@@ -264,7 +264,7 @@ All features below are **IMPLEMENTED AND FUNCTIONAL** in the current codebase.
 | **Launcher (Web)** | `src/launcher/` | Working - port 3340 |
 | **Dashboard** | `src/dashboard/` | Working - port 3344 |
 | **MCP Servers** | `mcp/` | Working - HTTP, stdio, filesystem |
-| **Brain Studio** | `/Users/jtr/_JTR_/COSMO_BrainStudio/` | Working - port 3398 |
+| **Brain Studio** | `/path/to/COSMO_BrainStudio/` | Working - port 3398 |
 | **Merge System** | `src/merge/`, `scripts/merge_runs.js` | Working - V2 with domain awareness |
 
 ### 2.3 Current Event Flow (What to Hook Into)
@@ -1304,7 +1304,7 @@ class KnowledgeGraphViz {
 User enters topic → COSMO researches (Watch mode) → Brain Studio explores (Studio mode)
 ```
 
-**Existing Brain Studio Components** (already built in `/Users/jtr/_JTR_/COSMO_BrainStudio/`):
+**Existing Brain Studio Components** (already built in `/path/to/COSMO_BrainStudio/`):
 
 | Component | Port | Function |
 |-----------|------|----------|
@@ -1397,9 +1397,9 @@ COSMO_Unified/
 │       ├── launch-mode.js        # Launch UI
 │       └── watch-mode.js         # Watch Panel (embeds intelligence.html)
 │
-├── engine/                       # Symlink → /Users/jtr/_JTR_/Cosmo2/COSMO2
+├── engine/                       # Symlink → /path/to/Cosmo2/COSMO2
 │
-├── studio/                       # Symlink → /Users/jtr/_JTR_/COSMO_BrainStudio
+├── studio/                       # Symlink → /path/to/COSMO_BrainStudio
 │
 └── brains/                       # Shared brain storage
     └── {brain-name}.brain/
@@ -1740,7 +1740,7 @@ When research completes, auto-generate a downloadable brief:
 **Goal:** Single entry point marrying COSMO + Brain Studio.
 
 **Completed Tasks:**
-1. ✅ Created `COSMO_Unified/` project at `/Users/jtr/_JTR_/COSMO_Unified/`
+1. ✅ Created `COSMO_Unified/` project at `/path/to/COSMO_Unified/`
 2. ✅ Created symlinks: `engine/` → COSMO2, `studio/` → Brain Studio
 3. ✅ Implemented `server/index.js` with:
    - Static file serving for Launch/Watch modes
@@ -1766,13 +1766,13 @@ When research completes, auto-generate a downloadable brief:
 - Brain handoff via shared filesystem (COSMO_RUNS_PATH)
 
 **Files Created:**
-- `/Users/jtr/_JTR_/COSMO_Unified/package.json`
-- `/Users/jtr/_JTR_/COSMO_Unified/server/index.js`
-- `/Users/jtr/_JTR_/COSMO_Unified/public/index.html`
-- `/Users/jtr/_JTR_/COSMO_Unified/public/js/app.js`
-- `/Users/jtr/_JTR_/COSMO_Unified/public/css/unified.css`
-- `/Users/jtr/_JTR_/COSMO_Unified/.env`
-- `/Users/jtr/_JTR_/COSMO_Unified/README.md`
+- `/path/to/COSMO_Unified/package.json`
+- `/path/to/COSMO_Unified/server/index.js`
+- `/path/to/COSMO_Unified/public/index.html`
+- `/path/to/COSMO_Unified/public/js/app.js`
+- `/path/to/COSMO_Unified/public/css/unified.css`
+- `/path/to/COSMO_Unified/.env`
+- `/path/to/COSMO_Unified/README.md`
 
 **Deliverable:** ✅ Single URL (localhost:3000), three modes, seamless transitions.
 
@@ -2089,8 +2089,8 @@ STRIPE_WEBHOOK_SECRET=...
 
 | Asset | Location | Integration |
 |-------|----------|-------------|
-| **Brain Studio** | `/Users/jtr/_JTR_/COSMO_BrainStudio/` | Proxy via `/studio/*` |
-| **COSMO2 Engine** | `/Users/jtr/_JTR_/Cosmo2/COSMO2/` | Symlink as `engine/` |
+| **Brain Studio** | `/path/to/COSMO_BrainStudio/` | Proxy via `/studio/*` |
+| **COSMO2 Engine** | `/path/to/Cosmo2/COSMO2/` | Symlink as `engine/` |
 | **Watch Panel** | `src/dashboard/intelligence.html` | Embed in `/watch` mode |
 | **Existing Runs** | `COSMO2/runs/` | Shared via `COSMO_RUNS_PATH` |
 

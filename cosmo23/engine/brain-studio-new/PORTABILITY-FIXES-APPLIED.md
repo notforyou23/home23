@@ -90,7 +90,7 @@ switch (platform) {
 | Before | After |
 |--------|-------|
 | `192.168.7.131:3405` | `YOUR_LOCAL_IP:3405` |
-| `/Users/jtr/_JTR23_/cosmo_ide_v2/ssl/cert.pem` | `ssl/cert.pem` from your COSMO IDE directory |
+| `/path/to/cosmo-ide/ssl/cert.pem` | `ssl/cert.pem` from your COSMO IDE directory |
 | "Find '192.168.7.131' certificate" | "Find the certificate (named with your IP)" |
 | "This Mac" | "This machine" |
 
@@ -107,7 +107,7 @@ switch (platform) {
 
 **Before:**
 ```bash
-cd /Users/jtr/_JTR23_/cosmo_ide_v2
+cd /path/to/cosmo-ide
 ```
 
 **After:**
@@ -124,8 +124,8 @@ cd cosmo_ide_v2
 
 **Before:**
 ```
-/Users/jtr/_JTR23_/cosmo_ide_v2/conversations/
-"folder": "/Users/jtr/project"
+/path/to/cosmo-ide/conversations/
+"folder": "/path/to/project"
 ```
 
 **After:**
@@ -142,10 +142,10 @@ cd cosmo_ide_v2
 
 **Before:**
 ```javascript
-let currentBrowsePath = '/Users/jtr/_JTR23_/COSMO';
+let currentBrowsePath = '.';
 
 async function navigateToHome() {
-    await browseFolders('/Users/jtr');
+    await browseFolders('.');
 }
 ```
 
@@ -162,11 +162,11 @@ async function navigateToHome() {
 ```
 
 **Changed:** All fallback paths from hardcoded to relative
-- **Before:** `(currentBrowsePath || '/Users/jtr/_JTR23_/COSMO')`
+- **Before:** `(currentBrowsePath || '.')`
 - **After:** `(currentBrowsePath || '.')`
 
 **Changed:** Placeholder text in folder browser
-- **Before:** `"e.g., /Users/jtr/Desktop"`
+- **Before:** `"e.g., /path/to/Desktop"`
 - **After:** `"e.g., /path/to/folder"`
 
 ---
@@ -187,7 +187,7 @@ async function navigateToHome() {
 ### No Hardcoded Values Remaining
 
 **Checked for:**
-- ❌ `/Users/jtr` - **NONE FOUND** in source files (only in audit docs)
+- ❌ `.` - **NONE FOUND** in source files (only in audit docs)
 - ❌ `192.168.7.131` - **NONE FOUND** in source files (only in audit docs)
 - ❌ `open -R` - **STILL IN USE** but with platform detection
 - ✅ Relative paths used throughout

@@ -11,7 +11,7 @@
  * Usage: node patch-memory-paths.js <run-directory>
  *
  * Example:
- *   cd /Users/jtr/_JTR_/COSMO_Unified
+ *   cd .
  *   node engine/scripts/patch-memory-paths.js data/users/cmjtizyn80000aulpahd0pfk5/runs/thoughts
  */
 

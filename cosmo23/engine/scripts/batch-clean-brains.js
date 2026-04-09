@@ -14,8 +14,8 @@
  *   node engine/scripts/batch-clean-brains.js <data-directory>
  *
  * Example:
- *   node engine/scripts/batch-clean-brains.js /Users/jtr/websites/cosmos.evobrew.com/data --dry-run
- *   node engine/scripts/batch-clean-brains.js /Users/jtr/websites/cosmos.evobrew.com/data
+ *   node engine/scripts/batch-clean-brains.js /path/to/brain-data --dry-run
+ *   node engine/scripts/batch-clean-brains.js /path/to/brain-data
  */
 
 const path = require('path');

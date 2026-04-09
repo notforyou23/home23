@@ -15,10 +15,10 @@ const CONFIG_PATH = process.env.FEEDER_CONFIG
   ? path.resolve(BASE_DIR, process.env.FEEDER_CONFIG)
   : path.join(BASE_DIR, 'feeder.yaml');
 const config = loadConfig();
-const memberName = config.member || 'jtr';
+const memberName = config.member || 'default';
 const MANIFEST_PATH = path.join(BASE_DIR, `manifest-${memberName}.json`);
 const PENDING_PATH = path.join(BASE_DIR, `pending-${memberName}.json`);
-const stateFile = resolvePath(config.state_file || '../runs/jtr/state.json.gz');
+const stateFile = resolvePath(config.state_file || '../runs/default/state.json.gz');
 const flushIntervalMs = (config.flush_interval_seconds || 300) * 1000;
 const flushBatchSize = config.flush_batch_size || 20;
 
@@ -134,7 +134,7 @@ function buildNode(item, nodeId) {
     lastAccessed: Date.now(),
     accessCount: 0,
     metadata: {
-      source: 'jtr-feeder',
+      source: 'home23-feeder',
       sourcePath: item.filePath || item.sourcePath,
       chunkKey: item.sourcePath,
       chunkIndex: item.chunkIndex ?? 0,

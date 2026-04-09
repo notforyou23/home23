@@ -1,7 +1,6 @@
 home:
-  name: home23-dev
+  name: home23
   version: 0.1.0
-  primaryAgent: jerry
 evobrew:
   port: 3415
 cosmo23:
@@ -13,31 +12,18 @@ cosmo23:
 providers:
   ollama-cloud:
     baseUrl: https://ollama.com/v1
-    defaultModels:
-      - minimax-m2.7
-      - kimi-k2.5
-      - gemma4:31b
-      - glm-5.1
-      - qwen3.5:397b
-      - deepseek-v3.2
-      - nemotron-3-super
+    defaultModels: []
   ollama-local:
     baseUrl: http://127.0.0.1:11434
   anthropic:
-    defaultModels:
-      - claude-sonnet-4-6
-      - claude-opus-4-6
+    defaultModels: []
   openai:
-    defaultModels:
-      - gpt-5.4
-      - gpt-5.4-mini
+    defaultModels: []
   openai-codex:
-    defaultModels:
-      - gpt-5.4
+    defaultModels: []
   xai:
     baseUrl: https://api.x.ai/v1
-    defaultModels:
-      - grok-4-0709
+    defaultModels: []
 embeddings:
   providers:
     - provider: ollama-local
@@ -51,8 +37,8 @@ embeddings:
       model: nomic-embed-text
       dimensions: 768
 chat:
-  defaultProvider: ollama-cloud
-  defaultModel: nemotron-3-super
+  defaultProvider: ""
+  defaultModel: ""
   maxTokens: 4096
   temperature: 0.7
   historyBudget: 400000

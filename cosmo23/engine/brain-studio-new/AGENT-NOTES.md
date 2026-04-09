@@ -18,14 +18,14 @@
 
 This repository has **TWO local installations** with different purposes:
 
-### 📁 `/Users/jtr/_JTR23_/cosmo_ide_v2/` - STABLE VERSION
+### 📁 `/path/to/cosmo-ide/` - STABLE VERSION
 - **Purpose:** Daily use, personal coding work, ready for others to test
 - **Ports:** 3405 (HTTP), 3406 (HTTPS)
 - **Git:** Fully functional repository on `main` branch, synced with GitHub
 - **Remote:** `https://github.com/notforyou23/cosmo_ide.git`
 - **Rule:** Only update via `git pull` after testing changes in dev
 
-### 📁 `/Users/jtr/_JTR23_/cosmo_ide_v2_dev/` - DEVELOPMENT VERSION
+### 📁 `/path/to/cosmo-ide_dev/` - DEVELOPMENT VERSION
 - **Purpose:** Experimenting, developing new features, breaking things safely
 - **Ports:** 3407 (HTTP), 3408 (HTTPS)
 - **Git:** Fully functional repository on `main` branch
@@ -42,7 +42,7 @@ This repository has **TWO local installations** with different purposes:
 
 1. **Work in DEV folder**
    ```bash
-   cd /Users/jtr/_JTR23_/cosmo_ide_v2_dev
+   cd /path/to/cosmo-ide_dev
    # Make changes
    npm start  # Test on port 3407
    ```
@@ -61,14 +61,14 @@ This repository has **TWO local installations** with different purposes:
 
 4. **Pull into stable when ready**
    ```bash
-   cd /Users/jtr/_JTR23_/cosmo_ide_v2
+   cd /path/to/cosmo-ide
    git pull origin main
    # Restart if server is running
    ```
 
 5. **If issues in stable - rollback**
    ```bash
-   cd /Users/jtr/_JTR23_/cosmo_ide_v2
+   cd /path/to/cosmo-ide
    git reset --hard <previous-commit>
    ```
 
@@ -120,7 +120,7 @@ This repository has **TWO local installations** with different purposes:
 ### ✅ ALWAYS DO:
 1. **Test in dev folder first** - `/cosmo_ide_v2_dev/`
 2. **Use environment variables** - For ports, API keys, config
-3. **Maintain portability** - No `/Users/jtr/` hardcoded paths
+3. **Maintain portability** - No `/path/to/user/` hardcoded paths
 4. **Update both .env files** - When adding new env vars
 5. **Check git status before committing** - Avoid committing secrets
 

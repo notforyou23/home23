@@ -1157,7 +1157,7 @@ class DocumentAnalysisAgent extends BaseAgent {
 
     try {
       // DEPRECATED: Hardcoded directory list - use configured allowedPaths instead
-      const directories = ['.', 'jtr', 'documents', 'runtime/outputs/document-creation', 'research'];
+      const directories = ['.', 'documents', 'runtime/outputs/document-creation', 'research'];
 
       for (const dir of directories) {
         try {

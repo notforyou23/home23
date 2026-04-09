@@ -4,8 +4,8 @@ Read this before touching the repo.
 
 ## Startup Rules
 
-1. Read [README.md](/Users/jtr/_JTR23_/cosmo_2.3/README.md) before making assumptions about the standalone surface.
-2. If work touches guided runs, read [investigations/cosmo-2.3-master-synthesis.md](/Users/jtr/_JTR23_/cosmo_2.3/investigations/cosmo-2.3-master-synthesis.md) first, then only the supporting investigation files needed for the task.
+1. Read [README.md](cosmo23/README.md) before making assumptions about the standalone surface.
+2. If work touches guided runs, read [investigations/cosmo-2.3-master-synthesis.md](cosmo23/investigations/cosmo-2.3-master-synthesis.md) first, then only the supporting investigation files needed for the task.
 3. Verify the current implementation files before editing. Some investigation file references are stale even when the conclusions are still correct.
 
 ## Non-Negotiable Safety Rules
@@ -29,14 +29,14 @@ The wrapper is not the engine. Guided-run behavior changes usually belong in `en
 
 ## Primary Edit Surfaces
 
-- Guided planning: [engine/src/core/guided-mode-planner.js](/Users/jtr/_JTR23_/cosmo_2.3/engine/src/core/guided-mode-planner.js)
-- Runtime loop and spawn paths: [engine/src/core/orchestrator.js](/Users/jtr/_JTR23_/cosmo_2.3/engine/src/core/orchestrator.js)
-- Strategic coordination and tier spawning: [engine/src/coordinator/meta-coordinator.js](/Users/jtr/_JTR23_/cosmo_2.3/engine/src/coordinator/meta-coordinator.js)
-- Agent result integration and follow-ups: [engine/src/agents/agent-executor.js](/Users/jtr/_JTR23_/cosmo_2.3/engine/src/agents/agent-executor.js)
-- Research handoff/output generation: [engine/src/agents/research-agent.js](/Users/jtr/_JTR23_/cosmo_2.3/engine/src/agents/research-agent.js)
-- Agent startup context: [engine/src/agents/ide-agent.js](/Users/jtr/_JTR23_/cosmo_2.3/engine/src/agents/ide-agent.js)
-- Introspection ingestion: [engine/src/system/introspection.js](/Users/jtr/_JTR23_/cosmo_2.3/engine/src/system/introspection.js)
-- Standalone launch normalization: [server/index.js](/Users/jtr/_JTR23_/cosmo_2.3/server/index.js), [launcher/config-generator.js](/Users/jtr/_JTR23_/cosmo_2.3/launcher/config-generator.js), [public/index.html](/Users/jtr/_JTR23_/cosmo_2.3/public/index.html), [public/app.js](/Users/jtr/_JTR23_/cosmo_2.3/public/app.js)
+- Guided planning: [engine/src/core/guided-mode-planner.js](cosmo23/engine/src/core/guided-mode-planner.js)
+- Runtime loop and spawn paths: [engine/src/core/orchestrator.js](cosmo23/engine/src/core/orchestrator.js)
+- Strategic coordination and tier spawning: [engine/src/coordinator/meta-coordinator.js](cosmo23/engine/src/coordinator/meta-coordinator.js)
+- Agent result integration and follow-ups: [engine/src/agents/agent-executor.js](cosmo23/engine/src/agents/agent-executor.js)
+- Research handoff/output generation: [engine/src/agents/research-agent.js](cosmo23/engine/src/agents/research-agent.js)
+- Agent startup context: [engine/src/agents/ide-agent.js](cosmo23/engine/src/agents/ide-agent.js)
+- Introspection ingestion: [engine/src/system/introspection.js](cosmo23/engine/src/system/introspection.js)
+- Standalone launch normalization: [server/index.js](cosmo23/server/index.js), [launcher/config-generator.js](cosmo23/launcher/config-generator.js), [public/index.html](cosmo23/public/index.html), [public/app.js](cosmo23/public/app.js)
 
 ## Ports And Runtime Facts
 
@@ -47,9 +47,9 @@ The wrapper is not the engine. Guided-run behavior changes usually belong in `en
 
 Primary runtime paths:
 
-- Local runs: [runs](/Users/jtr/_JTR23_/cosmo_2.3/runs)
-- Active runtime link: [runtime](/Users/jtr/_JTR23_/cosmo_2.3/runtime)
-- Investigation corpus: [investigations](/Users/jtr/_JTR23_/cosmo_2.3/investigations)
+- Local runs: [runs](cosmo23/runs)
+- Active runtime link: [runtime](cosmo23/runtime)
+- Investigation corpus: [investigations](cosmo23/investigations)
 
 ## External / merged run guardrail
 
@@ -76,7 +76,7 @@ Default to these unless the user explicitly says otherwise:
 
 ## Cross-Agent Safety (iOS App / External Agents)
 
-- The iOS app at `/Users/jtr/xCode_Builds/Cosmo` shares this backend. Agents working on the iOS app may modify backend files here.
+- If an iOS app shares this backend, agents working on the iOS app may modify backend files here.
 - **Two GPT5Client files exist:** `lib/gpt5-client.js` (query engine, web app) and `engine/src/core/gpt5-client.js` (engine runtime). They are independent — changes to one do not propagate to the other. Both must stay compatible with code that sets `.client` directly (e.g., xAI Responses client init in `lib/query-engine.js`).
 - After any backend modification by an external agent, verify queries work across all providers: OpenAI (`gpt-5.2`), xAI (`grok-4.20-0309-reasoning`), Anthropic (`claude-sonnet-4-6`), and local models.
 - Do not convert simple instance properties to getter-only accessors without checking all call sites — other code may assign to them directly.

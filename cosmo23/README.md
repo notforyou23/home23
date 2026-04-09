@@ -50,15 +50,14 @@ Overrides use the `COSMO23_*` namespaced env vars:
 - Global config: `~/.cosmo2.3/config.json`
 - Local model catalog: `~/.cosmo2.3/model-catalog.json`
 - OAuth/token DB: `~/.cosmo2.3/database.db`
-- Local runs: [runs](/Users/jtr/_JTR23_/cosmo_2.3/runs)
-- Active runtime link: [runtime](/Users/jtr/_JTR23_/cosmo_2.3/runtime)
+- Local runs: `runs/`
+- Active runtime link: `runtime/`
 
 ## Reference brains
 
 By default COSMO 2.3 scans these sibling run directories when present:
 
-- `/Users/jtr/_JTR23_/Cosmo_Unified_dev/runs`
-- `/Users/jtr/_JTR23_/COSMO/runs`
+- `../runs` (sibling directories if present)
 
 Override with `COSMO_REFERENCE_RUNS_PATHS`.
 
@@ -160,5 +159,5 @@ The standalone has been smoke-tested with:
 
 ## More docs
 
-- Detailed usage: [docs/USAGE.md](/Users/jtr/_JTR23_/cosmo_2.3/docs/USAGE.md)
-- Environment example: [.env.example](/Users/jtr/_JTR23_/cosmo_2.3/.env.example)
+- Detailed usage: [docs/USAGE.md](engine/docs/COSMO_PRODUCT_SPEC.md)
+- Environment example: [.env.example](.env.example)

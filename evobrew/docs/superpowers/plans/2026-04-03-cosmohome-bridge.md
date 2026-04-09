@@ -8,7 +8,7 @@
 
 **Tech Stack:** Anthropic SDK streaming (`messages.stream()`), Express, SSE.
 
-**Target codebase:** `/Users/jtr/_JTR23_/cosmo-home_2.3/`
+**Target codebase:** `/path/to/cosmo-home_2.3/`
 
 ---
 
@@ -19,7 +19,7 @@
 
 - [ ] **Step 1: Create the bridge module**
 
-Create `/Users/jtr/_JTR23_/cosmo-home_2.3/src/routes/evobrew-bridge.ts`:
+Create `/path/to/cosmo-home_2.3/src/routes/evobrew-bridge.ts`:
 
 ```typescript
 /**
@@ -171,7 +171,7 @@ export function createHealthHandler(config: { agentName: string }) {
 - [ ] **Step 2: Syntax check**
 
 ```bash
-cd /Users/jtr/_JTR23_/cosmo-home_2.3 && npx tsc --noEmit src/routes/evobrew-bridge.ts 2>&1 || echo "Check for errors"
+cd /path/to/cosmo-home_2.3 && npx tsc --noEmit src/routes/evobrew-bridge.ts 2>&1 || echo "Check for errors"
 ```
 
 Note: This may show import errors since the file isn't wired in yet. The important thing is no syntax errors in the file itself. A simpler check:
@@ -197,7 +197,7 @@ git commit -m "feat: add evobrew bridge route handler"
 
 - [ ] **Step 1: Add getApp() to WebhookServer**
 
-In `/Users/jtr/_JTR23_/cosmo-home_2.3/src/channels/webhooks.ts`, add a public method after the constructor (after line 73):
+In `/path/to/cosmo-home_2.3/src/channels/webhooks.ts`, add a public method after the constructor (after line 73):
 
 ```typescript
   /** Expose Express app for adding external routes */
@@ -208,7 +208,7 @@ In `/Users/jtr/_JTR23_/cosmo-home_2.3/src/channels/webhooks.ts`, add a public me
 
 - [ ] **Step 2: Register bridge routes in home.ts**
 
-In `/Users/jtr/_JTR23_/cosmo-home_2.3/src/home.ts`, add the import at the top (with the other imports):
+In `/path/to/cosmo-home_2.3/src/home.ts`, add the import at the top (with the other imports):
 
 ```typescript
 import { createEvobrewChatHandler, createHealthHandler } from './routes/evobrew-bridge.js';
@@ -240,7 +240,7 @@ Also verify that `COSMO_INSTANCE` is available — it should be defined earlier 
 - [ ] **Step 3: Build the TypeScript**
 
 ```bash
-cd /Users/jtr/_JTR23_/cosmo-home_2.3 && npx tsc
+cd /path/to/cosmo-home_2.3 && npx tsc
 ```
 
 Expected: Clean build with no errors.
@@ -259,7 +259,7 @@ git commit -m "feat: register evobrew bridge on webhook server"
 - [ ] **Step 1: Restart the cosmohome agent**
 
 ```bash
-cd /Users/jtr/_JTR23_/cosmo-home_2.3 && pm2 restart cosmo23-coz
+cd /path/to/cosmo-home_2.3 && pm2 restart cosmo23-coz
 ```
 
 - [ ] **Step 2: Test health endpoint**

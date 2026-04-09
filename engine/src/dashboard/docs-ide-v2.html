@@ -2204,7 +2204,7 @@
             
             // If COSMO compiled-docs URL (?run=X&system=Y), translate to filesystem path
             if (run && system) {
-                const cosmoRoot = '/Users/jtr/_JTR23_/COSMO';
+                const cosmoRoot = '.';
                 const compiledPath = run === 'runtime'
                     ? `${cosmoRoot}/runtime/compiled-docs/${system}`
                     : `${cosmoRoot}/runs/${run}/compiled-docs/${system}`;

@@ -1712,8 +1712,8 @@
                 <button onclick="navigateUp()" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">⬆️ Up</button>
                 <button onclick="navigateToHome()" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">🏠 Home</button>
                 <div style="flex: 1; padding: 6px 12px; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px; font-size: 12px; font-family: monospace; overflow-x: auto; white-space: nowrap;" id="current-path-display">
-                    /Users/jtr
-                </div>
+                    .
+</div>
             </div>
             <div id="folder-list" style="padding: 12px; overflow-y: auto; max-height: calc(70vh - 120px);">
                 <div style="text-align: center; color: var(--text-secondary); padding: 40px;">Loading...</div>
@@ -1886,7 +1886,7 @@
             // Get the current working folder based on IDE mode
             const currentFolder = IDE_MODE === 'filesystem' 
                 ? folderPath 
-                : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO');
+                : (currentBrowsePath || '.');
             
             // Already absolute? Return as-is
             if (inputPath.startsWith('/')) {
@@ -2056,7 +2056,7 @@
             }
             
             getCurrentDirectory() {
-                return IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO');
+                return IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.');
             }
             
             loadConversations(directory) {
@@ -4499,7 +4499,7 @@
                     fileName,
                     language,
                     fileTreeContext,
-                    currentFolder: IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO'),
+                    currentFolder: IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.'),
                     model: selectedModel,
                     conversationHistory: aiConversationHistory.slice(-12),
                     stream: true  // Enable streaming
@@ -4509,7 +4509,7 @@
                 let fullResponse = '';
                 let data = null;
                 let pendingFile = null; // {path, content} - file being streamed
-                const currentFolderForRealtime = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO');
+                const currentFolderForRealtime = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.');
                 let realtimeCreatedPaths = new Set(); // Track files created during streaming
                 
                 const response = await fetch('/api/ide/chat', {
@@ -4678,7 +4678,7 @@
                     const continueMessage = `Here are the files you requested:\n${filesContext}\n\nNow please provide your response to the original request.`;
                     
                     // Continue directly without recursive call
-                    const currentFolderContext = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO');
+                    const currentFolderContext = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.');
                     const continueResponse = await fetch('/api/ide/chat', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -4741,7 +4741,7 @@
                                 body: JSON.stringify({ 
                                     pattern, 
                                     path: searchPath,
-                                    currentFolder: IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO')
+                                    currentFolder: IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.')
                                 })
                             });
                             const grepData = await response.json();
@@ -4767,7 +4767,7 @@
                     // Continue conversation with grep results
                     const continueMessage = `Here are the search results:\n${grepResults}\n\nNow please provide your response to the original request.`;
                     
-                    const currentFolderContext = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO');
+                    const currentFolderContext = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.');
                     const continueResponse = await fetch('/api/ide/chat', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -4855,7 +4855,7 @@
                     // Continue conversation
                     const continueMessage = `Here are the directory listings:\n${dirListings}\n\nNow please provide your response to the original request.`;
                     
-                    const currentFolderContext = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO');
+                    const currentFolderContext = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.');
                     const continueResponse = await fetch('/api/ide/chat', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -4899,7 +4899,7 @@
                 if (edits.length > 0) {
                     // Multi-file editing - Use edit queue (Cursor-style)
                     let editCount = 0;
-                    const currentFolderForEdits = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO');
+                    const currentFolderForEdits = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.');
                     
                     for (const match of edits) {
                         let filePath = match[1].trim();
@@ -4963,7 +4963,7 @@
                     let successCount = 0;
                     let failCount = 0;
                     const createdFiles = [];
-                    const currentFolderForCreates = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO');
+                    const currentFolderForCreates = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.');
                     const alreadyCreated = data.realtimeCreated || [];
                     
                     for (const match of creates) {
@@ -5832,7 +5832,7 @@ ${html}
             const csvContent = csvLines.join('\n');
             
             // Create file
-            const currentFolder = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO');
+            const currentFolder = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.');
             const fullPath = fileName.startsWith('/') ? fileName : `${currentFolder}/${fileName}`;
             
             try {
@@ -6019,7 +6019,7 @@ ${html}
         }
         
         function copyRelativePath(filePath) {
-            const currentFolder = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO');
+            const currentFolder = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.');
             let relative = filePath.replace(currentFolder + '/', '');
             if (relative === filePath) relative = './' + filePath.split('/').pop();
             copyToClipboard(relative);
@@ -6049,7 +6049,7 @@ ${html}
          * Prompts for filename and creates in current folder
          */
         async function createNewFile() {
-            const currentFolder = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO');
+            const currentFolder = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.');
             const fileName = prompt('Enter new file name:', 'untitled.md');
             
             if (!fileName) return;
@@ -6070,7 +6070,7 @@ ${html}
          * Prompts for folder name and creates in current folder
          */
         async function createNewFolder() {
-            const currentFolder = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '/Users/jtr/_JTR23_/COSMO');
+            const currentFolder = IDE_MODE === 'filesystem' ? folderPath : (currentBrowsePath || '.');
             const folderName = prompt('Enter new folder name:', 'new-folder');
             
             if (!folderName) return;
@@ -6139,7 +6139,7 @@ ${html}
         // FOLDER BROWSER
         // ============================================================================
         
-        let currentBrowsePath = '/Users/jtr/_JTR23_/COSMO';
+        let currentBrowsePath = '.';
         
         async function showFolderBrowser() {
             document.getElementById('folder-browser').classList.remove('hidden');
@@ -6196,7 +6196,7 @@ ${html}
         }
         
         async function navigateToHome() {
-            await browseFolders('/Users/jtr');
+            await browseFolders('.');
         }
         
         function selectCurrentFolder() {

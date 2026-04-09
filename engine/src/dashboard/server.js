@@ -867,7 +867,7 @@ class DashboardServer {
           preview = preview.replace(/^\[(?:telegram|discord)\s+[^\]]*\]\s*/i, '');
 
           // Determine source from filename or content
-          const cleanId = id.replace(/^[^_]+__/, ''); // strip namespace prefix like "jerry__"
+          const cleanId = id.replace(/^[^_]+__/, ''); // strip namespace prefix like "agent__"
           const source = cleanId.startsWith('dashboard') ? 'dashboard'
             : cleanId.startsWith('evobrew') ? 'evobrew'
             : cleanId.startsWith('cron-') ? 'cron'

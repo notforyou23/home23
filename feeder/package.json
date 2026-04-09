@@ -1,10 +1,10 @@
 {
-  "name": "jtr-feeder",
+  "name": "home23-feeder",
   "version": "1.0.0",
-  "description": "Live feeder for jtr COSMO brain",
+  "description": "Live feeder for Home23 agent brain",
   "main": "server.js",
   "bin": {
-    "jtr-feed": "./cli.js"
+    "home23-feed": "./cli.js"
   },
   "scripts": {
     "start": "node server.js"

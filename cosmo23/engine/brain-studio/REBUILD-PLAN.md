@@ -12,7 +12,7 @@
 
 ## What I'm Copying (NO dumbing down):
 
-### From /Users/jtr/_JTR23_/cosmo_ide_v2_dev:
+### From /path/to/cosmo-ide:
 
 1. **public/index.html** (7,613 lines)
    - FULL IDE HTML structure

@@ -242,7 +242,7 @@ class QuantumReasoner {
 
     // Keep prompt minimal to avoid verbose responses
     // Ground in real cluster data FIRST so the model reasons from actual memory,
-    // not from confabulated plausible-sounding text about jtr.
+    // not from confabulated plausible-sounding text about the owner.
     const clusterPrefix = (context.activeClusterSummary && typeof context.activeClusterSummary === 'string')
       ? `${context.activeClusterSummary.trim().slice(0, 600)}\n\n`
       : '';

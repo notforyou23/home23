@@ -51,7 +51,7 @@
 
 ### **Files Tab - AI Assistant**
 
-**Reference:** `/Users/jtr/_JTR23_/cosmo_ide_v2_dev`
+**Reference:** `/path/to/cosmo-ide`
 
 **What to Copy:**
 
@@ -153,7 +153,7 @@
 **What Works Right Now:**
 ```bash
 # Launch Brain Studio
-cd /Users/jtr/_JTR23_/COSMO
+cd .
 node brain-studio/server/brain-server.js Physics2.brain
 
 # Opens http://localhost:3399

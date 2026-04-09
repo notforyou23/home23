@@ -43,14 +43,14 @@ This is not failure — this is the system working. Knowing what you already kno
 
 You choose where the work lands. The executor doesn't decide — you do, here, before any execution begins.
 
-Ask yourself: "When this is done, how does jtr know it happened and benefit from it?"
+Ask yourself: "When this is done, how does the owner know it happened and benefit from it?"
 
-- If it's about Jerry Garcia / Shakedown Shuffle content → **newsletter draft**
+- If it's about the subject / the newsletter content → **newsletter draft**
 - If it changes project status → **HEARTBEAT entry**
-- If it's time-sensitive or jtr needs to act → **Bridge Chat**
+- If it's time-sensitive or the owner needs to act → **Bridge Chat**
 - If it's a long-form synthesis → **synthesis file** in memory/
-- If it's an atomic new fact → **brain node** via jtr-feeder
-- If jtr needs to do something → **reminder**
+- If it's an atomic new fact → **brain node** via agent-feeder
+- If the owner needs to do something → **reminder**
 
 Never leave this field blank. "TBD" is not an output destination.
 
@@ -67,4 +67,4 @@ Bad phases: "Explore the topic." "Look into this." "Gather information."
 
 If a goal is too broad (would take more than 5 phases), split it into a parent plan and child plans. The parent plan has phases like "complete child plan A" and "complete child plan B."
 
-Don't try to solve everything in one plan. Terrapin's cycles are limited. Tight scope, clear deliverable, known destination.
+Don't try to solve everything in one plan. the agent's cycles are limited. Tight scope, clear deliverable, known destination.

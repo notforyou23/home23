@@ -119,11 +119,6 @@ export async function runAgentCreate(home23Root, name) {
 
   closeRL();
 
-  if (!botToken) {
-    console.error('Error: Telegram bot token is required');
-    process.exit(1);
-  }
-
   const ports = findNextPorts(home23Root);
 
   console.log('');
@@ -158,7 +153,7 @@ export async function runAgentCreate(home23Root, name) {
     },
     channels: {
       telegram: {
-        enabled: true,
+        enabled: !!botToken,
         streaming: 'partial',
         dmPolicy: 'open',
         groupPolicy: 'restricted',
@@ -222,9 +217,11 @@ export async function runAgentCreate(home23Root, name) {
     console.log(`  ${file.padEnd(16)} \u2713`);
   }
 
-  // Add bot token to secrets.yaml
-  addBotTokenToSecrets(home23Root, name, botToken);
-  console.log(`  secrets.yaml   \u2713 (bot token added)`);
+  // Add bot token to secrets.yaml (if provided)
+  if (botToken) {
+    addBotTokenToSecrets(home23Root, name, botToken);
+    console.log(`  secrets.yaml   \u2713 (bot token added)`);
+  }
 
   // Regenerate ecosystem.config.cjs
   console.log('');

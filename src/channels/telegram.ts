@@ -3,7 +3,7 @@
  *
  * Long-polling adapter for Telegram Bot API.
  * Receives messages via getUpdates, sends via sendMessage.
- * No webhook — jtr uses polling.
+ * No webhook — uses long-polling.
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';

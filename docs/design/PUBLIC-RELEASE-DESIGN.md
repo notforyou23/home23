@@ -31,7 +31,7 @@ The manifest becomes the source of truth for "what is Home23."
 
 ## Constraints
 
-- **Do NOT modify the running Home23 at `/Users/jtr/_JTR23_/Home23/`.** The public repo is a separate clean copy.
+- **Do NOT modify the running Home23 at `/path/to/Home23/`.** The public repo is a separate clean copy.
 - **Everything ships together.** No optional components, no separate install steps for evobrew or cosmo23.
 - **Must work from day one.** Clone, init, run. No paid API keys required for basic operation.
 
@@ -154,7 +154,7 @@ Before copying anything, each component is audited for:
 ### cosmo23/ Audit Scope
 - Inventory all directories — separate source from run artifacts
 - `runs/`, `runtime/`, `.cosmo23-config/`, `prisma/dev.db`, `exports/*/outputs/` are artifacts — do not ship
-- Check source files for hardcoded paths (`/Users/jtr/`, personal references)
+- Check source files for hardcoded paths (`/home/user/`, personal references)
 - Measure clean source size (should be dramatically smaller than 2.1GB)
 - Verify its own setup/onboarding handles provider config independently
 
@@ -204,16 +204,16 @@ The public repo becomes jtr's primary development environment. The old dev repo 
 
 **How it works:**
 - `$TARGET` is THE Home23 repo — jtr's running agent AND the public repo in one directory
-- Personal data (instances/jerry/, config/secrets.yaml, brain data, conversations) lives in gitignored directories — never pushed to GitHub
+- Personal data (instances/<agent>/, config/secrets.yaml, brain data, conversations) lives in gitignored directories — never pushed to GitHub
 - Development: make changes → commit → push. That's it. No syncing between repos.
 - Community: fork → PR → jtr reviews and merges
 - evobrew/cosmo23 standalone repos are upstream sources, not daily workspaces. Pull changes in with update commands when they happen.
 
-**Migration:** After the clean repo is built and verified, jerry's instance data (brain, config, conversations, identity) is copied in, PM2 processes are restarted from the new location, and the old repo is archived.
+**Migration:** After the clean repo is built and verified, the existing agent's instance data (brain, config, conversations, identity) is copied in, PM2 processes are restarted from the new location, and the old repo is archived.
 
 ## Current Repo State (for reference)
 
-The existing dev repo at `/Users/jtr/_JTR23_/Home23/` has issues:
+The existing dev repo at `/path/to/Home23/` has issues:
 - 2,286 tracked files, mostly old evobrew-era code (`exports/` 1561 files, `server/`, `lib/`, etc.)
 - The entire Home23 harness layer (`cli/`, `src/`, `config/`, `configs/`) is untracked
 - evobrew/ and cosmo23/ are untracked

@@ -1347,14 +1347,14 @@ if [ "$skip_questions" != "true" ] && [ "$modify_directive" != "true" ] && promp
                 # Categorize and display with description
                 case $dir in
                     docs) echo "    • docs/      - Documentation and guides" ;;
-                    jtr) echo "    • jtr/       - Personal workspace" ;;
+                    personal) echo "    • personal/  - Personal workspace" ;;
                     research) echo "    • research/  - Research materials" ;;
                     business) echo "    • business/  - Business documents" ;;
                     src) echo "    • src/       - COSMO source code (for analysis)" ;;
                 esac
             done
             echo ""
-            echo "Enter comma-separated directories (e.g., 'docs/, jtr/, research/')"
+            echo "Enter comma-separated directories (e.g., 'docs/, personal/, research/')"
             echo "Leave blank to use outputs only:"
             read -p "Directories: " custom_dirs
             

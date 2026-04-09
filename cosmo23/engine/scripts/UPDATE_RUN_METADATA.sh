@@ -57,8 +57,8 @@ for run_dir in "$RUNS_DIR"/*; do
         domain=$(grep '"domain"' "$metadata_file" | sed 's/.*"domain": "\([^"]*\)".*/\1/' || echo "")
         
         # Smart defaults based on domain
-        if echo "$domain" | grep -qi "jtr"; then
-            default_paths="jtr/"
+        if echo "$domain" | grep -qi "personal"; then
+            default_paths="personal/"
         elif echo "$domain" | grep -qi "business"; then
             default_paths="business/"
         elif echo "$domain" | grep -qi "src\|code"; then

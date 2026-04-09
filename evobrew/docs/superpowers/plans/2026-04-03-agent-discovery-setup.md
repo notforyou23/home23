@@ -13,11 +13,11 @@
 ### Task 1: Enhance cosmohome health endpoint
 
 **Files:**
-- Modify: `/Users/jtr/_JTR23_/cosmo-home_2.3/src/routes/evobrew-bridge.ts`
+- Modify: `/path/to/cosmo-home_2.3/src/routes/evobrew-bridge.ts`
 
 - [ ] **Step 1: Update createHealthHandler to include type and endpoint**
 
-In `/Users/jtr/_JTR23_/cosmo-home_2.3/src/routes/evobrew-bridge.ts`, replace the `createHealthHandler` function:
+In `/path/to/cosmo-home_2.3/src/routes/evobrew-bridge.ts`, replace the `createHealthHandler` function:
 
 ```typescript
 export function createHealthHandler(config: { agentName: string }) {
@@ -35,7 +35,7 @@ export function createHealthHandler(config: { agentName: string }) {
 - [ ] **Step 2: Build and commit**
 
 ```bash
-cd /Users/jtr/_JTR23_/cosmo-home_2.3 && npx tsc
+cd /path/to/cosmo-home_2.3 && npx tsc
 git add src/routes/evobrew-bridge.ts && git commit -m "feat: include type and endpoint in health response"
 ```
 

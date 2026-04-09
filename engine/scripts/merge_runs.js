@@ -2294,7 +2294,7 @@ Examples:
   node scripts/merge_runs.js
 
   # Merge specific runs
-  node scripts/merge_runs.js jerry2 jerryPsych --output combined
+  node scripts/merge_runs.js run1 run2 --output combined
 
   # Merge cross-domain brains (domain alignment enabled by default)
   node scripts/merge_runs.js math_brain physics_brain --output unified_brain

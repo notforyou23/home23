@@ -11,7 +11,7 @@
  *   node refocus-run.js <run-directory> --keep-goals  # Don't archive goals
  *
  * Example:
- *   cd /Users/jtr/_JTR_/COSMO_Unified
+ *   cd .
  *   node engine/scripts/refocus-run.js data/users/USER_ID/runs/RUN_NAME
  *   node engine/scripts/refocus-run.js data/users/USER_ID/runs/RUN_NAME --focus "Focus on validating code"
  */

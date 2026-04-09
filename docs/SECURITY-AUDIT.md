@@ -44,8 +44,8 @@
 
 | File | Issue | Fix Applied |
 |------|-------|-------------|
-| `cli/lib/cosmo23-update.js:18` | Fallback to `/Users/jtr/_JTR23_/cosmo_2.3` | Yes - removed fallback, requires config |
-| `cli/lib/generate-ecosystem.js:173` | Fallback to `/Users/jtr/_JTR23_/cosmo_2.3/runs` | Yes - changed fallback to empty string |
+| `cli/lib/cosmo23-update.js:18` | Fallback to `/path/to/cosmo_2.3` | Yes - removed fallback, requires config |
+| `cli/lib/generate-ecosystem.js:173` | Fallback to `/path/to/cosmo_2.3/runs` | Yes - changed fallback to empty string |
 | `config/home.yaml:12` | Hardcoded cosmo23 source path | Yes - commented out with placeholder |
 | `cosmo23/.env.example:13` | Hardcoded reference run paths | Yes - cleared value |
 

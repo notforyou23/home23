@@ -879,7 +879,7 @@ describe('ExecutionBaseAgent', function () {
         'echo test > /dev/null',
         'wget -q https://archive.org/file.json',
         'rm -rf /tmp/cosmo_work/agent_123/raw',
-        'rm -rf /Users/jtr/cosmo/runs/agent/temp',
+        'rm -rf ./runs/agent/temp',
         'chmod 755 script.sh',
         'npx playwright install 2>/dev/null'
       ];

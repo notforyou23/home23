@@ -487,8 +487,7 @@ ${runContext.recentProgress}
 `;
   }
 
-  // NOTE: This prompt is intentionally aligned to the canonical “unified” IDE prompt:
-  // /Users/jtr/_JTR23_/Cosmo_Unified_dev/engine/src/ide/ai-handler.js
+  // NOTE: This prompt is intentionally aligned to the canonical “unified” IDE prompt.
   // We keep a small identity header so multi-provider switching stays coherent.
   return `You are an elite AI coding assistant in an IDE. You're an AUTONOMOUS AGENT - explore thoroughly, understand deeply, ship quality code.
 
@@ -2052,8 +2051,7 @@ Execute the pending steps now. Start with the first step that has status "pendin
         const trimmedMessages = trimMessages(messages, 200000);
         const openaiModel = effectiveModel;
 
-        // Reference: /Users/jtr/_JTR23_/Cosmo_Unified_dev/engine/src/ide/ai-handler.js
-        // uses toolDefinitions for Responses (Chat Completions tool schema → Responses tool schema).
+        // Uses toolDefinitions for Responses (Chat Completions tool schema → Responses tool schema).
         const toolsForResponses = buildOpenAIResponsesToolsFromChatTools(availableTools);
         const instructions = buildOpenAIResponsesInstructionsFromMessages(trimmedMessages);
 

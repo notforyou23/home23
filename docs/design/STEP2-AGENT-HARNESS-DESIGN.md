@@ -10,7 +10,7 @@
 
 ## What Gets Copied
 
-The full `src/` directory from `/Users/jtr/_JTR23_/cosmo-home_2.3/src/` into `Home23/src/`.
+The full `src/` directory from `/path/to/cosmo-home_2.3/src/` into `Home23/src/`.
 
 | Directory | What | Approx Lines |
 |---|---|---|

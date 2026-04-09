@@ -165,7 +165,7 @@ function isPathAllowed(relPath) {
   return ALLOWED_PATHS.some(allowedPath => {
     // Handle both absolute external paths and COSMO-relative paths
     const resolvedAllowed = path.isAbsolute(allowedPath)
-      ? path.resolve(allowedPath)  // External absolute path (e.g., /Users/jtr/Documents/)
+      ? path.resolve(allowedPath)  // External absolute path (e.g., /home/user/Documents/)
       : path.resolve(ROOT_PATH, allowedPath);  // COSMO-relative path (e.g., runtime/outputs/)
     
     return resolvedRequested.startsWith(resolvedAllowed);

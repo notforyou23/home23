@@ -205,7 +205,7 @@ class NoticePass {
         subject: 'Weak cross-domain link detected',
         evidence,
         implication: 'This may be a useful bridge; a short synthesis note could connect two active areas and reduce context-switching cost.',
-        routing: this._looksJerry(a.concept) || this._looksJerry(b.concept) ? 'newsletter' : 'morning-briefing',
+        routing: this._looksPersonal(a.concept) || this._looksPersonal(b.concept) ? 'newsletter' : 'morning-briefing',
         priority: 'medium'
       });
 
@@ -342,9 +342,9 @@ class NoticePass {
     return null;
   }
 
-  _looksJerry(text) {
+  _looksPersonal(text) {
     const t = String(text || '').toLowerCase();
-    return t.includes('jerry') || t.includes('garcia') || t.includes('grateful dead') || t.includes('deadhead');
+    return t.includes('personal') || t.includes('family') || t.includes('hobby') || t.includes('interest');
   }
 
   _looksProject(text) {
@@ -363,7 +363,7 @@ class NoticePass {
     const lower = String(text || '').toLowerCase();
 
     if (type === 'gap') {
-      if (this._looksJerry(lower)) return { routing: 'newsletter', priority: 'medium' };
+      if (this._looksPersonal(lower)) return { routing: 'newsletter', priority: 'medium' };
       if (this._looksProject(lower)) return { routing: 'heartbeat', priority: 'medium' };
       return { routing: 'bridge-chat', priority: 'low' };
     }

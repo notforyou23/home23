@@ -27,7 +27,7 @@ COSMO 2.3 source lives at `Home23/cosmo23/` as a committed directory.
 
 `home23 init` installs cosmo23's npm deps (including Prisma generate).
 
-**Update command:** `home23 cosmo23 update`. COSMO 2.3 currently has no GitHub remote — it's a local-only repo. The update command copies from a configured source path (default: `/Users/jtr/_JTR23_/cosmo_2.3`). When a remote is added later, the command can be updated to pull from GitHub (same pattern as evobrew). Source path configurable in `home.yaml` under `cosmo23.source`.
+**Update command:** `home23 cosmo23 update`. COSMO 2.3 currently has no GitHub remote — it's a local-only repo. The update command copies from a configured source path (default: `/path/to/cosmo_2.3`). When a remote is added later, the command can be updated to pull from GitHub (same pattern as evobrew). Source path configurable in `home.yaml` under `cosmo23.source`.
 
 ## 2. Process Architecture
 
