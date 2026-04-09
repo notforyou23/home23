@@ -4,19 +4,15 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home23 Vibe Gallery</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/home23-dashboard.css">
   <style>
-    body {
-      min-height: 100vh;
-      background:
-        radial-gradient(circle at top, rgba(88, 166, 255, 0.12), transparent 38%),
-        linear-gradient(180deg, rgba(10, 22, 40, 0.96), rgba(7, 15, 28, 1));
-    }
-
     .h23-vg-shell {
       max-width: 1400px;
       margin: 0 auto;
       padding: 24px;
+      position: relative;
+      z-index: 1;
     }
 
     .h23-vg-header {
@@ -41,7 +37,7 @@
     }
 
     .h23-vg-title p {
-      color: var(--h23-text-secondary);
+      color: var(--text-secondary);
       font-size: 0.95rem;
     }
 
@@ -59,17 +55,19 @@
       min-height: 40px;
       padding: 0 16px;
       border-radius: 999px;
-      border: 1px solid rgba(88, 166, 255, 0.24);
-      background: rgba(17, 29, 51, 0.86);
-      color: var(--h23-text);
+      border: 1px solid var(--glass-border);
+      background: var(--glass-primary);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      color: var(--text-primary);
       text-decoration: none;
       cursor: pointer;
       font: inherit;
     }
 
     .h23-vg-btn:hover {
-      border-color: rgba(88, 166, 255, 0.48);
-      background: rgba(26, 42, 68, 0.96);
+      border-color: rgba(10, 132, 255, 0.48);
+      background: var(--glass-border);
     }
 
     .h23-vg-btn.primary {
@@ -81,10 +79,13 @@
     .h23-vg-meta {
       margin-bottom: 20px;
       padding: 14px 16px;
-      border-radius: var(--h23-radius);
-      background: rgba(17, 29, 51, 0.85);
-      border: 1px solid var(--h23-border);
-      color: var(--h23-text-secondary);
+      border-radius: var(--radius-md);
+      background: var(--glass-primary);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      color: var(--text-secondary);
+      box-shadow: var(--shadow-glass);
     }
 
     .h23-vg-grid {
@@ -94,17 +95,20 @@
     }
 
     .h23-vg-card {
-      background: rgba(17, 29, 51, 0.92);
-      border: 1px solid var(--h23-border);
-      border-radius: var(--h23-radius);
+      background: var(--glass-primary);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-md);
       overflow: hidden;
       cursor: pointer;
       transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+      box-shadow: var(--shadow-glass);
     }
 
     .h23-vg-card:hover {
       transform: translateY(-2px);
-      border-color: rgba(88, 166, 255, 0.35);
+      border-color: rgba(10, 132, 255, 0.35);
       box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
     }
 
@@ -113,7 +117,7 @@
       width: 100%;
       aspect-ratio: 1 / 1;
       object-fit: cover;
-      background: #07111f;
+      background: rgba(0, 0, 0, 0.3);
     }
 
     .h23-vg-card-body {
@@ -121,21 +125,21 @@
     }
 
     .h23-vg-caption {
-      color: var(--h23-text);
+      color: var(--text-primary);
       font-size: 0.96rem;
       line-height: 1.5;
       margin-bottom: 10px;
     }
 
     .h23-vg-seed {
-      color: var(--h23-text-secondary);
+      color: var(--text-secondary);
       font-size: 0.82rem;
       line-height: 1.45;
       margin-bottom: 10px;
     }
 
     .h23-vg-date {
-      color: var(--h23-text-muted);
+      color: var(--text-muted);
       font-size: 0.78rem;
       text-transform: uppercase;
       letter-spacing: 0.08em;
@@ -144,10 +148,12 @@
     .h23-vg-empty {
       padding: 60px 24px;
       text-align: center;
-      color: var(--h23-text-secondary);
-      background: rgba(17, 29, 51, 0.82);
-      border: 1px dashed var(--h23-border);
-      border-radius: var(--h23-radius);
+      color: var(--text-secondary);
+      background: var(--glass-primary);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px dashed var(--glass-border);
+      border-radius: var(--radius-md);
     }
 
     .h23-vg-lightbox {
@@ -170,11 +176,13 @@
       width: min(1100px, 100%);
       max-height: 92vh;
       overflow: auto;
-      background: rgba(10, 22, 40, 0.98);
-      border: 1px solid rgba(88, 166, 255, 0.18);
+      background: var(--glass-primary);
+      backdrop-filter: blur(30px);
+      -webkit-backdrop-filter: blur(30px);
+      border: 1px solid var(--glass-border);
       border-radius: 20px;
       padding: 18px;
-      box-shadow: 0 30px 70px rgba(0, 0, 0, 0.35);
+      box-shadow: var(--shadow-glass);
     }
 
     .h23-vg-lightbox-top {
@@ -186,7 +194,7 @@
     .h23-vg-lightbox img {
       width: 100%;
       border-radius: 14px;
-      background: #07111f;
+      background: rgba(0, 0, 0, 0.3);
     }
 
     .h23-vg-lightbox-copy {
@@ -201,7 +209,7 @@
     }
 
     .h23-vg-lightbox-copy p {
-      color: var(--h23-text-secondary);
+      color: var(--text-secondary);
       line-height: 1.6;
       white-space: pre-wrap;
     }
@@ -219,6 +227,7 @@
   </style>
 </head>
 <body>
+  <div id="particles-js"></div>
   <div class="h23-vg-shell">
     <div class="h23-vg-header">
       <div class="h23-vg-title">
@@ -249,7 +258,28 @@
     </div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
   <script>
+    if (typeof particlesJS !== 'undefined') {
+      particlesJS('particles-js', {
+        particles: {
+          number: { value: 40, density: { enable: true, value_area: 1000 } },
+          color: { value: ['#ffffff', '#007AFF', '#00C7BE', '#30D158'] },
+          shape: { type: 'circle' },
+          opacity: { value: 0.3, random: true, anim: { enable: true, speed: 1, opacity_min: 0.1, sync: false } },
+          size: { value: 3, random: true, anim: { enable: true, speed: 2, size_min: 1, sync: false } },
+          line_linked: { enable: true, distance: 200, color: '#ffffff', opacity: 0.15, width: 1 },
+          move: { enable: true, speed: 0.8, direction: 'none', random: true, straight: false, out_mode: 'out', bounce: false }
+        },
+        interactivity: {
+          detect_on: 'canvas',
+          events: { onhover: { enable: true, mode: 'bubble' }, onclick: { enable: false }, resize: true },
+          modes: { bubble: { distance: 200, size: 6, duration: 2, opacity: 0.6, speed: 3 } }
+        },
+        retina_detect: true
+      });
+    }
+
     const grid = document.getElementById('gallery-grid');
     const metaBar = document.getElementById('meta-bar');
     const lightbox = document.getElementById('lightbox');

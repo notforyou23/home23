@@ -4,10 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home23 — Settings</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/home23-dashboard.css">
   <link rel="stylesheet" href="/home23-settings.css">
 </head>
 <body>
+  <div id="particles-js"></div>
   <!-- Header -->
   <header class="h23-header">
     <div class="h23-header-left">
@@ -58,7 +60,7 @@
 
       <!-- Agent creation wizard (hidden by default) -->
       <div class="h23s-wizard" id="agent-wizard" style="display:none;">
-        <div id="wiz-primary-banner" style="display:none;background:rgba(88,166,255,0.08);border:1px solid rgba(88,166,255,0.2);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--h23-accent);">
+        <div id="wiz-primary-banner" style="display:none;background:rgba(10,132,255,0.08);border:1px solid rgba(10,132,255,0.2);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--accent-blue);">
           This will be your <strong>primary agent</strong> &mdash; the main intelligence for your Home23 system. Its model becomes the system default.
         </div>
         <div class="h23s-wizard-steps">
@@ -250,6 +252,28 @@
 
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
   <script src="/home23-settings.js"></script>
+  <script>
+    if (typeof particlesJS !== 'undefined') {
+      particlesJS('particles-js', {
+        particles: {
+          number: { value: 40, density: { enable: true, value_area: 1000 } },
+          color: { value: ['#ffffff', '#007AFF', '#00C7BE', '#30D158'] },
+          shape: { type: 'circle' },
+          opacity: { value: 0.3, random: true, anim: { enable: true, speed: 1, opacity_min: 0.1, sync: false } },
+          size: { value: 3, random: true, anim: { enable: true, speed: 2, size_min: 1, sync: false } },
+          line_linked: { enable: true, distance: 200, color: '#ffffff', opacity: 0.15, width: 1 },
+          move: { enable: true, speed: 0.8, direction: 'none', random: true, straight: false, out_mode: 'out', bounce: false }
+        },
+        interactivity: {
+          detect_on: 'canvas',
+          events: { onhover: { enable: true, mode: 'bubble' }, onclick: { enable: false }, resize: true },
+          modes: { bubble: { distance: 200, size: 6, duration: 2, opacity: 0.6, speed: 3 } }
+        },
+        retina_detect: true
+      });
+    }
+  </script>
 </body>
 </html>

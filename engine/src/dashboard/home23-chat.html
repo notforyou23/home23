@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home23 — Chat</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/home23-dashboard.css">
   <link rel="stylesheet" href="/home23-chat.css">
   <style>
@@ -17,7 +18,10 @@
       justify-content: space-between;
       align-items: center;
       padding: 12px 24px;
-      border-bottom: 1px solid var(--h23-border);
+      border-bottom: 1px solid var(--glass-border);
+      background: var(--glass-primary);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
     }
     .standalone-header-left {
       display: flex;
@@ -30,12 +34,12 @@
       color: #fff;
     }
     .standalone-back {
-      color: var(--h23-text-secondary);
+      color: var(--text-secondary);
       text-decoration: none;
       font-size: 13px;
     }
     .standalone-back:hover {
-      color: var(--h23-text);
+      color: var(--text-primary);
     }
     .standalone-body {
       flex: 1;
@@ -56,7 +60,8 @@
   </style>
 </head>
 <body>
-  <div class="standalone-wrap">
+  <div id="particles-js"></div>
+  <div class="standalone-wrap" style="position:relative;z-index:1;">
     <div class="standalone-header">
       <div class="standalone-header-left">
         <span class="standalone-logo">&#129504; Home23</span>
@@ -75,8 +80,8 @@
     </div>
     <div class="standalone-body" style="position:relative;">
       <div class="h23-chat-conv-panel" id="chat-conv-panel">
-        <div style="padding:10px 14px;border-bottom:1px solid var(--h23-border);display:flex;justify-content:space-between;align-items:center;">
-          <span style="font-size:12px;font-weight:600;color:var(--h23-text-secondary);text-transform:uppercase;letter-spacing:0.5px;">History</span>
+        <div style="padding:10px 14px;border-bottom:1px solid var(--glass-border);display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:12px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;">History</span>
           <button class="h23-chat-expand-btn" onclick="toggleConversationList()" title="Close" style="width:24px;height:24px;font-size:12px;">&#10005;</button>
         </div>
         <div class="h23-chat-conv-list" id="chat-conv-list"></div>
@@ -90,9 +95,31 @@
       </div>
     </div>
   </div>
+  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
   <script src="/home23-chat.js"></script>
   <script>
-    document.addEventListener('DOMContentLoaded', () => initChat('standalone'));
+    document.addEventListener('DOMContentLoaded', () => {
+      initChat('standalone');
+      if (typeof particlesJS !== 'undefined') {
+        particlesJS('particles-js', {
+          particles: {
+            number: { value: 40, density: { enable: true, value_area: 1000 } },
+            color: { value: ['#ffffff', '#007AFF', '#00C7BE', '#30D158'] },
+            shape: { type: 'circle' },
+            opacity: { value: 0.3, random: true, anim: { enable: true, speed: 1, opacity_min: 0.1, sync: false } },
+            size: { value: 3, random: true, anim: { enable: true, speed: 2, size_min: 1, sync: false } },
+            line_linked: { enable: true, distance: 200, color: '#ffffff', opacity: 0.15, width: 1 },
+            move: { enable: true, speed: 0.8, direction: 'none', random: true, straight: false, out_mode: 'out', bounce: false }
+          },
+          interactivity: {
+            detect_on: 'canvas',
+            events: { onhover: { enable: true, mode: 'bubble' }, onclick: { enable: false }, resize: true },
+            modes: { bubble: { distance: 200, size: 6, duration: 2, opacity: 0.6, speed: 3 } }
+          },
+          retina_detect: true
+        });
+      }
+    });
   </script>
 </body>
 </html>

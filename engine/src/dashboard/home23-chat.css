@@ -1,4 +1,4 @@
-/* Home23 Chat — tile, overlay, standalone */
+/* Home23 Chat — tile, overlay, standalone — ReginaCosmo glass-morphism */
 
 /* ── Chat Tile (in home grid) ── */
 
@@ -16,7 +16,7 @@
   justify-content: space-between;
   align-items: center;
   padding: 8px 12px;
-  border-bottom: 1px solid var(--h23-border);
+  border-bottom: 1px solid var(--glass-border);
   flex-shrink: 0;
 }
 
@@ -27,9 +27,9 @@
 }
 
 .h23-chat-agent-select {
-  background: var(--h23-bg);
-  border: 1px solid var(--h23-border);
-  color: var(--h23-text);
+  background: var(--glass-secondary);
+  border: 1px solid var(--glass-border);
+  color: var(--text-primary);
   padding: 4px 8px;
   border-radius: 6px;
   font-size: 13px;
@@ -38,13 +38,13 @@
   outline: none;
 }
 .h23-chat-agent-select:focus {
-  border-color: var(--h23-accent);
+  border-color: var(--accent-blue);
 }
 
 .h23-chat-model-select {
-  background: var(--h23-bg);
-  border: 1px solid var(--h23-border);
-  color: var(--h23-text-secondary);
+  background: var(--glass-secondary);
+  border: 1px solid var(--glass-border);
+  color: var(--text-secondary);
   padding: 3px 6px;
   border-radius: 6px;
   font-size: 11px;
@@ -52,7 +52,7 @@
   outline: none;
 }
 .h23-chat-model-select:focus {
-  border-color: var(--h23-accent);
+  border-color: var(--accent-blue);
 }
 
 .h23-chat-actions {
@@ -62,8 +62,8 @@
 
 .h23-chat-expand-btn {
   background: none;
-  border: 1px solid var(--h23-border);
-  color: var(--h23-text-muted);
+  border: 1px solid var(--glass-border);
+  color: var(--text-muted);
   width: 28px;
   height: 28px;
   border-radius: 6px;
@@ -74,8 +74,8 @@
   justify-content: center;
 }
 .h23-chat-expand-btn:hover {
-  color: var(--h23-text);
-  border-color: var(--h23-text-muted);
+  color: var(--text-primary);
+  border-color: var(--text-muted);
 }
 
 /* ── Messages Area ── */
@@ -87,6 +87,7 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  background: rgba(0, 0, 0, 0.3);
 }
 
 .h23-chat-msg {
@@ -98,15 +99,15 @@
 
 .h23-chat-msg.user {
   align-self: flex-end;
-  background: rgba(37, 99, 235, 0.15);
-  color: var(--h23-text);
+  background: rgba(10, 132, 255, 0.2);
+  color: var(--text-primary);
   padding: 8px 12px;
   border-radius: 12px 12px 4px 12px;
 }
 
 .h23-chat-msg.assistant {
   align-self: flex-start;
-  color: var(--h23-text);
+  color: var(--text-primary);
   padding: 8px 0;
 }
 
@@ -117,15 +118,15 @@
   margin-bottom: 0;
 }
 .h23-chat-msg.assistant code {
-  background: rgba(255,255,255,0.06);
+  background: var(--glass-secondary);
   padding: 1px 5px;
   border-radius: 3px;
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 12px;
 }
 .h23-chat-msg.assistant pre {
-  background: rgba(0,0,0,0.3);
-  border: 1px solid var(--h23-border);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--glass-border);
   border-radius: 6px;
   padding: 10px 12px;
   overflow-x: auto;
@@ -149,11 +150,11 @@
 
 .h23-chat-thinking {
   font-size: 12px;
-  color: var(--h23-text-muted);
+  color: var(--text-muted);
   font-style: italic;
   padding: 6px 10px;
   background: rgba(255, 255, 255, 0.02);
-  border-left: 2px solid var(--h23-border);
+  border-left: 2px solid var(--glass-border);
   border-radius: 0 6px 6px 0;
 }
 
@@ -162,7 +163,7 @@
 .h23-chat-tool {
   font-size: 12px;
   background: rgba(255, 255, 255, 0.03);
-  border: 1px solid var(--h23-border);
+  border: 1px solid var(--glass-border);
   border-radius: 8px;
   padding: 8px 12px;
   margin: 4px 0;
@@ -177,23 +178,23 @@
 
 .h23-chat-tool-name {
   font-weight: 600;
-  color: var(--h23-accent);
+  color: var(--accent-blue);
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
 
 .h23-chat-tool-status {
   font-size: 10px;
-  color: var(--h23-text-muted);
+  color: var(--text-muted);
 }
 .h23-chat-tool-status.done {
-  color: var(--h23-green);
+  color: var(--accent-green);
 }
 .h23-chat-tool-status.error {
-  color: var(--h23-red);
+  color: var(--accent-red);
 }
 
 .h23-chat-tool-args {
-  color: var(--h23-text-muted);
+  color: var(--text-muted);
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 11px;
   white-space: pre-wrap;
@@ -202,7 +203,7 @@
 }
 
 .h23-chat-tool-result {
-  color: var(--h23-text-secondary);
+  color: var(--text-secondary);
   font-size: 11px;
   margin-top: 4px;
   max-height: 80px;
@@ -212,10 +213,10 @@
 /* ── Error ── */
 
 .h23-chat-error {
-  color: var(--h23-red);
+  color: var(--accent-red);
   font-size: 12px;
   padding: 6px 10px;
-  background: rgba(248, 113, 113, 0.08);
+  background: rgba(255, 69, 58, 0.08);
   border-radius: 6px;
 }
 
@@ -225,16 +226,18 @@
   display: flex;
   gap: 8px;
   padding: 10px 16px 12px;
-  border-top: 1px solid var(--h23-border);
-  background: var(--h23-bg-card);
+  border-top: 1px solid var(--glass-border);
+  background: var(--glass-primary);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   flex-shrink: 0;
 }
 
 .h23-chat-input {
   flex: 1;
-  background: var(--h23-bg);
-  border: 1px solid var(--h23-border);
-  color: var(--h23-text);
+  background: var(--glass-secondary);
+  border: 1px solid var(--glass-border);
+  color: var(--text-primary);
   padding: 8px 12px;
   border-radius: 8px;
   font-size: 13px;
@@ -245,15 +248,15 @@
   max-height: 120px;
 }
 .h23-chat-input:focus {
-  border-color: var(--h23-accent);
+  border-color: var(--accent-blue);
 }
 
 .h23-chat-input::placeholder {
-  color: var(--h23-text-muted);
+  color: var(--text-muted);
 }
 
 .h23-chat-send-btn {
-  background: var(--h23-tab-active);
+  background: var(--accent-blue);
   color: #fff;
   border: none;
   width: 36px;
@@ -293,15 +296,18 @@
 }
 
 .h23-chat-overlay-panel {
-  background: var(--h23-bg-card);
-  border: 1px solid var(--h23-border);
-  border-radius: 16px;
+  background: var(--glass-primary);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
   width: 100%;
   max-width: 800px;
   height: 85vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  box-shadow: var(--shadow-glass);
 }
 
 /* ── System Stats Bar (relocated) ── */
@@ -310,12 +316,15 @@
   display: flex;
   gap: 24px;
   padding: 12px 20px;
-  background: var(--h23-bg-card);
-  border: 1px solid var(--h23-border);
-  border-radius: var(--h23-radius);
+  background: var(--glass-primary);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
   margin-bottom: 16px;
   align-items: center;
   flex-wrap: wrap;
+  box-shadow: var(--shadow-glass);
 }
 
 .h23-system-bar-item {
@@ -326,14 +335,14 @@
 }
 
 .h23-system-bar-item label {
-  color: var(--h23-text-muted);
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.5px;
   font-size: 10px;
 }
 
 .h23-system-bar-item .value {
-  color: var(--h23-text);
+  color: var(--text-primary);
   font-size: 14px;
   font-weight: 500;
 }
@@ -342,7 +351,7 @@
 
 .h23-chat-messages::-webkit-scrollbar { width: 4px; }
 .h23-chat-messages::-webkit-scrollbar-track { background: transparent; }
-.h23-chat-messages::-webkit-scrollbar-thumb { background: var(--h23-border); border-radius: 2px; }
+.h23-chat-messages::-webkit-scrollbar-thumb { background: var(--glass-border); border-radius: 2px; }
 
 /* ── Empty state ── */
 
@@ -351,7 +360,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--h23-text-muted);
+  color: var(--text-muted);
   font-size: 13px;
   font-style: italic;
 }
@@ -365,7 +374,9 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: var(--h23-bg-card);
+  background: var(--glass-primary);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   z-index: 5;
   flex-direction: column;
 }
@@ -380,7 +391,7 @@
 
 .h23-chat-conv-item {
   padding: 10px 14px;
-  border-bottom: 1px solid rgba(26, 42, 68, 0.5);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   cursor: pointer;
   transition: background 0.1s;
 }
@@ -388,13 +399,13 @@
   background: rgba(255, 255, 255, 0.04);
 }
 .h23-chat-conv-item.active {
-  background: rgba(88, 166, 255, 0.08);
-  border-left: 2px solid var(--h23-accent);
+  background: rgba(10, 132, 255, 0.08);
+  border-left: 2px solid var(--accent-blue);
 }
 
 .h23-chat-conv-preview {
   font-size: 13px;
-  color: var(--h23-text);
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -403,7 +414,7 @@
 
 .h23-chat-conv-meta {
   font-size: 11px;
-  color: var(--h23-text-muted);
+  color: var(--text-muted);
 }
 
 /* Make chat tile position:relative for the panel overlay */

@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home23 — Welcome</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/home23-dashboard.css">
   <style>
     .welcome-wrap {
@@ -14,6 +15,20 @@
       min-height: 100vh;
       text-align: center;
       padding: 40px 24px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .welcome-card {
+      background: var(--glass-primary);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid var(--glass-border);
+      border-radius: var(--radius-lg);
+      padding: 48px 40px;
+      box-shadow: var(--shadow-glass);
+      max-width: 520px;
+      width: 100%;
     }
 
     .welcome-logo {
@@ -31,15 +46,17 @@
 
     .welcome-subtitle {
       font-size: 16px;
-      color: var(--h23-text-secondary);
+      color: var(--text-secondary);
       margin-bottom: 48px;
       max-width: 440px;
       line-height: 1.6;
+      margin-left: auto;
+      margin-right: auto;
     }
 
     .welcome-btn {
       display: inline-block;
-      background: var(--h23-tab-active);
+      background: var(--accent-blue);
       color: #fff;
       padding: 14px 40px;
       border-radius: 10px;
@@ -58,19 +75,44 @@
     .welcome-version {
       margin-top: 48px;
       font-size: 12px;
-      color: var(--h23-text-muted);
+      color: var(--text-muted);
     }
   </style>
 </head>
 <body>
+  <div id="particles-js"></div>
   <div class="welcome-wrap">
-    <div class="welcome-logo">&#129504;</div>
-    <div class="welcome-title">Home23</div>
-    <div class="welcome-subtitle">
-      Installable AI operating system. Persistent agents with living brains, research engines, and creative tools.
+    <div class="welcome-card">
+      <div class="welcome-logo">&#129504;</div>
+      <div class="welcome-title">Home23</div>
+      <div class="welcome-subtitle">
+        Installable AI operating system. Persistent agents with living brains, research engines, and creative tools.
+      </div>
+      <a class="welcome-btn" href="/home23/settings">Get Started</a>
+      <div class="welcome-version">v0.1.0</div>
     </div>
-    <a class="welcome-btn" href="/home23/settings">Get Started</a>
-    <div class="welcome-version">v0.1.0</div>
   </div>
+  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
+  <script>
+    if (typeof particlesJS !== 'undefined') {
+      particlesJS('particles-js', {
+        particles: {
+          number: { value: 40, density: { enable: true, value_area: 1000 } },
+          color: { value: ['#ffffff', '#007AFF', '#00C7BE', '#30D158'] },
+          shape: { type: 'circle' },
+          opacity: { value: 0.3, random: true, anim: { enable: true, speed: 1, opacity_min: 0.1, sync: false } },
+          size: { value: 3, random: true, anim: { enable: true, speed: 2, size_min: 1, sync: false } },
+          line_linked: { enable: true, distance: 200, color: '#ffffff', opacity: 0.15, width: 1 },
+          move: { enable: true, speed: 0.8, direction: 'none', random: true, straight: false, out_mode: 'out', bounce: false }
+        },
+        interactivity: {
+          detect_on: 'canvas',
+          events: { onhover: { enable: true, mode: 'bubble' }, onclick: { enable: false }, resize: true },
+          modes: { bubble: { distance: 200, size: 6, duration: 2, opacity: 0.6, speed: 3 } }
+        },
+        retina_detect: true
+      });
+    }
+  </script>
 </body>
 </html>
