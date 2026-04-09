@@ -8,9 +8,14 @@ Home23 is a running AI operating system. The repo at `/Users/jtr/_JTR23_/release
 
 ## Before You Do Anything
 
-1. Read memory files at `/Users/jtr/.claude/projects/-Users-jtr--JTR23--release-home23/memory/`:
+1. Read the handoff docs in this repo:
+   - `docs/handoff/session_2026-04-09b_handoff.md` — LATEST: what was built, current state, priority work
+   - `docs/handoff/session_2026-04-09_full_context.md` — complete build narrative (all bugs, fixes, design decisions)
+   - `docs/handoff/session_2026-04-09_handoff.md` — Steps 12-13 context
+   - `docs/handoff/session_2026-04-08_handoff.md` — Steps 8-11 context
+
+2. Also read memory files (if available) at `/Users/jtr/.claude/projects/-Users-jtr--JTR23--release-home23/memory/`:
    - `next_session_instructions.md` — startup checklist
-   - `session_2026-04-09b_handoff.md` — latest session context
    - `user_jtr.md` — who you're working with
 
 2. Verify the system is running:
