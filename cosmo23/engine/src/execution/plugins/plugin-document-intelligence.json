@@ -1,0 +1,34 @@
+{
+  "id": "plugin:document-intelligence",
+  "name": "Document Processing & Analysis",
+  "domain": "document_processing",
+  "description": "Document intelligence toolkit for ingesting, parsing, summarizing, and validating structured and unstructured documents. Handles PDF, DOCX, HTML, Markdown, and plain text formats. Provides text extraction with layout preservation, multi-document summarization, format conversion between common document types, and JSON schema validation for structured data payloads. Designed for research pipelines that need to consume heterogeneous source material reliably.",
+  "version": "1.0.0",
+  "tags": ["document_processing", "summarization", "format_conversion", "validation", "text_extraction", "NLP"],
+  "skills": [
+    "skill:text-summarize",
+    "skill:file-convert",
+    "skill:json-schema-validate"
+  ],
+  "toolsRequired": [
+    { "id": "tool:python", "version": ">=3.10" }
+  ],
+  "assumptionsTracked": [
+    "document_completeness",
+    "format_fidelity",
+    "language_consistency"
+  ],
+  "uncertaintyModel": "Document extraction confidence measured by parser coverage ratio (fraction of content successfully extracted vs. total page area). Summarization quality assessed via key-entity retention rate and length-compression ratio. Format conversion fidelity tracked as round-trip diff percentage.",
+  "environment": {
+    "type": "local",
+    "resources": {
+      "memory_gb": 4,
+      "cores": 2
+    }
+  },
+  "origin": "authored",
+  "metadata": {
+    "maintainer": "cosmo-core",
+    "category": "base-domain"
+  }
+}

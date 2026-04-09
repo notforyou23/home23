@@ -1,0 +1,3528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🧠 Cosmo Cognition Observatory</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-deep: #0a0a0f;
+            --bg-dark: #12121a;
+            --bg-card: #1a1a2e;
+            --accent-cyan: #00ffff;
+            --accent-purple: #9d4edd;
+            --accent-pink: #ff006e;
+            --accent-yellow: #ffbe0b;
+            --accent-green: #06ffa5;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0b0;
+            --text-dim: #6060
+
+70;
+            --glow-cyan: rgba(0, 255, 255, 0.3);
+            --glow-purple: rgba(157, 78, 221, 0.3);
+        }
+
+        body {
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, var(--bg-deep) 0%, var(--bg-dark) 100%);
+            color: var(--text-primary);
+            overflow-x: hidden;
+            min-height: 100vh;
+        }
+
+        /* Animated Background */
+        .neural-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(circle at 20% 30%, rgba(0, 255, 255, 0.03) 0%, transparent 50%),
+                radial-gradient(circle at 80% 70%, rgba(157, 78, 221, 0.03) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        /* Main Layout */
+        .observatory {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-columns: 380px 1fr 380px;
+            grid-template-rows: auto 1fr;
+            gap: 20px;
+            padding: 20px;
+            min-height: 100vh;
+            max-width: 2400px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .header {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(26, 26, 46, 0.6);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(0, 255, 255, 0.2);
+            border-radius: 20px;
+            padding: 20px 30px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .logo {
+            font-size: 2.5rem;
+            animation: pulse 3s ease-in-out infinite;
+        }
+
+        .title-block h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .subtitle {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        .system-vitals {
+            display: flex;
+            gap: 30px;
+            align-items: center;
+        }
+
+        .vital {
+            text-align: center;
+        }
+
+        .vital-label {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 4px;
+        }
+
+        .vital-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(6, 255, 165, 0.1);
+            border: 1px solid var(--accent-green);
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--accent-green);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        /* Panel Base */
+        .panel {
+            background: rgba(26, 26, 46, 0.4);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 20px;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .panel:hover {
+            border-color: rgba(0, 255, 255, 0.3);
+            box-shadow: 0 8px 32px rgba(0, 255, 255, 0.1);
+        }
+
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .panel-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .panel-icon {
+            font-size: 1.3rem;
+        }
+
+        .panel-action {
+            padding: 4px 12px;
+            background: rgba(0, 255, 255, 0.1);
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            border-radius: 8px;
+            color: var(--accent-cyan);
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .panel-action:hover {
+            background: rgba(0, 255, 255, 0.2);
+            transform: translateY(-1px);
+        }
+
+        /* Left Column - Thought Stream & Goals */
+        .left-column {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            max-height: calc(100vh - 140px);
+        }
+
+        /* Thought Stream */
+        .thought-stream {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .thought-list {
+            flex: 1;
+            overflow-y: auto;
+            padding-right: 8px;
+        }
+
+        .thought-item {
+            background: rgba(0, 0, 0, 0.3);
+            border-left: 3px solid var(--accent-cyan);
+            padding: 12px;
+            margin-bottom: 12px;
+            border-radius: 8px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .thought-item:hover {
+            background: rgba(0, 255, 255, 0.05);
+            transform: translateX(4px);
+            box-shadow: 0 4px 16px rgba(0, 255, 255, 0.2);
+        }
+
+        .thought-item.curiosity { border-left-color: var(--accent-cyan); }
+        .thought-item.analyst { border-left-color: var(--accent-purple); }
+        .thought-item.critic { border-left-color: var(--accent-pink); }
+
+        /* Dreams Panel */
+        .dreams-panel {
+            min-height: 250px;
+        }
+
+        .dream-list {
+            overflow-y: auto;
+            min-height: 150px;
+            max-height: 300px;
+            padding-right: 8px;
+        }
+
+        .dream-item {
+            background: rgba(157, 78, 221, 0.08);
+            border-left: 3px solid var(--accent-purple);
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .dream-item:hover {
+            background: rgba(157, 78, 221, 0.15);
+            transform: translateX(4px);
+            box-shadow: 0 4px 12px rgba(157, 78, 221, 0.2);
+        }
+
+        .dream-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+
+        .dream-cycle {
+            font-size: 0.75rem;
+            color: var(--accent-purple);
+            font-weight: 600;
+        }
+
+        .dream-time {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+        }
+
+        .dream-content {
+            font-size: 0.85rem;
+            line-height: 1.4;
+            color: var(--text-secondary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            display: -webkit-box;
+            -webkit-line-clamp: 3;
+            line-clamp: 3;
+            -webkit-box-orient: vertical;
+        }
+
+        .dream-source {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            margin-top: 6px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .thought-meta {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+        }
+
+        .thought-role {
+            padding: 2px 8px;
+            background: rgba(0, 255, 255, 0.2);
+            border-radius: 4px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .thought-text {
+            font-size: 0.9rem;
+            line-height: 1.5;
+            color: var(--text-secondary);
+        }
+
+        /* Active Goals */
+        .goals-panel {
+            max-height: 400px;
+        }
+
+        .goal-item {
+            background: rgba(157, 78, 221, 0.1);
+            border: 1px solid rgba(157, 78, 221, 0.3);
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .goal-item:hover {
+            background: rgba(157, 78, 221, 0.2);
+            transform: translateX(4px);
+        }
+
+        .goal-title {
+            font-size: 0.9rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+
+        .goal-meta {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+        }
+
+        .goal-progress {
+            flex: 1;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .goal-progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-purple), var(--accent-cyan));
+            transition: width 0.5s ease;
+        }
+
+        /* Center Column - Neural Network */
+        .center-column {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .neural-network-panel {
+            flex: 1;
+            min-height: 600px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .network-controls {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+
+        .control-btn {
+            padding: 8px 16px;
+            background: rgba(0, 255, 255, 0.1);
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            border-radius: 8px;
+            color: var(--accent-cyan);
+            font-size: 0.8rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .control-btn:hover {
+            background: rgba(0, 255, 255, 0.2);
+            transform: translateY(-2px);
+        }
+
+        .control-btn.active {
+            background: rgba(0, 255, 255, 0.3);
+            border-color: var(--accent-cyan);
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border-subtle);
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+        }
+
+        .btn:hover {
+            background: rgba(0, 255, 255, 0.1);
+            border-color: var(--accent-cyan);
+            transform: translateY(-1px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            color: white;
+            border: none;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.8rem;
+        }
+
+        .network-search {
+            flex: 1;
+            min-width: 200px;
+            padding: 8px 16px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }
+
+        .network-search::placeholder {
+            color: var(--text-dim);
+        }
+
+        .network-container {
+            flex: 1;
+            position: relative;
+            background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 100%);
+            border: 2px solid rgba(0, 255, 255, 0.3);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        #memory-graph {
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+        }
+
+        #memory-graph:active {
+            cursor: grabbing;
+        }
+
+        .node-tooltip {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            max-width: 350px;
+            background: rgba(10, 10, 15, 0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid var(--accent-cyan);
+            border-radius: 12px;
+            padding: 16px;
+            display: none;
+            z-index: 100;
+            box-shadow: 0 8px 32px rgba(0, 255, 255, 0.3);
+        }
+
+        .node-tooltip.show {
+            display: block;
+        }
+
+        .tooltip-concept {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--accent-cyan);
+            margin-bottom: 12px;
+        }
+
+        .tooltip-metrics {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 12px;
+            font-size: 0.8rem;
+        }
+
+        .metric-box {
+            background: rgba(0, 255, 255, 0.1);
+            padding: 8px;
+            border-radius: 6px;
+        }
+
+        .metric-label {
+            color: var(--text-dim);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+        }
+
+        .metric-value {
+            color: var(--accent-cyan);
+            font-weight: 700;
+            font-size: 1rem;
+        }
+
+        /* Right Column - System Health & Agents */
+        .right-column {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            max-height: calc(100vh - 140px);
+            overflow-y: auto;
+        }
+
+        /* Cognitive State */
+        .cognitive-state {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 16px;
+            padding: 4px;
+            min-height: auto;
+            flex-shrink: 0;
+            overflow: visible;
+        }
+
+        .state-meter {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 16px 18px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .meter-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .meter-label {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .meter-value {
+            font-size: 1.4rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+            text-shadow: 0 0 10px rgba(0, 255, 255, 0.3);
+        }
+
+        .meter-bar {
+            height: 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+
+        .meter-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-purple));
+            transition: width 0.5s ease;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+        }
+
+        /* Specialist Agents */
+        .agents-panel {
+            flex: 1;
+            min-height: 300px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .agent-list {
+            flex: 1;
+            overflow-y: auto;
+            min-height: 250px;
+        }
+
+        .agent-item {
+            background: rgba(6, 255, 165, 0.08);
+            border: 1px solid rgba(6, 255, 165, 0.4);
+            padding: 14px;
+            margin-bottom: 12px;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: all 0.3s;
+            min-height: 100px;
+        }
+
+        .agent-item:hover {
+            background: rgba(6, 255, 165, 0.15);
+            transform: translateX(6px);
+            box-shadow: 0 4px 16px rgba(6, 255, 165, 0.2);
+        }
+
+        .agent-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .agent-type {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--accent-green);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .agent-status {
+            padding: 4px 12px;
+            background: rgba(6, 255, 165, 0.2);
+            border-radius: 6px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            border: 1px solid var(--accent-green);
+        }
+
+        .agent-goal {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+            line-height: 1.5;
+        }
+
+        .agent-progress {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+        }
+
+        /* Meta Coordinator */
+        .coordinator-panel {
+            min-height: 250px;
+            max-height: 350px;
+        }
+
+        .coordinator-list {
+            overflow-y: auto;
+            max-height: 280px;
+        }
+
+        .coordinator-insight {
+            background: rgba(255, 190, 11, 0.05);
+            border-left: 3px solid var(--accent-yellow);
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .coordinator-insight:hover {
+            background: rgba(255, 190, 11, 0.1);
+            transform: translateX(4px);
+        }
+
+        .insight-text {
+            font-size: 0.85rem;
+            line-height: 1.5;
+            color: var(--text-secondary);
+        }
+
+        .insight-meta {
+            margin-top: 8px;
+            font-size: 0.7rem;
+            color: var(--text-dim);
+        }
+
+        /* Scrollbars */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(0, 255, 255, 0.3);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(0, 255, 255, 0.5);
+        }
+
+        /* Animations */
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+            50% {
+                opacity: 0.7;
+                transform: scale(1.05);
+            }
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Graph Styles */
+        .graph-node {
+            cursor: pointer;
+            transition: all 0.3s ease;
+            pointer-events: all;
+        }
+
+        .graph-node:hover {
+            stroke: var(--accent-cyan);
+            stroke-width: 4px;
+            filter: brightness(1.5) drop-shadow(0 0 12px var(--glow-cyan));
+        }
+
+        .graph-node.selected {
+            stroke: var(--accent-yellow);
+            stroke-width: 5px;
+            filter: brightness(2) drop-shadow(0 0 20px var(--accent-yellow));
+        }
+
+        .graph-link {
+            stroke: rgba(0, 255, 255, 0.3);
+            transition: all 0.3s;
+            pointer-events: none;
+        }
+
+        .graph-link.highlighted {
+            stroke: var(--accent-cyan);
+            stroke-width: 3px;
+            opacity: 1;
+        }
+
+        /* Responsive */
+        @media (max-width: 1600px) {
+            .observatory {
+                grid-template-columns: 320px 1fr 320px;
+            }
+        }
+
+        @media (max-width: 1200px) {
+            .observatory {
+                grid-template-columns: 1fr;
+                grid-template-rows: auto auto auto auto;
+            }
+            
+            .left-column, .right-column {
+                max-height: none;
+            }
+        }
+
+        /* Empty States */
+        .empty-state {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            text-align: center;
+            color: var(--text-dim);
+        }
+
+        .empty-icon {
+            font-size: 3rem;
+            margin-bottom: 16px;
+            opacity: 0.3;
+        }
+
+        .empty-text {
+            font-size: 0.9rem;
+        }
+
+        /* Modal Overlay */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            animation: fadeIn 0.2s ease;
+        }
+
+        .modal-overlay.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-dark) 100%);
+            border: 2px solid var(--accent-cyan);
+            border-radius: 20px;
+            max-width: 900px;
+            max-height: 80vh;
+            width: 90%;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0, 255, 255, 0.3);
+            animation: slideUp 0.3s ease;
+        }
+
+        @keyframes slideUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px) scale(0.95);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+
+        .modal-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 24px 30px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            color: var(--accent-cyan);
+        }
+
+        .modal-close {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            font-size: 1.2rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+        .modal-close:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: rotate(90deg);
+        }
+
+        .modal-body {
+            padding: 30px;
+        }
+
+        .detail-section {
+            margin-bottom: 24px;
+        }
+
+        .detail-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .detail-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-dim);
+            margin-bottom: 8px;
+        }
+
+        .detail-value {
+            font-size: 1rem;
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .detail-card {
+            background: rgba(0, 255, 255, 0.05);
+            border: 1px solid rgba(0, 255, 255, 0.2);
+            padding: 16px;
+            border-radius: 12px;
+        }
+
+        .detail-card-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+            margin-bottom: 4px;
+        }
+
+        .detail-card-label {
+            font-size: 0.8rem;
+            color: var(--text-dim);
+        }
+
+        .findings-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            margin-top: 12px;
+        }
+
+        .finding-item {
+            background: rgba(6, 255, 165, 0.05);
+            border-left: 3px solid var(--accent-green);
+            padding: 12px;
+            border-radius: 6px;
+        }
+
+        .finding-text {
+            font-size: 0.9rem;
+            line-height: 1.6;
+            color: var(--text-secondary);
+        }
+    </style>
+</head>
+<body>
+    <div class="neural-bg"></div>
+    
+    <!-- Modal for detailed views -->
+    <div class="modal-overlay" id="detail-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title" id="modal-title"></div>
+                <button class="modal-close" onclick="closeModal()">✕</button>
+                </div>
+            <div class="modal-body" id="modal-body"></div>
+                </div>
+            </div>
+
+    <div class="observatory">
+        <!-- Header -->
+        <div class="header">
+            <div class="header-left">
+                <div class="logo">🧠</div>
+                <div class="title-block">
+                    <h1>Cosmo Cognition Observatory</h1>
+                    <div class="subtitle">Self-Propelled AI Research System</div>
+                    </div>
+                </div>
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <label for="run-selector" style="font-size: 0.75rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em;">Research Run</label>
+                    <select id="run-selector" style="
+                        padding: 8px 12px;
+                        background: rgba(26, 26, 46, 0.8);
+                        border: 1px solid rgba(0, 255, 255, 0.3);
+                        border-radius: 8px;
+                        color: var(--text-primary);
+                        font-size: 0.9rem;
+                        cursor: pointer;
+                        min-width: 200px;
+                        transition: all 0.2s;">
+                        <option value="runtime">runtime (active)</option>
+                    </select>
+                    <div id="run-domain" style="font-size: 0.75rem; color: var(--text-secondary); max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"></div>
+                </div>
+            </div>
+            <div class="system-vitals">
+                <div class="vital">
+                    <div class="vital-label">Cycle</div>
+                    <div class="vital-value" id="cycle-count">0</div>
+                    </div>
+                <div class="vital">
+                    <div class="vital-label">Memory Nodes</div>
+                    <div class="vital-value" id="memory-count">0</div>
+                    </div>
+                <div class="vital">
+                    <div class="vital-label">Active Goals</div>
+                    <div class="vital-value" id="goals-count">0</div>
+                </div>
+                <button class="status-badge" onclick="window.location.href='/runs'" style="cursor: pointer; transition: all 0.2s; border: none; background: linear-gradient(135deg, rgba(102,126,234,0.3), rgba(118,75,162,0.3));" 
+                        onmouseover="this.style.transform='scale(1.05)'" 
+                        onmouseout="this.style.transform='scale(1)'">
+                    <span>🧪</span>
+                    <span>Research Lab</span>
+                </button>
+                <button class="status-badge" onclick="window.location.href='/query'" style="cursor: pointer; transition: all 0.2s; border: none; background: linear-gradient(135deg, rgba(0,255,255,0.2), rgba(102,126,234,0.2));" 
+                        onmouseover="this.style.transform='scale(1.05)'" 
+                        onmouseout="this.style.transform='scale(1)'">
+                    <span>💬</span>
+                    <span>Query Brain</span>
+                </button>
+                <button class="status-badge" onclick="window.open('/insights', '_blank')" style="cursor: pointer; transition: all 0.2s; border: none;" 
+                        onmouseover="this.style.transform='scale(1.05)'" 
+                        onmouseout="this.style.transform='scale(1)'">
+                    <span>🔍</span>
+                    <span>Discover Insights</span>
+                </button>
+                <button class="status-badge" onclick="window.open('/novelty', '_blank')" style="cursor: pointer; transition: all 0.2s; border: none; background: linear-gradient(135deg, rgba(255,69,0,0.3), rgba(255,99,71,0.3));" 
+                        onmouseover="this.style.transform='scale(1.05)'" 
+                        onmouseout="this.style.transform='scale(1)'">
+                    <span>🔬</span>
+                    <span>Novelty Explorer</span>
+                </button>
+                <div class="status-badge">
+                    <div class="status-dot"></div>
+                    <span id="system-mode">THINKING</span>
+                </div>
+                </div>
+            </div>
+
+        <!-- Left Column: Thought Stream & Goals -->
+        <div class="left-column">
+            <!-- Thought Stream -->
+            <div class="panel thought-stream">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">💭</span>
+                        Thought Stream
+                </div>
+                    <div class="panel-action" onclick="refreshThoughts()">Refresh</div>
+                </div>
+                <div class="thought-list" id="thought-list">
+                    <div class="empty-state">
+                        <div class="empty-icon">💭</div>
+                        <div class="empty-text">Waiting for thoughts...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dreams -->
+            <div class="panel dreams-panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">💭</span>
+                        Dreams
+                    </div>
+                    <button class="panel-action" onclick="window.open('/dreams', '_blank')" style="cursor: pointer; border: none; background: none; color: var(--accent-cyan); transition: all 0.2s;">
+                        Explore →
+                    </button>
+                </div>
+                <div class="dream-list" id="dream-list">
+                    <div class="empty-state">
+                        <div class="empty-icon">🌙</div>
+                        <div class="empty-text">Waiting for deep sleep...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active Goals -->
+            <div class="panel goals-panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">🎯</span>
+                        Active Goals
+                </div>
+                    <div class="panel-action" onclick="refreshGoals()">Refresh</div>
+                </div>
+                <div class="goal-list" id="goal-list">
+                    <div class="empty-state">
+                        <div class="empty-icon">🎯</div>
+                        <div class="empty-text">No goals discovered yet</div>
+                    </div>
+                </div>
+                </div>
+            </div>
+
+        <!-- Center Column: Neural Network -->
+        <div class="center-column">
+            <div class="panel neural-network-panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">🕸️</span>
+                        Neural Memory Network
+                    </div>
+                    <div class="panel-action" onclick="fitNetwork()">Fit to Screen</div>
+                </div>
+                
+                <!-- Embedding Statistics -->
+                <div class="embedding-stats" id="embedding-stats-container" style="padding: 12px; background: rgba(0,255,255,0.05); border-radius: 8px; margin-bottom: 12px; display: none;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <strong style="color: var(--accent-cyan);">📊 Embedding Stats</strong>
+                        <span id="embedding-coverage" style="color: var(--accent-green); font-size: 0.9em;">-</span>
+                    </div>
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 0.85em; color: var(--text-secondary);">
+                        <div>Dimensions: <span id="embedding-dimensions" style="color: var(--text-primary);">-</span></div>
+                        <div>Storage: <span id="embedding-storage" style="color: var(--text-primary);">-</span></div>
+                        <div>Total Nodes: <span id="embedding-total" style="color: var(--text-primary);">-</span></div>
+                        <div>With Embeddings: <span id="embedding-with" style="color: var(--text-primary);">-</span></div>
+                    </div>
+                </div>
+                <div class="network-controls">
+                    <input type="text" class="network-search" id="search-nodes" placeholder="🔍 Search concepts...">
+                    <button class="control-btn" onclick="renderNetwork()">🎨 Render</button>
+                    <button class="control-btn" onclick="fitNetwork()">🎯 Fit</button>
+                    <button class="control-btn" onclick="zoomIn()">➕ Zoom In</button>
+                    <button class="control-btn" onclick="zoomOut()">➖ Zoom Out</button>
+                    <button class="control-btn" id="toggle-labels" onclick="toggleLabels()">🏷️ Labels</button>
+                    <button class="control-btn" id="toggle-clusters" onclick="toggleClusters()">🌐 Clusters</button>
+            </div>
+                <div class="network-container">
+                    <svg id="memory-graph"></svg>
+                    <div class="node-tooltip" id="node-tooltip">
+                        <div class="tooltip-concept" id="tooltip-concept"></div>
+                        <div class="tooltip-metrics" id="tooltip-metrics"></div>
+                        <div id="tooltip-connections"></div>
+                    </div>
+                    </div>
+                </div>
+            </div>
+
+        <!-- Right Column: System Health & Agents -->
+        <div class="right-column">
+            <!-- Cognitive State -->
+            <div class="panel cognitive-state">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">⚡</span>
+                        Cognitive State
+                </div>
+                    <div class="panel-action" id="cognitive-mode-badge" style="background: rgba(0,255,255,0.2); color: var(--accent-cyan); padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-weight: 600;">Active</div>
+                </div>
+                <div class="state-meter">
+                    <div class="meter-header">
+                        <span class="meter-label">Energy <span id="energy-status" style="font-size: 0.75rem; opacity: 0.7;"></span></span>
+                        <span class="meter-value" id="energy-value">0%</span>
+                </div>
+                    <div class="meter-bar" style="height: 12px;">
+                        <div class="meter-fill" id="energy-bar" style="width: 0%"></div>
+                </div>
+                </div>
+                <div class="state-meter">
+                    <div class="meter-header">
+                        <span class="meter-label">Curiosity</span>
+                        <span class="meter-value" id="curiosity-value">0%</span>
+                    </div>
+                    <div class="meter-bar">
+                        <div class="meter-fill" id="curiosity-bar" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="state-meter">
+                    <div class="meter-header">
+                        <span class="meter-label">Mood</span>
+                        <span class="meter-value" id="mood-value">0%</span>
+                    </div>
+                    <div class="meter-bar">
+                        <div class="meter-fill" id="mood-bar" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Specialist Agents -->
+            <div class="panel agents-panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">🤖</span>
+                        Specialist Agents
+                    </div>
+                    <div style="display: flex; gap: 8px;">
+                        <div class="panel-action" onclick="showAgentHistory()">View All</div>
+                        <div class="panel-action" onclick="refreshAgents()">Refresh</div>
+                    </div>
+                </div>
+                <div class="agent-list" id="agent-list">
+                    <div class="empty-state">
+                        <div class="empty-icon">🤖</div>
+                        <div class="empty-text">No agents active</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Meta Coordinator -->
+            <div class="panel coordinator-panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">🎯</span>
+                        Strategic Insights
+                    </div>
+                </div>
+                <div class="coordinator-list" id="coordinator-list">
+                    <div class="empty-state">
+                        <div class="empty-icon">🎯</div>
+                        <div class="empty-text">No strategic reviews yet</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Curated Insights Reports -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">📊</span>
+                        Curated Insights
+                    </div>
+                </div>
+                <div style="padding: 16px;">
+                    <div style="font-size: 0.85rem; color: var(--text-dim); margin-bottom: 16px;">
+                        Auto-generated every 50 cycles
+                    </div>
+                    <button onclick="viewLatestReportMain()" style="
+                        width: 100%;
+                        padding: 14px;
+                        background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+                        border: none;
+                        border-radius: 12px;
+                        color: white;
+                        cursor: pointer;
+                        font-size: 1rem;
+                        font-weight: 600;
+                        margin-bottom: 10px;
+                        transition: all 0.3s;
+                        box-shadow: 0 4px 12px var(--glow-cyan);
+                    " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 6px 20px var(--glow-cyan)'"
+                       onmouseout="this.style.transform=''; this.style.boxShadow='0 4px 12px var(--glow-cyan)'">
+                        📄 View Latest Report
+                    </button>
+                    <div style="font-size: 0.8rem; color: var(--text-dim); text-align: center; margin-top: 12px;">
+                        Cycle 250 report available
+                    </div>
+                    <div style="font-size: 0.75rem; color: var(--text-dim); text-align: center; margin-top: 8px;">
+                        📁 Location: coordinator/insights_curated_LATEST.md
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ==================== STATE ====================
+        let state = {
+            thoughts: [],
+            goals: [],
+            memory: { nodes: [], edges: [] },
+            currentRun: 'runtime',
+            availableRuns: [],
+            agents: [],
+            coordinator: [],
+            cognitiveState: {},
+            zoomBehavior: null,
+            simulation: null,
+            showLabels: false,
+            showClusters: false
+        };
+
+        let svg, g, nodeElements, linkElements, labelElements;
+
+        // ==================== DATA FETCHING ====================
+        // ==================== RUN MANAGEMENT ====================
+        
+        async function loadAvailableRuns() {
+            try {
+                const response = await fetch('/api/runs');
+                const data = await response.json();
+                
+                state.availableRuns = data.runs || [];
+                
+                // Populate the selector
+                const selector = document.getElementById('run-selector');
+                selector.innerHTML = ''; // Clear existing
+                
+                // Add runtime (current active)
+                const runtimeOption = document.createElement('option');
+                runtimeOption.value = 'runtime';
+                runtimeOption.textContent = `runtime (active${data.current?.metadata?.domain ? ' - ' + data.current.metadata.domain.substring(0, 40) + '...' : ''})`;
+                selector.appendChild(runtimeOption);
+                
+                // Add saved runs
+                data.runs.forEach(run => {
+                    const option = document.createElement('option');
+                    option.value = run.name;
+                    const domain = run.metadata?.domain || 'Unknown domain';
+                    option.textContent = `${run.name} - ${domain.substring(0, 40)}${domain.length > 40 ? '...' : ''}`;
+                    selector.appendChild(option);
+                });
+                
+                // Load current run info
+                const currentResponse = await fetch('/api/runs/current');
+                const currentData = await currentResponse.json();
+                state.currentRun = currentData.name;
+                selector.value = currentData.name;
+                
+                // Update domain display
+                updateRunDomainDisplay(currentData.metadata);
+                
+            } catch (error) {
+                console.error('Failed to load runs:', error);
+            }
+        }
+        
+        function updateRunDomainDisplay(metadata) {
+            const domainDisplay = document.getElementById('run-domain');
+            if (metadata && metadata.domain) {
+                domainDisplay.textContent = `Domain: ${metadata.domain.substring(0, 100)}${metadata.domain.length > 100 ? '...' : ''}`;
+                domainDisplay.title = metadata.domain; // Full text on hover
+            } else {
+                domainDisplay.textContent = '';
+            }
+        }
+        
+        async function switchRun(runName) {
+            try {
+                // Show loading state
+                const selector = document.getElementById('run-selector');
+                selector.disabled = true;
+                
+                // Switch on server
+                const response = await fetch('/api/runs/switch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ runName })
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    state.currentRun = data.run;
+                    updateRunDomainDisplay(data.metadata);
+                    
+                    // Reload all dashboard data
+                    await fetchData();
+                    
+                    console.log(`Switched to run: ${data.run}`);
+                } else {
+                    console.error('Failed to switch run:', data.error);
+                    alert('Failed to switch run: ' + data.error);
+                }
+                
+            } catch (error) {
+                console.error('Error switching run:', error);
+                alert('Error switching run: ' + error.message);
+            } finally {
+                const selector = document.getElementById('run-selector');
+                selector.disabled = false;
+            }
+        }
+        
+        // Set up run selector change handler
+        document.getElementById('run-selector').addEventListener('change', (e) => {
+            switchRun(e.target.value);
+        });
+        
+        // ==================== DATA FETCHING ====================
+
+        async function fetchData() {
+            try {
+                const [thoughts, goals, memState, agents, stats, stateData] = await Promise.all([
+                    fetch('/api/thoughts?limit=20').then(r => r.json()),
+                    fetch('/api/goals').then(r => r.json()),
+                    fetch('/api/memory').then(r => r.json()),
+                    fetch('/api/agents').then(r => r.ok ? r.json() : { stats: {}, activeAgents: [] }),
+                    fetch('/api/stats').then(r => r.json()),
+                    fetch('/api/state').then(r => r.json()).catch(() => ({}))
+                ]);
+
+                state.thoughts = thoughts || [];
+                state.goals = goals || { active: [] };
+                state.memory = memState || { nodes: [], edges: [] };
+                state.agents = agents || { stats: {}, activeAgents: [] };
+                state.stats = stats || {};
+                state.coordinator = stateData.coordinator || null;
+
+                updateUI();
+                loadEmbeddingStats(); // Load embedding statistics
+            } catch (error) {
+                console.error('Error fetching data:', error);
+            }
+        }
+
+        // ==================== EMBEDDING STATS ====================
+        async function loadEmbeddingStats() {
+            try {
+                const response = await fetch('/api/embedding-stats');
+                const stats = await response.json();
+                
+                // Show the container
+                const container = document.getElementById('embedding-stats-container');
+                if (container) {
+                    container.style.display = 'block';
+                    
+                    // Update UI elements
+                    const coverageEl = document.getElementById('embedding-coverage');
+                    const dimensionsEl = document.getElementById('embedding-dimensions');
+                    const storageEl = document.getElementById('embedding-storage');
+                    const totalEl = document.getElementById('embedding-total');
+                    const withEl = document.getElementById('embedding-with');
+                    
+                    if (coverageEl) coverageEl.textContent = stats.coverage + ' Coverage';
+                    if (dimensionsEl) dimensionsEl.textContent = stats.dimensionSize + ' dims';
+                    if (storageEl) storageEl.textContent = stats.storageMB + ' MB';
+                    if (totalEl) totalEl.textContent = stats.totalNodes;
+                    if (withEl) withEl.textContent = stats.nodesWithEmbeddings;
+                }
+            } catch (error) {
+                console.error('Failed to load embedding stats:', error);
+                // Hide container on error
+                const container = document.getElementById('embedding-stats-container');
+                if (container) {
+                    container.style.display = 'none';
+                }
+            }
+        }
+
+        // ==================== UI UPDATES ====================
+        function updateUI() {
+            updateHeader();
+            updateThoughtStream();
+            updateGoals();
+            updateCognitiveState();
+            updateAgents();
+            updateCoordinator();
+        }
+
+        function updateHeader() {
+            document.getElementById('cycle-count').textContent = state.stats?.cycleCount || 0;
+            document.getElementById('memory-count').textContent = state.memory?.nodes?.length || 0;
+            document.getElementById('goals-count').textContent = (Array.isArray(state.goals?.active) ? state.goals.active.length : 0);
+            
+            const mode = state.stats?.oscillator?.currentMode || 'thinking';
+            document.getElementById('system-mode').textContent = mode.toUpperCase();
+        }
+
+        function updateThoughtStream() {
+            const container = document.getElementById('thought-list');
+            if (!state.thoughts || state.thoughts.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">💭</div>
+                        <div class="empty-text">Waiting for thoughts...</div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = state.thoughts.slice().reverse().map(t => `
+                <div class="thought-item ${t.role}" onclick="selectThought('${t.cycle}')">
+                    <div class="thought-meta">
+                        <span class="thought-role">${t.role || 'system'}</span>
+                        <span>Cycle ${t.cycle}</span>
+                        ${t.usedWebSearch ? '<span>🌐 Web</span>' : ''}
+                        ${t.surprise ? `<span>⚡ ${(t.surprise * 100).toFixed(0)}%</span>` : ''}
+                    </div>
+                    <div class="thought-text">${escapeHtml(t.thought?.substring(0, 200) || '')}</div>
+                </div>
+            `).join('');
+        }
+
+        function updateGoals() {
+            const container = document.getElementById('goal-list');
+            const activeGoals = Array.isArray(state.goals?.active) ? state.goals.active : [];
+            
+            if (activeGoals.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">🎯</div>
+                        <div class="empty-text">No goals discovered yet</div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = activeGoals.slice(0, 10).map(([id, goal]) => {
+                const progress = (goal.progress || 0) * 100;
+                return `
+                    <div class="goal-item" onclick="selectGoal('${id}')">
+                        <div class="goal-title">${escapeHtml(goal.description?.substring(0, 80) || id)}</div>
+                        <div class="goal-meta">
+                            <div class="goal-progress">
+                                <div class="goal-progress-bar" style="width: ${progress}%"></div>
+                            </div>
+                            <span>${progress.toFixed(0)}%</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateCognitiveState() {
+            // Try multiple sources for cognitive state
+            const cogState = state.stats?.subsystems?.state || 
+                            state.stats?.cognitiveState ||
+                            (state.thoughts && state.thoughts[state.thoughts.length - 1]?.cognitiveState) ||
+                            {};
+            
+            // Handle null/undefined with proper fallbacks
+            const curiosity = (cogState.curiosity !== null && cogState.curiosity !== undefined && !isNaN(cogState.curiosity)) 
+                ? cogState.curiosity * 100 
+                : 50; // Default to 50% when unknown
+            const energy = (cogState.energy !== null && cogState.energy !== undefined && !isNaN(cogState.energy)) 
+                ? cogState.energy * 100 
+                : 50; // Default to 50% when unknown
+            const mood = (cogState.mood !== null && cogState.mood !== undefined && !isNaN(cogState.mood)) 
+                ? cogState.mood * 100 
+                : 50; // Default to 50% when unknown
+
+            // Update cognitive mode badge
+            const modeBadge = document.getElementById('cognitive-mode-badge');
+            const mode = cogState.mode || 'active';
+            const modeEmojis = {
+                'active': '🟢',
+                'sleeping': '😴',
+                'wandering': '🌊', 
+                'reflecting': '🤔',
+                'dreaming': '💭'
+            };
+            const modeColors = {
+                'active': 'rgba(6, 255, 165, 0.3)',
+                'sleeping': 'rgba(157, 78, 221, 0.3)',
+                'wandering': 'rgba(0, 255, 255, 0.3)',
+                'reflecting': 'rgba(255, 190, 11, 0.3)',
+                'dreaming': 'rgba(255, 0, 110, 0.3)'
+            };
+            if (modeBadge) {
+                modeBadge.textContent = `${modeEmojis[mode] || '⚡'} ${mode.charAt(0).toUpperCase() + mode.slice(1)}`;
+                modeBadge.style.background = modeColors[mode] || 'rgba(0,255,255,0.2)';
+            }
+
+            // Update energy with status indicator
+            const energyText = isNaN(energy) ? 'Init...' : energy.toFixed(0) + '%';
+            document.getElementById('energy-value').textContent = energyText;
+            document.getElementById('energy-bar').style.width = (isNaN(energy) ? 0 : energy) + '%';
+            document.getElementById('energy-bar').style.background = getStateColor(energy / 100);
+            
+            const energyStatus = document.getElementById('energy-status');
+            if (energyStatus) {
+                if (energy < 20) energyStatus.textContent = '(Critical - Sleep Soon)';
+                else if (energy < 40) energyStatus.textContent = '(Low)';
+                else if (energy < 60) energyStatus.textContent = '(Moderate)';
+                else if (energy < 80) energyStatus.textContent = '(Good)';
+                else energyStatus.textContent = '(Excellent)';
+            }
+            
+            // Update curiosity
+            const curiosityText = isNaN(curiosity) ? 'Init...' : curiosity.toFixed(0) + '%';
+            const curiosityLabel = (cogState.curiosity === null || cogState.curiosity === undefined) ? '~' : '';
+            document.getElementById('curiosity-value').textContent = curiosityLabel + curiosityText;
+            document.getElementById('curiosity-bar').style.width = (isNaN(curiosity) ? 0 : curiosity) + '%';
+            document.getElementById('curiosity-bar').style.background = getStateColor(curiosity / 100);
+            
+            // Update mood
+            const moodText = isNaN(mood) ? 'Init...' : mood.toFixed(0) + '%';
+            const moodLabel = (cogState.mood === null || cogState.mood === undefined) ? '~' : '';
+            document.getElementById('mood-value').textContent = moodLabel + moodText;
+            document.getElementById('mood-bar').style.width = (isNaN(mood) ? 0 : mood) + '%';
+            document.getElementById('mood-bar').style.background = getStateColor(mood / 100);
+        }
+
+        function getStateColor(value) {
+            // Dynamic color based on value: red (low) -> yellow (mid) -> green (high)
+            if (value < 0.3) return 'linear-gradient(90deg, #ff006e, #ff6b6b)';
+            if (value < 0.7) return 'linear-gradient(90deg, #ffbe0b, #ffa500)';
+            return 'linear-gradient(90deg, #06ffa5, #00ffff)';
+        }
+
+        function updateAgents() {
+            const container = document.getElementById('agent-list');
+            const activeAgents = state.agents?.activeAgents || [];
+            const recentActivity = state.agents?.recentActivity || [];
+            const stats = state.agents?.stats || {};
+            
+            // Combine active and recent agents
+            const allAgents = [
+                ...activeAgents.map(a => ({ ...a, isActive: true })),
+                ...recentActivity.slice(0, 5).map(a => ({ ...a, isActive: false }))
+            ];
+            
+            if (allAgents.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">🤖</div>
+                        <div class="empty-text">No agents active</div>
+                        ${stats.completed > 0 ? `<div style="margin-top: 8px; font-size: 0.8rem; color: var(--text-dim);">Total completed: ${stats.completed}</div>` : ''}
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = allAgents.map(agent => {
+                const statusColor = agent.isActive ? 'var(--accent-green)' : 
+                                   agent.status === 'completed' ? 'var(--accent-cyan)' :
+                                   agent.status === 'failed' ? 'var(--accent-pink)' : 'var(--accent-yellow)';
+                
+                const statusText = agent.isActive ? '🟢 RUNNING' : 
+                                  agent.status === 'completed' ? '✅ DONE' :
+                                  agent.status === 'failed' ? '❌ FAILED' : '⏱️ TIMEOUT';
+                
+                const typeIcon = (agent.type || agent.agentType || '').includes('Research') ? '🔍' :
+                                (agent.type || agent.agentType || '').includes('Analysis') ? '🧠' :
+                                (agent.type || agent.agentType || '').includes('Synthesis') ? '📝' :
+                                (agent.type || agent.agentType || '').includes('Exploration') ? '🌟' : '🤖';
+                
+                const goalText = agent.goal || agent.mission?.description || 'Working...';
+                const timeText = agent.isActive ? 
+                    `⏱️ Started: ${new Date(agent.startTime).toLocaleTimeString()}` :
+                    agent.status === 'timeout' ? 
+                        `⏱️ ${formatDuration(agent.duration || agent.mission?.maxDuration)} (max reached)` :
+                        `⏱️ ${formatDuration(agent.duration)}`;
+                
+                return `
+                    <div class="agent-item" onclick="showAgentDetails('${agent.agentId}')" 
+                         style="border-color: ${statusColor}; opacity: ${agent.isActive ? 1 : 0.85}; background: ${statusColor}10;">
+                        <div class="agent-header">
+                            <div class="agent-type">${typeIcon} ${agent.type || agent.agentType || 'Agent'}</div>
+                            <div class="agent-status" style="background: ${statusColor}30; color: ${statusColor}; border-color: ${statusColor};">
+                                ${statusText}
+                            </div>
+                        </div>
+                        <div class="agent-goal">${escapeHtml(goalText.substring(0, 80))}${goalText.length > 80 ? '...' : ''}</div>
+                        <div class="agent-progress">
+                            <span>${timeText}</span>
+                            <span style="color: var(--accent-cyan); font-weight: 600;">→ Click for details</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function formatDuration(ms) {
+            if (!ms) return 'N/A';
+            const seconds = Math.floor(ms / 1000);
+            if (seconds < 60) return `${seconds}s`;
+            const minutes = Math.floor(seconds / 60);
+            if (minutes < 60) return `${minutes}m`;
+            const hours = Math.floor(minutes / 60);
+            return `${hours}h ${minutes % 60}m`;
+        }
+
+        function updateCoordinator() {
+            const container = document.getElementById('coordinator-list');
+            
+            if (!state.coordinator || !state.coordinator.strategicDirectives || state.coordinator.strategicDirectives.length === 0) {
+                const lastReview = state.coordinator?.lastReviewCycle || 0;
+                const nextReview = state.coordinator?.nextReview || (lastReview + 50);
+                const cycleCount = state.stats?.cycleCount || 0;
+                const cyclesUntilReview = Math.max(0, nextReview - cycleCount);
+                
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">🎯</div>
+                        <div class="empty-text">
+                            ${lastReview > 0 ? 
+                                `Last review at cycle ${lastReview}<br>Next review in ~${cyclesUntilReview} cycles` :
+                                'No strategic reviews yet<br>First review at cycle 50'}
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+
+            // Show latest strategic directives
+            const directives = state.coordinator.strategicDirectives.slice(0, 5);
+            const lastReview = state.coordinator.lastReviewCycle || 0;
+            
+            container.innerHTML = `
+                <div style="margin-bottom: 12px; padding: 10px; background: rgba(255, 190, 11, 0.1); border-radius: 8px; font-size: 0.8rem; color: var(--text-secondary);">
+                    <strong>Last Review:</strong> Cycle ${lastReview}
+                </div>
+                ${directives.map((directive, i) => `
+                    <div class="coordinator-insight" onclick="showCoordinatorDetails()">
+                        <div class="insight-text">${escapeHtml(directive)}</div>
+                        <div class="insight-meta">Directive ${i + 1}</div>
+                    </div>
+                `).join('')}
+                ${state.coordinator.prioritizedGoals && state.coordinator.prioritizedGoals.length > 0 ? `
+                    <div style="margin-top: 12px; padding: 10px; background: rgba(0, 255, 255, 0.05); border-radius: 8px;">
+                        <div style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 8px;">🎯 PRIORITIZED GOALS (${state.coordinator.prioritizedGoals.length})</div>
+                        <div style="font-size: 0.85rem; color: var(--text-secondary);">
+                            ${state.coordinator.prioritizedGoals.slice(0, 3).map(g => 
+                                (typeof g === 'string' ? g : (g.description || g.id || 'Unknown')).substring(0, 80) + '...'
+                            ).join('<br>• ')}
+                        </div>
+                    </div>
+                ` : ''}
+            `;
+        }
+
+        function showCoordinatorDetails() {
+            if (!state.coordinator) return;
+
+            document.getElementById('modal-title').innerHTML = `
+                <span>🎯</span> Meta-Coordinator Strategic Review
+            `;
+
+            const lastReview = state.coordinator.lastReviewCycle || 0;
+            const directives = state.coordinator.strategicDirectives || [];
+            const prioritized = state.coordinator.prioritizedGoals || [];
+            const context = state.coordinator.contextMemory || [];
+
+            document.getElementById('modal-body').innerHTML = `
+                <div class="detail-section">
+                    <div class="detail-label">Review Cycle</div>
+                    <div class="detail-value">Cycle ${lastReview}</div>
+                </div>
+
+                ${directives.length > 0 ? `
+                    <div class="detail-section">
+                        <div class="detail-label">🎯 Strategic Directives</div>
+                        <div class="findings-list">
+                            ${directives.map((d, i) => `
+                                <div class="finding-item" style="border-left-color: var(--accent-yellow);">
+                                    <div style="font-weight: 600; margin-bottom: 6px; color: var(--accent-yellow);">Directive ${i + 1}</div>
+                                    <div class="finding-text">${escapeHtml(d)}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+
+                ${prioritized.length > 0 ? `
+                    <div class="detail-section">
+                        <div class="detail-label">📊 Prioritized Goals</div>
+                        <div class="detail-value">
+                            <ul style="margin: 0; padding-left: 20px; line-height: 1.8;">
+                                ${prioritized.map(g => `<li>${escapeHtml(g)}</li>`).join('')}
+                            </ul>
+                        </div>
+                    </div>
+                ` : ''}
+
+                ${context.length > 0 ? `
+                    <div class="detail-section">
+                        <div class="detail-label">📝 Context Memory (Last ${context.length} Reviews)</div>
+                        <div style="max-height: 200px; overflow-y: auto;">
+                            ${context.slice(0, 3).map((c, i) => `
+                                <div style="padding: 10px; background: rgba(255,255,255,0.02); border-radius: 6px; margin-bottom: 8px; font-size: 0.85rem;">
+                                    <div style="color: var(--text-dim); font-size: 0.75rem; margin-bottom: 4px;">Review ${context.length - i}</div>
+                                    <div style="color: var(--text-secondary);">${escapeHtml(c.substring(0, 200))}${c.length > 200 ? '...' : ''}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+
+                <div class="detail-section">
+                    <div class="detail-label">ℹ️ About Meta-Coordinator</div>
+                    <div class="detail-value" style="font-size: 0.9rem; opacity: 0.8;">
+                        Reviews system every ${state.coordinator.reviewInterval || 50} cycles to analyze cognitive work quality,
+                        goal portfolio health, memory patterns, and system health. Generates strategic directives and
+                        prioritizes goals for focused pursuit.
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('detail-modal').classList.add('show');
+        }
+
+        // ==================== NEURAL NETWORK ====================
+        function renderNetwork() {
+            const container = d3.select('#memory-graph');
+            container.selectAll('*').remove();
+
+            if (!state.memory || !state.memory.nodes || state.memory.nodes.length === 0) {
+                return;
+            }
+
+            const width = document.getElementById('memory-graph').parentElement.offsetWidth;
+            const height = document.getElementById('memory-graph').parentElement.offsetHeight;
+
+            let nodes = state.memory.nodes.map(n => ({...n}));
+            nodes.sort((a, b) => (b.activation || 0) - (a.activation || 0));
+
+            const nodeIds = new Set(nodes.map(n => n.id));
+            let edges = state.memory.edges ? 
+                state.memory.edges.filter(e => nodeIds.has(e.source) && nodeIds.has(e.target)).map(e => ({...e})) : 
+                [];
+
+            // Setup zoom
+            state.zoomBehavior = d3.zoom()
+                .scaleExtent([0.05, 20])
+                .on('zoom', (event) => {
+                    g.attr('transform', event.transform);
+                });
+
+            svg = container
+                .attr('width', width)
+                .attr('height', height)
+                .call(state.zoomBehavior);
+
+            g = svg.append('g');
+
+            // Create simulation
+            const nodeCount = nodes.length;
+            const linkDistance = nodeCount > 1000 ? 50 : nodeCount > 500 ? 60 : 70;
+            const chargeStrength = nodeCount > 1000 ? -100 : nodeCount > 500 ? -150 : -180;
+
+            // Calculate baseRadius first for collision detection
+            const baseRadius = nodeCount > 1000 ? 2 : nodeCount > 500 ? 2.5 : 3;
+            const maxNodeRadius = baseRadius + (nodeCount > 1000 ? 5 : 7);
+            
+            state.simulation = d3.forceSimulation(nodes)
+                .force('link', d3.forceLink(edges).id(d => d.id).distance(linkDistance))
+                .force('charge', d3.forceManyBody().strength(chargeStrength))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(maxNodeRadius + 2));
+
+            // Links
+            linkElements = g.append('g')
+                .selectAll('line')
+                .data(edges)
+                .enter().append('line')
+                .attr('class', 'graph-link')
+                .attr('stroke-width', d => Math.max(0.5, (d.weight || 0.5) * 2));
+
+            // Nodes
+            // Normalize activation values to prevent huge nodes after merging
+            const maxActivation = Math.max(...nodes.map(n => n.activation || 0), 1);
+            const normalizeActivation = (activation) => {
+                // Cap and normalize activation to 0-1 range
+                return Math.min(activation || 0, maxActivation) / maxActivation;
+            };
+            
+            nodeElements = g.append('g')
+                .selectAll('circle')
+                .data(nodes)
+                .enter().append('circle')
+                .attr('class', 'graph-node')
+                .attr('r', d => baseRadius + (normalizeActivation(d.activation) * (nodeCount > 1000 ? 5 : 7)))
+                .attr('fill', d => getNodeColor(d))
+                .on('click', (event, d) => selectNode(event, d))
+                .on('mouseover', (event, d) => highlightNode(d))
+                .on('mouseout', () => unhighlightAll())
+                .call(d3.drag()
+                    .on('start', dragstarted)
+                    .on('drag', dragged)
+                    .on('end', dragended));
+
+            // Labels (initially hidden)
+            labelElements = g.append('g')
+                .selectAll('text')
+                .data(nodes)
+                .enter().append('text')
+                .attr('font-size', '10px')
+                .attr('fill', 'white')
+                .attr('display', 'none')
+                .text(d => d.concept.substring(0, 30));
+
+            state.simulation.on('tick', () => {
+                linkElements
+                    .attr('x1', d => d.source.x)
+                    .attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x)
+                    .attr('y2', d => d.target.y);
+
+                nodeElements
+                    .attr('cx', d => d.x)
+                    .attr('cy', d => d.y);
+
+                labelElements
+                    .attr('x', d => d.x + 10)
+                    .attr('y', d => d.y + 3);
+            });
+
+            // Auto-fit after layout stabilizes
+            setTimeout(() => fitNetwork(), 1000);
+        }
+
+        function getNodeColor(node) {
+            if (node.tag === 'agent_finding' || node.concept?.includes('[AGENT')) {
+                return '#06ffa5';
+            }
+            if (node.tag === 'summary') return '#ffbe0b';
+            if (node.tag === 'consolidated') return '#ff006e';
+            
+            const activation = node.activation || 0;
+            if (activation > 0.7) return '#9d4edd';
+            if (activation > 0.4) return '#00ffff';
+            return '#4a5568';
+        }
+
+        function selectNode(event, d) {
+            event.stopPropagation();
+            nodeElements.classed('selected', n => n.id === d.id);
+            showNodeTooltip(d);
+        }
+
+        function showNodeTooltip(node) {
+            const tooltip = document.getElementById('node-tooltip');
+            document.getElementById('tooltip-concept').textContent = node.concept;
+            
+            const activation = ((node.activation || 0) * 100).toFixed(1);
+            const importance = node.accessCount ? (node.activation || 0) * Math.log(node.accessCount + 1) : 0;
+            
+            document.getElementById('tooltip-metrics').innerHTML = `
+                <div class="metric-box">
+                    <div class="metric-label">Activation</div>
+                    <div class="metric-value">${activation}%</div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-label">Access Count</div>
+                    <div class="metric-value">${node.accessCount || 0}</div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-label">Importance</div>
+                    <div class="metric-value">${(importance * 100).toFixed(0)}%</div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-label">Cluster</div>
+                    <div class="metric-value">${node.cluster || 'N/A'}</div>
+                </div>
+            `;
+            
+            tooltip.classList.add('show');
+        }
+
+        function highlightNode(node) {
+            if (!state.memory?.edges) return;
+            
+            const connectedNodes = new Set();
+            linkElements.classed('highlighted', e => {
+                if (e.source.id === node.id || e.target.id === node.id) {
+                    connectedNodes.add(e.source.id);
+                    connectedNodes.add(e.target.id);
+                    return true;
+                }
+                return false;
+            });
+        }
+
+        function unhighlightAll() {
+            linkElements.classed('highlighted', false);
+        }
+
+        function fitNetwork() {
+            if (!svg || !state.zoomBehavior || !nodeElements) return;
+
+            const bounds = g.node().getBBox();
+            const parent = svg.node().getBoundingClientRect();
+            const fullWidth = parent.width;
+            const fullHeight = parent.height;
+            
+            const scale = Math.min(
+                (fullWidth * 0.9) / bounds.width,
+                (fullHeight * 0.9) / bounds.height
+            );
+            
+            const midX = bounds.x + bounds.width / 2;
+            const midY = bounds.y + bounds.height / 2;
+            
+            const translate = [
+                fullWidth / 2 - scale * midX,
+                fullHeight / 2 - scale * midY
+            ];
+            
+            svg.transition().duration(750).call(
+                state.zoomBehavior.transform,
+                d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
+            );
+        }
+
+        function zoomIn() {
+            if (!svg || !state.zoomBehavior) return;
+            const parent = svg.node().getBoundingClientRect();
+            svg.transition().duration(300).call(
+                state.zoomBehavior.scaleBy, 1.5, [parent.width / 2, parent.height / 2]
+            );
+        }
+
+        function zoomOut() {
+            if (!svg || !state.zoomBehavior) return;
+            const parent = svg.node().getBoundingClientRect();
+            svg.transition().duration(300).call(
+                state.zoomBehavior.scaleBy, 0.67, [parent.width / 2, parent.height / 2]
+            );
+        }
+
+        function toggleLabels() {
+            if (!labelElements) return;
+            state.showLabels = !state.showLabels;
+            labelElements.attr('display', state.showLabels ? 'block' : 'none');
+            document.getElementById('toggle-labels').classList.toggle('active');
+        }
+
+        function toggleClusters() {
+            if (!nodeElements) return;
+            state.showClusters = !state.showClusters;
+            
+            if (state.showClusters) {
+                const clusterColors = [
+                    '#ff006e', '#00ffff', '#06ffa5', '#ffbe0b', '#9d4edd',
+                    '#ff9ff3', '#54a0ff', '#48dbfb', '#ff6348', '#1dd1a1'
+                ];
+                nodeElements.attr('fill', d => {
+                    if (d.cluster !== undefined) {
+                        return clusterColors[d.cluster % clusterColors.length];
+                    }
+                    return '#4a5568';
+                });
+            } else {
+                nodeElements.attr('fill', d => getNodeColor(d));
+            }
+            
+            document.getElementById('toggle-clusters').classList.toggle('active');
+        }
+
+            function dragstarted(event, d) {
+            if (!event.active && state.simulation) state.simulation.alphaTarget(0.3).restart();
+                d.fx = d.x;
+                d.fy = d.y;
+            }
+
+            function dragged(event, d) {
+                d.fx = event.x;
+                d.fy = event.y;
+            }
+
+            function dragended(event, d) {
+            if (!event.active && state.simulation) state.simulation.alphaTarget(0);
+                d.fx = null;
+                d.fy = null;
+        }
+
+        // ==================== UTILITIES ====================
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function closeModal() {
+            document.getElementById('detail-modal').classList.remove('show');
+        }
+
+        function selectThought(cycle) {
+            const thought = state.thoughts.find(t => t.cycle == cycle);
+            if (!thought) return;
+
+            const roleColors = {
+                curiosity: 'var(--accent-cyan)',
+                analyst: 'var(--accent-purple)',
+                critic: 'var(--accent-pink)'
+            };
+
+            document.getElementById('modal-title').innerHTML = `
+                <span>💭</span> Thought Cycle ${cycle}
+            `;
+
+            document.getElementById('modal-body').innerHTML = `
+                <div class="detail-section">
+                    <div class="detail-label">Role</div>
+                    <div class="detail-value" style="color: ${roleColors[thought.role]}; font-weight: 600;">
+                        ${thought.role.toUpperCase()}
+                    </div>
+                </div>
+
+                <div class="detail-section">
+                    <div class="detail-label">Thought Content</div>
+                    <div class="detail-value" style="font-size: 1.1rem; line-height: 1.8;">
+                        ${escapeHtml(thought.thought || '')}
+                    </div>
+                </div>
+
+                ${thought.reasoning ? `
+                    <div class="detail-section">
+                        <div class="detail-label">GPT-5.2 Reasoning</div>
+                        <div class="detail-value" style="font-style: italic; opacity: 0.9;">
+                            ${escapeHtml(thought.reasoning.substring(0, 500))}${thought.reasoning.length > 500 ? '...' : ''}
+                        </div>
+                    </div>
+                ` : ''}
+
+                <div class="detail-grid">
+                    <div class="detail-card">
+                        <div class="detail-card-value">${thought.usedWebSearch ? '🌐 Yes' : '❌ No'}</div>
+                        <div class="detail-card-label">Web Search</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${thought.surprise ? (thought.surprise * 100).toFixed(0) + '%' : 'N/A'}</div>
+                        <div class="detail-card-label">Surprise Level</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${thought.oscillatorMode || 'N/A'}</div>
+                        <div class="detail-card-label">Mode</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${thought.model?.split('-')[0] || 'GPT-5.2'}</div>
+                        <div class="detail-card-label">Model</div>
+                    </div>
+                </div>
+
+                ${thought.cognitiveState ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Cognitive State at Time of Thought</div>
+                        <div class="detail-grid">
+                            <div class="detail-card">
+                                <div class="detail-card-value">${(thought.cognitiveState.curiosity * 100).toFixed(0)}%</div>
+                                <div class="detail-card-label">Curiosity</div>
+                            </div>
+                            <div class="detail-card">
+                                <div class="detail-card-value">${(thought.cognitiveState.energy * 100).toFixed(0)}%</div>
+                                <div class="detail-card-label">Energy</div>
+                            </div>
+                            <div class="detail-card">
+                                <div class="detail-card-value">${(thought.cognitiveState.mood * 100).toFixed(0)}%</div>
+                                <div class="detail-card-label">Mood</div>
+                            </div>
+                        </div>
+                    </div>
+                ` : ''}
+
+                <div class="detail-section">
+                    <div class="detail-label">Timestamp</div>
+                    <div class="detail-value">${new Date(thought.timestamp).toLocaleString()}</div>
+                </div>
+            `;
+
+            document.getElementById('detail-modal').classList.add('show');
+        }
+
+        function selectGoal(id) {
+            const activeGoals = Array.isArray(state.goals?.active) ? state.goals.active : [];
+            const goalEntry = activeGoals.find(([gid, _]) => gid === id);
+            if (!goalEntry) return;
+
+            const [goalId, goal] = goalEntry;
+            const progress = (goal.progress || 0) * 100;
+
+            document.getElementById('modal-title').innerHTML = `
+                <span>🎯</span> Goal Details
+            `;
+
+            document.getElementById('modal-body').innerHTML = `
+                <div class="detail-section">
+                    <div class="detail-label">Description</div>
+                    <div class="detail-value" style="font-size: 1.1rem; line-height: 1.8;">
+                        ${escapeHtml(goal.description || '')}
+                    </div>
+                </div>
+
+                ${goal.reason ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Discovery Reason</div>
+                        <div class="detail-value">${escapeHtml(goal.reason)}</div>
+                    </div>
+                ` : ''}
+
+                <div class="detail-grid">
+                    <div class="detail-card">
+                        <div class="detail-card-value">${progress.toFixed(0)}%</div>
+                        <div class="detail-card-label">Progress</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${goal.priority ? (goal.priority * 100).toFixed(0) + '%' : 'N/A'}</div>
+                        <div class="detail-card-label">Priority</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${goal.pursuitCount || 0}</div>
+                        <div class="detail-card-label">Pursuit Count</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${goal.source || 'unknown'}</div>
+                        <div class="detail-card-label">Source</div>
+                    </div>
+                </div>
+
+                ${goal.uncertainty ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Uncertainty Level</div>
+                        <div class="detail-value">${(goal.uncertainty * 100).toFixed(0)}% - ${goal.uncertainty > 0.7 ? 'High uncertainty, good for exploration' : goal.uncertainty > 0.4 ? 'Moderate uncertainty' : 'Low uncertainty'}</div>
+                    </div>
+                ` : ''}
+
+                <div class="detail-section">
+                    <div class="detail-label">Created</div>
+                    <div class="detail-value">${goal.created ? new Date(goal.created).toLocaleString() : 'Unknown'}</div>
+                </div>
+
+                ${goal.lastPursued ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Last Pursued</div>
+                        <div class="detail-value">${new Date(goal.lastPursued).toLocaleString()}</div>
+                    </div>
+                ` : ''}
+
+                <div class="detail-section">
+                    <div class="detail-label">Goal ID</div>
+                    <div class="detail-value" style="font-family: monospace; opacity: 0.7;">${goalId}</div>
+                </div>
+            `;
+
+            document.getElementById('detail-modal').classList.add('show');
+        }
+
+        async function showAgentDetails(agentId) {
+            try {
+                const response = await fetch(`/api/agents/details/${agentId}`);
+                if (!response.ok) {
+                    console.error('Agent details not found');
+                    return;
+                }
+
+                const agent = await response.json();
+                const findings = agent.results?.filter(r => r.type === 'finding') || [];
+                const insights = agent.results?.filter(r => r.type === 'insight') || [];
+
+                document.getElementById('modal-title').innerHTML = `
+                    <span>🤖</span> ${agent.agentType || 'Agent'}
+                `;
+
+                document.getElementById('modal-body').innerHTML = `
+                    <div class="detail-section">
+                        <div class="detail-label">Mission</div>
+                        <div class="detail-value" style="font-size: 1.1rem; line-height: 1.8;">
+                            ${escapeHtml(agent.mission?.description || 'No description')}
+                        </div>
+                    </div>
+
+                    <!-- Provenance Trail Section -->
+                    <div class="detail-section">
+                        <div class="detail-label">🔗 Work Trail</div>
+                        <div class="detail-value">
+                            <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                                <button class="btn btn-sm" onclick="showAgentNetwork('${agent.agentId}')" style="background: var(--accent-cyan); color: var(--bg-dark);" title="See all agent connections">
+                                    🔗 Agent Network
+                                </button>
+                                <button class="btn btn-sm" onclick="showProvenanceTrail('${agent.agentId}')" style="background: var(--accent-purple); color: white;" title="Follow this agent's complete work path">
+                                    🔍 Trace Path
+                                </button>
+                            </div>
+                            <div id="provenance-preview-${agent.agentId}" style="font-size: 0.9rem; color: var(--text-secondary);">
+                                Loading work trail information...
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="detail-grid">
+                        <div class="detail-card">
+                            <div class="detail-card-value">${agent.status || 'unknown'}</div>
+                            <div class="detail-card-label">Status</div>
+                        </div>
+                        <div class="detail-card">
+                            <div class="detail-card-value">${agent.durationFormatted || 'N/A'}</div>
+                            <div class="detail-card-label">Duration</div>
+                        </div>
+                        <div class="detail-card">
+                            <div class="detail-card-value">${findings.length}</div>
+                            <div class="detail-card-label">Findings</div>
+                        </div>
+                        <div class="detail-card">
+                            <div class="detail-card-value">${insights.length}</div>
+                            <div class="detail-card-label">Insights</div>
+                        </div>
+                    </div>
+
+                    ${findings.length > 0 ? `
+                        <div class="detail-section">
+                            <div class="detail-label">🔍 Key Findings</div>
+                            <div class="findings-list">
+                                ${findings.slice(0, 10).map((f, i) => `
+                                    <div class="finding-item">
+                                        <div style="font-weight: 600; margin-bottom: 6px; color: var(--accent-green);">Finding ${i + 1}</div>
+                                        <div class="finding-text">${escapeHtml(f.content || f.text || 'No content')}</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    ${insights.length > 0 ? `
+                        <div class="detail-section">
+                            <div class="detail-label">💡 Key Insights</div>
+                            <div class="findings-list">
+                                ${insights.slice(0, 10).map((ins, i) => `
+                                    <div class="finding-item" style="border-left-color: var(--accent-yellow);">
+                                        <div style="font-weight: 600; margin-bottom: 6px; color: var(--accent-yellow);">Insight ${i + 1}</div>
+                                        <div class="finding-text">${escapeHtml(ins.content || ins.text || 'No content')}</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    ${agent.progressReports && agent.progressReports.length > 0 ? `
+                        <div class="detail-section">
+                            <div class="detail-label">📊 Progress Timeline</div>
+                            <div style="margin-top: 12px;">
+                                ${agent.progressReports.map(p => `
+                                    <div style="padding: 8px; background: rgba(255,255,255,0.03); border-radius: 6px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+                                        <span style="color: var(--text-secondary);">${p.message}</span>
+                                        <span style="color: var(--accent-cyan); font-weight: 600;">${p.percent}%</span>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    <div class="detail-section">
+                        <div class="detail-label">Agent ID</div>
+                        <div class="detail-value" style="font-family: monospace; opacity: 0.7;">${agent.agentId}</div>
+                    </div>
+                `;
+
+                // Load provenance preview after modal is shown
+                setTimeout(() => {
+                    loadProvenancePreview(agent.agentId);
+                }, 100);
+
+                document.getElementById('detail-modal').classList.add('show');
+            } catch (error) {
+                console.error('Failed to load agent details:', error);
+            }
+        }
+
+        function refreshThoughts() {
+        fetchData();
+        }
+
+        function refreshGoals() {
+            fetchData();
+        }
+
+        function refreshDreams() {
+            fetchDreamsData();
+        }
+
+        function refreshAgents() {
+            fetchData();
+        }
+
+        // ==================== PROVENANCE TRACKING ====================
+
+        function showAgentNetwork(agentId) {
+            // Open the agent network dashboard and highlight this agent
+            const networkUrl = `agent-network.html?highlight=${agentId}`;
+            window.open(networkUrl, '_blank');
+        }
+
+        function showProvenanceTrail(agentId) {
+            // Open the provenance explorer and focus on this agent's trail
+            const trailUrl = `provenance-explorer.html?agent=${agentId}`;
+            window.open(trailUrl, '_blank');
+        }
+
+        // Load provenance preview for agent details
+        async function loadProvenancePreview(agentId) {
+            try {
+                // In a real implementation, this would fetch provenance data for the specific agent
+                const provenanceData = await fetchProvenanceDataForAgent(agentId);
+
+                const container = document.getElementById(`provenance-preview-${agentId}`);
+                if (!container) return;
+
+                if (!provenanceData || !provenanceData.trail) {
+                    container.innerHTML = '<span style="color: var(--text-dim);">No provenance data available</span>';
+                    return;
+                }
+
+                const trail = provenanceData.trail;
+                const depth = trail.length;
+                const hasParent = trail.some(node => node.parentAgentId || node.parentMissionId);
+
+                container.innerHTML = `
+                    <div style="background: var(--bg-elevated); padding: 12px; border-radius: 8px; margin-top: 8px;">
+                        <div style="font-size: 0.8rem; color: var(--text-dim); margin-bottom: 8px;">
+                            Work path: ${depth} steps deep
+                        </div>
+                        <div style="font-size: 0.9rem; color: var(--text-primary);">
+                            ${hasParent ? '🔗 Connected to previous work' : '🎯 Started from scratch'}
+                        </div>
+                        <div style="font-size: 0.8rem; color: var(--text-secondary); margin-top: 4px;">
+                            Click "Trace Path" to follow the complete work journey
+                        </div>
+                    </div>
+                `;
+            } catch (error) {
+                console.error('Failed to load provenance preview:', error);
+                const container = document.getElementById(`provenance-preview-${agentId}`);
+                if (container) {
+                    container.innerHTML = '<span style="color: var(--error);">Failed to load provenance data</span>';
+                }
+            }
+        }
+
+        // Fetch real provenance data for specific agent
+        async function fetchProvenanceDataForAgent(agentId) {
+            try {
+                // Get the agent's details first
+                const agentResponse = await fetch(`/api/agents/details/${agentId}`);
+                if (!agentResponse.ok) {
+                    throw new Error('Agent not found');
+                }
+                const agent = await agentResponse.json();
+
+                // Build trail from agent metadata
+                const trail = [];
+
+                // Add parent agent if exists
+                if (agent.parentAgentId) {
+                    trail.push({
+                        type: 'agent',
+                        id: agent.parentAgentId,
+                        description: 'Parent agent',
+                        parentAgentId: agent.parentAgentId
+                    });
+                }
+
+                // Add parent mission if exists
+                if (agent.parentMissionId) {
+                    trail.push({
+                        type: 'mission',
+                        id: agent.parentMissionId,
+                        description: 'Parent mission',
+                        parentMissionId: agent.parentMissionId
+                    });
+                }
+
+                // Add current mission
+                if (agent.mission) {
+                    trail.push({
+                        type: 'mission',
+                        id: agent.mission.missionId || `mission_${agentId}`,
+                        description: agent.mission.description
+                    });
+                }
+
+                // Add current agent
+                trail.push({
+                    type: 'agent',
+                    id: agentId,
+                    description: agent.mission?.description || 'Current agent'
+                });
+
+                return { trail };
+            } catch (error) {
+                console.error('Failed to fetch provenance for agent:', error);
+                return {
+                    trail: [
+                        {
+                            type: 'agent',
+                            id: agentId,
+                            description: 'Agent (provenance unavailable)'
+                        }
+                    ]
+                };
+            }
+        }
+
+        // ==================== DREAMS ====================
+        async function fetchDreamsData() {
+            try {
+                const response = await fetch('/api/dreams?limit=10');
+                const data = await response.json();
+                state.dreams = data.dreams || [];
+                state.dreamStats = data.stats || {};
+                updateDreams();
+            } catch (error) {
+                console.error('Error fetching dreams:', error);
+            }
+        }
+
+        function updateDreams() {
+            const container = document.getElementById('dream-list');
+            const dreams = state.dreams || [];
+
+            if (dreams.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">🌙</div>
+                        <div class="empty-text">Waiting for deep sleep...</div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = dreams.map(dream => {
+                const timeAgo = formatTimeAgo(new Date(dream.timestamp));
+                const content = dream.content.replace('[DREAM] ', '').replace(/\[DREAM\]/g, '');
+                const sourceIcon = dream.source === 'memory' ? '🧠' : '🎯';
+                const sourceLabel = dream.source === 'memory' ? 'Memory' : 'Goals';
+                const completedBadge = dream.completed ? ' ✓' : '';
+                
+                return `
+                    <div class="dream-item" onclick="showDreamDetails('${escapeHtml(dream.id)}')">
+                        <div class="dream-header">
+                            <span class="dream-cycle">🌙 Dream${completedBadge}</span>
+                            <span class="dream-time">${timeAgo}</span>
+                        </div>
+                        <div class="dream-content">${escapeHtml(content)}</div>
+                        <div class="dream-source">
+                            <span>${sourceIcon}</span>
+                            <span>${sourceLabel}</span>
+                            ${dream.pursuitCount ? `<span>• ${dream.pursuitCount}x</span>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function showDreamDetails(dreamId) {
+            const dream = state.dreams.find(d => d.id === dreamId);
+            if (!dream) return;
+
+            const content = dream.content.replace('[DREAM] ', '').replace(/\[DREAM\]/g, '');
+            const sourceIcon = dream.source === 'memory' ? '🧠' : '🎯';
+            const sourceLabel = dream.source === 'memory' ? 'Memory' : 'Goals';
+            
+            document.getElementById('modal-title').textContent = `🌙 Dream${dream.completed ? ' ✓' : ''}`;
+            document.getElementById('modal-body').innerHTML = `
+                <div class="detail-section">
+                    <div class="detail-label">Content</div>
+                    <div class="detail-value">${escapeHtml(content)}</div>
+                </div>
+                ${dream.reason ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Origin</div>
+                        <div class="detail-value">${escapeHtml(dream.reason)}</div>
+                    </div>
+                ` : ''}
+                <div class="detail-section">
+                    <div class="detail-grid">
+                        <div class="detail-card">
+                            <div class="detail-card-value">${sourceIcon}</div>
+                            <div class="detail-card-label">Source: ${sourceLabel}</div>
+                        </div>
+                        ${dream.model ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">🤖</div>
+                                <div class="detail-card-label">Model: ${dream.model}</div>
+                            </div>
+                        ` : ''}
+                        ${dream.pursuitCount !== undefined ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${dream.pursuitCount}</div>
+                                <div class="detail-card-label">Times Pursued</div>
+                            </div>
+                        ` : ''}
+                        ${dream.progress !== undefined ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${(dream.progress * 100).toFixed(0)}%</div>
+                                <div class="detail-card-label">Progress</div>
+                            </div>
+                        ` : ''}
+                        ${dream.activation !== undefined ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${(dream.activation * 100).toFixed(0)}%</div>
+                                <div class="detail-card-label">Activation</div>
+                            </div>
+                        ` : ''}
+                        <div class="detail-card">
+                            <div class="detail-card-value">${new Date(dream.timestamp).toLocaleString()}</div>
+                            <div class="detail-card-label">Timestamp</div>
+                        </div>
+                    </div>
+                </div>
+                ${dream.tags && dream.tags.length > 0 ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Tags</div>
+                        <div class="detail-value">${dream.tags.join(', ')}</div>
+                    </div>
+                ` : ''}
+            `;
+            document.getElementById('detail-modal').style.display = 'flex';
+        }
+
+        // ==================== AGENT HISTORY ====================
+        async function showAgentHistory() {
+            const button = event.target;
+            const originalText = button.textContent;
+            button.textContent = 'Loading...';
+            button.style.opacity = '0.5';
+
+            try {
+                const response = await fetch('/api/agents/history?limit=100');
+                const data = await response.json();
+                
+                displayAgentHistory(data);
+            } catch (error) {
+                console.error('Failed to load agent history:', error);
+                alert('Failed to load agent history');
+            } finally {
+                button.textContent = originalText;
+                button.style.opacity = '1';
+            }
+        }
+
+        function displayAgentHistory(data) {
+            const stats = data.stats || {};
+            const typeStats = stats.byType || {};
+
+            document.getElementById('modal-title').innerHTML = `
+                <span>🤖</span> Complete Agent History
+            `;
+
+            // Build category tabs for agents
+            const agentTabs = [
+                { id: 'overview', label: 'Overview', count: stats.total || 0 },
+                { id: 'active', label: 'Active', count: stats.active || 0 },
+                { id: 'completed', label: 'Completed', count: stats.completed || 0 },
+                { id: 'failed', label: 'Failed', count: stats.failed || 0 },
+                { id: 'timeout', label: 'Timeout', count: stats.timeout || 0 },
+                { id: 'recent', label: 'Recent', count: data.recent?.length || 0 }
+            ];
+
+            document.getElementById('modal-body').innerHTML = `
+                <div style="margin-bottom: 20px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px;">
+                        <div class="detail-card">
+                            <div class="detail-card-value">${stats.total || 0}</div>
+                            <div class="detail-card-label">Total Agents</div>
+                        </div>
+                        <div class="detail-card" style="border-color: var(--accent-green);">
+                            <div class="detail-card-value" style="color: var(--accent-green);">${stats.active || 0}</div>
+                            <div class="detail-card-label">Active</div>
+                        </div>
+                        <div class="detail-card" style="border-color: var(--accent-cyan);">
+                            <div class="detail-card-value" style="color: var(--accent-cyan);">${stats.completed || 0}</div>
+                            <div class="detail-card-label">Completed</div>
+                        </div>
+                        <div class="detail-card" style="border-color: var(--accent-pink);">
+                            <div class="detail-card-value" style="color: var(--accent-pink);">${stats.failed || 0}</div>
+                            <div class="detail-card-label">Failed</div>
+                        </div>
+                        <div class="detail-card" style="border-color: var(--accent-yellow);">
+                            <div class="detail-card-value" style="color: var(--accent-yellow);">${stats.timeout || 0}</div>
+                            <div class="detail-card-label">Timeout</div>
+                        </div>
+                    </div>
+
+                    ${Object.keys(typeStats).length > 0 ? `
+                        <div style="margin-bottom: 16px;">
+                            <div class="detail-label">Agent Types</div>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 8px;">
+                                ${Object.entries(typeStats).map(([type, stats]) => `
+                                    <div style="background: rgba(0, 255, 255, 0.05); border: 1px solid rgba(0, 255, 255, 0.2); padding: 10px; border-radius: 8px;">
+                                        <div style="font-weight: 600; margin-bottom: 4px; color: var(--accent-cyan);">${type}</div>
+                                        <div style="font-size: 0.8rem; color: var(--text-dim);">
+                                            ${stats.completed}/${stats.total} completed
+                                            ${stats.failed > 0 ? ` · ${stats.failed} failed` : ''}
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                </div>
+
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px;">
+                    ${agentTabs.map((tab, i) => `
+                        <button class="agent-tab ${i === 0 ? 'active' : ''}" 
+                                data-category="${tab.id}" 
+                                onclick="switchAgentTab('${tab.id}')"
+                                style="padding: 8px 16px; background: ${i === 0 ? 'rgba(0, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)'}; 
+                                       border: 1px solid ${i === 0 ? 'var(--accent-cyan)' : 'rgba(255, 255, 255, 0.1)'}; 
+                                       border-radius: 8px; color: white; cursor: pointer; transition: all 0.2s; white-space: nowrap;">
+                            ${tab.label} (${tab.count})
+                        </button>
+                    `).join('')}
+                </div>
+
+                <div id="agents-content">
+                    ${renderAgentTab('overview', data)}
+                </div>
+            `;
+
+            // Store data for tab switching
+            window.currentAgentData = data;
+            document.getElementById('detail-modal').classList.add('show');
+        }
+
+        function switchAgentTab(category) {
+            // Update tab styling
+            document.querySelectorAll('.agent-tab').forEach(tab => {
+                const isActive = tab.dataset.category === category;
+                tab.style.background = isActive ? 'rgba(0, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)';
+                tab.style.borderColor = isActive ? 'var(--accent-cyan)' : 'rgba(255, 255, 255, 0.1)';
+            });
+
+            // Render content
+            document.getElementById('agents-content').innerHTML = renderAgentTab(category, window.currentAgentData);
+        }
+
+        function renderAgentTab(category, data) {
+            let agents = [];
+            let title = '';
+
+            switch(category) {
+                case 'overview':
+                    const typeStats = data.stats?.byType || {};
+                    return `
+                        <div class="detail-section">
+                            <div class="detail-label">Agent Activity Overview</div>
+                            <div style="margin-top: 12px;">
+                                ${Object.entries(typeStats).map(([type, stats]) => `
+                                    <div style="background: rgba(0, 255, 255, 0.03); padding: 12px; border-radius: 8px; margin-bottom: 10px;">
+                                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                                            <div style="font-weight: 600; color: var(--accent-cyan);">${type}</div>
+                                            <div style="font-size: 0.85rem; color: var(--text-dim);">
+                                                ${stats.total} total
+                                            </div>
+                                        </div>
+                                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-size: 0.8rem;">
+                                            <div style="text-align: center; padding: 6px; background: rgba(6, 255, 165, 0.1); border-radius: 4px;">
+                                                <div style="color: var(--accent-green); font-weight: 600;">${stats.completed}</div>
+                                                <div style="color: var(--text-dim); font-size: 0.7rem;">Completed</div>
+                                            </div>
+                                            <div style="text-align: center; padding: 6px; background: rgba(255, 0, 110, 0.1); border-radius: 4px;">
+                                                <div style="color: var(--accent-pink); font-weight: 600;">${stats.failed || 0}</div>
+                                                <div style="color: var(--text-dim); font-size: 0.7rem;">Failed</div>
+                                            </div>
+                                            <div style="text-align: center; padding: 6px; background: rgba(255, 190, 11, 0.1); border-radius: 4px;">
+                                                <div style="color: var(--accent-yellow); font-weight: 600;">${stats.timeout || 0}</div>
+                                                <div style="color: var(--text-dim); font-size: 0.7rem;">Timeout</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+                case 'active':
+                    agents = data.active || [];
+                    title = 'Currently Running Agents';
+                    break;
+                case 'completed':
+                    agents = (data.completed || []).reverse();
+                    title = 'Successfully Completed Agents';
+                    break;
+                case 'failed':
+                    agents = (data.failed || []).reverse();
+                    title = 'Failed Agents';
+                    break;
+                case 'timeout':
+                    agents = (data.timeout || []).reverse();
+                    title = 'Timed Out Agents';
+                    break;
+                case 'recent':
+                    agents = (data.recent || []).reverse();
+                    title = 'Recent Agent Activity';
+                    break;
+            }
+
+            if (category === 'overview') return ''; // Already handled above
+
+            if (agents.length === 0) {
+                return `<div class="empty-state"><div class="empty-icon">🤖</div><div class="empty-text">No agents in this category</div></div>`;
+            }
+
+            return `
+                <div style="margin-bottom: 16px; font-size: 1rem; font-weight: 600; color: var(--accent-cyan);">
+                    ${title} (${agents.length})
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 10px; max-height: 500px; overflow-y: auto;">
+                    ${agents.map((agent, i) => renderAgentCard(agent, i + 1)).join('')}
+                </div>
+            `;
+        }
+
+        function renderAgentCard(agent, index) {
+            const isActive = agent.status === 'running' || !agent.status;
+            const statusColor = isActive ? 'var(--accent-green)' : 
+                               agent.status === 'completed' ? 'var(--accent-cyan)' :
+                               agent.status === 'failed' ? 'var(--accent-pink)' : 'var(--accent-yellow)';
+            
+            const statusText = isActive ? 'RUNNING' : agent.status?.toUpperCase() || 'UNKNOWN';
+            const agentType = agent.type || agent.agentType || 'Agent';
+            const typeIcon = agentType.includes('Research') ? '🔍' :
+                            agentType.includes('Analysis') ? '🧠' :
+                            agentType.includes('Synthesis') ? '📝' :
+                            agentType.includes('Exploration') ? '🌟' : '🤖';
+            
+            const goalText = agent.goal || agent.mission?.goalId || agent.mission?.description || 'Unknown mission';
+            const findings = agent.results?.filter(r => r.type === 'finding').length || 0;
+            const insights = agent.results?.filter(r => r.type === 'insight').length || 0;
+
+            return `
+                <div style="background: rgba(0, 255, 255, 0.03); border: 1px solid ${statusColor}; padding: 12px; border-radius: 8px; cursor: pointer; transition: all 0.2s;"
+                     onclick="showAgentDetails('${agent.agentId}')"
+                     onmouseover="this.style.background='rgba(0, 255, 255, 0.08)'"
+                     onmouseout="this.style.background='rgba(0, 255, 255, 0.03)'">
+                    <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+                        <div style="font-weight: 600; color: var(--accent-cyan);">
+                            ${typeIcon} ${agentType}
+                        </div>
+                        <div style="background: ${statusColor}20; color: ${statusColor}; padding: 3px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: 600; border: 1px solid ${statusColor};">
+                            ${statusText}
+                        </div>
+                    </div>
+                    <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px; line-height: 1.5;">
+                        ${escapeHtml(goalText.substring(0, 100))}${goalText.length > 100 ? '...' : ''}
+                    </div>
+                    <div style="display: flex; gap: 12px; font-size: 0.75rem; color: var(--text-dim);">
+                        ${isActive ? 
+                            `<span>⏱️ Started: ${new Date(agent.startTime).toLocaleTimeString()}</span>` :
+                            `<span>⏱️ ${agent.durationFormatted || formatDuration(agent.duration)}</span>`
+                        }
+                        ${findings > 0 || insights > 0 ? `<span>📊 ${findings} findings, ${insights} insights</span>` : ''}
+                        <span style="color: var(--accent-cyan);">→ Click for details</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        // ==================== INSIGHT ANALYZER ====================
+        async function analyzeInsights() {
+            const button = event.target.closest('.status-badge');
+            const originalHTML = button.innerHTML;
+            button.innerHTML = '<span>⏳</span><span>Analyzing...</span>';
+            button.disabled = true;
+
+            try {
+                console.log('Fetching insights...');
+                const response = await fetch('/api/insights/analyze?limit=15');
+                
+                if (!response.ok) {
+                    throw new Error(`Server returned ${response.status}: ${response.statusText}`);
+                }
+                
+                const text = await response.text();
+                console.log('Raw response:', text.substring(0, 200));
+                
+                const insights = JSON.parse(text);
+                console.log('Insights received:', insights);
+                showInsightsModal(insights);
+            } catch (error) {
+                console.error('Failed to analyze insights:', error);
+                alert(`Failed to analyze insights: ${error.message}\n\nMake sure the dashboard server is running. You may need to restart it with:\n./RESTART_DASHBOARDS.sh`);
+            } finally {
+                button.innerHTML = originalHTML;
+                button.disabled = false;
+            }
+        }
+
+        function showInsightsModal(insights) {
+            document.getElementById('modal-title').innerHTML = `
+                <span>🔍</span> Intelligent Log Analysis
+            `;
+
+            const stats = insights.stats || {};
+            const categories = stats.categories || {};
+
+            // Build category tabs
+            const tabs = [
+                { id: 'all', label: 'Top Insights', count: stats.totalInsights || 0 },
+                { id: 'surprise', label: 'High Surprise', count: categories.highSurprise || 0 },
+                { id: 'web', label: 'Web-Enhanced', count: categories.webEnhanced || 0 },
+                { id: 'reasoning', label: 'Deep Reasoning', count: categories.deepReasoning || 0 },
+                { id: 'agents', label: 'Agent Breakthroughs', count: categories.agentBreakthroughs || 0 },
+                { id: 'memory', label: 'High Activation', count: categories.highActivation || 0 },
+                { id: 'crossdomain', label: 'Cross-Domain', count: categories.crossDomain || 0 },
+                { id: 'strategic', label: 'Strategic', count: categories.strategicInsights || 0 }
+            ].filter(tab => tab.count > 0);
+
+            document.getElementById('modal-body').innerHTML = `
+                <div style="margin-bottom: 20px; padding: 16px; background: rgba(0, 255, 255, 0.1); border-radius: 12px; text-align: center;">
+                    <div style="font-size: 2.5rem; font-weight: 700; color: var(--accent-cyan); margin-bottom: 8px;">
+                        ${stats.totalInsights || 0}
+                    </div>
+                    <div style="font-size: 0.9rem; color: var(--text-secondary);">
+                        Interesting Moments Discovered
+                    </div>
+                </div>
+
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px;">
+                    ${tabs.map((tab, i) => `
+                        <button class="insight-tab ${i === 0 ? 'active' : ''}" 
+                                data-category="${tab.id}" 
+                                onclick="switchInsightTab('${tab.id}')"
+                                style="padding: 8px 16px; background: ${i === 0 ? 'rgba(0, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)'}; 
+                                       border: 1px solid ${i === 0 ? 'var(--accent-cyan)' : 'rgba(255, 255, 255, 0.1)'}; 
+                                       border-radius: 8px; color: white; cursor: pointer; transition: all 0.2s; white-space: nowrap;">
+                            ${tab.label} (${tab.count})
+                        </button>
+                    `).join('')}
+                </div>
+
+                <div id="insights-content">
+                    ${renderInsightTab('all', insights)}
+                </div>
+            `;
+
+            // Store insights in global state for tab switching
+            window.currentInsights = insights;
+            document.getElementById('detail-modal').classList.add('show');
+        }
+
+        function switchInsightTab(category) {
+            // Update tab styling
+            document.querySelectorAll('.insight-tab').forEach(tab => {
+                const isActive = tab.dataset.category === category;
+                tab.style.background = isActive ? 'rgba(0, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.05)';
+                tab.style.borderColor = isActive ? 'var(--accent-cyan)' : 'rgba(255, 255, 255, 0.1)';
+            });
+
+            // Render content
+            document.getElementById('insights-content').innerHTML = renderInsightTab(category, window.currentInsights);
+        }
+
+        function renderInsightTab(category, insights) {
+            let items = [];
+            let title = '';
+
+            switch(category) {
+                case 'all':
+                    items = insights.stats?.topScores || [];
+                    title = 'Top Scoring Insights Across All Categories';
+                    break;
+                case 'surprise':
+                    items = insights.highSurpriseThoughts || [];
+                    title = 'Thoughts with Highest Surprise Values';
+                    break;
+                case 'web':
+                    items = insights.webEnhancedThoughts || [];
+                    title = 'Thoughts Enhanced by Web Search';
+                    break;
+                case 'reasoning':
+                    items = insights.reasoningTraces || [];
+                    title = 'Thoughts with Deep GPT-5.2 Reasoning';
+                    break;
+                case 'agents':
+                    items = insights.agentBreakthroughs || [];
+                    title = 'Agent Discoveries and Breakthroughs';
+                    break;
+                case 'memory':
+                    items = insights.highActivationNodes || [];
+                    title = 'Most Active Memory Concepts';
+                    break;
+                case 'crossdomain':
+                    items = insights.crossDomainConcepts || [];
+                    title = 'Concepts Bridging Multiple Domains';
+                    break;
+                case 'strategic':
+                    items = insights.strategicInsights || [];
+                    title = 'Meta-Coordinator Strategic Insights';
+                    break;
+            }
+
+            if (items.length === 0) {
+                return `<div class="empty-state"><div class="empty-icon">🔍</div><div class="empty-text">No items in this category</div></div>`;
+            }
+
+            return `
+                <div style="margin-bottom: 16px; font-size: 1rem; font-weight: 600; color: var(--accent-cyan);">
+                    ${title}
+                </div>
+                <div style="display: flex; flex-direction: column; gap: 12px; max-height: 500px; overflow-y: auto;">
+                    ${items.map((item, i) => renderInsightItem(item, i + 1)).join('')}
+                </div>
+            `;
+        }
+
+        function showInsightDetail(item) {
+            document.getElementById('modal-title').innerHTML = `
+                <span>🔍</span> ${item.category}
+            `;
+
+            let detailHTML = '';
+
+            if (item.category.includes('Memory') || item.category.includes('Cross-Domain')) {
+                detailHTML = `
+                    <div class="detail-section">
+                        <div class="detail-label">Full Concept</div>
+                        <div class="detail-value" style="font-size: 1.1rem; line-height: 1.8;">
+                            ${escapeHtml(item.concept || '')}
+                        </div>
+                    </div>
+                    <div class="detail-grid">
+                        ${item.activation ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${(item.activation * 100).toFixed(1)}%</div>
+                                <div class="detail-card-label">Activation</div>
+                            </div>
+                        ` : ''}
+                        ${item.accessCount ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${item.accessCount}</div>
+                                <div class="detail-card-label">Access Count</div>
+                            </div>
+                        ` : ''}
+                        ${item.clustersConnected ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${item.clustersConnected}</div>
+                                <div class="detail-card-label">Clusters Connected</div>
+                            </div>
+                        ` : ''}
+                        ${item.ownCluster !== undefined ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${item.ownCluster}</div>
+                                <div class="detail-card-label">Own Cluster</div>
+                            </div>
+                        ` : ''}
+                        <div class="detail-card">
+                            <div class="detail-card-value">${item.score.toFixed(0)}</div>
+                            <div class="detail-card-label">Score</div>
+                        </div>
+                        ${item.tag ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${item.tag}</div>
+                                <div class="detail-card-label">Tag</div>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            } else if (item.category.includes('Agent')) {
+                detailHTML = `
+                    <div class="detail-section">
+                        <div class="detail-label">Agent Type</div>
+                        <div class="detail-value">${item.agentType || 'Unknown'}</div>
+                    </div>
+                    <div class="detail-section">
+                        <div class="detail-label">Goal</div>
+                        <div class="detail-value" style="font-size: 1.1rem; line-height: 1.8;">
+                            ${escapeHtml(item.goal || '')}
+                        </div>
+                    </div>
+                    <div class="detail-grid">
+                        <div class="detail-card">
+                            <div class="detail-card-value">${item.totalFindings || 0}</div>
+                            <div class="detail-card-label">Findings</div>
+                        </div>
+                        <div class="detail-card">
+                            <div class="detail-card-value">${item.totalInsights || 0}</div>
+                            <div class="detail-card-label">Insights</div>
+                        </div>
+                        <div class="detail-card">
+                            <div class="detail-card-value">${item.duration || 'N/A'}</div>
+                            <div class="detail-card-label">Duration</div>
+                        </div>
+                        <div class="detail-card">
+                            <div class="detail-card-value">${item.score.toFixed(0)}</div>
+                            <div class="detail-card-label">Score</div>
+                        </div>
+                    </div>
+                    ${item.findings && item.findings.length > 0 ? `
+                        <div class="detail-section">
+                            <div class="detail-label">🔍 All Findings</div>
+                            <div class="findings-list">
+                                ${item.findings.map((f, i) => `
+                                    <div class="finding-item">
+                                        <div style="font-weight: 600; margin-bottom: 6px; color: var(--accent-green);">Finding ${i + 1}</div>
+                                        <div class="finding-text">${escapeHtml(f.content || f.text || '')}</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                    ${item.insights && item.insights.length > 0 ? `
+                        <div class="detail-section">
+                            <div class="detail-label">💡 All Insights</div>
+                            <div class="findings-list">
+                                ${item.insights.map((ins, i) => `
+                                    <div class="finding-item" style="border-left-color: var(--accent-yellow);">
+                                        <div style="font-weight: 600; margin-bottom: 6px; color: var(--accent-yellow);">Insight ${i + 1}</div>
+                                        <div class="finding-text">${escapeHtml(ins.content || ins.text || '')}</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                `;
+            } else if (item.category.includes('Strategic')) {
+                detailHTML = `
+                    <div class="detail-section">
+                        <div class="detail-label">Review Cycle</div>
+                        <div class="detail-value">Cycle ${item.cycle}</div>
+                    </div>
+                    ${item.keyInsights && item.keyInsights.length > 0 ? `
+                        <div class="detail-section">
+                            <div class="detail-label">🎯 Key Insights</div>
+                            <div class="findings-list">
+                                ${item.keyInsights.map((insight, i) => `
+                                    <div class="finding-item" style="border-left-color: var(--accent-cyan);">
+                                        <div style="font-weight: 600; margin-bottom: 6px; color: var(--accent-cyan);">Insight ${i + 1}</div>
+                                        <div class="finding-text">${escapeHtml(insight)}</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                    ${item.directives && item.directives.length > 0 ? `
+                        <div class="detail-section">
+                            <div class="detail-label">📋 Strategic Directives</div>
+                            <div class="findings-list">
+                                ${item.directives.map((dir, i) => `
+                                    <div class="finding-item" style="border-left-color: var(--accent-yellow);">
+                                        <div style="font-weight: 600; margin-bottom: 6px; color: var(--accent-yellow);">Directive ${i + 1}</div>
+                                        <div class="finding-text">${escapeHtml(dir)}</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                    ${item.priorities && item.priorities.length > 0 ? `
+                        <div class="detail-section">
+                            <div class="detail-label">🎯 Prioritized Goals</div>
+                            <div class="detail-value">
+                                <ul style="margin: 0; padding-left: 20px; line-height: 1.8;">
+                                    ${item.priorities.map(p => `<li>${escapeHtml(p)}</li>`).join('')}
+                                </ul>
+                            </div>
+                        </div>
+                    ` : ''}
+                `;
+            } else {
+                // Thought-based insights - show FULL content
+                const roleColors = {
+                    curiosity: 'var(--accent-cyan)',
+                    analyst: 'var(--accent-purple)',
+                    critic: 'var(--accent-pink)'
+                };
+
+                detailHTML = `
+                    <div class="detail-section">
+                        <div class="detail-label">Cycle & Role</div>
+                        <div class="detail-value" style="color: ${roleColors[item.role] || 'var(--accent-cyan)'}; font-weight: 600;">
+                            Cycle ${item.cycle} - ${item.role?.toUpperCase() || 'SYSTEM'}
+                        </div>
+                    </div>
+                    <div class="detail-section">
+                        <div class="detail-label">Complete Thought (No Truncation)</div>
+                        <div class="detail-value" style="font-size: 1.1rem; line-height: 1.8; background: rgba(0, 255, 255, 0.03); padding: 16px; border-radius: 8px;">
+                            ${escapeHtml(item.thought || '')}
+                        </div>
+                    </div>
+                    ${item.reasoning ? `
+                        <div class="detail-section">
+                            <div class="detail-label">Complete GPT-5.2 Reasoning Trace (Full)</div>
+                            <div class="detail-value" style="font-style: italic; opacity: 0.9; background: rgba(157, 78, 221, 0.05); padding: 16px; border-radius: 8px; line-height: 1.7; max-height: 400px; overflow-y: auto;">
+                                ${escapeHtml(item.reasoning)}
+                            </div>
+                        </div>
+                    ` : ''}
+                    <div class="detail-grid">
+                        ${item.surprise !== undefined ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${(item.surprise * 100).toFixed(1)}%</div>
+                                <div class="detail-card-label">Surprise Level</div>
+                            </div>
+                        ` : ''}
+                        <div class="detail-card">
+                            <div class="detail-card-value">${item.score.toFixed(0)}</div>
+                            <div class="detail-card-label">Insight Score</div>
+                        </div>
+                        ${item.goalsGenerated ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${item.goalsGenerated}</div>
+                                <div class="detail-card-label">Goals Generated</div>
+                            </div>
+                        ` : ''}
+                        ${item.reasoningLength ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${(item.reasoningLength / 1000).toFixed(1)}k</div>
+                                <div class="detail-card-label">Reasoning Chars</div>
+                            </div>
+                        ` : ''}
+                        <div class="detail-card">
+                            <div class="detail-card-value">${item.category}</div>
+                            <div class="detail-card-label">Category</div>
+                        </div>
+                    </div>
+                    ${item.timestamp ? `
+                        <div class="detail-section">
+                            <div class="detail-label">Timestamp</div>
+                            <div class="detail-value">${new Date(item.timestamp).toLocaleString()}</div>
+                        </div>
+                    ` : ''}
+                `;
+            }
+
+            document.getElementById('modal-body').innerHTML = detailHTML;
+            document.getElementById('detail-modal').classList.add('show');
+        }
+
+        function renderInsightItem(item, index) {
+            const scoreColor = item.score > 80 ? 'var(--accent-green)' : item.score > 50 ? 'var(--accent-cyan)' : 'var(--accent-yellow)';
+            const itemJSON = JSON.stringify(item).replace(/"/g, '&quot;');
+            
+            // Render based on category type
+            if (item.category.includes('Memory') || item.category.includes('Cross-Domain')) {
+                return `
+                    <div class="finding-item" style="border-left-color: ${scoreColor}; cursor: pointer;" 
+                         onclick='showInsightDetail(${itemJSON})'
+                         onmouseover="this.style.background='rgba(0, 255, 255, 0.08)'"
+                         onmouseout="this.style.background='rgba(6, 255, 165, 0.05)'">
+                        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+                            <div style="font-weight: 600; color: ${scoreColor};">${index}. ${item.category}</div>
+                            <div style="background: ${scoreColor}20; color: ${scoreColor}; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">
+                                Score: ${item.score.toFixed(0)}
+                            </div>
+                        </div>
+                        <div style="font-size: 0.95rem; line-height: 1.6; margin-bottom: 8px; color: var(--text-secondary);">
+                            ${escapeHtml(item.concept?.substring(0, 200) || '')}${(item.concept?.length || 0) > 200 ? '...' : ''}
+                        </div>
+                        <div style="display: flex; gap: 12px; font-size: 0.75rem; color: var(--text-dim);">
+                            ${item.activation ? `<span>Activation: ${(item.activation * 100).toFixed(0)}%</span>` : ''}
+                            ${item.accessCount ? `<span>Accessed: ${item.accessCount} times</span>` : ''}
+                            ${item.clustersConnected ? `<span>Bridges ${item.clustersConnected} clusters</span>` : ''}
+                            <span style="color: var(--accent-cyan);">→ Click for full details</span>
+                        </div>
+                    </div>
+                `;
+            } else if (item.category.includes('Agent')) {
+                return `
+                    <div class="finding-item" style="border-left-color: ${scoreColor}; cursor: pointer;" 
+                         onclick='showInsightDetail(${itemJSON})'
+                         onmouseover="this.style.background='rgba(6, 255, 165, 0.08)'"
+                         onmouseout="this.style.background='rgba(6, 255, 165, 0.05)'">
+                        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+                            <div style="font-weight: 600; color: ${scoreColor};">${index}. ${item.agentType || 'Agent'}</div>
+                            <div style="background: ${scoreColor}20; color: ${scoreColor}; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">
+                                ${item.totalFindings} findings, ${item.totalInsights} insights
+                            </div>
+                        </div>
+                        <div style="font-size: 0.9rem; margin-bottom: 8px; color: var(--text-secondary);">
+                            ${escapeHtml((item.goal || '').substring(0, 100))}${(item.goal || '').length > 100 ? '...' : ''}
+                        </div>
+                        ${item.findings?.length > 0 ? `
+                            <div style="margin-top: 8px;">
+                                ${item.findings.slice(0, 1).map(f => `
+                                    <div style="font-size: 0.85rem; padding: 6px; background: rgba(6, 255, 165, 0.05); border-radius: 4px; margin-bottom: 4px;">
+                                        • ${escapeHtml((f.content || f.text || '').substring(0, 120))}${(f.content || f.text || '').length > 120 ? '...' : ''}
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : ''}
+                        <div style="font-size: 0.75rem; color: var(--accent-cyan); margin-top: 8px;">
+                            → Click to see all ${item.totalFindings} findings and ${item.totalInsights} insights
+                        </div>
+                    </div>
+                `;
+            } else if (item.category.includes('Strategic')) {
+                return `
+                    <div class="finding-item" style="border-left-color: var(--accent-yellow); cursor: pointer;" 
+                         onclick='showInsightDetail(${itemJSON})'
+                         onmouseover="this.style.background='rgba(255, 190, 11, 0.08)'"
+                         onmouseout="this.style.background='rgba(255, 190, 11, 0.05)'">
+                        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+                            <div style="font-weight: 600; color: var(--accent-yellow);">${index}. Cycle ${item.cycle} Review</div>
+                        </div>
+                        ${item.keyInsights?.length > 0 ? `
+                            <div style="margin-bottom: 8px;">
+                                <div style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px;">Key Insights:</div>
+                                ${item.keyInsights.slice(0, 2).map(insight => `
+                                    <div style="font-size: 0.85rem; padding: 4px 0; color: var(--text-secondary);">
+                                        • ${escapeHtml(insight.substring(0, 100))}${insight.length > 100 ? '...' : ''}
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : ''}
+                        ${item.directives?.length > 0 ? `
+                            <div>
+                                <div style="font-size: 0.75rem; color: var(--text-dim); margin-bottom: 4px;">Directives:</div>
+                                ${item.directives.slice(0, 2).map(dir => `
+                                    <div style="font-size: 0.85rem; padding: 4px 0; color: var(--text-secondary);">
+                                        → ${escapeHtml(dir.substring(0, 100))}${dir.length > 100 ? '...' : ''}
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : ''}
+                        <div style="font-size: 0.75rem; color: var(--accent-cyan); margin-top: 8px;">
+                            → Click for full strategic review
+                        </div>
+                    </div>
+                `;
+            } else {
+                // Thought-based insights
+                return `
+                    <div class="finding-item" style="border-left-color: ${scoreColor}; cursor: pointer;" 
+                         onclick='showInsightDetail(${itemJSON})'
+                         onmouseover="this.style.background='rgba(157, 78, 221, 0.08)'"
+                         onmouseout="this.style.background='rgba(6, 255, 165, 0.05)'">
+                        <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;">
+                            <div style="font-weight: 600; color: ${scoreColor};">${index}. ${item.category} (Cycle ${item.cycle})</div>
+                            <div style="background: ${scoreColor}20; color: ${scoreColor}; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600;">
+                                ${item.surprise ? `Surprise: ${(item.surprise * 100).toFixed(0)}%` : `Score: ${item.score.toFixed(0)}`}
+                            </div>
+                        </div>
+                        <div style="font-size: 0.95rem; line-height: 1.6; margin-bottom: 8px; color: var(--text-secondary);">
+                            ${escapeHtml(item.thought?.substring(0, 200) || '')}${(item.thought?.length || 0) > 200 ? '...' : ''}
+                        </div>
+                        ${item.reasoning ? `
+                            <div style="font-style: italic; opacity: 0.8; font-size: 0.85rem; padding: 8px; background: rgba(157, 78, 221, 0.05); border-radius: 4px; margin-top: 8px;">
+                                ${escapeHtml(item.reasoning.substring(0, 150))}...
+                            </div>
+                        ` : ''}
+                        <div style="display: flex; gap: 12px; font-size: 0.75rem; color: var(--text-dim); margin-top: 8px;">
+                            <span>Role: ${item.role || 'N/A'}</span>
+                            ${item.goalsGenerated ? `<span>Generated ${item.goalsGenerated} goals</span>` : ''}
+                            ${item.reasoningLength ? `<span>Reasoning: ${item.reasoningLength} chars</span>` : ''}
+                        </div>
+                        <div style="font-size: 0.75rem; color: var(--accent-cyan); margin-top: 8px;">
+                            → Click for full thought ${item.reasoning ? 'and complete reasoning trace' : ''}
+                        </div>
+                    </div>
+                `;
+            }
+        }
+
+        // ==================== CURATED INSIGHTS ====================
+        async function viewLatestReportMain() {
+            try {
+                const response = await fetch('/reports/insights_curated_LATEST.md');
+                if (!response.ok) {
+                    alert('No report available yet. First report generated at cycle 50.');
+                    return;
+                }
+                
+                const markdown = await response.text();
+                
+                // Open in new window with formatted view
+                const reportWindow = window.open('', 'Curated Insights', 'width=1100,height=900,scrollbars=yes');
+                reportWindow.document.write(`
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Curated Insights - Latest</title>
+                        <meta charset="UTF-8">
+                        <style>
+                            body { 
+                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', sans-serif;
+                                max-width: 950px; 
+                                margin: 40px auto; 
+                                padding: 30px;
+                                line-height: 1.7;
+                                background: #f8f9fa;
+                                color: #2c3e50;
+                            }
+                            h1 { 
+                                font-size: 2.4em; 
+                                border-bottom: 4px solid #667eea; 
+                                padding-bottom: 12px; 
+                                margin-bottom: 20px;
+                                color: #1a202c;
+                            }
+                            h2 { 
+                                font-size: 1.9em; 
+                                border-bottom: 2px solid #95a5a6; 
+                                padding-bottom: 10px; 
+                                margin-top: 32px;
+                                color: #2d3748;
+                            }
+                            h3 { 
+                                font-size: 1.5em; 
+                                color: #4a5568; 
+                                margin-top: 24px;
+                            }
+                            pre { 
+                                background: #edf2f7; 
+                                padding: 16px; 
+                                border-radius: 8px; 
+                                overflow-x: auto;
+                                border-left: 4px solid #667eea;
+                            }
+                            code { 
+                                background: #e2e8f0; 
+                                padding: 3px 8px; 
+                                border-radius: 4px;
+                                font-size: 0.9em;
+                            }
+                            hr { 
+                                border: none; 
+                                border-top: 1px solid #cbd5e0; 
+                                margin: 28px 0; 
+                            }
+                            strong { 
+                                color: #2d3748; 
+                                font-weight: 600;
+                            }
+                            p { 
+                                margin: 12px 0; 
+                            }
+                            ul, ol {
+                                margin: 12px 0;
+                                padding-left: 24px;
+                            }
+                            li {
+                                margin: 8px 0;
+                            }
+                        </style>
+                    </head>
+                    <body>
+                        <pre style="white-space: pre-wrap; font-family: inherit; background: white; border: 1px solid #e2e8f0; padding: 40px; box-shadow: 0 4px 6px rgba(0,0,0,0.07);">${markdown.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+                    </body>
+                    </html>
+                `);
+                reportWindow.document.close();
+                
+            } catch (error) {
+                console.error('Failed to load latest report:', error);
+                alert('Could not load report: ' + error.message);
+            }
+        }
+
+        // ==================== INITIALIZATION ====================
+        loadAvailableRuns(); // Load run selector
+        fetchData();
+        fetchDreamsData();
+        setInterval(() => {
+            fetchData();
+            fetchDreamsData();
+        }, 5000); // Refresh every 5 seconds
+
+        // Search functionality
+        document.getElementById('search-nodes').addEventListener('input', (e) => {
+            const searchTerm = e.target.value.toLowerCase();
+            if (!searchTerm || !nodeElements) {
+                if (nodeElements) nodeElements.style('opacity', 1);
+                if (linkElements) linkElements.style('opacity', 0.3);
+                return;
+            }
+            
+            const matchingNodes = new Set();
+            nodeElements.style('opacity', d => {
+                if (d.concept.toLowerCase().includes(searchTerm)) {
+                    matchingNodes.add(d.id);
+                    return 1;
+                }
+                return 0.1;
+            });
+            
+            linkElements.style('opacity', e => {
+                if (matchingNodes.has(e.source.id) || matchingNodes.has(e.target.id)) {
+                    return 0.6;
+                }
+                return 0.05;
+            });
+        });
+
+        // Hide tooltip when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('.graph-node') && !e.target.closest('.node-tooltip')) {
+                document.getElementById('node-tooltip').classList.remove('show');
+                if (nodeElements) nodeElements.classed('selected', false);
+            }
+        });
+
+        // Close modal when clicking outside
+        document.getElementById('detail-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'detail-modal') {
+                closeModal();
+            }
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (!svg || !state.zoomBehavior) return;
+            const parent = svg.node().getBoundingClientRect();
+            const centerX = parent.width / 2;
+            const centerY = parent.height / 2;
+
+            switch(e.key) {
+                case '+':
+                case '=':
+                    e.preventDefault();
+                    svg.transition().duration(200).call(state.zoomBehavior.scaleBy, 1.2, [centerX, centerY]);
+                    break;
+                case '-':
+                    e.preventDefault();
+                    svg.transition().duration(200).call(state.zoomBehavior.scaleBy, 0.8, [centerX, centerY]);
+                    break;
+                case '0':
+                case 'f':
+                case 'F':
+                    e.preventDefault();
+                    fitNetwork();
+                    break;
+            }
+        });
+    </script>
+</body>
+</html>

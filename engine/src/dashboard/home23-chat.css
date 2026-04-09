@@ -1,0 +1,412 @@
+/* Home23 Chat — tile, overlay, standalone */
+
+/* ── Chat Tile (in home grid) ── */
+
+.h23-tile-chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 280px;
+  max-height: 400px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.h23-chat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--h23-border);
+  flex-shrink: 0;
+}
+
+.h23-chat-selects {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.h23-chat-agent-select {
+  background: var(--h23-bg);
+  border: 1px solid var(--h23-border);
+  color: var(--h23-text);
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+}
+.h23-chat-agent-select:focus {
+  border-color: var(--h23-accent);
+}
+
+.h23-chat-model-select {
+  background: var(--h23-bg);
+  border: 1px solid var(--h23-border);
+  color: var(--h23-text-secondary);
+  padding: 3px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+}
+.h23-chat-model-select:focus {
+  border-color: var(--h23-accent);
+}
+
+.h23-chat-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.h23-chat-expand-btn {
+  background: none;
+  border: 1px solid var(--h23-border);
+  color: var(--h23-text-muted);
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.h23-chat-expand-btn:hover {
+  color: var(--h23-text);
+  border-color: var(--h23-text-muted);
+}
+
+/* ── Messages Area ── */
+
+.h23-chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.h23-chat-msg {
+  max-width: 90%;
+  font-size: 13px;
+  line-height: 1.5;
+  word-wrap: break-word;
+}
+
+.h23-chat-msg.user {
+  align-self: flex-end;
+  background: rgba(37, 99, 235, 0.15);
+  color: var(--h23-text);
+  padding: 8px 12px;
+  border-radius: 12px 12px 4px 12px;
+}
+
+.h23-chat-msg.assistant {
+  align-self: flex-start;
+  color: var(--h23-text);
+  padding: 8px 0;
+}
+
+.h23-chat-msg.assistant p {
+  margin: 0 0 8px 0;
+}
+.h23-chat-msg.assistant p:last-child {
+  margin-bottom: 0;
+}
+.h23-chat-msg.assistant code {
+  background: rgba(255,255,255,0.06);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+}
+.h23-chat-msg.assistant pre {
+  background: rgba(0,0,0,0.3);
+  border: 1px solid var(--h23-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  margin: 8px 0;
+  line-height: 1.4;
+}
+.h23-chat-msg.assistant strong {
+  color: #fff;
+}
+.h23-chat-msg.assistant ul, .h23-chat-msg.assistant ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.h23-chat-msg.assistant li {
+  margin-bottom: 2px;
+}
+
+/* ── Thinking ── */
+
+.h23-chat-thinking {
+  font-size: 12px;
+  color: var(--h23-text-muted);
+  font-style: italic;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.02);
+  border-left: 2px solid var(--h23-border);
+  border-radius: 0 6px 6px 0;
+}
+
+/* ── Tool Cards ── */
+
+.h23-chat-tool {
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--h23-border);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 4px 0;
+}
+
+.h23-chat-tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.h23-chat-tool-name {
+  font-weight: 600;
+  color: var(--h23-accent);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.h23-chat-tool-status {
+  font-size: 10px;
+  color: var(--h23-text-muted);
+}
+.h23-chat-tool-status.done {
+  color: var(--h23-green);
+}
+.h23-chat-tool-status.error {
+  color: var(--h23-red);
+}
+
+.h23-chat-tool-args {
+  color: var(--h23-text-muted);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  max-height: 60px;
+  overflow: hidden;
+}
+
+.h23-chat-tool-result {
+  color: var(--h23-text-secondary);
+  font-size: 11px;
+  margin-top: 4px;
+  max-height: 80px;
+  overflow: hidden;
+}
+
+/* ── Error ── */
+
+.h23-chat-error {
+  color: var(--h23-red);
+  font-size: 12px;
+  padding: 6px 10px;
+  background: rgba(248, 113, 113, 0.08);
+  border-radius: 6px;
+}
+
+/* ── Input Area ── */
+
+.h23-chat-input-area {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--h23-border);
+  background: var(--h23-bg-card);
+  flex-shrink: 0;
+}
+
+.h23-chat-input {
+  flex: 1;
+  background: var(--h23-bg);
+  border: 1px solid var(--h23-border);
+  color: var(--h23-text);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+  min-height: 36px;
+  max-height: 120px;
+}
+.h23-chat-input:focus {
+  border-color: var(--h23-accent);
+}
+
+.h23-chat-input::placeholder {
+  color: var(--h23-text-muted);
+}
+
+.h23-chat-send-btn {
+  background: var(--h23-tab-active);
+  color: #fff;
+  border: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.h23-chat-send-btn:hover {
+  background: #3b82f6;
+}
+.h23-chat-send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── Overlay ── */
+
+.h23-chat-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  padding: 24px;
+}
+
+.h23-chat-overlay.open {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.h23-chat-overlay-panel {
+  background: var(--h23-bg-card);
+  border: 1px solid var(--h23-border);
+  border-radius: 16px;
+  width: 100%;
+  max-width: 800px;
+  height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── System Stats Bar (relocated) ── */
+
+.h23-system-bar {
+  display: flex;
+  gap: 24px;
+  padding: 12px 20px;
+  background: var(--h23-bg-card);
+  border: 1px solid var(--h23-border);
+  border-radius: var(--h23-radius);
+  margin-bottom: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.h23-system-bar-item {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.h23-system-bar-item label {
+  color: var(--h23-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: 10px;
+}
+
+.h23-system-bar-item .value {
+  color: var(--h23-text);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* ── Scrollbar for messages ── */
+
+.h23-chat-messages::-webkit-scrollbar { width: 4px; }
+.h23-chat-messages::-webkit-scrollbar-track { background: transparent; }
+.h23-chat-messages::-webkit-scrollbar-thumb { background: var(--h23-border); border-radius: 2px; }
+
+/* ── Empty state ── */
+
+.h23-chat-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--h23-text-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+/* ── Conversation List Panel ── */
+
+.h23-chat-conv-panel {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--h23-bg-card);
+  z-index: 5;
+  flex-direction: column;
+}
+.h23-chat-conv-panel.open {
+  display: flex;
+}
+
+.h23-chat-conv-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.h23-chat-conv-item {
+  padding: 10px 14px;
+  border-bottom: 1px solid rgba(26, 42, 68, 0.5);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.h23-chat-conv-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.h23-chat-conv-item.active {
+  background: rgba(88, 166, 255, 0.08);
+  border-left: 2px solid var(--h23-accent);
+}
+
+.h23-chat-conv-preview {
+  font-size: 13px;
+  color: var(--h23-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+
+.h23-chat-conv-meta {
+  font-size: 11px;
+  color: var(--h23-text-muted);
+}
+
+/* Make chat tile position:relative for the panel overlay */
+.h23-tile-chat {
+  position: relative;
+}

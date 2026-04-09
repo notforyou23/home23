@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>COSMO 2.3</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="masthead">
+      <div class="masthead-copy">
+        <p class="eyebrow">COSMO Standalone</p>
+        <h1>COSMO 2.3</h1>
+        <p class="masthead-text">Manage brains, continue focused runs safely, watch live execution, and query completed knowledge without touching the hosted stack.</p>
+      </div>
+      <div class="masthead-status">
+        <div class="status-chip" id="hero-run-status">Idle</div>
+        <div class="status-chip subtle" id="hero-setup-status">Setup pending</div>
+      </div>
+    </header>
+
+    <nav class="top-nav" aria-label="Primary">
+      <button class="top-nav-btn" type="button" data-view="launch">Launch</button>
+      <button class="top-nav-btn" type="button" data-view="brains">Brains</button>
+      <button class="top-nav-btn" type="button" data-view="watch">Watch</button>
+      <button class="top-nav-btn" type="button" data-view="query">Query</button>
+      <button class="top-nav-btn" type="button" data-view="map">Brain Map</button>
+      <button class="top-nav-btn" type="button" data-view="intelligence">Intelligence</button>
+      <button class="top-nav-btn" type="button" data-view="hub">Hub</button>
+      <button class="top-nav-btn" type="button" data-view="interactive">Interactive</button>
+      <button class="top-nav-btn tab-disabled" type="button" data-view="ingest" disabled>Ingest</button>
+    </nav>
+
+    <main class="view-stack">
+      <section class="view" id="view-launch">
+        <div class="launch-layout">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">New Run</p>
+                <h2>Launch Research</h2>
+              </div>
+              <div class="panel-head-copy">Compact composer for new local runs. Existing brains live in the dedicated workspace.</div>
+            </div>
+
+            <form id="launch-form" class="form-stack">
+              <div class="form-grid compact-grid">
+                <label class="field span-2">
+                  <span>Topic</span>
+                  <input type="text" name="topic" placeholder="What should COSMO research?">
+                </label>
+
+                <label class="field span-2">
+                  <span>Context</span>
+                  <textarea name="context" rows="5" placeholder="Extra framing, constraints, or source hints"></textarea>
+                </label>
+
+                <label class="field">
+                  <span>Run Name</span>
+                  <input type="text" name="runName" placeholder="optional">
+                </label>
+
+                <label class="field">
+                  <span>Exploration Mode</span>
+                  <select name="explorationMode">
+                    <option value="guided" selected>Guided</option>
+                    <option value="autonomous">Autonomous</option>
+                  </select>
+                </label>
+
+                <label class="field">
+                  <span>Analysis Depth</span>
+                  <select name="analysisDepth">
+                    <option value="normal" selected>Normal</option>
+                    <option value="deep">Deep</option>
+                    <option value="light">Light</option>
+                  </select>
+                </label>
+
+                <label class="field">
+                  <span>Cycles</span>
+                  <input type="number" name="cycles" min="1" value="80">
+                </label>
+
+                <label class="field">
+                  <span>Max Runtime Minutes</span>
+                  <input type="number" name="maxRuntimeMinutes" min="0" value="0">
+                </label>
+
+                <label class="field">
+                  <span>Review Period</span>
+                  <input type="number" name="reviewPeriod" min="1" value="20">
+                </label>
+
+                <label class="field">
+                  <span>Max Concurrent Agents</span>
+                  <input type="number" name="maxConcurrent" min="1" value="4">
+                </label>
+
+                <label class="field">
+                  <span>Primary Model</span>
+                  <select name="primaryModel"></select>
+                </label>
+
+                <label class="field">
+                  <span>Fast Model</span>
+                  <select name="fastModel"></select>
+                </label>
+
+                <label class="field">
+                  <span>Strategic Model</span>
+                  <select name="strategicModel"></select>
+                </label>
+              </div>
+
+              <details class="section-disclosure launch-disclosure">
+                <summary>Advanced Run Settings</summary>
+                <div class="disclosure-content">
+                  <div class="form-grid compact-grid">
+                    <label class="field span-2">
+                      <span>Local LLM Base URL</span>
+                      <input type="text" name="localLlmBaseUrl" value="http://localhost:11434/v1">
+                    </label>
+                  </div>
+
+                  <div class="toggle-grid">
+                    <label class="toggle-chip"><input type="checkbox" name="enableWebSearch" checked><span>Web Search</span></label>
+                    <label class="toggle-chip"><input type="checkbox" name="enableSleep" checked><span>Sleep</span></label>
+                    <label class="toggle-chip"><input type="checkbox" name="enableCodingAgents" checked><span>Coding Agents</span></label>
+                    <label class="toggle-chip"><input type="checkbox" name="enableIntrospection" checked><span>Introspection</span></label>
+                    <label class="toggle-chip"><input type="checkbox" name="enableAgentRouting" checked><span>Agent Routing</span></label>
+                    <label class="toggle-chip"><input type="checkbox" name="enableRecursiveMode" checked><span>Recursive Mode</span></label>
+                    <label class="toggle-chip"><input type="checkbox" name="enableMemoryGovernance" checked><span>Memory Governance</span></label>
+                    <label class="toggle-chip"><input type="checkbox" name="enableFrontier" checked><span>Frontier Observe</span></label>
+                    <label class="toggle-chip"><input type="checkbox" name="enableIDEFirst" checked><span>IDE First</span></label>
+                    <label class="toggle-chip"><input type="checkbox" name="enableDirectAction"><span>Direct Action</span></label>
+                    <label class="toggle-chip"><input type="checkbox" name="enableStabilization"><span>Stabilization</span></label>
+                    <label class="toggle-chip"><input type="checkbox" name="enableConsolidationMode"><span>Consolidation</span></label>
+                    <label class="toggle-chip"><input type="checkbox" name="enableExperimental"><span>Experimental</span></label>
+                  </div>
+                </div>
+              </details>
+
+              <div class="form-actions">
+                <button type="submit" class="primary-btn">Start Research</button>
+                <button type="button" class="ghost-btn" data-view-target="brains">Open Brain Workspace</button>
+              </div>
+            </form>
+          </section>
+
+          <aside class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Local Setup</p>
+                <h2>Providers And Models</h2>
+              </div>
+              <button class="ghost-btn" type="button" id="refresh-setup-btn">Refresh</button>
+            </div>
+
+            <div class="provider-status-bar" id="setup-summary"></div>
+
+            <form id="setup-form" class="form-stack">
+              <!-- Anthropic (OAuth-forward) -->
+              <fieldset class="provider-section" data-provider="anthropic">
+                <div class="provider-section-head">
+                  <label class="toggle-chip"><input type="checkbox" name="enableAnthropic"><span>Anthropic</span></label>
+                  <span class="provider-status-indicator" id="status-anthropic"></span>
+                </div>
+                <div class="provider-section-body" id="body-anthropic">
+                  <div class="provider-primary-action">
+                    <button type="button" class="primary-btn" id="import-oauth-btn">Import from Claude CLI</button>
+                  </div>
+                  <div id="anthropic-oauth-status"></div>
+                  <details class="compact-disclosure">
+                    <summary>Manual OAuth flow</summary>
+                    <div class="disclosure-content">
+                      <div class="action-row">
+                        <button type="button" class="ghost-btn" id="start-oauth-btn">Open Anthropic OAuth</button>
+                      </div>
+                      <label class="field">
+                        <span>Paste callback URL</span>
+                        <textarea name="anthropicCallbackUrl" rows="2" placeholder="https://console.anthropic.com/oauth/code/callback?..."></textarea>
+                      </label>
+                      <button type="button" class="ghost-btn" id="complete-oauth-btn">Complete OAuth</button>
+                    </div>
+                  </details>
+                </div>
+              </fieldset>
+
+              <!-- OpenAI (API key for embeddings + standard models) -->
+              <fieldset class="provider-section" data-provider="openai">
+                <div class="provider-section-head">
+                  <label class="toggle-chip"><input type="checkbox" name="enableOpenAI" checked><span>OpenAI</span></label>
+                  <span class="provider-status-indicator" id="status-openai"></span>
+                </div>
+                <div class="provider-section-body" id="body-openai">
+                  <label class="field">
+                    <span>OpenAI API Key</span>
+                    <input type="password" name="openaiApiKey" placeholder="sk-...">
+                  </label>
+                  <p class="field-note">Required for embeddings (text-embedding-3-small). Also provides GPT and o-series chat models.</p>
+                </div>
+              </fieldset>
+
+              <!-- OpenAI Codex (ChatGPT OAuth) -->
+              <fieldset class="provider-section" data-provider="openai-codex">
+                <div class="provider-section-head">
+                  <label class="toggle-chip"><input type="checkbox" name="enableOpenAICodex"><span>OpenAI Codex</span></label>
+                  <span class="provider-status-indicator" id="status-openai-codex"></span>
+                </div>
+                <div class="provider-section-body" id="body-openai-codex">
+                  <div class="provider-primary-action">
+                    <button type="button" class="primary-btn" id="start-codex-oauth-btn">Start OpenAI OAuth</button>
+                  </div>
+                  <div class="action-row">
+                    <button type="button" class="ghost-btn" id="import-codex-oauth-btn">Import from evobrew</button>
+                  </div>
+                  <div id="codex-oauth-status"></div>
+                  <p class="field-note">ChatGPT Codex models (gpt-5.2, gpt-5.3-codex). Separate from OpenAI API key.</p>
+                </div>
+              </fieldset>
+
+              <!-- xAI -->
+              <fieldset class="provider-section" data-provider="xai">
+                <div class="provider-section-head">
+                  <label class="toggle-chip"><input type="checkbox" name="enableXAI"><span>xAI</span></label>
+                  <span class="provider-status-indicator" id="status-xai"></span>
+                </div>
+                <div class="provider-section-body" id="body-xai">
+                  <label class="field">
+                    <span>xAI API Key</span>
+                    <input type="password" name="xaiApiKey" placeholder="xai-...">
+                  </label>
+                </div>
+              </fieldset>
+
+              <!-- Ollama Local -->
+              <fieldset class="provider-section" data-provider="ollama">
+                <div class="provider-section-head">
+                  <label class="toggle-chip"><input type="checkbox" name="enableOllama" checked><span>Ollama Local</span></label>
+                  <span class="provider-status-indicator" id="status-ollama"></span>
+                </div>
+                <div class="provider-section-body" id="body-ollama">
+                  <label class="field">
+                    <span>Base URL</span>
+                    <input type="text" name="ollamaBaseUrl" value="http://localhost:11434">
+                  </label>
+                </div>
+              </fieldset>
+
+              <!-- Ollama Cloud -->
+              <fieldset class="provider-section" data-provider="ollama-cloud">
+                <div class="provider-section-head">
+                  <label class="toggle-chip"><input type="checkbox" name="enableOllamaCloud"><span>Ollama Cloud</span></label>
+                  <span class="provider-status-indicator" id="status-ollama-cloud"></span>
+                </div>
+                <div class="provider-section-body" id="body-ollama-cloud">
+                  <label class="field">
+                    <span>API Key</span>
+                    <input type="password" name="ollamaCloudApiKey" placeholder="ollama.com API key">
+                  </label>
+                  <p class="field-note">Cloud-hosted models via ollama.com (Nemotron, Kimi, DeepSeek, etc.)</p>
+                </div>
+              </fieldset>
+
+              <details class="section-disclosure">
+                <summary>Model Catalog</summary>
+                <div class="disclosure-content">
+                  <div class="form-grid compact-grid">
+                    <label class="field span-2">
+                      <span>OpenAI Models</span>
+                      <textarea id="catalog-openai-models" rows="4" placeholder="One model per line"></textarea>
+                    </label>
+                    <label class="field span-2">
+                      <span>Anthropic Models</span>
+                      <textarea id="catalog-anthropic-models" rows="4" placeholder="One model per line"></textarea>
+                    </label>
+                    <label class="field span-2">
+                      <span>xAI Models</span>
+                      <textarea id="catalog-xai-models" rows="4" placeholder="One model per line"></textarea>
+                    </label>
+                    <div class="field span-2">
+                      <span>OpenAI Codex Models</span>
+                      <div id="catalog-codex-models" class="catalog-codex-list">
+                        <p class="catalog-codex-empty field-note">No Codex models available — connect OpenAI Codex (OAuth) in the providers panel above.</p>
+                      </div>
+                      <p class="field-note">Read-only. Codex models are discovered automatically when Codex OAuth is connected.</p>
+                    </div>
+                    <label class="field">
+                      <span>Default Query Model</span>
+                      <select id="catalog-query-model"></select>
+                    </label>
+                    <label class="field">
+                      <span>PGS Sweep Model</span>
+                      <select id="catalog-pgs-model"></select>
+                    </label>
+                    <label class="field">
+                      <span>Local Thinking Default</span>
+                      <select id="catalog-local-primary"></select>
+                    </label>
+                    <label class="field">
+                      <span>Local Coding / Fast Default</span>
+                      <select id="catalog-local-fast"></select>
+                    </label>
+                    <p class="field-note span-2">Core brain embeddings stay on the internal 512D OpenAI embedding path for compatibility. They are not user-selectable here.</p>
+                  </div>
+
+                  <div class="form-actions">
+                    <button type="button" class="ghost-btn" id="refresh-catalog-btn">Reload Catalog</button>
+                    <button type="button" class="ghost-btn" id="save-catalog-btn">Save Model Catalog</button>
+                  </div>
+                </div>
+              </details>
+
+              <details class="section-disclosure">
+                <summary>Brain Directories</summary>
+                <div class="disclosure-content">
+                  <p class="field-note">Add directories containing COSMO runs (one per line). All runs found will appear in the Brains library.</p>
+                  <div class="field">
+                    <span>Directories</span>
+                    <textarea id="brain-directories" rows="6" placeholder="/path/to/runs/&#10;/another/path/runs/"></textarea>
+                  </div>
+                </div>
+              </details>
+
+              <div class="form-actions">
+                <button type="submit" class="primary-btn">Save Local Setup</button>
+              </div>
+            </form>
+          </aside>
+        </div>
+      </section>
+
+      <section class="view" id="view-brains">
+        <div class="brains-layout">
+          <aside class="panel brain-library-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Brains</p>
+                <h2>Run Library</h2>
+              </div>
+              <button class="ghost-btn" type="button" id="refresh-brains-btn">Refresh</button>
+            </div>
+
+            <div class="toolbar-stack">
+              <label class="field">
+                <span>Search Runs</span>
+                <input type="search" id="brains-search" placeholder="Filter by name, topic, source, or mode">
+              </label>
+              <div class="brain-filter-bar">
+                <select id="brains-location-filter" class="brain-location-select">
+                  <option value="all">All locations</option>
+                </select>
+                <span class="library-count" id="brains-library-count">0 runs</span>
+              </div>
+            </div>
+
+            <div class="brain-library-list" id="brain-library-list"></div>
+          </aside>
+
+          <section class="panel brain-detail-panel">
+            <div id="brain-empty-state" class="empty-state">
+              <h3>Select a brain</h3>
+              <p>Choose a run from the library to review its settings, continue it with a tracked snapshot, or open the next brain-map workspace.</p>
+            </div>
+
+            <div id="brain-detail-shell" class="brain-detail-shell hidden">
+              <div class="panel-head brain-detail-head">
+                <div>
+                  <p class="eyebrow">Selected Run</p>
+                  <h2 id="selected-brain-name">Run</h2>
+                  <p class="panel-head-copy" id="selected-brain-meta">Run details</p>
+                </div>
+                <div class="brain-head-actions">
+                  <span class="source-badge" id="selected-brain-badge">Local</span>
+                  <button class="ghost-btn" type="button" id="brain-query-btn">Open In Query</button>
+                </div>
+              </div>
+
+              <div class="brain-stats" id="selected-brain-stats"></div>
+
+              <div class="detail-tab-row">
+                <button class="detail-tab active" type="button" data-brain-tab="overview">Overview</button>
+                <button class="detail-tab" type="button" data-brain-tab="continue">Continue</button>
+              </div>
+
+              <section class="detail-tab-panel active" data-brain-panel="overview">
+                <div id="brain-overview-panel"></div>
+              </section>
+
+              <section class="detail-tab-panel" data-brain-panel="continue">
+                <div class="continue-intro">
+                  <div>
+                    <h3>Continue This Run</h3>
+                    <p id="continue-base-note">Using the latest saved continuation settings.</p>
+                  </div>
+                  <div class="continue-cta">
+                    <span class="mini-chip" id="continue-source-note">Local continuation</span>
+                  </div>
+                </div>
+
+                <form id="continue-form" class="form-stack">
+                  <div class="form-grid compact-grid">
+                    <label class="field span-2">
+                      <span>Topic</span>
+                      <input type="text" name="topic" placeholder="Topic for this continuation">
+                    </label>
+
+                    <label class="field span-2">
+                      <span>Context</span>
+                      <textarea name="context" rows="5" placeholder="Context for the continued run"></textarea>
+                    </label>
+
+                    <label class="field">
+                      <span>Exploration Mode</span>
+                      <select name="explorationMode">
+                        <option value="guided">Guided</option>
+                        <option value="autonomous">Autonomous</option>
+                      </select>
+                    </label>
+
+                    <label class="field">
+                      <span>Analysis Depth</span>
+                      <select name="analysisDepth">
+                        <option value="normal">Normal</option>
+                        <option value="deep">Deep</option>
+                        <option value="light">Light</option>
+                      </select>
+                    </label>
+
+                    <label class="field">
+                      <span>Cycles</span>
+                      <input type="number" name="cycles" min="1">
+                    </label>
+
+                    <label class="field">
+                      <span>Max Runtime Minutes</span>
+                      <input type="number" name="maxRuntimeMinutes" min="0">
+                    </label>
+
+                    <label class="field">
+                      <span>Review Period</span>
+                      <input type="number" name="reviewPeriod" min="1">
+                    </label>
+
+                    <label class="field">
+                      <span>Max Concurrent Agents</span>
+                      <input type="number" name="maxConcurrent" min="1">
+                    </label>
+
+                    <label class="field">
+                      <span>Primary Model</span>
+                      <select name="primaryModel"></select>
+                    </label>
+
+                    <label class="field">
+                      <span>Fast Model</span>
+                      <select name="fastModel"></select>
+                    </label>
+
+                    <label class="field">
+                      <span>Strategic Model</span>
+                      <select name="strategicModel"></select>
+                    </label>
+                  </div>
+
+                  <details class="section-disclosure">
+                    <summary>Advanced Continuation Settings</summary>
+                    <div class="disclosure-content">
+                      <div class="form-grid compact-grid">
+                        <label class="field span-2">
+                          <span>Local LLM Base URL</span>
+                          <input type="text" name="localLlmBaseUrl">
+                        </label>
+                      </div>
+
+                      <div class="toggle-grid">
+                        <label class="toggle-chip"><input type="checkbox" name="enableWebSearch"><span>Web Search</span></label>
+                        <label class="toggle-chip"><input type="checkbox" name="enableSleep"><span>Sleep</span></label>
+                        <label class="toggle-chip"><input type="checkbox" name="enableCodingAgents"><span>Coding Agents</span></label>
+                        <label class="toggle-chip"><input type="checkbox" name="enableIntrospection"><span>Introspection</span></label>
+                        <label class="toggle-chip"><input type="checkbox" name="enableAgentRouting"><span>Agent Routing</span></label>
+                        <label class="toggle-chip"><input type="checkbox" name="enableRecursiveMode"><span>Recursive Mode</span></label>
+                        <label class="toggle-chip"><input type="checkbox" name="enableMemoryGovernance"><span>Memory Governance</span></label>
+                        <label class="toggle-chip"><input type="checkbox" name="enableFrontier"><span>Frontier Observe</span></label>
+                        <label class="toggle-chip"><input type="checkbox" name="enableIDEFirst" checked><span>IDE First</span></label>
+                        <label class="toggle-chip"><input type="checkbox" name="enableDirectAction"><span>Direct Action</span></label>
+                        <label class="toggle-chip"><input type="checkbox" name="enableStabilization"><span>Stabilization</span></label>
+                        <label class="toggle-chip"><input type="checkbox" name="enableConsolidationMode"><span>Consolidation</span></label>
+                        <label class="toggle-chip"><input type="checkbox" name="enableExperimental"><span>Experimental</span></label>
+                      </div>
+                    </div>
+                  </details>
+
+                  <div class="form-actions">
+                    <button type="submit" class="primary-btn" id="continue-run-btn">Continue Run</button>
+                  </div>
+                </form>
+              </section>
+
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-watch">
+        <div class="watch-layout">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Runtime</p>
+                <h2>Watch</h2>
+              </div>
+              <div class="action-row">
+                <a class="ghost-btn" id="watch-dashboard-link" href="#" target="_blank" rel="noopener noreferrer">Open Dashboard</a>
+                <button class="ghost-btn" type="button" id="refresh-status-btn">Refresh</button>
+                <button class="danger-btn" type="button" id="stop-run-btn">Stop</button>
+              </div>
+            </div>
+
+            <div class="watch-status-grid">
+              <div class="stat-card">
+                <span class="stat-label">Active Run</span>
+                <strong id="watch-run-name">Idle</strong>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Topic</span>
+                <strong id="watch-topic">None</strong>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">WebSocket</span>
+                <strong id="watch-socket-status">Disconnected</strong>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Started</span>
+                <strong id="watch-started-at">-</strong>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel panel-feed">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Live Activity</p>
+                <h2>Event Feed</h2>
+              </div>
+            </div>
+            <div class="activity-feed" id="activity-feed"></div>
+          </section>
+
+          <section class="panel panel-feed">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Process Output</p>
+                <h2>Console</h2>
+              </div>
+            </div>
+            <div class="console-feed" id="console-feed"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-query">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Research Mode</p>
+              <h2>Query A Brain</h2>
+            </div>
+            <div class="panel-head-copy">The selected run in the brain workspace is mirrored here automatically.</div>
+          </div>
+
+          <div class="query-brain-bar">
+            <label class="field query-brain-select">
+              <span>Brain</span>
+              <select id="query-brain"></select>
+            </label>
+            <div class="query-brain-note" id="query-brain-note">
+              Use the EVOBREW-style Research surface with PGS, follow-up context, exports, and deeper query controls.
+            </div>
+          </div>
+
+          <div id="query-tab-panel" class="query-tab-host"></div>
+        </section>
+      </section>
+
+      <section class="view" id="view-map">
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Knowledge Graph</p>
+              <h2>Brain Map</h2>
+            </div>
+            <div class="map-head-right">
+              <span class="mini-chip" id="brain-map-stats">0 nodes · 0 edges</span>
+              <div class="map-toolbar" id="brain-map-toolbar">
+                <button class="map-toolbar-btn" id="map-btn-fit" title="Zoom to fit">&#8982;</button>
+                <button class="map-toolbar-btn" id="map-btn-reset" title="Reset camera">&#8634;</button>
+                <button class="map-toolbar-btn" id="map-btn-refresh" title="Reload graph">&#8635;</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="map-brain-bar">
+            <label class="field">
+              <span>Brain</span>
+              <select id="map-brain"></select>
+            </label>
+          </div>
+
+          <div class="map-canvas-wrap">
+            <div class="map-canvas" id="brain-map-container"></div>
+            <div class="map-detail-panel" id="brain-map-detail"></div>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="view-intelligence">
+        <div class="intel-layout">
+          <aside class="panel intel-sidebar">
+            <div class="intel-brain-bar">
+              <label class="field">
+                <span>Brain</span>
+                <select id="intel-brain"></select>
+              </label>
+            </div>
+            <nav class="intel-nav">
+              <button class="intel-tab active" type="button" data-intel-tab="goals">Goals</button>
+              <button class="intel-tab" type="button" data-intel-tab="plans">Plans</button>
+              <button class="intel-tab" type="button" data-intel-tab="thoughts">Thoughts</button>
+              <button class="intel-tab" type="button" data-intel-tab="agents">Agents</button>
+              <button class="intel-tab" type="button" data-intel-tab="reviews">Reviews</button>
+              <button class="intel-tab" type="button" data-intel-tab="executive">Executive</button>
+              <button class="intel-tab" type="button" data-intel-tab="trajectory">Trajectory</button>
+              <button class="intel-tab" type="button" data-intel-tab="deliverables">Deliverables</button>
+            </nav>
+          </aside>
+
+          <section class="panel intel-content">
+            <div class="intel-content-head">
+              <h2 id="intel-content-title">Goals</h2>
+              <button class="ghost-btn" type="button" id="intel-refresh-btn">Refresh</button>
+            </div>
+            <div id="intel-content-body" class="intel-content-body">
+              <div class="intel-empty">Select a brain and sub-tab to explore its intelligence data.</div>
+            </div>
+          </section>
+        </div>
+      </section>
+      <section class="view" id="view-hub">
+        <div class="hub-layout">
+          <aside class="panel hub-sidebar">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Brain Packages</p>
+                <h2>Hub</h2>
+              </div>
+              <button class="ghost-btn" type="button" id="hub-refresh-btn">Refresh</button>
+            </div>
+
+            <div class="toolbar-stack">
+              <label class="field">
+                <span>Search</span>
+                <input type="search" id="hub-search" placeholder="Filter by name or topic">
+              </label>
+              <div class="hub-toolbar-actions">
+                <button class="primary-btn" type="button" id="hub-merge-btn" disabled>Merge</button>
+                <button class="ghost-btn" type="button" id="hub-import-btn">Import</button>
+              </div>
+            </div>
+
+            <div class="hub-brain-list" id="hub-brain-list"></div>
+          </aside>
+
+          <section class="panel hub-preview">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Details</p>
+                <h2>Brain Preview</h2>
+              </div>
+            </div>
+            <div id="hub-preview-content">
+              <div class="hub-empty">Select a brain to view details, fork, export, or merge.</div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-interactive">
+        <div class="interactive-layout">
+          <div class="interactive-context-bar" id="interactive-context"></div>
+          <div class="interactive-messages" id="interactive-messages"></div>
+          <div class="interactive-input-area">
+            <div class="interactive-controls">
+              <select id="interactive-model" class="qt-select" style="max-width: 220px; font-size: 0.82rem;">
+                <option value="">Loading models...</option>
+              </select>
+              <button class="ghost-btn" id="interactive-session-btn">Start Session</button>
+              <span class="interactive-status" id="interactive-status">No active session</span>
+            </div>
+            <div class="interactive-compose">
+              <textarea id="interactive-input" placeholder="Ask about the research, request actions, spawn agents..." rows="3" disabled></textarea>
+              <button class="primary-btn" id="interactive-send" disabled>Send</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    <!-- ═══ Ingest ═══ -->
+    <section class="view" id="view-ingest">
+      <div class="ingest-layout">
+        <!-- Upload Panel -->
+        <div class="panel ingest-upload-panel">
+          <h2 class="panel-title" style="font-family:var(--display);font-size:1.4rem;margin-bottom:12px;">Upload Documents</h2>
+          <div class="ingest-label-row">
+            <label for="ingest-label" style="font-family:var(--mono);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-secondary);">Folder Label</label>
+            <input type="text" id="ingest-label" value="documents" placeholder="documents"
+              style="font-family:var(--mono);font-size:0.85rem;padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);width:180px;">
+          </div>
+          <div class="ingest-dropzone" id="ingest-dropzone">
+            <div class="ingest-dropzone-icon">&#128196;</div>
+            <div class="ingest-dropzone-text">Drop files here</div>
+            <div class="ingest-dropzone-sub">or</div>
+            <button type="button" class="ingest-browse-btn" id="ingest-browse-btn">Browse Files</button>
+            <input type="file" id="ingest-file-input" multiple style="display:none;">
+          </div>
+          <div class="ingest-upload-list" id="ingest-upload-list"></div>
+        </div>
+
+        <!-- Status Panel -->
+        <div class="panel ingest-status-panel">
+          <h2 class="panel-title" style="font-family:var(--display);font-size:1.4rem;margin-bottom:12px;">Ingested Files</h2>
+          <div class="ingest-stats" id="ingest-stats">
+            <span class="ingest-stat"><strong id="ingest-file-count">0</strong> files</span>
+            <span class="ingest-stat-sep">&middot;</span>
+            <span class="ingest-stat"><strong id="ingest-node-count">0</strong> nodes</span>
+            <span class="ingest-stat-sep">&middot;</span>
+            <span class="ingest-stat"><strong id="ingest-pending-count">0</strong> pending</span>
+          </div>
+          <div class="ingest-file-list" id="ingest-file-list">
+            <div class="ingest-empty-state" id="ingest-empty-state">No documents ingested yet. Drop files in the upload zone to get started.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- No-run overlay -->
+      <div class="ingest-no-run" id="ingest-no-run" style="display:none;">
+        <p>Start a run to ingest documents.</p>
+      </div>
+    </section>
+    </main>
+  </div>
+
+  <div class="toast-stack" id="toast-stack"></div>
+
+  <script src="https://unpkg.com/3d-force-graph@1.73.4/dist/3d-force-graph.min.js"></script>
+  <script src="/js/brain-map.js"></script>
+  <script src="/js/intelligence-tab.js"></script>
+  <script src="/js/interactive-tab.js"></script>
+  <script src="/js/hub-tab.js"></script>
+  <script src="/js/query-tab.js"></script>
+  <script src="/js/ingestion-tab.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

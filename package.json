@@ -1,0 +1,42 @@
+{
+  "name": "home23",
+  "version": "0.1.0",
+  "description": "Installable AI operating system — persistent agents with living brains",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "home23": "cli/home23.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "pm2:start": "npm run build && pm2 start ecosystem.config.cjs",
+    "pm2:stop": "pm2 stop ecosystem.config.cjs",
+    "pm2:restart": "npm run build && pm2 restart ecosystem.config.cjs",
+    "pm2:logs": "pm2 logs --lines 50",
+    "start:test-agent": "bash scripts/start-agent.sh test-agent"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "better-sqlite3": "^11.0.0",
+    "chokidar": "^4.0.0",
+    "express": "^5.0.0",
+    "js-yaml": "^4.1.0",
+    "node-telegram-bot-api": "^0.66.0",
+    "proper-lockfile": "^4.1.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/express": "^5.0.0",
+    "@types/js-yaml": "^4.0.0",
+    "@types/node": "^22.19.17",
+    "@types/node-telegram-bot-api": "^0.64.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

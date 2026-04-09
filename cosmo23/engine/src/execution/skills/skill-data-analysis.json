@@ -1,0 +1,56 @@
+{
+  "id": "skill:data-analysis",
+  "name": "Data Analysis",
+  "description": "Run a pandas-based data analysis on CSV or JSON data. Supports descriptive statistics, correlation matrices, linear regression, and k-means clustering with automatic visualization.",
+  "domain": null,
+  "tags": ["data", "analysis", "statistics"],
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "dataPath": {
+        "type": "string",
+        "description": "Path to CSV or JSON data file"
+      },
+      "analysisType": {
+        "type": "string",
+        "enum": ["descriptive", "correlation", "regression", "clustering"],
+        "description": "Type of analysis to perform"
+      },
+      "columns": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Specific columns to analyze (optional, defaults to all numeric)"
+      }
+    },
+    "required": ["dataPath", "analysisType"]
+  },
+  "outputs": {
+    "type": "object",
+    "properties": {
+      "summary": { "type": "object", "description": "Analysis results as structured data" },
+      "visualizations": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Paths to generated chart images"
+      }
+    }
+  },
+  "assumptions": [
+    "pandas, numpy, and matplotlib are available",
+    "Input file exists and is valid CSV or JSON",
+    "Data contains numeric columns for analysis"
+  ],
+  "implementation": {
+    "type": "python_script",
+    "code": "import sys\nimport os\nimport json\nimport tempfile\n\ndef main():\n    inputs = json.loads(os.environ.get('SKILL_INPUTS', '{}'))\n    data_path = inputs.get('dataPath', '')\n    analysis_type = inputs.get('analysisType', 'descriptive')\n    columns = inputs.get('columns', None)\n\n    if not data_path or not os.path.exists(data_path):\n        print(json.dumps({'summary': {'error': f'File not found: {data_path}'}, 'visualizations': []}))\n        return\n\n    try:\n        import pandas as pd\n        import numpy as np\n        import matplotlib\n        matplotlib.use('Agg')\n        import matplotlib.pyplot as plt\n    except ImportError as e:\n        print(json.dumps({'summary': {'error': f'Missing dependency: {e}'}, 'visualizations': []}))\n        return\n\n    # Load data\n    ext = os.path.splitext(data_path)[1].lower()\n    try:\n        if ext == '.json':\n            df = pd.read_json(data_path)\n        else:\n            df = pd.read_csv(data_path)\n    except Exception as e:\n        print(json.dumps({'summary': {'error': f'Failed to load data: {e}'}, 'visualizations': []}))\n        return\n\n    # Select columns\n    if columns:\n        valid_cols = [c for c in columns if c in df.columns]\n        if not valid_cols:\n            print(json.dumps({'summary': {'error': f'None of the specified columns found. Available: {list(df.columns)}'}, 'visualizations': []}))\n            return\n        df_work = df[valid_cols]\n    else:\n        df_work = df.select_dtypes(include=[np.number])\n\n    if df_work.empty:\n        print(json.dumps({'summary': {'error': 'No numeric columns available for analysis'}, 'visualizations': []}))\n        return\n\n    out_dir = tempfile.mkdtemp(prefix='cosmo_analysis_')\n    visualizations = []\n    summary = {'rows': len(df), 'columns': list(df_work.columns), 'analysisType': analysis_type}\n\n    if analysis_type == 'descriptive':\n        desc = df_work.describe().to_dict()\n        # Convert numpy types to native Python for JSON serialization\n        for col in desc:\n            for stat in desc[col]:\n                desc[col][stat] = float(desc[col][stat]) if pd.notna(desc[col][stat]) else None\n        summary['statistics'] = desc\n        summary['nullCounts'] = {col: int(df_work[col].isna().sum()) for col in df_work.columns}\n\n        # Box plot\n        fig, ax = plt.subplots(figsize=(10, 6))\n        df_work.boxplot(ax=ax)\n        ax.set_title('Descriptive Statistics - Box Plot')\n        plt.xticks(rotation=45, ha='right')\n        plt.tight_layout()\n        chart_path = os.path.join(out_dir, 'boxplot.png')\n        fig.savefig(chart_path, dpi=100)\n        plt.close(fig)\n        visualizations.append(chart_path)\n\n    elif analysis_type == 'correlation':\n        corr = df_work.corr()\n        corr_dict = corr.to_dict()\n        for col in corr_dict:\n            for row in corr_dict[col]:\n                corr_dict[col][row] = float(corr_dict[col][row]) if pd.notna(corr_dict[col][row]) else None\n        summary['correlationMatrix'] = corr_dict\n\n        # Heatmap\n        fig, ax = plt.subplots(figsize=(10, 8))\n        im = ax.imshow(corr.values, cmap='RdBu_r', vmin=-1, vmax=1)\n        ax.set_xticks(range(len(corr.columns)))\n        ax.set_yticks(range(len(corr.columns)))\n        ax.set_xticklabels(corr.columns, rotation=45, ha='right')\n        ax.set_yticklabels(corr.columns)\n        for i in range(len(corr.columns)):\n            for j in range(len(corr.columns)):\n                val = corr.values[i, j]\n                if pd.notna(val):\n                    ax.text(j, i, f'{val:.2f}', ha='center', va='center', fontsize=8)\n        plt.colorbar(im, ax=ax)\n        ax.set_title('Correlation Matrix')\n        plt.tight_layout()\n        chart_path = os.path.join(out_dir, 'correlation_heatmap.png')\n        fig.savefig(chart_path, dpi=100)\n        plt.close(fig)\n        visualizations.append(chart_path)\n\n    elif analysis_type == 'regression':\n        if len(df_work.columns) < 2:\n            print(json.dumps({'summary': {'error': 'Regression requires at least 2 numeric columns'}, 'visualizations': []}))\n            return\n        x_col = df_work.columns[0]\n        y_col = df_work.columns[1]\n        mask = df_work[[x_col, y_col]].dropna()\n        x = mask[x_col].values\n        y = mask[y_col].values\n\n        # Simple linear regression via numpy\n        if len(x) < 2:\n            print(json.dumps({'summary': {'error': 'Not enough data points for regression'}, 'visualizations': []}))\n            return\n        coeffs = np.polyfit(x, y, 1)\n        slope, intercept = float(coeffs[0]), float(coeffs[1])\n        y_pred = np.polyval(coeffs, x)\n        ss_res = float(np.sum((y - y_pred) ** 2))\n        ss_tot = float(np.sum((y - np.mean(y)) ** 2))\n        r_squared = float(1 - ss_res / ss_tot) if ss_tot != 0 else 0.0\n\n        summary['regression'] = {\n            'xColumn': x_col, 'yColumn': y_col,\n            'slope': slope, 'intercept': intercept,\n            'rSquared': r_squared, 'nPoints': len(x)\n        }\n\n        fig, ax = plt.subplots(figsize=(10, 6))\n        ax.scatter(x, y, alpha=0.5, label='Data')\n        x_line = np.linspace(x.min(), x.max(), 100)\n        ax.plot(x_line, slope * x_line + intercept, 'r-', label=f'y = {slope:.4f}x + {intercept:.4f}\\nR² = {r_squared:.4f}')\n        ax.set_xlabel(x_col)\n        ax.set_ylabel(y_col)\n        ax.set_title(f'Linear Regression: {y_col} vs {x_col}')\n        ax.legend()\n        plt.tight_layout()\n        chart_path = os.path.join(out_dir, 'regression.png')\n        fig.savefig(chart_path, dpi=100)\n        plt.close(fig)\n        visualizations.append(chart_path)\n\n    elif analysis_type == 'clustering':\n        clean = df_work.dropna()\n        if len(clean) < 2:\n            print(json.dumps({'summary': {'error': 'Not enough data points for clustering'}, 'visualizations': []}))\n            return\n\n        # Standardize\n        means = clean.mean()\n        stds = clean.std().replace(0, 1)\n        standardized = (clean - means) / stds\n\n        # Simple k-means (k=min(3, n))\n        k = min(3, len(clean))\n        data = standardized.values\n        np.random.seed(42)\n        centroids = data[np.random.choice(len(data), k, replace=False)]\n\n        for iteration in range(50):\n            distances = np.array([[np.sqrt(np.sum((pt - c) ** 2)) for c in centroids] for pt in data])\n            labels = np.argmin(distances, axis=1)\n            new_centroids = np.array([data[labels == i].mean(axis=0) if np.sum(labels == i) > 0 else centroids[i] for i in range(k)])\n            if np.allclose(centroids, new_centroids, atol=1e-6):\n                break\n            centroids = new_centroids\n\n        cluster_sizes = {str(i): int(np.sum(labels == i)) for i in range(k)}\n        summary['clustering'] = {'k': k, 'clusterSizes': cluster_sizes, 'iterations': iteration + 1}\n\n        if len(df_work.columns) >= 2:\n            fig, ax = plt.subplots(figsize=(10, 6))\n            c1, c2 = df_work.columns[0], df_work.columns[1]\n            for i in range(k):\n                mask = labels == i\n                ax.scatter(clean[c1].values[mask], clean[c2].values[mask], alpha=0.6, label=f'Cluster {i} (n={cluster_sizes[str(i)]})')\n            ax.set_xlabel(c1)\n            ax.set_ylabel(c2)\n            ax.set_title(f'K-Means Clustering (k={k})')\n            ax.legend()\n            plt.tight_layout()\n            chart_path = os.path.join(out_dir, 'clustering.png')\n            fig.savefig(chart_path, dpi=100)\n            plt.close(fig)\n            visualizations.append(chart_path)\n\n    print(json.dumps({'summary': summary, 'visualizations': visualizations}))\n\nif __name__ == '__main__':\n    main()\n",
+    "timeout_sec": 180
+  },
+  "toolsRequired": [
+    { "id": "tool:python" },
+    { "id": "tool:pip:pandas" },
+    { "id": "tool:pip:numpy" },
+    { "id": "tool:pip:matplotlib" }
+  ],
+  "origin": "authored",
+  "confidence": 1.0
+}

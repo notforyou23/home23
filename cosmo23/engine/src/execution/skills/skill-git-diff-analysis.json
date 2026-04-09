@@ -1,0 +1,43 @@
+{
+  "id": "skill:git-diff-analysis",
+  "name": "Git Diff Analysis",
+  "description": "Analyze a git diff for a repository, reporting files changed, insertions, deletions, and a human-readable summary of what changed.",
+  "domain": null,
+  "tags": ["code", "git", "analysis"],
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "repoPath": {
+        "type": "string",
+        "description": "Path to the git repository"
+      },
+      "compareRef": {
+        "type": "string",
+        "description": "Git ref to compare against (default: HEAD~1)"
+      }
+    },
+    "required": ["repoPath"]
+  },
+  "outputs": {
+    "type": "object",
+    "properties": {
+      "filesChanged": { "type": "number", "description": "Number of files changed" },
+      "insertions": { "type": "number", "description": "Total lines inserted" },
+      "deletions": { "type": "number", "description": "Total lines deleted" },
+      "summary": { "type": "string", "description": "Human-readable summary of changes" }
+    }
+  },
+  "assumptions": [
+    "git is installed and available in PATH",
+    "The specified path is a valid git repository",
+    "The compare ref exists in the repository history"
+  ],
+  "implementation": {
+    "type": "bash_command",
+    "code": "#!/bin/bash\nset -euo pipefail\n\n# Parse inputs from SKILL_INPUTS env var\nREPO_PATH=$(echo \"$SKILL_INPUTS\" | python3 -c \"import sys,json; print(json.load(sys.stdin).get('repoPath',''))\")\nCOMPARE_REF=$(echo \"$SKILL_INPUTS\" | python3 -c \"import sys,json; print(json.load(sys.stdin).get('compareRef','HEAD~1'))\")\n\nif [ -z \"$REPO_PATH\" ]; then\n    echo '{\"filesChanged\":0,\"insertions\":0,\"deletions\":0,\"summary\":\"Error: no repoPath provided\"}'\n    exit 0\nfi\n\nif [ ! -d \"$REPO_PATH/.git\" ] && ! git -C \"$REPO_PATH\" rev-parse --git-dir >/dev/null 2>&1; then\n    echo '{\"filesChanged\":0,\"insertions\":0,\"deletions\":0,\"summary\":\"Error: not a git repository\"}'\n    exit 0\nfi\n\ncd \"$REPO_PATH\"\n\n# Verify compare ref exists\nif ! git rev-parse --verify \"$COMPARE_REF\" >/dev/null 2>&1; then\n    echo \"{\\\"filesChanged\\\":0,\\\"insertions\\\":0,\\\"deletions\\\":0,\\\"summary\\\":\\\"Error: ref '$COMPARE_REF' not found\\\"}\"\n    exit 0\nfi\n\n# Get diff stats\nSTAT_OUTPUT=$(git diff --stat \"$COMPARE_REF\" 2>/dev/null || echo \"\")\nSHORTSTAT=$(git diff --shortstat \"$COMPARE_REF\" 2>/dev/null || echo \"\")\n\n# Parse shortstat: \" 5 files changed, 120 insertions(+), 30 deletions(-)\"\nFILES_CHANGED=0\nINSERTIONS=0\nDELETIONS=0\n\nif [ -n \"$SHORTSTAT\" ]; then\n    FILES_CHANGED=$(echo \"$SHORTSTAT\" | grep -oE '[0-9]+ file' | grep -oE '[0-9]+' || echo 0)\n    INSERTIONS=$(echo \"$SHORTSTAT\" | grep -oE '[0-9]+ insertion' | grep -oE '[0-9]+' || echo 0)\n    DELETIONS=$(echo \"$SHORTSTAT\" | grep -oE '[0-9]+ deletion' | grep -oE '[0-9]+' || echo 0)\nfi\n\n# Handle empty values\nFILES_CHANGED=${FILES_CHANGED:-0}\nINSERTIONS=${INSERTIONS:-0}\nDELETIONS=${DELETIONS:-0}\n\n# Build file-level summary\nFILE_SUMMARY=$(git diff --stat --stat-width=80 \"$COMPARE_REF\" 2>/dev/null | head -20 || echo \"(no changes)\")\n\n# Get changed file types\nFILE_TYPES=$(git diff --name-only \"$COMPARE_REF\" 2>/dev/null | sed 's/.*\\.//' | sort | uniq -c | sort -rn | head -5 | awk '{printf \"%s (%s), \", $2, $1}' || echo \"\")\nFILE_TYPES=${FILE_TYPES%, }\n\n# Build summary text\nSUMMARY=\"Compared against ${COMPARE_REF}: ${FILES_CHANGED} files changed (+${INSERTIONS}/-${DELETIONS} lines).\"\nif [ -n \"$FILE_TYPES\" ]; then\n    SUMMARY=\"${SUMMARY} File types: ${FILE_TYPES}.\"\nfi\nSUMMARY=\"${SUMMARY}\\n\\nDetails:\\n${FILE_SUMMARY}\"\n\n# Output JSON using Python to handle escaping correctly\npython3 -c \"\nimport json, sys\nprint(json.dumps({\n    'filesChanged': int('${FILES_CHANGED}' or 0),\n    'insertions': int('${INSERTIONS}' or 0),\n    'deletions': int('${DELETIONS}' or 0),\n    'summary': '''${SUMMARY}'''.replace('\\\\n', '\\n')\n}))\n\"\n",
+    "timeout_sec": 30
+  },
+  "toolsRequired": [{ "id": "tool:git" }],
+  "origin": "authored",
+  "confidence": 1.0
+}

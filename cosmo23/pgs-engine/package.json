@@ -1,0 +1,39 @@
+{
+  "name": "pgs-engine",
+  "version": "1.0.0",
+  "description": "Partitioned Graph Synthesis — coverage-optimized query architecture for large knowledge graphs. Finds what standard RAG misses, reports what's absent, and discovers cross-domain connections.",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "mocha test/**/*.test.js --timeout 10000",
+    "test:unit": "mocha test/louvain.test.js test/partitioner.test.js test/router.test.js test/sweeper.test.js test/synthesizer.test.js test/session.test.js --timeout 10000",
+    "test:integration": "mocha test/integration.test.js --timeout 30000"
+  },
+  "files": [
+    "src/",
+    "examples/",
+    "benchmark/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "rag",
+    "retrieval",
+    "knowledge-graph",
+    "graph-synthesis",
+    "louvain",
+    "community-detection",
+    "llm",
+    "ai",
+    "search",
+    "partitioned-graph-synthesis"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "chai": "^4.3.0",
+    "mocha": "^10.0.0",
+    "sinon": "^17.0.0"
+  }
+}

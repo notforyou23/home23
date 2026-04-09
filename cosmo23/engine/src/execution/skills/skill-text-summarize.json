@@ -1,0 +1,44 @@
+{
+  "id": "skill:text-summarize",
+  "name": "Text Summarizer",
+  "description": "Extractive text summarization using TF-based sentence scoring. Selects the most informative sentences and extracts key phrases without requiring any LLM or external dependencies.",
+  "domain": null,
+  "tags": ["utility", "text", "summarization"],
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "text": {
+        "type": "string",
+        "description": "Text to summarize"
+      },
+      "maxSentences": {
+        "type": "number",
+        "description": "Maximum number of sentences in the summary (default: 5)"
+      }
+    },
+    "required": ["text"]
+  },
+  "outputs": {
+    "type": "object",
+    "properties": {
+      "summary": { "type": "string", "description": "Extractive summary" },
+      "keyPhrases": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Top key phrases from the text"
+      }
+    }
+  },
+  "assumptions": [
+    "Input text is in English",
+    "Text contains complete sentences"
+  ],
+  "implementation": {
+    "type": "python_script",
+    "code": "import sys\nimport os\nimport json\nimport re\nimport math\nfrom collections import Counter\n\nSTOP_WORDS = frozenset([\n    'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with',\n    'by', 'from', 'is', 'was', 'are', 'were', 'be', 'been', 'being', 'have', 'has', 'had',\n    'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'shall',\n    'can', 'need', 'dare', 'ought', 'used', 'it', 'its', 'this', 'that', 'these', 'those',\n    'i', 'me', 'my', 'mine', 'we', 'us', 'our', 'ours', 'you', 'your', 'yours',\n    'he', 'him', 'his', 'she', 'her', 'hers', 'they', 'them', 'their', 'theirs',\n    'what', 'which', 'who', 'whom', 'whose', 'where', 'when', 'how', 'why',\n    'not', 'no', 'nor', 'as', 'if', 'then', 'than', 'too', 'very', 'so',\n    'just', 'about', 'above', 'after', 'again', 'all', 'also', 'am', 'an', 'any',\n    'because', 'before', 'between', 'both', 'each', 'few', 'get', 'got',\n    'here', 'into', 'more', 'most', 'much', 'must', 'new', 'now', 'only',\n    'other', 'out', 'over', 'own', 'same', 'some', 'still', 'such', 'there',\n    'through', 'under', 'up', 'while', 'well', 'also', 'back', 'even', 'however'\n])\n\ndef tokenize(text):\n    \"\"\"Simple word tokenization.\"\"\"\n    return re.findall(r'[a-zA-Z][\\'a-zA-Z]*', text.lower())\n\ndef split_sentences(text):\n    \"\"\"Split text into sentences using regex.\"\"\"\n    # Handle common abbreviations to avoid false splits\n    text = re.sub(r'\\b(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|inc|ltd|co)\\.',\n                  lambda m: m.group().replace('.', '<DOT>'), text, flags=re.IGNORECASE)\n    # Split on sentence-ending punctuation followed by space + uppercase or end\n    parts = re.split(r'(?<=[.!?])\\s+(?=[A-Z\"])', text)\n    # Restore abbreviation dots\n    parts = [p.replace('<DOT>', '.').strip() for p in parts]\n    return [s for s in parts if len(s) > 10]\n\ndef extract_key_phrases(words, top_n=10):\n    \"\"\"Extract top key phrases by frequency, filtering stop words.\"\"\"\n    content_words = [w for w in words if w not in STOP_WORDS and len(w) > 2]\n    freq = Counter(content_words)\n    return [word for word, count in freq.most_common(top_n)]\n\ndef main():\n    inputs = json.loads(os.environ.get('SKILL_INPUTS', '{}'))\n    text = inputs.get('text', '')\n    max_sentences = inputs.get('maxSentences', 5)\n\n    if not text.strip():\n        print(json.dumps({'summary': '', 'keyPhrases': []}))\n        return\n\n    sentences = split_sentences(text)\n    if not sentences:\n        print(json.dumps({'summary': text[:500], 'keyPhrases': []}))\n        return\n\n    # Tokenize full text for word frequencies\n    all_words = tokenize(text)\n    if not all_words:\n        print(json.dumps({'summary': sentences[0] if sentences else '', 'keyPhrases': []}))\n        return\n\n    # Compute word frequencies (TF), excluding stop words\n    word_freq = Counter(w for w in all_words if w not in STOP_WORDS and len(w) > 2)\n    if not word_freq:\n        # All stop words - just return first sentences\n        selected = sentences[:max_sentences]\n        print(json.dumps({'summary': ' '.join(selected), 'keyPhrases': []}))\n        return\n\n    max_freq = max(word_freq.values())\n    # Normalize frequencies\n    for word in word_freq:\n        word_freq[word] /= max_freq\n\n    # Score each sentence\n    sentence_scores = []\n    for i, sentence in enumerate(sentences):\n        words = tokenize(sentence)\n        content_words = [w for w in words if w in word_freq]\n        if not content_words:\n            score = 0.0\n        else:\n            score = sum(word_freq[w] for w in content_words) / len(content_words)\n\n        # Boost for position: first and last sentences get a bonus\n        if i == 0:\n            score *= 1.3\n        elif i == len(sentences) - 1:\n            score *= 1.1\n        elif i < 3:\n            score *= 1.15\n\n        # Slight penalty for very long sentences\n        if len(words) > 40:\n            score *= 0.9\n\n        sentence_scores.append((i, score, sentence))\n\n    # Select top sentences by score\n    n = min(max_sentences, len(sentence_scores))\n    top = sorted(sentence_scores, key=lambda x: x[1], reverse=True)[:n]\n    # Re-order by original position for coherent reading\n    top.sort(key=lambda x: x[0])\n\n    summary = ' '.join(item[2] for item in top)\n    key_phrases = extract_key_phrases(all_words, top_n=10)\n\n    print(json.dumps({'summary': summary, 'keyPhrases': key_phrases}))\n\nif __name__ == '__main__':\n    main()\n",
+    "timeout_sec": 60
+  },
+  "toolsRequired": [{ "id": "tool:python" }],
+  "origin": "authored",
+  "confidence": 1.0
+}

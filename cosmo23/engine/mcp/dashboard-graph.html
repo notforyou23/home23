@@ -1,0 +1,1356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cosmo - Memory Network</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif;
+            background: #0a0e27;
+            color: #e8eaed;
+            overflow: hidden;
+        }
+
+        .cosmic-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(ellipse at top, #1a1f3a 0%, #0a0e27 100%);
+            z-index: -1;
+        }
+
+        .header {
+            padding: 15px 30px;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            background: rgba(10, 14, 39, 0.9);
+            backdrop-filter: blur(20px);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: relative;
+            z-index: 100;
+        }
+
+        .logo {
+            font-size: 1.6em;
+            font-weight: 600;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 5px;
+        }
+
+        .tab {
+            padding: 8px 16px;
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            color: #8b92a7;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 0.9em;
+            text-decoration: none;
+        }
+
+        .tab:hover {
+            background: rgba(255,255,255,0.05);
+            color: #e8eaed;
+        }
+
+        .tab.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-color: transparent;
+            color: white;
+        }
+
+        .graph-container {
+            width: 100vw;
+            height: calc(100vh - 65px);
+            position: relative;
+        }
+
+        svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .graph-link {
+            stroke: rgba(102, 126, 234, 0.15);
+            stroke-width: 1px;
+        }
+
+        .graph-link.highlighted {
+            stroke: rgba(102, 126, 234, 0.6);
+            stroke-width: 2px;
+        }
+
+        .graph-node {
+            cursor: pointer;
+            transition: r 0.3s;
+        }
+
+        .graph-node:hover {
+            stroke: rgba(255,255,255,0.8);
+            stroke-width: 2px;
+        }
+
+        .graph-node.selected {
+            stroke: #ffc107;
+            stroke-width: 3px;
+        }
+
+        .graph-node.dimmed {
+            opacity: 0.2;
+        }
+
+        /* Controls Panel */
+        .controls {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(10, 14, 39, 0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 16px;
+            padding: 24px;
+            min-width: 280px;
+            max-height: calc(100vh - 140px);
+            overflow-y: auto;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+
+        .control-section {
+            margin-bottom: 24px;
+        }
+
+        .control-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .control-title {
+            font-size: 0.85em;
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+        }
+
+        .control-item {
+            margin-bottom: 14px;
+        }
+
+        .control-label {
+            font-size: 0.85em;
+            color: #8b92a7;
+            margin-bottom: 8px;
+            display: block;
+        }
+
+        .control-value {
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            height: 4px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 2px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.4);
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+        }
+
+        .filter-buttons {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .filter-btn {
+            padding: 10px 14px;
+            background: rgba(102, 126, 234, 0.08);
+            border: 1px solid rgba(102, 126, 234, 0.2);
+            border-radius: 8px;
+            color: #8b92a7;
+            cursor: pointer;
+            font-size: 0.85em;
+            transition: all 0.2s;
+            text-align: left;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .filter-btn:hover {
+            background: rgba(102, 126, 234, 0.15);
+            color: #e8eaed;
+            transform: translateX(2px);
+        }
+
+        .filter-btn.active {
+            background: rgba(102, 126, 234, 0.25);
+            border-color: rgba(102, 126, 234, 0.6);
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .filter-count {
+            font-size: 0.8em;
+            opacity: 0.7;
+        }
+
+        .search-input {
+            width: 100%;
+            padding: 10px 12px;
+            background: rgba(0,0,0,0.4);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            color: #e8eaed;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+            transition: all 0.3s;
+        }
+
+        .search-input:focus {
+            outline: none;
+            border-color: rgba(102, 126, 234, 0.5);
+            background: rgba(0,0,0,0.5);
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .action-btn {
+            padding: 8px 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 0.85em;
+            font-weight: 600;
+            transition: all 0.2s;
+            flex: 1;
+            min-width: 80px;
+        }
+
+        .action-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .action-btn.secondary {
+            background: rgba(102, 126, 234, 0.15);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            color: #667eea;
+        }
+
+        /* Stats Panel */
+        .stats {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(10, 14, 39, 0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 16px;
+            padding: 20px;
+            min-width: 200px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+
+        .stat-item {
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .stat-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .stat-label {
+            font-size: 0.85em;
+            color: #8b92a7;
+        }
+
+        .stat-value {
+            color: #667eea;
+            font-weight: 700;
+            font-size: 1.1em;
+        }
+
+        /* Legend */
+        .legend {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(10, 14, 39, 0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 16px;
+            padding: 20px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+
+        .legend-title {
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 14px;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+            font-size: 0.85em;
+            color: #8b92a7;
+        }
+
+        .legend-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .legend-dot {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+        }
+
+        /* Node Detail Panel */
+        .detail-panel {
+            position: absolute;
+            top: 50%;
+            right: 20px;
+            transform: translateY(-50%);
+            background: rgba(10, 14, 39, 0.98);
+            backdrop-filter: blur(30px);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            border-radius: 16px;
+            padding: 24px;
+            width: 350px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 12px 48px rgba(0,0,0,0.5);
+            display: none;
+        }
+
+        .detail-panel.show {
+            display: block;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { transform: translateY(-50%) translateX(20px); opacity: 0; }
+            to { transform: translateY(-50%) translateX(0); opacity: 1; }
+        }
+
+        .detail-close {
+            position: absolute;
+            top: 16px;
+            right: 16px;
+            background: rgba(255,255,255,0.1);
+            border: none;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: #8b92a7;
+            font-size: 1.2em;
+            transition: all 0.2s;
+        }
+
+        .detail-close:hover {
+            background: rgba(255,255,255,0.2);
+            color: #fff;
+            transform: rotate(90deg);
+        }
+
+        .detail-concept {
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #e8eaed;
+            margin-bottom: 16px;
+            padding-right: 30px;
+            line-height: 1.4;
+        }
+
+        .detail-metrics {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        .metric-box {
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 8px;
+            padding: 12px;
+        }
+
+        .metric-label {
+            font-size: 0.75em;
+            color: #8b92a7;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+
+        .metric-value {
+            font-size: 1.3em;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        .detail-section {
+            margin-bottom: 20px;
+        }
+
+        .detail-section-title {
+            font-size: 0.85em;
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .connection-list {
+            list-style: none;
+        }
+
+        .connection-item {
+            padding: 8px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 0.85em;
+            color: #b8bcc8;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .connection-item:hover {
+            background: rgba(102, 126, 234, 0.15);
+            color: #e8eaed;
+            transform: translateX(4px);
+        }
+
+        /* Loading State */
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #8b92a7;
+        }
+
+        .loading-spinner {
+            width: 60px;
+            height: 60px;
+            border: 4px solid rgba(102, 126, 234, 0.2);
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Error State */
+        .error-message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(244, 67, 54, 0.1);
+            border: 1px solid rgba(244, 67, 54, 0.3);
+            border-radius: 12px;
+            padding: 30px;
+            text-align: center;
+            color: #ff5252;
+            max-width: 400px;
+        }
+
+        /* Zoom Controls */
+        .zoom-controls {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .zoom-btn {
+            width: 40px;
+            height: 40px;
+            background: rgba(10, 14, 39, 0.95);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            color: #667eea;
+            font-size: 1.2em;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .zoom-btn:hover {
+            background: rgba(102, 126, 234, 0.2);
+            border-color: rgba(102, 126, 234, 0.4);
+            transform: scale(1.1);
+        }
+
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255,255,255,0.2) transparent;
+    </style>
+</head>
+<body>
+    <div class="cosmic-bg"></div>
+
+    <div class="header">
+        <div class="logo">🧠 Cosmo - Memory Network</div>
+        <div class="tabs">
+            <a href="/" class="tab">Stream</a>
+            <a href="/graph" class="tab active">Graph</a>
+            <a href="/classic" class="tab">Classic</a>
+        </div>
+    </div>
+
+    <div class="graph-container">
+        <div class="loading" id="loading">
+            <div class="loading-spinner"></div>
+            <div>Loading memory network from Cosmo's mind...</div>
+            <div style="font-size: 0.85em; margin-top: 10px; opacity: 0.7;">
+                Reading state, building graph...
+            </div>
+        </div>
+
+        <svg id="memory-graph"></svg>
+
+        <div class="controls" id="controls" style="display: none;">
+            <div class="control-section">
+                <div class="control-title">🎛️ View Controls</div>
+                
+                <div class="action-buttons" style="margin-bottom: 16px;">
+                    <button class="action-btn" onclick="fitNetwork()">Fit All</button>
+                    <button class="action-btn secondary" onclick="resetView()">Reset</button>
+                </div>
+
+                <div class="control-item">
+                    <label class="control-label">
+                        Node Size: <span class="control-value" id="size-value">5</span>
+                    </label>
+                    <input type="range" id="node-size" min="1" max="10" value="5" step="0.5" oninput="updateNodeSize(this.value)">
+                </div>
+
+                <div class="control-item">
+                    <label class="control-label">
+                        Edge Opacity: <span class="control-value" id="opacity-value">15%</span>
+                    </label>
+                    <input type="range" id="edge-opacity" min="5" max="80" value="15" step="5" oninput="updateEdgeOpacity(this.value)">
+                </div>
+
+                <div class="control-item">
+                    <label class="control-label">
+                        <input type="checkbox" id="show-labels" onchange="toggleLabels(this.checked)" style="margin-right: 6px;">
+                        Show Labels
+                    </label>
+                </div>
+
+                <div class="control-item">
+                    <label class="control-label">
+                        <input type="checkbox" id="show-clusters" onchange="toggleClusters(this.checked)" style="margin-right: 6px;">
+                        Color by Cluster
+                    </label>
+                </div>
+            </div>
+
+            <div class="control-section">
+                <div class="control-title">🔍 Search</div>
+                <input type="text" 
+                       class="search-input" 
+                       id="search-input" 
+                       placeholder="Search concepts..."
+                       onkeypress="if(event.key==='Enter') searchGraph()">
+                <button class="action-btn" style="width: 100%;" onclick="searchGraph()">Search</button>
+            </div>
+
+            <div class="control-section">
+                <div class="control-title">🎨 Filter by Type</div>
+                <div class="filter-buttons" id="filter-buttons">
+                    <div class="filter-btn active" data-filter="all" onclick="setFilter('all')">
+                        <span>All Nodes</span>
+                        <span class="filter-count" id="count-all">0</span>
+                    </div>
+                    <div class="filter-btn" data-filter="analyst" onclick="setFilter('analyst')">
+                        <span>Analyst</span>
+                        <span class="filter-count" id="count-analyst">0</span>
+                    </div>
+                    <div class="filter-btn" data-filter="curiosity" onclick="setFilter('curiosity')">
+                        <span>Curiosity</span>
+                        <span class="filter-count" id="count-curiosity">0</span>
+                    </div>
+                    <div class="filter-btn" data-filter="critic" onclick="setFilter('critic')">
+                        <span>Critic</span>
+                        <span class="filter-count" id="count-critic">0</span>
+                    </div>
+                    <div class="filter-btn" data-filter="high-activation" onclick="setFilter('high-activation')">
+                        <span>High Activation</span>
+                        <span class="filter-count" id="count-high">0</span>
+                    </div>
+                    <div class="filter-btn" data-filter="agent_finding" onclick="setFilter('agent_finding')">
+                        <span>Agent Findings</span>
+                        <span class="filter-count" id="count-agent">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="stats" id="stats" style="display: none;">
+            <div class="stat-item">
+                <span class="stat-label">Nodes</span>
+                <span class="stat-value" id="node-count">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Connections</span>
+                <span class="stat-value" id="edge-count">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Clusters</span>
+                <span class="stat-value" id="cluster-count">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Visible</span>
+                <span class="stat-value" id="visible-count">0</span>
+            </div>
+        </div>
+
+        <div class="legend" id="legend" style="display: none;">
+            <div class="legend-title">Node Colors</div>
+            <div class="legend-item">
+                <div class="legend-dot" style="background: #667eea;"></div>
+                <span>Analyst</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-dot" style="background: #ffd700;"></div>
+                <span>Curiosity</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-dot" style="background: #ba68c8;"></div>
+                <span>Critic</span>
+            </div>
+            <div class="legend-item">
+                <div class="legend-dot" style="background: #06ffa5;"></div>
+                <span>Agent Finding</span>
+            </div>
+            <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 0.8em; color: #667eea;">
+                <div>Size = Activation Level</div>
+                <div>Drag nodes to reposition</div>
+                <div>Scroll to zoom</div>
+            </div>
+        </div>
+
+        <div class="detail-panel" id="detail-panel">
+            <button class="detail-close" onclick="closeDetail()">×</button>
+            <div id="detail-content"></div>
+        </div>
+
+        <div class="zoom-controls">
+            <div class="zoom-btn" onclick="zoomIn()">+</div>
+            <div class="zoom-btn" onclick="fitNetwork()">⊙</div>
+            <div class="zoom-btn" onclick="zoomOut()">−</div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const urlParams = new URLSearchParams(window.location.search);
+        const MCP_URL = urlParams.get('mcp') || 'http://localhost:3347/mcp';
+        
+        // Graph state
+        let allNodes = [];
+        let allEdges = [];
+        let filteredNodes = [];
+        let filteredEdges = [];
+        let currentFilter = 'all';
+        let showLabels = false;
+        let showClusters = false;
+        let selectedNode = null;
+        
+        // D3 elements
+        let svg, g, simulation;
+        let linkElements, nodeElements, labelElements;
+        let zoomBehavior;
+
+        console.log('Memory Graph connecting to:', MCP_URL);
+
+        // MCP Call
+        async function callMCP(toolName, args = {}) {
+            try {
+                const response = await fetch(MCP_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json, text/event-stream'
+                    },
+                    body: JSON.stringify({
+                        jsonrpc: '2.0',
+                        id: Date.now(),
+                        method: 'tools/call',
+                        params: { name: toolName, arguments: args }
+                    })
+                });
+
+                const text = await response.text();
+                const lines = text.trim().split('\n');
+                const dataLine = lines.find(l => l.startsWith('data: '));
+                
+                if (dataLine) {
+                    const parsed = JSON.parse(dataLine.substring(6));
+                    if (parsed.error) throw new Error(parsed.error.message);
+                    return JSON.parse(parsed.result.content[0].text);
+                }
+                
+                throw new Error('Invalid response format');
+            } catch (error) {
+                console.error('MCP call failed:', error);
+                throw error;
+            }
+        }
+
+        // Load graph data from MCP
+        async function loadGraphData() {
+            try {
+                // Get ACTUAL memory network graph (ALL nodes - no limits)
+                const graphData = await callMCP('get_memory_graph', { limit: 0 });
+                
+                if (!graphData || !graphData.nodes) {
+                    throw new Error('No memory network data available');
+                }
+                
+                console.log('Loaded memory network:', {
+                    total: graphData.totalNodes,
+                    returned: graphData.returned,
+                    edges: graphData.edges?.length || 0
+                });
+                
+                // Process nodes
+                const nodeMap = new Map();
+                const nodeCounts = { analyst: 0, curiosity: 0, critic: 0, agent_finding: 0, high: 0, unknown: 0 };
+                
+                graphData.nodes.forEach(node => {
+                    allNodes.push(node);
+                    nodeMap.set(node.id, node);
+                    
+                    // Count by type
+                    const tag = node.tag || 'unknown';
+                    nodeCounts[tag] = (nodeCounts[tag] || 0) + 1;
+                    if (node.activation > 0.15) nodeCounts.high++;
+                });
+                
+                // Process edges
+                graphData.edges.forEach(edge => {
+                    // Verify both nodes exist
+                    if (nodeMap.has(edge.source) && nodeMap.has(edge.target)) {
+                        allEdges.push(edge);
+                    }
+                });
+                
+                // Count clusters
+                const clusters = new Set(allNodes.map(n => n.cluster).filter(c => c !== undefined));
+                
+                // Update stats
+                document.getElementById('node-count').textContent = graphData.totalNodes;
+                document.getElementById('edge-count').textContent = graphData.totalEdges;
+                document.getElementById('cluster-count').textContent = clusters.size;
+                
+                // Update filter counts
+                document.getElementById('count-all').textContent = allNodes.length;
+                document.getElementById('count-analyst').textContent = nodeCounts.analyst;
+                document.getElementById('count-curiosity').textContent = nodeCounts.curiosity;
+                document.getElementById('count-critic').textContent = nodeCounts.critic;
+                document.getElementById('count-high').textContent = nodeCounts.high;
+                document.getElementById('count-agent').textContent = nodeCounts.agent_finding;
+                
+                // Initial render with all nodes
+                filterAndRender('all');
+                
+                // Show UI elements
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('controls').style.display = 'block';
+                document.getElementById('stats').style.display = 'block';
+                document.getElementById('legend').style.display = 'block';
+                
+            } catch (error) {
+                console.error('Failed to load graph:', error);
+                document.getElementById('loading').innerHTML = `
+                    <div class="error-message">
+                        ❌ Failed to load memory network<br><br>
+                        <span style="font-size: 0.9em;">${error.message}</span><br><br>
+                        <span style="font-size: 0.85em; opacity: 0.7;">
+                            Make sure MCP server is running: npm run mcp:http
+                        </span>
+                    </div>
+                `;
+            }
+        }
+
+        // Filter and render
+        function filterAndRender(filter) {
+            currentFilter = filter;
+            
+            // Filter nodes
+            if (filter === 'all') {
+                filteredNodes = [...allNodes];
+            } else if (filter === 'high-activation') {
+                filteredNodes = allNodes.filter(n => n.activation > 0.15);
+            } else {
+                filteredNodes = allNodes.filter(n => n.tag === filter);
+            }
+            
+            // Filter edges (only between visible nodes)
+            const visibleIds = new Set(filteredNodes.map(n => n.id));
+            filteredEdges = allEdges.filter(e => {
+                const sourceId = typeof e.source === 'object' ? e.source.id : e.source;
+                const targetId = typeof e.target === 'object' ? e.target.id : e.target;
+                return visibleIds.has(sourceId) && visibleIds.has(targetId);
+            });
+            
+            // Update visible count
+            document.getElementById('visible-count').textContent = filteredNodes.length;
+            
+            // Render
+            renderNetwork();
+        }
+
+        // Render network with D3
+        function renderNetwork() {
+            const container = d3.select('#memory-graph');
+            container.selectAll('*').remove();
+            
+            if (filteredNodes.length === 0) {
+                return;
+            }
+            
+            const width = window.innerWidth;
+            const height = window.innerHeight - 65;
+            
+            // Clone data for D3 (so it doesn't mutate our originals)
+            const nodes = filteredNodes.map(n => ({...n}));
+            const edges = filteredEdges.map(e => ({...e}));
+            
+            // Setup zoom
+            zoomBehavior = d3.zoom()
+                .scaleExtent([0.1, 10])
+                .on('zoom', (event) => {
+                    g.attr('transform', event.transform);
+                });
+            
+            svg = container
+                .attr('width', width)
+                .attr('height', height)
+                .call(zoomBehavior);
+            
+            g = svg.append('g');
+            
+            // Create force simulation
+            const nodeCount = nodes.length;
+            const linkDistance = nodeCount > 50 ? 40 : 60;
+            const chargeStrength = nodeCount > 50 ? -80 : -120;
+            
+            simulation = d3.forceSimulation(nodes)
+                .force('link', d3.forceLink(edges).id(d => d.id).distance(linkDistance))
+                .force('charge', d3.forceManyBody().strength(chargeStrength))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(d => getNodeRadius(d) + 5));
+            
+            // Draw edges
+            linkElements = g.append('g')
+                .selectAll('line')
+                .data(edges)
+                .enter().append('line')
+                .attr('class', 'graph-link')
+                .attr('stroke', 'rgba(102, 126, 234, 0.15)')
+                .attr('stroke-width', d => Math.max(0.5, (d.weight || 0.5) * 2));
+            
+            // Draw nodes
+            nodeElements = g.append('g')
+                .selectAll('circle')
+                .data(nodes)
+                .enter().append('circle')
+                .attr('class', 'graph-node')
+                .attr('r', d => getNodeRadius(d))
+                .attr('fill', d => getNodeColor(d))
+                .attr('opacity', 0.9)
+                .on('click', (event, d) => {
+                    event.stopPropagation();
+                    selectNode(d);
+                })
+                .on('mouseover', (event, d) => {
+                    highlightConnected(d);
+                    showQuickTooltip(event, d);
+                })
+                .on('mouseout', () => {
+                    unhighlightAll();
+                    hideQuickTooltip();
+                })
+                .call(d3.drag()
+                    .on('start', dragStarted)
+                    .on('drag', dragged)
+                    .on('end', dragEnded));
+            
+            // Draw labels (initially hidden)
+            labelElements = g.append('g')
+                .selectAll('text')
+                .data(nodes)
+                .enter().append('text')
+                .attr('font-size', '9px')
+                .attr('fill', 'rgba(255,255,255,0.8)')
+                .attr('text-anchor', 'middle')
+                .attr('display', 'none')
+                .attr('pointer-events', 'none')
+                .text(d => d.concept.substring(0, 25) + (d.concept.length > 25 ? '...' : ''));
+            
+            // Update positions on tick
+            simulation.on('tick', () => {
+                linkElements
+                    .attr('x1', d => d.source.x)
+                    .attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x)
+                    .attr('y2', d => d.target.y);
+                
+                nodeElements
+                    .attr('cx', d => d.x)
+                    .attr('cy', d => d.y);
+                
+                labelElements
+                    .attr('x', d => d.x)
+                    .attr('y', d => d.y + 4);
+            });
+            
+            // Auto-fit after layout stabilizes
+            setTimeout(() => fitNetwork(), 2000);
+        }
+
+        // Get node radius based on activation
+        function getNodeRadius(node) {
+            const baseSize = parseFloat(document.getElementById('node-size')?.value || 5);
+            // Normalize activation to prevent huge nodes after merging
+            // Most activations should be 0-1, but after merging they can be higher
+            const normalizedActivation = Math.min(node.activation || 0, 1);
+            return baseSize + (normalizedActivation * 8);
+        }
+
+        // Get node color
+        function getNodeColor(node) {
+            if (showClusters) {
+                const clusterColors = [
+                    '#ff006e', '#00ffff', '#06ffa5', '#ffbe0b', '#9d4edd',
+                    '#ff9ff3', '#54a0ff', '#48dbfb', '#ff6348', '#1dd1a1'
+                ];
+                return clusterColors[node.cluster % clusterColors.length];
+            }
+            
+            // Color by tag/type
+            switch(node.tag) {
+                case 'analyst': return '#667eea';
+                case 'curiosity': return '#ffd700';
+                case 'critic': return '#ba68c8';
+                case 'agent_finding': return '#06ffa5';
+                case 'summary': return '#ffbe0b';
+                default: return '#4a5568';
+            }
+        }
+
+        // Select node - Show detail panel
+        function selectNode(node) {
+            selectedNode = node;
+            
+            // Highlight in graph
+            nodeElements.classed('selected', n => n.id === node.id);
+            
+            // Build detail panel
+            const html = `
+                <div class="detail-concept">${escapeHtml(node.concept)}</div>
+                
+                <div class="detail-metrics">
+                    <div class="metric-box">
+                        <div class="metric-label">Activation</div>
+                        <div class="metric-value">${(node.activation * 100).toFixed(1)}%</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Access Count</div>
+                        <div class="metric-value">${node.accessCount || 0}</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Weight</div>
+                        <div class="metric-value">${(node.weight * 100).toFixed(0)}%</div>
+                    </div>
+                    <div class="metric-box">
+                        <div class="metric-label">Cluster</div>
+                        <div class="metric-value">#${node.cluster || 0}</div>
+                    </div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-section-title">📊 Details</div>
+                    <div style="font-size: 0.85em; color: #b8bcc8;">
+                        <div style="margin-bottom: 6px;"><strong>Cycle:</strong> ${node.cycle}</div>
+                        <div style="margin-bottom: 6px;"><strong>Type:</strong> ${node.tag}</div>
+                        <div style="margin-bottom: 6px;"><strong>Mode:</strong> ${node.mode || 'unknown'}</div>
+                        <div style="margin-bottom: 6px;"><strong>Model:</strong> ${node.model || 'unknown'}</div>
+                        ${node.usedWebSearch ? '<div style="color: #4fc3f7;">🔍 Used web search</div>' : ''}
+                    </div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-section-title">🔗 Connections</div>
+                    <ul class="connection-list" id="connections-list">
+                        ${getConnections(node)}
+                    </ul>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-section-title">🎯 Related Goal</div>
+                    <div style="font-size: 0.85em; color: #b8bcc8; padding: 8px; background: rgba(0,0,0,0.2); border-radius: 6px;">
+                        ${escapeHtml((node.goal || 'No specific goal').substring(0, 150))}
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('detail-content').innerHTML = html;
+            document.getElementById('detail-panel').classList.add('show');
+        }
+
+        // Get connections for a node
+        function getConnections(node) {
+            const connected = allEdges
+                .filter(e => {
+                    const sourceId = typeof e.source === 'object' ? e.source.id : e.source;
+                    const targetId = typeof e.target === 'object' ? e.target.id : e.target;
+                    return sourceId === node.id || targetId === node.id;
+                })
+                .slice(0, 5);
+            
+            if (connected.length === 0) {
+                return '<div style="color: #8b92a7; font-size: 0.85em; padding: 8px;">No connections</div>';
+            }
+            
+            return connected.map(e => {
+                const otherId = (typeof e.source === 'object' ? e.source.id : e.source) === node.id 
+                    ? (typeof e.target === 'object' ? e.target.id : e.target)
+                    : (typeof e.source === 'object' ? e.source.id : e.source);
+                
+                const otherNode = allNodes.find(n => n.id === otherId);
+                if (!otherNode) return '';
+                
+                return `<li class="connection-item" onclick="focusOnNode('${otherId}')">
+                    ${escapeHtml(otherNode.concept.substring(0, 80))}...
+                </li>`;
+            }).join('');
+        }
+
+        // Focus on a specific node
+        function focusOnNode(nodeId) {
+            const node = allNodes.find(n => n.id === nodeId);
+            if (!node) return;
+            
+            selectNode(node);
+            
+            // Zoom to node
+            if (svg && zoomBehavior) {
+                const transform = d3.zoomIdentity
+                    .translate(window.innerWidth / 2, window.innerHeight / 2)
+                    .scale(1.5)
+                    .translate(-node.x, -node.y);
+                
+                svg.transition().duration(750).call(zoomBehavior.transform, transform);
+            }
+        }
+
+        // Highlight connected nodes
+        function highlightConnected(node) {
+            const connectedIds = new Set();
+            
+            // Find all connected nodes
+            allEdges.forEach(e => {
+                const sourceId = typeof e.source === 'object' ? e.source.id : e.source;
+                const targetId = typeof e.target === 'object' ? e.target.id : e.target;
+                
+                if (sourceId === node.id) {
+                    connectedIds.add(targetId);
+                } else if (targetId === node.id) {
+                    connectedIds.add(sourceId);
+                }
+            });
+            
+            // Highlight links
+            if (linkElements) {
+                linkElements.classed('highlighted', e => {
+                    const sourceId = typeof e.source === 'object' ? e.source.id : e.source;
+                    const targetId = typeof e.target === 'object' ? e.target.id : e.target;
+                    return sourceId === node.id || targetId === node.id;
+                });
+            }
+            
+            // Dim unconnected nodes
+            if (nodeElements) {
+                nodeElements.classed('dimmed', n => n.id !== node.id && !connectedIds.has(n.id));
+            }
+        }
+
+        // Unhighlight all
+        function unhighlightAll() {
+            if (linkElements) linkElements.classed('highlighted', false);
+            if (nodeElements) nodeElements.classed('dimmed', false);
+        }
+
+        // Quick tooltip on hover
+        let quickTooltip = null;
+        function showQuickTooltip(event, node) {
+            if (!quickTooltip) {
+                quickTooltip = d3.select('body').append('div')
+                    .style('position', 'absolute')
+                    .style('background', 'rgba(10, 14, 39, 0.98)')
+                    .style('border', '1px solid rgba(102, 126, 234, 0.4)')
+                    .style('border-radius', '8px')
+                    .style('padding', '10px 14px')
+                    .style('pointer-events', 'none')
+                    .style('font-size', '0.85em')
+                    .style('z-index', '10000')
+                    .style('opacity', 0);
+            }
+            
+            quickTooltip
+                .html(`
+                    <div style="font-weight: 600; color: #667eea; margin-bottom: 4px;">
+                        ${escapeHtml(node.concept.substring(0, 80))}...
+                    </div>
+                    <div style="color: #8b92a7; font-size: 0.9em;">
+                        ${node.tag} • Activation: ${(node.activation * 100).toFixed(1)}% • Cluster: ${node.cluster}
+                    </div>
+                `)
+                .style('left', (event.pageX + 15) + 'px')
+                .style('top', (event.pageY + 15) + 'px')
+                .transition().duration(200)
+                .style('opacity', 1);
+        }
+
+        function hideQuickTooltip() {
+            if (quickTooltip) {
+                quickTooltip.transition().duration(200).style('opacity', 0);
+            }
+        }
+
+        // Close detail panel
+        function closeDetail() {
+            document.getElementById('detail-panel').classList.remove('show');
+            selectedNode = null;
+            if (nodeElements) nodeElements.classed('selected', false);
+        }
+
+        // Set filter
+        function setFilter(filter) {
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.querySelector(`[data-filter="${filter}"]`)?.classList.add('active');
+            
+            filterAndRender(filter);
+        }
+
+        // Search graph
+        function searchGraph() {
+            const query = document.getElementById('search-input').value.toLowerCase().trim();
+            if (!query) return;
+            
+            const matches = allNodes.filter(n => 
+                n.concept.toLowerCase().includes(query)
+            );
+            
+            if (matches.length === 0) {
+                alert('No nodes match your search');
+                return;
+            }
+            
+            // Focus on first match
+            focusOnNode(matches[0].id);
+        }
+
+        // Update node size
+        function updateNodeSize(value) {
+            document.getElementById('size-value').textContent = value;
+            if (nodeElements) {
+                nodeElements.attr('r', d => {
+                    const baseSize = parseFloat(value);
+                    return baseSize + (d.activation * 8);
+                });
+            }
+        }
+
+        // Update edge opacity
+        function updateEdgeOpacity(value) {
+            document.getElementById('opacity-value').textContent = value + '%';
+            if (linkElements) {
+                linkElements.attr('stroke', `rgba(102, 126, 234, ${value / 100})`);
+            }
+        }
+
+        // Toggle labels
+        function toggleLabels(checked) {
+            showLabels = checked;
+            if (labelElements) {
+                labelElements.attr('display', checked ? 'block' : 'none');
+            }
+        }
+
+        // Toggle clusters
+        function toggleClusters(checked) {
+            showClusters = checked;
+            if (nodeElements) {
+                nodeElements.attr('fill', d => getNodeColor(d));
+            }
+        }
+
+        // Fit network to view
+        function fitNetwork() {
+            if (!svg || !zoomBehavior || !g) return;
+            
+            try {
+                const bounds = g.node().getBBox();
+                const parent = svg.node().getBoundingClientRect();
+                const fullWidth = parent.width;
+                const fullHeight = parent.height;
+                
+                const scale = Math.min(
+                    (fullWidth * 0.85) / bounds.width,
+                    (fullHeight * 0.85) / bounds.height,
+                    2 // Max scale
+                );
+                
+                const midX = bounds.x + bounds.width / 2;
+                const midY = bounds.y + bounds.height / 2;
+                
+                const translate = [
+                    fullWidth / 2 - scale * midX,
+                    fullHeight / 2 - scale * midY
+                ];
+                
+                svg.transition().duration(750).call(
+                    zoomBehavior.transform,
+                    d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
+                );
+            } catch (error) {
+                console.log('Fit network not ready yet');
+            }
+        }
+
+        // Reset view
+        function resetView() {
+            if (!svg || !zoomBehavior) return;
+            svg.transition().duration(750).call(
+                zoomBehavior.transform,
+                d3.zoomIdentity
+            );
+        }
+
+        // Zoom in/out
+        function zoomIn() {
+            if (!svg || !zoomBehavior) return;
+            svg.transition().duration(300).call(zoomBehavior.scaleBy, 1.5);
+        }
+
+        function zoomOut() {
+            if (!svg || !zoomBehavior) return;
+            svg.transition().duration(300).call(zoomBehavior.scaleBy, 0.67);
+        }
+
+        // Drag functions
+        function dragStarted(event, d) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        }
+
+        function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+        }
+
+        function dragEnded(event, d) {
+            if (!event.active) simulation.alphaTarget(0);
+            // Keep pinned where dragged
+            d.fx = event.x;
+            d.fy = event.y;
+        }
+
+        // Helper: Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text || '';
+            return div.innerHTML;
+        }
+
+        // Initialize
+        async function init() {
+            await loadGraphData();
+        }
+
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>

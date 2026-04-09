@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COSMO Research Lab</title>
+    <link rel="stylesheet" href="design-system.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            background: #0d1117;
+            color: #c9d1d9;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            padding: 15px 0;
+            border-bottom: 1px solid #30363d;
+            margin-bottom: 20px;
+        }
+
+        h1 {
+            font-size: 18px;
+            font-weight: 600;
+            color: #c9d1d9;
+        }
+
+        .subtitle {
+            font-size: 13px;
+            color: #8b949e;
+            margin-top: 4px;
+        }
+
+        .section {
+            margin-bottom: 30px;
+        }
+
+        .section-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #c9d1d9;
+            margin-bottom: 12px;
+            padding-bottom: 6px;
+            border-bottom: 1px solid #21262d;
+        }
+
+        /* Table */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #0d1117;
+            font-size: 13px;
+        }
+
+        th {
+            text-align: left;
+            padding: 8px 12px;
+            background: #161b22;
+            color: #8b949e;
+            font-weight: 600;
+            border-bottom: 1px solid #30363d;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+
+        td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #21262d;
+        }
+
+        tr:hover {
+            background: #161b22;
+        }
+
+        tr.clickable {
+            cursor: pointer;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .status.active {
+            background: #1f3933;
+            color: #57d9a3;
+        }
+
+        .status.archived {
+            background: #24292f;
+            color: #8b949e;
+        }
+
+        .metric {
+            color: #58a6ff;
+        }
+
+        a {
+            color: #58a6ff;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-decoration: underline;
+        }
+
+        /* Filter Bar */
+        .filters {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+            padding: 12px;
+            background: #161b22;
+            border-radius: 6px;
+        }
+
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .filter-label {
+            font-size: 12px;
+            color: #8b949e;
+        }
+
+        select, input {
+            padding: 6px 10px;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            color: #c9d1d9;
+            font-size: 12px;
+            font-family: inherit;
+        }
+
+        select:focus, input:focus {
+            outline: none;
+            border-color: #58a6ff;
+        }
+
+        .insight-preview {
+            color: #8b949e;
+            font-size: 12px;
+            max-width: 600px;
+        }
+
+        /* APEX ENHANCEMENTS - Hero Section (Run Overview) */
+        .section:first-of-type {
+            background: linear-gradient(135deg, rgba(31, 57, 51, 0.3) 0%, rgba(13, 17, 23, 0.5) 100%);
+            padding: 24px;
+            border-radius: 8px;
+            border: 1px solid rgba(87, 217, 163, 0.3);
+        }
+
+        .section:first-of-type .section-title {
+            font-size: 16px;
+            color: #57d9a3;
+            border-bottom-color: rgba(87, 217, 163, 0.2);
+        }
+
+        /* APEX ENHANCEMENTS - Search Bar */
+        .search-bar {
+            margin-bottom: 16px;
+        }
+
+        .search-bar input {
+            width: 100%;
+            max-width: 400px;
+            padding: 10px 14px;
+            font-size: 13px;
+            border-radius: 6px;
+        }
+
+        /* APEX ENHANCEMENTS - Enhanced Table Hover */
+        .section:last-of-type tbody tr:hover {
+            background: #161b22;
+            border-left: 3px solid #58a6ff;
+        }
+
+        /* APEX ENHANCEMENTS - Improved Typography */
+        h1 {
+            font-size: 24px !important;
+            background: linear-gradient(135deg, #58a6ff, #57d9a3);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>COSMO Research Lab</h1>
+            <div class="subtitle">Distributed Intelligence Research Platform</div>
+        </header>
+
+        <!-- System Status Banner -->
+        <div id="system-status-banner" style="display: none; background: #161b22; padding: 12px 20px; border-radius: 6px; margin-bottom: 15px; border-left: 3px solid #57d9a3; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <span style="font-weight: 600; color: #57d9a3;">● Live</span>
+                <span style="color: #8b949e; margin-left: 10px;">Orchestrator Running</span>
+                <span id="status-details" style="color: #8b949e; margin-left: 10px;"></span>
+            </div>
+            <a href="/intelligence?name=runtime" style="color: #58a6ff; text-decoration: none; font-size: 12px;">View Operations →</a>
+        </div>
+
+        <div class="section">
+            <div class="section-title">Research Runs</div>
+            <table class="clean-table">
+                <thead>
+                    <tr>
+                        <th style="width: 25%;">Name</th>
+                        <th style="width: 15%;">Status</th>
+                        <th style="width: 15%;">Mode</th>
+                        <th style="width: 40%;">Domain</th>
+                        <th style="width: 5%;"></th>
+                    </tr>
+                </thead>
+                <tbody id="runs-body">
+                    <tr><td colspan="5" style="text-align: center; color: #8b949e;">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script src="utils/api.js"></script>
+    <script src="utils/formatters.js"></script>
+    <script>
+        async function waitForReady() {
+            // Poll /api/ready until dashboard is ready
+            let attempts = 0;
+            while (attempts < 20) {
+                try {
+                    const response = await fetch('/api/ready');
+                    if (response.ok) {
+                        return true; // Ready!
+                    }
+                } catch (e) {
+                    // Server not ready yet, keep trying
+                }
+                await new Promise(resolve => setTimeout(resolve, 500));
+                attempts++;
+            }
+            // After 10 seconds, proceed anyway
+            return true;
+        }
+
+        async function init() {
+            // Wait for server to be ready before loading data
+            const ready = await waitForReady();
+            
+            // Now load content
+            try {
+                await Promise.all([
+                    loadAllRuns(),
+                    checkOrchestratorStatus()
+                ]);
+            } catch (error) {
+                console.error('Failed to initialize:', error);
+                // Show error in runs table if it exists
+                const runsBody = document.getElementById('runs-body');
+                if (runsBody) {
+                    runsBody.innerHTML = '<tr><td colspan="5" style="color: #f85149;">Server not ready. Please wait and refresh.</td></tr>';
+                }
+            }
+        }
+
+        async function checkOrchestratorStatus() {
+            try {
+                const status = await fetch('/api/operations/status').then(r => r.json());
+                if (status.orchestrator.running) {
+                    const banner = document.getElementById('system-status-banner');
+                    const details = document.getElementById('status-details');
+                    
+                    const cycle = await fetch('/api/operations/cycle-status').then(r => r.json()).catch(() => null);
+                    if (cycle) {
+                        details.textContent = `Cycle ${cycle.currentCycle} | ${cycle.mode} mode | Energy ${Math.round(cycle.energy * 100)}%`;
+                    } else {
+                        details.textContent = `PID ${status.orchestrator.pid} | Uptime ${status.orchestrator.uptime}`;
+                    }
+                    
+                    banner.style.display = 'flex';
+                }
+            } catch (error) {
+                // Silently fail - banner stays hidden if status check fails
+            }
+        }
+
+        async function loadAllRuns() {
+            try {
+                const runsData = await API.getRuns();
+                const allRuns = [runsData.current, ...runsData.runs];
+
+                // Lightweight: just get metadata (no state file loading)
+                const rows = await Promise.all(allRuns.map(async (run) => {
+                    try {
+                        const metadata = await fetch(`/api/runs/${run.name}/metadata`)
+                            .then(r => r.json())
+                            .catch(() => ({ 
+                                domain: 'N/A', 
+                                explorationMode: 'unknown'
+                            }));
+
+                        const isActive = run.name === 'runtime';
+                        
+                        return {
+                            name: run.name,
+                            isActive,
+                            mode: metadata.explorationMode || 'unknown',
+                            domain: metadata.domain || 'N/A'
+                        };
+                    } catch (e) {
+                        return null;
+                    }
+                }));
+
+                const validRuns = rows.filter(r => r !== null);
+
+                const modeIcons = {
+                    'guided': '🎯',
+                    'autonomous': '🌌',
+                    'pure': '✨'
+                };
+
+                const html = validRuns.map(r => `
+                    <tr class="clickable" onclick="viewIntelligence('${r.name}')">
+                        <td>
+                            <strong style="color: ${r.isActive ? 'var(--accent-blue)' : 'var(--text-primary)'};">${r.name}</strong>
+                            ${r.isActive ? '<span class="badge badge-success" style="margin-left: 8px; font-size: 9px;">ACTIVE</span>' : ''}
+                        </td>
+                        <td>
+                            <span class="badge ${r.isActive ? 'badge-success' : 'badge-neutral'}">
+                                ${r.isActive ? '● Live' : 'Archived'}
+                            </span>
+                        </td>
+                        <td>${modeIcons[r.mode] || ''} ${r.mode}</td>
+                        <td style="color: var(--text-secondary);">${Formatters.truncate(r.domain, 60)}</td>
+                        <td style="text-align: right;">
+                            <button class="btn btn-sm btn-secondary" onclick="event.stopPropagation(); viewIntelligence('${r.name}')">
+                                View →
+                            </button>
+                        </td>
+                    </tr>
+                `).join('');
+
+                document.getElementById('runs-body').innerHTML = html || 
+                    '<tr><td colspan="5" style="color: #8b949e;">No runs available</td></tr>';
+            } catch (error) {
+                console.error('Failed to load runs:', error);
+                document.getElementById('runs-body').innerHTML = 
+                    '<tr><td colspan="5" style="color: #8b949e;">Failed to load runs</td></tr>';
+            }
+        }
+
+        function viewIntelligence(runName) {
+            window.location.href = `/intelligence?name=${runName}`;
+        }
+
+        // APEX ENHANCEMENT: Add search bar to All Runs
+        function enhanceAllRunsSection() {
+            const allRunsSection = document.querySelector('.section:last-of-type');
+            if (!allRunsSection) return;
+
+            const sectionTitle = allRunsSection.querySelector('.section-title');
+            if (!sectionTitle) return;
+
+            // Create search bar
+            const searchBar = document.createElement('div');
+            searchBar.className = 'search-bar';
+            searchBar.innerHTML = `
+                <input 
+                    type="text" 
+                    id="run-search" 
+                    placeholder="🔍 Search runs by name, status, or stats..." 
+                    style="width: 100%; max-width: 500px;">
+            `;
+
+            // Insert after section title
+            sectionTitle.after(searchBar);
+
+            // Add search functionality
+            document.getElementById('run-search').addEventListener('input', (e) => {
+                const query = e.target.value.toLowerCase();
+                const rows = document.querySelectorAll('#runs-body tr');
+                
+                rows.forEach(row => {
+                    const text = row.textContent.toLowerCase();
+                    row.style.display = text.includes(query) ? '' : 'none';
+                });
+            });
+        }
+
+        // Initialize everything
+        init().then(() => {
+            enhanceAllRunsSection();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+{
+  "id": "plugin:software-engineering",
+  "name": "Software Engineering & Code",
+  "domain": "software_engineering",
+  "description": "Software development toolkit covering code execution, static analysis, version control inspection, and error diagnosis. Supports Python and Node.js runtimes, linting across common languages, git diff analysis for code review, and structured error triage. Oriented toward research-adjacent engineering tasks where code is a means to an end rather than the deliverable itself.",
+  "version": "1.0.0",
+  "tags": ["software_engineering", "code", "development", "debugging", "git", "lint", "devops"],
+  "skills": [
+    "skill:python-execute",
+    "skill:code-lint",
+    "skill:git-diff-analysis",
+    "skill:error-diagnosis"
+  ],
+  "toolsRequired": [
+    { "id": "tool:python", "version": ">=3.10" },
+    { "id": "tool:node", "version": ">=18.0" },
+    { "id": "tool:git", "version": ">=2.30" },
+    { "id": "tool:npm" },
+    { "id": "tool:pip" },
+    { "id": "tool:docker" }
+  ],
+  "assumptionsTracked": [
+    "version_control_used",
+    "ci_cd_available",
+    "test_framework_present"
+  ],
+  "uncertaintyModel": "Code correctness assessed through static analysis findings (severity-weighted), test pass rates, and error reproduction consistency. Diagnostic confidence rated by symptom-to-cause match specificity.",
+  "environment": {
+    "type": "local",
+    "resources": {
+      "memory_gb": 2,
+      "cores": 2
+    }
+  },
+  "origin": "authored",
+  "metadata": {
+    "maintainer": "cosmo-core",
+    "category": "base-domain"
+  }
+}

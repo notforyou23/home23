@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Home23</title>
+  <link rel="stylesheet" href="home23-dashboard.css">
+  <link rel="stylesheet" href="/home23-chat.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="h23-header">
+    <div class="h23-header-left">
+      <span class="h23-logo">🧠 <span id="home-name">Home23</span></span>
+      <span class="h23-subtitle" id="home-subtitle">AUTONOMOUS INTELLIGENCE</span>
+    </div>
+    <div class="h23-header-right">
+      <span class="h23-time" id="clock"></span>
+      <span class="h23-status" id="system-status">● COSMO active</span>
+    </div>
+  </header>
+
+  <!-- Status pills -->
+  <div class="h23-pills" id="status-pills">
+    <span class="h23-pill" id="pill-cycle">🧠 —</span>
+    <span class="h23-pill" id="pill-mode">—</span>
+    <span class="h23-pill" id="pill-updated">sensors —</span>
+  </div>
+
+  <!-- Tab bar -->
+  <nav class="h23-tabs">
+    <button class="h23-tab active" data-tab="home">Home</button>
+    <button class="h23-tab" data-tab="intelligence">Intelligence</button>
+    <div id="agent-tabs"></div>
+    <button class="h23-tab h23-tab-settings" id="settings-btn">&#9881; Settings</button>
+    <button class="h23-tab h23-tab-cosmo23" id="cosmo23-btn">🔬 COSMO</button>
+    <a class="h23-tab h23-tab-evobrew" id="evobrew-btn" href="#" target="_blank">⚡ evobrew</a>
+  </nav>
+
+  <!-- Home panel — primary agent tiles (ReginaCosmo layout) -->
+  <main class="h23-main">
+    <div class="h23-panel active" id="panel-home">
+
+      <!-- COSMO status indicator -->
+      <div class="h23-cosmo-indicator" id="cosmo23-indicator" style="cursor:pointer;">
+        <span class="h23-cosmo-indicator-dot" id="cosmo23-ind-dot"></span>
+        <span id="cosmo23-ind-text">COSMO: checking...</span>
+      </div>
+
+      <!-- Top row: 3-column card grid -->
+      <div class="h23-grid-top">
+        <!-- Cosmo / Thoughts tile (left) -->
+        <div class="h23-tile h23-tile-thoughts">
+          <div class="h23-tile-header"><span class="icon">🧠</span> <span id="primary-agent-name">Agent</span></div>
+          <div class="h23-thought-text" id="home-thought">Loading...</div>
+          <div class="h23-thought-meta" id="home-thought-meta"></div>
+        </div>
+
+        <!-- Vibe tile (center) -->
+        <div class="h23-tile h23-tile-vibe">
+          <div class="h23-tile-header"><span class="icon">🎨</span> Vibe</div>
+          <div class="h23-vibe-image" id="home-vibe-image">
+            <span class="h23-vibe-placeholder">Generating...</span>
+          </div>
+          <div class="h23-vibe-caption" id="home-vibe-caption"></div>
+        </div>
+
+        <!-- Chat tile (right) -->
+        <div class="h23-tile h23-tile-chat" id="tile-chat">
+          <div class="h23-chat-header">
+            <div class="h23-chat-selects">
+              <select class="h23-chat-agent-select" id="chat-agent-select">
+                <option>Loading...</option>
+              </select>
+              <select class="h23-chat-model-select" id="chat-model-select">
+                <option>model</option>
+              </select>
+            </div>
+            <div class="h23-chat-actions">
+              <button class="h23-chat-expand-btn" id="chat-new-btn" title="New conversation" onclick="newConversation()">+</button>
+              <button class="h23-chat-expand-btn" id="chat-history-btn" title="Conversation history" onclick="toggleConversationList()">&#9776;</button>
+              <button class="h23-chat-expand-btn" id="chat-expand-btn" title="Expand">&#8599;</button>
+            </div>
+          </div>
+          <!-- Conversation list panel (slides over messages) -->
+          <div class="h23-chat-conv-panel" id="chat-conv-panel">
+            <div style="padding:10px 14px;border-bottom:1px solid var(--h23-border);display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-size:12px;font-weight:600;color:var(--h23-text-secondary);text-transform:uppercase;letter-spacing:0.5px;">History</span>
+              <button class="h23-chat-expand-btn" onclick="toggleConversationList()" title="Close" style="width:24px;height:24px;font-size:12px;">&#10005;</button>
+            </div>
+            <div class="h23-chat-conv-list" id="chat-conv-list"></div>
+          </div>
+          <div class="h23-chat-messages" id="chat-messages">
+            <div class="h23-chat-empty">Loading...</div>
+          </div>
+          <div class="h23-chat-input-area" id="chat-input-area">
+            <textarea class="h23-chat-input" id="chat-input" placeholder="Message your agent..." rows="1"></textarea>
+            <button class="h23-chat-send-btn" id="chat-send-btn">&#9654;</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- System stats bar (relocated from top grid) -->
+      <div class="h23-system-bar" id="system-bar">
+        <div class="h23-system-bar-item"><label>Uptime</label><div class="value" id="sys-uptime">—</div></div>
+        <div class="h23-system-bar-item"><label>Thoughts</label><div class="value" id="sys-thoughts">—</div></div>
+        <div class="h23-system-bar-item"><label>Nodes</label><div class="value" id="sys-nodes">—</div></div>
+        <div class="h23-system-bar-item"><label>Last</label><div class="value" id="sys-last">—</div></div>
+      </div>
+
+      <!-- Feeder tile -->
+      <div class="h23-tile h23-tile-feeder" id="tile-feeder">
+        <div class="h23-tile-header"><span class="icon">📥</span> Feeder</div>
+        <div id="home-feeder">
+          <p class="h23-muted">Loading...</p>
+        </div>
+      </div>
+
+      <!-- Brain Log -->
+      <div class="h23-tile h23-tile-brainlog">
+        <div class="h23-tile-header"><span class="icon">🧠</span> BRAIN LOG</div>
+        <div class="h23-brain-log" id="home-brainlog">
+          <p class="h23-muted">Loading...</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- COSMO 2.3 iframe (full-bleed, hidden until tab click) -->
+    <div id="cosmo23-frame-wrap" style="display:none; position:relative; width:100%; height:calc(100vh - 48px);">
+      <button id="cosmo23-refresh-btn" title="Reload COSMO" style="position:absolute; top:10px; right:14px; z-index:10; background:rgba(30,30,40,0.85); border:1px solid rgba(255,255,255,0.15); color:#aaa; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; backdrop-filter:blur(4px);">⟳ Refresh</button>
+      <iframe id="cosmo23-frame" style="width:100%; height:100%; border:none;"></iframe>
+    </div>
+
+    <!-- Intelligence panel -->
+    <div class="h23-panel" id="panel-intelligence">
+      <div class="h23-intel-header">
+        <h2>Intelligence</h2>
+        <div class="h23-intel-actions">
+          <span class="h23-intel-timestamp" id="intel-timestamp"></span>
+          <button class="h23-intel-synth-btn" id="intel-synth-btn">Run Synthesis</button>
+        </div>
+      </div>
+
+      <!-- Brain Vitals -->
+      <div class="h23-intel-vitals" id="intel-vitals">
+        <div class="h23-intel-stat"><span class="h23-intel-stat-val" id="iv-nodes">—</span><span class="h23-intel-stat-label">Nodes</span></div>
+        <div class="h23-intel-stat"><span class="h23-intel-stat-val" id="iv-edges">—</span><span class="h23-intel-stat-label">Edges</span></div>
+        <div class="h23-intel-stat"><span class="h23-intel-stat-val" id="iv-cycles">—</span><span class="h23-intel-stat-label">Cycles</span></div>
+        <div class="h23-intel-stat"><span class="h23-intel-stat-val" id="iv-compiled">—</span><span class="h23-intel-stat-label">Compiled</span></div>
+      </div>
+
+      <!-- Self Understanding -->
+      <div class="h23-intel-section" id="intel-self">
+        <h3>Self-Understanding</h3>
+        <div id="intel-self-content" class="h23-intel-card">
+          <p class="h23-muted">Awaiting synthesis...</p>
+        </div>
+      </div>
+
+      <!-- Consolidated Insights -->
+      <div class="h23-intel-section" id="intel-insights">
+        <h3>Consolidated Insights</h3>
+        <div id="intel-insights-list"></div>
+      </div>
+
+      <!-- Knowledge Index -->
+      <div class="h23-intel-section" id="intel-index">
+        <h3>Knowledge Index</h3>
+        <div id="intel-index-content" class="h23-intel-card h23-intel-index-card"></div>
+      </div>
+
+      <!-- Recent Activity -->
+      <div class="h23-intel-section" id="intel-activity">
+        <h3>Recent Activity</h3>
+        <ul id="intel-activity-list" class="h23-intel-activity-list"></ul>
+      </div>
+    </div>
+  </main>
+
+  <!-- Chat overlay -->
+  <div class="h23-chat-overlay" id="chat-overlay">
+    <div class="h23-chat-overlay-panel">
+      <div class="h23-chat-header">
+        <select class="h23-chat-agent-select" id="chat-overlay-agent-select"></select>
+        <div class="h23-chat-actions">
+          <button class="h23-chat-expand-btn" id="chat-standalone-btn" title="Open in new tab">&#8599;</button>
+          <button class="h23-chat-expand-btn" id="chat-minimize-btn" title="Minimize">&#8601;</button>
+        </div>
+      </div>
+      <div class="h23-chat-messages" id="chat-overlay-body"></div>
+      <div class="h23-chat-input-area" id="chat-overlay-input-area">
+        <textarea class="h23-chat-input" id="chat-overlay-input" placeholder="Message your agent..." rows="1"></textarea>
+        <button class="h23-chat-send-btn" id="chat-overlay-send-btn">&#9654;</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/home23-chat.js"></script>
+  <script src="home23-dashboard.js"></script>
+</body>
+</html>

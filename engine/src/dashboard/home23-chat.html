@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Home23 — Chat</title>
+  <link rel="stylesheet" href="/home23-dashboard.css">
+  <link rel="stylesheet" href="/home23-chat.css">
+  <style>
+    .standalone-wrap {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    .standalone-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 24px;
+      border-bottom: 1px solid var(--h23-border);
+    }
+    .standalone-header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .standalone-logo {
+      font-size: 18px;
+      font-weight: 700;
+      color: #fff;
+    }
+    .standalone-back {
+      color: var(--h23-text-secondary);
+      text-decoration: none;
+      font-size: 13px;
+    }
+    .standalone-back:hover {
+      color: var(--h23-text);
+    }
+    .standalone-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      max-width: 800px;
+      width: 100%;
+      margin: 0 auto;
+      overflow: hidden;
+    }
+    .standalone-body .h23-chat-messages {
+      flex: 1;
+      padding: 20px 24px;
+    }
+    .standalone-body .h23-chat-input-area {
+      padding: 12px 24px 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="standalone-wrap">
+    <div class="standalone-header">
+      <div class="standalone-header-left">
+        <span class="standalone-logo">&#129504; Home23</span>
+        <select class="h23-chat-agent-select" id="chat-agent-select">
+          <option>Loading...</option>
+        </select>
+        <select class="h23-chat-model-select" id="chat-model-select">
+          <option>model</option>
+        </select>
+        <div class="h23-chat-actions" style="margin-left:auto;">
+          <button class="h23-chat-expand-btn" onclick="newConversation()" title="New conversation">+</button>
+          <button class="h23-chat-expand-btn" onclick="toggleConversationList()" title="History">&#9776;</button>
+        </div>
+      </div>
+      <a href="/home23" class="standalone-back">&larr; Dashboard</a>
+    </div>
+    <div class="standalone-body" style="position:relative;">
+      <div class="h23-chat-conv-panel" id="chat-conv-panel">
+        <div style="padding:10px 14px;border-bottom:1px solid var(--h23-border);display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:12px;font-weight:600;color:var(--h23-text-secondary);text-transform:uppercase;letter-spacing:0.5px;">History</span>
+          <button class="h23-chat-expand-btn" onclick="toggleConversationList()" title="Close" style="width:24px;height:24px;font-size:12px;">&#10005;</button>
+        </div>
+        <div class="h23-chat-conv-list" id="chat-conv-list"></div>
+      </div>
+      <div class="h23-chat-messages" id="chat-messages">
+        <div class="h23-chat-empty">Loading...</div>
+      </div>
+      <div class="h23-chat-input-area" id="chat-input-area">
+        <textarea class="h23-chat-input" id="chat-input" placeholder="Message your agent..." rows="1"></textarea>
+        <button class="h23-chat-send-btn" id="chat-send-btn">&#9654;</button>
+      </div>
+    </div>
+  </div>
+  <script src="/home23-chat.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => initChat('standalone'));
+  </script>
+</body>
+</html>

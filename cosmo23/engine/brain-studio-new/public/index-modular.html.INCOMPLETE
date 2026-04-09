@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COSMO IDE v2 - Function Calling</title>
+    
+    <!-- External Dependencies -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+    
+    <!-- Monaco Editor -->
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <!-- Main Container -->
+    <div class="ide-container">
+        <!-- Sidebar: File Tree -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h2>Files</h2>
+                <button id="pick-folder-btn" class="btn-primary">📁 Pick Folder</button>
+            </div>
+            <div id="file-tree" class="file-tree"></div>
+        </aside>
+
+        <!-- Main Editor Area -->
+        <main class="main-content">
+            <!-- Tab Bar -->
+            <div class="tab-bar" id="tab-bar"></div>
+            
+            <!-- Monaco Editor -->
+            <div id="editor-container" class="editor-container"></div>
+        </main>
+
+        <!-- Right Panel: AI Chat -->
+        <aside class="ai-panel" id="ai-panel">
+            <div class="ai-header">
+                <h2>AI Assistant</h2>
+                <select id="model-select" class="model-select">
+                    <option value="gpt-5.2">GPT-5.2</option>
+                    <option value="claude-sonnet-4-5" selected>Claude Sonnet 4.5</option>
+                    <option value="claude-opus-4-5">Claude Opus 4.5</option>
+                </select>
+            </div>
+            
+            <div id="chat-messages" class="chat-messages">
+                <div class="welcome-message">
+                    <h3>👋 AI Assistant Ready</h3>
+                    <p>I can explore your codebase, answer questions, and make edits.</p>
+                    <p><strong>Try asking:</strong></p>
+                    <ul>
+                        <li>"How is this project structured?"</li>
+                        <li>"Where is authentication handled?"</li>
+                        <li>"Improve this code" (select code first)</li>
+                    </ul>
+                </div>
+            </div>
+            
+            <div class="chat-input-container">
+                <textarea 
+                    id="chat-input" 
+                    class="chat-input" 
+                    placeholder="Ask AI anything... (Cmd+Enter to send)"
+                    rows="3"
+                ></textarea>
+                <button id="chat-send-btn" class="btn-primary">Send</button>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Edit Queue Modal -->
+    <div id="edit-queue-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📝 AI Edits - Review Before Applying</h2>
+                <button id="close-edit-queue" class="btn-close">×</button>
+            </div>
+            <div id="edit-queue-list" class="edit-queue-list"></div>
+            <div class="modal-footer">
+                <button id="accept-all-edits" class="btn-primary">✓ Accept All</button>
+                <button id="reject-all-edits" class="btn-secondary">✕ Reject All</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Folder Picker Modal -->
+    <div id="folder-picker-modal" class="modal hidden">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>📁 Select Folder</h2>
+                <button id="close-folder-picker" class="btn-close">×</button>
+            </div>
+            <div id="folder-browser" class="folder-browser"></div>
+        </div>
+    </div>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+        <span id="status-folder" class="status-item">No folder selected</span>
+        <span id="status-edits" class="status-item hidden">0 edits pending</span>
+        <span id="status-ai" class="status-item">AI Ready</span>
+    </div>
+
+    <!-- Load Modules -->
+    <script type="module" src="js/editor.js"></script>
+    <script type="module" src="js/file-tree.js"></script>
+    <script type="module" src="js/surgical-edit.js"></script>
+    <script type="module" src="js/ai-chat.js"></script>
+    <script type="module" src="js/edit-queue.js"></script>
+    
+    <!-- Configure Markdown & Syntax Highlighting -->
+    <script>
+        // Configure marked.js with highlight.js for beautiful code rendering
+        marked.setOptions({
+            highlight: function(code, lang) {
+                if (lang && hljs.getLanguage(lang)) {
+                    try {
+                        return hljs.highlight(code, { language: lang }).value;
+                    } catch (err) {
+                        return hljs.highlightAuto(code).value;
+                    }
+                }
+                return hljs.highlightAuto(code).value;
+            },
+            breaks: true,
+            gfm: true,
+            headerIds: false,
+            mangle: false
+        });
+    </script>
+    
+    <!-- Initialize App -->
+    <script type="module">
+        import { initializeEditor } from './js/editor.js';
+        import { initializeFileTree } from './js/file-tree.js';
+        import { initializeAIChat } from './js/ai-chat.js';
+        import { initializeEditQueue } from './js/edit-queue.js';
+
+        // Initialize all modules
+        document.addEventListener('DOMContentLoaded', async () => {
+            console.log('🚀 COSMO IDE v2 - Initializing...');
+            
+            await initializeEditor();
+            await initializeFileTree();
+            await initializeAIChat();
+            await initializeEditQueue();
+            
+            console.log('✅ COSMO IDE v2 - Ready!');
+        });
+    </script>
+</body>
+</html>
+

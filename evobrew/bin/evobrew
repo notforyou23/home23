@@ -1,0 +1,914 @@
+#!/usr/bin/env node
+
+/**
+ * Evobrew CLI - Development workspace with daemon mode support
+ * 
+ * Usage:
+ *   evobrew [command] [options]
+ * 
+ * Commands:
+ *   start         Start Evobrew server (foreground)
+ *   setup         Run first-time setup wizard
+ *   config        Open configuration file
+ *   daemon        Manage background service (install|uninstall|start|stop|restart|status|logs)
+ */
+
+const { spawn } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+const { checkAndKillStaleProcess } = require('../lib/process-utils.js');
+
+const projectRoot = path.join(__dirname, '..');
+
+// Commands help text
+const HELP_TEXT = `
+🧪 Evobrew - Model-Agnostic AI Workspace
+
+Usage: evobrew [command] [options]
+
+Commands:
+  setup              Run first-time setup wizard
+           --only <providers>    configure only selected providers (comma-separated)
+           --skip <providers>    skip selected providers (comma-separated)
+           --status              show current configuration status and exit
+  start              Start server in foreground
+  status             Show service status (alias: daemon status)
+  logs               View recent logs (alias: daemon logs)
+  daemon <action>    Manage background service
+  config [action]    Configuration management
+  doctor             Health checks and diagnostics
+  version            Show version
+  update [options]   Check for and apply updates
+
+Daemon Actions:
+  daemon install     Install and start as background service
+  daemon uninstall   Stop and remove service
+  daemon start       Start service
+  daemon stop        Stop service
+  daemon restart     Restart service
+  daemon status      Show service status
+  daemon logs        View recent logs
+
+Config Actions:
+  config             Open config in default editor
+  config show        Display current config (secrets masked)
+  config reset       Reset to default configuration
+
+Options:
+  --help, -h         Show this help message
+  --version, -v      Show version number
+
+Examples:
+  evobrew setup                  First-time setup
+  evobrew setup --only anthropic,xai   Configure only anthropic and xAI
+  evobrew setup --skip ollama          Skip Ollama configuration
+  evobrew setup --status             Show provider status
+  evobrew daemon install       Install as launchd/systemd (default)
+  evobrew daemon install --pm2  Install/run under PM2
+  evobrew status               Check if running
+  evobrew start                Run in foreground (dev mode)
+
+Documentation: https://evobrew.ai/docs
+Issues: https://github.com/notforyou23/evobrew/issues
+`;
+
+const command = process.argv[2] || 'help';
+const subcommand = process.argv[3];
+
+// Parse version from package.json
+function getVersion() {
+  try {
+    const pkg = require(path.join(projectRoot, 'package.json'));
+    return pkg.version || '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+// Show help
+function showHelp() {
+  console.log(HELP_TEXT);
+  process.exit(0);
+}
+
+// Show version (simple)
+function showVersionSimple() {
+  console.log(getVersion());
+  process.exit(0);
+}
+
+// Show version (detailed)
+async function showVersion() {
+  const version = getVersion();
+  const daemonManager = require('../lib/daemon-manager.js');
+  const status = daemonManager.getDaemonStatus();
+  const configPath = path.join(require('os').homedir(), '.evobrew', 'config.json');
+  
+  console.log(`\n🧪 Evobrew v${version}`);
+  console.log();
+  console.log(`Node.js:  ${process.version}`);
+  console.log(`Platform: ${process.platform} ${process.arch}`);
+  console.log(`Config:   ${fs.existsSync(configPath) ? configPath.replace(require('os').homedir(), '~') : 'not found'}`);
+  console.log(`Daemon:   ${status.running ? `running (PID ${status.pid})` : status.installed ? 'installed (stopped)' : 'not installed'}`);
+  console.log();
+}
+
+// Check if first-run setup is needed
+function needsSetup() {
+  const os = require('os');
+  const configPath = path.join(os.homedir(), '.evobrew', 'config.json');
+  
+  // No config file = definitely needs setup
+  if (!fs.existsSync(configPath)) {
+    return true;
+  }
+  
+  // Check if at least one provider is configured
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const hasAnthropic = config.providers?.anthropic?.enabled && 
+      (config.providers.anthropic.oauth || config.providers.anthropic.api_key);
+    const hasOpenAI = config.providers?.openai?.enabled && config.providers.openai.api_key;
+    const hasOpenAICodex = config.providers?.['openai-codex']?.enabled;
+    const hasXAI = config.providers?.xai?.enabled && config.providers.xai.api_key;
+    const hasOllamaCloud = config.providers?.['ollama-cloud']?.enabled && config.providers['ollama-cloud'].api_key;
+    const hasOllama = config.providers?.ollama?.enabled;
+    
+    // Need setup if no providers are configured
+    if (!hasAnthropic && !hasOpenAI && !hasOpenAICodex && !hasXAI && !hasOllamaCloud && !hasOllama) {
+      return true;
+    }
+    
+    return false;
+  } catch {
+    // Config exists but can't be read/parsed = needs setup
+    return true;
+  }
+}
+
+function parseCsvList(input) {
+  if (!input) return [];
+  return String(input)
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function printConfigStatus(status) {
+  console.log('📋 Current Configuration:');
+
+  const order = ['anthropic', 'openaiApi', 'openaiCodex', 'xai', 'ollamaCloud', 'ollama', 'openclaw', 'brains'];
+
+  for (const key of order) {
+    const item = status[key];
+    const icon = item.configured ? '✓' : '✗';
+    const label = item.label.padEnd(12);
+    console.log(`  ${icon} ${label} [${item.status}]`);
+  }
+
+  console.log('');
+}
+
+function parseSetupArgs(args) {
+  const options = {
+    only: null,
+    skip: null,
+    showStatus: false
+  };
+
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--only' && args[i + 1]) {
+      options.only = parseCsvList(args[i + 1]);
+      i++;
+    } else if (args[i] === '--skip' && args[i + 1]) {
+      options.skip = parseCsvList(args[i + 1]);
+      i++;
+    } else if (args[i] === '--status') {
+      options.showStatus = true;
+    }
+  }
+
+  return options;
+}
+
+async function runSetupWizard(argv = []) {
+  const { setupWizard, getConfigStatus } = require('../lib/setup-wizard.js');
+
+  const options = parseSetupArgs(argv);
+
+  try {
+    if (options.showStatus) {
+      const status = await getConfigStatus();
+      printConfigStatus(status);
+      return;
+    }
+
+    await setupWizard(projectRoot, options);
+  } catch (err) {
+    console.error('❌ Setup failed:', err.message);
+    process.exit(1);
+  }
+}
+
+// ============================================================================
+// DAEMON COMMANDS
+// ============================================================================
+
+async function handleDaemonCommand() {
+  const daemonManager = require('../lib/daemon-manager.js');
+  const action = subcommand;
+  
+  // Parse additional arguments
+  const args = process.argv.slice(4);
+  const options = {};
+  
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '-n' && args[i + 1]) {
+      options.lines = parseInt(args[i + 1], 10);
+      i++;
+    } else if (args[i] === '--lines' && args[i + 1]) {
+      options.lines = parseInt(args[i + 1], 10);
+      i++;
+    } else if (args[i] === '--error' || args[i] === '-e') {
+      options.errorLog = true;
+    } else if (args[i] === '--follow' || args[i] === '-f') {
+      options.follow = true;
+    } else if (args[i] === '--pm2') {
+      options.pm2 = true;
+    }
+  }
+  
+  try {
+    switch (action) {
+      case 'install': {
+        console.log('🔧 Installing Evobrew service...\n');
+
+        const runner = options.pm2 ? 'pm2' : null;
+
+        if (!runner) {
+          const platform = daemonManager.detectPlatform();
+          if (!platform.supported) {
+            console.error(`❌ ${platform.message}`);
+            console.error('Tip: If you prefer PM2, install it and run: evobrew daemon install --pm2');
+            process.exit(1);
+          }
+          console.log(`Platform: ${platform.platform} (${platform.serviceManager})`);
+        } else {
+          if (!daemonManager.hasPm2()) {
+            console.error('❌ PM2 is not installed. Install with: npm install -g pm2');
+            process.exit(1);
+          }
+          console.log('Runner: pm2');
+        }
+
+        const result = await daemonManager.installDaemon({ runner });
+        
+        console.log('\n✅ Daemon installed successfully!');
+        if (result.plistPath) {
+          console.log(`   Plist: ${result.plistPath}`);
+        }
+        if (result.unitPath) {
+          console.log(`   Unit: ${result.unitPath}`);
+        }
+        
+        // Wait and check status
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const status = daemonManager.getDaemonStatus();
+        
+        if (status.running) {
+          console.log(`\n🚀 Evobrew is running!`);
+          console.log(`   PID: ${status.pid}`);
+          console.log(`   URL: http://localhost:${status.port}`);
+        } else {
+          console.log('\n⚠️  Service installed but not running. Check logs:');
+          console.log('   evobrew daemon logs');
+        }
+        break;
+      }
+      
+      case 'uninstall': {
+        console.log('🗑️  Uninstalling Evobrew service...\n');
+
+        const runner = options.pm2 ? 'pm2' : null;
+        await daemonManager.uninstallDaemon({ runner });
+        
+        console.log('✅ Daemon uninstalled successfully!');
+        console.log('   Service removed. Config and logs preserved in ~/.evobrew/');
+        break;
+      }
+      
+      case 'start': {
+        console.log('▶️  Starting Evobrew service...\n');
+
+        const runner = options.pm2 ? 'pm2' : null;
+        const result = await daemonManager.startDaemon({ runner });
+        
+        if (result.success) {
+          const status = daemonManager.getDaemonStatus();
+          if (status.running) {
+            console.log('✅ Daemon started!');
+            console.log(`   PID: ${status.pid}`);
+            console.log(`   URL: http://localhost:${status.port}`);
+          } else {
+            console.log('⚠️  Start command sent, but service not running.');
+            console.log('   Check logs: evobrew daemon logs');
+          }
+        }
+        break;
+      }
+      
+      case 'stop': {
+        console.log('⏹️  Stopping Evobrew service...\n');
+
+        const runner = options.pm2 ? 'pm2' : null;
+        await daemonManager.stopDaemon({ runner });
+        
+        console.log('✅ Daemon stopped.');
+        break;
+      }
+      
+      case 'restart': {
+        console.log('🔄 Restarting Evobrew service...\n');
+
+        const runner = options.pm2 ? 'pm2' : null;
+        await daemonManager.restartDaemon({ runner });
+        
+        // Wait and check status
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        const status = daemonManager.getDaemonStatus();
+        
+        if (status.running) {
+          console.log('✅ Daemon restarted!');
+          console.log(`   PID: ${status.pid}`);
+          console.log(`   URL: http://localhost:${status.port}`);
+        } else {
+          console.log('⚠️  Restart issued but service not running.');
+          console.log('   Check logs: evobrew daemon logs');
+        }
+        break;
+      }
+      
+      case 'status': {
+        const status = daemonManager.getDaemonStatus();
+        daemonManager.printStatus(status);
+        
+        // Exit code reflects running state
+        process.exit(status.running ? 0 : 1);
+        break;
+      }
+      
+      case 'logs': {
+        const lines = options.lines || 50;
+
+        // PM2 logs (if requested)
+        if (options.pm2) {
+          console.log(daemonManager.getPm2Logs(lines));
+          break;
+        }
+
+        if (options.follow !== false) {
+          // Default: tail -f mode
+          console.log(`📜 Tailing ${options.errorLog ? 'error' : 'server'} logs (Ctrl+C to stop)...\n`);
+          
+          const tail = daemonManager.tailDaemonLogs({
+            errorLog: options.errorLog,
+            lines
+          });
+          
+          tail.stdout.on('data', (data) => {
+            process.stdout.write(data);
+          });
+          
+          tail.stderr.on('data', (data) => {
+            process.stderr.write(data);
+          });
+          
+          tail.on('close', (code) => {
+            process.exit(code || 0);
+          });
+          
+          // Handle Ctrl+C gracefully
+          process.on('SIGINT', () => {
+            tail.kill();
+            console.log('\n');
+            process.exit(0);
+          });
+        } else {
+          // Show last N lines only
+          const logs = daemonManager.getDaemonLogs(lines, { errorLog: options.errorLog });
+          console.log(logs);
+        }
+        break;
+      }
+      
+      default:
+        console.log('❌ Unknown daemon command:', action);
+        console.log('\nAvailable daemon commands:');
+        console.log('  install    - Install and start as background service');
+        console.log('  uninstall  - Stop and remove background service');
+        console.log('  start      - Start background service');
+        console.log('  stop       - Stop background service');
+        console.log('  restart    - Restart background service');
+        console.log('  status     - Show service status');
+        console.log('  logs       - Tail server logs');
+        process.exit(1);
+    }
+  } catch (err) {
+    console.error(`❌ Error: ${err.message}`);
+    process.exit(1);
+  }
+}
+
+// ============================================================================
+// DOCTOR COMMAND
+// ============================================================================
+
+const https = require('https');
+const http = require('http');
+const net = require('net');
+const os = require('os');
+
+function checkHttpEndpoint(url, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const client = url.startsWith('https') ? https : http;
+    const req = client.get(url, { timeout: timeoutMs }, (res) => {
+      resolve({ ok: res.statusCode >= 200 && res.statusCode < 400, status: res.statusCode });
+    });
+    req.on('error', () => resolve({ ok: false, error: 'connection failed' }));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ ok: false, error: 'timeout' });
+    });
+  });
+}
+
+async function runDoctor() {
+  const daemonManager = require('../lib/daemon-manager.js');
+  const HOME = os.homedir();
+  const CONFIG_DIR = path.join(HOME, '.evobrew');
+  const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+  const DATABASE_FILE = path.join(CONFIG_DIR, 'database.db');
+  
+  console.log(`\n🧪 Evobrew Doctor`);
+  console.log('─'.repeat(40));
+  
+  let warnings = 0;
+  let errors = 0;
+  
+  // 1. Node.js version
+  const nodeVersion = process.version;
+  const nodeMajor = parseInt(nodeVersion.slice(1).split('.')[0]);
+  if (nodeMajor >= 18) {
+    console.log(`✅ Node.js ${nodeVersion} (>= 18 required)`);
+  } else {
+    console.log(`❌ Node.js ${nodeVersion} (>= 18 required)`);
+    errors++;
+  }
+  
+  // 2. Config file
+  let config = null;
+  if (fs.existsSync(CONFIG_FILE)) {
+    try {
+      config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+      console.log(`✅ Config: ${CONFIG_FILE.replace(HOME, '~')}`);
+    } catch {
+      console.log(`⚠️  Config: Invalid JSON`);
+      warnings++;
+    }
+  } else {
+    console.log(`⚠️  Config: Not found`);
+    warnings++;
+  }
+  
+  // 3. Database
+  if (fs.existsSync(DATABASE_FILE)) {
+    console.log(`✅ Database: ${DATABASE_FILE.replace(HOME, '~')}`);
+  } else {
+    console.log(`⚠️  Database: Not initialized`);
+    warnings++;
+  }
+  
+  // 4. Daemon status
+  const status = daemonManager.getDaemonStatus();
+  if (status.running) {
+    console.log(`✅ Daemon: running (PID ${status.pid})`);
+  } else if (status.installed) {
+    console.log(`⚠️  Daemon: installed but not running`);
+    warnings++;
+  } else {
+    console.log(`⚠️  Daemon: not installed`);
+    warnings++;
+  }
+  
+  // 5. HTTP endpoint
+  const port = config?.port || status.port || 3405;
+  const httpCheck = await checkHttpEndpoint(`http://localhost:${port}/api/health`);
+  if (httpCheck.ok) {
+    console.log(`✅ HTTP: localhost:${port} responding`);
+  } else {
+    console.log(`⚠️  HTTP: localhost:${port} not responding`);
+    warnings++;
+  }
+  
+  // 6. HTTPS (optional)
+  const httpsPort = config?.httpsPort || 3406;
+  if (httpsPort) {
+    const httpsCheck = await checkHttpEndpoint(`https://localhost:${httpsPort}/api/health`);
+    if (httpsCheck.ok) {
+      console.log(`✅ HTTPS: localhost:${httpsPort} responding`);
+    } else {
+      console.log(`⚠️  HTTPS: Not configured`);
+      warnings++;
+    }
+  }
+  
+  // 7. Providers
+  if (config && config.providers) {
+    const { openai, anthropic, xai } = config.providers;
+    
+    if (openai && openai.enabled && openai.apiKey) {
+      console.log(`✅ OpenAI: Configured`);
+    } else {
+      console.log(`⚠️  OpenAI: Not configured`);
+      warnings++;
+    }
+    
+    if (anthropic && (anthropic.enabled || anthropic.oauth)) {
+      if (anthropic.oauth) {
+        console.log(`✅ Anthropic: OAuth token configured`);
+      } else if (anthropic.apiKey) {
+        console.log(`✅ Anthropic: API key configured`);
+      }
+    } else {
+      console.log(`⚠️  Anthropic: Not configured`);
+      warnings++;
+    }
+    
+    if (xai && xai.enabled && xai.apiKey) {
+      console.log(`✅ xAI: Configured`);
+    } else {
+      console.log(`⚠️  xAI: Not configured`);
+      warnings++;
+    }
+  }
+  
+  // 8. OpenClaw
+  if (config && config.openclaw && config.openclaw.enabled) {
+    const gateway = config.openclaw.gateway || 'ws://localhost:18789';
+    console.log(`✅ OpenClaw: ${gateway}`);
+  } else {
+    console.log(`⚠️  OpenClaw: Not configured`);
+    warnings++;
+  }
+  
+  console.log('─'.repeat(40));
+  
+  if (errors > 0) {
+    console.log(`Overall: ${errors} error(s), ${warnings} warning(s)`);
+    process.exit(1);
+  } else if (warnings > 0) {
+    console.log(`Overall: Healthy (${warnings} warning${warnings !== 1 ? 's' : ''})`);
+  } else {
+    console.log(`Overall: Healthy`);
+  }
+  console.log();
+}
+
+// ============================================================================
+// UPDATE COMMAND
+// ============================================================================
+
+/**
+ * Handle the update command with full update functionality
+ */
+async function handleUpdateCommand() {
+  const updater = require('../lib/updater.js');
+  const args = process.argv.slice(3);
+  
+  // Parse flags
+  const checkOnly = args.includes('--check') || args.includes('-c');
+  const force = args.includes('--force') || args.includes('-f');
+  const skipRestart = args.includes('--no-restart');
+  const help = args.includes('--help') || args.includes('-h');
+  
+  if (help) {
+    console.log(`
+🧪 Evobrew Update
+
+Usage: evobrew update [options]
+
+Options:
+  --check, -c      Check for updates without applying
+  --force, -f      Force update even if already up to date
+  --no-restart     Skip daemon restart after update
+  --help, -h       Show this help
+
+Examples:
+  evobrew update            # Check and apply update
+  evobrew update --check    # Just check, don't update
+  evobrew update --force    # Force reinstall current version
+`);
+    return;
+  }
+  
+  if (checkOnly) {
+    // Just check for updates
+    const result = await updater.checkForUpdates();
+    updater.printUpdateCheckResult(result);
+    process.exit(result.updateAvailable ? 0 : 0);
+  } else {
+    // Full update
+    const result = await updater.fullUpdate({ force, skipRestart });
+    process.exit(result.success ? 0 : 1);
+  }
+}
+
+// ============================================================================
+// CONFIG COMMANDS
+// ============================================================================
+
+function maskSecret(str) {
+  if (!str || str.length < 8) return '***';
+  return str.substring(0, 4) + '...' + str.substring(str.length - 4);
+}
+
+function getDefaultConfig() {
+  const crypto = require('crypto');
+  return {
+    port: 3405,
+    httpsPort: 3406,
+    encryptionKey: crypto.randomBytes(32).toString('hex'),
+    providers: {
+      openai: { enabled: false, apiKey: null },
+      anthropic: { enabled: false, apiKey: null, oauth: false },
+      xai: { enabled: false, apiKey: null },
+    },
+    openclaw: {
+      enabled: false,
+      gateway: 'ws://localhost:18789',
+      token: null,
+    },
+    adminMode: false,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+async function handleConfigCommand() {
+  const HOME = os.homedir();
+  const CONFIG_DIR = path.join(HOME, '.evobrew');
+  const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
+  const action = subcommand || 'edit';
+  
+  if (action === 'edit' || action === 'open') {
+    if (!fs.existsSync(CONFIG_FILE)) {
+      console.log('❌ Error: Config file not found\n');
+      console.log("Run 'evobrew setup' to create configuration.");
+      console.log('Docs: https://evobrew.ai/docs/setup');
+      process.exit(1);
+    }
+    
+    console.log(`Opening config: ${CONFIG_FILE}\n`);
+    
+    const { exec } = require('child_process');
+    if (process.platform === 'darwin') {
+      exec(`open -e "${CONFIG_FILE}"`);
+    } else if (process.platform === 'linux') {
+      exec(`xdg-open "${CONFIG_FILE}"`);
+    } else {
+      console.log(`Manually open: ${CONFIG_FILE}`);
+    }
+    
+  } else if (action === 'show') {
+    if (!fs.existsSync(CONFIG_FILE)) {
+      console.log('❌ Error: Config file not found\n');
+      console.log("Run 'evobrew setup' to create configuration.");
+      process.exit(1);
+    }
+    
+    let config;
+    try {
+      config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+    } catch {
+      console.log('❌ Error: Invalid config file');
+      process.exit(1);
+    }
+    
+    console.log('\nEvobrew Configuration');
+    console.log('─'.repeat(40));
+    console.log();
+    console.log('Server');
+    console.log(`  Port:       ${config.port || 3405}`);
+    console.log(`  HTTPS Port: ${config.httpsPort || 'not configured'}`);
+    console.log(`  Admin Mode: ${config.adminMode ? 'enabled' : 'disabled'}`);
+    console.log();
+    console.log('Providers');
+    
+    const providers = config.providers || {};
+    for (const [name, p] of Object.entries(providers)) {
+      if (p.enabled || p.apiKey || p.oauth) {
+        const status = p.oauth ? 'OAuth' : (p.apiKey ? maskSecret(p.apiKey) : 'no key');
+        console.log(`  ${name}: enabled (${status})`);
+      } else {
+        console.log(`  ${name}: disabled`);
+      }
+    }
+    
+    console.log();
+    console.log('OpenClaw');
+    const oc = config.openclaw || {};
+    if (oc.enabled) {
+      console.log(`  Gateway: ${oc.gateway || 'ws://localhost:18789'}`);
+      console.log(`  Token:   ${oc.token ? maskSecret(oc.token) : 'not set'}`);
+    } else {
+      console.log(`  Not configured`);
+    }
+    
+    console.log();
+    console.log(`Config file: ${CONFIG_FILE}`);
+    console.log();
+    
+  } else if (action === 'reset') {
+    console.log('Resetting configuration to defaults...\n');
+    
+    if (!fs.existsSync(CONFIG_DIR)) {
+      fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    }
+    
+    const config = getDefaultConfig();
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+    
+    console.log('✅ Configuration reset');
+    console.log(`Config file: ${CONFIG_FILE}`);
+    console.log();
+    console.log("Run 'evobrew setup' to configure API keys.");
+    console.log();
+    
+  } else {
+    console.log(`❌ Unknown config action: ${action}`);
+    console.log("\nUse 'config', 'config show', or 'config reset'");
+    process.exit(1);
+  }
+}
+
+// ============================================================================
+// MAIN COMMAND HANDLER
+// ============================================================================
+
+(async () => {
+  try {
+    // Handle flags first
+    if (command === '--help' || command === '-h' || command === 'help') {
+      showHelp();
+    }
+    
+    if (command === '-v') {
+      showVersionSimple();
+    }
+    
+    if (command === '--version' || command === 'version') {
+      await showVersion();
+      process.exit(0);
+    }
+    
+    switch (command) {
+      case 'start': {
+        const staleResult = await checkAndKillStaleProcess(3405);
+        if (!staleResult.ok) {
+          process.exit(1);
+        }
+
+        // Auto-detect first run
+        if (needsSetup()) {
+          console.log('🔍 First-time setup detected...\n');
+          await runSetupWizard();
+          console.log('\n💡 Setup complete! Run "evobrew start" to launch.\n');
+          process.exit(0);
+        }
+        
+        // Start server in foreground
+        console.log('🚀 Starting Evobrew...\n');
+        const server = spawn('node', [path.join(projectRoot, 'server', 'server.js')], {
+          stdio: 'inherit',
+          cwd: projectRoot
+        });
+        
+        server.on('error', (err) => {
+          console.error('❌ Failed to start:', err.message);
+          process.exit(1);
+        });
+        
+        process.on('SIGINT', () => {
+          console.log('\n👋 Stopping Evobrew...');
+          server.kill('SIGTERM');
+          process.exit(0);
+        });
+        break;
+      }
+        
+      case 'setup': {
+        const setupArgs = process.argv.slice(3);
+        const setupOptions = parseSetupArgs(setupArgs);
+
+        let staleCheck = { ok: true, killed: false };
+        if (!setupOptions.showStatus) {
+          staleCheck = await checkAndKillStaleProcess(3405);
+          if (!staleCheck.ok) {
+            process.exit(1);
+          }
+        }
+
+        await runSetupWizard(setupArgs);
+        
+        // If we killed a server to run setup, restart it
+        if (staleCheck.killed) {
+          console.log('\n🔄 Restarting server (was stopped for setup)...');
+          const { spawn } = require('child_process');
+          const serverPath = path.join(projectRoot, 'server', 'server.js');
+          const server = spawn(process.execPath, [serverPath], {
+            detached: true,
+            stdio: 'ignore',
+            cwd: projectRoot
+          });
+          server.unref();
+          
+          // Give it a moment to start
+          await new Promise(r => setTimeout(r, 1500));
+          console.log('✅ Server restarted in background.');
+        }
+        
+        process.exit(0);
+      }
+        
+      case 'config':
+        await handleConfigCommand();
+        break;
+      
+      case 'doctor':
+        await runDoctor();
+        break;
+      
+      case 'update':
+        await handleUpdateCommand();
+        break;
+      
+      // STATUS ALIAS - shortcut for 'daemon status'
+      case 'status':
+        const daemonManager = require('../lib/daemon-manager.js');
+        const status = daemonManager.getDaemonStatus();
+        daemonManager.printStatus(status);
+        process.exit(status.running ? 0 : 1);
+        break;
+      
+      // LOGS ALIAS - shortcut for 'daemon logs'
+      case 'logs': {
+        const daemonMgr = require('../lib/daemon-manager.js');
+        const lines = 50;
+        
+        console.log(`📜 Tailing server logs (Ctrl+C to stop)...\n`);
+        
+        const tail = daemonMgr.tailDaemonLogs({ lines });
+        
+        tail.stdout.on('data', (data) => {
+          process.stdout.write(data);
+        });
+        
+        tail.stderr.on('data', (data) => {
+          process.stderr.write(data);
+        });
+        
+        tail.on('close', (code) => {
+          process.exit(code || 0);
+        });
+        
+        // Handle Ctrl+C gracefully
+        process.on('SIGINT', () => {
+          tail.kill();
+          console.log('\n');
+          process.exit(0);
+        });
+        break;
+      }
+      
+      case 'daemon':
+        if (!subcommand) {
+          console.log('❌ Missing daemon subcommand.\n');
+          console.log('Usage: evobrew daemon <command>\n');
+          console.log('Commands: install, uninstall, start, stop, restart, status, logs');
+          process.exit(1);
+        }
+        await handleDaemonCommand();
+        break;
+        
+      default:
+        console.log(`❌ Unknown command: ${command}\n`);
+        showHelp();
+    }
+  } catch (err) {
+    console.error(`\n❌ Error: ${err.message}`);
+    if (process.env.DEBUG || process.env.EVOBREW_DEBUG) {
+      console.error('\nStack trace:');
+      console.error(err.stack);
+    }
+    process.exit(1);
+  }
+})();

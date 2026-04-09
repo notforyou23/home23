@@ -1,0 +1,132 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Database files (CRITICAL - may contain tokens/secrets)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# SSL certificates and keys
+ssl/
+*.pem
+*.key
+*.crt
+
+# Conversation history (contains potentially sensitive data)
+conversations/
+conversations/*.json
+
+# File snapshots (automatic backups before AI edits)
+snapshots/
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+.nyc_output/
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# AI IDE directories (may contain personal paths/settings)
+.claude/
+cursor/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.cache
+
+# WIP documentation and agent artifacts
+AGENT-NOTES.md
+CONVERSATION-MANAGEMENT.md
+DUAL_BRAIN_ARCHITECTURE.md
+EVOBREW_SETUP_REDESIGN.md
+HTTPS-SETUP.md
+IMAGE-SUPPORT.md
+LAUNCH_CHECKLIST.md
+OAUTH-TOKEN-SINK.md
+OPENCLAW-INTEGRATION.md
+PI-DEPLOYMENT.md
+PORTABILITY-AUDIT.md
+PORTABILITY-FIXES-APPLIED.md
+SNAPSHOT-SYSTEM.md
+SURGICAL-EDITS.md
+anthropic-oauth-flow.md
+docs/ANTHROPIC_OAUTH_SETUP.md
+docs/CODEX_OAUTH_SPEC.md
+docs/CONFIG_SYSTEM.md
+docs/DAEMON_MODE.md
+docs/PI-DEPLOYMENT.md
+docs/plans/
+docs/security/
+scripts/audit-release-gate.js
+*.oauth-fixed
+
+# Build outputs (if you add a build step later)
+dist/
+build/
+out/
+.playwright-cli/
+.playwright-mcp/
+.evobrew-workspaces/

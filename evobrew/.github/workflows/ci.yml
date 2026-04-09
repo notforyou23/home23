@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      - run: npm ci
+
+      # Syntax-check all server and lib JS files
+      - name: Syntax check server/
+        run: find server -name '*.js' -exec node --check {} +
+
+      - name: Syntax check lib/
+        run: find lib -name '*.js' -exec node --check {} +
+
+      - name: Syntax check bin/
+        run: node --check bin/evobrew
+
+      # Run the release audit gate
+      - name: Release audit gate
+        run: node scripts/audit-release-gate.js

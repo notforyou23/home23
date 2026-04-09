@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cosmo Insights Explorer</title>
+    <style>
+        :root {
+            --bg-dark: #0a0e1a;
+            --bg-card: #131929;
+            --bg-elevated: #1a2137;
+            --text-primary: #e5e9f2;
+            --text-secondary: #b4c0d9;
+            --text-dim: #6b7a99;
+            --accent-cyan: #00ffff;
+            --accent-purple: #9d4edd;
+            --accent-pink: #ff006e;
+            --accent-green: #06ffa5;
+            --accent-yellow: #ffbe0b;
+            --border-subtle: rgba(255, 255, 255, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--bg-card), var(--bg-elevated));
+            border-bottom: 1px solid var(--border-subtle);
+            padding: 24px 32px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+        }
+
+        .header-content {
+            max-width: 1600px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .header-title h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border-subtle);
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+        }
+
+        .btn:hover {
+            background: rgba(0, 255, 255, 0.1);
+            border-color: var(--accent-cyan);
+            transform: translateY(-1px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            border: none;
+            color: white;
+            font-weight: 600;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0, 255, 255, 0.3);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Main Content */
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 32px;
+        }
+
+        /* Stats Overview */
+        .stats-overview {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+        .stat-card:hover {
+            border-color: var(--accent-cyan);
+            transform: translateY(-2px);
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 8px;
+        }
+
+        .stat-label {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+
+        /* Category Tabs */
+        .category-tabs {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-bottom: 24px;
+            padding: 16px;
+            background: var(--bg-card);
+            border-radius: 12px;
+            border: 1px solid var(--border-subtle);
+        }
+
+        .category-tab {
+            padding: 10px 18px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            color: var(--text-primary);
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .category-tab:hover {
+            background: rgba(0, 255, 255, 0.1);
+            border-color: var(--accent-cyan);
+        }
+
+        .category-tab.active {
+            background: rgba(0, 255, 255, 0.2);
+            border-color: var(--accent-cyan);
+            color: var(--accent-cyan);
+            font-weight: 600;
+        }
+
+        .category-tab .count {
+            display: inline-block;
+            margin-left: 6px;
+            padding: 2px 6px;
+            background: rgba(0, 255, 255, 0.2);
+            border-radius: 4px;
+            font-size: 0.75rem;
+        }
+
+        /* Content Area */
+        .content-header {
+            margin-bottom: 20px;
+        }
+
+        .content-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--accent-cyan);
+            margin-bottom: 8px;
+        }
+
+        .content-subtitle {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+
+        /* Insights Grid */
+        .insights-grid {
+            display: grid;
+            gap: 16px;
+        }
+
+        .insight-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-left: 4px solid var(--accent-cyan);
+            border-radius: 12px;
+            padding: 24px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .insight-card:hover {
+            background: var(--bg-elevated);
+            border-left-width: 6px;
+            transform: translateX(4px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        }
+
+        .insight-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 12px;
+        }
+
+        .insight-title {
+            font-weight: 600;
+            font-size: 1.1rem;
+            color: var(--text-primary);
+        }
+
+        .insight-score {
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .score-high {
+            background: rgba(6, 255, 165, 0.2);
+            color: var(--accent-green);
+        }
+
+        .score-medium {
+            background: rgba(0, 255, 255, 0.2);
+            color: var(--accent-cyan);
+        }
+
+        .score-low {
+            background: rgba(255, 190, 11, 0.2);
+            color: var(--accent-yellow);
+        }
+
+        .insight-content {
+            color: var(--text-secondary);
+            line-height: 1.7;
+            margin-bottom: 12px;
+        }
+
+        .insight-meta {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            margin-top: 12px;
+        }
+
+        .insight-meta span {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        /* Detail View */
+        .detail-view {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            backdrop-filter: blur(5px);
+        }
+
+        .detail-view.show {
+            display: flex;
+        }
+
+        .detail-content {
+            background: var(--bg-dark);
+            border: 1px solid var(--border-subtle);
+            border-radius: 16px;
+            max-width: 1200px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .detail-header {
+            position: sticky;
+            top: 0;
+            background: linear-gradient(135deg, var(--bg-card), var(--bg-elevated));
+            border-bottom: 1px solid var(--border-subtle);
+            padding: 24px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 10;
+        }
+
+        .detail-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .close-btn {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            border: 1px solid var(--border-subtle);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            transition: all 0.2s;
+        }
+
+        .close-btn:hover {
+            background: rgba(255, 0, 110, 0.2);
+            border-color: var(--accent-pink);
+            color: var(--accent-pink);
+        }
+
+        .detail-body {
+            padding: 32px;
+        }
+
+        .detail-section {
+            margin-bottom: 28px;
+        }
+
+        .detail-label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--accent-cyan);
+            margin-bottom: 10px;
+        }
+
+        .detail-value {
+            color: var(--text-primary);
+            line-height: 1.8;
+            font-size: 1rem;
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin: 24px 0;
+        }
+
+        .detail-card {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .detail-card-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+            margin-bottom: 6px;
+        }
+
+        .detail-card-label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .findings-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .finding-item {
+            background: rgba(6, 255, 165, 0.05);
+            border-left: 3px solid var(--accent-green);
+            border-radius: 8px;
+            padding: 16px;
+        }
+
+        .finding-text {
+            color: var(--text-secondary);
+            line-height: 1.7;
+        }
+
+        /* Loading State */
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border-subtle);
+            border-top-color: var(--accent-cyan);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 80px 20px;
+        }
+
+        .empty-icon {
+            font-size: 4rem;
+            margin-bottom: 16px;
+            opacity: 0.3;
+        }
+
+        .empty-text {
+            color: var(--text-dim);
+            font-size: 1.1rem;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-card);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(0, 255, 255, 0.3);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(0, 255, 255, 0.5);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container {
+                padding: 16px;
+            }
+
+            .header {
+                padding: 16px;
+            }
+
+            .header-title h1 {
+                font-size: 1.5rem;
+            }
+
+            .detail-body {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-content">
+            <div class="header-title">
+                <h1>🔍 Insights Explorer</h1>
+            </div>
+            <div class="header-actions">
+                <a href="/" class="btn">
+                    ← Back to Dashboard
+                </a>
+                <button id="refreshBtn" class="btn btn-primary" onclick="loadInsights()">
+                    <span id="refreshIcon">↻</span>
+                    Refresh Analysis
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="stats-overview" id="statsOverview">
+            <!-- Stats will be populated here -->
+        </div>
+
+        <div class="category-tabs" id="categoryTabs">
+            <!-- Tabs will be populated here -->
+        </div>
+
+        <div class="content-header">
+            <div class="content-title" id="contentTitle">Loading...</div>
+            <div class="content-subtitle" id="contentSubtitle"></div>
+        </div>
+
+        <div class="insights-grid" id="insightsGrid">
+            <div class="empty-state">
+                <div class="empty-icon">🔍</div>
+                <div class="empty-text">Click "Refresh Analysis" to discover insights...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Detail View Modal -->
+    <div class="detail-view" id="detailView" onclick="closeDetailIfBackdrop(event)">
+        <div class="detail-content" onclick="event.stopPropagation()">
+            <div class="detail-header">
+                <div class="detail-title" id="detailTitle"></div>
+                <button class="close-btn" onclick="closeDetail()">×</button>
+            </div>
+            <div class="detail-body" id="detailBody">
+                <!-- Detail content will be populated here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentInsights = null;
+        let currentCategory = 'all';
+
+        // Load insights on page load
+        async function loadInsights() {
+            const btn = document.getElementById('refreshBtn');
+            const icon = document.getElementById('refreshIcon');
+            
+            btn.disabled = true;
+            icon.style.animation = 'spin 0.8s linear infinite';
+
+            try {
+                const response = await fetch('/api/insights/analyze');
+                currentInsights = await response.json();
+                
+                renderStats(currentInsights);
+                renderTabs(currentInsights);
+                renderCategory('all', currentInsights);
+                
+            } catch (error) {
+                console.error('Failed to load insights:', error);
+                showError('Failed to load insights. Make sure the dashboard server is running.');
+            } finally {
+                btn.disabled = false;
+                icon.style.animation = '';
+            }
+        }
+
+        function renderStats(insights) {
+            const stats = insights.stats || {};
+            const categories = stats.categories || {};
+            
+            const statsHTML = `
+                <div class="stat-card">
+                    <div class="stat-value">${stats.totalInsights || 0}</div>
+                    <div class="stat-label">Total Insights</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${categories.highSurprise || 0}</div>
+                    <div class="stat-label">High Surprise</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${categories.agentBreakthroughs || 0}</div>
+                    <div class="stat-label">Agent Breakthroughs</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${categories.deepReasoning || 0}</div>
+                    <div class="stat-label">Deep Reasoning</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${categories.strategicInsights || 0}</div>
+                    <div class="stat-label">Strategic Insights</div>
+                </div>
+            `;
+            
+            document.getElementById('statsOverview').innerHTML = statsHTML;
+        }
+
+        function renderTabs(insights) {
+            const stats = insights.stats || {};
+            const categories = stats.categories || {};
+            
+            const tabs = [
+                { id: 'all', label: 'Top Insights', count: stats.totalInsights || 0 },
+                { id: 'surprise', label: 'High Surprise', count: categories.highSurprise || 0 },
+                { id: 'web', label: 'Web-Enhanced', count: categories.webEnhanced || 0 },
+                { id: 'reasoning', label: 'Deep Reasoning', count: categories.deepReasoning || 0 },
+                { id: 'agents', label: 'Agent Breakthroughs', count: categories.agentBreakthroughs || 0 },
+                { id: 'memory', label: 'High Activation', count: categories.highActivation || 0 },
+                { id: 'crossdomain', label: 'Cross-Domain', count: categories.crossDomain || 0 },
+                { id: 'strategic', label: 'Strategic', count: categories.strategicInsights || 0 },
+                { id: 'goals', label: 'Goal Genesis', count: categories.goalGenesis || 0 }
+            ].filter(tab => tab.count > 0);
+            
+            const tabsHTML = tabs.map(tab => `
+                <button class="category-tab ${tab.id === 'all' ? 'active' : ''}" 
+                        data-category="${tab.id}"
+                        onclick="switchCategory('${tab.id}')">
+                    ${tab.label}
+                    <span class="count">${tab.count}</span>
+                </button>
+            `).join('');
+            
+            document.getElementById('categoryTabs').innerHTML = tabsHTML;
+        }
+
+        function switchCategory(category) {
+            currentCategory = category;
+            
+            // Update tab styling
+            document.querySelectorAll('.category-tab').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.category === category);
+            });
+            
+            renderCategory(category, currentInsights);
+        }
+
+        function renderCategory(category, insights) {
+            let items = [];
+            let title = '';
+            let subtitle = '';
+            
+            switch(category) {
+                case 'all':
+                    items = insights.stats?.topScores || [];
+                    title = 'Top Insights';
+                    subtitle = 'Highest scoring insights across all categories';
+                    break;
+                case 'surprise':
+                    items = insights.highSurpriseThoughts || [];
+                    title = 'High Surprise Thoughts';
+                    subtitle = 'Thoughts with unexpected or novel content';
+                    break;
+                case 'web':
+                    items = insights.webEnhancedThoughts || [];
+                    title = 'Web-Enhanced Thoughts';
+                    subtitle = 'Thoughts augmented with web search data';
+                    break;
+                case 'reasoning':
+                    items = insights.reasoningTraces || [];
+                    title = 'Deep Reasoning Traces';
+                    subtitle = 'Thoughts with extensive GPT-5.2 reasoning';
+                    break;
+                case 'agents':
+                    items = insights.agentBreakthroughs || [];
+                    title = 'Agent Breakthroughs';
+                    subtitle = 'Significant discoveries from specialist agents';
+                    break;
+                case 'memory':
+                    items = insights.highActivationNodes || [];
+                    title = 'High Activation Memory';
+                    subtitle = 'Most actively used memory concepts';
+                    break;
+                case 'crossdomain':
+                    items = insights.crossDomainConcepts || [];
+                    title = 'Cross-Domain Connectors';
+                    subtitle = 'Concepts bridging multiple knowledge domains';
+                    break;
+                case 'strategic':
+                    items = insights.strategicInsights || [];
+                    title = 'Strategic Insights';
+                    subtitle = 'Meta-coordinator planning and directives';
+                    break;
+                case 'goals':
+                    items = insights.novelGoals || [];
+                    title = 'Goal Genesis';
+                    subtitle = 'Thoughts that generated new goals';
+                    break;
+            }
+            
+            document.getElementById('contentTitle').textContent = title;
+            document.getElementById('contentSubtitle').textContent = subtitle;
+            
+            if (items.length === 0) {
+                document.getElementById('insightsGrid').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">📭</div>
+                        <div class="empty-text">No insights found in this category</div>
+                    </div>
+                `;
+                return;
+            }
+            
+            const gridHTML = items.map((item, i) => renderInsightCard(item, i + 1)).join('');
+            document.getElementById('insightsGrid').innerHTML = gridHTML;
+        }
+
+        function renderInsightCard(item, index) {
+            const score = item.score || 0;
+            const scoreClass = score > 80 ? 'score-high' : score > 50 ? 'score-medium' : 'score-low';
+            const borderColor = score > 80 ? 'var(--accent-green)' : score > 50 ? 'var(--accent-cyan)' : 'var(--accent-yellow)';
+            
+            // Different rendering based on category
+            if (item.category && item.category.includes('Agent')) {
+                return `
+                    <div class="insight-card" style="border-left-color: ${borderColor}" 
+                         onclick='showDetail(${JSON.stringify(item).replace(/'/g, "&#39;")})'>
+                        <div class="insight-header">
+                            <div class="insight-title">${index}. ${escapeHtml(item.agentType || 'Agent Discovery')}</div>
+                            <div class="insight-score ${scoreClass}">
+                                ${item.totalFindings || 0} findings, ${item.totalInsights || 0} insights
+                            </div>
+                        </div>
+                        <div class="insight-content">
+                            ${escapeHtml((item.goal || 'No description').substring(0, 200))}${(item.goal || '').length > 200 ? '...' : ''}
+                        </div>
+                        ${item.findings && item.findings.length > 0 ? `
+                            <div style="margin-top: 12px; padding: 12px; background: rgba(6, 255, 165, 0.05); border-radius: 8px;">
+                                <div style="font-size: 0.85rem; color: var(--accent-green); font-weight: 600; margin-bottom: 6px;">Preview:</div>
+                                <div style="font-size: 0.9rem; color: var(--text-secondary);">
+                                    ${escapeHtml((item.findings[0].content || item.findings[0].text || '').substring(0, 150))}...
+                                </div>
+                            </div>
+                        ` : ''}
+                        <div class="insight-meta">
+                            <span>⏱️ ${item.duration || 'N/A'}</span>
+                            <span>📊 Score: ${score.toFixed(0)}</span>
+                            <span style="color: var(--accent-cyan);">→ Click for full details</span>
+                        </div>
+                    </div>
+                `;
+            } else if (item.category && (item.category.includes('Memory') || item.category.includes('Cross-Domain'))) {
+                return `
+                    <div class="insight-card" style="border-left-color: ${borderColor}"
+                         onclick='showDetail(${JSON.stringify(item).replace(/'/g, "&#39;")})'>
+                        <div class="insight-header">
+                            <div class="insight-title">${index}. ${item.category}</div>
+                            <div class="insight-score ${scoreClass}">Score: ${score.toFixed(0)}</div>
+                        </div>
+                        <div class="insight-content">
+                            ${escapeHtml((item.concept || 'No concept').substring(0, 250))}${(item.concept || '').length > 250 ? '...' : ''}
+                        </div>
+                        <div class="insight-meta">
+                            ${item.activation ? `<span>⚡ Activation: ${(item.activation * 100).toFixed(0)}%</span>` : ''}
+                            ${item.accessCount ? `<span>🔄 Accessed: ${item.accessCount}x</span>` : ''}
+                            ${item.clustersConnected ? `<span>🔗 Bridges ${item.clustersConnected} clusters</span>` : ''}
+                            <span style="color: var(--accent-cyan);">→ Click for details</span>
+                        </div>
+                    </div>
+                `;
+            } else if (item.category && item.category.includes('Strategic')) {
+                return `
+                    <div class="insight-card" style="border-left-color: ${borderColor}"
+                         onclick='showDetail(${JSON.stringify(item).replace(/'/g, "&#39;")})'>
+                        <div class="insight-header">
+                            <div class="insight-title">${index}. Cycle ${item.cycle} Strategic Review</div>
+                            <div class="insight-score ${scoreClass}">Score: ${score.toFixed(0)}</div>
+                        </div>
+                        <div class="insight-content">
+                            ${item.keyInsights && item.keyInsights.length > 0 ? 
+                                `<strong>Key Insight:</strong> ${escapeHtml(item.keyInsights[0].substring(0, 200))}...` : 
+                                'Strategic review with directives and priorities'}
+                        </div>
+                        <div class="insight-meta">
+                            <span>💡 ${item.keyInsights?.length || 0} insights</span>
+                            <span>📋 ${item.directives?.length || 0} directives</span>
+                            <span style="color: var(--accent-cyan);">→ Click for full review</span>
+                        </div>
+                    </div>
+                `;
+            } else {
+                // Thought-based insights
+                return `
+                    <div class="insight-card" style="border-left-color: ${borderColor}"
+                         onclick='showDetail(${JSON.stringify(item).replace(/'/g, "&#39;")})'>
+                        <div class="insight-header">
+                            <div class="insight-title">${index}. Cycle ${item.cycle} - ${(item.role || 'system').toUpperCase()}</div>
+                            <div class="insight-score ${scoreClass}">Score: ${score.toFixed(0)}</div>
+                        </div>
+                        <div class="insight-content">
+                            ${escapeHtml((item.thought || 'No thought').substring(0, 300))}${(item.thought || '').length > 300 ? '...' : ''}
+                        </div>
+                        <div class="insight-meta">
+                            ${item.surprise ? `<span>⚡ Surprise: ${(item.surprise * 100).toFixed(0)}%</span>` : ''}
+                            ${item.reasoningLength ? `<span>🧠 Reasoning: ${(item.reasoningLength / 1000).toFixed(1)}k chars</span>` : ''}
+                            ${item.goalsGenerated ? `<span>🎯 Generated ${item.goalsGenerated} goals</span>` : ''}
+                            <span>📂 ${item.category}</span>
+                            <span style="color: var(--accent-cyan);">→ Click for full thought</span>
+                        </div>
+                    </div>
+                `;
+            }
+        }
+
+        function showDetail(item) {
+            document.getElementById('detailTitle').innerHTML = `
+                <span>${getCategoryIcon(item.category)}</span> ${item.category}
+            `;
+            
+            let detailHTML = '';
+            
+            if (item.category && item.category.includes('Agent')) {
+                detailHTML = renderAgentDetail(item);
+            } else if (item.category && (item.category.includes('Memory') || item.category.includes('Cross-Domain'))) {
+                detailHTML = renderMemoryDetail(item);
+            } else if (item.category && item.category.includes('Strategic')) {
+                detailHTML = renderStrategicDetail(item);
+            } else {
+                detailHTML = renderThoughtDetail(item);
+            }
+            
+            document.getElementById('detailBody').innerHTML = detailHTML;
+            document.getElementById('detailView').classList.add('show');
+        }
+
+        function renderAgentDetail(item) {
+            return `
+                <div class="detail-section">
+                    <div class="detail-label">Agent Type</div>
+                    <div class="detail-value">${escapeHtml(item.agentType || 'Unknown')}</div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-label">Agent ID</div>
+                    <div class="detail-value" style="font-family: monospace; font-size: 0.9rem;">${escapeHtml(item.agentId || 'N/A')}</div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-label">Mission Goal</div>
+                    <div class="detail-value" style="font-size: 1.1rem; line-height: 1.8;">
+                        ${escapeHtml(item.goal || 'No goal specified')}
+                    </div>
+                </div>
+                
+                <div class="detail-grid">
+                    <div class="detail-card">
+                        <div class="detail-card-value">${item.totalFindings || 0}</div>
+                        <div class="detail-card-label">Total Findings</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${item.totalInsights || 0}</div>
+                        <div class="detail-card-label">Total Insights</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${item.duration || 'N/A'}</div>
+                        <div class="detail-card-label">Duration</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${item.score.toFixed(0)}</div>
+                        <div class="detail-card-label">Score</div>
+                    </div>
+                </div>
+                
+                ${item.findings && item.findings.length > 0 ? `
+                    <div class="detail-section">
+                        <div class="detail-label">🔍 All Findings (${item.findings.length})</div>
+                        <div class="findings-list">
+                            ${item.findings.map((f, i) => `
+                                <div class="finding-item">
+                                    <div style="font-weight: 600; margin-bottom: 8px; color: var(--accent-green);">
+                                        Finding ${i + 1}
+                                    </div>
+                                    <div class="finding-text">${escapeHtml(f.content || f.text || f || 'No content')}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : '<div class="detail-section"><div class="detail-label">🔍 Findings</div><div class="detail-value">No findings recorded</div></div>'}
+                
+                ${item.insights && item.insights.length > 0 ? `
+                    <div class="detail-section">
+                        <div class="detail-label">💡 All Insights (${item.insights.length})</div>
+                        <div class="findings-list">
+                            ${item.insights.map((ins, i) => `
+                                <div class="finding-item" style="border-left-color: var(--accent-yellow);">
+                                    <div style="font-weight: 600; margin-bottom: 8px; color: var(--accent-yellow);">
+                                        Insight ${i + 1}
+                                    </div>
+                                    <div class="finding-text">${escapeHtml(ins.content || ins.text || ins || 'No content')}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : '<div class="detail-section"><div class="detail-label">💡 Insights</div><div class="detail-value">No insights recorded</div></div>'}
+                
+                ${item.timestamp ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Timestamp</div>
+                        <div class="detail-value">${new Date(item.timestamp).toLocaleString()}</div>
+                    </div>
+                ` : ''}
+            `;
+        }
+
+        function renderMemoryDetail(item) {
+            return `
+                <div class="detail-section">
+                    <div class="detail-label">Memory Concept</div>
+                    <div class="detail-value" style="font-size: 1.2rem; line-height: 1.8; background: rgba(0, 255, 255, 0.05); padding: 16px; border-radius: 8px;">
+                        ${escapeHtml(item.concept || 'No concept')}
+                    </div>
+                </div>
+                
+                <div class="detail-grid">
+                    ${item.activation !== undefined ? `
+                        <div class="detail-card">
+                            <div class="detail-card-value">${(item.activation * 100).toFixed(1)}%</div>
+                            <div class="detail-card-label">Activation Level</div>
+                        </div>
+                    ` : ''}
+                    ${item.accessCount !== undefined ? `
+                        <div class="detail-card">
+                            <div class="detail-card-value">${item.accessCount}</div>
+                            <div class="detail-card-label">Access Count</div>
+                        </div>
+                    ` : ''}
+                    ${item.clustersConnected !== undefined ? `
+                        <div class="detail-card">
+                            <div class="detail-card-value">${item.clustersConnected}</div>
+                            <div class="detail-card-label">Clusters Connected</div>
+                        </div>
+                    ` : ''}
+                    ${item.ownCluster !== undefined ? `
+                        <div class="detail-card">
+                            <div class="detail-card-value">${item.ownCluster}</div>
+                            <div class="detail-card-label">Own Cluster</div>
+                        </div>
+                    ` : ''}
+                    <div class="detail-card">
+                        <div class="detail-card-value">${item.score.toFixed(0)}</div>
+                        <div class="detail-card-label">Score</div>
+                    </div>
+                    ${item.tag ? `
+                        <div class="detail-card">
+                            <div class="detail-card-value">${escapeHtml(item.tag)}</div>
+                            <div class="detail-card-label">Tag</div>
+                        </div>
+                    ` : ''}
+                </div>
+                
+                ${item.id ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Memory ID</div>
+                        <div class="detail-value" style="font-family: monospace;">${escapeHtml(item.id)}</div>
+                    </div>
+                ` : ''}
+                
+                ${item.created ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Created</div>
+                        <div class="detail-value">${new Date(item.created).toLocaleString()}</div>
+                    </div>
+                ` : ''}
+            `;
+        }
+
+        function renderStrategicDetail(item) {
+            return `
+                <div class="detail-section">
+                    <div class="detail-label">Review Cycle</div>
+                    <div class="detail-value">Cycle ${item.cycle}</div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-label">Source File</div>
+                    <div class="detail-value" style="font-family: monospace; font-size: 0.9rem;">${escapeHtml(item.file || 'N/A')}</div>
+                </div>
+                
+                ${item.keyInsights && item.keyInsights.length > 0 ? `
+                    <div class="detail-section">
+                        <div class="detail-label">🎯 Key Insights (${item.keyInsights.length})</div>
+                        <div class="findings-list">
+                            ${item.keyInsights.map((insight, i) => `
+                                <div class="finding-item" style="border-left-color: var(--accent-cyan);">
+                                    <div style="font-weight: 600; margin-bottom: 8px; color: var(--accent-cyan);">
+                                        Insight ${i + 1}
+                                    </div>
+                                    <div class="finding-text">${escapeHtml(insight)}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+                
+                ${item.directives && item.directives.length > 0 ? `
+                    <div class="detail-section">
+                        <div class="detail-label">📋 Strategic Directives (${item.directives.length})</div>
+                        <div class="findings-list">
+                            ${item.directives.map((dir, i) => `
+                                <div class="finding-item" style="border-left-color: var(--accent-yellow);">
+                                    <div style="font-weight: 600; margin-bottom: 8px; color: var(--accent-yellow);">
+                                        Directive ${i + 1}
+                                    </div>
+                                    <div class="finding-text">${escapeHtml(dir)}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+                
+                ${item.priorities && item.priorities.length > 0 ? `
+                    <div class="detail-section">
+                        <div class="detail-label">🎯 Prioritized Goals (${item.priorities.length})</div>
+                        <div class="detail-value">
+                            <ul style="margin: 0; padding-left: 20px; line-height: 1.9;">
+                                ${item.priorities.map(p => `<li>${escapeHtml(p)}</li>`).join('')}
+                            </ul>
+                        </div>
+                    </div>
+                ` : ''}
+            `;
+        }
+
+        function renderThoughtDetail(item) {
+            const roleColors = {
+                curiosity: 'var(--accent-cyan)',
+                analyst: 'var(--accent-purple)',
+                critic: 'var(--accent-pink)'
+            };
+            
+            return `
+                <div class="detail-section">
+                    <div class="detail-label">Cycle & Role</div>
+                    <div class="detail-value" style="color: ${roleColors[item.role] || 'var(--accent-cyan)'}; font-weight: 600; font-size: 1.1rem;">
+                        Cycle ${item.cycle} - ${(item.role || 'SYSTEM').toUpperCase()}
+                    </div>
+                </div>
+                
+                <div class="detail-section">
+                    <div class="detail-label">Complete Thought (Full Content)</div>
+                    <div class="detail-value" style="font-size: 1.1rem; line-height: 1.9; background: rgba(0, 255, 255, 0.05); padding: 20px; border-radius: 12px;">
+                        ${escapeHtml(item.thought || 'No thought content')}
+                    </div>
+                </div>
+                
+                ${item.reasoning ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Complete GPT-5.2 Reasoning Trace (Full Content)</div>
+                        <div class="detail-value" style="font-style: italic; opacity: 0.95; background: rgba(157, 78, 221, 0.08); padding: 20px; border-radius: 12px; line-height: 1.8; max-height: 600px; overflow-y: auto;">
+                            ${escapeHtml(item.reasoning)}
+                        </div>
+                    </div>
+                ` : ''}
+                
+                <div class="detail-grid">
+                    ${item.surprise !== undefined ? `
+                        <div class="detail-card">
+                            <div class="detail-card-value">${(item.surprise * 100).toFixed(1)}%</div>
+                            <div class="detail-card-label">Surprise Level</div>
+                        </div>
+                    ` : ''}
+                    <div class="detail-card">
+                        <div class="detail-card-value">${item.score.toFixed(0)}</div>
+                        <div class="detail-card-label">Insight Score</div>
+                    </div>
+                    ${item.goalsGenerated !== undefined ? `
+                        <div class="detail-card">
+                            <div class="detail-card-value">${item.goalsGenerated}</div>
+                            <div class="detail-card-label">Goals Generated</div>
+                        </div>
+                    ` : ''}
+                    ${item.reasoningLength !== undefined ? `
+                        <div class="detail-card">
+                            <div class="detail-card-value">${(item.reasoningLength / 1000).toFixed(1)}k</div>
+                            <div class="detail-card-label">Reasoning Chars</div>
+                        </div>
+                    ` : ''}
+                    <div class="detail-card">
+                        <div class="detail-card-value">${escapeHtml(item.category)}</div>
+                        <div class="detail-card-label">Category</div>
+                    </div>
+                </div>
+                
+                ${item.timestamp ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Timestamp</div>
+                        <div class="detail-value">${new Date(item.timestamp).toLocaleString()}</div>
+                    </div>
+                ` : ''}
+            `;
+        }
+
+        function getCategoryIcon(category) {
+            if (!category) return '🔍';
+            if (category.includes('Agent')) return '🤖';
+            if (category.includes('Memory')) return '🧠';
+            if (category.includes('Cross-Domain')) return '🔗';
+            if (category.includes('Strategic')) return '🎯';
+            if (category.includes('Surprise')) return '⚡';
+            if (category.includes('Reasoning')) return '🧠';
+            if (category.includes('Web')) return '🌐';
+            if (category.includes('Goal')) return '🎯';
+            return '💡';
+        }
+
+        function closeDetail() {
+            document.getElementById('detailView').classList.remove('show');
+        }
+
+        function closeDetailIfBackdrop(event) {
+            if (event.target.id === 'detailView') {
+                closeDetail();
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function showError(message) {
+            document.getElementById('insightsGrid').innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-icon">⚠️</div>
+                    <div class="empty-text">${escapeHtml(message)}</div>
+                </div>
+            `;
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeDetail();
+            }
+            if (e.key === 'r' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                loadInsights();
+            }
+        });
+    </script>
+</body>
+</html>
+

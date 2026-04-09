@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Agents Live</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d0d0d; color: #e0e0e0; font-family: -apple-system, sans-serif; }
+
+  header {
+    background: #111;
+    border-bottom: 1px solid #222;
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  header h1 { font-size: 18px; font-weight: 700; color: #fff; }
+  header span { font-size: 12px; color: #555; }
+
+  #back-btn {
+    display: none;
+    background: #1e1e1e;
+    border: 1px solid #333;
+    color: #aaa;
+    padding: 6px 14px;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  #back-btn:active { background: #2a2a2a; }
+
+  /* Agent grid */
+  #agent-grid {
+    padding: 16px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .agent-card {
+    background: #161616;
+    border: 1px solid #2a2a2a;
+    border-radius: 14px;
+    padding: 16px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .agent-card:active { background: #1e1e1e; }
+  .agent-card .icon { font-size: 28px; margin-bottom: 8px; }
+  .agent-card .name { font-size: 15px; font-weight: 600; color: #fff; }
+  .agent-card .desc { font-size: 12px; color: #666; margin-top: 4px; }
+
+  /* File list view */
+  #file-view {
+    display: none;
+    padding: 16px;
+  }
+  #file-view h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 14px;
+  }
+  .file-btn {
+    display: block;
+    width: 100%;
+    background: #161616;
+    border: 1px solid #2a2a2a;
+    border-radius: 12px;
+    color: #ccc;
+    font-size: 15px;
+    padding: 14px 16px;
+    margin-bottom: 10px;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .file-btn:active { background: #1e1e1e; }
+  .file-btn .file-icon { margin-right: 10px; }
+
+  /* Content view */
+  #content-view {
+    display: none;
+    padding: 16px;
+  }
+  #content-view h2 {
+    font-size: 15px;
+    font-weight: 600;
+    color: #aaa;
+    margin-bottom: 12px;
+  }
+  #content-body {
+    background: #111;
+    border: 1px solid #222;
+    border-radius: 12px;
+    padding: 16px;
+    font-size: 13px;
+    line-height: 1.7;
+    color: #ccc;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: calc(100vh - 140px);
+    overflow-y: auto;
+  }
+
+  .loading { color: #555; font-style: italic; }
+  .error { color: #e05555; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="header-title">Agents</h1>
+  <button id="back-btn" onclick="goBack()">← Back</button>
+</header>
+
+<div id="agent-grid"></div>
+<div id="file-view"><h2 id="file-view-title"></h2><div id="file-list"></div></div>
+<div id="content-view"><h2 id="content-title"></h2><pre id="content-body"></pre></div>
+
+<script>
+const AGENTS = [
+  { id: 'archivist',  name: 'Archivist',  icon: '📚', desc: 'Memory & documentation' },
+  { id: 'autostudy',  name: 'Autostudy',  icon: '🎓', desc: 'Learning & curriculum' },
+  { id: 'conductor',  name: 'Conductor',  icon: '🎼', desc: 'Coordination & routing' },
+  { id: 'sentinel',   name: 'Sentinel',   icon: '🛡️', desc: 'Health monitoring' },
+  { id: 'builder',    name: 'Builder',    icon: '🔧', desc: 'Code & construction' },
+  { id: 'researcher', name: 'Researcher', icon: '🔍', desc: 'Deep research' },
+  { id: 'critic',     name: 'Critic',     icon: '🎯', desc: 'Review & feedback' },
+  { id: 'synthesizer',name: 'Synthesizer',icon: '⚗️', desc: 'Synthesis & insight' },
+  { id: 'intel',      name: 'Intel',      icon: '🧠', desc: 'Intelligence ops' },
+  { id: 'scribe',     name: 'Scribe',     icon: '✍️', desc: 'Writing & drafts' },
+];
+
+const FILES = ['SOUL.md', 'MISSION.md', 'MEMORY.md', 'STATUS.md'];
+
+let currentAgent = null;
+let navStack = ['grid'];
+
+function showGrid() {
+  document.getElementById('agent-grid').style.display = 'grid';
+  document.getElementById('file-view').style.display = 'none';
+  document.getElementById('content-view').style.display = 'none';
+  document.getElementById('header-title').textContent = 'Agents';
+  document.getElementById('back-btn').style.display = 'none';
+}
+
+function showFiles(agent) {
+  currentAgent = agent;
+  document.getElementById('agent-grid').style.display = 'none';
+  document.getElementById('content-view').style.display = 'none';
+  document.getElementById('file-view').style.display = 'block';
+  document.getElementById('file-view-title').textContent = agent.name + ' — Files';
+  document.getElementById('header-title').textContent = agent.name;
+  document.getElementById('back-btn').style.display = 'block';
+
+  const list = document.getElementById('file-list');
+  list.innerHTML = '';
+  FILES.forEach(f => {
+    const btn = document.createElement('button');
+    btn.className = 'file-btn';
+    btn.innerHTML = '<span class="file-icon">📄</span>' + f;
+    btn.onclick = () => loadFile(agent, f);
+    list.appendChild(btn);
+  });
+  navStack = ['grid', 'files'];
+}
+
+async function loadFile(agent, file) {
+  document.getElementById('file-view').style.display = 'none';
+  document.getElementById('content-view').style.display = 'block';
+  document.getElementById('content-title').textContent = agent.name + ' / ' + file;
+  document.getElementById('header-title').textContent = file;
+  document.getElementById('back-btn').style.display = 'block';
+  navStack = ['grid', 'files', 'content'];
+
+  const body = document.getElementById('content-body');
+  body.className = 'loading';
+  body.textContent = 'Loading...';
+
+  try {
+    const res = await fetch(`/api/agent-file?agent=${agent.id}&file=${encodeURIComponent(file)}`);
+    if (!res.ok) {
+      const err = await res.text();
+      body.className = 'error';
+      body.textContent = 'Error ' + res.status + ': ' + err;
+      return;
+    }
+    const text = await res.text();
+    body.className = '';
+    body.textContent = text;
+  } catch (e) {
+    body.className = 'error';
+    body.textContent = 'Network error: ' + e.message;
+  }
+}
+
+function goBack() {
+  navStack.pop();
+  const dest = navStack[navStack.length - 1];
+  if (dest === 'files') showFiles(currentAgent);
+  else showGrid();
+}
+
+// Build agent grid
+const grid = document.getElementById('agent-grid');
+AGENTS.forEach(agent => {
+  const card = document.createElement('div');
+  card.className = 'agent-card';
+  card.innerHTML = `<div class="icon">${agent.icon}</div><div class="name">${agent.name}</div><div class="desc">${agent.desc}</div>`;
+  card.onclick = () => showFiles(agent);
+  grid.appendChild(card);
+});
+</script>
+</body>
+</html>

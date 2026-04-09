@@ -1,0 +1,233 @@
+{
+  "weather": {
+    "outdoor": {
+      "temperature": "61.2",
+      "feelsLike": "61.2",
+      "humidity": "45"
+    },
+    "wind": {
+      "speed": "3.1",
+      "gust": "4.9",
+      "direction": "262"
+    },
+    "pressure": {
+      "relative": "29.68"
+    },
+    "solar": {
+      "uv": "4",
+      "radiation": "461.7"
+    },
+    "indoor": {
+      "temperature": "68.9",
+      "humidity": "39"
+    },
+    "lastUpdate": "2026-03-21T19:05:04.359Z",
+    "rawData": {
+      "outdoor": {
+        "temperature": {
+          "time": "1774119855",
+          "unit": "ºF",
+          "value": "61.2"
+        },
+        "feels_like": {
+          "time": "1774119855",
+          "unit": "ºF",
+          "value": "61.2"
+        },
+        "app_temp": {
+          "time": "1774119855",
+          "unit": "ºF",
+          "value": "57.1"
+        },
+        "dew_point": {
+          "time": "1774119855",
+          "unit": "ºF",
+          "value": "39.7"
+        },
+        "humidity": {
+          "time": "1774119855",
+          "unit": "%",
+          "value": "45"
+        }
+      },
+      "indoor": {
+        "temperature": {
+          "time": "1774119855",
+          "unit": "ºF",
+          "value": "68.9"
+        },
+        "humidity": {
+          "time": "1774119855",
+          "unit": "%",
+          "value": "39"
+        },
+        "dew_point": {
+          "time": "1774119855",
+          "unit": "ºF",
+          "value": "42.9"
+        },
+        "feels_like": {
+          "time": "1774119855",
+          "unit": "ºF",
+          "value": "68.9"
+        },
+        "app_tempin": {
+          "time": "1774119855",
+          "unit": "ºF",
+          "value": "67.3"
+        }
+      },
+      "solar_and_uvi": {
+        "solar": {
+          "time": "1774119855",
+          "unit": "W/m²",
+          "value": "461.7"
+        },
+        "uvi": {
+          "time": "1774119855",
+          "unit": "",
+          "value": "4"
+        }
+      },
+      "rainfall_piezo": {
+        "rain_rate": {
+          "time": "1774119855",
+          "unit": "in/hr",
+          "value": "0.00"
+        },
+        "daily": {
+          "time": "1774119855",
+          "unit": "in",
+          "value": "0.01"
+        },
+        "state": {
+          "time": "1774119855",
+          "unit": "",
+          "value": "0"
+        },
+        "event": {
+          "time": "1774119855",
+          "unit": "in",
+          "value": "0.00"
+        },
+        "1_hour": {
+          "time": "1774119855",
+          "unit": "in",
+          "value": "0.00"
+        },
+        "weekly": {
+          "time": "1774119855",
+          "unit": "in",
+          "value": "0.85"
+        },
+        "monthly": {
+          "time": "1774119855",
+          "unit": "in",
+          "value": "2.74"
+        },
+        "yearly": {
+          "time": "1774119855",
+          "unit": "in",
+          "value": "4.67"
+        }
+      },
+      "wind": {
+        "wind_speed": {
+          "time": "1774119855",
+          "unit": "mph",
+          "value": "3.1"
+        },
+        "wind_gust": {
+          "time": "1774119855",
+          "unit": "mph",
+          "value": "4.9"
+        },
+        "wind_direction": {
+          "time": "1774119855",
+          "unit": "º",
+          "value": "262"
+        }
+      },
+      "pressure": {
+        "relative": {
+          "time": "1774119855",
+          "unit": "inHg",
+          "value": "29.68"
+        },
+        "absolute": {
+          "time": "1774119855",
+          "unit": "inHg",
+          "value": "29.68"
+        }
+      },
+      "temp_and_humidity_ch1": {
+        "temperature": {
+          "time": "1774119855",
+          "unit": "ºF",
+          "value": "65.7"
+        },
+        "humidity": {
+          "time": "1774119855",
+          "unit": "%",
+          "value": "42"
+        }
+      },
+      "temp_and_humidity_ch2": {
+        "temperature": {
+          "time": "1774119855",
+          "unit": "ºF",
+          "value": "72.0"
+        },
+        "humidity": {
+          "time": "1774119855",
+          "unit": "%",
+          "value": "46"
+        }
+      },
+      "battery": {
+        "haptic_array_battery": {
+          "time": "1774119855",
+          "unit": "V",
+          "value": "2.82"
+        },
+        "haptic_array_capacitor": {
+          "time": "1774119855",
+          "unit": "V",
+          "value": "5.4"
+        },
+        "temp_humidity_sensor_ch1": {
+          "time": "1774119855",
+          "unit": "",
+          "value": "0"
+        },
+        "temp_humidity_sensor_ch2": {
+          "time": "1774119855",
+          "unit": "",
+          "value": "0"
+        }
+      }
+    }
+  },
+  "sauna": {
+    "status": "Off",
+    "statusCode": 232,
+    "temperature": 151,
+    "targetTemperature": null,
+    "duration": 0,
+    "door": true,
+    "isHeating": false,
+    "isOffline": false,
+    "isLocked": false,
+    "isEmergency": false,
+    "rawData": {
+      "maxHeatingTime": "3",
+      "statusCode": 232,
+      "door": true,
+      "config": 0,
+      "paymentEndDate": null,
+      "temperature": "66",
+      "remoteSafetyState": "disabled"
+    }
+  },
+  "updatedAt": "2026-03-21T19:08:03.895Z"
+}

@@ -1,0 +1,1436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>COSMO Run Details</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+            background: #0d1117;
+            color: #c9d1d9;
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Header */
+        header {
+            background: #161b22;
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #30363d;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .back-link {
+            color: #58a6ff;
+            text-decoration: none;
+            font-size: 1.1em;
+            transition: opacity 0.2s;
+        }
+
+        .back-link:hover {
+            text-decoration: underline;
+        }
+
+        .run-title {
+            font-size: 1.8em;
+            font-weight: 700;
+            color: #c9d1d9;
+        }
+
+        .run-meta {
+            font-size: 0.9em;
+            color: #8b949e;
+        }
+
+        .header-right {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .status-indicator {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 600;
+        }
+
+        .status-indicator.active {
+            background: rgba(16, 185, 129, 0.3);
+            color: #10b981;
+        }
+
+        /* Tab Navigation */
+        .tab-nav {
+            background: #0d1117;
+            padding: 0 30px;
+            display: flex;
+            gap: 5px;
+            border-bottom: 1px solid #21262d;
+        }
+
+        .tab-btn {
+            padding: 15px 25px;
+            background: transparent;
+            border: none;
+            color: #8b949e;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 600;
+            transition: all 0.2s;
+            border-bottom: 2px solid transparent;
+        }
+
+        .tab-btn:hover {
+            color: #c9d1d9;
+        }
+
+        .tab-btn.active {
+            color: #c9d1d9;
+            border-bottom-color: #58a6ff;
+        }
+
+        /* Tab Content */
+        .tab-container {
+            padding: 30px;
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+
+        .tab-panel {
+            display: none;
+        }
+
+        .tab-panel.active {
+            display: block;
+        }
+
+        /* Cards */
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: #161b22;
+            padding: 25px;
+            border-radius: 10px;
+            border-left: 4px solid #58a6ff;
+        }
+
+        .card-label {
+            font-size: 0.85em;
+            color: #8b949e;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .card-value {
+            font-size: 2em;
+            font-weight: 700;
+            color: #58a6ff;
+        }
+
+        .card-secondary {
+            font-size: 0.9em;
+            color: #8b949e;
+            margin-top: 8px;
+        }
+
+        /* Section */
+        .section {
+            background: #161b22;
+            padding: 25px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            border: 1px solid #30363d;
+        }
+
+        .section-title {
+            font-size: 1.4em;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #c9d1d9;
+        }
+
+        /* Data Table */
+        .data-table-wrapper {
+            overflow-x: auto;
+        }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .data-table th {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 2px solid #21262d;
+            color: #8b949e;
+            font-weight: 600;
+            font-size: 0.85em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .data-table th.sortable {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .data-table th.sortable:hover {
+            color: #58a6ff;
+        }
+
+        .data-table td {
+            padding: 12px;
+            border-bottom: 1px solid #21262d;
+        }
+
+        .data-table tr.clickable {
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .data-table tr.clickable:hover {
+            background: rgba(102, 126, 234, 0.1);
+        }
+
+        .empty-message {
+            text-align: center;
+            padding: 40px;
+            color: #8b949e;
+        }
+
+        /* Status Badges */
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        .status-badge.status-success {
+            background: rgba(16, 185, 129, 0.2);
+            color: #10b981;
+        }
+
+        .status-badge.status-error {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .status-badge.status-warning {
+            background: rgba(245, 158, 11, 0.2);
+            color: #f59e0b;
+        }
+
+        .status-badge.status-info {
+            background: rgba(59, 130, 246, 0.2);
+            color: #3b82f6;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 10px 20px;
+            background: #58a6ff;
+            border: none;
+            border-radius: 6px;
+            color: white;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .btn:hover {
+            background: #58a6ff;
+        }
+
+        .btn-secondary {
+            background: #21262d;
+        }
+
+        .btn-secondary:hover {
+            background: #30363d;
+        }
+
+        /* Side Panel */
+        .side-panel {
+            position: fixed;
+            right: -600px;
+            top: 0;
+            width: 600px;
+            height: 100vh;
+            background: #161b22;
+            box-shadow: -4px 0 12px rgba(0, 0, 0, 0.5);
+            transition: right 0.3s ease;
+            z-index: 1000;
+            overflow-y: auto;
+        }
+
+        .side-panel.open {
+            right: 0;
+        }
+
+        .side-panel-header {
+            padding: 20px;
+            background: #0d1117;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+
+        .side-panel-title {
+            font-size: 1.3em;
+            font-weight: 600;
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            color: #c9d1d9;
+            font-size: 2em;
+            cursor: pointer;
+            padding: 0;
+            width: 40px;
+            height: 40px;
+            line-height: 40px;
+            text-align: center;
+        }
+
+        .close-btn:hover {
+            color: #58a6ff;
+        }
+
+        .side-panel-content {
+            padding: 25px;
+        }
+
+        /* Markdown Viewer */
+        .markdown-viewer {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: #0d1117;
+            z-index: 2000;
+            display: none;
+            flex-direction: column;
+        }
+
+        .markdown-viewer.open {
+            display: flex;
+        }
+
+        .markdown-viewer-header {
+            padding: 20px 30px;
+            background: #161b22;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+        }
+
+        .markdown-viewer-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .markdown-viewer-body {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        .markdown-toc {
+            width: 300px;
+            padding: 30px;
+            background: #161b22;
+            overflow-y: auto;
+        }
+
+        .markdown-toc h3 {
+            margin-bottom: 15px;
+            color: #58a6ff;
+        }
+
+        .toc-list {
+            list-style: none;
+        }
+
+        .toc-item {
+            margin: 8px 0;
+        }
+
+        .toc-link {
+            color: #c9d1d9;
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        .toc-link:hover {
+            color: #58a6ff;
+        }
+
+        .markdown-content {
+            flex: 1;
+            padding: 30px 50px;
+            overflow-y: auto;
+        }
+
+        .markdown-content h1,
+        .markdown-content h2,
+        .markdown-content h3 {
+            margin-top: 2em;
+            margin-bottom: 0.5em;
+            color: #c9d1d9;
+        }
+
+        .markdown-content h1 { font-size: 2.2em; }
+        .markdown-content h2 { font-size: 1.8em; }
+        .markdown-content h3 { font-size: 1.4em; }
+
+        .markdown-content p {
+            margin-bottom: 1em;
+        }
+
+        .markdown-content code {
+            background: #21262d;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .markdown-content pre {
+            background: #21262d;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 1em 0;
+        }
+
+        .markdown-content pre code {
+            background: none;
+            padding: 0;
+        }
+
+        .markdown-content ul, .markdown-content ol {
+            margin-left: 25px;
+            margin-bottom: 1em;
+        }
+
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 60px 20px;
+            color: #8b949e;
+        }
+
+        .spinner {
+            border: 3px solid #21262d;
+            border-top-color: #58a6ff;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Progress Bar */
+        .progress-bar {
+            height: 8px;
+            background: #21262d;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #58a6ff, #57d9a3);
+            transition: width 0.3s ease;
+        }
+
+        /* Filters */
+        .filters {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .filter-label {
+            font-size: 0.9em;
+            color: #8b949e;
+        }
+
+        .filter-input {
+            padding: 8px 12px;
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            color: #c9d1d9;
+            font-size: 0.9em;
+        }
+
+        .filter-input:focus {
+            outline: none;
+            border-color: #58a6ff;
+        }
+
+        /* Thought Card */
+        .thought-card {
+            background: #0d1117;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid #58a6ff;
+        }
+
+        .thought-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .thought-meta {
+            font-size: 0.85em;
+            color: #8b949e;
+        }
+
+        .thought-content {
+            color: #c9d1d9;
+            line-height: 1.6;
+        }
+
+        .thought-tags {
+            margin-top: 12px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .tag {
+            padding: 4px 10px;
+            background: #21262d;
+            border-radius: 12px;
+            font-size: 0.8em;
+            color: #8b949e;
+        }
+
+        /* Goal Card */
+        .goal-card {
+            background: #0d1117;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            border-left: 4px solid #58a6ff;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .goal-card:hover {
+            transform: translateX(4px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+        }
+
+        .goal-card.completed {
+            border-left-color: #10b981;
+        }
+
+        .goal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 12px;
+        }
+
+        .goal-description {
+            color: #c9d1d9;
+            flex: 1;
+            margin-right: 20px;
+        }
+
+        .goal-progress {
+            margin-bottom: 12px;
+        }
+
+        .goal-meta {
+            display: flex;
+            gap: 20px;
+            font-size: 0.85em;
+            color: #8b949e;
+        }
+
+        /* Memory Graph */
+        #memory-graph {
+            width: 100%;
+            height: 700px;
+            background: #0d1117;
+            border-radius: 10px;
+        }
+
+        /* Report Card */
+        .report-card {
+            background: #0d1117;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .report-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 15px;
+        }
+
+        .report-title {
+            font-size: 1.2em;
+            font-weight: 600;
+            color: #c9d1d9;
+            margin-bottom: 5px;
+        }
+
+        .report-meta {
+            font-size: 0.85em;
+            color: #8b949e;
+        }
+
+        .report-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-sm {
+            padding: 6px 14px;
+            font-size: 0.85em;
+        }
+
+        /* Query Interface */
+        .query-box {
+            background: #161b22;
+            padding: 25px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .query-input {
+            width: 100%;
+            padding: 15px;
+            background: #0d1117;
+            border: 2px solid #21262d;
+            border-radius: 8px;
+            color: #c9d1d9;
+            font-size: 1em;
+            margin-bottom: 15px;
+            resize: vertical;
+            min-height: 100px;
+        }
+
+        .query-input:focus {
+            outline: none;
+            border-color: #58a6ff;
+        }
+
+        .query-result {
+            background: #0d1117;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header>
+        <div class="header-left">
+            <a href="/" class="back-link" id="back-link">← Research Lab</a>
+            <div>
+                <div class="run-title" id="run-name">Loading...</div>
+                <div class="run-meta" id="run-domain"></div>
+            </div>
+        </div>
+        <div class="header-right">
+            <div class="status-indicator" id="run-status">
+                <span id="status-text">Loading...</span>
+            </div>
+        </div>
+    </header>
+
+    <!-- Tab Navigation -->
+    <nav class="tab-nav" id="tab-nav-container"></nav>
+
+    <!-- Tab Content -->
+    <main class="tab-container">
+        <!-- Tab 1: Overview -->
+        <div id="tab-overview" class="tab-panel">
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-label">Cycle</div>
+                    <div class="card-value" id="overview-cycle">0</div>
+                    <div class="card-secondary" id="overview-runtime">0h 0m</div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Memory Nodes</div>
+                    <div class="card-value" id="overview-nodes">0</div>
+                    <div class="card-secondary" id="overview-edges">0 connections</div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Goals</div>
+                    <div class="card-value" id="overview-goals">0</div>
+                    <div class="card-secondary" id="overview-goals-complete">0 completed</div>
+                </div>
+                <div class="card">
+                    <div class="card-label">Agents</div>
+                    <div class="card-value" id="overview-agents">0</div>
+                    <div class="card-secondary" id="overview-agents-success">0% success</div>
+                </div>
+            </div>
+
+            <div class="section" id="latest-review-section">
+                <h2 class="section-title">Latest Coordinator Review</h2>
+                <div id="latest-review-content"></div>
+            </div>
+        </div>
+
+        <!-- Tab 2: Agents -->
+        <div id="tab-agents" class="tab-panel">
+            <div class="section">
+                <h2 class="section-title">Agent Performance</h2>
+                <div id="agents-summary"></div>
+                <div id="agents-table"></div>
+            </div>
+        </div>
+
+        <!-- Tab 3: Goals -->
+        <div id="tab-goals" class="tab-panel">
+            <div class="filters">
+                <div class="filter-group">
+                    <span class="filter-label">Status:</span>
+                    <select class="filter-input" id="filter-goal-status">
+                        <option value="all">All</option>
+                        <option value="active">Active</option>
+                        <option value="completed">Completed</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <span class="filter-label">Search:</span>
+                    <input type="text" class="filter-input" id="filter-goal-search" placeholder="Search goals..." style="width: 300px">
+                </div>
+            </div>
+            <div id="goals-container"></div>
+        </div>
+
+        <!-- Tab 4: Memory -->
+        <div id="tab-memory" class="tab-panel">
+            <div id="memory-graph"></div>
+            <div style="margin-top: 20px; color: #8b949e; text-align: center;">
+                Memory graph visualization will be loaded here
+            </div>
+        </div>
+
+        <!-- Tab 5: Thoughts -->
+        <div id="tab-thoughts" class="tab-panel">
+            <div class="filters">
+                <div class="filter-group">
+                    <span class="filter-label">Role:</span>
+                    <select class="filter-input" id="filter-thought-role">
+                        <option value="all">All</option>
+                        <option value="analyst">Analyst</option>
+                        <option value="curiosity">Curiosity</option>
+                        <option value="critic">Critic</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <span class="filter-label">Search:</span>
+                    <input type="text" class="filter-input" id="filter-thought-search" placeholder="Search thoughts..." style="width: 300px">
+                </div>
+            </div>
+            <div id="thoughts-container"></div>
+        </div>
+
+        <!-- Tab 6: Reports -->
+        <div id="tab-reports" class="tab-panel">
+            <div class="section">
+                <h2 class="section-title">Coordinator Reviews</h2>
+                <div id="reviews-list"></div>
+            </div>
+            <div class="section">
+                <h2 class="section-title">Curated Insights</h2>
+                <div id="insights-list"></div>
+            </div>
+        </div>
+
+        <!-- Tab 7: Query -->
+        <div id="tab-query" class="tab-panel">
+            <div class="query-box">
+                <h2 class="section-title">Query This Run</h2>
+                <textarea class="query-input" id="query-input" placeholder="Ask a question about this research run..."></textarea>
+                <button class="btn" onclick="executeQuery()">🔍 Search</button>
+            </div>
+            <div id="query-results"></div>
+        </div>
+    </main>
+
+    <!-- Side Panel -->
+    <aside id="side-panel" class="side-panel">
+        <div class="side-panel-header">
+            <span class="side-panel-title" id="side-panel-title">Details</span>
+            <button class="close-btn">×</button>
+        </div>
+        <div class="side-panel-content" id="side-panel-content"></div>
+    </aside>
+
+    <!-- Markdown Viewer -->
+    <div id="markdown-viewer" class="markdown-viewer">
+        <div class="markdown-viewer-header">
+            <h2 id="md-viewer-title">Document</h2>
+            <div class="markdown-viewer-actions">
+                <button class="btn btn-secondary btn-sm" onclick="exportMarkdown('md')">Export MD</button>
+                <button class="btn btn-secondary btn-sm" onclick="exportMarkdown('html')">Export HTML</button>
+                <button class="close-btn" onclick="closeMarkdownViewer()">×</button>
+            </div>
+        </div>
+        <div class="markdown-viewer-body">
+            <aside class="markdown-toc" id="markdown-toc">
+                <h3>Contents</h3>
+            </aside>
+            <div class="markdown-content" id="markdown-content"></div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="components/tab-nav.js"></script>
+    <script src="components/data-table.js"></script>
+    <script src="components/side-panel.js"></script>
+    <script src="utils/api.js"></script>
+    <script src="utils/formatters.js"></script>
+    <script>
+        // Global state
+        let currentRunName = '';
+        let currentRunData = null;
+        let sidePanel = null;
+        let tabNav = null;
+
+        // Get run name from URL
+        const params = new URLSearchParams(window.location.search);
+        currentRunName = params.get('name') || 'runtime';
+        const returnUrl = params.get('return');
+        
+        // Update back link if return URL provided
+        if (returnUrl) {
+            const backLink = document.getElementById('back-link');
+            if (backLink) {
+                backLink.href = returnUrl;
+                backLink.textContent = '← Back';
+            }
+        }
+
+        // Initialize
+        async function init() {
+            // Setup side panel
+            sidePanel = new SidePanel('side-panel');
+            
+            // Setup tabs
+            tabNav = new TabNav('#tab-nav-container', [
+                { id: 'overview', label: 'Overview' },
+                { id: 'agents', label: 'Agents' },
+                { id: 'goals', label: 'Goals' },
+                { id: 'memory', label: 'Memory' },
+                { id: 'thoughts', label: 'Thoughts' },
+                { id: 'reports', label: 'Reports' },
+                { id: 'query', label: 'Query' }
+            ], {
+                onTabChange: onTabChange
+            });
+
+            // Load initial data
+            await loadRunData();
+        }
+
+        async function loadRunData() {
+            try {
+                // Get run-specific state and stats
+                const [state, stats] = await Promise.all([
+                    API.getRunState(currentRunName),
+                    API.getRunStats(currentRunName)
+                ]);
+                
+                document.getElementById('run-name').textContent = currentRunName;
+                document.getElementById('run-domain').textContent = state.guidedMissionPlan?.domain || 'Open-ended exploration';
+                
+                const statusEl = document.getElementById('run-status');
+                if (currentRunName === 'runtime') {
+                    statusEl.classList.add('active');
+                    document.getElementById('status-text').textContent = `Cycle ${state.cycleCount || 0} | Active`;
+                } else {
+                    document.getElementById('status-text').textContent = `Archived Run | Cycle ${state.cycleCount || 0}`;
+                }
+                
+                // Load overview tab by default
+                await loadOverviewTab();
+            } catch (error) {
+                console.error('Failed to load run data:', error);
+            }
+        }
+
+        async function onTabChange(tabId) {
+            console.log('Tab changed to:', tabId);
+            
+            // Load tab-specific data
+            switch(tabId) {
+                case 'overview':
+                    await loadOverviewTab();
+                    break;
+                case 'agents':
+                    await loadAgentsTab();
+                    break;
+                case 'goals':
+                    await loadGoalsTab();
+                    break;
+                case 'memory':
+                    await loadMemoryTab();
+                    break;
+                case 'thoughts':
+                    await loadThoughtsTab();
+                    break;
+                case 'reports':
+                    await loadReportsTab();
+                    break;
+                case 'query':
+                    // Query tab is interactive, no need to pre-load
+                    break;
+            }
+        }
+
+        // Tab loaders
+        async function loadOverviewTab() {
+            try {
+                const [state, stats, reviews] = await Promise.all([
+                    API.getRunState(currentRunName),
+                    API.getRunStats(currentRunName),
+                    API.getCoordinatorReviews(currentRunName)
+                ]);
+                
+                // Update cards
+                document.getElementById('overview-cycle').textContent = state.cycleCount || 0;
+                document.getElementById('overview-nodes').textContent = Formatters.number(state.memory?.nodes?.length || 0);
+                document.getElementById('overview-edges').textContent = `${Formatters.number(state.memory?.edges?.length || 0)} connections`;
+                
+                // Get goals from state
+                const activeGoals = state.goals?.active?.length || 0;
+                const completedGoals = (state.goals?.active || []).filter(([id, g]) => g.status === 'completed').length;
+                document.getElementById('overview-goals').textContent = activeGoals;
+                document.getElementById('overview-goals-complete').textContent = `${completedGoals} completed`;
+                
+                document.getElementById('overview-agents').textContent = stats.agents?.total || 0;
+                const successRate = stats.agents?.total > 0 ? Math.round((stats.agents.completed / stats.agents.total) * 100) : 0;
+                document.getElementById('overview-agents-success').textContent = `${successRate}% success`;
+                
+                // Latest review
+                if (reviews && reviews.length > 0) {
+                    const latest = reviews[0];
+                    document.getElementById('latest-review-content').innerHTML = `
+                        <div class="report-card">
+                            <div class="report-header">
+                                <div>
+                                    <div class="report-title">${latest.filename}</div>
+                                    <div class="report-meta">
+                                        📅 ${Formatters.date(latest.date)} | Cycles ${latest.cyclesReviewed} | ${latest.goalsEvaluated} goals evaluated
+                                    </div>
+                                </div>
+                                <div class="report-actions">
+                                    <button class="btn btn-sm" onclick="viewReview('${latest.filename}')">Read Review</button>
+                                </div>
+                            </div>
+                            <div class="card-grid" style="margin-top: 15px;">
+                                <div class="card">
+                                    <div class="card-label">Depth</div>
+                                    <div class="card-value">${latest.quality?.depth || 0}/10</div>
+                                </div>
+                                <div class="card">
+                                    <div class="card-label">Novelty</div>
+                                    <div class="card-value">${latest.quality?.novelty || 0}/10</div>
+                                </div>
+                                <div class="card">
+                                    <div class="card-label">Coherence</div>
+                                    <div class="card-value">${latest.quality?.coherence || 0}/10</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('Failed to load overview:', error);
+            }
+        }
+
+        async function loadAgentsTab() {
+            try {
+                const analytics = await API.getAgentAnalytics(currentRunName);
+                
+                // Summary table
+                const summaryRows = Object.entries(analytics.summary.byType || {}).map(([type, data]) => {
+                    const successRate = data.total > 0 ? Math.round((data.completed / data.total) * 100) : 0;
+                    return `
+                        <tr>
+                            <td>${Formatters.agentType(type)}</td>
+                            <td>${data.total}</td>
+                            <td>${data.completed} ✅</td>
+                            <td>${data.failed || 0}</td>
+                            <td>${data.timeout || 0}</td>
+                            <td>${Formatters.duration(data.avgDuration)}</td>
+                            <td>${successRate}%</td>
+                        </tr>
+                    `;
+                }).join('');
+                
+                document.getElementById('agents-summary').innerHTML = `
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Type</th>
+                                <th>Total</th>
+                                <th>Completed</th>
+                                <th>Failed</th>
+                                <th>Timeout</th>
+                                <th>Avg Duration</th>
+                                <th>Success Rate</th>
+                            </tr>
+                        </thead>
+                        <tbody>${summaryRows}</tbody>
+                    </table>
+                `;
+                
+                // All agents table
+                const agentRows = (analytics.agents || []).slice(0, 50).map(agent => {
+                    return `
+                        <tr class="clickable" onclick='viewAgentDetails(${JSON.stringify(agent.agentId)})'>
+                            <td>${Formatters.date(agent.startTime)}</td>
+                            <td>${Formatters.agentType(agent.agentType)}</td>
+                            <td>${agent.mission?.description?.substring(0, 50) || 'N/A'}...</td>
+                            <td>${Formatters.status(agent.status)}</td>
+                            <td>${Formatters.duration(agent.duration)}</td>
+                            <td>${agent.results?.length || 0}</td>
+                        </tr>
+                    `;
+                }).join('');
+                
+                document.getElementById('agents-table').innerHTML = `
+                    <h3 style="margin-top: 30px; margin-bottom: 15px;">All Agents</h3>
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Time</th>
+                                <th>Type</th>
+                                <th>Mission</th>
+                                <th>Status</th>
+                                <th>Duration</th>
+                                <th>Results</th>
+                            </tr>
+                        </thead>
+                        <tbody>${agentRows || '<tr><td colspan="6" class="empty-message">No agents found</td></tr>'}</tbody>
+                    </table>
+                `;
+            } catch (error) {
+                console.error('Failed to load agents:', error);
+                document.getElementById('agents-summary').innerHTML = '<p class="empty-message">Failed to load agent data</p>';
+            }
+        }
+
+        async function loadGoalsTab() {
+            try {
+                const state = await API.getRunState(currentRunName);
+                const activeGoals = state.goals?.active || [];
+                
+                const filterStatus = document.getElementById('filter-goal-status')?.value || 'active';
+                const searchQuery = document.getElementById('filter-goal-search')?.value?.toLowerCase() || '';
+                
+                const filtered = activeGoals.filter(([id, goal]) => {
+                    // Default to showing active goals only
+                    if (filterStatus === 'active' && goal.status !== 'active') return false;
+                    if (filterStatus === 'completed' && goal.status !== 'completed') return false;
+                    if (searchQuery && !goal.description.toLowerCase().includes(searchQuery)) return false;
+                    return true;
+                });
+                
+                const goalsHTML = filtered.map(([id, goal]) => {
+                    const progress = (goal.progress || 0) * 100;
+                    return `
+                        <div class="goal-card ${goal.status}" onclick='viewGoalDetails(${JSON.stringify(id)})'>
+                            <div class="goal-header">
+                                <div class="goal-description">${goal.description}</div>
+                                <span class="status-badge">${Formatters.status(goal.status)}</span>
+                            </div>
+                            <div class="goal-progress">
+                                <div class="progress-bar">
+                                    <div class="progress-fill" style="width: ${progress}%"></div>
+                                </div>
+                            </div>
+                            <div class="goal-meta">
+                                <span>Priority: ${Number(goal.priority || 0).toFixed(2)}</span>
+                                <span>Pursuits: ${goal.pursuitCount || 0}</span>
+                                <span>Campaign: ${goal.inCampaign || 'None'}</span>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+                document.getElementById('goals-container').innerHTML = goalsHTML || '<p class="empty-message">No goals found</p>';
+                
+                // Setup filters
+                document.getElementById('filter-goal-status').onchange = loadGoalsTab;
+                document.getElementById('filter-goal-search').oninput = loadGoalsTab;
+            } catch (error) {
+                console.error('Failed to load goals:', error);
+                document.getElementById('goals-container').innerHTML = '<p class="empty-message">Failed to load goals</p>';
+            }
+        }
+
+        async function loadMemoryTab() {
+            document.getElementById('memory-graph').innerHTML = '<div class="loading"><div class="spinner"></div><p>Memory graph visualization would be loaded here</p></div>';
+        }
+
+        async function loadThoughtsTab() {
+            try {
+                const thoughts = await API.getRunThoughts(currentRunName, 100);
+                
+                const filterRole = document.getElementById('filter-thought-role')?.value || 'all';
+                const searchQuery = document.getElementById('filter-thought-search')?.value?.toLowerCase() || '';
+                
+                const filtered = thoughts.filter(thought => {
+                    if (filterRole !== 'all' && thought.role !== filterRole) return false;
+                    if (searchQuery && !thought.thought.toLowerCase().includes(searchQuery)) return false;
+                    return true;
+                });
+                
+                const thoughtsHTML = filtered.map(thought => {
+                    return `
+                        <div class="thought-card">
+                            <div class="thought-header">
+                                <span class="thought-meta">Cycle ${thought.cycle} | ${thought.role}</span>
+                                <span class="thought-meta">${Formatters.date(thought.timestamp)}</span>
+                            </div>
+                            <div class="thought-content">${thought.thought}</div>
+                            <div class="thought-tags">
+                                <span class="tag">Mode: ${thought.oscillatorMode}</span>
+                                <span class="tag">Energy: ${(thought.cognitiveState?.energy * 100 || 0).toFixed(0)}%</span>
+                                ${thought.usedWebSearch ? '<span class="tag">🌐 Web Search</span>' : ''}
+                                ${thought.goalsAutoCaptured > 0 ? `<span class="tag">📌 ${thought.goalsAutoCaptured} goals</span>` : ''}
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+                document.getElementById('thoughts-container').innerHTML = thoughtsHTML || '<p class="empty-message">No thoughts found</p>';
+                
+                // Setup filters
+                document.getElementById('filter-thought-role').onchange = loadThoughtsTab;
+                document.getElementById('filter-thought-search').oninput = loadThoughtsTab;
+            } catch (error) {
+                console.error('Failed to load thoughts:', error);
+                document.getElementById('thoughts-container').innerHTML = '<p class="empty-message">Failed to load thoughts</p>';
+            }
+        }
+
+        async function loadReportsTab() {
+            try {
+                const [reviews, insights] = await Promise.all([
+                    API.getCoordinatorReviews(currentRunName),
+                    API.getCuratedInsights(currentRunName)
+                ]);
+                
+                // Reviews
+                const reviewsHTML = reviews.map(review => {
+                    return `
+                        <div class="report-card">
+                            <div class="report-header">
+                                <div>
+                                    <div class="report-title">📊 ${review.filename}</div>
+                                    <div class="report-meta">
+                                        ${Formatters.date(review.date)} | Cycles ${review.cyclesReviewed} | ${review.goalsEvaluated} goals | Quality: D:${review.quality.depth} N:${review.quality.novelty} C:${review.quality.coherence}
+                                    </div>
+                                </div>
+                                <div class="report-actions">
+                                    <button class="btn btn-sm" onclick="viewReview('${review.filename}')">Read</button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+                document.getElementById('reviews-list').innerHTML = reviewsHTML || '<p class="empty-message">No reviews found</p>';
+                
+                // Insights
+                const insightsHTML = insights.map(insight => {
+                    return `
+                        <div class="report-card">
+                            <div class="report-header">
+                                <div>
+                                    <div class="report-title">💡 ${insight.filename}</div>
+                                    <div class="report-meta">
+                                        ${insight.date} | Cycle ${insight.cycle} | ${insight.rawInsights} raw → ${insight.highValue} high-value | ${insight.duration}
+                                    </div>
+                                </div>
+                                <div class="report-actions">
+                                    <button class="btn btn-sm" onclick="viewInsight('${insight.filename}')">Read</button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                
+                document.getElementById('insights-list').innerHTML = insightsHTML || '<p class="empty-message">No curated insights found</p>';
+            } catch (error) {
+                console.error('Failed to load reports:', error);
+            }
+        }
+
+        // Detail viewers
+        async function viewAgentDetails(agentId) {
+            try {
+                const agent = await API.getAgentDetails(currentRunName, agentId);
+                
+                const resultsHTML = (agent.results || []).map(result => {
+                    return `<div style="padding: 10px; background: #0d1117; border-radius: 6px; margin-bottom: 10px;">
+                        <strong>${result.type}:</strong> ${result.content || JSON.stringify(result)}
+                    </div>`;
+                }).join('');
+                
+                sidePanel.open(`
+                    <h3>${Formatters.agentType(agent.agentType)}</h3>
+                    <p><strong>Agent ID:</strong> ${agent.agentId}</p>
+                    <p><strong>Status:</strong> ${Formatters.status(agent.status)}</p>
+                    <p><strong>Duration:</strong> ${Formatters.duration(agent.duration)}</p>
+                    <h4 style="margin-top: 20px;">Mission</h4>
+                    <p>${agent.mission?.description || 'N/A'}</p>
+                    <h4 style="margin-top: 20px;">Results</h4>
+                    ${resultsHTML || '<p>No results</p>'}
+                `);
+            } catch (error) {
+                console.error('Failed to load agent details:', error);
+            }
+        }
+
+        async function viewGoalDetails(goalId) {
+            try {
+                const state = await API.getRunState(currentRunName);
+                const goal = state.goals?.active?.find(([id]) => id === goalId)?.[1];
+                
+                if (!goal) return;
+                
+                sidePanel.open(`
+                    <h3>Goal Details</h3>
+                    <p><strong>ID:</strong> ${goalId}</p>
+                    <p><strong>Description:</strong> ${goal.description}</p>
+                    <p><strong>Status:</strong> ${Formatters.status(goal.status)}</p>
+                    <p><strong>Priority:</strong> ${Number(goal.priority || 0).toFixed(2)}</p>
+                    <p><strong>Progress:</strong> ${(goal.progress * 100).toFixed(0)}%</p>
+                    <p><strong>Pursuit Count:</strong> ${goal.pursuitCount || 0}</p>
+                    <p><strong>Campaign:</strong> ${goal.inCampaign || 'None'}</p>
+                    <p><strong>Created:</strong> ${Formatters.date(goal.created)}</p>
+                    <p><strong>Last Pursued:</strong> ${Formatters.date(goal.lastPursued)}</p>
+                    ${goal.completionNotes ? `<p><strong>Completion Notes:</strong> ${goal.completionNotes}</p>` : ''}
+                `);
+            } catch (error) {
+                console.error('Failed to load goal details:', error);
+            }
+        }
+
+        async function viewReview(filename) {
+            try {
+                const review = await API.getCoordinatorReview(currentRunName, filename);
+                showMarkdownViewer(review.markdown, filename);
+            } catch (error) {
+                console.error('Failed to load review:', error);
+                alert('Failed to load review');
+            }
+        }
+
+        async function viewInsight(filename) {
+            try {
+                const insight = await API.getCuratedInsight(currentRunName, filename);
+                showMarkdownViewer(insight.markdown, filename);
+            } catch (error) {
+                console.error('Failed to load insight:', error);
+                alert('Failed to load insight');
+            }
+        }
+
+        function showMarkdownViewer(markdown, title) {
+            document.getElementById('md-viewer-title').textContent = title;
+            document.getElementById('markdown-content').innerHTML = parseMarkdown(markdown);
+            document.getElementById('markdown-toc').innerHTML = '<h3>Contents</h3>' + generateTOC(markdown);
+            document.getElementById('markdown-viewer').classList.add('open');
+        }
+
+        function closeMarkdownViewer() {
+            document.getElementById('markdown-viewer').classList.remove('open');
+        }
+
+        function parseMarkdown(markdown) {
+            let html = markdown;
+            
+            // Headers with IDs
+            html = html.replace(/^(#{1,6})\s+(.+)$/gm, (match, hashes, text) => {
+                const level = hashes.length;
+                const id = text.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+                return `<h${level} id="${id}">${text}</h${level}>`;
+            });
+            
+            // Bold
+            html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+            
+            // Italic
+            html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+            
+            // Code blocks
+            html = html.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
+                return `<pre><code>${code.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></pre>`;
+            });
+            
+            // Inline code
+            html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+            
+            // Links
+            html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+            
+            // Lists
+            html = html.replace(/^[-*]\s+(.+)$/gm, '<li>$1</li>');
+            
+            // Paragraphs
+            const lines = html.split('\n');
+            let inList = false;
+            html = lines.map(line => {
+                if (line.trim().startsWith('<li>')) {
+                    if (!inList) {
+                        inList = true;
+                        return '<ul>' + line;
+                    }
+                    return line;
+                } else if (inList) {
+                    inList = false;
+                    return '</ul>' + line;
+                } else if (line.trim() && !line.match(/^<[^>]+>/)) {
+                    return '<p>' + line + '</p>';
+                }
+                return line;
+            }).join('\n');
+            
+            if (inList) html += '</ul>';
+            
+            return html;
+        }
+
+        function generateTOC(markdown) {
+            const headers = [];
+            const lines = markdown.split('\n');
+            
+            for (const line of lines) {
+                const match = line.match(/^(#{1,6})\s+(.+)/);
+                if (match) {
+                    const level = match[1].length;
+                    const text = match[2].trim();
+                    const id = text.toLowerCase().replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+                    headers.push({ level, text, id });
+                }
+            }
+            
+            if (headers.length === 0) {
+                return '<p class="toc-empty">No sections</p>';
+            }
+            
+            let tocHtml = '<ul class="toc-list">';
+            for (const header of headers) {
+                const indent = (header.level - 1) * 12;
+                tocHtml += `
+                    <li class="toc-item" style="padding-left: ${indent}px">
+                        <a href="#${header.id}" class="toc-link" onclick="scrollToSection(event, '${header.id}')">${header.text}</a>
+                    </li>
+                `;
+            }
+            tocHtml += '</ul>';
+            
+            return tocHtml;
+        }
+
+        function scrollToSection(event, id) {
+            event.preventDefault();
+            const element = document.getElementById(id);
+            if (element) {
+                element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        }
+
+        function exportMarkdown(format) {
+            // Export functionality would be implemented here
+            alert(`Export as ${format.toUpperCase()} - functionality to be implemented`);
+        }
+
+        async function executeQuery() {
+            const query = document.getElementById('query-input').value;
+            if (!query.trim()) return;
+            
+            document.getElementById('query-results').innerHTML = '<div class="loading"><div class="spinner"></div><p>Searching...</p></div>';
+            
+            try {
+                const result = await API.query(query, currentRunName);
+                
+                document.getElementById('query-results').innerHTML = `
+                    <div class="query-result">
+                        <h3>Results</h3>
+                        <p>${result.answer || 'No results found'}</p>
+                    </div>
+                `;
+            } catch (error) {
+                console.error('Query failed:', error);
+                document.getElementById('query-results').innerHTML = `
+                    <div class="query-result">
+                        <p style="color: #ef4444;">Query failed: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        // Initialize on load
+        init();
+    </script>
+</body>
+</html>
+

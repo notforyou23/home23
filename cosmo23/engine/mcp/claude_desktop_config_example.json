@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "cosmo-brain": {
+      "command": "node",
+      "args": [
+        "/Users/jtr/_JTR23_/new_Coz/mcp-server/cosmo-mcp.js"
+      ]
+    }
+  }
+}
+

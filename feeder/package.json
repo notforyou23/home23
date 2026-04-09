@@ -1,0 +1,16 @@
+{
+  "name": "jtr-feeder",
+  "version": "1.0.0",
+  "description": "Live feeder for jtr COSMO brain",
+  "main": "server.js",
+  "bin": {
+    "jtr-feed": "./cli.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "js-yaml": "^4.1.0"
+  }
+}

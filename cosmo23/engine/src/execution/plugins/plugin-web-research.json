@@ -1,0 +1,34 @@
+{
+  "id": "plugin:web-research",
+  "name": "Web Research & Information Gathering",
+  "domain": "web_research",
+  "description": "Web research toolkit for systematic information gathering, source evaluation, and synthesis from online sources. Supports URL fetching with content extraction, multi-source summarization, and provenance tracking. Each retrieved source is annotated with domain authority, publication date, and retrieval timestamp to support reproducibility and bias assessment in research workflows.",
+  "version": "1.0.0",
+  "tags": ["web_research", "information_gathering", "source_evaluation", "web_scraping", "synthesis", "fact_checking"],
+  "skills": [
+    "skill:web-fetch",
+    "skill:text-summarize"
+  ],
+  "toolsRequired": [
+    { "id": "tool:python", "version": ">=3.10" },
+    { "id": "tool:curl" }
+  ],
+  "assumptionsTracked": [
+    "source_reliability",
+    "information_recency",
+    "bias_detection"
+  ],
+  "uncertaintyModel": "Web source reliability assessed by domain authority, publication date, and cross-reference count. Claims supported by multiple independent sources receive higher confidence scores. Temporal decay applied to time-sensitive information. Bias indicators flagged when source diversity is low or when retrieved content shows strong sentiment polarity.",
+  "environment": {
+    "type": "local",
+    "resources": {
+      "memory_gb": 2,
+      "cores": 2
+    }
+  },
+  "origin": "authored",
+  "metadata": {
+    "maintainer": "cosmo-core",
+    "category": "base-domain"
+  }
+}

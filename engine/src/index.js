@@ -1,0 +1,691 @@
+#!/usr/bin/env node
+/**
+ * Phase 2B Self-Propelled AI - GPT-5.2 Version
+ * Uses GPT-5.2 Responses API with extended reasoning, web search, and tools
+ */
+
+const path = require('path');
+
+// Load environment variables from COSMO's .env only (don't search parent dirs)
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+const { ConfigLoader } = require('./core/config-loader');
+const { ConfigValidator } = require('./core/config-validator');
+const { PathResolver } = require('./core/path-resolver');
+const { NetworkMemory } = require('./memory/network-memory');
+const { MemorySummarizer } = require('./memory/summarizer');
+const { DynamicRoleSystem } = require('./cognition/dynamic-roles');
+const { QuantumReasoner } = require('./cognition/quantum-reasoner');
+const { CognitiveStateModulator } = require('./cognition/state-modulator');
+const { ThermodynamicController } = require('./cognition/thermodynamic');
+const { ChaoticEngine } = require('./creativity/chaotic-engine');
+const { IntrinsicGoalSystem } = require('./goals/intrinsic-goals');
+const { GoalCaptureSystem } = require('./goals/goal-capture');
+const { ReflectionAnalyzer } = require('./reflection/analyzer');
+const { EnvironmentInterface } = require('./environment/interface');
+const { TemporalRhythms } = require('./temporal/rhythms');
+const { FocusExplorationOscillator } = require('./temporal/oscillator');
+const { MetaCoordinator } = require('./coordinator/meta-coordinator');
+const { AgentExecutor } = require('./agents/agent-executor');
+const { ResearchAgent } = require('./agents/research-agent');
+const { AnalysisAgent } = require('./agents/analysis-agent');
+const { SynthesisAgent } = require('./agents/synthesis-agent');
+const { ExplorationAgent } = require('./agents/exploration-agent');
+const { CodebaseExplorationAgent } = require('./agents/codebase-exploration-agent');
+const { CodeExecutionAgent } = require('./agents/code-execution-agent');
+const { QualityAssuranceAgent } = require('./agents/quality-assurance-agent');
+const { PlanningAgent } = require('./agents/planning-agent');
+const { IntegrationAgent } = require('./agents/integration-agent');
+const { DocumentCreationAgent } = require('./agents/document-creation-agent');
+const { CodeCreationAgent } = require('./agents/code-creation-agent');
+const { CompletionAgent } = require('./agents/completion-agent');
+const { DocumentAnalysisAgent } = require('./agents/document-analysis-agent');
+const { ConsistencyAgent } = require('./agents/consistency-agent');
+const { SpecializedBinaryAgent } = require('./agents/specialized-binary-agent');
+const { DocumentCompilerAgent } = require('./agents/document-compiler-agent');
+const { TrajectoryForkSystem } = require('./cognition/trajectory-fork');
+const { TopicQueueSystem } = require('./goals/topic-queue');
+const { Orchestrator } = require('./core/orchestrator');
+const { GuidedModePlanner } = require('./core/guided-mode-planner');
+const { UnifiedClient } = require('./core/unified-client');
+const { SimpleLogger } = require('../lib/simple-logger');
+const { GoalAllocator } = require('./cluster/goal-allocator');
+
+// Clustering support
+const { ClusterAwareMemory } = require('./cluster/cluster-aware-memory');
+const ClusterStateStore = require('./cluster/cluster-state-store');
+const RedisStateStore = require('./cluster/backends/redis-state-store');
+const FilesystemStateStore = require('./cluster/backends/filesystem-state-store');
+const { RedisClusterOrchestrator } = require('./cluster/orchestrators/redis-cluster-orchestrator');
+const { FilesystemClusterOrchestrator } = require('./cluster/orchestrators/filesystem-cluster-orchestrator');
+const { ClusterCoordinator } = require('./cluster/cluster-coordinator');
+
+const logger = new SimpleLogger('info');
+
+// Optional: Initialize split-screen TUI dashboard
+let tuiDashboard = null;
+if (process.env.COSMO_TUI !== 'false' && process.env.COSMO_TUI_SPLIT === 'true') {
+  try {
+    const { TUIDashboard } = require('../lib/tui-dashboard');
+    tuiDashboard = new TUIDashboard(logger);
+    logger.attachDashboard(tuiDashboard);
+    
+    // Dashboard is now active - it will handle all output
+    // Skip the startup banner as dashboard will show it
+  } catch (e) {
+    // Graceful fallback if dashboard initialization fails
+    console.error('TUI Dashboard failed to initialize, falling back to enhanced logs:', e.message);
+    tuiDashboard = null;
+  }
+}
+
+async function main() {
+  // Only show banner if not using split-screen dashboard
+  if (!tuiDashboard) {
+    logger.info('╔══════════════════════════════════════════════════╗');
+    logger.info('║   COSMO - The Autonomous Brain                  ║');
+    logger.info('║   Portable AI Research System                   ║');
+    logger.info('╚══════════════════════════════════════════════════╝');
+    logger.info('');
+  }
+  logger.info('System Capabilities:');
+  logger.info('  • GPT-5.2 Multi-Tier Reasoning (xhigh/high/medium/low/none)');
+  logger.info('  • Goal Curator (campaigns & synthesis)');
+  logger.info('  • Quality Assurance (validation gate)');
+  logger.info('  • MCP Bridge (agent system awareness)');
+  logger.info('  • Web Search (autonomous research)');
+  logger.info('  • Multi-Agent System (see below for details)');
+  logger.info('');
+  
+  // Load configuration
+  logger.info('Loading configuration...');
+  const configLoader = new ConfigLoader();
+  const config = configLoader.load();
+  
+  // Validate configuration at startup
+  const validator = new ConfigValidator(config, logger);
+  const validation = validator.validate();
+  
+  if (!validation.valid) {
+    logger.error('Configuration validation failed. Please fix errors before starting.');
+    process.exit(1);
+  }
+  
+  // Read clustering environment variables
+  const instanceId = process.env.INSTANCE_ID || 'cosmo-1';
+  const dashboardPort = parseInt(process.env.DASHBOARD_PORT || config.dashboard?.port || 3344);
+  const mcpPort = parseInt(process.env.MCP_PORT || process.env.MCP_HTTP_PORT || config.mcp?.server?.port || 3347);
+  
+  // Override ports in config if environment vars provided
+  if (!config.dashboard) config.dashboard = {};
+  if (!config.mcp) config.mcp = {};
+  if (!config.mcp.server) config.mcp.server = {};
+  config.dashboard.port = dashboardPort;
+  config.mcp.server.port = mcpPort;
+  
+  // Update MCP client URL to use correct port
+  if (config.mcp.client && config.mcp.client.servers) {
+    config.mcp.client.servers.forEach(server => {
+      if (server.url && server.url.includes('localhost:3347')) {
+        server.url = `http://localhost:${mcpPort}/mcp`;
+      }
+    });
+  }
+  
+  // Display exploration mode
+  const explorationMode = config.architecture.roleSystem.explorationMode || 'autonomous';
+  const guidedDomain = config.architecture.roleSystem.guidedFocus?.domain || 'N/A';
+  
+  logger.info('Configuration loaded', {
+    instanceId,
+    ports: { dashboard: dashboardPort, mcp: mcpPort },
+    clusterEnabled: config.cluster?.enabled || false,
+    clusterBackend: config.cluster?.backend || 'N/A',
+    models: {
+      primary: config.models.primary,
+      fast: config.models.fast,
+      nano: config.models.nano
+    },
+    webSearch: config.models.enableWebSearch,
+    extendedReasoning: config.models.enableExtendedReasoning
+  });
+  
+  logger.info('');
+  logger.info('🧠 Exploration Mode: ' + explorationMode.toUpperCase());
+  if (explorationMode === 'guided') {
+    logger.info('   Domain Focus: ' + guidedDomain);
+    logger.info('   (Edit phase2/config.yaml to change)');
+  } else {
+    logger.info('   (Open-ended autonomous exploration)');
+  }
+  logger.info('');
+  
+  // Initialize all subsystems
+  logger.info('');
+  logger.info('Initializing subsystems...');
+  
+  // Initialize PathResolver FIRST - all other subsystems may need it
+  // COSMO_RUNTIME_DIR env var allows per-instance runtime isolation (cosmo-home multi-family)
+  const runtimeRoot = process.env.COSMO_RUNTIME_DIR
+    ? path.resolve(process.env.COSMO_RUNTIME_DIR)
+    : path.resolve(__dirname, '..', 'runtime');
+  
+  // Ensure MCP allowed paths are absolute and match what we'll use
+  // Extract from correct config structure: mcp.client.servers[0].allowedPaths
+  if (config.mcp?.client?.servers) {
+    config.mcp.client.servers.forEach(server => {
+      if (server.allowedPaths && Array.isArray(server.allowedPaths)) {
+        server.allowedPaths = server.allowedPaths.map(p => {
+          if (path.isAbsolute(p)) return p;
+          return path.resolve(__dirname, '..', p);
+        });
+      }
+    });
+  }
+  
+  // Set runtime root in config for all subsystems
+  config.runtimeRoot = runtimeRoot;
+  config.logsDir = runtimeRoot; // Ensure consistency
+  
+  const pathResolver = new PathResolver(config, logger);
+  logger.info('✅ Path resolver initialized', pathResolver.getDiagnostics());
+  
+  const baseMemory = new NetworkMemory(config.architecture.memory, logger);
+  logger.info('✅ Network memory graph initialized');
+
+  const clusterMemoryManager = new ClusterAwareMemory(baseMemory, {
+    config,
+    logger,
+    instanceId,
+    clusterEnabled: config.cluster?.enabled === true
+  });
+  const memory = clusterMemoryManager.getInterface();
+  logger.info(`✅ Cluster-aware memory wrapper initialized (${clusterMemoryManager.isClusterEnabled() ? 'cluster mode' : 'local mode'})`);
+  
+  const summarizer = new MemorySummarizer(config.architecture, logger, config);
+  logger.info('✅ Memory summarizer (GPT-5.2) initialized');
+  
+  const roles = new DynamicRoleSystem(config.architecture, logger, config);
+  logger.info('✅ Dynamic role system (GPT-5.2) initialized');
+  
+  const quantum = new QuantumReasoner(config.architecture, logger, config);
+  logger.info('✅ Quantum reasoner (GPT-5.2) initialized');
+  
+  const stateModulator = new CognitiveStateModulator(config.architecture, logger);
+  logger.info('✅ Cognitive state modulator initialized');
+  
+  const thermodynamic = new ThermodynamicController(config.architecture, logger);
+  logger.info('✅ Thermodynamic controller initialized');
+  
+  const chaotic = new ChaoticEngine(config.architecture, logger);
+  logger.info('✅ Chaotic creativity engine initialized');
+  
+  const goals = new IntrinsicGoalSystem(config.architecture, logger);
+  logger.info('✅ Intrinsic goal system initialized');
+  
+  const goalCapture = new GoalCaptureSystem(logger);
+  logger.info('✅ Goal capture system (GPT-5.2) initialized');
+  
+  const reflection = new ReflectionAnalyzer(config.architecture, logger);
+  logger.info('✅ Reflection analyzer (GPT-5.2) initialized');
+  
+  const environment = new EnvironmentInterface(config.architecture, logger);
+  logger.info('✅ Environment interface initialized');
+  
+  const temporal = new TemporalRhythms(config.architecture, logger);
+  logger.info('✅ Temporal rhythms initialized');
+  
+  const oscillator = new FocusExplorationOscillator(config.architecture, logger);
+  logger.info('✅ Focus/Exploration oscillator initialized');
+  
+  const coordinator = new MetaCoordinator(config, logger, pathResolver);
+  await coordinator.initialize();
+  
+  // Initialize Agent Executor
+  const agentExecutor = new AgentExecutor(
+    { memory, goals, pathResolver },
+    config,
+    logger
+  );
+  await agentExecutor.initialize();
+  
+  // Register specialist agent types
+  const codingAgentsEnabled = config.coordinator?.enableCodingAgents !== false;
+
+  agentExecutor.registerAgentType('research', ResearchAgent);
+  agentExecutor.registerAgentType('analysis', AnalysisAgent);
+  agentExecutor.registerAgentType('synthesis', SynthesisAgent);
+  agentExecutor.registerAgentType('exploration', ExplorationAgent);
+  agentExecutor.registerAgentType('codebase_exploration', CodebaseExplorationAgent);
+  agentExecutor.registerAgentType('quality_assurance', QualityAssuranceAgent);
+  agentExecutor.registerAgentType('planning', PlanningAgent);
+  agentExecutor.registerAgentType('integration', IntegrationAgent);
+  agentExecutor.registerAgentType('document_creation', DocumentCreationAgent);
+  agentExecutor.registerAgentType('completion', CompletionAgent);
+  agentExecutor.registerAgentType('document_analysis', DocumentAnalysisAgent);
+  agentExecutor.registerAgentType('consistency', ConsistencyAgent);
+  agentExecutor.registerAgentType('specialized_binary', SpecializedBinaryAgent);
+  agentExecutor.registerAgentType('document_compiler', DocumentCompilerAgent);
+
+  if (codingAgentsEnabled) {
+    agentExecutor.registerAgentType('code_execution', CodeExecutionAgent);
+    agentExecutor.registerAgentType('code_creation', CodeCreationAgent);
+  } else {
+    logger.info('🔒 Coding agents disabled via configuration');
+  }
+  
+  // Experimental agents (local OS autonomy) - requires explicit enable
+  if (config.experimental?.enabled) {
+    logger.info('🧪 Experimental mode enabled - validating requirements...');
+    
+    // Validate that experimental agent can be initialized
+    try {
+      const { ExperimentalAgent } = require('./agents/experimental-agent');
+      agentExecutor.registerAgentType('experimental', ExperimentalAgent);
+      
+      logger.info('✅ Experimental agent registered', {
+        requiresApproval: config.experimental.approval?.required !== false,
+        maxTime: Math.min(config.experimental.limits?.time_sec || 600, 900),
+        maxActions: Math.min(config.experimental.limits?.actions || 50, 200),
+        allowedDomains: (config.experimental.network?.allow || ['localhost']).join(', ')
+      });
+    } catch (error) {
+      logger.error('╔════════════════════════════════════════════════════╗');
+      logger.error('║  EXPERIMENTAL AGENT INITIALIZATION FAILED         ║');
+      logger.error('╚════════════════════════════════════════════════════╝');
+      logger.error('');
+      logger.error('Error:', error.message);
+      logger.error('');
+      logger.error('Required dependencies:');
+      logger.error('  npm install @nut-tree-fork/nut-js screenshot-desktop');
+      logger.error('');
+      logger.error('Continuing without experimental agent...');
+      logger.error('');
+    }
+  } else {
+    logger.debug('Experimental agents disabled (experimental.enabled not set)');
+  }
+  
+  logger.info('✅ Specialist agents registered', {
+    types: Array.from(agentExecutor.agentTypes.keys()),
+    count: agentExecutor.agentTypes.size
+  });
+  
+  // Initialize Trajectory Fork System
+  const forkConfig = {
+    ...config,
+    forking: {
+      maxConcurrent: 3,
+      maxDepth: 2,
+      cycleLimit: 5,
+      surpriseThreshold: 0.7,
+      uncertaintyThreshold: 0.8
+    }
+  };
+  const forkSystem = new TrajectoryForkSystem(
+    forkConfig,
+    { memory, quantum, goals },
+    logger
+  );
+  logger.info('✅ Trajectory fork system initialized');
+  
+  // Initialize Topic Queue System
+  const topicQueue = new TopicQueueSystem(
+    { ...config, logsDir: config.runtimeRoot || path.join(__dirname, '..', 'runtime') },
+    goals,
+    logger
+  );
+  await topicQueue.initialize();
+  logger.info('✅ Topic queue system initialized');
+  
+  // Initialize clustering if enabled
+  let clusterStateStore = null;
+  let clusterOrchestrator = null;
+  let goalAllocator = null;
+  let clusterCoordinator = null;
+  
+  // Always initialize FilesystemStateStore (even in single-instance mode for Plan/Task storage)
+  if (!config.cluster || !config.cluster.enabled) {
+    // Single-instance mode: use local FilesystemStateStore
+    logger.info('');
+    logger.info('📦 Initializing local state store (single-instance mode)...');
+    
+    try {
+      const fsConfig = {
+        instanceId: config.instanceId || 'cosmo-1',
+        instanceCount: 1,
+        fsRoot: config.runtimeRoot || path.join(__dirname, '..', 'runtime'),
+        stateStore: {
+          compressionThreshold: 102400
+        }
+      };
+      
+      const fsBackend = new FilesystemStateStore(fsConfig, logger);
+      clusterStateStore = new ClusterStateStore(fsConfig, fsBackend);
+      await clusterStateStore.connect();
+      
+      logger.info('✅ Local state store initialized', {
+        fsRoot: fsConfig.fsRoot,
+        instanceId: fsConfig.instanceId
+      });
+    } catch (error) {
+      logger.error('❌ Failed to initialize local state store', {
+        error: error.message,
+        stack: error.stack
+      });
+      throw new Error(`Local state store initialization failed: ${error.message}`);
+    }
+  } else if (config.cluster && config.cluster.enabled) {
+    logger.info('');
+    logger.info('🌐 Initializing cluster backend...');
+    
+    const backend = config.cluster.backend || 'redis';
+    const clusterConfig = {
+      ...config.cluster,
+      instanceId,
+      instanceCount: config.cluster.instanceCount || 3,
+      stateStore: {
+        url: backend === 'redis' ? (config.cluster.redis?.url || 'redis://localhost:6379') : null,
+        compressionThreshold: config.cluster.stateStore?.compressionThreshold || 102400
+      },
+      fsRoot: config.cluster.filesystem?.root || '/tmp/cosmo_cluster',
+      orchestrator: {
+        leaderLeaseMs: 15000,
+        renewIntervalMs: 5000
+      }
+    };
+    
+    try {
+      if (backend === 'redis') {
+        logger.info('  Backend: Redis (active/active CRDT)');
+        const redisBackend = new RedisStateStore(clusterConfig, logger);
+        clusterStateStore = new ClusterStateStore(clusterConfig, redisBackend);
+        await clusterStateStore.connect();
+        
+        // Create Redis orchestrator
+        clusterOrchestrator = new RedisClusterOrchestrator(clusterConfig, redisBackend, logger);
+        await clusterOrchestrator.initialize();
+
+        // Wire cluster-aware memory to backend
+        clusterMemoryManager.attachStateStore(clusterStateStore);
+        clusterMemoryManager.setClusterEnabled(true);
+        
+        // Try to acquire leadership
+        await clusterOrchestrator.tryAcquireLeadership();
+        
+        logger.info('✅ Redis cluster initialized', {
+          instanceId,
+          isLeader: clusterOrchestrator.isLeader
+        });
+
+        goalAllocator = new GoalAllocator(config, clusterStateStore, instanceId, logger);
+      } else if (backend === 'filesystem') {
+        logger.info('  Backend: Filesystem (single-writer lease)');
+        const fsBackend = new FilesystemStateStore(clusterConfig, logger);
+        clusterStateStore = new ClusterStateStore(clusterConfig, fsBackend);
+        await clusterStateStore.connect();
+        
+        // Create Filesystem orchestrator
+        clusterOrchestrator = new FilesystemClusterOrchestrator(clusterConfig, fsBackend, logger);
+        await clusterOrchestrator.initialize();
+
+        // Wire cluster-aware memory to backend
+        clusterMemoryManager.attachStateStore(clusterStateStore);
+        clusterMemoryManager.setClusterEnabled(true);
+        
+        // Try to acquire leadership
+        await clusterOrchestrator.tryAcquireLeadership();
+        
+        logger.info('✅ Filesystem cluster initialized', {
+          instanceId,
+          fsRoot: clusterConfig.fsRoot,
+          isLeader: clusterOrchestrator.isLeader
+        });
+
+        goalAllocator = new GoalAllocator(config, clusterStateStore, instanceId, logger);
+      } else {
+        throw new Error(`Unknown cluster backend: ${backend}`);
+      }
+    } catch (error) {
+      logger.error('❌ Cluster initialization failed', {
+        error: error.message,
+        stack: error.stack
+      });
+      throw error;
+    }
+  }
+
+  if (goalAllocator) {
+    goals.setGoalAllocator(goalAllocator);
+  } else {
+    goals.setGoalAllocator(null);
+  }
+
+  if (clusterStateStore) {
+    clusterCoordinator = new ClusterCoordinator({
+      stateStore: clusterStateStore,
+      instanceId,
+      clusterSize: config.cluster?.instanceCount || 1,
+      config: config.cluster,
+      logger
+    });
+    await clusterCoordinator.initialize();
+    logger.info('✅ Cluster coordinator initialized', {
+      instanceId,
+      clusterSize: clusterCoordinator.clusterSize || config.cluster?.instanceCount || 1
+    });
+
+    if (agentExecutor?.setClusterReviewContext) {
+      agentExecutor.setClusterReviewContext(clusterStateStore, instanceId);
+    }
+  }
+  
+  // Inject phase2b subsystems into coordinator for full system awareness
+  // Fixes existing bug where coordinator references this.phase2bSubsystems but it's never set
+  coordinator.phase2bSubsystems = {
+    memory: memory,
+    agentExecutor: agentExecutor,
+    clusterStateStore: clusterStateStore,
+    goals: goals
+  };
+  logger.info('✅ Meta-Coordinator subsystems connected', {
+    hasMemory: true,
+    hasAgentExecutor: true,
+    hasStateStore: !!clusterStateStore,
+    hasGoals: true
+  });
+  
+  // Create GPT-5.2 orchestrator
+  logger.info('');
+  logger.info('Creating GPT-5.2 orchestrator...');
+  
+  const orchestrator = new Orchestrator(
+    config,
+    {
+      memory,
+      summarizer,
+      roles,
+      quantum,
+      stateModulator,
+      thermodynamic,
+      chaotic,
+      goals,
+      goalCapture,
+      reflection,
+      environment,
+      temporal,
+      oscillator,
+      pathResolver,
+      coordinator,
+      agentExecutor,
+      forkSystem,
+      topicQueue,
+      clusterStateStore,      // Pass cluster state store
+      clusterOrchestrator,    // Pass cluster orchestrator
+      goalAllocator,
+      clusterCoordinator
+    },
+    logger
+  );
+  
+  await orchestrator.initialize();
+  
+  // Store cluster components for shutdown
+  orchestrator.clusterStateStore = clusterStateStore;
+  orchestrator.clusterOrchestrator = clusterOrchestrator;
+  orchestrator.goalAllocator = goalAllocator;
+  orchestrator.clusterCoordinator = clusterCoordinator;
+  
+  // Register orchestrator globally so dashboard can access it
+  global.cosmOrchestrator = orchestrator;
+  logger.info('✅ Orchestrator registered globally for dashboard access');
+  
+  // Wire evaluation framework to dashboard
+  if (orchestrator.evaluation) {
+    if (global.dashboardServer) {
+      global.dashboardServer.setEvaluationFramework(orchestrator.evaluation);
+      logger.info('✅ Evaluation framework wired to dashboard');
+    }
+  }
+  
+  // Wire orchestrator to dashboard for query command center
+  if (global.dashboardServer) {
+    global.dashboardServer.setOrchestrator(orchestrator);
+    logger.info('✅ Query Command Center: Actions enabled');
+
+    // Wire logger to dashboard server (enables console streaming)
+    logger.attachWebDashboard(global.dashboardServer);
+    logger.info('✅ Console streaming to web dashboard enabled');
+  }
+
+  // Start real-time WebSocket server for Watch Panel
+  const realtimePort = parseInt(process.env.REALTIME_PORT || config.realtime?.port || 3400);
+  try {
+    const { RealtimeServer } = require('./realtime/websocket-server');
+    const realtimeServer = new RealtimeServer(realtimePort, logger);
+    await realtimeServer.start();
+    global.realtimeServer = realtimeServer;
+    orchestrator.realtimeServer = realtimeServer;
+  } catch (error) {
+    logger.warn('⚠️  Realtime WebSocket server failed to start (non-fatal)', {
+      port: realtimePort,
+      error: error.message
+    });
+  }
+
+  // Initiate guided mission if in guided mode
+  // Coordinator owns mission lifecycle from startup
+  // CRITICAL: Skip if guidedMissionPlan was already restored from state (Continue flow)
+  if (config.architecture?.roleSystem?.explorationMode === 'guided') {
+    if (orchestrator.guidedMissionPlan) {
+      // Plan was restored from state.json.gz - this is a CONTINUE, not a new run
+      logger.info('');
+      logger.info('📋 Guided mission plan restored from state (Continue mode)');
+      logger.info('   Skipping mission generation - resuming existing plan');
+      logger.info('');
+
+      // Restore completion tracker if needed
+      if (!orchestrator.completionTracker && orchestrator.guidedMissionPlan) {
+        const { CompletionTracker } = require('./core/completion-tracker');
+        orchestrator.completionTracker = new CompletionTracker(orchestrator.guidedMissionPlan, logger);
+      }
+    } else {
+      // No existing plan - this is a NEW run, generate mission plan
+      // Timeout after 30s so the cognitive loop isn't blocked on a slow/failing LLM
+      let plan = null;
+      try {
+        const missionPromise = coordinator.initiateMission({
+          guidedFocus: config.architecture.roleSystem.guidedFocus,
+          subsystems: {
+            agentExecutor,
+            goals,
+            clusterStateStore: orchestrator.clusterStateStore,
+            pathResolver
+          }
+        });
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Mission generation timed out after 30s')), 30000)
+        );
+        plan = await Promise.race([missionPromise, timeoutPromise]);
+      } catch (err) {
+        logger.warn('⚠️  Mission plan generation failed or timed out, starting without plan', { error: err.message });
+      }
+
+      // Store plan in orchestrator for reference
+      if (plan) {
+        // Create completion tracker
+        const { CompletionTracker } = require('./core/completion-tracker');
+        orchestrator.completionTracker = new CompletionTracker(plan, logger);
+
+        orchestrator.guidedMissionPlan = plan;
+      }
+    }
+  }
+  
+  logger.info('');
+  logger.info('╔══════════════════════════════════════════════════╗');
+  logger.info('║   Phase 2B GPT-5.2 System Ready                 ║');
+  logger.info('╚══════════════════════════════════════════════════╝');
+  logger.info('');
+  logger.info('GPT-5.2 Enhanced Features:');
+  logger.info('');
+  logger.info('CORE PHASE 2B:');
+  logger.info('  • Network Memory (spreading activation, Hebbian)');
+  logger.info('  • Dynamic Roles (self-spawning, evolving)');
+  logger.info('  • Quantum Reasoning (5 parallel branches)');
+  logger.info('  • Chaotic Creativity (edge-of-chaos RNN)');
+  logger.info('  • Intrinsic Goals (self-discovered)');
+  logger.info('  • Cognitive State (mood, curiosity, energy)');
+  logger.info('  • Memory Summarization & Consolidation');
+  logger.info('  • Automatic Goal Capture');
+  logger.info('  • Focus/Exploration Oscillations');
+  logger.info('  • Deep Sleep with Dreams');
+  logger.info('');
+  logger.info('GPT-5.2 ENHANCEMENTS:');
+  logger.info('  ⭐ Extended Reasoning (see AI thinking process)');
+  logger.info('  🌐 Web Search (curiosity role + quantum branches)');
+  logger.info('  ⚡ Optimized Models (right model for each task)');
+  logger.info('  🔧 Responses API (modern format with tools)');
+  logger.info('');
+  logger.info('STRATEGIC COORDINATION:');
+  const reviewPeriod = config.coordinator?.reviewCyclePeriod || 50;
+  const curatorPeriod = config.curator?.curationCyclePeriod || 20;
+  const maxConcurrent = config.coordinator?.maxConcurrent || 5;
+  const agentTypes = Array.from(agentExecutor.agentTypes.keys());
+  logger.info(`  🎯 Meta-Coordinator (reviews every ${reviewPeriod} cycles)`);
+  logger.info(`  🎨 Goal Curator (campaigns & synthesis every ${curatorPeriod} cycles)`);
+  logger.info(`  🤖 Specialist Agent Swarm (${agentTypes.length} types, ${maxConcurrent} concurrent)`);
+  agentTypes.forEach(type => {
+    logger.info(`    - ${type.charAt(0).toUpperCase() + type.slice(1).replace('_', ' ')} Agent`);
+  });
+  logger.info('  🌐 MCP Bridge (all agents system-aware via MCP tools)');
+  logger.info('');
+  logger.info('ADVANCED FEATURES:');
+  logger.info('  🔱 Trajectory Forking (spawn sub-explorations)');
+  logger.info('  📥 Topic Queue (inject exploration topics)');
+  logger.info('');
+  logger.info('Logs directory: runtime/');
+  logger.info('Topic queue file: runtime/topics-queue.json');
+  logger.info('');
+  logger.info('Starting cognitive loop...');
+  logger.info('');
+  
+  // Pass TUI dashboard to orchestrator (if active)
+  if (tuiDashboard) {
+    orchestrator.tuiDashboard = tuiDashboard;
+  }
+  
+  // Graceful shutdown
+  // REMOVED: Graceful shutdown handlers are now managed by GracefulShutdownHandler
+  // Do NOT add duplicate process.on('SIGINT'/'SIGTERM') handlers here
+  // This was causing duplicate shutdown execution (state saved twice, etc)
+  // GracefulShutdownHandler is registered in orchestrator.initialize() at line 162
+  // and handles all signal-based shutdown with proper idempotency
+  // Start
+  await orchestrator.start();
+}
+
+main().catch(error => {
+  console.error('Phase 2B GPT-5.2 initialization failed:', error);
+  console.error(error.stack);
+  process.exit(1);
+});

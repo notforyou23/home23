@@ -1,0 +1,1 @@
+../../../ide/codebase-indexer.js

@@ -1,0 +1,39 @@
+{
+  "id": "skill:error-diagnosis",
+  "name": "Python Error Diagnosis",
+  "description": "Parse a Python traceback and extract actionable information: error type, message, source file, line number, and a contextual suggestion for fixing the issue.",
+  "domain": null,
+  "tags": ["utility", "debugging", "python"],
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "traceback": {
+        "type": "string",
+        "description": "Full Python traceback text"
+      }
+    },
+    "required": ["traceback"]
+  },
+  "outputs": {
+    "type": "object",
+    "properties": {
+      "errorType": { "type": "string", "description": "Exception class name" },
+      "errorMessage": { "type": "string", "description": "Exception message" },
+      "fileName": { "type": "string", "description": "Source file where the error occurred" },
+      "lineNumber": { "type": "number", "description": "Line number of the error" },
+      "suggestion": { "type": "string", "description": "Actionable suggestion for fixing the issue" }
+    }
+  },
+  "assumptions": [
+    "Input is a standard Python traceback format",
+    "Traceback follows CPython formatting conventions"
+  ],
+  "implementation": {
+    "type": "python_script",
+    "code": "import sys\nimport os\nimport json\nimport re\n\nSUGGESTIONS = {\n    'ModuleNotFoundError': lambda msg: f'Install the missing module with: pip install {msg.split(\"No module named \")[-1].strip().strip(chr(39)).split(\".\")[0]}' if 'No module named' in msg else 'Check that the module is installed and the name is spelled correctly.',\n    'ImportError': lambda msg: 'Verify the module is installed and the import path is correct. Check for circular imports.',\n    'NameError': lambda msg: f'The variable or function {msg.split(\"name \")[-1].split(\" is\")[0] if \"name \" in msg else \"\"} is not defined in this scope. Check for typos or missing imports.',\n    'TypeError': lambda msg: 'Check argument types and counts. A common cause is passing the wrong number of arguments or mixing incompatible types.' + (' You may be calling a None value as a function.' if 'NoneType' in msg and 'callable' in msg.lower() else ''),\n    'ValueError': lambda msg: 'The value is of the correct type but has an invalid value. Check input validation and conversion logic.',\n    'KeyError': lambda msg: f'The key {msg} does not exist in the dictionary. Use .get() with a default value or check key existence first.',\n    'IndexError': lambda msg: 'The index is out of range. Check list/tuple length before accessing by index, or use try/except.',\n    'AttributeError': lambda msg: 'The object does not have the requested attribute. Check the object type and verify the attribute name. The object may be None.',\n    'FileNotFoundError': lambda msg: 'The file or directory does not exist. Check the path, ensure the file was created, and verify working directory.',\n    'PermissionError': lambda msg: 'Insufficient permissions. Check file/directory permissions and ownership.',\n    'ZeroDivisionError': lambda msg: 'Division by zero encountered. Add a check for zero before dividing.',\n    'RecursionError': lambda msg: 'Maximum recursion depth exceeded. Check for infinite recursion or increase sys.setrecursionlimit().',\n    'OverflowError': lambda msg: 'Numeric overflow. The result is too large for the numeric type. Consider using decimal or limiting input ranges.',\n    'StopIteration': lambda msg: 'Iterator exhausted unexpectedly. Check that the iterable has enough elements before calling next().',\n    'SyntaxError': lambda msg: 'Syntax error in the code. Check for missing colons, parentheses, brackets, or invalid Python syntax.',\n    'IndentationError': lambda msg: 'Inconsistent indentation. Ensure consistent use of spaces (not tabs) and correct nesting levels.',\n    'UnicodeDecodeError': lambda msg: 'Failed to decode bytes. Specify the correct encoding (e.g., encoding=\"utf-8\" or encoding=\"latin-1\").',\n    'UnicodeEncodeError': lambda msg: 'Failed to encode string. Ensure the target encoding supports all characters in the string.',\n    'ConnectionError': lambda msg: 'Network connection failed. Check network connectivity, URL, and firewall settings.',\n    'TimeoutError': lambda msg: 'Operation timed out. Increase the timeout value or check if the target service is responding.',\n    'JSONDecodeError': lambda msg: 'Invalid JSON. Check the JSON string for syntax errors, trailing commas, or single quotes instead of double quotes.',\n    'OSError': lambda msg: 'Operating system error. Check file paths, permissions, disk space, and system resource limits.',\n}\n\ndef get_suggestion(error_type, error_message):\n    \"\"\"Get a contextual suggestion based on error type and message.\"\"\"\n    if error_type in SUGGESTIONS:\n        handler = SUGGESTIONS[error_type]\n        if callable(handler):\n            return handler(error_message)\n        return handler\n    return f'Review the {error_type} documentation and check the code at the indicated location for logical errors.'\n\ndef parse_traceback(tb_text):\n    \"\"\"Parse a Python traceback into structured components.\"\"\"\n    lines = tb_text.strip().splitlines()\n\n    error_type = ''\n    error_message = ''\n    file_name = ''\n    line_number = 0\n\n    # Find the error line (last line that looks like ErrorType: message)\n    for line in reversed(lines):\n        line = line.strip()\n        # Match patterns like: ValueError: invalid literal ...\n        match = re.match(r'^([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Warning|Interrupt|Exit)):\\s*(.*)', line)\n        if match:\n            error_type = match.group(1)\n            error_message = match.group(2)\n            break\n        # Match bare exception names (no message)\n        match = re.match(r'^([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Warning|Interrupt|Exit))$', line)\n        if match:\n            error_type = match.group(1)\n            error_message = ''\n            break\n\n    # Find the last File reference (most relevant frame)\n    file_pattern = re.compile(r'File \"([^\"]+)\",\\s*line\\s+(\\d+)')\n    for line in reversed(lines):\n        match = file_pattern.search(line)\n        if match:\n            file_name = match.group(1)\n            line_number = int(match.group(2))\n            break\n\n    # If no structured traceback found, try to extract from single-line errors\n    if not error_type:\n        for line in reversed(lines):\n            line = line.strip()\n            if ':' in line and line[0].isupper():\n                parts = line.split(':', 1)\n                error_type = parts[0].strip()\n                error_message = parts[1].strip() if len(parts) > 1 else ''\n                break\n\n    if not error_type:\n        error_type = 'UnknownError'\n        error_message = tb_text.strip().splitlines()[-1] if lines else 'Could not parse traceback'\n\n    suggestion = get_suggestion(error_type, error_message)\n\n    return {\n        'errorType': error_type,\n        'errorMessage': error_message,\n        'fileName': file_name,\n        'lineNumber': line_number,\n        'suggestion': suggestion\n    }\n\ndef main():\n    inputs = json.loads(os.environ.get('SKILL_INPUTS', '{}'))\n    traceback_text = inputs.get('traceback', '')\n\n    if not traceback_text.strip():\n        print(json.dumps({\n            'errorType': '',\n            'errorMessage': 'No traceback provided',\n            'fileName': '',\n            'lineNumber': 0,\n            'suggestion': 'Provide a Python traceback for analysis.'\n        }))\n        return\n\n    result = parse_traceback(traceback_text)\n    print(json.dumps(result))\n\nif __name__ == '__main__':\n    main()\n",
+    "timeout_sec": 15
+  },
+  "toolsRequired": [{ "id": "tool:python" }],
+  "origin": "authored",
+  "confidence": 1.0
+}

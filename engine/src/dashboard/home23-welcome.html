@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Home23 — Welcome</title>
+  <link rel="stylesheet" href="/home23-dashboard.css">
+  <style>
+    .welcome-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      text-align: center;
+      padding: 40px 24px;
+    }
+
+    .welcome-logo {
+      font-size: 64px;
+      margin-bottom: 16px;
+    }
+
+    .welcome-title {
+      font-size: 36px;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+
+    .welcome-subtitle {
+      font-size: 16px;
+      color: var(--h23-text-secondary);
+      margin-bottom: 48px;
+      max-width: 440px;
+      line-height: 1.6;
+    }
+
+    .welcome-btn {
+      display: inline-block;
+      background: var(--h23-tab-active);
+      color: #fff;
+      padding: 14px 40px;
+      border-radius: 10px;
+      font-size: 16px;
+      font-weight: 600;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .welcome-btn:hover {
+      background: #3b82f6;
+    }
+
+    .welcome-version {
+      margin-top: 48px;
+      font-size: 12px;
+      color: var(--h23-text-muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="welcome-wrap">
+    <div class="welcome-logo">&#129504;</div>
+    <div class="welcome-title">Home23</div>
+    <div class="welcome-subtitle">
+      Installable AI operating system. Persistent agents with living brains, research engines, and creative tools.
+    </div>
+    <a class="welcome-btn" href="/home23/settings">Get Started</a>
+    <div class="welcome-version">v0.1.0</div>
+  </div>
+</body>
+</html>

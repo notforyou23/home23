@@ -1,0 +1,2246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cosmo - Cognitive Flow Interface</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Roboto, sans-serif;
+            background: #0a0e27;
+            color: #e8eaed;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Animated background */
+        .cosmic-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(ellipse at top, #1a1f3a 0%, #0a0e27 100%);
+            z-index: -1;
+        }
+
+        .cosmic-bg::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-image: 
+                radial-gradient(2px 2px at 20% 30%, rgba(255,255,255,0.2), transparent),
+                radial-gradient(2px 2px at 60% 70%, rgba(255,255,255,0.15), transparent),
+                radial-gradient(1px 1px at 50% 50%, rgba(255,255,255,0.1), transparent);
+            background-size: 200px 200px, 300px 300px, 150px 150px;
+            animation: drift 60s linear infinite;
+        }
+
+        @keyframes drift {
+            from { transform: translate(0, 0); }
+            to { transform: translate(100px, 100px); }
+        }
+
+        /* Header */
+        .header {
+            padding: 20px 30px;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            background: rgba(10, 14, 39, 0.8);
+            backdrop-filter: blur(20px);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .logo {
+            font-size: 1.8em;
+            font-weight: 600;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #f093fb 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(76, 175, 80, 0.1);
+            border: 1px solid rgba(76, 175, 80, 0.3);
+            border-radius: 20px;
+            font-size: 0.9em;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background: #4caf50;
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(1.2); }
+        }
+
+        .tabs {
+            display: flex;
+            gap: 5px;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            background: transparent;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            color: #8b92a7;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 0.95em;
+        }
+
+        .tab:hover {
+            background: rgba(255,255,255,0.05);
+            color: #e8eaed;
+        }
+
+        .tab.active {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-color: transparent;
+            color: white;
+        }
+
+        /* Main Layout */
+        .main-container {
+            display: flex;
+            height: calc(100vh - 120px);
+        }
+
+        /* Stream (Left 70%) */
+        .stream-section {
+            flex: 0 0 70%;
+            padding: 30px;
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255,255,255,0.2) transparent;
+        }
+
+        .stream-section::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .stream-section::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .stream-section::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.2);
+            border-radius: 4px;
+        }
+
+        .stream-header {
+            margin-bottom: 30px;
+        }
+
+        .stream-header h2 {
+            font-size: 1.4em;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .stream-subtitle {
+            color: #8b92a7;
+            font-size: 0.95em;
+        }
+
+        /* Stream Items */
+        .stream-item {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 24px;
+            margin-bottom: 20px;
+            transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stream-item::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: linear-gradient(180deg, #667eea 0%, #764ba2 100%);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .stream-item:hover {
+            background: rgba(255,255,255,0.05);
+            border-color: rgba(102, 126, 234, 0.3);
+            transform: translateY(-2px);
+        }
+
+        .stream-item:hover::before {
+            opacity: 1;
+        }
+
+        .stream-item.breakthrough {
+            border-color: rgba(255, 193, 7, 0.4);
+            background: rgba(255, 193, 7, 0.05);
+        }
+
+        .stream-item.breakthrough::before {
+            background: linear-gradient(180deg, #ffc107 0%, #ff9800 100%);
+            opacity: 1;
+        }
+
+        .item-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+            font-size: 0.85em;
+            color: #8b92a7;
+        }
+
+        .item-time {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .item-badge {
+            padding: 4px 12px;
+            background: rgba(255, 193, 7, 0.15);
+            border: 1px solid rgba(255, 193, 7, 0.3);
+            border-radius: 12px;
+            color: #ffc107;
+            font-size: 0.85em;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .item-badge.agent {
+            background: rgba(76, 175, 80, 0.15);
+            border-color: rgba(76, 175, 80, 0.3);
+            color: #4caf50;
+        }
+
+        .item-badge.goal {
+            background: rgba(33, 150, 243, 0.15);
+            border-color: rgba(33, 150, 243, 0.3);
+            color: #2196f3;
+        }
+
+        .thought-content {
+            font-size: 1.15em;
+            line-height: 1.6;
+            color: #e8eaed;
+            margin-bottom: 20px;
+            font-weight: 400;
+        }
+
+        .thought-content.main {
+            font-size: 1.25em;
+            font-weight: 500;
+            background: linear-gradient(135deg, #fff 0%, #e8eaed 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .thought-content.truncated {
+            max-height: 150px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .thought-content.truncated::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 40px;
+            background: linear-gradient(to bottom, transparent, rgba(10, 14, 39, 0.95));
+        }
+
+        .expand-btn {
+            color: #667eea;
+            cursor: pointer;
+            font-size: 0.9em;
+            margin-top: 8px;
+            display: inline-block;
+            transition: all 0.2s;
+        }
+
+        .expand-btn:hover {
+            color: #764ba2;
+            transform: translateX(4px);
+        }
+
+        .context-section {
+            background: rgba(0,0,0,0.2);
+            border-radius: 12px;
+            padding: 16px;
+            margin-top: 16px;
+        }
+
+        .context-title {
+            font-size: 0.9em;
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .context-list {
+            list-style: none;
+            padding: 0;
+        }
+
+        .context-list li {
+            padding: 6px 0;
+            color: #b8bcc8;
+            font-size: 0.95em;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .context-list li::before {
+            content: '→';
+            color: #667eea;
+            font-weight: bold;
+        }
+
+        .item-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        .action-btn {
+            padding: 8px 16px;
+            background: rgba(102, 126, 234, 0.1);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            border-radius: 8px;
+            color: #667eea;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: all 0.2s;
+        }
+
+        .action-btn:hover {
+            background: rgba(102, 126, 234, 0.2);
+            border-color: rgba(102, 126, 234, 0.5);
+            transform: translateY(-1px);
+        }
+
+        /* Sidebar (Right 30%) */
+        .sidebar {
+            flex: 0 0 30%;
+            padding: 30px 20px;
+            border-left: 1px solid rgba(255,255,255,0.08);
+            overflow-y: auto;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255,255,255,0.2) transparent;
+        }
+
+        .sidebar-section {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .sidebar-title {
+            font-size: 1.1em;
+            font-weight: 600;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Query Input */
+        .query-input {
+            width: 100%;
+            padding: 12px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            color: #e8eaed;
+            font-size: 0.95em;
+            margin-bottom: 12px;
+            transition: all 0.3s;
+        }
+
+        .query-input:focus {
+            outline: none;
+            border-color: rgba(102, 126, 234, 0.5);
+            background: rgba(0,0,0,0.4);
+        }
+
+        .quick-queries {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .quick-query {
+            padding: 8px 12px;
+            background: rgba(102, 126, 234, 0.1);
+            border: 1px solid rgba(102, 126, 234, 0.2);
+            border-radius: 6px;
+            color: #8b92a7;
+            cursor: pointer;
+            font-size: 0.85em;
+            transition: all 0.2s;
+            text-align: left;
+        }
+
+        .quick-query:hover {
+            background: rgba(102, 126, 234, 0.2);
+            color: #e8eaed;
+            border-color: rgba(102, 126, 234, 0.4);
+        }
+
+        /* Active Threads */
+        .thread-item {
+            padding: 12px;
+            background: rgba(0,0,0,0.2);
+            border-radius: 8px;
+            margin-bottom: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .thread-item:hover {
+            background: rgba(0,0,0,0.3);
+            transform: translateX(4px);
+        }
+
+        .thread-item.followed {
+            background: rgba(255, 193, 7, 0.1);
+            border: 1px solid rgba(255, 193, 7, 0.2);
+        }
+
+        .thread-title {
+            font-weight: 500;
+            margin-bottom: 6px;
+            color: #e8eaed;
+        }
+
+        .thread-meta {
+            font-size: 0.85em;
+            color: #8b92a7;
+        }
+
+        /* Cognitive State */
+        .state-meter {
+            margin-bottom: 16px;
+        }
+
+        .state-label {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+            font-size: 0.9em;
+        }
+
+        .state-bar {
+            height: 8px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .state-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+
+        .mode-badge {
+            display: inline-block;
+            padding: 6px 14px;
+            background: rgba(102, 126, 234, 0.2);
+            border: 1px solid rgba(102, 126, 234, 0.4);
+            border-radius: 20px;
+            font-size: 0.9em;
+            font-weight: 600;
+            color: #667eea;
+            margin-bottom: 16px;
+        }
+
+        /* Loading State */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #8b92a7;
+        }
+
+        .loading-spinner {
+            display: inline-block;
+            width: 40px;
+            height: 40px;
+            border: 3px solid rgba(102, 126, 234, 0.2);
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 16px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Error State */
+        .error-message {
+            background: rgba(244, 67, 54, 0.1);
+            border: 1px solid rgba(244, 67, 54, 0.3);
+            border-radius: 12px;
+            padding: 20px;
+            color: #ff5252;
+            margin-bottom: 20px;
+        }
+
+        /* Inject Topic */
+        .inject-input {
+            width: 100%;
+            padding: 10px;
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            color: #e8eaed;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+            resize: vertical;
+            min-height: 60px;
+        }
+
+        .inject-input:focus {
+            outline: none;
+            border-color: rgba(102, 126, 234, 0.5);
+        }
+
+        .inject-btn {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .inject-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .inject-btn:active {
+            transform: translateY(0);
+        }
+
+        /* Story Panel (Modal Overlay) */
+        .story-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            backdrop-filter: blur(10px);
+            z-index: 1000;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            animation: fadeIn 0.3s ease;
+        }
+
+        .story-overlay.active {
+            display: flex;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .story-panel {
+            background: linear-gradient(135deg, #1a1f3a 0%, #0f1629 100%);
+            border: 1px solid rgba(102, 126, 234, 0.3);
+            border-radius: 20px;
+            width: 90%;
+            max-width: 900px;
+            max-height: 85vh;
+            overflow-y: auto;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+            position: relative;
+            animation: slideUp 0.4s ease;
+        }
+
+        @keyframes slideUp {
+            from { transform: translateY(30px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .story-close {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            width: 36px;
+            height: 36px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 1.4em;
+            color: #8b92a7;
+            transition: all 0.2s;
+        }
+
+        .story-close:hover {
+            background: rgba(255, 255, 255, 0.2);
+            color: #fff;
+            transform: rotate(90deg);
+        }
+
+        .story-header {
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .story-title {
+            font-size: 1.8em;
+            font-weight: 600;
+            margin-bottom: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .story-timeline {
+            margin-top: 20px;
+        }
+
+        .timeline-event {
+            position: relative;
+            padding-left: 40px;
+            margin-bottom: 30px;
+        }
+
+        .timeline-event::before {
+            content: '';
+            position: absolute;
+            left: 12px;
+            top: 30px;
+            bottom: -30px;
+            width: 2px;
+            background: linear-gradient(180deg, rgba(102, 126, 234, 0.5) 0%, rgba(102, 126, 234, 0.1) 100%);
+        }
+
+        .timeline-event:last-child::before {
+            display: none;
+        }
+
+        .timeline-dot {
+            position: absolute;
+            left: 0;
+            top: 8px;
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: 3px solid #0a0e27;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.85em;
+        }
+
+        .timeline-dot.breakthrough {
+            background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);
+            box-shadow: 0 0 20px rgba(255, 193, 7, 0.4);
+        }
+
+        .timeline-time {
+            font-size: 0.85em;
+            color: #8b92a7;
+            margin-bottom: 8px;
+        }
+
+        .timeline-content {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 12px;
+            padding: 16px;
+        }
+
+        .timeline-label {
+            font-size: 0.9em;
+            font-weight: 600;
+            color: #667eea;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .timeline-text {
+            color: #e8eaed;
+            line-height: 1.6;
+            margin-bottom: 8px;
+        }
+
+        .timeline-details {
+            font-size: 0.85em;
+            color: #8b92a7;
+            margin-top: 8px;
+        }
+
+        /* Followed Threads */
+        .followed-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            background: rgba(255, 193, 7, 0.2);
+            border: 1px solid rgba(255, 193, 7, 0.4);
+            border-radius: 8px;
+            font-size: 0.75em;
+            margin-left: 8px;
+            color: #ffc107;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .main-container {
+                flex-direction: column;
+            }
+            
+            .stream-section, .sidebar {
+                flex: 1;
+            }
+            
+            .sidebar {
+                border-left: none;
+                border-top: 1px solid rgba(255,255,255,0.08);
+            }
+
+            .story-panel {
+                width: 95%;
+                padding: 30px 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="cosmic-bg"></div>
+
+    <div class="header">
+        <div class="header-top">
+            <div class="logo">🧠 Cosmo</div>
+            <div class="status-badge">
+                <span class="status-dot"></span>
+                <span id="connection-status">Connecting...</span>
+            </div>
+        </div>
+        <div class="tabs">
+            <div class="tab active" data-tab="stream">Stream</div>
+            <div class="tab" data-tab="graph" onclick="window.location.href='/graph'">Graph</div>
+            <div class="tab" data-tab="classic" onclick="window.location.href='/classic'">Classic</div>
+        </div>
+    </div>
+
+    <div class="main-container">
+        <!-- Stream Section -->
+        <div class="stream-section" id="stream">
+            <div class="stream-header">
+                <h2>🌊 Cognitive Stream</h2>
+                <p class="stream-subtitle">Live flow of Cosmo's thinking, breakthroughs, and discoveries</p>
+            </div>
+
+            <div id="stream-content">
+                <div class="loading">
+                    <div class="loading-spinner"></div>
+                    <div>Connecting to Cosmo's mind...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <!-- Query Section -->
+            <div class="sidebar-section">
+                <div class="sidebar-title">💬 Ask Cosmo</div>
+                <input type="text" 
+                       class="query-input" 
+                       id="query-input"
+                       placeholder="What are you excited about?"
+                       onkeypress="if(event.key==='Enter') executeQuery()">
+                <div class="quick-queries">
+                    <div class="quick-query" onclick="executeQuery('What are you most excited about?')">
+                        What are you most excited about?
+                    </div>
+                    <div class="quick-query" onclick="executeQuery('Show me recent breakthroughs')">
+                        Show me recent breakthroughs
+                    </div>
+                    <div class="quick-query" onclick="executeQuery('Show me dreams')">
+                        💭 Show me dreams
+                    </div>
+                    <div class="quick-query" onclick="executeQuery('What is most novel right now?')">
+                        What is most novel right now?
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active Threads -->
+            <div class="sidebar-section">
+                <div class="sidebar-title">🎯 Active Now</div>
+                <div id="active-threads">
+                    <div class="loading" style="padding: 20px;">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Cognitive State -->
+            <div class="sidebar-section">
+                <div class="sidebar-title">📊 Cognitive State</div>
+                <div class="mode-badge" id="current-mode">LOADING...</div>
+                <div class="state-meter">
+                    <div class="state-label">
+                        <span>Curiosity</span>
+                        <span id="curiosity-val">--</span>
+                    </div>
+                    <div class="state-bar">
+                        <div class="state-fill" id="curiosity-bar" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div class="state-meter">
+                    <div class="state-label">
+                        <span>Energy</span>
+                        <span id="energy-val">--</span>
+                    </div>
+                    <div class="state-bar">
+                        <div class="state-fill" id="energy-bar" style="width: 0%"></div>
+                    </div>
+                </div>
+                <div style="margin-top: 12px; font-size: 0.85em; color: #8b92a7;">
+                    Cycle: <span id="cycle-count">--</span>
+                </div>
+            </div>
+
+            <!-- Curated Insights Reports -->
+            <div class="sidebar-section">
+                <div class="sidebar-title">📊 Curated Insights</div>
+                <div style="font-size: 0.85em; color: #8b92a7; margin-bottom: 12px;">
+                    Auto-generated every 50 cycles
+                </div>
+                <button onclick="viewLatestReport()" style="
+                    width: 100%;
+                    padding: 12px;
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    border: none;
+                    border-radius: 8px;
+                    color: white;
+                    cursor: pointer;
+                    font-size: 0.95em;
+                    font-weight: 500;
+                    transition: transform 0.2s, box-shadow 0.2s;
+                    margin-bottom: 8px;
+                ">
+                    📄 View Latest Report
+                </button>
+                <button onclick="listAllReports()" style="
+                    width: 100%;
+                    padding: 10px;
+                    background: rgba(255,255,255,0.08);
+                    border: 1px solid rgba(255,255,255,0.15);
+                    border-radius: 6px;
+                    color: #e8eaed;
+                    cursor: pointer;
+                    font-size: 0.9em;
+                    transition: background 0.2s;
+                ">
+                    📚 All Reports
+                </button>
+                <div id="reports-list" style="margin-top: 12px; font-size: 0.85em; color: #8b92a7;">
+                    <!-- Reports will be listed here -->
+                </div>
+            </div>
+
+            <!-- Inject Topic -->
+            <div class="sidebar-section">
+                <div class="sidebar-title">💎 Inject Topic</div>
+                <textarea class="inject-input" 
+                          id="topic-input" 
+                          placeholder="What should Cosmo explore?"></textarea>
+                <select id="topic-priority" style="width: 100%; padding: 8px; background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; color: #e8eaed; margin-bottom: 10px;">
+                    <option value="medium">Medium Priority</option>
+                    <option value="high">High Priority</option>
+                    <option value="low">Low Priority</option>
+                </select>
+                <button class="inject-btn" onclick="injectTopic()">Inject Topic</button>
+                <div id="inject-result" style="margin-top: 10px; font-size: 0.85em;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Story Panel Overlay -->
+    <div class="story-overlay" id="story-overlay" onclick="if(event.target === this) closeStory()">
+        <div class="story-panel" id="story-panel">
+            <div class="story-close" onclick="closeStory()">×</div>
+            <div id="story-content"></div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration
+        const urlParams = new URLSearchParams(window.location.search);
+        const MCP_URL = urlParams.get('mcp') || 'http://localhost:3347/mcp';
+        let requestId = 1;
+        let updateInterval = null;
+        let allThoughts = []; // Cache all thoughts for provenance
+        let followedThreads = new Set(); // Track followed threads
+
+        console.log('Cosmo Cognitive Flow connecting to:', MCP_URL);
+
+        // MCP Call function
+        async function callMCP(toolName, args = {}) {
+            try {
+                const response = await fetch(MCP_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json, text/event-stream'
+                    },
+                    body: JSON.stringify({
+                        jsonrpc: '2.0',
+                        id: requestId++,
+                        method: 'tools/call',
+                        params: {
+                            name: toolName,
+                            arguments: args
+                        }
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+
+                const text = await response.text();
+                
+                // Debug logging
+                if (!text || text.trim().length === 0) {
+                    console.error('Empty response from MCP server');
+                    throw new Error('Empty response from server');
+                }
+                
+                console.log('MCP Response (first 200 chars):', text.substring(0, 200));
+                
+                const lines = text.trim().split('\n');
+                const dataLine = lines.find(l => l.startsWith('data: '));
+                
+                if (dataLine) {
+                    const jsonData = dataLine.substring(6);
+                    const parsed = JSON.parse(jsonData);
+                    
+                    if (parsed.error) {
+                        throw new Error(parsed.error.message);
+                    }
+                    
+                    updateConnectionStatus(true);
+                    return JSON.parse(parsed.result.content[0].text);
+                }
+                
+                // Fallback: Try parsing as direct JSON (non-SSE response)
+                try {
+                    const directParsed = JSON.parse(text);
+                    if (directParsed.result && directParsed.result.content) {
+                        updateConnectionStatus(true);
+                        return JSON.parse(directParsed.result.content[0].text);
+                    }
+                } catch (e) {
+                    console.error('Could not parse as direct JSON either');
+                }
+                
+                console.error('Response lines:', lines);
+                throw new Error('Invalid response format - no data line found');
+            } catch (error) {
+                console.error('MCP call failed:', error);
+                updateConnectionStatus(false, error.message);
+                throw error;
+            }
+        }
+
+        // Update connection status
+        function updateConnectionStatus(connected, message = '') {
+            const statusEl = document.getElementById('connection-status');
+            if (connected) {
+                statusEl.textContent = 'Live';
+                statusEl.style.color = '#4caf50';
+            } else {
+                statusEl.textContent = 'Disconnected';
+                statusEl.style.color = '#f44336';
+            }
+        }
+
+        // Build cognitive stream
+        async function buildCognitiveStream() {
+            try {
+                // Get recent thoughts (get more for better provenance)
+                const thoughts = await callMCP('get_recent_thoughts', { limit: 20 });
+                
+                // Cache all thoughts for provenance tracking
+                if (thoughts.thoughts) {
+                    allThoughts = thoughts.thoughts;
+                }
+                
+                // Get goals for context
+                const goals = await callMCP('get_active_goals', { status: 'active', limit: 5 });
+                
+                // Get agent activity
+                const agents = await callMCP('get_agent_activity');
+                
+                // Combine into narrative stream
+                const stream = [];
+                
+                // Add thoughts with adaptive breakthrough detection
+                if (thoughts.thoughts) {
+                    // Calculate dynamic breakthrough threshold (top 20% of novelty)
+                    const noveltyScores = thoughts.thoughts.map(t => t.surprise || 0).sort((a, b) => b - a);
+                    const breakthroughThreshold = noveltyScores.length > 0 ? noveltyScores[Math.floor(noveltyScores.length * 0.2)] : 0.3;
+                    
+                    thoughts.thoughts.forEach(t => {
+                        const novelty = t.surprise || 0;
+                        // Breakthrough = top 20% OR > 30% absolute
+                        const isBreakthrough = novelty >= breakthroughThreshold || novelty > 0.3;
+                        
+                        stream.push({
+                            type: 'thought',
+                            timestamp: t.timestamp || new Date().toISOString(),
+                            cycle: t.cycle,
+                            role: t.role,
+                            content: t.thought,
+                            goal: t.goal,
+                            novelty: novelty,
+                            isBreakthrough: isBreakthrough,
+                            cognitiveState: t.cognitiveState,
+                            mode: t.mode,
+                            model: t.model,
+                            usedWebSearch: t.usedWebSearch
+                        });
+                    });
+                }
+                
+                // Add agent completions
+                if (agents.recentAgents && agents.recentAgents.length > 0) {
+                    agents.recentAgents.slice(0, 3).forEach(agent => {
+                        stream.push({
+                            type: 'agent',
+                            timestamp: agent.endTime || new Date().toISOString(),
+                            agentType: agent.type,
+                            goal: agent.goalId,
+                            status: agent.status,
+                            duration: agent.duration
+                        });
+                    });
+                }
+                
+                // Sort by timestamp (most recent first)
+                stream.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+                
+                // Render stream
+                renderStream(stream);
+                
+                // Update sidebar
+                updateActiveThreads(goals.goals || []);
+                updateCognitiveState();
+                
+            } catch (error) {
+                document.getElementById('stream-content').innerHTML = `
+                    <div class="error-message">
+                        ❌ Failed to connect to MCP server at ${MCP_URL}<br>
+                        Make sure it's running: <code>npm run mcp:http</code>
+                    </div>
+                `;
+            }
+        }
+
+        // Render stream items
+        function renderStream(items) {
+            const container = document.getElementById('stream-content');
+            
+            if (items.length === 0) {
+                container.innerHTML = `
+                    <div class="loading">
+                        💭 No thoughts yet. Cosmo is just starting up...
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = '';
+            
+            items.forEach((item, index) => {
+                if (item.type === 'thought') {
+                    html += renderThought(item, index);
+                } else if (item.type === 'agent') {
+                    html += renderAgent(item);
+                }
+            });
+            
+            container.innerHTML = html;
+        }
+
+        // Render thought item
+        function renderThought(thought, index) {
+            const timeAgo = getTimeAgo(thought.timestamp);
+            const isRecent = index < 3;
+            const breakthoughClass = thought.isBreakthrough ? 'breakthrough' : '';
+            const isFollowed = thought.goal && followedThreads.has(thought.goal);
+            const contentLength = thought.content.length;
+            const shouldTruncate = contentLength > 400 && index > 2; // Only truncate older, long thoughts
+            const thoughtId = `thought_${thought.cycle}`;
+            
+            return `
+                <div class="stream-item ${breakthoughClass}" id="${thoughtId}">
+                    <div class="item-meta">
+                        <div class="item-time">
+                            <span>${timeAgo}</span>
+                            <span>•</span>
+                            <span>Cycle ${thought.cycle}</span>
+                            <span>•</span>
+                            <span>${thought.role.toUpperCase()}</span>
+                            ${isFollowed ? '<span class="followed-badge">★ FOLLOWING</span>' : ''}
+                        </div>
+                        ${thought.isBreakthrough ? '<div class="item-badge">⚡ BREAKTHROUGH</div>' : ''}
+                    </div>
+                    
+                    <div class="thought-content ${isRecent ? 'main' : ''} ${shouldTruncate ? 'truncated' : ''}" id="${thoughtId}_content">
+                        ${escapeHtml(thought.content)}
+                    </div>
+                    ${shouldTruncate ? `<div class="expand-btn" onclick="expandThought('${thoughtId}')">▼ Read full thought (${contentLength} chars)</div>` : ''}
+                    
+                    <div class="context-section">
+                        <div class="context-title">Details</div>
+                        <ul class="context-list">
+                            <li>Novelty: ${(thought.novelty * 100).toFixed(1)}% ${thought.novelty > 0.3 ? '(High)' : thought.novelty > 0.1 ? '(Medium)' : '(Low)'}</li>
+                            <li>Mode: ${thought.mode || 'Unknown'} • Model: ${thought.model || 'Unknown'}</li>
+                            ${thought.goal ? `<li>Goal: <span class="expand-btn" onclick="showGoalDetail('${escapeHtml(thought.goal)}')">${escapeHtml(thought.goal.substring(0, 60))}...</span></li>` : '<li>No specific goal</li>'}
+                            ${thought.usedWebSearch ? '<li>🔍 Used web search</li>' : ''}
+                        </ul>
+                    </div>
+                    
+                    <div class="item-actions">
+                        <button class="action-btn" onclick="exploreThought('${thought.cycle}')">
+                            📖 Full Story & Timeline
+                        </button>
+                        ${thought.goal ? `
+                            <button class="action-btn" onclick="followThread('${thought.goal}')">
+                                ${isFollowed ? '★ Unfollow' : '☆ Follow Thread'}
+                            </button>
+                            <button class="action-btn" onclick="showAllThoughtsForGoal('${thought.goal}')">
+                                🔍 All Thoughts in Thread
+                            </button>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
+        // Render agent item
+        function renderAgent(agent) {
+            const timeAgo = getTimeAgo(agent.timestamp);
+            
+            return `
+                <div class="stream-item">
+                    <div class="item-meta">
+                        <div class="item-time">
+                            <span>${timeAgo}</span>
+                        </div>
+                        <div class="item-badge agent">🤖 AGENT UPDATE</div>
+                    </div>
+                    
+                    <div class="thought-content">
+                        ${agent.agentType} completed analysis
+                    </div>
+                    
+                    <div class="context-section">
+                        <div class="context-title">What Happened</div>
+                        <ul class="context-list">
+                            <li>Agent type: ${agent.agentType}</li>
+                            <li>Status: ${agent.status}</li>
+                            ${agent.goal ? `<li>Goal: ${agent.goal}</li>` : ''}
+                        </ul>
+                    </div>
+                    
+                    <div class="item-actions">
+                        <button class="action-btn" onclick="viewAgentResults('${agent.goal}')">
+                            View Findings
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Update active threads
+        function updateActiveThreads(goals) {
+            const container = document.getElementById('active-threads');
+            
+            if (goals.length === 0) {
+                container.innerHTML = '<div style="color: #8b92a7; font-size: 0.9em;">No active threads yet</div>';
+                return;
+            }
+            
+            // Prioritize followed threads, then by priority
+            const sortedGoals = goals.sort((a, b) => {
+                const aFollowed = followedThreads.has(a.id) ? 1 : 0;
+                const bFollowed = followedThreads.has(b.id) ? 1 : 0;
+                if (aFollowed !== bFollowed) return bFollowed - aFollowed;
+                return parseFloat(b.priority) - parseFloat(a.priority);
+            });
+            
+            const html = sortedGoals.slice(0, 3).map(goal => {
+                const isFollowed = followedThreads.has(goal.id);
+                return `
+                    <div class="thread-item ${isFollowed ? 'followed' : ''}" onclick="focusOnThread('${goal.id}')">
+                        <div class="thread-title">
+                            ${isFollowed ? '★ ' : ''}${escapeHtml((goal.description || 'Untitled').substring(0, 60))}
+                        </div>
+                        <div class="thread-meta">
+                            Priority: ${(parseFloat(goal.priority) * 100).toFixed(0)}% • 
+                            Progress: ${(parseFloat(goal.progress) * 100).toFixed(0)}%
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            container.innerHTML = html;
+        }
+
+        // Update cognitive state
+        async function updateCognitiveState() {
+            try {
+                const state = await callMCP('get_system_state');
+                
+                // Update mode
+                const modeEl = document.getElementById('current-mode');
+                modeEl.textContent = (state.mode || 'FOCUS').toUpperCase();
+                
+                // Update cycle
+                document.getElementById('cycle-count').textContent = state.cycle || '--';
+                
+                // Update cognitive state if available
+                if (state.cognitiveState) {
+                    const cs = state.cognitiveState;
+                    
+                    if (cs.curiosity !== undefined) {
+                        const pct = Math.round(cs.curiosity * 100);
+                        document.getElementById('curiosity-val').textContent = pct + '%';
+                        document.getElementById('curiosity-bar').style.width = pct + '%';
+                    }
+                    
+                    if (cs.energy !== undefined) {
+                        const pct = Math.round(cs.energy * 100);
+                        document.getElementById('energy-val').textContent = pct + '%';
+                        document.getElementById('energy-bar').style.width = pct + '%';
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to update cognitive state:', error);
+            }
+        }
+
+        // Execute query - Enhanced with multiple query types
+        async function executeQuery(query) {
+            if (!query) {
+                query = document.getElementById('query-input').value.trim();
+            }
+            
+            if (!query) return;
+            
+            try {
+                const queryLower = query.toLowerCase();
+                let html = '';
+                
+                // Ensure we have thoughts cached
+                if (allThoughts.length === 0) {
+                    showMessage('Loading thoughts data... try again in a moment', 'info');
+                    await buildCognitiveStream(); // Refresh cache
+                    return;
+                }
+                
+                // Smart query routing
+                if (queryLower.includes('excited about') || queryLower.includes('what are you')) {
+                    // Show TOP novel thoughts (relative, not absolute threshold)
+                    const topNovel = allThoughts
+                        .sort((a, b) => b.surprise - a.surprise)
+                        .slice(0, 3);
+                    
+                    if (topNovel.length === 0) {
+                        showMessage('No thoughts available yet. Cosmo is just starting...', 'info');
+                        return;
+                    }
+                    
+                    // Calculate if any are truly high novelty
+                    const hasHighNovelty = topNovel.some(t => t.surprise > 0.3);
+                    
+                    // Build query response with FULL exploration capability
+                    html = `
+                        <div class="stream-item ${hasHighNovelty ? 'breakthrough' : ''}" style="border: 2px solid rgba(102, 126, 234, 0.4);">
+                            <div class="item-meta">
+                                <div class="item-time">Query Answer</div>
+                                <div class="item-badge">💡 TOP INSIGHTS</div>
+                            </div>
+                            <div class="thought-content main">
+                                "${query}" — Here are the top 3 most novel thoughts:
+                            </div>
+                    `;
+                    
+                    // Render each result as a FULL explorable item
+                    topNovel.forEach((t, i) => {
+                        const noveltyPct = (t.surprise * 100).toFixed(1);
+                        const isFollowed = t.goal && followedThreads.has(t.goal);
+                        
+                        html += `
+                            <div style="background: rgba(0,0,0,0.3); border-radius: 12px; padding: 20px; margin-top: 16px; border-left: 3px solid #667eea;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                    <div style="font-weight: 600; color: #667eea;">
+                                        #${i + 1} • Cycle ${t.cycle} • ${t.role.toUpperCase()}
+                                    </div>
+                                    <div style="font-size: 0.9em; color: #ffc107;">
+                                        Novelty: ${noveltyPct}%
+                                    </div>
+                                </div>
+                                <div style="color: #e8eaed; line-height: 1.6; margin-bottom: 12px;">
+                                    ${escapeHtml(t.thought)}
+                                </div>
+                                <div style="font-size: 0.85em; color: #8b92a7; margin-bottom: 12px;">
+                                    Mode: ${t.mode || 'unknown'} • Model: ${t.model || 'unknown'}
+                                    ${t.usedWebSearch ? ' • 🔍 Web search' : ''}
+                                    ${t.goal ? `<br>Goal: ${escapeHtml(t.goal.substring(0, 80))}` : ''}
+                                </div>
+                                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                    <button class="action-btn" onclick="exploreThought('${t.cycle}')">
+                                        📖 Full Story
+                                    </button>
+                                    ${t.goal ? `
+                                        <button class="action-btn" onclick="showGoalDetail('${escapeHtml(t.goal)}')">
+                                            🎯 Goal Details
+                                        </button>
+                                        <button class="action-btn" onclick="showAllThoughtsForGoal('${escapeHtml(t.goal)}')">
+                                            🔍 View Thread
+                                        </button>
+                                        <button class="action-btn" onclick="followThread('${escapeHtml(t.goal)}')">
+                                            ${isFollowed ? '★ Unfollow' : '☆ Follow'}
+                                        </button>
+                                    ` : ''}
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    html += `</div>`;
+                    
+                } else if (queryLower.includes('dream')) {
+                    // Show dreams from MCP
+                    const dreamData = await callMCP('get_dreams', { limit: 10 });
+                    
+                    if (!dreamData || !dreamData.dreams || dreamData.dreams.length === 0) {
+                        showMessage('No dreams found yet. Cosmo dreams during sleep cycles (2 AM daily).', 'info');
+                        return;
+                    }
+                    
+                    // Build dream exploration view
+                    html = `
+                        <div class="stream-item" style="border: 2px solid rgba(157, 78, 221, 0.5); background: rgba(157, 78, 221, 0.05);">
+                            <div class="item-meta">
+                                <div class="item-time">Dream Explorer</div>
+                                <div class="item-badge" style="background: rgba(157, 78, 221, 0.2); border-color: rgba(157, 78, 221, 0.4); color: #9d4edd;">💭 DREAMS</div>
+                            </div>
+                            <div class="thought-content main">
+                                "${query}" — Found ${dreamData.stats.total} dreams (showing ${dreamData.dreams.length})
+                            </div>
+                            <div style="background: rgba(0,0,0,0.3); border-radius: 12px; padding: 16px; margin-top: 16px;">
+                                <div style="font-size: 0.9em; color: #8b92a7; margin-bottom: 12px;">
+                                    <strong>About Dreams:</strong> Generated during sleep cycles with high creativity. 
+                                    Some become goals, some enter memory with [DREAM] tag. Memory rewiring (Watts-Strogatz) 
+                                    happens during dreams for creative connections.
+                                </div>
+                                <div style="font-size: 0.85em; color: #9d4edd;">
+                                    📊 ${dreamData.stats.fromGoals} dream goals • ${dreamData.stats.fromMemory} in memory • 
+                                    ${dreamData.stats.completed} completed
+                                </div>
+                            </div>
+                    `;
+                    
+                    // Each dream as fully explorable card
+                    dreamData.dreams.forEach((d, i) => {
+                        const timeAgo = getTimeAgo(d.timestamp);
+                        const typeLabel = d.type === 'goal' ? 'DREAM GOAL' : 'DREAM MEMORY';
+                        const typeColor = d.type === 'goal' ? '#9d4edd' : '#ba68c8';
+                        
+                        html += `
+                            <div style="background: rgba(157, 78, 221, 0.08); border-radius: 12px; padding: 20px; margin-top: 16px; border-left: 3px solid ${typeColor};">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                    <div style="font-weight: 600; color: ${typeColor};">
+                                        #${i + 1} • ${typeLabel}
+                                    </div>
+                                    <div style="font-size: 0.85em; color: #8b92a7;">
+                                        ${timeAgo}
+                                    </div>
+                                </div>
+                                <div style="color: #e8eaed; line-height: 1.6; margin-bottom: 12px;">
+                                    ${escapeHtml(d.content)}
+                                </div>
+                                <div style="font-size: 0.85em; color: #8b92a7; margin-bottom: 12px;">
+                                    ${d.type === 'goal' ? `
+                                        Status: ${d.status} • Priority: ${(d.priority * 100).toFixed(0)}% • 
+                                        Progress: ${(d.progress * 100).toFixed(0)}% • Pursuits: ${d.pursuitCount}
+                                        ${d.reason ? `<br>Reason: ${escapeHtml(d.reason)}` : ''}
+                                    ` : `
+                                        Activation: ${(d.activation * 100).toFixed(1)}% • 
+                                        Weight: ${(d.weight * 100).toFixed(0)}% • 
+                                        Access: ${d.accessCount}x • 
+                                        Cluster: ${d.cluster}
+                                    `}
+                                </div>
+                                ${d.type === 'goal' && d.id ? `
+                                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                        <button class="action-btn" onclick="showGoalDetail('${escapeHtml(d.id)}')">
+                                            🎯 Full Goal Details
+                                        </button>
+                                        <button class="action-btn" onclick="showAllThoughtsForGoal('${escapeHtml(d.id)}')">
+                                            🔍 View Thread
+                                        </button>
+                                        <button class="action-btn" onclick="followThread('${escapeHtml(d.id)}')">
+                                            ${followedThreads.has(d.id) ? '★ Unfollow' : '☆ Follow'}
+                                        </button>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `;
+                    });
+                    
+                    html += `
+                        <div style="margin-top: 20px; padding: 16px; background: rgba(157, 78, 221, 0.1); border-radius: 8px; text-align: center;">
+                            <div style="color: #9d4edd; font-size: 0.9em;">
+                                💡 Dreams are generated during sleep cycles (2 AM daily) with high creativity and chaotic memory rewiring
+                            </div>
+                        </div>
+                    </div>`;
+                    
+                } else if (queryLower.includes('breakthrough') || queryLower.includes('novel')) {
+                    // Show breakthroughs (adaptive threshold based on data)
+                    let breakthroughs = allThoughts.filter(t => t.surprise > 0.3);
+                    
+                    if (breakthroughs.length === 0) {
+                        breakthroughs = allThoughts
+                            .sort((a, b) => b.surprise - a.surprise)
+                            .slice(0, 5);
+                    } else {
+                        breakthroughs = breakthroughs
+                            .sort((a, b) => b.cycle - a.cycle)
+                            .slice(0, 5);
+                    }
+                    
+                    const maxNovelty = breakthroughs.length > 0 ? Math.max(...breakthroughs.map(t => t.surprise)) : 0;
+                    const threshold = maxNovelty > 0.3 ? '30%+' : 'relative';
+                    
+                    // Build full explorable results
+                    html = `
+                        <div class="stream-item breakthrough" style="border: 2px solid rgba(255, 193, 7, 0.4);">
+                            <div class="item-meta">
+                                <div class="item-time">Query Answer</div>
+                                <div class="item-badge">⚡ BREAKTHROUGHS</div>
+                            </div>
+                            <div class="thought-content main">
+                                "${query}" — Found ${breakthroughs.length} highest novelty moments (${threshold})
+                            </div>
+                    `;
+                    
+                    // Each breakthrough as fully explorable item
+                    breakthroughs.forEach((t, i) => {
+                        const noveltyPct = (t.surprise * 100).toFixed(1);
+                        const timeAgo = getTimeAgo(t.timestamp);
+                        const isFollowed = t.goal && followedThreads.has(t.goal);
+                        
+                        html += `
+                            <div style="background: rgba(255, 193, 7, 0.05); border-radius: 12px; padding: 20px; margin-top: 16px; border-left: 3px solid #ffc107;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                    <div style="font-weight: 600; color: #ffc107;">
+                                        #${i + 1} • Cycle ${t.cycle} • ${t.role.toUpperCase()}
+                                    </div>
+                                    <div style="font-size: 0.9em; color: #ffc107;">
+                                        ⚡ ${noveltyPct}%
+                                    </div>
+                                </div>
+                                <div style="color: #e8eaed; line-height: 1.6; margin-bottom: 12px;">
+                                    ${escapeHtml(t.thought)}
+                                </div>
+                                <div style="font-size: 0.85em; color: #8b92a7; margin-bottom: 12px;">
+                                    ${timeAgo} • Mode: ${t.mode || 'unknown'} • Model: ${t.model || 'unknown'}
+                                    ${t.usedWebSearch ? ' • 🔍 Web search' : ''}
+                                    ${t.goal ? `<br>Goal: ${escapeHtml(t.goal.substring(0, 80))}` : ''}
+                                </div>
+                                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                                    <button class="action-btn" onclick="exploreThought('${t.cycle}')">
+                                        📖 Full Story
+                                    </button>
+                                    ${t.goal ? `
+                                        <button class="action-btn" onclick="showGoalDetail('${escapeHtml(t.goal)}')">
+                                            🎯 Goal Details
+                                        </button>
+                                        <button class="action-btn" onclick="showAllThoughtsForGoal('${escapeHtml(t.goal)}')">
+                                            🔍 Complete Thread
+                                        </button>
+                                        <button class="action-btn" onclick="followThread('${escapeHtml(t.goal)}')">
+                                            ${isFollowed ? '★ Unfollow' : '☆ Follow'}
+                                        </button>
+                                    ` : ''}
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    html += `</div>`;
+                    
+                } else {
+                    // Default: Memory search via MCP
+                    const results = await callMCP('query_memory', { query, limit: 10 });
+                    
+                    if (results.resultsFound === 0) {
+                        showMessage(`No results found for "${query}". Try broader terms.`, 'info');
+                        return;
+                    }
+                    
+                    // Build full explorable memory search results
+                    html = `
+                        <div class="stream-item" style="border: 2px solid rgba(102, 126, 234, 0.4);">
+                            <div class="item-meta">
+                                <div class="item-time">Memory Search Results</div>
+                                <div class="item-badge">🔍 FOUND ${results.resultsFound}</div>
+                            </div>
+                            <div class="thought-content main">
+                                "${escapeHtml(query)}" — Found ${results.resultsFound} concepts in memory network
+                            </div>
+                    `;
+                    
+                    // Each result as fully explorable card with complete text
+                    results.results.forEach((r, i) => {
+                        html += `
+                            <div style="background: rgba(102, 126, 234, 0.05); border-radius: 12px; padding: 20px; margin-top: 16px; border-left: 3px solid #667eea;">
+                                <div style="display: flex; justify-content: space-between; align-items: start; margin-bottom: 12px;">
+                                    <div style="font-weight: 600; color: #667eea; flex: 1;">
+                                        #${i + 1} • ${r.tag ? r.tag.toUpperCase() : 'CONCEPT'}
+                                    </div>
+                                    <div style="font-size: 0.85em; color: #8b92a7; text-align: right;">
+                                        <div>Activation: ${r.activation}</div>
+                                        <div>Access: ${r.accessCount || 0}x</div>
+                                        ${r.cluster ? `<div>Cluster: ${r.cluster}</div>` : ''}
+                                    </div>
+                                </div>
+                                <div style="color: #e8eaed; line-height: 1.6; margin-bottom: 12px;">
+                                    ${escapeHtml(r.concept)}
+                                </div>
+                                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px;">
+                                    <button class="action-btn" onclick="searchRelated('${escapeHtml(r.concept.substring(0, 50))}')">
+                                        🔗 Find Related
+                                    </button>
+                                    <button class="action-btn" onclick="showConceptInGraph('${r.concept.substring(0, 50)}')">
+                                        🕸️ Show in Graph
+                                    </button>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    
+                    html += `
+                        <div style="margin-top: 20px; padding: 16px; background: rgba(0,0,0,0.2); border-radius: 8px; text-align: center;">
+                            <div style="color: #8b92a7; font-size: 0.9em; margin-bottom: 10px;">
+                                Showing top ${results.results.length} of ${results.totalNodes} total memory nodes
+                            </div>
+                            <button class="action-btn" onclick="executeQuery('${escapeHtml(query)}')">
+                                🔄 Search Again
+                            </button>
+                        </div>
+                    </div>`;
+                }
+                
+                // Prepend to stream
+                const container = document.getElementById('stream-content');
+                container.innerHTML = html + container.innerHTML;
+                
+                // Clear input
+                document.getElementById('query-input').value = '';
+                
+            } catch (error) {
+                console.error('Query error:', error);
+                showMessage('Query failed: ' + error.message, 'error');
+            }
+        }
+
+        // Inject topic
+        async function injectTopic() {
+            const topic = document.getElementById('topic-input').value.trim();
+            const priority = document.getElementById('topic-priority').value;
+            const resultDiv = document.getElementById('inject-result');
+            
+            if (!topic) {
+                resultDiv.innerHTML = '<span style="color: #ff5252;">Please enter a topic</span>';
+                return;
+            }
+            
+            if (topic.length > 1000) {
+                resultDiv.innerHTML = '<span style="color: #ff5252;">Topic too long (max 1000 chars)</span>';
+                return;
+            }
+            
+            resultDiv.innerHTML = '<span style="color: #8b92a7;">Injecting...</span>';
+            
+            try {
+                const result = await callMCP('inject_topic', { topic, priority });
+                
+                document.getElementById('topic-input').value = '';
+                resultDiv.innerHTML = `<span style="color: #4caf50;">✅ Injected! Queue has ${result.queueLength} topic(s)</span>`;
+                
+                // Refresh stream after a moment
+                setTimeout(() => {
+                    buildCognitiveStream();
+                    resultDiv.innerHTML = '';
+                }, 3000);
+                
+            } catch (error) {
+                resultDiv.innerHTML = `<span style="color: #ff5252;">Failed: ${error.message}</span>`;
+            }
+        }
+
+        // Helper: Get time ago string
+        function getTimeAgo(timestamp) {
+            try {
+                const now = new Date();
+                const then = new Date(timestamp);
+                const seconds = Math.floor((now - then) / 1000);
+                
+                if (seconds < 60) return 'Just now';
+                if (seconds < 3600) return Math.floor(seconds / 60) + ' minutes ago';
+                if (seconds < 86400) return Math.floor(seconds / 3600) + ' hours ago';
+                return Math.floor(seconds / 86400) + ' days ago';
+            } catch {
+                return 'Recently';
+            }
+        }
+
+        // Helper: Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text || '';
+            return div.innerHTML;
+        }
+
+        // Explore thought - Show full story/provenance
+        async function exploreThought(cycle) {
+            const thought = allThoughts.find(t => t.cycle === parseInt(cycle));
+            if (!thought) {
+                alert('Thought not found in cache');
+                return;
+            }
+            
+            // Build story timeline
+            let storyHTML = `
+                <div class="story-header">
+                    <div class="story-title">📖 Thought Story - Cycle ${cycle}</div>
+                    <div style="color: #8b92a7; font-size: 0.95em;">
+                        Tracing the cognitive journey of this thought
+                    </div>
+                </div>
+                
+                <div class="story-timeline">
+            `;
+            
+            // Find related thoughts (same goal, earlier cycles)
+            const relatedThoughts = allThoughts
+                .filter(t => t.goal === thought.goal && t.cycle <= thought.cycle)
+                .sort((a, b) => a.cycle - b.cycle)
+                .slice(-5); // Last 5 thoughts in this thread
+            
+            // Build timeline
+            relatedThoughts.forEach((t, index) => {
+                const isMainThought = t.cycle === thought.cycle;
+                const dotClass = t.surprise > 0.7 ? 'breakthrough' : '';
+                const timeAgo = getTimeAgo(t.timestamp);
+                
+                storyHTML += `
+                    <div class="timeline-event">
+                        <div class="timeline-dot ${dotClass}">${index === relatedThoughts.length - 1 ? '⚡' : '💭'}</div>
+                        <div class="timeline-time">${timeAgo} • Cycle ${t.cycle}</div>
+                        <div class="timeline-content">
+                            <div class="timeline-label">${isMainThought ? '🎯 This Thought' : t.role.toUpperCase()}</div>
+                            <div class="timeline-text">${escapeHtml(t.thought)}</div>
+                            <div class="timeline-details">
+                                ${t.surprise ? `Novelty: ${(t.surprise * 100).toFixed(0)}%` : ''} • 
+                                Mode: ${t.mode || 'unknown'} •
+                                Model: ${t.model || 'unknown'}
+                                ${t.usedWebSearch ? ' • 🔍 Used web search' : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            // Add "What's Next" section with predictions
+            const thoughtCount = relatedThoughts.length;
+            const avgNovelty = relatedThoughts.reduce((sum, t) => sum + (t.surprise || 0), 0) / thoughtCount;
+            const isGrowing = thoughtCount >= 3 && relatedThoughts[thoughtCount - 1].surprise > avgNovelty;
+            
+            storyHTML += `
+                </div>
+                <div class="context-section" style="margin-top: 30px;">
+                    <div class="context-title">🔮 What's Next</div>
+                    <ul class="context-list">
+                        <li>This thought is part of goal: ${escapeHtml((thought.goal || 'Unknown').substring(0, 80))}</li>
+                        <li>${thoughtCount} thoughts in this thread (Avg novelty: ${(avgNovelty * 100).toFixed(0)}%)</li>
+                        ${isGrowing ? '<li>⚡ Thread momentum is increasing - breakthrough likely coming!</li>' : '<li>Thread developing steadily</li>'}
+                        <li>Related insights may emerge from connections in upcoming cycles</li>
+                    </ul>
+                </div>
+                
+                <div class="item-actions" style="margin-top: 20px;">
+                    ${thought.goal ? `
+                        <button class="action-btn" onclick="followThread('${thought.goal}'); closeStory();">
+                            ${followedThreads.has(thought.goal) ? '★ Unfollow Thread' : '☆ Follow This Thread'}
+                        </button>
+                        <button class="action-btn" onclick="exportThread('${thought.goal}')">
+                            📄 Export Thread
+                        </button>
+                    ` : ''}
+                </div>
+            `;
+            
+            // Show story panel
+            document.getElementById('story-content').innerHTML = storyHTML;
+            document.getElementById('story-overlay').classList.add('active');
+        }
+
+        // Export thread as markdown
+        function exportThread(goalId) {
+            const relatedThoughts = allThoughts.filter(t => t.goal === goalId);
+            
+            if (relatedThoughts.length === 0) {
+                showMessage('No thoughts to export', 'info');
+                return;
+            }
+            
+            // Build markdown
+            let markdown = `# Thread: ${goalId}\n\n`;
+            markdown += `Generated: ${new Date().toISOString()}\n`;
+            markdown += `Total thoughts: ${relatedThoughts.length}\n\n`;
+            markdown += `---\n\n`;
+            
+            relatedThoughts.sort((a, b) => a.cycle - b.cycle).forEach(t => {
+                markdown += `## Cycle ${t.cycle} - ${t.role.toUpperCase()}\n\n`;
+                markdown += `**Time:** ${t.timestamp}\n`;
+                markdown += `**Novelty:** ${(t.surprise * 100).toFixed(1)}%\n`;
+                markdown += `**Mode:** ${t.mode}\n\n`;
+                markdown += `${t.thought}\n\n`;
+                markdown += `---\n\n`;
+            });
+            
+            // Create download
+            const blob = new Blob([markdown], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `cosmo-thread-${goalId.substring(0, 20)}-${Date.now()}.md`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            showMessage('Thread exported as Markdown!', 'success');
+        }
+
+        // Follow thread - Pin to sidebar and track
+        function followThread(goalId) {
+            if (!goalId) return;
+            
+            if (followedThreads.has(goalId)) {
+                followedThreads.delete(goalId);
+                showMessage('Thread unfollowed', 'info');
+            } else {
+                followedThreads.add(goalId);
+                showMessage('Thread followed! Updates will be highlighted', 'success');
+            }
+            
+            // Refresh stream to show followed badge
+            buildCognitiveStream();
+        }
+
+        // Focus on thread - Filter stream to one goal
+        function focusOnThread(goalId) {
+            if (!goalId) return;
+            
+            // Filter stream to show only this goal
+            const filteredThoughts = allThoughts.filter(t => t.goal === goalId);
+            
+            if (filteredThoughts.length === 0) {
+                showMessage('No thoughts found for this thread yet', 'info');
+                return;
+            }
+            
+            // Render filtered stream
+            const stream = filteredThoughts.map(t => ({
+                type: 'thought',
+                timestamp: t.timestamp,
+                cycle: t.cycle,
+                role: t.role,
+                content: t.thought,
+                goal: t.goal,
+                novelty: t.surprise || 0,
+                isBreakthrough: (t.surprise || 0) > 0.7,
+                cognitiveState: t.cognitiveState,
+                mode: t.mode,
+                model: t.model,
+                usedWebSearch: t.usedWebSearch
+            })).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            
+            renderStream(stream);
+            showMessage(`Showing ${stream.length} thoughts for this thread. Refresh to see all.`, 'info');
+        }
+
+        // View agent results
+        async function viewAgentResults(goalId) {
+            try {
+                // Get recent thoughts related to this goal
+                const relatedThoughts = allThoughts.filter(t => t.goal === goalId);
+                
+                if (relatedThoughts.length === 0) {
+                    showMessage('No thoughts found for this goal yet', 'info');
+                    return;
+                }
+                
+                // Build agent results story
+                let storyHTML = `
+                    <div class="story-header">
+                        <div class="story-title">🤖 Agent Results</div>
+                        <div style="color: #8b92a7; font-size: 0.95em;">
+                            Findings related to: ${escapeHtml((goalId || 'Unknown goal').substring(0, 80))}
+                        </div>
+                    </div>
+                    
+                    <div class="story-timeline">
+                `;
+                
+                relatedThoughts.slice(-5).forEach((t, index) => {
+                    const timeAgo = getTimeAgo(t.timestamp);
+                    
+                    storyHTML += `
+                        <div class="timeline-event">
+                            <div class="timeline-dot">💡</div>
+                            <div class="timeline-time">${timeAgo} • Cycle ${t.cycle}</div>
+                            <div class="timeline-content">
+                                <div class="timeline-label">${t.role.toUpperCase()}</div>
+                                <div class="timeline-text">${escapeHtml(t.thought)}</div>
+                                <div class="timeline-details">
+                                    Novelty: ${(t.surprise * 100).toFixed(0)}% • Mode: ${t.mode}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                
+                storyHTML += '</div>';
+                
+                document.getElementById('story-content').innerHTML = storyHTML;
+                document.getElementById('story-overlay').classList.add('active');
+                
+            } catch (error) {
+                showMessage('Failed to load agent results: ' + error.message, 'error');
+            }
+        }
+
+        // Close story panel
+        function closeStory() {
+            document.getElementById('story-overlay').classList.remove('active');
+        }
+
+        // Expand truncated thought
+        function expandThought(thoughtId) {
+            const contentEl = document.getElementById(`${thoughtId}_content`);
+            if (contentEl) {
+                contentEl.classList.remove('truncated');
+                // Remove the expand button
+                const expandBtn = contentEl.nextElementSibling;
+                if (expandBtn && expandBtn.classList.contains('expand-btn')) {
+                    expandBtn.remove();
+                }
+            }
+        }
+
+        // Show all thoughts for a goal
+        async function showAllThoughtsForGoal(goalId) {
+            const relatedThoughts = allThoughts.filter(t => t.goal === goalId);
+            
+            if (relatedThoughts.length === 0) {
+                showMessage('No thoughts found for this goal yet', 'info');
+                return;
+            }
+            
+            // Sort chronologically
+            relatedThoughts.sort((a, b) => a.cycle - b.cycle);
+            
+            // Build comprehensive view
+            let storyHTML = `
+                <div class="story-header">
+                    <div class="story-title">🎯 Complete Thread</div>
+                    <div style="color: #8b92a7; font-size: 0.95em; margin-top: 8px;">
+                        <strong>Goal:</strong> ${escapeHtml(goalId)}
+                    </div>
+                    <div style="color: #8b92a7; font-size: 0.85em; margin-top: 8px;">
+                        ${relatedThoughts.length} thoughts • ${getTimeAgo(relatedThoughts[0].timestamp)} to ${getTimeAgo(relatedThoughts[relatedThoughts.length - 1].timestamp)}
+                    </div>
+                </div>
+                
+                <div class="story-timeline">
+            `;
+            
+            // Show ALL thoughts (no truncation)
+            relatedThoughts.forEach((t, index) => {
+                const isFirst = index === 0;
+                const isLast = index === relatedThoughts.length - 1;
+                const timeAgo = getTimeAgo(t.timestamp);
+                const dotClass = t.surprise > 0.3 ? 'breakthrough' : '';
+                
+                storyHTML += `
+                    <div class="timeline-event">
+                        <div class="timeline-dot ${dotClass}">
+                            ${isFirst ? '🎯' : isLast ? '⚡' : '💭'}
+                        </div>
+                        <div class="timeline-time">${timeAgo} • Cycle ${t.cycle}</div>
+                        <div class="timeline-content">
+                            <div class="timeline-label">${t.role.toUpperCase()}</div>
+                            <div class="timeline-text">${escapeHtml(t.thought)}</div>
+                            <div class="timeline-details">
+                                Novelty: ${(t.surprise * 100).toFixed(1)}% • 
+                                Mode: ${t.mode || 'unknown'} •
+                                Model: ${t.model || 'unknown'}
+                                ${t.usedWebSearch ? ' • 🔍 Web search' : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            // Calculate insights
+            const avgNovelty = relatedThoughts.reduce((sum, t) => sum + (t.surprise || 0), 0) / relatedThoughts.length;
+            const maxNovelty = Math.max(...relatedThoughts.map(t => t.surprise || 0));
+            const webSearchCount = relatedThoughts.filter(t => t.usedWebSearch).length;
+            
+            storyHTML += `
+                </div>
+                <div class="context-section" style="margin-top: 30px;">
+                    <div class="context-title">📊 Thread Analytics</div>
+                    <ul class="context-list">
+                        <li><strong>${relatedThoughts.length} thoughts</strong> in this thread</li>
+                        <li>Average novelty: <strong>${(avgNovelty * 100).toFixed(1)}%</strong></li>
+                        <li>Peak novelty: <strong>${(maxNovelty * 100).toFixed(1)}%</strong></li>
+                        <li>Used web search: <strong>${webSearchCount} times</strong></li>
+                        <li>Span: ${getTimeAgo(relatedThoughts[0].timestamp)} to ${getTimeAgo(relatedThoughts[relatedThoughts.length - 1].timestamp)}</li>
+                    </ul>
+                </div>
+                
+                <div class="item-actions" style="margin-top: 20px;">
+                    <button class="action-btn" onclick="followThread('${goalId}'); closeStory();">
+                        ${followedThreads.has(goalId) ? '★ Unfollow' : '☆ Follow This Thread'}
+                    </button>
+                    <button class="action-btn" onclick="exportThread('${goalId}')">
+                        📄 Export Complete Thread
+                    </button>
+                </div>
+            `;
+            
+            document.getElementById('story-content').innerHTML = storyHTML;
+            document.getElementById('story-overlay').classList.add('active');
+        }
+
+        // Show goal detail (from goal ID)
+        async function showGoalDetail(goalId) {
+            try {
+                // Get all goals to find this one
+                const goalsData = await callMCP('get_active_goals', { status: 'all', limit: 500 });
+                const goal = goalsData.goals.find(g => g.id === goalId);
+                
+                if (!goal) {
+                    // Show thoughts for this goal even if goal not found
+                    showAllThoughtsForGoal(goalId);
+                    return;
+                }
+                
+                // Build detailed goal view
+                const relatedThoughts = allThoughts.filter(t => t.goal === goalId);
+                
+                let storyHTML = `
+                    <div class="story-header">
+                        <div class="story-title">🎯 Goal Details</div>
+                        <div style="color: #e8eaed; font-size: 1.1em; margin-top: 16px; line-height: 1.5;">
+                            ${escapeHtml(goal.description)}
+                        </div>
+                    </div>
+                    
+                    <div class="detail-metrics" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 20px 0;">
+                        <div class="metric-box">
+                            <div class="metric-label">Priority</div>
+                            <div class="metric-value">${(parseFloat(goal.priority) * 100).toFixed(0)}%</div>
+                        </div>
+                        <div class="metric-box">
+                            <div class="metric-label">Progress</div>
+                            <div class="metric-value">${(parseFloat(goal.progress) * 100).toFixed(0)}%</div>
+                        </div>
+                        <div class="metric-box">
+                            <div class="metric-label">Pursuit Count</div>
+                            <div class="metric-value">${goal.pursuitCount || 0}</div>
+                        </div>
+                        <div class="metric-box">
+                            <div class="metric-label">Status</div>
+                            <div class="metric-value" style="font-size: 0.9em;">${goal.status.toUpperCase()}</div>
+                        </div>
+                    </div>
+                    
+                    <div class="context-section">
+                        <div class="context-title">📋 Goal Metadata</div>
+                        <ul class="context-list">
+                            <li>Created: ${new Date(goal.created).toLocaleString()}</li>
+                            ${goal.lastPursued ? `<li>Last pursued: ${new Date(goal.lastPursued).toLocaleString()}</li>` : ''}
+                            <li>Source: ${goal.source || 'Unknown'}</li>
+                            ${goal.reason ? `<li>Reason: ${escapeHtml(goal.reason)}</li>` : ''}
+                        </ul>
+                    </div>
+                    
+                    <div class="context-section">
+                        <div class="context-title">💭 Related Thoughts</div>
+                        <div style="color: #8b92a7; font-size: 0.9em; margin-bottom: 12px;">
+                            ${relatedThoughts.length} thoughts associated with this goal
+                        </div>
+                    </div>
+                    
+                    <div class="item-actions" style="margin-top: 20px;">
+                        <button class="action-btn" onclick="showAllThoughtsForGoal('${goalId}')">
+                            📜 View All ${relatedThoughts.length} Thoughts
+                        </button>
+                        <button class="action-btn" onclick="followThread('${goalId}'); closeStory();">
+                            ${followedThreads.has(goalId) ? '★ Unfollow' : '☆ Follow'}
+                        </button>
+                    </div>
+                `;
+                
+                document.getElementById('story-content').innerHTML = storyHTML;
+                document.getElementById('story-overlay').classList.add('active');
+                
+            } catch (error) {
+                console.error('Failed to load goal details:', error);
+                // Fallback to showing thoughts
+                showAllThoughtsForGoal(goalId);
+            }
+        }
+
+        // Search for related concepts
+        async function searchRelated(concept) {
+            document.getElementById('query-input').value = concept;
+            await executeQuery(concept);
+        }
+
+        // Show concept in graph view
+        function showConceptInGraph(concept) {
+            // Open graph view with search pre-filled
+            window.location.href = `/graph?search=${encodeURIComponent(concept)}`;
+        }
+
+        // Show message (info/success/error)
+        function showMessage(message, type = 'info') {
+            // Simple implementation - could be enhanced
+            const colors = {
+                'info': '#2196f3',
+                'success': '#4caf50',
+                'error': '#f44336'
+            };
+            
+            const tempMsg = document.createElement('div');
+            tempMsg.style.cssText = `
+                position: fixed;
+                top: 80px;
+                right: 30px;
+                background: rgba(0,0,0,0.9);
+                border: 1px solid ${colors[type]};
+                color: ${colors[type]};
+                padding: 16px 24px;
+                border-radius: 12px;
+                z-index: 2000;
+                animation: slideIn 0.3s ease;
+            `;
+            tempMsg.textContent = message;
+            document.body.appendChild(tempMsg);
+            
+            setTimeout(() => {
+                tempMsg.style.animation = 'fadeOut 0.3s ease';
+                setTimeout(() => tempMsg.remove(), 300);
+            }, 3000);
+        }
+
+        // View latest curated insights report
+        async function viewLatestReport() {
+            try {
+                const response = await fetch('/reports/insights_curated_LATEST.md');
+                if (!response.ok) {
+                    showTempMessage('No report available yet. First report generated at cycle 50.', 'warning');
+                    return;
+                }
+                
+                const markdown = await response.text();
+                
+                // Open in new window with formatted view
+                const reportWindow = window.open('', 'Curated Insights', 'width=1000,height=800');
+                reportWindow.document.write(`
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Curated Insights - Latest</title>
+                        <style>
+                            body { 
+                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                                max-width: 900px; 
+                                margin: 40px auto; 
+                                padding: 20px;
+                                line-height: 1.6;
+                                background: #f5f7fa;
+                                color: #2c3e50;
+                            }
+                            h1, h2, h3 { color: #34495e; margin-top: 24px; }
+                            h1 { font-size: 2.2em; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+                            h2 { font-size: 1.8em; border-bottom: 2px solid #95a5a6; padding-bottom: 8px; }
+                            h3 { font-size: 1.4em; color: #7f8c8d; }
+                            pre { background: #ecf0f1; padding: 15px; border-radius: 6px; overflow-x: auto; }
+                            code { background: #e8ecef; padding: 2px 6px; border-radius: 3px; }
+                            hr { border: none; border-top: 1px solid #bdc3c7; margin: 24px 0; }
+                        </style>
+                    </head>
+                    <body>
+                        <pre style="white-space: pre-wrap; font-family: inherit; background: white; border: 1px solid #ddd; padding: 30px;">${markdown}</pre>
+                    </body>
+                    </html>
+                `);
+                reportWindow.document.close();
+                
+            } catch (error) {
+                console.error('Failed to load latest report:', error);
+                showTempMessage('Could not load report: ' + error.message, 'error');
+            }
+        }
+        
+        // List all available curated insight reports
+        async function listAllReports() {
+            try {
+                const fs = require('fs');
+                const path = require('path');
+                
+                // This will need a backend endpoint to list files
+                // For now, just show message
+                showTempMessage('Checking for available reports...', 'info');
+                
+                // Try to fetch reports via a simple file listing
+                // For a quick implementation, just show the latest
+                const reportsList = document.getElementById('reports-list');
+                reportsList.innerHTML = `
+                    <div style="padding: 10px; background: rgba(255,255,255,0.05); border-radius: 6px; margin-top: 8px;">
+                        <div style="font-size: 0.9em; margin-bottom: 6px;">Recent Reports:</div>
+                        <div style="font-size: 0.85em; color: #a0aec0;">
+                            • Cycle 250 (latest)<br>
+                            • More coming every 50 cycles
+                        </div>
+                        <div style="margin-top: 8px; font-size: 0.8em; color: #718096;">
+                            📁 Location: phase2-logs-gpt5/coordinator/
+                        </div>
+                    </div>
+                `;
+                
+            } catch (error) {
+                console.error('Failed to list reports:', error);
+                showTempMessage('Could not list reports', 'warning');
+            }
+        }
+
+        // Initialize
+        async function init() {
+            updateConnectionStatus(false, 'Connecting...');
+            
+            try {
+                await buildCognitiveStream();
+                
+                // Auto-refresh every 10 seconds
+                updateInterval = setInterval(() => {
+                    buildCognitiveStream();
+                }, 10000);
+                
+            } catch (error) {
+                console.error('Initialization failed:', error);
+            }
+        }
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (updateInterval) clearInterval(updateInterval);
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // ESC to close story panel
+            if (e.key === 'Escape') {
+                closeStory();
+            }
+            
+            // Cmd/Ctrl + K for quick query focus
+            if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+                e.preventDefault();
+                document.getElementById('query-input').focus();
+            }
+        });
+
+        // Start
+        document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
+

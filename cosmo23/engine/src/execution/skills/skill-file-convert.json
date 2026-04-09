@@ -1,0 +1,41 @@
+{
+  "id": "skill:file-convert",
+  "name": "File Format Converter",
+  "description": "Convert between common data file formats: CSV, JSON, YAML, and Markdown tables. Handles type inference and preserves data fidelity.",
+  "domain": null,
+  "tags": ["utility", "conversion", "data"],
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "inputPath": {
+        "type": "string",
+        "description": "Path to the input file"
+      },
+      "outputFormat": {
+        "type": "string",
+        "enum": ["json", "csv", "yaml", "markdown"],
+        "description": "Desired output format"
+      }
+    },
+    "required": ["inputPath", "outputFormat"]
+  },
+  "outputs": {
+    "type": "object",
+    "properties": {
+      "outputPath": { "type": "string", "description": "Path to the converted output file" },
+      "rowCount": { "type": "number", "description": "Number of data rows processed" }
+    }
+  },
+  "assumptions": [
+    "Input file is valid CSV, JSON, or YAML",
+    "PyYAML is available for YAML conversion (falls back gracefully if not)"
+  ],
+  "implementation": {
+    "type": "python_script",
+    "code": "import sys\nimport os\nimport json\nimport csv\nimport io\n\ndef load_csv(path):\n    with open(path, 'r', newline='', encoding='utf-8') as f:\n        reader = csv.DictReader(f)\n        rows = list(reader)\n    return rows\n\ndef load_json(path):\n    with open(path, 'r', encoding='utf-8') as f:\n        data = json.load(f)\n    if isinstance(data, list):\n        return data\n    elif isinstance(data, dict):\n        # If it's a dict of lists (columnar), convert to row-oriented\n        keys = list(data.keys())\n        if keys and isinstance(data[keys[0]], list):\n            length = len(data[keys[0]])\n            return [{k: data[k][i] if i < len(data[k]) else None for k in keys} for i in range(length)]\n        return [data]\n    return []\n\ndef load_yaml(path):\n    try:\n        import yaml\n        with open(path, 'r', encoding='utf-8') as f:\n            data = yaml.safe_load(f)\n        if isinstance(data, list):\n            return data\n        elif isinstance(data, dict):\n            return [data]\n        return []\n    except ImportError:\n        raise ImportError('PyYAML is required for YAML input. Install with: pip install pyyaml')\n\ndef detect_format(path):\n    ext = os.path.splitext(path)[1].lower()\n    if ext in ('.csv', '.tsv'):\n        return 'csv'\n    elif ext in ('.json', '.jsonl'):\n        return 'json'\n    elif ext in ('.yaml', '.yml'):\n        return 'yaml'\n    # Sniff content\n    with open(path, 'r', encoding='utf-8') as f:\n        start = f.read(100).strip()\n    if start.startswith(('{', '[')):\n        return 'json'\n    if ':' in start and not ',' in start.split('\\n')[0]:\n        return 'yaml'\n    return 'csv'\n\ndef write_csv(rows, path):\n    if not rows:\n        with open(path, 'w') as f:\n            f.write('')\n        return\n    fieldnames = list(rows[0].keys())\n    with open(path, 'w', newline='', encoding='utf-8') as f:\n        writer = csv.DictWriter(f, fieldnames=fieldnames)\n        writer.writeheader()\n        writer.writerows(rows)\n\ndef write_json(rows, path):\n    with open(path, 'w', encoding='utf-8') as f:\n        json.dump(rows, f, indent=2, default=str)\n\ndef write_yaml(rows, path):\n    try:\n        import yaml\n        with open(path, 'w', encoding='utf-8') as f:\n            yaml.dump(rows, f, default_flow_style=False, allow_unicode=True)\n    except ImportError:\n        # Fallback: manual YAML-like output\n        with open(path, 'w', encoding='utf-8') as f:\n            for i, row in enumerate(rows):\n                f.write(f'- # item {i}\\n')\n                for k, v in row.items():\n                    val = json.dumps(v) if isinstance(v, (dict, list)) else str(v) if v is not None else 'null'\n                    f.write(f'  {k}: {val}\\n')\n\ndef write_markdown(rows, path):\n    if not rows:\n        with open(path, 'w') as f:\n            f.write('(empty)\\n')\n        return\n    headers = list(rows[0].keys())\n    with open(path, 'w', encoding='utf-8') as f:\n        f.write('| ' + ' | '.join(headers) + ' |\\n')\n        f.write('| ' + ' | '.join(['---'] * len(headers)) + ' |\\n')\n        for row in rows:\n            vals = [str(row.get(h, '')).replace('|', '\\\\|').replace('\\n', ' ') for h in headers]\n            f.write('| ' + ' | '.join(vals) + ' |\\n')\n\ndef main():\n    inputs = json.loads(os.environ.get('SKILL_INPUTS', '{}'))\n    input_path = inputs.get('inputPath', '')\n    output_format = inputs.get('outputFormat', 'json')\n\n    if not input_path or not os.path.exists(input_path):\n        print(json.dumps({'outputPath': '', 'rowCount': 0, 'error': f'File not found: {input_path}'}))\n        return\n\n    # Detect and load\n    src_format = detect_format(input_path)\n    loaders = {'csv': load_csv, 'json': load_json, 'yaml': load_yaml}\n    try:\n        rows = loaders[src_format](input_path)\n    except Exception as e:\n        print(json.dumps({'outputPath': '', 'rowCount': 0, 'error': f'Failed to load {src_format}: {e}'}))\n        return\n\n    # Build output path\n    base = os.path.splitext(input_path)[0]\n    ext_map = {'json': '.json', 'csv': '.csv', 'yaml': '.yaml', 'markdown': '.md'}\n    output_path = base + ext_map.get(output_format, '.out')\n    # Avoid overwriting input\n    if os.path.abspath(output_path) == os.path.abspath(input_path):\n        output_path = base + '_converted' + ext_map.get(output_format, '.out')\n\n    # Write\n    writers = {'csv': write_csv, 'json': write_json, 'yaml': write_yaml, 'markdown': write_markdown}\n    try:\n        writers[output_format](rows, output_path)\n    except Exception as e:\n        print(json.dumps({'outputPath': '', 'rowCount': len(rows), 'error': f'Failed to write {output_format}: {e}'}))\n        return\n\n    print(json.dumps({'outputPath': output_path, 'rowCount': len(rows)}))\n\nif __name__ == '__main__':\n    main()\n",
+    "timeout_sec": 120
+  },
+  "toolsRequired": [{ "id": "tool:python" }],
+  "origin": "authored",
+  "confidence": 1.0
+}

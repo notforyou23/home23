@@ -1,0 +1,37 @@
+{
+  "id": "plugin:legal-research",
+  "name": "Legal Research & Analysis",
+  "domain": "legal",
+  "description": "Legal research toolkit for statute and case law retrieval, precedent analysis, and jurisdiction-aware summarization. Supports fetching legal documents from web sources, extracting holdings and rationale, cross-referencing citations, and producing structured legal memoranda. All outputs carry jurisdiction and temporal scope metadata to guard against stale or inapplicable conclusions.",
+  "version": "1.0.0",
+  "tags": ["legal", "research", "case_law", "statutes", "precedent", "jurisdiction", "compliance"],
+  "skills": [
+    "skill:web-fetch",
+    "skill:text-summarize",
+    "skill:file-convert"
+  ],
+  "toolsRequired": [
+    { "id": "tool:python", "version": ">=3.10" },
+    { "id": "tool:curl" }
+  ],
+  "assumptionsTracked": [
+    "jurisdiction_applicability",
+    "precedent_validity",
+    "statutory_currency",
+    "constitutional_conformity"
+  ],
+  "uncertaintyModel": "Legal conclusions are jurisdiction-specific and time-sensitive. Precedent strength measured by court level, recency, and number of citations. Statutory analysis tagged with effective-date ranges and amendment history. Conflicting authority across circuits or jurisdictions is flagged explicitly rather than resolved silently.",
+  "environment": {
+    "type": "local",
+    "resources": {
+      "memory_gb": 2,
+      "cores": 2
+    }
+  },
+  "origin": "authored",
+  "metadata": {
+    "maintainer": "cosmo-core",
+    "category": "base-domain",
+    "disclaimer": "This plugin assists with legal research but does not provide legal advice. All outputs should be reviewed by a qualified attorney."
+  }
+}

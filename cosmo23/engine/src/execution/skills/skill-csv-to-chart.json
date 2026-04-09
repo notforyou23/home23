@@ -1,0 +1,56 @@
+{
+  "id": "skill:csv-to-chart",
+  "name": "CSV to Chart",
+  "description": "Generate a chart image from CSV data. Supports line, bar, scatter, and histogram chart types with automatic axis labeling and optional title.",
+  "domain": null,
+  "tags": ["data", "visualization"],
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "csvPath": {
+        "type": "string",
+        "description": "Path to the CSV file"
+      },
+      "chartType": {
+        "type": "string",
+        "enum": ["line", "bar", "scatter", "histogram"],
+        "description": "Type of chart to generate"
+      },
+      "xColumn": {
+        "type": "string",
+        "description": "Column name for the X axis"
+      },
+      "yColumn": {
+        "type": "string",
+        "description": "Column name for the Y axis"
+      },
+      "title": {
+        "type": "string",
+        "description": "Chart title (optional)"
+      }
+    },
+    "required": ["csvPath", "chartType", "xColumn", "yColumn"]
+  },
+  "outputs": {
+    "type": "object",
+    "properties": {
+      "chartPath": { "type": "string", "description": "Path to the generated chart image (PNG)" }
+    }
+  },
+  "assumptions": [
+    "matplotlib is available",
+    "CSV file exists and contains the specified columns",
+    "Column data is numeric or convertible to numeric for plotting"
+  ],
+  "implementation": {
+    "type": "python_script",
+    "code": "import sys\nimport os\nimport json\nimport csv\nimport tempfile\n\ndef main():\n    inputs = json.loads(os.environ.get('SKILL_INPUTS', '{}'))\n    csv_path = inputs.get('csvPath', '')\n    chart_type = inputs.get('chartType', 'line')\n    x_col = inputs.get('xColumn', '')\n    y_col = inputs.get('yColumn', '')\n    title = inputs.get('title', '')\n\n    if not csv_path or not os.path.exists(csv_path):\n        print(json.dumps({'chartPath': '', 'error': f'File not found: {csv_path}'}))\n        return\n\n    try:\n        import matplotlib\n        matplotlib.use('Agg')\n        import matplotlib.pyplot as plt\n        import matplotlib.dates as mdates\n    except ImportError:\n        print(json.dumps({'chartPath': '', 'error': 'matplotlib is not installed'}))\n        return\n\n    # Read CSV\n    rows = []\n    with open(csv_path, 'r', newline='', encoding='utf-8') as f:\n        reader = csv.DictReader(f)\n        if not reader.fieldnames:\n            print(json.dumps({'chartPath': '', 'error': 'CSV has no headers'}))\n            return\n        for row in reader:\n            rows.append(row)\n\n    if not rows:\n        print(json.dumps({'chartPath': '', 'error': 'CSV is empty'}))\n        return\n\n    if x_col not in rows[0]:\n        print(json.dumps({'chartPath': '', 'error': f'Column \"{x_col}\" not found. Available: {list(rows[0].keys())}'}))\n        return\n    if y_col not in rows[0]:\n        print(json.dumps({'chartPath': '', 'error': f'Column \"{y_col}\" not found. Available: {list(rows[0].keys())}'}))\n        return\n\n    # Extract and convert data\n    def to_numeric(val):\n        try:\n            return float(val)\n        except (ValueError, TypeError):\n            return None\n\n    x_raw = [row.get(x_col, '') for row in rows]\n    y_raw = [row.get(y_col, '') for row in rows]\n\n    # Try numeric conversion for y\n    y_vals = [to_numeric(v) for v in y_raw]\n    y_numeric = [v for v in y_vals if v is not None]\n\n    # Try numeric conversion for x\n    x_vals = [to_numeric(v) for v in x_raw]\n    x_is_numeric = sum(1 for v in x_vals if v is not None) > len(x_vals) * 0.5\n\n    if not y_numeric:\n        print(json.dumps({'chartPath': '', 'error': f'Column \"{y_col}\" has no numeric values'}))\n        return\n\n    # Filter to rows where both x and y are valid\n    if x_is_numeric:\n        pairs = [(xv, yv) for xv, yv in zip(x_vals, y_vals) if xv is not None and yv is not None]\n        x_plot = [p[0] for p in pairs]\n        y_plot = [p[1] for p in pairs]\n    else:\n        pairs = [(xr, yv) for xr, yv in zip(x_raw, y_vals) if yv is not None]\n        x_plot = [p[0] for p in pairs]\n        y_plot = [p[1] for p in pairs]\n\n    if not x_plot:\n        print(json.dumps({'chartPath': '', 'error': 'No valid data points after filtering'}))\n        return\n\n    # Create chart\n    fig, ax = plt.subplots(figsize=(12, 7))\n\n    if chart_type == 'line':\n        ax.plot(x_plot, y_plot, marker='o', markersize=3, linewidth=1.5)\n    elif chart_type == 'bar':\n        if len(x_plot) > 50:\n            # Too many bars - show first 50\n            x_plot = x_plot[:50]\n            y_plot = y_plot[:50]\n        ax.bar(range(len(x_plot)), y_plot, tick_label=[str(x)[:15] for x in x_plot])\n        plt.xticks(rotation=45, ha='right')\n    elif chart_type == 'scatter':\n        ax.scatter(x_plot, y_plot, alpha=0.6, s=20)\n    elif chart_type == 'histogram':\n        bins = min(50, max(10, len(y_plot) // 5))\n        ax.hist(y_plot, bins=bins, edgecolor='black', alpha=0.7)\n        ax.set_xlabel(y_col)\n        ax.set_ylabel('Frequency')\n    else:\n        print(json.dumps({'chartPath': '', 'error': f'Unknown chart type: {chart_type}'}))\n        return\n\n    if chart_type != 'histogram':\n        ax.set_xlabel(x_col)\n        ax.set_ylabel(y_col)\n\n    if title:\n        ax.set_title(title)\n    else:\n        ax.set_title(f'{chart_type.capitalize()}: {y_col} vs {x_col}')\n\n    ax.grid(True, alpha=0.3)\n    plt.tight_layout()\n\n    # Save\n    out_dir = tempfile.mkdtemp(prefix='cosmo_chart_')\n    chart_path = os.path.join(out_dir, f'{chart_type}_chart.png')\n    fig.savefig(chart_path, dpi=150)\n    plt.close(fig)\n\n    print(json.dumps({'chartPath': chart_path}))\n\nif __name__ == '__main__':\n    main()\n",
+    "timeout_sec": 60
+  },
+  "toolsRequired": [
+    { "id": "tool:python" },
+    { "id": "tool:pip:matplotlib" }
+  ],
+  "origin": "authored",
+  "confidence": 1.0
+}

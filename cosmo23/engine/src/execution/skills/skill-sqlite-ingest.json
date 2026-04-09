@@ -1,0 +1,53 @@
+{
+  "id": "skill:sqlite-ingest",
+  "name": "SQLite JSON Ingest",
+  "description": "Discover all JSON data files in a directory tree, infer schema, create a SQLite database, and ingest all records. Designed for post-scrape consolidation — no LLM needed, pure code.",
+  "domain": null,
+  "tags": ["database", "sqlite", "ingest", "etl", "pipeline"],
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "sourceDir": {
+        "type": "string",
+        "description": "Root directory to scan for JSON files (recursively)"
+      },
+      "dbPath": {
+        "type": "string",
+        "description": "Path to the SQLite database to create/append to"
+      },
+      "tableName": {
+        "type": "string",
+        "description": "Table name (default: 'records')"
+      },
+      "excludePatterns": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Filename patterns to exclude (e.g., 'manifest.json')"
+      }
+    },
+    "required": ["sourceDir", "dbPath"]
+  },
+  "outputs": {
+    "type": "object",
+    "properties": {
+      "dbPath": { "type": "string" },
+      "tablesCreated": { "type": "array", "items": { "type": "string" } },
+      "totalRecords": { "type": "integer" },
+      "filesSummary": { "type": "array" }
+    }
+  },
+  "assumptions": [
+    "sqlite3 Python module is available (stdlib)",
+    "JSON files contain arrays of objects or single objects"
+  ],
+  "implementation": {
+    "type": "python_script",
+    "code": "import sys, os, json, sqlite3, glob, re\n\ndef main():\n    inputs = json.loads(os.environ.get('SKILL_INPUTS', '{}'))\n    source_dir = inputs.get('sourceDir', '')\n    db_path = inputs.get('dbPath', '')\n    table_name = inputs.get('tableName', 'records')\n    excludes = set(inputs.get('excludePatterns', ['manifest.json', 'sources.json', 'crawl-log.jsonl', '.DS_Store']))\n\n    if not source_dir or not db_path:\n        print(json.dumps({'error': 'sourceDir and dbPath required'}))\n        return\n\n    # Find all JSON files\n    json_files = []\n    for root, dirs, files in os.walk(source_dir):\n        for f in files:\n            if f.endswith('.json') and f not in excludes:\n                json_files.append(os.path.join(root, f))\n\n    if not json_files:\n        print(json.dumps({'error': f'No JSON files found in {source_dir}', 'searched': source_dir}))\n        return\n\n    # Load all records from all files\n    all_records = []\n    files_summary = []\n    for fp in sorted(json_files):\n        try:\n            with open(fp) as fh:\n                data = json.load(fh)\n            if isinstance(data, list):\n                records = data\n            elif isinstance(data, dict):\n                # If it's a dict of lists, flatten\n                if all(isinstance(v, list) for v in data.values()):\n                    records = []\n                    for key, items in data.items():\n                        for item in items:\n                            if isinstance(item, dict):\n                                item['_source_key'] = key\n                                records.append(item)\n                else:\n                    records = [data]\n            else:\n                continue\n\n            # Tag each record with source file\n            rel_path = os.path.relpath(fp, source_dir)\n            for r in records:\n                if isinstance(r, dict):\n                    r['_source_file'] = rel_path\n\n            all_records.extend(records)\n            files_summary.append({'file': rel_path, 'records': len(records)})\n        except Exception as e:\n            files_summary.append({'file': os.path.relpath(fp, source_dir), 'error': str(e)})\n\n    if not all_records:\n        print(json.dumps({'error': 'No records found in any JSON file', 'files': files_summary}))\n        return\n\n    # Collect all unique keys across all records for schema\n    all_keys = set()\n    for r in all_records:\n        if isinstance(r, dict):\n            all_keys.update(r.keys())\n    all_keys = sorted(all_keys)\n\n    # Create database and table\n    os.makedirs(os.path.dirname(db_path) or '.', exist_ok=True)\n    conn = sqlite3.connect(db_path)\n    cur = conn.cursor()\n\n    # Create table with TEXT columns for flexibility\n    cols_def = ', '.join(f'\"{k}\" TEXT' for k in all_keys)\n    cur.execute(f'CREATE TABLE IF NOT EXISTS \"{table_name}\" (id INTEGER PRIMARY KEY AUTOINCREMENT, {cols_def})')\n\n    # Insert records\n    placeholders = ', '.join(['?'] * len(all_keys))\n    col_names = ', '.join(f'\"{k}\"' for k in all_keys)\n    inserted = 0\n    for r in all_records:\n        if not isinstance(r, dict):\n            continue\n        values = []\n        for k in all_keys:\n            v = r.get(k)\n            if isinstance(v, (dict, list)):\n                values.append(json.dumps(v))\n            elif v is None:\n                values.append(None)\n            else:\n                values.append(str(v))\n        try:\n            cur.execute(f'INSERT INTO \"{table_name}\" ({col_names}) VALUES ({placeholders})', values)\n            inserted += 1\n        except Exception:\n            pass\n\n    conn.commit()\n\n    # Summary\n    cur.execute(f'SELECT COUNT(*) FROM \"{table_name}\"')\n    total = cur.fetchone()[0]\n    cur.execute(f'SELECT sql FROM sqlite_master WHERE name=\"{table_name}\"')\n    schema = cur.fetchone()[0]\n    conn.close()\n\n    print(json.dumps({\n        'dbPath': db_path,\n        'tableName': table_name,\n        'totalRecords': total,\n        'insertedThisRun': inserted,\n        'columns': all_keys,\n        'schema': schema,\n        'filesSummary': files_summary\n    }))\n\nif __name__ == '__main__':\n    main()\n",
+    "timeout_sec": 300
+  },
+  "toolsRequired": [
+    { "id": "tool:python" }
+  ],
+  "origin": "authored",
+  "confidence": 1.0
+}

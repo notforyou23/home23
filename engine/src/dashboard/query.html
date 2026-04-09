@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>COSMO Query Interface</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica', 'Arial', sans-serif;
+      background: #0a0e27;
+      color: #e0e0e0;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+
+    header {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      padding: 30px;
+      border-radius: 12px;
+      margin-bottom: 30px;
+      box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+    }
+
+    h1 {
+      font-size: 2.5em;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .subtitle {
+      font-size: 1.1em;
+      opacity: 0.9;
+    }
+
+    .nav-links {
+      margin-top: 15px;
+    }
+
+    .nav-links a {
+      color: white;
+      text-decoration: none;
+      margin-right: 20px;
+      padding: 8px 16px;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 6px;
+      transition: background 0.3s;
+    }
+
+    .nav-links a:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+
+    .run-selector-container {
+      margin-top: 15px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .run-selector-container label {
+      font-size: 0.85em;
+      opacity: 0.9;
+      color: white;
+    }
+
+    .run-selector-container select {
+      padding: 8px 12px;
+      background: rgba(255, 255, 255, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      border-radius: 6px;
+      color: white;
+      font-size: 0.9em;
+      cursor: pointer;
+      min-width: 200px;
+      transition: background 0.3s;
+    }
+
+    .run-selector-container select:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+
+    .run-selector-container select:focus {
+      outline: none;
+      border-color: rgba(255, 255, 255, 0.5);
+    }
+
+    .run-domain-display {
+      margin-top: 8px;
+      font-size: 0.85em;
+      opacity: 0.8;
+      font-style: italic;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      gap: 30px;
+    }
+
+    .sidebar {
+      background: #1a1f3a;
+      border-radius: 12px;
+      padding: 20px;
+      height: fit-content;
+    }
+
+    .sidebar h3 {
+      margin-bottom: 15px;
+      color: #667eea;
+      font-size: 1.2em;
+    }
+
+    .history-item {
+      background: #0d1127;
+      padding: 12px;
+      margin-bottom: 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.3s;
+      border-left: 3px solid #667eea;
+    }
+
+    .history-item:hover {
+      background: #151a32;
+    }
+
+    .history-item-query {
+      font-size: 0.9em;
+      margin-bottom: 5px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .history-item-meta {
+      font-size: 0.75em;
+      color: #888;
+    }
+
+    .main-content {
+      background: #1a1f3a;
+      border-radius: 12px;
+      padding: 30px;
+    }
+
+    .query-box {
+      margin-bottom: 30px;
+    }
+
+    .input-group {
+      margin-bottom: 15px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      color: #a0a0a0;
+      font-weight: 500;
+    }
+
+    textarea {
+      width: 100%;
+      padding: 15px;
+      background: #0d1127;
+      border: 2px solid #2a2f4a;
+      border-radius: 8px;
+      color: #e0e0e0;
+      font-size: 1em;
+      font-family: inherit;
+      resize: vertical;
+      min-height: 120px;
+      transition: border-color 0.3s;
+    }
+
+    textarea:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .options-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+
+    select {
+      width: 100%;
+      padding: 12px;
+      background: #0d1127;
+      border: 2px solid #2a2f4a;
+      border-radius: 8px;
+      color: #e0e0e0;
+      font-size: 1em;
+      cursor: pointer;
+      transition: border-color 0.3s;
+    }
+
+    select:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+
+    .button-row {
+      display: flex;
+      gap: 15px;
+      align-items: center;
+    }
+
+    button {
+      padding: 12px 24px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 1em;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.3s;
+    }
+
+    button:hover:not(:disabled) {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-secondary {
+      background: #2a2f4a;
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: #3a3f5a;
+    }
+
+    .results-section {
+      margin-top: 30px;
+    }
+
+    .results-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding-bottom: 15px;
+      border-bottom: 2px solid #2a2f4a;
+    }
+
+    .results-header h2 {
+      color: #667eea;
+    }
+
+    .export-buttons {
+      display: flex;
+      gap: 10px;
+    }
+
+    .export-buttons button {
+      padding: 8px 16px;
+      font-size: 0.9em;
+    }
+
+    .answer-box {
+      background: #0d1127;
+      padding: 25px;
+      border-radius: 8px;
+      border-left: 4px solid #667eea;
+      line-height: 1.8;
+      white-space: pre-wrap;
+      font-size: 1.05em;
+    }
+
+    .metadata {
+      margin-top: 20px;
+      padding: 20px;
+      background: #0d1127;
+      border-radius: 8px;
+      font-size: 0.9em;
+    }
+
+    .metadata-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+    }
+
+    .metadata-item {
+      padding: 10px;
+      background: #1a1f3a;
+      border-radius: 6px;
+    }
+
+    .metadata-label {
+      color: #888;
+      font-size: 0.85em;
+      margin-bottom: 5px;
+    }
+
+    .metadata-value {
+      color: #667eea;
+      font-weight: 600;
+    }
+
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: #888;
+    }
+
+    .spinner {
+      border: 3px solid #2a2f4a;
+      border-top: 3px solid #667eea;
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin: 20px auto;
+    }
+
+    @keyframes spin {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+
+    .error {
+      background: #3a1f1f;
+      border-left-color: #e74c3c;
+      padding: 20px;
+      border-radius: 8px;
+      border-left: 4px solid #e74c3c;
+      margin-top: 20px;
+    }
+
+    .streaming-indicator {
+      display: inline-block;
+      padding: 5px 15px;
+      background: #667eea;
+      border-radius: 20px;
+      font-size: 0.85em;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+
+    code {
+      background: #0a0e27;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: 'Monaco', 'Courier New', monospace;
+      font-size: 0.9em;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    .d-none {
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🧠 COSMO Query Interface</h1>
+      <div class="subtitle">GPT-5.2 powered semantic search with full knowledge access</div>
+      <div class="run-selector-container">
+        <label for="run-selector">Research Run:</label>
+        <select id="run-selector" onchange="switchRun(this.value)">
+          <option value="runtime">Loading...</option>
+        </select>
+      </div>
+      <div class="run-domain-display" id="run-domain"></div>
+      <div class="nav-links">
+        <a href="/">← Dashboard</a>
+        <a href="/insights">Insights</a>
+        <a href="/dreams">Dreams</a>
+        <a href="/evaluation">Evaluation</a>
+      </div>
+    </header>
+
+    <div class="layout">
+      <!-- Sidebar -->
+      <div class="sidebar">
+        <h3>Query History</h3>
+        <div id="history-list">
+          <div style="color: #888; font-size: 0.9em; padding: 20px 10px; text-align: center;">
+            No queries yet. Start by asking a question!
+          </div>
+        </div>
+      </div>
+
+      <!-- Main Content -->
+      <div class="main-content">
+        <!-- Context Banner (for follow-up queries) -->
+        <div id="context-banner" class="d-none" style="background: #1a3a1a; border-left: 4px solid #2ecc71; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <div style="font-size: 0.85em; color: #2ecc71; font-weight: 600; margin-bottom: 5px;">📎 Context Active - Follow-up Mode</div>
+              <div style="font-size: 0.9em; color: #e0e0e0;">Building on: <span id="context-query-snippet" style="font-style: italic;"></span></div>
+            </div>
+            <button onclick="clearContextQuery()" style="padding: 6px 12px; font-size: 0.85em; background: #2a2f4a;">Clear Context</button>
+          </div>
+        </div>
+        
+        <div class="query-box">
+          <div class="input-group">
+            <label for="query-input">Your Question:</label>
+            <textarea 
+              id="query-input" 
+              placeholder="Ask anything about COSMO's research... e.g., 'What did you discover about X?' or 'How does Y relate to Z?'"
+            ></textarea>
+          </div>
+
+          <div class="options-row">
+            <div class="input-group">
+              <label for="model-select">Model:</label>
+              <select id="model-select">
+                <option value="gpt-5.1" selected>GPT-5.1 (Default - Fast with 24h Caching)</option>
+                <option value="gpt-5">GPT-5 (Maximum Reasoning Depth)</option>
+                <option value="gpt-5-mini">GPT-5 Mini (Ultra Fast & Economical)</option>
+              </select>
+            </div>
+
+            <div class="input-group">
+              <label for="mode-select">Reasoning Mode:</label>
+              <select id="mode-select">
+                <option value="fast">Fast (Truth Extraction)</option>
+                <option value="normal" selected>Normal (Truth Extraction)</option>
+                <option value="deep">Deep (Truth Extraction)</option>
+                <option value="executive">📊 Executive Summary (Compressed Truth)</option>
+                <option value="raw">🔓 Raw (No Choreography)</option>
+                <option value="report">Report (Academic Truth)</option>
+                <option value="innovation">💡 Innovation (Creative Synthesis)</option>
+                <option value="consulting">📊 Consulting (Creative Strategy)</option>
+              </select>
+              <div style="font-size: 11px; color: #888; margin-top: 5px;">
+                Truth modes: Auditable citations. Executive: Compressed for decision-makers. Raw: Direct answers. Creative modes: Brainstorming ideas.
+              </div>
+            </div>
+
+            <div class="input-group">
+              <label for="export-select">Auto-Export:</label>
+              <select id="export-select">
+                <option value="none">None</option>
+                <option value="markdown">Markdown</option>
+                <option value="html">HTML</option>
+                <option value="json">JSON</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="enhancement-options" style="margin-top: 15px; padding: 15px; background: #0d1127; border-radius: 8px;">
+            <label style="font-size: 0.95em; margin-bottom: 10px; color: #667eea;">🚀 Enhancements (Optional):</label>
+            <div style="display: flex; gap: 20px; margin-top: 10px;">
+              <label style="display: flex; align-items: center; cursor: pointer; color: #e0e0e0;">
+                <input type="checkbox" id="evidence-check" style="margin-right: 8px; cursor: pointer;">
+                <span style="font-size: 0.9em;">Evidence Quality Metrics</span>
+              </label>
+              <label style="display: flex; align-items: center; cursor: pointer; color: #e0e0e0;">
+                <input type="checkbox" id="synthesis-check" style="margin-right: 8px; cursor: pointer;">
+                <span style="font-size: 0.9em;">Insight Synthesis</span>
+              </label>
+              <label style="display: flex; align-items: center; cursor: pointer; color: #e0e0e0;">
+                <input type="checkbox" id="coordinator-check" checked style="margin-right: 8px; cursor: pointer;">
+                <span style="font-size: 0.9em;">Coordinator Insights</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- NEW: Command Center Features -->
+          <div class="enhancement-options" style="margin-top: 15px; padding: 15px; background: #1a1f3a; border-radius: 8px; border-left: 3px solid #667eea;">
+            <label style="font-size: 0.95em; margin-bottom: 10px; color: #667eea;">⚡ Command Center:</label>
+            <div style="display: flex; gap: 20px; margin-top: 10px; flex-wrap: wrap;">
+              <label style="display: flex; align-items: center; cursor: pointer; color: #e0e0e0;">
+                <input type="checkbox" id="include-files-check" checked style="margin-right: 8px; cursor: pointer;">
+                <span style="font-size: 0.9em;">📁 Include Agent Output Files</span>
+              </label>
+              <label style="display: flex; align-items: center; cursor: pointer; color: #f39c12; font-weight: 500;">
+                <input type="checkbox" id="allow-actions-check" style="margin-right: 8px; cursor: pointer;">
+                <span style="font-size: 0.9em;">🚀 Allow Action Execution (spawn agents, create goals)</span>
+              </label>
+            </div>
+            <div style="font-size: 0.8em; color: #888; margin-top: 8px; font-style: italic;">
+              💡 With file access: Query can read generated code, documents, and execution outputs
+              <br>
+              ⚠️ With actions enabled: Query can spawn agents and create goals (use with intention!)
+            </div>
+          </div>
+
+          <div class="button-row">
+            <button id="query-btn" onclick="submitQuery()">Ask COSMO</button>
+            <button id="clear-btn" class="btn-secondary" onclick="clearQuery()">Clear</button>
+            <span id="status-text" style="color: #888; margin-left: 10px;"></span>
+          </div>
+        </div>
+
+        <!-- Results -->
+        <div id="results-section" class="results-section hidden">
+          <div class="results-header">
+            <h2>Answer</h2>
+            <div class="export-buttons">
+              <button onclick="exportResult('markdown')">Export MD</button>
+              <button onclick="exportResult('html')">Export HTML</button>
+              <button onclick="exportResult('json')">Export JSON</button>
+            </div>
+          </div>
+
+          <div id="answer-box" class="answer-box"></div>
+
+          <div class="metadata">
+            <h3 style="margin-bottom: 15px; color: #667eea;">Query Metadata</h3>
+            <div class="metadata-grid" id="metadata-grid"></div>
+          </div>
+        </div>
+
+        <div id="loading-section" class="loading hidden">
+          <div class="spinner"></div>
+          <p>Querying COSMO brain...</p>
+          <p id="loading-status" style="margin-top: 10px; color: #667eea;"></p>
+        </div>
+
+        <div id="error-section" class="error hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentQuery = null;
+    let currentAnswer = null;
+    let queryHistory = [];
+    let currentRun = 'runtime';
+    let availableRuns = [];
+    let contextQuery = null; // For follow-up queries with context
+
+    // ==================== RUN MANAGEMENT ====================
+    
+    async function loadAvailableRuns() {
+      try {
+        const response = await fetch('/api/runs');
+        const data = await response.json();
+        
+        availableRuns = data.runs || [];
+        
+        // Populate the selector
+        const selector = document.getElementById('run-selector');
+        selector.innerHTML = ''; // Clear existing
+        
+        // Add current/runtime first
+        const currentOption = document.createElement('option');
+        currentOption.value = 'runtime';
+        currentOption.textContent = `${data.current.name} (current)`;
+        selector.appendChild(currentOption);
+        
+        // Add all other runs
+        availableRuns.forEach(run => {
+          const option = document.createElement('option');
+          option.value = run.name;
+          option.textContent = run.name;
+          if (run.metadata?.domain) {
+            option.title = run.metadata.domain;
+          }
+          selector.appendChild(option);
+        });
+        
+        // Load current run info
+        const currentResponse = await fetch('/api/runs/current');
+        const currentData = await currentResponse.json();
+        currentRun = currentData.name;
+        selector.value = currentData.name;
+        
+        // Update domain display
+        updateRunDomainDisplay(currentData.metadata);
+        
+      } catch (error) {
+        console.error('Failed to load runs:', error);
+      }
+    }
+    
+    function updateRunDomainDisplay(metadata) {
+      const domainDisplay = document.getElementById('run-domain');
+      if (metadata && metadata.domain) {
+        domainDisplay.textContent = `Domain: ${metadata.domain.substring(0, 100)}${metadata.domain.length > 100 ? '...' : ''}`;
+        domainDisplay.title = metadata.domain; // Full text on hover
+      } else {
+        domainDisplay.textContent = '';
+      }
+    }
+    
+    async function switchRun(runName) {
+      try {
+        // Show loading state
+        const selector = document.getElementById('run-selector');
+        selector.disabled = true;
+        
+        // Switch on server
+        const response = await fetch('/api/runs/switch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ runName })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          currentRun = data.run;
+          updateRunDomainDisplay(data.metadata);
+          
+          // Clear current results and show notification
+          document.getElementById('results-section').classList.add('hidden');
+          document.getElementById('error-section').classList.add('hidden');
+          
+          alert(`Switched to run: ${runName}`);
+        } else {
+          throw new Error(data.error || 'Failed to switch run');
+        }
+      } catch (error) {
+        console.error('Switch run failed:', error);
+        alert('Error switching run: ' + error.message);
+      } finally {
+        const selector = document.getElementById('run-selector');
+        selector.disabled = false;
+      }
+    }
+
+    // ==================== HISTORY MANAGEMENT ====================
+
+    // Load history from localStorage
+    function loadHistory() {
+      try {
+        const saved = localStorage.getItem('cosmo_query_history');
+        if (saved) {
+          queryHistory = JSON.parse(saved);
+          renderHistory();
+        }
+      } catch (error) {
+        console.error('Failed to load history:', error);
+      }
+    }
+
+    // Save history to localStorage
+    function saveHistory() {
+      try {
+        localStorage.setItem('cosmo_query_history', JSON.stringify(queryHistory.slice(0, 50)));
+      } catch (error) {
+        console.error('Failed to save history:', error);
+      }
+    }
+
+    // Render history sidebar
+    function renderHistory() {
+      const historyList = document.getElementById('history-list');
+      
+      if (queryHistory.length === 0) {
+        historyList.innerHTML = '<div style="color: #888; font-size: 0.9em; padding: 20px 10px; text-align: center;">No queries yet</div>';
+        return;
+      }
+
+      historyList.innerHTML = queryHistory.slice(0, 20).map((item, idx) => `
+        <div class="history-item" onclick="loadFromHistory(${idx})">
+          <div class="history-item-query">${escapeHtml(item.query.substring(0, 60))}${item.query.length > 60 ? '...' : ''}</div>
+          <div class="history-item-meta">
+            ${item.model} • ${item.mode} • ${new Date(item.timestamp).toLocaleTimeString()}
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // Load query from history
+    function loadFromHistory(idx) {
+      const item = queryHistory[idx];
+      document.getElementById('query-input').value = item.query;
+      document.getElementById('model-select').value = item.model;
+      document.getElementById('mode-select').value = item.mode;
+      
+      if (item.answer) {
+        // Set as context so user can follow up on this historical query
+        if (item.mode !== 'executive') {
+          setContextQuery(item.query, { answer: item.answer });
+          console.log('[HISTORY] Loaded query as context for follow-up');
+        }
+        
+        displayAnswer(item.answer, item.metadata || {});
+      }
+    }
+
+    // ==================== CONTEXT MANAGEMENT ====================
+
+    // Context query management for follow-ups
+    function setContextQuery(query, result) {
+      contextQuery = { query, result, timestamp: Date.now() };
+      updateContextUI();
+      console.log('[CONTEXT] Set context for follow-up queries:', { query: query.substring(0, 50) });
+    }
+
+    function clearContextQuery() {
+      contextQuery = null;
+      updateContextUI();
+      console.log('[CONTEXT] Cleared context');
+    }
+
+    function updateContextUI() {
+      const banner = document.getElementById('context-banner');
+      const snippet = document.getElementById('context-query-snippet');
+      
+      if (contextQuery && banner && snippet) {
+        const queryText = contextQuery.query;
+        const maxLength = 80;
+        const displayText = queryText.length > maxLength 
+          ? queryText.substring(0, maxLength) + '...' 
+          : queryText;
+        
+        snippet.textContent = displayText;
+        banner.classList.remove('d-none');
+      } else if (banner) {
+        banner.classList.add('d-none');
+      }
+    }
+
+    // Submit query
+    async function submitQuery() {
+      const query = document.getElementById('query-input').value.trim();
+      if (!query) {
+        alert('Please enter a question');
+        return;
+      }
+
+      const model = document.getElementById('model-select').value;
+      const mode = document.getElementById('mode-select').value;
+      const exportFormat = document.getElementById('export-select').value;
+      
+      // Enhancement options
+      const includeEvidenceMetrics = document.getElementById('evidence-check').checked;
+      const enableSynthesis = document.getElementById('synthesis-check').checked;
+      const includeCoordinatorInsights = document.getElementById('coordinator-check').checked;
+      
+      // NEW: Command Center options
+      const includeFiles = document.getElementById('include-files-check').checked;
+      const allowActions = document.getElementById('allow-actions-check').checked;
+
+      // Show loading
+      document.getElementById('results-section').classList.add('hidden');
+      document.getElementById('error-section').classList.add('hidden');
+      document.getElementById('loading-section').classList.remove('hidden');
+      document.getElementById('query-btn').disabled = true;
+      document.getElementById('status-text').innerHTML = '<span class="streaming-indicator">Querying...</span>';
+
+      currentQuery = { query, model, mode, exportFormat, includeEvidenceMetrics, enableSynthesis, includeCoordinatorInsights, includeFiles, allowActions };
+
+      try {
+        const requestBody = {
+          query, 
+          model, 
+          mode,
+          runName: currentRun, // FIX: Send current run name
+          exportFormat: exportFormat !== 'none' ? exportFormat : null,
+          includeEvidenceMetrics,
+          enableSynthesis,
+          includeCoordinatorInsights,
+          includeFiles,
+          allowActions
+        };
+
+        // Include prior context if exists (for follow-up queries)
+        // Note: Executive mode should NOT include prior context (it's compression-only)
+        if (contextQuery && mode !== 'executive') {
+          requestBody.priorContext = {
+            query: contextQuery.query,
+            answer: contextQuery.result.answer
+          };
+          console.log('[QUERY EXECUTION] Including prior context for follow-up');
+        }
+
+        const response = await fetch('/api/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+          throw new Error(`Server error: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        
+        // Store for action display
+        window.lastQueryResult = result;
+        
+        // Store for export
+        currentAnswer = result;
+        
+        // CONTEXT FIX (2025-12-11): Don't auto-set context after every query
+        // Context is only set when user explicitly selects from history (loadFromHistory)
+        // This prevents unwanted context accumulation and gives user full control
+        // Old behavior: setContextQuery(query, result) - removed
+        console.log('[QUERY EXECUTION] Query complete. Context only set if explicitly selected from history.');
+        
+        // Add to history
+        queryHistory.unshift({
+          query,
+          model,
+          mode,
+          answer: result.answer,
+          metadata: result.metadata,
+          timestamp: new Date().toISOString()
+        });
+        saveHistory();
+        renderHistory();
+
+        // Display result
+        displayAnswer(result.answer, result.metadata);
+
+      } catch (error) {
+        console.error('Query failed:', error);
+        showError(`Failed to query COSMO: ${error.message}`);
+      } finally {
+        document.getElementById('loading-section').classList.add('hidden');
+        document.getElementById('query-btn').disabled = false;
+        document.getElementById('status-text').textContent = '';
+      }
+    }
+
+    // Display answer
+    function displayAnswer(answer, metadata) {
+      document.getElementById('answer-box').textContent = answer;
+      
+      const metadataGrid = document.getElementById('metadata-grid');
+      let metadataHTML = `
+        <div class="metadata-item">
+          <div class="metadata-label">Model</div>
+          <div class="metadata-value">${metadata.model || 'gpt-5-mini'}</div>
+        </div>
+        <div class="metadata-item">
+          <div class="metadata-label">Mode</div>
+          <div class="metadata-value">${metadata.mode || 'normal'}</div>
+        </div>
+        <div class="metadata-item">
+          <div class="metadata-label">Reasoning</div>
+          <div class="metadata-value">${metadata.reasoningEffort || 'medium'}</div>
+        </div>
+        <div class="metadata-item">
+          <div class="metadata-label">Memory Nodes</div>
+          <div class="metadata-value">${metadata.sources?.memoryNodes || 0}</div>
+        </div>
+        <div class="metadata-item">
+          <div class="metadata-label">Thoughts</div>
+          <div class="metadata-value">${metadata.sources?.thoughts || 0}</div>
+        </div>
+        <div class="metadata-item">
+          <div class="metadata-label">Connections</div>
+          <div class="metadata-value">${metadata.sources?.edges || 0}</div>
+        </div>
+        ${metadata.exported ? `
+          <div class="metadata-item">
+            <div class="metadata-label">Exported To</div>
+            <div class="metadata-value">${metadata.exported}</div>
+          </div>
+        ` : ''}
+      `;
+
+      // NEW: Display evidence quality metrics
+      if (metadata.evidenceQuality) {
+        const eq = metadata.evidenceQuality;
+        const coveragePercent = Math.round(eq.coverage.percentage * 100);
+        const confidencePercent = Math.round(eq.confidence.score * 100);
+        
+        metadataHTML += `
+          <div class="metadata-item" style="grid-column: 1 / -1; background: #1a1f3a; padding: 15px;">
+            <div style="margin-bottom: 10px;">
+              <div class="metadata-label" style="font-size: 1em; color: #667eea; margin-bottom: 8px;">📊 Evidence Quality</div>
+              <div style="font-size: 0.85em; color: #a0a0a0;">${eq.summary || 'Analysis complete'}</div>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px;">
+              <div>
+                <div style="font-size: 0.8em; color: #888; margin-bottom: 5px;">Coverage: ${eq.coverage.rating}</div>
+                <div style="background: #0d1127; border-radius: 8px; height: 8px; overflow: hidden;">
+                  <div style="background: linear-gradient(90deg, #667eea, #764ba2); height: 100%; width: ${coveragePercent}%; transition: width 0.5s;"></div>
+                </div>
+                <div style="font-size: 0.75em; color: #667eea; margin-top: 3px;">${coveragePercent}% (${eq.coverage.used}/${eq.coverage.total} nodes)</div>
+              </div>
+              <div>
+                <div style="font-size: 0.8em; color: #888; margin-bottom: 5px;">Confidence: ${eq.confidence.rating}</div>
+                <div style="background: #0d1127; border-radius: 8px; height: 8px; overflow: hidden;">
+                  <div style="background: linear-gradient(90deg, #667eea, #764ba2); height: 100%; width: ${confidencePercent}%; transition: width 0.5s;"></div>
+                </div>
+                <div style="font-size: 0.75em; color: #667eea; margin-top: 3px;">${confidencePercent}%</div>
+              </div>
+            </div>
+            ${eq.gaps && eq.gaps.length > 0 ? `
+              <div style="margin-top: 10px; padding: 8px; background: #3a1f1f; border-left: 3px solid #e74c3c; border-radius: 4px;">
+                <div style="font-size: 0.8em; color: #e74c3c; margin-bottom: 5px;">⚠️ Gaps Identified:</div>
+                ${eq.gaps.map(g => `<div style="font-size: 0.75em; color: #d0d0d0; margin-left: 10px;">• ${g.description}</div>`).join('')}
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }
+
+      // NEW: Display synthesis insights
+      if (metadata.synthesis) {
+        const syn = metadata.synthesis;
+        metadataHTML += `
+          <div class="metadata-item" style="grid-column: 1 / -1; background: #1a1f3a; padding: 15px;">
+            <div class="metadata-label" style="font-size: 1em; color: #667eea; margin-bottom: 8px;">🔍 Insight Synthesis</div>
+            <div style="font-size: 0.85em; color: #a0a0a0; margin-bottom: 10px;">${syn.summary || 'Analysis complete'}</div>
+            
+            ${syn.patterns && syn.patterns.length > 0 ? `
+              <div style="margin-top: 10px;">
+                <div style="font-size: 0.8em; color: #888; margin-bottom: 5px;">Temporal Patterns (${syn.patterns.length}):</div>
+                ${syn.patterns.slice(0, 3).map(p => `
+                  <div style="font-size: 0.75em; color: #d0d0d0; margin: 5px 0; padding: 5px; background: #0d1127; border-radius: 4px;">
+                    • <strong>${p.type}</strong>: ${p.theme || p.description} (${p.occurrences || 'N/A'} occurrences, ${p.trend || 'stable'})
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+            
+            ${syn.breakthroughs && syn.breakthroughs.length > 0 ? `
+              <div style="margin-top: 10px;">
+                <div style="font-size: 0.8em; color: #888; margin-bottom: 5px;">💡 Breakthroughs (${syn.breakthroughs.length}):</div>
+                ${syn.breakthroughs.slice(0, 2).map(b => `
+                  <div style="font-size: 0.75em; color: #d0d0d0; margin: 5px 0; padding: 5px; background: #0d1127; border-radius: 4px; border-left: 3px solid #667eea;">
+                    Cycle ${b.cycle}: ${b.content.substring(0, 100)}...
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }
+
+      // NEW: Display coordinator insights
+      if (metadata.coordinatorInsights && metadata.coordinatorInsights.insights) {
+        const insights = metadata.coordinatorInsights.insights;
+        if (insights.length > 0) {
+          metadataHTML += `
+            <div class="metadata-item" style="grid-column: 1 / -1; background: #1a1f3a; padding: 15px;">
+              <div class="metadata-label" style="font-size: 1em; color: #667eea; margin-bottom: 8px;">🎯 Coordinator Insights (${insights.length})</div>
+              ${insights.slice(0, 3).map(ins => `
+                <div style="margin: 8px 0; padding: 10px; background: #0d1127; border-radius: 4px; border-left: 3px solid #764ba2;">
+                  <div style="font-size: 0.8em; color: #667eea; margin-bottom: 3px;">${ins.title}</div>
+                  <div style="font-size: 0.75em; color: #d0d0d0;">${ins.content.substring(0, 150)}${ins.content.length > 150 ? '...' : ''}</div>
+                  <div style="font-size: 0.7em; color: #888; margin-top: 5px;">
+                    Cycle ${ins.cycle || 'N/A'} • Relevance: ${ins.relevance}%
+                  </div>
+                </div>
+              `).join('')}
+            </div>
+          `;
+        }
+      }
+
+      // NEW: Display files accessed
+      if (metadata.filesAccessed && metadata.filesAccessed.total > 0) {
+        const fa = metadata.filesAccessed;
+        metadataHTML += `
+          <div class="metadata-item" style="grid-column: 1 / -1; background: #1a3a1a; padding: 15px; border-left: 3px solid #2ecc71;">
+            <div class="metadata-label" style="font-size: 1em; color: #2ecc71; margin-bottom: 8px;">📁 Agent Output Files Accessed (${fa.total})</div>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 10px;">
+              <div style="background: #0d1127; padding: 10px; border-radius: 4px;">
+                <div style="font-size: 0.75em; color: #888;">Code Files</div>
+                <div style="font-size: 1.2em; color: #2ecc71; font-weight: 600;">${fa.codeFiles || 0}</div>
+              </div>
+              <div style="background: #0d1127; padding: 10px; border-radius: 4px;">
+                <div style="font-size: 0.75em; color: #888;">Execution Outputs</div>
+                <div style="font-size: 1.2em; color: #2ecc71; font-weight: 600;">${fa.executionOutputs || 0}</div>
+              </div>
+              <div style="background: #0d1127; padding: 10px; border-radius: 4px;">
+                <div style="font-size: 0.75em; color: #888;">Documents</div>
+                <div style="font-size: 1.2em; color: #2ecc71; font-weight: 600;">${fa.documents || 0}</div>
+              </div>
+              <div style="background: #0d1127; padding: 10px; border-radius: 4px;">
+                <div style="font-size: 0.75em; color: #888;">Deliverables</div>
+                <div style="font-size: 1.2em; color: #2ecc71; font-weight: 600;">${fa.deliverables || 0}</div>
+              </div>
+            </div>
+            <div style="font-size: 0.75em; color: #a0a0a0; margin-top: 10px; font-style: italic;">
+              💡 Query had access to generated code, documents, and execution results
+            </div>
+          </div>
+        `;
+      }
+
+      metadataGrid.innerHTML = metadataHTML;
+      
+      // NEW: Display action results at the top if present
+      const answerBox = document.getElementById('answer-box');
+      let fullHTML = '';
+      
+      // Show action executed
+      if (window.lastQueryResult && window.lastQueryResult.actionExecuted && window.lastQueryResult.actionResult) {
+        const action = window.lastQueryResult.actionResult;
+        fullHTML += `
+          <div style="background: #1a3a1a; border-left: 4px solid #2ecc71; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+            <h3 style="color: #2ecc71; margin-bottom: 10px;">⚡ Action Executed</h3>
+            <p style="color: #e0e0e0; font-size: 1.05em;">${action.message || JSON.stringify(action, null, 2)}</p>
+            ${action.agentId ? `<div style="margin-top: 10px; font-size: 0.9em; color: #a0a0a0;">Agent ID: <code style="background: #0a0e27; padding: 2px 6px; border-radius: 4px;">${action.agentId}</code></div>` : ''}
+          </div>
+        `;
+      }
+      
+      // Show action suggestion
+      if (window.lastQueryResult && window.lastQueryResult.actionSuggestion) {
+        const suggestion = window.lastQueryResult.actionSuggestion;
+        fullHTML += `
+          <div style="background: #3a2a1a; border-left: 4px solid #f39c12; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+            <h3 style="color: #f39c12; margin-bottom: 10px;">💡 Action Available</h3>
+            <p style="color: #e0e0e0; font-size: 1.05em;">${suggestion.message}</p>
+            <div style="margin-top: 10px; font-size: 0.85em; color: #a0a0a0;">
+              Enable "Allow Action Execution" checkbox and re-run to execute this action.
+            </div>
+          </div>
+        `;
+      }
+      
+      fullHTML += `<div>${answer}</div>`;
+      answerBox.innerHTML = fullHTML;
+      document.getElementById('results-section').classList.remove('hidden');
+    }
+
+    // Show error
+    function showError(message) {
+      const errorSection = document.getElementById('error-section');
+      errorSection.textContent = message;
+      errorSection.classList.remove('hidden');
+    }
+
+    // Export result
+    async function exportResult(format) {
+      if (!currentAnswer) {
+        alert('No answer to export');
+        return;
+      }
+
+      try {
+        const response = await fetch('/api/query/export', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            query: currentQuery.query,
+            answer: currentAnswer.answer,
+            format: format,
+            metadata: currentAnswer.metadata
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`Export failed: ${response.statusText}`);
+        }
+
+        const result = await response.json();
+        alert(`Exported to: ${result.filepath}`);
+      } catch (error) {
+        alert(`Export failed: ${error.message}`);
+      }
+    }
+
+    // Clear query
+    function clearQuery() {
+      document.getElementById('query-input').value = '';
+      document.getElementById('results-section').classList.add('hidden');
+      document.getElementById('error-section').classList.add('hidden');
+    }
+
+    // Escape HTML
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Enter key to submit
+    document.getElementById('query-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        submitQuery();
+      }
+    });
+
+    // Initialize
+    loadHistory();
+    loadAvailableRuns();
+    
+    // Force correct defaults on page load (clear any cached invalid models)
+    document.getElementById('model-select').value = 'gpt-5.1';
+    if (!document.getElementById('mode-select').value) {
+      document.getElementById('mode-select').value = 'normal';
+    }
+  </script>
+</body>
+</html>
+

@@ -1,0 +1,51 @@
+{
+  "id": "skill:code-lint",
+  "name": "Python Code Linter",
+  "description": "Static analysis of Python code using the ast module. Detects syntax errors, undefined names, unused imports, unused variables, overly long functions, and basic style issues. No external dependencies required.",
+  "domain": null,
+  "tags": ["code", "quality", "python"],
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "codePath": {
+        "type": "string",
+        "description": "Path to Python file to analyze"
+      },
+      "strict": {
+        "type": "boolean",
+        "description": "Enable strict mode with additional style checks (default: false)"
+      }
+    },
+    "required": ["codePath"]
+  },
+  "outputs": {
+    "type": "object",
+    "properties": {
+      "issues": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "line": { "type": "number" },
+            "severity": { "type": "string", "enum": ["error", "warning", "info"] },
+            "message": { "type": "string" }
+          }
+        },
+        "description": "List of detected issues"
+      },
+      "score": { "type": "number", "description": "Code quality score from 0 (worst) to 10 (best)" }
+    }
+  },
+  "assumptions": [
+    "Input file is Python source code",
+    "Python 3.8+ ast module is available"
+  ],
+  "implementation": {
+    "type": "python_script",
+    "code": "import sys\nimport os\nimport json\nimport ast\nimport re\n\nBUILTINS = set(dir(__builtins__)) if isinstance(__builtins__, dict) else set(dir(__builtins__))\nBUILTINS.update(['__name__', '__file__', '__doc__', '__builtins__', '__spec__', '__loader__', '__package__',\n                  'print', 'len', 'range', 'int', 'str', 'float', 'list', 'dict', 'set', 'tuple',\n                  'bool', 'type', 'None', 'True', 'False', 'isinstance', 'issubclass', 'hasattr',\n                  'getattr', 'setattr', 'delattr', 'super', 'property', 'staticmethod', 'classmethod',\n                  'open', 'input', 'map', 'filter', 'zip', 'enumerate', 'sorted', 'reversed',\n                  'min', 'max', 'sum', 'abs', 'round', 'any', 'all', 'next', 'iter',\n                  'Exception', 'BaseException', 'ValueError', 'TypeError', 'KeyError', 'IndexError',\n                  'AttributeError', 'ImportError', 'OSError', 'IOError', 'FileNotFoundError',\n                  'RuntimeError', 'StopIteration', 'NotImplementedError', 'ZeroDivisionError',\n                  'NameError', 'ModuleNotFoundError', 'OverflowError', 'RecursionError'])\n\ndef analyze(code_text, strict=False):\n    issues = []\n    lines = code_text.splitlines()\n\n    # Check syntax first\n    try:\n        tree = ast.parse(code_text)\n    except SyntaxError as e:\n        issues.append({'line': e.lineno or 1, 'severity': 'error', 'message': f'Syntax error: {e.msg}'})\n        return issues\n\n    # Collect all defined names and imported names\n    defined_names = set()\n    imported_names = {}\n    used_names = set()\n    function_defs = []\n\n    class NameCollector(ast.NodeVisitor):\n        def __init__(self):\n            self.scope_stack = [set()]\n\n        def visit_Import(self, node):\n            for alias in node.names:\n                name = alias.asname if alias.asname else alias.name.split('.')[0]\n                imported_names[name] = node.lineno\n                defined_names.add(name)\n            self.generic_visit(node)\n\n        def visit_ImportFrom(self, node):\n            for alias in node.names:\n                name = alias.asname if alias.asname else alias.name\n                if name == '*':\n                    continue\n                imported_names[name] = node.lineno\n                defined_names.add(name)\n            self.generic_visit(node)\n\n        def visit_FunctionDef(self, node):\n            defined_names.add(node.name)\n            function_defs.append(node)\n            for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs:\n                defined_names.add(arg.arg)\n            if node.args.vararg:\n                defined_names.add(node.args.vararg.arg)\n            if node.args.kwarg:\n                defined_names.add(node.args.kwarg.arg)\n            self.generic_visit(node)\n\n        visit_AsyncFunctionDef = visit_FunctionDef\n\n        def visit_ClassDef(self, node):\n            defined_names.add(node.name)\n            self.generic_visit(node)\n\n        def visit_Name(self, node):\n            if isinstance(node.ctx, (ast.Load, ast.Del)):\n                used_names.add(node.id)\n            elif isinstance(node.ctx, ast.Store):\n                defined_names.add(node.id)\n            self.generic_visit(node)\n\n        def visit_Global(self, node):\n            for name in node.names:\n                defined_names.add(name)\n            self.generic_visit(node)\n\n        def visit_For(self, node):\n            if isinstance(node.target, ast.Name):\n                defined_names.add(node.target.id)\n            elif isinstance(node.target, ast.Tuple):\n                for elt in node.target.elts:\n                    if isinstance(elt, ast.Name):\n                        defined_names.add(elt.id)\n            self.generic_visit(node)\n\n        def visit_With(self, node):\n            for item in node.items:\n                if item.optional_vars and isinstance(item.optional_vars, ast.Name):\n                    defined_names.add(item.optional_vars.id)\n            self.generic_visit(node)\n\n        def visit_ExceptHandler(self, node):\n            if node.name:\n                defined_names.add(node.name)\n            self.generic_visit(node)\n\n    collector = NameCollector()\n    collector.visit(tree)\n\n    # Check for unused imports\n    for name, lineno in imported_names.items():\n        if name not in used_names and not name.startswith('_'):\n            issues.append({'line': lineno, 'severity': 'warning', 'message': f\"Unused import: '{name}'\"})\n\n    # Check for long functions\n    for func in function_defs:\n        end_line = getattr(func, 'end_lineno', None)\n        if end_line:\n            length = end_line - func.lineno\n            threshold = 30 if strict else 50\n            if length > threshold:\n                issues.append({'line': func.lineno, 'severity': 'warning',\n                               'message': f\"Function '{func.name}' is {length} lines long (threshold: {threshold})\"})\n\n        # Check for missing docstring\n        if strict and func.body:\n            first = func.body[0]\n            if not (isinstance(first, ast.Expr) and isinstance(first.value, (ast.Str, ast.Constant))):\n                issues.append({'line': func.lineno, 'severity': 'info',\n                               'message': f\"Function '{func.name}' is missing a docstring\"})\n\n    # Line-level checks\n    for i, line in enumerate(lines, 1):\n        # Line length\n        if len(line) > (88 if strict else 120):\n            issues.append({'line': i, 'severity': 'info',\n                           'message': f'Line is {len(line)} chars (limit: {88 if strict else 120})'})\n        # Trailing whitespace\n        if strict and line.rstrip() != line and line.strip():\n            issues.append({'line': i, 'severity': 'info', 'message': 'Trailing whitespace'})\n        # TODO/FIXME/HACK markers\n        if re.search(r'#\\s*(TODO|FIXME|HACK|XXX)', line, re.IGNORECASE):\n            issues.append({'line': i, 'severity': 'info',\n                           'message': f'Contains TODO/FIXME marker'})\n\n    # Check for bare except\n    for node in ast.walk(tree):\n        if isinstance(node, ast.ExceptHandler) and node.type is None:\n            issues.append({'line': node.lineno, 'severity': 'warning', 'message': 'Bare except clause (catches all exceptions including SystemExit, KeyboardInterrupt)'})\n\n    # Sort by line number\n    issues.sort(key=lambda x: x['line'])\n    return issues\n\ndef score_from_issues(issues, total_lines):\n    if total_lines == 0:\n        return 10.0\n    penalty = 0\n    for issue in issues:\n        if issue['severity'] == 'error':\n            penalty += 3.0\n        elif issue['severity'] == 'warning':\n            penalty += 1.0\n        else:\n            penalty += 0.3\n    # Normalize: start at 10, subtract penalties scaled by file size\n    score = 10.0 - (penalty / max(total_lines / 10, 1))\n    return round(max(0.0, min(10.0, score)), 1)\n\ndef main():\n    inputs = json.loads(os.environ.get('SKILL_INPUTS', '{}'))\n    code_path = inputs.get('codePath', '')\n    strict = inputs.get('strict', False)\n\n    if not code_path or not os.path.exists(code_path):\n        print(json.dumps({'issues': [{'line': 0, 'severity': 'error', 'message': f'File not found: {code_path}'}], 'score': 0}))\n        return\n\n    with open(code_path, 'r', encoding='utf-8') as f:\n        code_text = f.read()\n\n    issues = analyze(code_text, strict)\n    total_lines = len(code_text.splitlines())\n    score = score_from_issues(issues, total_lines)\n\n    print(json.dumps({'issues': issues, 'score': score}))\n\nif __name__ == '__main__':\n    main()\n",
+    "timeout_sec": 60
+  },
+  "toolsRequired": [{ "id": "tool:python" }],
+  "origin": "authored",
+  "confidence": 1.0
+}

@@ -1,0 +1,175 @@
+# COSMO Test Configuration - Quantum Reasoner Enhancement Testing
+# Created: 2025-10-16
+# Purpose: Test branchPolicy, latentProjector, and telemetry features
+# WARNING: Test configuration only - not for production use
+
+architecture:
+  roleSystem:
+    type: dynamic
+    explorationMode: autonomous
+    
+    initialRoles:
+      - id: curiosity
+        prompt: "Generate ONE novel question (2-4 sentences)."
+        temperature: 1.0
+        max_completion_tokens: 500
+        successThreshold: 0.6
+      - id: analyst
+        prompt: "Examine ONE topic (3-5 sentences)."
+        temperature: 1.0
+        max_completion_tokens: 500
+        successThreshold: 0.7
+    evolutionEnabled: false
+    maxRoles: 15
+  
+  memory:
+    type: graph
+    topology: small-world
+    embedding:
+      model: text-embedding-3-small
+      dimensions: 512
+    decay:
+      function: exponential
+      baseFactor: 0.995
+      minimumWeight: 0.1
+      decayInterval: 3600
+    spreading:
+      enabled: true
+      maxDepth: 3
+      activationThreshold: 0.1
+      decayFactor: 0.7
+    hebbian:
+      enabled: true
+      reinforcementStrength: 0.1
+      weakenFactor: 0.05
+    smallWorld:
+      clusteringCoefficient: 0.6
+      averagePathLength: 3.0
+      bridgeProbability: 0.05
+      rewireInterval: 600
+    contextDiversity:
+      enabled: true
+      noContextProbability: 0.15
+      maxContextNodes: 3
+      peripheralSamplingRate: 0.20
+      minSimilarityThreshold: 0.3
+  
+  reasoning:
+    mode: quantum
+    parallelBranches: 5
+    collapseStrategy: weighted
+    entanglementEnabled: true
+    tunnelingProbability: 0.02
+    # === QUANTUM ENHANCEMENTS ENABLED FOR TESTING ===
+    features:
+      branchPolicy:
+        enabled: true
+      latentProjector:
+        enabled: true
+      consistencyReview:
+        enabled: true         # Phase 4 - Consistency agent
+        divergenceThreshold: 0.6  # Trigger review when divergence >= 0.6
+    latentProjector:
+      maxMemoryNodes: 5
+      maxGoalCount: 3
+      hintMaxLength: 140
+      vectorSize: 128
+      autoTrain: true              # Auto-train when enough samples collected
+      autoTrainThreshold: 100      # Min samples before first training
+      autoTrainInterval: 50        # Retrain after N new samples
+  
+  creativity:
+    chaosEnabled: true
+    chaoticRNN:
+      size: 100
+      spectralRadius: 0.95
+      updateSteps: 10
+      perturbationInterval: 300
+    mutations:
+      enabled: true
+      mutationRate: 0.1
+      hybridizationRate: 0.05
+  
+  goals:
+    intrinsicEnabled: true
+    discoveryMethod: reflection
+    maxGoals: 50  # Reduced for test
+    prioritization: uncertainty
+    rotation:
+      enabled: true
+      maxPursuitsPerGoal: 10
+      satisfactionThreshold: 0.6
+      staleArchiveAfterDays: 3
+      dominanceThreshold: 0.20
+      checkInterval: 5
+    curator:
+      enabled: false  # Simplified for test
+  
+  thermodynamic:
+    surpriseEnabled: true
+    freeEnergyTarget: 0.5
+  
+  environment:
+    sensorsEnabled: true
+    sensors:
+      - name: system_time
+        type: internal
+        pollInterval: 60
+        enabled: true
+  
+  temporal:
+    sleepEnabled: false  # Disabled for short test
+    oscillations:
+      enabled: true
+      fastPhaseDuration: 300
+      slowPhaseDuration: 120
+  
+  cognitiveState:
+    curiosityEnabled: true
+    moodEnabled: true
+    energyEnabled: true
+  
+  reflection:
+    enabled: true
+
+models:
+  primary: gpt-5
+  fast: gpt-5-mini
+  nano: gpt-5-mini
+  embeddings: text-embedding-3-small
+  defaultReasoningEffort: low
+  defaultMaxTokens: 6000
+  enableWebSearch: false  # Disabled for test
+  enableExtendedReasoning: true
+
+providers:
+  openai:
+    enabled: true
+
+coordinator:
+  enabled: true   # Enabled to allow consistency agent spawning
+  reviewCyclePeriod: 50
+  model: gpt-5-mini
+  reasoningEffort: low
+  maxTokens: 3000
+  maxConcurrent: 2  # Allow consistency agents
+
+execution:
+  baseInterval: 60
+  maxCycles: 5  # Short test run
+  adaptiveTimingEnabled: true
+
+logging:
+  level: info
+  thoughtJournal: true
+  cycleMetrics: true
+
+dashboard:
+  enabled: false  # Disabled for test
+
+mcp:
+  server:
+    enabled: false  # Disabled for test
+  client:
+    enabled: false  # Disabled for test
+

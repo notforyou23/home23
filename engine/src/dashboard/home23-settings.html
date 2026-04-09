@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Home23 — Settings</title>
+  <link rel="stylesheet" href="/home23-dashboard.css">
+  <link rel="stylesheet" href="/home23-settings.css">
+</head>
+<body>
+  <!-- Header -->
+  <header class="h23-header">
+    <div class="h23-header-left">
+      <span class="h23-logo">&#129504; <span id="home-name">Home23</span></span>
+      <span class="h23-subtitle">SETTINGS</span>
+    </div>
+    <div class="h23-header-right">
+      <a href="/home23" class="h23s-back-link">&larr; Dashboard</a>
+    </div>
+  </header>
+
+  <!-- Sub-tab bar -->
+  <nav class="h23s-tabs">
+    <button class="h23s-tab active" data-stab="providers">Providers</button>
+    <button class="h23s-tab" data-stab="agents">Agents</button>
+    <button class="h23s-tab" data-stab="models">Models</button>
+    <button class="h23s-tab" data-stab="system">System</button>
+  </nav>
+
+  <main class="h23s-main">
+
+    <!-- Providers Panel -->
+    <div class="h23s-panel active" id="panel-providers">
+      <h2 class="h23s-panel-title">Providers &amp; API Keys</h2>
+      <p class="h23s-panel-desc">Configure API keys for each LLM provider. Keys are stored locally in <code>config/secrets.yaml</code>.</p>
+
+      <div class="h23s-provider-list" id="provider-list">
+      </div>
+
+      <div class="h23s-actions">
+        <button class="h23s-btn-primary" id="btn-save-providers">Save</button>
+        <span class="h23s-save-status" id="providers-status"></span>
+      </div>
+    </div>
+
+    <!-- Agents Panel -->
+    <div class="h23s-panel" id="panel-agents">
+      <div class="h23s-panel-header">
+        <div>
+          <h2 class="h23s-panel-title">Agents</h2>
+          <p class="h23s-panel-desc">Manage your AI agent instances.</p>
+        </div>
+        <button class="h23s-btn-primary" id="btn-create-agent">+ Create Agent</button>
+      </div>
+
+      <div class="h23s-agent-list" id="agent-list">
+      </div>
+
+      <!-- Agent creation wizard (hidden by default) -->
+      <div class="h23s-wizard" id="agent-wizard" style="display:none;">
+        <div id="wiz-primary-banner" style="display:none;background:rgba(88,166,255,0.08);border:1px solid rgba(88,166,255,0.2);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--h23-accent);">
+          This will be your <strong>primary agent</strong> &mdash; the main intelligence for your Home23 system. Its model becomes the system default.
+        </div>
+        <div class="h23s-wizard-steps">
+          <span class="h23s-wizard-step active" data-step="1">1. Identity</span>
+          <span class="h23s-wizard-step" data-step="2">2. Channels</span>
+          <span class="h23s-wizard-step" data-step="3">3. Model</span>
+        </div>
+
+        <!-- Step 1: Identity -->
+        <div class="h23s-wizard-page active" id="wizard-step-1">
+          <div class="h23s-field">
+            <label>Agent Name <span class="h23s-required">*</span></label>
+            <input type="text" id="wiz-name" placeholder="my-agent" pattern="[a-z0-9][a-z0-9-]*">
+            <span class="h23s-hint">Lowercase, alphanumeric, hyphens only</span>
+          </div>
+          <div class="h23s-field">
+            <label>Display Name</label>
+            <input type="text" id="wiz-display-name" placeholder="My Agent">
+          </div>
+          <div class="h23s-field">
+            <label>Owner Name</label>
+            <input type="text" id="wiz-owner" placeholder="owner">
+          </div>
+          <div class="h23s-field">
+            <label>Timezone</label>
+            <input type="text" id="wiz-timezone" placeholder="America/New_York">
+          </div>
+          <div class="h23s-wizard-nav">
+            <button class="h23s-btn-secondary" id="wiz-cancel">Cancel</button>
+            <button class="h23s-btn-primary" id="wiz-next-1">Next</button>
+          </div>
+        </div>
+
+        <!-- Step 2: Channels (optional) -->
+        <div class="h23s-wizard-page" id="wizard-step-2">
+          <p class="h23s-panel-desc" style="margin-bottom:16px;">
+            Channels let you talk to your agent from external apps. These are optional &mdash; you can always chat directly from the dashboard.
+          </p>
+          <div class="h23s-field">
+            <label>Telegram Bot Token</label>
+            <input type="password" id="wiz-bot-token" placeholder="123456:ABC-DEF... (optional)">
+            <span class="h23s-hint">Get one from <a href="https://t.me/BotFather" target="_blank">@BotFather</a> on Telegram. You can add this later.</span>
+          </div>
+          <div class="h23s-field">
+            <label>Owner Telegram ID</label>
+            <input type="text" id="wiz-telegram-id" placeholder="123456789">
+            <span class="h23s-hint">Your numeric Telegram user ID</span>
+          </div>
+          <div class="h23s-wizard-nav">
+            <button class="h23s-btn-secondary" id="wiz-back-2">Back</button>
+            <button class="h23s-btn-primary" id="wiz-next-2">Next</button>
+          </div>
+        </div>
+
+        <!-- Step 3: Model -->
+        <div class="h23s-wizard-page" id="wizard-step-3">
+          <div class="h23s-field">
+            <label>Default Provider</label>
+            <select id="wiz-provider">
+              <option value="ollama-cloud">Ollama Cloud</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="openai">OpenAI</option>
+              <option value="xai">xAI</option>
+            </select>
+          </div>
+          <div class="h23s-field">
+            <label>Default Model</label>
+            <select id="wiz-model">
+            </select>
+          </div>
+          <div class="h23s-field">
+            <label>Ports</label>
+            <div class="h23s-ports-preview" id="wiz-ports">Auto-assigned on creation</div>
+          </div>
+          <div class="h23s-wizard-nav">
+            <button class="h23s-btn-secondary" id="wiz-back-3">Back</button>
+            <button class="h23s-btn-primary" id="wiz-create">Create Agent</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Models Panel -->
+    <div class="h23s-panel" id="panel-models">
+      <h2 class="h23s-panel-title">Models</h2>
+      <p class="h23s-panel-desc">Model catalog, aliases, and default selections.</p>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Defaults</h3>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Default Provider</label>
+            <select id="models-default-provider"></select>
+          </div>
+          <div class="h23s-field">
+            <label>Default Model</label>
+            <select id="models-default-model"></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Aliases</h3>
+        <table class="h23s-table" id="aliases-table">
+          <thead>
+            <tr><th>Alias</th><th>Provider</th><th>Model</th><th></th></tr>
+          </thead>
+          <tbody id="aliases-body">
+          </tbody>
+        </table>
+        <button class="h23s-btn-secondary" id="btn-add-alias" style="margin-top:8px;">+ Add Alias</button>
+      </div>
+
+      <div class="h23s-actions">
+        <button class="h23s-btn-primary" id="btn-save-models">Save</button>
+        <span class="h23s-save-status" id="models-status"></span>
+      </div>
+    </div>
+
+    <!-- System Panel -->
+    <div class="h23s-panel" id="panel-system">
+      <h2 class="h23s-panel-title">System</h2>
+      <p class="h23s-panel-desc">Ports, embeddings, chat defaults, and maintenance actions.</p>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Ports</h3>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Evobrew Port</label>
+            <input type="number" id="sys-evobrew-port" value="3415">
+          </div>
+          <div class="h23s-field">
+            <label>COSMO App Port</label>
+            <input type="number" id="sys-cosmo-app" value="43210">
+          </div>
+          <div class="h23s-field">
+            <label>COSMO WebSocket</label>
+            <input type="number" id="sys-cosmo-ws" value="43240">
+          </div>
+          <div class="h23s-field">
+            <label>COSMO Dashboard</label>
+            <input type="number" id="sys-cosmo-dash" value="43244">
+          </div>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Chat Defaults</h3>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Max Tokens</label>
+            <input type="number" id="sys-max-tokens" value="4096">
+          </div>
+          <div class="h23s-field">
+            <label>Temperature</label>
+            <input type="number" id="sys-temperature" step="0.1" min="0" max="2" value="0.7">
+          </div>
+          <div class="h23s-field">
+            <label>History Budget</label>
+            <input type="number" id="sys-history-budget" value="400000">
+          </div>
+          <div class="h23s-field">
+            <label>Session Gap (ms)</label>
+            <input type="number" id="sys-session-gap" value="1800000">
+          </div>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Embeddings</h3>
+        <div class="h23s-embed-list" id="embeddings-list">
+        </div>
+      </div>
+
+      <div class="h23s-actions">
+        <button class="h23s-btn-primary" id="btn-save-system">Save</button>
+        <span class="h23s-save-status" id="system-status"></span>
+      </div>
+
+      <div class="h23s-section" style="margin-top:32px;">
+        <h3 class="h23s-section-title">Maintenance</h3>
+        <div class="h23s-action-row">
+          <button class="h23s-btn-secondary" id="btn-install-deps">Install Dependencies</button>
+          <button class="h23s-btn-secondary" id="btn-build-ts">Build TypeScript</button>
+        </div>
+        <pre class="h23s-action-output" id="action-output" style="display:none;"></pre>
+      </div>
+    </div>
+
+  </main>
+
+  <script src="/home23-settings.js"></script>
+</body>
+</html>

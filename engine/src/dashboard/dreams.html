@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cosmo Dreams Explorer</title>
+    <style>
+        :root {
+            --bg-dark: #0a0e1a;
+            --bg-card: #131929;
+            --bg-elevated: #1a2137;
+            --text-primary: #e5e9f2;
+            --text-secondary: #b4c0d9;
+            --text-dim: #6b7a99;
+            --accent-cyan: #00ffff;
+            --accent-purple: #9d4edd;
+            --accent-pink: #ff006e;
+            --accent-green: #06ffa5;
+            --accent-yellow: #ffbe0b;
+            --border-subtle: rgba(255, 255, 255, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-dark);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, var(--bg-card), var(--bg-elevated));
+            border-bottom: 1px solid var(--border-subtle);
+            padding: 24px 32px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(10px);
+        }
+
+        .header-content {
+            max-width: 1600px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .header-title h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: 1px solid var(--border-subtle);
+            background: var(--bg-elevated);
+            color: var(--text-primary);
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+        }
+
+        .btn:hover {
+            background: rgba(157, 78, 221, 0.1);
+            border-color: var(--accent-purple);
+            transform: translateY(-1px);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink));
+            border: none;
+            color: white;
+            font-weight: 600;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(157, 78, 221, 0.3);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Main Content */
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            padding: 32px;
+        }
+
+        /* Stats Overview */
+        .stats-overview {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-bottom: 32px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+        .stat-card:hover {
+            border-color: var(--accent-purple);
+            transform: translateY(-2px);
+        }
+
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-pink));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 8px;
+        }
+
+        .stat-label {
+            color: var(--text-dim);
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        /* Dreams Grid */
+        .dreams-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+            gap: 24px;
+            margin-bottom: 32px;
+        }
+
+        .dream-card {
+            background: var(--bg-card);
+            border: 1px solid rgba(157, 78, 221, 0.3);
+            border-radius: 12px;
+            padding: 24px;
+            transition: all 0.3s;
+            cursor: pointer;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .dream-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: linear-gradient(180deg, var(--accent-purple), var(--accent-pink));
+        }
+
+        .dream-card:hover {
+            border-color: var(--accent-purple);
+            transform: translateY(-4px);
+            box-shadow: 0 12px 32px rgba(157, 78, 221, 0.2);
+        }
+
+        .dream-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 16px;
+        }
+
+        .dream-cycle {
+            font-size: 0.85rem;
+            color: var(--accent-purple);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .dream-timestamp {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+        }
+
+        .dream-content {
+            color: var(--text-secondary);
+            line-height: 1.7;
+            margin-bottom: 16px;
+            font-size: 0.95rem;
+        }
+
+        .dream-meta {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding-top: 12px;
+            border-top: 1px solid var(--border-subtle);
+        }
+
+        .dream-source {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+        }
+
+        .dream-model {
+            font-size: 0.75rem;
+            color: var(--accent-purple);
+            padding: 4px 8px;
+            background: rgba(157, 78, 221, 0.1);
+            border-radius: 4px;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .modal-content {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 16px;
+            max-width: 800px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+            position: relative;
+        }
+
+        .modal-header {
+            padding: 24px;
+            border-bottom: 1px solid var(--border-subtle);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--accent-purple);
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-dim);
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 8px;
+            line-height: 1;
+            transition: all 0.2s;
+        }
+
+        .modal-close:hover {
+            color: var(--text-primary);
+            transform: rotate(90deg);
+        }
+
+        .modal-body {
+            padding: 24px;
+        }
+
+        .detail-section {
+            margin-bottom: 24px;
+        }
+
+        .detail-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-dim);
+            margin-bottom: 8px;
+        }
+
+        .detail-value {
+            color: var(--text-secondary);
+            line-height: 1.7;
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 16px;
+            margin: 24px 0;
+        }
+
+        .detail-card {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .detail-card-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            color: var(--accent-purple);
+            margin-bottom: 6px;
+        }
+
+        .detail-card-label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        /* Loading State */
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--border-subtle);
+            border-top-color: var(--accent-purple);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 80px 20px;
+        }
+
+        .empty-icon {
+            font-size: 4rem;
+            margin-bottom: 16px;
+            opacity: 0.3;
+        }
+
+        .empty-text {
+            color: var(--text-dim);
+            font-size: 1.1rem;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-card);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(157, 78, 221, 0.3);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(157, 78, 221, 0.5);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .container {
+                padding: 16px;
+            }
+
+            .header {
+                padding: 16px;
+            }
+
+            .header-content {
+                flex-direction: column;
+                gap: 16px;
+                align-items: flex-start;
+            }
+
+            .dreams-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <div class="header-content">
+            <div class="header-title">
+                <span style="font-size: 2.5rem;">🌙</span>
+                <h1>Dreams Explorer</h1>
+            </div>
+            <div class="header-actions">
+                <button class="btn" onclick="refreshDreams()" id="refresh-btn">
+                    <span>🔄</span>
+                    <span>Refresh</span>
+                </button>
+                <a href="/" class="btn">
+                    <span>←</span>
+                    <span>Back to Dashboard</span>
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="container">
+        <!-- Stats Overview -->
+        <div class="stats-overview">
+            <div class="stat-card">
+                <div class="stat-value" id="stat-total">0</div>
+                <div class="stat-label">Total Dreams</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-goals">0</div>
+                <div class="stat-label">From Goals</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-memory">0</div>
+                <div class="stat-label">From Memory</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="stat-completed">0</div>
+                <div class="stat-label">Completed</div>
+            </div>
+        </div>
+
+        <!-- Dreams Grid -->
+        <div class="dreams-grid" id="dreams-grid">
+            <div class="empty-state">
+                <div class="empty-icon">🌙</div>
+                <div class="empty-text">Loading dreams...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for detailed view -->
+    <div class="modal-overlay" id="dream-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title" id="modal-title">Dream Details</div>
+                <button class="modal-close" onclick="closeModal()">✕</button>
+            </div>
+            <div class="modal-body" id="modal-body">
+                <!-- Content will be inserted here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let dreamsData = [];
+
+        // Utility functions (defined first to avoid hoisting issues)
+        function formatTimeAgo(date) {
+            const seconds = Math.floor((new Date() - date) / 1000);
+            
+            if (seconds < 60) return 'Just now';
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+            if (seconds < 604800) return `${Math.floor(seconds / 86400)}d ago`;
+            
+            return date.toLocaleDateString();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Fetch dreams data
+        async function refreshDreams() {
+            const btn = document.getElementById('refresh-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading-spinner"></span><span>Loading...</span>';
+
+            try {
+                const response = await fetch('/api/dreams?limit=100');
+                const data = await response.json();
+                
+                dreamsData = data.dreams || [];
+                const stats = data.stats || {};
+
+                // Update stats
+                document.getElementById('stat-total').textContent = stats.total || 0;
+                document.getElementById('stat-goals').textContent = stats.fromGoals || 0;
+                document.getElementById('stat-memory').textContent = stats.fromMemory || 0;
+                document.getElementById('stat-completed').textContent = stats.completed || 0;
+
+                // Render dreams
+                renderDreams();
+            } catch (error) {
+                console.error('Failed to fetch dreams:', error);
+                document.getElementById('dreams-grid').innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">⚠️</div>
+                        <div class="empty-text">Failed to load dreams</div>
+                    </div>
+                `;
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '<span>🔄</span><span>Refresh</span>';
+            }
+        }
+
+        function renderDreams() {
+            const container = document.getElementById('dreams-grid');
+
+            if (dreamsData.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <div class="empty-icon">🌙</div>
+                        <div class="empty-text">No dreams recorded yet. Waiting for deep sleep...</div>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = dreamsData.map(dream => {
+                const content = dream.content.replace('[DREAM] ', '').replace(/\[DREAM\]/g, '');
+                const sourceIcon = dream.source === 'memory' ? '🧠' : '🎯';
+                const sourceLabel = dream.source === 'memory' ? 'Memory' : 'Goals';
+                const timestamp = new Date(dream.timestamp);
+                const timeAgo = formatTimeAgo(timestamp);
+                const statusBadge = dream.completed ? ' <span style="color: var(--accent-green); margin-left: 8px;">✓</span>' : '';
+
+                return `
+                    <div class="dream-card" onclick="showDreamDetails('${escapeHtml(dream.id)}')">
+                        <div class="dream-card-header">
+                            <div class="dream-cycle">
+                                🌙 Dream${statusBadge}
+                            </div>
+                            <div class="dream-timestamp">${timeAgo}</div>
+                        </div>
+                        <div class="dream-content">${escapeHtml(content)}</div>
+                        <div class="dream-meta">
+                            <div class="dream-source">
+                                <span>${sourceIcon}</span>
+                                <span>${sourceLabel}</span>
+                                ${dream.pursuitCount ? `<span>• Pursued ${dream.pursuitCount}x</span>` : ''}
+                            </div>
+                            ${dream.model ? `<div class="dream-model">${dream.model}</div>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function showDreamDetails(dreamId) {
+            const dream = dreamsData.find(d => d.id === dreamId);
+            if (!dream) return;
+
+            const content = dream.content.replace('[DREAM] ', '').replace(/\[DREAM\]/g, '');
+            const sourceIcon = dream.source === 'memory' ? '🧠' : '🎯';
+            const sourceLabel = dream.source === 'memory' ? 'Memory' : 'Goals';
+
+            document.getElementById('modal-title').textContent = `🌙 Dream${dream.completed ? ' ✓' : ''}`;
+            document.getElementById('modal-body').innerHTML = `
+                <div class="detail-section">
+                    <div class="detail-label">Dream Content</div>
+                    <div class="detail-value">${escapeHtml(content)}</div>
+                </div>
+                ${dream.reason ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Origin</div>
+                        <div class="detail-value">${escapeHtml(dream.reason)}</div>
+                    </div>
+                ` : ''}
+                <div class="detail-section">
+                    <div class="detail-grid">
+                        <div class="detail-card">
+                            <div class="detail-card-value">${sourceIcon}</div>
+                            <div class="detail-card-label">Source: ${sourceLabel}</div>
+                        </div>
+                        ${dream.model ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">🤖</div>
+                                <div class="detail-card-label">Model: ${dream.model}</div>
+                            </div>
+                        ` : ''}
+                        ${dream.uncertainty !== undefined ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${(dream.uncertainty * 100).toFixed(0)}%</div>
+                                <div class="detail-card-label">Uncertainty</div>
+                            </div>
+                        ` : ''}
+                        ${dream.priority !== undefined ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${(dream.priority * 100).toFixed(0)}%</div>
+                                <div class="detail-card-label">Priority</div>
+                            </div>
+                        ` : ''}
+                        ${dream.progress !== undefined ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${(dream.progress * 100).toFixed(0)}%</div>
+                                <div class="detail-card-label">Progress</div>
+                            </div>
+                        ` : ''}
+                        ${dream.pursuitCount !== undefined ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${dream.pursuitCount}</div>
+                                <div class="detail-card-label">Times Pursued</div>
+                            </div>
+                        ` : ''}
+                        ${dream.activation !== undefined ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${(dream.activation * 100).toFixed(0)}%</div>
+                                <div class="detail-card-label">Activation</div>
+                            </div>
+                        ` : ''}
+                        ${dream.accessCount !== undefined ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">${dream.accessCount}</div>
+                                <div class="detail-card-label">Accesses</div>
+                            </div>
+                        ` : ''}
+                        <div class="detail-card">
+                            <div class="detail-card-value">📅</div>
+                            <div class="detail-card-label">${new Date(dream.timestamp).toLocaleString()}</div>
+                        </div>
+                        ${dream.completed && dream.completedAt ? `
+                            <div class="detail-card">
+                                <div class="detail-card-value">✅</div>
+                                <div class="detail-card-label">Completed ${new Date(dream.completedAt).toLocaleDateString()}</div>
+                            </div>
+                        ` : ''}
+                    </div>
+                </div>
+                ${dream.tags && dream.tags.length > 0 ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Tags</div>
+                        <div class="detail-value">${dream.tags.join(', ')}</div>
+                    </div>
+                ` : ''}
+            `;
+            document.getElementById('dream-modal').style.display = 'flex';
+        }
+
+        function closeModal() {
+            document.getElementById('dream-modal').style.display = 'none';
+        }
+
+        // Close modal on overlay click
+        document.getElementById('dream-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'dream-modal') {
+                closeModal();
+            }
+        });
+
+        // Close modal on Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                closeModal();
+            }
+        });
+
+        // Initialize
+        refreshDreams();
+    </script>
+</body>
+</html>
+

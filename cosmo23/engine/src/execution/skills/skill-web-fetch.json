@@ -1,0 +1,42 @@
+{
+  "id": "skill:web-fetch",
+  "name": "Web Fetch",
+  "description": "Fetch a URL and extract content in text, JSON, or HTML format. Uses only Python standard library (urllib) with no external dependencies.",
+  "domain": null,
+  "tags": ["utility", "web", "fetch"],
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "URL to fetch"
+      },
+      "format": {
+        "type": "string",
+        "enum": ["text", "json", "html"],
+        "description": "Desired output format (default: text)"
+      }
+    },
+    "required": ["url"]
+  },
+  "outputs": {
+    "type": "object",
+    "properties": {
+      "content": { "type": "string", "description": "Fetched content in requested format" },
+      "statusCode": { "type": "number", "description": "HTTP status code" },
+      "contentType": { "type": "string", "description": "Content-Type header from response" }
+    }
+  },
+  "assumptions": [
+    "Network access is available",
+    "Target URL is reachable"
+  ],
+  "implementation": {
+    "type": "python_script",
+    "code": "import sys\nimport os\nimport json\nimport re\nimport html as html_mod\nfrom urllib.request import urlopen, Request\nfrom urllib.error import HTTPError, URLError\n\ndef strip_html_tags(html_str):\n    \"\"\"Remove HTML tags and decode entities to produce plain text.\"\"\"\n    # Remove script and style blocks\n    text = re.sub(r'<script[^>]*>[\\s\\S]*?</script>', '', html_str, flags=re.IGNORECASE)\n    text = re.sub(r'<style[^>]*>[\\s\\S]*?</style>', '', text, flags=re.IGNORECASE)\n    # Insert newlines for block elements\n    text = re.sub(r'<(br|p|div|h[1-6]|li|tr)[^>]*/?>', '\\n', text, flags=re.IGNORECASE)\n    # Remove all remaining tags\n    text = re.sub(r'<[^>]+>', '', text)\n    # Decode HTML entities\n    text = html_mod.unescape(text)\n    # Collapse whitespace\n    lines = [line.strip() for line in text.splitlines()]\n    text = '\\n'.join(line for line in lines if line)\n    return text\n\ndef main():\n    inputs = json.loads(os.environ.get('SKILL_INPUTS', '{}'))\n    url = inputs.get('url', '')\n    fmt = inputs.get('format', 'text')\n\n    if not url:\n        print(json.dumps({'content': '', 'statusCode': 0, 'contentType': '', 'error': 'No URL provided'}))\n        return\n\n    # Basic URL validation\n    if not url.startswith(('http://', 'https://')):\n        url = 'https://' + url\n\n    headers = {\n        'User-Agent': 'COSMO/2.3 ResearchBot (Python/urllib)',\n        'Accept': 'text/html,application/json,application/xhtml+xml,*/*'\n    }\n\n    try:\n        req = Request(url, headers=headers)\n        with urlopen(req, timeout=30) as response:\n            status_code = response.status\n            content_type = response.headers.get('Content-Type', '')\n            charset = 'utf-8'\n            if 'charset=' in content_type:\n                charset = content_type.split('charset=')[-1].split(';')[0].strip()\n            raw_bytes = response.read(5 * 1024 * 1024)  # Max 5MB\n            raw_text = raw_bytes.decode(charset, errors='replace')\n    except HTTPError as e:\n        print(json.dumps({'content': '', 'statusCode': e.code, 'contentType': '', 'error': str(e)}))\n        return\n    except URLError as e:\n        print(json.dumps({'content': '', 'statusCode': 0, 'contentType': '', 'error': str(e.reason)}))\n        return\n    except Exception as e:\n        print(json.dumps({'content': '', 'statusCode': 0, 'contentType': '', 'error': str(e)}))\n        return\n\n    if fmt == 'json':\n        try:\n            parsed = json.loads(raw_text)\n            content = json.dumps(parsed, indent=2)\n        except json.JSONDecodeError:\n            content = raw_text\n    elif fmt == 'html':\n        content = raw_text\n    else:\n        # text: strip HTML if content looks like HTML\n        if '<html' in raw_text.lower() or '<body' in raw_text.lower():\n            content = strip_html_tags(raw_text)\n        else:\n            content = raw_text\n\n    # Truncate to reasonable size for output\n    if len(content) > 200000:\n        content = content[:200000] + '\\n... [truncated at 200KB]'\n\n    print(json.dumps({'content': content, 'statusCode': status_code, 'contentType': content_type}))\n\nif __name__ == '__main__':\n    main()\n",
+    "timeout_sec": 60
+  },
+  "toolsRequired": [{ "id": "tool:python" }],
+  "origin": "authored",
+  "confidence": 1.0
+}

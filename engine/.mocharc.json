@@ -1,0 +1,9 @@
+{
+  "timeout": 30000,
+  "bail": false,
+  "exit": true,
+  "reporter": "spec",
+  "ui": "bdd",
+  "check-leaks": true,
+  "slow": 5000
+}

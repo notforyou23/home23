@@ -1,0 +1,684 @@
+/* Home23 Dashboard — Dark theme, faithful to ReginaCosmo */
+
+:root {
+  --h23-bg: #0a1628;
+  --h23-bg-card: #111d33;
+  --h23-bg-header: #0d1a2d;
+  --h23-border: #1a2a44;
+  --h23-text: #c9d1d9;
+  --h23-text-secondary: #6b8aad;
+  --h23-text-muted: #3d5478;
+  --h23-accent: #58a6ff;
+  --h23-green: #4ade80;
+  --h23-orange: #fb923c;
+  --h23-red: #f87171;
+  --h23-pill-bg: #1a2a44;
+  --h23-tab-active: #2563eb;
+  --h23-radius: 12px;
+  --h23-radius-sm: 8px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', sans-serif;
+  background: var(--h23-bg);
+  color: var(--h23-text);
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* ── Header (ReginaCosmo style) ── */
+
+.h23-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 20px 24px 12px;
+}
+
+.h23-header-left {
+  display: flex;
+  flex-direction: column;
+}
+
+.h23-logo {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: #fff;
+}
+
+.h23-subtitle {
+  font-size: 11px;
+  color: var(--h23-text-muted);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+
+.h23-header-right {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  text-align: right;
+}
+
+.h23-time {
+  font-size: 32px;
+  font-weight: 200;
+  letter-spacing: -0.5px;
+  color: #e2e8f0;
+}
+
+.h23-status {
+  font-size: 12px;
+  color: var(--h23-green);
+  white-space: nowrap;
+}
+
+.h23-status.offline {
+  color: var(--h23-red);
+}
+
+/* ── Status Pills (ReginaCosmo sensor bar) ── */
+
+.h23-pills {
+  display: flex;
+  gap: 8px;
+  padding: 4px 24px 12px;
+  flex-wrap: wrap;
+}
+
+.h23-pill {
+  background: var(--h23-pill-bg);
+  padding: 4px 14px;
+  border-radius: 16px;
+  font-size: 12px;
+  color: var(--h23-text-secondary);
+}
+
+/* ── Tab Bar ── */
+
+.h23-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 24px 16px;
+  flex-wrap: wrap;
+}
+
+.h23-tab {
+  background: var(--h23-pill-bg);
+  border: none;
+  color: var(--h23-text-secondary);
+  padding: 6px 16px;
+  border-radius: 16px;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.15s, color 0.15s;
+}
+
+.h23-tab:hover {
+  background: var(--h23-border);
+  color: var(--h23-text);
+}
+
+.h23-tab.active {
+  background: var(--h23-tab-active);
+  color: #fff;
+}
+
+.h23-tab-evobrew {
+  margin-left: auto;
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+}
+
+.h23-tab-evobrew:hover {
+  background: rgba(139, 92, 246, 0.25);
+  color: #c4b5fd;
+}
+
+#agent-tabs {
+  display: contents;
+}
+
+.h23-tab-settings {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--h23-text-secondary);
+  border: 1px solid var(--h23-border);
+}
+.h23-tab-settings:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--h23-text);
+}
+
+.h23-tab-cosmo23 {
+  background: rgba(59, 130, 246, 0.15);
+  color: #93c5fd;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+.h23-tab-cosmo23:hover {
+  background: rgba(59, 130, 246, 0.25);
+  color: #bfdbfe;
+}
+/* COSMO iframe */
+#cosmo23-frame {
+  position: absolute;
+  top: 48px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: calc(100vh - 48px);
+  border: none;
+}
+
+/* COSMO status indicator on Home tab */
+.h23-cosmo-indicator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.8rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.85rem;
+  color: #9ca3af;
+  background: rgba(59, 130, 246, 0.06);
+  border-radius: 6px;
+  border: 1px solid rgba(59, 130, 246, 0.1);
+  width: fit-content;
+}
+
+.h23-cosmo-indicator:hover {
+  background: rgba(59, 130, 246, 0.12);
+  color: #93c5fd;
+}
+
+.h23-cosmo-indicator-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6b7280;
+  flex-shrink: 0;
+}
+
+.h23-cosmo-indicator-dot.running {
+  background: #22c55e;
+  animation: pulse 2s infinite;
+}
+
+.h23-cosmo-indicator-dot.error {
+  background: #ef4444;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Main Content ── */
+
+.h23-main {
+  padding: 0 24px 24px;
+}
+
+.h23-panel {
+  display: none;
+}
+
+.h23-panel.active {
+  display: block;
+}
+
+.h23-muted {
+  color: var(--h23-text-muted);
+  font-size: 13px;
+}
+
+/* ── Top Row: 3-column tile grid (ReginaCosmo layout) ── */
+
+.h23-grid-top {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.h23-tile {
+  background: var(--h23-bg-card);
+  border-radius: var(--h23-radius);
+  padding: 20px;
+  border: 1px solid var(--h23-border);
+}
+
+.h23-tile-header {
+  font-size: 13px;
+  color: var(--h23-text-secondary);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.h23-tile-header .icon {
+  font-size: 15px;
+}
+
+/* ── Thoughts tile (left column, tall) ── */
+
+.h23-tile-thoughts {
+  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+}
+
+.h23-thought-text {
+  font-size: 16px;
+  line-height: 1.7;
+  color: var(--h23-text);
+  flex: 1;
+  overflow: hidden;
+}
+
+.h23-thought-meta {
+  font-size: 11px;
+  color: var(--h23-text-muted);
+  text-transform: uppercase;
+  margin-top: 12px;
+  letter-spacing: 0.5px;
+}
+
+/* ── Vibe tile (center column) ── */
+
+.h23-tile-vibe {
+  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+}
+
+.h23-vibe-image {
+  flex: 1;
+  border-radius: var(--h23-radius-sm);
+  background: #0d1525;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  min-height: 180px;
+  margin-bottom: 10px;
+}
+
+.h23-vibe-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: var(--h23-radius-sm);
+}
+
+.h23-vibe-placeholder {
+  color: var(--h23-text-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.h23-vibe-caption {
+  font-size: 13px;
+  color: var(--h23-text-secondary);
+  font-style: italic;
+  text-align: center;
+  line-height: 1.5;
+}
+
+/* ── System tile (right column) ── */
+
+.h23-tile-system {
+  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+}
+
+.h23-system-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.h23-system-item label {
+  display: block;
+  font-size: 10px;
+  color: var(--h23-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+
+.h23-system-item .value {
+  font-size: 18px;
+  font-weight: 400;
+  color: var(--h23-text);
+}
+
+.h23-system-excerpt {
+  font-size: 12px;
+  color: var(--h23-text-muted);
+  font-style: italic;
+  line-height: 1.5;
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid var(--h23-border);
+  max-height: 60px;
+  overflow: hidden;
+}
+
+/* ── Feeder tile ── */
+
+.h23-tile-feeder {
+  margin-bottom: 16px;
+}
+
+.h23-feeder-stats {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 12px;
+}
+
+.h23-feeder-stat {
+  font-size: 11px;
+  color: var(--h23-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.h23-feeder-stat .value {
+  font-size: 20px;
+  font-weight: 300;
+  color: var(--h23-text);
+  display: block;
+}
+
+.h23-feeder-files {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.h23-feeder-file {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(26, 42, 68, 0.5);
+  font-size: 12px;
+}
+
+.h23-feeder-file:last-child {
+  border-bottom: none;
+}
+
+.h23-feeder-file .path {
+  color: var(--h23-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.h23-feeder-file .chunks {
+  color: var(--h23-text-muted);
+  margin-left: 12px;
+  white-space: nowrap;
+}
+
+/* ── Brain Log tile (full width) ── */
+
+.h23-tile-brainlog {
+  background: #0d1525;
+  border-radius: var(--h23-radius);
+  padding: 16px 20px;
+  border: 1px solid var(--h23-border);
+}
+
+.h23-brain-log {
+  max-height: 300px;
+  overflow-y: auto;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  font-size: 12px;
+}
+
+.h23-log-entry {
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(26, 42, 68, 0.5);
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.h23-log-entry:last-child {
+  border-bottom: none;
+}
+
+.h23-log-time {
+  color: var(--h23-text-muted);
+  white-space: nowrap;
+  min-width: 70px;
+  font-size: 11px;
+}
+
+.h23-log-role {
+  color: var(--h23-accent);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  min-width: 60px;
+}
+
+.h23-log-text {
+  color: var(--h23-text-secondary);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Scrollbar ── */
+
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--h23-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--h23-text-muted); }
+
+/* ── Responsive ── */
+
+/* ── Intelligence Tab ── */
+
+.h23-intel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.2rem;
+}
+
+.h23-intel-header h2 {
+  margin: 0;
+  font-size: 1.3rem;
+}
+
+.h23-intel-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.h23-intel-timestamp {
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.h23-intel-synth-btn {
+  padding: 0.4rem 1rem;
+  background: rgba(139, 92, 246, 0.15);
+  color: #a78bfa;
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.h23-intel-synth-btn:hover {
+  background: rgba(139, 92, 246, 0.25);
+  color: #c4b5fd;
+}
+
+.h23-intel-synth-btn.running {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* Vitals row */
+.h23-intel-vitals {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.h23-intel-stat {
+  background: rgba(255,255,255,0.04);
+  border-radius: 8px;
+  padding: 0.8rem;
+  text-align: center;
+}
+
+.h23-intel-stat-val {
+  display: block;
+  font-size: 1.6rem;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.h23-intel-stat-label {
+  display: block;
+  font-size: 0.7rem;
+  color: #6b7280;
+  margin-top: 0.2rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Sections */
+.h23-intel-section {
+  margin-bottom: 1.5rem;
+}
+
+.h23-intel-section h3 {
+  font-size: 0.9rem;
+  color: #9ca3af;
+  margin: 0 0 0.6rem 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Cards */
+.h23-intel-card {
+  background: rgba(255,255,255,0.04);
+  border-radius: 8px;
+  padding: 1rem;
+  line-height: 1.6;
+  color: #d1d5db;
+  font-size: 0.9rem;
+}
+
+.h23-intel-index-card {
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-family: monospace;
+  font-size: 0.8rem;
+  color: #9ca3af;
+}
+
+/* Insight cards */
+.h23-intel-insight {
+  background: rgba(255,255,255,0.04);
+  border-radius: 8px;
+  padding: 0.8rem 1rem;
+  margin-bottom: 0.6rem;
+  border-left: 3px solid rgba(139, 92, 246, 0.4);
+}
+
+.h23-intel-insight-title {
+  font-weight: 600;
+  color: #e5e7eb;
+  margin-bottom: 0.3rem;
+  font-size: 0.9rem;
+}
+
+.h23-intel-insight-excerpt {
+  color: #9ca3af;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.h23-intel-insight-meta {
+  margin-top: 0.4rem;
+  font-size: 0.7rem;
+  color: #6b7280;
+}
+
+.h23-intel-insight-theme {
+  display: inline-block;
+  background: rgba(139, 92, 246, 0.1);
+  color: #a78bfa;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  margin-right: 0.3rem;
+}
+
+/* Activity list */
+.h23-intel-activity-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.h23-intel-activity-list li {
+  padding: 0.4rem 0;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  font-size: 0.8rem;
+  color: #9ca3af;
+}
+
+.h23-intel-activity-list li:last-child {
+  border-bottom: none;
+}
+
+/* Self-understanding obsessions */
+.h23-intel-obsessions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+
+.h23-intel-obsession {
+  background: rgba(59, 130, 246, 0.1);
+  color: #93c5fd;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+@media (max-width: 900px) {
+  .h23-grid-top {
+    grid-template-columns: 1fr;
+  }
+  .h23-time { font-size: 24px; }
+}

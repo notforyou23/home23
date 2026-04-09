@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment
+.env
+.env.local
+
+# Local Data
+conversations/
+snapshots/
+*.log
+
+# System
+.DS_Store
+Thumbs.db
+
+# Brains (optional - usually brains are provided by user)
+# brains/

@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cosmo - Evaluation Metrics</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
+      color: #e0e0e0;
+      padding: 20px;
+      min-height: 100vh;
+    }
+    
+    .header {
+      text-align: center;
+      margin-bottom: 30px;
+      padding: 20px;
+      background: rgba(255,255,255,0.05);
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    
+    .header h1 {
+      font-size: 2.5em;
+      margin-bottom: 10px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .header .subtitle {
+      color: #a0a0a0;
+      font-size: 1.1em;
+    }
+    
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+      margin-bottom: 30px;
+    }
+    
+    .metric-card {
+      background: rgba(255,255,255,0.05);
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 20px;
+      transition: transform 0.3s, box-shadow 0.3s;
+    }
+    
+    .metric-card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+    }
+    
+    .metric-card .title {
+      font-size: 0.9em;
+      color: #a0a0a0;
+      margin-bottom: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    
+    .metric-card .value {
+      font-size: 2.5em;
+      font-weight: bold;
+      margin-bottom: 5px;
+    }
+    
+    .metric-card .trend {
+      font-size: 0.9em;
+      padding: 5px 10px;
+      border-radius: 5px;
+      display: inline-block;
+      margin-top: 5px;
+    }
+    
+    .trend.improving {
+      background: rgba(76, 175, 80, 0.2);
+      color: #4caf50;
+    }
+    
+    .trend.declining {
+      background: rgba(244, 67, 54, 0.2);
+      color: #f44336;
+    }
+    
+    .trend.stable {
+      background: rgba(158, 158, 158, 0.2);
+      color: #9e9e9e;
+    }
+    
+    .section {
+      background: rgba(255,255,255,0.05);
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 25px;
+      margin-bottom: 30px;
+    }
+    
+    .section h2 {
+      font-size: 1.8em;
+      margin-bottom: 20px;
+      color: #667eea;
+    }
+    
+    .agent-ranking {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    
+    .agent-rank-item {
+      display: flex;
+      align-items: center;
+      background: rgba(255,255,255,0.03);
+      padding: 15px;
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.05);
+    }
+    
+    .agent-rank-item .rank {
+      font-size: 1.5em;
+      font-weight: bold;
+      margin-right: 20px;
+      color: #667eea;
+      min-width: 40px;
+    }
+    
+    .agent-rank-item .agent-name {
+      flex: 1;
+      font-size: 1.1em;
+    }
+    
+    .agent-rank-item .effectiveness-bar {
+      width: 200px;
+      height: 20px;
+      background: rgba(255,255,255,0.1);
+      border-radius: 10px;
+      overflow: hidden;
+      margin: 0 15px;
+    }
+    
+    .agent-rank-item .effectiveness-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+      transition: width 0.5s;
+    }
+    
+    .agent-rank-item .score {
+      min-width: 60px;
+      text-align: right;
+      font-weight: bold;
+    }
+    
+    .insights-list {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    
+    .insight-item {
+      padding: 15px;
+      border-radius: 8px;
+      border-left: 4px solid;
+    }
+    
+    .insight-item.warning {
+      background: rgba(255, 152, 0, 0.1);
+      border-color: #ff9800;
+    }
+    
+    .insight-item.info {
+      background: rgba(33, 150, 243, 0.1);
+      border-color: #2196f3;
+    }
+    
+    .insight-item.success {
+      background: rgba(76, 175, 80, 0.1);
+      border-color: #4caf50;
+    }
+    
+    .insight-item .category {
+      font-size: 0.8em;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 5px;
+      opacity: 0.7;
+    }
+    
+    .insight-item .message {
+      font-size: 1em;
+      margin-bottom: 5px;
+    }
+    
+    .insight-item .metric-info {
+      font-size: 0.9em;
+      opacity: 0.6;
+    }
+    
+    .recommendations-list {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+    
+    .recommendation-item {
+      padding: 15px;
+      background: rgba(255,255,255,0.03);
+      border-radius: 8px;
+      border: 1px solid rgba(255,255,255,0.05);
+    }
+    
+    .recommendation-item .priority {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 3px;
+      font-size: 0.8em;
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+    
+    .recommendation-item .priority.high {
+      background: rgba(244, 67, 54, 0.3);
+      color: #f44336;
+    }
+    
+    .recommendation-item .priority.medium {
+      background: rgba(255, 152, 0, 0.3);
+      color: #ff9800;
+    }
+    
+    .recommendation-item .priority.low {
+      background: rgba(158, 158, 158, 0.3);
+      color: #9e9e9e;
+    }
+    
+    .recommendation-item .action {
+      font-size: 1.05em;
+      margin-bottom: 8px;
+      font-weight: 500;
+    }
+    
+    .recommendation-item .reason {
+      font-size: 0.9em;
+      opacity: 0.7;
+    }
+    
+    .chart-container {
+      height: 300px;
+      margin-top: 20px;
+      background: rgba(0,0,0,0.2);
+      border-radius: 8px;
+      padding: 15px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #666;
+    }
+    
+    .refresh-button {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1em;
+      font-weight: bold;
+      transition: transform 0.2s;
+      z-index: 1000;
+    }
+    
+    .refresh-button:hover {
+      transform: scale(1.05);
+    }
+    
+    .last-updated {
+      text-align: center;
+      color: #666;
+      font-size: 0.9em;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+<body>
+  <button class="refresh-button" onclick="loadMetrics()">Refresh</button>
+  
+  <div class="header">
+    <h1>📊 Cosmo Evaluation Metrics</h1>
+    <div class="subtitle">System Performance & Health Dashboard</div>
+  </div>
+  
+  <div class="metrics-grid" id="metricsGrid">
+    <!-- Populated by JavaScript -->
+  </div>
+  
+  <div class="section">
+    <h2>🤖 Agent Effectiveness Ranking</h2>
+    <div class="agent-ranking" id="agentRanking">
+      <!-- Populated by JavaScript -->
+    </div>
+  </div>
+  
+  <div class="section">
+    <h2>💡 Insights</h2>
+    <div class="insights-list" id="insightsList">
+      <!-- Populated by JavaScript -->
+    </div>
+  </div>
+  
+  <div class="section">
+    <h2>🎯 Recommendations</h2>
+    <div class="recommendations-list" id="recommendationsList">
+      <!-- Populated by JavaScript -->
+    </div>
+  </div>
+  
+  <div class="last-updated" id="lastUpdated">
+    Loading...
+  </div>
+  
+  <script>
+    async function loadMetrics() {
+      try {
+        const response = await fetch('/api/evaluation/metrics');
+        const data = await response.json();
+        
+        renderMetricsGrid(data.metrics);
+        renderAgentRanking(data.agentRanking);
+        renderInsights(data.insights);
+        renderRecommendations(data.recommendations);
+        
+        document.getElementById('lastUpdated').textContent = 
+          `Last updated: ${new Date(data.lastUpdated).toLocaleString()}`;
+      } catch (error) {
+        console.error('Failed to load metrics:', error);
+      }
+    }
+    
+    function renderMetricsGrid(metrics) {
+      const grid = document.getElementById('metricsGrid');
+      
+      const cards = [
+        {
+          title: 'Goal Conversion Rate',
+          value: (metrics.goals.conversionRate * 100).toFixed(1) + '%',
+          trend: metrics.goals.conversionRate > 0.25 ? 'improving' : 'declining',
+          color: '#667eea'
+        },
+        {
+          title: 'Agent Success Rate',
+          value: metrics.agents.totalSpawned > 0 
+            ? ((metrics.agents.totalCompleted / metrics.agents.totalSpawned) * 100).toFixed(1) + '%'
+            : 'N/A',
+          trend: 'stable',
+          color: '#764ba2'
+        },
+        {
+          title: 'QA Pass Rate',
+          value: (metrics.cognitive.qaPassRate * 100).toFixed(1) + '%',
+          trend: metrics.cognitive.qaPassRate > 0.9 ? 'improving' : 'stable',
+          color: '#f093fb'
+        },
+        {
+          title: 'Diversity Score',
+          value: metrics.cognitive.diversityScore.toFixed(2),
+          trend: metrics.cognitive.diversityScore > 0.6 ? 'improving' : 'declining',
+          color: '#4facfe'
+        },
+        {
+          title: 'Active Campaigns',
+          value: metrics.campaigns.active,
+          trend: 'stable',
+          color: '#43e97b'
+        },
+        {
+          title: 'Memory Nodes',
+          value: metrics.memory.totalNodes.toLocaleString(),
+          trend: 'improving',
+          color: '#fa709a'
+        },
+        {
+          title: 'Total Cycles',
+          value: metrics.system.cyclesRun.toLocaleString(),
+          trend: 'improving',
+          color: '#feca57'
+        },
+        {
+          title: 'Campaign Success Rate',
+          value: (metrics.campaigns.successRate * 100).toFixed(1) + '%',
+          trend: metrics.campaigns.successRate > 0.5 ? 'improving' : 'declining',
+          color: '#ff6348'
+        }
+      ];
+      
+      grid.innerHTML = cards.map(card => `
+        <div class="metric-card">
+          <div class="title">${card.title}</div>
+          <div class="value" style="color: ${card.color}">${card.value}</div>
+          <div class="trend ${card.trend}">${card.trend}</div>
+        </div>
+      `).join('');
+    }
+    
+    function renderAgentRanking(ranking) {
+      const container = document.getElementById('agentRanking');
+      
+      if (!ranking || ranking.length === 0) {
+        container.innerHTML = '<div style="text-align: center; color: #666;">No agent data yet</div>';
+        return;
+      }
+      
+      container.innerHTML = ranking.map((agent, index) => `
+        <div class="agent-rank-item">
+          <div class="rank">#${index + 1}</div>
+          <div class="agent-name">${agent.type}</div>
+          <div class="effectiveness-bar">
+            <div class="effectiveness-fill" style="width: ${(agent.effectiveness * 100).toFixed(0)}%"></div>
+          </div>
+          <div class="score">${(agent.effectiveness * 100).toFixed(1)}</div>
+          <div style="margin-left: 15px; font-size: 0.9em; color: #888;">
+            ${agent.completed}/${agent.spawned} completed
+          </div>
+        </div>
+      `).join('');
+    }
+    
+    function renderInsights(insights) {
+      const container = document.getElementById('insightsList');
+      
+      if (!insights || insights.length === 0) {
+        container.innerHTML = '<div style="text-align: center; color: #666;">All metrics healthy ✨</div>';
+        return;
+      }
+      
+      container.innerHTML = insights.map(insight => `
+        <div class="insight-item ${insight.type}">
+          <div class="category">${insight.category}</div>
+          <div class="message">${insight.message}</div>
+          <div class="metric-info">${insight.metric}: ${
+            typeof insight.value === 'number' 
+              ? insight.value.toFixed(3) 
+              : insight.value
+          }</div>
+        </div>
+      `).join('');
+    }
+    
+    function renderRecommendations(recommendations) {
+      const container = document.getElementById('recommendationsList');
+      
+      if (!recommendations || recommendations.length === 0) {
+        container.innerHTML = '<div style="text-align: center; color: #666;">No recommendations at this time 👍</div>';
+        return;
+      }
+      
+      container.innerHTML = recommendations.map(rec => `
+        <div class="recommendation-item">
+          <div class="priority ${rec.priority}">${rec.priority}</div>
+          <div class="action">${rec.action}</div>
+          <div class="reason">${rec.reason}</div>
+        </div>
+      `).join('');
+    }
+    
+    // Load metrics on page load
+    loadMetrics();
+    
+    // Auto-refresh every 30 seconds
+    setInterval(loadMetrics, 30000);
+  </script>
+</body>
+</html>
+

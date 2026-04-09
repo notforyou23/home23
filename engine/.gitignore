@@ -1,0 +1,144 @@
+# Logs and runtime data
+*.log
+logs/
+log/
+phase2-logs*/
+phase2-logs-gpt5*/
+self-agent-logs*/
+dashboard.log
+gpt5_run.log
+gpt5_startup.log
+gpt5_test.log
+
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json.backup
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Environment variables and secrets
+.env
+.env.*
+.env copy
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*.local
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+.tmp/
+temp/
+
+# Build outputs
+dist/
+build/
+*.min.js
+*.min.css
+
+# Cache directories
+.cache/
+.parcel-cache/
+
+# Coverage reports
+coverage/
+.nyc_output/
+
+# Backup files
+*.backup
+*~backup
+*.orig
+*.rej
+*.tar.gz
+*_backup_*.tar.gz
+
+# COSMO backup and restore directories
+cosmo_backup*/
+cosmo_pre_restore*/
+backups/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Lock files (optional - some teams track these)
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# API keys and secrets (if any)
+config/secrets.json
+**/secrets/**
+
+# Memory and state files that regenerate
+**/memory.json
+**/cycles.jsonl
+**/thoughts.jsonl
+**/state.json
+**/state.json.gz
+**/self_dialogue.jsonl
+
+# COSMO runtime directories and files
+runs/
+runtime
+run*.txt
+.pending_experiments/
+
+# Brain packages (exported .brain directories)
+*.brain/
+**/*.brain/
+
+# COSMO generated executables (none currently)
+
+# Generated artifacts under src
+src/generated-documents/
+src/dashboard/_old-*.html
+
+# Test outputs
+test-results/
+junit.xml
+**/test-results/**
+
+# Documentation builds
+docs/_build/
+*.pdf
+
+# Runtime configuration
+config/runtime.json
+**/runtime/**
+src/config.yaml
+
+# Data files
+data-set/
+Dataset_Data/
+
+# Generated images (CHAOS MODE output)
+data/images/*.png
+data/images/*.jpg
+data/images/*.jpeg

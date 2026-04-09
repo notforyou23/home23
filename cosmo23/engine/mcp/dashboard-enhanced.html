@@ -1,0 +1,1585 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cosmo Brain - Complete MCP Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            color: #fff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 3em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 8px rgba(0,0,0,0.5);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .header .subtitle {
+            font-size: 1.2em;
+            opacity: 0.8;
+        }
+
+        .connection-status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            margin-left: 15px;
+            background: rgba(255,255,255,0.1);
+        }
+
+        .connection-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        .connection-dot.connected {
+            background: #4caf50;
+        }
+
+        .connection-dot.disconnected {
+            background: #f44336;
+            animation: none;
+        }
+
+        .connection-dot.checking {
+            background: #ff9800;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .refresh-button {
+            padding: 10px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            font-size: 0.95em;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-left: 15px;
+        }
+
+        .refresh-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .refresh-button:active {
+            transform: translateY(0);
+        }
+
+        .status-bar {
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 25px;
+            display: flex;
+            justify-content: space-around;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 30px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+
+        .stat {
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .stat-label {
+            font-size: 0.95em;
+            opacity: 0.7;
+            margin-top: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .cognitive-bar {
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 25px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+        }
+
+        .cognitive-title {
+            font-size: 1.3em;
+            margin-bottom: 15px;
+            text-align: center;
+            opacity: 0.9;
+        }
+
+        .cognitive-meters {
+            display: flex;
+            gap: 20px;
+        }
+
+        .meter-container {
+            flex: 1;
+        }
+
+        .meter-label {
+            font-size: 0.9em;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .meter {
+            height: 25px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .meter-fill {
+            height: 100%;
+            transition: width 0.5s ease;
+            border-radius: 12px;
+        }
+
+        .meter-fill.curiosity {
+            background: linear-gradient(90deg, #ffd700, #ffed4e);
+        }
+
+        .meter-fill.mood {
+            background: linear-gradient(90deg, #4fc3f7, #29b6f6);
+        }
+
+        .meter-fill.energy {
+            background: linear-gradient(90deg, #66bb6a, #43a047);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .grid-full {
+            grid-column: 1 / -1;
+        }
+
+        .panel {
+            background: rgba(255,255,255,0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            transition: transform 0.3s;
+        }
+
+        .panel:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 40px rgba(0,0,0,0.4);
+        }
+
+        .panel h2 {
+            font-size: 1.6em;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 2px solid rgba(255,255,255,0.1);
+            padding-bottom: 10px;
+        }
+
+        .thought-item {
+            background: rgba(255,255,255,0.03);
+            border-left: 4px solid;
+            padding: 18px;
+            margin-bottom: 18px;
+            border-radius: 10px;
+            transition: background 0.3s;
+        }
+
+        .thought-item:hover {
+            background: rgba(255,255,255,0.08);
+        }
+
+        .thought-item.curiosity { border-left-color: #ffd700; }
+        .thought-item.analyst { border-left-color: #4fc3f7; }
+        .thought-item.critic { border-left-color: #ba68c8; }
+
+        .thought-meta {
+            font-size: 0.85em;
+            opacity: 0.7;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            flex-wrap: wrap;
+        }
+
+        .thought-content {
+            line-height: 1.7;
+            font-size: 1.05em;
+        }
+
+        .goal-item {
+            background: rgba(255,255,255,0.03);
+            padding: 15px;
+            margin-bottom: 12px;
+            border-radius: 10px;
+            border-left: 4px solid #4caf50;
+            transition: background 0.3s;
+        }
+
+        .goal-item:hover {
+            background: rgba(255,255,255,0.08);
+        }
+
+        .goal-description {
+            font-size: 1.05em;
+            margin-bottom: 8px;
+            line-height: 1.5;
+        }
+
+        .goal-meta {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.85em;
+            opacity: 0.7;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .memory-item {
+            background: rgba(255,255,255,0.03);
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            font-size: 0.95em;
+            transition: background 0.3s;
+        }
+
+        .memory-item:hover {
+            background: rgba(255,255,255,0.08);
+        }
+
+        .memory-concept {
+            line-height: 1.5;
+            margin-bottom: 6px;
+        }
+
+        .memory-meta {
+            font-size: 0.8em;
+            opacity: 0.6;
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .search-box {
+            width: 100%;
+            padding: 15px;
+            border: 2px solid rgba(255,255,255,0.2);
+            border-radius: 10px;
+            background: rgba(255,255,255,0.05);
+            color: #fff;
+            font-size: 1.05em;
+            margin-bottom: 15px;
+            transition: border-color 0.3s;
+        }
+
+        .search-box:focus {
+            outline: none;
+            border-color: rgba(255,255,255,0.5);
+        }
+
+        .search-box::placeholder {
+            color: rgba(255,255,255,0.5);
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            color: #fff;
+            padding: 12px 24px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .error {
+            background: rgba(244, 67, 54, 0.2);
+            border: 2px solid rgba(244, 67, 54, 0.5);
+            color: #ff5252;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .success {
+            background: rgba(76, 175, 80, 0.2);
+            border: 2px solid rgba(76, 175, 80, 0.5);
+            color: #4caf50;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 30px;
+            font-size: 1.1em;
+            opacity: 0.6;
+        }
+
+        .agent-item {
+            background: rgba(255,255,255,0.03);
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            border-left: 4px solid #ff9800;
+        }
+
+        .stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .stat-card {
+            background: rgba(255,255,255,0.05);
+            padding: 15px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .stat-card-value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #4fc3f7;
+        }
+
+        .stat-card-label {
+            font-size: 0.85em;
+            opacity: 0.7;
+            margin-top: 5px;
+        }
+
+        .refresh-indicator {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(76, 175, 80, 0.9);
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 0.9em;
+            opacity: 0;
+            transition: opacity 0.3s;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+
+        .refresh-indicator.show {
+            opacity: 1;
+        }
+
+        .tag {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            background: rgba(255,255,255,0.2);
+            margin-right: 6px;
+        }
+
+        .coordinator-report {
+            background: rgba(255,255,255,0.03);
+            padding: 15px;
+            border-radius: 10px;
+            max-height: 400px;
+            overflow-y: auto;
+            font-size: 0.95em;
+            line-height: 1.6;
+        }
+
+        .inject-topic {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .inject-topic input {
+            flex: 1;
+        }
+
+        .inject-topic select {
+            padding: 12px;
+            border: 2px solid rgba(255,255,255,0.2);
+            border-radius: 10px;
+            background: rgba(255,255,255,0.05);
+            color: #fff;
+            font-size: 1em;
+        }
+
+        .success-message {
+            background: rgba(76, 175, 80, 0.2);
+            border: 2px solid rgba(76, 175, 80, 0.5);
+            padding: 12px;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(255,255,255,0.05);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.2);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255,255,255,0.3);
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            border-bottom: 2px solid rgba(255,255,255,0.1);
+            padding-bottom: 10px;
+        }
+
+        .tab {
+            padding: 10px 20px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 8px 8px 0 0;
+            cursor: pointer;
+            transition: all 0.3s;
+            border: 1px solid transparent;
+        }
+
+        .tab:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        .tab.active {
+            background: rgba(255,255,255,0.15);
+            border-color: rgba(255,255,255,0.3);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧠 Cosmo Brain - Complete Dashboard</h1>
+            <div class="subtitle">
+                Full MCP Protocol Access • Real-Time Updates
+                <span class="connection-status" id="connection-status">
+                    <span class="connection-dot checking" id="connection-dot"></span>
+                    <span id="connection-text">Connecting...</span>
+                </span>
+                <button class="refresh-button" onclick="manualRefresh()" title="Refresh all data now">
+                    🔄 Refresh
+                </button>
+            </div>
+        </div>
+
+        <div class="refresh-indicator" id="refresh-indicator">🔄 Updated</div>
+
+        <div id="error-container"></div>
+
+        <!-- System Stats -->
+        <div class="status-bar">
+            <div class="stat">
+                <div class="stat-value" id="cycle-count">--</div>
+                <div class="stat-label">Cycle</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="memory-nodes">--</div>
+                <div class="stat-label">Memory Nodes</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="memory-edges">--</div>
+                <div class="stat-label">Connections</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="active-goals">--</div>
+                <div class="stat-label">Active Goals</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="completed-goals">--</div>
+                <div class="stat-label">Completed</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value" id="clusters">--</div>
+                <div class="stat-label">Clusters</div>
+            </div>
+        </div>
+
+        <!-- Cognitive State -->
+        <div class="cognitive-bar" id="cognitive-container" style="display: none;">
+            <div class="cognitive-title">
+                Cognitive State • Mode: <span id="oscillator-mode">--</span>
+            </div>
+            <div class="cognitive-meters">
+                <div class="meter-container">
+                    <div class="meter-label">
+                        <span>Curiosity</span>
+                        <span id="curiosity-value">--</span>
+                    </div>
+                    <div class="meter">
+                        <div class="meter-fill curiosity" id="curiosity-meter"></div>
+                    </div>
+                </div>
+                <div class="meter-container">
+                    <div class="meter-label">
+                        <span>Mood</span>
+                        <span id="mood-value">--</span>
+                    </div>
+                    <div class="meter">
+                        <div class="meter-fill mood" id="mood-meter"></div>
+                    </div>
+                </div>
+                <div class="meter-container">
+                    <div class="meter-label">
+                        <span>Energy</span>
+                        <span id="energy-value">--</span>
+                    </div>
+                    <div class="meter">
+                        <div class="meter-fill energy" id="energy-meter"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content Grid -->
+        <div class="grid">
+            <!-- Recent Thoughts -->
+            <div class="panel">
+                <h2>💭 Recent Thoughts</h2>
+                <div class="tabs">
+                    <div class="tab active" onclick="switchTab('thoughts', 5)">Latest 5</div>
+                    <div class="tab" onclick="switchTab('thoughts', 10)">Latest 10</div>
+                    <div class="tab" onclick="switchTab('thoughts', 20)">Latest 20</div>
+                </div>
+                <div id="thoughts-container" class="loading">Loading...</div>
+            </div>
+
+            <!-- Active Goals -->
+            <div class="panel">
+                <h2>🎯 Active Goals</h2>
+                <div class="tabs">
+                    <div class="tab active" onclick="switchGoalStatus('active')">Active</div>
+                    <div class="tab" onclick="switchGoalStatus('completed')">Completed</div>
+                    <div class="tab" onclick="switchGoalStatus('all')">All</div>
+                </div>
+                <div id="goals-container" class="loading">Loading...</div>
+            </div>
+        </div>
+
+        <!-- Agent Activity -->
+        <div class="panel">
+            <h2>🤖 Agent Activity</h2>
+            <div id="agents-container" class="loading">Loading...</div>
+        </div>
+
+        <!-- Memory Statistics -->
+        <div class="panel">
+            <h2>📊 Memory Network Statistics</h2>
+            <div id="memory-stats-container" class="loading">Loading...</div>
+        </div>
+
+        <!-- Curated Insights Reports -->
+        <div class="panel">
+            <h2>📑 Curated Insights Reports</h2>
+            <div style="margin-bottom: 15px; color: #8b92a7; font-size: 0.9em;">
+                Auto-generated every 50 cycles with strategic reviews
+            </div>
+            <button onclick="viewLatestReportEnhanced()" style="
+                padding: 12px 24px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                border: none;
+                border-radius: 8px;
+                color: white;
+                cursor: pointer;
+                font-size: 1em;
+                font-weight: 500;
+                margin-right: 10px;
+                transition: transform 0.2s, box-shadow 0.2s;
+            " onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 12px rgba(102,126,234,0.4)'"
+               onmouseout="this.style.transform=''; this.style.boxShadow=''">
+                📄 View Latest Report
+            </button>
+            <button onclick="openReportsFolder()" style="
+                padding: 12px 24px;
+                background: rgba(255,255,255,0.08);
+                border: 1px solid rgba(255,255,255,0.15);
+                border-radius: 8px;
+                color: #e8eaed;
+                cursor: pointer;
+                font-size: 1em;
+                transition: background 0.2s;
+            " onmouseover="this.style.background='rgba(255,255,255,0.12)'"
+               onmouseout="this.style.background='rgba(255,255,255,0.08)'">
+                📁 Open Reports Folder
+            </button>
+            <div id="reports-status" style="margin-top: 15px; font-size: 0.9em; color: #a0aec0;">
+                Reports generated at cycles: 50, 100, 150, 200, 250 (and every 50 thereafter)
+            </div>
+        </div>
+
+        <!-- Interactive Memory Search -->
+        <div class="panel">
+            <h2>🔍 Query Memory Network</h2>
+            <input type="text" class="search-box" id="memory-search" placeholder="Search Cosmo's knowledge graph...">
+            <button class="btn" onclick="searchMemory()">Search</button>
+            <div id="memory-results" style="margin-top: 20px;"></div>
+        </div>
+
+        <!-- Topic Injection -->
+        <div class="panel">
+            <h2>💬 Inject Research Topic</h2>
+            <p style="opacity: 0.8; margin-bottom: 15px;">Add a new research topic to Cosmo's exploration queue</p>
+            <input type="text" class="search-box" id="topic-input" placeholder="Enter research topic or question...">
+            <div class="inject-topic">
+                <select id="topic-priority">
+                    <option value="medium">Medium Priority</option>
+                    <option value="high">High Priority</option>
+                    <option value="low">Low Priority</option>
+                </select>
+                <select id="topic-depth">
+                    <option value="moderate">Moderate Depth</option>
+                    <option value="deep">Deep Exploration</option>
+                    <option value="quick">Quick Investigation</option>
+                </select>
+                <button class="btn" onclick="injectTopic()">Inject Topic</button>
+            </div>
+            <div id="inject-result"></div>
+        </div>
+
+        <!-- Coordinator Report -->
+        <div class="panel">
+            <h2>📝 Meta-Coordinator Report</h2>
+            <div id="coordinator-container" class="loading">Loading...</div>
+        </div>
+
+        <!-- Topic Queue -->
+        <div class="panel">
+            <h2>📋 Topic Queue</h2>
+            <div id="topic-queue-container" class="loading">Loading...</div>
+        </div>
+
+        <!-- Journal -->
+        <div class="panel">
+            <h2>📖 Thought Journal</h2>
+            <div class="tabs">
+                <div class="tab active" onclick="switchJournal(10)">Last 10</div>
+                <div class="tab" onclick="switchJournal(20)">Last 20</div>
+                <div class="tab" onclick="switchJournal(50)">Last 50</div>
+            </div>
+            <div id="journal-container" class="loading">Loading...</div>
+        </div>
+    </div>
+
+    <script>
+        // Get MCP URL from query string or default
+        const urlParams = new URLSearchParams(window.location.search);
+        const MCP_URL = urlParams.get('mcp') || 'http://localhost:3347/mcp';
+        let requestId = 1;
+        let currentThoughtLimit = 5;
+        let currentGoalStatus = 'active';
+        let currentJournalLimit = 10;
+        let isConnected = false;
+        let lastSuccessfulCall = null;
+
+        // Update connection status indicator
+        function updateConnectionStatus(connected, message = '') {
+            isConnected = connected;
+            const dot = document.getElementById('connection-dot');
+            const text = document.getElementById('connection-text');
+            
+            if (connected) {
+                dot.className = 'connection-dot connected';
+                text.textContent = 'Connected';
+                lastSuccessfulCall = Date.now();
+                hideError();
+            } else {
+                dot.className = 'connection-dot disconnected';
+                text.textContent = message || 'Disconnected';
+            }
+        }
+
+        // Call MCP server
+        async function callMCP(method, params = {}) {
+            try {
+                const response = await fetch(MCP_URL, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Accept': 'application/json, text/event-stream'
+                    },
+                    body: JSON.stringify({
+                        jsonrpc: '2.0',
+                        id: requestId++,
+                        method,
+                        params
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const text = await response.text();
+                
+                // Parse SSE format
+                const lines = text.trim().split('\n');
+                const dataLine = lines.find(l => l.startsWith('data: '));
+                
+                if (dataLine) {
+                    const jsonData = dataLine.substring(6);
+                    const parsed = JSON.parse(jsonData);
+                    
+                    if (parsed.error) {
+                        throw new Error(parsed.error.message);
+                    }
+                    
+                    updateConnectionStatus(true);
+                    return parsed.result;
+                }
+                
+                throw new Error('Invalid MCP response format');
+            } catch (error) {
+                console.error('MCP call failed:', error);
+                
+                // Update connection status
+                if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+                    updateConnectionStatus(false, 'Server unreachable');
+                    showError(`Cannot connect to MCP server at ${MCP_URL}. Make sure it's running: npm run mcp:http`);
+                } else if (error.message.includes('HTTP 500')) {
+                    updateConnectionStatus(false, 'Server error');
+                    showError('MCP server error: ' + error.message);
+                } else {
+                    updateConnectionStatus(false, 'Error');
+                    showError('MCP Error: ' + error.message);
+                }
+                
+                throw error;
+            }
+        }
+
+        // Update system state
+        async function updateSystemState() {
+            try {
+                const result = await callMCP('tools/call', {
+                    name: 'get_system_state',
+                    arguments: {}
+                });
+
+                const data = JSON.parse(result.content[0].text);
+                
+                document.getElementById('cycle-count').textContent = data.cycle || 0;
+                document.getElementById('memory-nodes').textContent = data.memory?.totalNodes || 0;
+                document.getElementById('memory-edges').textContent = data.memory?.totalEdges || 0;
+                document.getElementById('active-goals').textContent = data.goals?.active || 0;
+                document.getElementById('completed-goals').textContent = data.goals?.completed || 0;
+                document.getElementById('clusters').textContent = data.memory?.clusters || 0;
+                
+                // Update oscillator mode
+                updateOscillatorMode();
+                
+                // Update cognitive state if available
+                if (data.cognitiveState && Object.keys(data.cognitiveState).length > 0) {
+                    const cs = data.cognitiveState;
+                    document.getElementById('cognitive-container').style.display = 'block';
+                    
+                    if (cs.curiosity !== undefined) {
+                        const pct = (cs.curiosity * 100).toFixed(0);
+                        document.getElementById('curiosity-value').textContent = cs.curiosity.toFixed(2);
+                        document.getElementById('curiosity-meter').style.width = pct + '%';
+                    }
+                    
+                    if (cs.mood !== undefined) {
+                        const pct = (cs.mood * 100).toFixed(0);
+                        document.getElementById('mood-value').textContent = cs.mood.toFixed(2);
+                        document.getElementById('mood-meter').style.width = pct + '%';
+                    }
+                    
+                    if (cs.energy !== undefined) {
+                        const pct = (cs.energy * 100).toFixed(0);
+                        document.getElementById('energy-value').textContent = cs.energy.toFixed(2);
+                        document.getElementById('energy-meter').style.width = pct + '%';
+                    }
+                }
+                
+                showRefreshIndicator();
+                hideError();
+            } catch (error) {
+                console.error('Failed to update system state:', error);
+            }
+        }
+
+        // Update recent thoughts
+        async function updateThoughts() {
+            try {
+                const result = await callMCP('tools/call', {
+                    name: 'get_recent_thoughts',
+                    arguments: { limit: currentThoughtLimit }
+                });
+
+                const data = JSON.parse(result.content[0].text);
+                const container = document.getElementById('thoughts-container');
+                
+                if (data.thoughts.length === 0) {
+                    container.innerHTML = '<div class="loading">💭 No thoughts yet. Cosmo is just starting up...</div>';
+                    return;
+                }
+
+                container.innerHTML = data.thoughts.map(t => `
+                    <div class="thought-item ${t.role}">
+                        <div class="thought-meta">
+                            <span>Cycle ${t.cycle} • <strong>${t.role.toUpperCase()}</strong></span>
+                            <span>${t.model} ${t.usedWebSearch ? '🌐' : ''}</span>
+                        </div>
+                        <div class="thought-content">
+                            ${escapeHtml(t.thought || 'No content')}
+                        </div>
+                    </div>
+                `).join('');
+                
+            } catch (error) {
+                console.error('Failed to update thoughts:', error);
+            }
+        }
+
+        // Update active goals
+        async function updateGoals() {
+            try {
+                const result = await callMCP('tools/call', {
+                    name: 'get_active_goals',
+                    arguments: { status: currentGoalStatus, limit: 10 }
+                });
+
+                const data = JSON.parse(result.content[0].text);
+                const container = document.getElementById('goals-container');
+                
+                if (!data.goals || data.goals.length === 0) {
+                    const messages = {
+                        'active': '🎯 No active goals yet. Cosmo will discover goals as it thinks...',
+                        'completed': '✅ No completed goals yet. Check back after Cosmo has explored for a while.',
+                        'all': '🎯 No goals yet. Goals will appear as Cosmo discovers interesting topics.'
+                    };
+                    container.innerHTML = '<div class="loading">' + (messages[currentGoalStatus] || 'No goals') + '</div>';
+                    return;
+                }
+
+                container.innerHTML = data.goals.map(g => `
+                    <div class="goal-item">
+                        <div class="goal-description">
+                            ${escapeHtml(g.description || 'Untitled goal')}
+                        </div>
+                        <div class="goal-meta">
+                            <span>Priority: ${g.priority || 'N/A'}</span>
+                            <span>Progress: ${g.progress ? (parseFloat(g.progress) * 100).toFixed(0) + '%' : 'N/A'}</span>
+                            <span>Pursuits: ${g.pursuitCount || 0}</span>
+                            <span>Source: ${g.source || 'unknown'}</span>
+                        </div>
+                    </div>
+                `).join('');
+                
+            } catch (error) {
+                console.error('Failed to update goals:', error);
+            }
+        }
+
+        // Update agent activity
+        async function updateAgents() {
+            try {
+                const result = await callMCP('tools/call', {
+                    name: 'get_agent_activity',
+                    arguments: {}
+                });
+
+                const data = JSON.parse(result.content[0].text);
+                const container = document.getElementById('agents-container');
+                
+                const activeAgents = data.activeAgents || [];
+                const recentAgents = data.recentAgents || [];
+                const stats = data.stats || {};
+                
+                if (activeAgents.length === 0 && recentAgents.length === 0) {
+                    if (stats.totalCompleted > 0) {
+                        container.innerHTML = `<div class="loading">✓ No active agents. ${stats.totalCompleted} agents completed total.</div>`;
+                    } else {
+                        container.innerHTML = '<div class="loading">🤖 No agent activity yet. Agents will spawn as Cosmo pursues goals...</div>';
+                    }
+                    return;
+                }
+
+                let html = '';
+                
+                // Show stats
+                if (stats.totalCompleted > 0) {
+                    html += '<div style="margin-bottom: 15px; opacity: 0.8;">';
+                    html += `<strong>${stats.totalCompleted} agents completed</strong> • `;
+                    html += `${stats.active} active`;
+                    if (stats.byType && Object.keys(stats.byType).length > 0) {
+                        html += '<div style="margin-top: 8px; display: flex; gap: 10px; flex-wrap: wrap;">';
+                        for (const [type, count] of Object.entries(stats.byType)) {
+                            html += `<span class="tag">${type}: ${count}</span>`;
+                        }
+                        html += '</div>';
+                    }
+                    html += '</div>';
+                }
+                
+                // Active agents
+                if (activeAgents.length > 0) {
+                    html += '<h3 style="margin-bottom: 10px; opacity: 0.8;">Active Agents</h3>';
+                    html += activeAgents.map(a => `
+                        <div class="agent-item">
+                            <strong>${a.type || 'Unknown'}</strong> - ${a.status}
+                            <div style="opacity: 0.7; font-size: 0.9em; margin-top: 5px;">
+                                Goal: ${a.goalId} • Progress: ${a.progress || 0}%
+                            </div>
+                        </div>
+                    `).join('');
+                }
+                
+                // Recent completed agents
+                if (recentAgents.length > 0) {
+                    html += '<h3 style="margin: 20px 0 10px 0; opacity: 0.8;">Recently Completed (Last 20)</h3>';
+                    html += recentAgents.map(a => `
+                        <div class="agent-item" style="border-left-color: #4caf50;">
+                            <div><strong>${a.type || 'Unknown'}</strong> - ${a.status}</div>
+                            <div style="opacity: 0.7; font-size: 0.85em; margin-top: 5px;">
+                                Goal: ${(a.goalId || '').substring(0, 50)}
+                            </div>
+                            <div style="opacity: 0.6; font-size: 0.8em; margin-top: 3px;">
+                                ${a.endTime ? new Date(a.endTime).toLocaleString() : 'Time unknown'}
+                                ${a.duration ? ` • ${(a.duration / 1000).toFixed(1)}s` : ''}
+                            </div>
+                        </div>
+                    `).join('');
+                }
+                
+                container.innerHTML = html;
+                
+            } catch (error) {
+                console.error('Failed to update agents:', error);
+            }
+        }
+
+        // Update memory statistics
+        async function updateMemoryStats() {
+            try {
+                const result = await callMCP('tools/call', {
+                    name: 'get_memory_statistics',
+                    arguments: {}
+                });
+
+                const data = JSON.parse(result.content[0].text);
+                const container = document.getElementById('memory-stats-container');
+                
+                let html = '<div class="stat-grid">';
+                html += `<div class="stat-card"><div class="stat-card-value">${data.totalNodes}</div><div class="stat-card-label">Total Nodes</div></div>`;
+                html += `<div class="stat-card"><div class="stat-card-value">${data.totalEdges}</div><div class="stat-card-label">Total Edges</div></div>`;
+                html += `<div class="stat-card"><div class="stat-card-value">${data.clusters}</div><div class="stat-card-label">Clusters</div></div>`;
+                html += `<div class="stat-card"><div class="stat-card-value">${data.averageActivation || 'N/A'}</div><div class="stat-card-label">Avg Activation</div></div>`;
+                html += '</div>';
+                
+                // Nodes by tag
+                if (data.nodesByTag && Object.keys(data.nodesByTag).length > 0) {
+                    html += '<h3 style="margin: 20px 0 10px 0; opacity: 0.8;">Nodes by Type</h3>';
+                    html += '<div style="display: flex; gap: 15px; flex-wrap: wrap;">';
+                    for (const [tag, count] of Object.entries(data.nodesByTag)) {
+                        html += `<span class="tag">${tag}: ${count}</span>`;
+                    }
+                    html += '</div>';
+                }
+                
+                // Most accessed
+                if (data.mostAccessedNodes && data.mostAccessedNodes.length > 0) {
+                    html += '<h3 style="margin: 20px 0 10px 0; opacity: 0.8;">Most Accessed Concepts</h3>';
+                    html += data.mostAccessedNodes.map(n => `
+                        <div class="memory-item">
+                            <div class="memory-concept">${escapeHtml(n.concept)}</div>
+                            <div class="memory-meta">
+                                <span>Accessed: ${n.accessCount}x</span>
+                                <span>Activation: ${n.activation}</span>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+                
+                // Highest activation
+                if (data.highestActivationNodes && data.highestActivationNodes.length > 0) {
+                    html += '<h3 style="margin: 20px 0 10px 0; opacity: 0.8;">Most Activated Concepts</h3>';
+                    html += data.highestActivationNodes.map(n => `
+                        <div class="memory-item">
+                            <div class="memory-concept">${escapeHtml(n.concept)}</div>
+                            <div class="memory-meta">
+                                <span>Activation: ${n.activation}</span>
+                                <span>Weight: ${n.weight}</span>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+                
+                container.innerHTML = html;
+                
+            } catch (error) {
+                console.error('Failed to update memory stats:', error);
+            }
+        }
+
+        // Update oscillator mode
+        async function updateOscillatorMode() {
+            try {
+                const result = await callMCP('tools/call', {
+                    name: 'get_oscillator_mode',
+                    arguments: {}
+                });
+
+                const data = JSON.parse(result.content[0].text);
+                const modeEl = document.getElementById('oscillator-mode');
+                
+                if (modeEl && data.currentMode) {
+                    modeEl.textContent = data.currentMode.toUpperCase();
+                    document.getElementById('cognitive-container').style.display = 'block';
+                }
+            } catch (error) {
+                console.error('Failed to update oscillator mode:', error);
+            }
+        }
+
+        // Update topic queue
+        async function updateTopicQueue() {
+            try {
+                const result = await callMCP('tools/call', {
+                    name: 'get_topic_queue',
+                    arguments: {}
+                });
+
+                const data = JSON.parse(result.content[0].text);
+                const container = document.getElementById('topic-queue-container');
+                
+                if (data.queueLength === 0) {
+                    container.innerHTML = '<div class="loading">No topics in queue</div>';
+                    return;
+                }
+
+                let html = `<div style="margin-bottom: 15px; opacity: 0.8;">
+                    ${data.queueLength} topics in queue, ${data.processed?.length || 0} processed
+                </div>`;
+                
+                html += data.topics.map(t => `
+                    <div class="memory-item">
+                        <div class="memory-concept"><strong>${escapeHtml(t.topic)}</strong></div>
+                        <div class="memory-meta">
+                            <span class="tag">${t.priority} priority</span>
+                            <span>${t.depth || 'moderate'} depth</span>
+                            <span>Source: ${t.source || 'user'}</span>
+                            ${t.injectedAt ? `<span>${new Date(t.injectedAt).toLocaleString()}</span>` : ''}
+                        </div>
+                    </div>
+                `).join('');
+                
+                container.innerHTML = html;
+                
+            } catch (error) {
+                console.error('Failed to update topic queue:', error);
+            }
+        }
+
+        // Update journal
+        async function updateJournal() {
+            try {
+                const result = await callMCP('tools/call', {
+                    name: 'get_journal',
+                    arguments: { limit: currentJournalLimit }
+                });
+
+                const data = JSON.parse(result.content[0].text);
+                const container = document.getElementById('journal-container');
+                
+                if (!data.entries || data.entries.length === 0) {
+                    container.innerHTML = '<div class="loading">No journal entries yet</div>';
+                    return;
+                }
+
+                container.innerHTML = `<div style="margin-bottom: 10px; opacity: 0.8;">
+                    Showing ${data.entries.length} of ${data.totalEntries} total entries
+                </div>` + data.entries.map(e => `
+                    <div class="thought-item ${e.role}">
+                        <div class="thought-meta">
+                            <span>Cycle ${e.cycle} • ${e.role?.toUpperCase()}</span>
+                            <span>${e.oscillatorMode || 'unknown'} mode</span>
+                        </div>
+                        <div class="thought-content">
+                            ${escapeHtml(e.thought || 'No content')}
+                        </div>
+                    </div>
+                `).join('');
+                
+            } catch (error) {
+                console.error('Failed to update journal:', error);
+            }
+        }
+
+        // Switch journal view
+        function switchJournal(limit) {
+            currentJournalLimit = limit;
+            updateJournal();
+            
+            const container = document.getElementById('journal-container');
+            const tabs = container.previousElementSibling.querySelectorAll('.tab');
+            tabs.forEach(tab => tab.classList.remove('active'));
+            if (limit === 10) tabs[0].classList.add('active');
+            if (limit === 20) tabs[1].classList.add('active');
+            if (limit === 50) tabs[2].classList.add('active');
+        }
+
+        // Update coordinator report
+        async function updateCoordinator() {
+            try {
+                const result = await callMCP('tools/call', {
+                    name: 'get_coordinator_report',
+                    arguments: {}
+                });
+
+                const data = JSON.parse(result.content[0].text);
+                const container = document.getElementById('coordinator-container');
+                
+                if (data.report === 'No coordinator reports found yet.') {
+                    container.innerHTML = '<div class="loading">No coordinator reports yet. Reports generated every 50 cycles.</div>';
+                    return;
+                }
+                
+                let html = `<div style="opacity: 0.8; margin-bottom: 15px;">
+                    <strong>${data.filename}</strong> (${data.totalReports} total reports)
+                </div>`;
+                
+                html += '<div class="coordinator-report">';
+                html += escapeHtml(data.content).replace(/\n/g, '<br>');
+                html += '</div>';
+                
+                container.innerHTML = html;
+                
+            } catch (error) {
+                console.error('Failed to update coordinator:', error);
+            }
+        }
+
+        // Search memory
+        async function searchMemory() {
+            const query = document.getElementById('memory-search').value;
+            if (!query) return;
+
+            const container = document.getElementById('memory-results');
+            container.innerHTML = '<div class="loading">Searching...</div>';
+
+            try {
+                const result = await callMCP('tools/call', {
+                    name: 'query_memory',
+                    arguments: { query, limit: 15 }
+                });
+
+                const data = JSON.parse(result.content[0].text);
+                
+                if (data.results.length === 0) {
+                    container.innerHTML = '<div class="loading">No results found</div>';
+                    return;
+                }
+
+                let html = `<div style="margin-bottom: 15px; opacity: 0.8;">
+                    Found ${data.resultsFound} results from ${data.totalNodes} total nodes
+                </div>`;
+                
+                html += data.results.map(r => `
+                    <div class="memory-item">
+                        <div class="memory-concept">${escapeHtml(r.concept)}</div>
+                        <div class="memory-meta">
+                            <span class="tag">${r.tag}</span>
+                            <span>Activation: ${r.activation}</span>
+                            <span>Weight: ${r.weight}</span>
+                            <span>Score: ${r.relevanceScore}</span>
+                            <span>Accessed: ${r.accessCount}x</span>
+                            <span>Cluster: ${r.cluster}</span>
+                        </div>
+                    </div>
+                `).join('');
+                
+                container.innerHTML = html;
+                
+            } catch (error) {
+                container.innerHTML = '<div class="error">Search failed: ' + error.message + '</div>';
+            }
+        }
+
+        // Inject topic
+        async function injectTopic() {
+            const topicInput = document.getElementById('topic-input');
+            const topic = topicInput.value.trim();
+            
+            if (!topic) {
+                showError('Please enter a topic');
+                return;
+            }
+            
+            if (topic.length > 1000) {
+                showError('Topic too long (max 1000 characters)');
+                return;
+            }
+
+            const priority = document.getElementById('topic-priority').value;
+            const depth = document.getElementById('topic-depth').value;
+            const resultDiv = document.getElementById('inject-result');
+            
+            resultDiv.innerHTML = '<div class="loading">Injecting topic...</div>';
+
+            try {
+                const result = await callMCP('tools/call', {
+                    name: 'inject_topic',
+                    arguments: { topic, priority, depth }
+                });
+
+                const data = JSON.parse(result.content[0].text);
+                
+                resultDiv.innerHTML = `
+                    <div class="success">
+                        ✅ Topic injected successfully!<br>
+                        Queue now has ${data.queueLength} topic(s).<br>
+                        Cosmo will explore this soon.
+                    </div>
+                `;
+                
+                topicInput.value = '';
+                
+                // Auto-clear success message after 5 seconds
+                setTimeout(() => {
+                    resultDiv.innerHTML = '';
+                }, 5000);
+                
+                // Update topic queue to show the new topic
+                setTimeout(() => {
+                    updateTopicQueue();
+                }, 1000);
+                
+            } catch (error) {
+                if (error.message.includes('too long')) {
+                    resultDiv.innerHTML = '<div class="error">❌ Topic too long (max 1000 characters)</div>';
+                } else if (error.message.includes('required')) {
+                    resultDiv.innerHTML = '<div class="error">❌ Topic is required</div>';
+                } else {
+                    resultDiv.innerHTML = '<div class="error">Failed to inject topic: ' + error.message + '</div>';
+                }
+            }
+        }
+
+        // Tab switching
+        function switchTab(type, limit) {
+            if (type === 'thoughts') {
+                currentThoughtLimit = limit;
+                updateThoughts();
+                
+                // Update tab active state
+                document.querySelectorAll('#thoughts-container').forEach(el => {
+                    const tabs = el.previousElementSibling.querySelectorAll('.tab');
+                    tabs.forEach(tab => tab.classList.remove('active'));
+                    if (limit === 5) tabs[0].classList.add('active');
+                    if (limit === 10) tabs[1].classList.add('active');
+                    if (limit === 20) tabs[2].classList.add('active');
+                });
+            }
+        }
+
+        function switchGoalStatus(status) {
+            currentGoalStatus = status;
+            updateGoals();
+            
+            // Update tab active state
+            const container = document.getElementById('goals-container');
+            const tabs = container.previousElementSibling.querySelectorAll('.tab');
+            tabs.forEach(tab => tab.classList.remove('active'));
+            if (status === 'active') tabs[0].classList.add('active');
+            if (status === 'completed') tabs[1].classList.add('active');
+            if (status === 'all') tabs[2].classList.add('active');
+        }
+
+        // Show refresh indicator
+        function showRefreshIndicator() {
+            const indicator = document.getElementById('refresh-indicator');
+            indicator.classList.add('show');
+            setTimeout(() => {
+                indicator.classList.remove('show');
+            }, 1000);
+        }
+
+        // Show/hide error (with type: error or success)
+        function showError(message, type = 'error') {
+            const container = document.getElementById('error-container');
+            const className = type === 'success' ? 'success' : 'error';
+            container.innerHTML = `<div class="${className}">${escapeHtml(message)}</div>`;
+            
+            // Auto-hide success messages after 5 seconds
+            if (type === 'success') {
+                setTimeout(() => hideError(), 5000);
+            }
+        }
+
+        function hideError() {
+            document.getElementById('error-container').innerHTML = '';
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Manual refresh function
+        async function manualRefresh() {
+            const button = event.target;
+            button.disabled = true;
+            button.textContent = '🔄 Refreshing...';
+            
+            try {
+                await Promise.all([
+                    updateSystemState(),
+                    updateThoughts(),
+                    updateGoals(),
+                    updateAgents(),
+                    updateMemoryStats(),
+                    updateCoordinator(),
+                    updateTopicQueue(),
+                    updateJournal()
+                ]);
+                button.textContent = '✓ Refreshed!';
+                setTimeout(() => {
+                    button.textContent = '🔄 Refresh';
+                    button.disabled = false;
+                }, 2000);
+            } catch (error) {
+                button.textContent = '✗ Failed';
+                setTimeout(() => {
+                    button.textContent = '🔄 Refresh';
+                    button.disabled = false;
+                }, 2000);
+            }
+        }
+
+        // Track intervals for cleanup
+        const activeIntervals = [];
+        
+        // Initialize and auto-refresh
+        async function init() {
+            // Show MCP URL in console for debugging
+            console.log('Cosmo MCP Dashboard connecting to:', MCP_URL);
+            
+            try {
+                // Initial load with connection status
+                updateConnectionStatus(false, 'Connecting...');
+                document.getElementById('connection-dot').className = 'connection-dot checking';
+                
+                await Promise.all([
+                    updateSystemState(),
+                    updateThoughts(),
+                    updateGoals(),
+                    updateAgents(),
+                    updateMemoryStats(),
+                    updateCoordinator(),
+                    updateTopicQueue(),
+                    updateJournal()
+                ]);
+                
+                // Auto-refresh every 5 seconds
+                const fastInterval = setInterval(async () => {
+                    await Promise.all([
+                        updateSystemState(),
+                        updateThoughts(),
+                        updateGoals(),
+                        updateAgents()
+                    ]);
+                }, 5000);
+                activeIntervals.push(fastInterval);
+                
+                // Refresh memory stats, coordinator, queue, journal less frequently (every 30 seconds)
+                const slowInterval = setInterval(async () => {
+                    await Promise.all([
+                        updateMemoryStats(),
+                        updateCoordinator(),
+                        updateTopicQueue(),
+                        updateJournal()
+                    ]);
+                }, 30000);
+                activeIntervals.push(slowInterval);
+                
+            } catch (error) {
+                updateConnectionStatus(false, 'Connection failed');
+                showError(`Failed to connect to Cosmo MCP server at ${MCP_URL}. Make sure it's running: npm run mcp:http`);
+            }
+        }
+        
+        // View latest curated insights report
+        async function viewLatestReportEnhanced() {
+            try {
+                const response = await fetch('/reports/insights_curated_LATEST.md');
+                if (!response.ok) {
+                    showError('No report available yet. First report generated at cycle 50.');
+                    return;
+                }
+                
+                const markdown = await response.text();
+                
+                // Open in new window with formatted view
+                const reportWindow = window.open('', 'Curated Insights', 'width=1000,height=800');
+                reportWindow.document.write(`
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <title>Curated Insights - Latest</title>
+                        <style>
+                            body { 
+                                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                                max-width: 900px; 
+                                margin: 40px auto; 
+                                padding: 20px;
+                                line-height: 1.6;
+                                background: #f5f7fa;
+                                color: #2c3e50;
+                            }
+                            h1, h2, h3 { color: #34495e; margin-top: 24px; }
+                            h1 { font-size: 2.2em; border-bottom: 3px solid #3498db; padding-bottom: 10px; }
+                            h2 { font-size: 1.8em; border-bottom: 2px solid #95a5a6; padding-bottom: 8px; }
+                            h3 { font-size: 1.4em; color: #7f8c8d; }
+                            pre { background: #ecf0f1; padding: 15px; border-radius: 6px; overflow-x: auto; }
+                            code { background: #e8ecef; padding: 2px 6px; border-radius: 3px; }
+                            hr { border: none; border-top: 1px solid #bdc3c7; margin: 24px 0; }
+                            strong { color: #2c3e50; }
+                        </style>
+                    </head>
+                    <body>
+                        <pre style="white-space: pre-wrap; font-family: inherit; background: white; border: 1px solid #ddd; padding: 30px;">${markdown}</pre>
+                    </body>
+                    </html>
+                `);
+                reportWindow.document.close();
+                showSuccess('Report opened in new window');
+                
+            } catch (error) {
+                console.error('Failed to load latest report:', error);
+                showError('Could not load report: ' + error.message);
+            }
+        }
+        
+        // Open reports folder in file explorer (helper)
+        function openReportsFolder() {
+            showError('Reports location: phase2-logs-gpt5/coordinator/insights_curated_*.md', 'success');
+            // Could use shell command via MCP tool in future
+        }
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            activeIntervals.forEach(id => clearInterval(id));
+        });
+        
+        // Pause updates when tab is hidden (battery saving)
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                // Pause: clear all intervals
+                activeIntervals.forEach(id => clearInterval(id));
+                activeIntervals.length = 0;
+            } else {
+                // Resume: restart intervals
+                init();
+            }
+        });
+
+        // Event listeners
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('memory-search').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    searchMemory();
+                }
+            });
+            
+            document.getElementById('topic-input').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    injectTopic();
+                }
+            });
+            
+            init();
+        });
+    </script>
+</body>
+</html>

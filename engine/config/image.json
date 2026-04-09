@@ -1,0 +1,37 @@
+{
+  "_comment": "Set active to switch image provider. promptEngine/commentaryEngine use local Ollama qwen3.5:4b.",
+  "active": "openai",
+  "promptEngine": {
+    "provider": "ollama",
+    "model": "qwen3.5:4b",
+    "ollamaOptions": {
+      "think": false
+    },
+    "fallback": {
+      "provider": "openai",
+      "model": "gpt-4o-mini"
+    }
+  },
+  "commentaryEngine": {
+    "provider": "ollama",
+    "model": "qwen3.5:4b",
+    "ollamaOptions": {
+      "think": false
+    },
+    "fallback": {
+      "provider": "openai",
+      "model": "gpt-4o-mini"
+    }
+  },
+  "providers": {
+    "openai": {
+      "model": "gpt-image-1",
+      "size": "auto",
+      "quality": "auto"
+    },
+    "stable-diffusion": {
+      "endpoint": "http://localhost:7860",
+      "steps": 20
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "id": "skill:python-execute",
+  "name": "Python Code Executor",
+  "description": "Run arbitrary Python code with structured I/O. Handles package installation, temp file management, and captures stdout/stderr/exit code along with any output files produced.",
+  "domain": null,
+  "tags": ["utility", "execution", "python"],
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "code": {
+        "type": "string",
+        "description": "Python source code to execute"
+      },
+      "inputFiles": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Paths to input files the code may read"
+      },
+      "packages": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Pip packages to ensure are installed before execution"
+      }
+    },
+    "required": ["code"]
+  },
+  "outputs": {
+    "type": "object",
+    "properties": {
+      "stdout": { "type": "string", "description": "Standard output from execution" },
+      "stderr": { "type": "string", "description": "Standard error from execution" },
+      "exitCode": { "type": "number", "description": "Process exit code (0 = success)" },
+      "outputFiles": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Paths to files created during execution"
+      }
+    }
+  },
+  "assumptions": [
+    "Python 3.8+ is available on the system",
+    "pip is available for package installation",
+    "Temporary directory is writable"
+  ],
+  "implementation": {
+    "type": "python_script",
+    "code": "import sys\nimport os\nimport json\nimport subprocess\nimport tempfile\nimport glob\n\ndef main():\n    inputs = json.loads(os.environ.get('SKILL_INPUTS', '{}'))\n    code = inputs.get('code', '')\n    packages = inputs.get('packages', [])\n    input_files = inputs.get('inputFiles', [])\n\n    if not code:\n        print(json.dumps({'stdout': '', 'stderr': 'No code provided', 'exitCode': 1, 'outputFiles': []}))\n        return\n\n    # Install packages if requested\n    if packages:\n        for pkg in packages:\n            # Sanitize package name: only allow alphanumeric, hyphens, underscores, dots, brackets, commas\n            safe = ''.join(c for c in pkg if c.isalnum() or c in '-_.[],')\n            if safe != pkg:\n                print(json.dumps({'stdout': '', 'stderr': f'Invalid package name: {pkg}', 'exitCode': 1, 'outputFiles': []}))\n                return\n            result = subprocess.run(\n                [sys.executable, '-m', 'pip', 'install', '--quiet', safe],\n                capture_output=True, text=True, timeout=120\n            )\n            if result.returncode != 0:\n                print(json.dumps({\n                    'stdout': '', \n                    'stderr': f'Failed to install {safe}: {result.stderr}',\n                    'exitCode': 1, \n                    'outputFiles': []\n                }))\n                return\n\n    # Create temp working directory\n    work_dir = tempfile.mkdtemp(prefix='cosmo_exec_')\n\n    # Symlink input files into working dir for easy access\n    for fpath in input_files:\n        if os.path.exists(fpath):\n            basename = os.path.basename(fpath)\n            link_path = os.path.join(work_dir, basename)\n            if not os.path.exists(link_path):\n                os.symlink(os.path.abspath(fpath), link_path)\n\n    # Write code to temp file\n    script_path = os.path.join(work_dir, '_cosmo_script.py')\n    with open(script_path, 'w') as f:\n        f.write(code)\n\n    # Snapshot files before execution\n    before = set(os.listdir(work_dir))\n\n    # Execute\n    try:\n        result = subprocess.run(\n            [sys.executable, script_path],\n            capture_output=True, text=True,\n            cwd=work_dir, timeout=300\n        )\n        exit_code = result.returncode\n        stdout = result.stdout\n        stderr = result.stderr\n    except subprocess.TimeoutExpired:\n        exit_code = 124\n        stdout = ''\n        stderr = 'Execution timed out after 300 seconds'\n    except Exception as e:\n        exit_code = 1\n        stdout = ''\n        stderr = str(e)\n\n    # Detect output files (new files created during execution)\n    after = set(os.listdir(work_dir))\n    new_files = after - before - {'_cosmo_script.py'}\n    output_files = [os.path.join(work_dir, f) for f in sorted(new_files)]\n\n    print(json.dumps({\n        'stdout': stdout[:100000],\n        'stderr': stderr[:50000],\n        'exitCode': exit_code,\n        'outputFiles': output_files\n    }))\n\nif __name__ == '__main__':\n    main()\n",
+    "timeout_sec": 360
+  },
+  "toolsRequired": [{ "id": "tool:python" }],
+  "origin": "authored",
+  "confidence": 1.0
+}

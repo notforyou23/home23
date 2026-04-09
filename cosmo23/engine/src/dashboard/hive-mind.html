@@ -1,0 +1,1855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🧬 COSMO Hive Mind Observatory</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-deep: #0a0a0f;
+            --bg-dark: #12121a;
+            --bg-card: #1a1a2e;
+            --accent-cyan: #00ffff;
+            --accent-purple: #9d4edd;
+            --accent-pink: #ff006e;
+            --accent-yellow: #ffbe0b;
+            --accent-green: #06ffa5;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0b0;
+            --text-dim: #606070;
+            --glow-cyan: rgba(0, 255, 255, 0.3);
+            --glow-purple: rgba(157, 78, 221, 0.3);
+            --glow-green: rgba(6, 255, 165, 0.3);
+        }
+
+        body {
+            font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+            background: linear-gradient(135deg, var(--bg-deep) 0%, var(--bg-dark) 100%);
+            color: var(--text-primary);
+            overflow-x: hidden;
+            min-height: 100vh;
+        }
+
+        .neural-bg {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: 
+                radial-gradient(circle at 20% 30%, rgba(0, 255, 255, 0.03) 0%, transparent 50%),
+                radial-gradient(circle at 80% 70%, rgba(157, 78, 221, 0.03) 0%, transparent 50%),
+                radial-gradient(circle at 50% 50%, rgba(6, 255, 165, 0.02) 0%, transparent 60%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        /* Main Layout - 3 Column like Observatory */
+        .observatory {
+            position: relative;
+            z-index: 1;
+            display: grid;
+            grid-template-columns: 380px 1fr 380px;
+            grid-template-rows: auto 1fr;
+            gap: 20px;
+            padding: 20px;
+            min-height: 100vh;
+            max-width: 2400px;
+            margin: 0 auto;
+        }
+
+        /* Header */
+        .header {
+            grid-column: 1 / -1;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(26, 26, 46, 0.6);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(0, 255, 255, 0.2);
+            border-radius: 20px;
+            padding: 20px 30px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .logo {
+            font-size: 2.5rem;
+            animation: pulse 3s ease-in-out infinite;
+        }
+
+        .title-block h1 {
+            font-size: 1.8rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-top: 4px;
+        }
+
+        .system-vitals {
+            display: flex;
+            gap: 30px;
+            align-items: center;
+        }
+
+        .vital {
+            text-align: center;
+        }
+
+        .vital-label {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .vital-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-green));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(6, 255, 165, 0.1);
+            border: 1px solid var(--accent-green);
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--accent-green);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        /* Panel Base */
+        .panel {
+            background: rgba(26, 26, 46, 0.4);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 20px;
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .panel:hover {
+            border-color: rgba(0, 255, 255, 0.3);
+            box-shadow: 0 8px 32px rgba(0, 255, 255, 0.1);
+        }
+
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .panel-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .panel-icon {
+            font-size: 1.3rem;
+        }
+
+        /* Left Column */
+        .left-column {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            max-height: calc(100vh - 140px);
+        }
+
+        .thought-stream {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .thought-list {
+            flex: 1;
+            overflow-y: auto;
+            padding-right: 8px;
+        }
+
+        .thought-item {
+            background: rgba(0, 0, 0, 0.3);
+            border-left: 3px solid var(--accent-cyan);
+            padding: 12px;
+            margin-bottom: 12px;
+            border-radius: 8px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .thought-item:hover {
+            background: rgba(0, 255, 255, 0.05);
+            transform: translateX(4px);
+            box-shadow: 0 4px 16px rgba(0, 255, 255, 0.2);
+        }
+
+        .thought-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .thought-role {
+            font-size: 0.75rem;
+            font-weight: 600;
+            padding: 4px 8px;
+            border-radius: 10px;
+            background: rgba(0, 255, 255, 0.2);
+            color: var(--accent-cyan);
+        }
+
+        .thought-instance {
+            font-size: 0.7rem;
+            padding: 3px 8px;
+            border-radius: 10px;
+            background: rgba(157, 78, 221, 0.2);
+            color: var(--accent-purple);
+        }
+
+        .thought-instance.leader::before {
+            content: '👑 ';
+        }
+
+        .thought-text {
+            color: var(--text-primary);
+            line-height: 1.5;
+            font-size: 0.95rem;
+        }
+
+        .thought-meta {
+            color: var(--text-dim);
+            font-size: 0.75rem;
+            margin-top: 8px;
+            display: flex;
+            gap: 15px;
+        }
+
+        /* Goals Panel */
+        .goal-categories {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .category-btn {
+            padding: 6px 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .category-btn.active {
+            background: rgba(157, 78, 221, 0.2);
+            border-color: var(--accent-purple);
+            color: var(--accent-purple);
+        }
+
+        .goal-list {
+            max-height: 300px;
+            overflow-y: auto;
+            padding-right: 8px;
+        }
+
+        .goal-item {
+            background: rgba(0, 0, 0, 0.3);
+            border-left: 3px solid var(--accent-purple);
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .goal-item:hover {
+            background: rgba(157, 78, 221, 0.05);
+            transform: translateX(4px);
+        }
+
+        .goal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+
+        .goal-text {
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            line-height: 1.4;
+        }
+
+        .goal-priority {
+            font-size: 0.75rem;
+            padding: 3px 8px;
+            border-radius: 8px;
+            background: rgba(255, 190, 11, 0.2);
+            color: var(--accent-yellow);
+        }
+
+        /* Center Column - Merged Memory Graph */
+        .center-column {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .memory-panel {
+            flex: 1;
+            min-height: 600px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .network-stats {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .stat-box {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            margin-bottom: 4px;
+        }
+
+        .stat-value {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+        }
+
+        .network-controls {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .control-btn {
+            padding: 6px 12px;
+            background: rgba(0, 255, 255, 0.1);
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            border-radius: 8px;
+            color: var(--accent-cyan);
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .control-btn:hover {
+            background: rgba(0, 255, 255, 0.2);
+        }
+
+        .control-btn.active {
+            background: rgba(0, 255, 255, 0.3);
+            box-shadow: 0 0 10px var(--glow-cyan);
+        }
+
+        .network-search {
+            flex: 1;
+            padding: 8px 12px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }
+
+        .network-search:focus {
+            outline: none;
+            border-color: var(--accent-cyan);
+        }
+
+        .network-container {
+            position: relative;
+            flex: 1;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        #memory-graph {
+            width: 100%;
+            height: 100%;
+            cursor: move;
+        }
+
+        .graph-node {
+            stroke: #fff;
+            stroke-width: 1.5px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .graph-node:hover {
+            stroke-width: 3px;
+            filter: brightness(1.3);
+        }
+
+        .graph-node.selected {
+            stroke: var(--accent-yellow);
+            stroke-width: 4px;
+            filter: drop-shadow(0 0 8px var(--accent-yellow));
+        }
+
+        .graph-link {
+            stroke: rgba(255, 255, 255, 0.15);
+            stroke-opacity: 0.6;
+        }
+
+        .graph-link.highlighted {
+            stroke: var(--accent-cyan);
+            stroke-width: 2px;
+            stroke-opacity: 1;
+        }
+
+        .node-tooltip {
+            position: absolute;
+            background: rgba(26, 26, 46, 0.95);
+            border: 1px solid var(--accent-cyan);
+            border-radius: 12px;
+            padding: 15px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            max-width: 300px;
+            z-index: 100;
+        }
+
+        .node-tooltip.show {
+            opacity: 1;
+        }
+
+        .tooltip-concept {
+            font-weight: 600;
+            color: var(--accent-cyan);
+            margin-bottom: 10px;
+            font-size: 1.05rem;
+        }
+
+        .tooltip-instance {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            background: rgba(157, 78, 221, 0.2);
+            color: var(--accent-purple);
+            margin-bottom: 10px;
+        }
+
+        .tooltip-metrics {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 8px;
+        }
+
+        .metric-box {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 8px;
+            border-radius: 6px;
+        }
+
+        .metric-label {
+            font-size: 0.7rem;
+            color: var(--text-dim);
+        }
+
+        .metric-value {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--accent-cyan);
+        }
+
+        /* Right Column */
+        .right-column {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            max-height: calc(100vh - 140px);
+        }
+
+        /* Coordination Panel */
+        .coordination-status {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 15px;
+            border-radius: 12px;
+            margin-bottom: 12px;
+        }
+
+        .coordination-title {
+            font-weight: 600;
+            color: var(--accent-green);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .node-grid {
+            display: grid;
+            gap: 10px;
+        }
+
+        .node-item {
+            background: rgba(0, 0, 0, 0.4);
+            border-left: 3px solid var(--accent-cyan);
+            padding: 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .node-item.leader {
+            border-left-color: var(--accent-green);
+            box-shadow: 0 0 15px var(--glow-green);
+        }
+
+        .node-item:hover {
+            background: rgba(0, 255, 255, 0.05);
+        }
+
+        .node-item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .node-name {
+            font-weight: 600;
+            color: var(--accent-cyan);
+        }
+
+        .node-name.leader {
+            color: var(--accent-green);
+        }
+
+        .node-name.leader::before {
+            content: '👑 ';
+        }
+
+        .node-role-badge {
+            font-size: 0.7rem;
+            padding: 3px 8px;
+            border-radius: 8px;
+            background: rgba(157, 78, 221, 0.2);
+            color: var(--accent-purple);
+        }
+
+        .node-metrics-mini {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 6px;
+            font-size: 0.75rem;
+        }
+
+        .node-metric-mini {
+            color: var(--text-secondary);
+        }
+
+        .node-metric-mini span {
+            color: var(--accent-cyan);
+            font-weight: 600;
+        }
+
+        /* Agent Swarm */
+        .agent-swarm {
+            max-height: 300px;
+            overflow-y: auto;
+            padding-right: 8px;
+        }
+
+        .agent-item {
+            background: rgba(0, 0, 0, 0.3);
+            border-left: 3px solid var(--accent-yellow);
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .agent-item:hover {
+            background: rgba(255, 190, 11, 0.05);
+            transform: translateX(4px);
+        }
+
+        .agent-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+
+        .agent-type {
+            font-weight: 600;
+            color: var(--accent-yellow);
+            font-size: 0.9rem;
+        }
+
+        .agent-goal {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin-bottom: 6px;
+            line-height: 1.4;
+        }
+
+        .agent-progress-bar {
+            width: 100%;
+            height: 4px;
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 2px;
+            overflow: hidden;
+        }
+
+        .agent-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-yellow), var(--accent-pink));
+            transition: width 0.3s ease;
+        }
+
+        /* Synthesis Insight Cards */
+        .synthesis-list {
+            max-height: 400px;
+            overflow-y: auto;
+            padding-right: 8px;
+        }
+
+        .synthesis-item {
+            background: linear-gradient(135deg, rgba(0, 255, 255, 0.05), rgba(157, 78, 221, 0.05));
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            padding: 15px;
+            margin-bottom: 12px;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .synthesis-item:hover {
+            box-shadow: 0 4px 20px var(--glow-cyan);
+            transform: translateY(-2px);
+        }
+
+        .synthesis-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .synthesis-title {
+            font-weight: 600;
+            color: var(--accent-cyan);
+        }
+
+        .synthesis-sources {
+            display: flex;
+            gap: 5px;
+        }
+
+        .source-badge {
+            padding: 3px 8px;
+            border-radius: 8px;
+            font-size: 0.7rem;
+            background: rgba(0, 255, 255, 0.2);
+            color: var(--accent-cyan);
+        }
+
+        .source-badge.leader {
+            background: rgba(6, 255, 165, 0.2);
+            color: var(--accent-green);
+        }
+
+        .synthesis-content {
+            color: var(--text-primary);
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        /* Modal */
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.85);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: var(--bg-card);
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            border-radius: 20px;
+            padding: 30px;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-title {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+        }
+
+        .modal-close {
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: var(--text-secondary);
+            transition: color 0.2s;
+        }
+
+        .modal-close:hover {
+            color: var(--accent-pink);
+        }
+
+        .detail-section {
+            margin-bottom: 20px;
+        }
+
+        .detail-label {
+            font-size: 0.85rem;
+            color: var(--text-dim);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .detail-value {
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+
+        .detail-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 12px;
+            margin-top: 15px;
+        }
+
+        .detail-card {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 12px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .detail-card-value {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: var(--accent-cyan);
+            margin-bottom: 4px;
+        }
+
+        .detail-card-label {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+        }
+
+        /* Scrollbar styling */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(0, 255, 255, 0.3);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(0, 255, 255, 0.5);
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.6; }
+        }
+
+        @keyframes glow {
+            0%, 100% {
+                box-shadow: 0 0 10px rgba(0, 255, 255, 0.3);
+            }
+            50% {
+                box-shadow: 0 0 25px rgba(0, 255, 255, 0.6);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="neural-bg"></div>
+    
+    <div class="observatory">
+        <!-- Header -->
+        <div class="header">
+            <div class="header-left">
+                <div class="logo">🧬</div>
+                <div class="title-block">
+                    <h1>COSMO Hive Mind Observatory</h1>
+                    <div class="subtitle">Collective Superintelligence • Synergistic Cognition</div>
+                </div>
+            </div>
+            
+            <div class="system-vitals">
+                <div class="vital">
+                    <div class="vital-label">Cycles</div>
+                    <div class="vital-value" id="total-cycles">0</div>
+                </div>
+                <div class="vital">
+                    <div class="vital-label">Goals</div>
+                    <div class="vital-value" id="total-goals">0</div>
+                </div>
+                <div class="vital">
+                    <div class="vital-label">Memory</div>
+                    <div class="vital-value" id="total-memory">0</div>
+                </div>
+                <div class="vital">
+                    <div class="vital-label">Nodes</div>
+                    <div class="vital-value" id="active-nodes">0</div>
+                </div>
+            </div>
+            
+            <div class="status-badge">
+                <div class="status-dot"></div>
+                <span id="hive-status">Hive Active</span>
+            </div>
+        </div>
+
+        <!-- Left Column: Thought Stream & Goals -->
+        <div class="left-column">
+            <!-- Hive Thought Stream -->
+            <div class="panel thought-stream">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">💭</span>
+                        Collective Thought Stream
+                    </div>
+                </div>
+                <div class="thought-list" id="thought-list">
+                    <div style="color: var(--text-secondary); padding: 20px; text-align: center;">
+                        Loading hive thoughts...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Unified Goals -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">🎯</span>
+                        Unified Mission Goals
+                    </div>
+                </div>
+                <div class="goal-categories">
+                    <div class="category-btn active" onclick="filterGoals('active')">
+                        Active (<span id="active-count">0</span>)
+                    </div>
+                    <div class="category-btn" onclick="filterGoals('completed')">
+                        Completed (<span id="completed-count">0</span>)
+                    </div>
+                </div>
+                <div class="goal-list" id="goal-list">
+                    <div style="color: var(--text-secondary); padding: 20px; text-align: center;">
+                        Loading goals...
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Center Column: Merged Memory Graph -->
+        <div class="center-column">
+            <div class="panel memory-panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">🧬</span>
+                        Collective Memory Network
+                    </div>
+                </div>
+
+                <div class="network-stats">
+                    <div class="stat-box">
+                        <div class="stat-label">Total Nodes</div>
+                        <div class="stat-value" id="graph-nodes">0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Connections</div>
+                        <div class="stat-value" id="graph-edges">0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Clusters</div>
+                        <div class="stat-value" id="graph-clusters">0</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Density</div>
+                        <div class="stat-value" id="graph-density">0%</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Synthesis</div>
+                        <div class="stat-value" id="synthesis-count">0</div>
+                    </div>
+                </div>
+
+                <div class="network-controls">
+                    <input type="text" class="network-search" id="search-nodes" placeholder="🔍 Search collective memory...">
+                    <button class="control-btn" onclick="forceRenderNetwork()">🔄 Refresh</button>
+                    <button class="control-btn" onclick="fitNetwork()">🎯 Fit</button>
+                    <button class="control-btn" onclick="zoomIn()">➕</button>
+                    <button class="control-btn" onclick="zoomOut()">➖</button>
+                    <button class="control-btn" id="toggle-labels" onclick="toggleLabels()">🏷️ Labels</button>
+                    <button class="control-btn" id="toggle-instances" onclick="toggleInstanceColors()">🌐 Instances</button>
+                </div>
+
+                <div class="network-container">
+                    <svg id="memory-graph"></svg>
+                    <div class="node-tooltip" id="node-tooltip">
+                        <div class="tooltip-concept" id="tooltip-concept"></div>
+                        <div class="tooltip-instance" id="tooltip-instance"></div>
+                        <div class="tooltip-metrics" id="tooltip-metrics"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Right Column: Coordination & Agents -->
+        <div class="right-column">
+            <!-- Coordination State -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">🧠</span>
+                        Hive Coordination
+                    </div>
+                </div>
+                
+                <div class="coordination-status">
+                    <div class="coordination-title">🎯 Meta-Coordinator</div>
+                    <div id="coordinator-info">
+                        <div style="color: var(--text-secondary);">Loading...</div>
+                    </div>
+                </div>
+
+                <div class="node-grid" id="node-grid">
+                    <div style="color: var(--text-secondary); padding: 10px;">
+                        Loading nodes...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Agent Swarm -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">🤖</span>
+                        Agent Swarm
+                    </div>
+                    <span style="color: var(--text-dim); font-size: 0.85rem;">
+                        <span id="swarm-count">0</span> active
+                    </span>
+                </div>
+                <div class="agent-swarm" id="agent-swarm">
+                    <div style="color: var(--text-secondary); padding: 20px; text-align: center;">
+                        Loading agent activity...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Emergent Synthesis -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <span class="panel-icon">✨</span>
+                        Emergent Synthesis
+                    </div>
+                </div>
+                <div class="synthesis-list" id="synthesis-list">
+                    <div style="color: var(--text-secondary); padding: 20px; text-align: center;">
+                        Awaiting cross-node synthesis...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for Details -->
+    <div class="modal" id="detail-modal" onclick="closeModal()">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <div class="modal-title" id="modal-title">Details</div>
+                <div class="modal-close" onclick="closeModal()">✕</div>
+            </div>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <script>
+        // ==================== STATE ====================
+        let state = {
+            thoughts: [],
+            goals: { active: [], completed: [] },
+            memory: { nodes: [], edges: [] },
+            agents: { active: [], byInstance: {} },
+            nodes: [],
+            leader: null,
+            simulation: null,
+            zoomBehavior: null,
+            showLabels: false,
+            showInstanceColors: false,
+            currentGoalFilter: 'active',
+            networkRendered: false
+        };
+
+        let svg, g, nodeElements, linkElements, labelElements;
+
+        // Instance color mapping
+        const instanceColors = {
+            'cosmo-1': '#00ffff',
+            'cosmo-2': '#9d4edd',
+            'cosmo-3': '#ff006e',
+            'cosmo-4': '#ffbe0b',
+            'cosmo-5': '#06ffa5'
+        };
+
+        // ==================== DATA FETCHING ====================
+        async function fetchHiveMindData() {
+            try {
+                const [overview, thoughts, goals, memory, agents] = await Promise.all([
+                    fetch('/api/cluster/overview').then(r => r.json()),
+                    fetch('/api/cluster/thoughts?limit=20').then(r => r.json()),
+                    fetch('/api/cluster/goals').then(r => r.json()),
+                    fetch('/api/cluster/memory').then(r => r.json()),
+                    fetch('/api/cluster/agents').then(r => r.json())
+                ]);
+
+                state.leader = overview.leader;
+                state.nodes = overview.instances;
+                state.thoughts = thoughts;
+                state.goals = goals;
+                state.memory = memory;
+                state.agents = agents;
+
+                updateUI();
+            } catch (error) {
+                console.error('Error fetching hive mind data:', error);
+            }
+        }
+
+        function updateUI() {
+            updateHeader();
+            updateThoughts();
+            updateGoals();
+            updateCoordination();
+            updateAgents();
+            updateSynthesis();
+            
+            // Only render network on first load or when explicitly requested
+            // Don't re-render on every refresh - too expensive
+            if (state.memory.totalNodes > 0 && !state.networkRendered) {
+                renderNetwork();
+                state.networkRendered = true;
+            }
+        }
+
+        function updateHeader() {
+            const overview = state.nodes || [];
+            const healthy = overview.filter(n => n.status === 'healthy').length;
+            
+            document.getElementById('total-cycles').textContent = overview.reduce((sum, n) => sum + (n.cycles || 0), 0);
+            document.getElementById('total-goals').textContent = (state.goals.active?.length || 0);
+            document.getElementById('total-memory').textContent = state.memory.totalNodes || 0;
+            document.getElementById('active-nodes').textContent = healthy;
+            
+            const status = healthy >= Math.ceil(overview.length / 2) ? 'Hive Healthy' : 'Hive Degraded';
+            document.getElementById('hive-status').textContent = status;
+        }
+
+        function updateThoughts() {
+            const container = document.getElementById('thought-list');
+            
+            if (!state.thoughts || state.thoughts.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-secondary); padding: 20px; text-align: center;">No recent thoughts</div>';
+                return;
+            }
+
+            container.innerHTML = state.thoughts.map(thought => {
+                const isLeader = thought.instanceId === state.leader;
+                const roleClass = thought.role || 'unknown';
+                
+                return `
+                    <div class="thought-item" onclick="showThoughtDetail('${thought.cycle}', '${thought.instanceId}')">
+                        <div class="thought-header">
+                            <span class="thought-role">${thought.role || 'Unknown'}</span>
+                            <span class="thought-instance ${isLeader ? 'leader' : ''}">${thought.instanceId}</span>
+                        </div>
+                        <div class="thought-text">
+                            ${escapeHtml((thought.thought || thought.content || '').substring(0, 150))}${(thought.thought || thought.content || '').length > 150 ? '...' : ''}
+                        </div>
+                        <div class="thought-meta">
+                            <span>Cycle ${thought.cycle || '?'}</span>
+                            ${thought.usedWebSearch ? '<span>🌐 Web</span>' : ''}
+                            ${thought.surprise ? `<span>💫 ${(thought.surprise * 100).toFixed(0)}%</span>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateGoals() {
+            const activeGoals = state.goals.active || [];
+            const completedGoals = state.goals.completed || [];
+            
+            document.getElementById('active-count').textContent = activeGoals.length;
+            document.getElementById('completed-count').textContent = completedGoals.length;
+            
+            const goals = state.currentGoalFilter === 'active' ? activeGoals : completedGoals;
+            const container = document.getElementById('goal-list');
+            
+            if (goals.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-secondary); padding: 20px; text-align: center;">No goals</div>';
+                return;
+            }
+
+            container.innerHTML = goals.slice(0, 20).map(goal => {
+                const isLeader = goal.instanceId === state.leader;
+                const priority = goal.priority ? (goal.priority * 100).toFixed(0) : '50';
+                
+                return `
+                    <div class="goal-item" onclick="showGoalDetail('${goal.id}')">
+                        <div class="goal-header">
+                            <span class="thought-instance ${isLeader ? 'leader' : ''}">${goal.instanceId}</span>
+                            <span class="goal-priority">${priority}%</span>
+                        </div>
+                        <div class="goal-text">
+                            ${escapeHtml((goal.description || goal.text || '').substring(0, 100))}${(goal.description || goal.text || '').length > 100 ? '...' : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateCoordination() {
+            // Coordinator info
+            const leaderNode = state.nodes.find(n => n.instanceId === state.leader);
+            const coordInfo = document.getElementById('coordinator-info');
+            
+            if (leaderNode && leaderNode.status === 'healthy') {
+                coordInfo.innerHTML = `
+                    <div style="color: var(--accent-green); font-weight: 600; margin-bottom: 8px;">
+                        ${leaderNode.instanceId} (Leader)
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-size: 0.85rem;">
+                        <div>
+                            <div style="color: var(--text-dim);">Cycles</div>
+                            <div style="color: var(--accent-cyan); font-weight: 600;">${leaderNode.cycles || 0}</div>
+                        </div>
+                        <div>
+                            <div style="color: var(--text-dim);">Goals</div>
+                            <div style="color: var(--accent-cyan); font-weight: 600;">${leaderNode.goals || 0}</div>
+                        </div>
+                        <div>
+                            <div style="color: var(--text-dim);">Memory</div>
+                            <div style="color: var(--accent-cyan); font-weight: 600;">${leaderNode.memory || 0}</div>
+                        </div>
+                    </div>
+                    <a href="http://localhost:${leaderNode.port}" target="_blank" 
+                       style="display: inline-block; margin-top: 10px; padding: 6px 12px; 
+                       background: rgba(6, 255, 165, 0.1); border: 1px solid var(--accent-green); 
+                       border-radius: 8px; color: var(--accent-green); text-decoration: none; font-size: 0.85rem;">
+                        View Coordinator →
+                    </a>
+                `;
+            } else {
+                coordInfo.innerHTML = '<div style="color: var(--text-secondary);">No coordinator elected</div>';
+            }
+
+            // Node grid
+            const container = document.getElementById('node-grid');
+            const followerNodes = state.nodes.filter(n => n.instanceId !== state.leader && n.status === 'healthy');
+            
+            if (followerNodes.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-secondary); padding: 10px;">No follower nodes</div>';
+                return;
+            }
+
+            const roles = ['Explorer', 'Analyst', 'Synthesizer', 'Researcher'];
+            
+            container.innerHTML = followerNodes.map((node, idx) => {
+                const role = roles[idx % roles.length];
+                return `
+                    <div class="node-item" onclick="window.open('http://localhost:${node.port}', '_blank')">
+                        <div class="node-item-header">
+                            <div class="node-name">${node.instanceId}</div>
+                            <div class="node-role-badge">${role}</div>
+                        </div>
+                        <div class="node-metrics-mini">
+                            <div class="node-metric-mini">C: <span>${node.cycles || 0}</span></div>
+                            <div class="node-metric-mini">G: <span>${node.goals || 0}</span></div>
+                            <div class="node-metric-mini">M: <span>${node.memory || 0}</span></div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateAgents() {
+            const container = document.getElementById('agent-swarm');
+            const agents = state.agents.recentActivity || [];
+            
+            document.getElementById('swarm-count').textContent = agents.length;
+            
+            if (agents.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-secondary); padding: 20px; text-align: center;">No active agents</div>';
+                return;
+            }
+
+            container.innerHTML = agents.map(agent => {
+                const isLeader = agent.instanceId === state.leader;
+                const progress = agent.progress || 0;
+                
+                return `
+                    <div class="agent-item" onclick="showAgentDetail('${agent.agentId}')">
+                        <div class="agent-header">
+                            <span class="agent-type">${agent.type || 'Agent'}</span>
+                            <span class="thought-instance ${isLeader ? 'leader' : ''}">${agent.instanceId}</span>
+                        </div>
+                        ${agent.goal ? `<div class="agent-goal">${escapeHtml(agent.goal.substring(0, 80))}</div>` : ''}
+                        <div class="agent-progress-bar">
+                            <div class="agent-progress-fill" style="width: ${progress}%"></div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function updateSynthesis() {
+            const container = document.getElementById('synthesis-list');
+            
+            // Build synthesis from thoughts with similar topics across nodes
+            const synthesis = buildEmergentSynthesis();
+            
+            document.getElementById('synthesis-count').textContent = synthesis.length;
+            
+            if (synthesis.length === 0) {
+                container.innerHTML = '<div style="color: var(--text-secondary); padding: 20px; text-align: center;">Building synthesis...</div>';
+                return;
+            }
+
+            container.innerHTML = synthesis.map((syn, idx) => `
+                <div class="synthesis-item" onclick="showSynthesisDetail(${idx})">
+                    <div class="synthesis-header">
+                        <span class="synthesis-title">Synthesis ${idx + 1}</span>
+                        <div class="synthesis-sources">
+                            ${syn.sources.map(s => `
+                                <span class="source-badge ${s === state.leader ? 'leader' : ''}">${s}</span>
+                            `).join('')}
+                        </div>
+                    </div>
+                    <div class="synthesis-content">
+                        ${escapeHtml(syn.content.substring(0, 200))}${syn.content.length > 200 ? '...' : ''}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function buildEmergentSynthesis() {
+            const synthesis = [];
+            const thoughtsByNode = {};
+            
+            state.thoughts.forEach(t => {
+                if (!thoughtsByNode[t.instanceId]) {
+                    thoughtsByNode[t.instanceId] = [];
+                }
+                thoughtsByNode[t.instanceId].push(t);
+            });
+
+            const nodeIds = Object.keys(thoughtsByNode);
+            
+            // Create synthesis combining perspectives
+            for (let i = 0; i < Math.min(5, Math.max(...Object.values(thoughtsByNode).map(arr => arr.length))); i++) {
+                const sources = [];
+                const combined = [];
+                
+                nodeIds.forEach(nodeId => {
+                    if (thoughtsByNode[nodeId][i]) {
+                        sources.push(nodeId);
+                        combined.push(thoughtsByNode[nodeId][i].thought || thoughtsByNode[nodeId][i].content);
+                    }
+                });
+                
+                if (sources.length >= 2) {
+                    synthesis.push({
+                        sources,
+                        content: combined.join(' ⚡ '),
+                        timestamp: Date.now()
+                    });
+                }
+            }
+            
+            return synthesis;
+        }
+
+        // ==================== MEMORY NETWORK RENDERING ====================
+        function renderNetwork() {
+            if (!state.memory || !state.memory.byInstance) return;
+
+            const container = document.querySelector('.network-container');
+            const width = container.clientWidth;
+            const height = container.clientHeight;
+
+            // Merge all nodes from all instances
+            const allNodes = [];
+            const allEdges = [];
+            const nodeMap = new Map();
+            let missingEdges = 0;
+
+            Object.entries(state.memory.byInstance).forEach(([instanceId, memData]) => {
+                (memData.nodes || []).forEach(node => {
+                    const nodeId = `${instanceId}:${node.id}`;
+                    if (!nodeMap.has(nodeId)) {
+                        nodeMap.set(nodeId, {
+                            ...node,
+                            sourceInstance: instanceId,
+                            isLeader: instanceId === state.leader,
+                            displayId: nodeId
+                        });
+                        allNodes.push(nodeMap.get(nodeId));
+                    }
+                });
+
+                (memData.edges || []).forEach(edge => {
+                    const sourceId = `${instanceId}:${edge.source}`;
+                    const targetId = `${instanceId}:${edge.target}`;
+
+                    if (!nodeMap.has(sourceId) || !nodeMap.has(targetId)) {
+                        missingEdges += 1;
+                        return;
+                    }
+
+                    allEdges.push({
+                        source: sourceId,
+                        target: targetId,
+                        weight: edge.weight || 0.5
+                    });
+                });
+            });
+
+            if (missingEdges > 0) {
+                console.debug(`[HiveMind] Skipped ${missingEdges} edges with missing nodes (likely trimmed from instance memory).`);
+            }
+
+            // Update stats
+            document.getElementById('graph-nodes').textContent = allNodes.length;
+            document.getElementById('graph-edges').textContent = allEdges.length;
+            document.getElementById('graph-clusters').textContent = Object.keys(state.memory.byInstance).length;
+            
+            const density = allNodes.length > 1 ? 
+                ((allEdges.length / (allNodes.length * (allNodes.length - 1))) * 100).toFixed(1) : 0;
+            document.getElementById('graph-density').textContent = density + '%';
+
+            // Clear existing
+            d3.select('#memory-graph').selectAll('*').remove();
+
+            svg = d3.select('#memory-graph')
+                .attr('width', width)
+                .attr('height', height);
+
+            g = svg.append('g');
+
+            // Zoom behavior
+            state.zoomBehavior = d3.zoom()
+                .scaleExtent([0.1, 4])
+                .on('zoom', (event) => {
+                    g.attr('transform', event.transform);
+                });
+
+            svg.call(state.zoomBehavior);
+
+            // Create simulation
+            const nodeCount = allNodes.length;
+            const linkDistance = nodeCount > 100 ? 30 : 50;
+            const chargeStrength = nodeCount > 100 ? -30 : -100;
+
+            state.simulation = d3.forceSimulation(allNodes)
+                .force('link', d3.forceLink(allEdges).id(d => d.displayId).distance(linkDistance))
+                .force('charge', d3.forceManyBody().strength(chargeStrength))
+                .force('center', d3.forceCenter(width / 2, height / 2))
+                .force('collision', d3.forceCollide().radius(20));
+
+            // Links
+            linkElements = g.append('g')
+                .selectAll('line')
+                .data(allEdges)
+                .enter().append('line')
+                .attr('class', 'graph-link')
+                .attr('stroke-width', d => Math.max(0.5, (d.weight || 0.5) * 2));
+
+            // Nodes
+            const baseRadius = nodeCount > 500 ? 3 : nodeCount > 100 ? 5 : 7;
+            
+            nodeElements = g.append('g')
+                .selectAll('circle')
+                .data(allNodes)
+                .enter().append('circle')
+                .attr('class', 'graph-node')
+                .attr('r', d => baseRadius + ((d.activation || 0) * 7))
+                .attr('fill', d => getNodeColor(d))
+                .on('click', (event, d) => selectNode(event, d))
+                .on('mouseover', (event, d) => showNodeTooltip(event, d))
+                .on('mouseout', () => hideNodeTooltip())
+                .call(d3.drag()
+                    .on('start', dragstarted)
+                    .on('drag', dragged)
+                    .on('end', dragended));
+
+            // Labels (initially hidden)
+            labelElements = g.append('g')
+                .selectAll('text')
+                .data(allNodes)
+                .enter().append('text')
+                .attr('font-size', '10px')
+                .attr('fill', 'white')
+                .attr('display', 'none')
+                .text(d => (d.concept || '').substring(0, 30));
+
+            state.simulation.on('tick', () => {
+                linkElements
+                    .attr('x1', d => d.source.x)
+                    .attr('y1', d => d.source.y)
+                    .attr('x2', d => d.target.x)
+                    .attr('y2', d => d.target.y);
+
+                nodeElements
+                    .attr('cx', d => d.x)
+                    .attr('cy', d => d.y);
+
+                labelElements
+                    .attr('x', d => d.x + 10)
+                    .attr('y', d => d.y + 3);
+            });
+
+            setTimeout(() => fitNetwork(), 1000);
+        }
+
+        function getNodeColor(node) {
+            if (state.showInstanceColors) {
+                return instanceColors[node.sourceInstance] || '#4a5568';
+            }
+            
+            if (node.tag === 'agent_finding') return '#06ffa5';
+            if (node.tag === 'summary') return '#ffbe0b';
+            
+            const activation = node.activation || 0;
+            if (activation > 0.7) return '#9d4edd';
+            if (activation > 0.4) return '#00ffff';
+            return '#4a5568';
+        }
+
+        function selectNode(event, d) {
+            event.stopPropagation();
+            nodeElements.classed('selected', n => n.displayId === d.displayId);
+        }
+
+        function showNodeTooltip(event, node) {
+            const tooltip = document.getElementById('node-tooltip');
+            const [x, y] = d3.pointer(event, document.body);
+            
+            tooltip.style.left = (x + 20) + 'px';
+            tooltip.style.top = (y - 50) + 'px';
+            
+            document.getElementById('tooltip-concept').textContent = node.concept || 'Unknown';
+            document.getElementById('tooltip-instance').textContent = node.sourceInstance;
+            document.getElementById('tooltip-instance').classList.toggle('leader', node.isLeader);
+            
+            const activation = ((node.activation || 0) * 100).toFixed(1);
+            document.getElementById('tooltip-metrics').innerHTML = `
+                <div class="metric-box">
+                    <div class="metric-label">Activation</div>
+                    <div class="metric-value">${activation}%</div>
+                </div>
+                <div class="metric-box">
+                    <div class="metric-label">Access</div>
+                    <div class="metric-value">${node.accessCount || 0}</div>
+                </div>
+            `;
+            
+            tooltip.classList.add('show');
+        }
+
+        function hideNodeTooltip() {
+            document.getElementById('node-tooltip').classList.remove('show');
+        }
+
+        function fitNetwork() {
+            if (!svg || !state.zoomBehavior || !nodeElements) return;
+
+            const bounds = g.node().getBBox();
+            const parent = svg.node().getBoundingClientRect();
+            const fullWidth = parent.width;
+            const fullHeight = parent.height;
+            
+            const scale = Math.min(
+                (fullWidth * 0.9) / bounds.width,
+                (fullHeight * 0.9) / bounds.height,
+                1
+            );
+            
+            const midX = bounds.x + bounds.width / 2;
+            const midY = bounds.y + bounds.height / 2;
+            
+            const translate = [
+                fullWidth / 2 - scale * midX,
+                fullHeight / 2 - scale * midY
+            ];
+            
+            svg.transition().duration(750).call(
+                state.zoomBehavior.transform,
+                d3.zoomIdentity.translate(translate[0], translate[1]).scale(scale)
+            );
+        }
+
+        function zoomIn() {
+            if (!svg || !state.zoomBehavior) return;
+            svg.transition().duration(300).call(state.zoomBehavior.scaleBy, 1.5);
+        }
+
+        function zoomOut() {
+            if (!svg || !state.zoomBehavior) return;
+            svg.transition().duration(300).call(state.zoomBehavior.scaleBy, 0.67);
+        }
+
+        function toggleLabels() {
+            if (!labelElements) return;
+            state.showLabels = !state.showLabels;
+            labelElements.attr('display', state.showLabels ? 'block' : 'none');
+            document.getElementById('toggle-labels').classList.toggle('active');
+        }
+
+        function toggleInstanceColors() {
+            state.showInstanceColors = !state.showInstanceColors;
+            if (nodeElements) {
+                nodeElements.attr('fill', d => getNodeColor(d));
+            }
+            document.getElementById('toggle-instances').classList.toggle('active');
+        }
+
+        function forceRenderNetwork() {
+            state.networkRendered = false;
+            renderNetwork();
+            state.networkRendered = true;
+        }
+
+        function dragstarted(event, d) {
+            if (!event.active && state.simulation) state.simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        }
+
+        function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+        }
+
+        function dragended(event, d) {
+            if (!event.active && state.simulation) state.simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        }
+
+        // ==================== MODALS ====================
+        function showThoughtDetail(cycle, instanceId) {
+            const thought = state.thoughts.find(t => t.cycle == cycle && t.instanceId === instanceId);
+            if (!thought) return;
+
+            document.getElementById('modal-title').innerHTML = `
+                <span>💭</span> Thought from ${instanceId} (Cycle ${cycle})
+            `;
+
+            document.getElementById('modal-body').innerHTML = `
+                <div class="detail-section">
+                    <div class="detail-label">Source Node</div>
+                    <div class="detail-value">
+                        <span style="color: ${instanceId === state.leader ? 'var(--accent-green)' : 'var(--accent-cyan)'}; font-weight: 600;">
+                            ${instanceId}${instanceId === state.leader ? ' (Leader 👑)' : ''}
+                        </span>
+                    </div>
+                </div>
+
+                <div class="detail-section">
+                    <div class="detail-label">Role</div>
+                    <div class="detail-value" style="color: var(--accent-purple); font-weight: 600;">
+                        ${thought.role || 'Unknown'}
+                    </div>
+                </div>
+
+                <div class="detail-section">
+                    <div class="detail-label">Thought Content</div>
+                    <div class="detail-value" style="font-size: 1.1rem; line-height: 1.8;">
+                        ${escapeHtml(thought.thought || thought.content || '')}
+                    </div>
+                </div>
+
+                ${thought.reasoning ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Extended Reasoning</div>
+                        <div class="detail-value" style="font-style: italic; opacity: 0.9;">
+                            ${escapeHtml(thought.reasoning.substring(0, 500))}${thought.reasoning.length > 500 ? '...' : ''}
+                        </div>
+                    </div>
+                ` : ''}
+
+                <div class="detail-grid">
+                    <div class="detail-card">
+                        <div class="detail-card-value">${thought.usedWebSearch ? '🌐 Yes' : '❌ No'}</div>
+                        <div class="detail-card-label">Web Search</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${thought.surprise ? (thought.surprise * 100).toFixed(0) + '%' : 'N/A'}</div>
+                        <div class="detail-card-label">Surprise</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${thought.model?.split('-')[0] || 'GPT-5.2'}</div>
+                        <div class="detail-card-label">Model</div>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('detail-modal').classList.add('show');
+        }
+
+        function showGoalDetail(goalId) {
+            const goal = [...(state.goals.active || []), ...(state.goals.completed || [])].find(g => g.id === goalId);
+            if (!goal) return;
+
+            document.getElementById('modal-title').innerHTML = `
+                <span>🎯</span> Unified Mission Goal
+            `;
+
+            const isLeader = goal.instanceId === state.leader;
+
+            document.getElementById('modal-body').innerHTML = `
+                <div class="detail-section">
+                    <div class="detail-label">Source Node</div>
+                    <div class="detail-value">
+                        <span style="color: ${isLeader ? 'var(--accent-green)' : 'var(--accent-cyan)'}; font-weight: 600;">
+                            ${goal.instanceId}${isLeader ? ' (Leader 👑)' : ''}
+                        </span>
+                    </div>
+                </div>
+
+                <div class="detail-section">
+                    <div class="detail-label">Description</div>
+                    <div class="detail-value" style="font-size: 1.1rem; line-height: 1.8;">
+                        ${escapeHtml(goal.description || goal.text || '')}
+                    </div>
+                </div>
+
+                <div class="detail-grid">
+                    <div class="detail-card">
+                        <div class="detail-card-value">${goal.progress ? (goal.progress * 100).toFixed(0) : 0}%</div>
+                        <div class="detail-card-label">Progress</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${goal.priority ? (goal.priority * 100).toFixed(0) : 50}%</div>
+                        <div class="detail-card-label">Priority</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${goal.pursuitCount || 0}</div>
+                        <div class="detail-card-label">Pursuits</div>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('detail-modal').classList.add('show');
+        }
+
+        function showAgentDetail(agentId) {
+            const agent = state.agents.recentActivity.find(a => a.agentId === agentId);
+            if (!agent) return;
+
+            const isLeader = agent.instanceId === state.leader;
+
+            document.getElementById('modal-title').innerHTML = `
+                <span>🤖</span> ${agent.type || 'Agent'} Details
+            `;
+
+            document.getElementById('modal-body').innerHTML = `
+                <div class="detail-section">
+                    <div class="detail-label">Running On</div>
+                    <div class="detail-value">
+                        <span style="color: ${isLeader ? 'var(--accent-green)' : 'var(--accent-cyan)'}; font-weight: 600;">
+                            ${agent.instanceId}${isLeader ? ' (Leader 👑)' : ''}
+                        </span>
+                    </div>
+                </div>
+
+                <div class="detail-section">
+                    <div class="detail-label">Agent Type</div>
+                    <div class="detail-value" style="color: var(--accent-yellow); font-weight: 600;">
+                        ${agent.type}
+                    </div>
+                </div>
+
+                ${agent.goal ? `
+                    <div class="detail-section">
+                        <div class="detail-label">Current Goal</div>
+                        <div class="detail-value">
+                            ${escapeHtml(agent.goal)}
+                        </div>
+                    </div>
+                ` : ''}
+
+                <div class="detail-grid">
+                    <div class="detail-card">
+                        <div class="detail-card-value">${agent.progress || 0}%</div>
+                        <div class="detail-card-label">Progress</div>
+                    </div>
+                    <div class="detail-card">
+                        <div class="detail-card-value">${agent.status || 'active'}</div>
+                        <div class="detail-card-label">Status</div>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('detail-modal').classList.add('show');
+        }
+
+        function showSynthesisDetail(idx) {
+            const syn = buildEmergentSynthesis()[idx];
+            if (!syn) return;
+
+            document.getElementById('modal-title').innerHTML = `
+                <span>✨</span> Emergent Synthesis ${idx + 1}
+            `;
+
+            document.getElementById('modal-body').innerHTML = `
+                <div class="detail-section">
+                    <div class="detail-label">Contributing Nodes</div>
+                    <div class="detail-value">
+                        ${syn.sources.map(s => `
+                            <span style="display: inline-block; padding: 6px 12px; margin: 4px; 
+                                  background: ${s === state.leader ? 'rgba(6, 255, 165, 0.2)' : 'rgba(0, 255, 255, 0.2)'};
+                                  border-radius: 10px; color: ${s === state.leader ? 'var(--accent-green)' : 'var(--accent-cyan)'};
+                                  font-weight: 600;">
+                                ${s}${s === state.leader ? ' 👑' : ''}
+                            </span>
+                        `).join('')}
+                    </div>
+                </div>
+
+                <div class="detail-section">
+                    <div class="detail-label">Synthesized Insight</div>
+                    <div class="detail-value" style="font-size: 1.05rem; line-height: 1.8;">
+                        ${escapeHtml(syn.content)}
+                    </div>
+                </div>
+
+                <div class="detail-section">
+                    <div class="detail-label">Emergence Type</div>
+                    <div class="detail-value" style="color: var(--accent-purple);">
+                        Cross-Node Cognitive Fusion (${syn.sources.length} perspectives)
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('detail-modal').classList.add('show');
+        }
+
+        function closeModal() {
+            document.getElementById('detail-modal').classList.remove('show');
+        }
+
+        function filterGoals(category) {
+            state.currentGoalFilter = category;
+            document.querySelectorAll('.category-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            updateGoals();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // ==================== AUTO REFRESH ====================
+        function startAutoRefresh() {
+            fetchHiveMindData();
+            setInterval(fetchHiveMindData, 5000);
+        }
+
+        startAutoRefresh();
+    </script>
+</body>
+</html>

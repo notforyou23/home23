@@ -1,0 +1,101 @@
+# External Integrations - Starter Configuration
+# Copy these into src/config.yaml under externalIntegrations section
+
+externalIntegrations:
+  # === TESTING (No setup required) ===
+  
+  # HTTP testing sandbox - validate integration works
+  httpbin:
+    enabled: false  # Set to true to test
+    type: rest
+    baseURL: "https://httpbin.org"
+    description: "Public HTTP testing API - no auth needed"
+  
+  # Fake REST API with sample data
+  jsonplaceholder:
+    enabled: false
+    type: rest
+    baseURL: "https://jsonplaceholder.typicode.com"
+    description: "Sample users, posts, comments data"
+  
+  # === COSMO SELF-ACCESS ===
+  
+  # Query COSMO's own brain via MCP
+  # (Requires MCP HTTP server running on 3344)
+  cosmo_mcp:
+    enabled: false
+    type: rest
+    baseURL: "http://localhost:3344"
+    description: "COSMO's MCP server for meta-analysis"
+  
+  # Read COSMO files (docs, code, reports)
+  # (Requires: npm run mcp:fs in separate terminal)
+  filesystem:
+    enabled: false
+    type: rest
+    baseURL: "http://localhost:3347"
+    description: "Filesystem MCP - read COSMO files"
+  
+  # === USEFUL FREE APIS ===
+  
+  # Weather data (no auth)
+  weather:
+    enabled: false
+    type: rest
+    baseURL: "https://wttr.in"
+    description: "Weather data - no auth needed"
+  
+  # IP geolocation (no auth)
+  ip_geo:
+    enabled: false
+    type: rest
+    baseURL: "https://ipapi.co"
+    description: "IP geolocation - no auth needed"
+  
+  # ISS location tracker (no auth)
+  iss_tracker:
+    enabled: false
+    type: rest
+    baseURL: "http://api.open-notify.org"
+    description: "ISS location - no auth needed"
+  
+  # === WHEN YOU'RE READY ===
+  
+  # Stripe payment API
+  stripe:
+    enabled: false
+    type: rest
+    apiKey: ${STRIPE_SECRET_KEY}
+    description: "Stripe payment processing"
+    rateLimit:
+      maxCalls: 100
+      windowMs: 1000
+  
+  # Your custom API
+  # my_business_api:
+  #   enabled: false
+  #   type: rest
+  #   baseURL: "https://api.yourbusiness.com"
+  #   auth:
+  #     type: bearer
+  #     token: ${YOUR_API_TOKEN}
+
+# === QUICK START ===
+#
+# 1. Copy this entire section to src/config.yaml
+# 2. Set httpbin: enabled: true
+# 3. Restart COSMO
+# 4. Check logs for: "✅ External integration loaded: httpbin"
+# 5. Test in any agent: await this.external.call('httpbin', 'GET /get', {})
+#
+# === RECOMMENDATIONS ===
+#
+# Start with these three (all free, no auth):
+#   httpbin: true        # Validate integration works
+#   jsonplaceholder: true # Test with sample data
+#   cosmo_mcp: true      # Meta-analysis of COSMO
+#
+# Later add:
+#   filesystem: true     # Read your own files
+#   Your business APIs   # Real commercial value
+

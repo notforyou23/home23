@@ -1,0 +1,40 @@
+{
+  "id": "plugin:data-science",
+  "name": "Data Science & Analysis",
+  "domain": "data_science",
+  "description": "Comprehensive data science toolkit for statistical analysis, data wrangling, visualization, and machine learning. Supports CSV/JSON/Parquet ingestion, exploratory data analysis, hypothesis testing, regression, classification, clustering, and publication-quality chart generation. Designed for research workflows where data integrity and reproducibility are paramount.",
+  "version": "1.0.0",
+  "tags": ["data_science", "statistics", "visualization", "machine_learning", "analysis", "pandas", "numpy"],
+  "skills": [
+    "skill:data-analysis",
+    "skill:csv-to-chart",
+    "skill:file-convert",
+    "skill:json-schema-validate"
+  ],
+  "toolsRequired": [
+    { "id": "tool:python", "version": ">=3.10" },
+    { "id": "tool:pip:pandas", "provision": "pip:pandas" },
+    { "id": "tool:pip:numpy", "provision": "pip:numpy" },
+    { "id": "tool:pip:scipy", "provision": "pip:scipy" },
+    { "id": "tool:pip:matplotlib", "provision": "pip:matplotlib" },
+    { "id": "tool:pip:scikit-learn", "provision": "pip:scikit-learn" }
+  ],
+  "assumptionsTracked": [
+    "data_integrity",
+    "statistical_independence",
+    "sufficient_sample_size"
+  ],
+  "uncertaintyModel": "Statistical uncertainty quantified via confidence intervals, p-values, and bootstrap resampling. Model uncertainty assessed through cross-validation scores and residual analysis. Data quality issues flagged as missing-value ratios and outlier counts.",
+  "environment": {
+    "type": "local",
+    "resources": {
+      "memory_gb": 4,
+      "cores": 2
+    }
+  },
+  "origin": "authored",
+  "metadata": {
+    "maintainer": "cosmo-core",
+    "category": "base-domain"
+  }
+}

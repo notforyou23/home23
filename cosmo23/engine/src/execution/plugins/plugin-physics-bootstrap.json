@@ -1,0 +1,48 @@
+{
+  "id": "plugin:physics-bootstrap",
+  "name": "Conformal Bootstrap (Theoretical Physics)",
+  "domain": "theoretical_physics",
+  "description": "Conformal bootstrap plugin for computing rigorous bounds on conformal field theory (CFT) data using semidefinite programming. The canonical use case is the 3D Ising CFT, where crossing symmetry and unitarity constraints produce rigorous islands in the space of allowed operator dimensions and OPE coefficients. Supports derivative-order (Lambda) convergence studies, extremal functional extraction, and bootstrap island visualization. This plugin provides the computational infrastructure; domain-specific skills for bootstrap equation assembly, SDP formulation, and island analysis are planned for future authoring.",
+  "version": "1.0.0",
+  "tags": ["theoretical_physics", "conformal_bootstrap", "CFT", "3d_ising", "semidefinite_programming", "operator_dimensions", "OPE_coefficients"],
+  "skills": [
+    "skill:python-execute"
+  ],
+  "toolsRequired": [
+    { "id": "tool:python", "version": ">=3.10" },
+    { "id": "tool:pip:numpy", "provision": "pip:numpy" },
+    { "id": "tool:pip:scipy", "provision": "pip:scipy" },
+    { "id": "tool:pip:matplotlib", "provision": "pip:matplotlib" },
+    { "id": "tool:sdpb", "version": ">=2.5", "provision": "apt:sdpb" },
+    { "id": "tool:pip:pycftboot", "provision": "pip:PyCFTBoot" }
+  ],
+  "assumptionsTracked": [
+    "unitarity",
+    "crossing_symmetry",
+    "z2_symmetry",
+    "relevant_scalar_gap",
+    "spin_truncation",
+    "finite_lambda_truncation"
+  ],
+  "uncertaintyModel": "Finite derivative-order (Lambda) truncation with power-law or exponential convergence. Error bars from island volume at fixed Lambda. Systematic uncertainty dominated by Lambda truncation — bounds sharpen monotonically as Lambda increases. Extrapolation to Lambda -> infinity possible via empirical convergence fits but not rigorous. Numerical precision of SDP solver introduces sub-dominant uncertainty quantified by duality gap.",
+  "environment": {
+    "type": "container",
+    "image": "cosmo-bootstrap-base",
+    "resources": {
+      "memory_gb": 32,
+      "cores": 8,
+      "gpu": false,
+      "timeout_hours": 24
+    }
+  },
+  "origin": "authored",
+  "metadata": {
+    "maintainer": "cosmo-core",
+    "category": "base-domain",
+    "notes": "SDPB and PyCFTBoot may require manual installation or a pre-built container image. The container image cosmo-bootstrap-base should include SDPB compiled with GMP support.",
+    "references": [
+      "Poland, Simmons-Duffin, Vichi — 'The Conformal Bootstrap' (2019)",
+      "Kos, Poland, Simmons-Duffin — '3D Ising model bootstrap' (2014)"
+    ]
+  }
+}

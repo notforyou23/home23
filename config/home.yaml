@@ -1,0 +1,127 @@
+home:
+  name: home23-dev
+  version: 0.1.0
+  primaryAgent: jerry
+evobrew:
+  port: 3415
+cosmo23:
+  ports:
+    app: 43210
+    websocket: 43240
+    dashboard: 43244
+    mcp: 43247
+providers:
+  ollama-cloud:
+    baseUrl: https://ollama.com/v1
+    defaultModels:
+      - minimax-m2.7
+      - kimi-k2.5
+      - gemma4:31b
+      - glm-5.1
+      - qwen3.5:397b
+      - deepseek-v3.2
+      - nemotron-3-super
+  ollama-local:
+    baseUrl: http://127.0.0.1:11434
+  anthropic:
+    defaultModels:
+      - claude-sonnet-4-6
+      - claude-opus-4-6
+  openai:
+    defaultModels:
+      - gpt-5.4
+      - gpt-5.4-mini
+  openai-codex:
+    defaultModels:
+      - gpt-5.4
+  xai:
+    baseUrl: https://api.x.ai/v1
+    defaultModels:
+      - grok-4-0709
+embeddings:
+  providers:
+    - provider: ollama-local
+      model: nomic-embed-text
+      endpoint: http://127.0.0.1:11434/api/embeddings
+      dimensions: 768
+    - provider: openai
+      model: text-embedding-3-small
+      dimensions: 1536
+    - provider: ollama-cloud
+      model: nomic-embed-text
+      dimensions: 768
+chat:
+  defaultProvider: ollama-cloud
+  defaultModel: nemotron-3-super
+  maxTokens: 4096
+  temperature: 0.7
+  historyBudget: 400000
+  sessionGapMs: 1800000
+models:
+  aliases:
+    sonnet:
+      provider: anthropic
+      model: claude-sonnet-4-6
+    opus:
+      provider: anthropic
+      model: claude-opus-4-6
+    haiku:
+      provider: anthropic
+      model: claude-haiku-4-5
+    gpt:
+      provider: openai
+      model: gpt-5.4
+    gpt5:
+      provider: openai
+      model: gpt-5.4
+    mini:
+      provider: openai
+      model: gpt-5.4-mini
+    grok:
+      provider: xai
+      model: grok-4-0709
+    grok4:
+      provider: xai
+      model: grok-4-0709
+    kimi:
+      provider: ollama-cloud
+      model: kimi-k2.5
+    kimi-k2.5:
+      provider: ollama-cloud
+      model: kimi-k2.5
+    qwen:
+      provider: ollama-cloud
+      model: qwen3.5:397b
+    deepseek:
+      provider: ollama-cloud
+      model: deepseek-v3.2
+    minimax:
+      provider: ollama-cloud
+      model: minimax-m2.7
+    nemotron:
+      provider: ollama-cloud
+      model: nemotron-3-super
+    mistral:
+      provider: ollama-cloud
+      model: mistral-large-3:675b
+    qwen-coder:
+      provider: ollama-cloud
+      model: qwen3-coder:480b
+    devstral:
+      provider: ollama-cloud
+      model: devstral-2:123b
+    gemma4:
+      provider: ollama-cloud
+      model: gemma4:31b
+    gemma:
+      provider: ollama-cloud
+      model: gemma4:31b
+    glm:
+      provider: ollama-cloud
+      model: glm-5.1
+    glm5:
+      provider: ollama-cloud
+      model: glm-5.1
+    codex:
+      provider: openai-codex
+      model: gpt-5.4

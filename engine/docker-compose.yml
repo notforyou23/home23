@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  cosmo:
+    build: .
+    container_name: cosmo
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Optional clustering envs
+      - COSMO_CLUSTER_FORCE=${COSMO_CLUSTER_FORCE:-false}
+      - COSMO_CLUSTER_DISABLE=${COSMO_CLUSTER_DISABLE:-false}
+    ports:
+      - "3344:3344"   # Main Dashboard
+      - "3346:3346"   # MCP Dashboard
+      - "3347:3347"   # MCP HTTP
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - cosmo_runs:/app/runs
+      - cosmo_logs:/app/logs
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: cosmo-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  cosmo_runs:
+  cosmo_logs:
+
