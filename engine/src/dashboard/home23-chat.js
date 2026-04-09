@@ -243,7 +243,7 @@ function renderConversationList() {
   if (!list) return;
 
   if (chatConversations.length === 0) {
-    list.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:var(--h23-text-muted);font-style:italic;">No previous conversations</div>';
+    list.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:var(--text-muted);font-style:italic;">No previous conversations</div>';
     return;
   }
 
@@ -253,7 +253,7 @@ function renderConversationList() {
                     date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
     const isActive = c.id === chatConversationId;
     const sourceIcon = c.source === 'telegram' ? '&#9992; ' : c.source === 'dashboard' ? '&#128172; ' : '';
-    const sourceLabel = c.source && c.source !== 'dashboard' ? `<span style="color:var(--h23-text-muted);font-size:10px;text-transform:uppercase;">${c.source}</span> &middot; ` : '';
+    const sourceLabel = c.source && c.source !== 'dashboard' ? `<span style="color:var(--text-muted);font-size:10px;text-transform:uppercase;">${c.source}</span> &middot; ` : '';
     return `
       <div class="h23-chat-conv-item ${isActive ? 'active' : ''}" onclick="openConversation('${c.id}')" title="${c.preview}">
         <div class="h23-chat-conv-preview">${sourceIcon}${escapeHtml(c.preview)}</div>
@@ -315,8 +315,8 @@ async function sendMessage(source) {
   const sendBtn = document.getElementById('chat-send-btn');
   const overlaySendBtn = document.getElementById('chat-overlay-send-btn');
   // Swap send → stop button
-  if (sendBtn) { sendBtn.innerHTML = '&#9632;'; sendBtn.disabled = false; sendBtn.onclick = stopChat; sendBtn.title = 'Stop'; sendBtn.style.background = 'var(--h23-red)'; }
-  if (overlaySendBtn) { overlaySendBtn.innerHTML = '&#9632;'; overlaySendBtn.disabled = false; overlaySendBtn.onclick = stopChat; overlaySendBtn.title = 'Stop'; overlaySendBtn.style.background = 'var(--h23-red)'; }
+  if (sendBtn) { sendBtn.innerHTML = '&#9632;'; sendBtn.disabled = false; sendBtn.onclick = stopChat; sendBtn.title = 'Stop'; sendBtn.style.background = 'var(--accent-red)'; }
+  if (overlaySendBtn) { overlaySendBtn.innerHTML = '&#9632;'; overlaySendBtn.disabled = false; overlaySendBtn.onclick = stopChat; overlaySendBtn.title = 'Stop'; overlaySendBtn.style.background = 'var(--accent-red)'; }
 
   chatAbort = new AbortController();
   const bridgeUrl = `http://${window.location.hostname}:${chatAgent.bridgePort}/api/chat`;
@@ -433,12 +433,12 @@ function appendMedia(mediaType, filePath, caption, containerId) {
     div.innerHTML = `
       <div style="margin:4px 0;">
         <img src="/home23/api/media?path=${encodeURIComponent(filePath)}"
-             style="max-width:100%;border-radius:8px;border:1px solid var(--h23-border);"
+             style="max-width:100%;border-radius:8px;border:1px solid var(--glass-border);"
              alt="${escapeHtml(caption || 'Generated image')}"
              onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
-        <span style="display:none;color:var(--h23-text-muted);font-size:12px;">Image: ${escapeHtml(filePath)}</span>
+        <span style="display:none;color:var(--text-muted);font-size:12px;">Image: ${escapeHtml(filePath)}</span>
       </div>
-      ${caption ? `<div style="font-size:12px;color:var(--h23-text-muted);margin-top:4px;">${escapeHtml(caption)}</div>` : ''}
+      ${caption ? `<div style="font-size:12px;color:var(--text-muted);margin-top:4px;">${escapeHtml(caption)}</div>` : ''}
     `;
   } else {
     div.textContent = `[${mediaType}: ${filePath}]${caption ? ' — ' + caption : ''}`;

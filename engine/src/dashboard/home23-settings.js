@@ -59,7 +59,7 @@ function renderProviders(providers) {
         <div class="h23s-provider-header">
           <div style="display:flex;align-items:center;gap:10px;">
             <span class="h23s-provider-name">${PROVIDER_DISPLAY[name] || name}</span>
-            ${modelsText ? `<span style="font-size:11px;color:var(--h23-text-muted);">${modelsText}</span>` : ''}
+            ${modelsText ? `<span style="font-size:11px;color:var(--text-muted);">${modelsText}</span>` : ''}
           </div>
           <div class="h23s-provider-status" id="prov-status-${name}">
             <span class="h23s-status-dot ${statusClass}"></span>
@@ -68,8 +68,8 @@ function renderProviders(providers) {
         </div>
         ${p.hasKey ? `
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
-            <span style="font-size:12px;color:var(--h23-text-muted);">Current key:</span>
-            <code style="font-size:12px;color:var(--h23-text-secondary);background:rgba(255,255,255,0.04);padding:3px 8px;border-radius:4px;">${p.maskedKey}</code>
+            <span style="font-size:12px;color:var(--text-muted);">Current key:</span>
+            <code style="font-size:12px;color:var(--text-secondary);background:rgba(255,255,255,0.04);padding:3px 8px;border-radius:4px;">${p.maskedKey}</code>
             <button class="h23s-btn-secondary" onclick="testProvider('${name}')" style="padding:4px 10px;font-size:11px;">Test Connection</button>
           </div>
         ` : ''}
@@ -123,16 +123,16 @@ async function saveProviders() {
     const data = await res.json();
     if (data.ok) {
       statusEl.textContent = 'Saved';
-      statusEl.style.color = 'var(--h23-green)';
+      statusEl.style.color = 'var(--accent-green)';
       setTimeout(() => { statusEl.textContent = ''; }, 3000);
       loadProviders();
     } else {
       statusEl.textContent = 'Error: ' + (data.error || 'unknown');
-      statusEl.style.color = 'var(--h23-red)';
+      statusEl.style.color = 'var(--accent-red)';
     }
   } catch (err) {
     statusEl.textContent = 'Error: ' + err.message;
-    statusEl.style.color = 'var(--h23-red)';
+    statusEl.style.color = 'var(--accent-red)';
   }
 }
 
@@ -159,11 +159,11 @@ function renderAgents(agents) {
     const provLabel = PROVIDER_DISPLAY[a.provider] || a.provider || '?';
     const dashUrl = `http://${window.location.hostname}:${a.ports.dashboard || '?'}`;
     return `
-    <div class="h23s-agent-card" data-agent="${a.name}" ${a.isPrimary ? 'style="border-color:var(--h23-accent);"' : ''}>
+    <div class="h23s-agent-card" data-agent="${a.name}" ${a.isPrimary ? 'style="border-color:var(--accent-blue);"' : ''}>
       <div class="h23s-agent-summary" onclick="toggleAgentDetail('${a.name}')">
         <div class="h23s-agent-info">
           <span class="h23s-agent-name">${a.displayName || a.name}</span>
-          ${a.isPrimary ? '<span class="h23s-agent-badge" style="background:rgba(88,166,255,0.12);color:var(--h23-accent);">PRIMARY</span>' : ''}
+          ${a.isPrimary ? '<span class="h23s-agent-badge" style="background:rgba(88,166,255,0.12);color:var(--accent-blue);">PRIMARY</span>' : ''}
           <span class="h23s-agent-badge ${a.status}">${a.status}</span>
         </div>
         <div style="display:flex;align-items:center;gap:12px;">
@@ -171,16 +171,16 @@ function renderAgents(agents) {
             ? `<button class="h23s-btn-secondary" onclick="event.stopPropagation(); stopAgent('${a.name}')" style="font-size:12px;padding:5px 12px;">Stop</button>`
             : `<button class="h23s-btn-secondary" onclick="event.stopPropagation(); startAgent('${a.name}')" style="font-size:12px;padding:5px 12px;">Start</button>`
           }
-          <span style="color:var(--h23-text-muted);font-size:16px;" id="chevron-${a.name}">&#9656;</span>
+          <span style="color:var(--text-muted);font-size:16px;" id="chevron-${a.name}">&#9656;</span>
         </div>
       </div>
-      <div style="display:flex;gap:20px;margin-top:8px;font-size:12px;color:var(--h23-text-muted);flex-wrap:wrap;">
-        <span>Model: <strong style="color:var(--h23-text-secondary);">${a.model || '?'}</strong></span>
-        <span>Provider: <strong style="color:var(--h23-text-secondary);">${provLabel}</strong></span>
-        <span>Owner: <strong style="color:var(--h23-text-secondary);">${a.owner || 'not set'}</strong></span>
-        <span>Ports: <strong style="color:var(--h23-text-secondary);">${a.ports.engine || '?'} / ${a.ports.dashboard || '?'}</strong></span>
-        <span>Channels: <strong style="color:var(--h23-text-secondary);">${[a.channels?.telegram?.enabled && 'Telegram', a.channels?.discord?.enabled && 'Discord'].filter(Boolean).join(', ') || 'Direct only'}</strong></span>
-        ${a.status === 'running' ? `<a href="${dashUrl}/home23" target="_blank" style="color:var(--h23-accent);text-decoration:none;" onclick="event.stopPropagation();">Open Dashboard &rarr;</a>` : ''}
+      <div style="display:flex;gap:20px;margin-top:8px;font-size:12px;color:var(--text-muted);flex-wrap:wrap;">
+        <span>Model: <strong style="color:var(--text-secondary);">${a.model || '?'}</strong></span>
+        <span>Provider: <strong style="color:var(--text-secondary);">${provLabel}</strong></span>
+        <span>Owner: <strong style="color:var(--text-secondary);">${a.owner || 'not set'}</strong></span>
+        <span>Ports: <strong style="color:var(--text-secondary);">${a.ports.engine || '?'} / ${a.ports.dashboard || '?'}</strong></span>
+        <span>Channels: <strong style="color:var(--text-secondary);">${[a.channels?.telegram?.enabled && 'Telegram', a.channels?.discord?.enabled && 'Discord'].filter(Boolean).join(', ') || 'Direct only'}</strong></span>
+        ${a.status === 'running' ? `<a href="${dashUrl}/home23" target="_blank" style="color:var(--accent-blue);text-decoration:none;" onclick="event.stopPropagation();">Open Dashboard &rarr;</a>` : ''}
       </div>
       <div class="h23s-agent-detail" id="detail-${a.name}">
         <div class="h23s-field-row">
@@ -213,24 +213,24 @@ function renderAgents(agents) {
             <input type="text" id="edit-${a.name}-telegramId" value="${a.telegramId || ''}" placeholder="Numeric user ID (optional)">
           </div>
         </div>
-        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--h23-border);">
-          <h4 style="font-size:12px;color:var(--h23-accent);text-transform:uppercase;letter-spacing:1px;margin:0 0 14px 0;font-weight:600;">Channels</h4>
-          <div style="background:rgba(255,255,255,0.02);border:1px solid var(--h23-border);border-radius:8px;padding:14px 16px;margin-bottom:10px;">
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--glass-border);">
+          <h4 style="font-size:12px;color:var(--accent-blue);text-transform:uppercase;letter-spacing:1px;margin:0 0 14px 0;font-weight:600;">Channels</h4>
+          <div style="background:rgba(255,255,255,0.02);border:1px solid var(--glass-border);border-radius:8px;padding:14px 16px;margin-bottom:10px;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
               <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;color:#fff;margin:0;">
                 <input type="checkbox" id="edit-${a.name}-telegram-enabled" ${a.channels?.telegram?.enabled ? 'checked' : ''}
-                  style="width:16px;height:16px;accent-color:var(--h23-accent);cursor:pointer;">
+                  style="width:16px;height:16px;accent-color:var(--accent-blue);cursor:pointer;">
                 Telegram
               </label>
-              <span style="font-size:11px;color:${a.channels?.telegram?.enabled ? 'var(--h23-green)' : 'var(--h23-text-muted)'};">${a.channels?.telegram?.enabled ? 'Connected' : 'Not configured'}</span>
+              <span style="font-size:11px;color:${a.channels?.telegram?.enabled ? 'var(--accent-green)' : 'var(--text-muted)'};">${a.channels?.telegram?.enabled ? 'Connected' : 'Not configured'}</span>
             </div>
             <div class="h23s-field" style="margin-bottom:0;">
               <input type="password" id="edit-${a.name}-telegram-token" placeholder="${a.channels?.telegram?.enabled ? 'Token configured — paste new to replace' : 'Paste bot token from @BotFather'}"
                 style="font-size:12px;">
             </div>
           </div>
-          <div style="background:rgba(255,255,255,0.02);border:1px solid var(--h23-border);border-radius:8px;padding:14px 16px;opacity:0.5;">
-            <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:var(--h23-text-muted);margin:0;">
+          <div style="background:rgba(255,255,255,0.02);border:1px solid var(--glass-border);border-radius:8px;padding:14px 16px;opacity:0.5;">
+            <label style="display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text-muted);margin:0;">
               <input type="checkbox" disabled style="width:16px;height:16px;">
               Discord <span style="font-size:11px;margin-left:8px;">coming soon</span>
             </label>
@@ -298,16 +298,16 @@ async function saveAgent(name) {
     });
     const data = await res.json();
     if (data.ok) {
-      statusEl.innerHTML = `Saved &mdash; <button onclick="restartAgent('${name}')" style="background:var(--h23-accent);color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer;">Restart to apply</button>`;
-      statusEl.style.color = 'var(--h23-green)';
+      statusEl.innerHTML = `Saved &mdash; <button onclick="restartAgent('${name}')" style="background:var(--accent-blue);color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer;">Restart to apply</button>`;
+      statusEl.style.color = 'var(--accent-green)';
     } else {
       statusEl.textContent = 'Error: ' + data.error;
-      statusEl.style.color = 'var(--h23-red)';
+      statusEl.style.color = 'var(--accent-red)';
       setTimeout(() => { statusEl.textContent = ''; }, 3000);
     }
   } catch (err) {
     statusEl.textContent = 'Error: ' + err.message;
-    statusEl.style.color = 'var(--h23-red)';
+    statusEl.style.color = 'var(--accent-red)';
   }
 }
 
@@ -319,7 +319,7 @@ async function restartAgent(name) {
     const statusEl = document.getElementById(`agent-status-${name}`);
     if (statusEl) {
       statusEl.textContent = 'Restarted';
-      statusEl.style.color = 'var(--h23-green)';
+      statusEl.style.color = 'var(--accent-green)';
       setTimeout(() => { statusEl.textContent = ''; loadAgents(); }, 2000);
     }
   } catch (err) {
@@ -567,11 +567,11 @@ async function saveModels() {
     });
     const data = await res.json();
     statusEl.textContent = data.ok ? 'Saved' : ('Error: ' + data.error);
-    statusEl.style.color = data.ok ? 'var(--h23-green)' : 'var(--h23-red)';
+    statusEl.style.color = data.ok ? 'var(--accent-green)' : 'var(--accent-red)';
     setTimeout(() => { statusEl.textContent = ''; }, 3000);
   } catch (err) {
     statusEl.textContent = 'Error: ' + err.message;
-    statusEl.style.color = 'var(--h23-red)';
+    statusEl.style.color = 'var(--accent-red)';
   }
 }
 
@@ -637,10 +637,10 @@ function renderSystem(data) {
   embList.innerHTML = providers.map((p, i) => `
     <div class="h23s-provider-card" style="padding:12px 16px;margin-bottom:8px;">
       <div style="display:flex;gap:12px;align-items:center;font-size:13px;">
-        <span style="color:var(--h23-text-muted);min-width:20px;">${i === 0 ? 'Primary' : 'Fallback ' + i}.</span>
+        <span style="color:var(--text-muted);min-width:20px;">${i === 0 ? 'Primary' : 'Fallback ' + i}.</span>
         <span style="color:#fff;font-weight:500;">${PROVIDER_DISPLAY[p.provider] || p.provider}</span>
-        <span style="color:var(--h23-text-secondary);">${p.model}</span>
-        <span style="color:var(--h23-text-muted);">${p.dimensions} dimensions</span>
+        <span style="color:var(--text-secondary);">${p.model}</span>
+        <span style="color:var(--text-muted);">${p.dimensions} dimensions</span>
       </div>
     </div>
   `).join('') || '<p class="h23s-panel-desc" style="margin:0;">No embedding providers configured.</p>';
@@ -673,11 +673,11 @@ async function saveSystem() {
     });
     const data = await res.json();
     statusEl.textContent = data.ok ? 'Saved' : ('Error: ' + data.error);
-    statusEl.style.color = data.ok ? 'var(--h23-green)' : 'var(--h23-red)';
+    statusEl.style.color = data.ok ? 'var(--accent-green)' : 'var(--accent-red)';
     setTimeout(() => { statusEl.textContent = ''; }, 3000);
   } catch (err) {
     statusEl.textContent = 'Error: ' + err.message;
-    statusEl.style.color = 'var(--h23-red)';
+    statusEl.style.color = 'var(--accent-red)';
   }
 }
 
