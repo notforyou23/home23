@@ -52,9 +52,9 @@ Both `config.json` and `.evobrew-config.json` contain plaintext API keys:
 
 | File | Key Type | Example Prefix |
 |------|----------|---------------|
-| config.json:6 | Anthropic API key | `sk-ant-oat01-F0oTdY1q...` |
-| config.json:10 | OpenAI API key | `sk-proj-qaneJRwu3P4B...` |
-| config.json:13 | xAI API key | `xai-x0vxBHT4R8KBEXfh...` |
+| config.json:6 | Anthropic API key | `sk-ant-REDACTED
+| config.json:10 | OpenAI API key | `sk-proj-REDACTED
+| config.json:13 | xAI API key | `xai-REDACTED
 | .evobrew-config.json:6 | Anthropic API key | (same) |
 | .evobrew-config.json:9 | OpenAI API key | (same) |
 | .evobrew-config.json:12 | xAI API key | (same) |
@@ -249,9 +249,9 @@ Clean and appropriate for a public repo. No secrets in the workflow file.
 1. **Add `config.json` and `.evobrew-config.json` to .gitignore** — These contain plaintext API keys (Anthropic, OpenAI, xAI). If evobrew is committed to the public monorepo without this fix, keys ship.
 
 2. **Rotate all exposed API keys** — Even though these files haven't been pushed to a public repo, they exist in the Home23 working tree. After ensuring .gitignore coverage, rotate:
-   - Anthropic key: `sk-ant-oat01-F0oTdY1q...`
-   - OpenAI key: `sk-proj-qaneJRwu3P4B...`
-   - xAI key: `xai-x0vxBHT4R8KBEXfh...`
+   - Anthropic key: `sk-ant-REDACTED
+   - OpenAI key: `sk-proj-REDACTED
+   - xAI key: `xai-REDACTED
 
 ### HIGH
 

@@ -68,9 +68,9 @@ Additional engine subdirectories with source:
 
 ```
 .cosmo23-config/config.json:
-  - OpenAI API key: sk-proj-qane...LgA (full key exposed)
-  - xAI API key: xai-x0vx...heZD (full key exposed)
-  - Encryption key: 5f0a42e36e... (full key exposed)
+  - OpenAI API key: sk-proj-REDACTED
+  - xAI API key: xai-REDACTED
+  - Encryption key: REDACTED
 ```
 
 **Action required:** This file must NEVER be committed. Add `.cosmo23-config/` to .gitignore.
