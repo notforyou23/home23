@@ -24,6 +24,7 @@ async function init() {
   await loadAgents();
   renderAgentTabs();
   setupTabHandlers();
+  setupVibeActions();
   await loadHomeTiles();
   startAutoRefresh();
   updateCosmoIndicator();
@@ -270,6 +271,12 @@ async function loadHomeTiles() {
       updateBrainLog(thoughts);
     }
   } catch { /* offline */ }
+
+  await loadVibeTile(primaryAgent, {
+    imageId: 'home-vibe-image',
+    captionId: 'home-vibe-caption',
+    galleryHrefId: 'home-vibe-gallery-link',
+  });
 }
 
 function updateSystemTile(state) {
@@ -385,7 +392,8 @@ function createAgentPanel(agentName) {
       </div>
       <div class="h23-tile h23-tile-vibe">
         <div class="h23-tile-header"><span class="icon">🎨</span> Vibe</div>
-        <div class="h23-vibe-image"><span class="h23-vibe-placeholder">Generating...</span></div>
+        <div class="h23-vibe-image" id="vibe-image-${agentName}"><span class="h23-vibe-placeholder">Generating...</span></div>
+        <div class="h23-vibe-caption" id="vibe-caption-${agentName}"></div>
       </div>
       <div class="h23-tile h23-tile-system">
         <div class="h23-tile-header"><span class="icon">⚡</span> System</div>
@@ -450,6 +458,11 @@ async function loadAgentPanel(agentName) {
       }
     }
   } catch { /* offline */ }
+
+  await loadVibeTile(agent, {
+    imageId: `vibe-image-${agentName}`,
+    captionId: `vibe-caption-${agentName}`,
+  });
 }
 
 // ── Auto-Refresh ──
@@ -471,6 +484,79 @@ function apiBase(agent) {
   const port = agent.dashboardPort;
   return port == (parseInt(window.location.port) || 5002)
     ? '' : `http://${window.location.hostname}:${port}`;
+}
+
+function setupVibeActions() {
+  const galleryLink = document.getElementById('home-vibe-gallery-link');
+  if (galleryLink) {
+    galleryLink.href = '/home23/vibe-gallery';
+  }
+
+  const vibeTrigger = document.getElementById('vibe-trigger');
+  if (vibeTrigger) {
+    vibeTrigger.addEventListener('click', async (event) => {
+      if (event.detail !== 3) return;
+      await triggerVibeGeneration();
+    });
+  }
+}
+
+async function triggerVibeGeneration() {
+  setText('home-vibe-caption', 'Generating a fresh chaos vibe...');
+
+  try {
+    await fetch('/home23/api/vibe/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+    await loadVibeTile(primaryAgent, {
+      imageId: 'home-vibe-image',
+      captionId: 'home-vibe-caption',
+      galleryHrefId: 'home-vibe-gallery-link',
+    });
+  } catch (err) {
+    setText('home-vibe-caption', `Generation failed: ${err.message}`);
+  }
+}
+
+async function loadVibeTile(agent, { imageId, captionId, galleryHrefId = null }) {
+  const base = apiBase(agent);
+  const imageEl = document.getElementById(imageId);
+  const captionEl = document.getElementById(captionId);
+  const galleryHref = galleryHrefId ? document.getElementById(galleryHrefId) : null;
+  if (!imageEl || !captionEl) return;
+
+  if (galleryHref) {
+    galleryHref.href = `${base}/home23/vibe-gallery`;
+  }
+
+  try {
+    const data = await apiFetch(`${base}/home23/api/vibe/current`);
+    const galleryUrl = `${base}/home23/vibe-gallery`;
+
+    if (data?.item?.url) {
+      imageEl.innerHTML = `<img src="${data.item.url}" alt="Vibe image for ${agent.displayName || agent.name}" loading="lazy">`;
+      imageEl.classList.add('clickable');
+      imageEl.onclick = () => { window.location.href = galleryUrl; };
+      captionEl.textContent = data.item.caption || 'Latest chaos vibe';
+      return;
+    }
+
+    imageEl.classList.remove('clickable');
+    imageEl.onclick = null;
+    const placeholder = data?.generating
+      ? 'Conjuring a new chaos vibe...'
+      : 'No image yet';
+    imageEl.innerHTML = `<span class="h23-vibe-placeholder">${placeholder}</span>`;
+    captionEl.textContent = data?.generating
+      ? 'A fresh vibe image is being generated in the background.'
+      : 'The gallery is empty. The dashboard will seed it on the next generation window.';
+  } catch {
+    imageEl.classList.remove('clickable');
+    imageEl.onclick = null;
+    imageEl.innerHTML = '<span class="h23-vibe-placeholder">Vibe offline</span>';
+    captionEl.textContent = 'Could not load the current vibe image.';
+  }
 }
 
 async function apiFetch(url) {

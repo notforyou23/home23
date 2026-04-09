@@ -6,6 +6,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const OpenAI = require('openai');
+const yaml = require('js-yaml');
 const { v4: uuidv4 } = require('uuid');
 const { getOpenAIClient } = require('./openai-client');
 
@@ -16,21 +18,128 @@ const IMAGES_DIR = path.join(__dirname, '..', '..', 'data', 'images');
 const DEFAULT_CONFIG = {
   active: 'openai',
   promptEngine: {
-    provider: 'ollama',
-    model: 'qwen3.5:4b',
-    ollamaOptions: { think: false },
+    provider: 'openai',
+    model: 'gpt-4o-mini',
     fallback: { provider: 'openai', model: 'gpt-4o-mini' }
   },
   commentaryEngine: {
-    provider: 'ollama',
-    model: 'qwen3.5:4b',
-    ollamaOptions: { think: false },
+    provider: 'openai',
+    model: 'gpt-4o-mini',
     fallback: { provider: 'openai', model: 'gpt-4o-mini' }
   },
   providers: {
     openai: { model: 'gpt-image-1', size: 'auto', quality: 'auto' }
   }
 };
+
+function deepMerge(target, source) {
+  const result = { ...(target || {}) };
+  for (const [key, value] of Object.entries(source || {})) {
+    if (
+      result[key] && value &&
+      typeof result[key] === 'object' && typeof value === 'object' &&
+      !Array.isArray(result[key]) && !Array.isArray(value)
+    ) {
+      result[key] = deepMerge(result[key], value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function loadYamlFile(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return {};
+  try {
+    return yaml.load(fs.readFileSync(filePath, 'utf8')) || {};
+  } catch {
+    return {};
+  }
+}
+
+function normalizeRemoteProvider(provider) {
+  const value = String(provider || '').trim().toLowerCase();
+  if (value === 'openai' || value === 'ollama-cloud') return value;
+  return null;
+}
+
+function pickFirstString(values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function resolveSystemRemoteProvider(homeConfig, agentConfig) {
+  return normalizeRemoteProvider(
+    agentConfig?.chat?.provider ||
+    agentConfig?.chat?.defaultProvider ||
+    homeConfig?.chat?.provider ||
+    homeConfig?.chat?.defaultProvider
+  );
+}
+
+function resolveModelForProvider(provider, engineConfig, homeConfig, agentConfig) {
+  const engineProvider = normalizeRemoteProvider(engineConfig?.provider);
+  if (engineProvider === provider && typeof engineConfig?.model === 'string' && engineConfig.model.trim()) {
+    return engineConfig.model.trim();
+  }
+
+  const agentProvider = normalizeRemoteProvider(agentConfig?.chat?.provider || agentConfig?.chat?.defaultProvider);
+  if (agentProvider === provider) {
+    const agentModel = pickFirstString([agentConfig?.chat?.model, agentConfig?.chat?.defaultModel]);
+    if (agentModel) return agentModel;
+  }
+
+  const homeProvider = normalizeRemoteProvider(homeConfig?.chat?.provider || homeConfig?.chat?.defaultProvider);
+  if (homeProvider === provider) {
+    const homeModel = pickFirstString([homeConfig?.chat?.model, homeConfig?.chat?.defaultModel]);
+    if (homeModel) return homeModel;
+  }
+
+  const providerDefaults = Array.isArray(homeConfig?.providers?.[provider]?.defaultModels)
+    ? homeConfig.providers[provider].defaultModels
+    : [];
+  const defaultModel = pickFirstString(providerDefaults);
+  if (defaultModel) return defaultModel;
+
+  return provider === 'ollama-cloud' ? 'kimi-k2.5' : 'gpt-4o-mini';
+}
+
+function resolveEngineConfig(engineConfig, homeConfig, agentConfig) {
+  const selectedProvider =
+    resolveSystemRemoteProvider(homeConfig, agentConfig) ||
+    normalizeRemoteProvider(engineConfig?.provider) ||
+    'openai';
+
+  const selectedModel = resolveModelForProvider(selectedProvider, engineConfig, homeConfig, agentConfig);
+  const baseFallback = engineConfig?.fallback || {};
+  const fallbackProvider =
+    (normalizeRemoteProvider(baseFallback.provider) && normalizeRemoteProvider(baseFallback.provider) !== selectedProvider)
+      ? normalizeRemoteProvider(baseFallback.provider)
+      : (selectedProvider === 'openai' ? 'ollama-cloud' : 'openai');
+
+  const resolved = {
+    ...(engineConfig || {}),
+    provider: selectedProvider,
+    model: selectedModel,
+    fallback: {
+      ...baseFallback,
+      provider: fallbackProvider,
+      model: resolveModelForProvider(fallbackProvider, baseFallback, homeConfig, agentConfig),
+    },
+  };
+
+  const ollamaCloudBaseUrl = homeConfig?.providers?.['ollama-cloud']?.baseUrl || 'https://ollama.com/v1';
+  if (resolved.provider === 'ollama-cloud') {
+    resolved.baseUrl = resolved.baseUrl || ollamaCloudBaseUrl;
+  }
+  if (resolved.fallback.provider === 'ollama-cloud') {
+    resolved.fallback.baseUrl = resolved.fallback.baseUrl || ollamaCloudBaseUrl;
+  }
+
+  return resolved;
+}
 
 // ─── CHAOS MODE Category Pools (§17 — preserved verbatim) ─────────────────────
 const IMAGE_CATEGORIES = {
@@ -117,15 +226,27 @@ Be unpredictable. Surprise with creativity. But output must be valid JSON.`;
 /**
  * Load image config from config/image.json (falls back to defaults if missing)
  */
-function loadConfig() {
+function loadConfig(runtime = {}) {
+  let config = deepMerge(DEFAULT_CONFIG, {});
   try {
     if (fs.existsSync(CONFIG_PATH)) {
-      return { ...DEFAULT_CONFIG, ...JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) };
+      const fileConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+      config = deepMerge(config, fileConfig);
     }
   } catch (e) {
     // Malformed JSON — fall through to defaults
   }
-  return DEFAULT_CONFIG;
+
+  if (runtime.home23Root) {
+    const homeConfig = loadYamlFile(path.join(runtime.home23Root, 'config', 'home.yaml'));
+    const agentConfig = runtime.agentName
+      ? loadYamlFile(path.join(runtime.home23Root, 'instances', runtime.agentName, 'config.yaml'))
+      : {};
+    config.promptEngine = resolveEngineConfig(config.promptEngine, homeConfig, agentConfig);
+    config.commentaryEngine = resolveEngineConfig(config.commentaryEngine, homeConfig, agentConfig);
+  }
+
+  return config;
 }
 
 /**
@@ -151,38 +272,58 @@ async function callOllama(model, messages, options = {}) {
   return data.message?.content ?? '';
 }
 
+async function callOpenAICompatibleChat({ apiKey, baseURL, model, messages }) {
+  const client = new OpenAI({ apiKey, baseURL });
+  const completion = await client.chat.completions.create({ model, messages });
+  return completion.choices[0]?.message?.content ?? '';
+}
+
+async function runTextEngine(engineConfig, messages) {
+  const provider = String(engineConfig?.provider || 'openai').toLowerCase();
+  const model = engineConfig?.model || 'gpt-4o-mini';
+
+  if (provider === 'openai') {
+    const client = getOpenAIClient();
+    const completion = await client.chat.completions.create({ model, messages });
+    return completion.choices[0]?.message?.content ?? '';
+  }
+
+  if (provider === 'ollama-cloud') {
+    const apiKey = engineConfig?.apiKey || process.env.OLLAMA_CLOUD_API_KEY;
+    const baseURL = engineConfig?.baseUrl || process.env.OLLAMA_CLOUD_BASE_URL || 'https://ollama.com/v1';
+    if (!apiKey) throw new Error('OLLAMA_CLOUD_API_KEY missing');
+    return callOpenAICompatibleChat({ apiKey, baseURL, model, messages });
+  }
+
+  if (provider === 'ollama' || provider === 'ollama-local') {
+    throw new Error('Local Ollama is disabled for Home23 Vibe. Use ollama-cloud or openai.');
+  }
+
+  throw new Error(`Unsupported prompt engine provider: ${provider}`);
+}
+
 /**
  * createImageProvider() — factory that returns a provider instance
  */
-function createImageProvider() {
-  const config = loadConfig();
+function createImageProvider(runtime = {}) {
+  const getConfig = () => loadConfig(runtime);
 
   /**
    * callPromptEngine(systemPrompt, userPrompt, jsonMode)
-   * Uses Ollama (qwen3.5:4b) with think:false; falls back to gpt-4o-mini if Ollama unavailable.
+   * Uses the resolved remote text provider (`ollama-cloud` or `openai`) with a remote fallback.
    * jsonMode: if true, strips think tags and JSON.parses the result (throws on failure)
    */
   async function callPromptEngine(systemPrompt, userPrompt, jsonMode = false) {
+    const config = getConfig();
     const messages = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt }
     ];
     let text;
     try {
-      text = await callOllama(
-        config.promptEngine.model,
-        messages,
-        config.promptEngine.ollamaOptions || { think: false }
-      );
-    } catch (_ollamaErr) {
-      // Ollama unavailable — fallback to OpenAI chat completions
-      const fallbackModel = config.promptEngine.fallback?.model || 'gpt-4o-mini';
-      const client = getOpenAIClient();
-      const completion = await client.chat.completions.create({
-        model: fallbackModel,
-        messages
-      });
-      text = completion.choices[0]?.message?.content ?? '';
+      text = await runTextEngine(config.promptEngine, messages);
+    } catch (_promptErr) {
+      text = await runTextEngine(config.promptEngine.fallback || { provider: 'openai', model: 'gpt-4o-mini' }, messages);
     }
 
     if (jsonMode) {
@@ -198,27 +339,18 @@ function createImageProvider() {
 
   /**
    * callCommentaryEngine(systemPrompt, userPrompt)
-   * Same Ollama-first pattern as prompt engine, always returns string.
+   * Same remote-only provider pattern as prompt engine, always returns string.
    */
   async function callCommentaryEngine(systemPrompt, userPrompt) {
+    const config = getConfig();
     const messages = [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt }
     ];
     try {
-      return await callOllama(
-        config.commentaryEngine.model,
-        messages,
-        config.commentaryEngine.ollamaOptions || { think: false }
-      );
-    } catch (_ollamaErr) {
-      const fallbackModel = config.commentaryEngine.fallback?.model || 'gpt-4o-mini';
-      const client = getOpenAIClient();
-      const completion = await client.chat.completions.create({
-        model: fallbackModel,
-        messages
-      });
-      return completion.choices[0]?.message?.content ?? '';
+      return await runTextEngine(config.commentaryEngine, messages);
+    } catch (_commentaryErr) {
+      return await runTextEngine(config.commentaryEngine.fallback || { provider: 'openai', model: 'gpt-4o-mini' }, messages);
     }
   }
 
@@ -229,6 +361,7 @@ function createImageProvider() {
    * Returns normalized result: { url, b64, mimeType, provider, model, prompt, generatedAt, localPath }
    */
   async function generate(prompt, options = {}) {
+    const config = getConfig();
     const active = options.provider || config.active || 'openai';
     const providerCfg = config.providers?.[active] || {};
     const model = options.model || providerCfg.model || 'gpt-image-1';

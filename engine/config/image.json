@@ -1,23 +1,19 @@
 {
-  "_comment": "Set active to switch image provider. promptEngine/commentaryEngine use local Ollama qwen3.5:4b.",
+  "_comment": "Vibe image defaults. promptEngine/commentaryEngine are remote-only; Home23 prefers the agent/home provider path when it is ollama-cloud or openai, with these values as defaults/fallbacks.",
   "active": "openai",
   "promptEngine": {
-    "provider": "ollama",
+    "provider": "ollama-cloud",
     "model": "qwen3.5:4b",
-    "ollamaOptions": {
-      "think": false
-    },
+    "baseUrl": "https://ollama.com/v1",
     "fallback": {
       "provider": "openai",
       "model": "gpt-4o-mini"
     }
   },
   "commentaryEngine": {
-    "provider": "ollama",
+    "provider": "ollama-cloud",
     "model": "qwen3.5:4b",
-    "ollamaOptions": {
-      "think": false
-    },
+    "baseUrl": "https://ollama.com/v1",
     "fallback": {
       "provider": "openai",
       "model": "gpt-4o-mini"

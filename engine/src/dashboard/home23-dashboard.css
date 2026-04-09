@@ -336,6 +336,40 @@ body {
   line-height: 1.5;
 }
 
+.h23-vibe-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.h23-vibe-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(88, 166, 255, 0.24);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--h23-text-secondary);
+  text-decoration: none;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+
+.h23-vibe-action:hover {
+  border-color: rgba(88, 166, 255, 0.44);
+  color: var(--h23-text);
+  background: rgba(88, 166, 255, 0.08);
+}
+
+.h23-vibe-image.clickable {
+  cursor: pointer;
+}
+
 /* ── System tile (right column) ── */
 
 .h23-tile-system {

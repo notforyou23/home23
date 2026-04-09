@@ -14,6 +14,7 @@ const { QueryEngine } = require('./query-engine');
 const { IntelligenceBuilder } = require('./intelligence-builder');
 const { ClusterDataProxy } = require('../cluster/cluster-data-proxy');
 const { MissionTracer } = require('../../scripts/TRACE_RESEARCH_MISSIONS');
+const { Home23VibeService } = require('./home23-vibe/service');
 
 /**
  * Phase 2B Dashboard Server
@@ -74,6 +75,13 @@ class DashboardServer {
     
     // Logger for route handlers - using console for consistency
     this.logger = console;
+    this.home23Vibe = new Home23VibeService({
+      home23Root: this.getHome23Root(),
+      agentName: this.getHome23AgentName(),
+      loadState: () => this.loadState(),
+      getRecentThoughts: (limit) => this.getRecentThoughts(limit),
+      logger: this.logger,
+    });
     
     this.setupRoutes();
   }
@@ -690,6 +698,17 @@ class DashboardServer {
         : path.resolve(__dirname, '..', '..', '..'));
   }
 
+  getHome23AgentName() {
+    if (process.env.HOME23_AGENT) return process.env.HOME23_AGENT;
+    if (process.env.COSMO_WORKSPACE_PATH) {
+      return path.basename(path.dirname(path.resolve(process.env.COSMO_WORKSPACE_PATH)));
+    }
+    if (process.env.COSMO_RUNTIME_DIR) {
+      return path.basename(path.dirname(path.resolve(process.env.COSMO_RUNTIME_DIR)));
+    }
+    return 'agent';
+  }
+
   setupRoutes() {
     this.app.use(express.static(path.join(__dirname)));
 
@@ -934,6 +953,36 @@ class DashboardServer {
     // Chat standalone page
     this.app.get('/home23/chat', (req, res) => {
       res.sendFile(path.join(__dirname, 'home23-chat.html'));
+    });
+
+    this.app.get('/home23/vibe-gallery', (req, res) => {
+      res.sendFile(path.join(__dirname, 'home23-vibe', 'gallery.html'));
+    });
+
+    this.app.get('/home23/api/vibe/current', async (req, res) => {
+      try {
+        res.json(await this.home23Vibe.getCurrent());
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    this.app.post('/home23/api/vibe/generate', async (req, res) => {
+      try {
+        const item = await this.home23Vibe.requestGeneration();
+        res.json({ ok: true, item });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    this.app.get('/home23/api/vibe/gallery', async (req, res) => {
+      try {
+        const limit = parseInt(req.query.limit || '60', 10);
+        res.json(await this.home23Vibe.listGallery(limit));
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
     });
 
     // Media serving for dashboard chat (images from agent tools)

@@ -9,6 +9,12 @@ cosmo23:
     websocket: 43240
     dashboard: 43244
     mcp: 43247
+dashboard:
+  vibe:
+    autoGenerate: true
+    generationIntervalHours: 12
+    rotationIntervalSeconds: 45
+    galleryLimit: 60
 providers:
   ollama-cloud:
     baseUrl: https://ollama.com/v1
