@@ -1142,7 +1142,7 @@ class DocumentAnalysisAgent extends BaseAgent {
    * Document discovery now uses discoverDocumentsViaMCPInSpecificPath() with
    * configured allowedPaths from launch script. See getDocumentPaths() (lines 314-404).
    * 
-   * NOTE: The hardcoded directory list below (['jtr', 'documents', etc.]) should not
+   * NOTE: The hardcoded directory list below (['documents', etc.]) should not
    * be used as it makes assumptions about filesystem structure. Use configured paths instead.
    * 
    * TODO: Consider removing in future cleanup if confirmed unused.
