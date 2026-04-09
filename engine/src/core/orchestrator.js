@@ -965,7 +965,7 @@ class Orchestrator {
         // Check if should wake up (both systems must agree or minimum cycles met)
         // In dream mode, never wake (stays asleep until maxCycles)
         const cyclesCompleted = cyclesAsleep + 1;
-        const energyRestored = cognitiveState.energy >= 0.8;
+        const energyRestored = cognitiveState.energy >= 0.6;
         const minimumMet = cyclesCompleted >= this.sleepSession.minimumCycles;
         
         if (!this.config.execution?.dreamModeSettings?.preventWake && minimumMet && energyRestored) {
