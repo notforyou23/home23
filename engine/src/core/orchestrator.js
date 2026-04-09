@@ -1026,8 +1026,18 @@ class Orchestrator {
       const oscillatorParams = this.oscillator.getThinkingParameters();
 
       if (!thinkingParams.shouldThink) {
-        this.logger.info('Skipping thought generation');
-        return;
+        // Still generate a thought if this is the first waking cycle (energy just ran out)
+        // This ensures the dashboard always shows recent activity
+        const journal = this.state?.journal || [];
+        const lastThoughtCycle = journal.length > 0 ? journal[journal.length - 1].cycle : 0;
+        const cyclesSinceThought = this.cycleCount - lastThoughtCycle;
+        if (cyclesSinceThought > 2) {
+          this.logger.info('Generating thought despite low energy (dashboard freshness)');
+          thinkingParams.shouldThink = true;
+        } else {
+          this.logger.info('Skipping thought generation');
+          return;
+        }
       }
 
       // 4. EXECUTIVE RING: Reality check and decision (if enabled)
