@@ -187,11 +187,24 @@ export class CommandHandler {
     return `${arg} (unknown provider)`;
   }
 
-  /** Persist model choice so it survives restarts. */
+  /** Persist model choice to agent config.yaml (single source of truth). */
   private persistModel(model: string, provider: string): void {
     try {
-      const filePath = join(this.ctx.runtimeDir, 'default-model.json');
-      writeFileSync(filePath, JSON.stringify({ model, provider }));
+      // Write to agent config.yaml
+      const configPath = join(this.ctx.workspacePath, '..', 'config.yaml');
+      if (existsSync(configPath)) {
+        const yaml = require('js-yaml');
+        const config = yaml.load(readFileSync(configPath, 'utf-8')) || {};
+        if (!config.chat) config.chat = {};
+        config.chat.defaultModel = model;
+        config.chat.defaultProvider = provider;
+        config.chat.model = model;
+        config.chat.provider = provider;
+        writeFileSync(configPath, yaml.dump(config, { lineWidth: -1 }));
+      }
+      // Also write legacy file for backward compat
+      const legacyPath = join(this.ctx.runtimeDir, 'default-model.json');
+      writeFileSync(legacyPath, JSON.stringify({ model, provider }));
     } catch { /* non-fatal */ }
   }
 

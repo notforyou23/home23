@@ -194,18 +194,10 @@ async function main(): Promise<void> {
     runAgentLoop: null,       // wired after agent creation
   };
 
-  // ── Load persisted default model (survives restarts) ──
-  const defaultModelPath = join(RUNTIME_DIR, 'default-model.json');
-  let startupModel = config.chat.defaultModel ?? config.chat.model ?? 'kimi2.5';
-  let startupProvider = config.chat.defaultProvider ?? config.chat.provider ?? 'ollama-cloud';
-  try {
-    if (existsSync(defaultModelPath)) {
-      const saved = JSON.parse(readFileSync(defaultModelPath, 'utf-8')) as { model: string; provider: string };
-      startupModel = saved.model;
-      startupProvider = saved.provider;
-      console.log(`[home] Loaded default model: ${startupModel} (${startupProvider})`);
-    }
-  } catch { /* use hardcoded default */ }
+  // ── Model from config.yaml (single source of truth) ──
+  const startupModel = config.chat.defaultModel ?? config.chat.model ?? 'kimi-k2.5';
+  const startupProvider = config.chat.defaultProvider ?? config.chat.provider ?? 'ollama-cloud';
+  console.log(`[home] Model: ${startupModel} (${startupProvider}) — from config.yaml`);
 
   // ── Auth tokens ──
   function resolveApiKey(provider: string): string {

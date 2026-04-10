@@ -387,6 +387,26 @@ function createSettingsRouter(home23Root) {
 
     saveYaml(configPath, config);
     regenerateEcosystem();
+
+    // Sync model change to harness's persisted file + restart harness
+    if (model !== undefined || provider !== undefined) {
+      const m = model || config.chat?.defaultModel || config.chat?.model;
+      const p = provider || config.chat?.defaultProvider || config.chat?.provider;
+      // Write to all locations the harness checks
+      const convDir = path.join(home23Root, 'instances', agentName, 'conversations');
+      const brainDir = path.join(home23Root, 'instances', agentName, 'brain');
+      const modelJson = JSON.stringify({ model: m, provider: p });
+      for (const dir of [convDir, brainDir]) {
+        try { fs.writeFileSync(path.join(dir, 'default-model.json'), modelJson); } catch { /* ok */ }
+      }
+      // Restart harness to pick up new model
+      try {
+        const { execSync } = require('child_process');
+        execSync(`pm2 restart home23-${agentName}-harness`, { stdio: 'pipe', timeout: 10000 });
+      } catch { /* non-fatal */ }
+      regenerateEvobrewConfig();
+    }
+
     res.json({ ok: true });
   });
 
