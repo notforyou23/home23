@@ -173,7 +173,7 @@ export async function runAgentCreate(home23Root, name) {
       historyBudget: 400000,
       sessionGapMs: 1800000,
       memorySearch: { enabled: false, timeoutMs: 10000, topK: 5 },
-      identityFiles: ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'MEMORY.md', 'LEARNINGS.md'],
+      identityFiles: ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'MEMORY.md', 'LEARNINGS.md', 'COSMO_RESEARCH.md'],
       heartbeatRefreshMs: 60000,
     },
     sessions: {
@@ -210,7 +210,7 @@ export async function runAgentCreate(home23Root, name) {
 
   // Write identity files from templates
   const templateVars = { displayName, name, ownerName };
-  for (const file of ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'MEMORY.md', 'LEARNINGS.md']) {
+  for (const file of ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'MEMORY.md', 'LEARNINGS.md', 'COSMO_RESEARCH.md']) {
     const template = loadTemplate(home23Root, file);
     const content = renderTemplate(template, templateVars);
     writeFileSync(join(instanceDir, 'workspace', file), content, 'utf8');

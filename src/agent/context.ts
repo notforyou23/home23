@@ -179,6 +179,8 @@ export class ContextManager implements ContextManagerRef {
       content = lines.slice(0, 100).join('\n').slice(0, 2200);
     } else if (filename === 'ALIASES.json') {
       content = content.slice(0, 1800);
+    } else if (filename === 'COSMO_RESEARCH.md') {
+      content = content.slice(0, 2800);
     }
 
     return content;

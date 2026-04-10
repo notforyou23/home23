@@ -382,6 +382,27 @@ ALWAYS use your tools for file operations — read_file to read, write_file to w
 Model: ${this.model} (${this.provider})`;
       }
 
+      // ── Situational awareness: COSMO 2.3 active-run check ──
+      // If any research_* tool is registered and a run is currently in flight,
+      // inject a live state block so the agent doesn't double-launch.
+      if (this.registry.get('research_launch')) {
+        try {
+          const { checkCosmoActiveRun } = await import('./tools/research.js');
+          const active = await checkCosmoActiveRun();
+          if (active) {
+            rawSystemPrompt += `\n\n[COSMO ACTIVE RUN]
+A research run is currently in flight — do not launch another.
+- runName: ${active.runName}
+- topic: ${active.topic || '(unknown)'}
+- started: ${active.startedAt || '(unknown)'}
+- processes: ${active.processCount}
+Use research_watch_run to check progress. Use research_stop to cancel. You can still query completed brains while this runs.`;
+          }
+        } catch {
+          // Never block on situational awareness failure
+        }
+      }
+
       // ── Memory: Semantic Recall (before every turn) ──────
       try {
         const recall = await this.memory.semanticRecall(userText);

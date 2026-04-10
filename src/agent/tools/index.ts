@@ -15,7 +15,19 @@ import { generateImageTool, ttsTool } from './media.js';
 import { cronScheduleTool, cronListTool, cronDeleteTool } from './cron.js';
 import { selfUpdateTool, selfReadTool } from './identity.js';
 import { spawnAgentTool } from './subagent.js';
-import { researchTool } from './research.js';
+import {
+  listBrainsTool,
+  queryBrainTool,
+  searchAllBrainsTool,
+  launchTool,
+  continueRunTool,
+  stopRunTool,
+  watchRunTool,
+  getBrainSummaryTool,
+  getBrainGraphTool,
+  compileBrainTool,
+  compileSectionTool,
+} from './research.js';
 
 export class ToolRegistry {
   private tools: Map<string, ToolDefinition> = new Map();
@@ -94,7 +106,18 @@ export function createToolRegistry(): ToolRegistry {
   registry.register(selfUpdateTool);
   registry.register(selfReadTool);
   registry.register(spawnAgentTool);
-  registry.register(researchTool);
+  // COSMO 2.3 research toolkit — 11 tools (see docs/design/STEP16)
+  registry.register(listBrainsTool);
+  registry.register(queryBrainTool);
+  registry.register(searchAllBrainsTool);
+  registry.register(launchTool);
+  registry.register(continueRunTool);
+  registry.register(stopRunTool);
+  registry.register(watchRunTool);
+  registry.register(getBrainSummaryTool);
+  registry.register(getBrainGraphTool);
+  registry.register(compileBrainTool);
+  registry.register(compileSectionTool);
 
   return registry;
 }
