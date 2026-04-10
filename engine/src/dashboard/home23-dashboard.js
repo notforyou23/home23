@@ -377,7 +377,7 @@ async function updateCosmoIndicator() {
   const text = document.getElementById('cosmo23-ind-text');
   if (!dot || !text) return;
   try {
-    const res = await fetch(`${cosmo23Url}/api/status`, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(`${cosmo23Url}/api/status`, { signal: AbortSignal.timeout(10000) });
     const status = await res.json();
     if (status.running && status.activeContext) {
       dot.className = 'h23-cosmo-indicator-dot running';
@@ -455,20 +455,21 @@ function setupTabHandlers() {
 async function loadHomeTiles() {
   const base = apiBase(primaryAgent);
 
-  // State
+  // State → Home23 engine status indicator
   try {
     const state = await apiFetch(`${base}/api/state`);
     if (state) {
       updateSystemTile(state);
       updatePulseFromState(state);
-      const dot = document.getElementById('cosmo-dot');
+      const dot = document.getElementById('engine-dot');
       if (dot) { dot.className = 'status-dot alive'; }
-      setText('cosmo-status-text', 'COSMO');
+      const temporalState = state.temporal?.state || state.cognitiveState?.mode || 'awake';
+      setText('engine-status-text', temporalState === 'sleeping' ? 'ENGINE · SLEEPING' : 'ENGINE');
     }
   } catch {
-    const dot = document.getElementById('cosmo-dot');
+    const dot = document.getElementById('engine-dot');
     if (dot) { dot.className = 'status-dot dead'; }
-    setText('cosmo-status-text', 'COSMO offline');
+    setText('engine-status-text', 'ENGINE offline');
   }
 
   // Feeder status
@@ -984,7 +985,9 @@ function closeLogOverlay() {
 }
 
 async function apiFetch(url) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+  // 15s timeout — /api/state serializes the full brain and can take several seconds
+  // over Tailscale / LAN when the brain has thousands of nodes
+  const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
   if (!res.ok) return null;
   return res.json();
 }
