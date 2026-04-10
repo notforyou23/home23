@@ -29,46 +29,50 @@ node cli/home23.js cosmo23 update          # Sync latest COSMO from source
 ```
 Home23/
   engine/              <- JS COSMO engine (DO NOT REWRITE)
-  feeder/              <- Ingestion pipeline
-  src/                 <- TS harness layer (40 files)
+    src/ingestion/     <- Document feeder (chokidar, compiler, converter, manifest)
+    src/realtime/      <- WebSocket + /admin/feeder/* HTTP on port 5001
+  src/                 <- TS harness layer
+    agent/tools/       <- 30+ agent tools (files, web, brain, research_*, etc.)
   dist/                <- Compiled JS output (gitignored)
   cli/                 <- CLI installer + management commands
     lib/               <- Command implementations
-    templates/         <- Identity file templates for new agents
+    templates/         <- Identity file templates (incl. COSMO_RESEARCH.md skill)
   config/              <- Home-level config
     home.yaml          <- Provider URLs, model aliases, chat defaults
     secrets.yaml       <- API keys, bot tokens (gitignored)
   configs/             <- Engine config templates
-    base-engine.yaml   <- Cognitive loop config (shared by all agents)
-  instances/           <- Per-agent directories
+    base-engine.yaml   <- Cognitive loop + feeder config (shared by all agents)
+  instances/           <- Per-agent directories (all gitignored)
     <agent-name>/
-      workspace/       <- Identity files (SOUL.md, MISSION.md, BRAIN_INDEX.md, etc.)
-      brain/           <- Engine state (thoughts, goals, dreams, metrics)
+      workspace/       <- Identity files (SOUL.md, MISSION.md, COSMO_RESEARCH.md, BRAIN_INDEX.md, etc.)
+      brain/           <- Engine state (thoughts, goals, dreams, metrics, ingestion-manifest.json)
       conversations/   <- JSONL chat history
       config.yaml      <- Agent-specific config (ports, model, channels)
-      feeder.yaml      <- Feeder config for this agent
       logs/            <- Process logs
   evobrew/             <- Bundled AI IDE
-  cosmo23/             <- Bundled research engine (COSMO 2.3)
+  cosmo23/             <- Bundled research engine (COSMO 2.3) — see COSMO23-VENDORED-PATCHES.md
   logs/                <- Home-level logs (evobrew)
   scripts/             <- Dev start/stop scripts (PM2 is primary)
   ecosystem.config.cjs <- PM2 config (auto-generated from instances)
 ```
 
+Note: `feeder/` (a standalone feeder process) is legacy and gone. All document ingestion happens inside the cognitive engine via `engine/src/ingestion/`.
+
 ## Process Architecture (per agent)
 
-Each agent runs 4 processes managed by PM2, plus 2 shared processes:
+Each agent runs 3 processes managed by PM2, plus 2 shared processes:
 
 | Process | Script | Purpose | Port |
 |---|---|---|---|
-| `home23-<name>` | `engine/src/index.js` | Cognitive engine (loops, dreaming, brain growth) | WS |
-| `home23-<name>-dash` | `engine/src/dashboard/server.js` | HTTP API (brain queries, state, memory) | HTTP |
-| `home23-<name>-feeder` | `feeder/server.js` | File watcher, chunker, embedder, compiler | — |
-| `home23-<name>-harness` | `dist/home.js` | TS agent (Telegram, 26 tools, LLM loop) | bridge |
+| `home23-<name>` | `engine/src/index.js` | Cognitive engine (loops, dreaming, brain growth, **document ingestion**) | 5001 (WS + admin HTTP) |
+| `home23-<name>-dash` | `engine/src/dashboard/server.js` | HTTP API (brain queries, state, settings, feeder upload/proxy) | 5002 (HTTP) |
+| `home23-<name>-harness` | `dist/home.js` | TS agent (Telegram, 30+ tools incl. research_*, LLM loop) | 5004 (bridge) |
 | `home23-evobrew` | `evobrew/server/server.js` | AI IDE (shared, all agents) | 3415 |
 | `home23-cosmo23` | `cosmo23/server/index.js` | Research engine (shared, on-demand runs) | 43210 |
 
 Ports auto-assigned per agent: first agent 5001/5002/5003/5004, second 5011/5012/5013/5014, etc.
+
+The cognitive engine process owns both the cognitive loop AND the document feeder. The dashboard process proxies feeder admin commands (flush, add-watch-path, etc.) to the engine's `/admin/feeder/*` endpoints on port 5001.
 
 ## Front Door (UI Layer)
 
@@ -84,11 +88,12 @@ Engine (cognitive loops, persistence)       <- BUILT
 
 The dashboard is the AI OS home screen, served at `/home23` on each agent's dashboard port (e.g., `http://localhost:5002/home23`).
 
-Tab bar (the OS dock): Home, Intelligence, Settings, COSMO, evobrew.
+Tab bar (the OS dock): Home, Intelligence, Brain Map, About, Settings, COSMO, evobrew.
 
-- **Home tab** — Three-column tile grid: Thoughts (left), Vibe (center), **Chat** (right). System stats bar below. Feeder + Brain Log at bottom. Chat tile connects to agent loop via SSE with full thinking/tool visibility, agent selector, model selector, conversation history, expand to overlay or standalone `/home23/chat`.
-- **Settings tab** — Full settings page at `/home23/settings` with nested sub-tabs: Providers (API keys), Agents (create/edit/channels/start/stop), Models (aliases/defaults), System (ports/embeddings/maintenance). First-run shows welcome screen -> Settings onboarding flow. Primary agent concept (first agent, can't be deleted).
+- **Home tab** — Three-column tile grid: Thoughts (left), Vibe (center), **Chat** (right). System stats bar + engine pulse bar at top. Feeder + Brain Log at bottom. Chat tile connects to agent loop via SSE with full thinking/tool visibility, agent selector, model selector, conversation history, expand to overlay or standalone `/home23/chat`.
+- **Settings tab** — Full settings page at `/home23/settings` with nested sub-tabs: Providers (API keys), Agents (create/edit/channels/start/stop), Models (aliases/defaults), **Feeder** (watch paths, exclusion patterns, chunking, compiler model, converter, drop zone), System (ports/embeddings/maintenance). First-run shows welcome screen -> Settings onboarding flow. Primary agent concept (first agent, can't be deleted).
 - **Intelligence tab** — Synthesis agent reads brain + index and produces curated insights. Scheduled synthesis every 4 hours; manual trigger button also available.
+- **Brain Map tab** — 3D force-directed knowledge graph visualization of the agent's brain.
 - **COSMO tab** — Full COSMO 2.3 research UI embedded via iframe (all 9 tabs). Iframe preserves state across tab switches.
 - **Evobrew button** — Opens AI IDE in new tab with `?agent=<name>` pre-selection.
 
@@ -102,15 +107,19 @@ Agents appear as `local:<name>` in the model dropdown. Chat goes through the bri
 
 ### COSMO 2.3 (Research Engine)
 
-Bundled at `cosmo23/`, served at `http://localhost:43210`. One shared PM2 process — COSMO manages its own subprocesses internally when a run is active. Config pre-seeded with API keys from Home23.
+Bundled at `cosmo23/`, served at `http://localhost:43210`. One shared PM2 process — COSMO manages its own subprocesses internally when a run is active. Config pre-seeded with API keys from Home23 via `cli/lib/cosmo23-config.js` (plaintext in gitignored `.cosmo23-config/` dir, env vars via PM2 as the authoritative source).
 
-Full COSMO UI embedded in dashboard via iframe (all 9 tabs). The agent has a `research` tool with search/launch/status actions. Research brains visible in evobrew.
+Full COSMO UI embedded in dashboard via iframe (all 9 tabs). The agent has 11 `research_*` tools (list/query/search_all/launch/continue/stop/watch/get_brain_summary/get_brain_graph/compile_brain/compile_section) mapping to COSMO's HTTP API. Workflow policy lives in `instances/<agent>/workspace/COSMO_RESEARCH.md` (loaded as an identity layer file). When a COSMO run is active, `src/agent/loop.ts` polls `/api/status` and injects a live `[COSMO ACTIVE RUN]` block into the system prompt. Research brains are visible in evobrew.
 
-### Ingestion Compiler
+**Critical:** `cosmo23/` has been patched with 3 structural fixes (config dir unification, env-first key resolution, decrypt-safe bootstrap). All patches are tracked in `docs/design/COSMO23-VENDORED-PATCHES.md` and **must be re-verified after any `cli/home23.js cosmo23 update`**.
 
-Documents ingested through the feeder are synthesized by an LLM before brain entry (`engine/src/ingestion/document-compiler.js`). Compiler produces a structured synthesis (key concepts, relationships, insights) that is stored as the brain node rather than raw text. A brain knowledge index is maintained automatically at `instances/<name>/workspace/BRAIN_INDEX.md` — a human-readable map of everything the agent knows.
+### Ingestion Compiler + Feeder
 
-Conversation sessions are compiled to workspace on session gap (idle timeout). The agent's `research` tool supports a `compile` action: `research({ action: "compile", runId: "..." })` to compile a completed COSMO research run into the brain.
+Documents are watched by `engine/src/ingestion/document-feeder.js` (chokidar-based), converted from binary formats via `document-converter.js` (MarkItDown + vision OCR), chunked, validated, classified, and then synthesized by an LLM via `document-compiler.js` before brain entry. Compiler produces structured synthesis (key concepts, relationships, insights) stored as brain nodes rather than raw text. A brain knowledge index is maintained automatically at `instances/<name>/workspace/BRAIN_INDEX.md`.
+
+Feeder configuration lives in `configs/base-engine.yaml` under the `feeder:` block and is fully editable from the dashboard's **Settings → Feeder** tab: watch paths, exclusion patterns, chunking, flush cadence, compiler model, converter settings, and a drag-and-drop drop zone. Settings classify as hot-apply (compiler model, new watch paths) or restart-required (flush interval, chunking, converter) with a UI banner when a restart is needed.
+
+Conversation sessions are compiled to workspace on session gap (idle timeout). The agent's `research_compile_brain` and `research_compile_section` tools write compiled COSMO research summaries into `workspace/research/` where the feeder auto-ingests them as permanent brain nodes.
 
 > The model is the current voice. The engine is the living process. The brain is the enduring cortex.
 
@@ -138,8 +147,9 @@ Config loader merges: `home.yaml` <- `agent config.yaml` <- `secrets.yaml` <- pe
 
 ## Rules
 
-- Do NOT rewrite engine/. It is battle-tested JS.
-- Do NOT rewrite feeder/. It works.
+- Do NOT rewrite engine/. It is battle-tested JS. Fix root-cause bugs directly; avoid wholesale rewrites.
+- Do NOT rewrite `engine/src/ingestion/`. It is the ingestion pipeline — the legacy `feeder/` dir is gone.
+- Do NOT edit `cosmo23/` without reading `docs/design/COSMO23-VENDORED-PATCHES.md` first. Three surgical patches must survive every upstream resync.
 - ecosystem.config.cjs is auto-generated — do not edit manually.
 
 ## Key Documents
@@ -155,6 +165,15 @@ Config loader merges: `home.yaml` <- `agent config.yaml` <- `secrets.yaml` <- pe
 | `docs/design/STEP8-EVOBREW-INTEGRATION-DESIGN.md` | Evobrew integration design |
 | `docs/design/STEP9-COSMO23-INTEGRATION-DESIGN.md` | COSMO 2.3 integration design |
 | `docs/design/STEP9B-DASHBOARD-COSMO-EMBED-DESIGN.md` | Dashboard as OS home screen (iframe embed) |
+| `docs/design/STEP10-INGESTION-COMPILER-DESIGN.md` | LLM-powered document compiler |
+| `docs/design/STEP11-INTELLIGENCE-TAB-DESIGN.md` | Intelligence tab + scheduled synthesis |
+| `docs/design/STEP13-DASHBOARD-CHAT-DESIGN.md` | Dashboard chat with SSE + tool visibility |
+| `docs/design/STEP14-VIBE-INTEGRATION-DESIGN.md` | Vibe tile + CHAOS MODE image flow |
+| `docs/design/STEP15-DESIGN-LANGUAGE-OVERHAUL.md` | ReginaCosmo design language |
+| `docs/design/STEP16-AGENT-COSMO-TOOLKIT-DESIGN.md` | 11 `research_*` tools + skill file + active-run injection |
+| `docs/design/STEP17-FEEDER-SETTINGS-DESIGN.md` | Feeder settings tab + drop zone |
+| `docs/design/COSMO23-VENDORED-PATCHES.md` | **CRITICAL:** patches to vendored cosmo23 that must survive updates |
+| `docs/design/SLEEP-WAKE-DESIGN.md` | Engine sleep/wake tuning for Home23 |
 | `docs/vision/HOME23_CANONICAL_VISION.md` | Product thesis |
 | `docs/vision/HOME23_STACK_PYRAMID.md` | Architectural law |
 | `docs/vision/HOME23_DRIFT_ANALYSIS_FROM_SESSION_HISTORY.md` | What went wrong last time |

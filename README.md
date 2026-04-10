@@ -15,6 +15,8 @@ Four integrated systems, one install:
 
 - **Node.js 20+** (LTS recommended)
 - **PM2** — process manager (`npm install -g pm2`)
+- **Python 3** — for the document feeder's binary-format converter
+- **MarkItDown** — optional but recommended: `pip install markitdown` lets the feeder ingest PDFs, DOCX, images, audio, and more
 - **An LLM provider** — at least one of: Ollama Cloud (free), Anthropic, OpenAI, xAI
 - **An embedding provider** — Ollama local (free, recommended), OpenAI, or Ollama Cloud
 
@@ -42,9 +44,10 @@ This creates the agent's directory structure, identity files, and config. Telegr
 node cli/home23.js start my-agent
 ```
 
-This launches 4 processes for your agent plus 2 shared processes (Evobrew and COSMO). Open your browser:
+This launches 3 processes for your agent plus 2 shared processes (Evobrew and COSMO). Open your browser:
 
 - **Dashboard:** `http://localhost:5002/home23`
+- **Settings:** `http://localhost:5002/home23/settings`
 - **Evobrew IDE:** `http://localhost:3415`
 - **COSMO Research:** `http://localhost:43210`
 
@@ -94,12 +97,11 @@ Model aliases are defined in `config/home.yaml` — use short names like `sonnet
 
 ```
 Home23/
-  engine/        JS cognitive engine (loops, dreaming, brain growth, memory)
-  src/           TS agent harness (AgentLoop, 26+ tools, channels, routes)
+  engine/        JS cognitive engine (loops, dreaming, brain growth, memory, ingestion)
+  src/           TS agent harness (AgentLoop, 30+ tools, channels, routes)
   cli/           CLI installer and management commands
-  feeder/        Document ingestion pipeline (watch, chunk, embed, compile)
   config/        Provider URLs, model aliases, API keys
-  configs/       Shared engine config templates
+  configs/       Shared engine config templates (base-engine.yaml incl. feeder block)
   instances/     Per-agent directories (workspace, brain, conversations)
   evobrew/       AI IDE (brain exploration, code editing, multi-provider)
   cosmo23/       Research engine (guided runs, multi-phase, brain integration)
@@ -109,18 +111,19 @@ Home23/
 
 ### Processes (per agent)
 
-Each agent runs 4 PM2 processes, plus 2 shared:
+Each agent runs 3 PM2 processes, plus 2 shared:
 
 | Process | Purpose | Default Port |
 |---|---|---|
-| `home23-<name>` | Cognitive engine — thinking, dreaming, brain growth | 5001 (WS) |
-| `home23-<name>-dash` | Dashboard API — brain queries, state, memory search | 5002 (HTTP) |
-| `home23-<name>-feeder` | Ingestion — file watching, chunking, embedding | — |
-| `home23-<name>-harness` | Agent runtime — Telegram, tools, LLM loop | 5004 (bridge) |
+| `home23-<name>` | Cognitive engine — thinking, dreaming, brain growth, document ingestion | 5001 (WS + admin HTTP) |
+| `home23-<name>-dash` | Dashboard API — brain queries, state, settings, feeder drop zone | 5002 (HTTP) |
+| `home23-<name>-harness` | Agent runtime — Telegram, 30+ tools, LLM loop | 5004 (bridge) |
 | `home23-evobrew` | AI IDE (shared across all agents) | 3415 |
 | `home23-cosmo23` | Research engine (shared, on-demand) | 43210 |
 
 Multiple agents get sequential port blocks: first agent 5001-5004, second 5011-5014, etc.
+
+The document feeder runs **inside** the cognitive engine process (no separate PM2 entry). Configure it from the Feeder tab in Settings.
 
 ## Configuration
 
