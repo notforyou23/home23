@@ -26,48 +26,39 @@ curl -s http://localhost:5002/api/state | python3 -c "import sys,json; d=json.lo
 
 ## Priority Work
 
-### 1. Engine Sleep/Wake Fix (CRITICAL)
+### 1. COSMO 2.3 Integration (NEXT SESSION)
 
-The cognitive engine gets stuck sleeping for 25+ minutes, showing stale thoughts on the dashboard. Three partial fixes were applied but none fully solve it.
+Make COSMO 2.3 work properly as part of the Home23 AI OS — both for the user (dashboard tab, direct UI access) and for agents (research tool, brain compilation).
 
-**Root cause:** The sleep branch in `engine/src/core/orchestrator.js` (around line 943) returns before reaching thought generation code (around line 1028). During sleep, the engine processes feeder nodes and dreams but never writes a journal thought — so the dashboard goes stale.
+**What exists:**
+- cosmo23 bundled at `cosmo23/`, PM2 process `home23-cosmo23` on port 43210
+- Dashboard COSMO tab embeds cosmo23 UI via iframe
+- Agent has a `research` tool with search/launch/status/compile actions
+- Design docs at `docs/design/STEP9-COSMO23-INTEGRATION-DESIGN.md` and `STEP9B-DASHBOARD-COSMO-EMBED-DESIGN.md`
 
-**What was tried:**
-- Reduced minimum sleep cycles from 12 to 3 (line 116)
-- Lowered wake energy threshold from 0.8 to 0.6 (line 968)
-- Added force-thought-on-stale check (line 1028-1039) — but this code is unreachable during sleep
-
-**What needs to happen:** Either:
-- Generate a thought during sleep cycles (modify the sleep branch to produce at least one thought per cycle), OR
-- Restructure the cycle so thought generation happens BEFORE agent work drains energy to zero
-
-The engine already thinks during sleep (dreams, consolidation) — it just doesn't write those as journal entries that the dashboard can display.
-
-**Key files:**
-- `engine/src/core/orchestrator.js` — the main cycle logic, sleep branch ~line 900-990, thought generation ~line 1020-1100
-- `engine/src/cognition/state-modulator.js` — `shouldThink` gate at line 252 (returns false when mode is 'sleeping')
-
-### 2. Live Activity Indicator (CRITICAL UX)
-
-The dashboard needs a real-time heartbeat showing what the engine is doing RIGHT NOW. When the user sees the dashboard, they should instantly know:
-- Is it awake or sleeping?
-- What phase is it in? (Phase 1: analyzing, Phase 2: goals, Phase 3: memory, Phase 4: health, Phase 5: decisions)
-- Current energy level
-- Time since last thought
-- What it's actively doing (running AnalysisAgent, compiling document X, dreaming)
-
-The engine already logs all this to stdout. It needs to be exposed to the dashboard — either via SSE (real-time event stream), WebSocket (the engine already has one on the realtime port), or a polling endpoint.
-
-**Where to put it on the dashboard:** A persistent status bar or indicator that's always visible — not hidden in a tab. Could be:
-- An enhanced version of the existing status pills
-- A dedicated "engine pulse" section
-- The COSMO status indicator expanded to show full engine state
+**What to verify/fix:**
+1. Is cosmo23 accessible at http://localhost:43210? Does the UI load?
+2. Does the agent's research tool launch COSMO runs?
+3. Can completed research runs compile into the agent brain?
+4. Do research brains appear in evobrew's brain picker?
+5. Does the COSMO tab iframe in the dashboard work?
+6. API keys — does cosmo23 read from Home23's secrets.yaml?
+7. Models — does cosmo23 use models from home.yaml?
 
 **Key files:**
-- `engine/src/dashboard/server.js` — dashboard API, already has SSE for log streaming
-- `engine/src/dashboard/home23-dashboard.html` — the dashboard page
-- `engine/src/dashboard/home23-dashboard.js` — client-side logic
-- `engine/src/core/orchestrator.js` — where phase/state info originates
+- `cosmo23/` — bundled COSMO 2.3 installation
+- `cosmo23/.cosmo23-config/config.json` — COSMO config (auto-generated?)
+- `src/agent/tools/research.ts` — agent's research tool
+- `engine/src/dashboard/home23-dashboard.js` — COSMO tab iframe logic
+
+### 2. Done: Engine Sleep/Wake (FIXED)
+
+Sleep/wake rebalanced for Home23. Config-driven, ~90s naps, fast maintenance always runs.
+See `docs/design/SLEEP-WAKE-DESIGN.md`.
+
+### 3. Done: Live Activity Indicator (FIXED)
+
+Engine pulse bar on dashboard via WebSocket (port 5001). Shows state, phase, energy, cycle, ago timer.
 
 ## Hard Rules
 
@@ -85,8 +76,14 @@ jtr is the architect. He doesn't write code — he works through AI agents. He's
 ## System State
 
 - Agent "jerry" running from `/Users/jtr/_JTR23_/release/home23/`
-- 6 PM2 processes: home23-jerry, home23-jerry-dash, home23-jerry-feeder, home23-jerry-harness, home23-evobrew, home23-cosmo23
+- 5 PM2 processes: home23-jerry, home23-jerry-dash, home23-jerry-harness, home23-evobrew, home23-cosmo23
+- Standalone feeder (home23-jerry-feeder) is STOPPED — engine's built-in DocumentFeeder handles ingestion
 - Dashboard: http://localhost:5002/home23
-- Engine: cognitive loops with sleep/wake cycles, 4000+ brain nodes
-- Feeder: processing ~6000 doc queue from workspace migration
+- Evobrew: http://localhost:3415 (managed by Home23, config.json gitignored + auto-generated)
+- COSMO 2.3: http://localhost:43210
+- Engine: cognitive loops with config-driven sleep/wake (~90s naps), pulse bar on dashboard
+- Ingestion: engine DocumentFeeder processing ~4400 files through LLM compiler (minimax-m2.7)
+- Jerry's model: configurable via dashboard dropdown (currently grok-4.20-reasoning-latest / xai)
+- Model change flow: dashboard dropdown → config.yaml → harness auto-restart → evobrew config regen
+- Config single source of truth: `config/home.yaml` + `config/secrets.yaml` + `instances/jerry/config.yaml`
 - Design: ReginaCosmo glass-morphism (space gradient, particles, translucent tiles)
