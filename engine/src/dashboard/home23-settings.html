@@ -35,9 +35,59 @@
     <!-- Providers Panel -->
     <div class="h23s-panel active" id="panel-providers">
       <h2 class="h23s-panel-title">Providers &amp; API Keys</h2>
-      <p class="h23s-panel-desc">Configure API keys for each LLM provider. Keys are stored locally in <code>config/secrets.yaml</code>.</p>
+      <p class="h23s-panel-desc">OAuth is the preferred way to authenticate with Anthropic and ChatGPT. It's free with a Claude Max plan or ChatGPT Plus/Pro subscription and refreshes automatically. Use API keys below for all other providers or as a fallback.</p>
 
-      <div class="h23s-provider-list" id="provider-list">
+      <!-- OAuth Cards (STEP 18) -->
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">OAuth Sign-in <span class="h23s-oauth-badge">recommended</span></h3>
+
+        <!-- Anthropic OAuth -->
+        <div class="h23s-oauth-card" id="anthropic-oauth-card">
+          <div class="h23s-oauth-header">
+            <div>
+              <div class="h23s-oauth-title">Anthropic (claude.ai)</div>
+              <div class="h23s-oauth-desc">Sign in with your Claude account for Sonnet / Opus access.</div>
+            </div>
+            <div class="h23s-oauth-status" id="anthropic-oauth-status">checking…</div>
+          </div>
+          <div class="h23s-action-row">
+            <button class="h23s-btn-primary" id="btn-anthropic-oauth-import">Import from Claude CLI</button>
+            <button class="h23s-btn-secondary" id="btn-anthropic-oauth-start">Start OAuth Flow</button>
+            <button class="h23s-btn-secondary h23s-oauth-logout" id="btn-anthropic-oauth-logout" hidden>Logout</button>
+          </div>
+          <div class="h23s-oauth-flow" id="anthropic-oauth-flow" hidden>
+            <p>A new tab will open to Anthropic's OAuth page. After authorizing, copy the <strong>entire callback URL</strong> from your browser's address bar and paste it below.</p>
+            <a id="anthropic-oauth-link" target="_blank" rel="noopener" class="h23s-oauth-link">Open OAuth page</a>
+            <textarea id="anthropic-oauth-callback" rows="3" placeholder="https://console.anthropic.com/oauth/code/callback?code=...&amp;state=..."></textarea>
+            <button class="h23s-btn-primary" id="btn-anthropic-oauth-complete">Complete OAuth</button>
+          </div>
+        </div>
+
+        <!-- OpenAI Codex OAuth -->
+        <div class="h23s-oauth-card" id="codex-oauth-card">
+          <div class="h23s-oauth-header">
+            <div>
+              <div class="h23s-oauth-title">OpenAI Codex (ChatGPT)</div>
+              <div class="h23s-oauth-desc">Sign in with your ChatGPT account for GPT-5 / Codex access without an API key.</div>
+            </div>
+            <div class="h23s-oauth-status" id="codex-oauth-status">checking…</div>
+          </div>
+          <div class="h23s-action-row">
+            <button class="h23s-btn-primary" id="btn-codex-oauth-import">Import from Evobrew</button>
+            <button class="h23s-btn-secondary" id="btn-codex-oauth-start">Start OAuth Flow</button>
+            <button class="h23s-btn-secondary h23s-oauth-logout" id="btn-codex-oauth-logout" hidden>Logout</button>
+          </div>
+          <p class="h23s-oauth-subdesc" id="codex-oauth-note" hidden>
+            The OAuth flow opens your browser automatically and completes via a loopback callback. Wait for the status to flip to Connected.
+          </p>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">API Keys</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">Stored in <code>config/secrets.yaml</code>. Use these for providers that don't offer OAuth, or as a fallback.</p>
+        <div class="h23s-provider-list" id="provider-list">
+        </div>
       </div>
 
       <div class="h23s-actions">

@@ -79,19 +79,50 @@ This runs entirely on your machine with no API key needed. The default config (`
 
 ## LLM Providers
 
-Unlike embeddings, you can switch LLM providers freely. Configure any combination in `config/secrets.yaml`:
+Unlike embeddings, you can switch LLM providers freely. Configure any combination in `config/secrets.yaml`, or use OAuth for Anthropic and OpenAI Codex (recommended — see next section):
 
 | Provider | What you need | Models |
 |---|---|---|
-| **Ollama Cloud** | API key from ollama.com | kimi-k2.5, minimax-m2.7, qwen3.5, deepseek-v3.2, and more |
-| **Anthropic** | API key | Claude Sonnet, Claude Opus |
+| **Anthropic** | OAuth (recommended, requires Claude Max plan) OR API key | Claude Sonnet, Claude Opus |
+| **OpenAI Codex** | OAuth (recommended, requires ChatGPT Plus/Pro) | GPT-5, Codex |
 | **OpenAI** | API key | GPT-5.4, GPT-5.4-mini |
+| **Ollama Cloud** | API key from ollama.com | kimi-k2.5, minimax-m2.7, qwen3.5, deepseek-v3.2, and more |
 | **xAI** | API key | Grok-4 |
 | **Ollama Local** | Ollama running locally | Any pulled model |
 
 Model aliases are defined in `config/home.yaml` — use short names like `sonnet`, `gpt`, `kimi` instead of full model IDs.
 
 **Minimum setup (free):** Ollama Cloud provides free API access to many models. Use it for both LLM and embeddings to run Home23 with zero cost.
+
+## OAuth Sign-in (Anthropic + ChatGPT)
+
+If you have a **Claude Max** plan or a **ChatGPT Plus/Pro** subscription, you can sign in with OAuth instead of managing API keys. OAuth is the preferred path — it's free (included in your subscription), tokens refresh automatically, and no billing surprises.
+
+Configure from the dashboard: **Settings → Providers → OAuth Sign-in**.
+
+### Anthropic (claude.ai)
+
+Two options:
+
+- **Import from Claude CLI** — if you already have the [Claude CLI](https://docs.anthropic.com/claude/docs/claude-code) signed in on this machine, click Import. Home23 reads your existing credentials from `~/.claude/.credentials.json` and you're done.
+- **Start OAuth Flow** — clicks open a new browser tab to claude.ai's OAuth page. Authorize, copy the entire callback URL from your browser, paste it into the Complete OAuth textarea, and click Complete. The token is stored encrypted and refreshes automatically.
+
+### OpenAI Codex (ChatGPT)
+
+Two options:
+
+- **Import from Evobrew** — if you already have evobrew signed in with Codex OAuth at `~/.evobrew/auth-profiles.json`, click Import.
+- **Start OAuth Flow** — runs the full PKCE flow via a loopback callback server. Your browser opens automatically to OpenAI's authorize page. After authorizing, the flow completes and the status flips to Connected.
+
+### How it works
+
+Home23 uses the bundled cosmo23 server as an OAuth broker. cosmo23 has a battle-tested PKCE implementation with encrypted token storage (SQLite + Prisma + AES-256-GCM) and automatic refresh. Home23's Settings tab proxies to cosmo23's OAuth endpoints and then mirrors the resulting access token into `config/secrets.yaml` under the appropriate provider slot, where it flows to the agent harness and engine via the standard PM2 env-injection pipeline.
+
+A background poller on the dashboard checks every 30 minutes for token rotation (cosmo23 refreshes transparently) and re-syncs to `secrets.yaml` + restarts the affected processes if the token has changed. Research runs in flight are detected and the restart is skipped to avoid disruption.
+
+### Logout
+
+Click Logout on either OAuth card to revoke. This clears the token from both cosmo23's DB and Home23's `secrets.yaml`, and restarts the engine + harness so they drop the credential.
 
 ## Architecture
 

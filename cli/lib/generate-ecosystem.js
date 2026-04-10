@@ -90,8 +90,10 @@ export function generateEcosystem(home23Root) {
     lines.push(`      name: 'home23-${agent.name}',`);
     lines.push(`      script: 'src/index.js',`);
     lines.push(`      cwd: ENGINE,`);
-    lines.push(`      node_args: '--expose-gc --max-old-space-size=768',`);
-    lines.push(`      max_memory_restart: '900M',`);
+    // Heap sized for a cognitive engine with a growing brain — see commit
+    // 174c76c (Step: engine OOM fix). 768MB caused a restart loop at ~7k nodes.
+    lines.push(`      node_args: '--expose-gc --max-old-space-size=4096',`);
+    lines.push(`      max_memory_restart: '5G',`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/engine-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/engine-err.log',`);

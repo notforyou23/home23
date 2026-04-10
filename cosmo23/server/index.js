@@ -37,7 +37,8 @@ const {
   storeToken,
   clearToken,
   getOAuthStatus,
-  importFromClaudeCLI
+  importFromClaudeCLI,
+  getAnthropicApiKey  // HOME23 PATCH — for /api/oauth/anthropic/raw-token
 } = require('./services/anthropic-oauth');
 const {
   sanitizeRunName,
@@ -986,6 +987,28 @@ app.post('/api/oauth/anthropic/logout', async (_req, res) => {
   }
 });
 
+// HOME23 PATCH — expose current decrypted access token so Home23 can mirror
+// it into config/secrets.yaml for PM2 env injection. Localhost-only (Express
+// default binding); any local process that can reach :43210 already has
+// filesystem access to the same Prisma DB, so this does not lower the
+// security surface. Returns 404 when no credentials are configured.
+app.get('/api/oauth/anthropic/raw-token', async (_req, res) => {
+  try {
+    const creds = await getAnthropicApiKey();
+    if (!creds || !creds.authToken) {
+      return res.status(404).json({ ok: false, error: 'not configured' });
+    }
+    res.json({
+      ok: true,
+      token: creds.authToken,
+      isOAuth: creds.isOAuth === true,
+      source: creds.source || 'db',
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // OpenAI Codex OAuth routes
 let codexOAuth = null;
 try { codexOAuth = require('./services/openai-codex-oauth'); } catch (e) {
@@ -1034,6 +1057,29 @@ app.post('/api/oauth/openai-codex/logout', async (_req, res) => {
     res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// HOME23 PATCH — expose current decrypted Codex access token so Home23 can
+// mirror it into config/secrets.yaml for PM2 env injection. Same
+// localhost-only caveat as the Anthropic raw-token endpoint above.
+app.get('/api/oauth/openai-codex/raw-token', async (_req, res) => {
+  if (!codexOAuth) {
+    return res.status(404).json({ ok: false, error: 'Codex OAuth service not available' });
+  }
+  try {
+    const creds = await codexOAuth.getCodexCredentials();
+    if (!creds || !creds.accessToken) {
+      return res.status(404).json({ ok: false, error: 'not configured' });
+    }
+    res.json({
+      ok: true,
+      token: creds.accessToken,
+      accountId: creds.accountId || null,
+      expiresAt: creds.expiresAt || null,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
   }
 });
 

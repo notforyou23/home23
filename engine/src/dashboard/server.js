@@ -915,6 +915,90 @@ class DashboardServer {
       console.warn('[Settings API] Failed to mount:', err.message);
     }
 
+    // ── OAuth refresh poller (STEP 18) ──
+    // cosmo23 handles PKCE refresh internally. Every 30 min, check the current
+    // decrypted token. If it differs from what's in secrets.yaml, sync it in
+    // and restart the engine + harness so the new env flows through.
+    // Skip the restart if a COSMO research run is active (would kill it).
+    try {
+      const home23RootForPoll = this.getHome23Root();
+      const fsSync = require('fs');
+      const yaml = require('js-yaml');
+      const cosmoPort = parseInt(process.env.COSMO23_PORT || '43210', 10);
+      const cosmoBase = `http://localhost:${cosmoPort}`;
+      const secretsPath = path.join(home23RootForPoll, 'config', 'secrets.yaml');
+
+      const pollInterval = 30 * 60 * 1000; // 30 min
+      setInterval(async () => {
+        try {
+          // Skip if a research run is in flight
+          let researchActive = false;
+          try {
+            const sres = await fetch(`${cosmoBase}/api/status`, { signal: AbortSignal.timeout(3000) });
+            if (sres.ok) {
+              const data = await sres.json();
+              researchActive = !!data.running;
+            }
+          } catch { /* cosmo unreachable — skip silently */ }
+          if (researchActive) {
+            return;
+          }
+
+          for (const provider of ['anthropic', 'openai-codex']) {
+            try {
+              const r = await fetch(`${cosmoBase}/api/oauth/${provider}/raw-token`, {
+                signal: AbortSignal.timeout(5000),
+              });
+              if (!r.ok) continue;
+              const data = await r.json();
+              const newToken = data?.token;
+              if (!newToken) continue;
+
+              if (!fsSync.existsSync(secretsPath)) continue;
+              const secrets = yaml.load(fsSync.readFileSync(secretsPath, 'utf8')) || {};
+              const current = secrets.providers?.[provider]?.apiKey;
+              if (current === newToken) continue; // no rotation
+
+              // Rotate: write new token, regenerate ecosystem, restart
+              if (!secrets.providers) secrets.providers = {};
+              if (!secrets.providers[provider]) secrets.providers[provider] = {};
+              secrets.providers[provider].apiKey = newToken;
+              secrets.providers[provider].oauthManaged = true;
+              fsSync.writeFileSync(secretsPath, yaml.dump(secrets, { lineWidth: 120 }));
+
+              try {
+                const { execSync } = require('child_process');
+                execSync(`node --input-type=module -e "
+                  import { generateEcosystem } from './cli/lib/generate-ecosystem.js';
+                  generateEcosystem('.');
+                "`, { cwd: home23RootForPoll, stdio: 'pipe', timeout: 10_000 });
+              } catch { /* fallback: restart anyway, ecosystem regen is optional */ }
+
+              // Find primary agent and restart
+              try {
+                const homeCfg = yaml.load(fsSync.readFileSync(path.join(home23RootForPoll, 'config', 'home.yaml'), 'utf8')) || {};
+                const agentName = homeCfg.home?.primaryAgent;
+                if (agentName) {
+                  const { execSync } = require('child_process');
+                  execSync(
+                    `pm2 restart home23-${agentName} home23-${agentName}-harness --update-env`,
+                    { stdio: 'pipe', timeout: 30_000 }
+                  );
+                  console.log(`[OAuth refresh] rotated ${provider} token, restarted home23-${agentName}`);
+                }
+              } catch (err) {
+                console.warn(`[OAuth refresh] ${provider} token written but restart failed:`, err.message);
+              }
+            } catch { /* per-provider error, continue with next */ }
+          }
+        } catch (err) {
+          console.warn('[OAuth refresh] poller error:', err.message);
+        }
+      }, pollInterval);
+    } catch (err) {
+      console.warn('[OAuth refresh] setup failed:', err.message);
+    }
+
     // Chat History API
     // Helper: parse JSONL conversation file into messages
     const parseConversationFile = (filePath, limit) => {

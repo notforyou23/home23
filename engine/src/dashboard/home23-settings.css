@@ -491,6 +491,114 @@
   border-color: var(--accent-blue);
 }
 
+/* ── OAuth cards on Providers tab (STEP 18) ── */
+
+.h23s-oauth-badge {
+  display: inline-block;
+  font-size: 0.7em;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  margin-left: 10px;
+  border-radius: 10px;
+  background: rgba(48, 209, 88, 0.15);
+  color: var(--accent-green, #30D158);
+  vertical-align: middle;
+}
+
+.h23s-oauth-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.h23s-oauth-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.h23s-oauth-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.h23s-oauth-desc {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.h23s-oauth-subdesc {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: rgba(0, 122, 255, 0.08);
+  border-radius: 6px;
+}
+
+.h23s-oauth-status {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.h23s-oauth-connected {
+  color: var(--accent-green, #30D158);
+}
+
+.h23s-oauth-expired {
+  color: var(--accent-orange, #fb923c);
+}
+
+.h23s-oauth-disconnected {
+  opacity: 0.5;
+}
+
+.h23s-oauth-flow {
+  margin-top: 14px;
+  padding: 12px;
+  background: rgba(0, 122, 255, 0.05);
+  border: 1px solid rgba(0, 122, 255, 0.15);
+  border-radius: 8px;
+}
+
+.h23s-oauth-flow p {
+  margin: 0 0 8px 0;
+  font-size: 12px;
+}
+
+.h23s-oauth-flow textarea {
+  width: 100%;
+  margin: 8px 0;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: inherit;
+  font-family: 'SF Mono', monospace;
+  font-size: 11px;
+  resize: vertical;
+}
+
+.h23s-oauth-link {
+  display: inline-block;
+  margin: 6px 0 10px 0;
+  font-size: 12px;
+  color: var(--accent-blue, #007AFF);
+  text-decoration: none;
+}
+
+.h23s-oauth-link:hover {
+  text-decoration: underline;
+}
+
 /* ── Feeder drop zone (STEP 17) ── */
 
 .h23s-dropzone {

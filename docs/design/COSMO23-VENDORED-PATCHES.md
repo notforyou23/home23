@@ -35,6 +35,10 @@ corrupts runtime state with encrypted strings that later get shipped as literal
 bearer tokens. First observed as `401 unauthorized: encrypted:...` errors during
 smoke testing (2026-04-10).
 
+There are currently **4 patches** in this file. Patches 1–3 are the config/key
+plumbing fixes from the initial integration. Patch 4 is a small admin HTTP
+surface that lets Home23 use cosmo23 as an OAuth broker (Step 18).
+
 ---
 
 ## Patch 1 — `cosmo23/lib/config-manager.js`
@@ -211,8 +215,103 @@ If it shows `401 unauthorized` on ollama-cloud specifically, Patch 2 regressed.
 
 ---
 
+## Patch 4 — `cosmo23/server/index.js` · raw-token admin endpoints
+
+**Problem:** Home23's Settings UI needs to mirror the current decrypted
+OAuth access token into `config/secrets.yaml` so it flows to the engine
+and harness via PM2 env injection. cosmo23 exposes OAuth `status`
+(configured, valid, expiresAt) but not the raw token itself. Adding the
+decrypt path to Home23 would duplicate ~300 lines of cosmo23's Prisma +
+AES-256-GCM stack.
+
+**Fix:** two new read-only admin HTTP routes that return the current
+access token by delegating to the existing `getAnthropicApiKey()` /
+`getCodexCredentials()` functions (which already handle refresh-if-expired
+internally). Home23's dashboard fetches these endpoints after an OAuth
+import/callback and writes the result into `secrets.yaml`.
+
+Import addition (near line 41):
+
+```js
+const {
+  getAuthorizationUrl,
+  exchangeCodeForTokens,
+  storeToken,
+  clearToken,
+  getOAuthStatus,
+  importFromClaudeCLI,
+  getAnthropicApiKey  // HOME23 PATCH — for /api/oauth/anthropic/raw-token
+} = require('./services/anthropic-oauth');
+```
+
+Endpoints added after the existing `/api/oauth/anthropic/logout` and
+`/api/oauth/openai-codex/logout` routes:
+
+```js
+// HOME23 PATCH — expose current decrypted access token so Home23 can mirror
+// it into config/secrets.yaml for PM2 env injection. Localhost-only (Express
+// default binding); any local process that can reach :43210 already has
+// filesystem access to the same Prisma DB, so this does not lower the
+// security surface. Returns 404 when no credentials are configured.
+app.get('/api/oauth/anthropic/raw-token', async (_req, res) => {
+  try {
+    const creds = await getAnthropicApiKey();
+    if (!creds || !creds.authToken) {
+      return res.status(404).json({ ok: false, error: 'not configured' });
+    }
+    res.json({
+      ok: true,
+      token: creds.authToken,
+      isOAuth: creds.isOAuth === true,
+      source: creds.source || 'db',
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// HOME23 PATCH — Codex equivalent
+app.get('/api/oauth/openai-codex/raw-token', async (_req, res) => {
+  if (!codexOAuth) {
+    return res.status(404).json({ ok: false, error: 'Codex OAuth service not available' });
+  }
+  try {
+    const creds = await codexOAuth.getCodexCredentials();
+    if (!creds || !creds.accessToken) {
+      return res.status(404).json({ ok: false, error: 'not configured' });
+    }
+    res.json({
+      ok: true,
+      token: creds.accessToken,
+      accountId: creds.accountId || null,
+      expiresAt: creds.expiresAt || null,
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+```
+
+**Security note:** These routes do NOT require an auth header. They are
+localhost-only (Express default bind) and any local process that can reach
+:43210 already has filesystem access to the same Prisma DB holding the
+encrypted tokens. Adding a shared secret would be theater — it would not
+raise the bar.
+
+**Effect under Home23:** `engine/src/dashboard/home23-settings-api.js`
+fetches these endpoints in `syncOAuthTokenToSecrets()` after every
+OAuth import/callback, and `engine/src/dashboard/server.js` polls them
+every 30 minutes in the background refresh poller to catch token rotations.
+
+**Effect under standalone COSMO:** unchanged — nothing else calls them.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
   Root-caused via log of a failed 5-cycle run that returned
   `401 Incorrect API key provided: encrypted:6094a213b3...`.
+- **2026-04-10** — Patch 4 added during Step 18 (OAuth in Settings UI).
+  Home23 now uses cosmo23 as an OAuth broker; the raw-token endpoints
+  are how the two systems stay in sync.

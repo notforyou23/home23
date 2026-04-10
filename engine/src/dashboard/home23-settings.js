@@ -817,6 +817,155 @@ async function buildTS() {
   }
 }
 
+// ── OAuth cards on Providers tab (STEP 18) ──
+
+async function loadOAuthStatus() {
+  try {
+    const res = await fetch(`${API}/oauth/status`);
+    const data = await res.json();
+    renderOAuthCard('anthropic', data.anthropic || {});
+    renderOAuthCard('codex', data.openaiCodex || {});
+  } catch (err) {
+    console.warn('oauth status load failed:', err.message);
+    renderOAuthCard('anthropic', {});
+    renderOAuthCard('codex', {});
+  }
+}
+
+function renderOAuthCard(kind, status) {
+  const statusEl = document.getElementById(`${kind}-oauth-status`);
+  const logoutBtn = document.getElementById(`btn-${kind}-oauth-logout`);
+  if (!statusEl) return;
+  if (status.configured && status.valid) {
+    const expiry = status.expiresAt ? ` · expires ${new Date(status.expiresAt).toLocaleDateString()}` : '';
+    statusEl.innerHTML = `<span class="h23s-oauth-connected">✓ Connected${expiry}</span>`;
+    if (logoutBtn) logoutBtn.hidden = false;
+  } else if (status.configured) {
+    statusEl.innerHTML = `<span class="h23s-oauth-expired">⚠ Token expired — re-authorize</span>`;
+    if (logoutBtn) logoutBtn.hidden = false;
+  } else {
+    statusEl.innerHTML = `<span class="h23s-oauth-disconnected">Not configured</span>`;
+    if (logoutBtn) logoutBtn.hidden = true;
+  }
+}
+
+function showOAuthMessage(kind, text, isError = false) {
+  const el = document.getElementById(`${kind}-oauth-status`);
+  if (!el) return;
+  const color = isError ? 'var(--accent-red)' : 'var(--accent-blue)';
+  el.innerHTML = `<span style="color:${color};">${text}</span>`;
+}
+
+async function anthropicOAuthImportCli() {
+  showOAuthMessage('anthropic', 'Importing from Claude CLI…');
+  try {
+    const r = await fetch(`${API}/oauth/anthropic/import-cli`, { method: 'POST' });
+    const data = await r.json();
+    if (!data.ok) return showOAuthMessage('anthropic', `Import failed: ${data.error || 'unknown'}`, true);
+    await loadOAuthStatus();
+    if (data.warn) console.warn('[oauth]', data.warn);
+  } catch (err) {
+    showOAuthMessage('anthropic', `Import error: ${err.message}`, true);
+  }
+}
+
+async function anthropicOAuthStart() {
+  try {
+    const r = await fetch(`${API}/oauth/anthropic/start`);
+    const data = await r.json();
+    if (!data.ok) return showOAuthMessage('anthropic', `Start failed: ${data.error || 'unknown'}`, true);
+    const link = document.getElementById('anthropic-oauth-link');
+    link.href = data.authUrl;
+    link.textContent = 'Open Anthropic OAuth page ↗';
+    document.getElementById('anthropic-oauth-flow').hidden = false;
+    // Auto-open in a new tab
+    window.open(data.authUrl, '_blank', 'noopener,noreferrer');
+  } catch (err) {
+    showOAuthMessage('anthropic', `Start error: ${err.message}`, true);
+  }
+}
+
+async function anthropicOAuthComplete() {
+  const callbackUrl = document.getElementById('anthropic-oauth-callback').value.trim();
+  if (!callbackUrl) return;
+  showOAuthMessage('anthropic', 'Completing OAuth…');
+  try {
+    const r = await fetch(`${API}/oauth/anthropic/callback`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callbackUrl }),
+    });
+    const data = await r.json();
+    if (!data.ok) return showOAuthMessage('anthropic', `OAuth failed: ${data.error || 'unknown'}`, true);
+    document.getElementById('anthropic-oauth-flow').hidden = true;
+    document.getElementById('anthropic-oauth-callback').value = '';
+    await loadOAuthStatus();
+  } catch (err) {
+    showOAuthMessage('anthropic', `OAuth error: ${err.message}`, true);
+  }
+}
+
+async function anthropicOAuthLogout() {
+  if (!confirm('Log out of Anthropic OAuth? The agent will lose access to Anthropic models until re-configured.')) return;
+  try {
+    const r = await fetch(`${API}/oauth/anthropic/logout`, { method: 'POST' });
+    const data = await r.json();
+    if (!data.ok) return showOAuthMessage('anthropic', `Logout failed: ${data.error || 'unknown'}`, true);
+    await loadOAuthStatus();
+  } catch (err) {
+    showOAuthMessage('anthropic', `Logout error: ${err.message}`, true);
+  }
+}
+
+async function codexOAuthImportEvobrew() {
+  showOAuthMessage('codex', 'Importing from Evobrew…');
+  try {
+    const r = await fetch(`${API}/oauth/openai-codex/import-evobrew`, { method: 'POST' });
+    const data = await r.json();
+    if (!data.ok) return showOAuthMessage('codex', `Import failed: ${data.error || 'unknown'}`, true);
+    await loadOAuthStatus();
+  } catch (err) {
+    showOAuthMessage('codex', `Import error: ${err.message}`, true);
+  }
+}
+
+async function codexOAuthStart() {
+  showOAuthMessage('codex', 'OAuth flow running (check your browser)…');
+  document.getElementById('codex-oauth-note').hidden = false;
+  try {
+    // This call blocks until cosmo23's local callback server receives the code
+    const r = await fetch(`${API}/oauth/openai-codex/start`, { method: 'POST' });
+    const data = await r.json();
+    if (!data.ok) return showOAuthMessage('codex', `OAuth failed: ${data.error || 'unknown'}`, true);
+    document.getElementById('codex-oauth-note').hidden = true;
+    await loadOAuthStatus();
+  } catch (err) {
+    showOAuthMessage('codex', `OAuth error: ${err.message}`, true);
+  }
+}
+
+async function codexOAuthLogout() {
+  if (!confirm('Log out of OpenAI Codex OAuth? The agent will lose access to Codex models until re-configured.')) return;
+  try {
+    const r = await fetch(`${API}/oauth/openai-codex/logout`, { method: 'POST' });
+    const data = await r.json();
+    if (!data.ok) return showOAuthMessage('codex', `Logout failed: ${data.error || 'unknown'}`, true);
+    await loadOAuthStatus();
+  } catch (err) {
+    showOAuthMessage('codex', `Logout error: ${err.message}`, true);
+  }
+}
+
+function setupOAuthHandlers() {
+  document.getElementById('btn-anthropic-oauth-import')?.addEventListener('click', anthropicOAuthImportCli);
+  document.getElementById('btn-anthropic-oauth-start')?.addEventListener('click', anthropicOAuthStart);
+  document.getElementById('btn-anthropic-oauth-complete')?.addEventListener('click', anthropicOAuthComplete);
+  document.getElementById('btn-anthropic-oauth-logout')?.addEventListener('click', anthropicOAuthLogout);
+  document.getElementById('btn-codex-oauth-import')?.addEventListener('click', codexOAuthImportEvobrew);
+  document.getElementById('btn-codex-oauth-start')?.addEventListener('click', codexOAuthStart);
+  document.getElementById('btn-codex-oauth-logout')?.addEventListener('click', codexOAuthLogout);
+}
+
 // ── Feeder tab (STEP 17) ──
 
 let feederPollTimer = null;
@@ -1147,6 +1296,7 @@ async function init() {
   loadAgents();
   loadSystem();
   loadFeeder();
+  loadOAuthStatus();
 
   document.getElementById('btn-save-providers').addEventListener('click', saveProviders);
   document.getElementById('btn-create-agent').addEventListener('click', showWizard);
@@ -1155,6 +1305,7 @@ async function init() {
   document.getElementById('btn-install-deps').addEventListener('click', installDeps);
   document.getElementById('btn-build-ts').addEventListener('click', buildTS);
   setupFeederHandlers();
+  setupOAuthHandlers();
 
   setupWizard();
 }

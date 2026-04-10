@@ -105,13 +105,15 @@ Bundled at `evobrew/`, served at `http://localhost:3415`. One shared PM2 process
 
 Agents appear as `local:<name>` in the model dropdown. Chat goes through the bridge endpoint (`src/routes/evobrew-bridge.ts`) which runs the full agent loop with identity/tools/memory. Brain auto-connects on launch.
 
-### COSMO 2.3 (Research Engine)
+### COSMO 2.3 (Research Engine + OAuth Broker)
 
 Bundled at `cosmo23/`, served at `http://localhost:43210`. One shared PM2 process — COSMO manages its own subprocesses internally when a run is active. Config pre-seeded with API keys from Home23 via `cli/lib/cosmo23-config.js` (plaintext in gitignored `.cosmo23-config/` dir, env vars via PM2 as the authoritative source).
 
 Full COSMO UI embedded in dashboard via iframe (all 9 tabs). The agent has 11 `research_*` tools (list/query/search_all/launch/continue/stop/watch/get_brain_summary/get_brain_graph/compile_brain/compile_section) mapping to COSMO's HTTP API. Workflow policy lives in `instances/<agent>/workspace/COSMO_RESEARCH.md` (loaded as an identity layer file). When a COSMO run is active, `src/agent/loop.ts` polls `/api/status` and injects a live `[COSMO ACTIVE RUN]` block into the system prompt. Research brains are visible in evobrew.
 
-**Critical:** `cosmo23/` has been patched with 3 structural fixes (config dir unification, env-first key resolution, decrypt-safe bootstrap). All patches are tracked in `docs/design/COSMO23-VENDORED-PATCHES.md` and **must be re-verified after any `cli/home23.js cosmo23 update`**.
+**OAuth broker**: cosmo23 doubles as Home23's OAuth provider for Anthropic and OpenAI Codex. cosmo23 has a battle-tested PKCE implementation with encrypted token storage (SQLite + Prisma + AES-256-GCM) and automatic refresh. Home23's Settings → Providers → OAuth Sign-in UI proxies to cosmo23's `/api/oauth/anthropic/*` and `/api/oauth/openai-codex/*` routes, then mirrors the resulting access tokens into `config/secrets.yaml` where they flow to the engine/harness via PM2 env injection. A 30-minute background poller in `engine/src/dashboard/server.js` catches cosmo23-side token rotations and re-syncs secrets.yaml + restarts the engine + harness (skipped during active research runs).
+
+**Critical:** `cosmo23/` has been patched with 4 structural fixes (config dir unification, env-first key resolution, decrypt-safe bootstrap, and raw-token admin endpoints for the OAuth broker). All patches are tracked in `docs/design/COSMO23-VENDORED-PATCHES.md` and **must be re-verified after any `cli/home23.js cosmo23 update`**.
 
 ### Ingestion Compiler + Feeder
 
@@ -172,6 +174,7 @@ Config loader merges: `home.yaml` <- `agent config.yaml` <- `secrets.yaml` <- pe
 | `docs/design/STEP15-DESIGN-LANGUAGE-OVERHAUL.md` | ReginaCosmo design language |
 | `docs/design/STEP16-AGENT-COSMO-TOOLKIT-DESIGN.md` | 11 `research_*` tools + skill file + active-run injection |
 | `docs/design/STEP17-FEEDER-SETTINGS-DESIGN.md` | Feeder settings tab + drop zone |
+| `docs/design/STEP18-OAUTH-SETTINGS-DESIGN.md` | Anthropic + OpenAI Codex OAuth via cosmo23 broker |
 | `docs/design/COSMO23-VENDORED-PATCHES.md` | **CRITICAL:** patches to vendored cosmo23 that must survive updates |
 | `docs/design/SLEEP-WAKE-DESIGN.md` | Engine sleep/wake tuning for Home23 |
 | `docs/vision/HOME23_CANONICAL_VISION.md` | Product thesis |
