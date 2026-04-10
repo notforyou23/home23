@@ -736,9 +736,9 @@ Model: ${this.model} (${this.provider})`;
             turnMessages.push({ role: 'assistant', content: capText });
             this.history.append(chatId, turnMessages);
             return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
-          } else if (this.provider === 'xai' && this.model.includes('4.20')) {
-            // ── xAI Responses API path (grok-4.20 models) ──
-            // Same Responses API format as OpenAI, but at https://api.x.ai/v1/responses
+          } else if (this.provider === 'xai' && this.model.includes('multi-agent')) {
+            // ── xAI Responses API path (grok-4.20 multi-agent) ──
+            // Only multi-agent requires Responses API; reasoning/non-reasoning work with Chat Completions too
             const xaiKey = process.env.XAI_API_KEY;
             if (!xaiKey) throw new Error('XAI_API_KEY not set');
 
