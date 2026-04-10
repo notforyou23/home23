@@ -736,10 +736,184 @@ Model: ${this.model} (${this.provider})`;
             turnMessages.push({ role: 'assistant', content: capText });
             this.history.append(chatId, turnMessages);
             return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
+          } else if (this.provider === 'xai' && this.model.includes('4.20')) {
+            // ── xAI Responses API path (grok-4.20 models) ──
+            // Same Responses API format as OpenAI, but at https://api.x.ai/v1/responses
+            const xaiKey = process.env.XAI_API_KEY;
+            if (!xaiKey) throw new Error('XAI_API_KEY not set');
+
+            const sysText = typeof systemPrompt === 'string'
+              ? systemPrompt
+              : (systemPrompt as Array<{ text: string }>).map(b => b.text).join('\n');
+
+            const chatMsgs: Array<Record<string, unknown>> = [];
+            for (const m of truncated) {
+              if (typeof m.content === 'string') {
+                chatMsgs.push({ role: m.role, content: m.content });
+              } else {
+                const parts: string[] = [];
+                for (const block of m.content as Array<Record<string, unknown>>) {
+                  if (block.type === 'text' && block.text) parts.push(block.text as string);
+                  else if (block.type === 'tool_use') parts.push(`[Used tool: ${block.name}]`);
+                  else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 200)}]`);
+                  else if (block.type === 'image') parts.push('[image]');
+                }
+                chatMsgs.push({ role: m.role, content: parts.join('\n') || '(empty)' });
+              }
+            }
+
+            type OAITool = { type: string; function: { name: string; description?: string; parameters?: unknown } };
+            const xaiTools = (this.registry.getOpenAITools() as OAITool[]).map(t => ({
+              type: 'function',
+              name: t.function.name,
+              description: t.function.description ?? null,
+              parameters: t.function.parameters ?? null,
+            }));
+
+            const apiMessages: Array<Record<string, unknown>> = [
+              { role: 'system', content: sysText },
+              ...chatMsgs,
+            ];
+
+            type ToolCallObj = { id?: string; type?: string; function: { name: string; arguments: string | Record<string, unknown> } };
+            type ResponseMessage = { role: string; content?: string | null; tool_calls?: ToolCallObj[] };
+
+            for (let i = 0; i < MAX_ITERATIONS; i++) {
+              if (ac.signal.aborted) {
+                const interruptText = `Stopped. (${toolCallCount} tool call${toolCallCount !== 1 ? 's' : ''}, ${((Date.now() - startMs) / 1000).toFixed(1)}s)`;
+                turnMessages.push({ role: 'assistant', content: interruptText });
+                this.history.append(chatId, turnMessages);
+                return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
+              }
+
+              // Build Responses API input from apiMessages
+              const instructions = (apiMessages[0]?.content as string) ?? '';
+              const inputItems: Array<Record<string, unknown>> = [];
+              for (const msg of apiMessages.slice(1)) {
+                const role = msg.role as string;
+                const content = msg.content as string | null | undefined;
+                const msgToolCalls = msg.tool_calls as ToolCallObj[] | undefined;
+                if (role === 'user') {
+                  inputItems.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: content ?? '' }] });
+                } else if (role === 'assistant') {
+                  if (content) inputItems.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: content }] });
+                  if (msgToolCalls?.length) {
+                    for (const tc of msgToolCalls) {
+                      inputItems.push({ type: 'function_call', call_id: tc.id, name: tc.function.name, arguments: typeof tc.function.arguments === 'string' ? tc.function.arguments : JSON.stringify(tc.function.arguments) });
+                    }
+                  }
+                } else if (role === 'tool') {
+                  inputItems.push({ type: 'function_call_output', call_id: msg.tool_call_id as string, output: (msg.content as string) ?? '' });
+                }
+              }
+
+              const xaiBody = {
+                model: this.model,
+                instructions,
+                input: inputItems,
+                tools: xaiTools.length > 0 ? xaiTools : undefined,
+                tool_choice: xaiTools.length > 0 ? 'auto' : undefined,
+                stream: true,
+                store: false,
+              };
+
+              const xaiTimeout = 120_000;
+              const fetchSignal = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any
+                ? (AbortSignal as unknown as { any: (signals: AbortSignal[]) => AbortSignal }).any([ac.signal, AbortSignal.timeout(xaiTimeout)])
+                : ac.signal;
+
+              const res = await fetch('https://api.x.ai/v1/responses', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${xaiKey}` },
+                body: JSON.stringify(xaiBody),
+                signal: fetchSignal,
+              });
+
+              if (!res.ok) {
+                const errText = await res.text().catch(() => '');
+                throw new Error(`xai responses HTTP ${res.status}: ${errText.slice(0, 300)}`);
+              }
+              if (!res.body) throw new Error('xai responses missing body');
+
+              // Parse SSE stream
+              let textContent = '';
+              type FunctionCallItem = { call_id: string; name: string; arguments: string };
+              const functionCallItems: FunctionCallItem[] = [];
+
+              for await (const event of parseSSE(res.body)) {
+                const evType = event.type as string | undefined;
+                if (evType === 'response.output_text.delta') {
+                  textContent += (event.delta as string) ?? '';
+                } else if (evType === 'response.output_text.done') {
+                  textContent = (event.text as string) ?? textContent;
+                } else if (evType === 'response.output_item.done') {
+                  const item = event.item as Record<string, unknown> | undefined;
+                  if (item?.type === 'function_call') {
+                    functionCallItems.push({ call_id: item.call_id as string, name: item.name as string, arguments: (item.arguments as string) ?? '{}' });
+                  }
+                } else if (evType === 'response.reasoning_summary_text.delta') {
+                  if (onEvent) onEvent({ type: 'thinking', content: (event.delta as string) ?? '' });
+                }
+              }
+
+              const respMsg: ResponseMessage = {
+                role: 'assistant',
+                content: textContent || null,
+                tool_calls: functionCallItems.length > 0
+                  ? functionCallItems.map(fc => ({ id: fc.call_id, type: 'function' as const, function: { name: fc.name, arguments: fc.arguments } }))
+                  : undefined,
+              };
+
+              console.log(`[agent] xai responses: content=${(respMsg.content || '').length} chars, tool_calls=${respMsg.tool_calls?.length ?? 0}, tools_sent=${xaiTools.length}, model=${this.model}`);
+
+              const toolCalls = respMsg.tool_calls;
+              if (!toolCalls || toolCalls.length === 0) {
+                const answer = (respMsg.content || '').trim() || '(no response)';
+                if (onEvent && answer) onEvent({ type: 'response_chunk', chunk: answer });
+                turnMessages.push({ role: 'assistant', content: answer });
+                this.history.append(chatId, turnMessages);
+                if (messages.length > 10) {
+                  this.memory.extractAndSave(chatId, messages, this.model).catch(() => {});
+                }
+                return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
+              }
+
+              // Execute tool calls
+              apiMessages.push({ role: 'assistant', content: respMsg.content || null, tool_calls: toolCalls });
+              for (const tc of toolCalls) {
+                if (ac.signal.aborted) {
+                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: 'Interrupted by /stop' });
+                  continue;
+                }
+                toolCallCount++;
+                let input: Record<string, unknown>;
+                try { input = typeof tc.function.arguments === 'string' ? JSON.parse(tc.function.arguments) : tc.function.arguments; }
+                catch { input = {}; }
+                if (onEvent) onEvent({ type: 'tool_start', tool: tc.function.name, args: input });
+                try {
+                  const result = await this.registry.get(tc.function.name)!.execute(input, runContext);
+                  if (result.media?.length) { allMedia.push(...result.media); if (onEvent) for (const m of result.media) onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption }); }
+                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: result.content.slice(0, 50_000) });
+                  if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, result: result.content.slice(0, 300), success: true });
+                } catch (toolErr) {
+                  const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
+                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: `Error: ${errMsg}` });
+                  if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, result: errMsg, success: false });
+                }
+              }
+              const toolNames = toolCalls.map(tc => tc.function.name).join(', ');
+              turnMessages.push({ role: 'assistant', content: `[Used tools: ${toolNames}]` });
+            }
+
+            const capText = `Hit max tool calls (${MAX_ITERATIONS}).`;
+            turnMessages.push({ role: 'assistant', content: capText });
+            this.history.append(chatId, turnMessages);
+            return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
+
           } else {
           // ── Non-Claude tool-use loop ──
           // Ollama Cloud: native /api/chat (proper tool support, configurable num_ctx)
-          // OpenAI / xAI: /v1/chat/completions (standard OpenAI format)
+          // OpenAI / xAI (non-4.20): /v1/chat/completions (standard OpenAI format)
 
           const isOllamaCloud = this.provider === 'ollama-cloud';
 
