@@ -9,7 +9,7 @@
  */
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import yaml from 'js-yaml';
 
 function loadYaml(filePath) {
@@ -18,6 +18,8 @@ function loadYaml(filePath) {
 }
 
 export function generateEvobrewConfig(home23Root) {
+  // Resolve to absolute — critical for evobrew which runs from a different cwd
+  home23Root = resolve(home23Root);
   const homeConfig = loadYaml(join(home23Root, 'config', 'home.yaml'));
   const instancesDir = join(home23Root, 'instances');
 
