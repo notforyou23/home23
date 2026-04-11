@@ -89,6 +89,10 @@ class IntrinsicGoalSystem {
       .filter(Boolean);
   }
 
+  isDreamSeedGoal(goal) {
+    return goal?.source === 'dream_gpt5' || goal?.source === 'dream';
+  }
+
   initializeSpecialization(clusterConfig) {
     if (!clusterConfig || clusterConfig.enabled === false) {
       return null;
@@ -689,8 +693,10 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
   getPrioritizedGoals(context = {}) {
     const goals = Array.from(this.goals.values())
       .filter(g => g.status === 'active' || !g.status);
+    const groundedGoals = goals.filter(goal => !this.isDreamSeedGoal(goal));
+    const selectableGoals = groundedGoals.length > 0 ? groundedGoals : goals;
 
-    return goals
+    return selectableGoals
       .map(goal => {
         const adjustedPriority = this.adjustPriority(goal, context);
         return { goal, adjustedPriority };
@@ -1576,11 +1582,20 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
     if (totalPursuits === 0) return null;
     
     // Find dominant goal
-    for (const [goalId, count] of Object.entries(goalCounts)) {
+    for (const [goalDescription, count] of Object.entries(goalCounts)) {
       const dominance = count / totalPursuits;
       if (dominance > threshold) {
+        const goalEntry = Array.from(this.goals.entries()).find(([, goal]) =>
+          goal && (goal.status === 'active' || !goal.status) && goal.description === goalDescription
+        );
+
+        if (!goalEntry) {
+          continue;
+        }
+
         return {
-          goalId,
+          goalId: goalEntry[0],
+          goalDescription,
           pursuitCount: count,
           totalPursuits,
           dominance: dominance.toFixed(2),

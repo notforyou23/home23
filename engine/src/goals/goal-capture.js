@@ -38,7 +38,7 @@ class GoalCaptureSystem {
   /**
    * Capture goals from output (pattern-based + GPT-5.2 AI analysis)
    */
-  async captureGoalsFromOutput(output) {
+  async captureGoalsFromOutput(output, options = {}) {
     const patternGoals = this.capturePatternGoals(output);
     
     // Use GPT-5.2 to analyze for implicit goals (only for substantial outputs)
@@ -46,16 +46,18 @@ class GoalCaptureSystem {
     
     const all = [...patternGoals, ...aiGoals];
     const unique = this.deduplicateGoals(all);
+    const filtered = this.filterCapturedGoals(unique, options);
 
-    if (unique.length > 0) {
+    if (filtered.length > 0) {
       this.logger?.info('Goals captured (GPT-5.2)', {
-        total: unique.length,
+        total: filtered.length,
         pattern: patternGoals.length,
-        aiDetected: aiGoals.length
+        aiDetected: aiGoals.length,
+        provenance: options.provenance || 'default'
       });
     }
 
-    return unique;
+    return filtered;
   }
 
   /**
@@ -239,6 +241,45 @@ class GoalCaptureSystem {
     return unique;
   }
 
+  filterCapturedGoals(goals, options = {}) {
+    if (goals.length === 0) return goals;
+
+    const provenance = options.provenance || 'default';
+    const filtered = goals.filter(goal => this.isAllowedGoal(goal?.text || '', provenance));
+
+    if (filtered.length !== goals.length) {
+      this.logger?.warn?.('Filtered low-signal captured goals', {
+        provenance,
+        dropped: goals.length - filtered.length
+      });
+    }
+
+    return filtered;
+  }
+
+  isAllowedGoal(text, provenance = 'default') {
+    const normalized = typeof text === 'string' ? text.trim() : '';
+    if (normalized.length < 15 || normalized.length > 280) {
+      return false;
+    }
+
+    if (provenance === 'dream' && this.isEncodedPayloadGoal(normalized)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  isEncodedPayloadGoal(text) {
+    const hasBinaryPayload = /\b[01]{6,8}(?:\s+[01]{6,8}){2,}\b/.test(text);
+    const hasDecodeFraming = /\b(decode|interpret|translate|anagram|cipher|hidden message)\b/i.test(text);
+    const digitCount = (text.match(/\d/g) || []).length;
+    const letterCount = (text.match(/[A-Za-z]/g) || []).length;
+    const digitHeavy = digitCount >= 12 && digitCount > letterCount * 0.5;
+
+    return hasBinaryPayload || (hasDecodeFraming && digitHeavy);
+  }
+
   detectSurprise(output) {
     const surpriseIndicators = [
       /surprising/gi, /unexpected/gi, /never thought/gi, /didn't realize/gi,
@@ -256,4 +297,3 @@ class GoalCaptureSystem {
 }
 
 module.exports = { GoalCaptureSystem };
-

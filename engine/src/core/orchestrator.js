@@ -2578,7 +2578,9 @@ class Orchestrator {
         });
 
         // Capture dream goals
-        const dreamGoals = await this.goalCapture.captureGoalsFromOutput(dreamThought.hypothesis);
+        const dreamGoals = await this.goalCapture.captureGoalsFromOutput(dreamThought.hypothesis, {
+          provenance: 'dream'
+        });
         for (const dg of dreamGoals) {
           if (Math.random() < 0.3) {
             // AUDIT: Attach dream metadata for traceability
@@ -6093,4 +6095,3 @@ class Orchestrator {
 }
 
 module.exports = { Orchestrator };
-
