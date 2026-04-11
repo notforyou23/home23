@@ -6,6 +6,7 @@
  */
 
 const CHAT_API = '/home23/api/chat';
+const CHAT_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 let chatAgent = null;
 let chatAgents = [];
 let chatModels = {};
@@ -14,6 +15,8 @@ let chatStreaming = false;
 let chatAbort = null;
 let chatConversationId = null;  // current conversation ID
 let chatConversations = [];     // list of all conversations
+let chatPersistTimer = null;
+let chatPersistenceBound = false;
 
 // ── Init ──
 
@@ -45,8 +48,9 @@ async function initChat(mode) {
     return;
   }
 
+  bindChatPersistence();
   renderAgentSelectors(primary.name);
-  await switchAgent(primary.name);
+  await switchAgent(primary.name, { preferRestore: true });
 
   // Model selector — use agent's current model (may have been changed in settings)
   chatModel = primary.model;
@@ -198,7 +202,8 @@ function cmdHelp(text, source) {
 
 // ── Agent Switching ──
 
-async function switchAgent(name) {
+async function switchAgent(name, options = {}) {
+  const { preferRestore = false } = options;
   if (chatAgent) cacheHistory();
 
   try {
@@ -225,6 +230,11 @@ async function switchAgent(name) {
 
   // Load conversation list, then start a new conversation
   await loadConversationList(name);
+  if (preferRestore && restoreChatState(name)) {
+    renderConversationList();
+    resetSendButtons();
+    return;
+  }
   newConversation();
 
   await loadHistory(name);
@@ -246,10 +256,16 @@ async function loadHistory(agentName, conversationId) {
     } else {
       container.innerHTML = '<div class="h23-chat-empty">Start a conversation with your agent.</div>';
     }
+    const overlayBody = document.getElementById('chat-overlay-body');
+    if (overlayBody) overlayBody.innerHTML = container.innerHTML;
+    scheduleChatPersist();
     scrollToBottom();
   } catch (err) {
     console.error('Failed to load history:', err);
     container.innerHTML = '<div class="h23-chat-empty">Start a conversation with your agent.</div>';
+    const overlayBody = document.getElementById('chat-overlay-body');
+    if (overlayBody) overlayBody.innerHTML = '';
+    scheduleChatPersist();
   }
 }
 
@@ -263,6 +279,7 @@ function newConversation() {
   if (overlayBody) overlayBody.innerHTML = '';
   // Highlight active in list
   updateConversationListHighlight();
+  scheduleChatPersist();
 }
 
 async function loadConversationList(agentName) {
@@ -308,6 +325,7 @@ async function openConversation(convId) {
   chatConversationId = convId;
   await loadHistory(chatAgent?.agentName, convId);
   renderConversationList();
+  scheduleChatPersist();
 }
 
 function toggleConversationList() {
@@ -332,6 +350,7 @@ async function sendMessage(source) {
 
   input.value = '';
   input.style.height = 'auto';
+  scheduleChatPersist();
 
   // Handle slash commands
   if (text.startsWith('/')) {
@@ -348,6 +367,7 @@ async function sendMessage(source) {
   scrollContainer(containerId);
 
   chatStreaming = true;
+  scheduleChatPersist();
   const sendBtn = document.getElementById('chat-send-btn');
   const overlaySendBtn = document.getElementById('chat-overlay-send-btn');
   // Swap send → stop button
@@ -393,6 +413,7 @@ async function sendMessage(source) {
             responseEl = appendMessage('assistant', currentResponse, containerId);
           } else {
             responseEl.innerHTML = renderMarkdown(currentResponse);
+            scheduleChatPersist();
           }
           scrollContainer(containerId);
         } else if (event.type === 'thinking') {
@@ -427,6 +448,7 @@ async function sendMessage(source) {
   chatStreaming = false;
   resetSendButtons();
   chatAbort = null;
+  scheduleChatPersist();
 }
 
 function resetSendButtons() {
@@ -454,6 +476,7 @@ async function stopChat() {
   chatStreaming = false;
   resetSendButtons();
   chatAbort = null;
+  scheduleChatPersist();
 }
 
 // ── DOM Helpers ──
@@ -480,6 +503,7 @@ function appendMedia(mediaType, filePath, caption, containerId) {
     div.textContent = `[${mediaType}: ${filePath}]${caption ? ' — ' + caption : ''}`;
   }
   container.appendChild(div);
+  scheduleChatPersist();
 }
 
 function renderMarkdown(text) {
@@ -526,6 +550,7 @@ function appendMessage(role, content, containerId) {
     div.textContent = content;
   }
   container.appendChild(div);
+  scheduleChatPersist();
   return div;
 }
 
@@ -536,6 +561,7 @@ function appendThinking(text, containerId) {
   div.className = 'h23-chat-thinking';
   div.textContent = text;
   container.appendChild(div);
+  scheduleChatPersist();
 }
 
 function appendToolCard(name, args, status, containerId) {
@@ -562,6 +588,7 @@ function appendToolCard(name, args, status, containerId) {
     <div class="h23-chat-tool-result"></div>
   `;
   container.appendChild(div);
+  scheduleChatPersist();
 }
 
 function updateToolCard(name, result, success) {
@@ -583,6 +610,7 @@ function updateToolCard(name, result, success) {
       resultEl.textContent = text;
     }
   }
+  scheduleChatPersist();
 }
 
 function appendError(text, containerId) {
@@ -592,6 +620,7 @@ function appendError(text, containerId) {
   div.className = 'h23-chat-error';
   div.textContent = text;
   container.appendChild(div);
+  scheduleChatPersist();
 }
 
 function scrollToBottom() {
@@ -611,20 +640,24 @@ function escapeHtml(text) {
 
 function cacheHistory() {
   if (!chatAgent) return;
-  // Find the active messages container (overlay or tile)
-  const overlay = document.getElementById('chat-overlay');
-  const isOverlayOpen = overlay && overlay.classList.contains('open');
-  const containerId = isOverlayOpen ? 'chat-overlay-body' : 'chat-messages';
-  const container = document.getElementById(containerId);
+  const container = getActiveChatContainer();
   if (!container) return;
-  const messages = [];
-  container.querySelectorAll('.h23-chat-msg').forEach(el => {
-    messages.push({
-      role: el.classList.contains('user') ? 'user' : 'assistant',
-      content: el.textContent,
-    });
-  });
-  localStorage.setItem(`home23:chat:${chatAgent.agentName}`, JSON.stringify(messages.slice(-50)));
+  const messages = extractMessageHistory(container);
+
+  try {
+    localStorage.setItem(`home23:chat:${chatAgent.agentName}`, JSON.stringify(messages.slice(-50)));
+    localStorage.setItem(getChatSessionKey(chatAgent.agentName), JSON.stringify({
+      agentName: chatAgent.agentName,
+      conversationId: chatConversationId,
+      html: container.innerHTML,
+      streaming: chatStreaming,
+      savedAt: Date.now(),
+      tileInput: document.getElementById('chat-input')?.value || '',
+      overlayInput: document.getElementById('chat-overlay-input')?.value || '',
+    }));
+  } catch {
+    // LocalStorage may be unavailable or full; keep chat functional.
+  }
 }
 
 // ── Overlay ──
@@ -642,6 +675,7 @@ function openOverlay() {
 
   overlay.classList.add('open');
   scrollContainer('chat-overlay-body');
+  scheduleChatPersist();
 }
 
 function closeOverlay() {
@@ -654,4 +688,89 @@ function closeOverlay() {
     tileMessages.innerHTML = overlayBody.innerHTML;
   }
   scrollToBottom();
+  scheduleChatPersist();
+}
+
+function bindChatPersistence() {
+  if (chatPersistenceBound) return;
+
+  const persist = () => cacheHistory();
+  window.addEventListener('beforeunload', persist);
+  window.addEventListener('pagehide', persist);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') persist();
+  });
+
+  chatPersistenceBound = true;
+}
+
+function scheduleChatPersist() {
+  if (chatPersistTimer) return;
+  chatPersistTimer = setTimeout(() => {
+    chatPersistTimer = null;
+    cacheHistory();
+  }, 150);
+}
+
+function getChatSessionKey(agentName) {
+  return `home23:chat:session:${agentName}`;
+}
+
+function getActiveChatContainer() {
+  const overlay = document.getElementById('chat-overlay');
+  const isOverlayOpen = overlay && overlay.classList.contains('open');
+  const containerId = isOverlayOpen ? 'chat-overlay-body' : 'chat-messages';
+  return document.getElementById(containerId);
+}
+
+function extractMessageHistory(container) {
+  const messages = [];
+  container.querySelectorAll('.h23-chat-msg').forEach(el => {
+    messages.push({
+      role: el.classList.contains('user') ? 'user' : 'assistant',
+      content: el.textContent,
+    });
+  });
+  return messages;
+}
+
+function restoreChatState(agentName) {
+  try {
+    const raw = localStorage.getItem(getChatSessionKey(agentName));
+    if (!raw) return false;
+
+    const saved = JSON.parse(raw);
+    if (!saved || saved.agentName !== agentName) return false;
+    if (!saved.savedAt || (Date.now() - saved.savedAt) > CHAT_SESSION_TTL_MS) {
+      localStorage.removeItem(getChatSessionKey(agentName));
+      return false;
+    }
+
+    chatConversationId = saved.conversationId || `dashboard-${agentName}-${Date.now()}`;
+
+    const tileMessages = document.getElementById('chat-messages');
+    const overlayBody = document.getElementById('chat-overlay-body');
+    const html = saved.html || '<div class="h23-chat-empty">Start a conversation with your agent.</div>';
+
+    if (tileMessages) tileMessages.innerHTML = html;
+    if (overlayBody) overlayBody.innerHTML = html;
+
+    const tileInput = document.getElementById('chat-input');
+    const overlayInput = document.getElementById('chat-overlay-input');
+    if (tileInput) tileInput.value = saved.tileInput || '';
+    if (overlayInput) overlayInput.value = saved.overlayInput || '';
+
+    if (saved.streaming) {
+      if (tileMessages) appendError('Response interrupted by refresh.', 'chat-messages');
+      if (overlayBody) appendError('Response interrupted by refresh.', 'chat-overlay-body');
+    }
+
+    chatStreaming = false;
+    chatAbort = null;
+    scrollToBottom();
+    scrollContainer('chat-overlay-body');
+    return true;
+  } catch {
+    return false;
+  }
 }
