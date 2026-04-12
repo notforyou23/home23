@@ -523,10 +523,10 @@ function createSettingsRouter(home23Root) {
 
     // Propagate default model change to all agents' engine roles + restart
     if (chat?.defaultModel) {
-      const agents = discoverAgents();
-      for (const agent of agents) {
+      const agentNames = discoverAgents();
+      for (const name of agentNames) {
         try {
-          const agentConfigPath = path.join(home23Root, 'instances', agent.name, 'config.yaml');
+          const agentConfigPath = path.join(home23Root, 'instances', name, 'config.yaml');
           const agentConfig = loadYaml(agentConfigPath);
           if (!agentConfig.engine) agentConfig.engine = {};
           agentConfig.engine.thought = chat.defaultModel;
@@ -535,8 +535,8 @@ function createSettingsRouter(home23Root) {
           agentConfig.engine.query = chat.defaultModel;
           saveYaml(agentConfigPath, agentConfig);
           const { execSync } = require('child_process');
-          execSync(`pm2 restart home23-${agent.name}`, { stdio: 'pipe', timeout: 10000 });
-        } catch { /* non-fatal */ }
+          execSync(`pm2 restart home23-${name}`, { stdio: 'pipe', timeout: 10000 });
+        } catch (err) { console.error(`[Settings] Failed to propagate model to ${name}:`, err.message); }
       }
     }
 
