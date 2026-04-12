@@ -520,6 +520,26 @@ function createSettingsRouter(home23Root) {
 
     saveYaml(configPath, homeConfig);
     regenerateEvobrewConfig();
+
+    // Propagate default model change to all agents' engine roles + restart
+    if (chat?.defaultModel) {
+      const agents = discoverAgents();
+      for (const agent of agents) {
+        try {
+          const agentConfigPath = path.join(home23Root, 'instances', agent.name, 'config.yaml');
+          const agentConfig = loadYaml(agentConfigPath);
+          if (!agentConfig.engine) agentConfig.engine = {};
+          agentConfig.engine.thought = chat.defaultModel;
+          agentConfig.engine.consolidation = chat.defaultModel;
+          agentConfig.engine.dreaming = chat.defaultModel;
+          agentConfig.engine.query = chat.defaultModel;
+          saveYaml(agentConfigPath, agentConfig);
+          const { execSync } = require('child_process');
+          execSync(`pm2 restart home23-${agent.name}`, { stdio: 'pipe', timeout: 10000 });
+        } catch { /* non-fatal */ }
+      }
+    }
+
     res.json({ ok: true });
   });
 
