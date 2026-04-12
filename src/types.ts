@@ -242,3 +242,145 @@ export interface TTSConfig {
   voiceId: string;
   modelId: string;
 }
+
+// ─── Situational Awareness Engine Types ─────────────────
+
+export type MemoryObjectType =
+  | 'observation'
+  | 'evidence_link'
+  | 'insight'
+  | 'uncertainty_item'
+  | 'procedure'
+  | 'correction'
+  | 'breakdown_diagnostic'
+  | 'hypothesis'
+  | 'recommendation_state'
+  | 'checkpoint'
+  | 'handoff_receipt';
+
+export type DeltaClass =
+  | 'belief_change'
+  | 'priority_change'
+  | 'scope_change'
+  | 'recommendation_change'
+  | 'uncertainty_change'
+  | 'action_change'
+  | 'measurement_model_change'
+  | 'no_change';
+
+export type LifecycleLayer = 'raw' | 'working' | 'durable';
+
+export type MemoryStatus = 'candidate' | 'approved' | 'challenged' | 'superseded' | 'expired' | 'rejected';
+
+export type ReviewState = 'unreviewed' | 'self_reviewed' | 'peer_reviewed' | 'approved' | 'challenged' | 'rejected' | 'expired';
+
+export type ThreadLevel = 'constitutional' | 'strategic' | 'tactical' | 'immediate';
+
+export interface StateDelta {
+  delta_class: DeltaClass;
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+  why: string;
+}
+
+export interface TriggerCondition {
+  trigger_type: string;
+  condition: string;
+}
+
+export interface MemoryObject {
+  memory_id: string;
+  type: MemoryObjectType;
+  thread_id: string;
+  session_id: string;
+  lifecycle_layer: LifecycleLayer;
+  status: MemoryStatus;
+  title: string;
+  statement: string;
+  summary?: string;
+  created_at: string;
+  updated_at: string;
+  actor: string;
+  provenance: {
+    source_refs: string[];
+    session_refs: string[];
+    generation_method: string;
+  };
+  evidence: {
+    evidence_links: string[];
+    grounding_strength: 'strong' | 'medium' | 'weak' | 'none';
+    grounding_note?: string;
+  };
+  confidence: {
+    score: number;
+    basis: string;
+  };
+  state_delta: StateDelta;
+  triggers: TriggerCondition[];
+  scope: {
+    applies_to: string[];
+    excludes: string[];
+  };
+  review_state: ReviewState;
+  supersedes?: string[];
+  superseded_by?: string[];
+  staleness_policy: {
+    review_after_days?: number;
+    expire_after_days?: number;
+  };
+  privacy_class?: 'internal' | 'personal' | 'sensitive';
+  consent?: {
+    consent_scope: 'this_session' | 'ongoing' | 'until_revoked';
+    retention_basis: string;
+    do_not_surface_without_trigger: boolean;
+    user_confirmed?: boolean;
+  };
+  reuse_count: number;
+  last_reactivated?: string;
+  last_acted_on?: string;
+}
+
+export interface ProblemThread {
+  thread_id: string;
+  title: string;
+  question: string;
+  objective: string;
+  level: ThreadLevel;
+  status: 'open' | 'progressing' | 'blocked' | 'resolved' | 'archived';
+  priority: 'high' | 'medium' | 'low';
+  owner: string;
+  parent_thread?: string;
+  child_threads: string[];
+  opened_at: string;
+  closed_at?: string;
+  current_state_summary: string;
+  success_criteria: string[];
+  related_threads: string[];
+  context_boundaries: {
+    applies_to: string[];
+    does_not_apply_to: string[];
+  };
+  version: number;
+}
+
+export interface EventEnvelope {
+  event_id: string;
+  event_type: string;
+  thread_id?: string;
+  session_id: string;
+  object_id?: string;
+  timestamp: string;
+  actor: string;
+  invocation_id?: string;
+  retry_of?: string;
+  payload: Record<string, unknown>;
+}
+
+export interface AssemblyResult {
+  block: string;
+  degraded: boolean;
+  brainCueCount: number;
+  triggerCount: number;
+  surfacesLoaded: string[];
+  events: EventEnvelope[];
+}
