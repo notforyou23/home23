@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Migration Index</title>
+  <style>
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;max-width:900px;margin:40px auto;padding:0 20px;line-height:1.55;color:#111;background:#fafafa}
+    h1,h2,h3{line-height:1.2}
+    code{background:#eee;padding:2px 5px;border-radius:4px}
+    pre{background:#f0f0f0;padding:12px;border-radius:8px;overflow:auto}
+    ul{margin-top:.3rem}
+    .muted{color:#666}
+  </style>
+</head>
+<body>
+<h1>Agent Migration Index</h1>
+<p class="muted">Future-us map for migrating useful value from legacy <code>cosmo-home_2.3</code> into Home23 without rebuilding old chaos.</p>
+
+<h2>Bottom line</h2>
+<ul>
+  <li>Keep Home23 sparse.</li>
+  <li><code>jerry</code> remains the central continuity spine.</li>
+  <li>Only obvious future standalone agents: <code>tick</code>, <code>edison</code>.</li>
+  <li><code>archivist</code>, <code>autostudy</code>, <code>sentinel</code> should start as workflows, not bodies.</li>
+  <li><code>althea</code> and legacy <code>coz</code> are doctrine sources more than resurrection targets.</li>
+  <li>Old home is a donor archive, not a live dependency.</li>
+</ul>
+
+<h2>What we decided</h2>
+<h3>Agent model in Home23</h3>
+<p>A new Home23 agent is a full isolated runtime with its own:</p>
+<ul>
+  <li><code>config.yaml</code></li>
+  <li><code>workspace/</code></li>
+  <li><code>brain/</code></li>
+  <li><code>conversations/</code></li>
+  <li><code>logs/</code></li>
+  <li><code>cron-runs/</code></li>
+  <li>port block / process set</li>
+</ul>
+<p>So “new agent” means a real separate mind, not a light persona.</p>
+
+<h3>Migration rules</h3>
+<ol>
+  <li>Migrate <strong>doctrine</strong> aggressively.</li>
+  <li>Migrate <strong>memory</strong> selectively and in curated chunks.</li>
+  <li>Migrate <strong>identity</strong> only when the role is truly distinct.</li>
+  <li>Do not bulk import legacy logs or stale state.</li>
+  <li>Do not make the old house a permanent dependency.</li>
+</ol>
+
+<h2>Current recommendations</h2>
+<h3>Keep as real future agents</h3>
+<ul>
+  <li><code>tick</code> — strongest case for a separate runtime; distinct operational role, risk profile, and memory boundary.</li>
+  <li><code>edison</code> — valid specialist future agent; separate enough to justify its own body when workload warrants.</li>
+</ul>
+
+<h3>Keep as workflows first</h3>
+<ul>
+  <li><code>archivist</code> — memory curation / continuity hygiene</li>
+  <li><code>autostudy</code> — research/study loop with explicit state</li>
+  <li><code>sentinel</code> — meaningful output and failure monitoring</li>
+</ul>
+
+<h3>Keep as doctrine sources</h3>
+<ul>
+  <li><code>althea</code> — executive/debug/retrieval doctrine</li>
+  <li><code>coz</code> — operator voice and scope discipline lineage</li>
+</ul>
+
+<h2>Key docs</h2>
+<ul>
+  <li><code>HOME23_AGENT_ARCHITECTURE_RECOMMENDATION.md</code></li>
+  <li><code>LEGACY_MEMORY_IMPORT_PLAN.md</code></li>
+  <li><code>IDENTITY_LAYERS_SAFETY_REVIEW.md</code></li>
+  <li><code>TICK_HOME23_AGENT_SPEC.md</code></li>
+  <li><code>EDISON_HOME23_AGENT_SPEC.md</code></li>
+  <li><code>AGENT_INSTANTIATION_CRITERIA.md</code></li>
+</ul>
+
+<h2>Current state</h2>
+<ul>
+  <li>migration project scaffolded</li>
+  <li>legacy doctrine extracted</li>
+  <li>workflow specs written</li>
+  <li>curated imports made into Jerry</li>
+  <li>Tick and Edison future-agent specs drafted</li>
+  <li>instantiation criteria defined</li>
+</ul>
+
+<h2>Practical next steps</h2>
+<ol>
+  <li>Implement one workflow for real.</li>
+  <li>Only instantiate Tick or Edison when the criteria doc says go.</li>
+  <li>Continue curated imports only as needed, not by bulk dump.</li>
+</ol>
+</body>
+</html>
