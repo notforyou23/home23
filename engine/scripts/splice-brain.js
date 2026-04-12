@@ -69,7 +69,7 @@ async function main() {
   // 4. Compute mean weights and normalize jtr-sourced nodes
   const meanWeight = (nodes) => {
     if (nodes.length === 0) return 0;
-    const sum = nodes.reduce((acc, n) => acc + (n.weight || 0), 0);
+    const sum = nodes.reduce((acc, n) => acc + (n.weight || 0.5), 0);
     return sum / nodes.length;
   };
 
@@ -85,7 +85,7 @@ async function main() {
   let normalizedCount = 0;
   for (const node of mergedNodes) {
     if (!jerryNodeIds.has(node.id)) {
-      const original = node.weight || 0;
+      const original = node.weight || 0.5;
       node.weight = Math.min(1.0, Math.max(0.1, original * ratio));
       normalizedCount++;
     }
