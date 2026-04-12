@@ -6,7 +6,7 @@ Home23 is not another chatbot framework. It is a complete AI operating system th
 
 Four integrated systems, one install:
 
-- **Agent** — always-on AI with a cognitive loop, 30+ tools (including a full research toolkit for driving COSMO), Telegram channel, and an LLM-powered conversation interface
+- **Agent** — always-on AI with a cognitive loop, 31 tools (including a full research toolkit for driving COSMO and a `promote_to_memory` tool for governed memory promotion), Telegram channel, and an LLM-powered conversation interface with **situational awareness** — the agent queries its brain and loads domain-specific context before every response
 - **COSMO 2.3** — multi-phase research engine with guided runs, brain integration, and a 9-tab UI. Fully agent-drivable: your agent can launch runs, monitor them, query completed brains, and compile findings into its own memory
 - **Evobrew** — AI-powered IDE with brain connectivity, multi-provider LLM support, and code editing
 - **Dashboard** — OS home screen with real-time thoughts, chat, intelligence synthesis, settings, and full access to COSMO and Evobrew
@@ -148,7 +148,7 @@ Each agent runs 3 PM2 processes, plus 2 shared:
 |---|---|---|
 | `home23-<name>` | Cognitive engine — thinking, dreaming, brain growth, document ingestion | 5001 (WS + admin HTTP) |
 | `home23-<name>-dash` | Dashboard API — brain queries, state, settings, feeder drop zone | 5002 (HTTP) |
-| `home23-<name>-harness` | Agent runtime — Telegram, 30+ tools, LLM loop | 5004 (bridge) |
+| `home23-<name>-harness` | Agent runtime — Telegram, 31 tools, LLM loop, situational awareness | 5004 (bridge) |
 | `home23-evobrew` | AI IDE (shared across all agents) | 3415 |
 | `home23-cosmo23` | Research engine (shared, on-demand) | 43210 |
 
@@ -167,7 +167,33 @@ The document feeder runs **inside** the cognitive engine process (no separate PM
 
 ## How It Works
 
-The cognitive engine runs continuous think-consolidate-dream cycles. During waking hours, it processes thoughts, pursues goals, and responds to messages. During sleep periods, it dreams — synthesizing connections across its brain, consolidating knowledge, and growing.
+The cognitive engine runs continuous think-consolidate-dream cycles. During waking hours, it processes thoughts through analyst, critic, curiosity, and **curator** roles, pursues goals, and responds to messages. During sleep periods, it dreams — synthesizing connections across its brain, consolidating knowledge, and growing.
+
+### Situational Awareness Engine
+
+The agent doesn't just respond to messages — it **shows up already knowing what it needs to know**. Before every LLM call, a context assembly layer:
+
+1. **Queries the brain** via semantic search (21,000+ nodes, cosine similarity)
+2. **Evaluates trigger conditions** on durable memory objects (keyword, temporal, domain-entry triggers)
+3. **Loads domain surfaces** — living workspace documents maintained by the curator cycle:
+   - `TOPOLOGY.md` — active ports, services, URLs (fact surface, registry-backed)
+   - `PROJECTS.md` — what's in flight, what was decided, what's next
+   - `PERSONAL.md` — ongoing personal threads with the owner
+   - `DOCTRINE.md` — conventions, boundaries, operating constraints
+   - `RECENT.md` — last 24-48 hours digest
+4. **Applies salience ranking** within a 6000-char budget — triggered memories outrank similarity results, higher confidence outranks lower
+5. **Verifies freshness** — stale fact surfaces get tagged `[UNVERIFIED]`, expired checkpoints get flagged
+6. **Enters explicit degraded mode** if the brain is unreachable — the agent knows it's operating without continuity
+
+Memory is governed, not accumulated. The **Memory Object Model** stores knowledge as typed objects with state deltas (before/after/why), trigger conditions, provenance, confidence scores constrained by evidence type, and scope boundaries. Every promotable memory must belong to a **Problem Thread** — evolving questions organized in a goal hierarchy (constitutional → strategic → tactical → immediate).
+
+An **Event Ledger** proves continuity with an 8-stage chain: session started → checkpoint loaded → retrieval executed → state delta recorded → checkpoint saved → memory reactivated → acted on → outcome observed. If any link breaks, the system knows where continuity failed.
+
+The agent has a `promote_to_memory` tool for mid-conversation promotion of important knowledge. Session-end extraction produces structured MemoryObjects with domain classification. The curator cycle (engine role) reads working memory objects, evaluates 8 promotion gates, rewrites surfaces, and flags zero-reuse durable memories for review.
+
+See `docs/design/STEP20-SITUATIONAL-AWARENESS-ENGINE-DESIGN.md` for the full design.
+
+### Document Ingestion
 
 Documents fed through the feeder are LLM-synthesized before brain entry: raw text becomes structured knowledge with extracted concepts, relationships, and insights. A brain knowledge index is maintained automatically as a human-readable map of everything the agent knows. Feeder behavior is fully configurable from the dashboard's Settings → Feeder tab (watch paths, exclusion patterns, chunking, compiler model, converter, drop zone) — see "Document Feeder" below.
 

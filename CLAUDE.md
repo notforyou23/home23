@@ -32,7 +32,11 @@ Home23/
     src/ingestion/     <- Document feeder (chokidar, compiler, converter, manifest)
     src/realtime/      <- WebSocket + /admin/feeder/* HTTP on port 5001
   src/                 <- TS harness layer
-    agent/tools/       <- 30+ agent tools (files, web, brain, research_*, etc.)
+    agent/tools/       <- 31 agent tools (files, web, brain, research_*, promote_to_memory, etc.)
+    agent/context-assembly.ts  <- Situational awareness: pre-turn brain query + surface loading
+    agent/memory-objects.ts    <- MemoryObject + ProblemThread CRUD (Step 20)
+    agent/event-ledger.ts      <- Continuity proof chain (append-only JSONL)
+    agent/trigger-index.ts     <- Trigger-based memory reactivation
   dist/                <- Compiled JS output (gitignored)
   cli/                 <- CLI installer + management commands
     lib/               <- Command implementations
@@ -66,7 +70,7 @@ Each agent runs 3 processes managed by PM2, plus 2 shared processes:
 |---|---|---|---|
 | `home23-<name>` | `engine/src/index.js` | Cognitive engine (loops, dreaming, brain growth, **document ingestion**) | 5001 (WS + admin HTTP) |
 | `home23-<name>-dash` | `engine/src/dashboard/server.js` | HTTP API (brain queries, state, settings, feeder upload/proxy) | 5002 (HTTP) |
-| `home23-<name>-harness` | `dist/home.js` | TS agent (Telegram, 30+ tools incl. research_*, LLM loop) | 5004 (bridge) |
+| `home23-<name>-harness` | `dist/home.js` | TS agent (Telegram, 31 tools incl. research_* + promote_to_memory, LLM loop, situational awareness engine) | 5004 (bridge) |
 | `home23-evobrew` | `evobrew/server/server.js` | AI IDE (shared, all agents) | 3415 |
 | `home23-cosmo23` | `cosmo23/server/index.js` | Research engine (shared, on-demand runs) | 43210 |
 
@@ -125,6 +129,27 @@ Conversation sessions are compiled to workspace on session gap (idle timeout). T
 
 > The model is the current voice. The engine is the living process. The brain is the enduring cortex.
 
+### Situational Awareness Engine (Step 20)
+
+Before every LLM call, the agent's context assembly layer (`src/agent/context-assembly.ts`) queries the brain and loads domain surfaces into the system prompt. This replaces the old static `MEMORY.md` + `semanticRecall` approach.
+
+**Key files:**
+- `src/agent/context-assembly.ts` — pre-turn brain query + trigger eval + surface loading + salience ranking + degraded mode
+- `src/agent/memory-objects.ts` — MemoryObject + ProblemThread CRUD with confidence anti-theater constraints
+- `src/agent/event-ledger.ts` — append-only JSONL at `instances/<agent>/brain/event-ledger.jsonl`
+- `src/agent/trigger-index.ts` — trigger-based reactivation (keyword, temporal, domain_entry)
+- `src/agent/tools/promote.ts` — `promote_to_memory` tool for mid-conversation promotion
+- `engine/src/core/curator-cycle.js` — brain-node intake governance, surface rewriting, audit metrics
+
+**Domain surfaces** (per-agent, curator-maintained in `instances/<agent>/workspace/`):
+- `TOPOLOGY.md` — fact surface (ports, services, URLs)
+- `PROJECTS.md` — active project state
+- `PERSONAL.md` — owner relationship context (consent-gated)
+- `DOCTRINE.md` — conventions, boundaries, constraints
+- `RECENT.md` — last 24-48h digest
+
+**Memory objects** live in `instances/<agent>/brain/memory-objects.json`. Problem threads in `problem-threads.json`. Trigger index in `trigger-index.json`. All are JSON, all are gitignored.
+
 ## Config (Single Source of Truth)
 
 | File | What | Committed? |
@@ -175,6 +200,8 @@ Config loader merges: `home.yaml` <- `agent config.yaml` <- `secrets.yaml` <- pe
 | `docs/design/STEP16-AGENT-COSMO-TOOLKIT-DESIGN.md` | 11 `research_*` tools + skill file + active-run injection |
 | `docs/design/STEP17-FEEDER-SETTINGS-DESIGN.md` | Feeder settings tab + drop zone |
 | `docs/design/STEP18-OAUTH-SETTINGS-DESIGN.md` | Anthropic + OpenAI Codex OAuth via cosmo23 broker |
+| `docs/design/STEP19-TELEGRAM-MESSAGE-HANDLING-DESIGN.md` | Adaptive debounce + queue-during-run for Telegram |
+| `docs/design/STEP20-SITUATIONAL-AWARENESS-ENGINE-DESIGN.md` | **CORE:** Brain-driven pre-turn context assembly, governed memory objects, event ledger, curator cycle |
 | `docs/design/COSMO23-VENDORED-PATCHES.md` | **CRITICAL:** patches to vendored cosmo23 that must survive updates |
 | `docs/design/SLEEP-WAKE-DESIGN.md` | Engine sleep/wake tuning for Home23 |
 | `docs/vision/HOME23_CANONICAL_VISION.md` | Product thesis |
