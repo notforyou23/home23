@@ -28,28 +28,33 @@ cd home23
 node cli/home23.js init
 ```
 
-The init wizard walks you through API keys, installs dependencies, and builds the TypeScript harness.
+Init checks prerequisites (Node 20+, PM2, Python 3, Ollama), prompts for API keys, installs dependencies, and builds the TypeScript harness.
 
-## Create an Agent
+## Setup — Web Dashboard
 
-```bash
-node cli/home23.js agent create my-agent
-```
-
-This creates the agent's directory structure, identity files, and config. Telegram is optional — skip the bot token prompt if you only want dashboard/IDE access.
-
-## Start
+Everything after init happens in the browser. Start the system:
 
 ```bash
-node cli/home23.js start my-agent
+node cli/home23.js start
 ```
 
-This launches 3 processes for your agent plus 2 shared processes (Evobrew and COSMO). Open your browser:
+Then open **`http://localhost:5002/home23`** in your browser.
 
-- **Dashboard:** `http://localhost:5002/home23`
-- **Settings:** `http://localhost:5002/home23/settings`
-- **Evobrew IDE:** `http://localhost:3415`
-- **COSMO Research:** `http://localhost:43210`
+**First-run flow:**
+1. **Welcome screen** — click "Get Started"
+2. **Settings → Providers** — configure your LLM providers (API keys or OAuth sign-in)
+3. **Settings → Agents** — click "+ Create Agent" to create your first agent through the guided wizard (name, owner, model, Telegram token if you want it)
+4. **Start the agent** from the Agents tab — the dashboard launches all processes
+5. **You're live** — the dashboard switches to the home screen with real-time thoughts, chat, and full system access
+
+The web dashboard is the primary interface for everything — agent creation, provider configuration, model selection, feeder settings, and day-to-day use. The CLI exists for init and process management but the onboarding is web-based.
+
+**What you see:**
+- **Dashboard:** `http://localhost:5002/home23` — OS home screen
+- **Settings:** `http://localhost:5002/home23/settings` — all configuration
+- **Chat:** `http://localhost:5002/home23/chat` — standalone chat with your agent
+- **Evobrew IDE:** `http://localhost:3415` — AI code editor with brain access
+- **COSMO Research:** `http://localhost:43210` — research engine UI
 
 ## Commands
 

@@ -1866,16 +1866,18 @@ class Orchestrator {
                   if (!fsSync.existsSync(surfacePath)) continue;
 
                   let content = fsSync.readFileSync(surfacePath, 'utf-8');
-                  const contentLower = content.toLowerCase();
                   const budget = SURFACE_BUDGETS[objs] || 3000;
                   let added = 0;
+                  const seenTitles = new Set(); // track titles added in THIS cycle too
 
                   for (const obj of domainObjs) {
-                    // DEDUP: skip if this title is already on the surface
-                    if (contentLower.includes(obj.title.toLowerCase())) {
+                    const titleLower = obj.title.toLowerCase();
+                    // DEDUP: skip if this title is already on the surface OR already added this cycle
+                    if (content.toLowerCase().includes(titleLower) || seenTitles.has(titleLower)) {
                       processedIds.push(obj.memory_id);
                       continue;
                     }
+                    seenTitles.add(titleLower);
 
                     const entry = `\n\n### ${obj.title}\n${obj.statement}${obj.state_delta ? `\n_Changed: ${obj.state_delta.before?.state || '?'} → ${obj.state_delta.after?.state || '?'} (${obj.state_delta.why || '?'})_` : ''}\n_Added: ${new Date().toISOString().split('T')[0]}_`;
 
