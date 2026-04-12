@@ -311,7 +311,8 @@ async function main(): Promise<void> {
     const cmdResult = await commandHandler.handle(text, message.chatId, message.channel);
     if (cmdResult) return cmdResult;
 
-    // If the agent is already running for this chat, don't start a concurrent run
+    // Safety net: if somehow a message reaches here while agent is busy
+    // (should not happen with queueDuringRun, but defensive)
     if (agent.isRunning(message.chatId)) {
       return {
         text: "I'm still working on something. Send /stop to interrupt me.",
@@ -320,14 +321,23 @@ async function main(): Promise<void> {
       };
     }
 
-    // Everything else → agent loop
-    const result = await agent.run(message.chatId, text, message.media);
-    return {
-      text: result.text,
-      channel: message.channel,
-      chatId: message.chatId,
-      media: result.media,
-    };
+    // Track active run so router holds incoming messages during processing
+    const routerKey = `${message.channel}:${message.chatId}`;
+    router.markRunActive(routerKey);
+
+    try {
+      const result = await agent.run(message.chatId, text, message.media);
+      return {
+        text: result.text,
+        channel: message.channel,
+        chatId: message.chatId,
+        media: result.media,
+      };
+    } finally {
+      router.markRunComplete(routerKey);
+      // Process any messages that arrived during the run
+      await router.drainPending(routerKey);
+    }
   };
 
   // ── Create SessionRouter ──
