@@ -288,19 +288,84 @@ Verified during implementation:
   - `POST /home23/api/vibe/generate` created `499b4294-6942-4a42-9819-986052bc4bb4`
   - `GET /home23/api/vibe/current` now returns that item as `latestItem` with `algorithm: "chaos-mode"` and `themeThought`
 
+## Dream Augmentation (added 2026-04-11)
+
+The CHAOS MODE random pools produced visually coherent but aesthetically same-y output over time — 82 evocative subjects × fixed styles/moods/lighting with weak in-memory dedup and only a single latest-thought theme line. The next iteration adds a symbolic layer harvested from the agent's own dream output.
+
+### What it does
+
+Before each generation, the vibe service reads the most recent N dreams from `instances/<agent>/brain/dreams.jsonl`, extracts symbolic motifs, and passes them to `generateChaos` as a new `dreamMotifs` option. `generateChaos` injects them into the CHAOS PROMPT ENGINE user prompt as a new line:
+
+```
+Dream motifs (weave subtly into texture, material, and atmosphere — do not make them the subject): <motifs>
+```
+
+The motifs color the texture, material, and atmosphere of the image without becoming the literal subject — random subject/style/mood selection is preserved. If the dreams file is missing, empty, or dream augmentation is disabled, `generateChaos` behaves exactly as before.
+
+### Motif extraction
+
+Heuristic (default):
+- Unicode-aware regex over the last `lookback` dream `content` strings (keeps non-ASCII like `möbius`).
+- Two-word adjective+noun phrase mining, ranked by repeat count.
+- Falls back to single-token frequency filtered against an expanded stop-word set (articles, pronouns, auxiliaries, weak adverbs, meta-dream nouns).
+- Suppresses single tokens already present inside a chosen phrase.
+- Caps at 5 motifs per generation.
+
+LLM (placeholder, not yet wired): a tiny pre-pass via the same remote prompt engine to extract 3-5 motifs. The config slot exists but the UI option is disabled.
+
+### Subject history tuning
+
+`image-provider.js` bumps in-memory `SUBJECT_HISTORY_LIMIT` from `50` → `80` and `SUBJECT_MAX_ATTEMPTS` from `5` → `10`. Still resets on restart (acceptable — matches the `:3508` pattern).
+
+### Config shape
+
+```yaml
+dashboard:
+  vibe:
+    autoGenerate: true
+    generationIntervalHours: 12
+    rotationIntervalSeconds: 45
+    galleryLimit: 60
+    dreams:
+      enabled: true
+      lookback: 3          # 1..10
+      extraction: heuristic # heuristic | llm (llm is placeholder)
+```
+
+### Manifest metadata additions
+
+New manifest items gain:
+
+- `algorithm: "chaos-mode-dream-augmented"` when motifs were used (otherwise unchanged `"chaos-mode"`)
+- `dreamMotifs: [ ... ]`
+- `sourceDreamCount: N`
+- `promptTemplate` suffixed with `"plus dream motifs"`
+
+### Settings UI (new)
+
+`/home23/settings` now has a dedicated **Vibe** sub-tab (between Feeder and System) with:
+
+1. Generation & rotation: auto-generate toggle, generation interval (h), rotation interval (s), gallery limit
+2. Dream augmentation: enabled toggle, dream lookback (1..10), extraction method
+
+Backend routes:
+
+- `GET /home23/api/settings/vibe` — reads `dashboard.vibe` block from `home.yaml`
+- `PUT /home23/api/settings/vibe` — merges and writes; hot-apply only (vibe service re-reads config on each generation call, no restart required)
+
+### Verified
+
+- `node -c` on all touched files
+- `pm2 restart home23-jerry-dash`
+- `GET /home23/api/settings/vibe` returns merged defaults
+- `POST /home23/api/vibe/generate` produces items with `algorithm: "chaos-mode-dream-augmented"`, `sourceDreamCount: 3`, and real motifs (e.g. `["clock grown", "saffron apple", "möbius strip", "melancholy philosophers", "forever wears"]`) that survive end-to-end into the final image prompt
+- Generated prompt verified to weave motifs as texture: *"An owl perched on a spiraling möbius strip, surrounded by lush tropical foliage, its feathers adorned with clock faces and saffron-colored apples."*
+
 ## Remaining Work
 
 ### Onboarding/settings wiring
 
-The runtime behavior exists, but the dedicated Vibe controls are not yet exposed in `/home23/settings`.
-
-The next clean settings fields are:
-
-1. `dashboard.vibe.autoGenerate`
-2. `dashboard.vibe.generationIntervalHours`
-3. `dashboard.vibe.rotationIntervalSeconds`
-4. `dashboard.vibe.galleryLimit`
-5. optional toggle for hidden manual generation
+Base vibe settings and dream-augmentation controls are now exposed. Optional follow-up: add a "hidden manual generation" toggle to make the triple-click trigger discoverable/configurable.
 
 ### Provider/image tuning
 

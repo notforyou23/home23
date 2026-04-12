@@ -14,12 +14,41 @@ const MIN_GENERATION_INTERVAL_HOURS = 1;
 const MIN_ROTATION_INTERVAL_SECONDS = 15;
 const AUTO_RETRY_BACKOFF_MS = 30 * 60 * 1000;
 
+const DEFAULT_DREAM_LOOKBACK = 3;
+const MAX_DREAM_LOOKBACK = 10;
+const DREAM_TAIL_BYTES = 128 * 1024;
+const MAX_MOTIFS = 5;
+
 const DEFAULT_VIBE_CONFIG = Object.freeze({
   autoGenerate: true,
   generationIntervalHours: DEFAULT_GENERATION_INTERVAL_HOURS,
   rotationIntervalSeconds: DEFAULT_ROTATION_INTERVAL_SECONDS,
   galleryLimit: DEFAULT_GALLERY_LIMIT,
+  dreams: {
+    enabled: true,
+    lookback: DEFAULT_DREAM_LOOKBACK,
+    extraction: 'heuristic',
+  },
 });
+
+// Heuristic stop-word list for motif extraction — drops filler so concrete
+// nouns/adjectives surface from dream text.
+const MOTIF_STOPWORDS = new Set([
+  'the','a','an','and','or','but','if','while','when','then','than','that','this','these','those',
+  'i','me','my','mine','you','your','he','she','it','its','we','us','our','they','them','their',
+  'is','was','were','are','be','been','being','am','do','does','did','doing','have','has','had',
+  'of','in','on','at','to','for','with','from','by','as','into','onto','upon','over','under','about',
+  'up','down','out','off','through','between','around','against','within','without','across',
+  'not','no','yes','so','too','very','just','only','also','still','even','ever','never','always',
+  'here','there','where','why','how','what','which','who','whom','whose','can','could','should','would',
+  'will','shall','may','might','must','ought','like','seems','feels','looks','felt','seemed','looked',
+  'one','two','some','any','each','every','all','both','few','many','most','other','another',
+  'thing','things','something','nothing','anything','everything','someone','anyone','everyone',
+  'dream','dreams','dreamt','dreaming','moment','moments','time','times',
+  'actually','really','perhaps','maybe','almost','nearly','mostly','often','sometimes','usually',
+  'quite','rather','somewhat','truly','simply','suddenly','finally','again','already','instead',
+  'next','last','first','second','third','another','chapter','part','section','existence',
+]);
 
 function toArray(value) {
   if (Array.isArray(value)) return value;
@@ -117,6 +146,10 @@ class Home23VibeService {
     return path.join(this.home23Root, 'instances', this.agentName, 'config.yaml');
   }
 
+  get dreamsPath() {
+    return path.join(this.home23Root, 'instances', this.agentName, 'brain', 'dreams.jsonl');
+  }
+
   async ensureDirs() {
     await fsp.mkdir(this.imagesDir, { recursive: true });
   }
@@ -186,6 +219,19 @@ class Home23VibeService {
       Math.floor(positiveNumber(config.galleryLimit, DEFAULT_GALLERY_LIMIT))
     );
 
+    const dreamsRaw = (config.dreams && typeof config.dreams === 'object') ? config.dreams : {};
+    const dreamExtraction = String(dreamsRaw.extraction || 'heuristic').toLowerCase() === 'llm'
+      ? 'llm'
+      : 'heuristic';
+    const dreams = {
+      enabled: dreamsRaw.enabled !== false,
+      lookback: Math.min(
+        MAX_DREAM_LOOKBACK,
+        Math.max(1, Math.floor(positiveNumber(dreamsRaw.lookback, DEFAULT_DREAM_LOOKBACK)))
+      ),
+      extraction: dreamExtraction,
+    };
+
     return {
       autoGenerate: config.autoGenerate !== false,
       generationIntervalHours,
@@ -193,6 +239,7 @@ class Home23VibeService {
       rotationIntervalSeconds,
       rotationIntervalMs: rotationIntervalSeconds * 1000,
       galleryLimit,
+      dreams,
     };
   }
 
@@ -202,6 +249,7 @@ class Home23VibeService {
       generationIntervalHours: config.generationIntervalHours,
       rotationIntervalSeconds: config.rotationIntervalSeconds,
       galleryLimit: config.galleryLimit,
+      dreams: config.dreams,
     };
   }
 
@@ -310,10 +358,20 @@ class Home23VibeService {
     const config = this.getConfig();
     const themeThought = await this.getLatestThoughtTheme();
 
+    let dreamMotifs = [];
+    let sourceDreamCount = 0;
+    if (config.dreams.enabled) {
+      const dreams = await this.getRecentDreams(config.dreams.lookback);
+      sourceDreamCount = dreams.length;
+      dreamMotifs = this.extractDreamMotifs(dreams);
+    }
+
     this.logger.info?.('[Home23 Vibe] Starting CHAOS MODE generation', {
       agent: this.agentName,
       algorithm: 'chaos-mode',
       themeThought: themeThought?.slice(0, 120) || null,
+      dreamMotifs,
+      sourceDreamCount,
     });
 
     if (typeof this.imageProvider.generateChaos !== 'function') {
@@ -321,7 +379,7 @@ class Home23VibeService {
     }
 
     const image = await withTimeout(
-      this.imageProvider.generateChaos(themeThought || '', {}),
+      this.imageProvider.generateChaos(themeThought || '', { dreamMotifs }),
       120_000,
       'Image generation'
     );
@@ -352,11 +410,15 @@ class Home23VibeService {
       caption,
       prompt,
       thought: prompt || null,
-      promptTemplate: 'CHAOS MODE random category assembly plus latest-thought theme',
+      promptTemplate: dreamMotifs.length
+        ? 'CHAOS MODE random category assembly plus latest-thought theme plus dream motifs'
+        : 'CHAOS MODE random category assembly plus latest-thought theme',
       provider: image.provider,
       model: image.model,
-      algorithm: 'chaos-mode',
+      algorithm: dreamMotifs.length ? 'chaos-mode-dream-augmented' : 'chaos-mode',
       themeThought: themeThought || null,
+      dreamMotifs: dreamMotifs.length ? dreamMotifs : null,
+      sourceDreamCount: sourceDreamCount || null,
     };
 
     await fsp.writeFile(
@@ -377,6 +439,92 @@ class Home23VibeService {
     });
 
     return this.enrichItem(item);
+  }
+
+  async getRecentDreams(n) {
+    const limit = Math.min(MAX_DREAM_LOOKBACK, Math.max(1, Math.floor(n || DEFAULT_DREAM_LOOKBACK)));
+    if (!fs.existsSync(this.dreamsPath)) return [];
+    try {
+      const stats = await fsp.stat(this.dreamsPath);
+      const start = Math.max(0, stats.size - DREAM_TAIL_BYTES);
+      const handle = await fsp.open(this.dreamsPath, 'r');
+      try {
+        const length = stats.size - start;
+        const buffer = Buffer.alloc(length);
+        await handle.read(buffer, 0, length, start);
+        const text = buffer.toString('utf8');
+        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+        // If we seeked mid-line, drop the first partial line unless start was 0.
+        const usable = start === 0 ? lines : lines.slice(1);
+        const tail = usable.slice(-limit);
+        const dreams = [];
+        for (const line of tail) {
+          try {
+            const parsed = JSON.parse(line);
+            if (parsed && typeof parsed.content === 'string' && parsed.content.trim()) {
+              dreams.push({
+                id: parsed.id || null,
+                cycle: parsed.cycle || null,
+                timestamp: parsed.timestamp || null,
+                content: parsed.content,
+              });
+            }
+          } catch { /* skip malformed */ }
+        }
+        return dreams;
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      this.logger.warn?.('[Home23 Vibe] Failed to read dreams', { error: error.message });
+      return [];
+    }
+  }
+
+  extractDreamMotifs(dreams) {
+    if (!Array.isArray(dreams) || dreams.length === 0) return [];
+    const counts = new Map();
+    const phraseHits = new Map();
+    // Pass 1: two-word evocative adjective+noun phrases (lowercased), since
+    // dream text is often rich in "quantum foam library" / "cold humming metal".
+    const phraseRe = /([\p{L}]{4,})\s+([\p{L}]{4,})/giu;
+    for (const dream of dreams) {
+      const text = String(dream.content || '')
+        .replace(/[*_`~]+/g, ' ')
+        .replace(/[^\p{L}\s\-]/gu, ' ')
+        .toLowerCase();
+      let match;
+      while ((match = phraseRe.exec(text)) !== null) {
+        const [, a, b] = match;
+        if (MOTIF_STOPWORDS.has(a) || MOTIF_STOPWORDS.has(b)) continue;
+        const phrase = `${a} ${b}`;
+        phraseHits.set(phrase, (phraseHits.get(phrase) || 0) + 1);
+      }
+      for (const word of text.split(/\s+/)) {
+        if (word.length < 5) continue;
+        if (MOTIF_STOPWORDS.has(word)) continue;
+        counts.set(word, (counts.get(word) || 0) + 1);
+      }
+    }
+    // Prefer repeated phrases first, then uncommon single tokens.
+    const rankedPhrases = Array.from(phraseHits.entries())
+      .filter(([, c]) => c >= 1)
+      .sort((a, b) => b[1] - a[1])
+      .map(([p]) => p);
+    const rankedWords = Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([w]) => w);
+    const merged = [];
+    const seen = new Set();
+    for (const token of [...rankedPhrases, ...rankedWords]) {
+      if (merged.length >= MAX_MOTIFS) break;
+      // Skip single-words that are already inside a chosen phrase.
+      if (!token.includes(' ') && merged.some(m => m.includes(` ${token}`) || m.startsWith(`${token} `))) continue;
+      if (seen.has(token)) continue;
+      seen.add(token);
+      merged.push(token);
+    }
+    return merged;
   }
 
   async getLatestThoughtTheme() {

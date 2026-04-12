@@ -190,8 +190,8 @@ const IMAGE_CATEGORIES = {
 };
 
 // Subject history guard — in-memory, resets on restart (acceptable per §17)
-const SUBJECT_HISTORY_LIMIT = 50;
-const SUBJECT_MAX_ATTEMPTS = 5;
+const SUBJECT_HISTORY_LIMIT = 80;
+const SUBJECT_MAX_ATTEMPTS = 10;
 const subjectHistory = [];
 
 function randomInt(n) { return crypto.randomInt(n); }
@@ -429,7 +429,7 @@ function createImageProvider(runtime = {}) {
    * Saves locally, writes metadata JSON.
    */
   async function generateChaos(thought, opts = {}) {
-    const { sensorContext } = opts;
+    const { sensorContext, dreamMotifs } = opts;
 
     // Step 2: Select subject with history guard
     const subject    = selectRandomSubject();
@@ -465,6 +465,16 @@ function createImageProvider(runtime = {}) {
       ? `\nTheme (subtle inspiration, do not illustrate literally): ${thought.slice(0, 120)}`
       : '';
 
+    // Dream motifs adds symbolic texture pulled from recent dreams. They must
+    // not become the literal subject — they color the atmosphere, materials,
+    // and strange details.
+    const motifList = Array.isArray(dreamMotifs)
+      ? dreamMotifs.filter(m => typeof m === 'string' && m.trim()).slice(0, 5)
+      : [];
+    const dreamHint = motifList.length
+      ? `\nDream motifs (weave subtly into texture, material, and atmosphere — do not make them the subject): ${motifList.join(', ')}`
+      : '';
+
     // Step 4: CHAOS PROMPT ENGINE — LLM assembles the final prompt
     const userPrompt = `Create an image prompt with these elements:
 
@@ -472,7 +482,7 @@ Subject: ${subject}
 Style: ${style}
 Lighting: ${lighting}
 Mood: ${mood}
-Composition: ${composition}${contextHints.length ? '\nContext: ' + contextHints.join(', ') : ''}${thoughtHint}
+Composition: ${composition}${contextHints.length ? '\nContext: ' + contextHints.join(', ') : ''}${thoughtHint}${dreamHint}
 
 Combine these into a vivid, specific scene description. Respond in JSON format.`;
 

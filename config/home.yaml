@@ -13,9 +13,13 @@ cosmo23:
 dashboard:
   vibe:
     autoGenerate: true
-    generationIntervalHours: 12
-    rotationIntervalSeconds: 45
-    galleryLimit: 60
+    generationIntervalHours: 1
+    rotationIntervalSeconds: 120
+    galleryLimit: 600
+    dreams:
+      enabled: true
+      lookback: 3
+      extraction: heuristic
 providers:
   ollama-cloud:
     baseUrl: https://ollama.com/v1
@@ -35,7 +39,6 @@ providers:
       - claude-opus-4-6
   openai:
     defaultModels:
-      - gpt-5.4
       - gpt-5.4-mini
   openai-codex:
     defaultModels:
@@ -60,8 +63,8 @@ embeddings:
       model: nomic-embed-text
       dimensions: 768
 chat:
-  defaultProvider: ollama-cloud
-  defaultModel: nemotron-3-super
+  defaultProvider: openai-codex
+  defaultModel: gpt-5.4
   maxTokens: 4096
   temperature: 0.7
   historyBudget: 400000
