@@ -23,10 +23,10 @@ const STALENESS_HOURS = 24;
 
 // ─── Types ──────────────────────────────────────────────
 interface BrainSearchResult {
-  content: string;
-  score: number;
+  concept: string;     // brain returns 'concept', not 'content'
+  similarity: number;  // brain returns 'similarity', not 'score'
   tag?: string;
-  id?: string;
+  id?: number;
 }
 
 interface AssemblyConfig {
@@ -153,7 +153,7 @@ export async function assembleContext(
   try {
     const contextSnippet = recentTurns
       .slice(-3)
-      .map(t => t.content.slice(0, 200))
+      .map(t => (t.content ?? '').slice(0, 200))
       .join(' ');
     const searchQuery = `${userText} ${contextSnippet}`.trim().slice(0, 500);
 
@@ -196,8 +196,8 @@ export async function assembleContext(
 
   for (const cue of brainCues) {
     salienceItems.push({
-      text: `- ${cue.content.slice(0, 300)}${cue.tag ? ` [${cue.tag}]` : ''}`,
-      score: cue.score,
+      text: `- ${(cue.concept ?? '').slice(0, 300)}${cue.tag ? ` [${cue.tag}]` : ''}`,
+      score: cue.similarity,
       source: 'brain',
     });
   }
