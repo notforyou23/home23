@@ -348,7 +348,14 @@ function createSettingsRouter(home23Root) {
       config.agent.timezone = timezone;
       if (config.scheduler) config.scheduler.timezone = timezone;
     }
-    if (model !== undefined) { config.chat.model = model; config.chat.defaultModel = model; }
+    if (model !== undefined) {
+      config.chat.model = model; config.chat.defaultModel = model;
+      if (!config.engine) config.engine = {};
+      config.engine.thought = model;
+      config.engine.consolidation = model;
+      config.engine.dreaming = model;
+      config.engine.query = model;
+    }
     if (provider !== undefined) { config.chat.provider = provider; config.chat.defaultProvider = provider; }
 
     // Channel updates
@@ -399,10 +406,11 @@ function createSettingsRouter(home23Root) {
       for (const dir of [convDir, brainDir]) {
         try { fs.writeFileSync(path.join(dir, 'default-model.json'), modelJson); } catch { /* ok */ }
       }
-      // Restart harness to pick up new model
+      // Restart harness + engine to pick up new model
       try {
         const { execSync } = require('child_process');
         execSync(`pm2 restart home23-${agentName}-harness`, { stdio: 'pipe', timeout: 10000 });
+        execSync(`pm2 restart home23-${agentName}`, { stdio: 'pipe', timeout: 10000 });
       } catch { /* non-fatal */ }
       regenerateEvobrewConfig();
     }
@@ -910,6 +918,56 @@ function createSettingsRouter(home23Root) {
     saveYaml(BASE_ENGINE_PATH, baseEngine);
 
     res.json({ ok: true, applied, requiresRestart });
+  });
+
+  // ─── Vibe (dashboard) ───────────────────────────────────────────────────────
+  // Lives in config/home.yaml under dashboard.vibe. Hot-apply only — the vibe
+  // service re-reads config on each generation call, so no restart needed.
+
+  const VIBE_DEFAULTS = {
+    autoGenerate: true,
+    generationIntervalHours: 12,
+    rotationIntervalSeconds: 45,
+    galleryLimit: 60,
+    dreams: {
+      enabled: true,
+      lookback: 3,
+      extraction: 'heuristic',
+    },
+  };
+
+  function mergeVibeConfig(s = {}) {
+    const dreams = (s.dreams && typeof s.dreams === 'object') ? s.dreams : {};
+    return {
+      autoGenerate: s.autoGenerate !== false,
+      generationIntervalHours: Number(s.generationIntervalHours) || VIBE_DEFAULTS.generationIntervalHours,
+      rotationIntervalSeconds: Number(s.rotationIntervalSeconds) || VIBE_DEFAULTS.rotationIntervalSeconds,
+      galleryLimit: Number(s.galleryLimit) || VIBE_DEFAULTS.galleryLimit,
+      dreams: {
+        enabled: dreams.enabled !== false,
+        lookback: Number(dreams.lookback) || VIBE_DEFAULTS.dreams.lookback,
+        extraction: String(dreams.extraction || 'heuristic').toLowerCase() === 'llm' ? 'llm' : 'heuristic',
+      },
+    };
+  }
+
+  router.get('/vibe', (_req, res) => {
+    const homeConfig = loadYaml(path.join(home23Root, 'config', 'home.yaml'));
+    const vibe = mergeVibeConfig(homeConfig.dashboard?.vibe || {});
+    res.json({ vibe });
+  });
+
+  router.put('/vibe', (req, res) => {
+    const { vibe: input } = req.body || {};
+    if (!input || typeof input !== 'object') {
+      return res.status(400).json({ ok: false, error: 'vibe object required' });
+    }
+    const configPath = path.join(home23Root, 'config', 'home.yaml');
+    const homeConfig = loadYaml(configPath);
+    if (!homeConfig.dashboard) homeConfig.dashboard = {};
+    homeConfig.dashboard.vibe = mergeVibeConfig(input);
+    saveYaml(configPath, homeConfig);
+    res.json({ ok: true, vibe: homeConfig.dashboard.vibe, applied: ['vibe'], requiresRestart: [] });
   });
 
   return { router, loadYaml, saveYaml, discoverAgents };
