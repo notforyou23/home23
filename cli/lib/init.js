@@ -232,7 +232,19 @@ ${agentsSection}`;
   }
 
   console.log('');
-  console.log('Home23 is ready. Create your first agent:');
-  console.log('  node cli/home23.js agent create <name>');
+  console.log('═══════════════════════════════════════════════════');
+  console.log('  Home23 is ready!');
+  console.log('═══════════════════════════════════════════════════');
+  console.log('');
+  console.log('  Next step — start the system:');
+  console.log('');
+  console.log('    node cli/home23.js start');
+  console.log('');
+  console.log('  Then open your browser:');
+  console.log('');
+  console.log('    http://localhost:5002/home23');
+  console.log('');
+  console.log('  The web dashboard will walk you through creating');
+  console.log('  your first agent and configuring providers.');
   console.log('');
 }

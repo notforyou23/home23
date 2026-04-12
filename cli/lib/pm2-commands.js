@@ -93,6 +93,36 @@ export async function runStart(home23Root, agentName) {
   } catch {
     console.log('  (COSMO 2.3 not started — run home23 cosmo23 update if not installed)');
   }
+
+  // Find dashboard port for the URL
+  let dashPort = 5002;
+  try {
+    const { readdirSync, readFileSync: readFs } = await import('node:fs');
+    const yaml = (await import('js-yaml')).default;
+    const instancesDir = join(home23Root, 'instances');
+    if (existsSync(instancesDir)) {
+      const agents = readdirSync(instancesDir);
+      for (const a of agents) {
+        const cfgPath = join(instancesDir, a, 'config.yaml');
+        if (existsSync(cfgPath)) {
+          const cfg = yaml.load(readFs(cfgPath, 'utf8'));
+          if (cfg?.ports?.dashboard) { dashPort = cfg.ports.dashboard; break; }
+        }
+      }
+    }
+  } catch { /* use default */ }
+
+  console.log('');
+  console.log('═══════════════════════════════════════════════════');
+  console.log('  Home23 is running!');
+  console.log('═══════════════════════════════════════════════════');
+  console.log('');
+  console.log(`  Open your browser:  http://localhost:${dashPort}/home23`);
+  console.log('');
+  console.log('  Check status:       node cli/home23.js status');
+  console.log('  View logs:          node cli/home23.js logs');
+  console.log('  Stop:               node cli/home23.js stop');
+  console.log('');
 }
 
 export async function runStop(home23Root, agentName) {
