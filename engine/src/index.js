@@ -100,7 +100,12 @@ async function main() {
   logger.info('Loading configuration...');
   const configLoader = new ConfigLoader();
   const config = configLoader.load();
-  
+
+  if (Array.isArray(config._instanceOverridesApplied) && config._instanceOverridesApplied.length) {
+    logger.info('Applied instance engine model overrides:');
+    for (const line of config._instanceOverridesApplied) logger.info('  ' + line);
+  }
+
   // Validate configuration at startup
   const validator = new ConfigValidator(config, logger);
   const validation = validator.validate();

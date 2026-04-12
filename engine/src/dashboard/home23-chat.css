@@ -5,8 +5,8 @@
 .h23-tile-chat {
   display: flex;
   flex-direction: column;
-  min-height: 360px;
-  max-height: 460px;
+  min-height: 460px;
+  max-height: 560px;
   padding: 0;
   overflow: hidden;
 }

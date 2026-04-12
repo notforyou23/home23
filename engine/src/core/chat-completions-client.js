@@ -20,6 +20,78 @@
 
 const OpenAI = require('openai');
 
+// ─── Per-baseURL concurrency gate + 429 retry ─────────────────────────────────
+// Some upstreams (ollama-cloud, notably) rate-limit "too many concurrent
+// requests" per API key well below what the cognitive engine issues in flight.
+// We cap concurrent chat.completions.create() calls per baseURL and retry 429s
+// with exponential backoff + jitter. Scope is module-level so every
+// ChatCompletionsClient instance sharing a baseURL shares the gate.
+
+const DEFAULT_MAX_CONCURRENT = Number(process.env.CHAT_COMPLETIONS_MAX_CONCURRENT) || 2;
+const CONCURRENCY_GATES = new Map(); // baseURL -> { inFlight, queue, limit }
+
+function getGate(baseURL) {
+  let gate = CONCURRENCY_GATES.get(baseURL);
+  if (!gate) {
+    gate = { inFlight: 0, queue: [], limit: DEFAULT_MAX_CONCURRENT };
+    CONCURRENCY_GATES.set(baseURL, gate);
+  }
+  return gate;
+}
+
+function acquireGateSlot(gate) {
+  if (gate.inFlight < gate.limit) {
+    gate.inFlight++;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => gate.queue.push(resolve));
+}
+
+function releaseGateSlot(gate) {
+  gate.inFlight--;
+  const next = gate.queue.shift();
+  if (next) {
+    gate.inFlight++;
+    next();
+  }
+}
+
+function is429(error) {
+  if (!error) return false;
+  if (error.status === 429) return true;
+  const msg = String(error.message || '');
+  return /\b429\b|too many concurrent requests|rate.?limit/i.test(msg);
+}
+
+async function createWithGateAndRetry(client, payload, logger) {
+  const baseURL = String(client.baseURL || '');
+  const gate = getGate(baseURL);
+  const maxAttempts = 5;
+  await acquireGateSlot(gate);
+  try {
+    let lastErr = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        return await client.chat.completions.create(payload);
+      } catch (error) {
+        lastErr = error;
+        if (!is429(error) || attempt === maxAttempts - 1) throw error;
+        const backoff = Math.min(8000, 500 * Math.pow(2, attempt)) + Math.floor(Math.random() * 250);
+        logger?.warn?.('Chat Completions 429, backing off', {
+          baseURL,
+          attempt: attempt + 1,
+          backoffMs: backoff,
+          model: payload?.model,
+        });
+        await new Promise((resolve) => setTimeout(resolve, backoff));
+      }
+    }
+    throw lastErr || new Error('Chat Completions 429 retry exhausted');
+  } finally {
+    releaseGateSlot(gate);
+  }
+}
+
 class ChatCompletionsClient {
   constructor(config = {}, logger = null) {
     this.logger = logger;
@@ -330,7 +402,7 @@ class ChatCompletionsClient {
    * Generate with streaming (preferred method)
    */
   async generateStreaming(payload, originalModel) {
-    const stream = await this.client.chat.completions.create(payload);
+    const stream = await createWithGateAndRetry(this.client, payload, this.logger);
 
     let aggregatedText = '';
     let finalResponse = null;
@@ -411,7 +483,7 @@ class ChatCompletionsClient {
   async generateNonStreaming(payload, originalModel) {
     payload.stream = false;
 
-    const response = await this.client.chat.completions.create(payload);
+    const response = await createWithGateAndRetry(this.client, payload, this.logger);
 
     const choice = response.choices?.[0];
     const content = choice?.message?.content || '';
