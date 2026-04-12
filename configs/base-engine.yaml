@@ -54,8 +54,15 @@ architecture:
         max_completion_tokens: 500
         successThreshold: 0.7
         enableMCPTools: true
+      - id: curator
+        prompt: "You are the memory curator for a persistent AI agent. Review the latest brain insights and working memory objects. For each, decide: Is this operationally important? Should it be promoted to a domain surface (TOPOLOGY, PROJECTS, PERSONAL, DOCTRINE, RECENT)? Write a brief, load-bearing summary for any surface updates. Skip anything that is just restating known information. Focus on: what changed, what's new, what the agent needs to know to be ready."
+        promptGuided: "Curate memory for {domain}. Review recent brain insights about {context}. What is load-bearing? What should the agent know?"
+        temperature: 0.3
+        max_completion_tokens: 1000
+        successThreshold: 0.5
+        enableMCPTools: false
     evolutionEnabled: false
-    maxRoles: 4  # reduced for local LLM — 4 roles × ~90s = ~6min cycle
+    maxRoles: 5
   
   codeCreation:
     planMode: true
