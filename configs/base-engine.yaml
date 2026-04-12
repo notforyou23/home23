@@ -563,13 +563,20 @@ mcp:
   client:
     enabled: true
     servers:
+      # The filesystem MCP server is not bundled with Home23 — the engine does
+      # not start an MCP HTTP server on its MCP_HTTP_PORT, so leaving this
+      # enabled produces a stream of "request to http://localhost:5003/mcp
+      # failed" errors from every agent that tries list_directory/read_file.
+      # Disabled until a real server is wired. Agents can still use MCPBridge
+      # (mcp-bridge.js) directly for system introspection — that path reads
+      # files off config.logsDir and does not go through the HTTP client.
       - label: "filesystem"
         type: "http"
         url: "http://localhost:3347/mcp"
         auth: null
         allowedTools: ["read_file", "read_binary_file", "list_directory"]
         requireApproval: "never"
-        enabled: true
+        enabled: false
         allowedPaths:
           - "runtime/outputs/"
           - "runtime/exports/"
