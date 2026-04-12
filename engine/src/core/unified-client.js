@@ -458,7 +458,7 @@ class UnifiedClient extends GPT5Client {
 
         this.logger?.info('Trying fallback', { provider: fb.provider, model: fb.model, step: i + 1, total: chain.length });
 
-        if (fb.provider === 'openai') {
+        if (fb.provider === 'openai' || fb.provider === 'openai-codex') {
           return await super.generate({ ...options, model: fb.model });
         } else if (fb.provider === 'xai') {
           return await this.generateXAI(fb, options);
@@ -491,13 +491,13 @@ class UnifiedClient extends GPT5Client {
     // Get model assignment from config (returns null if none configured)
     const assignment = this.getModelAssignment(options.component, options.purpose);
     
-    // If no assignment OR assignment is OpenAI -> use parent GPT5Client implementation
-    if (!assignment || assignment.provider === 'openai') {
+    // If no assignment OR assignment is OpenAI/OpenAI-Codex -> use parent GPT5Client implementation
+    if (!assignment || assignment.provider === 'openai' || assignment.provider === 'openai-codex') {
       // Apply model override if specified in assignment
       if (assignment && assignment.model) {
         options = { ...options, model: assignment.model };
       }
-      
+
       // Use parent implementation - exact current GPT-5.2 behavior
       return await super.generate(options);
     }
@@ -911,7 +911,7 @@ class UnifiedClient extends GPT5Client {
     const assignment = this.getModelAssignment(options.component, options.purpose);
     
     // If OpenAI or no assignment -> use parent (GPT-5.2) with model override
-    if (!assignment || assignment.provider === 'openai') {
+    if (!assignment || assignment.provider === 'openai' || assignment.provider === 'openai-codex') {
       // CRITICAL: Apply model override if assignment specifies a different model
       if (assignment && assignment.model) {
         options = { ...options, model: assignment.model };
@@ -963,7 +963,7 @@ class UnifiedClient extends GPT5Client {
     const assignment = this.getModelAssignment(options.component, options.purpose);
     
     // If OpenAI or no assignment -> use parent (GPT-5.2) with model override
-    if (!assignment || assignment.provider === 'openai') {
+    if (!assignment || assignment.provider === 'openai' || assignment.provider === 'openai-codex') {
       // CRITICAL: Apply model override if assignment specifies a different model
       if (assignment && assignment.model) {
         options = { ...options, model: assignment.model };
@@ -1018,8 +1018,8 @@ class UnifiedClient extends GPT5Client {
       return await super.generateFast(options);
     }
     
-    // If OpenAI assignment -> use parent with model override
-    if (assignment.provider === 'openai') {
+    // If OpenAI/Codex assignment -> use parent with model override
+    if (assignment.provider === 'openai' || assignment.provider === 'openai-codex') {
       options = { ...options, model: assignment.model };
       this.logger?.debug('Model override for fast generation', {
         component: options.component,

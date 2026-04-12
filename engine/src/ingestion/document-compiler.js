@@ -2,6 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const yaml = require('js-yaml');
 const OpenAI = require('openai');
 
 const DEFAULT_INDEX_SECTIONS = [
@@ -47,18 +48,49 @@ class DocumentCompiler {
     this.logger = logger;
     this.indexPath = path.join(workspacePath, 'BRAIN_INDEX.md');
 
-    // Default to Ollama Cloud — the default compiler model (minimax-m2.7) is cloud-only.
-    // LOCAL_LLM_BASE_URL intentionally not in the fallback chain.
-    const baseURL = config.baseURL
-      || process.env.COMPILER_LLM_BASE_URL
-      || 'https://ollama.com/v1';
-    const apiKey = config.apiKey
-      || process.env.COMPILER_LLM_API_KEY
-      || process.env.OLLAMA_CLOUD_API_KEY
-      || 'ollama';
+    this.model = config.model || 'minimax-m2.7';
+
+    // Resolve provider baseURL from model name via home.yaml
+    let baseURL = config.baseURL || process.env.COMPILER_LLM_BASE_URL;
+    let apiKey = config.apiKey || process.env.COMPILER_LLM_API_KEY;
+
+    if (!baseURL) {
+      const resolved = this._resolveProviderForModel(this.model);
+      if (resolved) {
+        baseURL = resolved.baseUrl;
+        apiKey = apiKey || resolved.apiKey;
+      }
+    }
+
+    baseURL = baseURL || 'https://ollama.com/v1';
+    apiKey = apiKey || process.env.OLLAMA_CLOUD_API_KEY || 'ollama';
 
     this.client = new OpenAI({ apiKey, baseURL });
-    this.model = config.model || 'minimax-m2.7';
+  }
+
+  _resolveProviderForModel(model) {
+    const envKeyMap = {
+      'ollama-cloud': 'OLLAMA_CLOUD_API_KEY',
+      'anthropic': 'ANTHROPIC_AUTH_TOKEN',
+      'openai': 'OPENAI_API_KEY',
+      'openai-codex': 'OPENAI_API_KEY',
+      'xai': 'XAI_API_KEY',
+    };
+    try {
+      const engineDir = path.resolve(__dirname, '..');
+      const homePath = path.join(engineDir, '..', 'config', 'home.yaml');
+      if (!fs.existsSync(homePath)) return null;
+      const home = yaml.load(fs.readFileSync(homePath, 'utf8')) || {};
+      for (const [name, prov] of Object.entries(home.providers || {})) {
+        if ((prov.defaultModels || []).includes(model)) {
+          return {
+            baseUrl: prov.baseUrl || prov.baseURL,
+            apiKey: process.env[envKeyMap[name] || ''] || undefined,
+          };
+        }
+      }
+    } catch { /* best-effort */ }
+    return null;
   }
 
   async compile(text, metadata = {}) {

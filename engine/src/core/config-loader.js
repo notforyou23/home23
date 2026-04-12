@@ -44,20 +44,6 @@ class ConfigLoader {
     if (!engineOverrides || typeof engineOverrides !== 'object') return;
     if (!this.config.modelAssignments || typeof this.config.modelAssignments !== 'object') return;
 
-    const thoughtKeys = [
-      'default',
-      'quantumReasoner.branches',
-      'quantumReasoner.singleReasoning',
-      'agents',
-      'agents.analytical',
-      'agents.discovery',
-      'agents.clustering',
-      'agents.quality_assurance',
-      'agents.research-fallback',
-      'goalCurator',
-      'intrinsicGoals',
-    ];
-
     const applied = [];
 
     const resolveProvider = (model) => {
@@ -93,7 +79,7 @@ class ConfigLoader {
     };
 
     if (typeof engineOverrides.thought === 'string' && engineOverrides.thought.trim()) {
-      for (const key of thoughtKeys) setModel(key, engineOverrides.thought.trim());
+      for (const key of Object.keys(this.config.modelAssignments)) setModel(key, engineOverrides.thought.trim());
     }
     if (typeof engineOverrides.consolidation === 'string' && engineOverrides.consolidation.trim()) {
       setModel('agents.synthesis', engineOverrides.consolidation.trim());

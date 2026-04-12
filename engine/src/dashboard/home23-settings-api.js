@@ -265,7 +265,7 @@ function createSettingsRouter(home23Root) {
         maxSubAgents: 3,
       },
       ports,
-      engine: { thought: 'minimax-m2.7', consolidation: 'minimax-m2.7', dreaming: 'minimax-m2.7', query: 'minimax-m2.7' },
+      engine: { thought: model || 'minimax-m2.7', consolidation: model || 'minimax-m2.7', dreaming: model || 'minimax-m2.7', query: model || 'minimax-m2.7' },
       channels: {
         telegram: botToken
           ? { enabled: true, streaming: 'partial', dmPolicy: 'open', groupPolicy: 'restricted', groups: {}, ackReaction: true }

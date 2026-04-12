@@ -2569,7 +2569,7 @@ class Orchestrator {
           timestamp: new Date().toISOString(),
           content: dreamThought.hypothesis,
           reasoning: dreamThought.reasoning || null,
-          model: dreamThought.model || 'gpt-5-2025-08-07',
+          model: dreamThought.model || this.config.models?.primary || 'unknown',
           cognitiveState: {
             energy: this.stateModulator.getState().energy,
             mood: this.stateModulator.getState().mood,

@@ -4479,7 +4479,9 @@ Respond in JSON format:
       const curator = new InsightCurator(
         this.fullConfig,
         this.logger,
-        path.join(__dirname, '..', '..', 'runtime')
+        this.fullConfig?.logsDir
+          || this.fullConfig?.runtimeRoot
+          || path.join(__dirname, '..', '..', 'runtime')
       );
       
       // Generate timestamped report path
@@ -4790,7 +4792,7 @@ Respond with JSON:
 
     try {
       const response = await this.gpt5.complete({
-        model: 'gpt-5.2', // Use powerful model for crisis analysis
+        model: this.config.models?.coordinatorStrategic || this.config.models?.primary || 'gpt-5.2',
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 600,
         temperature: 0.2,

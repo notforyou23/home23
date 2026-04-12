@@ -442,7 +442,7 @@ Respond ONLY with JSON:
 
     try {
       const response = await this.gpt5.complete({
-        model: 'gpt-5-mini',
+        model: this.config.models?.fast || this.config.models?.primary || 'gpt-5-mini',
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 250,
         temperature: 0.1,

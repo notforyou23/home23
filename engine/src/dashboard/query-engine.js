@@ -1148,10 +1148,7 @@ STYLE:
       priorContext = null // NEW: For follow-up queries - includes prior query and answer
     } = options;
     
-    // Validate model - ONLY GPT-5 models supported
-    if (!model.includes('gpt-5')) {
-      throw new Error(`Model ${model} not supported. Only GPT-5 family models are supported (gpt-5.2, gpt-5-mini, gpt-5.1-codex-max).`);
-    }
+    // Model validation removed — any model routable by UnifiedClient is valid
     
     // EXECUTIVE MODE SPECIAL CASE: Compress existing answer, don't re-query brain
     if (mode === 'executive' && baseAnswer) {
