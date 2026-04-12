@@ -1832,7 +1832,6 @@ class Orchestrator {
                 // Group by domain using scope.applies_to
                 const domainMap = { ops: [], project: [], personal: [], doctrine: [], meta: [] };
                 for (const obj of working) {
-                  // Infer domain from thread or scope
                   const domains = obj.scope?.applies_to || [];
                   for (const d of domains) {
                     const key = d.toLowerCase();
@@ -1849,7 +1848,6 @@ class Orchestrator {
                   if (domains.length === 0) domainMap.project.push(obj);
                 }
 
-                // Surface file mapping
                 const surfaceFiles = {
                   ops: 'TOPOLOGY.md',
                   project: 'PROJECTS.md',
@@ -1857,7 +1855,9 @@ class Orchestrator {
                   doctrine: 'DOCTRINE.md',
                 };
 
-                // Append new working objects to relevant surfaces
+                let totalAdded = 0;
+                const processedIds = [];
+
                 for (const [domain, objs] of Object.entries(surfaceFiles)) {
                   const domainObjs = domainMap[domain] || [];
                   if (domainObjs.length === 0) continue;
@@ -1865,38 +1865,52 @@ class Orchestrator {
                   const surfacePath = path.join(workspacePath, objs);
                   if (!fsSync.existsSync(surfacePath)) continue;
 
-                  const freshness = checkSurfaceFreshness(surfacePath, domainObjs, SURFACE_BUDGETS[objs] || 3000);
-                  if (!freshness.needsUpdate) continue;
-
-                  // Append new entries
                   let content = fsSync.readFileSync(surfacePath, 'utf-8');
+                  const contentLower = content.toLowerCase();
                   const budget = SURFACE_BUDGETS[objs] || 3000;
+                  let added = 0;
 
                   for (const obj of domainObjs) {
+                    // DEDUP: skip if this title is already on the surface
+                    if (contentLower.includes(obj.title.toLowerCase())) {
+                      processedIds.push(obj.memory_id);
+                      continue;
+                    }
+
                     const entry = `\n\n### ${obj.title}\n${obj.statement}${obj.state_delta ? `\n_Changed: ${obj.state_delta.before?.state || '?'} → ${obj.state_delta.after?.state || '?'} (${obj.state_delta.why || '?'})_` : ''}\n_Added: ${new Date().toISOString().split('T')[0]}_`;
 
                     if (content.length + entry.length <= budget) {
                       content += entry;
+                      added++;
+                      processedIds.push(obj.memory_id);
                     }
                   }
 
-                  // Update curator-maintained timestamp
-                  content = content.replace(/Last updated:\s*\d{4}-\d{2}-\d{2}/, `Last updated: ${new Date().toISOString().split('T')[0]}`);
-                  content = content.replace(/Curator-maintained\./, `Curator-maintained. Last updated: ${new Date().toISOString().split('T')[0]}.`);
-
-                  fsSync.writeFileSync(surfacePath, content);
-                  this.logger.info(`📋 Curator: updated ${objs}`, { newEntries: domainObjs.length });
+                  if (added > 0) {
+                    fsSync.writeFileSync(surfacePath, content);
+                    totalAdded += added;
+                    this.logger.info(`📋 Curator: updated ${objs}`, { newEntries: added, skippedDupes: domainObjs.length - added });
+                  }
                 }
 
-                // Also update RECENT.md with a summary of what was curated
-                const recentPath = path.join(workspacePath, 'RECENT.md');
-                if (fsSync.existsSync(recentPath)) {
-                  const recentContent = fsSync.readFileSync(recentPath, 'utf-8');
-                  const recentBudget = SURFACE_BUDGETS['RECENT.md'] || 3000;
-                  const summaryLine = `\n- Curator processed ${working.length} working memory object(s) at cycle ${this.cycleCount}`;
-                  if (recentContent.length + summaryLine.length <= recentBudget) {
-                    fsSync.writeFileSync(recentPath, recentContent + summaryLine);
+                // Mark processed objects as 'self_reviewed' so they don't get re-processed
+                if (processedIds.length > 0) {
+                  let modified = false;
+                  for (const obj of objects) {
+                    if (processedIds.includes(obj.memory_id) && obj.status === 'candidate') {
+                      obj.status = 'self_reviewed';
+                      obj.review_state = 'self_reviewed';
+                      modified = true;
+                    }
                   }
+                  if (modified) {
+                    fsSync.writeFileSync(objectsPath, JSON.stringify({ objects }, null, 2));
+                    this.logger.info('📋 Curator: marked processed objects as self_reviewed', { count: processedIds.length });
+                  }
+                }
+
+                if (totalAdded > 0) {
+                  this.logger.info(`📋 Curator: cycle ${this.cycleCount} — ${totalAdded} new entries added to surfaces`);
                 }
               }
             }
