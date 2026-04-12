@@ -36,11 +36,67 @@ function maskKey(key) {
   return key.slice(0, 8) + '...' + key.slice(-4);
 }
 
+function checkPrerequisites() {
+  const issues = [];
+  const warnings = [];
+
+  // Node version
+  const nodeVersion = parseInt(process.versions.node.split('.')[0], 10);
+  if (nodeVersion < 20) {
+    issues.push(`Node.js ${process.versions.node} detected — Node 20+ required`);
+  }
+
+  // PM2
+  try {
+    execSync('pm2 --version', { stdio: 'pipe' });
+  } catch {
+    issues.push('PM2 not found — install with: npm install -g pm2');
+  }
+
+  // Python 3
+  try {
+    execSync('python3 --version', { stdio: 'pipe' });
+  } catch {
+    warnings.push('Python 3 not found — document ingestion (PDF/DOCX/images) will be unavailable');
+  }
+
+  // Ollama (for embeddings)
+  try {
+    execSync('ollama --version', { stdio: 'pipe' });
+    // Check if nomic-embed-text is pulled
+    try {
+      const models = execSync('ollama list', { stdio: 'pipe', encoding: 'utf-8' });
+      if (!models.includes('nomic-embed-text')) {
+        warnings.push('Ollama installed but nomic-embed-text not pulled — run: ollama pull nomic-embed-text');
+      }
+    } catch { /* list failed, skip */ }
+  } catch {
+    warnings.push('Ollama not found — needed for local embeddings (free). Install from https://ollama.com or use cloud embeddings instead.');
+  }
+
+  return { issues, warnings };
+}
+
 export async function runInit(home23Root) {
   console.log('');
   console.log('Home23 — Setup');
   console.log('──────────────');
   console.log('');
+
+  // Prerequisite check
+  const prereqs = checkPrerequisites();
+  if (prereqs.issues.length > 0) {
+    console.log('❌ Prerequisites missing:');
+    for (const issue of prereqs.issues) console.log(`   • ${issue}`);
+    console.log('');
+    console.log('Fix these before continuing.');
+    process.exit(1);
+  }
+  if (prereqs.warnings.length > 0) {
+    console.log('⚠️  Warnings:');
+    for (const warn of prereqs.warnings) console.log(`   • ${warn}`);
+    console.log('');
+  }
 
   const secretsPath = join(home23Root, 'config', 'secrets.yaml');
   const existing = loadExistingSecrets(secretsPath);

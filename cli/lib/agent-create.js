@@ -173,12 +173,12 @@ export async function runAgentCreate(home23Root, name) {
       historyBudget: 400000,
       sessionGapMs: 1800000,
       memorySearch: { enabled: false, timeoutMs: 10000, topK: 5 },
-      identityFiles: ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'MEMORY.md', 'LEARNINGS.md', 'COSMO_RESEARCH.md'],
+      identityFiles: ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'LEARNINGS.md', 'COSMO_RESEARCH.md'],
       heartbeatRefreshMs: 60000,
     },
     sessions: {
       threadBindings: { enabled: true, idleHours: 24 },
-      messageQueue: { mode: 'collect', debounceMs: 3000, cap: 10, overflowStrategy: 'summarize' },
+      messageQueue: { mode: 'collect', debounceMs: 3000, adaptiveDebounce: true, cap: 10, overflowStrategy: 'summarize', queueDuringRun: true },
     },
     scheduler: { timezone, jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' },
     sibling: {
@@ -216,6 +216,27 @@ export async function runAgentCreate(home23Root, name) {
     writeFileSync(join(instanceDir, 'workspace', file), content, 'utf8');
     console.log(`  ${file.padEnd(16)} \u2713`);
   }
+
+  // Write domain surfaces for Situational Awareness Engine (Step 20)
+  const surfaces = {
+    'TOPOLOGY.md': `# House Topology\n\n_No services registered yet. The curator cycle will populate this as the agent learns about the house._\n\n_Last verified: ${new Date().toISOString().split('T')[0]}. Source: initial setup._\n`,
+    'PROJECTS.md': `# Active Projects\n\n_No projects tracked yet. Use promote_to_memory or conversation extraction to add projects._\n\n_Curator-maintained. Last updated: ${new Date().toISOString().split('T')[0]}._\n`,
+    'PERSONAL.md': `# Personal Context — ${ownerName}\n\n## Profile\n- Owner: ${ownerName}\n\n_Personal memory. Surface only on direct relevance. Curator-maintained._\n`,
+    'DOCTRINE.md': `# Doctrine — How We Work\n\n## Conventions\n- Engine is JS. Harness is TS. Two languages, one system.\n- NEVER pm2 delete/stop all — scope commands to specific process names.\n\n_Curator-maintained. Includes boundaries and operating constraints._\n`,
+    'RECENT.md': `# Recent Activity (Last 48 Hours)\n\n## ${new Date().toISOString().split('T')[0]}\n\n### Agent created\n- ${displayName} initialized with Home23\n- Situational awareness engine active\n\n_Auto-generated. Entries older than 48h drop from assembly loading._\n`,
+  };
+
+  for (const [file, content] of Object.entries(surfaces)) {
+    writeFileSync(join(instanceDir, 'workspace', file), content, 'utf8');
+    console.log(`  ${file.padEnd(16)} \u2713 (surface)`);
+  }
+
+  // Write empty brain data files for Step 20
+  mkdirSync(join(instanceDir, 'brain'), { recursive: true });
+  writeFileSync(join(instanceDir, 'brain', 'memory-objects.json'), JSON.stringify({ objects: [] }, null, 2));
+  writeFileSync(join(instanceDir, 'brain', 'problem-threads.json'), JSON.stringify({ threads: [] }, null, 2));
+  writeFileSync(join(instanceDir, 'brain', 'trigger-index.json'), JSON.stringify({ triggers: [] }, null, 2));
+  console.log(`  brain data     \u2713 (memory objects, threads, triggers)`);
 
   // Add bot token to secrets.yaml (if provided)
   if (botToken) {
