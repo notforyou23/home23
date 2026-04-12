@@ -12,6 +12,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AssemblyResult, EventEnvelope } from '../types.js';
+import type { EventLedger } from './event-ledger.js';
 
 // ─── Constants ──────────────────────────────────────────
 const CONTEXT_BUDGET = 6000;
@@ -127,6 +128,7 @@ export async function assembleContext(
   chatId: string,
   recentTurns: Array<{ role: string; content: string }>,
   config: AssemblyConfig,
+  ledger?: EventLedger,
 ): Promise<AssemblyResult> {
   const events: EventEnvelope[] = [];
   const isFirstTurn = recentTurns.length === 0;
@@ -212,6 +214,7 @@ export async function assembleContext(
 
   // ── Step 3: Assemble with salience ranking ──
   if (degraded) {
+    if (ledger) { ledger.emit(events); }
     return {
       block: '[SITUATIONAL AWARENESS: DEGRADED — operating without continuity layer. Brain unreachable. Treat prior context as unverified.]',
       degraded: true,
@@ -225,6 +228,7 @@ export async function assembleContext(
   const rankedParts = rankBySalience(salienceItems, CONTEXT_BUDGET);
 
   if (rankedParts.length === 0) {
+    if (ledger) { ledger.emit(events); }
     return {
       block: '',
       degraded: false,
@@ -245,6 +249,7 @@ export async function assembleContext(
 
   const block = `[SITUATIONAL AWARENESS]\n\n${brainSection}${surfaceSection}\n\n[/SITUATIONAL AWARENESS]`;
 
+  if (ledger) { ledger.emit(events); }
   return {
     block: block.slice(0, CONTEXT_BUDGET),
     degraded: false,

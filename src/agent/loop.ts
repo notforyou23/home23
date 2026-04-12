@@ -19,6 +19,7 @@ import type { CompactionManager } from './compaction.js';
 import type { MediaAttachment } from '../types.js';
 import { getCodexCredentials, getCodexHeaders } from './codex-auth.js';
 import { assembleContext } from './context-assembly.js';
+import { EventLedger } from './event-ledger.js';
 
 const MAX_ITERATIONS = 100;
 const TYPING_INTERVAL_MS = 4000;
@@ -209,6 +210,7 @@ export class AgentLoop {
   private activeRuns = new Map<string, AbortController>();
   private sessionGapMs: number;
   private workspacePath: string;
+  private eventLedger: EventLedger;
 
   constructor(opts: {
     apiKey: string;
@@ -251,6 +253,7 @@ export class AgentLoop {
     this.cacheDiagnostics = opts.cacheDiagnostics;
     this.sessionGapMs = opts.sessionGapMs ?? 30 * 60 * 1000;
     this.workspacePath = opts.workspacePath;
+    this.eventLedger = new EventLedger(join(this.workspacePath, '..', 'brain'));
   }
 
   private async compileSessionTranscript(chatId: string, records: HistoryRecord[]): Promise<void> {
@@ -484,6 +487,7 @@ export class AgentLoop {
             enginePort: this.toolContext.enginePort,
             sessionId: chatId,
           },
+          this.eventLedger,
         );
 
         if (assembly.block) {
