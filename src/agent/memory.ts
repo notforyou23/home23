@@ -131,6 +131,13 @@ Output ONLY the JSON objects, one per line. No prose.`,
         const brainDir = join(this.workspacePath, '..', 'brain');
         const store = new MemoryObjectStore(brainDir);
 
+        // Get existing objects for dedup
+        const existingTitles = new Set(
+          store.getObjectsByLayer('working')
+            .concat(store.getObjectsByLayer('durable'))
+            .map(o => o.title.toLowerCase())
+        );
+
         for (const line of lines) {
           try {
             const parsed = JSON.parse(line) as {
@@ -138,6 +145,13 @@ Output ONLY the JSON objects, one per line. No prose.`,
               before: string; after: string; why: string;
               trigger_keywords: string; applies_to: string; priority: string;
             };
+
+            // Dedup: skip if title already exists as a memory object
+            if (existingTitles.has(parsed.title.toLowerCase())) {
+              console.log(`[memory] Skipping duplicate extraction: "${parsed.title}"`);
+              continue;
+            }
+            existingTitles.add(parsed.title.toLowerCase());
 
             // Find or create thread
             const threads = store.getOpenThreads();
