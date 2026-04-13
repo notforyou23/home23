@@ -17,6 +17,7 @@ config/agents.json
 runtime/
 logs/
 *.log
+.home23-state.json
 
 # PM2 (auto-generated)
 ecosystem.config.cjs

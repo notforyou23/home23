@@ -31,6 +31,8 @@ Commands:
   stop [name]             Stop agent(s) via PM2
   status                  Show running processes
   logs [name]             Tail PM2 logs
+  update                  Update Home23 to latest release
+  update --check          Check for updates without applying
   evobrew update          Pull latest evobrew from GitHub
   cosmo23 update          Sync latest COSMO 2.3 from source
   help                    Show this help
@@ -79,6 +81,10 @@ Commands:
     } else {
       console.log('Usage: home23 cosmo23 update');
     }
+  } else if (command === 'update') {
+    const checkOnly = args.includes('--check');
+    const { runUpdate } = await import('./lib/update.js');
+    await runUpdate(HOME23_ROOT, checkOnly);
   } else {
     console.error(`Unknown command: ${command}`);
     console.error('Run "node cli/home23.js help" for usage');
