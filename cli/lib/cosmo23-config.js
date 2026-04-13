@@ -75,9 +75,26 @@ export function seedCosmo23Config(home23Root) {
   const ollamaLocalUrl = homeConfig.providers?.['ollama-local']?.baseUrl || 'http://localhost:11434';
   config.providers.ollama = { ...config.providers.ollama, enabled: true, base_url: ollamaLocalUrl, auto_detect: true };
 
-  // Ensure encryption key exists (generate once, preserve forever)
-  if (!config.security.encryption_key) {
-    config.security.encryption_key = randomBytes(32).toString('hex');
+  // Encryption key: secrets.yaml is the single source of truth.
+  // Three cases: (1) secrets has it → use it, (2) config has it but secrets doesn't
+  // → adopt it into secrets, (3) neither → generate and persist to both.
+  const secretsEncKey = secrets.cosmo23?.encryptionKey;
+  if (secretsEncKey) {
+    // Case 1: secrets.yaml has the key — propagate to config.json
+    config.security.encryption_key = secretsEncKey;
+  } else {
+    // Cases 2 and 3: adopt existing config key or generate new one
+    const key = config.security.encryption_key || randomBytes(32).toString('hex');
+    config.security.encryption_key = key;
+    // Persist to secrets.yaml so ecosystem and init can read it
+    if (!secrets.cosmo23) secrets.cosmo23 = {};
+    secrets.cosmo23.encryptionKey = key;
+    try {
+      writeFileSync(join(home23Root, 'config', 'secrets.yaml'),
+        '# Home23 secrets — API keys and tokens\n# This file is gitignored. Never commit it.\n\n'
+        + yaml.dump(secrets, { lineWidth: 120 }), 'utf8');
+      console.log('[cosmo23] Encryption key synced to secrets.yaml');
+    } catch { /* non-fatal */ }
   }
 
   // Set security profile

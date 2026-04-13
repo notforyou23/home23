@@ -19,6 +19,13 @@ const homeConfig = loadYaml(path.join(HOME23, 'config', 'home.yaml'));
 const secrets = loadYaml(path.join(HOME23, 'config', 'secrets.yaml'));
 const ollamaLocalUrl = homeConfig.providers?.['ollama-local']?.baseUrl || 'http://127.0.0.1:11434';
 
+// Cosmo23 OAuth encryption key — read from secrets.yaml (init generates it)
+const cosmo23EncryptionKey = secrets.cosmo23?.encryptionKey || '';
+if (!cosmo23EncryptionKey) {
+  console.warn('[ecosystem] Warning: cosmo23 encryption key not found in secrets.yaml. Run "home23 init" to generate.');
+}
+const cosmo23DbUrl = 'file:' + path.join(HOME23, 'cosmo23', 'prisma', 'dev.db');
+
 const commonEnv = {
   NODE_ENV: 'production',
   COSMO_CONFIG_PATH: path.join(HOME23, 'configs', 'base-engine.yaml'),
@@ -87,6 +94,7 @@ module.exports = {
         COSMO_ADMIN_MODE: 'true',
         PORT: String(homeConfig.evobrew?.port || 3405),
         EVOBREW_CONFIG_DIR: path.join(HOME23, 'evobrew'),
+        HOME23_MANAGED: 'true',
         NODE_ENV: 'production',
       },
     },
@@ -106,8 +114,11 @@ module.exports = {
         COSMO23_DASHBOARD_PORT: String(homeConfig.cosmo23?.ports?.dashboard || 43244),
         COSMO23_MCP_HTTP_PORT: String(homeConfig.cosmo23?.ports?.mcp || 43247),
         COSMO23_CONFIG_DIR: path.join(HOME23, 'cosmo23', '.cosmo23-config'),
+        DATABASE_URL: cosmo23DbUrl,
+        ENCRYPTION_KEY: cosmo23EncryptionKey,
         COSMO_RUNTIME_DIR: path.join(HOME23, 'cosmo23', 'runs'),
         COSMO_REFERENCE_RUNS_PATHS: homeConfig.cosmo23?.source ? homeConfig.cosmo23.source + '/runs' : '',
+        HOME23_MANAGED: 'true',
         NODE_ENV: 'production',
       },
     },

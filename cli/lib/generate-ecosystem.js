@@ -59,17 +59,10 @@ export function generateEcosystem(home23Root) {
   lines.push(`const secrets = loadYaml(path.join(HOME23, 'config', 'secrets.yaml'));`);
   lines.push(`const ollamaLocalUrl = homeConfig.providers?.['ollama-local']?.baseUrl || 'http://127.0.0.1:11434';`);
   lines.push(``);
-  lines.push(`// Cosmo23 OAuth encryption key — generated on first ecosystem build, persisted in secrets`);
-  lines.push(`let cosmo23EncryptionKey = secrets.cosmo23?.encryptionKey || '';`);
+  lines.push(`// Cosmo23 OAuth encryption key — read from secrets.yaml (init generates it)`);
+  lines.push(`const cosmo23EncryptionKey = secrets.cosmo23?.encryptionKey || '';`);
   lines.push(`if (!cosmo23EncryptionKey) {`);
-  lines.push(`  cosmo23EncryptionKey = require('crypto').randomBytes(32).toString('hex');`);
-  lines.push(`  // Persist so it survives ecosystem regeneration`);
-  lines.push(`  if (!secrets.cosmo23) secrets.cosmo23 = {};`);
-  lines.push(`  secrets.cosmo23.encryptionKey = cosmo23EncryptionKey;`);
-  lines.push(`  try {`);
-  lines.push(`    const secretsPath = path.join(HOME23, 'config', 'secrets.yaml');`);
-  lines.push(`    fs.writeFileSync(secretsPath, yaml.dump(secrets, { lineWidth: 120 }), 'utf8');`);
-  lines.push(`  } catch (e) { /* non-fatal */ }`);
+  lines.push(`  console.warn('[ecosystem] Warning: cosmo23 encryption key not found in secrets.yaml. Run "home23 init" to generate.');`);
   lines.push(`}`);
   lines.push(`const cosmo23DbUrl = 'file:' + path.join(HOME23, 'cosmo23', 'prisma', 'dev.db');`);
   lines.push(``);
@@ -164,6 +157,7 @@ export function generateEcosystem(home23Root) {
   lines.push(`        COSMO_ADMIN_MODE: 'true',`);
   lines.push(`        PORT: String(homeConfig.evobrew?.port || 3405),`);
   lines.push(`        EVOBREW_CONFIG_DIR: path.join(HOME23, 'evobrew'),`);
+  lines.push(`        HOME23_MANAGED: 'true',`);
   lines.push(`        NODE_ENV: 'production',`);
   lines.push(`      },`);
   lines.push(`    },`);
@@ -189,6 +183,7 @@ export function generateEcosystem(home23Root) {
   lines.push(`        ENCRYPTION_KEY: cosmo23EncryptionKey,`);
   lines.push(`        COSMO_RUNTIME_DIR: path.join(HOME23, 'cosmo23', 'runs'),`);
   lines.push(`        COSMO_REFERENCE_RUNS_PATHS: homeConfig.cosmo23?.source ? homeConfig.cosmo23.source + '/runs' : '',`);
+  lines.push(`        HOME23_MANAGED: 'true',`);
   lines.push(`        NODE_ENV: 'production',`);
   lines.push(`      },`);
   lines.push(`    },`);
