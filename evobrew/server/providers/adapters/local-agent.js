@@ -68,6 +68,7 @@ class LocalAgentAdapter extends ProviderAdapter {
 
     for (const chunk of chunks) {
       if (chunk.type === 'text' && chunk.text) text += chunk.text;
+      if (chunk.type === 'response_chunk' && chunk.chunk) text += chunk.chunk;
       if (chunk.type === 'tool_use_start') {
         currentTool = { id: chunk.toolId, name: chunk.toolName, arguments: '' };
       }

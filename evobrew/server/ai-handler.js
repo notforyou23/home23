@@ -1950,6 +1950,10 @@ Execute the pending steps now. Start with the first step that has status "pendin
               textContent += chunk.text;
               eventEmitter?.({ type: 'response_chunk', chunk: chunk.text });
             }
+            if (chunk.type === 'response_chunk' && chunk.chunk) {
+              textContent += chunk.chunk;
+              eventEmitter?.({ type: 'response_chunk', chunk: chunk.chunk });
+            }
             if (chunk.type === 'content_delta' && chunk.delta?.text) {
               textContent += chunk.delta.text;
               eventEmitter?.({ type: 'response_chunk', chunk: chunk.delta.text });
