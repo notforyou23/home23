@@ -1,4 +1,4 @@
-# Home23
+# Home23 v0.2.0
 
 **An installable AI operating system — persistent agents with living brains.**
 
@@ -15,8 +15,7 @@ Four integrated systems, one install:
 
 - **Node.js 20+** (LTS recommended)
 - **PM2** — process manager (`npm install -g pm2`)
-- **Python 3** — for the document feeder's binary-format converter
-- **MarkItDown** — optional but recommended: `pip install markitdown` lets the feeder ingest PDFs, DOCX, images, audio, and more
+- **Python 3** — for the document feeder's binary-format converter (MarkItDown installed automatically by init)
 - **An LLM provider** — at least one of: Ollama Cloud (free), Anthropic, OpenAI, xAI
 - **An embedding provider** — Ollama local (free, recommended), OpenAI, or Ollama Cloud
 
@@ -28,7 +27,7 @@ cd home23
 node cli/home23.js init
 ```
 
-Init checks prerequisites (Node 20+, PM2, Python 3, Ollama), installs dependencies, sets up encryption and the OAuth database, and builds the TypeScript harness. No API keys needed at this step — provider setup happens in the web dashboard.
+Init checks prerequisites, installs all dependencies (including MarkItDown for document ingestion), sets up encryption keys and the OAuth database, builds the TypeScript harness, and seeds all configuration. No API keys needed — provider setup happens in the web dashboard.
 
 ## Setup — Web Dashboard
 
@@ -65,6 +64,18 @@ node cli/home23.js stop                # Stop all Home23 processes
 node cli/home23.js update              # Update to latest release
 node cli/home23.js update --check      # Check for updates
 ```
+
+## Updating
+
+```bash
+node cli/home23.js update
+```
+
+One command handles everything: pulls the latest tagged release from GitHub, installs new dependencies, rebuilds TypeScript, runs any data migrations, and restarts all processes. Your agent's brain, conversations, and configuration are preserved.
+
+Check for updates without applying: `node cli/home23.js update --check`
+
+The dashboard also shows a notification bar when a new version is available.
 
 ## Embedding Provider
 
@@ -116,7 +127,7 @@ Two options:
 
 Two options:
 
-- **Import from Evobrew** — if you already have evobrew signed in with Codex OAuth at `~/.evobrew/auth-profiles.json`, click Import.
+- **Import from Evobrew** — if you already have a standalone evobrew installation signed in with Codex OAuth at `~/.evobrew/auth-profiles.json`, click Import.
 - **Start OAuth Flow** — runs the full PKCE flow via a loopback callback server. Your browser opens automatically to OpenAI's authorize page. After authorizing, the flow completes and the status flips to Connected.
 
 ### How it works
@@ -135,15 +146,16 @@ Click Logout on either OAuth card to revoke. This clears the token from both cos
 Home23/
   engine/        JS cognitive engine (loops, dreaming, brain growth, memory, ingestion)
   src/           TS agent harness (AgentLoop, 30+ tools, channels, routes)
-  cli/           CLI installer and management commands
-  config/        Provider URLs, model aliases, API keys
+  cli/           CLI installer, update system, and management commands
+  config/        Provider URLs, model aliases, secrets (gitignored)
   configs/       Shared engine config templates (base-engine.yaml incl. feeder block)
   instances/     Per-agent directories (workspace, brain, conversations)
-  evobrew/       AI IDE (brain exploration, code editing, multi-provider)
-  cosmo23/       Research engine (guided runs, multi-phase, brain integration)
-  scripts/       Helper scripts
+  evobrew/       Bundled AI IDE (brain exploration, code editing, multi-provider)
+  cosmo23/       Bundled research engine (guided runs, multi-phase, brain integration)
   docs/          Design specs and vision documents
 ```
+
+All systems are bundled — evobrew and cosmo23 ship with the repo and update together via `home23 update`. Provider configuration is managed centrally by Home23's Settings UI; evobrew and cosmo23 receive API keys via environment variables and show model pickers only.
 
 ### Processes (per agent)
 
