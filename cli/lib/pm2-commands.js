@@ -7,6 +7,7 @@
 import { execSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { ensureSystemHealth } from './system-health.js';
 
 function exec(cmd, opts = {}) {
   try {
@@ -36,6 +37,9 @@ export async function runStart(home23Root, agentName) {
     console.error('  Build FAILED. Fix errors with: npx tsc --noEmit');
     process.exit(1);
   }
+
+  // Ensure system plumbing is healthy (encryption key, configs, ecosystem)
+  await ensureSystemHealth(home23Root);
 
   const ecosystemPath = join(home23Root, 'ecosystem.config.cjs');
   if (!existsSync(ecosystemPath)) {
@@ -69,14 +73,10 @@ export async function runStart(home23Root, agentName) {
     const evobrewRunning = procs.some(p => p.name === 'home23-evobrew' && p.pm2_env?.status === 'online');
     if (!evobrewRunning) {
       console.log('Starting evobrew...');
-      // Generate config before starting
-      const { writeEvobrewConfig } = await import('./evobrew-config.js');
-      writeEvobrewConfig(home23Root);
       execSync(`pm2 start ${ecosystemPath} --only home23-evobrew`, { cwd: home23Root, stdio: 'inherit' });
     }
   } catch {
-    // Non-fatal — evobrew is optional
-    console.log('  (evobrew not started — run home23 evobrew update if not installed)');
+    console.log('  (evobrew not started)');
   }
 
   // Start cosmo23 (shared process) if not already running
@@ -86,13 +86,11 @@ export async function runStart(home23Root, agentName) {
     const cosmo23Running = procs2.some(p => p.name === 'home23-cosmo23' && p.pm2_env?.status === 'online');
     if (!cosmo23Running) {
       console.log('Starting COSMO 2.3...');
-      const { seedCosmo23Config } = await import('./cosmo23-config.js');
-      seedCosmo23Config(home23Root);
       execSync(`pm2 start ${ecosystemPath} --only home23-cosmo23`, { cwd: home23Root, stdio: 'inherit' });
     }
   } catch (err) {
     console.error(`  ⚠ COSMO 2.3 failed to start: ${err.message}`);
-    console.log('  Run "home23 cosmo23 update" to install, or check logs/cosmo23-err.log');
+    console.log('  Check logs/cosmo23-err.log for details');
   }
 
   // Find dashboard port for the URL
