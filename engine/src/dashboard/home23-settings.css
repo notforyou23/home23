@@ -642,6 +642,220 @@
   opacity: 0.55;
 }
 
+/* ── Onboarding Overlay ── */
+
+.h23s-onboarding {
+  max-width: 700px;
+  margin: 0 auto;
+  padding-bottom: 40px;
+}
+
+.h23s-onboarding-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.h23s-onboarding-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: #fff;
+  margin: 0 0 8px 0;
+}
+
+.h23s-onboarding-subtitle {
+  font-size: 14px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+/* Step indicator */
+
+.h23s-onboarding-steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  margin-bottom: 32px;
+}
+
+.h23s-onboarding-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 20px;
+  transition: all 0.2s;
+}
+
+.h23s-onboarding-step-num {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--glass-secondary);
+  color: var(--text-muted);
+  border: 1px solid var(--glass-border);
+  transition: all 0.2s;
+}
+
+.h23s-onboarding-step-label {
+  font-size: 13px;
+  color: var(--text-muted);
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.h23s-onboarding-step.active .h23s-onboarding-step-num {
+  background: var(--accent-blue);
+  color: #fff;
+  border-color: var(--accent-blue);
+}
+
+.h23s-onboarding-step.active .h23s-onboarding-step-label {
+  color: #fff;
+}
+
+.h23s-onboarding-step.done .h23s-onboarding-step-num {
+  background: var(--accent-green);
+  color: #fff;
+  border-color: var(--accent-green);
+}
+
+.h23s-onboarding-step.done .h23s-onboarding-step-label {
+  color: var(--accent-green);
+}
+
+.h23s-onboarding-step-line {
+  width: 40px;
+  height: 2px;
+  background: var(--glass-border);
+  margin: 0 4px;
+  transition: background 0.2s;
+}
+
+.h23s-onboarding-step-line.done {
+  background: var(--accent-green);
+}
+
+/* Onboarding pages */
+
+.h23s-onboarding-page {
+  display: none;
+}
+
+.h23s-onboarding-page.active {
+  display: block;
+}
+
+.h23s-onboarding-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--glass-border);
+}
+
+.h23s-onboarding-gate {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.h23s-onboarding-gate.satisfied {
+  color: var(--accent-green);
+}
+
+.h23s-onboarding-gate.satisfied .h23s-status-dot {
+  background: var(--accent-green);
+}
+
+.h23s-onboarding-details {
+  margin-top: 16px;
+  padding: 12px 16px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+}
+
+.h23s-onboarding-details summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  user-select: none;
+}
+
+.h23s-onboarding-details summary:hover {
+  color: var(--text-primary);
+}
+
+/* Launch step */
+
+.h23s-onboarding-launch {
+  text-align: center;
+}
+
+.h23s-onboarding-summary {
+  background: var(--glass-primary);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 20px 24px;
+  text-align: left;
+  display: inline-block;
+  min-width: 340px;
+}
+
+.h23s-onboarding-summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  font-size: 14px;
+}
+
+.h23s-onboarding-summary-row:not(:last-child) {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.h23s-onboarding-summary-label {
+  color: var(--text-muted);
+}
+
+.h23s-onboarding-summary-value {
+  color: #fff;
+  font-weight: 500;
+}
+
+.h23s-btn-launch {
+  font-size: 16px;
+  padding: 12px 40px;
+  border-radius: 12px;
+  background: var(--accent-green);
+}
+
+.h23s-btn-launch:hover {
+  background: #22c55e;
+}
+
+.h23s-btn-launch:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.h23s-onboarding-launch-status {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-muted);
+  min-height: 20px;
+}
+
 /* ── Responsive ── */
 
 @media (max-width: 700px) {

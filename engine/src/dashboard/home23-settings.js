@@ -1377,6 +1377,474 @@ function setupFeederHandlers() {
   setupFeederDropzone();
 }
 
+// ── Onboarding ──
+
+let onboardingActive = false;
+let onboardingStep = 1;
+let onboardingProviderPollTimer = null;
+let onboardingCreatedAgent = null;
+
+/**
+ * Check if this is a first-run scenario:
+ *  - No providers configured
+ *  - No agents exist
+ */
+async function checkOnboarding() {
+  try {
+    const [provRes, agentRes, oauthRes] = await Promise.all([
+      fetch(`${API}/providers`),
+      fetch(`${API}/agents`),
+      fetch(`${API}/oauth/status`).catch(() => null),
+    ]);
+    const provData = await provRes.json();
+    const agentData = await agentRes.json();
+
+    const hasApiKey = Object.values(provData.providers || {}).some(p => p.hasKey || p.configured);
+    let hasOAuth = false;
+    if (oauthRes && oauthRes.ok) {
+      const oauthData = await oauthRes.json();
+      hasOAuth = (oauthData.anthropic?.configured && oauthData.anthropic?.valid)
+              || (oauthData.openaiCodex?.configured && oauthData.openaiCodex?.valid);
+    }
+    const hasProvider = hasApiKey || hasOAuth;
+    const hasAgent = (agentData.agents || []).length > 0;
+
+    return !hasProvider && !hasAgent;
+  } catch (err) {
+    console.warn('Onboarding check failed:', err);
+    return false;
+  }
+}
+
+function showOnboarding() {
+  onboardingActive = true;
+  onboardingStep = 1;
+
+  // Hide normal settings UI
+  document.querySelector('.h23s-tabs').style.display = 'none';
+  document.querySelectorAll('.h23s-panel').forEach(p => p.classList.remove('active'));
+
+  // Show onboarding overlay
+  const overlay = document.getElementById('onboarding-overlay');
+  overlay.style.display = 'block';
+
+  // Populate step 1 with OAuth cards (clone them so originals stay intact for tabbed view)
+  populateOnboardingProviders();
+
+  updateOnboardingStep();
+  startOnboardingProviderPoll();
+}
+
+function hideOnboarding() {
+  onboardingActive = false;
+  stopOnboardingProviderPoll();
+
+  // Restore OAuth cards to original location if they were moved
+  restoreOAuthCards();
+
+  // Restore wizard to original location
+  restoreWizard();
+
+  // Hide overlay, show normal settings
+  document.getElementById('onboarding-overlay').style.display = 'none';
+  document.querySelector('.h23s-tabs').style.display = '';
+
+  // Activate the first tab
+  document.querySelectorAll('.h23s-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.h23s-panel').forEach(p => p.classList.remove('active'));
+  const firstTab = document.querySelector('.h23s-tab[data-stab="providers"]');
+  if (firstTab) firstTab.classList.add('active');
+  document.getElementById('panel-providers')?.classList.add('active');
+
+  // Reload data for the normal view
+  loadProviders();
+  loadAgents();
+  loadOAuthStatus();
+}
+
+function populateOnboardingProviders() {
+  const oauthHost = document.getElementById('ob-oauth-host');
+  const apikeysHost = document.getElementById('ob-apikeys-host');
+
+  // Move the real OAuth cards into onboarding (they carry their existing IDs + event listeners)
+  const anthropicCard = document.getElementById('anthropic-oauth-card');
+  const codexCard = document.getElementById('codex-oauth-card');
+  if (anthropicCard) oauthHost.appendChild(anthropicCard);
+  if (codexCard) oauthHost.appendChild(codexCard);
+
+  // Build API key inputs for onboarding
+  const order = ['ollama-cloud', 'anthropic', 'openai', 'xai'];
+  apikeysHost.innerHTML = order.map(name => `
+    <div class="h23s-provider-card" style="padding:12px 16px;margin-bottom:8px;">
+      <div class="h23s-provider-header" style="margin-bottom:8px;">
+        <span class="h23s-provider-name">${PROVIDER_DISPLAY[name] || name}</span>
+        <div class="h23s-provider-status" id="ob-prov-status-${name}">
+          <span class="h23s-status-dot"></span>
+          <span>Not configured</span>
+        </div>
+      </div>
+      <div class="h23s-provider-key-row">
+        <input type="password" id="ob-prov-key-${name}" placeholder="Paste API key...">
+        <button class="h23s-btn-secondary" onclick="obTestProvider('${name}')" style="padding:6px 12px;font-size:12px;">Test</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function restoreOAuthCards() {
+  // Move OAuth cards back to the original providers panel oauth section
+  const oauthSection = document.getElementById('oauth-section');
+  const anthropicCard = document.getElementById('anthropic-oauth-card');
+  const codexCard = document.getElementById('codex-oauth-card');
+  if (oauthSection) {
+    if (anthropicCard) oauthSection.appendChild(anthropicCard);
+    if (codexCard) oauthSection.appendChild(codexCard);
+  }
+}
+
+function restoreWizard() {
+  // Restore original wizard event handlers
+  const cancelBtn = document.getElementById('wiz-cancel');
+  if (cancelBtn && cancelBtn._obHandler) {
+    cancelBtn.removeEventListener('click', cancelBtn._obHandler);
+    cancelBtn.addEventListener('click', hideWizard);
+    delete cancelBtn._obHandler;
+  }
+  const createBtn = document.getElementById('wiz-create');
+  if (createBtn && createBtn._obHandler) {
+    createBtn.removeEventListener('click', createBtn._obHandler);
+    createBtn.addEventListener('click', createAgent);
+    delete createBtn._obHandler;
+  }
+
+  // Move wizard back to the agents panel
+  const wizard = document.getElementById('agent-wizard');
+  const agentsPanel = document.getElementById('panel-agents');
+  if (wizard && agentsPanel) {
+    agentsPanel.appendChild(wizard);
+    wizard.style.display = 'none';
+  }
+}
+
+function updateOnboardingStep() {
+  // Update step indicators
+  document.querySelectorAll('.h23s-onboarding-step').forEach(s => {
+    const step = parseInt(s.dataset.obStep);
+    s.classList.remove('active', 'done');
+    if (step === onboardingStep) s.classList.add('active');
+    if (step < onboardingStep) s.classList.add('done');
+  });
+
+  // Update connector lines
+  const lines = document.querySelectorAll('.h23s-onboarding-step-line');
+  lines.forEach((line, i) => {
+    line.classList.toggle('done', i + 1 < onboardingStep);
+  });
+
+  // Show the active page
+  document.querySelectorAll('.h23s-onboarding-page').forEach(p => p.classList.remove('active'));
+  const page = document.getElementById(`ob-step-${onboardingStep}`);
+  if (page) page.classList.add('active');
+}
+
+// Provider poll — detect OAuth completing in another tab
+function startOnboardingProviderPoll() {
+  stopOnboardingProviderPoll();
+  checkOnboardingProviderGate();
+  onboardingProviderPollTimer = setInterval(checkOnboardingProviderGate, 3000);
+}
+
+function stopOnboardingProviderPoll() {
+  if (onboardingProviderPollTimer) {
+    clearInterval(onboardingProviderPollTimer);
+    onboardingProviderPollTimer = null;
+  }
+}
+
+async function checkOnboardingProviderGate() {
+  try {
+    const [provRes, oauthRes] = await Promise.all([
+      fetch(`${API}/providers`),
+      fetch(`${API}/oauth/status`),
+    ]);
+    const provData = await provRes.json();
+    const oauthData = await oauthRes.json();
+
+    const hasApiKey = Object.values(provData.providers || {}).some(p => p.hasKey);
+    const hasOAuth = (oauthData.anthropic?.configured && oauthData.anthropic?.valid)
+                  || (oauthData.openaiCodex?.configured && oauthData.openaiCodex?.valid);
+
+    const gate = document.getElementById('ob-provider-gate');
+    const nextBtn = document.getElementById('ob-next-1');
+    const satisfied = hasApiKey || hasOAuth;
+
+    if (gate) {
+      if (satisfied) {
+        gate.classList.add('satisfied');
+        gate.innerHTML = '<span class="h23s-status-dot ok"></span> <span>Provider configured</span>';
+      } else {
+        gate.classList.remove('satisfied');
+        gate.innerHTML = '<span class="h23s-status-dot"></span> <span>Configure at least one provider to continue</span>';
+      }
+    }
+    if (nextBtn) nextBtn.disabled = !satisfied;
+
+    // Also refresh OAuth card statuses
+    renderOAuthCard('anthropic', oauthData.anthropic || {});
+    renderOAuthCard('codex', oauthData.openaiCodex || {});
+  } catch (err) {
+    console.warn('Provider gate check failed:', err);
+  }
+}
+
+async function obTestProvider(name) {
+  const keyInput = document.getElementById(`ob-prov-key-${name}`);
+  const statusEl = document.getElementById(`ob-prov-status-${name}`);
+  if (!keyInput || !statusEl) return;
+
+  const key = keyInput.value.trim();
+  if (!key) {
+    statusEl.innerHTML = '<span class="h23s-status-dot fail"></span> <span>Enter a key first</span>';
+    return;
+  }
+
+  statusEl.innerHTML = '<span class="h23s-status-dot"></span> <span>Testing...</span>';
+
+  try {
+    const res = await fetch(`${API}/providers/${name}/test`, { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      statusEl.innerHTML = '<span class="h23s-status-dot ok"></span> <span>Connected</span>';
+    } else {
+      statusEl.innerHTML = `<span class="h23s-status-dot fail"></span> <span>Failed: ${data.error || data.status}</span>`;
+    }
+  } catch (err) {
+    statusEl.innerHTML = `<span class="h23s-status-dot fail"></span> <span>Error: ${err.message}</span>`;
+  }
+}
+
+async function obSaveKeys() {
+  const providers = {};
+  for (const name of ['ollama-cloud', 'anthropic', 'openai', 'xai']) {
+    const input = document.getElementById(`ob-prov-key-${name}`);
+    if (input && input.value.trim()) {
+      providers[name] = { apiKey: input.value.trim() };
+    }
+  }
+
+  if (Object.keys(providers).length === 0) {
+    const statusEl = document.getElementById('ob-keys-status');
+    statusEl.textContent = 'Enter at least one API key';
+    statusEl.style.color = 'var(--accent-red)';
+    setTimeout(() => { statusEl.textContent = ''; }, 3000);
+    return;
+  }
+
+  const statusEl = document.getElementById('ob-keys-status');
+  try {
+    const res = await fetch(`${API}/providers`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providers }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      statusEl.textContent = 'Saved';
+      statusEl.style.color = 'var(--accent-green)';
+      setTimeout(() => { statusEl.textContent = ''; }, 3000);
+      // Re-check the gate immediately
+      checkOnboardingProviderGate();
+    } else {
+      statusEl.textContent = 'Error: ' + (data.error || 'unknown');
+      statusEl.style.color = 'var(--accent-red)';
+    }
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.style.color = 'var(--accent-red)';
+  }
+}
+
+function goToOnboardingStep(step) {
+  onboardingStep = step;
+  updateOnboardingStep();
+
+  if (step === 1) {
+    startOnboardingProviderPoll();
+  } else {
+    stopOnboardingProviderPoll();
+  }
+
+  if (step === 2) {
+    setupOnboardingWizard();
+  }
+
+  if (step === 3) {
+    populateOnboardingLaunchSummary();
+  }
+}
+
+function setupOnboardingWizard() {
+  // Move the existing wizard into the onboarding host
+  const wizard = document.getElementById('agent-wizard');
+  const host = document.getElementById('ob-wizard-host');
+
+  if (wizard && host) {
+    host.appendChild(wizard);
+    wizard.style.display = 'block';
+
+    // Reset to step 1 and show the primary banner
+    wizardStep = 1;
+    updateWizardStep();
+    const banner = document.getElementById('wiz-primary-banner');
+    if (banner) banner.style.display = 'block';
+
+    // Pre-fill timezone
+    document.getElementById('wiz-timezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York';
+
+    // Override the cancel button to go back to onboarding step 1
+    const cancelBtn = document.getElementById('wiz-cancel');
+    if (cancelBtn) {
+      if (cancelBtn._obHandler) cancelBtn.removeEventListener('click', cancelBtn._obHandler);
+      cancelBtn.removeEventListener('click', hideWizard);
+      cancelBtn._obHandler = () => goToOnboardingStep(1);
+      cancelBtn.addEventListener('click', cancelBtn._obHandler);
+    }
+
+    // Override the create button to capture the created agent and advance
+    const createBtn = document.getElementById('wiz-create');
+    if (createBtn) {
+      if (createBtn._obHandler) createBtn.removeEventListener('click', createBtn._obHandler);
+      createBtn.removeEventListener('click', createAgent);
+      createBtn._obHandler = () => obCreateAgent();
+      createBtn.addEventListener('click', createBtn._obHandler);
+    }
+  }
+}
+
+async function obCreateAgent() {
+  const body = {
+    name: document.getElementById('wiz-name').value.trim(),
+    displayName: document.getElementById('wiz-display-name').value.trim(),
+    ownerName: document.getElementById('wiz-owner').value.trim(),
+    timezone: document.getElementById('wiz-timezone').value.trim(),
+    botToken: document.getElementById('wiz-bot-token').value.trim(),
+    ownerTelegramId: document.getElementById('wiz-telegram-id').value.trim(),
+    provider: document.getElementById('wiz-provider').value,
+    model: document.getElementById('wiz-model').value,
+  };
+
+  if (!body.name || !/^[a-z0-9][a-z0-9-]*$/.test(body.name)) {
+    alert('Agent name must be lowercase alphanumeric with hyphens');
+    return;
+  }
+
+  const btn = document.getElementById('wiz-create');
+  btn.disabled = true;
+  btn.textContent = 'Creating...';
+
+  try {
+    const res = await fetch(`${API}/agents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      onboardingCreatedAgent = {
+        name: body.name,
+        displayName: body.displayName || body.name,
+        provider: body.provider,
+        model: body.model,
+      };
+      goToOnboardingStep(3);
+    } else {
+      alert('Error: ' + data.error);
+    }
+  } catch (err) {
+    alert('Failed to create agent: ' + err.message);
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Create Agent';
+}
+
+function populateOnboardingLaunchSummary() {
+  const summary = document.getElementById('ob-summary');
+  if (!summary || !onboardingCreatedAgent) return;
+
+  const a = onboardingCreatedAgent;
+  const provLabel = PROVIDER_DISPLAY[a.provider] || a.provider || '?';
+
+  summary.innerHTML = `
+    <div class="h23s-onboarding-summary-row">
+      <span class="h23s-onboarding-summary-label">Agent</span>
+      <span class="h23s-onboarding-summary-value">${a.displayName || a.name}</span>
+    </div>
+    <div class="h23s-onboarding-summary-row">
+      <span class="h23s-onboarding-summary-label">Provider</span>
+      <span class="h23s-onboarding-summary-value">${provLabel}</span>
+    </div>
+    <div class="h23s-onboarding-summary-row">
+      <span class="h23s-onboarding-summary-label">Model</span>
+      <span class="h23s-onboarding-summary-value">${a.model || 'default'}</span>
+    </div>
+  `;
+}
+
+async function obLaunchAgent() {
+  if (!onboardingCreatedAgent) return;
+  const name = onboardingCreatedAgent.name;
+  const btn = document.getElementById('ob-launch');
+  const statusEl = document.getElementById('ob-launch-status');
+
+  btn.disabled = true;
+  btn.textContent = 'Starting...';
+  statusEl.textContent = 'Launching cognitive engine, dashboard, and harness...';
+  statusEl.style.color = 'var(--text-muted)';
+
+  try {
+    const res = await fetch(`${API}/agents/${name}/start`, { method: 'POST' });
+    const data = await res.json();
+
+    if (data.ok || data.status === 'started') {
+      statusEl.textContent = 'Agent started. Redirecting to dashboard...';
+      statusEl.style.color = 'var(--accent-green)';
+
+      // Get the agent's dashboard port to redirect
+      try {
+        const agentRes = await fetch(`${API}/agents`);
+        const agentData = await agentRes.json();
+        const agent = (agentData.agents || []).find(a => a.name === name);
+        if (agent?.ports?.dashboard) {
+          setTimeout(() => {
+            window.location.href = `http://${window.location.hostname}:${agent.ports.dashboard}/home23`;
+          }, 1500);
+          return;
+        }
+      } catch { /* fall through to default redirect */ }
+
+      // Fallback: redirect to current host /home23
+      setTimeout(() => { window.location.href = '/home23'; }, 1500);
+    } else {
+      statusEl.textContent = 'Start may have failed: ' + (data.error || 'unknown status');
+      statusEl.style.color = 'var(--accent-red)';
+      btn.disabled = false;
+      btn.textContent = 'Retry Start';
+    }
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.style.color = 'var(--accent-red)';
+    btn.disabled = false;
+    btn.textContent = 'Retry Start';
+  }
+}
+
+function setupOnboardingHandlers() {
+  document.getElementById('ob-next-1')?.addEventListener('click', () => goToOnboardingStep(2));
+  document.getElementById('ob-save-keys')?.addEventListener('click', obSaveKeys);
+  document.getElementById('ob-launch')?.addEventListener('click', obLaunchAgent);
+}
+
 // ── Init ──
 
 async function init() {
@@ -1399,8 +1867,15 @@ async function init() {
   setupFeederHandlers();
   document.getElementById('vibe-save')?.addEventListener('click', saveVibe);
   setupOAuthHandlers();
+  setupOnboardingHandlers();
 
   setupWizard();
+
+  // Check if onboarding is needed
+  const needsOnboarding = await checkOnboarding();
+  if (needsOnboarding) {
+    showOnboarding();
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);

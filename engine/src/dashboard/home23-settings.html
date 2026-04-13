@@ -33,13 +33,97 @@
 
   <main class="h23s-main">
 
+    <!-- Onboarding Overlay (shown on first run when no providers + no agents) -->
+    <div id="onboarding-overlay" class="h23s-onboarding" style="display:none;">
+      <div class="h23s-onboarding-header">
+        <h1 class="h23s-onboarding-title">Welcome to Home23</h1>
+        <p class="h23s-onboarding-subtitle">Let's get your AI operating system running. This takes about 2 minutes.</p>
+      </div>
+
+      <!-- Step indicator -->
+      <div class="h23s-onboarding-steps">
+        <div class="h23s-onboarding-step active" data-ob-step="1">
+          <span class="h23s-onboarding-step-num">1</span>
+          <span class="h23s-onboarding-step-label">Providers</span>
+        </div>
+        <div class="h23s-onboarding-step-line"></div>
+        <div class="h23s-onboarding-step" data-ob-step="2">
+          <span class="h23s-onboarding-step-num">2</span>
+          <span class="h23s-onboarding-step-label">Create Agent</span>
+        </div>
+        <div class="h23s-onboarding-step-line"></div>
+        <div class="h23s-onboarding-step" data-ob-step="3">
+          <span class="h23s-onboarding-step-num">3</span>
+          <span class="h23s-onboarding-step-label">Launch</span>
+        </div>
+      </div>
+
+      <!-- Onboarding Step 1: Providers -->
+      <div class="h23s-onboarding-page active" id="ob-step-1">
+        <h2 class="h23s-panel-title">Connect a Provider</h2>
+        <p class="h23s-panel-desc">Your agent needs at least one AI provider to think. OAuth is recommended — it's free with Claude Max or ChatGPT Plus and refreshes automatically.</p>
+
+        <!-- OAuth cards (reference the same IDs — the existing HTML above has them) -->
+        <div class="h23s-section" id="ob-oauth-host">
+          <!-- Anthropic and Codex OAuth cards will be moved here during onboarding -->
+        </div>
+
+        <details class="h23s-onboarding-details">
+          <summary>Or enter API keys manually</summary>
+          <div class="h23s-section" id="ob-apikeys-host" style="margin-top:12px;">
+            <!-- API key inputs will be injected here -->
+          </div>
+          <div class="h23s-actions" style="border-top:none;padding-top:8px;">
+            <button class="h23s-btn-primary" id="ob-save-keys">Save API Keys</button>
+            <span class="h23s-save-status" id="ob-keys-status"></span>
+          </div>
+        </details>
+
+        <div class="h23s-onboarding-nav">
+          <div class="h23s-onboarding-gate" id="ob-provider-gate">
+            <span class="h23s-status-dot"></span>
+            <span>Configure at least one provider to continue</span>
+          </div>
+          <button class="h23s-btn-primary" id="ob-next-1" disabled>Next</button>
+        </div>
+      </div>
+
+      <!-- Onboarding Step 2: Create Agent (embeds the existing wizard) -->
+      <div class="h23s-onboarding-page" id="ob-step-2">
+        <h2 class="h23s-panel-title">Create Your Agent</h2>
+        <p class="h23s-panel-desc">This will be your primary agent — the main intelligence for your Home23 system.</p>
+        <div id="ob-wizard-host">
+          <!-- The existing #agent-wizard will be moved here during onboarding step 2 -->
+        </div>
+      </div>
+
+      <!-- Onboarding Step 3: Launch -->
+      <div class="h23s-onboarding-page" id="ob-step-3">
+        <div class="h23s-onboarding-launch">
+          <h2 class="h23s-panel-title">Ready to Launch</h2>
+          <p class="h23s-panel-desc" style="margin-bottom:20px;">Here's what we set up:</p>
+
+          <div class="h23s-onboarding-summary" id="ob-summary">
+            <!-- Populated by JS -->
+          </div>
+
+          <p class="h23s-panel-desc" style="margin-top:20px;">Starting your agent launches the cognitive engine, dashboard, and harness. It takes about 10 seconds.</p>
+
+          <div class="h23s-onboarding-nav" style="justify-content:center;">
+            <button class="h23s-btn-primary h23s-btn-launch" id="ob-launch">Start Agent</button>
+          </div>
+          <div class="h23s-onboarding-launch-status" id="ob-launch-status"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Providers Panel -->
     <div class="h23s-panel active" id="panel-providers">
       <h2 class="h23s-panel-title">Providers &amp; API Keys</h2>
       <p class="h23s-panel-desc">OAuth is the preferred way to authenticate with Anthropic and ChatGPT. It's free with a Claude Max plan or ChatGPT Plus/Pro subscription and refreshes automatically. Use API keys below for all other providers or as a fallback.</p>
 
       <!-- OAuth Cards (STEP 18) -->
-      <div class="h23s-section">
+      <div class="h23s-section" id="oauth-section">
         <h3 class="h23s-section-title">OAuth Sign-in <span class="h23s-oauth-badge">recommended</span></h3>
 
         <!-- Anthropic OAuth -->
