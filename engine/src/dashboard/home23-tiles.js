@@ -494,7 +494,17 @@ function ensureHttpUrl(rawUrl) {
 }
 
 function resolveConnectionUrl(baseUrl, requestPath) {
-  const base = ensureHttpUrl(baseUrl);
+  const normalizedBaseUrl = (() => {
+    const raw = String(baseUrl || '').trim();
+    if (!raw) return raw;
+    const url = new URL(raw);
+    if (!url.pathname.endsWith('/')) {
+      url.pathname = `${url.pathname}/`;
+    }
+    return url.toString();
+  })();
+
+  const base = ensureHttpUrl(normalizedBaseUrl);
   const rawPath = String(requestPath || '').trim();
   if (!rawPath) return base;
   if (/^https?:\/\//i.test(rawPath) || rawPath.startsWith('//')) {
@@ -907,12 +917,12 @@ class Home23TileService {
           subtitle: [
             sauna.targetTemperature != null ? `Target ${sauna.targetTemperature}°F` : null,
             sauna.duration ? `${sauna.duration} min remaining` : null,
-            sauna.door ? `Door ${String(sauna.door).toLowerCase()}` : null,
+            sauna.door === true ? 'Door open' : sauna.door === false ? 'Door closed' : null,
           ].filter(Boolean).join(' · ') || 'No status details',
           metrics: [
             { label: 'Target', value: sauna.targetTemperature != null ? `${sauna.targetTemperature}°F` : '—' },
             { label: 'Duration', value: sauna.duration ? `${sauna.duration} min` : '—' },
-            { label: 'Door', value: sauna.door ? String(sauna.door) : '—' },
+            { label: 'Door', value: sauna.door === true ? 'Open' : sauna.door === false ? 'Closed' : '—' },
             { label: 'Heating', value: sauna.isHeating ? 'Yes' : 'No' },
           ],
         },

@@ -32,6 +32,12 @@ dashboard:
       - tileId: chat
         enabled: true
         size: third
+      - tileId: outside-weather
+        enabled: true
+        size: half
+      - tileId: sauna-control
+        enabled: true
+        size: half
       - tileId: system-summary
         enabled: true
         size: full
@@ -44,7 +50,26 @@ dashboard:
       - tileId: feeder
         enabled: true
         size: full
-    customTiles: []
+    customTiles:
+      - id: outside-weather
+        title: Outside
+        icon: 🌤
+        mode: ecowitt-weather
+        connectionId: jtr-ecowitt
+        refreshMs: 60000
+        sizeDefault: half
+        config: {}
+      - id: sauna-control
+        title: Sauna
+        icon: ♨️
+        mode: huum-sauna
+        connectionId: jtr-huum
+        refreshMs: 15000
+        sizeDefault: half
+        config:
+          startDefaults:
+            targetTemperature: 190
+            duration: 180
 providers:
   ollama-cloud:
     baseUrl: https://ollama.com/v1
