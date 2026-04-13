@@ -5,7 +5,7 @@
  * Provider setup happens in the web dashboard, not here.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -90,18 +90,21 @@ export async function runInit(home23Root) {
 
   const secrets = loadYaml(secretsPath);
 
-  // Ensure structure
-  if (!secrets.providers) secrets.providers = {};
-  if (!secrets.cosmo23) secrets.cosmo23 = {};
-
   // Generate cosmo23 encryption key if missing
+  if (!secrets.cosmo23) secrets.cosmo23 = {};
+  let secretsChanged = false;
   if (!secrets.cosmo23.encryptionKey) {
     secrets.cosmo23.encryptionKey = randomBytes(32).toString('hex');
+    secretsChanged = true;
     console.log('  Generated cosmo23 encryption key');
+  } else {
+    console.log('  Encryption key exists');
   }
 
-  const header = '# Home23 secrets — API keys and tokens\n# This file is gitignored. Never commit it.\n\n';
-  writeFileSync(secretsPath, header + yaml.dump(secrets, { lineWidth: 120 }), 'utf8');
+  if (secretsChanged) {
+    const header = '# Home23 secrets — API keys and tokens\n# This file is gitignored. Never commit it.\n\n';
+    writeFileSync(secretsPath, header + yaml.dump(secrets, { lineWidth: 120 }), 'utf8');
+  }
   console.log('  done');
 
   // Install dependencies
@@ -162,7 +165,6 @@ export async function runInit(home23Root) {
     // Create config directory for cosmo23
     const cosmo23ConfigDir = join(cosmo23Dir, '.cosmo23-config');
     if (!existsSync(cosmo23ConfigDir)) {
-      const { mkdirSync } = await import('node:fs');
       mkdirSync(cosmo23ConfigDir, { recursive: true });
     }
   }
