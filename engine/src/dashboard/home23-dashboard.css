@@ -23,6 +23,7 @@
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
+  --home-top-tile-height: 460px;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -406,6 +407,8 @@ body::before {
 
 .h23-home-item.h23-home-size-third {
   grid-column: span 4;
+  height: var(--home-top-tile-height);
+  max-height: var(--home-top-tile-height);
 }
 
 .h23-home-item.h23-home-size-half {
@@ -414,6 +417,12 @@ body::before {
 
 .h23-home-item.h23-home-size-full {
   grid-column: span 12;
+}
+
+.h23-home-item.h23-home-size-third > .h23-tile {
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
 }
 
 /* ── Top Row: 3-column tile grid (ReginaCosmo layout) ── */
@@ -1869,6 +1878,8 @@ body::before {
   .h23-home-item.h23-home-size-half,
   .h23-home-item.h23-home-size-full {
     grid-column: span 1;
+    height: auto;
+    max-height: none;
   }
   .h23-grid-top {
     grid-template-columns: 1fr;
