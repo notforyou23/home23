@@ -179,51 +179,6 @@
     if (input) input.value = '';
   }
 
-  function renderHome23Managed(group, data) {
-    const status = data?.status || {};
-    const app = data?.app || {};
-    const details = data?.details || {};
-
-    const providerRows = [
-      ['Anthropic', status.anthropic?.status || 'Unknown'],
-      ['OpenAI', status.openaiApi?.status || 'Unknown'],
-      ['xAI', status.xai?.status || 'Unknown'],
-      ['Ollama Cloud', status.ollamaCloud?.status || 'Unknown'],
-      ['Ollama Local', status.ollama?.status || 'Unknown'],
-      ['Brains', status.brains?.status || 'Unknown']
-    ];
-
-    group.innerHTML = `
-      <div class="setting-group-title">Managed by Home23</div>
-      <div class="live-settings-section">
-        <div class="live-settings-note" style="padding:12px 16px;background:rgba(56,189,248,0.08);border:1px solid rgba(56,189,248,0.2);border-radius:8px;margin-bottom:16px;line-height:1.6;">
-          This evobrew instance is managed by <strong>Home23</strong>. Providers, API keys, and models are configured in the Home23 dashboard.<br>
-          <a href="${escapeHtml(app.home23_settings_url || '/home23/settings')}" target="_blank" style="color:#38bdf8;text-decoration:underline;">Open Home23 Settings</a>
-        </div>
-      </div>
-      <div class="live-settings-section">
-        <div class="live-settings-section-title">Provider Status</div>
-        <div class="live-settings-grid">${renderRows(providerRows)}</div>
-      </div>
-      <div class="live-settings-section">
-        <div class="live-settings-section-title">System</div>
-        <div class="live-settings-grid">${renderRows([
-          ['Mode', 'Home23 Managed'],
-          ['Port', app.http_port ? ':' + app.http_port : '-'],
-          ['Terminal', app.terminal_enabled ? 'Enabled' : 'Disabled'],
-          ['Brains', details.brains?.enabled ? 'Enabled (' + (details.brains?.directory_count || 0) + ' directories)' : 'Disabled'],
-        ])}</div>
-      </div>
-      <div class="live-settings-actions">
-        <button class="btn" type="button" data-live-settings-action="refresh-status">Refresh Status</button>
-      </div>
-    `;
-
-    // Hide Local Agents section — agents are auto-configured by Home23
-    const localAgentsSection = document.getElementById('local-agents-settings');
-    if (localAgentsSection) localAgentsSection.style.display = 'none';
-  }
-
   function renderStatus(data) {
     const group = ensureGroup();
     if (!group) return;
@@ -232,12 +187,6 @@
     const app = data?.app || {};
     const details = data?.details || {};
     const setup = data?.setup || {};
-
-    // When managed by Home23, show simplified settings with redirect
-    if (app.managed_by_home23) {
-      renderHome23Managed(group, data);
-      return;
-    }
 
     const appRows = [
       ['Config Source', app.config_source || 'unknown'],

@@ -29,7 +29,7 @@ No formal linter or test suite — validate with `node --check` on all modified 
 ## Rules
 
 - Never commit `.env` — contains ENCRYPTION_KEY and all API keys
-- Never hardcode absolute paths like `/path/to/` — app must be portable
+- Never hardcode absolute paths like `/Users/jtr/` — app must be portable
 - Never restructure `server.js` — too large and interconnected, surgical edits only
 - Never change `openai-codex` routing — intentionally bypasses the registry for OAuth reasons (ChatGPT OAuth tokens lack Platform API scopes)
 - Never modify `~/.evobrew/config.json` directly — use the wizard or `config-manager.js`

@@ -29,12 +29,10 @@ const { encryptApiKey, decryptApiKey } = require('./encryption');
 // Ensure DATABASE_URL is set before Prisma import
 // This supports both global config (~/.evobrew/database.db) and local (.env)
 if (!process.env.DATABASE_URL) {
-  // Check for global config first (respect EVOBREW_CONFIG_DIR override)
-  const globalConfigDir = process.env.EVOBREW_CONFIG_DIR
-    || path.join(os.homedir(), '.evobrew');
-  const globalConfigPath = path.join(globalConfigDir, 'config.json');
+  // Check for global config first
+  const globalConfigPath = path.join(os.homedir(), '.evobrew', 'config.json');
   if (fs.existsSync(globalConfigPath)) {
-    const globalDbPath = path.join(globalConfigDir, 'database.db');
+    const globalDbPath = path.join(os.homedir(), '.evobrew', 'database.db');
     process.env.DATABASE_URL = `file:${globalDbPath}`;
   } else {
     // Fall back to project-local database

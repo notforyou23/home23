@@ -62,8 +62,8 @@ The web dashboard is the primary interface for everything — agent creation, pr
 node cli/home23.js status              # Check what's running
 node cli/home23.js logs my-agent       # Tail agent logs
 node cli/home23.js stop                # Stop all Home23 processes
-node cli/home23.js evobrew update      # Pull latest Evobrew from GitHub
-node cli/home23.js cosmo23 update      # Sync latest COSMO from source
+node cli/home23.js update              # Update to latest release
+node cli/home23.js update --check      # Check for updates
 ```
 
 ## Embedding Provider

@@ -20,8 +20,7 @@ node cli/home23.js start <name>            # Starts agent + evobrew + COSMO
 node cli/home23.js status                  # Check what's running
 node cli/home23.js logs <name>             # Tail logs
 node cli/home23.js stop                    # Stop everything
-node cli/home23.js evobrew update          # Pull latest evobrew from GitHub
-node cli/home23.js cosmo23 update          # Sync latest COSMO from source
+node cli/home23.js update                  # Update to latest release
 ```
 
 ## Architecture
@@ -117,7 +116,7 @@ Full COSMO UI embedded in dashboard via iframe (all 9 tabs). The agent has 11 `r
 
 **OAuth broker**: cosmo23 doubles as Home23's OAuth provider for Anthropic and OpenAI Codex. cosmo23 has a battle-tested PKCE implementation with encrypted token storage (SQLite + Prisma + AES-256-GCM) and automatic refresh. Home23's Settings → Providers → OAuth Sign-in UI proxies to cosmo23's `/api/oauth/anthropic/*` and `/api/oauth/openai-codex/*` routes, then mirrors the resulting access tokens into `config/secrets.yaml` where they flow to the engine/harness via PM2 env injection. A 30-minute background poller in `engine/src/dashboard/server.js` catches cosmo23-side token rotations and re-syncs secrets.yaml + restarts the engine + harness (skipped during active research runs).
 
-**Critical:** `cosmo23/` has been patched with 4 structural fixes (config dir unification, env-first key resolution, decrypt-safe bootstrap, and raw-token admin endpoints for the OAuth broker). All patches are tracked in `docs/design/COSMO23-VENDORED-PATCHES.md` and **must be re-verified after any `cli/home23.js cosmo23 update`**.
+**Critical:** `cosmo23/` has been patched with 5 structural fixes (config dir unification, env-first key resolution, decrypt-safe bootstrap, raw-token admin endpoints, and HOME23_MANAGED provider suppression). All patches are tracked in `docs/design/COSMO23-VENDORED-PATCHES.md`.
 
 ### Ingestion Compiler + Feeder
 
@@ -204,6 +203,7 @@ Config loader merges: `home.yaml` <- `agent config.yaml` <- `secrets.yaml` <- pe
 | `docs/design/STEP19-TELEGRAM-MESSAGE-HANDLING-DESIGN.md` | Adaptive debounce + queue-during-run for Telegram |
 | `docs/design/STEP20-SITUATIONAL-AWARENESS-ENGINE-DESIGN.md` | **CORE:** Brain-driven pre-turn context assembly, governed memory objects, event ledger, curator cycle |
 | `docs/design/STEP21-PROVIDER-AUTHORITY-DESIGN.md` | **CORE:** Home23 owns all provider config — single encryption key, guided onboarding, cosmo23/evobrew as consumers |
+| `docs/design/STEP22-UPDATE-SYSTEM-DESIGN.md` | Update system — one command, versioned releases, migration system |
 | `docs/design/COSMO23-VENDORED-PATCHES.md` | **CRITICAL:** patches to vendored cosmo23 that must survive updates |
 | `docs/design/SLEEP-WAKE-DESIGN.md` | Engine sleep/wake tuning for Home23 |
 | `docs/vision/HOME23_CANONICAL_VISION.md` | Product thesis |

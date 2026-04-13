@@ -18,10 +18,8 @@ let brainQueryEngine = null;
 
 // Get embeddings API key from config or env
 function getEmbeddingsApiKey() {
-  // Try config first (respect EVOBREW_CONFIG_DIR override)
-  const configDir = process.env.EVOBREW_CONFIG_DIR
-    || path.join(os.homedir(), '.evobrew');
-  const configPath = path.join(configDir, 'config.json');
+  // Try config first
+  const configPath = path.join(os.homedir(), '.evobrew', 'config.json');
   try {
     const config = JSON.parse(fsSync.readFileSync(configPath, 'utf8'));
     if (config.embeddings?.api_key) {

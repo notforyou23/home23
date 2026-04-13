@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-03
 **Scope:** Add `POST /api/chat` to cosmohome2.3 agents for evobrew integration
-**Codebase:** `/path/to/cosmo-home_2.3/`
+**Codebase:** `/Users/jtr/_JTR23_/cosmo-home_2.3/`
 
 ## Summary
 
@@ -113,7 +113,7 @@ Add `GET /health` returning `{ status: "ok", agent: config.name }` for the evobr
 
 After adding the route, rebuild the TypeScript:
 ```bash
-cd /path/to/cosmo-home_2.3
+cd /Users/jtr/_JTR23_/cosmo-home_2.3
 npx tsc
 pm2 restart cosmo23-coz cosmo23-edison cosmo23-tick
 ```

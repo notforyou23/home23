@@ -18,7 +18,7 @@
 - [ ] **Step 1: Install archiver**
 
 ```bash
-cd /path/to/evobrew && npm install archiver
+cd /Users/jtr/_JTR23_/evobrew && npm install archiver
 ```
 
 - [ ] **Step 2: Verify installation**

@@ -228,35 +228,20 @@ async function sendMessage() {
                         }
                         
                         else if (event.type === 'tool_start') {
-                            // Show tool activity (works for both cloud providers and local agents)
-                            const icon = getToolIcon(event.toolName || event.tool);
+                            // Update feedback with current tool
+                            const icon = getToolIcon(event.tool);
                             const argStr = getToolArgString(event.args);
-                            const feedback = `${icon} ${event.toolName || event.tool}: ${argStr}`;
-
+                            const feedback = `${icon} ${event.tool}: ${argStr}`;
+                            
                             if (toolFeedbackMsg) {
                                 updateChatMessage(toolFeedbackMsg, feedback);
-                            } else {
-                                toolFeedbackMsg = addChatMessage('system', feedback, { temp: true });
                             }
-
-                            updateStatus(`Running: ${event.toolName || event.tool}...`);
+                            
+                            updateStatus(`Running: ${event.tool}...`);
                         }
                         
                         else if (event.type === 'tool_complete') {
-                            // Show tool completion (local agent bridge format)
-                            const icon = getToolIcon(event.toolName || event.tool);
-                            const statusIcon = event.success !== false ? '✓' : '✗';
-                            const resultPreview = event.result ? String(event.result).substring(0, 120) : '';
-                            const message = `${icon} ${statusIcon} ${event.toolName || event.tool}${resultPreview ? ': ' + resultPreview : ''}`;
-                            addChatMessage('system', message, {
-                                cssClass: 'tool-result',
-                                persistent: true
-                            });
-                            // Clear the "running" feedback
-                            if (toolFeedbackMsg) {
-                                toolFeedbackMsg.remove();
-                                toolFeedbackMsg = null;
-                            }
+                            console.log(`[AI] ✓ ${event.tool}`);
                         }
                         
                         else if (event.type === 'tool_result') {

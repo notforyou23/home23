@@ -684,7 +684,7 @@ Update the test agent to return a tool call:
 // In the POST handler, replace the response with:
 res.write('data: {"type":"text","text":"Let me check that file."}\n\n');
 res.write('data: {"type":"tool_use_start","toolId":"t1","toolName":"file_read"}\n\n');
-res.write('data: {"type":"tool_use_delta","toolId":"t1","argumentsDelta":"{\\"file_path\\": \\"/path/to/evobrew/package.json\\"}"}\n\n');
+res.write('data: {"type":"tool_use_delta","toolId":"t1","argumentsDelta":"{\\"file_path\\": \\"/Users/jtr/_JTR23_/evobrew/package.json\\"}"}\n\n');
 res.write('data: {"type":"tool_use_end","toolId":"t1"}\n\n');
 res.write('data: {"type":"done","stopReason":"tool_use"}\n\n');
 ```

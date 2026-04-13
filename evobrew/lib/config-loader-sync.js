@@ -36,9 +36,7 @@ function getEncryptionKey() {
 
   // 2) Config file security key
   try {
-    const configDir = process.env.EVOBREW_CONFIG_DIR
-      || path.join(os.homedir(), '.evobrew');
-    const configPath = path.join(configDir, 'config.json');
+    const configPath = path.join(os.homedir(), '.evobrew', 'config.json');
     if (fs.existsSync(configPath)) {
       const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
       const keyHex = raw?.security?.encryption_key;
@@ -136,9 +134,6 @@ const CONFIG_DIR_NAME = '.evobrew';
 const CONFIG_FILE_NAME = 'config.json';
 
 function getConfigDir() {
-  if (process.env.EVOBREW_CONFIG_DIR) {
-    return process.env.EVOBREW_CONFIG_DIR;
-  }
   return path.join(os.homedir(), CONFIG_DIR_NAME);
 }
 

@@ -2,7 +2,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const CACHE_DIR = process.env.EVOBREW_CONFIG_DIR || path.join(os.homedir(), '.evobrew');
+const CACHE_DIR = path.join(os.homedir(), '.evobrew');
 const CACHE_PATH = path.join(CACHE_DIR, 'model-catalog-cache.json');
 
 const PRE_RELEASE_PATTERN = /(preview|beta|alpha|experimental|nightly|snapshot|rc\b|dev\b|test\b)/i;
