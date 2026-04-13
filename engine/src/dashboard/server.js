@@ -15,6 +15,7 @@ const { IntelligenceBuilder } = require('./intelligence-builder');
 const { ClusterDataProxy } = require('../cluster/cluster-data-proxy');
 const { MissionTracer } = require('../../scripts/TRACE_RESEARCH_MISSIONS');
 const { Home23VibeService } = require('./home23-vibe/service');
+const { Home23TileService } = require('./home23-tiles');
 
 /**
  * Phase 2B Dashboard Server
@@ -76,6 +77,10 @@ class DashboardServer {
     
     // Logger for route handlers - using console for consistency
     this.logger = console;
+    this.home23Tiles = new Home23TileService({
+      home23Root: this.getHome23Root(),
+      logger: this.logger,
+    });
     this.home23Vibe = new Home23VibeService({
       home23Root: this.getHome23Root(),
       agentName: this.getHome23AgentName(),
@@ -756,6 +761,38 @@ class DashboardServer {
       });
     });
 
+    // Home23 tile runtime
+    this.app.get('/home23/api/tiles/config', (req, res) => {
+      try {
+        res.json(this.home23Tiles.getRuntimeConfig());
+      } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+      }
+    });
+
+    this.app.get('/home23/api/tiles/:tileId/data', async (req, res) => {
+      try {
+        const data = await this.home23Tiles.getTileData(req.params.tileId);
+        res.json({ ok: true, ...data });
+      } catch (err) {
+        res.status(400).json({ ok: false, error: err.message });
+      }
+    });
+
+    this.app.post('/home23/api/tiles/:tileId/actions/:actionId', async (req, res) => {
+      try {
+        const action = await this.home23Tiles.runTileAction(
+          req.params.tileId,
+          req.params.actionId,
+          req.body || {}
+        );
+        const data = await this.home23Tiles.getTileData(req.params.tileId);
+        res.json({ ok: true, action, data });
+      } catch (err) {
+        res.status(400).json({ ok: false, error: err.message });
+      }
+    });
+
     // Home23 feeder status — reads from engine's DocumentFeeder manifest
     this.app.get('/home23/feeder-status', (req, res) => {
       const fsSync = require('fs');
@@ -998,6 +1035,49 @@ class DashboardServer {
       }, pollInterval);
     } catch (err) {
       console.warn('[OAuth refresh] setup failed:', err.message);
+    }
+
+    // ── COSMO 2.3 health watchdog ──
+    // After a machine crash/restart, PM2 may restore the dashboard but not cosmo23
+    // (if it wasn't in the saved list). Check every 2 minutes; if cosmo23 is
+    // unreachable, start it via the ecosystem config.
+    try {
+      const home23RootForWatchdog = this.getHome23Root();
+      const cosmoWatchdogPort = parseInt(process.env.COSMO23_PORT || '43210', 10);
+      const cosmoWatchdogUrl = `http://localhost:${cosmoWatchdogPort}`;
+
+      // Initial check after 15s (give processes time to settle on boot)
+      setTimeout(() => {
+        checkAndStartCosmo23();
+        // Then check every 2 minutes
+        setInterval(checkAndStartCosmo23, 2 * 60 * 1000);
+      }, 15_000);
+
+      async function checkAndStartCosmo23() {
+        try {
+          const res = await fetch(`${cosmoWatchdogUrl}/api/status`, { signal: AbortSignal.timeout(5000) });
+          if (res.ok) return; // healthy
+        } catch { /* unreachable — try to start */ }
+
+        // Check PM2 state before starting (avoid double-start race)
+        try {
+          const { execSync } = require('child_process');
+          const jlist = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', timeout: 5000 }));
+          const proc = jlist.find(p => p.name === 'home23-cosmo23');
+          if (proc && proc.pm2_env?.status === 'online') return; // PM2 says online, just slow to respond
+
+          console.log('[COSMO watchdog] cosmo23 not responding — starting...');
+          const ecosystemPath = path.join(home23RootForWatchdog, 'ecosystem.config.cjs');
+          execSync(`pm2 start ${ecosystemPath} --only home23-cosmo23`, {
+            cwd: home23RootForWatchdog, stdio: 'pipe', timeout: 15_000
+          });
+          console.log('[COSMO watchdog] cosmo23 started');
+        } catch (err) {
+          console.warn('[COSMO watchdog] failed to start cosmo23:', err.message);
+        }
+      }
+    } catch (err) {
+      console.warn('[COSMO watchdog] setup failed:', err.message);
     }
 
     // Chat History API

@@ -2,9 +2,11 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
+const { Home23TileService } = require('./home23-tiles');
 
 function createSettingsRouter(home23Root) {
   const router = express.Router();
+  const tileService = new Home23TileService({ home23Root });
 
   function loadYaml(filePath) {
     if (!fs.existsSync(filePath)) return {};
@@ -496,6 +498,36 @@ function createSettingsRouter(home23Root) {
         try { execSync(`pm2 stop ${n}`, { stdio: 'pipe' }); } catch { /* not running */ }
       }
       res.json({ ok: true, status: 'stopped' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── COSMO 2.3 process management ──
+
+  router.get('/cosmo23/status', (req, res) => {
+    try {
+      const { execSync } = require('child_process');
+      const jlist = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', timeout: 5000 }));
+      const proc = jlist.find(p => p.name === 'home23-cosmo23');
+      if (!proc) return res.json({ running: false, reason: 'not_in_pm2' });
+      res.json({ running: proc.pm2_env?.status === 'online', pid: proc.pid, status: proc.pm2_env?.status });
+    } catch (err) {
+      res.json({ running: false, reason: 'pm2_error', error: err.message });
+    }
+  });
+
+  router.post('/cosmo23/restart', async (req, res) => {
+    try {
+      const { execSync } = require('child_process');
+      const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
+      // Seed config before starting
+      try {
+        const { seedCosmo23Config } = await import(path.join(home23Root, 'cli', 'lib', 'cosmo23-config.js'));
+        seedCosmo23Config(home23Root);
+      } catch { /* config seeding optional */ }
+      execSync(`pm2 start ${ecosystemPath} --only home23-cosmo23`, { cwd: home23Root, stdio: 'pipe', timeout: 15000 });
+      res.json({ ok: true, status: 'started' });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -1020,6 +1052,63 @@ function createSettingsRouter(home23Root) {
     homeConfig.dashboard.vibe = mergeVibeConfig(input);
     saveYaml(configPath, homeConfig);
     res.json({ ok: true, vibe: homeConfig.dashboard.vibe, applied: ['vibe'], requiresRestart: [] });
+  });
+
+  // ─── Tiles (STEP 22) ──────────────────────────────────────────────────────
+
+  router.get('/tiles', (_req, res) => {
+    try {
+      res.json({ tiles: tileService.getSettingsTilesPayload() });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  router.put('/tiles', (req, res) => {
+    try {
+      const { tiles: input } = req.body || {};
+      if (!input || typeof input !== 'object') {
+        return res.status(400).json({ ok: false, error: 'tiles object required' });
+      }
+
+      const tiles = tileService.saveTilesSettings(input);
+      res.json({
+        ok: true,
+        tiles,
+        applied: ['dashboard.tiles'],
+        requiresRestart: [],
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  router.get('/tile-connections', (_req, res) => {
+    try {
+      res.json({ connections: tileService.getSettingsConnectionsPayload() });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  router.put('/tile-connections', (req, res) => {
+    try {
+      const { connections: input } = req.body || {};
+      if (!input || !Array.isArray(input.connections)) {
+        return res.status(400).json({ ok: false, error: 'connections.connections array required' });
+      }
+
+      const saved = tileService.saveConnectionsSettings(input);
+      res.json({
+        ok: true,
+        connections: tileService.getSettingsConnectionsPayload().connections,
+        applied: ['dashboard.tileConnections'],
+        requiresRestart: [],
+        savedCount: saved.connections.length,
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
   });
 
   return { router, loadYaml, saveYaml, discoverAgents };

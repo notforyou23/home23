@@ -16,8 +16,15 @@ let currentTab = 'home';
 let cosmo23Url = '';
 let evobrewUrl = '';
 let cosmo23Loaded = false;
+let cosmoOnline = false;
 let intelRefreshInterval = null;
 let homeThoughtRotationTimer = null;
+let homeTileLayout = [];
+let homeTileLayoutSignature = '';
+let homeTileCustomRefreshers = new Map();
+let homeTileCustomState = new Map();
+let tileActionDialogState = null;
+let homeTileBroadcast = null;
 
 // ── Engine Pulse State ──
 const enginePulse = {
@@ -38,18 +45,16 @@ async function init() {
   await loadAgents();
   renderAgentTabs();
   setupTabHandlers();
-  setupVibeActions();
+  setupHomeLayoutHandlers();
+  setupTileActionHandlers();
+  setupHomeTileBroadcast();
+  await loadHomeLayoutConfig({ force: true });
   connectEnginePulse();
   loadHomeTiles().catch(() => { /* initial home load is best-effort */ });
   startHomeThoughtRotation();
   startAutoRefresh();
   updateCosmoIndicator();
   setInterval(updateCosmoIndicator, REFRESH_MS);
-
-  // Initialize dashboard chat
-  if (typeof initChat === 'function') {
-    initChat('tile');
-  }
 
   // Update pulse "ago" timer every second
   setInterval(updatePulseAgo, 1000);
@@ -333,7 +338,10 @@ async function loadAgents() {
   primaryAgent = agents.find(a => a.dashboardPort === currentPort) || agents[0];
 
   // Set agent name in thoughts tile
-  document.getElementById('primary-agent-name').textContent = primaryAgent.displayName || primaryAgent.name;
+  const primaryAgentName = document.getElementById('primary-agent-name');
+  if (primaryAgentName) {
+    primaryAgentName.textContent = primaryAgent.displayName || primaryAgent.name;
+  }
 
   // Load config and construct host-relative URLs
   const host = window.location.hostname;
@@ -399,11 +407,19 @@ function showCosmoFrame() {
   document.querySelectorAll('.h23-panel').forEach(p => p.classList.remove('active'));
   const frame = document.getElementById('cosmo23-frame');
   const wrap = document.getElementById('cosmo23-frame-wrap');
-  if (!cosmo23Loaded && cosmo23Url) {
-    frame.src = cosmo23Url;
-    cosmo23Loaded = true;
-  }
   if (wrap) wrap.style.display = 'block';
+
+  if (cosmoOnline) {
+    // Online — show iframe, hide offline overlay
+    hideCosmoOfflineOverlay();
+    if (!cosmo23Loaded && cosmo23Url) {
+      frame.src = cosmo23Url;
+      cosmo23Loaded = true;
+    }
+  } else {
+    // Offline — show actionable overlay instead of blank iframe
+    showCosmoOfflineOverlay();
+  }
 }
 
 function hideCosmoFrame() {
@@ -419,6 +435,71 @@ function refreshCosmoFrame() {
   }
 }
 
+function showCosmoOfflineOverlay() {
+  let overlay = document.getElementById('cosmo23-offline-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'cosmo23-offline-overlay';
+    overlay.style.cssText = 'position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; align-items:center; justify-content:center; background:rgba(10,10,18,0.95); gap:16px;';
+    overlay.innerHTML = `
+      <div style="font-size:36px; opacity:0.4;">&#x1F52C;</div>
+      <div style="font-size:16px; color:#ccc; font-weight:500;">COSMO 2.3 is offline</div>
+      <div id="cosmo23-offline-detail" style="font-size:13px; color:#888; max-width:400px; text-align:center;">The research engine process is not running.</div>
+      <button id="cosmo23-restart-btn" style="margin-top:8px; padding:8px 24px; background:rgba(99,102,241,0.25); border:1px solid rgba(99,102,241,0.5); color:#a5b4fc; border-radius:8px; font-size:14px; cursor:pointer; transition:all 0.15s;">Start COSMO 2.3</button>
+      <div id="cosmo23-restart-status" style="font-size:12px; color:#888; min-height:18px;"></div>
+    `;
+    const wrap = document.getElementById('cosmo23-frame-wrap');
+    if (wrap) wrap.appendChild(overlay);
+
+    // Wire restart button
+    overlay.querySelector('#cosmo23-restart-btn').addEventListener('click', restartCosmo23);
+  }
+  overlay.style.display = 'flex';
+  // Hide iframe behind overlay
+  const frame = document.getElementById('cosmo23-frame');
+  if (frame) frame.style.visibility = 'hidden';
+}
+
+function hideCosmoOfflineOverlay() {
+  const overlay = document.getElementById('cosmo23-offline-overlay');
+  if (overlay) overlay.style.display = 'none';
+  const frame = document.getElementById('cosmo23-frame');
+  if (frame) frame.style.visibility = 'visible';
+}
+
+async function restartCosmo23() {
+  const btn = document.getElementById('cosmo23-restart-btn');
+  const status = document.getElementById('cosmo23-restart-status');
+  if (btn) { btn.disabled = true; btn.textContent = 'Starting...'; }
+  if (status) status.textContent = '';
+  try {
+    const res = await fetch('/home23/api/settings/cosmo23/restart', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      if (status) status.textContent = 'Started. Connecting...';
+      // Give it a moment to bind the port, then recheck
+      setTimeout(async () => {
+        await updateCosmoIndicator();
+        if (cosmoOnline) {
+          hideCosmoOfflineOverlay();
+          cosmo23Loaded = false;
+          const frame = document.getElementById('cosmo23-frame');
+          if (frame && cosmo23Url) { frame.src = cosmo23Url; cosmo23Loaded = true; }
+        } else {
+          if (status) status.textContent = 'Process started but not yet responding. Try refreshing in a few seconds.';
+          if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+        }
+      }, 3000);
+    } else {
+      if (status) status.textContent = `Error: ${data.error || 'unknown'}`;
+      if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+    }
+  } catch (err) {
+    if (status) status.textContent = `Failed: ${err.message}`;
+    if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
+  }
+}
+
 // ── COSMO status indicator ──
 
 async function updateCosmoIndicator() {
@@ -429,6 +510,7 @@ async function updateCosmoIndicator() {
   try {
     const res = await fetch(`${cosmo23Url}/api/status`, { signal: AbortSignal.timeout(10000) });
     const status = await res.json();
+    cosmoOnline = true;
     if (status.running && status.activeContext) {
       dot.className = 'h23-cosmo-indicator-dot running';
       text.textContent = `COSMO: running — ${status.activeContext.runName || 'research'}`;
@@ -436,9 +518,14 @@ async function updateCosmoIndicator() {
       dot.className = 'h23-cosmo-indicator-dot';
       text.textContent = 'COSMO: idle';
     }
+    // If we just came back online and the tab is showing, refresh
+    if (currentTab === 'cosmo23') hideCosmoOfflineOverlay();
   } catch {
+    cosmoOnline = false;
     dot.className = 'h23-cosmo-indicator-dot error';
     text.textContent = 'COSMO: offline';
+    // If viewing the COSMO tab right now, show the overlay
+    if (currentTab === 'cosmo23') showCosmoOfflineOverlay();
   }
 }
 
@@ -502,6 +589,511 @@ function setupTabHandlers() {
 
 // ── Home Tiles (primary agent) ──
 
+function layoutHasTile(tileId) {
+  return homeTileLayout.some((item) => item.tileId === tileId);
+}
+
+function fallbackHomeLayout() {
+  return [
+    { tileId: 'thought-feed', size: 'third', tile: { id: 'thought-feed', kind: 'core' } },
+    { tileId: 'vibe', size: 'third', tile: { id: 'vibe', kind: 'core' } },
+    { tileId: 'chat', size: 'third', tile: { id: 'chat', kind: 'core' } },
+    { tileId: 'system-summary', size: 'full', tile: { id: 'system-summary', kind: 'core' } },
+    { tileId: 'brain-log', size: 'half', tile: { id: 'brain-log', kind: 'core' } },
+    { tileId: 'dream-log', size: 'half', tile: { id: 'dream-log', kind: 'core' } },
+    { tileId: 'feeder', size: 'full', tile: { id: 'feeder', kind: 'core' } },
+  ];
+}
+
+function getVisibleCustomTiles() {
+  return homeTileLayout.filter((item) => item?.tile?.kind === 'custom');
+}
+
+function getHomeTile(tileId) {
+  return homeTileLayout.find((item) => item.tileId === tileId)?.tile || null;
+}
+
+function renderThoughtFeedTile() {
+  return `
+    <div class="h23-tile h23-tile-thoughts">
+      <div class="h23-tile-header">🌊 <span id="primary-agent-name">${escapeHtml(primaryAgent?.displayName || primaryAgent?.name || 'Agent')}</span></div>
+      <div class="h23-thought-text" id="home-thought">Loading...</div>
+      <div class="h23-thought-meta" id="home-thought-meta"></div>
+    </div>
+  `;
+}
+
+function renderVibeTile() {
+  return `
+    <div class="h23-tile h23-tile-vibe">
+      <div class="h23-tile-header"><span id="vibe-trigger">🎨 Vibe</span></div>
+      <div class="h23-vibe-image" id="home-vibe-image">
+        <span class="h23-vibe-placeholder">Generating...</span>
+      </div>
+      <div class="h23-vibe-caption" id="home-vibe-caption"></div>
+      <div class="h23-vibe-actions">
+        <a class="h23-vibe-action" id="home-vibe-gallery-link" href="/home23/vibe-gallery">Gallery</a>
+      </div>
+    </div>
+  `;
+}
+
+function renderChatTile() {
+  return `
+    <div class="h23-tile h23-tile-chat" id="tile-chat">
+      <div class="h23-chat-header">
+        <div class="h23-chat-selects">
+          <select class="h23-chat-agent-select" id="chat-agent-select">
+            <option>Loading...</option>
+          </select>
+          <select class="h23-chat-model-select" id="chat-model-select">
+            <option>model</option>
+          </select>
+        </div>
+        <div class="h23-chat-actions">
+          <button class="h23-chat-expand-btn" id="chat-new-btn" type="button" title="New conversation" onclick="newConversation()">+</button>
+          <button class="h23-chat-expand-btn" id="chat-history-btn" type="button" title="Conversation history" onclick="toggleConversationList()">&#9776;</button>
+          <button class="h23-chat-expand-btn" id="chat-expand-btn" type="button" title="Expand">&#8599;</button>
+        </div>
+      </div>
+      <div class="h23-chat-conv-panel" id="chat-conv-panel">
+        <div style="padding:10px 14px;border-bottom:1px solid var(--glass-border);display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-size:12px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;">History</span>
+          <button class="h23-chat-expand-btn" type="button" onclick="toggleConversationList()" title="Close" style="width:24px;height:24px;font-size:12px;">&#10005;</button>
+        </div>
+        <div class="h23-chat-conv-list" id="chat-conv-list"></div>
+      </div>
+      <div class="h23-chat-messages" id="chat-messages">
+        <div class="h23-chat-empty">Loading...</div>
+      </div>
+      <div class="h23-chat-input-area" id="chat-input-area">
+        <textarea class="h23-chat-input" id="chat-input" placeholder="Message your agent..." rows="1"></textarea>
+        <button class="h23-chat-send-btn" id="chat-send-btn" type="button">&#9654;</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderSystemSummaryTile() {
+  return `
+    <div class="h23-tile h23-tile-system-summary">
+      <div class="h23-tile-header"><span class="icon">⚡</span> System Summary</div>
+      <div class="h23-system-bar" id="system-bar">
+        <div class="h23-system-bar-item"><label>Uptime</label><div class="value" id="sys-uptime">—</div></div>
+        <div class="h23-system-bar-item"><label>Thoughts</label><div class="value" id="sys-thoughts">—</div></div>
+        <div class="h23-system-bar-item"><label>Nodes</label><div class="value" id="sys-nodes">—</div></div>
+        <div class="h23-system-bar-item"><label>Last</label><div class="value" id="sys-last">—</div></div>
+      </div>
+      <div class="h23-system-summary-excerpt" id="sys-excerpt"></div>
+    </div>
+  `;
+}
+
+function renderBrainLogTile() {
+  return `
+    <div class="h23-tile h23-tile-brainlog h23-tile-log" onclick="openLogOverlay('brain')">
+      <div class="h23-brainlog-header">
+        <span class="h23-brainlog-title">🧠 BRAIN LOG</span>
+        <span class="h23-brainlog-stamp" id="brainlog-stamp"></span>
+      </div>
+      <div class="h23-brain-log" id="home-brainlog">
+        <p class="h23-muted">Loading...</p>
+      </div>
+    </div>
+  `;
+}
+
+function renderDreamLogTile() {
+  return `
+    <div class="h23-tile h23-tile-brainlog h23-tile-log" onclick="openLogOverlay('dream')">
+      <div class="h23-brainlog-header">
+        <span class="h23-brainlog-title">💭 DREAM LOG</span>
+        <span class="h23-brainlog-stamp" id="dreamlog-stamp"></span>
+      </div>
+      <div class="h23-dream-log" id="home-dreamlog">
+        <p class="h23-muted">Loading...</p>
+      </div>
+    </div>
+  `;
+}
+
+function renderFeederTile() {
+  return `
+    <div class="h23-tile h23-tile-feeder h23-tile-log" id="tile-feeder" onclick="openFeederOverlay()">
+      <div class="h23-tile-header"><span class="icon">📥</span> Ingestion Compiler</div>
+      <div id="home-feeder">
+        <p class="h23-muted">Loading...</p>
+      </div>
+    </div>
+  `;
+}
+
+function renderCustomTile(tile) {
+  const safeId = tile.id;
+  const refreshSeconds = Math.max(5, Math.round((tile.refreshMs || REFRESH_MS) / 1000));
+
+  return `
+    <div class="h23-tile h23-tile-custom" id="tile-custom-${safeId}" data-custom-tile-id="${safeId}">
+      <div class="h23-tile-header"><span class="icon">${escapeHtml(tile.icon || '🧩')}</span> ${escapeHtml(tile.title || safeId)}</div>
+      <div class="h23-custom-status" id="tile-custom-status-${safeId}">Loading...</div>
+      <div class="h23-custom-value" id="tile-custom-value-${safeId}">—</div>
+      <div class="h23-custom-subtitle" id="tile-custom-subtitle-${safeId}">Connecting to ${escapeHtml(tile.mode)}…</div>
+      <div class="h23-custom-metrics" id="tile-custom-metrics-${safeId}"></div>
+      <div class="h23-custom-actions" id="tile-custom-actions-${safeId}"></div>
+      <div class="h23-custom-footer">
+        <span id="tile-custom-cache-${safeId}">refresh ${refreshSeconds}s</span>
+        <span id="tile-custom-updated-${safeId}"></span>
+      </div>
+    </div>
+  `;
+}
+
+function renderHomeLayoutItem(item) {
+  const sizeClass = `h23-home-size-${item.size || 'third'}`;
+  let markup = '';
+
+  switch (item.tileId) {
+    case 'thought-feed':
+      markup = renderThoughtFeedTile();
+      break;
+    case 'vibe':
+      markup = renderVibeTile();
+      break;
+    case 'chat':
+      markup = renderChatTile();
+      break;
+    case 'system-summary':
+      markup = renderSystemSummaryTile();
+      break;
+    case 'brain-log':
+      markup = renderBrainLogTile();
+      break;
+    case 'dream-log':
+      markup = renderDreamLogTile();
+      break;
+    case 'feeder':
+      markup = renderFeederTile();
+      break;
+    default:
+      markup = renderCustomTile(item.tile || {});
+      break;
+  }
+
+  return `<section class="h23-home-item ${sizeClass}" data-home-tile-id="${escapeHtml(item.tileId)}">${markup}</section>`;
+}
+
+function renderHomeLayout(layout) {
+  const host = document.getElementById('home-layout-grid');
+  if (!host) return;
+
+  homeTileLayout = Array.isArray(layout) ? layout : [];
+  host.innerHTML = homeTileLayout.map(renderHomeLayoutItem).join('');
+
+  const primaryNameEl = document.getElementById('primary-agent-name');
+  if (primaryNameEl && primaryAgent) {
+    primaryNameEl.textContent = primaryAgent.displayName || primaryAgent.name;
+  }
+
+  setupVibeActions();
+  syncCustomTileRefreshers();
+
+  if (layoutHasTile('chat') && typeof initChat === 'function') {
+    Promise.resolve(initChat('tile')).catch(() => { /* best effort */ });
+  } else if (typeof closeOverlay === 'function') {
+    closeOverlay();
+  }
+
+  loadVisibleCustomTiles().catch(() => { /* best effort */ });
+}
+
+async function loadHomeLayoutConfig({ force = false } = {}) {
+  const config = await apiFetch('/home23/api/tiles/config', { timeoutMs: 4000 });
+  if (!config?.layout) {
+    if (homeTileLayout.length === 0) {
+      renderHomeLayout(fallbackHomeLayout());
+      homeTileLayoutSignature = 'fallback';
+      return true;
+    }
+    return false;
+  }
+
+  const signature = JSON.stringify(config.layout);
+  if (!force && signature === homeTileLayoutSignature) {
+    return false;
+  }
+
+  homeTileLayoutSignature = signature;
+  renderHomeLayout(config.layout);
+  return true;
+}
+
+function setupHomeLayoutHandlers() {
+  const host = document.getElementById('home-layout-grid');
+  if (!host || host.dataset.bound === 'true') return;
+
+  host.addEventListener('click', (event) => {
+    const actionBtn = event.target.closest('[data-tile-action-id]');
+    if (!actionBtn) return;
+    openTileActionDialog(actionBtn.dataset.tileId, actionBtn.dataset.tileActionId);
+  });
+
+  host.dataset.bound = 'true';
+}
+
+function setupHomeTileBroadcast() {
+  if (typeof BroadcastChannel === 'undefined') return;
+  homeTileBroadcast = new BroadcastChannel('home23-dashboard-tiles');
+  homeTileBroadcast.addEventListener('message', async () => {
+    try {
+      await loadHomeLayoutConfig();
+      await loadHomeTiles();
+      await loadVisibleCustomTiles();
+    } catch {
+      /* best effort */
+    }
+  });
+}
+
+function syncCustomTileRefreshers() {
+  const nextTiles = new Map(getVisibleCustomTiles().map((item) => [item.tile.id, item.tile.refreshMs || REFRESH_MS]));
+
+  for (const [tileId, entry] of homeTileCustomRefreshers.entries()) {
+    if (!nextTiles.has(tileId) || nextTiles.get(tileId) !== entry.refreshMs) {
+      clearInterval(entry.timer);
+      homeTileCustomRefreshers.delete(tileId);
+      homeTileCustomState.delete(tileId);
+    }
+  }
+
+  for (const [tileId, refreshMs] of nextTiles.entries()) {
+    if (homeTileCustomRefreshers.has(tileId)) continue;
+    const timer = setInterval(() => {
+      loadCustomTileData(tileId).catch(() => { /* tile-local errors are rendered in-place */ });
+    }, refreshMs);
+    homeTileCustomRefreshers.set(tileId, { timer, refreshMs });
+  }
+}
+
+async function loadVisibleCustomTiles() {
+  const tiles = getVisibleCustomTiles();
+  await Promise.all(tiles.map((item) => loadCustomTileData(item.tile.id).catch(() => null)));
+}
+
+function renderCustomTileMetrics(tileId, metrics) {
+  const host = document.getElementById(`tile-custom-metrics-${tileId}`);
+  if (!host) return;
+
+  if (!Array.isArray(metrics) || metrics.length === 0) {
+    host.innerHTML = '';
+    return;
+  }
+
+  host.innerHTML = metrics.map((metric) => `
+    <div class="h23-custom-metric">
+      <span class="h23-custom-metric-label">${escapeHtml(metric.label || 'Metric')}</span>
+      <span class="h23-custom-metric-value">${escapeHtml(metric.value ?? '—')}</span>
+    </div>
+  `).join('');
+}
+
+function renderCustomTileActions(tileId, actions) {
+  const host = document.getElementById(`tile-custom-actions-${tileId}`);
+  if (!host) return;
+
+  if (!Array.isArray(actions) || actions.length === 0) {
+    host.innerHTML = '';
+    return;
+  }
+
+  host.innerHTML = actions.map((action) => `
+    <button class="h23-custom-action-btn" type="button" data-tile-id="${escapeHtml(tileId)}" data-tile-action-id="${escapeHtml(action.id)}">
+      ${escapeHtml(action.label || action.id)}
+    </button>
+  `).join('');
+}
+
+function renderCustomTileData(tileId, payload) {
+  const tileEl = document.getElementById(`tile-custom-${tileId}`);
+  if (!tileEl) return;
+
+  const content = payload?.content || {};
+  tileEl.classList.remove('is-error');
+  setText(`tile-custom-status-${tileId}`, content.status ?? 'Live');
+  setText(`tile-custom-value-${tileId}`, content.value ?? '—');
+  setText(`tile-custom-subtitle-${tileId}`, content.subtitle ?? '');
+  setText(`tile-custom-cache-${tileId}`, payload?.cache?.hit
+    ? `cached · ${Math.round((payload.cache.refreshMs || REFRESH_MS) / 1000)}s ttl`
+    : `refresh ${Math.round((payload?.cache?.refreshMs || getHomeTile(tileId)?.refreshMs || REFRESH_MS) / 1000)}s`);
+  setText(`tile-custom-updated-${tileId}`, payload?.fetchedAt ? `Updated ${timeSince(new Date(payload.fetchedAt))}` : '');
+  renderCustomTileMetrics(tileId, content.metrics || []);
+  renderCustomTileActions(tileId, payload?.actions || []);
+
+  homeTileCustomState.set(tileId, {
+    ...(homeTileCustomState.get(tileId) || {}),
+    payload,
+  });
+}
+
+function renderCustomTileError(tileId, error) {
+  const tileEl = document.getElementById(`tile-custom-${tileId}`);
+  if (!tileEl) return;
+
+  tileEl.classList.add('is-error');
+  setText(`tile-custom-status-${tileId}`, 'Unavailable');
+  setText(`tile-custom-value-${tileId}`, '—');
+  setText(`tile-custom-subtitle-${tileId}`, error?.message || 'Tile request failed');
+  setText(`tile-custom-cache-${tileId}`, 'retrying automatically');
+  setText(`tile-custom-updated-${tileId}`, '');
+  renderCustomTileMetrics(tileId, []);
+  renderCustomTileActions(tileId, []);
+}
+
+async function loadCustomTileData(tileId) {
+  try {
+    const res = await fetch(`/home23/api/tiles/${encodeURIComponent(tileId)}/data`, {
+      signal: AbortSignal.timeout(15_000),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `Tile request failed (${res.status})`);
+    }
+    renderCustomTileData(tileId, data);
+    return data;
+  } catch (err) {
+    renderCustomTileError(tileId, err);
+    throw err;
+  }
+}
+
+function buildTileActionFieldInput(field) {
+  if (field.type === 'boolean') {
+    return `
+      <label class="h23-tile-action-checkbox">
+        <input type="checkbox" data-tile-action-input="${escapeHtml(field.id)}" ${field.defaultValue ? 'checked' : ''}>
+        <span>${escapeHtml(field.label)}</span>
+      </label>
+    `;
+  }
+
+  const inputType = field.type === 'number' ? 'number' : 'text';
+  const value = field.defaultValue ?? '';
+  return `
+    <label>${escapeHtml(field.label)}</label>
+    <input type="${inputType}" data-tile-action-input="${escapeHtml(field.id)}" value="${escapeHtml(value)}" ${field.required ? 'required' : ''}>
+  `;
+}
+
+function openTileActionDialog(tileId, actionId) {
+  const tile = getHomeTile(tileId);
+  const runtimeState = homeTileCustomState.get(tileId);
+  const action = runtimeState?.payload?.actions?.find((entry) => entry.id === actionId);
+  if (!tile || !action) return;
+
+  const requiresDialog = (action.fields && action.fields.length > 0) || action.confirmationText || action.method !== 'GET';
+  if (!requiresDialog) {
+    runTileAction(tileId, actionId).catch(() => {});
+    return;
+  }
+
+  tileActionDialogState = { tileId, tile, action };
+  setText('tile-action-title', `${tile.title} · ${action.label}`);
+  setText('tile-action-confirmation', action.confirmationText || (action.method !== 'GET' ? 'Confirm this action.' : ''));
+
+  const form = document.getElementById('tile-action-form');
+  if (form) {
+    form.innerHTML = (action.fields || []).map((field) => `
+      <div class="h23-tile-action-field">
+        ${buildTileActionFieldInput(field)}
+      </div>
+    `).join('');
+  }
+
+  setText('tile-action-status', '');
+  document.getElementById('tile-action-overlay')?.classList.add('active');
+}
+
+function closeTileActionOverlay() {
+  tileActionDialogState = null;
+  document.getElementById('tile-action-overlay')?.classList.remove('active');
+}
+
+function collectTileActionDialogInput() {
+  const inputs = document.querySelectorAll('[data-tile-action-input]');
+  const values = {};
+  inputs.forEach((input) => {
+    const key = input.dataset.tileActionInput;
+    if (!key) return;
+    if (input.type === 'checkbox') {
+      values[key] = input.checked;
+    } else if (input.type === 'number') {
+      values[key] = input.value === '' ? '' : Number(input.value);
+    } else {
+      values[key] = input.value;
+    }
+  });
+  return values;
+}
+
+async function runTileAction(tileId, actionId, input = {}) {
+  const actionState = homeTileCustomState.get(tileId)?.payload?.actions?.find((entry) => entry.id === actionId);
+  const statusEl = document.getElementById('tile-action-status');
+  const submitBtn = document.getElementById('tile-action-submit');
+
+  if (statusEl) statusEl.textContent = 'Running action...';
+  if (submitBtn) submitBtn.disabled = true;
+
+  try {
+    const res = await fetch(`/home23/api/tiles/${encodeURIComponent(tileId)}/actions/${encodeURIComponent(actionId)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `Action failed (${res.status})`);
+    }
+
+    if (data.data) {
+      renderCustomTileData(tileId, data.data);
+    } else {
+      await loadCustomTileData(tileId);
+    }
+
+    if (statusEl) statusEl.textContent = actionState?.method !== 'GET' ? 'Action completed.' : '';
+    closeTileActionOverlay();
+    return data;
+  } catch (err) {
+    if (statusEl) statusEl.textContent = err.message;
+    throw err;
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+  }
+}
+
+function setupTileActionHandlers() {
+  document.getElementById('tile-action-cancel')?.addEventListener('click', closeTileActionOverlay);
+  document.getElementById('tile-action-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!tileActionDialogState) return;
+    try {
+      const input = collectTileActionDialogInput();
+      await runTileAction(tileActionDialogState.tileId, tileActionDialogState.action.id, input);
+    } catch {
+      /* status is rendered in overlay */
+    }
+  });
+  document.getElementById('tile-action-submit')?.addEventListener('click', async () => {
+    if (!tileActionDialogState) return;
+    try {
+      const input = collectTileActionDialogInput();
+      await runTileAction(tileActionDialogState.tileId, tileActionDialogState.action.id, input);
+    } catch {
+      /* status is rendered in overlay */
+    }
+  });
+}
+
 async function loadHomeTiles() {
   const base = apiBase(primaryAgent);
 
@@ -563,7 +1155,12 @@ function updateSystemTile(state) {
   // Excerpt of latest thought in system tile
   const latestThoughtText = state.lastThoughtText || lastThought?.thought;
   if (latestThoughtText) {
-    setText('sys-excerpt', latestThoughtText.slice(0, 120) + '...');
+    const excerpt = latestThoughtText.length > 120
+      ? `${latestThoughtText.slice(0, 120)}...`
+      : latestThoughtText;
+    setText('sys-excerpt', excerpt);
+  } else {
+    setText('sys-excerpt', '');
   }
 
   updatePulseFromState(state);
@@ -1043,7 +1640,9 @@ async function loadAgentPanel(agentName) {
 function startAutoRefresh() {
   setInterval(async () => {
     if (currentTab === 'home') {
+      await loadHomeLayoutConfig();
       await loadHomeTiles();
+      await loadVisibleCustomTiles();
     } else if (currentTab.startsWith('agent-')) {
       await loadAgentPanel(currentTab.replace('agent-', ''));
     }
@@ -1052,6 +1651,15 @@ function startAutoRefresh() {
 }
 
 // ── Utilities ──
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 function apiBase(agent) {
   const port = agent.dashboardPort;
@@ -1066,11 +1674,12 @@ function setupVibeActions() {
   }
 
   const vibeTrigger = document.getElementById('vibe-trigger');
-  if (vibeTrigger) {
+  if (vibeTrigger && vibeTrigger.dataset.bound !== 'true') {
     vibeTrigger.addEventListener('click', async (event) => {
       if (event.detail !== 3) return;
       await triggerVibeGeneration();
     });
+    vibeTrigger.dataset.bound = 'true';
   }
 }
 

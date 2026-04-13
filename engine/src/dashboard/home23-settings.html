@@ -28,6 +28,7 @@
     <button class="h23s-tab" data-stab="models">Models</button>
     <button class="h23s-tab" data-stab="feeder">Feeder</button>
     <button class="h23s-tab" data-stab="vibe">Vibe</button>
+    <button class="h23s-tab" data-stab="tiles">Tiles</button>
     <button class="h23s-tab" data-stab="system">System</button>
   </nav>
 
@@ -550,6 +551,139 @@
       <div class="h23s-section">
         <button class="h23s-btn-primary" id="vibe-save">Save Vibe Settings</button>
         <span id="vibe-save-status" class="h23s-status"></span>
+      </div>
+    </div>
+
+    <!-- Tiles Panel -->
+    <div class="h23s-panel" id="panel-tiles">
+      <h2 class="h23s-panel-title">Tiles</h2>
+      <p class="h23s-panel-desc">
+        Compose the Home dashboard without code changes. Layout controls the full Home tab.
+        Custom tiles use reusable connections stored in <code>config/secrets.yaml</code>; tile definitions live in <code>config/home.yaml</code>.
+      </p>
+
+      <div class="h23s-section">
+        <div class="h23s-panel-header">
+          <div>
+            <h3 class="h23s-section-title">Layout</h3>
+            <p class="h23s-panel-desc" style="margin:0;">Drag rows to reorder the Home tab. Toggle visibility and set each tile's width.</p>
+          </div>
+        </div>
+        <div id="tiles-layout-list" class="h23s-layout-list"></div>
+      </div>
+
+      <div class="h23s-section">
+        <div class="h23s-panel-header">
+          <div>
+            <h3 class="h23s-section-title">Tiles</h3>
+            <p class="h23s-panel-desc" style="margin:0;">Create custom weather, sauna, or advanced HTTP/JSON tiles.</p>
+          </div>
+          <button class="h23s-btn-secondary" id="btn-new-custom-tile">+ New Tile</button>
+        </div>
+
+        <div id="custom-tiles-list" class="h23s-card-list"></div>
+
+        <div class="h23s-builder-card">
+          <div class="h23s-builder-title" id="custom-tile-builder-title">Tile Builder</div>
+          <div class="h23s-field-row">
+            <div class="h23s-field">
+              <label>Title</label>
+              <input type="text" id="tile-title" placeholder="Weather">
+            </div>
+            <div class="h23s-field">
+              <label>Tile ID</label>
+              <input type="text" id="tile-id" placeholder="weather">
+            </div>
+          </div>
+          <div class="h23s-field-row">
+            <div class="h23s-field">
+              <label>Icon</label>
+              <input type="text" id="tile-icon" placeholder="🌤">
+            </div>
+            <div class="h23s-field">
+              <label>Mode</label>
+              <select id="tile-mode"></select>
+            </div>
+          </div>
+          <div class="h23s-field-row">
+            <div class="h23s-field">
+              <label>Connection</label>
+              <select id="tile-connection"></select>
+            </div>
+            <div class="h23s-field">
+              <label>Refresh (ms)</label>
+              <input type="number" id="tile-refresh-ms" min="5000" step="1000" value="30000">
+            </div>
+          </div>
+          <div class="h23s-field-row">
+            <div class="h23s-field">
+              <label>Default Width</label>
+              <select id="tile-size-default">
+                <option value="third">third</option>
+                <option value="half">half</option>
+                <option value="full">full</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="tile-mode-fields"></div>
+
+          <div class="h23s-action-row">
+            <button class="h23s-btn-primary" id="btn-stage-custom-tile">Save Tile Draft</button>
+            <button class="h23s-btn-secondary" id="btn-reset-custom-tile">Clear</button>
+            <span class="h23s-save-status" id="custom-tile-form-status"></span>
+          </div>
+        </div>
+
+        <div class="h23s-actions">
+          <button class="h23s-btn-primary" id="btn-save-tiles">Save Tile Settings</button>
+          <span class="h23s-save-status" id="tiles-status"></span>
+        </div>
+      </div>
+
+      <div class="h23s-section">
+        <div class="h23s-panel-header">
+          <div>
+            <h3 class="h23s-section-title">Connections</h3>
+            <p class="h23s-panel-desc" style="margin:0;">Reusable secret-backed connections for all custom tiles.</p>
+          </div>
+          <button class="h23s-btn-secondary" id="btn-new-tile-connection">+ New Connection</button>
+        </div>
+
+        <div id="tile-connections-list" class="h23s-card-list"></div>
+
+        <div class="h23s-builder-card">
+          <div class="h23s-builder-title" id="tile-connection-builder-title">Connection Builder</div>
+          <div class="h23s-field-row">
+            <div class="h23s-field">
+              <label>Name</label>
+              <input type="text" id="tile-connection-name" placeholder="House Weather">
+            </div>
+            <div class="h23s-field">
+              <label>Connection ID</label>
+              <input type="text" id="tile-connection-id" placeholder="house-weather">
+            </div>
+          </div>
+          <div class="h23s-field-row">
+            <div class="h23s-field">
+              <label>Type</label>
+              <select id="tile-connection-type"></select>
+            </div>
+          </div>
+
+          <div id="tile-connection-fields"></div>
+
+          <div class="h23s-action-row">
+            <button class="h23s-btn-primary" id="btn-stage-tile-connection">Save Connection Draft</button>
+            <button class="h23s-btn-secondary" id="btn-reset-tile-connection">Clear</button>
+            <span class="h23s-save-status" id="tile-connection-form-status"></span>
+          </div>
+        </div>
+
+        <div class="h23s-actions">
+          <button class="h23s-btn-primary" id="btn-save-tile-connections">Save Connections</button>
+          <span class="h23s-save-status" id="tile-connections-status"></span>
+        </div>
       </div>
     </div>
 

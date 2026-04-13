@@ -230,6 +230,170 @@
   white-space: pre-wrap;
 }
 
+/* ── Tile Composer ── */
+
+.h23s-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.h23s-builder-card {
+  background: var(--glass-primary);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 18px 20px;
+  box-shadow: var(--shadow-glass);
+}
+
+.h23s-builder-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 14px;
+}
+
+.h23s-layout-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.h23s-layout-row,
+.h23s-config-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 14px;
+  align-items: center;
+  background: var(--glass-primary);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  box-shadow: var(--shadow-glass);
+}
+
+.h23s-layout-row.dragging {
+  opacity: 0.55;
+}
+
+.h23s-layout-row.drop-target {
+  border-color: var(--accent-blue);
+}
+
+.h23s-layout-handle {
+  color: var(--text-muted);
+  font-size: 18px;
+  cursor: grab;
+  user-select: none;
+}
+
+.h23s-layout-info,
+.h23s-config-card-main {
+  min-width: 0;
+}
+
+.h23s-layout-title,
+.h23s-config-card-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.h23s-layout-subtitle,
+.h23s-config-card-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.h23s-layout-controls,
+.h23s-config-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.h23s-layout-controls select,
+.h23s-layout-controls input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.h23s-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.h23s-badge.core {
+  color: var(--accent-blue);
+  border-color: rgba(10, 132, 255, 0.24);
+  background: rgba(10, 132, 255, 0.08);
+}
+
+.h23s-badge.custom {
+  color: #9fe0d9;
+  border-color: rgba(0, 199, 190, 0.22);
+  background: rgba(0, 199, 190, 0.08);
+}
+
+.h23s-badge.mode {
+  color: var(--text-muted);
+}
+
+.h23s-config-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.h23s-field textarea {
+  width: 100%;
+  background: var(--glass-secondary);
+  border: 1px solid var(--glass-border);
+  color: var(--text-primary);
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-family: 'SF Mono', monospace;
+  outline: none;
+  resize: vertical;
+  min-height: 92px;
+}
+
+.h23s-field textarea:focus {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.15);
+}
+
+.h23s-inline-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+.h23s-empty-card {
+  padding: 14px 16px;
+  border: 1px dashed var(--glass-border);
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 /* ── Provider Cards ── */
 
 .h23s-provider-list {

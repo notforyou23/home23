@@ -72,92 +72,7 @@
         <span id="cosmo23-ind-text">COSMO: checking...</span>
       </div>
 
-      <!-- Top row: 3-column card grid -->
-      <div class="h23-grid-top">
-        <!-- Cosmo / Thoughts tile (left) -->
-        <div class="h23-tile h23-tile-thoughts">
-          <div class="h23-tile-header">🌊 <span id="primary-agent-name">Cosmo</span></div>
-          <div class="h23-thought-text" id="home-thought">Loading...</div>
-          <div class="h23-thought-meta" id="home-thought-meta"></div>
-        </div>
-
-        <!-- Vibe tile (center) -->
-        <div class="h23-tile h23-tile-vibe">
-          <div class="h23-tile-header"><span id="vibe-trigger">🎨 Vibe</span></div>
-          <div class="h23-vibe-image" id="home-vibe-image">
-            <span class="h23-vibe-placeholder">Generating...</span>
-          </div>
-          <div class="h23-vibe-caption" id="home-vibe-caption"></div>
-          <div class="h23-vibe-actions">
-            <a class="h23-vibe-action" id="home-vibe-gallery-link" href="/home23/vibe-gallery">Gallery</a>
-          </div>
-        </div>
-
-        <!-- Chat tile (right) -->
-        <div class="h23-tile h23-tile-chat" id="tile-chat">
-          <div class="h23-chat-header">
-            <div class="h23-chat-selects">
-              <select class="h23-chat-agent-select" id="chat-agent-select">
-                <option>Loading...</option>
-              </select>
-              <select class="h23-chat-model-select" id="chat-model-select">
-                <option>model</option>
-              </select>
-            </div>
-            <div class="h23-chat-actions">
-              <button class="h23-chat-expand-btn" id="chat-new-btn" title="New conversation" onclick="newConversation()">+</button>
-              <button class="h23-chat-expand-btn" id="chat-history-btn" title="Conversation history" onclick="toggleConversationList()">&#9776;</button>
-              <button class="h23-chat-expand-btn" id="chat-expand-btn" title="Expand">&#8599;</button>
-            </div>
-          </div>
-          <!-- Conversation list panel (slides over messages) -->
-          <div class="h23-chat-conv-panel" id="chat-conv-panel">
-            <div style="padding:10px 14px;border-bottom:1px solid var(--glass-border);display:flex;justify-content:space-between;align-items:center;">
-              <span style="font-size:12px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;">History</span>
-              <button class="h23-chat-expand-btn" onclick="toggleConversationList()" title="Close" style="width:24px;height:24px;font-size:12px;">&#10005;</button>
-            </div>
-            <div class="h23-chat-conv-list" id="chat-conv-list"></div>
-          </div>
-          <div class="h23-chat-messages" id="chat-messages">
-            <div class="h23-chat-empty">Loading...</div>
-          </div>
-          <div class="h23-chat-input-area" id="chat-input-area">
-            <textarea class="h23-chat-input" id="chat-input" placeholder="Message your agent..." rows="1"></textarea>
-            <button class="h23-chat-send-btn" id="chat-send-btn">&#9654;</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- System stats bar (relocated from top grid) -->
-      <div class="h23-system-bar" id="system-bar">
-        <div class="h23-system-bar-item"><label>Uptime</label><div class="value" id="sys-uptime">—</div></div>
-        <div class="h23-system-bar-item"><label>Thoughts</label><div class="value" id="sys-thoughts">—</div></div>
-        <div class="h23-system-bar-item"><label>Nodes</label><div class="value" id="sys-nodes">—</div></div>
-        <div class="h23-system-bar-item"><label>Last</label><div class="value" id="sys-last">—</div></div>
-      </div>
-
-      <!-- Brain + Dream Logs (side by side) -->
-      <div class="h23-logs-row">
-        <div class="h23-tile h23-tile-brainlog" onclick="openLogOverlay('brain')">
-          <div class="h23-brainlog-header">
-            <span class="h23-brainlog-title">🧠 BRAIN LOG</span>
-            <span class="h23-brainlog-stamp" id="brainlog-stamp"></span>
-          </div>
-          <div class="h23-brain-log" id="home-brainlog">
-            <p class="h23-muted">Loading...</p>
-          </div>
-        </div>
-
-        <div class="h23-tile h23-tile-brainlog" onclick="openLogOverlay('dream')">
-          <div class="h23-brainlog-header">
-            <span class="h23-brainlog-title">💭 DREAM LOG</span>
-            <span class="h23-brainlog-stamp" id="dreamlog-stamp"></span>
-          </div>
-          <div class="h23-dream-log" id="home-dreamlog">
-            <p class="h23-muted">Loading...</p>
-          </div>
-        </div>
-      </div>
+      <div class="h23-home-layout" id="home-layout-grid"></div>
 
       <!-- Log overlay (full details) -->
       <div class="h23-log-overlay" id="log-overlay" onclick="if(event.target===this)closeLogOverlay()">
@@ -170,14 +85,6 @@
         </div>
       </div>
 
-      <!-- Feeder tile (bottom) -->
-      <div class="h23-tile h23-tile-feeder" id="tile-feeder" onclick="openFeederOverlay()">
-        <div class="h23-tile-header"><span class="icon">📥</span> Ingestion Compiler</div>
-        <div id="home-feeder">
-          <p class="h23-muted">Loading...</p>
-        </div>
-      </div>
-
       <!-- Feeder overlay (click-to-expand details) -->
       <div class="h23-log-overlay" id="feeder-overlay" onclick="if(event.target===this)closeFeederOverlay()">
         <div class="h23-log-overlay-panel h23-feeder-overlay-panel">
@@ -186,6 +93,25 @@
             <button class="h23-log-overlay-close" onclick="closeFeederOverlay()">&#10005;</button>
           </div>
           <div class="h23-log-overlay-body" id="feeder-overlay-body"></div>
+        </div>
+      </div>
+
+      <!-- Tile action overlay -->
+      <div class="h23-log-overlay" id="tile-action-overlay" onclick="if(event.target===this)closeTileActionOverlay()">
+        <div class="h23-log-overlay-panel h23-tile-action-overlay-panel">
+          <div class="h23-log-overlay-header">
+            <span class="h23-brainlog-title" id="tile-action-title">Tile Action</span>
+            <button class="h23-log-overlay-close" onclick="closeTileActionOverlay()">&#10005;</button>
+          </div>
+          <div class="h23-log-overlay-body">
+            <div class="h23-tile-action-confirmation" id="tile-action-confirmation"></div>
+            <form class="h23-tile-action-form" id="tile-action-form"></form>
+            <div class="h23-tile-action-status" id="tile-action-status"></div>
+          </div>
+          <div class="h23-tile-action-footer">
+            <button class="h23-tile-action-btn secondary" id="tile-action-cancel" type="button">Cancel</button>
+            <button class="h23-tile-action-btn primary" id="tile-action-submit" type="button">Run Action</button>
+          </div>
         </div>
       </div>
 

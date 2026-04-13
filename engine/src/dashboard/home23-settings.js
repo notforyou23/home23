@@ -4,6 +4,14 @@
 
 const API = '/home23/api/settings';
 let modelsData = null;
+let tilesState = null;
+let tileConnectionsState = null;
+let editingCustomTileId = null;
+let editingTileConnectionId = null;
+let layoutDragTileId = null;
+const tilesBroadcast = typeof BroadcastChannel !== 'undefined'
+  ? new BroadcastChannel('home23-dashboard-tiles')
+  : null;
 
 // ── Sub-tab switching ──
 
@@ -1358,6 +1366,850 @@ async function saveVibe() {
   }
 }
 
+// ── Tiles ──
+
+const TILE_MODE_LABELS = {
+  'ecowitt-weather': 'Ecowitt Weather',
+  'huum-sauna': 'Huum Sauna',
+  'generic-http-json': 'Generic HTTP JSON',
+};
+
+function broadcastTilesUpdate() {
+  try {
+    tilesBroadcast?.postMessage({ type: 'tiles-updated', at: Date.now() });
+  } catch {
+    /* optional */
+  }
+}
+
+async function loadTilesPanel() {
+  try {
+    const [tilesRes, connectionsRes] = await Promise.all([
+      fetch(`${API}/tiles`),
+      fetch(`${API}/tile-connections`),
+    ]);
+    const tilesData = await tilesRes.json();
+    const connectionsData = await connectionsRes.json();
+
+    tilesState = tilesData.tiles;
+    tileConnectionsState = connectionsData.connections;
+    tileConnectionsState.connections = (tileConnectionsState.connections || []).map((connection) => ({
+      ...connection,
+      secrets: connection.secrets || {},
+    }));
+
+    ensureTileLayoutCoverage();
+    renderTilesPanel();
+  } catch (err) {
+    console.error('Failed to load tile settings:', err);
+  }
+}
+
+function slugifyDraftId(value, fallbackPrefix) {
+  const slug = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (slug) return slug;
+  return `${fallbackPrefix}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function maskSecretPreview(value) {
+  const raw = String(value || '');
+  if (!raw) return '';
+  if (raw.length <= 10) return '••••';
+  return `${raw.slice(0, 4)}…${raw.slice(-4)}`;
+}
+
+function prettyJson(value) {
+  return JSON.stringify(value || [], null, 2);
+}
+
+function parseJsonField(raw, label, fallback = []) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return fallback;
+  try {
+    return JSON.parse(trimmed);
+  } catch (err) {
+    throw new Error(`${label} must be valid JSON`);
+  }
+}
+
+function getTileDefinitionsMap() {
+  const map = new Map();
+  (tilesState?.coreTiles || []).forEach((tile) => map.set(tile.id, tile));
+  (tilesState?.customTiles || []).forEach((tile) => map.set(tile.id, tile));
+  return map;
+}
+
+function ensureTileLayoutCoverage() {
+  if (!tilesState) return;
+  const defs = getTileDefinitionsMap();
+  const existing = new Set((tilesState.homeLayout || []).map((item) => item.tileId));
+  for (const tile of defs.values()) {
+    if (existing.has(tile.id)) continue;
+    tilesState.homeLayout.push({
+      tileId: tile.id,
+      enabled: true,
+      size: tile.sizeDefault || 'third',
+      tile,
+    });
+  }
+}
+
+function getConnectionOptionsForMode(mode) {
+  const template = (tilesState?.templateModes || []).find((entry) => entry.mode === mode);
+  const requiredType = template?.connectionType;
+  return (tileConnectionsState?.connections || []).filter((connection) => connection.type === requiredType);
+}
+
+function renderTilesPanel() {
+  renderTilesLayoutList();
+  renderCustomTilesList();
+  renderTileConnectionsList();
+  populateTileModeSelect();
+  populateConnectionTypeSelect();
+  resetCustomTileForm();
+  resetTileConnectionForm();
+}
+
+function renderTilesLayoutList() {
+  const host = document.getElementById('tiles-layout-list');
+  if (!host || !tilesState) return;
+
+  const defs = getTileDefinitionsMap();
+  const rows = (tilesState.homeLayout || []).map((item) => {
+    const tile = defs.get(item.tileId) || item.tile;
+    if (!tile) return '';
+    return `
+      <div class="h23s-layout-row" draggable="true" data-layout-tile-id="${tile.id}">
+        <div class="h23s-layout-handle">☰</div>
+        <div class="h23s-layout-info">
+          <div class="h23s-layout-title">
+            <span>${escapeHtml(tile.icon || '🧩')}</span>
+            <span>${escapeHtml(tile.title)}</span>
+            <span class="h23s-badge ${tile.kind === 'core' ? 'core' : 'custom'}">${tile.kind}</span>
+          </div>
+          <div class="h23s-layout-subtitle">${escapeHtml(tile.id)} · ${escapeHtml(tile.mode)}</div>
+        </div>
+        <div class="h23s-layout-controls">
+          <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary);">
+            <input type="checkbox" data-layout-enabled ${item.enabled !== false ? 'checked' : ''}>
+            <span>visible</span>
+          </label>
+          <select data-layout-size>
+            ${(tilesState.sizeOptions || ['third', 'half', 'full']).map((size) => `<option value="${size}" ${size === item.size ? 'selected' : ''}>${size}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  host.innerHTML = rows || '<div class="h23s-empty-card">No tiles in layout.</div>';
+}
+
+function renderCustomTilesList() {
+  const host = document.getElementById('custom-tiles-list');
+  if (!host || !tilesState) return;
+
+  const tiles = tilesState.customTiles || [];
+  if (!tiles.length) {
+    host.innerHTML = '<div class="h23s-empty-card">No custom tiles yet. Create one below.</div>';
+    return;
+  }
+
+  host.innerHTML = tiles.map((tile) => {
+    const connection = (tileConnectionsState?.connections || []).find((entry) => entry.id === tile.connectionId);
+    return `
+      <div class="h23s-config-card" data-custom-tile-id="${tile.id}">
+        <div class="h23s-config-card-main">
+          <div class="h23s-config-card-title">
+            <span>${escapeHtml(tile.icon || '🧩')}</span>
+            <span>${escapeHtml(tile.title)}</span>
+            <span class="h23s-badge custom">custom</span>
+            <span class="h23s-badge mode">${escapeHtml(TILE_MODE_LABELS[tile.mode] || tile.mode)}</span>
+          </div>
+          <div class="h23s-config-card-subtitle">
+            ${escapeHtml(tile.id)} · ${escapeHtml(connection?.name || 'No connection')} · refresh ${Math.round((tile.refreshMs || 30000) / 1000)}s · default ${escapeHtml(tile.sizeDefault || 'third')}
+          </div>
+        </div>
+        <div class="h23s-config-card-actions">
+          <button class="h23s-btn-secondary" data-edit-custom-tile="${tile.id}">Edit</button>
+          <button class="h23s-btn-danger" data-delete-custom-tile="${tile.id}">Delete</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderTileConnectionsList() {
+  const host = document.getElementById('tile-connections-list');
+  if (!host || !tileConnectionsState) return;
+
+  const connections = tileConnectionsState.connections || [];
+  if (!connections.length) {
+    host.innerHTML = '<div class="h23s-empty-card">No reusable connections configured yet.</div>';
+    return;
+  }
+
+  host.innerHTML = connections.map((connection) => {
+    const secretSummary = Object.entries(connection.maskedSecrets || {})
+      .map(([key, value]) => `${key}: ${value}`)
+      .join(' · ');
+    return `
+      <div class="h23s-config-card" data-tile-connection-id="${connection.id}">
+        <div class="h23s-config-card-main">
+          <div class="h23s-config-card-title">
+            <span>${escapeHtml(connection.name)}</span>
+            <span class="h23s-badge mode">${escapeHtml(connection.type)}</span>
+          </div>
+          <div class="h23s-config-card-subtitle">
+            ${escapeHtml(connection.id)}
+            ${connection.config?.baseUrl ? ` · ${escapeHtml(connection.config.baseUrl)}` : ''}
+            ${secretSummary ? ` · ${escapeHtml(secretSummary)}` : ''}
+          </div>
+        </div>
+        <div class="h23s-config-card-actions">
+          <button class="h23s-btn-secondary" data-edit-tile-connection="${connection.id}">Edit</button>
+          <button class="h23s-btn-danger" data-delete-tile-connection="${connection.id}">Delete</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+function populateTileModeSelect() {
+  const select = document.getElementById('tile-mode');
+  if (!select || !tilesState) return;
+  const current = select.value || 'ecowitt-weather';
+  select.innerHTML = (tilesState.templateModes || []).map((mode) => (
+    `<option value="${mode.mode}">${mode.label}</option>`
+  )).join('');
+  select.value = (tilesState.templateModes || []).some((entry) => entry.mode === current)
+    ? current
+    : ((tilesState.templateModes || [])[0]?.mode || 'ecowitt-weather');
+  populateTileConnectionSelect();
+  renderTileModeFields();
+}
+
+function populateTileConnectionSelect(selectedConnectionId = '') {
+  const select = document.getElementById('tile-connection');
+  if (!select) return;
+  const mode = document.getElementById('tile-mode')?.value || 'ecowitt-weather';
+  const connections = getConnectionOptionsForMode(mode);
+  select.innerHTML = connections.length
+    ? connections.map((connection) => `<option value="${connection.id}">${escapeHtml(connection.name)}</option>`).join('')
+    : '<option value="">No matching connections yet</option>';
+
+  if (selectedConnectionId && connections.some((entry) => entry.id === selectedConnectionId)) {
+    select.value = selectedConnectionId;
+  }
+}
+
+function populateConnectionTypeSelect() {
+  const select = document.getElementById('tile-connection-type');
+  if (!select || !tileConnectionsState) return;
+  const current = select.value || 'ecowitt';
+  select.innerHTML = (tileConnectionsState.connectionTypes || []).map((type) => (
+    `<option value="${type.type}">${type.label}</option>`
+  )).join('');
+  select.value = (tileConnectionsState.connectionTypes || []).some((entry) => entry.type === current)
+    ? current
+    : ((tileConnectionsState.connectionTypes || [])[0]?.type || 'ecowitt');
+  renderTileConnectionFields();
+}
+
+function renderTileModeFields(config = null) {
+  const host = document.getElementById('tile-mode-fields');
+  const mode = document.getElementById('tile-mode')?.value;
+  if (!host || !mode) return;
+
+  if (mode === 'huum-sauna') {
+    const startDefaults = config?.startDefaults || {};
+    host.innerHTML = `
+      <div class="h23s-field-row">
+        <div class="h23s-field">
+          <label>Start Target Temperature (F)</label>
+          <input type="number" id="tile-huum-start-temp" min="100" max="240" value="${startDefaults.targetTemperature ?? 190}">
+        </div>
+        <div class="h23s-field">
+          <label>Start Duration (minutes)</label>
+          <input type="number" id="tile-huum-start-duration" min="15" max="720" value="${startDefaults.duration ?? 180}">
+        </div>
+      </div>
+      <div class="h23s-inline-note">The tile will expose Start and Stop actions. Start uses these defaults until the operator overrides them in the action dialog.</div>
+    `;
+    return;
+  }
+
+  if (mode === 'generic-http-json') {
+    const display = config?.display || {};
+    const request = config?.request || {};
+    host.innerHTML = `
+      <div class="h23s-field">
+        <label>Request Path</label>
+        <input type="text" id="tile-generic-request-path" value="${escapeHtml(request.path || '/')}" placeholder="./status">
+        <span class="h23s-hint">Relative to the selected connection base URL. Absolute URLs are rejected.</span>
+      </div>
+      <div class="h23s-field-row">
+        <div class="h23s-field">
+          <label>Value Path</label>
+          <input type="text" id="tile-generic-value-path" value="${escapeHtml(display.valuePath || '')}" placeholder="data.temperature">
+        </div>
+        <div class="h23s-field">
+          <label>Status Path</label>
+          <input type="text" id="tile-generic-status-path" value="${escapeHtml(display.statusPath || '')}" placeholder="status.label">
+        </div>
+      </div>
+      <div class="h23s-field">
+        <label>Subtitle Path</label>
+        <input type="text" id="tile-generic-subtitle-path" value="${escapeHtml(display.subtitlePath || '')}" placeholder="data.summary">
+      </div>
+      <div class="h23s-field">
+        <label>Metrics JSON</label>
+        <textarea id="tile-generic-metrics-json" placeholder='[{"label":"Humidity","path":"data.humidity"}]'>${escapeHtml(prettyJson(display.metrics || []))}</textarea>
+        <span class="h23s-hint">Array of <code>{ "label": "...", "path": "..." }</code>.</span>
+      </div>
+      <div class="h23s-field">
+        <label>Actions JSON</label>
+        <textarea id="tile-generic-actions-json" placeholder='[{"id":"toggle","label":"Toggle","method":"POST","path":"./toggle","confirmationText":"Send toggle command?","fields":[{"id":"state","label":"State","type":"text","defaultValue":"on","required":true}],"bodyTemplate":{"state":"$state"}}]'>${escapeHtml(prettyJson(config?.actions || []))}</textarea>
+        <span class="h23s-hint">Advanced mode. Actions are server-side only and can declare typed inputs for the dashboard action dialog.</span>
+      </div>
+    `;
+    return;
+  }
+
+  host.innerHTML = `
+    <div class="h23s-inline-note">
+      This template uses the selected Ecowitt connection and needs no extra tile-specific fields.
+    </div>
+  `;
+}
+
+function renderTileConnectionFields(connection = null) {
+  const host = document.getElementById('tile-connection-fields');
+  const type = document.getElementById('tile-connection-type')?.value;
+  if (!host || !type) return;
+
+  if (type === 'ecowitt') {
+    host.innerHTML = `
+      <div class="h23s-field-row">
+        <div class="h23s-field">
+          <label>Application Key</label>
+          <input type="password" id="tile-conn-ecowitt-application-key" placeholder="${escapeHtml(connection?.maskedSecrets?.applicationKey || 'Paste application key')}">
+        </div>
+        <div class="h23s-field">
+          <label>API Key</label>
+          <input type="password" id="tile-conn-ecowitt-api-key" placeholder="${escapeHtml(connection?.maskedSecrets?.apiKey || 'Paste API key')}">
+        </div>
+      </div>
+      <div class="h23s-field">
+        <label>Device MAC</label>
+        <input type="password" id="tile-conn-ecowitt-mac" placeholder="${escapeHtml(connection?.maskedSecrets?.mac || 'Paste device MAC')}">
+      </div>
+    `;
+    return;
+  }
+
+  if (type === 'huum') {
+    host.innerHTML = `
+      <div class="h23s-field">
+        <label>Base URL</label>
+        <input type="text" id="tile-conn-huum-base-url" value="${escapeHtml(connection?.config?.baseUrl || '')}" placeholder="https://example.com/api">
+      </div>
+      <div class="h23s-field-row">
+        <div class="h23s-field">
+          <label>Username</label>
+          <input type="password" id="tile-conn-huum-username" placeholder="${escapeHtml(connection?.maskedSecrets?.username || 'Paste username')}">
+        </div>
+        <div class="h23s-field">
+          <label>Password</label>
+          <input type="password" id="tile-conn-huum-password" placeholder="${escapeHtml(connection?.maskedSecrets?.password || 'Paste password')}">
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  const authType = connection?.config?.authType || 'none';
+  host.innerHTML = `
+    <div class="h23s-field">
+      <label>Base URL</label>
+      <input type="text" id="tile-conn-generic-base-url" value="${escapeHtml(connection?.config?.baseUrl || '')}" placeholder="https://api.example.com/v1/">
+    </div>
+    <div class="h23s-field-row">
+      <div class="h23s-field">
+        <label>Auth Type</label>
+        <select id="tile-conn-generic-auth-type">
+          ${(tileConnectionsState?.authTypes || ['none', 'basic', 'bearer', 'header']).map((option) => (
+            `<option value="${option}" ${option === authType ? 'selected' : ''}>${option}</option>`
+          )).join('')}
+        </select>
+      </div>
+      <div class="h23s-field">
+        <label>Header Name (for header auth)</label>
+        <input type="text" id="tile-conn-generic-header-name" value="${escapeHtml(connection?.config?.headerName || '')}" placeholder="X-API-Key">
+      </div>
+    </div>
+    <div class="h23s-field">
+      <label>Static Headers JSON</label>
+      <textarea id="tile-conn-generic-headers-json" placeholder='{"Accept":"application/json"}'>${escapeHtml(prettyJson(connection?.config?.headers || {}))}</textarea>
+    </div>
+    <div class="h23s-field-row">
+      <div class="h23s-field">
+        <label>Basic Auth Username</label>
+        <input type="password" id="tile-conn-generic-username" placeholder="${escapeHtml(connection?.maskedSecrets?.username || 'Stored username')}">
+      </div>
+      <div class="h23s-field">
+        <label>Basic Auth Password</label>
+        <input type="password" id="tile-conn-generic-password" placeholder="${escapeHtml(connection?.maskedSecrets?.password || 'Stored password')}">
+      </div>
+    </div>
+    <div class="h23s-field-row">
+      <div class="h23s-field">
+        <label>Bearer Token</label>
+        <input type="password" id="tile-conn-generic-bearer-token" placeholder="${escapeHtml(connection?.maskedSecrets?.bearerToken || 'Stored bearer token')}">
+      </div>
+      <div class="h23s-field">
+        <label>Header Secret Value</label>
+        <input type="password" id="tile-conn-generic-header-value" placeholder="${escapeHtml(connection?.maskedSecrets?.headerValue || 'Stored header value')}">
+      </div>
+    </div>
+  `;
+}
+
+function resetCustomTileForm() {
+  editingCustomTileId = null;
+  document.getElementById('custom-tile-builder-title').textContent = 'Tile Builder';
+  document.getElementById('tile-title').value = '';
+  const idInput = document.getElementById('tile-id');
+  idInput.value = '';
+  idInput.disabled = false;
+  document.getElementById('tile-icon').value = '🌤';
+  document.getElementById('tile-refresh-ms').value = 30000;
+  document.getElementById('tile-size-default').value = 'third';
+  populateTileModeSelect();
+  document.getElementById('custom-tile-form-status').textContent = '';
+}
+
+function populateCustomTileForm(tile) {
+  editingCustomTileId = tile.id;
+  document.getElementById('custom-tile-builder-title').textContent = `Editing ${tile.title}`;
+  document.getElementById('tile-title').value = tile.title;
+  const idInput = document.getElementById('tile-id');
+  idInput.value = tile.id;
+  idInput.disabled = true;
+  document.getElementById('tile-icon').value = tile.icon || '';
+  document.getElementById('tile-refresh-ms').value = tile.refreshMs || 30000;
+  document.getElementById('tile-size-default').value = tile.sizeDefault || 'third';
+  populateTileModeSelect();
+  document.getElementById('tile-mode').value = tile.mode;
+  populateTileConnectionSelect(tile.connectionId);
+  document.getElementById('tile-connection').value = tile.connectionId || '';
+  renderTileModeFields(tile.config || {});
+  document.getElementById('custom-tile-form-status').textContent = '';
+}
+
+function collectCustomTileForm() {
+  const title = document.getElementById('tile-title').value.trim();
+  if (!title) throw new Error('Tile title is required');
+
+  const mode = document.getElementById('tile-mode').value;
+  const connectionId = document.getElementById('tile-connection').value;
+  if (!connectionId) throw new Error('Select a matching connection first');
+
+  const tile = {
+    id: editingCustomTileId || slugifyDraftId(document.getElementById('tile-id').value || title, 'tile'),
+    title,
+    icon: document.getElementById('tile-icon').value.trim() || '🧩',
+    mode,
+    connectionId,
+    refreshMs: Number(document.getElementById('tile-refresh-ms').value || 30000),
+    sizeDefault: document.getElementById('tile-size-default').value || 'third',
+    config: {},
+  };
+
+  if (mode === 'huum-sauna') {
+    tile.config = {
+      startDefaults: {
+        targetTemperature: Number(document.getElementById('tile-huum-start-temp').value || 190),
+        duration: Number(document.getElementById('tile-huum-start-duration').value || 180),
+      },
+    };
+  } else if (mode === 'generic-http-json') {
+    const metrics = parseJsonField(document.getElementById('tile-generic-metrics-json').value, 'Metrics JSON', []);
+    const actions = parseJsonField(document.getElementById('tile-generic-actions-json').value, 'Actions JSON', []);
+    if (!Array.isArray(metrics)) throw new Error('Metrics JSON must be an array');
+    if (!Array.isArray(actions)) throw new Error('Actions JSON must be an array');
+    tile.config = {
+      request: {
+        path: document.getElementById('tile-generic-request-path').value.trim() || '/',
+      },
+      display: {
+        valuePath: document.getElementById('tile-generic-value-path').value.trim(),
+        statusPath: document.getElementById('tile-generic-status-path').value.trim(),
+        subtitlePath: document.getElementById('tile-generic-subtitle-path').value.trim(),
+        metrics,
+      },
+      actions,
+    };
+  }
+
+  return tile;
+}
+
+function stageCustomTile() {
+  const statusEl = document.getElementById('custom-tile-form-status');
+  try {
+    const tile = collectCustomTileForm();
+    const existingIndex = (tilesState.customTiles || []).findIndex((entry) => entry.id === tile.id);
+    if (existingIndex >= 0) {
+      tilesState.customTiles.splice(existingIndex, 1, tile);
+    } else {
+      tilesState.customTiles.push(tile);
+      tilesState.homeLayout.push({
+        tileId: tile.id,
+        enabled: true,
+        size: tile.sizeDefault,
+        tile,
+      });
+    }
+
+    ensureTileLayoutCoverage();
+    renderTilesLayoutList();
+    renderCustomTilesList();
+    statusEl.textContent = 'Draft saved';
+    statusEl.style.color = 'var(--accent-green)';
+    populateTileConnectionSelect(tile.connectionId);
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.style.color = 'var(--accent-red)';
+  }
+}
+
+function editCustomTile(tileId) {
+  const tile = (tilesState?.customTiles || []).find((entry) => entry.id === tileId);
+  if (!tile) return;
+  populateCustomTileForm(tile);
+}
+
+function deleteCustomTile(tileId) {
+  const tile = (tilesState?.customTiles || []).find((entry) => entry.id === tileId);
+  if (!tile) return;
+  if (!confirm(`Delete tile "${tile.title}"?`)) return;
+  tilesState.customTiles = (tilesState.customTiles || []).filter((entry) => entry.id !== tileId);
+  tilesState.homeLayout = (tilesState.homeLayout || []).filter((entry) => entry.tileId !== tileId);
+  renderTilesLayoutList();
+  renderCustomTilesList();
+  if (editingCustomTileId === tileId) resetCustomTileForm();
+}
+
+function resetTileConnectionForm() {
+  editingTileConnectionId = null;
+  document.getElementById('tile-connection-builder-title').textContent = 'Connection Builder';
+  document.getElementById('tile-connection-name').value = '';
+  const idInput = document.getElementById('tile-connection-id');
+  idInput.value = '';
+  idInput.disabled = false;
+  populateConnectionTypeSelect();
+  document.getElementById('tile-connection-form-status').textContent = '';
+}
+
+function populateTileConnectionForm(connection) {
+  editingTileConnectionId = connection.id;
+  document.getElementById('tile-connection-builder-title').textContent = `Editing ${connection.name}`;
+  document.getElementById('tile-connection-name').value = connection.name;
+  const idInput = document.getElementById('tile-connection-id');
+  idInput.value = connection.id;
+  idInput.disabled = true;
+  populateConnectionTypeSelect();
+  document.getElementById('tile-connection-type').value = connection.type;
+  renderTileConnectionFields(connection);
+  document.getElementById('tile-connection-form-status').textContent = '';
+}
+
+function collectTileConnectionForm() {
+  const name = document.getElementById('tile-connection-name').value.trim();
+  if (!name) throw new Error('Connection name is required');
+
+  const type = document.getElementById('tile-connection-type').value;
+  const base = {
+    id: editingTileConnectionId || slugifyDraftId(document.getElementById('tile-connection-id').value || name, 'connection'),
+    name,
+    type,
+    config: {},
+    secrets: {},
+  };
+
+  if (type === 'ecowitt') {
+    const applicationKey = document.getElementById('tile-conn-ecowitt-application-key').value.trim();
+    const apiKey = document.getElementById('tile-conn-ecowitt-api-key').value.trim();
+    const mac = document.getElementById('tile-conn-ecowitt-mac').value.trim();
+    if (!editingTileConnectionId && (!applicationKey || !apiKey || !mac)) {
+      throw new Error('New Ecowitt connections require application key, API key, and MAC');
+    }
+    if (applicationKey) base.secrets.applicationKey = applicationKey;
+    if (apiKey) base.secrets.apiKey = apiKey;
+    if (mac) base.secrets.mac = mac;
+    return base;
+  }
+
+  if (type === 'huum') {
+    base.config.baseUrl = document.getElementById('tile-conn-huum-base-url').value.trim();
+    const username = document.getElementById('tile-conn-huum-username').value.trim();
+    const password = document.getElementById('tile-conn-huum-password').value.trim();
+    if (!base.config.baseUrl) throw new Error('Base URL is required');
+    if (!editingTileConnectionId && (!username || !password)) {
+      throw new Error('New Huum connections require username and password');
+    }
+    if (username) base.secrets.username = username;
+    if (password) base.secrets.password = password;
+    return base;
+  }
+
+  base.config.baseUrl = document.getElementById('tile-conn-generic-base-url').value.trim();
+  base.config.authType = document.getElementById('tile-conn-generic-auth-type').value;
+  base.config.headerName = document.getElementById('tile-conn-generic-header-name').value.trim();
+  base.config.headers = parseJsonField(document.getElementById('tile-conn-generic-headers-json').value, 'Headers JSON', {});
+  if (Array.isArray(base.config.headers) || typeof base.config.headers !== 'object') {
+    throw new Error('Headers JSON must be an object');
+  }
+  if (!base.config.baseUrl) throw new Error('Base URL is required');
+  const username = document.getElementById('tile-conn-generic-username').value.trim();
+  const password = document.getElementById('tile-conn-generic-password').value.trim();
+  const bearerToken = document.getElementById('tile-conn-generic-bearer-token').value.trim();
+  const headerValue = document.getElementById('tile-conn-generic-header-value').value.trim();
+  if (username) base.secrets.username = username;
+  if (password) base.secrets.password = password;
+  if (bearerToken) base.secrets.bearerToken = bearerToken;
+  if (headerValue) base.secrets.headerValue = headerValue;
+  return base;
+}
+
+function stageTileConnection() {
+  const statusEl = document.getElementById('tile-connection-form-status');
+  try {
+    const connection = collectTileConnectionForm();
+    const existing = (tileConnectionsState.connections || []).find((entry) => entry.id === connection.id);
+    const nextConnection = {
+      id: connection.id,
+      name: connection.name,
+      type: connection.type,
+      config: connection.config,
+      secrets: connection.secrets,
+      maskedSecrets: existing?.maskedSecrets ? { ...existing.maskedSecrets } : {},
+    };
+    Object.entries(connection.secrets || {}).forEach(([key, value]) => {
+      if (value) nextConnection.maskedSecrets[key] = maskSecretPreview(value);
+    });
+
+    const existingIndex = (tileConnectionsState.connections || []).findIndex((entry) => entry.id === connection.id);
+    if (existingIndex >= 0) {
+      tileConnectionsState.connections.splice(existingIndex, 1, nextConnection);
+    } else {
+      tileConnectionsState.connections.push(nextConnection);
+    }
+
+    renderTileConnectionsList();
+    populateTileConnectionSelect();
+    statusEl.textContent = 'Draft saved';
+    statusEl.style.color = 'var(--accent-green)';
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.style.color = 'var(--accent-red)';
+  }
+}
+
+function editTileConnection(connectionId) {
+  const connection = (tileConnectionsState?.connections || []).find((entry) => entry.id === connectionId);
+  if (!connection) return;
+  populateTileConnectionForm(connection);
+}
+
+function deleteTileConnection(connectionId) {
+  const usedBy = (tilesState?.customTiles || []).filter((tile) => tile.connectionId === connectionId);
+  if (usedBy.length > 0) {
+    alert(`Connection is still used by ${usedBy.map((tile) => tile.title).join(', ')}.`);
+    return;
+  }
+  if (!confirm(`Delete connection "${connectionId}"?`)) return;
+  tileConnectionsState.connections = (tileConnectionsState.connections || []).filter((entry) => entry.id !== connectionId);
+  renderTileConnectionsList();
+  populateTileConnectionSelect();
+  if (editingTileConnectionId === connectionId) resetTileConnectionForm();
+}
+
+function updateLayoutItem(tileId, patch) {
+  const item = (tilesState?.homeLayout || []).find((entry) => entry.tileId === tileId);
+  if (!item) return;
+  Object.assign(item, patch);
+}
+
+function moveLayoutTile(dragId, dropId) {
+  if (!dragId || !dropId || dragId === dropId) return;
+  const layout = tilesState?.homeLayout || [];
+  const fromIndex = layout.findIndex((entry) => entry.tileId === dragId);
+  const toIndex = layout.findIndex((entry) => entry.tileId === dropId);
+  if (fromIndex < 0 || toIndex < 0) return;
+  const [entry] = layout.splice(fromIndex, 1);
+  layout.splice(toIndex, 0, entry);
+  renderTilesLayoutList();
+}
+
+async function saveTilesSettings() {
+  const statusEl = document.getElementById('tiles-status');
+  statusEl.textContent = 'Saving...';
+  try {
+    const payload = {
+      version: 1,
+      homeLayout: (tilesState.homeLayout || []).map((item) => ({
+        tileId: item.tileId,
+        enabled: item.enabled !== false,
+        size: item.size,
+      })),
+      customTiles: tilesState.customTiles || [],
+    };
+
+    const res = await fetch(`${API}/tiles`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tiles: payload }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'save failed');
+    statusEl.textContent = 'Saved · hot-applied';
+    statusEl.style.color = 'var(--accent-green)';
+    await loadTilesPanel();
+    broadcastTilesUpdate();
+    setTimeout(() => { statusEl.textContent = ''; }, 3000);
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.style.color = 'var(--accent-red)';
+  }
+}
+
+async function saveTileConnections() {
+  const statusEl = document.getElementById('tile-connections-status');
+  statusEl.textContent = 'Saving...';
+  try {
+    const payload = {
+      connections: (tileConnectionsState.connections || []).map((connection) => ({
+        id: connection.id,
+        name: connection.name,
+        type: connection.type,
+        config: connection.config,
+        secrets: connection.secrets || {},
+      })),
+    };
+
+    const res = await fetch(`${API}/tile-connections`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ connections: payload }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'save failed');
+    statusEl.textContent = 'Saved · hot-applied';
+    statusEl.style.color = 'var(--accent-green)';
+    await loadTilesPanel();
+    broadcastTilesUpdate();
+    setTimeout(() => { statusEl.textContent = ''; }, 3000);
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.style.color = 'var(--accent-red)';
+  }
+}
+
+function setupTilesHandlers() {
+  document.getElementById('btn-new-custom-tile')?.addEventListener('click', resetCustomTileForm);
+  document.getElementById('btn-stage-custom-tile')?.addEventListener('click', stageCustomTile);
+  document.getElementById('btn-reset-custom-tile')?.addEventListener('click', resetCustomTileForm);
+  document.getElementById('btn-save-tiles')?.addEventListener('click', saveTilesSettings);
+
+  document.getElementById('btn-new-tile-connection')?.addEventListener('click', resetTileConnectionForm);
+  document.getElementById('btn-stage-tile-connection')?.addEventListener('click', stageTileConnection);
+  document.getElementById('btn-reset-tile-connection')?.addEventListener('click', resetTileConnectionForm);
+  document.getElementById('btn-save-tile-connections')?.addEventListener('click', saveTileConnections);
+
+  document.getElementById('tile-title')?.addEventListener('input', () => {
+    if (editingCustomTileId) return;
+    const idInput = document.getElementById('tile-id');
+    if (!idInput.value.trim()) {
+      idInput.value = slugifyDraftId(document.getElementById('tile-title').value, 'tile');
+    }
+  });
+
+  document.getElementById('tile-connection-name')?.addEventListener('input', () => {
+    if (editingTileConnectionId) return;
+    const idInput = document.getElementById('tile-connection-id');
+    if (!idInput.value.trim()) {
+      idInput.value = slugifyDraftId(document.getElementById('tile-connection-name').value, 'connection');
+    }
+  });
+
+  document.getElementById('tile-mode')?.addEventListener('change', () => {
+    populateTileConnectionSelect();
+    renderTileModeFields();
+  });
+  document.getElementById('tile-connection-type')?.addEventListener('change', () => renderTileConnectionFields());
+
+  document.getElementById('custom-tiles-list')?.addEventListener('click', (event) => {
+    const editBtn = event.target.closest('[data-edit-custom-tile]');
+    if (editBtn) return editCustomTile(editBtn.dataset.editCustomTile);
+    const deleteBtn = event.target.closest('[data-delete-custom-tile]');
+    if (deleteBtn) return deleteCustomTile(deleteBtn.dataset.deleteCustomTile);
+  });
+
+  document.getElementById('tile-connections-list')?.addEventListener('click', (event) => {
+    const editBtn = event.target.closest('[data-edit-tile-connection]');
+    if (editBtn) return editTileConnection(editBtn.dataset.editTileConnection);
+    const deleteBtn = event.target.closest('[data-delete-tile-connection]');
+    if (deleteBtn) return deleteTileConnection(deleteBtn.dataset.deleteTileConnection);
+  });
+
+  const layoutHost = document.getElementById('tiles-layout-list');
+  layoutHost?.addEventListener('change', (event) => {
+    const row = event.target.closest('[data-layout-tile-id]');
+    if (!row) return;
+    const tileId = row.dataset.layoutTileId;
+    if (event.target.matches('[data-layout-enabled]')) {
+      updateLayoutItem(tileId, { enabled: event.target.checked });
+    }
+    if (event.target.matches('[data-layout-size]')) {
+      updateLayoutItem(tileId, { size: event.target.value });
+    }
+  });
+
+  layoutHost?.addEventListener('dragstart', (event) => {
+    const row = event.target.closest('[data-layout-tile-id]');
+    if (!row) return;
+    layoutDragTileId = row.dataset.layoutTileId;
+    row.classList.add('dragging');
+    event.dataTransfer.effectAllowed = 'move';
+  });
+
+  layoutHost?.addEventListener('dragend', () => {
+    layoutDragTileId = null;
+    document.querySelectorAll('.h23s-layout-row').forEach((row) => row.classList.remove('dragging', 'drop-target'));
+  });
+
+  layoutHost?.addEventListener('dragover', (event) => {
+    const row = event.target.closest('[data-layout-tile-id]');
+    if (!row) return;
+    event.preventDefault();
+    document.querySelectorAll('.h23s-layout-row').forEach((entry) => entry.classList.remove('drop-target'));
+    row.classList.add('drop-target');
+  });
+
+  layoutHost?.addEventListener('drop', (event) => {
+    const row = event.target.closest('[data-layout-tile-id]');
+    if (!row) return;
+    event.preventDefault();
+    moveLayoutTile(layoutDragTileId, row.dataset.layoutTileId);
+  });
+}
+
 function setupFeederHandlers() {
   document.getElementById('btn-save-feeder')?.addEventListener('click', saveFeeder);
   document.getElementById('btn-feeder-refresh')?.addEventListener('click', loadFeederLiveStatus);
@@ -1857,6 +2709,7 @@ async function init() {
   loadFeeder();
   loadVibe();
   loadOAuthStatus();
+  loadTilesPanel();
 
   document.getElementById('btn-save-providers').addEventListener('click', saveProviders);
   document.getElementById('btn-create-agent').addEventListener('click', showWizard);
@@ -1864,6 +2717,7 @@ async function init() {
   document.getElementById('btn-save-system').addEventListener('click', saveSystem);
   document.getElementById('btn-install-deps').addEventListener('click', installDeps);
   document.getElementById('btn-build-ts').addEventListener('click', buildTS);
+  setupTilesHandlers();
   setupFeederHandlers();
   document.getElementById('vibe-save')?.addEventListener('click', saveVibe);
   setupOAuthHandlers();

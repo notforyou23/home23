@@ -119,6 +119,7 @@ module.exports = {
         COSMO_RUNTIME_DIR: path.join(HOME23, 'cosmo23', 'runs'),
         COSMO_REFERENCE_RUNS_PATHS: homeConfig.cosmo23?.source ? homeConfig.cosmo23.source + '/runs' : '',
         HOME23_MANAGED: 'true',
+        HOME23_DASHBOARD_PORT: '5002',
         NODE_ENV: 'production',
       },
     },

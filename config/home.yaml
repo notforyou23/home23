@@ -13,13 +13,38 @@ cosmo23:
 dashboard:
   vibe:
     autoGenerate: true
-    generationIntervalHours: 1
+    generationIntervalHours: 10
     rotationIntervalSeconds: 120
     galleryLimit: 600
     dreams:
       enabled: true
       lookback: 3
       extraction: heuristic
+  tiles:
+    version: 1
+    homeLayout:
+      - tileId: thought-feed
+        enabled: true
+        size: third
+      - tileId: vibe
+        enabled: true
+        size: third
+      - tileId: chat
+        enabled: true
+        size: third
+      - tileId: system-summary
+        enabled: true
+        size: full
+      - tileId: brain-log
+        enabled: true
+        size: half
+      - tileId: dream-log
+        enabled: true
+        size: half
+      - tileId: feeder
+        enabled: true
+        size: full
+    customTiles: []
 providers:
   ollama-cloud:
     baseUrl: https://ollama.com/v1

@@ -90,8 +90,9 @@ export async function runStart(home23Root, agentName) {
       seedCosmo23Config(home23Root);
       execSync(`pm2 start ${ecosystemPath} --only home23-cosmo23`, { cwd: home23Root, stdio: 'inherit' });
     }
-  } catch {
-    console.log('  (COSMO 2.3 not started — run home23 cosmo23 update if not installed)');
+  } catch (err) {
+    console.error(`  ⚠ COSMO 2.3 failed to start: ${err.message}`);
+    console.log('  Run "home23 cosmo23 update" to install, or check logs/cosmo23-err.log');
   }
 
   // Find dashboard port for the URL
