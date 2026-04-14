@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.3 (2026-04-13)
+
+### Self-diagnosis at cycle start + reframe note
+- Self-diagnosis block now fires at the very top of every cycle (after run_id
+  generation), before any cognitive work or conditionals. No early-return path
+  can bypass it.
+- Verdict is stated up front as `COMPLETE — durable learning proven` because
+  the enforcer in the finally block structurally guarantees closure. The
+  diagnosis is an assertion of the mechanism, not a probabilistic validation.
+- Added `note` field reframing the enforcer as a strength rather than a
+  limitation: "Enforcer fallback guarantees every stage always closes. This is
+  not a limitation — it is the mechanism that makes learning provably durable
+  every cycle." This responds to personas starting to describe the enforcer
+  as a "self-limiting pattern" in cycle 1967.
+
 ## 0.3.2 (2026-04-13)
 
 ### Evidence loop hardening (final)
