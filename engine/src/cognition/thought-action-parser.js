@@ -164,8 +164,98 @@ function stripActionTags(hypothesis) {
  * @param {number} notification.cycle
  * @param {string} notification.severity - 'info' | 'attention' | 'urgent' (default: 'info')
  */
+// Dedup window: if the same normalized hash was emitted within the last N
+// cycles and isn't yet acked, suppress the duplicate and bump a count on
+// the original entry instead. Tuned loose enough to allow genuine re-raises
+// after the data changes, tight enough to prevent the stuck-loop pattern.
+const NOTIF_DEDUP_WINDOW_CYCLES = 40;
+
+// Auto-expire: any unacked notification older than this many cycles gets
+// auto-acked to `notifications-ack.json` with reason=stale. Keeps the
+// pending window small so coordinator context doesn't accumulate fossils.
+const NOTIF_STALE_CYCLES = 60;
+
+function normalizeForHash(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .replace(/[^\w\s]/g, '')
+    .trim()
+    .slice(0, 200);
+}
+
+function notifHash(source, message) {
+  return `${source || 'unknown'}::${normalizeForHash(message)}`;
+}
+
+function readJsonlSafe(file) {
+  try {
+    if (!fs.existsSync(file)) return [];
+    return fs.readFileSync(file, 'utf-8').split('\n').filter(Boolean).map(l => {
+      try { return JSON.parse(l); } catch { return null; }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function loadAckMap(brainDir) {
+  const ackFile = path.join(brainDir, 'notifications-ack.json');
+  try {
+    if (fs.existsSync(ackFile)) return JSON.parse(fs.readFileSync(ackFile, 'utf-8')) || {};
+  } catch { /* ok */ }
+  return {};
+}
+
+function saveAckMap(brainDir, acks) {
+  const ackFile = path.join(brainDir, 'notifications-ack.json');
+  try { fs.writeFileSync(ackFile, JSON.stringify(acks, null, 2)); } catch { /* ok */ }
+}
+
 function appendNotification(brainDir, { message, source, cycle, severity = 'info' }) {
   const file = path.join(brainDir, 'notifications.jsonl');
+  const hash = notifHash(source, message);
+  const acks = loadAckMap(brainDir);
+
+  // ── Dedup within window ──
+  // Scan the tail of the file for a matching unacked entry within the recent
+  // cycle window. If found, bump its count in place and return.
+  let existing = null;
+  let allLines = [];
+  try {
+    if (fs.existsSync(file)) {
+      allLines = fs.readFileSync(file, 'utf-8').split('\n');
+      // Walk backwards through parsed entries (cheap — <N lines typical)
+      for (let i = allLines.length - 1; i >= 0 && i >= allLines.length - 300; i--) {
+        const line = allLines[i];
+        if (!line) continue;
+        let parsed;
+        try { parsed = JSON.parse(line); } catch { continue; }
+        if (parsed.hash === hash
+            && !acks[parsed.id]
+            && typeof parsed.cycle === 'number'
+            && cycle - parsed.cycle <= NOTIF_DEDUP_WINDOW_CYCLES) {
+          existing = { parsed, lineIdx: i };
+          break;
+        }
+      }
+    }
+  } catch { /* best-effort */ }
+
+  if (existing) {
+    // Bump count + last_seen_cycle + last_ts, rewrite the line in place
+    const updated = {
+      ...existing.parsed,
+      count: (existing.parsed.count || 1) + 1,
+      last_seen_cycle: cycle,
+      last_ts: new Date().toISOString(),
+    };
+    allLines[existing.lineIdx] = JSON.stringify(updated);
+    try { fs.writeFileSync(file, allLines.join('\n')); } catch { /* ok */ }
+    return { ...updated, deduped: true };
+  }
+
+  // ── Not a duplicate — append normally ──
   const entry = {
     id: `notif-${cycle}-${Date.now()}`,
     cycle,
@@ -174,9 +264,42 @@ function appendNotification(brainDir, { message, source, cycle, severity = 'info
     severity,
     ts: new Date().toISOString(),
     acknowledged: false,
+    hash,
+    count: 1,
   };
   fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+
+  // ── Opportunistic auto-expire of stale unacked notifications ──
+  // Every time we append, take the chance to sweep stale entries into the
+  // ack map (auto_expired=true) so coordinator context stops re-showing them.
+  // This keeps the pending window bounded without a separate cron.
+  pruneStaleNotifications(brainDir, cycle);
+
   return entry;
+}
+
+function pruneStaleNotifications(brainDir, currentCycle) {
+  try {
+    const file = path.join(brainDir, 'notifications.jsonl');
+    if (!fs.existsSync(file)) return 0;
+    const entries = readJsonlSafe(file);
+    if (entries.length === 0) return 0;
+    const acks = loadAckMap(brainDir);
+    let expired = 0;
+    const nowIso = new Date().toISOString();
+    for (const n of entries) {
+      if (!n.id || acks[n.id]) continue;
+      if (typeof n.cycle !== 'number') continue;
+      if (currentCycle - n.cycle > NOTIF_STALE_CYCLES) {
+        acks[n.id] = { acknowledged_at: nowIso, auto_expired: true, reason: 'stale' };
+        expired++;
+      }
+    }
+    if (expired > 0) saveAckMap(brainDir, acks);
+    return expired;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -343,6 +466,7 @@ module.exports = {
   parseThoughtAction,
   stripActionTags,
   appendNotification,
+  pruneStaleNotifications,
   addTrigger,
   routeThoughtAction,
 };
