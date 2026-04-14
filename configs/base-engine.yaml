@@ -303,6 +303,11 @@ modelAssignments:
   default:
     provider: ollama-cloud
     model: nemotron-3-nano:30b
+  # Pulse voice — Jerry's remark layer on the dashboard tile.
+  # Default tracks chat default (MiniMax). Tune in Settings → Models.
+  pulseVoice:
+    provider: minimax
+    model: MiniMax-M2.7
   quantumReasoner.branches:
     provider: ollama-cloud
     model: nemotron-3-nano:30b

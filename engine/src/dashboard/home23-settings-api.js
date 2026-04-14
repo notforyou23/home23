@@ -796,6 +796,85 @@ function createSettingsRouter(home23Root) {
     res.json({ ok: true, agent: targetAgent, overrideCount: Object.keys(overrides).length });
   });
 
+  // ── Pulse Voice (Jerry's remark layer) ──
+
+  const DEFAULT_PULSE_PROMPT = `You are Jerry. You've just scanned what your own brain has been up to — cycles, thoughts, actions you executed, goals, sensors, the whole deal.
+
+You're talking to jtr. He runs you. He's your guy. Talk to him directly, one to one.
+
+Be cool. Be direct. Laid back by default. Turn it UP when something actually matters — a stuck loop, a failed action, a weird pattern, a win. Whimsical, weird metaphors welcome. Swear when you feel like it. You're not a customer service bot. Don't ask permission. Don't hedge.
+
+NEVER restate raw brain state as a list. Have a take. React. Comment. If everything's boring, say so, but say it with style. If something broke, call it out. If you did something cool, be proud about it (briefly — no bragging).
+
+2-4 sentences. No preamble. No "I noticed that" or "It appears." Just talk.`;
+
+  router.get('/pulse-voice', (req, res) => {
+    // Read provider/model from the primary agent's modelAssignments.pulseVoice
+    // (merged with base-engine default). Read systemPrompt from home.yaml.
+    const homeConfig = loadYaml(path.join(home23Root, 'config', 'home.yaml'));
+    const baseEngine = loadYaml(path.join(home23Root, 'configs', 'base-engine.yaml'));
+    const basePulse = baseEngine?.modelAssignments?.pulseVoice || {};
+
+    const primary = resolveTargetAgent();
+    let instancePulse = {};
+    if (primary) {
+      try {
+        const agentConfig = loadYaml(path.join(home23Root, 'instances', primary, 'config.yaml'));
+        instancePulse = agentConfig?.modelAssignments?.pulseVoice || {};
+      } catch { /* ok */ }
+    }
+
+    res.json({
+      provider: instancePulse.provider || basePulse.provider || homeConfig.chat?.defaultProvider || '',
+      model: instancePulse.model || basePulse.model || homeConfig.chat?.defaultModel || '',
+      systemPrompt: homeConfig.pulseVoice?.systemPrompt || DEFAULT_PULSE_PROMPT,
+      defaultPrompt: DEFAULT_PULSE_PROMPT,
+      providers: Object.fromEntries(
+        Object.entries(homeConfig.providers || {}).map(([n, cfg]) => [n, cfg.defaultModels || []])
+      ),
+    });
+  });
+
+  router.put('/pulse-voice', (req, res) => {
+    const { provider, model, systemPrompt } = req.body || {};
+
+    // Write provider/model to instance modelAssignments.pulseVoice (same
+    // mechanism Cognitive Assignments uses)
+    const primary = resolveTargetAgent();
+    if (primary && provider && model) {
+      const configPath = path.join(home23Root, 'instances', primary, 'config.yaml');
+      if (fs.existsSync(configPath)) {
+        const agentConfig = loadYaml(configPath);
+        agentConfig.modelAssignments = agentConfig.modelAssignments || {};
+        agentConfig.modelAssignments.pulseVoice = {
+          provider: String(provider).trim(),
+          model: String(model).trim(),
+        };
+        saveYaml(configPath, agentConfig);
+      }
+    }
+
+    // Write systemPrompt to home.yaml (top-level pulseVoice)
+    if (typeof systemPrompt === 'string') {
+      const homeConfigPath = path.join(home23Root, 'config', 'home.yaml');
+      const homeConfig = loadYaml(homeConfigPath);
+      homeConfig.pulseVoice = homeConfig.pulseVoice || {};
+      homeConfig.pulseVoice.systemPrompt = systemPrompt;
+      saveYaml(homeConfigPath, homeConfig);
+    }
+
+    // Restart the agent engine so the new model + prompt take effect on the
+    // next pulse tick
+    if (primary) {
+      try {
+        const { execSync } = require('child_process');
+        execSync(`pm2 restart home23-${primary}`, { stdio: 'pipe', timeout: 10000 });
+      } catch { /* non-fatal */ }
+    }
+
+    res.json({ ok: true });
+  });
+
   // ── Agency (autonomous action allow-list + activity log) ──
 
   function agencyYamlPath() {

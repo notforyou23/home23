@@ -4512,6 +4512,71 @@ Be specific, actionable, and maintain research continuity.`;
       }
     });
 
+    // ── Pulse Remarks API (Jerry's voice tile) ──
+    // The pulse-remarks engine loop writes structured entries to
+    // brain/pulse-remarks.jsonl. Dashboard exposes latest + history + stats.
+    const pulseFile = () => require('path').join(this.logsDir || '', 'pulse-remarks.jsonl');
+    const loadPulseRemarks = (limit = 30) => {
+      try {
+        const fs = require('fs');
+        const file = pulseFile();
+        if (!fs.existsSync(file)) return [];
+        const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).slice(-limit);
+        const out = [];
+        for (const line of lines) {
+          try { out.push(JSON.parse(line)); } catch { /* skip */ }
+        }
+        return out.reverse(); // newest first
+      } catch { return []; }
+    };
+
+    this.app.get('/api/pulse/latest', (req, res) => {
+      const remarks = loadPulseRemarks(1);
+      if (!remarks.length) return res.json({ remark: null });
+      const latest = remarks[0];
+      res.json({
+        remark: {
+          id: latest.id,
+          ts: latest.ts,
+          cycle: latest.cycle,
+          text: latest.text,
+          model: latest.model,
+          stats: latest.brief?.stats || [],
+          notable: latest.brief?.notable || [],
+          sensorSummary: latest.brief?.sensorSummary || [],
+        },
+      });
+    });
+
+    this.app.get('/api/pulse/stats', (req, res) => {
+      // Returns the latest stats cards for tile rotation between remarks.
+      const remarks = loadPulseRemarks(1);
+      const latest = remarks[0];
+      res.json({
+        cycle: latest?.cycle || null,
+        ts: latest?.ts || null,
+        stats: latest?.brief?.stats || [],
+        sensorSummary: latest?.brief?.sensorSummary || [],
+      });
+    });
+
+    this.app.get('/api/pulse/history', (req, res) => {
+      const limit = Math.min(parseInt(req.query.limit || '30', 10) || 30, 200);
+      const remarks = loadPulseRemarks(limit);
+      res.json({
+        count: remarks.length,
+        remarks: remarks.map(r => ({
+          id: r.id,
+          ts: r.ts,
+          cycle: r.cycle,
+          text: r.text,
+          model: r.model,
+          // Include the brief structure for the detail overlay
+          brief: r.brief || null,
+        })),
+      });
+    });
+
     // ── Notifications API (thought-action queue) ──
     // Cognitive cycles can emit NOTIFY:<message> which appends to
     // notifications.jsonl. Dashboard shows pending count + list; acknowledging

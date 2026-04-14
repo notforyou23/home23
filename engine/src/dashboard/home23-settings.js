@@ -3078,6 +3078,84 @@ async function resetAssignments() {
   }
 }
 
+// ── Pulse Voice (Jerry's remark layer) ──
+
+let pulseVoiceData = null;
+let pulseVoiceDefaultPrompt = '';
+
+async function loadPulseVoice() {
+  try {
+    const res = await fetch(`${API}/pulse-voice`);
+    pulseVoiceData = await res.json();
+    pulseVoiceDefaultPrompt = pulseVoiceData.defaultPrompt || '';
+    renderPulseVoice(pulseVoiceData);
+  } catch (err) {
+    console.error('Failed to load pulse-voice config:', err);
+  }
+}
+
+function renderPulseVoice(data) {
+  const provSel = document.getElementById('pulse-voice-provider');
+  const modelSel = document.getElementById('pulse-voice-model');
+  const prompt = document.getElementById('pulse-voice-prompt');
+  if (!provSel || !modelSel || !prompt) return;
+
+  const providers = data.providers || {};
+  provSel.innerHTML = Object.keys(providers).map(p =>
+    `<option value="${p}" ${p === data.provider ? 'selected' : ''}>${PROVIDER_DISPLAY[p] || p}</option>`
+  ).join('');
+
+  const fillModels = () => {
+    const models = providers[provSel.value] || [];
+    modelSel.innerHTML = models.map(m =>
+      `<option value="${m}" ${m === data.model ? 'selected' : ''}>${m}</option>`
+    ).join('');
+  };
+  fillModels();
+  if (!provSel.dataset.bound) {
+    provSel.addEventListener('change', () => { data.model = ''; fillModels(); });
+    provSel.dataset.bound = 'true';
+  }
+
+  prompt.value = data.systemPrompt || '';
+}
+
+async function savePulseVoice() {
+  const statusEl = document.getElementById('pulse-voice-status');
+  statusEl.textContent = 'Saving…';
+  statusEl.style.color = '';
+  const body = {
+    provider: document.getElementById('pulse-voice-provider')?.value,
+    model: document.getElementById('pulse-voice-model')?.value,
+    systemPrompt: document.getElementById('pulse-voice-prompt')?.value,
+  };
+  try {
+    const res = await fetch(`${API}/pulse-voice`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      statusEl.textContent = 'Saved. Engine restarting, next remark uses this.';
+      statusEl.style.color = 'var(--accent-green)';
+    } else {
+      statusEl.textContent = 'Error: ' + (data.error || 'unknown');
+      statusEl.style.color = 'var(--accent-red)';
+    }
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.style.color = 'var(--accent-red)';
+  }
+}
+
+function resetPulsePrompt() {
+  const prompt = document.getElementById('pulse-voice-prompt');
+  if (!prompt || !pulseVoiceDefaultPrompt) return;
+  if (!confirm('Reset Jerry\'s voice prompt to the default? Your current text will be lost.')) return;
+  prompt.value = pulseVoiceDefaultPrompt;
+}
+
 // ── Agency (autonomous actions allow-list editor + live audit trail) ──
 
 let agencyData = null;
@@ -3323,6 +3401,11 @@ async function init() {
   // Agency
   loadAgency();
   startAgencyPoll();
+
+  // Pulse Voice
+  loadPulseVoice();
+  document.getElementById('btn-save-pulse-voice')?.addEventListener('click', savePulseVoice);
+  document.getElementById('btn-reset-pulse-prompt')?.addEventListener('click', resetPulsePrompt);
   document.getElementById('btn-save-system').addEventListener('click', saveSystem);
   document.getElementById('btn-install-deps').addEventListener('click', installDeps);
   document.getElementById('btn-build-ts').addEventListener('click', buildTS);

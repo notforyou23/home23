@@ -401,7 +401,28 @@ class Orchestrator {
    */
   async start() {
     this.running = true;
-    
+
+    // Start the pulse-remarks loop (Jerry's voice layer) once the orchestrator
+    // is actually running. Lazy-loaded so engines without the pulse module
+    // (if any) still boot cleanly.
+    try {
+      if (!this.pulseRemarks) {
+        const { PulseRemarks } = require('../pulse/pulse-remarks');
+        this.pulseRemarks = new PulseRemarks({
+          config: this.config,
+          logger: this.logger,
+          memory: this.memory,
+          goals: this.goals,
+          logsDir: this.logsDir,
+          workspaceDir: process.env.COSMO_WORKSPACE_PATH || null,
+          agentName: process.env.HOME23_AGENT || null,
+        });
+        this.pulseRemarks.start();
+      }
+    } catch (e) {
+      this.logger.warn?.('pulse-remarks start failed (non-fatal)', { error: e.message });
+    }
+
     this.logger.info('🚀 Starting GPT-5.2 cognitive loop...');
     
     while (this.running) {

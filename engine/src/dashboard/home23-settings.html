@@ -302,6 +302,31 @@
       </div>
 
       <div class="h23s-section">
+        <h3 class="h23s-section-title">Pulse Voice (Jerry's Remark)</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">The model that generates Jerry's dashboard remarks — the tile's top-left voice. Defaults to the chat default; change here to use a different model for remarks only.</p>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label>Provider</label>
+            <select id="pulse-voice-provider"></select>
+          </div>
+          <div class="h23s-field">
+            <label>Model</label>
+            <select id="pulse-voice-model"></select>
+          </div>
+        </div>
+        <div class="h23s-field" style="margin-top:8px;">
+          <label>System prompt (Jerry's voice)</label>
+          <textarea id="pulse-voice-prompt" rows="9" style="font-family:inherit;font-size:12px;line-height:1.5;width:100%;resize:vertical;"></textarea>
+          <p style="font-size:11px;color:var(--text-muted);margin-top:4px;">How Jerry talks. Tune freely — this is the personality.</p>
+        </div>
+        <div class="h23s-actions" style="border-top:none;padding-top:8px;">
+          <button class="h23s-btn-primary" id="btn-save-pulse-voice">Save</button>
+          <button class="h23s-btn-secondary" id="btn-reset-pulse-prompt" style="margin-left:8px;">Reset Prompt to Default</button>
+          <span class="h23s-save-status" id="pulse-voice-status"></span>
+        </div>
+      </div>
+
+      <div class="h23s-section">
         <h3 class="h23s-section-title">Engine Roles</h3>
         <p class="h23s-panel-desc" style="margin-top:0;">Override which model each cognitive role uses. Leave on "Use Default" to follow the default model above.</p>
         <div class="h23s-field-row">
