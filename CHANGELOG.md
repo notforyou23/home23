@@ -1,5 +1,72 @@
 # Changelog
 
+## 0.5.5 (2026-04-14)
+
+### Mobile-first /home23/chat page (iOS Safari)
+The standalone chat page was rewritten for mobile without touching the chat
+interaction logic — `home23-chat.js`, the tile on the home dashboard, and the
+expand-to-overlay behavior are all unchanged. Only the standalone `/home23/chat`
+shell was replaced.
+
+- 100dvh root + `visualViewport` listener lifts the input bar above the
+  on-screen keyboard on iOS Safari
+- Safe-area insets for notch, home indicator, and landscape sides
+- Compact header: hamburger + tappable agent/model title + new-conversation
+- Bottom sheet for agent + model selectors (iOS-style)
+- Slide-in history drawer from the left with backdrop dim / tap-to-close
+- 17px message text, 48×48 send button, 16px input font-size to prevent
+  iOS zoom-on-focus
+- PWA meta (`apple-mobile-web-app-capable`, `theme-color`) so Add to Home
+  Screen gives a fullscreen app with no Safari chrome
+- Particles kept at all sizes; scales up to 880px centered on tablet/desktop
+
+### Per-slot cognitive model assignments UI
+Every place the engine calls out to a model is now user-selectable from
+Settings → Models → Cognitive Assignments, with optional fallback chains.
+Closes the gap where the only dashboard control was the blunt Engine Roles
+sweep (thought/consolidation/dreaming/query) which rewrote every
+`modelAssignments` key uniformly.
+
+- `engine/src/core/config-loader.js` — new `applyInstanceModelAssignments()`
+  deep-merges per-slot overrides from `instances/<agent>/config.yaml →
+  modelAssignments` onto the base. Runs AFTER the sweep so per-slot wins.
+- `GET/PUT /api/settings/model-assignments` — returns effective assignments
+  + provider→models catalog; PUT persists only keys that diverge from base
+  (keeps config clean), then pm2-restarts the target agent's engine.
+- New Cognitive Assignments section in the Models tab — 15 slots grouped
+  by purpose (Cognition / Agents / Coordination / Goals / Default). Each
+  row: human-readable label + raw key, a `?` info button with per-slot
+  "what this slot does" + "Pick:" guidance on model trade-offs, primary
+  provider + model selects (model list repopulates on provider change),
+  and an add/remove fallback chain.
+
+Known caveat (left intentionally): the old Engine Roles "thought" dropdown
+still runs first as a sweep. Users going per-slot should park the four
+Engine Roles dropdowns on "Use Default" so the sweep doesn't mask
+untouched slots. Removing the sweep is a follow-up.
+
+### Pi sensor integration + sauna usage logging
+- New `engine/src/core/integrations/pi-sensor.js` — client for the Pi
+  (jtrpi/Axiom) dashboard API pulling barometric pressure, temperature,
+  and external data.
+- `sensors.js` polls pressure on a 5-min interval, caches it, and surfaces
+  it in `getSensorContext()` for CHAOS MODE overlays.
+- Sauna state-transition detection — appends `start`/`stop` events to
+  `~/.sauna_usage_log.jsonl` from both `sensors.js` and `home23-tiles.js`
+  so usage patterns are reconstructable regardless of which poll path saw
+  the change first.
+
+### Operational
+Diagnosed the "No content received from GPT-5.2" errors in the live
+cosmo23-jtr agent (runs from `/Users/jtr/_JTR23_/cosmo-home_2.3/`, not this
+release repo). Root cause cascade: ollama-cloud 429 rate limits → no
+fallback configured for `quantumReasoner.*` → falls through to parent
+GPT5Client → expired `OPENAI_API_KEY` (401). Key was rotated and the
+cosmo-home_2.3 engine processes (cosmo23-jtr, cosmo23-terrapin + their
+dash/feeder) stopped in favor of migrating to this release. The live
+agents (cosmo23-edison, coz, home, tick) remain running for incremental
+migration.
+
 ## 0.5.4 (2026-04-14)
 
 ### Engine-side Anthropic stealth headers for OAuth tokens
