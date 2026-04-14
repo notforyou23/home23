@@ -27,22 +27,41 @@ architecture:
         - completion
     initialRoles:
       - id: curiosity
-        prompt: Generate ONE novel question (2-4 sentences).
-        promptGuided: Generate ONE question about {domain}, {context}
+        prompt: >-
+          Generate ONE novel question (2-4 sentences), then propose ONE concrete
+          action to advance it. Output on a second line starting with one of:
+            INVESTIGATE: <specific thing to look into>
+            NOTIFY: <message to send the owner>
+            TRIGGER: <condition to watch for>
+          If no action is warranted, end with: NO_ACTION
+        promptGuided: Generate ONE question about {domain}, {context}. End with an action tag (INVESTIGATE/NOTIFY/TRIGGER/NO_ACTION).
         temperature: 1
         max_completion_tokens: 500
         successThreshold: 0.6
         enableMCPTools: true
       - id: analyst
-        prompt: Examine ONE topic (3-5 sentences).
-        promptGuided: Examine ONE aspect of {domain}. {context}
+        prompt: >-
+          Examine ONE topic (3-5 sentences), then propose ONE concrete action.
+          Output on a second line starting with one of:
+            INVESTIGATE: <specific thing to verify or examine>
+            NOTIFY: <message to send the owner>
+            TRIGGER: <condition to watch for>
+          If no action is warranted, end with: NO_ACTION
+        promptGuided: Examine ONE aspect of {domain}. {context}. End with an action tag (INVESTIGATE/NOTIFY/TRIGGER/NO_ACTION).
         temperature: 1
         max_completion_tokens: 500
         successThreshold: 0.7
         enableMCPTools: true
       - id: critic
-        prompt: Critically evaluate ONE assumption (3-5 sentences).
-        promptGuided: Evaluate ONE assumption about {domain}. {context}
+        prompt: >-
+          Critically evaluate ONE assumption (3-5 sentences), then propose ONE
+          concrete test that would validate or falsify it. Output on a second
+          line starting with one of:
+            INVESTIGATE: <specific thing to check>
+            NOTIFY: <message to send the owner>
+            TRIGGER: <condition to watch for>
+          If no action is warranted, end with: NO_ACTION
+        promptGuided: Evaluate ONE assumption about {domain}. {context}. End with an action tag (INVESTIGATE/NOTIFY/TRIGGER/NO_ACTION).
         temperature: 1
         max_completion_tokens: 500
         successThreshold: 0.7
@@ -61,6 +80,25 @@ architecture:
         max_completion_tokens: 1000
         successThreshold: 0.5
         enableMCPTools: false
+      - id: proposal
+        prompt: >-
+          Given the recent cognitive output (curiosity, analyst, critic insights in memory context), propose ONE
+          concrete action the agent should take right now. Pick the single highest-leverage thing. Output format:
+            <1-2 sentences explaining what and why>
+            <ACTION TAG on its own line>
+          ACTION TAG must be one of:
+            INVESTIGATE: <specific thing to look into via a research agent>
+            NOTIFY: <message to send the owner — something worth their attention>
+            TRIGGER: <specific condition to watch for going forward>
+          Do NOT output NO_ACTION. Your entire job is to produce one action. If nothing obvious stands out,
+          propose NOTIFY: <brief observation worth surfacing to the owner>.
+        promptGuided: >-
+          Given recent cognitive output about {context}, propose ONE concrete action for {domain}. Must end with an
+          action tag (INVESTIGATE/NOTIFY/TRIGGER).
+        temperature: 0.7
+        max_completion_tokens: 400
+        successThreshold: 0.5
+        enableMCPTools: true
     evolutionEnabled: false
     maxRoles: 5
   codeCreation:

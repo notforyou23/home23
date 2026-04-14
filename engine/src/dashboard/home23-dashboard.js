@@ -61,6 +61,95 @@ async function init() {
 
   // Check for Home23 updates
   checkUpdateNotification();
+
+  // Poll notifications (pending thought-actions from cognitive cycles)
+  updateNotificationBadge();
+  setInterval(updateNotificationBadge, 15000);
+}
+
+// ── Notifications (thought-action queue) ──
+
+async function updateNotificationBadge() {
+  try {
+    const r = await fetch(`${dashboardBaseUrl()}/api/notifications`);
+    if (!r.ok) return;
+    const data = await r.json();
+    const el = document.getElementById('pulse-notifs');
+    const badge = document.getElementById('pulse-notifs-badge');
+    if (!el || !badge) return;
+    if (data.pending > 0) {
+      el.style.display = '';
+      badge.textContent = `🔔 ${data.pending}`;
+      badge.style.color = data.pending > 5 ? '#ffb347' : '#5ac8fa';
+    } else {
+      el.style.display = 'none';
+    }
+  } catch { /* silent — dashboard refresh handles retries */ }
+}
+
+async function openNotificationsPanel() {
+  const overlay = document.getElementById('notifications-overlay');
+  const list = document.getElementById('notifications-list');
+  if (!overlay || !list) return;
+  overlay.style.display = 'flex';
+  list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Loading...</div>';
+  try {
+    const r = await fetch(`${dashboardBaseUrl()}/api/notifications`);
+    const data = await r.json();
+    if (!data.items || data.items.length === 0) {
+      list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">No notifications yet. Cognitive cycles will queue action proposals here.</div>';
+      return;
+    }
+    list.innerHTML = data.items.map(n => {
+      const ts = new Date(n.ts).toLocaleString();
+      const roleIcon = { curiosity: '❓', analyst: '🔬', critic: '⚠️', curator: '📋', proposal: '⚡' }[n.source] || '🧠';
+      const opacity = n.acknowledged ? '0.4' : '1';
+      const bgColor = n.acknowledged ? 'transparent' : 'rgba(0,122,255,0.05)';
+      return `
+        <div style="padding:10px 12px;margin-bottom:8px;background:${bgColor};border-left:3px solid ${n.acknowledged ? 'rgba(255,255,255,0.1)' : '#5ac8fa'};opacity:${opacity};">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
+            <div style="flex:1;">
+              <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px;">
+                ${roleIcon} ${n.source} · cycle ${n.cycle} · ${ts}
+              </div>
+              <div style="color:#fff;">${escapeHtmlNotif(n.message)}</div>
+            </div>
+            ${n.acknowledged ? '<span style="color:rgba(255,255,255,0.4);font-size:11px;">✓ ack</span>' : `<button onclick="ackNotification('${n.id}')" style="background:rgba(255,255,255,0.1);border:none;color:#fff;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;">Ack</button>`}
+          </div>
+        </div>`;
+    }).join('');
+  } catch (err) {
+    list.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
+  }
+}
+
+function escapeHtmlNotif(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+}
+
+function closeNotificationsPanel() {
+  const overlay = document.getElementById('notifications-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+async function ackNotification(id) {
+  try {
+    await fetch(`${dashboardBaseUrl()}/api/notifications/${id}/ack`, { method: 'POST' });
+    openNotificationsPanel();
+    updateNotificationBadge();
+  } catch {}
+}
+
+async function acknowledgeAllNotifications() {
+  try {
+    await fetch(`${dashboardBaseUrl()}/api/notifications/ack-all`, { method: 'POST' });
+    openNotificationsPanel();
+    updateNotificationBadge();
+  } catch {}
+}
+
+function dashboardBaseUrl() {
+  return `http://${window.location.hostname}:${window.location.port || 5002}`;
 }
 
 // ── Engine Pulse (Live Activity Indicator) ──

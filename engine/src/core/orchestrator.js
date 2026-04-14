@@ -34,6 +34,11 @@ const {
   enforceFullLoop,
 } = require('./evidence-receipt');
 
+// Thought → Action routing: cognitive cycles produce structured action tags
+// (INVESTIGATE/NOTIFY/TRIGGER) that get routed to agents, notifications, and
+// standing triggers so thoughts have real consequences.
+const { routeThoughtAction, stripActionTags } = require('../cognition/thought-action-parser');
+
 // EXECUTIVE RING: Executive function layer (dlPFC)
 const { ExecutiveCoordinator } = require('../coordinator/executive-coordinator');
 const { RecursivePlanner } = require('../system/recursive-planner');
@@ -1821,6 +1826,38 @@ class Orchestrator {
         }));
         evidenceStagesWritten.push('memory_write');
       } catch (e) { /* evidence receipt non-fatal */ }
+
+      // ── Thought → Action routing ──
+      // Parse the thought for structured proposals (INVESTIGATE/NOTIFY/TRIGGER)
+      // and route them. This is the "meat" layer — makes cognitive cycles
+      // produce real consequences instead of pure reflection.
+      try {
+        const actionResult = await routeThoughtAction({
+          hypothesis: thought.hypothesis,
+          role: role.id,
+          cycle: this.cycleCount,
+          brainDir: this.logsDir,
+          agentExecutor: this.agentExecutor,
+          logger: this.logger,
+        });
+        if (actionResult.action !== 'none') {
+          this.logger.info('🎬 Thought produced action', {
+            cycle: this.cycleCount,
+            role: role.id,
+            action: actionResult.action,
+            routed: actionResult.routed,
+            payloadPreview: (actionResult.payload || '').substring(0, 100),
+          });
+        } else {
+          // Log absence too — if this is frequent, prompts need tightening or
+          // the LLM is ignoring the action-tag instruction
+          this.logger.debug?.('Thought produced no action', {
+            cycle: this.cycleCount, role: role.id,
+          });
+        }
+      } catch (e) {
+        this.logger.warn('Thought-action routing failed (non-fatal)', { error: e.message });
+      }
 
       // Add reasoning to memory if significant (with robust validation)
       if (thought.reasoning) {

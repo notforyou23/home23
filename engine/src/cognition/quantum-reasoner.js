@@ -101,7 +101,7 @@ class QuantumReasoner {
                 purpose: 'branches',
                 model: 'gpt-5-mini',
                 instructions: branchPrompt,
-                messages: [{ role: 'user', content: 'One concise insight (2-3 sentences).' }],
+                messages: [{ role: 'user', content: 'Produce your output per the system instructions above, including the required action tag (INVESTIGATE/NOTIFY/TRIGGER/NO_ACTION) on its own line if the role specifies one.' }],
                 max_completion_tokens: 8000, // Room for reasoning + output - creative problem-solving benefits from space
                 reasoningEffort
               })
@@ -110,7 +110,7 @@ class QuantumReasoner {
                 purpose: 'branches',
                 model: 'gpt-5-mini',
                 instructions: branchPrompt,
-                messages: [{ role: 'user', content: 'One concise insight (2-3 sentences).' }],
+                messages: [{ role: 'user', content: 'Produce your output per the system instructions above, including the required action tag (INVESTIGATE/NOTIFY/TRIGGER/NO_ACTION) on its own line if the role specifies one.' }],
                 max_completion_tokens: 8000, // Room for reasoning + output - creative problem-solving benefits from space
                 reasoningEffort
               });

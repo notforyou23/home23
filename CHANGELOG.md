@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.4.0 (2026-04-13)
+
+### Thoughts → Action (Phase 1 of 2)
+Cognitive cycles now produce real consequences instead of just journal entries.
+The brain stops talking to itself and starts doing things.
+
+**Role prompts rewritten (A)** — curiosity, analyst, critic now require a
+structured action tag appended to each thought:
+  - `INVESTIGATE: <specific thing>` — spawns a research agent task
+  - `NOTIFY: <message>` — queues a user notification
+  - `TRIGGER: <condition>` — adds a standing monitor
+  - `NO_ACTION` — thought was reflection only (allowed)
+
+**Thought-action parser (new module `engine/src/cognition/thought-action-parser.js`)**
+parses structured tags from the thought's hypothesis and routes:
+  - Notifications → `instances/<agent>/brain/notifications.jsonl`
+  - Triggers → `instances/<agent>/brain/trigger-index.json`
+  - Investigations → spawns a research agent (falls back to notification)
+
+**5th cognitive role: PROPOSAL (B)** — explicitly tasked with producing one
+concrete action given recent cognitive output. Never produces NO_ACTION.
+Rotates alongside the other four roles.
+
+**Notifications queue + dashboard UI (D)** — new endpoints:
+  - `GET /api/notifications` — list pending actions
+  - `POST /api/notifications/:id/ack` — acknowledge one
+  - `POST /api/notifications/ack-all` — acknowledge all
+Pulse bar shows badge (🔔 N) when pending actions exist, click opens a panel
+to review/acknowledge.
+
+**Standing triggers (E)** — thoughts that emit `TRIGGER:` append to the
+existing `trigger-index.json`, leveraging the reactivation infrastructure
+already in place (Step 20 situational awareness engine).
+
+**Quantum reasoner user message tuned** — the generic "One concise insight"
+user message was undercutting the role prompt's action-tag instruction.
+Updated to reinforce the action-tag requirement from the role prompt.
+
+### Still TODO (Phase 2, next session)
+- **Tool-capable quantum reasoner (C)** — let cycles make tool calls mid-thought.
+  Requires multi-turn tool_use loop in the reasoner, which is a significant
+  refactor of its parallel-branch architecture.
+
 ## 0.3.3 (2026-04-13)
 
 ### Self-diagnosis at cycle start + reframe note

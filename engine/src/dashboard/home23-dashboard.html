@@ -48,6 +48,26 @@
     <span class="h23-pulse-cycle" id="pulse-cycle">cycle —</span>
     <span class="h23-pulse-sep">·</span>
     <span class="h23-pulse-ago" id="pulse-ago">—</span>
+    <span class="h23-pulse-sep">·</span>
+    <span class="h23-pulse-notifs" id="pulse-notifs" style="cursor:pointer;display:none;" onclick="openNotificationsPanel()">
+      <span id="pulse-notifs-badge">🔔 0</span>
+    </span>
+  </div>
+
+  <!-- Notifications panel (thought-action queue) -->
+  <div class="h23-log-overlay" id="notifications-overlay" onclick="if(event.target===this)closeNotificationsPanel()">
+    <div class="h23-log-overlay-panel">
+      <div class="h23-log-overlay-header">
+        <span class="h23-brainlog-title">🔔 Pending Actions from Brain</span>
+        <button class="h23-log-overlay-close" onclick="closeNotificationsPanel()">&#10005;</button>
+      </div>
+      <div class="h23-log-overlay-body">
+        <div id="notifications-list" style="padding:12px;"></div>
+        <div style="padding:12px;border-top:1px solid rgba(255,255,255,0.1);">
+          <button onclick="acknowledgeAllNotifications()" style="background:rgba(0,122,255,0.2);border:1px solid rgba(0,122,255,0.4);color:#fff;padding:8px 16px;border-radius:6px;cursor:pointer;">Acknowledge All</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Update notification bar -->

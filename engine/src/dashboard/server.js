@@ -4482,6 +4482,66 @@ Be specific, actionable, and maintain research continuity.`;
       }
     });
 
+    // ── Notifications API (thought-action queue) ──
+    // Cognitive cycles can emit NOTIFY:<message> which appends to
+    // notifications.jsonl. Dashboard shows pending count + list; acknowledging
+    // sets acknowledged=true in a separate mutations file so the original
+    // append-only log stays intact.
+    const notifFile = () => require('path').join(this.logsDir || '', 'notifications.jsonl');
+    const ackFile = () => require('path').join(this.logsDir || '', 'notifications-ack.json');
+    const loadNotifs = () => {
+      try {
+        const fs = require('fs');
+        const path = notifFile();
+        if (!fs.existsSync(path)) return [];
+        return fs.readFileSync(path, 'utf-8')
+          .split('\n').filter(Boolean).map(l => JSON.parse(l));
+      } catch { return []; }
+    };
+    const loadAcks = () => {
+      try {
+        const fs = require('fs');
+        const path = ackFile();
+        if (!fs.existsSync(path)) return {};
+        return JSON.parse(fs.readFileSync(path, 'utf-8'));
+      } catch { return {}; }
+    };
+    const saveAcks = (acks) => {
+      const fs = require('fs');
+      fs.writeFileSync(ackFile(), JSON.stringify(acks, null, 2));
+    };
+
+    this.app.get('/api/notifications', (req, res) => {
+      const notifs = loadNotifs();
+      const acks = loadAcks();
+      const enriched = notifs.map(n => ({ ...n, acknowledged: !!acks[n.id] }));
+      const pending = enriched.filter(n => !n.acknowledged);
+      res.json({
+        total: enriched.length,
+        pending: pending.length,
+        items: enriched.slice(-100).reverse(), // most recent first, cap at 100
+      });
+    });
+
+    this.app.post('/api/notifications/:id/ack', (req, res) => {
+      const id = req.params.id;
+      const acks = loadAcks();
+      acks[id] = { acknowledged_at: new Date().toISOString() };
+      saveAcks(acks);
+      res.json({ ok: true, id });
+    });
+
+    this.app.post('/api/notifications/ack-all', (req, res) => {
+      const notifs = loadNotifs();
+      const acks = loadAcks();
+      const now = new Date().toISOString();
+      for (const n of notifs) {
+        if (!acks[n.id]) acks[n.id] = { acknowledged_at: now };
+      }
+      saveAcks(acks);
+      res.json({ ok: true, count: Object.keys(acks).length });
+    });
+
     // API: Get recent thoughts
     this.app.get('/api/thoughts', async (req, res) => {
       const limit = parseInt(req.query.limit) || 20;
