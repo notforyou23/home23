@@ -7,10 +7,13 @@ const fs   = require('fs');
 const path = require('path');
 const { fetchWeatherData } = require('./integrations/weather');
 const { fetchSaunaStatus, toggleSauna } = require('./integrations/sauna');
+const { fetchPiSensor } = require('./integrations/pi-sensor');
 
-const CACHE_PATH = path.join(__dirname, '..', '..', 'data', 'sensor-cache.json');
+const CACHE_PATH    = path.join(__dirname, '..', '..', 'data', 'sensor-cache.json');
+const USAGE_LOG_PATH = path.join(process.env.HOME || '/Users/jtr', '.sauna_usage_log.jsonl');
 const WEATHER_INTERVAL_MS = 5 * 60 * 1000;  // 5 min
 const SAUNA_INTERVAL_MS   = 2 * 60 * 1000;  // 2 min
+const PI_INTERVAL_MS      = 5 * 60 * 1000;  // 5 min — matches pressure log cron
 
 const weatherConfig = {
   application_key: process.env.ECOWITT_APPLICATION_KEY,
@@ -28,8 +31,27 @@ const saunaConfig = {
 let cache = {
   weather: null,
   sauna:   null,
+  pressure: null,
   updatedAt: null,
 };
+
+// Sauna usage tracking — detect state transitions
+let prevSaunaState = null; // { isHeating, isLocked }
+
+function logSaunaEvent(event, saunaData) {
+  try {
+    const entry = {
+      event,
+      ts: new Date().toISOString(),
+      temp: saunaData.temperature,
+      targetTemp: saunaData.targetTemperature,
+      status: saunaData.status,
+    };
+    fs.appendFileSync(USAGE_LOG_PATH, JSON.stringify(entry) + '\n');
+  } catch (e) {
+    console.warn('[SENSORS] Sauna usage log write failed:', e.message);
+  }
+}
 
 // Load cache from disk on startup
 function loadCache() {
@@ -71,9 +93,32 @@ async function pollSauna() {
     cache.sauna = data;
     cache.updatedAt = new Date().toISOString();
     saveCache();
+
+    // Detect state transitions for usage logging
+    const isActive = data.isHeating || data.isLocked;
+    const wasActive = prevSaunaState && (prevSaunaState.isHeating || prevSaunaState.isLocked);
+    if (isActive && !wasActive) {
+      logSaunaEvent('start', data);
+    } else if (!isActive && wasActive) {
+      logSaunaEvent('stop', data);
+    }
+    prevSaunaState = { isHeating: data.isHeating, isLocked: data.isLocked };
+
     console.log(`[SENSORS] Sauna: ${data.status} @ ${data.temperature}°F`);
   } catch (e) {
     console.warn('[SENSORS] Sauna poll failed:', e.message);
+  }
+}
+
+async function pollPressure() {
+  try {
+    const data = await fetchPiSensor();
+    cache.pressure = data;
+    cache.updatedAt = new Date().toISOString();
+    saveCache();
+    console.log(`[SENSORS] Pressure: ${data.pressure_inhg} inHg (${data.pressure_pa} Pa)`);
+  } catch (e) {
+    console.warn('[SENSORS] Pressure poll failed:', e.message);
   }
 }
 
@@ -83,6 +128,10 @@ async function pollSauna() {
  */
 function getSensorContext() {
   const parts = [];
+
+  if (cache.pressure?.pressure_inhg != null) {
+    parts.push(`${cache.pressure.pressure_inhg} inHg`);
+  }
 
   if (cache.weather?.outdoor?.temperature != null) {
     const temp = Math.round(cache.weather.outdoor.temperature);
@@ -133,13 +182,26 @@ async function controlSauna(turnOn, targetTempF = 190, durationMin = 180) {
  */
 function startPolling() {
   loadCache();
-  // Immediate first polls
+  // Seed prevSaunaState from cache so we don't log a spurious transition on first run
+  if (cache.sauna) {
+    prevSaunaState = { isHeating: cache.sauna.isHeating, isLocked: cache.sauna.isLocked };
+  }
+
+  // Initial poll
   pollWeather();
   pollSauna();
-  // Recurring
+  pollPressure();
+
   setInterval(pollWeather, WEATHER_INTERVAL_MS);
-  setInterval(pollSauna,   SAUNA_INTERVAL_MS);
-  console.log('[SENSORS] Polling started (weather: 5min, sauna: 2min)');
+  setInterval(pollSauna, SAUNA_INTERVAL_MS);
+  setInterval(pollPressure, PI_INTERVAL_MS);
 }
 
-module.exports = { startPolling, getSensorContext, getSensorData, controlSauna };
+module.exports = {
+  startPolling,
+  getSensorContext,
+  getSensorData,
+  controlSauna,
+  pollWeather,
+  pollSauna,
+};

@@ -4,6 +4,16 @@ const yaml = require('js-yaml');
 
 const TILE_SIZES = ['third', 'half', 'full'];
 const GENERIC_AUTH_TYPES = ['none', 'basic', 'bearer', 'header'];
+const SAUNA_LOG_PATH = path.join(process.env.HOME || '/Users/jtr', '.sauna_usage_log.jsonl');
+let _prevSaunaState = null; // for usage transition detection
+
+function logSaunaEvent(event, saunaData) {
+  try {
+    fs.appendFileSync(SAUNA_LOG_PATH, JSON.stringify({ event, ts: new Date().toISOString(), temp: saunaData.temperature, targetTemp: saunaData.targetTemperature, status: saunaData.status }) + '\n');
+  } catch (e) {
+    console.warn('[TILES] Sauna usage log write failed:', e.message);
+  }
+}
 
 const CORE_TILES = [
   {
@@ -617,7 +627,7 @@ async function fetchHuumStatus(connection) {
   const temperature = data.temperature ? Math.round((Number(data.temperature) * 9) / 5 + 32) : null;
   const targetTemperature = data.targetTemperature ? Math.round((Number(data.targetTemperature) * 9) / 5 + 32) : null;
 
-  return {
+  const result = {
     status: huumStatusText(data.statusCode),
     statusCode: data.statusCode,
     temperature,
@@ -630,6 +640,18 @@ async function fetchHuumStatus(connection) {
     isEmergency: data.statusCode === 400,
     rawData: data,
   };
+
+  // Detect usage transitions — log start/stop events
+  const isActive = result.isHeating || result.isLocked;
+  const wasActive = _prevSaunaState !== null && (_prevSaunaState.isHeating || _prevSaunaState.isLocked);
+  if (isActive && !wasActive) {
+    logSaunaEvent('start', result);
+  } else if (!isActive && wasActive) {
+    logSaunaEvent('stop', result);
+  }
+  _prevSaunaState = { isHeating: result.isHeating, isLocked: result.isLocked };
+
+  return result;
 }
 
 async function toggleHuumSauna(connection, turnOn, options = {}) {
