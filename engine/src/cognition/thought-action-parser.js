@@ -133,6 +133,38 @@ function parseThoughtAction(hypothesis) {
  * Strip action tags from hypothesis so they don't pollute the stored brain node.
  * The action is already captured separately.
  */
+/**
+ * Scrub tool-call artifacts the LLM sometimes emits as literal text instead of
+ * as structured tool_use blocks. Happens most with curator / MiniMax / older
+ * Ollama models — they mirror the system prompt's tool syntax into the
+ * response body, and that syntax ends up stored as the thought itself.
+ *
+ * Strips:
+ *   [TOOL_CALL] ... [/TOOL_CALL]
+ *   <tool_call> ... </tool_call>
+ *   {tool => "name", args => {...}}            (perl-ish hash syntax)
+ *   {"tool": "name", "args": {...}}            (raw JSON tool calls)
+ *   Runs of whitespace left behind are collapsed.
+ */
+function scrubToolArtifacts(text) {
+  if (!text || typeof text !== 'string') return text;
+  let out = text;
+  // Bracket-delimited blocks (greedy within same line, tolerates newlines)
+  out = out.replace(/\[TOOL_CALL\][\s\S]*?\[\/TOOL_CALL\]/gi, '');
+  out = out.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '');
+  out = out.replace(/<tool_use[\s\S]*?<\/tool_use>/gi, '');
+  // Perl-hash-ish tool invocations
+  out = out.replace(/\{\s*tool\s*=>\s*["'][^"']+["'][\s\S]*?\}\s*\}?/g, '');
+  // Raw JSON tool-call objects (best-effort, not a full parser)
+  out = out.replace(/\{\s*"tool"\s*:\s*"[^"]+"[\s\S]*?\}\s*\}?/g, '');
+  // Also strip a stray "[TOOL_CALL]" or closing tag on its own
+  out = out.replace(/\[\/?TOOL_CALL\]/gi, '');
+  out = out.replace(/<\/?tool_call>/gi, '');
+  // Collapse stranded whitespace runs
+  out = out.replace(/\n{3,}/g, '\n\n').trim();
+  return out;
+}
+
 function stripActionTags(hypothesis) {
   if (!hypothesis) return hypothesis;
   let out = hypothesis
@@ -465,6 +497,7 @@ async function routeThoughtAction(opts) {
 module.exports = {
   parseThoughtAction,
   stripActionTags,
+  scrubToolArtifacts,
   appendNotification,
   pruneStaleNotifications,
   addTrigger,

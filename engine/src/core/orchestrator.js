@@ -37,7 +37,7 @@ const {
 // Thought → Action routing: cognitive cycles produce structured action tags
 // (INVESTIGATE/NOTIFY/TRIGGER) that get routed to agents, notifications, and
 // standing triggers so thoughts have real consequences.
-const { routeThoughtAction, stripActionTags } = require('../cognition/thought-action-parser');
+const { routeThoughtAction, stripActionTags, scrubToolArtifacts } = require('../cognition/thought-action-parser');
 
 // Cycle tools: inline MCP-style tools that cognitive cycles can call mid-thought
 // to ground their reasoning in real data (surface files, brain memory, goals,
@@ -1672,7 +1672,16 @@ class Orchestrator {
         footerDiagnosis = `\n\n[system status footer — do not discuss: loop=${diagnosis.learning_proven_durable ? 'closed' : 'open'} cycle=${this.cycleCount} chain=${diagnosis.chain_continuity}]`;
       } catch (e) { /* diagnosis non-fatal */ }
 
-      const rolePromptWithDiagnosis = focusDirective + role.prompt + footerDiagnosis;
+      // ── Cross-cycle role dedup ─────────────────────────────────────
+      // Each cognitive role kept independently arriving at the same angle
+      // (proposal saying "correlation view" 15 cycles in a row; curiosity
+      // asking about the olfactory anchor three cycles straight). Roles had
+      // no visibility into what they themselves had recently said. Feed the
+      // last ~4 outputs for this role back in as an explicit "do not repeat"
+      // list. Cheap file tail + prompt injection.
+      const recentRoleBlock = this._buildRecentRoleBlock(role.id, 4);
+
+      const rolePromptWithDiagnosis = focusDirective + role.prompt + recentRoleBlock + footerDiagnosis;
 
       const superposition = await this.quantum.generateSuperposition(
         rolePromptWithDiagnosis,
@@ -1861,6 +1870,20 @@ class Orchestrator {
       await this.logLatentTrainingSample(branchReward);
 
       // 10. Store in memory (with robust validation)
+      //     Scrub any tool-call artifacts the model may have emitted as
+      //     literal text (e.g. [TOOL_CALL]...[/TOOL_CALL], {tool => ...})
+      //     BEFORE validation + storage. Without this, curator's raw tool
+      //     syntax ends up stored as the thought itself — the bug we saw
+      //     at cycle 2173 / 2183.
+      if (thought && typeof thought.hypothesis === 'string') {
+        const scrubbed = scrubToolArtifacts(thought.hypothesis);
+        // Only replace if scrubbing actually removed something substantial;
+        // otherwise keep the original to avoid losing nuance.
+        if (scrubbed && scrubbed.length >= 10 && scrubbed !== thought.hypothesis) {
+          thought.hypothesis = scrubbed;
+        }
+      }
+
       let memoryNode = null;
       const thoughtValidation = validateAndClean(thought.hypothesis);
       if (thoughtValidation.valid) {
@@ -5194,11 +5217,57 @@ class Orchestrator {
   async logThought(entry) {
     const logPath = path.join(this.logsDir, 'thoughts.jsonl');
     const line = JSON.stringify(entry) + '\n';
-    
+
     try {
       await fs.appendFile(logPath, line);
     } catch (error) {
       this.logger.error('Failed to log', { error: error.message });
+    }
+  }
+
+  /**
+   * Read recent thoughts for a specific role and return a formatted "don't
+   * repeat" block that gets appended to the role's prompt. Prevents the
+   * same role from independently arriving at the same angle cycle after
+   * cycle (e.g. proposal saying "correlation view" 15x in a row).
+   */
+  _buildRecentRoleBlock(roleId, limit = 4) {
+    try {
+      const fsSync = require('fs');
+      const logPath = path.join(this.logsDir, 'thoughts.jsonl');
+      if (!fsSync.existsSync(logPath)) return '';
+      const lines = fsSync.readFileSync(logPath, 'utf-8')
+        .split('\n').filter(Boolean).slice(-400);
+      const ownEntries = [];
+      // Walk backwards so we collect the MOST RECENT first, then reverse for display
+      for (let i = lines.length - 1; i >= 0 && ownEntries.length < limit; i--) {
+        try {
+          const e = JSON.parse(lines[i]);
+          if (e.role === roleId) {
+            const text = (e.thought || e.hypothesis || e.content || '').trim();
+            if (text && text.length > 20) {
+              ownEntries.push({ cycle: e.cycle, text: text.slice(0, 280) });
+            }
+          }
+        } catch { /* skip bad line */ }
+      }
+      if (ownEntries.length === 0) return '';
+      const bullets = ownEntries.reverse()
+        .map(e => `  • [cycle ${e.cycle || '?'}] ${e.text}`)
+        .join('\n');
+      return [
+        '',
+        '',
+        '═══ RECENT ANGLES YOU ALREADY COVERED — DO NOT REPEAT ═══',
+        'These are your last few outputs for this role. Find a genuinely',
+        'different topic. If you keep circling the same point, step back and',
+        'pick a different corner of jtr\'s world.',
+        bullets,
+        '═══════════════════════════════════════════════════════════',
+        '',
+      ].join('\n');
+    } catch {
+      return '';
     }
   }
 
