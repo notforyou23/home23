@@ -17,10 +17,14 @@
 const fs = require('fs');
 const path = require('path');
 
+// Match action tags liberally: model may emit "INVESTIGATE:", "INVESTIGATE ",
+// "INVESTIGATE\n", or even just "INVESTIGATE" at the start/end of a line
+// followed by the payload on the next line. We extract payload from either
+// the same line (after : / - /  whitespace) or the next non-empty line.
 const ACTION_PATTERNS = {
-  investigate: /(?:^|\n)\s*(?:INVESTIGATE|investigate)\s*[:：]\s*(.+?)(?:\n|$)/,
-  notify: /(?:^|\n)\s*(?:NOTIFY|notify)\s*[:：]\s*(.+?)(?:\n|$)/,
-  trigger: /(?:^|\n)\s*(?:TRIGGER|trigger)\s*[:：]\s*(.+?)(?:\n|$)/,
+  investigate: /(?:^|\n)[\s`*_>]*(?:INVESTIGATE|investigate)\b[\s`*_]*[:：\-—]?\s*(.*?)(?:\n|$)/,
+  notify: /(?:^|\n)[\s`*_>]*(?:NOTIFY|notify)\b[\s`*_]*[:：\-—]?\s*(.*?)(?:\n|$)/,
+  trigger: /(?:^|\n)[\s`*_>]*(?:TRIGGER|trigger)\b[\s`*_]*[:：\-—]?\s*(.*?)(?:\n|$)/,
   noAction: /(?:^|\n)\s*NO_ACTION\s*$/i,
 };
 
@@ -45,9 +49,20 @@ function parseThoughtAction(hypothesis) {
   for (const [type, pattern] of Object.entries(ACTION_PATTERNS)) {
     if (type === 'noAction') continue;
     const match = hypothesis.match(pattern);
-    if (match && match[1]) {
-      const payload = match[1].trim();
-      // Skip empty or placeholder payloads
+    if (match) {
+      let payload = (match[1] || '').trim();
+
+      // If no inline payload (tag was on its own line), grab the next
+      // non-empty line as the payload.
+      if (!payload || payload.length < 3) {
+        const matchIdx = match.index + match[0].length;
+        const remainder = hypothesis.slice(matchIdx);
+        const nextLine = remainder.split('\n').map(l => l.trim()).find(Boolean);
+        if (nextLine && nextLine.length >= 3) {
+          payload = nextLine;
+        }
+      }
+
       if (!payload || payload.length < 3 || /^(none|nothing|n\/a)$/i.test(payload)) {
         continue;
       }
@@ -186,19 +201,32 @@ async function routeThoughtAction(opts) {
     }
 
     if (parsed.type === 'investigate') {
-      // If we have an agent executor, spawn a research agent.
-      // Otherwise fall back to notification so the intent isn't lost.
+      // If we have an agent executor, spawn a research agent using the
+      // standard missionSpec shape.
       if (agentExecutor?.spawnAgent) {
         try {
-          const agentId = await agentExecutor.spawnAgent({
-            type: 'research',
-            mission: { description: parsed.payload, source: `cycle_${cycle}_${role}` },
+          const missionSpec = {
+            missionId: `mission_thoughtaction_${cycle}_${Date.now()}`,
+            agentType: 'ResearchAgent',
+            description: parsed.payload,
+            successCriteria: ['Produce a concise finding (1-3 paragraphs) addressing the investigation topic'],
+            maxDuration: 360000, // 6 minutes
+            createdBy: 'cognitive_cycle',
+            spawnCycle: cycle,
+            triggerSource: 'thought_action_investigate',
+            spawningReason: `${role}_proposed_investigation`,
             priority: 0.5,
-          });
-          logger?.info?.('🔍 Thought-action: investigation agent spawned', {
-            cycle, role, agentId, mission: parsed.payload.substring(0, 80),
-          });
-          return { action: 'investigate', payload: parsed.payload, routed: `agent:${agentId}` };
+            provenanceChain: [`cycle_${cycle}`, role],
+            metadata: { source: 'thought_action_parser', role, cycle },
+          };
+          const agentId = await agentExecutor.spawnAgent(missionSpec);
+          if (agentId) {
+            logger?.info?.('🔍 Thought-action: investigation agent spawned', {
+              cycle, role, agentId, mission: parsed.payload.substring(0, 80),
+            });
+            return { action: 'investigate', payload: parsed.payload, routed: `agent:${agentId}` };
+          }
+          // spawnAgent returned falsy — fall through to notification fallback
         } catch (err) {
           logger?.warn?.('Investigation spawn failed, falling back to notification', {
             error: err.message,
