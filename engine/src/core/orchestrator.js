@@ -591,36 +591,42 @@ class Orchestrator {
 
     this.logger.info(`\n═══ Cycle ${this.cycleCount} [${this.oscillator.getCurrentMode().toUpperCase()}] [GPT-5.2] ═══`);
 
-    // Evidence Receipt Trail — generate run_id and link to previous run
-    const evidenceRunId = generateRunId(this.cycleCount);
-    const evidencePrevId = loadPrevRunId(this.logsDir);
+    // Evidence Receipt Trail — declared here so they're in scope for the finally
+    // block. Populated inside the try so even if generateRunId() or anything else
+    // below throws, the finally block still runs enforceFullLoop() with what it has.
+    let evidenceRunId = null;
+    let evidencePrevId = null;
     const evidenceMemoryDelta = { added: [], updated: [], removed: [] };
     // Track which cognitive stages wrote receipts this cycle. Any stage missing
     // at cycle end will be filled by enforceFullLoop() with a no_change_detected
     // fallback, so the loop always closes with all 5 stages receipted.
     const evidenceStagesWritten = [];
 
-    // Phase A: Start cycle timeout (default 60s, configurable)
-    const cycleTimeout = this.config.timeouts?.cycleTimeoutMs || 60000;
-    this.timeoutManager.startCycleTimer(this.cycleCount, cycleTimeout);
-    
-    // Update TUI dashboard if active
-    if (this.tuiDashboard) {
-      this.tuiDashboard.updateCycle({
+    try {
+      // Generate run_id and link to previous run. Inside the try so any failure
+      // here still triggers the finally-block enforcer below with sensible defaults.
+      evidenceRunId = generateRunId(this.cycleCount);
+      evidencePrevId = loadPrevRunId(this.logsDir);
+
+      // Phase A: Start cycle timeout (default 60s, configurable)
+      const cycleTimeout = this.config.timeouts?.cycleTimeoutMs || 60000;
+      this.timeoutManager.startCycleTimer(this.cycleCount, cycleTimeout);
+
+      // Update TUI dashboard if active
+      if (this.tuiDashboard) {
+        this.tuiDashboard.updateCycle({
+          cycle: this.cycleCount,
+          oscillatorMode: this.oscillator.getCurrentMode(),
+          cognitiveState: this.stateModulator.getState()
+        });
+      }
+
+      // Emit real-time cycle start event
+      cosmoEvents.emitCycleStart({
         cycle: this.cycleCount,
-        oscillatorMode: this.oscillator.getCurrentMode(),
+        mode: this.oscillator.getCurrentMode(),
         cognitiveState: this.stateModulator.getState()
       });
-    }
-
-    // Emit real-time cycle start event
-    cosmoEvents.emitCycleStart({
-      cycle: this.cycleCount,
-      mode: this.oscillator.getCurrentMode(),
-      cognitiveState: this.stateModulator.getState()
-    });
-
-    try {
       // 0. Poll topic queue for new user-injected topics
       if (this.topicQueue && this.cycleCount % 3 === 0) {
         const newTopics = await this.topicQueue.pollQueue();
@@ -1552,15 +1558,20 @@ class Orchestrator {
         executionContext: currentGoal?.executionContext || 'autonomous'
       };
 
-      // Self-Diagnosis Block: inject evidence schema validation into curator/analyst prompt
+      // Self-Diagnosis Block: inject evidence schema validation into EVERY role prompt
+      // so every persona (curiosity, analyst, critic, curator) sees the loop-closure
+      // status. Previously only curator+analyst got it, which meant curiosity+critic
+      // kept pulling 100+ cycles of stale "loop incomplete" brain context and
+      // regurgitating it even after the loop was provably closed.
       let rolePromptWithDiagnosis = role.prompt;
-      if (role.id === 'curator' || role.id === 'analyst') {
-        try {
-          const diagnosis = runSelfDiagnosis(this.logsDir, evidenceRunId);
-          const diagBlock = formatDiagnosisBlock(diagnosis);
-          rolePromptWithDiagnosis = diagBlock + '\n\n' + role.prompt;
-        } catch (e) { /* diagnosis non-fatal */ }
-      }
+      try {
+        const diagnosis = runSelfDiagnosis(this.logsDir, evidenceRunId, {
+          cycle: this.cycleCount,
+          prevId: evidencePrevId,
+        });
+        const diagBlock = formatDiagnosisBlock(diagnosis);
+        rolePromptWithDiagnosis = diagBlock + '\n\n' + role.prompt;
+      } catch (e) { /* diagnosis non-fatal */ }
 
       const superposition = await this.quantum.generateSuperposition(
         rolePromptWithDiagnosis,
@@ -2569,12 +2580,20 @@ class Orchestrator {
       });
     } finally {
       // Phase A: Always cancel cycle timeout (success or failure)
-      this.timeoutManager.cancelCycleTimer();
+      try { this.timeoutManager.cancelCycleTimer(); } catch (e) { /* best-effort */ }
 
-      // Full-Loop Enforcer — fill any missing stage receipts with no_change_detected
-      // fallbacks so every cycle closes with all 5 stages. Also logs the self-diagnosis
-      // so the brain can see loop closure in its own log stream.
+      // Full-Loop Enforcer — MANDATORY: fills any missing stage receipts with
+      // no_change_detected fallbacks so every cycle closes with all 5 stages.
+      // Also logs the self-diagnosis so the brain can see loop closure.
+      //
+      // This block can NEVER be skipped — it runs on happy path, early-return,
+      // exception, and even when the cycle threw before generating a run_id
+      // (in which case we generate one here as a safety net).
       try {
+        if (!evidenceRunId) {
+          evidenceRunId = generateRunId(this.cycleCount);
+          evidencePrevId = loadPrevRunId(this.logsDir);
+        }
         enforceFullLoop({
           brainDir: this.logsDir,
           runId: evidenceRunId,
@@ -2584,6 +2603,20 @@ class Orchestrator {
           logger: this.logger,
         });
       } catch (e) {
+        // Even if enforcer itself throws, write a cycle_error receipt so the
+        // evidence chain never silently drops a cycle.
+        try {
+          appendEvidenceReceipt(this.logsDir, buildReceipt({
+            run_id: evidenceRunId || `r-fallback-${this.cycleCount}`,
+            prev_id: evidencePrevId,
+            stage: 'audit',
+            raw_input_ids: [`cycle-${this.cycleCount}`],
+            reflection_id: `cycle-error-${this.cycleCount}`,
+            memory_delta: { added: [], updated: [], removed: [] },
+            behavior_impact: `enforcer_failed: ${e.message}`,
+            provenance: { source: 'enforced_safety', trust_level: 'high', parser_anomalies: 1 }
+          }));
+        } catch (e2) { /* give up — no more we can do */ }
         this.logger.warn('Full-loop enforcer failed (non-fatal)', { error: e.message });
       }
     }
