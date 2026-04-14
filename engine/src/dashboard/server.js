@@ -5931,6 +5931,106 @@ You are empowered to explore and understand. The user trusts you to discover the
       }
     });
 
+    // ── POST /api/pgs — Progressive Graph Search ──
+    // Four-phase coverage-optimized query: partition → route → sweep → synthesize.
+    // Pulls the full memory graph, feeds it to PGSEngine (from cosmo23/pgs-engine),
+    // returns synthesized findings + absences + cross-domain connections.
+    this.app.post('/api/pgs', async (req, res) => {
+      try {
+        const { query, mode = 'full', maxPartitions } = req.body || {};
+        if (!query) return res.status(400).json({ error: 'query is required' });
+
+        // Lazy-load PGS engine + UnifiedClient shim (avoids startup cost when PGS unused)
+        let PGSEngine;
+        try {
+          PGSEngine = require('../../../cosmo23/pgs-engine/src/index').PGSEngine;
+        } catch (err) {
+          return res.status(500).json({
+            error: 'PGS engine not found',
+            detail: err.message,
+            hint: 'cosmo23/pgs-engine/src/index.js must exist relative to engine/',
+          });
+        }
+
+        // Build a provider shim over UnifiedClient (sweep + synthesis providers)
+        const { UnifiedClient } = require('../core/unified-client');
+        const unified = new UnifiedClient(this.config || {}, this.logger);
+
+        const providerShim = {
+          async generate({ instructions, input, maxTokens, reasoningEffort }) {
+            // PGSEngine sends {instructions, input} — UnifiedClient wants
+            // {instructions, messages: [{role:'user', content}]}
+            const response = await unified.generate({
+              component: 'pgsEngine',
+              purpose: 'sweep',
+              model: 'gpt-5-mini',
+              instructions: instructions || '',
+              messages: [{ role: 'user', content: input || '' }],
+              max_completion_tokens: maxTokens || 4000,
+              reasoningEffort: reasoningEffort || 'medium',
+            });
+            return { content: response.content || '' };
+          },
+        };
+
+        // Embedding provider — uses engine's network-memory embed helper when available
+        let embeddingProvider = null;
+        if (this.orchestrator?.memory?.embed) {
+          const memRef = this.orchestrator.memory;
+          embeddingProvider = {
+            embed: (text) => memRef.embed(text),
+          };
+        }
+
+        // Pull the full memory graph
+        const state = await this.loadState();
+        const nodes = state?.memory?.nodes || [];
+        const edges = state?.memory?.edges || [];
+        if (nodes.length === 0) {
+          return res.status(503).json({ error: 'Brain graph empty — no nodes loaded' });
+        }
+
+        const pgs = new PGSEngine({
+          sweepProvider: providerShim,
+          synthesisProvider: providerShim,
+          embeddingProvider,
+          config: maxPartitions ? { maxSweepPartitions: Number(maxPartitions) } : {},
+          onEvent: (e) => console.log(`[PGS] ${e.type}: ${JSON.stringify(e).slice(0, 200)}`),
+        });
+
+        const result = await pgs.execute(query, { nodes, edges }, { mode });
+
+        // Extract structured fields PGSEngine may return
+        const payload = {
+          answer: result.answer || null,
+          synthesis: result.synthesis || result.answer || null,
+          partitions: result.partitions || result.metadata?.partitions || [],
+          sweeps: result.sweeps || result.metadata?.sweeps || [],
+          absences: result.absences || [],
+          crossDomain: result.crossDomain || result.metadata?.crossDomain || [],
+          metadata: result.metadata || {},
+        };
+
+        // Log the PGS query alongside other queries
+        try {
+          const queryLogPath = path.join(this.logsDir, 'queries.jsonl');
+          await fs.appendFile(queryLogPath, JSON.stringify({
+            timestamp: new Date().toISOString(),
+            kind: 'pgs',
+            query,
+            mode,
+            answerLength: (payload.answer || '').length,
+            partitionCount: payload.partitions.length,
+          }) + '\n');
+        } catch { /* non-fatal */ }
+
+        res.json(payload);
+      } catch (error) {
+        console.error('[/api/pgs] Failed:', error);
+        res.status(500).json({ error: error.message, stack: error.stack?.split('\n').slice(0, 5).join('\n') });
+      }
+    });
+
     /**
      * API: Derive executive view for an existing query answer
      * IMPORTANT:

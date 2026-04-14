@@ -10,7 +10,7 @@ import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { shellTool } from './shell.js';
 import { readFileTool, writeFileTool, editFileTool, listFilesTool, searchFilesTool } from './files.js';
 import { webBrowseTool, webSearchTool } from './web.js';
-import { brainSearchTool, brainQueryTool, brainStatusTool } from './brain.js';
+import { brainSearchTool, brainQueryTool, brainStatusTool, brainMemoryGraphTool, brainSynthesizeTool, brainPgsTool } from './brain.js';
 import { generateImageTool, ttsTool } from './media.js';
 import { cronScheduleTool, cronListTool, cronDeleteTool } from './cron.js';
 import { selfUpdateTool, selfReadTool } from './identity.js';
@@ -99,6 +99,9 @@ export function createToolRegistry(): ToolRegistry {
   registry.register(brainSearchTool);
   registry.register(brainQueryTool);
   registry.register(brainStatusTool);
+  registry.register(brainMemoryGraphTool);
+  registry.register(brainSynthesizeTool);
+  registry.register(brainPgsTool);
   registry.register(generateImageTool);
   registry.register(ttsTool);
   registry.register(cronScheduleTool);

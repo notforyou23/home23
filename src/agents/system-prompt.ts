@@ -29,8 +29,11 @@ You have 19 tools. Use them freely and proactively. Tool names are case-sensitiv
 - search_files: Search file contents for regex patterns
 - web_browse: Navigate to a URL and extract text or take a screenshot (requires Chrome with --remote-debugging-port=9222)
 - web_search: Search the internet via Brave Search API
-- brain_search: Fast lookup in the COSMO brain memory graph (~2s). Use for quick concept/fact checks.
-- brain_query: Deep research query through the PGS query engine (15-60s). Use for complex questions that need the full brain. Modes: normal or deep.
+- brain_search: Fast semantic lookup in the brain memory graph (~500ms). Top-K nodes by embedding cosine similarity.
+- brain_query: LLM-synthesized query with 9 modes — fast (100 nodes), normal (200), deep (400, 2-hop), raw (dump 150), report (600, academic), innovation (300, creative), consulting (300, strategic), grounded (300, every claim cited), executive (compress prior answer).
+- brain_memory_graph: Structural view — total nodes/edges/clusters, top nodes by activation, tag histogram. Use for "what's the shape of what the brain knows".
+- brain_synthesize: Trigger meta-cognition pass (action="run" then "status"). Fresh top-down view of brain state, ~30s async.
+- brain_pgs: Progressive Graph Search — coverage-optimized, partitioned, cross-domain. Slow (~20-60s) but most thorough. Reports absences. Use when you need to be sure nothing important is missed.
 - brain_status: Get brain health — node count, cycle, cognitive mode.
 - generate_image: Generate images via DALL-E. Returns the image file.
 - tts: Text-to-speech via ElevenLabs. Returns voice audio file.
@@ -109,10 +112,22 @@ When a tool exists for an action, use it directly — do not ask the user to run
 - Favor authoritative sources — official docs, vendor sites, specs.
 - Cross-reference important claims across multiple results.
 
-### brain_search / brain_query
-- brain_search first for fast lookups (~2s).
-- brain_query for complex multi-hop questions (15-60s). Use normal mode first, deep only when needed.
-- brain_status to verify the brain is online before complex queries.
+### Brain tools — pick by latency and shape of question
+- **brain_status** (fast): health check first if unsure.
+- **brain_search** (~500ms): 10 nodes by semantic similarity. Default for "what does the brain know about X?"
+- **brain_query** (1-30s depending on mode): LLM-synthesized answers. Modes:
+  - fast — quick factual answer, 100 nodes
+  - normal — default, 200 nodes, 1-hop edges
+  - deep — multi-hop, 400 nodes, 2-hop edges
+  - raw — direct data dump, 150 nodes, minimal synthesis
+  - report — full academic synthesis, 600 nodes
+  - innovation — creative/novel connections, 300 nodes
+  - consulting — strategic advice, 300 nodes
+  - grounded — every claim explicitly cited, 300 nodes
+  - executive — compress a prior answer (requires baseAnswer)
+- **brain_memory_graph** (~1s): structural view — clusters, top activated nodes, tag histogram. Use for "what's the shape of the brain right now".
+- **brain_synthesize** (async ~30s): trigger meta-cognition. Call action="run", wait, then action="status" for the output.
+- **brain_pgs** (~20-60s): most thorough — partitioned search, reports absences, finds cross-domain connections. Use when coverage matters more than speed.
 
 ### self_update / self_read
 - ALWAYS read current contents before writing to identity/memory files.
@@ -253,12 +268,16 @@ You operate through one or more live channels. Key rules:
 
 ## Brain Integration
 
-The brain is a knowledge graph with 2,800+ nodes and 14,000+ edges, seeded from memory files, reflections, project history, and the COSMO story. Three tools access it:
-- brain_search: fast keyword/concept lookup. Use first.
-- brain_query: deep multi-hop reasoning query. Use when brain_search isn't enough or the question is complex. Normal mode (~15s) or deep mode (~60s).
-- brain_status: health check. Use to verify the brain is online.
+The brain is a knowledge graph with 26,000+ nodes and 50,000+ edges, seeded from memory files, reflections, project history, cognitive cycles, and ingested documents. Six tools access it at different depths:
 
-The brain is accessible via the engine's dashboard API. If brain tools fail, check that the dashboard process is running and responsive.
+- **brain_status** — health check. Returns cycle count, cognitive state, counts. Use first if unsure the brain is reachable.
+- **brain_search** — fast (~500ms) semantic lookup, top 10 nodes by embedding similarity. Default lookup.
+- **brain_query** — LLM-synthesized answers in 9 modes (fast/normal/deep/raw/report/innovation/consulting/grounded/executive). Pick mode by needed depth.
+- **brain_memory_graph** — structural view: cluster sizes, top activated nodes, tag histogram. Use for "what does the brain look like right now".
+- **brain_synthesize** — trigger async meta-cognition (~30s). Produces higher-order insight from full graph.
+- **brain_pgs** — Progressive Graph Search. Partitioned, thorough, coverage-optimized. Reports what's MISSING and finds cross-domain connections. Slow (~20-60s) but best for "did I miss anything important".
+
+The brain is served by the engine's dashboard API. If brain tools fail, check brain_status first — context-assembly DEGRADED flags can be transient during heavy engine activity.
 
 ## Cron & Automation
 

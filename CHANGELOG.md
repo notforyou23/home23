@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.5.2 (2026-04-14)
+
+### Full brain-tier access for Jerry (all query layers exposed)
+Jerry previously had 3 brain tools with 2 of 9 query modes. Now has 6 tools
+covering every layer of brain access.
+
+- **brain_query** expanded to all 9 QueryEngine modes: fast / normal / deep /
+  raw / report / innovation / consulting / grounded / executive. Each mode
+  trades context breadth for reasoning depth. `executive` mode accepts a
+  baseAnswer for compression of prior answers.
+- **brain_memory_graph** (new): structural view via GET /api/memory —
+  cluster sizes, top-activated nodes, tag histogram. Use for "what's the
+  shape of the brain right now".
+- **brain_synthesize** (new): triggers POST /api/synthesis/run for
+  meta-cognition. action="run" then action="status" (async ~30s).
+- **brain_pgs** (new): Progressive Graph Search via new POST /api/pgs
+  endpoint. Partition (Louvain) → route → parallel LLM sweeps → synthesize.
+  Coverage-optimized; reports absences and cross-domain connections. Uses
+  cosmo23/pgs-engine library with a UnifiedClient shim as sweep + synthesis
+  providers. Lazy-loaded so it doesn't affect startup.
+
+### Context-assembly no longer lies when brain is busy
+Previously, context-assembly's 5s brain probe would time out during heavy
+engine activity (coordinator review), mark the brain DEGRADED, and inject
+"Brain unreachable. Treat prior context as unverified" into Jerry's system
+prompt. Jerry read his own prompt and told users "brain not connected" —
+which was false.
+
+Now:
+- Probe timeout raised to 20s (brain searches 26k+ nodes during stress can
+  exceed 5s).
+- If the probe still times out, the degraded branch now loads domain
+  surfaces (cheap local reads, unaffected) and tells the agent "brain
+  probe skipped this turn — call brain_status / brain_search / brain_query
+  directly if you need brain data" instead of declaring unreachability.
+
+### /api/state (v0.5.1 carried forward)
+Lightweight projection + 30s mtime-invalidated cache (was serving the full
+~185MB state file on every request, causing timeouts).
+
 ## 0.5.0 (2026-04-14)
 
 ### Tool-capable quantum reasoner (Phase 2 of thoughts→action)

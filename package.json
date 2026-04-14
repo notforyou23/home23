@@ -1,6 +1,6 @@
 {
   "name": "home23",
-  "version": "0.5.0",
+  "version": "0.5.2",
   "description": "Installable AI operating system — persistent agents with living brains",
   "type": "module",
   "engines": {

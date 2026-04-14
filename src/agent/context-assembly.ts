@@ -17,7 +17,11 @@ import type { TriggerIndex } from './trigger-index.js';
 
 // ─── Constants ──────────────────────────────────────────
 const CONTEXT_BUDGET = 6000;
-const BRAIN_SEARCH_TIMEOUT_MS = 5000;   // brain searches 21k+ nodes, needs ~2-3s
+const BRAIN_SEARCH_TIMEOUT_MS = 20000;  // 26k+ nodes; during coordinator review (heavy LLM activity)
+                                         // searches can easily exceed 5s. Timing out here falsely
+                                         // flags the brain DEGRADED in the system prompt, which the
+                                         // chat agent then reports as "brain not connected" even
+                                         // though it's just temporarily busy.
 const BRAIN_SEARCH_LIMIT = 8;
 const STALENESS_HOURS = 24;
 
@@ -241,14 +245,42 @@ export async function assembleContext(
   });
 
   // ── Step 3: Assemble with salience ranking ──
+  // If the brain probe timed out, DON'T tell the agent the brain is offline —
+  // that's false and causes the LLM to report "brain not connected" to the user.
+  // Instead: note the probe was skipped, surface the loaded surfaces normally,
+  // and remind the agent it can call brain_status / brain_search / brain_query
+  // directly if it needs brain data for this turn.
   if (degraded) {
     if (ledger) { ledger.emit(events); }
+
+    // Try to still load domain surfaces — they're cheap local file reads.
+    // Only the brain probe timed out; surfaces are unaffected.
+    const degradedSurfacePieces: string[] = [];
+    const degradedSurfacesLoaded: string[] = [];
+    for (const surface of DOMAIN_SURFACES) {
+      const content = loadSurface(config.workspacePath, surface.file, surface.budget);
+      if (content) {
+        degradedSurfacePieces.push(`\nRelevant context (${surface.name}):\n${content}`);
+        degradedSurfacesLoaded.push(surface.name);
+      }
+    }
+
+    const pieces: string[] = [
+      '[SITUATIONAL AWARENESS: brain probe skipped this turn (engine busy). ' +
+      'Domain surfaces below are current. If you need brain memory for this answer, ' +
+      'call brain_status / brain_search / brain_query directly — they have longer ' +
+      'per-call timeouts and will succeed.]',
+    ];
+    if (degradedSurfacePieces.length > 0) {
+      pieces.push(degradedSurfacePieces.join('\n\n'));
+    }
+
     return {
-      block: '[SITUATIONAL AWARENESS: DEGRADED — operating without continuity layer. Brain unreachable. Treat prior context as unverified.]',
+      block: pieces.join('\n'),
       degraded: true,
       brainCueCount: 0,
       triggerCount: triggerMatches.length,
-      surfacesLoaded: [],
+      surfacesLoaded: degradedSurfacesLoaded,
       events,
     };
   }
