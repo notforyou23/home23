@@ -38,6 +38,8 @@ const DEFAULT_INTERVAL_MS = 3 * 60 * 1000; // 3 min baseline cadence
 const MIN_GAP_MS = 60 * 1000;              // floor between remarks
 const MAX_INTERVAL_MS = 8 * 60 * 1000;     // force one every ~8 min even if nothing notable
 const NOVELTY_WINDOW = 30;                 // cycles for thought novelty dedup
+const REMARKED_TTL_MS = 30 * 60 * 1000;    // 30 min: don't re-remark on same hash within this window
+const RECENT_BRIEF_DEPTH = 3;              // drop notable events seen in last N briefs (regardless of remark)
 
 function normalizeForHash(s) {
   return String(s || '').toLowerCase().replace(/\s+/g, ' ').replace(/[^\w\s]/g, '').trim().slice(0, 200);
@@ -74,7 +76,69 @@ class PulseRemarks {
     this.lastRemarkAt = 0;
     this.lastSeenCycle = 0;
     this.lastNotableSignature = null;
+
+    // Cross-brief loop guards
+    // Rolling buffer of signal hashes from the last N briefs — used to drop
+    // events from the "notable" pool if they've been in the brief recently
+    // even if Jerry didn't remark on them yet (prevents the same event
+    // ratcheting through 4 briefs).
+    this._briefSignalHistory = []; // array of Set<string>, newest last
+    // Hashes of signals Jerry has explicitly remarked on, with expiry timestamps.
+    // Persisted to brain/pulse-remarks-seen.json so restarts don't reset the loop.
+    this._remarkedSignals = new Map(); // hash → expiresAt
+    this._loadRemarkedSignals();
+    // Activation delta tracking: top brain nodes by *change*, not absolute
+    this._lastActivations = new Map(); // nodeId → activation
   }
+
+  _seenFile() {
+    return path.join(this.logsDir || '', 'pulse-remarks-seen.json');
+  }
+
+  _loadRemarkedSignals() {
+    try {
+      const file = this._seenFile();
+      if (!fs.existsSync(file)) return;
+      const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const now = Date.now();
+      for (const [hash, expiresAt] of Object.entries(data)) {
+        if (typeof expiresAt === 'number' && expiresAt > now) {
+          this._remarkedSignals.set(hash, expiresAt);
+        }
+      }
+    } catch { /* ok */ }
+  }
+
+  _saveRemarkedSignals() {
+    try {
+      const obj = Object.fromEntries(this._remarkedSignals.entries());
+      fs.writeFileSync(this._seenFile(), JSON.stringify(obj));
+    } catch { /* best-effort */ }
+  }
+
+  _pruneRemarkedSignals(now) {
+    for (const [hash, expiresAt] of this._remarkedSignals) {
+      if (expiresAt <= now) this._remarkedSignals.delete(hash);
+    }
+  }
+
+  // Stable hash of a signal so we can match it across briefs.
+  _signalHash(notable) {
+    if (!notable || !notable.kind) return '';
+    const parts = [notable.kind];
+    if (notable.kind === 'action') parts.push(notable.action, notable.target || '', notable.status || '');
+    else if (notable.kind === 'surface') parts.push(notable.name);
+    else if (notable.kind === 'goal') parts.push(notable.status, normalizeForHash(notable.description || ''));
+    else if (notable.kind === 'notification') parts.push(notable.source, normalizeForHash((notable.message || '').slice(0, 120)));
+    else if (notable.kind === 'action_request_rejected') parts.push(notable.action, notable.target || '');
+    else parts.push(JSON.stringify(notable).slice(0, 120));
+    return parts.join('::');
+  }
+
+  _thoughtHash(t) {
+    return `thought::${normalizeForHash((t.text || '').slice(0, 200))}`;
+  }
+
 
   start() {
     if (this.running) return;
@@ -347,14 +411,52 @@ class PulseRemarks {
       sensorSummary.push(`sauna ${s.status}${s.temperature ? ' @ ' + s.temperature + '°F' : ''}`);
     }
 
+    // ── Cross-brief loop guards ──
+    // 1. Drop notable events that match hashes Jerry already remarked on
+    //    within REMARKED_TTL_MS, OR that appeared in any of the last
+    //    RECENT_BRIEF_DEPTH briefs (regardless of remark).
+    this._pruneRemarkedSignals(now);
+    const allRecentBriefSignals = new Set();
+    for (const set of this._briefSignalHistory) for (const h of set) allRecentBriefSignals.add(h);
+
+    const filteredNotable = [];
+    const droppedReasons = { remarked: 0, briefRepeat: 0 };
+    for (const n of notable) {
+      const h = this._signalHash(n);
+      if (this._remarkedSignals.has(h)) { droppedReasons.remarked++; continue; }
+      if (allRecentBriefSignals.has(h)) { droppedReasons.briefRepeat++; continue; }
+      filteredNotable.push({ ...n, _hash: h });
+    }
+
+    // 2. Same dedup pass for novel thoughts
+    const filteredThoughts = [];
+    for (const t of novelThoughts) {
+      const h = this._thoughtHash(t);
+      if (this._remarkedSignals.has(h)) continue;
+      if (allRecentBriefSignals.has(h)) continue;
+      filteredThoughts.push({ ...t, _hash: h });
+    }
+
+    // 3. Brain top-activated by *delta* (what's actually moving), not absolute
+    const movingNodes = this._topMovingNodes(snap.brain?.topActive || []);
+
+    // Record this brief's signals so the next 3 briefs can suppress repeats
+    const thisBriefSignals = new Set();
+    for (const n of filteredNotable) thisBriefSignals.add(n._hash);
+    for (const t of filteredThoughts) thisBriefSignals.add(t._hash);
+    this._briefSignalHistory.push(thisBriefSignals);
+    while (this._briefSignalHistory.length > RECENT_BRIEF_DEPTH) this._briefSignalHistory.shift();
+
     // Stats card data for tile rotation
-    const stats = this.buildStats(snap, notable, novelThoughts);
+    const stats = this.buildStats(snap, filteredNotable, filteredThoughts);
 
     return {
       cycle: snap.cycle,
       ts: snap.ts,
-      notable,
-      novelThoughts,
+      notable: filteredNotable,
+      novelThoughts: filteredThoughts,
+      droppedNotable: droppedReasons,
+      movingNodes,
       sensorSummary,
       brain: snap.brain,
       goals: {
@@ -363,6 +465,35 @@ class PulseRemarks {
       },
       stats,
     };
+  }
+
+  // Track activation deltas across briefs. Returns nodes whose activation
+  // CHANGED most since the last call — captures what's actually moving in
+  // the brain rather than what's been sticky-hot for hours.
+  _topMovingNodes(currentTop) {
+    const moving = [];
+    if (this.memory?.nodes) {
+      for (const node of this.memory.nodes.values()) {
+        const cur = node.activation || 0;
+        const prev = this._lastActivations.get(node.id);
+        if (prev == null) continue;       // first observation — no delta
+        const delta = cur - prev;
+        if (Math.abs(delta) < 0.01) continue; // ignore noise
+        moving.push({
+          id: node.id,
+          concept: (node.concept || '').slice(0, 80),
+          tag: node.tag,
+          delta: +delta.toFixed(3),
+          activation: +cur.toFixed(3),
+        });
+      }
+      // Refresh snapshot for next call
+      for (const node of this.memory.nodes.values()) {
+        this._lastActivations.set(node.id, node.activation || 0);
+      }
+    }
+    moving.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+    return moving.slice(0, 5);
   }
 
   buildStats(snap, notable, novelThoughts) {
@@ -427,9 +558,26 @@ class PulseRemarks {
       for (const g of brief.goals.activeDescriptions) parts.push(`  - ${g}`);
     }
 
+    // Loop-guard signal: tell the LLM what's NEW since last remark and what
+    // was already filtered out, so it has explicit license to say "quiet"
+    // when there's nothing fresh.
+    const newSignalCount = brief.notable.length + brief.novelThoughts.length;
+    const droppedTotal = (brief.droppedNotable?.remarked || 0) + (brief.droppedNotable?.briefRepeat || 0);
+    parts.push('');
+    parts.push(`NEW since your last remark: ${newSignalCount} signals${droppedTotal > 0 ? ` (${droppedTotal} repeats already filtered out — do NOT re-comment on those topics)` : ''}.`);
+
+    if (brief.movingNodes && brief.movingNodes.length > 0) {
+      parts.push('');
+      parts.push('Brain activation moving (delta since last brief):');
+      for (const n of brief.movingNodes) {
+        const arrow = n.delta > 0 ? '↑' : '↓';
+        parts.push(`  - ${arrow} ${Math.abs(n.delta)} [${n.tag || '?'}] ${n.concept}`);
+      }
+    }
+
     if (brief.notable.length > 0) {
       parts.push('');
-      parts.push('Recent notable (last 10 min):');
+      parts.push('Recent notable (last 10 min, dedup of repeats):');
       for (const n of brief.notable.slice(0, 12)) {
         if (n.kind === 'action') {
           parts.push(`  - [ACTION ${n.status}] ${n.action}${n.target ? ' → ' + n.target : ''} · ${n.reason || '(no reason)'}${n.detail ? ' · ' + n.detail : ''}`);
@@ -460,6 +608,7 @@ class PulseRemarks {
 
     parts.push('');
     parts.push('Now: one remark to jtr. Your voice. Be real.');
+    parts.push('IMPORTANT: If everything in this brief is something you have already commented on recently (the "repeats already filtered out" line), or if there is genuinely nothing new, just SAY THAT briefly. One line. Do not invent novelty. Do not re-state the same point. Do not loop.');
 
     return { systemPrompt, userMessage: parts.join('\n') };
   }
@@ -514,6 +663,19 @@ class PulseRemarks {
     } catch (err) {
       this.logger?.warn?.('[pulse] persist failed', { error: err.message });
     }
+
+    // Mark every signal that fed this brief as "remarked on" so future briefs
+    // suppress them. TTL is REMARKED_TTL_MS (30 min by default).
+    const expiresAt = Date.now() + REMARKED_TTL_MS;
+    for (const n of brief.notable || []) {
+      const h = n._hash || this._signalHash(n);
+      if (h) this._remarkedSignals.set(h, expiresAt);
+    }
+    for (const t of brief.novelThoughts || []) {
+      const h = t._hash || this._thoughtHash(t);
+      if (h) this._remarkedSignals.set(h, expiresAt);
+    }
+    this._saveRemarkedSignals();
   }
 }
 
