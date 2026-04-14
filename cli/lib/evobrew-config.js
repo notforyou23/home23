@@ -10,6 +10,7 @@
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import yaml from 'js-yaml';
 
 function loadYaml(filePath) {
@@ -17,11 +18,62 @@ function loadYaml(filePath) {
   return yaml.load(readFileSync(filePath, 'utf8')) || {};
 }
 
+function loadJson(filePath) {
+  if (!existsSync(filePath)) return {};
+  try {
+    return JSON.parse(readFileSync(filePath, 'utf8')) || {};
+  } catch {
+    return {};
+  }
+}
+
+function loadExternalBrainDirectories(home23Root) {
+  const configPaths = [
+    join(homedir(), '.evobrew', 'config.json'),
+    join(homedir(), '.cosmo2.3', 'config.json'),
+  ];
+
+  const configuredDirs = [];
+  for (const configPath of configPaths) {
+    const config = loadJson(configPath);
+    const dirs = Array.isArray(config?.features?.brains?.directories)
+      ? config.features.brains.directories
+      : Array.isArray(config?.brains?.directories)
+        ? config.brains.directories
+        : [];
+
+    for (const dir of dirs) {
+      const trimmed = String(dir || '').trim();
+      if (trimmed) configuredDirs.push(resolve(trimmed));
+    }
+  }
+
+  const envDirs = [process.env.COSMO_BRAIN_DIRS, process.env.BRAIN_DIRS]
+    .filter(Boolean)
+    .flatMap(value => String(value).split(','))
+    .map(dir => String(dir || '').trim())
+    .filter(Boolean)
+    .map(dir => resolve(dir));
+
+  const allDirs = [...configuredDirs, ...envDirs];
+  const uniqueDirs = [];
+  const seen = new Set();
+
+  for (const dir of allDirs) {
+    if (!dir || seen.has(dir)) continue;
+    seen.add(dir);
+    uniqueDirs.push(dir);
+  }
+
+  return uniqueDirs.filter(dir => dir !== home23Root);
+}
+
 export function generateEvobrewConfig(home23Root) {
   // Resolve to absolute — critical for evobrew which runs from a different cwd
   home23Root = resolve(home23Root);
   const homeConfig = loadYaml(join(home23Root, 'config', 'home.yaml'));
   const instancesDir = join(home23Root, 'instances');
+  const externalBrainDirs = loadExternalBrainDirectories(home23Root);
 
   // Scan instances for agents
   const agents = [];
@@ -68,6 +120,19 @@ export function generateEvobrewConfig(home23Root) {
     if (providerConfig?.defaultModels?.length) {
       allowedModels[providerId] = providerConfig.defaultModels;
     }
+  }
+
+  const managedBrainDirs = [
+    ...agents.map(a => join(home23Root, 'instances', a.id)),
+    ...(existsSync(cosmo23RunsDir) ? [cosmo23RunsDir] : []),
+  ].map(dir => resolve(dir));
+
+  const brainDirectories = [];
+  const seenBrainDirs = new Set();
+  for (const dir of [...managedBrainDirs, ...externalBrainDirs]) {
+    if (!dir || seenBrainDirs.has(dir)) continue;
+    seenBrainDirs.add(dir);
+    brainDirectories.push(dir);
   }
 
   // Build evobrew config — NO API KEYS (PM2 env vars handle auth)
@@ -122,10 +187,7 @@ export function generateEvobrewConfig(home23Root) {
     features: {
       brains: {
         enabled: true,
-        directories: [
-          ...agents.map(a => join(home23Root, 'instances', a.id)),
-          ...(existsSync(cosmo23RunsDir) ? [cosmo23RunsDir] : []),
-        ],
+        directories: brainDirectories,
       },
     },
 
@@ -159,6 +221,7 @@ export function writeEvobrewConfig(home23Root) {
   writeFileSync(configPath, JSON.stringify(config, null, 2));
   console.log(`[evobrew] Config written to ${configPath}`);
   console.log(`[evobrew]   ${config.providers.local_agents.length} agent(s), ${Object.keys(config.brain.researchBrains).length} research brain(s)`);
+  console.log(`[evobrew]   Brain roots: ${config.features?.brains?.directories?.length || 0}`);
   console.log(`[evobrew]   Allowed models: ${Object.entries(config.allowedModels).map(([p, m]) => `${p}(${m.length})`).join(', ')}`);
 
   return configPath;

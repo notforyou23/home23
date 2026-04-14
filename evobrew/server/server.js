@@ -4348,13 +4348,95 @@ const BRAIN_DIRS = BRAINS_ENABLED
       : legacyBrainDirs)
   : [];
 
+function looksLikeOpaqueBrainSegment(segment) {
+  return /^cm[a-z0-9]{8,}$/i.test(segment)
+    || /^[a-f0-9]{16,}$/i.test(segment)
+    || /^[a-z0-9_-]{24,}$/i.test(segment);
+}
+
+function findReadableBrainSegment(dir) {
+  const resolved = path.resolve(dir);
+  const parts = resolved.split(path.sep).filter(Boolean);
+  const ignored = new Set([
+    'users',
+    'volumes',
+    'data',
+    'runs',
+    'priorruns',
+    'brains',
+    'brain',
+    'cosmoruns',
+    '_all_coz'
+  ]);
+
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const segment = parts[i];
+    const lower = segment.toLowerCase();
+    if (!segment || ignored.has(lower) || looksLikeOpaqueBrainSegment(segment)) continue;
+    return segment;
+  }
+
+  return path.basename(resolved) || path.basename(path.dirname(resolved)) || 'brains';
+}
+
+function inferBrainRootLabel(dir) {
+  const resolved = path.resolve(dir);
+  const lower = resolved.toLowerCase();
+
+  if (lower.includes(`${path.sep}instances${path.sep}`)) return 'agent';
+  if (lower.includes(`${path.sep}release${path.sep}home23${path.sep}cosmo23${path.sep}runs`)) return 'home23 research';
+  if (lower.includes('cosmo-home')) return 'cosmo-home';
+  if (lower.includes('_alltesting')) return 'bertha/testing';
+  if (lower.includes('bertha')) return 'bertha';
+  if (lower.includes('cosmo_2.3')) return 'cosmo_2.3';
+  if (lower.includes('cosmos.evobrew.com')) return 'cosmos.evobrew.com';
+
+  return findReadableBrainSegment(resolved);
+}
+
+function inferBrainRootShortName(dir) {
+  const resolved = path.resolve(dir);
+  const lower = resolved.toLowerCase();
+
+  if (lower.includes(`${path.sep}instances${path.sep}`)) {
+    return path.basename(resolved) || 'agent';
+  }
+  if (lower.includes(`${path.sep}release${path.sep}home23${path.sep}cosmo23${path.sep}runs`)) {
+    return 'cosmo23';
+  }
+
+  return findReadableBrainSegment(resolved);
+}
+
+function describeBrainRoot(dir) {
+  const label = inferBrainRootLabel(dir);
+  const shortName = inferBrainRootShortName(dir);
+  const displayLabel = shortName && shortName.toLowerCase() !== label.toLowerCase()
+    ? `${label} · ${shortName}`
+    : label;
+
+  return {
+    label,
+    shortName,
+    displayLabel
+  };
+}
+
+function getBrainDisplayName(rootDir, entryName) {
+  if (String(entryName || '').trim() !== 'brain') {
+    return entryName;
+  }
+
+  const rootName = path.basename(path.resolve(rootDir));
+  return rootName && rootName !== 'brain' ? rootName : entryName;
+}
+
 const BRAIN_DIR_LABELS = {};
+const BRAIN_DIR_META = {};
 BRAIN_DIRS.forEach(d => {
-  if (d.includes('cosmo-home')) BRAIN_DIR_LABELS[d] = 'cosmo-home';
-  else if (d.includes('_allTesting')) BRAIN_DIR_LABELS[d] = 'bertha/testing';
-  else if (d.includes('Bertha')) BRAIN_DIR_LABELS[d] = 'bertha';
-  else if (d.includes('cosmo_2.3')) BRAIN_DIR_LABELS[d] = 'cosmo_2.3';
-  else BRAIN_DIR_LABELS[d] = 'main';
+  const meta = describeBrainRoot(d);
+  BRAIN_DIR_LABELS[d] = meta.label;
+  BRAIN_DIR_META[d] = meta;
 });
 
 // Brain list cache: keyed by location+counts, 60s TTL
@@ -5170,37 +5252,28 @@ app.get('/api/brains/locations', async (req, res) => {
         }
       }
 
-      const label = (() => {
-        const d = dir.toLowerCase();
-        if (d.includes('bertha') && d.includes('testing')) return 'bertha/testing';
-        if (d.includes('bertha')) return 'bertha';
-        if (d.includes('cosmo-home')) return 'cosmo-home';
-        return BRAIN_DIR_LABELS[dir] || path.basename(dir) || 'brains';
-      })();
+      const meta = BRAIN_DIR_META[dir] || describeBrainRoot(dir);
 
       rawLocations.push({
-        label,
+        ...meta,
         path: dir,
         available,
         brainCount
       });
     }
 
-    const labelCounts = rawLocations.reduce((acc, location) => {
-      acc[location.label] = (acc[location.label] || 0) + 1;
+    const displayCounts = rawLocations.reduce((acc, location) => {
+      acc[location.displayLabel] = (acc[location.displayLabel] || 0) + 1;
       return acc;
     }, {});
 
     const locations = rawLocations.map((location) => {
-      const duplicateCount = labelCounts[location.label] || 0;
+      const duplicateCount = displayCounts[location.displayLabel] || 0;
       const resolvedPath = path.resolve(location.path);
-      let suffix = path.basename(resolvedPath) || path.basename(path.dirname(resolvedPath));
-      if (suffix === 'runs' || suffix === 'priorRuns') {
-        suffix = path.basename(path.dirname(resolvedPath)) || suffix;
-      }
+      const uniqueTail = path.basename(resolvedPath) || path.basename(path.dirname(resolvedPath)) || 'brains';
       const displayLabel = duplicateCount > 1
-        ? `${location.label} · ${suffix}`
-        : location.label;
+        ? `${location.displayLabel} · ${uniqueTail}`
+        : location.displayLabel;
 
       return {
         ...location,
@@ -5272,12 +5345,16 @@ app.get('/api/brains/list', async (req, res) => {
               estimated = true;
             } catch { estimated = true; }
           }
+          const rootMeta = BRAIN_DIR_META[dir] || describeBrainRoot(dir);
           brains.push({
             name: entry.name,
+            displayName: getBrainDisplayName(dir, entry.name),
             path: brainPath,
             nodes: nodeCount,
             estimated,
-            location: BRAIN_DIR_LABELS[dir] || 'unknown'
+            location: rootMeta.label || 'unknown',
+            locationDisplayLabel: rootMeta.displayLabel || rootMeta.label || 'unknown',
+            locationPath: dir
           });
         } catch {
           continue; // no state.json.gz = not a valid brain
