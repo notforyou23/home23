@@ -2,6 +2,34 @@ const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
 
+// Sensor registry — optional. We lazy-load to keep tiles decoupled from the
+// engine's internal modules. If the engine/src/sensors module isn't present
+// (e.g. dashboard-only deploys), publishing is a no-op.
+let _sensorRegistry = null;
+function getRegistry() {
+  if (_sensorRegistry === null) {
+    try { _sensorRegistry = require('../sensors/registry'); }
+    catch { _sensorRegistry = false; }
+  }
+  return _sensorRegistry || null;
+}
+
+function publishTileSensor(tile, mode, data, valueSummary) {
+  const reg = getRegistry();
+  if (!reg) return;
+  try {
+    reg.publish({
+      id: `tile.${tile.id}`,
+      label: tile.title || tile.id,
+      category: 'tile',
+      source: `tile:${mode}`,
+      value: valueSummary,
+      data,
+      ok: true,
+    });
+  } catch { /* non-fatal */ }
+}
+
 const TILE_SIZES = ['third', 'half', 'full'];
 const GENERIC_AUTH_TYPES = ['none', 'basic', 'bearer', 'header'];
 const SAUNA_LOG_PATH = path.join(process.env.HOME || '/Users/jtr', '.sauna_usage_log.jsonl');
@@ -906,6 +934,10 @@ class Home23TileService {
     let payload;
     if (tile.mode === 'ecowitt-weather') {
       const weather = await fetchEcowittData(connection);
+      const summary = weather?.outdoor?.temperature != null
+        ? `${weather.outdoor.temperature}°F${weather.outdoor.humidity != null ? ' · ' + weather.outdoor.humidity + '%RH' : ''}`
+        : 'no readings';
+      publishTileSensor(tile, 'ecowitt-weather', weather, summary);
       payload = {
         tileId,
         fetchedAt: new Date().toISOString(),
@@ -929,6 +961,10 @@ class Home23TileService {
       };
     } else if (tile.mode === 'huum-sauna') {
       const sauna = await fetchHuumStatus(connection);
+      const summary = sauna?.temperature != null
+        ? `${sauna.status || '?'} · ${sauna.temperature}°F${sauna.targetTemperature ? ' → ' + sauna.targetTemperature + '°F' : ''}`
+        : (sauna?.status || 'unknown');
+      publishTileSensor(tile, 'huum-sauna', sauna, summary);
       const startDefaults = tile.config?.startDefaults || {};
       payload = {
         tileId,
@@ -980,6 +1016,13 @@ class Home23TileService {
         throw new Error(`Tile request failed: ${response.status} ${response.statusText}`);
       }
       const raw = await response.json();
+      // Generic tile: publish the raw response to the registry. Summary tries
+      // to pull a sensible one-liner from common fields; otherwise fall back
+      // to JSON size.
+      const guessSummary = typeof raw === 'object' && raw
+        ? (raw.summary || raw.status || raw.value || raw.title || `${Object.keys(raw).length} fields`)
+        : String(raw);
+      publishTileSensor(tile, tile.mode || 'generic', raw, String(guessSummary).slice(0, 120));
       payload = {
         tileId,
         fetchedAt: new Date().toISOString(),

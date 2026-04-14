@@ -4512,6 +4512,24 @@ Be specific, actionable, and maintain research continuity.`;
       }
     });
 
+    // ── Sensor Registry API ──
+    // Live snapshot of every published sensor (stock + tile-backed + plugins).
+    // The registry is an in-memory module so this is a cheap read.
+    this.app.get('/api/sensors', (req, res) => {
+      try {
+        const registry = require('../sensors/registry');
+        const category = req.query.category;
+        const list = registry.list(category ? { category } : {});
+        res.json({
+          count: list.length,
+          stats: registry.stats(),
+          sensors: list,
+        });
+      } catch (err) {
+        res.json({ count: 0, sensors: [], error: err.message });
+      }
+    });
+
     // ── Pulse Remarks API (Jerry's voice tile) ──
     // The pulse-remarks engine loop writes structured entries to
     // brain/pulse-remarks.jsonl. Dashboard exposes latest + history + stats.
@@ -8764,6 +8782,20 @@ You are empowered to explore and understand. The user trusts you to discover the
     } catch (err) {
       console.warn('[DashboardServer] Synthesis agent not available:', err.message);
       this._synthesisAgent = null;
+    }
+
+    // Boot the sensor registry + stock sensors. Tile fetches publish into
+    // the same registry from home23-tiles.js. Pulse remarks (running in the
+    // engine process) reads via /api/sensors so this is the single source
+    // of truth for "what does the host know."
+    try {
+      const sensorsModule = require('../sensors');
+      sensorsModule.startStock({
+        info: (...a) => console.log('[sensors]', ...a),
+        warn: (...a) => console.warn('[sensors]', ...a),
+      });
+    } catch (e) {
+      console.warn('[DashboardServer] sensors boot failed (non-fatal):', e.message);
     }
 
     this.app.listen(this.port, () => {

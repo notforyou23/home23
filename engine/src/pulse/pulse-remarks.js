@@ -95,8 +95,28 @@ class PulseRemarks {
     this.timer = setTimeout(() => this.tick(), Math.max(delayMs, 5000));
   }
 
+  async fetchSensors() {
+    // The dashboard owns the registry. Fetch via HTTP from this same host.
+    // DASHBOARD_PORT is set by the ecosystem config; fall back to 5002.
+    const port = process.env.DASHBOARD_PORT || process.env.COSMO_DASHBOARD_PORT || '5002';
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/api/sensors`);
+      if (!res.ok) return;
+      const data = await res.json();
+      const list = data.sensors || [];
+      const byKey = {};
+      for (const s of list) {
+        if (s.id === 'tile.outside-weather') byKey.weather = s.data;
+        if (s.id === 'tile.sauna-control') byKey.sauna = s.data;
+        if (s.id === 'tile.pi-sensor') byKey.pressure = s.data;
+      }
+      this._lastSensors = { list, byKey };
+    } catch { /* dashboard might be starting up — try again next tick */ }
+  }
+
   async tick() {
     try {
+      await this.fetchSensors();
       const snapshot = this.gather();
       const brief = this.synthesize(snapshot);
       const now = Date.now();
@@ -210,11 +230,12 @@ class PulseRemarks {
       }
     }
 
-    // Sensors (if available — cached in engine/data/sensor-cache.json)
-    const sensorCache = path.join(__dirname, '..', '..', 'data', 'sensor-cache.json');
-    try {
-      if (fs.existsSync(sensorCache)) snap.sensors = JSON.parse(fs.readFileSync(sensorCache, 'utf8'));
-    } catch { /* ok */ }
+    // Sensors — fetched from the dashboard's /api/sensors endpoint which
+    // owns the canonical registry (stock + tile-backed + future plugins).
+    // We do this synchronously by reading from the cached snapshot the
+    // pulse loop maintains; see fetchSensors() called from tick().
+    snap.sensors = this._lastSensors?.byKey || {};
+    snap.sensorList = this._lastSensors?.list || [];
 
     // Cycle number — latest from thoughts
     snap.cycle = snap.thoughts.length > 0 ? snap.thoughts[snap.thoughts.length - 1].cycle : null;
@@ -366,7 +387,7 @@ class PulseRemarks {
     const top = snap.brain?.topActive?.[0];
     if (top) cards.push({ icon: '✨', label: 'top active', value: top.concept.slice(0, 60) });
 
-    // Sensor highlights
+    // Sensor highlights (from tile-backed sensors via registry)
     if (snap.sensors?.weather?.outdoor?.temperature != null) {
       cards.push({ icon: '🌤', label: 'outside', value: `${Math.round(snap.sensors.weather.outdoor.temperature)}°F` });
     }
@@ -376,6 +397,18 @@ class PulseRemarks {
     if (snap.sensors?.sauna?.status && snap.sensors.sauna.status !== 'Off') {
       cards.push({ icon: '♨️', label: 'sauna', value: snap.sensors.sauna.status });
     }
+
+    // Stock system sensors — work on any install, no config needed.
+    for (const s of (snap.sensorList || [])) {
+      if (s.category !== 'system' || !s.ok || !s.value) continue;
+      const icon = s.id === 'system.disk' ? '💾'
+        : s.id === 'system.memory' ? '🧠'
+        : s.id === 'system.cpu' ? '🔥'
+        : s.id === 'system.process' ? '⚙️'
+        : '•';
+      cards.push({ icon, label: s.label.toLowerCase(), value: s.value });
+    }
+
     if (snap.cycle) cards.push({ icon: '🌀', label: 'cycle', value: snap.cycle });
     return cards;
   }
