@@ -39,6 +39,11 @@ const {
 // standing triggers so thoughts have real consequences.
 const { routeThoughtAction, stripActionTags } = require('../cognition/thought-action-parser');
 
+// Cycle tools: inline MCP-style tools that cognitive cycles can call mid-thought
+// to ground their reasoning in real data (surface files, brain memory, goals,
+// pending notifications).
+const { buildCycleTools, buildCycleToolExecutor } = require('../cognition/cycle-tools');
+
 // EXECUTIVE RING: Executive function layer (dlPFC)
 const { ExecutiveCoordinator } = require('../coordinator/executive-coordinator');
 const { RecursivePlanner } = require('../system/recursive-planner');
@@ -1573,6 +1578,25 @@ class Orchestrator {
       }
 
       // 8. Generate thought using GPT-5.2 Quantum Reasoning
+      //
+      // Cycle tools: if the role has enableMCPTools and we have an MCP bridge,
+      // hand the reasoner a curated tool set. The branch can then call
+      // read_surface / query_brain / get_recent_thoughts etc. mid-thought.
+      // When not wired, quantum-reasoner falls back to single-shot generation.
+      const mcpBridge = this.agentExecutor?.mcpBridge || null;
+      const workspacePath = process.env.COSMO_WORKSPACE_PATH || null;
+      let cycleTools = null;
+      let cycleToolExecutor = null;
+      if (role.enableMCPTools !== false && mcpBridge && workspacePath) {
+        cycleTools = buildCycleTools();
+        cycleToolExecutor = buildCycleToolExecutor({
+          mcpBridge,
+          workspacePath,
+          brainDir: this.logsDir,
+          logger: this.logger,
+        });
+      }
+
       const context = {
         memory: memoryContext,
         goals: currentGoal ? [currentGoal] : [],
@@ -1586,7 +1610,11 @@ class Orchestrator {
         activeClusterSummary,
 
         // Context isolation: Pass execution context to downstream systems
-        executionContext: currentGoal?.executionContext || 'autonomous'
+        executionContext: currentGoal?.executionContext || 'autonomous',
+
+        // Inline tool access for the branch LLM (optional — null when unavailable)
+        cycleTools,
+        cycleToolExecutor,
       };
 
       // Self-Diagnosis Block: inject evidence schema validation into EVERY role prompt

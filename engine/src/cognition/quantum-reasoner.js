@@ -95,6 +95,12 @@ class QuantumReasoner {
           resolvedEfforts[i] = reasoningEffort;
           resolvedWebSearch[i] = enableWebSearch ? 1 : 0;
           
+          // If the orchestrator passed a cycle tool set, run the branch through
+          // a tool-use continuation loop: LLM may emit tool_use blocks, we execute
+          // and feed results back, until the LLM produces a final text answer.
+          // When tools aren't wired, behaves like the original single-shot call.
+          const hasCycleTools = Array.isArray(context.cycleTools) && context.cycleTools.length > 0 && typeof context.cycleToolExecutor === 'function';
+
           const response = enableWebSearch
             ? await this.gpt5.generateWithWebSearch({
                 component: 'quantumReasoner',
@@ -102,17 +108,15 @@ class QuantumReasoner {
                 model: 'gpt-5-mini',
                 instructions: branchPrompt,
                 messages: [{ role: 'user', content: 'Produce your output per the system instructions above, including the required action tag (INVESTIGATE/NOTIFY/TRIGGER/NO_ACTION) on its own line if the role specifies one.' }],
-                max_completion_tokens: 8000, // Room for reasoning + output - creative problem-solving benefits from space
+                max_completion_tokens: 8000,
                 reasoningEffort
               })
-            : await this.gpt5.generate({
-                component: 'quantumReasoner',
-                purpose: 'branches',
-                model: 'gpt-5-mini',
-                instructions: branchPrompt,
-                messages: [{ role: 'user', content: 'Produce your output per the system instructions above, including the required action tag (INVESTIGATE/NOTIFY/TRIGGER/NO_ACTION) on its own line if the role specifies one.' }],
-                max_completion_tokens: 8000, // Room for reasoning + output - creative problem-solving benefits from space
-                reasoningEffort
+            : await this._runBranchWithTools({
+                branchPrompt,
+                reasoningEffort,
+                cycleTools: hasCycleTools ? context.cycleTools : null,
+                cycleToolExecutor: hasCycleTools ? context.cycleToolExecutor : null,
+                branchIndex: i,
               });
 
           // Check if we got valid content
@@ -493,6 +497,119 @@ Respond with ONLY the number (1-${hypotheses.length}) of the best hypothesis.`;
       this.logger?.error('Quantum tunnel failed', { error: error.message });
       return null;
     }
+  }
+
+  /**
+   * Run a single branch's LLM call, with optional multi-turn tool-use loop.
+   *
+   * If `cycleTools` and `cycleToolExecutor` are provided, the branch can emit
+   * Anthropic-format tool_use blocks. We execute each tool, append a tool_result
+   * user message, and re-invoke the LLM until it stops emitting tool calls.
+   *
+   * When tools aren't wired, this is a single generate() call identical to
+   * the prior one-shot behavior.
+   *
+   * Returns the final response object (same shape as generate()) — with the
+   * final text/reasoning that the branch produced after any tool interactions.
+   */
+  async _runBranchWithTools({ branchPrompt, reasoningEffort, cycleTools, cycleToolExecutor, branchIndex }) {
+    const baseOpts = {
+      component: 'quantumReasoner',
+      purpose: 'branches',
+      model: 'gpt-5-mini',
+      instructions: branchPrompt,
+      max_completion_tokens: 8000,
+      reasoningEffort,
+    };
+
+    // Conversation state accumulated across tool-use turns
+    const messages = [{
+      role: 'user',
+      content: 'Produce your output per the system instructions above, including the required action tag (INVESTIGATE/NOTIFY/TRIGGER/NO_ACTION) on its own line if the role specifies one. You have tools available — use read_surface / query_brain / get_active_goals / etc. to ground your thought in jtr\'s actual world before producing your final answer.',
+    }];
+
+    let response = null;
+    let iteration = 0;
+    const aggregatedReasoning = [];
+    const toolCallLog = [];
+
+    // No hard loop cap per user direction — but guard against runaway with a
+    // sanity ceiling. If a branch hits 20 iterations something is broken.
+    const SAFETY_CEILING = 20;
+
+    while (iteration < SAFETY_CEILING) {
+      iteration++;
+
+      const callOpts = { ...baseOpts, messages };
+      if (cycleTools && cycleTools.length > 0) {
+        callOpts.tools = cycleTools;
+      }
+
+      response = await this.gpt5.generate(callOpts);
+
+      // Accumulate reasoning across turns for the final return
+      if (response.reasoning) aggregatedReasoning.push(response.reasoning);
+
+      // No tool calls → we have our final answer
+      if (!response.toolCalls || response.toolCalls.length === 0) break;
+
+      // Record tool call log for observability
+      for (const tc of response.toolCalls) {
+        toolCallLog.push({ iteration, name: tc.name, input: tc.arguments });
+      }
+
+      // Preserve the assistant's full content (text + tool_use blocks + thinking)
+      // so the conversation history accurately reflects the tool-use turn.
+      messages.push({
+        role: 'assistant',
+        content: response.rawContent && response.rawContent.length > 0
+          ? response.rawContent
+          : [{ type: 'text', text: response.content || '' }],
+      });
+
+      // Execute each tool and build a tool_result user message
+      const toolResults = [];
+      for (const tc of response.toolCalls) {
+        let result;
+        try {
+          result = await cycleToolExecutor(tc.name, tc.arguments);
+        } catch (err) {
+          result = { error: err.message };
+        }
+        const content = typeof result === 'string' ? result : JSON.stringify(result);
+        // Cap each tool result to avoid blowing context on huge reads
+        const capped = content.length > 4000 ? content.substring(0, 4000) + '\n...[truncated]' : content;
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: tc.id,
+          content: capped,
+        });
+      }
+      messages.push({ role: 'user', content: toolResults });
+    }
+
+    if (iteration >= SAFETY_CEILING) {
+      this.logger?.warn?.('Branch hit SAFETY_CEILING in tool-use loop', {
+        branchIndex, iterations: iteration, toolCalls: toolCallLog.length,
+      });
+    }
+
+    if (toolCallLog.length > 0) {
+      this.logger?.info?.('Branch completed tool-use loop', {
+        branchIndex,
+        iterations: iteration,
+        toolCallsTotal: toolCallLog.length,
+        toolsUsed: [...new Set(toolCallLog.map(t => t.name))],
+      });
+    }
+
+    // Merge aggregated reasoning so the branch's thinking across all tool-use
+    // turns is preserved, not just the final turn's.
+    if (aggregatedReasoning.length > 0) {
+      response.reasoning = aggregatedReasoning.join('\n\n---\n\n');
+    }
+
+    return response;
   }
 
   /**

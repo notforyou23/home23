@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.5.0 (2026-04-14)
+
+### Tool-capable quantum reasoner (Phase 2 of thoughts→action)
+Cognitive cycles can now call tools mid-thought to ground their reasoning in
+real data instead of working from cached memory alone.
+
+**New module** `engine/src/cognition/cycle-tools.js` — exposes a curated set of
+tools to the quantum reasoner via Anthropic tool-use format:
+- `read_surface` — read TOPOLOGY.md / PROJECTS.md / PERSONAL.md / DOCTRINE.md /
+  RECENT.md / BRAIN_INDEX.md / SOUL.md / MISSION.md / COZ.md / HEARTBEAT.md
+- `query_brain` — search brain memory for relevant nodes
+- `get_recent_thoughts` — see the agent's recent cognitive output
+- `get_active_goals` — view goals the agent is pursuing
+- `get_pending_notifications` — check actions the agent has already queued
+
+**Tool-use continuation loop** in `quantum-reasoner.js` — the branch LLM call
+now iterates: emit tool_use → execute → feed result back via tool_result →
+repeat until the model produces a final text answer. Preserves the full
+content array (text + thinking + tool_use) across turns for proper Anthropic
+multi-turn semantics. Aggregated thinking from all tool-use turns is returned
+as the final reasoning.
+
+**unified-client.js** returns `rawContent` alongside parsed text/thinking/toolCalls
+so downstream callers can reconstruct the conversation accurately.
+
+**Safety:** no hard call limit (per explicit design direction). A safety
+ceiling of 20 iterations exists as a runaway guard for bugs, not policy.
+Per-result truncation at 4KB to avoid blowing the context window on huge
+surface reads.
+
+**Live verified** (cycle 1976 analyst): branch made 5 tool calls over 3
+iterations (read RECENT.md, PROJECTS.md, BRAIN_INDEX.md, MISSION.md,
+HEARTBEAT.md), then produced a grounded thought about jtr's actual work:
+  "The natural next build is the correlation analysis view — all three
+  streams (pressure, health, sauna) now land on the Mac..."
+Zero mention of loop closure or Home23 internals. The brain is now operating
+on jtr's world.
+
 ## 0.4.1 (2026-04-13)
 
 ### Redirect cognitive cycles toward jtr's world

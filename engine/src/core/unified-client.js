@@ -896,6 +896,7 @@ class UnifiedClient extends GPT5Client {
       content: content,
       reasoning: reasoning, // Interleaved thinking blocks (M2.7 / Claude extended thinking)
       toolCalls: toolCalls, // Structured tool_use blocks for agent loops
+      rawContent: response.content || [], // Preserved block array for multi-turn tool continuation
       responseId: response.id,
       model: response.model,
       usage: response.usage,
