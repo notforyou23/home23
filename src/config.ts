@@ -73,11 +73,14 @@ export function loadConfig(agentName: string): HomeConfig {
   const thisAgentSecrets = agentSecrets?.[agentName] as Record<string, unknown> | undefined;
   if (thisAgentSecrets) {
     // Merge agent-specific secrets into channels config
-    if (thisAgentSecrets.telegram) {
-      const channels = (config as Record<string, unknown>).channels as Record<string, unknown> | undefined;
-      if (channels?.telegram) {
-        Object.assign(channels.telegram as Record<string, unknown>, thisAgentSecrets.telegram);
-      }
+    const channels = (config as Record<string, unknown>).channels as Record<string, unknown> | undefined;
+
+    if (thisAgentSecrets.telegram && channels?.telegram) {
+      Object.assign(channels.telegram as Record<string, unknown>, thisAgentSecrets.telegram);
+    }
+
+    if (thisAgentSecrets.discord && channels?.discord) {
+      Object.assign(channels.discord as Record<string, unknown>, thisAgentSecrets.discord);
     }
   }
 

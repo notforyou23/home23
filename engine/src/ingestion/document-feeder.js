@@ -30,6 +30,12 @@ class DocumentFeeder {
     this._flushTimer = null;
     this._started = false;
 
+    // Concurrency-limited compilation queue — prevents 429 rate-limit avalanche
+    // when large folders are added and chokidar fires hundreds of file events at once
+    this._compileQueue = [];
+    this._compileActive = 0;
+    this._compileMaxConcurrent = config.compiler?.maxConcurrent || 3;
+
     // Subsystems — created in start()
     this.converter = null;
     this.chunker = null;
@@ -357,10 +363,11 @@ class DocumentFeeder {
       }
 
       // Compile — LLM synthesizes the document in context of existing knowledge
+      // Uses concurrency-limited queue to avoid 429 rate-limit avalanche on bulk ingestion
       let textForChunking = text;
       let usedCompiler = false;
       try {
-        const compiled = await this.compiler.compile(text, { filePath, format });
+        const compiled = await this._queueCompile(text, { filePath, format });
         if (compiled && compiled.synthesis) {
           textForChunking = compiled.synthesis;
           usedCompiler = true;
@@ -473,6 +480,45 @@ class DocumentFeeder {
     if (!this.manifest) return;
     await this.manifest.removeFile(filePath);
     this.logger?.debug?.('Skipped managed brain artifact during ingestion', { filePath, basename });
+  }
+
+  /**
+   * Queue a compilation request with concurrency limiting.
+   * At most _compileMaxConcurrent LLM calls run in parallel.
+   */
+  _queueCompile(text, metadata) {
+    return new Promise((resolve, reject) => {
+      this._compileQueue.push({ text, metadata, resolve, reject });
+      this._drainCompileQueue();
+    });
+  }
+
+  async _drainCompileQueue() {
+    while (this._compileQueue.length > 0 && this._compileActive < this._compileMaxConcurrent) {
+      const job = this._compileQueue.shift();
+      this._compileActive++;
+
+      // Fire and forget — the promise resolution happens inside
+      this.compiler.compile(job.text, job.metadata)
+        .then(result => {
+          job.resolve(result);
+        })
+        .catch(err => {
+          job.reject(err);
+        })
+        .finally(() => {
+          this._compileActive--;
+          this._drainCompileQueue();
+        });
+    }
+
+    if (this._compileQueue.length > 0 && this._compileQueue.length % 50 === 0) {
+      this.logger?.info?.('Compile queue depth', {
+        queued: this._compileQueue.length,
+        active: this._compileActive,
+        max: this._compileMaxConcurrent
+      });
+    }
   }
 
   _chunkCompiledSynthesis(text, filePath) {

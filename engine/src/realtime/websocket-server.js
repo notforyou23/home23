@@ -207,8 +207,13 @@ class RealtimeServer {
         if (feeder.compiler.config) feeder.compiler.config.enabled = body.enabled;
       }
       if (typeof body.model === 'string' && body.model.trim()) {
-        feeder.compilerConfig.model = body.model.trim();
-        if (feeder.compiler.config) feeder.compiler.config.model = body.model.trim();
+        const newModel = body.model.trim();
+        feeder.compilerConfig.model = newModel;
+        if (feeder.compiler.config) feeder.compiler.config.model = newModel;
+        // Hot-update the running compiler instance (re-resolves provider + rebuilds client)
+        if (feeder.compiler.updateModel) {
+          feeder.compiler.updateModel(newModel);
+        }
       }
       return json(200, { ok: true, compiler: feeder.compilerConfig });
     }

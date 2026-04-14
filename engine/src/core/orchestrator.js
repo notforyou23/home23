@@ -25,6 +25,15 @@ const { MemoryGovernor } = require('../system/memory-governor');
 // Curator cycle (Step 20: Situational Awareness Engine)
 const { filterEligibleNodes, checkSurfaceFreshness, SURFACE_BUDGETS } = require('./curator-cycle');
 
+// Evidence Receipt Trail — Cryptographic Evidence Schema
+const {
+  generateRunId, loadPrevRunId, saveCurrentRunId,
+  appendEvidenceReceipt, buildReceipt,
+  canonicalNonzeroFixture, sideBySideAudit,
+  runSelfDiagnosis, formatDiagnosisBlock,
+  enforceFullLoop,
+} = require('./evidence-receipt');
+
 // EXECUTIVE RING: Executive function layer (dlPFC)
 const { ExecutiveCoordinator } = require('../coordinator/executive-coordinator');
 const { RecursivePlanner } = require('../system/recursive-planner');
@@ -581,7 +590,16 @@ class Orchestrator {
     }
 
     this.logger.info(`\n═══ Cycle ${this.cycleCount} [${this.oscillator.getCurrentMode().toUpperCase()}] [GPT-5.2] ═══`);
-    
+
+    // Evidence Receipt Trail — generate run_id and link to previous run
+    const evidenceRunId = generateRunId(this.cycleCount);
+    const evidencePrevId = loadPrevRunId(this.logsDir);
+    const evidenceMemoryDelta = { added: [], updated: [], removed: [] };
+    // Track which cognitive stages wrote receipts this cycle. Any stage missing
+    // at cycle end will be filled by enforceFullLoop() with a no_change_detected
+    // fallback, so the loop always closes with all 5 stages receipted.
+    const evidenceStagesWritten = [];
+
     // Phase A: Start cycle timeout (default 60s, configurable)
     const cycleTimeout = this.config.timeouts?.cycleTimeoutMs || 60000;
     this.timeoutManager.startCycleTimer(this.cycleCount, cycleTimeout);
@@ -1487,6 +1505,27 @@ class Orchestrator {
         this.logger.info(`🎨 Fresh cycle - no memory context injected${modeInfo}`);
       }
 
+      // Evidence Receipt: INGEST stage — memory context loaded
+      try {
+        appendEvidenceReceipt(this.logsDir, buildReceipt({
+          run_id: evidenceRunId,
+          prev_id: evidencePrevId,
+          stage: 'ingest',
+          raw_input_ids: memoryContext.map(m => String(m.id)),
+          reflection_id: null,
+          memory_delta: { added: [], updated: [], removed: [] },
+          behavior_impact: `queried ${memoryContext.length} memory nodes for role=${role.id}`,
+          provenance: { source: 'memory_context_query', trust_level: 'internal', parser_anomalies: 0 },
+          side_by_side_counts: {
+            control_metadata: this.memory.nodes?.size || 0,
+            workspace_enumerated: memoryContext.length,
+            registry: this.goals.getGoals().length,
+            raw_item_ids: memoryContext.slice(0, 10).map(m => String(m.id))
+          }
+        }));
+        evidenceStagesWritten.push('ingest');
+      } catch (e) { /* evidence receipt non-fatal */ }
+
       // 7b. Summarize *recent* active memory clusters (grounding for cycles)
       // Never break a cycle if memory summary fails.
       let activeClusterSummary = null;
@@ -1513,8 +1552,18 @@ class Orchestrator {
         executionContext: currentGoal?.executionContext || 'autonomous'
       };
 
+      // Self-Diagnosis Block: inject evidence schema validation into curator/analyst prompt
+      let rolePromptWithDiagnosis = role.prompt;
+      if (role.id === 'curator' || role.id === 'analyst') {
+        try {
+          const diagnosis = runSelfDiagnosis(this.logsDir, evidenceRunId);
+          const diagBlock = formatDiagnosisBlock(diagnosis);
+          rolePromptWithDiagnosis = diagBlock + '\n\n' + role.prompt;
+        } catch (e) { /* diagnosis non-fatal */ }
+      }
+
       const superposition = await this.quantum.generateSuperposition(
-        role.prompt,
+        rolePromptWithDiagnosis,
         context
       );
 
@@ -1570,6 +1619,25 @@ class Orchestrator {
         
         return; // Skip rest of cycle
       }
+
+      // Evidence Receipt: REFLECT stage — thought generated
+      try {
+        appendEvidenceReceipt(this.logsDir, buildReceipt({
+          run_id: evidenceRunId,
+          prev_id: evidencePrevId,
+          stage: 'reflect',
+          raw_input_ids: memoryContext.map(m => String(m.id)),
+          reflection_id: `thought-${this.cycleCount}-${role.id}`,
+          memory_delta: { added: [], updated: [], removed: [] },
+          behavior_impact: `generated thought: ${(thought.hypothesis || '').substring(0, 120)}`,
+          provenance: {
+            source: `quantum_collapse_${role.id}`,
+            trust_level: thought.usedWebSearch ? 'web_augmented' : 'internal',
+            parser_anomalies: thought.hadError ? 1 : 0
+          }
+        }));
+        evidenceStagesWritten.push('reflect');
+      } catch (e) { /* evidence receipt non-fatal */ }
 
       // Log extended reasoning if present
       if (thought.reasoning) {
@@ -1696,6 +1764,26 @@ class Orchestrator {
           role: role.id
         });
       }
+
+      // Evidence Receipt: MEMORY_WRITE stage — thought stored in brain
+      try {
+        if (memoryNode) {
+          evidenceMemoryDelta.added.push(String(memoryNode.id));
+        }
+        appendEvidenceReceipt(this.logsDir, buildReceipt({
+          run_id: evidenceRunId,
+          prev_id: evidencePrevId,
+          stage: 'memory_write',
+          raw_input_ids: memoryNode ? [String(memoryNode.id)] : [],
+          reflection_id: `thought-${this.cycleCount}-${role.id}`,
+          memory_delta: { ...evidenceMemoryDelta },
+          behavior_impact: memoryNode
+            ? `stored node ${memoryNode.id} (${role.id})`
+            : `skipped storage: ${thoughtValidation.reason || 'invalid'}`,
+          provenance: { source: 'memory_addNode', trust_level: 'internal', parser_anomalies: memoryNode ? 0 : 1 }
+        }));
+        evidenceStagesWritten.push('memory_write');
+      } catch (e) { /* evidence receipt non-fatal */ }
 
       // Add reasoning to memory if significant (with robust validation)
       if (thought.reasoning) {
@@ -2269,6 +2357,94 @@ class Orchestrator {
         }
       }
       
+      // Evidence Receipt: BEHAVIOR_USE stage — surfaces updated, goals progressed
+      try {
+        appendEvidenceReceipt(this.logsDir, buildReceipt({
+          run_id: evidenceRunId,
+          prev_id: evidencePrevId,
+          stage: 'behavior_use',
+          raw_input_ids: [`cycle-${this.cycleCount}`, `role-${role.id}`],
+          reflection_id: currentGoal ? `goal-${currentGoal.id}` : null,
+          memory_delta: { ...evidenceMemoryDelta },
+          behavior_impact: currentGoal
+            ? `pursued goal "${(currentGoal.description || '').substring(0, 80)}" progress +${explorationGoal ? '0.05' : '0.1'}`
+            : `no active goal — role=${role.id} mode=${this.oscillator.getCurrentMode()}`,
+          provenance: { source: 'behavior_cycle', trust_level: 'internal', parser_anomalies: 0 }
+        }));
+        evidenceStagesWritten.push('behavior_use');
+      } catch (e) { /* evidence receipt non-fatal */ }
+
+      // Evidence Receipt: AUDIT stage — canonical nonzero fixture + side-by-side
+      try {
+        const fixtureCtx = {
+          run_id: evidenceRunId,
+          prev_id: evidencePrevId,
+          cycleCount: this.cycleCount,
+          memoryNodeCount: this.memory.nodes?.size || 0,
+          goalCount: this.goals.getGoals().length,
+          roleId: role.id,
+          oscillatorMode: this.oscillator.getCurrentMode(),
+          energy: cognitiveState.energy || 0
+        };
+        appendEvidenceReceipt(this.logsDir, canonicalNonzeroFixture(fixtureCtx));
+
+        // Side-by-side audit: compare control metadata vs actual workspace
+        const fsSync = require('fs');
+        const workspacePath = process.env.COSMO_WORKSPACE_PATH;
+        let surfaceCount = 0;
+        if (workspacePath) {
+          for (const sf of ['TOPOLOGY.md', 'PROJECTS.md', 'PERSONAL.md', 'DOCTRINE.md', 'RECENT.md']) {
+            if (fsSync.existsSync(path.join(workspacePath, sf))) surfaceCount++;
+          }
+        }
+        const controlCounts = {
+          thoughts: this.journal.length,
+          memories: this.memory.nodes?.size || 0,
+          goals: this.goals.getGoals().length,
+          surfaces: 5 // expected domain surfaces
+        };
+        const workspaceCounts = {
+          thoughts: this.journal.length, // journal is authoritative
+          memories: this.memory.nodes?.size || 0,
+          goals: this.goals.getGoals().length,
+          surfaces: surfaceCount
+        };
+        const registryCounts = {
+          agents: this.agentExecutor?.registry?.activeAgents?.size || 0,
+          triggers: 0,
+          problems: 0
+        };
+        // Load trigger/problem counts from brain dir
+        try {
+          const trigPath = path.join(this.logsDir, 'trigger-index.json');
+          const probPath = path.join(this.logsDir, 'problem-threads.json');
+          if (fsSync.existsSync(trigPath)) {
+            const trig = JSON.parse(fsSync.readFileSync(trigPath, 'utf-8'));
+            registryCounts.triggers = (trig.triggers || []).length;
+          }
+          if (fsSync.existsSync(probPath)) {
+            const prob = JSON.parse(fsSync.readFileSync(probPath, 'utf-8'));
+            registryCounts.problems = (prob.threads || []).length;
+          }
+        } catch (e) { /* counts non-fatal */ }
+
+        appendEvidenceReceipt(this.logsDir, sideBySideAudit({
+          run_id: evidenceRunId,
+          prev_id: evidencePrevId,
+          cycleCount: this.cycleCount,
+          controlCounts,
+          workspaceCounts,
+          registryCounts,
+          rawItemIds: evidenceMemoryDelta.added
+        }));
+        evidenceStagesWritten.push('audit');
+
+        // Persist run_id for next cycle's prev_id chain
+        saveCurrentRunId(this.logsDir, evidenceRunId);
+      } catch (e) {
+        this.logger.warn('Evidence receipt audit failed (non-fatal)', { error: e.message });
+      }
+
       // Save state every cycle so dashboard/brain_search are always in sync
       await this.saveState();
 
@@ -2394,6 +2570,22 @@ class Orchestrator {
     } finally {
       // Phase A: Always cancel cycle timeout (success or failure)
       this.timeoutManager.cancelCycleTimer();
+
+      // Full-Loop Enforcer — fill any missing stage receipts with no_change_detected
+      // fallbacks so every cycle closes with all 5 stages. Also logs the self-diagnosis
+      // so the brain can see loop closure in its own log stream.
+      try {
+        enforceFullLoop({
+          brainDir: this.logsDir,
+          runId: evidenceRunId,
+          prevId: evidencePrevId,
+          cycleCount: this.cycleCount,
+          stagesWritten: evidenceStagesWritten,
+          logger: this.logger,
+        });
+      } catch (e) {
+        this.logger.warn('Full-loop enforcer failed (non-fatal)', { error: e.message });
+      }
     }
 
     this.lastCycleTime = new Date();

@@ -1069,11 +1069,52 @@ function renderFeeder(data) {
 
   // Compiler
   document.getElementById('fd-compiler-enabled').checked = f.compiler?.enabled !== false;
-  document.getElementById('fd-compiler-model').value = f.compiler?.model || 'minimax-m2.7';
+  const compilerSel = document.getElementById('fd-compiler-model');
+  const currentCompilerModel = f.compiler?.model || 'minimax-m2.7';
+  compilerSel.innerHTML = '';
+  if (modelsData?.providers) {
+    for (const [provName, prov] of Object.entries(modelsData.providers)) {
+      for (const m of (prov.defaultModels || [])) {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = `${m}  (${PROVIDER_DISPLAY[provName] || provName})`;
+        if (m === currentCompilerModel) opt.selected = true;
+        compilerSel.appendChild(opt);
+      }
+    }
+  }
+  // If current model isn't in any provider list, add it so it's still selectable
+  if (currentCompilerModel && !compilerSel.querySelector(`option[value="${CSS.escape(currentCompilerModel)}"]`)) {
+    const opt = document.createElement('option');
+    opt.value = currentCompilerModel;
+    opt.textContent = `${currentCompilerModel}  (unknown provider)`;
+    opt.selected = true;
+    compilerSel.prepend(opt);
+  }
 
   // Converter
   document.getElementById('fd-converter-enabled').checked = f.converter?.enabled !== false;
-  document.getElementById('fd-converter-vision').value = f.converter?.visionModel || 'gpt-4o-mini';
+  const visionSel = document.getElementById('fd-converter-vision');
+  const currentVisionModel = f.converter?.visionModel || 'gpt-4o-mini';
+  visionSel.innerHTML = '';
+  if (modelsData?.providers) {
+    for (const [provName, prov] of Object.entries(modelsData.providers)) {
+      for (const m of (prov.defaultModels || [])) {
+        const opt = document.createElement('option');
+        opt.value = m;
+        opt.textContent = `${m}  (${PROVIDER_DISPLAY[provName] || provName})`;
+        if (m === currentVisionModel) opt.selected = true;
+        visionSel.appendChild(opt);
+      }
+    }
+  }
+  if (currentVisionModel && !visionSel.querySelector(`option[value="${CSS.escape(currentVisionModel)}"]`)) {
+    const opt = document.createElement('option');
+    opt.value = currentVisionModel;
+    opt.textContent = `${currentVisionModel}  (unknown provider)`;
+    opt.selected = true;
+    visionSel.prepend(opt);
+  }
   document.getElementById('fd-converter-python').value = f.converter?.pythonPath || 'python3';
 }
 

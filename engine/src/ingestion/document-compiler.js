@@ -4,6 +4,11 @@ const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
 const OpenAI = require('openai');
+let Anthropic;
+try { Anthropic = require('@anthropic-ai/sdk'); } catch { Anthropic = null; }
+
+// Providers that use the Anthropic messages API (not OpenAI chat/completions)
+const ANTHROPIC_COMPAT_PROVIDERS = new Set(['minimax', 'anthropic']);
 
 const DEFAULT_INDEX_SECTIONS = [
   'Decisions',
@@ -49,23 +54,58 @@ class DocumentCompiler {
     this.indexPath = path.join(workspacePath, 'BRAIN_INDEX.md');
 
     this.model = config.model || 'minimax-m2.7';
+    this.clientType = null; // 'anthropic' or 'openai'
+    this.client = null;
+    this._buildClient(this.model);
+  }
 
-    // Resolve provider baseURL from model name via home.yaml
-    let baseURL = config.baseURL || process.env.COMPILER_LLM_BASE_URL;
-    let apiKey = config.apiKey || process.env.COMPILER_LLM_API_KEY;
+  /**
+   * Build the appropriate SDK client for a given model.
+   * Anthropic-compatible providers (minimax, anthropic) use the Anthropic SDK.
+   * Everything else uses the OpenAI SDK.
+   */
+  _buildClient(model) {
+    let baseURL = this.config.baseURL || process.env.COMPILER_LLM_BASE_URL;
+    let apiKey = this.config.apiKey || process.env.COMPILER_LLM_API_KEY;
+    let providerName = null;
 
     if (!baseURL) {
-      const resolved = this._resolveProviderForModel(this.model);
+      const resolved = this._resolveProviderForModel(model);
       if (resolved) {
         baseURL = resolved.baseUrl;
         apiKey = apiKey || resolved.apiKey;
+        providerName = resolved.providerName;
       }
     }
 
-    baseURL = baseURL || 'https://ollama.com/v1';
-    apiKey = apiKey || process.env.OLLAMA_CLOUD_API_KEY || 'ollama';
+    const isAnthropicCompat = providerName && ANTHROPIC_COMPAT_PROVIDERS.has(providerName);
 
-    this.client = new OpenAI({ apiKey, baseURL });
+    if (isAnthropicCompat && Anthropic) {
+      apiKey = apiKey || process.env.MINIMAX_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
+      this.client = new Anthropic({ apiKey, baseURL });
+      this.clientType = 'anthropic';
+    } else {
+      baseURL = baseURL || 'https://ollama.com/v1';
+      apiKey = apiKey || process.env.OLLAMA_CLOUD_API_KEY || 'ollama';
+      this.client = new OpenAI({ apiKey, baseURL });
+      this.clientType = 'openai';
+    }
+
+    this.logger?.info?.('Compiler client initialized', {
+      model, clientType: this.clientType, baseURL, providerName: providerName || 'fallback'
+    });
+  }
+
+  /**
+   * Hot-update the compiler model at runtime (called by feeder admin endpoint).
+   * Re-resolves provider and rebuilds the correct SDK client.
+   */
+  updateModel(newModel) {
+    if (!newModel || newModel === this.model) return;
+    const oldModel = this.model;
+    this.model = newModel;
+    this._buildClient(newModel);
+    this.logger?.info?.('Compiler model updated', { oldModel, newModel, clientType: this.clientType });
   }
 
   _resolveProviderForModel(model) {
@@ -75,15 +115,17 @@ class DocumentCompiler {
       'openai': 'OPENAI_API_KEY',
       'openai-codex': 'OPENAI_API_KEY',
       'xai': 'XAI_API_KEY',
+      'minimax': 'MINIMAX_API_KEY',
     };
     try {
-      const engineDir = path.resolve(__dirname, '..');
+      const engineDir = path.resolve(__dirname, '..', '..');
       const homePath = path.join(engineDir, '..', 'config', 'home.yaml');
       if (!fs.existsSync(homePath)) return null;
       const home = yaml.load(fs.readFileSync(homePath, 'utf8')) || {};
       for (const [name, prov] of Object.entries(home.providers || {})) {
         if ((prov.defaultModels || []).includes(model)) {
           return {
+            providerName: name,
             baseUrl: prov.baseUrl || prov.baseURL,
             apiKey: process.env[envKeyMap[name] || ''] || undefined,
           };
@@ -111,14 +153,26 @@ class DocumentCompiler {
         .replace('{FORMAT}', format)
         .replace('{CONTENT}', text);
 
-      const response = await this.client.chat.completions.create({
-        model: this.model,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 4096,
-        temperature: 0.1,
-      });
-
-      const synthesis = response.choices?.[0]?.message?.content;
+      let synthesis;
+      if (this.clientType === 'anthropic') {
+        const response = await this.client.messages.create({
+          model: this.model,
+          max_tokens: 4096,
+          messages: [{ role: 'user', content: prompt }],
+        });
+        // MiniMax/Claude can return multiple content blocks — find the text block.
+        // Reasoning models return a "thinking" block first, then a "text" block.
+        const textBlock = (response.content || []).find(b => b.type === 'text');
+        synthesis = textBlock?.text || '';
+      } else {
+        const response = await this.client.chat.completions.create({
+          model: this.model,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 4096,
+          temperature: 0.1,
+        });
+        synthesis = response.choices?.[0]?.message?.content || '';
+      }
       if (!synthesis || synthesis.trim().length === 0) {
         this.logger?.warn?.('Compiler returned empty synthesis', { filename });
         return null;

@@ -74,7 +74,6 @@ providers:
   ollama-cloud:
     baseUrl: https://ollama.com/v1
     defaultModels:
-      - minimax-m2.7
       - kimi-k2.5
       - gemma4:31b
       - glm-5.1
@@ -100,9 +99,6 @@ providers:
       - MiniMax-M2.7-highspeed
       - MiniMax-M2.5
       - MiniMax-M2.5-highspeed
-      - MiniMax-M2.1
-      - MiniMax-M2.1-highspeed
-      - MiniMax-M2
   xai:
     baseUrl: https://api.x.ai/v1
     defaultModels:
@@ -123,8 +119,8 @@ embeddings:
       model: nomic-embed-text
       dimensions: 768
 chat:
-  defaultProvider: openai-codex
-  defaultModel: gpt-5.4
+  defaultProvider: minimax
+  defaultModel: MiniMax-M2.7
   maxTokens: 4096
   temperature: 0.7
   historyBudget: 400000
