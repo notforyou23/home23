@@ -1872,16 +1872,13 @@ class Orchestrator {
       // 10. Store in memory (with robust validation)
       //     Scrub any tool-call artifacts the model may have emitted as
       //     literal text (e.g. [TOOL_CALL]...[/TOOL_CALL], {tool => ...})
-      //     BEFORE validation + storage. Without this, curator's raw tool
-      //     syntax ends up stored as the thought itself — the bug we saw
-      //     at cycle 2173 / 2183.
+      //     BEFORE validation + storage. Always apply; if the scrub leaves
+      //     the thought too short, validateAndClean will reject it and the
+      //     cycle will log the issue rather than store junk. This is the
+      //     bug that stored the whole tool-call as the thought at cycle
+      //     2173 / 2183 / 2423.
       if (thought && typeof thought.hypothesis === 'string') {
-        const scrubbed = scrubToolArtifacts(thought.hypothesis);
-        // Only replace if scrubbing actually removed something substantial;
-        // otherwise keep the original to avoid losing nuance.
-        if (scrubbed && scrubbed.length >= 10 && scrubbed !== thought.hypothesis) {
-          thought.hypothesis = scrubbed;
-        }
+        thought.hypothesis = scrubToolArtifacts(thought.hypothesis);
       }
 
       let memoryNode = null;
@@ -5226,18 +5223,20 @@ class Orchestrator {
   }
 
   /**
-   * Read recent thoughts for a specific role and return a formatted "don't
-   * repeat" block that gets appended to the role's prompt. Prevents the
-   * same role from independently arriving at the same angle cycle after
-   * cycle (e.g. proposal saying "correlation view" 15x in a row).
+   * Read recent thoughts for a specific role, extract topic keywords, and
+   * return a strong "FORBIDDEN TOPICS" block. Empirically a text-level
+   * "don't repeat these outputs" instruction is not enough — models
+   * interpret it as "use different words" and keep circling the same
+   * subject. So we extract noun-like keywords from recent role outputs
+   * and tell the model those topics are off-limits this cycle.
    */
-  _buildRecentRoleBlock(roleId, limit = 4) {
+  _buildRecentRoleBlock(roleId, limit = 6) {
     try {
       const fsSync = require('fs');
       const logPath = path.join(this.logsDir, 'thoughts.jsonl');
       if (!fsSync.existsSync(logPath)) return '';
       const lines = fsSync.readFileSync(logPath, 'utf-8')
-        .split('\n').filter(Boolean).slice(-400);
+        .split('\n').filter(Boolean).slice(-600);
       const ownEntries = [];
       // Walk backwards so we collect the MOST RECENT first, then reverse for display
       for (let i = lines.length - 1; i >= 0 && ownEntries.length < limit; i--) {
@@ -5252,23 +5251,128 @@ class Orchestrator {
         } catch { /* skip bad line */ }
       }
       if (ownEntries.length === 0) return '';
-      const bullets = ownEntries.reverse()
-        .map(e => `  • [cycle ${e.cycle || '?'}] ${e.text}`)
+
+      // Extract topic phrases from recent outputs. Naive but effective:
+      // tokenize on word boundaries, filter stopwords + short tokens,
+      // count frequencies, return the top repeated 1-2 word phrases
+      // weighted by cross-entry repetition.
+      const topics = this._extractTopicKeywords(ownEntries);
+
+      const recentBullets = ownEntries.reverse()
+        .map(e => `  • [cycle ${e.cycle || '?'}] ${e.text.slice(0, 120)}…`)
         .join('\n');
+
+      const topicList = topics.length > 0
+        ? topics.map(t => `  ✗ ${t}`).join('\n')
+        : '  (no clear repeat topics detected)';
+
       return [
         '',
         '',
-        '═══ RECENT ANGLES YOU ALREADY COVERED — DO NOT REPEAT ═══',
-        'These are your last few outputs for this role. Find a genuinely',
-        'different topic. If you keep circling the same point, step back and',
-        'pick a different corner of jtr\'s world.',
-        bullets,
+        '═══ HARD CONSTRAINT — FORBIDDEN TOPICS THIS CYCLE ═══',
+        `You (${roleId}) have already written about these subjects in your`,
+        `last ${ownEntries.length} outputs. They are SATURATED. You are`,
+        'FORBIDDEN from producing any output on these topics this cycle,',
+        'even framed differently, even with different words. Rephrasing',
+        'the same subject counts as repetition — it is not a new angle.',
+        '',
+        'Forbidden topics:',
+        topicList,
+        '',
+        'Pick an ENTIRELY DIFFERENT corner of jtr\'s world. Look at his',
+        'other interests: trading positions, newsletter work, specific',
+        'people, scheduling, historical decisions, specific projects',
+        'beyond Home23 infrastructure, sensory observations from actual',
+        'sensor data, recent conversations, anything at all — just NOT',
+        'the topics above. If nothing else comes to mind, write about',
+        'something genuinely surprising or small from jtr\'s context.',
+        '',
+        'For audit, here are your recent outputs (verbatim — do not',
+        'reword them):',
+        recentBullets,
         '═══════════════════════════════════════════════════════════',
         '',
       ].join('\n');
     } catch {
       return '';
     }
+  }
+
+  /**
+   * Pull topic keywords from a set of recent entries. Returns 1-2 word
+   * phrases that appear across multiple entries, indicating the role is
+   * circling them. No NLP library — just cheap tokenization + frequency.
+   */
+  _extractTopicKeywords(entries) {
+    const STOPWORDS = new Set([
+      'the', 'and', 'that', 'this', 'with', 'from', 'into', 'have', 'will',
+      'not', 'for', 'but', 'are', 'was', 'were', 'been', 'being', 'has', 'had',
+      'can', 'could', 'should', 'would', 'may', 'might', 'one', 'two', 'any',
+      'some', 'all', 'more', 'most', 'other', 'its', 'itself', 'which', 'what',
+      'when', 'where', 'how', 'who', 'why', 'here', 'there', 'now', 'then',
+      'already', 'still', 'just', 'only', 'also', 'very', 'much', 'even',
+      'about', 'between', 'through', 'across', 'over', 'under', 'above',
+      'jtr', 'home23', 'this', 'make', 'made', 'said', 'say', 'get', 'got',
+      'insight', 'action', 'investigate', 'notify', 'trigger', 'analyze',
+      'analysis', 'next', 'build', 'clear', 'assumption', 'verdict', 'cycle',
+    ]);
+
+    // Collect all alphabetic tokens per entry
+    const entryTokens = [];
+    for (const e of entries) {
+      const norm = e.text.toLowerCase().replace(/[^a-z\s-]/g, ' ');
+      const tokens = norm.split(/\s+/).filter(t => t.length >= 4 && !STOPWORDS.has(t));
+      entryTokens.push(new Set(tokens));
+    }
+
+    // Score tokens by number of entries they appear in (cross-entry repetition)
+    const scores = new Map();
+    for (const tokenSet of entryTokens) {
+      for (const t of tokenSet) {
+        scores.set(t, (scores.get(t) || 0) + 1);
+      }
+    }
+
+    // Also score common 2-word phrases (adjacent tokens, not separated by stopwords)
+    const phraseScores = new Map();
+    for (const e of entries) {
+      const norm = e.text.toLowerCase().replace(/[^a-z\s-]/g, ' ');
+      const tokens = norm.split(/\s+/).filter(Boolean);
+      const seenInEntry = new Set();
+      for (let i = 0; i < tokens.length - 1; i++) {
+        const a = tokens[i], b = tokens[i + 1];
+        if (a.length < 4 || b.length < 4) continue;
+        if (STOPWORDS.has(a) || STOPWORDS.has(b)) continue;
+        const phrase = `${a} ${b}`;
+        if (seenInEntry.has(phrase)) continue;
+        seenInEntry.add(phrase);
+        phraseScores.set(phrase, (phraseScores.get(phrase) || 0) + 1);
+      }
+    }
+
+    // Collect items that appear in ≥2 entries (truly repeated across outputs)
+    const minRepeat = Math.min(2, entries.length);
+    const items = [];
+    for (const [phrase, count] of phraseScores) {
+      if (count >= minRepeat) items.push({ text: phrase, count, type: 'phrase' });
+    }
+    for (const [token, count] of scores) {
+      if (count >= minRepeat) items.push({ text: token, count, type: 'word' });
+    }
+
+    // Prefer phrases over single words when they overlap
+    const phraseWords = new Set();
+    for (const it of items) {
+      if (it.type === 'phrase') {
+        for (const w of it.text.split(' ')) phraseWords.add(w);
+      }
+    }
+    const filtered = items.filter(it => it.type === 'phrase' || !phraseWords.has(it.text));
+
+    // Sort by repetition count then length
+    filtered.sort((a, b) => b.count - a.count || b.text.length - a.text.length);
+
+    return filtered.slice(0, 8).map(it => it.text);
   }
 
   async saveDream(dream) {
