@@ -1,0 +1,18 @@
+{
+  "id": "x",
+  "version": "1.0.0",
+  "name": "X",
+  "description": "Operate on X/Twitter with bird CLI for timelines, reads, search, mentions, posts, and replies.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "author": "home23",
+  "entry": "index.js",
+  "actions": [
+    "timeline",
+    "read",
+    "search",
+    "mentions",
+    "post",
+    "reply"
+  ]
+}

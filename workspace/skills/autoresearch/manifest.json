@@ -1,0 +1,12 @@
+{
+  "id": "autoresearch",
+  "version": "1.0.0",
+  "name": "Autoresearch",
+  "description": "Guidance for iteratively improving a weak skill through score, tweak, and retest loops.",
+  "layer": "skill",
+  "runtime": "docs",
+  "author": "home23",
+  "actions": [
+    "autoresearch_loop"
+  ]
+}

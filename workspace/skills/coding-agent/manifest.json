@@ -1,0 +1,14 @@
+{
+  "id": "coding-agent",
+  "version": "1.0.0",
+  "name": "Coding Agent",
+  "description": "Guidance for when to delegate coding work to a specialized coding runtime or worker.",
+  "layer": "skill",
+  "runtime": "docs",
+  "author": "home23",
+  "actions": [
+    "brief",
+    "model-selection",
+    "handoff"
+  ]
+}

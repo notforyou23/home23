@@ -1,0 +1,15 @@
+{
+  "id": "browser-automation",
+  "version": "1.0.0",
+  "name": "Browser Automation",
+  "description": "Use Home23's live browser controller for screenshots, navigation checks, and page extraction.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "author": "home23",
+  "entry": "index.js",
+  "actions": [
+    "navigate",
+    "extract",
+    "screenshot"
+  ]
+}

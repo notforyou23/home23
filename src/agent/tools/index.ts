@@ -16,6 +16,7 @@ import { cronScheduleTool, cronListTool, cronDeleteTool } from './cron.js';
 import { selfUpdateTool, selfReadTool } from './identity.js';
 import { spawnAgentTool } from './subagent.js';
 import { promoteToMemoryTool } from './promote.js';
+import { skillsGetTool, skillsListTool, skillsRunTool } from './skills.js';
 import {
   listBrainsTool,
   queryBrainTool,
@@ -109,6 +110,9 @@ export function createToolRegistry(): ToolRegistry {
   registry.register(cronDeleteTool);
   registry.register(selfUpdateTool);
   registry.register(selfReadTool);
+  registry.register(skillsListTool);
+  registry.register(skillsGetTool);
+  registry.register(skillsRunTool);
   registry.register(spawnAgentTool);
   // COSMO 2.3 research toolkit — 11 tools (see docs/design/STEP16)
   registry.register(listBrainsTool);

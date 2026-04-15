@@ -45,6 +45,7 @@ import { ApnsClient } from './push/apns-client.js';
 import { ApnsPusher } from './push/apns-pusher.js';
 import { createRegisterDeviceHandler, createUnregisterDeviceHandler, createListDevicesHandler } from './routes/device.js';
 import { createChatHistoryHandler, createChatListHandler } from './routes/chat-history.js';
+import { syncSharedSkillsRegistry } from './skills/runtime.js';
 
 // ─── Constants ──────────────────────────────────────────────
 
@@ -143,6 +144,14 @@ async function main(): Promise<void> {
   // Ensure directories exist
   mkdirSync(CONVERSATIONS_DIR, { recursive: true });
   mkdirSync(SESSIONS_DIR, { recursive: true });
+
+  const sharedSkillsRegistry = await syncSharedSkillsRegistry(PROJECT_ROOT).catch((err) => {
+    console.warn(`[home] Shared skills registry sync failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  });
+  if (sharedSkillsRegistry) {
+    console.log('[home] Shared skills registry synced');
+  }
 
   // ── Context Manager (identity + system prompt) ──
   const workspacePath = WORKSPACE_PATH;

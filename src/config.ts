@@ -54,6 +54,35 @@ function normalizeEmbeddedAgentLayers(embeddedAgent?: EmbeddedAgentConfig): Iden
   return layers.length > 0 ? layers : undefined;
 }
 
+function buildDefaultIdentityLayers(agentName: string, identityFiles: string[]): IdentityLayerConfig[] {
+  return [{
+    basePath: join(HOME23_ROOT, 'instances', agentName, 'workspace'),
+    files: identityFiles,
+  }];
+}
+
+function appendSharedSkillsLayer(agentName: string, config: HomeConfig): void {
+  if (!config.chat) return;
+
+  const routingBasePath = join(HOME23_ROOT, 'workspace', 'skills');
+  const routingFile = 'SKILL_ROUTING.md';
+  if (!existsSync(join(routingBasePath, routingFile))) return;
+
+  const currentLayers = config.chat.identityLayers && config.chat.identityLayers.length > 0
+    ? [...config.chat.identityLayers]
+    : buildDefaultIdentityLayers(agentName, config.chat.identityFiles);
+
+  const alreadyPresent = currentLayers.some((layer) =>
+    resolve(layer.basePath) === resolve(routingBasePath) && layer.files.includes(routingFile)
+  );
+
+  if (!alreadyPresent) {
+    currentLayers.push({ basePath: routingBasePath, files: [routingFile] });
+  }
+
+  config.chat.identityLayers = currentLayers;
+}
+
 export function loadConfig(agentName: string): HomeConfig {
   // Layer 1: Home-level defaults
   const homeConfig = loadYaml(join(HOME23_ROOT, 'config', 'home.yaml'));
@@ -86,11 +115,10 @@ export function loadConfig(agentName: string): HomeConfig {
 
   const typedConfig = config as unknown as HomeConfig;
   const derivedLayers = normalizeEmbeddedAgentLayers(typedConfig.chat?.embeddedAgent);
-  if (derivedLayers && (!typedConfig.chat?.identityLayers || typedConfig.chat.identityLayers.length === 0)) {
-    if (typedConfig.chat) {
-      typedConfig.chat.identityLayers = derivedLayers;
-    }
+  if (typedConfig.chat && (!typedConfig.chat.identityLayers || typedConfig.chat.identityLayers.length === 0)) {
+    typedConfig.chat.identityLayers = derivedLayers ?? buildDefaultIdentityLayers(agentName, typedConfig.chat.identityFiles);
   }
+  appendSharedSkillsLayer(agentName, typedConfig);
 
   return typedConfig;
 }
