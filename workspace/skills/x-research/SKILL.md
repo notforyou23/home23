@@ -114,6 +114,7 @@ Clear cached X research results.
 
 - This skill is read-only research, not posting or account management.
 - X API auth is separate from the browser-cookie `bird` path used by `x`.
+- In Home23, the preferred auth path is the Settings → Skills tab, which stores the bearer token host-wide in `config/secrets.yaml`.
 - Search is recent-search oriented; it is not full archive research.
 - A lot of X chatter is derivative. Validate primary sources before treating claims as facts.
 - Broad queries get spammy fast. Use `from`, `since`, `quality`, and negative operators to tighten the search.

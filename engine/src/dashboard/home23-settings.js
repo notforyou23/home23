@@ -4,6 +4,7 @@
 
 const API = '/home23/api/settings';
 let modelsData = null;
+let skillsSettingsData = null;
 let tilesState = null;
 let tileConnectionsState = null;
 let editingCustomTileId = null;
@@ -822,6 +823,119 @@ async function saveSystem() {
     statusEl.textContent = 'Error: ' + err.message;
     statusEl.style.color = 'var(--accent-red)';
   }
+}
+
+// ── Skills ──
+
+async function loadSkillsSettings() {
+  try {
+    const res = await fetch(`${API}/skills`);
+    const data = await res.json();
+    renderSkillsSettings(data);
+  } catch (err) {
+    console.error('Failed to load skills settings:', err);
+  }
+}
+
+function renderSkillCard(skill) {
+  const audit = skill.audit || {};
+  const settings = skill.settings || {};
+  const configured = settings.authRequired
+    ? (settings.configured ? 'credential configured' : 'credential missing')
+    : 'no credential required';
+  const configuredColor = settings.authRequired
+    ? (settings.configured ? 'var(--accent-green)' : 'var(--accent-orange, #fb923c)')
+    : 'var(--text-muted)';
+
+  return `
+    <div class="h23s-provider-card" style="padding:14px 16px;margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span class="h23s-provider-name">${escapeHtml(skill.name)}</span>
+            <span class="h23s-agent-badge">${escapeHtml(skill.category || 'general')}</span>
+            <span class="h23s-agent-badge">${skill.operational ? 'exec' : 'docs'}</span>
+            ${audit.status ? `<span class="h23s-agent-badge ${audit.status === 'strong' ? 'running' : 'partial'}">${escapeHtml(audit.status)}</span>` : ''}
+          </div>
+          <div style="font-size:12px;color:var(--text-muted);margin-top:6px;">${escapeHtml(skill.description || '')}</div>
+        </div>
+        <div style="font-size:11px;color:${configuredColor};text-align:right;min-width:160px;">
+          <div>${escapeHtml(configured)}</div>
+          ${audit.undertriggerRisk ? `<div style="margin-top:4px;color:var(--text-muted);">undertrigger: ${escapeHtml(audit.undertriggerRisk)}</div>` : ''}
+        </div>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;font-size:11px;color:var(--text-muted);">
+        <span>Runtime: <strong style="color:var(--text-secondary);">${escapeHtml(skill.runtime || 'docs')}</strong></span>
+        <span>Actions: <strong style="color:var(--text-secondary);">${escapeHtml((skill.actions || []).join(', ') || 'none')}</strong></span>
+        <span>Runs: <strong style="color:var(--text-secondary);">${audit.runCount || 0}</strong></span>
+        ${settings.authRequired ? `<span>Auth: <strong style="color:${configuredColor};">${settings.configured ? 'ready' : 'needed'}</strong></span>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderSkillsSettings(data) {
+  skillsSettingsData = data;
+  document.getElementById('skills-config-path').textContent = data.configPath || 'config/home.yaml';
+  document.getElementById('skills-secrets-path').textContent = data.secretsPath || 'config/secrets.yaml';
+
+  const catalog = document.getElementById('skills-catalog');
+  catalog.innerHTML = (data.skills || []).map(renderSkillCard).join('')
+    || '<p class="h23s-panel-desc" style="margin:0;">No shared skills discovered.</p>';
+
+  const xr = data.xResearch || {};
+  document.getElementById('xresearch-default-quick').checked = xr.defaults?.quick === true;
+  document.getElementById('xresearch-default-markdown').checked = xr.defaults?.saveMarkdown !== false;
+  document.getElementById('xresearch-watchlist-count').textContent = String(xr.watchlistCount || 0);
+  document.getElementById('xresearch-clear-token').checked = false;
+  document.getElementById('xresearch-token').value = '';
+  document.getElementById('xresearch-token-current').textContent = xr.configured
+    ? `Current token: ${xr.maskedBearerToken || 'configured'}`
+    : 'No token configured';
+}
+
+async function saveSkillsSettings() {
+  const statusEl = document.getElementById('skills-status');
+  const bearerToken = document.getElementById('xresearch-token').value.trim();
+  const clearBearerToken = document.getElementById('xresearch-clear-token').checked;
+  const body = {
+    skills: {
+      'x-research': {
+        defaults: {
+          quick: document.getElementById('xresearch-default-quick').checked,
+          saveMarkdown: document.getElementById('xresearch-default-markdown').checked,
+        },
+        ...(bearerToken ? { bearerToken } : {}),
+        ...(clearBearerToken ? { clearBearerToken: true } : {}),
+      },
+    },
+  };
+
+  try {
+    const res = await fetch(`${API}/skills`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!data.ok) {
+      statusEl.textContent = 'Error: ' + (data.error || 'unknown');
+      statusEl.style.color = 'var(--accent-red)';
+      return;
+    }
+
+    statusEl.textContent = 'Saved · hot-applied';
+    statusEl.style.color = 'var(--accent-green)';
+    setTimeout(() => { statusEl.textContent = ''; }, 4000);
+    loadSkillsSettings();
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.style.color = 'var(--accent-red)';
+  }
+}
+
+function setupSkillsHandlers() {
+  document.getElementById('btn-save-skills')?.addEventListener('click', saveSkillsSettings);
 }
 
 // ── Maintenance actions ──
@@ -3387,6 +3501,7 @@ async function init() {
   loadAgents();
   loadSystem();
   loadFeeder();
+  loadSkillsSettings();
   loadVibe();
   loadOAuthStatus();
   loadTilesPanel();
@@ -3411,6 +3526,7 @@ async function init() {
   document.getElementById('btn-build-ts').addEventListener('click', buildTS);
   setupTilesHandlers();
   setupFeederHandlers();
+  setupSkillsHandlers();
   document.getElementById('vibe-save')?.addEventListener('click', saveVibe);
   setupOAuthHandlers();
   setupOnboardingHandlers();

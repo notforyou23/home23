@@ -1,11 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const BASE_URL = "https://api.x.com/2";
 const RATE_DELAY_MS = 350;
 const DEFAULT_PAGE_SIZE = 100;
 const DEFAULT_CACHE_TTL_MS = 15 * 60 * 1000;
+const SKILL_ID = "x-research";
+const require = createRequire(import.meta.url);
+const yaml = require("js-yaml");
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -29,7 +34,36 @@ function slugify(value, fallback = "query") {
 }
 
 function resolveSkillDir() {
-  return path.dirname(new URL(import.meta.url).pathname);
+  return path.dirname(fileURLToPath(import.meta.url));
+}
+
+function resolveProjectRoot(context = {}) {
+  return context?.projectRoot || path.resolve(resolveSkillDir(), "..", "..", "..");
+}
+
+function readYamlFile(filePath) {
+  if (!fs.existsSync(filePath)) return {};
+  return yaml.load(fs.readFileSync(filePath, "utf8")) || {};
+}
+
+function loadHome23Config(context = {}) {
+  return readYamlFile(path.join(resolveProjectRoot(context), "config", "home.yaml"));
+}
+
+function loadHome23Secrets(context = {}) {
+  return readYamlFile(path.join(resolveProjectRoot(context), "config", "secrets.yaml"));
+}
+
+function getSkillHostConfig(context = {}) {
+  const homeConfig = loadHome23Config(context);
+  const stored = homeConfig.skills?.[SKILL_ID] || {};
+  const defaults = stored.defaults && typeof stored.defaults === "object" ? stored.defaults : {};
+  return {
+    defaults: {
+      quick: defaults.quick === true,
+      saveMarkdown: defaults.saveMarkdown !== false,
+    },
+  };
 }
 
 function resolveDataDir() {
@@ -105,8 +139,16 @@ function parseSince(since) {
   return null;
 }
 
-function getToken() {
+function getToken(context = {}) {
   if (process.env.X_BEARER_TOKEN) return process.env.X_BEARER_TOKEN;
+
+  try {
+    const secrets = loadHome23Secrets(context);
+    const configured = secrets.skills?.[SKILL_ID]?.bearerToken;
+    if (configured) return String(configured);
+  } catch {
+    // ignore
+  }
 
   try {
     const globalEnv = fs.readFileSync(path.join(process.env.HOME || "", ".config", "env", "global.env"), "utf8");
@@ -411,9 +453,19 @@ function buildSearchQuery(params = {}) {
   return query;
 }
 
+function resolveSaveMarkdown(params, context) {
+  if (params.saveMarkdown !== undefined) return params.saveMarkdown !== false;
+  return getSkillHostConfig(context).defaults.saveMarkdown !== false;
+}
+
+function resolveSearchQuick(params, context) {
+  if (params.quick !== undefined) return params.quick === true;
+  return getSkillHostConfig(context).defaults.quick === true;
+}
+
 async function actionSearch(params = {}, context = {}) {
   const outputDir = resolveOutputDir(context);
-  const quick = Boolean(params.quick);
+  const quick = resolveSearchQuick(params, context);
   const sort = String(params.sort || "likes");
   const pages = quick ? 1 : Math.max(1, Math.min(Number(params.pages || 1), 5));
   const limit = quick ? Math.min(Number(params.limit || 10), 10) : Math.max(1, Math.min(Number(params.limit || 15), 50));
@@ -476,7 +528,7 @@ async function actionSearch(params = {}, context = {}) {
     });
   }
 
-  if (params.saveMarkdown !== false) {
+  if (resolveSaveMarkdown(params, context)) {
     result.savedMarkdownTo = writeTextFile(
       outputDir,
       `search-${slugify(finalQuery)}`,
@@ -514,7 +566,7 @@ async function actionThread(params = {}, context = {}) {
       tweets,
     });
   }
-  if (params.saveMarkdown !== false) {
+  if (resolveSaveMarkdown(params, context)) {
     result.savedMarkdownTo = writeTextFile(
       outputDir,
       `thread-${tweetId}`,
@@ -552,7 +604,7 @@ async function actionProfile(params = {}, context = {}) {
       ...profile,
     });
   }
-  if (params.saveMarkdown !== false) {
+  if (resolveSaveMarkdown(params, context)) {
     result.savedMarkdownTo = writeTextFile(
       outputDir,
       `profile-${username}`,
@@ -586,7 +638,7 @@ async function actionTweet(params = {}, context = {}) {
   if (params.saveJson) {
     result.savedJsonTo = writeJsonFile(outputDir, `tweet-${tweetId}`, tweet);
   }
-  if (params.saveMarkdown !== false) {
+  if (resolveSaveMarkdown(params, context)) {
     result.savedMarkdownTo = writeTextFile(
       outputDir,
       `tweet-${tweetId}`,
@@ -714,7 +766,7 @@ async function actionWatchlistCheck(params = {}, context = {}) {
     reports,
   };
 
-  if (params.saveMarkdown !== false) {
+  if (resolveSaveMarkdown(params, context)) {
     result.savedMarkdownTo = writeTextFile(outputDir, "watchlist-check", "md", lines.join("\n"));
   }
 

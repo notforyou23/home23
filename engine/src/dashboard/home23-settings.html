@@ -27,6 +27,7 @@
     <button class="h23s-tab" data-stab="agents">Agents</button>
     <button class="h23s-tab" data-stab="models">Models</button>
     <button class="h23s-tab" data-stab="feeder">Feeder</button>
+    <button class="h23s-tab" data-stab="skills">Skills</button>
     <button class="h23s-tab" data-stab="vibe">Vibe</button>
     <button class="h23s-tab" data-stab="tiles">Tiles</button>
     <button class="h23s-tab" data-stab="agency">Agency</button>
@@ -537,6 +538,58 @@
         <div id="fd-upload-progress"></div>
       </div>
 
+    </div>
+
+    <!-- Skills Panel -->
+    <div class="h23s-panel" id="panel-skills">
+      <h2 class="h23s-panel-title">Skills</h2>
+      <p class="h23s-panel-desc">
+        Shared skills are host-wide capabilities for all Home23 agents on this machine. Public skill settings live in
+        <code id="skills-config-path">config/home.yaml</code>; credentials live in
+        <code id="skills-secrets-path">config/secrets.yaml</code>.
+      </p>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">Skill Catalog</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">Use this to see what the shared skill system currently exposes, how healthy each skill is, and which ones need credentials.</p>
+        <div id="skills-catalog"></div>
+      </div>
+
+      <div class="h23s-section">
+        <h3 class="h23s-section-title">X Research</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">
+          Read-only X/Twitter research uses its own X API bearer token. This is stored host-wide so any Home23 agent can use the skill without per-user shell setup.
+        </p>
+        <div class="h23s-field-row">
+          <div class="h23s-field" style="flex:2;">
+            <label>Bearer Token</label>
+            <input type="password" id="xresearch-token" placeholder="Paste X API bearer token">
+            <span class="h23s-hint" id="xresearch-token-current">No token configured</span>
+          </div>
+          <div class="h23s-field">
+            <label>Watchlist Accounts</label>
+            <div id="xresearch-watchlist-count">0</div>
+          </div>
+        </div>
+        <div class="h23s-field-row">
+          <div class="h23s-field">
+            <label><input type="checkbox" id="xresearch-default-quick"> Default to quick mode</label>
+            <span class="h23s-hint">Cheap pulse checks first unless a prompt explicitly asks for deeper research.</span>
+          </div>
+          <div class="h23s-field">
+            <label><input type="checkbox" id="xresearch-default-markdown"> Save markdown artifacts by default</label>
+            <span class="h23s-hint">Writes research summaries into the workspace report path automatically.</span>
+          </div>
+        </div>
+        <div class="h23s-field">
+          <label><input type="checkbox" id="xresearch-clear-token"> Clear stored bearer token on save</label>
+        </div>
+      </div>
+
+      <div class="h23s-actions">
+        <button class="h23s-btn-primary" id="btn-save-skills">Save Skill Settings</button>
+        <span class="h23s-save-status" id="skills-status"></span>
+      </div>
     </div>
 
     <!-- Vibe Panel -->

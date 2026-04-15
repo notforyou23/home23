@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const { pathToFileURL } = require('url');
 const yaml = require('js-yaml');
 const { Home23TileService } = require('./home23-tiles');
 
@@ -71,8 +72,34 @@ function createSettingsRouter(home23Root) {
     return key.slice(0, 8) + '...' + key.slice(-4);
   }
 
+  function getHomeConfigPath() {
+    return path.join(home23Root, 'config', 'home.yaml');
+  }
+
+  function getSecretsPath() {
+    return path.join(home23Root, 'config', 'secrets.yaml');
+  }
+
+  function loadHomeConfig() {
+    return loadYaml(getHomeConfigPath());
+  }
+
   function loadSecrets() {
-    return loadYaml(path.join(home23Root, 'config', 'secrets.yaml'));
+    return loadYaml(getSecretsPath());
+  }
+
+  function normalizeXResearchSettings(stored = {}) {
+    const defaults = stored.defaults && typeof stored.defaults === 'object' ? stored.defaults : {};
+    return {
+      defaults: {
+        quick: defaults.quick === true,
+        saveMarkdown: defaults.saveMarkdown !== false,
+      },
+    };
+  }
+
+  async function importSkillLoader() {
+    return import(pathToFileURL(path.join(home23Root, 'workspace', 'skills', 'skill-loader.js')).href);
   }
 
   router.get('/providers', (req, res) => {
@@ -605,7 +632,7 @@ function createSettingsRouter(home23Root) {
   // ── Task 4: Models + System API ──
 
   router.get('/models', (req, res) => {
-    const homeConfig = loadYaml(path.join(home23Root, 'config', 'home.yaml'));
+    const homeConfig = loadHomeConfig();
     const primary = getPrimaryAgent();
     let engineRoles = {};
     if (primary) {
@@ -626,7 +653,7 @@ function createSettingsRouter(home23Root) {
 
   router.put('/models', (req, res) => {
     const { chat, aliases, providerModels, engineRoles } = req.body;
-    const configPath = path.join(home23Root, 'config', 'home.yaml');
+    const configPath = getHomeConfigPath();
     const homeConfig = loadYaml(configPath);
 
     if (chat) {
@@ -811,7 +838,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
   router.get('/pulse-voice', (req, res) => {
     // Read provider/model from the primary agent's modelAssignments.pulseVoice
     // (merged with base-engine default). Read systemPrompt from home.yaml.
-    const homeConfig = loadYaml(path.join(home23Root, 'config', 'home.yaml'));
+    const homeConfig = loadHomeConfig();
     const baseEngine = loadYaml(path.join(home23Root, 'configs', 'base-engine.yaml'));
     const basePulse = baseEngine?.modelAssignments?.pulseVoice || {};
 
@@ -948,7 +975,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
   });
 
   router.get('/system', (req, res) => {
-    const homeConfig = loadYaml(path.join(home23Root, 'config', 'home.yaml'));
+    const homeConfig = loadHomeConfig();
     res.json({
       evobrew: homeConfig.evobrew || {},
       cosmo23: homeConfig.cosmo23 || {},
@@ -963,7 +990,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
   });
 
   router.put('/system', (req, res) => {
-    const configPath = path.join(home23Root, 'config', 'home.yaml');
+    const configPath = getHomeConfigPath();
     const homeConfig = loadYaml(configPath);
     const { evobrew, cosmo23, embeddings, chat } = req.body;
 
@@ -991,6 +1018,131 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     regenerateEcosystem();
     regenerateEvobrewConfig();
     res.json({ ok: true });
+  });
+
+  // ── Skills (host-wide settings + credentials) ──
+
+  router.get('/skills', async (_req, res) => {
+    try {
+      const [skillLoader, homeConfig, secrets] = await Promise.all([
+        importSkillLoader(),
+        Promise.resolve(loadHomeConfig()),
+        Promise.resolve(loadSecrets()),
+      ]);
+
+      const skills = skillLoader.listSkills();
+      const audit = skillLoader.auditSkills({ telemetryDays: 30 });
+      const auditsById = new Map((audit.skills || []).map((entry) => [entry.id, entry]));
+
+      const xResearchConfig = normalizeXResearchSettings(homeConfig.skills?.['x-research'] || {});
+      const xResearchSecret = secrets.skills?.['x-research'] || {};
+      const watchlistPath = path.join(home23Root, 'workspace', 'skills', 'x-research', 'data', 'watchlist.json');
+      let watchlistCount = 0;
+      if (fs.existsSync(watchlistPath)) {
+        try {
+          const watchlist = JSON.parse(fs.readFileSync(watchlistPath, 'utf8'));
+          watchlistCount = Array.isArray(watchlist.accounts) ? watchlist.accounts.length : 0;
+        } catch {
+          watchlistCount = 0;
+        }
+      }
+
+      res.json({
+        configPath: getHomeConfigPath(),
+        secretsPath: getSecretsPath(),
+        skills: skills.map((skill) => {
+          const auditEntry = auditsById.get(skill.id) || null;
+          const isXResearch = skill.id === 'x-research';
+          return {
+            id: skill.id,
+            name: skill.name,
+            description: skill.description,
+            category: skill.category,
+            runtime: skill.runtime,
+            type: skill.type,
+            operational: skill.hasEntry === true,
+            actions: skill.actions || [],
+            hooks: skill.hookNames || [],
+            audit: auditEntry ? {
+              status: auditEntry.status,
+              score: auditEntry.score,
+              undertriggerRisk: auditEntry.undertriggerRisk,
+              runCount: auditEntry.usage?.runCount || 0,
+              failureCount: auditEntry.usage?.failureCount || 0,
+              lastUsedAt: auditEntry.usage?.lastUsedAt || null,
+            } : null,
+            settings: isXResearch ? {
+              authRequired: true,
+              configured: !!xResearchSecret.bearerToken,
+              maskedBearerToken: maskKey(xResearchSecret.bearerToken || ''),
+              watchlistCount,
+              defaults: xResearchConfig.defaults,
+            } : {
+              authRequired: false,
+            },
+          };
+        }),
+        xResearch: {
+          defaults: xResearchConfig.defaults,
+          configured: !!xResearchSecret.bearerToken,
+          maskedBearerToken: maskKey(xResearchSecret.bearerToken || ''),
+          watchlistCount,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  router.put('/skills', (req, res) => {
+    const updates = req.body?.skills;
+    if (!updates || typeof updates !== 'object') {
+      return res.status(400).json({ ok: false, error: 'skills object required' });
+    }
+
+    const homeConfigPath = getHomeConfigPath();
+    const secretsPath = getSecretsPath();
+    const homeConfig = loadHomeConfig();
+    const secrets = loadSecrets();
+
+    if (!homeConfig.skills || typeof homeConfig.skills !== 'object') homeConfig.skills = {};
+    if (!secrets.skills || typeof secrets.skills !== 'object') secrets.skills = {};
+
+    const applied = [];
+
+    if (updates['x-research'] && typeof updates['x-research'] === 'object') {
+      const incoming = updates['x-research'];
+      const current = normalizeXResearchSettings(homeConfig.skills['x-research'] || {});
+      homeConfig.skills['x-research'] = {
+        ...(homeConfig.skills['x-research'] || {}),
+        defaults: {
+          quick: incoming.defaults?.quick !== undefined ? !!incoming.defaults.quick : current.defaults.quick,
+          saveMarkdown: incoming.defaults?.saveMarkdown !== undefined ? !!incoming.defaults.saveMarkdown : current.defaults.saveMarkdown,
+        },
+      };
+      applied.push('skills.x-research.defaults');
+
+      if (!secrets.skills['x-research'] || typeof secrets.skills['x-research'] !== 'object') {
+        secrets.skills['x-research'] = {};
+      }
+
+      if (typeof incoming.bearerToken === 'string' && incoming.bearerToken.trim()) {
+        secrets.skills['x-research'].bearerToken = incoming.bearerToken.trim();
+        applied.push('skills.x-research.bearerToken');
+      } else if (incoming.clearBearerToken === true) {
+        delete secrets.skills['x-research'].bearerToken;
+        applied.push('skills.x-research.bearerToken:cleared');
+      }
+    }
+
+    saveYaml(homeConfigPath, homeConfig);
+    saveYaml(secretsPath, secrets);
+
+    res.json({
+      ok: true,
+      applied,
+      requiresRestart: [],
+    });
   });
 
   router.post('/system/install', (req, res) => {
