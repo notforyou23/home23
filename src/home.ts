@@ -40,6 +40,11 @@ import {
   createPendingTurnsHandler,
 } from './routes/chat-turn.js';
 import { EngineEventListener } from './engine-events.js';
+import { DeviceRegistry } from './push/device-registry.js';
+import { ApnsClient } from './push/apns-client.js';
+import { ApnsPusher } from './push/apns-pusher.js';
+import { createRegisterDeviceHandler, createUnregisterDeviceHandler, createListDevicesHandler } from './routes/device.js';
+import { createChatHistoryHandler, createChatListHandler } from './routes/chat-history.js';
 
 // ─── Constants ──────────────────────────────────────────────
 
@@ -630,6 +635,30 @@ async function main(): Promise<void> {
     console.log('[home] Scheduler started');
   }
 
+  // ── Push notifications (APNs) — optional ──
+  const apnsConfig = config.apns;
+  const deviceRegistryPath = join(process.env.COSMO_RUNTIME_DIR ?? process.cwd(), 'device-registry.json');
+  const deviceRegistry = new DeviceRegistry(deviceRegistryPath);
+
+  if (apnsConfig?.team_id && apnsConfig?.key_id && apnsConfig?.key_path && apnsConfig?.bundle_id) {
+    try {
+      const apnsClient = new ApnsClient({
+        team_id: apnsConfig.team_id,
+        key_id: apnsConfig.key_id,
+        key_path: apnsConfig.key_path,
+        bundle_id: apnsConfig.bundle_id,
+        default_env: apnsConfig.default_env ?? 'production',
+      });
+      const pusher = new ApnsPusher(apnsClient, deviceRegistry, AGENT_NAME);
+      agent.setPusher(pusher);
+      console.log(`[home] APNs pusher installed — bundle=${apnsConfig.bundle_id}, env=${apnsConfig.default_env ?? 'production'}`);
+    } catch (err) {
+      console.warn('[home] APNs pusher init failed:', err instanceof Error ? err.message : err);
+    }
+  } else {
+    console.log('[home] APNs pusher not configured — push disabled');
+  }
+
   // ── Evobrew Bridge (standalone Express server) ──
   const BRIDGE_PORT = config.ports?.bridge ?? 5004;
   const bridgeToken = config.channels?.webhooks?.token ?? process.env.BRIDGE_TOKEN ?? '';
@@ -640,7 +669,7 @@ async function main(): Promise<void> {
   bridgeApp.use((_req: any, res: any, next: any) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
     if (_req.method === 'OPTIONS') { res.sendStatus(200); return; }
     next();
   });
@@ -666,8 +695,19 @@ async function main(): Promise<void> {
   bridgeApp.post('/api/chat/stop-turn', createTurnStopHandler(chatTurnConfig));
   bridgeApp.get('/api/chat/pending', createPendingTurnsHandler(chatTurnConfig));
 
+  // Device registration routes (iOS push)
+  const deviceConfig = { agentName: AGENT_NAME, registry: deviceRegistry, token: bridgeToken || undefined };
+  bridgeApp.post('/api/device/register', createRegisterDeviceHandler(deviceConfig));
+  bridgeApp.delete('/api/device/register', createUnregisterDeviceHandler(deviceConfig));
+  bridgeApp.get('/api/device/registry', createListDevicesHandler(deviceConfig));
+
+  // Chat history routes (iOS initial load + conversation list)
+  const historyRouteConfig = { agentName: AGENT_NAME, history, token: bridgeToken || undefined };
+  bridgeApp.get('/api/chat/history', createChatHistoryHandler(historyRouteConfig));
+  bridgeApp.get('/api/chat/conversations', createChatListHandler(historyRouteConfig));
+
   bridgeApp.listen(BRIDGE_PORT, () => {
-    console.log(`[home] Evobrew bridge listening on port ${BRIDGE_PORT} (/api/chat, /api/stop, /api/chat/turn, /api/chat/stream, /api/chat/pending, /api/chat/stop-turn, /health)`);
+    console.log(`[home] Evobrew bridge listening on port ${BRIDGE_PORT} (/api/chat, /api/stop, /api/chat/turn, /api/chat/stream, /api/chat/pending, /api/chat/stop-turn, /api/chat/history, /api/chat/conversations, /api/device/register, /api/device/registry, /health)`);
   });
 
   // ── Startup banner ──
