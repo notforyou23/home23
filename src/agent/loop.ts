@@ -219,6 +219,7 @@ export class AgentLoop {
   private triggerIndex: TriggerIndex;
   private memoryStore: MemoryObjectStore;
   private turnStore: TurnStore;
+  private pusher: import('../push/apns-pusher.js').ApnsPusher | null = null;
 
   constructor(opts: {
     apiKey: string;
@@ -371,6 +372,11 @@ export class AgentLoop {
     return [...this.activeRuns.keys()];
   }
 
+  /** Optional: install an APNs pusher to fire notifications on turn completion. */
+  setPusher(pusher: import('../push/apns-pusher.js').ApnsPusher | null): void {
+    this.pusher = pusher;
+  }
+
   /**
    * Run a turn with lifecycle tracking. Writes a `pending` envelope, persists every
    * onEvent as a seq'd `event` record, and writes a final envelope on completion/error.
@@ -410,6 +416,13 @@ export class AgentLoop {
         const endEnv = this.turnStore.writeEnd(chatId, turnId, 'complete', { last_seq: seq, stop_reason: 'end_turn' });
         turnBus.emit(chatId, turnId, endEnv);
         turnBus.close(chatId, turnId);
+        if (this.pusher) {
+          this.pusher.notifyTurnComplete({
+            chatId,
+            turnId,
+            assistantText: result.text ?? '',
+          }).catch(err => console.warn('[push] notifyTurnComplete failed:', err));
+        }
         return result;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
