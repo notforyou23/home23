@@ -28,7 +28,7 @@ const DEFAULT_CONFIG = {
     fallback: { provider: 'openai', model: 'gpt-4o-mini' }
   },
   providers: {
-    openai: { model: 'gpt-image-1', size: 'auto', quality: 'auto' }
+    openai: { model: 'gpt-image-1.5', size: 'auto', quality: 'auto' }
   }
 };
 
@@ -141,6 +141,23 @@ function resolveEngineConfig(engineConfig, homeConfig, agentConfig) {
   return resolved;
 }
 
+function applyHome23ImageGenerationConfig(config, homeConfig) {
+  const configured = homeConfig?.media?.imageGeneration || {};
+  const provider = pickFirstString([configured.provider, config.active, 'openai']) || 'openai';
+  const model = pickFirstString([
+    configured.model,
+    config.providers?.[provider]?.model,
+    DEFAULT_CONFIG.providers?.openai?.model,
+  ]) || 'gpt-image-1.5';
+
+  config.active = provider;
+  config.providers = config.providers || {};
+  config.providers[provider] = {
+    ...(config.providers[provider] || {}),
+    model,
+  };
+}
+
 // ─── CHAOS MODE Category Pools (§17 — preserved verbatim) ─────────────────────
 const IMAGE_CATEGORIES = {
   subjects: [
@@ -244,6 +261,7 @@ function loadConfig(runtime = {}) {
       : {};
     config.promptEngine = resolveEngineConfig(config.promptEngine, homeConfig, agentConfig);
     config.commentaryEngine = resolveEngineConfig(config.commentaryEngine, homeConfig, agentConfig);
+    applyHome23ImageGenerationConfig(config, homeConfig);
   }
 
   return config;
@@ -356,7 +374,7 @@ function createImageProvider(runtime = {}) {
 
   /**
    * generate(prompt, options)
-   * Calls OpenAI images.generate with gpt-image-1.
+   * Calls OpenAI images.generate with the configured GPT Image / DALL-E model.
    * Saves PNG locally to data/images/{uuid}.png (no Supabase).
    * Returns normalized result: { url, b64, mimeType, provider, model, prompt, generatedAt, localPath }
    */
@@ -364,7 +382,7 @@ function createImageProvider(runtime = {}) {
     const config = getConfig();
     const active = options.provider || config.active || 'openai';
     const providerCfg = config.providers?.[active] || {};
-    const model = options.model || providerCfg.model || 'gpt-image-1';
+    const model = options.model || providerCfg.model || 'gpt-image-1.5';
     const size = options.size || providerCfg.size || 'auto';
     const quality = options.quality || providerCfg.quality || 'auto';
 

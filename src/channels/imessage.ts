@@ -71,7 +71,15 @@ export class IMessageAdapter implements ChannelAdapter {
     const { chatId, text } = response;
 
     try {
-      await execFileAsync(cliPath, ['send', chatId, text]);
+      if (text) {
+        await execFileAsync(cliPath, ['send', '--chat-id', chatId, '--text', text]);
+      }
+
+      for (const attachment of response.media ?? []) {
+        const args = ['send', '--chat-id', chatId, '--file', attachment.path];
+        if (attachment.caption) args.push('--text', attachment.caption);
+        await execFileAsync(cliPath, args);
+      }
     } catch (err) {
       console.error(`[imessage] Failed to send to ${chatId}:`, err);
       throw err;

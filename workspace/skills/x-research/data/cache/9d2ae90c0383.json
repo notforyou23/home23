@@ -1,0 +1,1711 @@
+{
+  "query": "test -is:retweet",
+  "params": "sort=likes&pages=1&since=7d",
+  "timestamp": 1776280174111,
+  "tweets": [
+    {
+      "id": "2043408398784287031",
+      "text": "@Osint613 Test test test test test test test test test test test",
+      "author_id": "363036500",
+      "username": "Number_Three_",
+      "name": "Kevin",
+      "created_at": "2026-04-12T19:18:21.000Z",
+      "conversation_id": "2043394073478775242",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 39,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "Osint613"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Number_Three_/status/2043408398784287031"
+    },
+    {
+      "id": "2043314467585310880",
+      "text": "test 1 test 2 test 3 test 4 test 5 test 6 test 7 test 8 test 9 test 10 test 11 test https://t.co/Wk1DiuYfBI https://t.co/YQ5BBdmafd",
+      "author_id": "1883658091876478976",
+      "username": "NamalessNo58654",
+      "name": "NoNamaless",
+      "created_at": "2026-04-12T13:05:06.000Z",
+      "conversation_id": "2043314467585310880",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://iwe.one/MGODP",
+        "https://x.com/NamalessNo58654/status/2043314467585310880/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/NamalessNo58654/status/2043314467585310880"
+    },
+    {
+      "id": "2042935728397603038",
+      "text": "test 1 test 2 test 3 test 4 test 5 test 6 test 7 test 8 test 9 test 10 test 11 test https://t.co/Wk1DiuYfBI https://t.co/XPVuWlmAlB",
+      "author_id": "1883658091876478976",
+      "username": "NamalessNo58654",
+      "name": "NoNamaless",
+      "created_at": "2026-04-11T12:00:08.000Z",
+      "conversation_id": "2042935728397603038",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://iwe.one/MGODP",
+        "https://x.com/NamalessNo58654/status/2042935728397603038/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/NamalessNo58654/status/2042935728397603038"
+    },
+    {
+      "id": "2043379415095136427",
+      "text": "What's your favorite test DM now to take the tests⬇️\nSissy test\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test (custom vid response)\nMy boybreaking Hypnosis\nThe straight test\n\nFee is required\n\nDm📨https://t.co/ZVRQMVeS57 https://t.co/Y7ZvIINVvQ",
+      "author_id": "1380454240745848833",
+      "username": "Damazonia_sissy",
+      "name": "Miss Damazonia Sissy School",
+      "created_at": "2026-04-12T17:23:11.000Z",
+      "conversation_id": "2043379415095136427",
+      "metrics": {
+        "likes": 234,
+        "retweets": 68,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 11121,
+        "bookmarks": 94
+      },
+      "urls": [
+        "http://t.me/bowtomommy1",
+        "https://x.com/Damazonia_sissy/status/2043379415095136427/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Damazonia_sissy/status/2043379415095136427"
+    },
+    {
+      "id": "2043449156627251563",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test \nSPH \nHypnosis test\nThe trigger test\nThe loser test\nFeminization session \nSissification training🔥💦\nAre you ready for this test 💦\nDM 📨👉https://t.co/4NTITILx4R https://t.co/pHcnD4kPVY",
+      "author_id": "1639693792147038209",
+      "username": "Godmother_Meera",
+      "name": "Official Godmother",
+      "created_at": "2026-04-12T22:00:19.000Z",
+      "conversation_id": "2043449156627251563",
+      "metrics": {
+        "likes": 5,
+        "retweets": 20,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1693,
+        "bookmarks": 3
+      },
+      "urls": [
+        "http://t.me/Godmother_M",
+        "https://x.com/Godmother_Meera/status/2043449156627251563/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Godmother_Meera/status/2043449156627251563"
+    },
+    {
+      "id": "2043270994039640064",
+      "text": "Test post before the real thing.\nTest post before the real thing.\nTest post before the real thing.\nTest post before the real thing.\nTest post before the real thing.\nTest post before the real thing.\nTest post before the real thing.\nTest post before the real\nhttps://t.co/RzuaN3AnnR",
+      "author_id": "1928706624610254848",
+      "username": "raellydude",
+      "name": "rae",
+      "created_at": "2026-04-12T10:12:21.000Z",
+      "conversation_id": "2043270994039640064",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 7,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/i/status/2029244228224860418/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/raellydude/status/2043270994039640064"
+    },
+    {
+      "id": "2043310949860295145",
+      "text": "APPROACH FOR BRUTAL SISSY SESSIONS NOW:\nSissy test Gay test Cum test\nStraight test\nBBC test\nHypnosis test \nThe trigger test \nThe loser test\nFeminization session \nSissification training\n\n‼️Not free⚠️\n\nDm📨https://t.co/djNbMrCBA3 https://t.co/4WbWYf90rf",
+      "author_id": "1592801641585147905",
+      "username": "Kgrey31",
+      "name": "Mistress Elizabeth",
+      "created_at": "2026-04-12T12:51:07.000Z",
+      "conversation_id": "2043310949860295145",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 71,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://t.me/Kgrey31",
+        "https://x.com/Kgrey31/status/2043310949860295145/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Kgrey31/status/2043310949860295145"
+    },
+    {
+      "id": "2043183451596079370",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test \nSPH \nHypnosis test\nThe trigger test\nThe loser test\nMy boybreaking fetish questionnaire\nFeminization session \nSissification training💦\n\nAre you ready for this test 💦\n\nDM 📨👉 https://t.co/Z0vlkm4ddV https://t.co/zyffbdfvll",
+      "author_id": "1758219202580656128",
+      "username": "BellaMistr54726",
+      "name": "🥀Bella MiSTR SiSSY SCHOOl 🏫🤍🌸🌹",
+      "created_at": "2026-04-12T04:24:30.000Z",
+      "conversation_id": "2043183451596079370",
+      "metrics": {
+        "likes": 12,
+        "retweets": 5,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 648,
+        "bookmarks": 1
+      },
+      "urls": [
+        "http://t.me/mistresBella01",
+        "https://x.com/BellaMistr54726/status/2043183451596079370/photo/1",
+        "https://x.com/BellaMistr54726/status/2043183451596079370/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BellaMistr54726/status/2043183451596079370"
+    },
+    {
+      "id": "2043183601114550544",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test\nSPH \nHypnosis test\nThe trigger test\nThe loser test\nMy boybreaking fetish questionnaire\nFeminization session \nSissification training🔥💦\n\nAre you ready for this test 💦\n\nDM 📨👉 https://t.co/Z0vlkm4ddV https://t.co/CQ5PjcTUij",
+      "author_id": "1758219202580656128",
+      "username": "BellaMistr54726",
+      "name": "🥀Bella MiSTR SiSSY SCHOOl 🏫🤍🌸🌹",
+      "created_at": "2026-04-12T04:25:05.000Z",
+      "conversation_id": "2043183601114550544",
+      "metrics": {
+        "likes": 7,
+        "retweets": 6,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 600,
+        "bookmarks": 2
+      },
+      "urls": [
+        "http://t.me/mistresBella01",
+        "https://x.com/BellaMistr54726/status/2043183601114550544/photo/1",
+        "https://x.com/BellaMistr54726/status/2043183601114550544/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BellaMistr54726/status/2043183601114550544"
+    },
+    {
+      "id": "2043183567946072312",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test\nSPH \nHypnosis test\nThe trigger test\nThe loser test\nMy boybreaking fetish questionnaire\nFeminization session \nSissification training🔥💦\n\nAre you ready for this test 💦\n\nDM 📨👉 https://t.co/Z0vlkm4ddV https://t.co/4FhHqcT7Fl",
+      "author_id": "1758219202580656128",
+      "username": "BellaMistr54726",
+      "name": "🥀Bella MiSTR SiSSY SCHOOl 🏫🤍🌸🌹",
+      "created_at": "2026-04-12T04:24:57.000Z",
+      "conversation_id": "2043183567946072312",
+      "metrics": {
+        "likes": 4,
+        "retweets": 5,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 492,
+        "bookmarks": 2
+      },
+      "urls": [
+        "http://t.me/mistresBella01",
+        "https://x.com/BellaMistr54726/status/2043183567946072312/photo/1",
+        "https://x.com/BellaMistr54726/status/2043183567946072312/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BellaMistr54726/status/2043183567946072312"
+    },
+    {
+      "id": "2043393626126868833",
+      "text": "APPROACH FOR BRUTAL SISSY SESSIONS NOW:\nSissy test Gay test Cum test\nStraight test\nBBC test\nHypnosis test \nThe trigger test \nThe loser test\nFeminization session \nSissification training\n\n‼️Not free⚠️\n\nDm📨https://t.co/iYjQVyvgSF https://t.co/bTO1M4jS7V",
+      "author_id": "2011350542405222400",
+      "username": "goddessmar18784",
+      "name": "goddessmary",
+      "created_at": "2026-04-12T18:19:39.000Z",
+      "conversation_id": "2043393626126868833",
+      "metrics": {
+        "likes": 14,
+        "retweets": 16,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 788,
+        "bookmarks": 3
+      },
+      "urls": [
+        "http://t.me/Mostressmary",
+        "https://x.com/goddessmar18784/status/2043393626126868833/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/goddessmar18784/status/2043393626126868833"
+    },
+    {
+      "id": "2043456411451961743",
+      "text": "What's your favorite test DM now to take the tests⬇️\nSissy test\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test (custom vid response)\nMy boybreaking Hypnosis\nThe straight test\n\nFee is required\n\nDm📨https://t.co/0rBzmZpHIW https://t.co/TbE7XAfq4a",
+      "author_id": "1909707987930816512",
+      "username": "dominateCYTHIA1",
+      "name": "✨YOUR💦ADDICTION💕GOONEETTY🦋",
+      "created_at": "2026-04-12T22:29:08.000Z",
+      "conversation_id": "2043456411451961743",
+      "metrics": {
+        "likes": 38,
+        "retweets": 20,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 763,
+        "bookmarks": 15
+      },
+      "urls": [
+        "http://t.me/mommylisa15",
+        "https://x.com/dominateCYTHIA1/status/2043456411451961743/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/dominateCYTHIA1/status/2043456411451961743"
+    },
+    {
+      "id": "2043421930217148834",
+      "text": "What's your favorite test DM now to take the tests⬇️\nSissy test\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test (custom vid response)\nMy boybreaking Hypnosis\nThe straight test\n\nFee is required\n\nDm📨https://t.co/TcMJiBszdn https://t.co/PcHvEy4MoJ",
+      "author_id": "1964408325723824128",
+      "username": "mistresskella55",
+      "name": "Mistress Alexia",
+      "created_at": "2026-04-12T20:12:07.000Z",
+      "conversation_id": "2043421930217148834",
+      "metrics": {
+        "likes": 25,
+        "retweets": 28,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1742,
+        "bookmarks": 5
+      },
+      "urls": [
+        "http://t.me/Godd346",
+        "https://x.com/mistresskella55/status/2043421930217148834/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/mistresskella55/status/2043421930217148834"
+    },
+    {
+      "id": "2043402193575817475",
+      "text": "What's your favorite test DM now to take the tests⬇️\nSissy test\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test (custom vid response)\nMy boybreaking Hypnosis\nThe straight test\n\nFee is required\n\nDm📨https://t.co/HCwSz38O2B https://t.co/ip98K203QX",
+      "author_id": "1858080439467945984",
+      "username": "ReeseWithe54945",
+      "name": "Reese Witherspoon",
+      "created_at": "2026-04-12T18:53:42.000Z",
+      "conversation_id": "2043402193575817475",
+      "metrics": {
+        "likes": 1,
+        "retweets": 11,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 293,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://t.me/Isabellamary23",
+        "https://x.com/ReeseWithe54945/status/2043402193575817475/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ReeseWithe54945/status/2043402193575817475"
+    },
+    {
+      "id": "2043412057362759714",
+      "text": "What's your favorite test DM now to take the tests⬇️\nSissy test\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test (custom vid response)\nMy boybreaking Hypnosis\nThe straight test\n\nFee is required\n\nDm📨 https://t.co/wA6YjmIdax https://t.co/MBngFRFi9A",
+      "author_id": "1845917679808344064",
+      "username": "MISSLINDASiSSY",
+      "name": "Mistress linda key holder 🗝️school 🏦",
+      "created_at": "2026-04-12T19:32:53.000Z",
+      "conversation_id": "2043412057362759714",
+      "metrics": {
+        "likes": 61,
+        "retweets": 49,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 5996,
+        "bookmarks": 33
+      },
+      "urls": [
+        "https://t.me/mistresslindasissy_school",
+        "https://x.com/MISSLINDASiSSY/status/2043412057362759714/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/MISSLINDASiSSY/status/2043412057362759714"
+    },
+    {
+      "id": "2043183416405844257",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test \nSPH \nHypnosis test\nThe trigger test\nThe loser test\nMy boybreaking fetish questionnaire\nFeminization session \nSissification training💦\n\nAre you ready for this test 💦\n\nDM 📨👉 https://t.co/Z0vlkm4ddV https://t.co/mqcUR8gd1B",
+      "author_id": "1758219202580656128",
+      "username": "BellaMistr54726",
+      "name": "🥀Bella MiSTR SiSSY SCHOOl 🏫🤍🌸🌹",
+      "created_at": "2026-04-12T04:24:21.000Z",
+      "conversation_id": "2043183416405844257",
+      "metrics": {
+        "likes": 15,
+        "retweets": 7,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 657,
+        "bookmarks": 7
+      },
+      "urls": [
+        "http://t.me/mistresBella01",
+        "https://x.com/BellaMistr54726/status/2043183416405844257/photo/1",
+        "https://x.com/BellaMistr54726/status/2043183416405844257/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BellaMistr54726/status/2043183416405844257"
+    },
+    {
+      "id": "2043310511023067545",
+      "text": "💖Sissy test \n💖Sissy test 2(BBC)\n💖The trigger test\n💖The loser test \n💖The gay test \n💖Hypno test (custom vid response)\n💖My boy breaking fetish questionnaire https://t.co/xeHycKdwaN",
+      "author_id": "1952760528096428032",
+      "username": "goddessella120",
+      "name": "𝕲𝖔𝖉𝖉𝖊𝖘𝖘_𝖊𝖑𝖑𝖆",
+      "created_at": "2026-04-12T12:49:23.000Z",
+      "conversation_id": "2043310511023067545",
+      "metrics": {
+        "likes": 5,
+        "retweets": 4,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 198,
+        "bookmarks": 2
+      },
+      "urls": [
+        "https://x.com/goddessella120/status/2043310511023067545/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/goddessella120/status/2043310511023067545"
+    },
+    {
+      "id": "2043414472568742266",
+      "text": "What's your favorite test DM now to take the tests⬇️\nSissy test\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test (custom vid response)\nMy boybreaking Hypnosis\nThe straight test\n\nFee is required\n\nDm📨 https://t.co/wA6YjmIdax https://t.co/I5MBvFFYIq",
+      "author_id": "1845917679808344064",
+      "username": "MISSLINDASiSSY",
+      "name": "Mistress linda key holder 🗝️school 🏦",
+      "created_at": "2026-04-12T19:42:29.000Z",
+      "conversation_id": "2043414472568742266",
+      "metrics": {
+        "likes": 290,
+        "retweets": 86,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 12376,
+        "bookmarks": 121
+      },
+      "urls": [
+        "https://t.me/mistresslindasissy_school",
+        "https://x.com/MISSLINDASiSSY/status/2043414472568742266/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/MISSLINDASiSSY/status/2043414472568742266"
+    },
+    {
+      "id": "2043419263063478529",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test \nSPH \nHypnosis test\nThe trigger test\nThe loser test\nMy boybreaking fetish questionnaire\nFeminization session \nSissification training💦\n\nAre you ready for this test 💦\n\nDM 📨👉 https://t.co/SQ54VC1fkR https://t.co/u4G0SoKtg5",
+      "author_id": "1951016787337682945",
+      "username": "bbc_hub223",
+      "name": "MISTRESS ( BNWO♠️♠️)",
+      "created_at": "2026-04-12T20:01:31.000Z",
+      "conversation_id": "2043419263063478529",
+      "metrics": {
+        "likes": 2,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 106,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://t.me/mistres6346",
+        "https://x.com/bbc_hub223/status/2043419263063478529/photo/1",
+        "https://x.com/bbc_hub223/status/2043419263063478529/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/bbc_hub223/status/2043419263063478529"
+    },
+    {
+      "id": "2042789860457476339",
+      "text": "What's your favorite test DM now to take the tests⬇️\nSissy test\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test (custom vid response)\nMy boybreaking Hypnosis\nThe straight test\n\n https://t.co/cP5yBMWdRA",
+      "author_id": "2977879062",
+      "username": "Mistresviola1",
+      "name": "MISTRESS VIOLA SISSY SCHOOL/SISSY-GAY TEST",
+      "created_at": "2026-04-11T02:20:30.000Z",
+      "conversation_id": "2042789860457476339",
+      "metrics": {
+        "likes": 36,
+        "retweets": 10,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 4157,
+        "bookmarks": 11
+      },
+      "urls": [
+        "https://x.com/mistress_jorda9/status/2042752583346065751/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Mistresviola1/status/2042789860457476339"
+    },
+    {
+      "id": "2043393711610921068",
+      "text": "APPROACH FOR BRUTAL SISSY SESSIONS NOW:\nSissy test Gay test Cum test\nStraight test\nBBC test\nHypnosis test \nThe trigger test \nThe loser test\nFeminization session \nSissification training\n\n‼️Not free⚠️\n\nDm📨https://t.co/iYjQVyvgSF https://t.co/jAha9Cztrh",
+      "author_id": "2011350542405222400",
+      "username": "goddessmar18784",
+      "name": "goddessmary",
+      "created_at": "2026-04-12T18:19:59.000Z",
+      "conversation_id": "2043393711610921068",
+      "metrics": {
+        "likes": 5,
+        "retweets": 15,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 694,
+        "bookmarks": 2
+      },
+      "urls": [
+        "http://t.me/Mostressmary",
+        "https://x.com/goddessmar18784/status/2043393711610921068/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/goddessmar18784/status/2043393711610921068"
+    },
+    {
+      "id": "2043304211429969968",
+      "text": "@MusafirNafar Guess which test is missing. \nTest 1. Muslim\nTest 2. Christian \nTest 3. Jew\nTest 4. Hindu",
+      "author_id": "885155792193822722",
+      "username": "hamasnpc",
+      "name": "HECKER",
+      "created_at": "2026-04-12T12:24:21.000Z",
+      "conversation_id": "2043030845813068161",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 4,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "MusafirNafar"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/hamasnpc/status/2043304211429969968"
+    },
+    {
+      "id": "2043620567278911676",
+      "text": "Dm for your test now 🍆🥵💦💦\n\nSissy test\nSissy test 2(BBC)\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test\nStraight test https://t.co/osjNpbF3qZ",
+      "author_id": "4221270754",
+      "username": "TAMMYSCHOOL1",
+      "name": "🎀TAMMY SISSY SCHOOL🎀",
+      "created_at": "2026-04-13T09:21:26.000Z",
+      "conversation_id": "2043620567278911676",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 175,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/TAMMYSCHOOL1/status/2043620567278911676/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/TAMMYSCHOOL1/status/2043620567278911676"
+    },
+    {
+      "id": "2043090740163526752",
+      "text": "APPROACH FOR BRUTAL SISSY SESSIONS NOW:\nSissy test Gay test Cum test\nStraight test\nBBC test\nHypnosis test \nThe trigger test \nThe loser test\nFeminization session \nSissification training\n\n‼️Not free⚠️\n\nDm📨https://t.co/0rBzmZpHIW https://t.co/U3hMtas0Fd",
+      "author_id": "1909707987930816512",
+      "username": "dominateCYTHIA1",
+      "name": "✨YOUR💦ADDICTION💕GOONEETTY🦋",
+      "created_at": "2026-04-11T22:16:05.000Z",
+      "conversation_id": "2043090740163526752",
+      "metrics": {
+        "likes": 29,
+        "retweets": 12,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 671,
+        "bookmarks": 11
+      },
+      "urls": [
+        "http://t.me/mommylisa15",
+        "https://x.com/dominateCYTHIA1/status/2043090740163526752/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/dominateCYTHIA1/status/2043090740163526752"
+    },
+    {
+      "id": "2043092392769663360",
+      "text": "What's your favorite test DM now to take the tests⬇️\nSissy test\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test (custom vid response)\nMy boybreaking Hypnosis\nThe straight test\n\n https://t.co/lAIuLGggcD",
+      "author_id": "1759699884368666625",
+      "username": "stallionkim0",
+      "name": "🖤♠️🤴🏿 BNWO BLACK ALPHA DADDY🤴🏿♠️🖤",
+      "created_at": "2026-04-11T22:22:39.000Z",
+      "conversation_id": "2043092392769663360",
+      "metrics": {
+        "likes": 22,
+        "retweets": 4,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1474,
+        "bookmarks": 4
+      },
+      "urls": [
+        "https://x.com/mistress_jorda9/status/2042752583346065751/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/stallionkim0/status/2043092392769663360"
+    },
+    {
+      "id": "2043826932479918115",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test \nSPH \nHypnosis test\nThe trigger test\nThe loser test\nFeminization session \nSissification training🔥💦\nAre you ready for this test 💦\nDM 📨👉 https://t.co/4NTITILx4R https://t.co/cxCrokHyNk",
+      "author_id": "1639693792147038209",
+      "username": "Godmother_Meera",
+      "name": "Official Godmother",
+      "created_at": "2026-04-13T23:01:27.000Z",
+      "conversation_id": "2043826932479918115",
+      "metrics": {
+        "likes": 34,
+        "retweets": 27,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 1978,
+        "bookmarks": 7
+      },
+      "urls": [
+        "http://t.me/Godmother_M",
+        "https://x.com/Godmother_Meera/status/2043826932479918115/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Godmother_Meera/status/2043826932479918115"
+    },
+    {
+      "id": "2043786048916910163",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test \nHypnosis test\nThe trigger test\nThe loser test\nMy boybreaking fetish questionnaire\nFeminization session \nSissification training🔥💦\nAre you ready for this test dm on tele @Mom_sst https://t.co/qmNlA0bKxg",
+      "author_id": "1937645742262251520",
+      "username": "Momma_katcum",
+      "name": "Black mommy",
+      "created_at": "2026-04-13T20:19:00.000Z",
+      "conversation_id": "2043786048916910163",
+      "metrics": {
+        "likes": 42,
+        "retweets": 37,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 1510,
+        "bookmarks": 19
+      },
+      "urls": [
+        "https://x.com/Momma_katcum/status/2043786048916910163/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Momma_katcum/status/2043786048916910163"
+    },
+    {
+      "id": "2043261775433339101",
+      "text": "Sissy test 🫥\nCum test💦\nHypnosis test🥵\nThe trigger test🌀\nThe loser test😻\nFeminization session 🐶\nSissification training 🔥💦\nAre you ready for this test https://t.co/3QjSIMFaWS",
+      "author_id": "1951016787337682945",
+      "username": "bbc_hub223",
+      "name": "MISTRESS ( BNWO♠️♠️)",
+      "created_at": "2026-04-12T09:35:43.000Z",
+      "conversation_id": "2043261775433339101",
+      "metrics": {
+        "likes": 0,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 108,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/bbc_hub223/status/2043261775433339101/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/bbc_hub223/status/2043261775433339101"
+    },
+    {
+      "id": "2043036288232611882",
+      "text": "What's your favorite test DM now to take the tests⬇️\nSissy test\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test (custom vid response)\nMy boybreaking Hypnosis\nThe straight test\n\nFee is required\n\nDm📨https://t.co/ZVRQMVeS57 https://t.co/DEJYstatl7",
+      "author_id": "1380454240745848833",
+      "username": "Damazonia_sissy",
+      "name": "Miss Damazonia Sissy School",
+      "created_at": "2026-04-11T18:39:43.000Z",
+      "conversation_id": "2043036288232611882",
+      "metrics": {
+        "likes": 73,
+        "retweets": 51,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 7673,
+        "bookmarks": 26
+      },
+      "urls": [
+        "http://t.me/bowtomommy1",
+        "https://x.com/Damazonia_sissy/status/2043036288232611882/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Damazonia_sissy/status/2043036288232611882"
+    },
+    {
+      "id": "2043691972011901381",
+      "text": "test 1 test 2 test 3 test 4 test 5 test 6 test 7 test 8 test 9 test 10 test 11 test https://t.co/Wk1DiuYfBI https://t.co/qLxOoKvu8P",
+      "author_id": "1883658091876478976",
+      "username": "NamalessNo58654",
+      "name": "NoNamaless",
+      "created_at": "2026-04-13T14:05:10.000Z",
+      "conversation_id": "2043691972011901381",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://iwe.one/MGODP",
+        "https://x.com/NamalessNo58654/status/2043691972011901381/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/NamalessNo58654/status/2043691972011901381"
+    },
+    {
+      "id": "2042451330564809045",
+      "text": "test 1 test 2 test 3 test 4 test 5 test 6 test 7 test 8 test 9 test 10 test 11 test https://t.co/Wk1DiuYfBI https://t.co/ZvFdsKiQw3",
+      "author_id": "1883658091876478976",
+      "username": "NamalessNo58654",
+      "name": "NoNamaless",
+      "created_at": "2026-04-10T03:55:18.000Z",
+      "conversation_id": "2042451330564809045",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://iwe.one/MGODP",
+        "https://x.com/NamalessNo58654/status/2042451330564809045/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/NamalessNo58654/status/2042451330564809045"
+    },
+    {
+      "id": "2042072582522835390",
+      "text": "test 1 test 2 test 3 test 4 test 5 test 6 test 7 test 8 test 9 test 10 test 11 test https://t.co/Wk1DiuYfBI https://t.co/kdFRed71TG",
+      "author_id": "1883658091876478976",
+      "username": "NamalessNo58654",
+      "name": "NoNamaless",
+      "created_at": "2026-04-09T02:50:18.000Z",
+      "conversation_id": "2042072582522835390",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://iwe.one/MGODP",
+        "https://x.com/NamalessNo58654/status/2042072582522835390/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/NamalessNo58654/status/2042072582522835390"
+    },
+    {
+      "id": "2043447307660652724",
+      "text": "@PressTV Test test test test https://t.co/lyPmc8jWTI",
+      "author_id": "1587905064261324800",
+      "username": "MortyIsReal",
+      "name": "The Morty",
+      "created_at": "2026-04-12T21:52:58.000Z",
+      "conversation_id": "2043445755973611644",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 2,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/MortyIsReal/status/2043447307660652724/photo/1"
+      ],
+      "mentions": [
+        "PressTV"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/MortyIsReal/status/2043447307660652724"
+    },
+    {
+      "id": "2043142155401650281",
+      "text": "Online For 2 hours taking straight test sessions 🥵 DM's Open For scared Fake Straight Boys\n\nAsk price to participate in any of my Tests below👇🏾\n- SISSY TEST \n- STRAIGHT TEST\n- GAY TEST\n- BBC TEST\n- HYPNOSIS TEST\n- GOONS\n\nDM📥; https://t.co/kVdhvFYXI5\n⚠️NOT FREE‼️ https://t.co/ZdOSo6a775",
+      "author_id": "2027918055813353478",
+      "username": "ObeyMomMelissa",
+      "name": "➶➶➶ EBONY MOMMY MELISSA 👸🏾♠️",
+      "created_at": "2026-04-12T01:40:24.000Z",
+      "conversation_id": "2043142155401650281",
+      "metrics": {
+        "likes": 22,
+        "retweets": 55,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 2153,
+        "bookmarks": 12
+      },
+      "urls": [
+        "http://t.me/ObeyMomMelissa",
+        "https://x.com/ObeyMomMelissa/status/2043142155401650281/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ObeyMomMelissa/status/2043142155401650281"
+    },
+    {
+      "id": "2043285684459327867",
+      "text": "Specific Tests\n🔹 Tuberculosis (TB) – Mantoux Test\n🔹 HIV/AIDS – ELISA Test\n🔹 Malaria – Rapid Diagnostic Test\n🔹 Typhoid – Widal Test\n🔹 Diabetes – HbA1c Test\n🔹 Heart Attack – ECG, Echocardiography\n🔹 Breast Cancer – Mammography\n🔹 Urinary Tract Infection (UTI) – Urine Culture",
+      "author_id": "1687781766038261760",
+      "username": "DrEdekin",
+      "name": "Dr Edekin",
+      "created_at": "2026-04-12T11:10:44.000Z",
+      "conversation_id": "2043285684459327867",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/DrEdekin/status/2043285684459327867"
+    },
+    {
+      "id": "2044367148315709543",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test \nSPH \nHypnosis test\nThe trigger test\nThe loser test\nMy boybreaking fetish questionnaire\nFeminization session \nSissification training🔥💦\nAre you ready for this test 💦\nDM 📨 https://t.co/RwZdRSSsPb https://t.co/ShKPoKDxzY",
+      "author_id": "1683755706011328512",
+      "username": "miss_jeval",
+      "name": "𝙈𝙞𝙨𝙨🌸𝙅𝙚𝙫𝙖𝙡 𝙨𝙞𝙨𝙨𝙮 𝙖𝙘𝙖𝙙𝙚𝙢𝙮 📚",
+      "created_at": "2026-04-15T10:48:05.000Z",
+      "conversation_id": "2044367148315709543",
+      "metrics": {
+        "likes": 15,
+        "retweets": 44,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 895,
+        "bookmarks": 7
+      },
+      "urls": [
+        "https://t.me/miss_jeval",
+        "https://x.com/miss_jeval/status/2044367148315709543/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/miss_jeval/status/2044367148315709543"
+    },
+    {
+      "id": "2044448197297287421",
+      "text": "test 1 test 2 test 3 test 4 test 5 test 6 test 7 test 8 test 9 test 10 test 11 test https://t.co/Wk1DiuYfBI https://t.co/RZRODzBODo",
+      "author_id": "1883658091876478976",
+      "username": "NamalessNo58654",
+      "name": "NoNamaless",
+      "created_at": "2026-04-15T16:10:08.000Z",
+      "conversation_id": "2044448197297287421",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://iwe.one/MGODP",
+        "https://x.com/NamalessNo58654/status/2044448197297287421/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/NamalessNo58654/status/2044448197297287421"
+    },
+    {
+      "id": "2043413149706338404",
+      "text": "If you want to be my sissy slut follow and say hi…..👋 \nDm to enroll for a session with Mommy..\n✓Sissy Test\n✓BBC test\n✓Hypnosis test\n✓Gat test\n✓Feminization test\n✓CEI session \n✓JOI\nApproach appropriately\nTelegram https://t.co/wA6YjmIdax https://t.co/rc1La8bjId",
+      "author_id": "1845917679808344064",
+      "username": "MISSLINDASiSSY",
+      "name": "Mistress linda key holder 🗝️school 🏦",
+      "created_at": "2026-04-12T19:37:14.000Z",
+      "conversation_id": "2043413149706338404",
+      "metrics": {
+        "likes": 192,
+        "retweets": 61,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 7379,
+        "bookmarks": 45
+      },
+      "urls": [
+        "https://t.me/mistresslindasissy_school",
+        "https://x.com/MISSLINDASiSSY/status/2043413149706338404/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/MISSLINDASiSSY/status/2043413149706338404"
+    },
+    {
+      "id": "2043215815055491575",
+      "text": "@NWSGSP THIS IS A TEST, TEST TEST THIS IS A TEST",
+      "author_id": "1434225600386961411",
+      "username": "LordWebbo",
+      "name": "WEBBOGOD",
+      "created_at": "2026-04-12T06:33:06.000Z",
+      "conversation_id": "2043036358340456902",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 14,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NWSGSP"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/LordWebbo/status/2043215815055491575"
+    },
+    {
+      "id": "2043089060143469042",
+      "text": "What's your favorite test DM now to take the tests⬇️\nSissy test\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test (custom vid response)\nMy boybreaking Hypnosis\nThe straight test\n\nFee is required\n\nDm📨https://t.co/0rBzmZpHIW https://t.co/R5LzwxwEM1",
+      "author_id": "1909707987930816512",
+      "username": "dominateCYTHIA1",
+      "name": "✨YOUR💦ADDICTION💕GOONEETTY🦋",
+      "created_at": "2026-04-11T22:09:25.000Z",
+      "conversation_id": "2043089060143469042",
+      "metrics": {
+        "likes": 30,
+        "retweets": 12,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 635,
+        "bookmarks": 9
+      },
+      "urls": [
+        "http://t.me/mommylisa15",
+        "https://x.com/dominateCYTHIA1/status/2043089060143469042/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/dominateCYTHIA1/status/2043089060143469042"
+    },
+    {
+      "id": "2042594851804307862",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test \nHypnosis test\nThe trigger test\nThe loser test\nMy boybreaking fetish questionnaire\nFeminization session \nSissification training🔥💦\nAre you ready for this test 💦\nDM 📨https://t.co/IljaLr5zLN https://t.co/pf9fOgyDG0",
+      "author_id": "1932559244035043329",
+      "username": "mommybella46",
+      "name": "🎀 𝑀🌸𝓂𝓂𝓎 𝑔🏵🌸𝓃 𝒻🍪𝓇 🎀 `",
+      "created_at": "2026-04-10T13:25:36.000Z",
+      "conversation_id": "2042594851804307862",
+      "metrics": {
+        "likes": 4,
+        "retweets": 3,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 273,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://t.me/mommy4slut303",
+        "https://x.com/mommybella46/status/2042594851804307862/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/mommybella46/status/2042594851804307862"
+    },
+    {
+      "id": "2043721892280832432",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test \nSPH \nHypnosis test\nThe trigger test\nThe loser test\nMy boybreaking fetish questionnaire\nFeminization session \nSissification training🔥💦\n\nAre you ready for this test 💦 https://t.co/ysRXIalMt0",
+      "author_id": "1949059621379010560",
+      "username": "MBNym995",
+      "name": "Misstress sandra 🤸🏿‍♀️",
+      "created_at": "2026-04-13T16:04:04.000Z",
+      "conversation_id": "2043721892280832432",
+      "metrics": {
+        "likes": 11,
+        "retweets": 10,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 705,
+        "bookmarks": 3
+      },
+      "urls": [
+        "https://x.com/MBNym995/status/2043721892280832432/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/MBNym995/status/2043721892280832432"
+    },
+    {
+      "id": "2043154671280214096",
+      "text": "New Siri Shortcut #SiriShortcuts: test https://t.co/Q9ONVADTsK this is a test test a this aiis es test going to be",
+      "author_id": "1043593872188813313",
+      "username": "siri_shortcuts",
+      "name": "Shortcuts Gallery",
+      "created_at": "2026-04-12T02:30:08.000Z",
+      "conversation_id": "2043154671280214096",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 132,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://shortcutsgallery.com/shortcuts/test-3/"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "SiriShortcuts"
+      ],
+      "tweet_url": "https://x.com/siri_shortcuts/status/2043154671280214096"
+    },
+    {
+      "id": "2043780879990878394",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test \nSPH \nHypnosis test\nThe trigger test\nThe loser test\nMy boybreaking fetish questionnaire\nFeminization session \nSissification training🔥💦\nAre you ready for this test 💦\nDM NOW ! ! ! https://t.co/AWZapxTONX",
+      "author_id": "1639693792147038209",
+      "username": "Godmother_Meera",
+      "name": "Official Godmother",
+      "created_at": "2026-04-13T19:58:28.000Z",
+      "conversation_id": "2043780879990878394",
+      "metrics": {
+        "likes": 59,
+        "retweets": 13,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 1771,
+        "bookmarks": 12
+      },
+      "urls": [
+        "https://x.com/Godmother_Meera/status/2043780879990878394/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Godmother_Meera/status/2043780879990878394"
+    },
+    {
+      "id": "2043235312252682292",
+      "text": "NEW JOB: Test Development Engineer - Circuit Card Test: Manchester, UK MBDA UK This is a fantastic opportunity for an experienced Test Development Engineer, specialising in circuit card electronic test, to join our Test… https://t.co/AitKniku76 #jobs #jobsearch #hiring",
+      "author_id": "1497271282664198147",
+      "username": "DijobsUK",
+      "name": "DIjobs.co.uk - The Diversity & Inclusion Job Board",
+      "created_at": "2026-04-12T07:50:34.000Z",
+      "conversation_id": "2043235312252682292",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 15,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://dlvr.it/TS0CZj"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "jobs",
+        "jobsearch",
+        "hiring"
+      ],
+      "tweet_url": "https://x.com/DijobsUK/status/2043235312252682292"
+    },
+    {
+      "id": "2044283751530729853",
+      "text": "Dm for your test now 🍆🥵💦💦\n\nSissy test\nSissy test 2(BBC)\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test\nStraight test https://t.co/tQJ1uxGgWu",
+      "author_id": "1962621832378400769",
+      "username": "goonmommyjane1",
+      "name": "GoonMommy ~Jane💕",
+      "created_at": "2026-04-15T05:16:41.000Z",
+      "conversation_id": "2044283751530729853",
+      "metrics": {
+        "likes": 0,
+        "retweets": 3,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 31,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/goonmommyjane1/status/2044283751530729853/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/goonmommyjane1/status/2044283751530729853"
+    },
+    {
+      "id": "2042581652891705531",
+      "text": "APPROACH FOR BRUTAL SISSY SESSIONS NOW:\nSissy test Gay test Cum test\nStraight test\nBBC test\nHypnosis test \nThe trigger test \nThe loser test\nFeminization session \nSissification training\n\n‼️Not free⚠️\n\nDm📨https://t.co/iYjQVyvgSF https://t.co/2VPL73Eir7",
+      "author_id": "2011350542405222400",
+      "username": "goddessmar18784",
+      "name": "goddessmary",
+      "created_at": "2026-04-10T12:33:10.000Z",
+      "conversation_id": "2042581652891705531",
+      "metrics": {
+        "likes": 35,
+        "retweets": 41,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 807,
+        "bookmarks": 4
+      },
+      "urls": [
+        "http://t.me/Mostressmary",
+        "https://x.com/goddessmar18784/status/2042581652891705531/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/goddessmar18784/status/2042581652891705531"
+    },
+    {
+      "id": "2042580973401866746",
+      "text": "APPROACH FOR BRUTAL SISSY SESSIONS NOW:\nSissy test Gay test Cum test\nStraight test\nBBC test\nHypnosis test \nThe trigger test \nThe loser test\nFeminization session \nSissification training\n\n‼️Not free⚠️\n\nDm📨https://t.co/HCwSz38O2B https://t.co/cYExwzAD91",
+      "author_id": "1858080439467945984",
+      "username": "ReeseWithe54945",
+      "name": "Reese Witherspoon",
+      "created_at": "2026-04-10T12:30:28.000Z",
+      "conversation_id": "2042580973401866746",
+      "metrics": {
+        "likes": 1,
+        "retweets": 9,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 173,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://t.me/Isabellamary23",
+        "https://x.com/ReeseWithe54945/status/2042580973401866746/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ReeseWithe54945/status/2042580973401866746"
+    },
+    {
+      "id": "2042580524229595256",
+      "text": "APPROACH FOR BRUTAL SISSY SESSIONS NOW:\nSissy test Gay test Cum test\nStraight test\nBBC test\nHypnosis test \nThe trigger test \nThe loser test\nFeminization session \nSissification training\n\n‼️Not free⚠️\n\nDm📨https://t.co/HCwSz38O2B https://t.co/wazT1Jj7uH",
+      "author_id": "1858080439467945984",
+      "username": "ReeseWithe54945",
+      "name": "Reese Witherspoon",
+      "created_at": "2026-04-10T12:28:40.000Z",
+      "conversation_id": "2042580524229595256",
+      "metrics": {
+        "likes": 1,
+        "retweets": 8,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 145,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://t.me/Isabellamary23",
+        "https://x.com/ReeseWithe54945/status/2042580524229595256/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ReeseWithe54945/status/2042580524229595256"
+    },
+    {
+      "id": "2042581737679503785",
+      "text": "APPROACH FOR BRUTAL SISSY SESSIONS NOW:\nSissy test Gay test Cum test\nStraight test\nBBC test\nHypnosis test \nThe trigger test \nThe loser test\nFeminization session \nSissification training\n\n‼️Not free⚠️\n\nDm📨https://t.co/iYjQVyvgSF https://t.co/K5BFfsVCt1",
+      "author_id": "2011350542405222400",
+      "username": "goddessmar18784",
+      "name": "goddessmary",
+      "created_at": "2026-04-10T12:33:30.000Z",
+      "conversation_id": "2042581737679503785",
+      "metrics": {
+        "likes": 29,
+        "retweets": 39,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 1104,
+        "bookmarks": 3
+      },
+      "urls": [
+        "http://t.me/Mostressmary",
+        "https://x.com/goddessmar18784/status/2042581737679503785/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/goddessmar18784/status/2042581737679503785"
+    },
+    {
+      "id": "2042581583090061313",
+      "text": "APPROACH FOR BRUTAL SISSY SESSIONS NOW:\nSissy test Gay test Cum test\nStraight test\nBBC test\nHypnosis test \nThe trigger test \nThe loser test\nFeminization session \nSissification training\n\n‼️Not free⚠️\n\nDm📨https://t.co/iYjQVyvgSF https://t.co/Mse6MN0Hev",
+      "author_id": "2011350542405222400",
+      "username": "goddessmar18784",
+      "name": "goddessmary",
+      "created_at": "2026-04-10T12:32:53.000Z",
+      "conversation_id": "2042581583090061313",
+      "metrics": {
+        "likes": 7,
+        "retweets": 36,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 506,
+        "bookmarks": 1
+      },
+      "urls": [
+        "http://t.me/Mostressmary",
+        "https://x.com/goddessmar18784/status/2042581583090061313/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/goddessmar18784/status/2042581583090061313"
+    },
+    {
+      "id": "2043463580318945776",
+      "text": "Summary for 1026 test programs:\n    10507 passed test cases.\n    202 failed test cases.\n    122 expected failed test cases.\n    579 skipped test cases.\n\nCPU: AMD Sempron(tm) 145 Processor (2800.10-MHz K8-class CPU)\nFreeBSD releng/14.4\nbhyve + NetBSD 11.99.5",
+      "author_id": "98021223",
+      "username": "n12i",
+      "name": "なかじ",
+      "created_at": "2026-04-12T22:57:37.000Z",
+      "conversation_id": "2043463580318945776",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 44,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/n12i/status/2043463580318945776"
+    },
+    {
+      "id": "2042662528501584320",
+      "text": "This is a test. \nThis is a test.\nThis is a test.\nThis is a test.\nThis is a test.\nThis is a test.",
+      "author_id": "1907057000401207296",
+      "username": "TheCopiumGoat",
+      "name": "Everything Agent",
+      "created_at": "2026-04-10T17:54:32.000Z",
+      "conversation_id": "2042662528501584320",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 43,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/TheCopiumGoat/status/2042662528501584320"
+    },
+    {
+      "id": "2043158715650507253",
+      "text": "It's not gay if you don't cum Bro 😵‍💫\n\nSlide inside in my telegram and come be straight with me🤤 \n\nAsk price to participate in any of my Tests below👇🏾\n- SISSY TEST \n- STRAIGHT TEST\n- GAY TEST\n- BBC TEST\n- HYPNOSIS TEST\n- GOONS\n\nDM📥; https://t.co/SZqpwqAK4i\n\n⚠️NOT FREE‼️ https://t.co/A0evwlfFEl",
+      "author_id": "1773637024563580928",
+      "username": "haylee_042",
+      "name": "MistressHaylee",
+      "created_at": "2026-04-12T02:46:12.000Z",
+      "conversation_id": "2043158715650507253",
+      "metrics": {
+        "likes": 29,
+        "retweets": 28,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1194,
+        "bookmarks": 14
+      },
+      "urls": [
+        "https://t.me/haylee233",
+        "https://x.com/haylee_042/status/2043158715650507253/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/haylee_042/status/2043158715650507253"
+    },
+    {
+      "id": "2043245209832566802",
+      "text": "If you  want to be my sissy slut follow and say hi…..👋 \nDm to enroll for a session with Mommy..\n✓Sissy Test\n✓BBC test\n✓Hypnosis test\n✓Gat test\n✓Feminization test\n✓CEI session \n✓JOI\nApproach appropriately on telegram t/me Mom_sst https://t.co/ExbsJcUyp2",
+      "author_id": "1937645742262251520",
+      "username": "Momma_katcum",
+      "name": "Black mommy",
+      "created_at": "2026-04-12T08:29:54.000Z",
+      "conversation_id": "2043245209832566802",
+      "metrics": {
+        "likes": 91,
+        "retweets": 36,
+        "replies": 3,
+        "quotes": 0,
+        "impressions": 2724,
+        "bookmarks": 31
+      },
+      "urls": [
+        "https://x.com/Momma_katcum/status/2043245209832566802/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Momma_katcum/status/2043245209832566802"
+    },
+    {
+      "id": "2043132136740270326",
+      "text": "If you  want to be my sissy slut follow and say hi…..👋 \nDm to enroll for a session with Mommy..\n✓Sissy Test\n✓BBC test\n✓Hypnosis test\n✓Gat test\n✓Feminization test\n✓CEI session \n✓JOI\nApproach appropriately\nTelegram https://t.co/kGepmEW18X https://t.co/7hoKNpcGJI",
+      "author_id": "1868073834097606656",
+      "username": "leak4sabrina",
+      "name": "𝓢𝓐𝓑𝓡𝓘𝓝𝓐 ♠️",
+      "created_at": "2026-04-12T01:00:35.000Z",
+      "conversation_id": "2043132136740270326",
+      "metrics": {
+        "likes": 16,
+        "retweets": 38,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 611,
+        "bookmarks": 3
+      },
+      "urls": [
+        "http://t.me/Goddesslisa70",
+        "https://x.com/leak4sabrina/status/2043132136740270326/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/leak4sabrina/status/2043132136740270326"
+    },
+    {
+      "id": "2043534416287256640",
+      "text": "APPROACH FOR BRUTAL SISSY SESSIONS NOW:\nSissy test Gay test Cum test\nStraight test\nBBC test\nHypnosis test \nThe trigger test \nThe loser test\nFeminization session \nSissification training\n\n‼️Not free⚠️\n\nDm📨https://t.co/iYjQVyvgSF https://t.co/WkG05JUMSw",
+      "author_id": "2011350542405222400",
+      "username": "goddessmar18784",
+      "name": "goddessmary",
+      "created_at": "2026-04-13T03:39:06.000Z",
+      "conversation_id": "2043534416287256640",
+      "metrics": {
+        "likes": 1,
+        "retweets": 23,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 346,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://t.me/Mostressmary",
+        "https://x.com/goddessmar18784/status/2043534416287256640/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/goddessmar18784/status/2043534416287256640"
+    },
+    {
+      "id": "2043348242520256548",
+      "text": "If you  want to be my sissy slut follow and say hi…..👋 \nDm to enroll for a session with Mommy..\n✓Sissy Test\n✓BBC test\n✓Hypnosis test\n✓Gat test\n✓Feminization test\n✓CEI session \n✓JOI\nApproach appropriately\nTelegram https://t.co/S0y3w8dO1K https://t.co/MiWt0uoeWe",
+      "author_id": "1945693194190295040",
+      "username": "mom_tranny",
+      "name": "TRANNY MOM 🏳️‍⚧️",
+      "created_at": "2026-04-12T15:19:19.000Z",
+      "conversation_id": "2043348242520256548",
+      "metrics": {
+        "likes": 10,
+        "retweets": 26,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 578,
+        "bookmarks": 2
+      },
+      "urls": [
+        "http://t.me/Black_tranny",
+        "https://x.com/mom_tranny/status/2043348242520256548/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/mom_tranny/status/2043348242520256548"
+    },
+    {
+      "id": "2043347931135091140",
+      "text": "If you  want to be my sissy slut follow and say hi…..👋 \nDm to enroll for a session with Mommy..\n✓Sissy Test\n✓BBC test\n✓Hypnosis test\n✓Gat test\n✓Feminization test\n✓CEI session \n✓JOI\nApproach appropriately\nTelegram https://t.co/S0y3w8dO1K https://t.co/UR2OAPYKcK",
+      "author_id": "1945693194190295040",
+      "username": "mom_tranny",
+      "name": "TRANNY MOM 🏳️‍⚧️",
+      "created_at": "2026-04-12T15:18:05.000Z",
+      "conversation_id": "2043347931135091140",
+      "metrics": {
+        "likes": 19,
+        "retweets": 22,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 908,
+        "bookmarks": 10
+      },
+      "urls": [
+        "http://t.me/Black_tranny",
+        "https://x.com/mom_tranny/status/2043347931135091140/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/mom_tranny/status/2043347931135091140"
+    },
+    {
+      "id": "2043198599018820041",
+      "text": "If you  want to be my sissy slut follow and say hi…..👋 \nDm to enroll for a session with Mommy..\n✓Sissy Test\n✓BBC test\n✓Hypnosis test\n✓Gat test\n✓Feminization test\n✓CEI session \n✓JOI\nApproach appropriately\nTelegram https://t.co/Iqo1d5kx0R https://t.co/3Udm36dIU3",
+      "author_id": "1752943783577030656",
+      "username": "_mistres_amanda",
+      "name": "mistress Amanda",
+      "created_at": "2026-04-12T05:24:41.000Z",
+      "conversation_id": "2043198599018820041",
+      "metrics": {
+        "likes": 79,
+        "retweets": 131,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 3228,
+        "bookmarks": 24
+      },
+      "urls": [
+        "http://t.me/amanda33335555",
+        "https://x.com/_mistres_amanda/status/2043198599018820041/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/_mistres_amanda/status/2043198599018820041"
+    },
+    {
+      "id": "2042440412799906072",
+      "text": "Wataa💦💦\n\nOne thing is certain, you definitely will leak uncontrollably during my GAY TESTS 👗🧪\n\nDM 📤 to take mommy test\n\nhttps://t.co/AzNtlxmaHG\n\nASK FOR TEST PRICE \n\nGay test \nSissy test\nHypnosis test \nStraight test \nHumiliation test \nChastity test \nBBC test https://t.co/J7W9RCXGrh",
+      "author_id": "2004757902469287937",
+      "username": "mistressalice92",
+      "name": "Alice trans mistress",
+      "created_at": "2026-04-10T03:11:55.000Z",
+      "conversation_id": "2042440412799906072",
+      "metrics": {
+        "likes": 21,
+        "retweets": 29,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1300,
+        "bookmarks": 10
+      },
+      "urls": [
+        "https://t.me/alicesmith0191",
+        "https://x.com/mistressalice92/status/2042440412799906072/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/mistressalice92/status/2042440412799906072"
+    },
+    {
+      "id": "2042932864451215717",
+      "text": "Can anyone see me\n\ntest test test \n\nMAGA are cockroaches and Trump will go to hell ELMO is going with him \n\ntest test test",
+      "author_id": "1771625082122625024",
+      "username": "badge55950",
+      "name": "Badger Fella 🏴󠁧󠁢󠁷󠁬󠁳󠁿🇺🇦🇬🇧🇪🇺🇺🇲",
+      "created_at": "2026-04-11T11:48:45.000Z",
+      "conversation_id": "2042932864451215717",
+      "metrics": {
+        "likes": 549,
+        "retweets": 79,
+        "replies": 60,
+        "quotes": 0,
+        "impressions": 2995,
+        "bookmarks": 2
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/badge55950/status/2042932864451215717"
+    },
+    {
+      "id": "2043488052065005775",
+      "text": "What's your favorite test DM now to take the tests⬇️\nSissy test\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test (custom vid response)\nMy boybreaking Hypnosis\nThe straight test\n\nFee is required\n\nDm📨 https://t.co/xqDNkIJBMV https://t.co/iRapKNNOlM",
+      "author_id": "1919441271988617216",
+      "username": "BNWOMOMMY330",
+      "name": "BNWO MOMMY",
+      "created_at": "2026-04-13T00:34:52.000Z",
+      "conversation_id": "2043488052065005775",
+      "metrics": {
+        "likes": 1,
+        "retweets": 14,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 305,
+        "bookmarks": 1
+      },
+      "urls": [
+        "http://t.me/vikkybrauer",
+        "https://x.com/BNWOMOMMY330/status/2043488052065005775/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BNWOMOMMY330/status/2043488052065005775"
+    },
+    {
+      "id": "2042635588487049504",
+      "text": "What's your favorite test DM now to take the tests\nSissy test\nSissy test 2 (BBC)\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test Hypno test\nThe straight test\nThe cum challenge\nThe cum eating\nDM now!! It's not free\n\nhttps://t.co/wa9xQdYFTS https://t.co/EY9K3X7tHZ",
+      "author_id": "1970917667772272640",
+      "username": "gd20cm",
+      "name": "𝑯𝒀𝑷𝑵𝑶 𝑮𝑶𝑫𝑫𝑬𝑺𝑺",
+      "created_at": "2026-04-10T16:07:29.000Z",
+      "conversation_id": "2042635588487049504",
+      "metrics": {
+        "likes": 4,
+        "retweets": 4,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 454,
+        "bookmarks": 3
+      },
+      "urls": [
+        "http://t.me/mommygoddess1129",
+        "https://x.com/gd20cm/status/2042635588487049504/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/gd20cm/status/2042635588487049504"
+    },
+    {
+      "id": "2043621389215645919",
+      "text": "Dm for your test now 🍆🥵💦💦\n\nSissy test\nSissy test 2(BBC)\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test\nStraight test https://t.co/eJu5pVPcLR",
+      "author_id": "4221270754",
+      "username": "TAMMYSCHOOL1",
+      "name": "🎀TAMMY SISSY SCHOOL🎀",
+      "created_at": "2026-04-13T09:24:42.000Z",
+      "conversation_id": "2043621389215645919",
+      "metrics": {
+        "likes": 5,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 221,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/TAMMYSCHOOL1/status/2043621389215645919/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/TAMMYSCHOOL1/status/2043621389215645919"
+    },
+    {
+      "id": "2043785873347457463",
+      "text": "Sissy test \nGay test\nCum test\nHumiliation and exposure \nStraight test \nBBC test \nHypnosis test\nThe trigger test\nThe loser test\nMy boybreaking fetish questionnaire\nFeminization session \nSissification training🔥💦\nAre you ready for this test dm on telegram @Mom_sst https://t.co/UaFXNlqOxs",
+      "author_id": "1937645742262251520",
+      "username": "Momma_katcum",
+      "name": "Black mommy",
+      "created_at": "2026-04-13T20:18:18.000Z",
+      "conversation_id": "2043785873347457463",
+      "metrics": {
+        "likes": 33,
+        "retweets": 38,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 1843,
+        "bookmarks": 15
+      },
+      "urls": [
+        "https://x.com/Momma_katcum/status/2043785873347457463/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Momma_katcum/status/2043785873347457463"
+    },
+    {
+      "id": "2043455501288067250",
+      "text": "FATHER!\n\nTest me too with huge wealth\nTest me too with massive wins\nTest me too with Money\nTest me too with success.\n\nI promise, I won’t disappoint you.",
+      "author_id": "1939167081288622080",
+      "username": "OmosNotes",
+      "name": "Ọmótáyọ̀",
+      "created_at": "2026-04-12T22:25:31.000Z",
+      "conversation_id": "2043455501288067250",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 3,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/OmosNotes/status/2043455501288067250"
+    },
+    {
+      "id": "2043276807353291081",
+      "text": "If you  want to be my sissy slut follow and say hi…..👋 \nDm to enroll for a session with Mommy..\n✓Sissy Test\n✓BBC test\n✓Hypnosis test\n✓Gat test\n✓Feminization test\n✓CEI session \n✓JOI\nApproach appropriately on telegram: https://t.co/axcz1DrawJ https://t.co/5MPbcmsI1C",
+      "author_id": "1984335216580935680",
+      "username": "TeeSandy84278",
+      "name": "GODDESS SANDRA 💋SISSY SCHOOL 📚",
+      "created_at": "2026-04-12T10:35:27.000Z",
+      "conversation_id": "2043276807353291081",
+      "metrics": {
+        "likes": 13,
+        "retweets": 19,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 589,
+        "bookmarks": 6
+      },
+      "urls": [
+        "http://t.me/mistresssandra23101",
+        "https://x.com/TeeSandy84278/status/2043276807353291081/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/TeeSandy84278/status/2043276807353291081"
+    },
+    {
+      "id": "2043194902654410840",
+      "text": "The market will test your thesis.\nThen it will test your patience.\nThen it will test your marriage.\nThen it will test your ability to sleep.\nThe thesis is the smallest part.",
+      "author_id": "1444413450118057988",
+      "username": "YeshuaXRPL",
+      "name": "Yeshua",
+      "created_at": "2026-04-12T05:10:00.000Z",
+      "conversation_id": "2043194902654410840",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 21,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/YeshuaXRPL/status/2043194902654410840"
+    },
+    {
+      "id": "2042671321096593465",
+      "text": "Dm for your test now 🍆🥵💦💦\n\nSissy test\nSissy test 2(BBC)\nThe trigger test\nThe loser test\nThe humiliation test\nThe gay test\nHypno test\nStraight test\nhttps://t.co/NHFIWs4Waz\n\nDM ME no telegram https://t.co/4usHy5133y",
+      "author_id": "1885346606557331456",
+      "username": "GoddessAnna155",
+      "name": "@GoddessAnna 25",
+      "created_at": "2026-04-10T18:29:28.000Z",
+      "conversation_id": "2042671321096593465",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 228,
+        "bookmarks": 1
+      },
+      "urls": [
+        "http://T.me/mommygooner1100",
+        "https://x.com/GoddessAnna155/status/2042671321096593465/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/GoddessAnna155/status/2042671321096593465"
+    },
+    {
+      "id": "2043198686033817900",
+      "text": "If you  want to be my sissy slut follow and say hi…..👋 \nDm to enroll for a session with Mommy..\n✓Sissy Test\n✓BBC test\n✓Hypnosis test\n✓Gat test\n✓Feminization test\n✓CEI session \n✓JOI\nApproach appropriately\nTelegram https://t.co/Iqo1d5kx0R https://t.co/iYaIIgfz5k",
+      "author_id": "1752943783577030656",
+      "username": "_mistres_amanda",
+      "name": "mistress Amanda",
+      "created_at": "2026-04-12T05:25:02.000Z",
+      "conversation_id": "2043198686033817900",
+      "metrics": {
+        "likes": 61,
+        "retweets": 172,
+        "replies": 1,
+        "quotes": 1,
+        "impressions": 3289,
+        "bookmarks": 14
+      },
+      "urls": [
+        "http://t.me/amanda33335555",
+        "https://x.com/_mistres_amanda/status/2043198686033817900/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/_mistres_amanda/status/2043198686033817900"
+    },
+    {
+      "id": "2043379030137667963",
+      "text": "If you want to be my sissy slut follow and say hi…..👋 \nDm to enroll for a session with Mommy..\n✓Sissy Test\n✓BBC test\n✓Hypnosis test\n✓Gat test\n✓Feminization test\n✓CEI session \n✓JOI\nApproach appropriately\nTelegram https://t.co/ZVRQMVeS57 https://t.co/5vUuzwzsUJ",
+      "author_id": "1380454240745848833",
+      "username": "Damazonia_sissy",
+      "name": "Miss Damazonia Sissy School",
+      "created_at": "2026-04-12T17:21:39.000Z",
+      "conversation_id": "2043379030137667963",
+      "metrics": {
+        "likes": 288,
+        "retweets": 61,
+        "replies": 2,
+        "quotes": 1,
+        "impressions": 9838,
+        "bookmarks": 144
+      },
+      "urls": [
+        "http://t.me/bowtomommy1",
+        "https://x.com/Damazonia_sissy/status/2043379030137667963/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Damazonia_sissy/status/2043379030137667963"
+    }
+  ]
+}

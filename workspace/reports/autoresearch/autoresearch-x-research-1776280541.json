@@ -1,0 +1,40 @@
+{
+  "targetSkill": "x-research",
+  "failureMode": "python test",
+  "rounds": [
+    {
+      "round": 1,
+      "avgScore": 2.0,
+      "gain": null,
+      "promptCount": 1,
+      "scoreBreakdown": [
+        {
+          "prompt": "cold plunge",
+          "total": 2.0,
+          "scores": {
+            "queryStrategy": 1,
+            "qualityFiltering": 1,
+            "resultCoverage": 1,
+            "actionContract": 4,
+            "documentation": 3
+          }
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "startScore": 2.0,
+    "finalScore": 2.0,
+    "totalGain": 0.0,
+    "roundsRun": 1,
+    "maxRounds": 1,
+    "stoppedEarly": false
+  },
+  "recommendations": [
+    {
+      "dimension": "queryStrategy",
+      "avgScore": 1.0,
+      "recommendation": "Persistent low score in queryStrategy (1.0/5). Manual SKILL.md review recommended."
+    }
+  ]
+}

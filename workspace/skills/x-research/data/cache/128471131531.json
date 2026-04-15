@@ -1,0 +1,30 @@
+{
+  "query": "cold shower health benefits -is:retweet",
+  "params": "sort=likes&pages=1&since=7d",
+  "timestamp": 1776279857788,
+  "tweets": [
+    {
+      "id": "2043221729397313653",
+      "text": "@micheal_ws18 I also do all of those, not because of health benefits, but because I need to start doing things which I don't want to do.\n\nEverytime I'm stepping into shower and turning the tap into cold water I don't want to do this, but I need to act despite that.",
+      "author_id": "1959593838202208256",
+      "username": "LiftingCoder",
+      "name": "Adrian",
+      "created_at": "2026-04-12T06:56:36.000Z",
+      "conversation_id": "2042710805557448708",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 8,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "micheal_ws18"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/LiftingCoder/status/2043221729397313653"
+    }
+  ]
+}

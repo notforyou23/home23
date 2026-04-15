@@ -1,0 +1,76 @@
+{
+  "query": "sauna cold plunge contrast therapy -is:retweet",
+  "params": "sort=likes&pages=1&since=7d",
+  "timestamp": 1776284213101,
+  "tweets": [
+    {
+      "id": "2042956765558456558",
+      "text": "@newstart_2024 I sauna at my house about 5-6 days a week. Once a week, I go to my gym and do contrast therapy with two 6 minute cold plunge sessions in btw three 10 minute sauna sessions. Cold plunge is a euphoric experience. Have to really focus on breathing to be able to stay in that long.",
+      "author_id": "2737333801",
+      "username": "SageMoneyRadio",
+      "name": "Hollis Day",
+      "created_at": "2026-04-11T13:23:43.000Z",
+      "conversation_id": "2042919040021102681",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 112,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "newstart_2024"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/SageMoneyRadio/status/2042956765558456558"
+    },
+    {
+      "id": "2042593769959137462",
+      "text": "@thmoneycircle Sleep the best recovery over all, followed by sauna and cold plunge contrast therapy",
+      "author_id": "2533652420",
+      "username": "SabreWright",
+      "name": "Sabre",
+      "created_at": "2026-04-10T13:21:18.000Z",
+      "conversation_id": "2042437182619558101",
+      "metrics": {
+        "likes": 3,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 92,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "thmoneycircle"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/SabreWright/status/2042593769959137462"
+    },
+    {
+      "id": "2043405033811669155",
+      "text": "Contrast therapy (Hot sauna and cold plunge) eather makes you\n A) tired\nB) energized\n\n@CollinCusce is In group A.",
+      "author_id": "866002729482825732",
+      "username": "trou13le22",
+      "name": "Hapu Marlene",
+      "created_at": "2026-04-12T19:04:59.000Z",
+      "conversation_id": "2043405033811669155",
+      "metrics": {
+        "likes": 2,
+        "retweets": 1,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 155,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "CollinCusce"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/trou13le22/status/2043405033811669155"
+    }
+  ]
+}

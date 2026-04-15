@@ -1,0 +1,2321 @@
+{
+  "query": "sauna -is:retweet",
+  "params": "sort=likes&pages=1&since=7d",
+  "timestamp": 1776279632371,
+  "tweets": [
+    {
+      "id": "2042692886618104179",
+      "text": "@smlmkl sauna sauna sauna sauna sauna saunasauna sauna saunasauna sauna saunasauna sauna saunasauna sauna saunasauna sauna saunasauna sauna saunasauna sauna sauna",
+      "author_id": "1056106466392924160",
+      "username": "finninaama",
+      "name": "finninaama",
+      "created_at": "2026-04-10T19:55:10.000Z",
+      "conversation_id": "2042647479179468805",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 13,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "smlmkl"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/finninaama/status/2042692886618104179"
+    },
+    {
+      "id": "2043476400288797144",
+      "text": "4/13（月）プログラム✎\n\n♂️男性フロア\n11:30　sauna①　スタッフロウリュ🔥\n13:30　sauna③　オーク蒸し🌿\n15:30　sauna①　スタッフロウリュ🔥\n17:30　sauna①　スタッフロウリュ🔥\n19:30　sauna③　オーク蒸し🌿\n21:30　sauna④　スタッフロウリュ🔥🔥\n\n♀️女性フロア\n12:17　sauna④ https://t.co/g5TX9mWjcj",
+      "author_id": "1728671094742343680",
+      "username": "nus_saunahouse",
+      "name": "saunahouse（サウナハウス）",
+      "created_at": "2026-04-12T23:48:34.000Z",
+      "conversation_id": "2043476400288797144",
+      "metrics": {
+        "likes": 3,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 868,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/nus_saunahouse/status/2043476400288797144/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/nus_saunahouse/status/2043476400288797144"
+    },
+    {
+      "id": "2042399221027127319",
+      "text": "4/10（金）プログラム✎\n\n♂️男性フロア\n11:30　sauna③　オーク蒸し🌿\n13:30　sauna①　スタッフロウリュ🔥\n15:30　sauna③　オーク蒸し🌿\n17:30　sauna①　スタッフロウリュ🔥\n19:30　sauna③　オーク蒸し🌿\n21:30　sauna④　スタッフロウリュ🔥🔥\n\n♀️女性フロア\n12:17/16:17/20:17\nsauna④",
+      "author_id": "1728671094742343680",
+      "username": "nus_saunahouse",
+      "name": "saunahouse（サウナハウス）",
+      "created_at": "2026-04-10T00:28:14.000Z",
+      "conversation_id": "2042399221027127319",
+      "metrics": {
+        "likes": 2,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 815,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/nus_saunahouse/status/2042399221027127319"
+    },
+    {
+      "id": "2043835505637572793",
+      "text": "4/14(火)プログラム✏\n\n🚹男性フロア🚹\n11：30　sauna①　スタッフロウリュ🔥\n13：30　sauna③　オーク蒸し🌿\n15：30　sauna①　スタッフロウリュ🔥\n17：30　sauna①　スタッフロウリュ🔥\n19：30　sauna③　オーク蒸し🌿\n21：30　sauna①　スタッフロウリュ🔥\n\n🚺女性フロア🚺\n12：17/16：17/20：17 https://t.co/l3LYlwfnAX",
+      "author_id": "1728671094742343680",
+      "username": "nus_saunahouse",
+      "name": "saunahouse（サウナハウス）",
+      "created_at": "2026-04-13T23:35:31.000Z",
+      "conversation_id": "2043835505637572793",
+      "metrics": {
+        "likes": 9,
+        "retweets": 2,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1121,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/nus_saunahouse/status/2043835505637572793/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/nus_saunahouse/status/2043835505637572793"
+    },
+    {
+      "id": "2043829193692058040",
+      "text": "Doing regular 🔥sauna🔥sessions naturally boost testosterone and HGH production.. Do 20 min in sauna then take a 10 min cooldown repeat!! This is one of the best sauna protocols proven through years of research… \n\nTotal 40 min in sauna",
+      "author_id": "2043821074823942144",
+      "username": "CrusaderFit91",
+      "name": "CrusaderFitness",
+      "created_at": "2026-04-13T23:10:26.000Z",
+      "conversation_id": "2043829193692058040",
+      "metrics": {
+        "likes": 4,
+        "retweets": 2,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 52,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/CrusaderFit91/status/2043829193692058040"
+    },
+    {
+      "id": "2043116814767632886",
+      "text": "4/12(日)プログラム✏\n\n🚹男性フロア🚹\n11：30　sauna①　スタッフロウリュ🔥\n13：30　sauna③　オーク蒸し🌿\n15：30　sauna①　スタッフロウリュ🔥\n17：30　sauna③　オーク蒸し🌿\n19：30　sauna①　スタッフロウリュ🔥\n21：30　sauna④　スタッフロウリュ🔥🔥\n\n🚺女性フロア🚺\n12：17/16：17/20：17 https://t.co/Us8zeqXPW0",
+      "author_id": "1728671094742343680",
+      "username": "nus_saunahouse",
+      "name": "saunahouse（サウナハウス）",
+      "created_at": "2026-04-11T23:59:42.000Z",
+      "conversation_id": "2043116814767632886",
+      "metrics": {
+        "likes": 8,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 2,
+        "impressions": 2370,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/nus_saunahouse/status/2043116814767632886/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/nus_saunahouse/status/2043116814767632886"
+    },
+    {
+      "id": "2043153867425120594",
+      "text": "@darkness24x Biceps Back Cardio Sauna M/T\nTricep Chest Cardio Sauna T/F\nShoulders Legs Cardio Sauna W/S\nRest S",
+      "author_id": "929515215351353349",
+      "username": "wstgoat7",
+      "name": "🌧️",
+      "created_at": "2026-04-12T02:26:56.000Z",
+      "conversation_id": "2043142602363462141",
+      "metrics": {
+        "likes": 3,
+        "retweets": 0,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 767,
+        "bookmarks": 1
+      },
+      "urls": [],
+      "mentions": [
+        "darkness24x"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/wstgoat7/status/2043153867425120594"
+    },
+    {
+      "id": "2043623313373561101",
+      "text": "The SaunaのTシャツベージュ！Mサイズぴったりでいい感じ〜\n\nThe Sauna SAUNA PARADISE Tシャツ ベージュ\nhttps://t.co/RwmH57hZV0",
+      "author_id": "1948669231408840705",
+      "username": "saunagoodsloe4",
+      "name": "サウナ好き子",
+      "created_at": "2026-04-13T09:32:21.000Z",
+      "conversation_id": "2043623313373561101",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 6,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://jp.mercari.com/item/m67744667254?afid=7908875457"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/saunagoodsloe4/status/2043623313373561101"
+    },
+    {
+      "id": "2044362181026709642",
+      "text": "@DeanTTraining Go to sauna. Sauna is massively underrated for mental reset.",
+      "author_id": "1960682217568657409",
+      "username": "ZenSpa_wellness",
+      "name": "Zen Spa - Sauna Rituals",
+      "created_at": "2026-04-15T10:28:21.000Z",
+      "conversation_id": "2044098571079754191",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "DeanTTraining"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ZenSpa_wellness/status/2044362181026709642"
+    },
+    {
+      "id": "2042700596063440974",
+      "text": "@AutismCapital @bryan_johnson Would be interesting to understand the levels of attribution of ball icing vs sauna. What if you do ball icing separately from the sauna, and just do regular hot ball sauna.\n\nSo many questions...",
+      "author_id": "1373870443447353345",
+      "username": "Techbro",
+      "name": "abundance",
+      "created_at": "2026-04-10T20:25:48.000Z",
+      "conversation_id": "2042695346250486164",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1181,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "AutismCapital",
+        "bryan_johnson"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Techbro/status/2042700596063440974"
+    },
+    {
+      "id": "2042516481615802460",
+      "text": "Sauna Blanket vs Portable Sauna 😳\n\nOne is convenient…\nThe other actually WORKS 🔥\nMost people are buying the wrong one.\n\nHere’s the truth 👇\nhttps://t.co/CQGYM4pZi0\n\n#biohacking #wellness #fitness #sauna #health",
+      "author_id": "2031667582315683840",
+      "username": "portablsaunalab",
+      "name": "portablesaunalab",
+      "created_at": "2026-04-10T08:14:11.000Z",
+      "conversation_id": "2042516481615802460",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 7,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://portablesaunalab.com/portable-sauna-vs-sauna-blanket/"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "biohacking",
+        "wellness",
+        "fitness",
+        "sauna",
+        "health"
+      ],
+      "tweet_url": "https://x.com/portablsaunalab/status/2042516481615802460"
+    },
+    {
+      "id": "2044296883879997877",
+      "text": "10 taun yang lalu, songkran itu belum jadi ajang cruising atau orgy di sauna gitu ya. di tahun 2016, belum banyak gay sauna di bangkok dan belum banyak orang akses prep dan doxypep. orang2 gak seliar itu dulu. Sauna dulu cuma ada Babylon (uda tutup) dan Chakran. https://t.co/EujDm5uA4t",
+      "author_id": "1819678940249882624",
+      "username": "kokasboi",
+      "name": "vaga kaas",
+      "created_at": "2026-04-15T06:08:52.000Z",
+      "conversation_id": "2044296883879997877",
+      "metrics": {
+        "likes": 19,
+        "retweets": 3,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 1812,
+        "bookmarks": 5
+      },
+      "urls": [
+        "https://twitter.com/kokasboi/status/2043600545722830962"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/kokasboi/status/2044296883879997877"
+    },
+    {
+      "id": "2043310719471329563",
+      "text": "Sauna heat may give your immune system a quick boost, study finds | Knowridge\n\nA relaxing sauna session may do more than just help you unwind. A new study from Finland suggests that spending time in a sauna can quickly boost the body’s immune activity.\n\nThe research, published in https://t.co/cBPkUZNnvD",
+      "author_id": "853318060052291584",
+      "username": "OwenGregorian",
+      "name": "Owen Gregorian",
+      "created_at": "2026-04-12T12:50:13.000Z",
+      "conversation_id": "2043310719471329563",
+      "metrics": {
+        "likes": 27,
+        "retweets": 9,
+        "replies": 4,
+        "quotes": 2,
+        "impressions": 1934,
+        "bookmarks": 7
+      },
+      "urls": [
+        "https://x.com/OwenGregorian/status/2043310719471329563/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/OwenGregorian/status/2043310719471329563"
+    },
+    {
+      "id": "2044247248754680073",
+      "text": "@ruggybrb Sauna sauna 🧖 ou sauna 🫦?",
+      "author_id": "3270841878",
+      "username": "Thetheuzo",
+      "name": "RivaisTesudos",
+      "created_at": "2026-04-15T02:51:39.000Z",
+      "conversation_id": "2044205154639999485",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 30,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "ruggybrb"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Thetheuzo/status/2044247248754680073"
+    },
+    {
+      "id": "2043642639439089887",
+      "text": "@comeNcumm Selain ini , yg mayoritas sauna nya local thai itu mana aja bro??? Thanks,,, gak suka sauna sauna mostly bule dan org luar...",
+      "author_id": "1758718986815184896",
+      "username": "meincartoon",
+      "name": "DailySecret",
+      "created_at": "2026-04-13T10:49:08.000Z",
+      "conversation_id": "2042637551228588222",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 288,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "comeNcumm"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/meincartoon/status/2043642639439089887"
+    },
+    {
+      "id": "2043518943365656664",
+      "text": "Chilling in the sauna with my best friend 🫂 #sauna #vibes https://t.co/fAWgc1oTco",
+      "author_id": "1733931254125297664",
+      "username": "4PlayIzDaWay",
+      "name": "Ryan Dumper",
+      "created_at": "2026-04-13T02:37:37.000Z",
+      "conversation_id": "2043518943365656664",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 42,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/4PlayIzDaWay/status/2043518943365656664/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "sauna",
+        "vibes"
+      ],
+      "tweet_url": "https://x.com/4PlayIzDaWay/status/2043518943365656664"
+    },
+    {
+      "id": "2042696192904106404",
+      "text": "@natehoodstp Yes! Am afraid of people who objected to this that might derail the whole adult bathhouses where someone just want to follow the Finnish tradition in the sauna… No sex needed, just being naked in the sauna. That is the way to be in sauna.",
+      "author_id": "98301413",
+      "username": "keithdoane",
+      "name": "keith doane",
+      "created_at": "2026-04-10T20:08:18.000Z",
+      "conversation_id": "2042626930252615908",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 476,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "natehoodstp"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/keithdoane/status/2042696192904106404"
+    },
+    {
+      "id": "2044365513283760160",
+      "text": "@Moralityrevived Go to sauna. Sauna is massively underrated for mental reset.",
+      "author_id": "1960682217568657409",
+      "username": "ZenSpa_wellness",
+      "name": "Zen Spa - Sauna Rituals",
+      "created_at": "2026-04-15T10:41:35.000Z",
+      "conversation_id": "2044022223447421098",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 4,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "Moralityrevived"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ZenSpa_wellness/status/2044365513283760160"
+    },
+    {
+      "id": "2044362865730007240",
+      "text": "@KristenJakobitz Go to sauna. Sauna is massively underrated for mental reset.",
+      "author_id": "1960682217568657409",
+      "username": "ZenSpa_wellness",
+      "name": "Zen Spa - Sauna Rituals",
+      "created_at": "2026-04-15T10:31:04.000Z",
+      "conversation_id": "2030745284452429902",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 2,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "KristenJakobitz"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ZenSpa_wellness/status/2044362865730007240"
+    },
+    {
+      "id": "2042543787818324368",
+      "text": "Christina often gets asked why people love sauna routines.\n\nResearch links regular sauna use with better circulation, reduced stress and cardiovascular support.\n\nExplore sauna options for your home: https://t.co/JcLo2z8R6O\n\n#SaunaLife #HomeWellness https://t.co/IRkpRKZLiI",
+      "author_id": "1950189577143984128",
+      "username": "steamroomsauna",
+      "name": "saunasteamroomco",
+      "created_at": "2026-04-10T10:02:42.000Z",
+      "conversation_id": "2042543787818324368",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://f.mtr.cool/nbtlikhmiu",
+        "https://x.com/steamroomsauna/status/2042543787818324368/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "SaunaLife",
+        "HomeWellness"
+      ],
+      "tweet_url": "https://x.com/steamroomsauna/status/2042543787818324368"
+    },
+    {
+      "id": "2043713405068964001",
+      "text": "@mariekehoogwout Het is ook echt een onsamenhangend betoog van heb ik jou daar. Of vrouwen maar even transmannen in de sauna willen gedogen. Prima als dat een gemengde sauna is, maar anders niet.\nAls man vind ik vrouwen in de sauna ook onprettig.",
+      "author_id": "467830653",
+      "username": "TarakNL",
+      "name": "Tarak",
+      "created_at": "2026-04-13T15:30:20.000Z",
+      "conversation_id": "2043700551204872514",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 57,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "mariekehoogwout"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/TarakNL/status/2043713405068964001"
+    },
+    {
+      "id": "2042576169183142012",
+      "text": "@SahilBloom @blakeaburge @foundmyfitness Sauna (sow-na not saw-na) has been a thing in the Upper Penninsula of Michigan forever.  Many, many homes for sale advertise having a sauna.  Sauna followed by a roll in a snowbank, 5 gallon bucket of cold water over the head, dip in the lake are de rigueur.",
+      "author_id": "1822440765286739968",
+      "username": "PoppyAce906",
+      "name": "R ✝️ Tetelestai",
+      "created_at": "2026-04-10T12:11:22.000Z",
+      "conversation_id": "2042284985982255195",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 18,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "SahilBloom",
+        "blakeaburge",
+        "foundmyfitness"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/PoppyAce906/status/2042576169183142012"
+    },
+    {
+      "id": "2042575849816555963",
+      "text": "📍 配布施設はこちら\n\n■ サウナ\nUMEGASHIMA DRIVE-IN ＆ SAUNA VILLA\nsauna MYSA\nうわの空 -uwanosora-\nコトトキス SAUNA &amp; BONFIRE\nおふろcafe bijinyu\n用宗みなと温泉",
+      "author_id": "2036433095235436544",
+      "username": "mizudochu",
+      "name": "しずおかみず道中",
+      "created_at": "2026-04-10T12:10:06.000Z",
+      "conversation_id": "2042575129289593023",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 251,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/mizudochu/status/2042575849816555963"
+    },
+    {
+      "id": "2043075514789761334",
+      "text": "@yungjay_01 Greeting from Finland. 120\nFahrenheit is very cold sauna, 200 Fahrenheit normal family sauna temperature and 250 Fahrenheit something  which was familiar for me and my brother, when we were in the sauna as kids with our father. No big drama..",
+      "author_id": "1872986594",
+      "username": "pekka_siltala",
+      "name": "Pekka Siltala",
+      "created_at": "2026-04-11T21:15:35.000Z",
+      "conversation_id": "2042876400135262600",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 775,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "yungjay_01"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/pekka_siltala/status/2043075514789761334"
+    },
+    {
+      "id": "2042543429255647688",
+      "text": "@Jonhsqkka @PathOfMen_ Yes, according to Bryan Johnson's self-reported data from 238 sauna sessions (shared yesterday), icing his testicles during sauna raised total motile sperm count +57% and motility +16% vs. his pre-sauna baseline.\n\nRemoving the ice for 15 sessions then crashed motility -57% and",
+      "author_id": "1720665183188922368",
+      "username": "grok",
+      "name": "Grok",
+      "created_at": "2026-04-10T10:01:16.000Z",
+      "conversation_id": "2042428162211192846",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 425,
+        "bookmarks": 3
+      },
+      "urls": [],
+      "mentions": [
+        "Jonhsqkka",
+        "PathOfMen_"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/grok/status/2042543429255647688"
+    },
+    {
+      "id": "2044326121454330261",
+      "text": "#Harvia kasvumahkuja riittää. Hyvä toi 🇺🇸 potentiaalivertaus, sauna vs uima-altaat. \n\nJa sauna on paljon yksinkertaisempi ja halvempi tuoda/rakentaa tontille 👍 https://t.co/mnfoCdllqJ",
+      "author_id": "2284034171",
+      "username": "zijoittaja",
+      "name": "Tomi Lahti",
+      "created_at": "2026-04-15T08:05:03.000Z",
+      "conversation_id": "2044326121454330261",
+      "metrics": {
+        "likes": 4,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1116,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/zijoittaja/status/2044326121454330261/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "Harvia"
+      ],
+      "tweet_url": "https://x.com/zijoittaja/status/2044326121454330261"
+    },
+    {
+      "id": "2042681171956412539",
+      "text": "@natehoodstp Pro tip... get a cabin and build a wood burning sauna. 1) hotter than electric 2) can go straight from water to sauna or sauna to water 3) can use beach sand as a scrub when pores are open then use lake to rinse off... added side benefit no senior citizen scrotums",
+      "author_id": "2039555036083023872",
+      "username": "MNModerate2028",
+      "name": "Minnesota Moderate 🇺🇸🧭📐👻⚡️",
+      "created_at": "2026-04-10T19:08:37.000Z",
+      "conversation_id": "2042626930252615908",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 175,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "natehoodstp"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/MNModerate2028/status/2042681171956412539"
+    },
+    {
+      "id": "2043705164058808829",
+      "text": "@Osint613 Pedro Sánchez can't stop criticizing America—calling the US 'wrong' on Iran, refusing our bases, and lecturing on 'international law' and 'no to war.' Yet his wife Begoña Gómez's family ran Madrid brothels/saunas (like Sauna Adán, Sauna Azul &amp; Sauna Bar) with reports of women",
+      "author_id": "1776423003603292160",
+      "username": "MonstejzTTV",
+      "name": "MonstejzTTV (MonsterMFPURR.ETH)",
+      "created_at": "2026-04-13T14:57:35.000Z",
+      "conversation_id": "2043682489399443718",
+      "metrics": {
+        "likes": 41,
+        "retweets": 9,
+        "replies": 2,
+        "quotes": 1,
+        "impressions": 1485,
+        "bookmarks": 1
+      },
+      "urls": [],
+      "mentions": [
+        "Osint613"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/MonstejzTTV/status/2043705164058808829"
+    },
+    {
+      "id": "2044393615326171461",
+      "text": "Sauna sauna tomorrow 💦💦💦",
+      "author_id": "1171011855734718469",
+      "username": "HungLiverpool01",
+      "name": "HungPablo",
+      "created_at": "2026-04-15T12:33:15.000Z",
+      "conversation_id": "2044393615326171461",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 223,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/HungLiverpool01/status/2044393615326171461"
+    },
+    {
+      "id": "2042508745549267311",
+      "text": "A home sauna setup is designed to provide daily recovery, relaxation, and long-term wellness benefits. From improving circulation to reducing stress and supporting muscle recovery, sauna use has become a key part of modern home wellness routines.\n\n#homewellness #sauna https://t.co/fnbDW1CY2j",
+      "author_id": "2024198079650693120",
+      "username": "fitness49373",
+      "name": "Ultimate Wellness Fitness",
+      "created_at": "2026-04-10T07:43:27.000Z",
+      "conversation_id": "2042508745549267311",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 78,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/fitness49373/status/2042508745549267311/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "homewellness",
+        "sauna"
+      ],
+      "tweet_url": "https://x.com/fitness49373/status/2042508745549267311"
+    },
+    {
+      "id": "2044284742485578127",
+      "text": "I’m laughing today’s radio Kobachia was in the sauna (he likes sauna) for 2 hours or so Hatanaka Tasuku tried contacting him after 10 minutes they parted ways but Kobachia was in sauna so he couldn’t pick it up. Next day he got interrogated by Hatanaka on where were you man????",
+      "author_id": "1978822311818985472",
+      "username": "Archives_79",
+      "name": "Kugetsu Archives_79",
+      "created_at": "2026-04-15T05:20:38.000Z",
+      "conversation_id": "2044284742485578127",
+      "metrics": {
+        "likes": 2,
+        "retweets": 1,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 133,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Archives_79/status/2044284742485578127"
+    },
+    {
+      "id": "2042271822314606920",
+      "text": "Sauna time! Submit your sweaty sauna pics for me! https://t.co/7wHBX55RoU",
+      "author_id": "1611785666454503425",
+      "username": "MidwestCurves",
+      "name": "Midwest Curves",
+      "created_at": "2026-04-09T16:02:00.000Z",
+      "conversation_id": "2042271822314606920",
+      "metrics": {
+        "likes": 5,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 398,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/MidwestCurves/status/2042271822314606920/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/MidwestCurves/status/2042271822314606920"
+    },
+    {
+      "id": "2043293444291096876",
+      "text": "@ArnGev69 Ok na din pala na hindi ako natuloy. Grabe ang frustration ko siguro kung pati Sauna may pila. Ganyan pala kapag may festivity. Aling Sauna ito?",
+      "author_id": "850338931627368450",
+      "username": "Stanley_Rahl",
+      "name": "Stanley Rahl",
+      "created_at": "2026-04-12T11:41:34.000Z",
+      "conversation_id": "2043280677261742572",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 60,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "ArnGev69"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Stanley_Rahl/status/2043293444291096876"
+    },
+    {
+      "id": "2044383000834576796",
+      "text": "@getpeakr Go to sauna also. Sauna is so underrated.",
+      "author_id": "1960682217568657409",
+      "username": "ZenSpa_wellness",
+      "name": "Zen Spa - Sauna Rituals",
+      "created_at": "2026-04-15T11:51:04.000Z",
+      "conversation_id": "2044072957836726285",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "getpeakr"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ZenSpa_wellness/status/2044383000834576796"
+    },
+    {
+      "id": "2044444972179714194",
+      "text": "There are so many benefits to using a sauna 🌿✨ Regular sauna sessions can help improve sleep, reduce inflammation, relieve pain, and so much more.\n\nIf you're looking for a home one, comment SAUNA and we'll send over all the details on the one Collin ... https://t.co/6zaFjfedV9",
+      "author_id": "2035576664219103232",
+      "username": "BellaTorre29270",
+      "name": "Sun Home Saunas",
+      "created_at": "2026-04-15T15:57:19.000Z",
+      "conversation_id": "2044444972179714194",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BellaTorre29270/status/2044444972179714194/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BellaTorre29270/status/2044444972179714194"
+    },
+    {
+      "id": "2044210128182968440",
+      "text": "@comeNcumm Gak suka ama sauna ini, setnya bukan sauna asli semua hitam, gak ada dry/wet sauna yg proper. Cuma bilik bilik buat nge* ama org*. Mostly mainland dengan segala bentuk. Cuma stgh jam lalu check out. Lokasi emang strategis",
+      "author_id": "1725854388",
+      "username": "Jungwo_Kim",
+      "name": "Kim Jung Wo",
+      "created_at": "2026-04-15T00:24:08.000Z",
+      "conversation_id": "2043698637851771148",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 33,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "comeNcumm"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Jungwo_Kim/status/2044210128182968440"
+    },
+    {
+      "id": "2042035506574164043",
+      "text": "Three friends built a sauna on trailer. Years later, 1% of Ireland's population has booked sauna experiences with them 🤯 Super cool to have partnered with the team at The Hot Box Sauna https://t.co/pNn029jevb https://t.co/nxjwm3SoPI",
+      "author_id": "1512139913000538121",
+      "username": "ltvhunter",
+      "name": "Ray",
+      "created_at": "2026-04-09T00:22:58.000Z",
+      "conversation_id": "2042035506574164043",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 155,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://www.getservicify.com/post/hot-box-sauna-success-story",
+        "https://x.com/ltvhunter/status/2042035506574164043/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ltvhunter/status/2042035506574164043"
+    },
+    {
+      "id": "2042084629205958970",
+      "text": "[Giveaway Closed] I'm giving away a SAUNA !!! 🥵✨ I'm teaming up with  to give one of you beautiful people the same sauna that I have at home. :)\n\nThe sauna is obviously great for cardiovascular health, inflammation, &amp; recovery. BUT for me, it's also ... https://t.co/gZnDUjUmf9",
+      "author_id": "2035576664219103232",
+      "username": "BellaTorre29270",
+      "name": "Sun Home Saunas",
+      "created_at": "2026-04-09T03:38:10.000Z",
+      "conversation_id": "2042084629205958970",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 3,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BellaTorre29270/status/2042084629205958970/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BellaTorre29270/status/2042084629205958970"
+    },
+    {
+      "id": "2042320875324662136",
+      "text": "There’s nothing worse than a real sauna being replaced by an infrared sauna. If I was POTUS I would make the term “infrared sauna” illegal",
+      "author_id": "929542791344029697",
+      "username": "paulhansonclark",
+      "name": "🎰🍀",
+      "created_at": "2026-04-09T19:16:55.000Z",
+      "conversation_id": "2042320875324662136",
+      "metrics": {
+        "likes": 4,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 112,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/paulhansonclark/status/2042320875324662136"
+    },
+    {
+      "id": "2044473552251064611",
+      "text": "simple trip to Sauna 😊\n\n📍Hanko, Finland -\n\nExtra sauna content on IG subscription or Patreon 🔥 link in bio https://t.co/vGeZry3kXu",
+      "author_id": "2039041595035557888",
+      "username": "rivera_sav27251",
+      "name": "Nina Laitiala",
+      "created_at": "2026-04-15T17:50:53.000Z",
+      "conversation_id": "2044473552251064611",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/rivera_sav27251/status/2044473552251064611/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/rivera_sav27251/status/2044473552251064611"
+    },
+    {
+      "id": "2043825546669502727",
+      "text": "月と太陽の煌めき\n#SAUNA煌-KOU-\n\n🌕🌞特典応酬\n○氏のサ活を読んで狙っていたSAUNA煌さん❗️う草薙駅降りてすぐ三角屋根が見えてきた。\n受付💁‍♂... (＠ SAUNA煌ｰKOUｰ in 静岡県, 静岡市) https://t.co/8lTuXw8tXV https://t.co/QIbyNF191U",
+      "author_id": "3163822082",
+      "username": "k_yonedaotlook",
+      "name": "ヨネ（ヨネロッキー）",
+      "created_at": "2026-04-13T22:55:57.000Z",
+      "conversation_id": "2043825546669502727",
+      "metrics": {
+        "likes": 8,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 96,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://sauna-ikitai.com/saunners/97511/posts/10159354",
+        "https://x.com/k_yonedaotlook/status/2043825546669502727/photo/1",
+        "https://x.com/k_yonedaotlook/status/2043825546669502727/photo/1",
+        "https://x.com/k_yonedaotlook/status/2043825546669502727/photo/1",
+        "https://x.com/k_yonedaotlook/status/2043825546669502727/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "SAUNA煌"
+      ],
+      "tweet_url": "https://x.com/k_yonedaotlook/status/2043825546669502727"
+    },
+    {
+      "id": "2043083438131974218",
+      "text": "Sauna sesh even though it feels like a sauna outside today  https://t.co/P19Xmhr66W https://t.co/GDiYWexsfI",
+      "author_id": "19173816",
+      "username": "terannhilow",
+      "name": "TERANN HILOW",
+      "created_at": "2026-04-11T21:47:04.000Z",
+      "conversation_id": "2043083438131974218",
+      "metrics": {
+        "likes": 606,
+        "retweets": 9,
+        "replies": 16,
+        "quotes": 0,
+        "impressions": 5032,
+        "bookmarks": 29
+      },
+      "urls": [
+        "https://wink.ing/terannhilow",
+        "https://x.com/terannhilow/status/2043083438131974218/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/terannhilow/status/2043083438131974218"
+    },
+    {
+      "id": "2043356736275218888",
+      "text": "Would we be doing this in secret in that one sauna nobody notices? 😉\nZouden we dit stiekem doen in die sauna die iedereen vergeet? 😋 https://t.co/sHQq8O7h7u",
+      "author_id": "1508407263618285575",
+      "username": "BraboExhib",
+      "name": "Public Brabo 🇳🇱 (10K)",
+      "created_at": "2026-04-12T15:53:04.000Z",
+      "conversation_id": "2043356736275218888",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 740,
+        "bookmarks": 1
+      },
+      "urls": [
+        "https://twitter.com/MommyFigr/status/2042829746543673806"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BraboExhib/status/2043356736275218888"
+    },
+    {
+      "id": "2044294691001344252",
+      "text": "The ultimate business hotel with natural hot springs and sauna, Hotel Orein Shizuoka【S12】 #hotel #shizuoka #orein #sauna https://t.co/jSx0DBElWE",
+      "author_id": "1004980000540409857",
+      "username": "travel_f_blog",
+      "name": "F",
+      "created_at": "2026-04-15T06:00:10.000Z",
+      "conversation_id": "2044294691001344252",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 2,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://travel-f.com/en/spa/s12-hotelolein/"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "hotel",
+        "shizuoka",
+        "orein",
+        "sauna"
+      ],
+      "tweet_url": "https://x.com/travel_f_blog/status/2044294691001344252"
+    },
+    {
+      "id": "2043267514214293784",
+      "text": "@devadam88 I have sauna at home and sauna at the summer cottage.  So yes. Almost daily.",
+      "author_id": "1154702920945930240",
+      "username": "TimoCodes",
+      "name": "Timo",
+      "created_at": "2026-04-12T09:58:32.000Z",
+      "conversation_id": "2043260978981122240",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 58,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "devadam88"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/TimoCodes/status/2043267514214293784"
+    },
+    {
+      "id": "2043813755528585440",
+      "text": "Entre sauna y sauna.... https://t.co/4vhb2nzOqO",
+      "author_id": "979049064",
+      "username": "josemiguelhonty",
+      "name": "jose miguel honty",
+      "created_at": "2026-04-13T22:09:06.000Z",
+      "conversation_id": "2043813755528585440",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 17,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://twitter.com/MediterraneoDGT/status/2043610477675114604"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/josemiguelhonty/status/2043813755528585440"
+    },
+    {
+      "id": "2043389918882439501",
+      "text": "wake up Joko watch the ring camera film back to bed wake up dresdenpost jack off again back to bed wake up watch the Harry Dresden video watch it again make some eggs and toast watch it again jack off back to bed gym sauna watch it in the sauna Jack off in the sauna go to work ja",
+      "author_id": "1509572449859297285",
+      "username": "whispyws",
+      "name": "Whispy",
+      "created_at": "2026-04-12T18:04:55.000Z",
+      "conversation_id": "2043389918882439501",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 105,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/whispyws/status/2043389918882439501"
+    },
+    {
+      "id": "2043949511672832372",
+      "text": "Sauna blankets + fasting = next-level autophagy 🔥 Our new guide compares the top infrared sauna blankets for fasting recovery in 2026.\n\nFull guide: https://t.co/35hlEhJEqW\n\n#fasting #autophagy #sauna https://t.co/3vcvFkqxWS",
+      "author_id": "1769286113963692032",
+      "username": "FastingPioneer",
+      "name": "Fasting Pioneer",
+      "created_at": "2026-04-14T07:08:32.000Z",
+      "conversation_id": "2043949511672832372",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 22,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://fastingpioneer.com/best-sauna-blankets-fasting-recovery-2026/",
+        "https://x.com/FastingPioneer/status/2043949511672832372/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "fasting",
+        "autophagy",
+        "sauna"
+      ],
+      "tweet_url": "https://x.com/FastingPioneer/status/2043949511672832372"
+    },
+    {
+      "id": "2042482730005561455",
+      "text": "The newly opened Japanese-style premium sauna in Tamachi, PARADISE【S7】 #tamachi #paradise #sauna #blog https://t.co/LLcsxZ9ZPl",
+      "author_id": "1004980000540409857",
+      "username": "travel_f_blog",
+      "name": "F",
+      "created_at": "2026-04-10T06:00:04.000Z",
+      "conversation_id": "2042482730005561455",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 48,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://travel-f.com/en/spa/s7-paradise/"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "tamachi",
+        "paradise",
+        "sauna",
+        "blog"
+      ],
+      "tweet_url": "https://x.com/travel_f_blog/status/2042482730005561455"
+    },
+    {
+      "id": "2043381845975306296",
+      "text": "@plario214541 @franmacos Y yo me pregunto ¿ese Falcón tiene sauna?\nAllí, en la sauna, se les mojarían las plumas y Julio Iglesias les cantaría \"Vuela alto\".",
+      "author_id": "1932191419",
+      "username": "emarrodd",
+      "name": "Emilio Martin R.",
+      "created_at": "2026-04-12T17:32:50.000Z",
+      "conversation_id": "2043327860488704020",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 359,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "plario214541",
+        "franmacos"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/emarrodd/status/2043381845975306296"
+    },
+    {
+      "id": "2043652735229198531",
+      "text": "Haciendo publicidad del coche eléctrico de Xiaomi, los que compiten con los que fabricamos aquí.\nChapero de Sauna pero sauna china. https://t.co/QtHSt2ZGOp",
+      "author_id": "1811138437547765760",
+      "username": "merogos_",
+      "name": "merogos",
+      "created_at": "2026-04-13T11:29:15.000Z",
+      "conversation_id": "2043652735229198531",
+      "metrics": {
+        "likes": 75,
+        "retweets": 16,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 2036,
+        "bookmarks": 1
+      },
+      "urls": [
+        "https://twitter.com/sanchezcastejon/status/2043615984989163658"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/merogos_/status/2043652735229198531"
+    },
+    {
+      "id": "2042197599097327704",
+      "text": "\"you live in Singapore why do you need to go to the sauna\"\n\nsauna is so much more than just humidity + heat. sauna is meditative. sauna is recovery. sauna has become my favourite form of self-care.",
+      "author_id": "1591340401826283520",
+      "username": "martschweiger",
+      "name": "Mart Schweiger",
+      "created_at": "2026-04-09T11:07:04.000Z",
+      "conversation_id": "2042197599097327704",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 235,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/martschweiger/status/2042197599097327704"
+    },
+    {
+      "id": "2043806567372353604",
+      "text": "@_gas404 rule #1 what happens in the sauna stays in the sauna",
+      "author_id": "1689044186253701120",
+      "username": "itsKazgar",
+      "name": "kazgar",
+      "created_at": "2026-04-13T21:40:32.000Z",
+      "conversation_id": "2043790860358193648",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 152,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "_gas404"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/itsKazgar/status/2043806567372353604"
+    },
+    {
+      "id": "2043325350529376738",
+      "text": "Lift. Sweat. Recover.\n\nSauna = faster recovery, less soreness, better performance. 🔥\n\n#HyperCool #Recovery #Sauna #GymLife #استشفاء_عضلي https://t.co/RK6u5JLFFi",
+      "author_id": "1780154037565841408",
+      "username": "HypercoolSA",
+      "name": "Hyper Cool",
+      "created_at": "2026-04-12T13:48:21.000Z",
+      "conversation_id": "2043325350529376738",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 52,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/HypercoolSA/status/2043325350529376738/photo/1",
+        "https://x.com/HypercoolSA/status/2043325350529376738/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "HyperCool",
+        "Recovery",
+        "Sauna",
+        "GymLife",
+        "استشفاء_عضلي"
+      ],
+      "tweet_url": "https://x.com/HypercoolSA/status/2043325350529376738"
+    },
+    {
+      "id": "2043321921391989069",
+      "text": "@devadam88 as a developer when talking about the sauna is hilarious\n\nlike yes, I obviously code in the sauna",
+      "author_id": "1835397805155749888",
+      "username": "byLuocca",
+      "name": "Luca Marchetti",
+      "created_at": "2026-04-12T13:34:43.000Z",
+      "conversation_id": "2043260978981122240",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 3,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "devadam88"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/byLuocca/status/2043321921391989069"
+    },
+    {
+      "id": "2042597720029040886",
+      "text": "@blimemed Ke Sauna Mania atau Krubb atau 39 Underground atau Onsen..\nReferensi 🏳️‍🌈 Sauna di Bangkok🇹🇭\n👉https://t.co/0CT5QAgdD4",
+      "author_id": "1687117251231825920",
+      "username": "riankusuma83",
+      "name": "Rian Kuskus",
+      "created_at": "2026-04-10T13:37:00.000Z",
+      "conversation_id": "2042567964139098324",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 89,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://youtu.be/1JNHwmVFqr4?si=eMi0kg60zGEnKJAY"
+      ],
+      "mentions": [
+        "blimemed"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/riankusuma83/status/2042597720029040886"
+    },
+    {
+      "id": "2043887546019762456",
+      "text": "@justabdulraouf Actually, I love a full sauna with people who want to chat. \n\nI have some pretty hilarious sauna stories pre-Covid before they separated the sauna into men’s and women’s. \n\nKeep in mind you had to be clothed.",
+      "author_id": "1893161039249973248",
+      "username": "ckeyte546",
+      "name": "Peskius Maximus",
+      "created_at": "2026-04-14T03:02:19.000Z",
+      "conversation_id": "2043884785790009669",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 29,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "justabdulraouf"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ckeyte546/status/2043887546019762456"
+    },
+    {
+      "id": "2044326221572403276",
+      "text": "Unlock the secrets of sauna therapy for back pain relief. Learn about science and safety measures here: https://t.co/kyaU4Ascyc #Sauna #Health #BackPainRelief https://t.co/lVdB3LtBSh",
+      "author_id": "1893516834135252995",
+      "username": "longevitybased",
+      "name": "Longevity Based",
+      "created_at": "2026-04-15T08:05:27.000Z",
+      "conversation_id": "2044326221572403276",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 8,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://longevitybased.com/blogs/longevity-blog/sauna-benefits-back-pain-science-safety-strategies",
+        "https://x.com/longevitybased/status/2044326221572403276/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "Sauna",
+        "Health",
+        "BackPainRelief"
+      ],
+      "tweet_url": "https://x.com/longevitybased/status/2044326221572403276"
+    },
+    {
+      "id": "2043339364856455577",
+      "text": "Kramer: (in the sauna) It's like a sauna in here. #Seinfeldism",
+      "author_id": "887153378",
+      "username": "Seinfeldism1",
+      "name": "Seinfeldism",
+      "created_at": "2026-04-12T14:44:02.000Z",
+      "conversation_id": "2043339364856455577",
+      "metrics": {
+        "likes": 26,
+        "retweets": 1,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 2453,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [
+        "Seinfeldism"
+      ],
+      "tweet_url": "https://x.com/Seinfeldism1/status/2043339364856455577"
+    },
+    {
+      "id": "2042417562961788954",
+      "text": "(8) nagpepenetrate sa walls ng sauna, giving that red room ambiance sa loob ng sauna. Amoy bagong plank of woods. Halatang di pa nababasa ng wet towels ang woods sa loob ng sauna. Spacious ang sauna, bigger than what Luminere had in the past. Ang item for improvement nila dito ay",
+      "author_id": "1880667113020628992",
+      "username": "DeepWebbbbbb",
+      "name": "DeepWebbbbbb",
+      "created_at": "2026-04-10T01:41:07.000Z",
+      "conversation_id": "2041828696382951748",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 1316,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/DeepWebbbbbb/status/2042417562961788954"
+    },
+    {
+      "id": "2043687839724970024",
+      "text": "Got a Sauna Suit and 30lb weighted vest 💪🏼even if the sauna suit only makes me lose water weight by sweating maybe the vest can still help me build muscle 🙂‍↕️ https://t.co/G5IUb4z1kK",
+      "author_id": "1922951891052609536",
+      "username": "lockinandloseit",
+      "name": "caloriecollector || shedtwt",
+      "created_at": "2026-04-13T13:48:45.000Z",
+      "conversation_id": "2043687839724970024",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 44,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/lockinandloseit/status/2043687839724970024/photo/1",
+        "https://x.com/lockinandloseit/status/2043687839724970024/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/lockinandloseit/status/2043687839724970024"
+    },
+    {
+      "id": "2042408890764083679",
+      "text": "Sauna Construction in Uganda. \nNew infrared sauna on sale. for more information please contact us. By B.sauna Energy Construction Workshop. #goviralreels #everyone #engineers #sauna #Israël https://t.co/lTDXJgHbwX",
+      "author_id": "1547277837123702785",
+      "username": "BuwemboSauna",
+      "name": "Engineer Buwembo Sauna",
+      "created_at": "2026-04-10T01:06:40.000Z",
+      "conversation_id": "2042408890764083679",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 31,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BuwemboSauna/status/2042408890764083679/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "goviralreels",
+        "everyone",
+        "engineers",
+        "sauna",
+        "Israël"
+      ],
+      "tweet_url": "https://x.com/BuwemboSauna/status/2042408890764083679"
+    },
+    {
+      "id": "2043964378781765795",
+      "text": "Homedics Portable Sauna – Collapsible Personal Steam Sauna for Stress Relief &amp; Muscle Relaxation, Fast 1-Min Setup, Heats to 115°F, Up to 60 Min Session, Compact Foldable Design\nhttps://t.co/c3imc5Oex3\n#amazon #deals #homedics #portable #sauna",
+      "author_id": "1665533892",
+      "username": "evalueexplorer",
+      "name": "Value Explorer",
+      "created_at": "2026-04-14T08:07:37.000Z",
+      "conversation_id": "2043964378781765795",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 12,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://valueexplorer.short.gy/eOR0QW"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "amazon",
+        "deals",
+        "homedics",
+        "portable",
+        "sauna"
+      ],
+      "tweet_url": "https://x.com/evalueexplorer/status/2043964378781765795"
+    },
+    {
+      "id": "2043786194543087970",
+      "text": "@mostolocked pero sauna sauna o fue en un balneario normal en los que también hay sexo según cuenta David Vilaseca en Els homes i els dies?",
+      "author_id": "1899376066474504192",
+      "username": "FKAbioput",
+      "name": "bioput",
+      "created_at": "2026-04-13T20:19:35.000Z",
+      "conversation_id": "2043783347667685455",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 61,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "mostolocked"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/FKAbioput/status/2043786194543087970"
+    },
+    {
+      "id": "2044309194623287780",
+      "text": "@Filofficialvip1 @cuban_dy Profite, Medellin c'est trop cool. Sauna 55 ou cruising sauna.",
+      "author_id": "1867501004884787200",
+      "username": "WhiteExplore",
+      "name": "WhiteExplorer",
+      "created_at": "2026-04-15T06:57:48.000Z",
+      "conversation_id": "2036298609122054428",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 25,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "Filofficialvip1",
+        "cuban_dy"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/WhiteExplore/status/2044309194623287780"
+    },
+    {
+      "id": "2043659724894159323",
+      "text": "Plan ou sauna cette aprem sur Paris vu le nombre de proposition ca risque d etre le sauna 😂 #lgbtq #kiffeurs https://t.co/vz3y4ZIm9g",
+      "author_id": "1789589967821324288",
+      "username": "feetmanlicker75",
+      "name": "Garcia Thomas",
+      "created_at": "2026-04-13T11:57:02.000Z",
+      "conversation_id": "2043659724894159323",
+      "metrics": {
+        "likes": 1,
+        "retweets": 1,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 269,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://twitter.com/feetmanlicker75/status/2043459199275811103"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "lgbtq",
+        "kiffeurs"
+      ],
+      "tweet_url": "https://x.com/feetmanlicker75/status/2043659724894159323"
+    },
+    {
+      "id": "2043517441175966054",
+      "text": "Sauna before bed! 185 degrees for 15 minutes! Best health investment I’ve ever made is buying a sauna! https://t.co/NUDiFi5XhP",
+      "author_id": "1437190345",
+      "username": "collinsworth55",
+      "name": "Kyle Collinsworth",
+      "created_at": "2026-04-13T02:31:39.000Z",
+      "conversation_id": "2043517441175966054",
+      "metrics": {
+        "likes": 54,
+        "retweets": 0,
+        "replies": 8,
+        "quotes": 1,
+        "impressions": 5911,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/collinsworth55/status/2043517441175966054/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/collinsworth55/status/2043517441175966054"
+    },
+    {
+      "id": "2042297975792144601",
+      "text": "In sauna and Mexican women non stop talking on the phone. Leave the fucking sauna to take your phone call this isn’t Mexico City.",
+      "author_id": "2020719808136749056",
+      "username": "HowYADoin17315",
+      "name": "Paulie Walnuts",
+      "created_at": "2026-04-09T17:45:56.000Z",
+      "conversation_id": "2042297975792144601",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 46,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/HowYADoin17315/status/2042297975792144601"
+    },
+    {
+      "id": "2043653460327850427",
+      "text": "I love the sauna. When the towel falls and I feel the eyes on me... the heat on the skin, the soft tingling. It's exciting every time. 🔥\n\nKi-generated Model \n\n#sauna #camping #vanlife https://t.co/IyRePrQrOW",
+      "author_id": "1814392106170949632",
+      "username": "VanlifeEmmipmk",
+      "name": "Vanlife.Emmi",
+      "created_at": "2026-04-13T11:32:08.000Z",
+      "conversation_id": "2043653460327850427",
+      "metrics": {
+        "likes": 5,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 98,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/VanlifeEmmipmk/status/2043653460327850427/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "sauna",
+        "camping",
+        "vanlife"
+      ],
+      "tweet_url": "https://x.com/VanlifeEmmipmk/status/2043653460327850427"
+    },
+    {
+      "id": "2042622369597133051",
+      "text": "Sauna mode on. Warning: temperature rising! #gaysauna  #sauna  #gay  #hot https://t.co/iQhVQww8CV",
+      "author_id": "1869552616189153280",
+      "username": "maxivillion",
+      "name": "Maxivillion",
+      "created_at": "2026-04-10T15:14:57.000Z",
+      "conversation_id": "2042622369597133051",
+      "metrics": {
+        "likes": 14895,
+        "retweets": 352,
+        "replies": 49,
+        "quotes": 7,
+        "impressions": 269599,
+        "bookmarks": 2891
+      },
+      "urls": [
+        "https://x.com/maxivillion/status/2042622369597133051/photo/1",
+        "https://x.com/maxivillion/status/2042622369597133051/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "gaysauna",
+        "sauna",
+        "gay",
+        "hot"
+      ],
+      "tweet_url": "https://x.com/maxivillion/status/2042622369597133051"
+    },
+    {
+      "id": "2042208579122274657",
+      "text": "@VolkerPetzer Meiner Frau, ebenso wie Frauentag in der Sauna. Nichts für jemanden, der in der Sauna entspannen will.",
+      "author_id": "3200453659",
+      "username": "SexismObserver",
+      "name": "Sexismusbeauftragter",
+      "created_at": "2026-04-09T11:50:42.000Z",
+      "conversation_id": "2042150202908287160",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 205,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "VolkerPetzer"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/SexismObserver/status/2042208579122274657"
+    },
+    {
+      "id": "2043234641470169536",
+      "text": "@OChanSauna Drawbacks ↓\n• You start craving sauna like it’s a daily necessity 😭\n• 5 mins feels like survival mode every time\n• Post-sauna hunger goes crazy, wallet suffers 💀\n• You come out looking like you just ran a marathon 😭😭",
+      "author_id": "1752967862732382210",
+      "username": "anjany06",
+      "name": "Anjaney",
+      "created_at": "2026-04-12T07:47:54.000Z",
+      "conversation_id": "2043181683437109523",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 12368,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "OChanSauna"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/anjany06/status/2043234641470169536"
+    },
+    {
+      "id": "2042078217461473297",
+      "text": "@M0SC0W0 I once did the same thing when our sauna including women during repairs of the women's sauna. The woman opposite me in the sauna tried the towel drop sh*t with me &amp; I didn't even BLINK so help me as she said coquettishly \"OOPS!\" waiting for my gushing response that never came 1/2",
+      "author_id": "1785573411298938880",
+      "username": "HoministPapers",
+      "name": "Rocky Mark",
+      "created_at": "2026-04-09T03:12:41.000Z",
+      "conversation_id": "2041954947554529679",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 160,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "M0SC0W0"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/HoministPapers/status/2042078217461473297"
+    },
+    {
+      "id": "2043719342018208147",
+      "text": "@BeatrizTalegon Y no son los puteros del polígono, son los \"feministas\" de PSOE, que viajaban con otro \"feminista\" en coche, de Sauna en sauna. Aquí si rascamos va a salir algún Enstein, digo Eps...",
+      "author_id": "1691524501496819712",
+      "username": "Xalochh",
+      "name": "THE REVERSE THINKING MAN",
+      "created_at": "2026-04-13T15:53:56.000Z",
+      "conversation_id": "2043693939123777911",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 90,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "BeatrizTalegon"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Xalochh/status/2043719342018208147"
+    },
+    {
+      "id": "2042100883744551019",
+      "text": "apakah sauna di onsenku adalah gay sauna?? 🤯🤯🤯🤯🤯 https://t.co/2KhFFYWA5M",
+      "author_id": "1165131201138450434",
+      "username": "penikmatsemua_",
+      "name": "célibataire",
+      "created_at": "2026-04-09T04:42:45.000Z",
+      "conversation_id": "2042100883744551019",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 680,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://twitter.com/DjM_46_531/status/2042097500052713795"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/penikmatsemua_/status/2042100883744551019"
+    },
+    {
+      "id": "2044053534816207352",
+      "text": "Yakan. Masuk sauna abis Seungcheol, keluar sauna kaya raya https://t.co/tkBGJ6vqyN",
+      "author_id": "1291604174472245249",
+      "username": "coupstastu17",
+      "name": "🍒🐶HYPE VIBES",
+      "created_at": "2026-04-14T14:01:54.000Z",
+      "conversation_id": "2044053534816207352",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 50,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://twitter.com/shuaashoot/status/2044044334513959412"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/coupstastu17/status/2044053534816207352"
+    },
+    {
+      "id": "2044242856764989861",
+      "text": "@tomgreenlive Is that a sauna?\n\nSauna rap?",
+      "author_id": "1959272419350487040",
+      "username": "judgesnedge",
+      "name": "Judge Snedge",
+      "created_at": "2026-04-15T02:34:11.000Z",
+      "conversation_id": "2044156441406193708",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 47,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "tomgreenlive"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/judgesnedge/status/2044242856764989861"
+    },
+    {
+      "id": "2042211311627694145",
+      "text": "📍マップ配布場所はこちら\n\n■ 観光案内所\n静岡市総合観光案内所（JR静岡駅）\n\n■ サウナ\nUMEGASHIMA DRIVE-IN ＆ SAUNA VILLA\nsauna MYSA\nうわの空 -uwanosora-\nコトトキス SAUNA &amp; BONFIRE\nおふろcafe bijinyu\n用宗みなと温泉\n\n#しずおかみず道中",
+      "author_id": "2036433095235436544",
+      "username": "mizudochu",
+      "name": "しずおかみず道中",
+      "created_at": "2026-04-09T12:01:33.000Z",
+      "conversation_id": "2042209595729572287",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 205,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [
+        "しずおかみず道中"
+      ],
+      "tweet_url": "https://x.com/mizudochu/status/2042211311627694145"
+    },
+    {
+      "id": "2043098530365980940",
+      "text": "será mesmo q essa intervenção \"sauna bixa\" integra todos os trabalhos? nao sei se ja foram numa sauna bixa, mas... https://t.co/VMKAZ5LhRx",
+      "author_id": "762507195250413570",
+      "username": "codinomejonas",
+      "name": "jonas tentando montar num cavalo",
+      "created_at": "2026-04-11T22:47:03.000Z",
+      "conversation_id": "2043085303972241479",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 12,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/codinomejonas/status/2043098530365980940/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/codinomejonas/status/2043098530365980940"
+    },
+    {
+      "id": "2042593130130608459",
+      "text": "💧 Hidrate-se sempre: antes, durante e após a sauna na SaunApolo 56! Venha cuidar de si. #saunapolo56 #lisboa #sauna https://t.co/bqhV0Fca4g",
+      "author_id": "475724444",
+      "username": "SAUNAPOLO56",
+      "name": "SaunApolo 56",
+      "created_at": "2026-04-10T13:18:46.000Z",
+      "conversation_id": "2042593130130608459",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 87,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/SAUNAPOLO56/status/2042593130130608459/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "saunapolo56",
+        "lisboa",
+        "sauna"
+      ],
+      "tweet_url": "https://x.com/SAUNAPOLO56/status/2042593130130608459"
+    },
+    {
+      "id": "2043070664060408128",
+      "text": "@irbis_svk it Russian sauna ;D\nI've experienced it in the most canon way: diving into snow after takin sauna session. One of the best feelings I've ever had!",
+      "author_id": "1091476547704373248",
+      "username": "DiMaltaid",
+      "name": "Maltaid🇷🇺",
+      "created_at": "2026-04-11T20:56:19.000Z",
+      "conversation_id": "2042963440809934926",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 27,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "irbis_svk"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/DiMaltaid/status/2043070664060408128"
+    },
+    {
+      "id": "2042573329094021340",
+      "text": "@F_khan3 @nagakionsen This is a notice from Nagaki Onsen, a public bathhouse/sauna in Nagoya, Japan.\n\nIt says a customer yesterday snuck into the men's sauna machinery room and cranked the temp up to nearly 150°C (super dangerous—alarm went off, no injuries luckily). They had to shut down the sauna",
+      "author_id": "1720665183188922368",
+      "username": "grok",
+      "name": "Grok",
+      "created_at": "2026-04-10T12:00:05.000Z",
+      "conversation_id": "2042523956566200496",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 86,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "F_khan3",
+        "nagakionsen"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/grok/status/2042573329094021340"
+    },
+    {
+      "id": "2042650778226037112",
+      "text": "check out our blog on how to build your own outdoor sauna...\n\n#sauna #saunainstallation #homesauna #healthyliving https://t.co/Dh7Q7eThh3",
+      "author_id": "1996277755881861121",
+      "username": "SaunaInstaller",
+      "name": "The Sauna Installer",
+      "created_at": "2026-04-10T17:07:50.000Z",
+      "conversation_id": "2042650778226037112",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 99,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/SaunaInstaller/status/2042650778226037112/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "sauna",
+        "saunainstallation",
+        "homesauna",
+        "healthyliving"
+      ],
+      "tweet_url": "https://x.com/SaunaInstaller/status/2042650778226037112"
+    },
+    {
+      "id": "2043646962587902011",
+      "text": "@cerita_babul Aku udah jarang banget sauna. Terakhir sauna 2 plate ga nyala, jadi kurang panas.",
+      "author_id": "2030692736236748800",
+      "username": "Dikadq",
+      "name": "Dika",
+      "created_at": "2026-04-13T11:06:19.000Z",
+      "conversation_id": "2043302799459717395",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 18,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "cerita_babul"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Dikadq/status/2043646962587902011"
+    },
+    {
+      "id": "2044196493033386111",
+      "text": "4/15(水)プログラム✏\n\n🚹男性フロア🚹\n11：30　sauna①　スタッフロウリュ🔥\n13：30　sauna③　オーク蒸し🌿\n15：30　sauna①　スタッフロウリュ🔥\n17：30　sauna①　スタッフロウリュ🔥\n19：30　sauna③　オーク蒸し🌿\n21：30　sauna①　スタッフロウリュ🔥\n\n🚺女性フロア🚺\n12：17/16：17/20：17 https://t.co/SuUtJH8EbY",
+      "author_id": "1728671094742343680",
+      "username": "nus_saunahouse",
+      "name": "saunahouse（サウナハウス）",
+      "created_at": "2026-04-14T23:29:57.000Z",
+      "conversation_id": "2044196493033386111",
+      "metrics": {
+        "likes": 2,
+        "retweets": 2,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 950,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/nus_saunahouse/status/2044196493033386111/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/nus_saunahouse/status/2044196493033386111"
+    },
+    {
+      "id": "2043706390108053922",
+      "text": "LUNES SIN EXPLICACIONES...\n\n📍 Sauna Paraíso · Calle Norte, 15 · Madrid\n🔞 Only men.\n\n#paraiso #saunagay #madrid #gaymadrid #sauna https://t.co/9gmqdBkHUF",
+      "author_id": "1726020912",
+      "username": "SaunaParaiso",
+      "name": "Sauna Paraíso",
+      "created_at": "2026-04-13T15:02:28.000Z",
+      "conversation_id": "2043706390108053922",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 102,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/SaunaParaiso/status/2043706390108053922/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "paraiso",
+        "saunagay",
+        "madrid",
+        "gaymadrid",
+        "sauna"
+      ],
+      "tweet_url": "https://x.com/SaunaParaiso/status/2043706390108053922"
+    },
+    {
+      "id": "2042299223027179841",
+      "text": "𝐐𝐔𝐄𝐄𝐑  𝐂𝐈𝐍𝐄𝐌𝐀 ᶠᵘˡˡ\nＧＡＹ  ＳＡＵＮＡ\n\n#softcore #queercinema #trans ⚧︎\n#nsfw #sauna #queerart #lgbtqiap https://t.co/6yP3yhQkrZ",
+      "author_id": "1972289761306968064",
+      "username": "mkfanedits",
+      "name": "MKedits",
+      "created_at": "2026-04-09T17:50:53.000Z",
+      "conversation_id": "2042299223027179841",
+      "metrics": {
+        "likes": 4017,
+        "retweets": 205,
+        "replies": 4,
+        "quotes": 2,
+        "impressions": 75420,
+        "bookmarks": 2480
+      },
+      "urls": [
+        "https://x.com/mkfanedits/status/2042299223027179841/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "softcore",
+        "queercinema",
+        "trans",
+        "nsfw",
+        "sauna",
+        "queerart",
+        "lgbtqiap"
+      ],
+      "tweet_url": "https://x.com/mkfanedits/status/2042299223027179841"
+    },
+    {
+      "id": "2043743680998363412",
+      "text": "@tommy_lee21175 Interesting protocol. That would have to replace a few sauna sessions - there's only so much you can sweat out without tanking your electrolytes. For most people this means bathing in chlorine and heavy metals. Sauna is probably the safer general recommendation.",
+      "author_id": "1473825817478107136",
+      "username": "ChrisDeVocht_",
+      "name": "Chris DeVocht",
+      "created_at": "2026-04-13T17:30:39.000Z",
+      "conversation_id": "1904355746961309980",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 24,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "tommy_lee21175"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ChrisDeVocht_/status/2043743680998363412"
+    },
+    {
+      "id": "2043391539104378881",
+      "text": "yawaaaaa! mag sauna gani mo ba pagdala og mouthwash. Pang gargle pod mo kay naluya kos baho. Imbis ma excite ta hehehe ahak naglikaylikay na nuon tas didto sa sauna. Shutaaaaa be hygienic pod tawn hehehehe🤣\n\n#altercebu",
+      "author_id": "823359002436202496",
+      "username": "pong_ceb",
+      "name": "ping.",
+      "created_at": "2026-04-12T18:11:21.000Z",
+      "conversation_id": "2043391539104378881",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 135,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [
+        "altercebu"
+      ],
+      "tweet_url": "https://x.com/pong_ceb/status/2043391539104378881"
+    },
+    {
+      "id": "2042723813301874940",
+      "text": "15 MINUTE WARMUP WITH CARDIO\n20 MINUTE SAUNA\n1 1/2 HOUR WORKOUT \n15 MINUTES OF CARDIO\n20 MINUTE SAUNA \n\nTHAT’S WHY!! https://t.co/Q9kFFk4Jgj",
+      "author_id": "2006088326915444736",
+      "username": "Security16X",
+      "name": "B-DOG 💯🔥🇯🇲",
+      "created_at": "2026-04-10T21:58:03.000Z",
+      "conversation_id": "2042723813301874940",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 38,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://twitter.com/kletlape/status/2042553700841853007"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Security16X/status/2042723813301874940"
+    },
+    {
+      "id": "2042421120037499050",
+      "text": "@AshleyGWinter @anothercohen My Finnish Great Grandma had a sauna on the family ranch before indoor plumbing was installed. I think Scandinavian sauna",
+      "author_id": "1031264466",
+      "username": "LilyCrue",
+      "name": "Lily Crue",
+      "created_at": "2026-04-10T01:55:16.000Z",
+      "conversation_id": "2042304932376637878",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 145,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "AshleyGWinter",
+        "anothercohen"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/LilyCrue/status/2042421120037499050"
+    },
+    {
+      "id": "2042623017759514998",
+      "text": "Why don't you have a sauna yet? Go to https://t.co/BIty8Mgpci and get yours ordered today! #sauna #saunalife #upstatehottubs #joerogan https://t.co/Vc2oG9D2Cr",
+      "author_id": "1944527519232761856",
+      "username": "upstatehottubs",
+      "name": "Upstate Hot Tubs",
+      "created_at": "2026-04-10T15:17:32.000Z",
+      "conversation_id": "2042623017759514998",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://www.upstatehottubs.com/saunas",
+        "https://x.com/upstatehottubs/status/2042623017759514998/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "sauna",
+        "saunalife",
+        "upstatehottubs",
+        "joerogan"
+      ],
+      "tweet_url": "https://x.com/upstatehottubs/status/2042623017759514998"
+    },
+    {
+      "id": "2044364043503235268",
+      "text": "@minds_eminent Go to sauna. Sauna is massively underrated for mental reset.",
+      "author_id": "1960682217568657409",
+      "username": "ZenSpa_wellness",
+      "name": "Zen Spa - Sauna Rituals",
+      "created_at": "2026-04-15T10:35:45.000Z",
+      "conversation_id": "2044063607215010295",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 4,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "minds_eminent"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ZenSpa_wellness/status/2044364043503235268"
+    },
+    {
+      "id": "2044363834756891090",
+      "text": "@gregogallagher Go to sauna. Sauna is massively underrated for mental reset.",
+      "author_id": "1960682217568657409",
+      "username": "ZenSpa_wellness",
+      "name": "Zen Spa - Sauna Rituals",
+      "created_at": "2026-04-15T10:34:55.000Z",
+      "conversation_id": "2044216245919330598",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 4,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "gregogallagher"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ZenSpa_wellness/status/2044363834756891090"
+    },
+    {
+      "id": "2042902269662818387",
+      "text": "J'ai 20 ans et à Paris du vendredi 15 mai au lundi 18 mai. Des jeunes gays qui veulent me baiser là-bas ? \nDes lieux de baise gays sympa avec des jeunes ? (Bar, sauna, ..)\nMerci\n#gay #baise #sauna #paris",
+      "author_id": "1436944285002342403",
+      "username": "suceurdijon",
+      "name": "passif dijon",
+      "created_at": "2026-04-11T09:47:11.000Z",
+      "conversation_id": "2042902269662818387",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 526,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [
+        "gay",
+        "baise",
+        "sauna",
+        "paris"
+      ],
+      "tweet_url": "https://x.com/suceurdijon/status/2042902269662818387"
+    },
+    {
+      "id": "2042396758672904412",
+      "text": "New Video! @ryuuji_suzuki \nNothing is hotter than 2 guy's sex inside the sauna.\nTITLE: \"The Sauna Secrets\"\nFull video at:\nhttps://t.co/rMRJzfQT2a \nhttps://t.co/fn4PKiN6Ba \nhttps://t.co/UhI61MhCy7 https://t.co/aXjCsNkH5o",
+      "author_id": "1560656682245849091",
+      "username": "ryuuji_suzuki",
+      "name": "RYUJI",
+      "created_at": "2026-04-10T00:18:27.000Z",
+      "conversation_id": "2042396758672904412",
+      "metrics": {
+        "likes": 840,
+        "retweets": 41,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 38736,
+        "bookmarks": 192
+      },
+      "urls": [
+        "https://onlyfans.com/ryuji_suzuki",
+        "https://justfor.fans/ryuji_suzuki",
+        "https://fansone.co/ryuji_suzuki",
+        "https://x.com/ryuuji_suzuki/status/2042396758672904412/video/1"
+      ],
+      "mentions": [
+        "ryuuji_suzuki"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ryuuji_suzuki/status/2042396758672904412"
+    }
+  ]
+}

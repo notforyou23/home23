@@ -1,0 +1,6 @@
+{
+  "query": "sauna health longevity science -is:retweet",
+  "params": "sort=likes&pages=1&since=7d",
+  "timestamp": 1776279857598,
+  "tweets": []
+}

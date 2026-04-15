@@ -6,19 +6,19 @@ Generated from live skill discovery. Total: 10 skills.
 
 - **ID:** `autoresearch`
 - **Type:** rich
-- **Runtime:** docs
+- **Runtime:** nodejs
 - **Category:** meta
-- **Operational:** no
+- **Operational:** yes
 - **Has SKILL.md:** yes
 - **Has manifest:** yes
-- **Has scripts:** no
+- **Has scripts:** yes
 - **Hooks:** none
-- **Description:** Improve a weak skill by running a score, tweak, and retest loop when the issue is the skill itself rather than the current task.
+- **Description:** Iteratively improve a weak skill through score, tweak, and retest loops. Run against a target skill, define failure mode and rubric, execute the loop, and get a scored report with recommendations.
 - **Actions:** autoresearch_loop
 - **Triggers:** improve this skill | autoresearch this skill | optimize the skill | why is this skill weak
-- **Requires tools:** skills_audit
-- **Composes:** knowledge-structuring
-- **Depends on:** none
+- **Requires tools:** skills_run, skills_list, skills_get, skills_audit
+- **Composes:** knowledge-structuring, source-validation
+- **Depends on:** skill-loader
 
 ## browser-automation
 

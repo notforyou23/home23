@@ -16,6 +16,8 @@ dashboard:
     generationIntervalHours: 10
     rotationIntervalSeconds: 120
     galleryLimit: 600
+    sourcePaths:
+      - /Volumes/Casey Jones/_cosmoImages/images
     dreams:
       enabled: true
       lookback: 3
@@ -125,6 +127,10 @@ chat:
   temperature: 0.7
   historyBudget: 400000
   sessionGapMs: 1800000
+media:
+  imageGeneration:
+    provider: openai
+    model: gpt-image-1.5
 models:
   aliases:
     sonnet:

@@ -1,0 +1,30 @@
+{
+  "query": "infrared sauna health benefits -is:retweet",
+  "params": "sort=likes&pages=1&since=7d",
+  "timestamp": 1776284213242,
+  "tweets": [
+    {
+      "id": "2042595329468399624",
+      "text": "@anothercohen Consider an IR sauna instead. \n\nSame idea, but you get all of the additional health benefits of the infrared lights.",
+      "author_id": "984514197185638400",
+      "username": "EvokingGenius",
+      "name": "John Hittler",
+      "created_at": "2026-04-10T13:27:30.000Z",
+      "conversation_id": "2042304932376637878",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 29,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "anothercohen"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/EvokingGenius/status/2042595329468399624"
+    }
+  ]
+}

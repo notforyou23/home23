@@ -540,6 +540,39 @@ function renderModels(data) {
   provSelect.addEventListener('change', fillModelSelect);
   fillModelSelect();
 
+  // Image generation config — used by generate_image + Vibe
+  const imageProviderSel = document.getElementById('image-gen-provider');
+  const imageModelSel = document.getElementById('image-gen-model');
+  if (imageProviderSel && imageModelSel) {
+    imageProviderSel.innerHTML = '';
+    for (const [name, cfg] of Object.entries(data.imageProviders || {})) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = cfg.displayName || PROVIDER_DISPLAY[name] || name;
+      imageProviderSel.appendChild(opt);
+    }
+
+    const fillImageModelSelect = () => {
+      const provider = imageProviderSel.value;
+      imageModelSel.innerHTML = '';
+      const models = data.imageProviders?.[provider]?.models || [];
+      for (const model of models) {
+        const opt = document.createElement('option');
+        opt.value = model;
+        opt.textContent = model;
+        if (model === data.imageGeneration?.model) opt.selected = true;
+        imageModelSel.appendChild(opt);
+      }
+    };
+
+    if (!imageProviderSel.dataset.bound) {
+      imageProviderSel.addEventListener('change', fillImageModelSelect);
+      imageProviderSel.dataset.bound = 'true';
+    }
+    imageProviderSel.value = data.imageGeneration?.provider || 'openai';
+    fillImageModelSelect();
+  }
+
   // Engine role dropdowns — collect ALL models across ALL providers
   const allModels = [];
   for (const [provName, prov] of Object.entries(data.providers || {})) {
@@ -654,6 +687,10 @@ async function saveModels() {
       defaultModel: document.getElementById('models-default-model').value,
     },
     aliases,
+    imageGeneration: {
+      provider: document.getElementById('image-gen-provider')?.value || 'openai',
+      model: document.getElementById('image-gen-model')?.value || 'gpt-image-1.5',
+    },
     providerModels: collectProviderModels(),
     engineRoles,
   };

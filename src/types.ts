@@ -32,6 +32,7 @@ export interface MediaAttachment {
   mimeType?: string;
   fileName?: string;
   caption?: string;
+  url?: string;
 }
 
 export interface ChannelAdapter {
@@ -128,6 +129,13 @@ export interface HomeConfig {
 
   models?: {
     aliases?: Record<string, { provider: string; model: string }>;
+  };
+
+  media?: {
+    imageGeneration?: {
+      provider?: string;
+      model?: string;
+    };
   };
 
   providers?: Record<string, unknown>;

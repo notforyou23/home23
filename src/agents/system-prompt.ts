@@ -35,7 +35,7 @@ You have 19 tools. Use them freely and proactively. Tool names are case-sensitiv
 - brain_synthesize: Trigger meta-cognition pass (action="run" then "status"). Fresh top-down view of brain state, ~30s async.
 - brain_pgs: Progressive Graph Search — coverage-optimized, partitioned, cross-domain. Slow (~20-60s) but most thorough. Reports absences. Use when you need to be sure nothing important is missed.
 - brain_status: Get brain health — node count, cycle, cognitive mode.
-- generate_image: Generate images via DALL-E. Returns the image file.
+- generate_image: Generate images via the configured image provider/model. Returns the image file.
 - tts: Text-to-speech via ElevenLabs. Returns voice audio file.
 - cron_schedule: Schedule recurring or one-shot tasks. Kinds: agentTurn (full tool access), exec (shell command), query (brain query).
 - cron_list: List all scheduled jobs with status and next run time.
@@ -151,8 +151,8 @@ When a tool exists for an action, use it directly — do not ask the user to run
 
 ### generate_image / tts
 - Use only when explicitly requested or clearly implied by the task.
-- generate_image sends result to Telegram automatically.
-- tts sends voice message to Telegram automatically.
+- generate_image returns media to the current channel when that channel supports media delivery.
+- tts returns media to the current channel when that channel supports media delivery.
 
 ## Execution Workflow
 

@@ -13,7 +13,7 @@
 import express, { type Request, type Response, type Application } from 'express';
 import type { Server } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { ChannelAdapter, IncomingMessage, OutgoingResponse } from './router.js';
 
 // ─── Config ──────────────────────────────────────────────────
@@ -95,6 +95,7 @@ export class WebhookServer implements ChannelAdapter {
       const sessionBindingsPath = `${this.config.path}/sessions/bindings`.replace(/\/+/g, '/');
       const sessionResolvePath = `${this.config.path}/sessions/resolve`.replace(/\/+/g, '/');
       const sessionHistoryByKeyPath = `${this.config.path}/sessions/history-by-key`.replace(/\/+/g, '/');
+      const mediaPath = `${this.config.path}/media`.replace(/\/+/g, '/');
 
       this.app.post(sessionMessagePath, (req: Request, res: Response) => {
         this.handleSessionMessage(req, res);
@@ -114,6 +115,10 @@ export class WebhookServer implements ChannelAdapter {
 
       this.app.get(sessionHistoryByKeyPath, (req: Request, res: Response) => {
         this.handleSessionHistoryByKey(req, res);
+      });
+
+      this.app.get(mediaPath, (req: Request, res: Response) => {
+        this.handleMedia(req, res);
       });
     }
 
@@ -210,7 +215,13 @@ export class WebhookServer implements ChannelAdapter {
         .then(() => responsePromise)
         .then((response) => {
           clearTimeout(timeout);
-          res.json({ text: response.text });
+          res.json({
+            text: response.text,
+            media: this.serializeMedia(response.media),
+            model: response.model,
+            mode: response.mode,
+            durationMs: response.durationMs,
+          });
         })
         .catch((err) => {
           clearTimeout(timeout);
@@ -289,6 +300,7 @@ export class WebhookServer implements ChannelAdapter {
           sessionId,
           chatId,
           text: response.text,
+          media: this.serializeMedia(response.media),
           model: response.model,
           mode: response.mode,
           durationMs: response.durationMs,
@@ -454,5 +466,37 @@ export class WebhookServer implements ChannelAdapter {
       current = (current as Record<string, unknown>)[key];
     }
     return current;
+  }
+
+  private handleMedia(req: Request, res: Response): void {
+    const filePath = req.query.path;
+    if (!filePath || typeof filePath !== 'string') {
+      res.status(400).json({ error: 'path required' });
+      return;
+    }
+
+    const resolvedPath = resolve(filePath);
+    if (!resolvedPath.startsWith(process.cwd()) && !resolvedPath.startsWith('/tmp/')) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    if (!existsSync(resolvedPath)) {
+      res.status(404).json({ error: 'File not found' });
+      return;
+    }
+
+    res.sendFile(resolvedPath);
+  }
+
+  private serializeMedia(media: OutgoingResponse['media']): Array<Record<string, unknown>> {
+    return (media ?? []).map((item) => ({
+      type: item.type,
+      path: item.path,
+      mimeType: item.mimeType,
+      fileName: item.fileName,
+      caption: item.caption,
+      url: `${this.config.path}/media?path=${encodeURIComponent(item.path)}`.replace(/\/+/g, '/'),
+    }));
   }
 }

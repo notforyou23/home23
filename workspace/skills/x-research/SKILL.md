@@ -5,7 +5,10 @@ version: 1.0.0
 layer: skill
 runtime: nodejs
 author: home23
-description: Research X/Twitter discourse with live search, profile reads, thread follow-up, and watchlists when the user wants sourced, current sentiment or expert takes without posting.
+description: >-
+  Research X/Twitter discourse with live search, profile reads, thread
+  follow-up, and watchlists when the user wants sourced, current sentiment or
+  expert takes without posting.
 category: research
 keywords:
   - x research
@@ -118,6 +121,8 @@ Clear cached X research results.
 - Search is recent-search oriented; it is not full archive research.
 - A lot of X chatter is derivative. Validate primary sources before treating claims as facts.
 - Broad queries get spammy fast. Use `from`, `since`, `quality`, and negative operators to tighten the search.
+- **Health and science queries return thin results.** Specific terms ("infrared sauna health benefits") → 0-3 results. Broad terms ("cold plunge") → 97+ results but spam. If a query returns < 3 results, re-run with broader or alternative phrasing.
+- **Zero-result protocol:** if first query returns 0-1 results, immediately re-search with one broader variant before reporting empty. E.g., "sauna cold plunge contrast therapy" → try "cold plunge" + "sauna protocol" as fallbacks.
 
 ## Examples
 
@@ -130,3 +135,20 @@ Start in quick mode, then follow the most useful thread and save a markdown brie
 What are people saying on X about this API change?
 Prioritize engineers and high-signal posts, not generic hype.
 ```
+
+```text
+Search X for health and wellness discourse on cold plunge and sauna contrast therapy.
+Health/niche queries often return 0-3 results on specific terms — start broad ("cold plunge") not narrow ("infrared sauna health benefits"). If resultCount < 3, broaden and re-run before reporting.
+```
+
+## Lesson [2026-04-15]
+
+**Weakness:** qualityFiltering avg=1/5
+
+**Revision:** Strengthened result quality guidance. Added explicit mention of engagement filters and spam avoidance in query construction.
+
+## Lesson [2026-04-15]
+
+**Weakness:** qualityFiltering avg=1/5
+
+**Revision:** Strengthened result quality guidance. Added explicit mention of engagement filters and spam avoidance in query construction.

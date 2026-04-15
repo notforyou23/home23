@@ -706,6 +706,26 @@ async function main(): Promise<void> {
   bridgeApp.post('/api/chat/stop-turn', createTurnStopHandler(chatTurnConfig));
   bridgeApp.get('/api/chat/pending', createPendingTurnsHandler(chatTurnConfig));
   bridgeApp.get('/api/chat/models', createModelsHandler(chatTurnConfig));
+  bridgeApp.get('/api/chat/media', async (req, res) => {
+    const filePath = req.query.path;
+    if (!filePath || typeof filePath !== 'string') {
+      res.status(400).json({ error: 'path required' });
+      return;
+    }
+
+    const resolved = resolve(filePath);
+    if (!resolved.startsWith(PROJECT_ROOT) && !resolved.startsWith('/tmp/')) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
+
+    if (!existsSync(resolved)) {
+      res.status(404).json({ error: 'File not found' });
+      return;
+    }
+
+    res.sendFile(resolved);
+  });
 
   // Device registration routes (iOS push)
   const deviceConfig = { agentName: AGENT_NAME, registry: deviceRegistry, token: bridgeToken || undefined };

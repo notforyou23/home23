@@ -1,0 +1,2250 @@
+{
+  "query": "cold plunge -is:retweet",
+  "params": "sort=likes&pages=1&since=7d",
+  "timestamp": 1776283862622,
+  "tweets": [
+    {
+      "id": "2043737860998873477",
+      "text": "@Paul00540712 I asked my wife for a cold plunge for my birthday, and she said if I couldn't handle cold showers then she wouldn't waste her money on a cold plunge. So here we are, lol.",
+      "author_id": "2328285678",
+      "username": "PetGorilla",
+      "name": "PetGorilla",
+      "created_at": "2026-04-13T17:07:31.000Z",
+      "conversation_id": "2043703279054737731",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 7,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "Paul00540712"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/PetGorilla/status/2043737860998873477"
+    },
+    {
+      "id": "2043643263329112184",
+      "text": "lando cold and warm plunge Hot &amp; Cold Plunge Tub Designed for both performance and relaxation, the Lando dual-seat plunge tub is available in a natural wood finish https://t.co/dxgUvdGAgi",
+      "author_id": "1078887969375674373",
+      "username": "haokaixin3",
+      "name": "landowaterchillers",
+      "created_at": "2026-04-13T10:51:37.000Z",
+      "conversation_id": "2043643263329112184",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 23,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/haokaixin3/status/2043643263329112184/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/haokaixin3/status/2043643263329112184"
+    },
+    {
+      "id": "2043756114580246582",
+      "text": "SF is the only city where someone will interrupt your cold plunge to show you their Oura ring's HRV data from that cold plunge, then sell you a coaching program about optimizing cold plunges.",
+      "author_id": "1958392481969844224",
+      "username": "Hew_Knew",
+      "name": "Matt Hew 👽",
+      "created_at": "2026-04-13T18:20:03.000Z",
+      "conversation_id": "2043756114580246582",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 37,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Hew_Knew/status/2043756114580246582"
+    },
+    {
+      "id": "2043792798340510169",
+      "text": "pool was 65 but it was like a cold plunge lol actually my muscle soreness went away immediatley .... may do the cold plunge more often ! https://t.co/X0xrZ6tAx7",
+      "author_id": "2234177801",
+      "username": "Sctty569",
+      "name": "Scott Sapinkopf",
+      "created_at": "2026-04-13T20:45:49.000Z",
+      "conversation_id": "2043792798340510169",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 17,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/Sctty569/status/2043792798340510169/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Sctty569/status/2043792798340510169"
+    },
+    {
+      "id": "2042737872411738593",
+      "text": "@bryan_johnson @AutismCapital You should also add a cold plunge to see if cooling the “boys” in cold plunge makes the same difference.",
+      "author_id": "1589609248652201985",
+      "username": "hankbelfor",
+      "name": "Hank B",
+      "created_at": "2026-04-10T22:53:55.000Z",
+      "conversation_id": "2042695346250486164",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 326,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "bryan_johnson",
+        "AutismCapital"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/hankbelfor/status/2042737872411738593"
+    },
+    {
+      "id": "2042896416851247570",
+      "text": "A cold plunge is just like taking a cold shower at 4 a.m. 🥶",
+      "author_id": "2420496533",
+      "username": "reenmoraa",
+      "name": "Momoh",
+      "created_at": "2026-04-11T09:23:55.000Z",
+      "conversation_id": "2042896416851247570",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/reenmoraa/status/2042896416851247570"
+    },
+    {
+      "id": "2043642908407214180",
+      "text": "Commercial Cold Plunge Tub Manufacturer - Lando Chiller  Factory-built commercial cold plunge systems engineered for stable 36-50°Fperformance, high-traffic durability, and scalable OEM supply. 36-50° https://t.co/Tqxdf1BAZg",
+      "author_id": "1078887969375674373",
+      "username": "haokaixin3",
+      "name": "landowaterchillers",
+      "created_at": "2026-04-13T10:50:13.000Z",
+      "conversation_id": "2043642908407214180",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 20,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/haokaixin3/status/2043642908407214180/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/haokaixin3/status/2043642908407214180"
+    },
+    {
+      "id": "2042745244442136653",
+      "text": "Cooldown matters. A short cold plunge after training speeds recovery, reduces soreness, and resets your day. Read our blog \"Cold Plunge Benefits After Workout\" to learn how to make it a simple post-work ritual: [link] https://t.co/ZL0uK3H2af https://t.co/mum4v8F3X4",
+      "author_id": "2042716557306916864",
+      "username": "TheWellBody",
+      "name": "Michael Bean",
+      "created_at": "2026-04-10T23:23:13.000Z",
+      "conversation_id": "2042745244442136653",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://thewellbodystore.com/blogs/news/cold-plunge-benefits-after-workout",
+        "https://x.com/TheWellBody/status/2042745244442136653/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/TheWellBody/status/2042745244442136653"
+    },
+    {
+      "id": "2043899303450509317",
+      "text": "I bought the Cybertruck to haul my cold plunge to networking events and now I can't afford the cold plunge.",
+      "author_id": "1958392481969844224",
+      "username": "Hew_Knew",
+      "name": "Matt Hew 👽",
+      "created_at": "2026-04-14T03:49:02.000Z",
+      "conversation_id": "2043899303450509317",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 72,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Hew_Knew/status/2043899303450509317"
+    },
+    {
+      "id": "2042956765558456558",
+      "text": "@newstart_2024 I sauna at my house about 5-6 days a week. Once a week, I go to my gym and do contrast therapy with two 6 minute cold plunge sessions in btw three 10 minute sauna sessions. Cold plunge is a euphoric experience. Have to really focus on breathing to be able to stay in that long.",
+      "author_id": "2737333801",
+      "username": "SageMoneyRadio",
+      "name": "Hollis Day",
+      "created_at": "2026-04-11T13:23:43.000Z",
+      "conversation_id": "2042919040021102681",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 112,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "newstart_2024"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/SageMoneyRadio/status/2042956765558456558"
+    },
+    {
+      "id": "2043339594863698414",
+      "text": "@williamtradesfx Cold plunge looks icy! How cold you running it?",
+      "author_id": "2002718307330478080",
+      "username": "Stepofxn",
+      "name": "Crypto James",
+      "created_at": "2026-04-12T14:44:57.000Z",
+      "conversation_id": "2043321691418263972",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 133,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "williamtradesfx"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Stepofxn/status/2043339594863698414"
+    },
+    {
+      "id": "2043301887554765299",
+      "text": "@PaleHorseRAAM cold plunge everytime u die. https://t.co/dpL6UpaR67",
+      "author_id": "3077164771",
+      "username": "MazharulAlam25",
+      "name": "Mazharul Alam",
+      "created_at": "2026-04-12T12:15:07.000Z",
+      "conversation_id": "2043296195116671430",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 21,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/MazharulAlam25/status/2043301887554765299/photo/1"
+      ],
+      "mentions": [
+        "PaleHorseRAAM"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/MazharulAlam25/status/2043301887554765299"
+    },
+    {
+      "id": "2042588441334972769",
+      "text": "Sauna and cold plunge are two recovery tools many members use together. A simple approach: warm up in the sauna, follow with a short cold plunge, and repeat for a few rounds. Start gradually and allow your body to adjust. Many find this routine energizing and restorative. https://t.co/YPUuRdZ4sc",
+      "author_id": "1780646066519445504",
+      "username": "BluByThriveWell",
+      "name": "BLU by ThriveWell™",
+      "created_at": "2026-04-10T13:00:08.000Z",
+      "conversation_id": "2042588441334972769",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 8,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BluByThriveWell/status/2042588441334972769/photo/1",
+        "https://x.com/BluByThriveWell/status/2042588441334972769/photo/1",
+        "https://x.com/BluByThriveWell/status/2042588441334972769/photo/1",
+        "https://x.com/BluByThriveWell/status/2042588441334972769/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BluByThriveWell/status/2042588441334972769"
+    },
+    {
+      "id": "2042827211066216495",
+      "text": "@MoguruChannel Polar plungeか単にcold plunge だったと思います、サウナとセットでしたね",
+      "author_id": "990915061097971713",
+      "username": "KaiheZak",
+      "name": "Kaihe Yamazaki 🌊❄️",
+      "created_at": "2026-04-11T04:48:55.000Z",
+      "conversation_id": "2042815560426353069",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 32,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "MoguruChannel"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/KaiheZak/status/2042827211066216495"
+    },
+    {
+      "id": "2042276916481138958",
+      "text": "@m89707 Cold plunge helps like dipping it in cold water",
+      "author_id": "1808869716766961667",
+      "username": "TomokoMaxxing",
+      "name": "Sardina",
+      "created_at": "2026-04-09T16:22:15.000Z",
+      "conversation_id": "2042259880225231152",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 12,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "m89707"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/TomokoMaxxing/status/2042276916481138958"
+    },
+    {
+      "id": "2043392968392900872",
+      "text": "Watched someone cold plunge at 6am then skip their workout because their Oura ring said their recovery score was too low. The ring doesn't know about the plunge. They forgot to tell it.",
+      "author_id": "1958392481969844224",
+      "username": "Hew_Knew",
+      "name": "Matt Hew 👽",
+      "created_at": "2026-04-12T18:17:02.000Z",
+      "conversation_id": "2043392968392900872",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 15,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Hew_Knew/status/2043392968392900872"
+    },
+    {
+      "id": "2042754573001965851",
+      "text": "Embrace cold exposure like a cold plunge or a 30-60 second cold shower blast. It's not about freezing temperatures, but building resilience. #ColdPlunge #Wellness https://t.co/BWP2cllg0i",
+      "author_id": "1937309134392819715",
+      "username": "donor_dan",
+      "name": "Donor Dan",
+      "created_at": "2026-04-11T00:00:17.000Z",
+      "conversation_id": "2042754573001965851",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 25,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/donor_dan/status/2042754573001965851/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "ColdPlunge",
+        "Wellness"
+      ],
+      "tweet_url": "https://x.com/donor_dan/status/2042754573001965851"
+    },
+    {
+      "id": "2043273939237982702",
+      "text": "@HydrogenDaily Did a 15-minute cold plunge once and thought I’d be used to the cold lol :(",
+      "author_id": "545589933",
+      "username": "aquileschavez99",
+      "name": "Aquiles",
+      "created_at": "2026-04-12T10:24:03.000Z",
+      "conversation_id": "2042995418380771592",
+      "metrics": {
+        "likes": 2,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1280,
+        "bookmarks": 1
+      },
+      "urls": [],
+      "mentions": [
+        "HydrogenDaily"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/aquileschavez99/status/2043273939237982702"
+    },
+    {
+      "id": "2043868655897981097",
+      "text": "@mechanakamoto Wake at 5 am… make the bed, mineralize with 8 ounces of water with Celtic salt..\nJacuzzi 15 minutes… Cold plunge 2 to 3 minutes…  20 minutes red light therapy meditation in 151° infrared sauna.. one minute cold plunge… 1/2 hour yoga.. \nthan non stop all day… mother nature",
+      "author_id": "1460479157087858689",
+      "username": "180thmeridian",
+      "name": "LIFE AND GLORY 🙂",
+      "created_at": "2026-04-14T01:47:15.000Z",
+      "conversation_id": "2043841013576270225",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 54,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "mechanakamoto"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/180thmeridian/status/2043868655897981097"
+    },
+    {
+      "id": "2042253364499730734",
+      "text": "@lordsambrah Nice forehand!\nRoutine: Aftet making the bed mineralizing with salt water, 15 minute Jacuzzi two minute cold plunge 20 minute meditation in infrared red light sauna.. one minute cold plunge… Half hour yoga.. than..\nSurf if up\nFetch dinner\nMtn bike \nAnd the reward.. ocean to https://t.co/lJSYX0q1KJ",
+      "author_id": "1460479157087858689",
+      "username": "180thmeridian",
+      "name": "LIFE AND GLORY 🙂",
+      "created_at": "2026-04-09T14:48:39.000Z",
+      "conversation_id": "2042138919873995015",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 37,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/180thmeridian/status/2042253364499730734/photo/1",
+        "https://x.com/180thmeridian/status/2042253364499730734/photo/1",
+        "https://x.com/180thmeridian/status/2042253364499730734/photo/1",
+        "https://x.com/180thmeridian/status/2042253364499730734/photo/1"
+      ],
+      "mentions": [
+        "lordsambrah"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/180thmeridian/status/2042253364499730734"
+    },
+    {
+      "id": "2042950451876770215",
+      "text": "adderall sauna and cold plunge happening mashallah  https://t.co/BsWHjS1x0w",
+      "author_id": "1267664476725227523",
+      "username": "janeincamo",
+      "name": "jane 🪷 misses manon",
+      "created_at": "2026-04-11T12:58:38.000Z",
+      "conversation_id": "2042950451876770215",
+      "metrics": {
+        "likes": 1,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 17,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/gomenaxae/status/2041314693554286728/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/janeincamo/status/2042950451876770215"
+    },
+    {
+      "id": "2042795828541067570",
+      "text": "@SahilBloom no more cold plunge?",
+      "author_id": "1711789956564205568",
+      "username": "ChrisMason92512",
+      "name": "Chris Mason",
+      "created_at": "2026-04-11T02:44:13.000Z",
+      "conversation_id": "2042635229559505358",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 101,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "SahilBloom"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ChrisMason92512/status/2042795828541067570"
+    },
+    {
+      "id": "2043431367518699723",
+      "text": "@JadesSabre Oh. Uh…\n\nCold showers have a great physiological effect on your body. Don’t have a cold plunge tub? A long cold shower does the same thing!",
+      "author_id": "1260203525818253312",
+      "username": "AndSammiches",
+      "name": "Ham and Mayonnaise Sammiches",
+      "created_at": "2026-04-12T20:49:37.000Z",
+      "conversation_id": "2043420116659188155",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 23,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "JadesSabre"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/AndSammiches/status/2043431367518699723"
+    },
+    {
+      "id": "2043317121115926772",
+      "text": "@heyytal what you miss cold plunge",
+      "author_id": "22962393",
+      "username": "kumar_amit",
+      "name": "amit kumar",
+      "created_at": "2026-04-12T13:15:39.000Z",
+      "conversation_id": "2043237027983020143",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 26,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "heyytal"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/kumar_amit/status/2043317121115926772"
+    },
+    {
+      "id": "2042756569771971025",
+      "text": "Integrity got the best cold plunge ever. ❤️ https://t.co/m1z9ztUolm",
+      "author_id": "1164986944314626053",
+      "username": "namankatyal14",
+      "name": "Naman Katyal",
+      "created_at": "2026-04-11T00:08:13.000Z",
+      "conversation_id": "2042756569771971025",
+      "metrics": {
+        "likes": 0,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 1,
+        "impressions": 162,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://twitter.com/namankatyal14/status/2042755114931523878"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/namankatyal14/status/2042756569771971025"
+    },
+    {
+      "id": "2043351856064414098",
+      "text": "@williamtradesfx sauna and cold plunge",
+      "author_id": "766605193",
+      "username": "GMHitradio",
+      "name": "GM Hitradio",
+      "created_at": "2026-04-12T15:33:40.000Z",
+      "conversation_id": "2043321691418263972",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 5,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "williamtradesfx"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/GMHitradio/status/2043351856064414098"
+    },
+    {
+      "id": "2042692403471995097",
+      "text": "@foundmyfitness For those who asked, my sauna and cold plunge are from SISU. I've had several saunas over the years and this is the best one. Cold plunge is great too, but not their specialty.\n\nI'm not compensated, but the founder is a dear friend (and wonderful human).\n\nhttps://t.co/BshqyN3VZw https://t.co/7kUh0X7172",
+      "author_id": "312681953",
+      "username": "SahilBloom",
+      "name": "Sahil Bloom",
+      "created_at": "2026-04-10T19:53:15.000Z",
+      "conversation_id": "2042284985982255195",
+      "metrics": {
+        "likes": 9,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 8425,
+        "bookmarks": 10
+      },
+      "urls": [
+        "http://sisulifestyle.com/us",
+        "https://x.com/SahilBloom/status/2042692403471995097/photo/1"
+      ],
+      "mentions": [
+        "foundmyfitness"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/SahilBloom/status/2042692403471995097"
+    },
+    {
+      "id": "2043935320505495988",
+      "text": "It's finally starting to get cold here in the west - so I wandered up to Grand Teton National Park for a cold plunge in Taggart Lake.\n\nThe  Advance works perfectly for this - hike in, plunge, hike out…see the link in my bio to get yours! https://t.co/Xe1XWJCiIb",
+      "author_id": "2039303678113320960",
+      "username": "ZoeGonzale44276",
+      "name": "Cold Plunge Cam",
+      "created_at": "2026-04-14T06:12:09.000Z",
+      "conversation_id": "2043935320505495988",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 2,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/ZoeGonzale44276/status/2043935320505495988/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ZoeGonzale44276/status/2043935320505495988"
+    },
+    {
+      "id": "2043230713827463224",
+      "text": "Rekomendasiin cold plunge di jaksel donggg",
+      "author_id": "1679712880789426177",
+      "username": "adamsadam98",
+      "name": "adam🔥",
+      "created_at": "2026-04-12T07:32:18.000Z",
+      "conversation_id": "2043230713827463224",
+      "metrics": {
+        "likes": 2,
+        "retweets": 1,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 242,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/adamsadam98/status/2043230713827463224"
+    },
+    {
+      "id": "2044035804239147183",
+      "text": "You don’t need motivation. You need a reset. FREE Trails available too if its your FIRST time.\n\nCold plunge, slow breaths, rooftop sky. That’s the recipe. 🌤️🧊\n\nDownload the Cold Plunge SG App and start your sessions today.\n\n#ColdPlungeSG #RooftopRecovery #ColdPlunge e https://t.co/UGxeMAIEro",
+      "author_id": "1864054300831580160",
+      "username": "coldplungesg",
+      "name": "COLDPLUNGESG",
+      "created_at": "2026-04-14T12:51:26.000Z",
+      "conversation_id": "2044035804239147183",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 6,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/coldplungesg/status/2044035804239147183/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "ColdPlungeSG",
+        "RooftopRecovery",
+        "ColdPlunge"
+      ],
+      "tweet_url": "https://x.com/coldplungesg/status/2044035804239147183"
+    },
+    {
+      "id": "2043411162050482585",
+      "text": "@Ajmetax That or cold plunge?",
+      "author_id": "1952420702637924352",
+      "username": "3Letters__",
+      "name": "3Letters",
+      "created_at": "2026-04-12T19:29:20.000Z",
+      "conversation_id": "2043410672067743823",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 8,
+        "bookmarks": 1
+      },
+      "urls": [],
+      "mentions": [
+        "Ajmetax"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/3Letters__/status/2043411162050482585"
+    },
+    {
+      "id": "2042881758690185682",
+      "text": "cold plunge but in the ocean 🌊",
+      "author_id": "846863840335794176",
+      "username": "ilykatana",
+      "name": "✩",
+      "created_at": "2026-04-11T08:25:40.000Z",
+      "conversation_id": "2042881758690185682",
+      "metrics": {
+        "likes": 6,
+        "retweets": 3,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 111,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ilykatana/status/2042881758690185682"
+    },
+    {
+      "id": "2043135484143218803",
+      "text": "@housleyd No cold plunge or meditation either",
+      "author_id": "365290645",
+      "username": "ADeermount",
+      "name": "Adam Deermount",
+      "created_at": "2026-04-12T01:13:53.000Z",
+      "conversation_id": "2043134601384866288",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 9,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "housleyd"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ADeermount/status/2043135484143218803"
+    },
+    {
+      "id": "2042575591086739493",
+      "text": "Less scrolling. More soul reset and sunsets.\n\nCome plunge and feel your brain switch back on. ⚡️🧊\n\nDownload the Cold Plunge SG App and start your sessions today.\n\n#ColdPlungeSG #RooftopRecovery #ColdPlunge #StrengthAndRecovery #Singapore https://t.co/b9azsjHogS",
+      "author_id": "1864054300831580160",
+      "username": "coldplungesg",
+      "name": "COLDPLUNGESG",
+      "created_at": "2026-04-10T12:09:04.000Z",
+      "conversation_id": "2042575591086739493",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 10,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/coldplungesg/status/2042575591086739493/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "ColdPlungeSG",
+        "RooftopRecovery",
+        "ColdPlunge",
+        "StrengthAndRecovery",
+        "Singapore"
+      ],
+      "tweet_url": "https://x.com/coldplungesg/status/2042575591086739493"
+    },
+    {
+      "id": "2043881788536246343",
+      "text": "@DearS_o_n Cold plunge",
+      "author_id": "2355446901",
+      "username": "HansBez",
+      "name": "Hans Bez",
+      "created_at": "2026-04-14T02:39:26.000Z",
+      "conversation_id": "2043743779044102439",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "DearS_o_n"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/HansBez/status/2043881788536246343"
+    },
+    {
+      "id": "2043332767069676014",
+      "text": "4) Cold plunge every single morning\n\nA quick cold shock sends a signal straight to your bone marrow.\n\nBarbara explains how important this is for your immune system: https://t.co/L7sJ6qUkxy",
+      "author_id": "1949880948235128833",
+      "username": "LyfespanHealth",
+      "name": "Lyfespan",
+      "created_at": "2026-04-12T14:17:49.000Z",
+      "conversation_id": "2043332462416363717",
+      "metrics": {
+        "likes": 163,
+        "retweets": 17,
+        "replies": 3,
+        "quotes": 0,
+        "impressions": 41475,
+        "bookmarks": 70
+      },
+      "urls": [
+        "https://x.com/LyfespanHealth/status/2043332767069676014/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/LyfespanHealth/status/2043332767069676014"
+    },
+    {
+      "id": "2044187062031790545",
+      "text": "@_sorrengailll Cold plunge always helps",
+      "author_id": "35137966",
+      "username": "AttentionZane",
+      "name": "IAMZANE",
+      "created_at": "2026-04-14T22:52:29.000Z",
+      "conversation_id": "2044143418012586280",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 854,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "_sorrengailll"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/AttentionZane/status/2044187062031790545"
+    },
+    {
+      "id": "2044158628849201345",
+      "text": "@BabyB_Bianca I like cold shower after steam room and cold plunge after running. Otherwise I like hot shower too. 😜",
+      "author_id": "1918914430466949120",
+      "username": "Caesar_Emeritus",
+      "name": "Leotus",
+      "created_at": "2026-04-14T20:59:30.000Z",
+      "conversation_id": "2044088837039620453",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 40,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "BabyB_Bianca"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Caesar_Emeritus/status/2044158628849201345"
+    },
+    {
+      "id": "2043642715926327797",
+      "text": "Lando Two-Person Hot &amp; Cold Plunge Tub Designed.... #Hotplunge &amp; #ColdPlunge Tub Designed for both performance and relaxation, the Lando dual-seat plunge tubis available in a natural wood finish or ... https://t.co/k1DPew53Rq",
+      "author_id": "1078887969375674373",
+      "username": "haokaixin3",
+      "name": "landowaterchillers",
+      "created_at": "2026-04-13T10:49:27.000Z",
+      "conversation_id": "2043642715926327797",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 16,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/haokaixin3/status/2043642715926327797/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "Hotplunge",
+        "ColdPlunge"
+      ],
+      "tweet_url": "https://x.com/haokaixin3/status/2043642715926327797"
+    },
+    {
+      "id": "2043474658679492723",
+      "text": "@mrmikeMTL Cold plunge and sauna back and forth. \n\nGood sleep.\n\nExercise.",
+      "author_id": "1968773883320004608",
+      "username": "Doom_Goy",
+      "name": "Doom Goy",
+      "created_at": "2026-04-12T23:41:39.000Z",
+      "conversation_id": "2043314576024834168",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 5,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "mrmikeMTL"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Doom_Goy/status/2043474658679492723"
+    },
+    {
+      "id": "2043288463303135578",
+      "text": "@norab84 It is 🥶 -cold plunge",
+      "author_id": "920310805",
+      "username": "plh19566591",
+      "name": "patricia harris",
+      "created_at": "2026-04-12T11:21:46.000Z",
+      "conversation_id": "2043232884241158483",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 3,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "norab84"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/plh19566591/status/2043288463303135578"
+    },
+    {
+      "id": "2042371299805139024",
+      "text": "Got a bunch of questions on the timing of this:\n\n- 6:30pm sauna\n- 6:50pm cold plunge\n- 7:00pm shower/skincare\n- 8:30pm asleep (wake up at 4:30)\n\nI started adding the cold plunge because I saw @foundmyfitness talk about the benefits for sleep ~1-2 hours before bed. I've LOVED it.",
+      "author_id": "312681953",
+      "username": "SahilBloom",
+      "name": "Sahil Bloom",
+      "created_at": "2026-04-09T22:37:17.000Z",
+      "conversation_id": "2042284985982255195",
+      "metrics": {
+        "likes": 40,
+        "retweets": 4,
+        "replies": 7,
+        "quotes": 0,
+        "impressions": 21934,
+        "bookmarks": 23
+      },
+      "urls": [],
+      "mentions": [
+        "foundmyfitness"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/SahilBloom/status/2042371299805139024"
+    },
+    {
+      "id": "2043380365134270641",
+      "text": "@Mmmmicas And then take an ice-cold plunge?",
+      "author_id": "1947625412676227072",
+      "username": "fodaille",
+      "name": "Georges Fodaille",
+      "created_at": "2026-04-12T17:26:57.000Z",
+      "conversation_id": "2043377416475717992",
+      "metrics": {
+        "likes": 1,
+        "retweets": 1,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 42,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "Mmmmicas"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/fodaille/status/2043380365134270641"
+    },
+    {
+      "id": "2043340158393520380",
+      "text": "@williamtradesfx Cold plunge game strong. That Coldture unit holding up well?",
+      "author_id": "1301349912785944579",
+      "username": "Johnypeter355",
+      "name": "Petter Johns",
+      "created_at": "2026-04-12T14:47:11.000Z",
+      "conversation_id": "2043321691418263972",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 47,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "williamtradesfx"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Johnypeter355/status/2043340158393520380"
+    },
+    {
+      "id": "2042474504170217842",
+      "text": "@nikssocial i need a cold plunge",
+      "author_id": "2014178107276791808",
+      "username": "sixpackbrands_",
+      "name": "Ajinkya Revdikar",
+      "created_at": "2026-04-10T05:27:23.000Z",
+      "conversation_id": "2042182271084769430",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 4,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "nikssocial"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/sixpackbrands_/status/2042474504170217842"
+    },
+    {
+      "id": "2042372592321864050",
+      "text": "@SahilBloom @foundmyfitness Shouldn’t you cold plunge before sauna? Cold to hot as opposed to hot to cold?",
+      "author_id": "2519074004",
+      "username": "nfltalksabout",
+      "name": "lin",
+      "created_at": "2026-04-09T22:42:26.000Z",
+      "conversation_id": "2042284985982255195",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 280,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "SahilBloom",
+        "foundmyfitness"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/nfltalksabout/status/2042372592321864050"
+    },
+    {
+      "id": "2042920942733541691",
+      "text": "@TheGregYang Combine with sauna and cold plunge, now you are cooking, sir 🫡",
+      "author_id": "96311143",
+      "username": "chocolatewine",
+      "name": "Craig",
+      "created_at": "2026-04-11T11:01:23.000Z",
+      "conversation_id": "2042672802034319700",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 78,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "TheGregYang"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/chocolatewine/status/2042920942733541691"
+    },
+    {
+      "id": "2042814312054689878",
+      "text": "ceritanya mau cold plunge https://t.co/xJsjvT8ACX",
+      "author_id": "879974826202480640",
+      "username": "larimengejarbus",
+      "name": "Belangkakinya",
+      "created_at": "2026-04-11T03:57:40.000Z",
+      "conversation_id": "2042814312054689878",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 66,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/larimengejarbus/status/2042814312054689878/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/larimengejarbus/status/2042814312054689878"
+    },
+    {
+      "id": "2043642161154163077",
+      "text": "Lando Dual-Seat Hot &amp; Cold Plunge Tub.Natural or black finish, built for recovery and relaxation. Enjoy refreshing cold plunges or soothing .#landochiller #waterchiller #spachiller https://t.co/noNbnR3khW",
+      "author_id": "1078887969375674373",
+      "username": "haokaixin3",
+      "name": "landowaterchillers",
+      "created_at": "2026-04-13T10:47:14.000Z",
+      "conversation_id": "2043642161154163077",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 18,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/haokaixin3/status/2043642161154163077/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "landochiller",
+        "waterchiller",
+        "spachiller"
+      ],
+      "tweet_url": "https://x.com/haokaixin3/status/2043642161154163077"
+    },
+    {
+      "id": "2042195299406348540",
+      "text": "Few things that help with insomnia / sleep deprivation for me:\n\n- Cardio\n- Creatine (10g)\n- Cold Plunge or Cold Showers",
+      "author_id": "1898894736800223232",
+      "username": "TheRealNickM__",
+      "name": "Nick",
+      "created_at": "2026-04-09T10:57:56.000Z",
+      "conversation_id": "2042195299406348540",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 27,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/TheRealNickM__/status/2042195299406348540"
+    },
+    {
+      "id": "2043319880368144533",
+      "text": "@itsmarcosruiz sauna and cold plunge changed everything",
+      "author_id": "104025363",
+      "username": "Hiraweb3",
+      "name": "Hira",
+      "created_at": "2026-04-12T13:26:37.000Z",
+      "conversation_id": "2043312232591667209",
+      "metrics": {
+        "likes": 2,
+        "retweets": 1,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 1589,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "itsmarcosruiz"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Hiraweb3/status/2043319880368144533"
+    },
+    {
+      "id": "2043457806984946093",
+      "text": "@robjama then a sauna / cold plunge combo 😅",
+      "author_id": "294392319",
+      "username": "sergical",
+      "name": "Serge 🇺🇦",
+      "created_at": "2026-04-12T22:34:41.000Z",
+      "conversation_id": "2043448460314099876",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 40,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "robjama"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/sergical/status/2043457806984946093"
+    },
+    {
+      "id": "2042776097826443704",
+      "text": "Cold plunge 💕\n\nNow off to reply to all your lovely messages  #sauna #coldplunge #contrasttherapy #motitvation https://t.co/f46k7tHjqu",
+      "author_id": "1393961400062517249",
+      "username": "GenxTara",
+      "name": "TaraGenx",
+      "created_at": "2026-04-11T01:25:49.000Z",
+      "conversation_id": "2042776097826443704",
+      "metrics": {
+        "likes": 323,
+        "retweets": 16,
+        "replies": 9,
+        "quotes": 0,
+        "impressions": 8060,
+        "bookmarks": 49
+      },
+      "urls": [
+        "https://x.com/GenxTara/status/2042776097826443704/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "sauna",
+        "coldplunge",
+        "contrasttherapy",
+        "motitvation"
+      ],
+      "tweet_url": "https://x.com/GenxTara/status/2042776097826443704"
+    },
+    {
+      "id": "2043356876553715746",
+      "text": "Nothing like a Sunday morning cold plunge 🥶🧊😁",
+      "author_id": "108376583",
+      "username": "davebeezy317",
+      "name": "Akaza",
+      "created_at": "2026-04-12T15:53:37.000Z",
+      "conversation_id": "2043356876553715746",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 10,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/davebeezy317/status/2043356876553715746"
+    },
+    {
+      "id": "2043031789887799331",
+      "text": "water means change! cold plunge!",
+      "author_id": "880622845084270592",
+      "username": "ameliasosas",
+      "name": "anna",
+      "created_at": "2026-04-11T18:21:51.000Z",
+      "conversation_id": "2042291761351999795",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 42,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ameliasosas/status/2043031789887799331"
+    },
+    {
+      "id": "2042371543062167834",
+      "text": "My Post-gym routine:\n\n→ Sauna (8 min) 🔥\n→ Cold plunge (3 min) ❄️\n→ Steam (2 min) \n→ Cold shower 🚿\n\nWould be interesting to see the scientific results. https://t.co/lZWUczXcuu",
+      "author_id": "521990157",
+      "username": "NkululekoMhlaba",
+      "name": "Nkululeko Mhlaba",
+      "created_at": "2026-04-09T22:38:15.000Z",
+      "conversation_id": "2042371543062167834",
+      "metrics": {
+        "likes": 4,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 881,
+        "bookmarks": 3
+      },
+      "urls": [
+        "https://twitter.com/bryan_johnson/status/2042360189958107190"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/NkululekoMhlaba/status/2042371543062167834"
+    },
+    {
+      "id": "2043016730994266433",
+      "text": "I liked Nefertari’s cold plunge 💜🩵💞 https://t.co/I0PhyBGFAo",
+      "author_id": "1851613439220736000",
+      "username": "ADIYXGI",
+      "name": "OSHULI ॐ🔱🚩",
+      "created_at": "2026-04-11T17:22:00.000Z",
+      "conversation_id": "2043016730994266433",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 3,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://twitter.com/suraj_624/status/2043008908097392860"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ADIYXGI/status/2043016730994266433"
+    },
+    {
+      "id": "2043413397916790844",
+      "text": "As it gets hotter out in Vegas - i need to get back into my cold shower routines and would love to find somewhere to take an ice bath or cold plunge 😭\n\ni miss ice baths ngl - i can thank sports for my love of cold water when called for",
+      "author_id": "342850283",
+      "username": "ItsJwowwBitchh",
+      "name": "ᗩᗰᗩᒪIᗩ シ",
+      "created_at": "2026-04-12T19:38:13.000Z",
+      "conversation_id": "2043413397916790844",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 33,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ItsJwowwBitchh/status/2043413397916790844"
+    },
+    {
+      "id": "2043787712050626924",
+      "text": "@DearS_o_n Exercise, sauna and cold plunge",
+      "author_id": "116528596",
+      "username": "playboiGreaz",
+      "name": "Hornets Playoff Basketball Enjoyer 🏀",
+      "created_at": "2026-04-13T20:25:36.000Z",
+      "conversation_id": "2043743779044102439",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 13,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "DearS_o_n"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/playboiGreaz/status/2043787712050626924"
+    },
+    {
+      "id": "2042961420975751318",
+      "text": "@Gorgon_Girl I know that sound. I’ve never been tempted to cold plunge. What does it do for you?",
+      "author_id": "46025367",
+      "username": "Latch68",
+      "name": "It's Greg, for all intents and purposes",
+      "created_at": "2026-04-11T13:42:13.000Z",
+      "conversation_id": "2042959413145665847",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 15,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "Gorgon_Girl"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Latch68/status/2042961420975751318"
+    },
+    {
+      "id": "2043135130546348187",
+      "text": "@0hour1 He needs a cold plunge and a facial and maybe some sleep",
+      "author_id": "248402043",
+      "username": "AmyTaylorTx",
+      "name": "Amy Taylor ✝️🌵",
+      "created_at": "2026-04-12T01:12:29.000Z",
+      "conversation_id": "2043126893914833200",
+      "metrics": {
+        "likes": 7,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 869,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "0hour1"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/AmyTaylorTx/status/2043135130546348187"
+    },
+    {
+      "id": "2042689353562866012",
+      "text": "@jezcuh Cold plunge",
+      "author_id": "2440488722",
+      "username": "Hennito_Garcia",
+      "name": "RG",
+      "created_at": "2026-04-10T19:41:07.000Z",
+      "conversation_id": "2042669355805348179",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 13,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "jezcuh"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Hennito_Garcia/status/2042689353562866012"
+    },
+    {
+      "id": "2042333197191745786",
+      "text": "🛀❄️ Cold plunge ftw 🧊🥶 https://t.co/2kBpbARw78",
+      "author_id": "1856378265566584832",
+      "username": "TR0LLH0LIO",
+      "name": "j0€¥ CR@CK",
+      "created_at": "2026-04-09T20:05:53.000Z",
+      "conversation_id": "2042333197191745786",
+      "metrics": {
+        "likes": 0,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 57,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/TR0LLH0LIO/status/2042333197191745786/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/TR0LLH0LIO/status/2042333197191745786"
+    },
+    {
+      "id": "2042151782600626220",
+      "text": "@tigerisfine cold plunge + sauna, tiger knows recovery ball",
+      "author_id": "1974437220577681408",
+      "username": "zinnresearch",
+      "name": "Zinn",
+      "created_at": "2026-04-09T08:05:00.000Z",
+      "conversation_id": "2042004417185014142",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 15,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "tigerisfine"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/zinnresearch/status/2042151782600626220"
+    },
+    {
+      "id": "2042665733679910918",
+      "text": "@iHarnoorSingh fitness sf isnt that bad, it includes sauna cold plunge and all of them",
+      "author_id": "3664037413",
+      "username": "berrrrrrrrrrrrt",
+      "name": "Bert",
+      "created_at": "2026-04-10T18:07:16.000Z",
+      "conversation_id": "2042611518773280915",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 1441,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "iHarnoorSingh"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/berrrrrrrrrrrrt/status/2042665733679910918"
+    },
+    {
+      "id": "2042959413145665847",
+      "text": "I have a frog living behind my cold plunge and its little noises sound just like a Pomeranian’s bark.",
+      "author_id": "2029296333987721216",
+      "username": "Gorgon_Girl",
+      "name": "Medusa",
+      "created_at": "2026-04-11T13:34:15.000Z",
+      "conversation_id": "2042959413145665847",
+      "metrics": {
+        "likes": 43,
+        "retweets": 8,
+        "replies": 4,
+        "quotes": 0,
+        "impressions": 624,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Gorgon_Girl/status/2042959413145665847"
+    },
+    {
+      "id": "2042960389151887621",
+      "text": "Mf charging 10k for a cold plunge lmaoooo https://t.co/W3lyXtg3Sm",
+      "author_id": "1438263671994597381",
+      "username": "Base____reality",
+      "name": "BASE REALITY ⚫️",
+      "created_at": "2026-04-11T13:38:07.000Z",
+      "conversation_id": "2042960389151887621",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 47,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/primetateHQ/status/2042633278406930896/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Base____reality/status/2042960389151887621"
+    },
+    {
+      "id": "2043199822396891196",
+      "text": "@shihab45eth @permacastapp @Permaweb_DAO @dango cold plunge then permacast drop   let’s go",
+      "author_id": "3226728746",
+      "username": "NalyMetaX",
+      "name": "Naly",
+      "created_at": "2026-04-12T05:29:33.000Z",
+      "conversation_id": "2043175292924047702",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 3,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "shihab45eth",
+        "permacastapp",
+        "Permaweb_DAO",
+        "dango"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/NalyMetaX/status/2043199822396891196"
+    },
+    {
+      "id": "2042693679501164552",
+      "text": "Calisthenics, Sauna, Cold Plunge!",
+      "author_id": "967829654617907200",
+      "username": "IsoDom_",
+      "name": "Dom Johnson",
+      "created_at": "2026-04-10T19:58:19.000Z",
+      "conversation_id": "2042693679501164552",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 39,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/IsoDom_/status/2042693679501164552"
+    },
+    {
+      "id": "2042669355805348179",
+      "text": "Jacuzzi or cold plunge?",
+      "author_id": "56764450",
+      "username": "jezcuh",
+      "name": "JES",
+      "created_at": "2026-04-10T18:21:40.000Z",
+      "conversation_id": "2042669355805348179",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 32,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/jezcuh/status/2042669355805348179"
+    },
+    {
+      "id": "2043413515076071904",
+      "text": "Top offer of the season! Portable Ice Bath Tub Pro - Water Chiller Compatible Cold Plunge Easy Recovery Solution, now at an exclusive price of $148.00 https://t.co/OP7tEM2TP1 https://t.co/ZNYar4wh9R",
+      "author_id": "1931574171735412736",
+      "username": "RevivPro",
+      "name": "RevivPro",
+      "created_at": "2026-04-12T19:38:41.000Z",
+      "conversation_id": "2043413515076071904",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 10,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://instagr.am/p/DXCyOELEn8n/",
+        "https://x.com/RevivPro/status/2043413515076071904/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/RevivPro/status/2043413515076071904"
+    },
+    {
+      "id": "2044211418715529371",
+      "text": "Cold plunge after that leg day was just 🤌🏾🤌🏾",
+      "author_id": "108376583",
+      "username": "davebeezy317",
+      "name": "Akaza",
+      "created_at": "2026-04-15T00:29:16.000Z",
+      "conversation_id": "2044211418715529371",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 5,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/davebeezy317/status/2044211418715529371"
+    },
+    {
+      "id": "2043658267633545611",
+      "text": "@EgemEraslan Cold plunge oldu",
+      "author_id": "2911698322",
+      "username": "gercekcakir",
+      "name": "Exeter",
+      "created_at": "2026-04-13T11:51:14.000Z",
+      "conversation_id": "2043629333600756026",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 34,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "EgemEraslan"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/gercekcakir/status/2043658267633545611"
+    },
+    {
+      "id": "2043389545127854573",
+      "text": "they also have a cold plunge but I don’t think I can or want to",
+      "author_id": "1473015442532876292",
+      "username": "kookendipity",
+      "name": "abby",
+      "created_at": "2026-04-12T18:03:26.000Z",
+      "conversation_id": "2043389465813553200",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 79,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/kookendipity/status/2043389545127854573"
+    },
+    {
+      "id": "2042360754930651267",
+      "text": "I guess the whole cold plunge thing petered out.",
+      "author_id": "362415881",
+      "username": "ChuckPrince50",
+      "name": "Chuck Prince",
+      "created_at": "2026-04-09T21:55:23.000Z",
+      "conversation_id": "2042360754930651267",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 11,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ChuckPrince50/status/2042360754930651267"
+    },
+    {
+      "id": "2044270199176573178",
+      "text": "@tropical_ploy Cold plunge!!",
+      "author_id": "1967319217168121856",
+      "username": "DanteXRP58",
+      "name": "Dante",
+      "created_at": "2026-04-15T04:22:50.000Z",
+      "conversation_id": "2044216705447268849",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 5,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "tropical_ploy"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/DanteXRP58/status/2044270199176573178"
+    },
+    {
+      "id": "2044053298177589660",
+      "text": "The rising global ritual of cold plunge sauna therapy https://t.co/569KmwTha8",
+      "author_id": "346670861",
+      "username": "fainfosalute",
+      "name": "fainfo salute",
+      "created_at": "2026-04-14T14:00:57.000Z",
+      "conversation_id": "2044053298177589660",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 7,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://fai.informazione.news/daiblog/F99B0BD5-7E3F-4BC3-91BC-14278E317609/The-rising-global-ritual-of-cold-plunge-sauna-therapy"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/fainfosalute/status/2044053298177589660"
+    },
+    {
+      "id": "2043054419353166277",
+      "text": "@Tyre_94 me with my parents, they have a home sauna and cold plunge lmfaooo they don’t want shit I can afford 😭😭",
+      "author_id": "826090688",
+      "username": "savanah2j",
+      "name": "Savanah Tujague",
+      "created_at": "2026-04-11T19:51:46.000Z",
+      "conversation_id": "2043050287213023691",
+      "metrics": {
+        "likes": 17,
+        "retweets": 0,
+        "replies": 3,
+        "quotes": 0,
+        "impressions": 1629,
+        "bookmarks": 1
+      },
+      "urls": [],
+      "mentions": [
+        "Tyre_94"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/savanah2j/status/2043054419353166277"
+    },
+    {
+      "id": "2043783775889567888",
+      "text": "@anitakirkovska perfect time for a cold plunge",
+      "author_id": "1282160715998978048",
+      "username": "BetterSayAJ",
+      "name": "Ajay Yadav",
+      "created_at": "2026-04-13T20:09:58.000Z",
+      "conversation_id": "2043781753358156132",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 47,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "anitakirkovska"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BetterSayAJ/status/2043783775889567888"
+    },
+    {
+      "id": "2043694466314260533",
+      "text": "@smccl_stocks I believe that if you did a cold plunge immediately after, you would lose some of the immune cell-stimulating effects, because unlike heat, cold appears to blunt inflammation/circulation.",
+      "author_id": "66590132",
+      "username": "foundmyfitness",
+      "name": "Dr. Rhonda Patrick",
+      "created_at": "2026-04-13T14:15:05.000Z",
+      "conversation_id": "2043692490537001398",
+      "metrics": {
+        "likes": 10,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1107,
+        "bookmarks": 3
+      },
+      "urls": [],
+      "mentions": [
+        "smccl_stocks"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/foundmyfitness/status/2043694466314260533"
+    },
+    {
+      "id": "2042593171478122708",
+      "text": "I'm Not Freezing My Balls For Discipline  Cold Plunge Brainrot https://t.co/nBouEVpf1c via @YouTube",
+      "author_id": "521292067",
+      "username": "BrainrotAddict",
+      "name": "Certified Brainrot Addict🤯",
+      "created_at": "2026-04-10T13:18:56.000Z",
+      "conversation_id": "2042593171478122708",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 30,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://youtu.be/KUv5VOzmysY?si=9DKRl6bUs6tSOCaU"
+      ],
+      "mentions": [
+        "YouTube"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BrainrotAddict/status/2042593171478122708"
+    },
+    {
+      "id": "2043968505138094413",
+      "text": "@antibearthesis swimming sounds refreshing! how’s the cold plunge? 🥶",
+      "author_id": "1459561762076901386",
+      "username": "WavesOceannn",
+      "name": "Ocean Waves",
+      "created_at": "2026-04-14T08:24:01.000Z",
+      "conversation_id": "2043963959863054561",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 18,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "antibearthesis"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/WavesOceannn/status/2043968505138094413"
+    },
+    {
+      "id": "2043170863558865100",
+      "text": "Just did my first cold plunge. This will hopefully help my sciatica. https://t.co/6CgAaQjwSh",
+      "author_id": "244246223",
+      "username": "ROKU9413",
+      "name": "Rokaan Al-Zeer",
+      "created_at": "2026-04-12T03:34:28.000Z",
+      "conversation_id": "2043170863558865100",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 28,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/ROKU9413/status/2043170863558865100/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ROKU9413/status/2043170863558865100"
+    },
+    {
+      "id": "2043404180753432646",
+      "text": "Triple sauna / cold plunge session followed by thunder sandwich drive through the canyon. Dopamine maxxing https://t.co/zn4IkCV4eh",
+      "author_id": "4760389288",
+      "username": "sketchy_cactus",
+      "name": "Duke Delarosa 🇹🇹",
+      "created_at": "2026-04-12T19:01:35.000Z",
+      "conversation_id": "2043404180753432646",
+      "metrics": {
+        "likes": 15,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 1041,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/sketchy_cactus/status/2043404180753432646/photo/1",
+        "https://x.com/sketchy_cactus/status/2043404180753432646/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/sketchy_cactus/status/2043404180753432646"
+    },
+    {
+      "id": "2043762965229212112",
+      "text": "@iky_fwjett Mushrooms, cold plunge and exercise",
+      "author_id": "1355617907552755713",
+      "username": "E1deremo27",
+      "name": "Ryan 🏴󠁧󠁢󠁳󠁣󠁴󠁿🏴‍☠️",
+      "created_at": "2026-04-13T18:47:16.000Z",
+      "conversation_id": "2043704927910764733",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 158,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "iky_fwjett"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/E1deremo27/status/2043762965229212112"
+    },
+    {
+      "id": "2044189811142209639",
+      "text": "@Darmindont Cold plunge in Seattle https://t.co/Y88UGC3Ph0",
+      "author_id": "1547421901680623616",
+      "username": "RockyTolt",
+      "name": "Rocky Tolt",
+      "created_at": "2026-04-14T23:03:24.000Z",
+      "conversation_id": "2044036707247378724",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 2,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/RockyTolt/status/2044189811142209639/photo/1"
+      ],
+      "mentions": [
+        "Darmindont"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/RockyTolt/status/2044189811142209639"
+    },
+    {
+      "id": "2043641883256029668",
+      "text": "@mrmikeMTL As a temporary relief cold shower or cold plunge can give you a couple hours of peace after. It releases endorphins. 5 minutes of discomfort for 2 hours of feeling pretty great.",
+      "author_id": "986851016",
+      "username": "nbergen0",
+      "name": "🟠 Infinity ⚡",
+      "created_at": "2026-04-13T10:46:08.000Z",
+      "conversation_id": "2043314576024834168",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 17,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "mrmikeMTL"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/nbergen0/status/2043641883256029668"
+    },
+    {
+      "id": "2042721540005937521",
+      "text": "7 minute cold plunge today!!!",
+      "author_id": "151378244",
+      "username": "carlosjmelgar",
+      "name": "carlosjmelgar.eth",
+      "created_at": "2026-04-10T21:49:01.000Z",
+      "conversation_id": "2042721540005937521",
+      "metrics": {
+        "likes": 12,
+        "retweets": 0,
+        "replies": 7,
+        "quotes": 0,
+        "impressions": 440,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/carlosjmelgar/status/2042721540005937521"
+    },
+    {
+      "id": "2042761322304008599",
+      "text": "@thegarybrecka I get sunlight when I do my cold plunge outside first thing in the morning. Kill two birds with one stone.",
+      "author_id": "1641833517335162880",
+      "username": "juggy121212",
+      "name": "JT",
+      "created_at": "2026-04-11T00:27:06.000Z",
+      "conversation_id": "2042745692997943416",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 87,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "thegarybrecka"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/juggy121212/status/2042761322304008599"
+    },
+    {
+      "id": "2044122234818896008",
+      "text": "cold plunge time because that lady had me fucked up",
+      "author_id": "1961446445267259392",
+      "username": "___just_a_girl_",
+      "name": "goddess 🫦🎀 | Fin Dom 💰",
+      "created_at": "2026-04-14T18:34:53.000Z",
+      "conversation_id": "2043704750877929943",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 35,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/___just_a_girl_/status/2044122234818896008"
+    },
+    {
+      "id": "2043414015460655504",
+      "text": "Was it the steam shower or cold plunge for #TEAMROSE this morning?",
+      "author_id": "1712109736408100865",
+      "username": "realairyordan",
+      "name": "🅿️",
+      "created_at": "2026-04-12T19:40:40.000Z",
+      "conversation_id": "2043414015460655504",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 22,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [
+        "TEAMROSE"
+      ],
+      "tweet_url": "https://x.com/realairyordan/status/2043414015460655504"
+    },
+    {
+      "id": "2043547071115038858",
+      "text": "Cold plunge yESS https://t.co/OiCrqLM1Eq",
+      "author_id": "2039248663789326336",
+      "username": "brizzofapril",
+      "name": "Mi",
+      "created_at": "2026-04-13T04:29:23.000Z",
+      "conversation_id": "2043547071115038858",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 12,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/brizzofapril/status/2043547071115038858/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/brizzofapril/status/2043547071115038858"
+    },
+    {
+      "id": "2044223365641343064",
+      "text": "@DocStrangelove2 When you do the cold plunge",
+      "author_id": "1976547870468694016",
+      "username": "ProjektDarkalt",
+      "name": "Night VTUBER | EN 🌑🎖️",
+      "created_at": "2026-04-15T01:16:44.000Z",
+      "conversation_id": "2044195414396596453",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 44,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "DocStrangelove2"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ProjektDarkalt/status/2044223365641343064"
+    },
+    {
+      "id": "2043369964262867176",
+      "text": "@fibonacki just got back from sauna and cold plunge, my Finns really got life mapped out.",
+      "author_id": "1678776135566659585",
+      "username": "WheelerrDealerr",
+      "name": "The Wheeler Dealer 🌍",
+      "created_at": "2026-04-12T16:45:38.000Z",
+      "conversation_id": "2043367292860309875",
+      "metrics": {
+        "likes": 3,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 187,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "fibonacki"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/WheelerrDealerr/status/2043369964262867176"
+    },
+    {
+      "id": "2044381798722044285",
+      "text": "A cold plunge a day, keeps the doctor away! 🥶 https://t.co/yZBSky1pnz",
+      "author_id": "2038354411110473728",
+      "username": "its_messy_bun",
+      "name": "Tay",
+      "created_at": "2026-04-15T11:46:18.000Z",
+      "conversation_id": "2044381798722044285",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/its_messy_bun/status/2044381798722044285/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/its_messy_bun/status/2044381798722044285"
+    },
+    {
+      "id": "2042999094172430672",
+      "text": "The nap after sauna, steam room, cold plunge hits so different",
+      "author_id": "1275241853747691520",
+      "username": "ruhi_hi",
+      "name": "Ruhi",
+      "created_at": "2026-04-11T16:11:55.000Z",
+      "conversation_id": "2042999094172430672",
+      "metrics": {
+        "likes": 44,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1599,
+        "bookmarks": 1
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ruhi_hi/status/2042999094172430672"
+    },
+    {
+      "id": "2042909130768175396",
+      "text": "@madbaldscotsman That's so cool! Enjoy your cold plunge after the run.",
+      "author_id": "1651264950311190528",
+      "username": "Manofhonou6815",
+      "name": "Amélie Rousseau",
+      "created_at": "2026-04-11T10:14:26.000Z",
+      "conversation_id": "2041923940969541644",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "madbaldscotsman"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Manofhonou6815/status/2042909130768175396"
+    }
+  ]
+}

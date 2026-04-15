@@ -1,0 +1,40 @@
+{
+  "targetSkill": "x-research",
+  "failureMode": "test",
+  "rounds": [
+    {
+      "round": 1,
+      "avgScore": 3.2,
+      "gain": null,
+      "promptCount": 1,
+      "scoreBreakdown": [
+        {
+          "prompt": "cold",
+          "total": 3.2,
+          "scores": {
+            "queryStrategy": 3,
+            "qualityFiltering": 1,
+            "resultCoverage": 5,
+            "actionContract": 4,
+            "documentation": 3
+          }
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "startScore": 3.2,
+    "finalScore": 3.2,
+    "totalGain": 0,
+    "roundsRun": 1,
+    "maxRounds": 1,
+    "stoppedEarly": false
+  },
+  "recommendations": [
+    {
+      "dimension": "qualityFiltering",
+      "avgScore": 1,
+      "recommendation": "Persistent low score in qualityFiltering (1/5). Manual SKILL.md review recommended."
+    }
+  ]
+}

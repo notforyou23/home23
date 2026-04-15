@@ -1,0 +1,6 @@
+{
+  "query": "hot cold immersion recovery health benefits -is:retweet",
+  "params": "sort=likes&pages=1&since=7d",
+  "timestamp": 1776279697959,
+  "tweets": []
+}

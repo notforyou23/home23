@@ -975,12 +975,12 @@ class Home23TileService {
           subtitle: [
             sauna.targetTemperature != null ? `Target ${sauna.targetTemperature}°F` : null,
             sauna.duration ? `${sauna.duration} min remaining` : null,
-            sauna.door === true ? 'Door open' : sauna.door === false ? 'Door closed' : null,
+            sauna.door === false ? 'Door open' : sauna.door === true ? 'Door closed' : null,
           ].filter(Boolean).join(' · ') || 'No status details',
           metrics: [
             { label: 'Target', value: sauna.targetTemperature != null ? `${sauna.targetTemperature}°F` : '—' },
             { label: 'Duration', value: sauna.duration ? `${sauna.duration} min` : '—' },
-            { label: 'Door', value: sauna.door === true ? 'Open' : sauna.door === false ? 'Closed' : '—' },
+            { label: 'Door', value: sauna.door === false ? 'Open' : sauna.door === true ? 'Closed' : '—' },
             { label: 'Heating', value: sauna.isHeating ? 'Yes' : 'No' },
           ],
         },

@@ -98,6 +98,26 @@ function createSettingsRouter(home23Root) {
     };
   }
 
+  const IMAGE_PROVIDER_CATALOG = Object.freeze({
+    openai: {
+      displayName: 'OpenAI',
+      models: ['gpt-image-1.5', 'gpt-image-1', 'gpt-image-1-mini', 'dall-e-3', 'dall-e-2'],
+    },
+  });
+
+  function normalizeImageGenerationSettings(stored = {}) {
+    const fallbackProvider = 'openai';
+    const provider = typeof stored.provider === 'string' && IMAGE_PROVIDER_CATALOG[stored.provider]
+      ? stored.provider
+      : fallbackProvider;
+    const models = IMAGE_PROVIDER_CATALOG[provider].models;
+    const fallbackModel = models[0];
+    const model = typeof stored.model === 'string' && models.includes(stored.model)
+      ? stored.model
+      : fallbackModel;
+    return { provider, model };
+  }
+
   async function importSkillLoader() {
     return import(pathToFileURL(path.join(home23Root, 'workspace', 'skills', 'skill-loader.js')).href);
   }
@@ -644,6 +664,8 @@ function createSettingsRouter(home23Root) {
     res.json({
       chat: homeConfig.chat || {},
       aliases: homeConfig.models?.aliases || {},
+      imageGeneration: normalizeImageGenerationSettings(homeConfig.media?.imageGeneration || {}),
+      imageProviders: IMAGE_PROVIDER_CATALOG,
       providers: Object.fromEntries(
         Object.entries(homeConfig.providers || {}).map(([name, cfg]) => [name, { defaultModels: cfg.defaultModels || [] }])
       ),
@@ -652,7 +674,7 @@ function createSettingsRouter(home23Root) {
   });
 
   router.put('/models', (req, res) => {
-    const { chat, aliases, providerModels, engineRoles } = req.body;
+    const { chat, aliases, providerModels, engineRoles, imageGeneration } = req.body;
     const configPath = getHomeConfigPath();
     const homeConfig = loadYaml(configPath);
 
@@ -671,6 +693,10 @@ function createSettingsRouter(home23Root) {
         if (!homeConfig.providers[provName]) homeConfig.providers[provName] = {};
         homeConfig.providers[provName].defaultModels = models;
       }
+    }
+    if (imageGeneration && typeof imageGeneration === 'object') {
+      if (!homeConfig.media) homeConfig.media = {};
+      homeConfig.media.imageGeneration = normalizeImageGenerationSettings(imageGeneration);
     }
 
     saveYaml(configPath, homeConfig);

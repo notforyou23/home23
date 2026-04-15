@@ -9,6 +9,8 @@
  */
 
 import WebSocket from 'ws';
+import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import type { ChannelAdapter, IncomingMessage, OutgoingResponse } from './router.js';
 
 // ─── Config ──────────────────────────────────────────────────
@@ -106,37 +108,63 @@ export class DiscordAdapter implements ChannelAdapter {
 
   async send(response: OutgoingResponse): Promise<void> {
     const url = `https://discord.com/api/v10/channels/${response.chatId}/messages`;
-    const body = JSON.stringify({ content: response.text });
+    if (response.text) {
+      await this.sendJsonMessage(url, { content: response.text });
+    }
 
+    for (const attachment of response.media ?? []) {
+      const form = new FormData();
+      const payload = attachment.caption ? { content: attachment.caption } : {};
+      form.append('payload_json', JSON.stringify(payload));
+      form.append(
+        'files[0]',
+        new Blob([readFileSync(attachment.path)], { type: attachment.mimeType || 'application/octet-stream' }),
+        attachment.fileName || basename(attachment.path),
+      );
+      await this.sendMultipartMessage(url, form);
+    }
+  }
+
+  private async sendJsonMessage(url: string, body: Record<string, unknown>): Promise<void> {
     const res = await fetch(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bot ${this.config.token}`,
         'Content-Type': 'application/json',
       },
+      body: JSON.stringify(body),
+    });
+
+    if (res.status === 429) {
+      const retryAfter = parseFloat(res.headers.get('Retry-After') ?? '1') * 1000;
+      console.warn(`[discord] Rate limited, retrying after ${retryAfter}ms`);
+      await new Promise(r => setTimeout(r, retryAfter));
+      return this.sendJsonMessage(url, body);
+    }
+
+    if (!res.ok) {
+      throw new Error(`[discord] Send failed: ${res.status} ${await res.text()}`);
+    }
+  }
+
+  private async sendMultipartMessage(url: string, body: FormData): Promise<void> {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bot ${this.config.token}`,
+      },
       body,
     });
 
     if (res.status === 429) {
-      // Rate limited — wait and retry once
       const retryAfter = parseFloat(res.headers.get('Retry-After') ?? '1') * 1000;
-      console.warn(`[discord] Rate limited, retrying after ${retryAfter}ms`);
+      console.warn(`[discord] Rate limited on attachment, retrying after ${retryAfter}ms`);
       await new Promise(r => setTimeout(r, retryAfter));
+      return this.sendMultipartMessage(url, body);
+    }
 
-      const retry = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bot ${this.config.token}`,
-          'Content-Type': 'application/json',
-        },
-        body,
-      });
-
-      if (!retry.ok) {
-        throw new Error(`[discord] Send failed after retry: ${retry.status}`);
-      }
-    } else if (!res.ok) {
-      throw new Error(`[discord] Send failed: ${res.status} ${await res.text()}`);
+    if (!res.ok) {
+      throw new Error(`[discord] Attachment send failed: ${res.status} ${await res.text()}`);
     }
   }
 
