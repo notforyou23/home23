@@ -56,7 +56,13 @@ export class ConversationHistory {
       for (const line of raw.split('\n')) {
         if (!line.trim()) continue;
         try {
-          records.push(JSON.parse(line) as HistoryRecord);
+          const rec = JSON.parse(line) as HistoryRecord;
+          // Skip turn envelopes and events — those are for turn endpoints, not message history
+          if (rec && typeof rec === 'object' && ('type' in rec) &&
+              ((rec as { type: string }).type === 'turn' || (rec as { type: string }).type === 'event')) {
+            continue;
+          }
+          records.push(rec);
         } catch {
           badLines++;
         }
@@ -94,6 +100,34 @@ export class ConversationHistory {
     });
     const lines = timestamped.map(r => JSON.stringify(r)).join('\n') + '\n';
     appendFileSync(filePath, lines);
+  }
+
+  /** Load ALL records including turn envelopes and events. Use for turn endpoints, not message-building. */
+  loadRaw(chatId: string): unknown[] {
+    const filePath = this.filePath(chatId);
+    if (!existsSync(filePath)) return [];
+    try {
+      const content = readFileSync(filePath, 'utf-8');
+      const lines = content.split('\n').filter(l => l.trim());
+      const records: unknown[] = [];
+      for (const line of lines) {
+        try {
+          records.push(JSON.parse(line));
+        } catch {
+          // skip bad line
+        }
+      }
+      return records;
+    } catch {
+      return [];
+    }
+  }
+
+  /** Append a single arbitrary record as JSONL. No transformation. */
+  appendRecord(chatId: string, record: unknown): void {
+    const filePath = this.filePath(chatId);
+    const line = JSON.stringify(record) + '\n';
+    appendFileSync(filePath, line);
   }
 
   /** Truncate history to fit within maxChars budget. Filters out session boundaries — returns only StoredMessages for the API. */
