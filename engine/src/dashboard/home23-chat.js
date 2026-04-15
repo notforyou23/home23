@@ -12,7 +12,12 @@ let chatAgents = [];
 let chatModels = {};
 let chatModel = null;
 let chatStreaming = false;
-let chatAbort = null;
+let activeTurnId = null;
+let activeChatId = null;
+let activeCursor = -1;
+let activeEventSource = null;
+// UI render state per turn — reset when a turn starts, reused by both live streaming and reconnect.
+let currentTurnCtx = null;
 let chatConversationId = null;  // current conversation ID
 let chatConversations = [];     // list of all conversations
 let chatPersistTimer = null;
@@ -267,6 +272,44 @@ async function loadHistory(agentName, conversationId) {
     if (overlayBody) overlayBody.innerHTML = '';
     scheduleChatPersist();
   }
+  await resumePendingTurns();
+}
+
+async function resumePendingTurns() {
+  if (!chatAgent?.bridgePort || !chatConversationId) return;
+  try {
+    const bridgeBase = `http://${window.location.hostname}:${chatAgent.bridgePort}`;
+    const res = await fetch(`${bridgeBase}/api/chat/pending?chatId=${encodeURIComponent(chatConversationId)}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    const pending = data.pending || [];
+    if (pending.length === 0) return;
+
+    const turn = pending[pending.length - 1];
+
+    const containerId = 'chat-messages';
+    currentTurnCtx = {
+      containerId,
+      responseEl: null,
+      currentResponse: '',
+      thinkingEl: null,
+      currentThinking: '',
+    };
+    activeTurnId = turn.turn_id;
+    activeChatId = chatConversationId;
+    activeCursor = -1;
+    chatStreaming = true;
+
+    // Button swap to Stop while resuming
+    const sendBtn = document.getElementById('chat-send-btn');
+    const overlaySendBtn = document.getElementById('chat-overlay-send-btn');
+    if (sendBtn) { sendBtn.innerHTML = '&#9632;'; sendBtn.disabled = false; sendBtn.onclick = stopChat; sendBtn.title = 'Stop'; sendBtn.style.background = 'var(--accent-red)'; }
+    if (overlaySendBtn) { overlaySendBtn.innerHTML = '&#9632;'; overlaySendBtn.disabled = false; overlaySendBtn.onclick = stopChat; overlaySendBtn.title = 'Stop'; overlaySendBtn.style.background = 'var(--accent-red)'; }
+
+    openTurnStream({ bridgeBase, chatId: activeChatId, turnId: turn.turn_id, cursor: -1 });
+  } catch (err) {
+    console.warn('[chat] pending-turn resume failed', err);
+  }
 }
 
 // ── Conversations ──
@@ -374,105 +417,143 @@ async function sendMessage(source) {
   if (sendBtn) { sendBtn.innerHTML = '&#9632;'; sendBtn.disabled = false; sendBtn.onclick = stopChat; sendBtn.title = 'Stop'; sendBtn.style.background = 'var(--accent-red)'; }
   if (overlaySendBtn) { overlaySendBtn.innerHTML = '&#9632;'; overlaySendBtn.disabled = false; overlaySendBtn.onclick = stopChat; overlaySendBtn.title = 'Stop'; overlaySendBtn.style.background = 'var(--accent-red)'; }
 
-  chatAbort = new AbortController();
-  const bridgeUrl = `http://${window.location.hostname}:${chatAgent.bridgePort}/api/chat`;
+  // New turn protocol flow
+  currentTurnCtx = {
+    containerId,
+    responseEl: null,
+    currentResponse: '',
+    thinkingEl: null,
+    currentThinking: '',
+  };
+  activeChatId = chatConversationId;
+  activeCursor = -1;
 
+  const bridgeBase = `http://${window.location.hostname}:${chatAgent.bridgePort}`;
+
+  let turnId;
   try {
-    const res = await fetch(bridgeUrl, {
+    const res = await fetch(`${bridgeBase}/api/chat/turn`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: text, chatId: chatConversationId }),
-      signal: chatAbort.signal,
+      body: JSON.stringify({ chatId: activeChatId, message: text }),
     });
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let currentResponse = '';
-    let responseEl = null;
-    // Streaming thinking accumulator — deltas from the agent arrive as multiple
-    // events, accumulate into a single block until something else (tool or text)
-    // fires and we start a new block.
-    let currentThinking = '';
-    let thinkingEl = null;
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const raw = line.slice(6);
-        if (raw === '[DONE]') continue;
-
-        let event;
-        try { event = JSON.parse(raw); } catch { continue; }
-
-        if (event.type === 'text' || event.type === 'response_chunk') {
-          // Starting/continuing a response block — close out any active thinking block
-          thinkingEl = null;
-          currentThinking = '';
-
-          currentResponse += event.text || event.chunk || '';
-          if (!responseEl) {
-            responseEl = appendMessage('assistant', currentResponse, containerId);
-          } else {
-            responseEl.innerHTML = renderMarkdown(currentResponse);
-            scheduleChatPersist();
-          }
-          scrollContainer(containerId);
-        } else if (event.type === 'thinking') {
-          // Starting/continuing a thinking block — close out any active response
-          responseEl = null;
-          currentResponse = '';
-
-          currentThinking += event.content || event.message || '';
-          if (!thinkingEl) {
-            thinkingEl = appendThinking(currentThinking, containerId);
-          } else {
-            thinkingEl.textContent = currentThinking;
-            scheduleChatPersist();
-          }
-          scrollContainer(containerId);
-        } else if (event.type === 'tool_start') {
-          // Tool call begins — close any active blocks
-          thinkingEl = null;
-          currentThinking = '';
-          responseEl = null;
-          currentResponse = '';
-
-          appendToolCard(event.tool || event.name, event.args, 'running', containerId);
-          scrollContainer(containerId);
-        } else if (event.type === 'tool_complete' || event.type === 'tool_result') {
-          updateToolCard(event.tool || event.name, event.result || event.summary || event.output, true);
-          scrollContainer(containerId);
-        } else if (event.type === 'media') {
-          appendMedia(event.mediaType, event.path, event.caption, containerId);
-          scrollContainer(containerId);
-        } else if (event.type === 'subagent_result') {
-          appendMessage('assistant', `**[Sub-agent]** ${event.task}\n\n${event.result}`, containerId);
-          scrollContainer(containerId);
-        } else if (event.type === 'done' && event.stopReason === 'error') {
-          appendError(event.error || 'Unknown error', containerId);
-          scrollContainer(containerId);
-        }
-      }
+    if (res.status === 409) {
+      const data = await res.json();
+      turnId = data.turn_id;
+      console.warn('[chat] resuming in-flight turn', turnId);
+    } else if (!res.ok) {
+      let errBody = '';
+      try { errBody = (await res.json()).error || ''; } catch {}
+      throw new Error(`turn start failed (${res.status}) ${errBody}`);
+    } else {
+      const data = await res.json();
+      turnId = data.turn_id;
     }
-
-    cacheHistory();
   } catch (err) {
-    if (err.name !== 'AbortError') {
-      appendError('Connection failed: ' + err.message, containerId);
+    appendError('Connection failed: ' + err.message, containerId);
+    chatStreaming = false;
+    resetSendButtons();
+    scheduleChatPersist();
+    return;
+  }
+
+  activeTurnId = turnId;
+  openTurnStream({ bridgeBase, chatId: activeChatId, turnId, cursor: -1 });
+}
+
+function dispatchLegacyEvent(event, ctx) {
+  const { containerId } = ctx;
+  if (event.type === 'text' || event.type === 'response_chunk') {
+    ctx.thinkingEl = null;
+    ctx.currentThinking = '';
+    ctx.currentResponse += event.text || event.chunk || '';
+    if (!ctx.responseEl) {
+      ctx.responseEl = appendMessage('assistant', ctx.currentResponse, containerId);
+    } else {
+      ctx.responseEl.innerHTML = renderMarkdown(ctx.currentResponse);
+      scheduleChatPersist();
     }
+    scrollContainer(containerId);
+  } else if (event.type === 'thinking') {
+    ctx.responseEl = null;
+    ctx.currentResponse = '';
+    ctx.currentThinking += event.content || event.message || '';
+    if (!ctx.thinkingEl) {
+      ctx.thinkingEl = appendThinking(ctx.currentThinking, containerId);
+    } else {
+      ctx.thinkingEl.textContent = ctx.currentThinking;
+      scheduleChatPersist();
+    }
+    scrollContainer(containerId);
+  } else if (event.type === 'tool_start') {
+    ctx.thinkingEl = null; ctx.currentThinking = '';
+    ctx.responseEl = null; ctx.currentResponse = '';
+    appendToolCard(event.tool || event.name, event.args, 'running', containerId);
+    scrollContainer(containerId);
+  } else if (event.type === 'tool_complete' || event.type === 'tool_result') {
+    updateToolCard(event.tool || event.name, event.result || event.summary || event.output, true);
+    scrollContainer(containerId);
+  } else if (event.type === 'media') {
+    appendMedia(event.mediaType, event.path, event.caption, containerId);
+    scrollContainer(containerId);
+  } else if (event.type === 'subagent_result') {
+    appendMessage('assistant', `**[Sub-agent]** ${event.task}\n\n${event.result}`, containerId);
+    scrollContainer(containerId);
+  }
+}
+
+function openTurnStream({ bridgeBase, chatId, turnId, cursor }) {
+  // Close any existing stream
+  if (activeEventSource) { try { activeEventSource.close(); } catch {} activeEventSource = null; }
+
+  const url = `${bridgeBase}/api/chat/stream?chatId=${encodeURIComponent(chatId)}&turn_id=${encodeURIComponent(turnId)}&cursor=${cursor}`;
+  const es = new EventSource(url);
+  activeEventSource = es;
+
+  es.onmessage = (msg) => {
+    if (msg.data === '[DONE]') {
+      es.close();
+      if (activeEventSource === es) activeEventSource = null;
+      finalizeTurn(null);
+      return;
+    }
+    let record;
+    try { record = JSON.parse(msg.data); } catch { return; }
+
+    if (record.type === 'event') {
+      activeCursor = record.seq;
+      if (currentTurnCtx) dispatchLegacyEvent(record.data, currentTurnCtx);
+    } else if (record.type === 'turn' && record.status !== 'pending') {
+      es.close();
+      if (activeEventSource === es) activeEventSource = null;
+      finalizeTurn(record);
+    }
+  };
+
+  es.onerror = () => {
+    // Don't auto-reconnect here — visibilitychange handles resume; avoid duplicate streams.
+    try { es.close(); } catch {}
+    if (activeEventSource === es) activeEventSource = null;
+  };
+}
+
+function finalizeTurn(finalEnvelope) {
+  if (finalEnvelope && finalEnvelope.status === 'error') {
+    appendError(finalEnvelope.error || 'Error', (currentTurnCtx && currentTurnCtx.containerId) || 'chat-messages');
+  } else if (finalEnvelope && finalEnvelope.status === 'stopped') {
+    // quiet — the stop button already reflected the user action
+  } else if (finalEnvelope && finalEnvelope.status === 'orphaned') {
+    appendError('Previous turn was interrupted — try resending.', (currentTurnCtx && currentTurnCtx.containerId) || 'chat-messages');
   }
 
   chatStreaming = false;
+  activeTurnId = null;
+  activeChatId = null;
+  activeCursor = -1;
+  currentTurnCtx = null;
   resetSendButtons();
-  chatAbort = null;
+  cacheHistory();
   scheduleChatPersist();
 }
 
@@ -484,24 +565,23 @@ function resetSendButtons() {
 }
 
 async function stopChat() {
-  // 1. Abort the fetch stream
-  if (chatAbort) chatAbort.abort();
-
-  // 2. Tell the agent to stop its run
-  if (chatAgent?.bridgePort) {
+  if (activeEventSource) { try { activeEventSource.close(); } catch {} activeEventSource = null; }
+  if (chatAgent?.bridgePort && activeChatId) {
     try {
-      await fetch(`http://${window.location.hostname}:${chatAgent.bridgePort}/api/stop`, {
+      await fetch(`http://${window.location.hostname}:${chatAgent.bridgePort}/api/chat/stop-turn`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId: chatConversationId }),
+        body: JSON.stringify({ chatId: activeChatId }),
       });
     } catch { /* bridge might be unreachable */ }
   }
-
-  chatStreaming = false;
-  resetSendButtons();
-  chatAbort = null;
-  scheduleChatPersist();
+  // finalizeTurn will be called when the stream closes with a 'stopped' envelope,
+  // but if the stream was already closed, clean up here too.
+  if (!activeTurnId) {
+    chatStreaming = false;
+    resetSendButtons();
+    scheduleChatPersist();
+  }
 }
 
 // ── DOM Helpers ──
@@ -792,7 +872,6 @@ function restoreChatState(agentName) {
     }
 
     chatStreaming = false;
-    chatAbort = null;
     scrollToBottom();
     scrollContainer('chat-overlay-body');
     return true;
@@ -800,3 +879,15 @@ function restoreChatState(agentName) {
     return false;
   }
 }
+
+// ── Reconnect on tab visibility ──
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (!activeTurnId || !activeChatId || activeEventSource) return;
+  if (!chatAgent?.bridgePort) return;
+
+  const bridgeBase = `http://${window.location.hostname}:${chatAgent.bridgePort}`;
+  console.log('[chat] tab visible — resuming stream from cursor', activeCursor);
+  openTurnStream({ bridgeBase, chatId: activeChatId, turnId: activeTurnId, cursor: activeCursor });
+});
