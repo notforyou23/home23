@@ -139,6 +139,14 @@ export interface HomeConfig {
   acp: ACPConfig;
   browser: BrowserConfig;
   tts: TTSConfig;
+
+  apns?: {
+    team_id: string;
+    key_id: string;
+    key_path: string;
+    bundle_id: string;
+    default_env: 'sandbox' | 'production';
+  };
 }
 
 export interface ChannelsConfig {
