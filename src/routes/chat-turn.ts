@@ -10,6 +10,7 @@ export interface ChatTurnConfig {
   agent: AgentLoop;
   history: ConversationHistory;
   token?: string;
+  modelAliases?: Record<string, { provider: string; model: string }>;
 }
 
 function checkAuth(req: Request, res: Response, token?: string): boolean {
@@ -27,7 +28,7 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
   return async (req: Request, res: Response): Promise<void> => {
     if (!checkAuth(req, res, config.token)) return;
 
-    const { chatId, message } = req.body ?? {};
+    const { chatId, message, model } = req.body ?? {};
     if (!chatId || typeof chatId !== 'string') {
       res.status(400).json({ error: 'chatId required' }); return;
     }
@@ -46,8 +47,20 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
       }
     }
 
+    // Resolve model alias → { model, provider } for per-turn override.
+    let modelOverride: { model: string; provider?: string } | undefined;
+    if (typeof model === 'string' && model.length > 0) {
+      const alias = config.modelAliases?.[model];
+      if (alias) {
+        modelOverride = { model: alias.model, provider: alias.provider };
+      } else {
+        // Accept raw model name without alias — provider inferred by setModel().
+        modelOverride = { model };
+      }
+    }
+
     try {
-      const { turnId, response } = await config.agent.runWithTurn(chatId, message);
+      const { turnId, response } = await config.agent.runWithTurn(chatId, message, { modelOverride });
 
       // Detach — don't await. Swallow errors (already persisted to JSONL as error envelope).
       response.catch(err => {
@@ -147,6 +160,24 @@ export function createTurnStopHandler(config: ChatTurnConfig) {
 
     const result = config.agent.stop(chatId);
     res.json(result);
+  };
+}
+
+/** GET /api/chat/models — list of alias names the client can pick from, plus current default. */
+export function createModelsHandler(config: ChatTurnConfig) {
+  return (req: Request, res: Response): void => {
+    if (!checkAuth(req, res, config.token)) return;
+    const aliases = config.modelAliases ?? {};
+    const models = Object.entries(aliases).map(([alias, val]) => ({
+      alias,
+      provider: val.provider,
+      model: val.model,
+    }));
+    res.json({
+      models,
+      defaultModel: config.agent.getModel(),
+      defaultProvider: config.agent.getProvider(),
+    });
   };
 }
 

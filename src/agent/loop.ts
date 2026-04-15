@@ -386,9 +386,17 @@ export class AgentLoop {
   async runWithTurn(
     chatId: string,
     userText: string,
-    opts: { turnId?: string; media?: import('../types.js').MediaAttachment[]; onEvent?: import('./types.js').AgentEventCallback } = {},
+    opts: { turnId?: string; media?: import('../types.js').MediaAttachment[]; onEvent?: import('./types.js').AgentEventCallback; modelOverride?: { model: string; provider?: string } } = {},
   ): Promise<{ turnId: string; response: Promise<import('./types.js').AgentResponse> }> {
     const turnId = opts.turnId ?? newTurnId();
+
+    // Per-turn model override — swap before start, restore after.
+    const prevModel = this.model;
+    const prevProvider = this.provider;
+    if (opts.modelOverride?.model) {
+      this.setModel(opts.modelOverride.model, opts.modelOverride.provider);
+    }
+
     const model = this.getModel?.() ?? undefined;
     this.turnStore.writeStart(chatId, turnId, model);
 
@@ -432,6 +440,11 @@ export class AgentLoop {
         turnBus.emit(chatId, turnId, endEnv);
         turnBus.close(chatId, turnId);
         throw err;
+      } finally {
+        // Restore class-level model state if we swapped it.
+        if (opts.modelOverride?.model) {
+          this.setModel(prevModel, prevProvider);
+        }
       }
     })();
 

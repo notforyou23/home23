@@ -22,6 +22,10 @@ class FreeWebSearch {
     // SearXNG configuration (self-hosted meta-search)
     this.searxngUrl = config.searxngUrl || process.env.SEARXNG_URL || null;
 
+    // Brave Search API (fallback when SearXNG/DDG unavailable)
+    this.braveApiKey = config.braveApiKey || process.env.BRAVE_API_KEY || null;
+    this.braveEndpoint = 'https://api.search.brave.com/res/v1/web/search';
+
     // Rate limiting and failure tracking (only for DuckDuckGo fallback)
     this.lastSearchTime = 0;
     this.minSearchInterval = 2000; // 2 seconds between searches
@@ -32,6 +36,9 @@ class FreeWebSearch {
 
     if (this.searxngUrl) {
       this.logger?.info?.('SearXNG configured as primary search', { url: this.searxngUrl });
+    }
+    if (this.braveApiKey) {
+      this.logger?.info?.('Brave API configured as fallback search');
     }
   }
 
@@ -171,18 +178,43 @@ class FreeWebSearch {
       this.consecutiveFailures++;
       this.lastFailureTime = Date.now();
 
-      this.logger?.error?.('Web search failed', {
+      this.logger?.error?.('DuckDuckGo search failed, trying Brave', {
         query,
         error: error.message,
         consecutiveFailures: this.consecutiveFailures
       });
+
+      // Try Brave as second fallback
+      if (this.braveApiKey) {
+        try {
+          const braveResults = await this.searchBrave(query, maxResults);
+          if (braveResults.length > 0) {
+            this.consecutiveFailures = 0; // Reset on success
+            cosmoEvents.emitEvent('web_search', {
+              query,
+              resultCount: braveResults.length,
+              source: 'brave',
+              sources: braveResults.slice(0, 3).map(r => r.title || r.url).filter(Boolean)
+            });
+            return {
+              success: true,
+              query,
+              results: braveResults,
+              source: 'brave',
+              resultCount: braveResults.length
+            };
+          }
+        } catch (braveError) {
+          this.logger?.error?.('Brave search also failed', { error: braveError.message });
+        }
+      }
 
       return {
         success: false,
         query,
         results: [],
         error: error.message,
-        message: 'Search temporarily unavailable. The AI will use its training knowledge instead.'
+        message: 'All search providers failed. The AI will use its training knowledge instead.'
       };
     }
   }
@@ -210,6 +242,58 @@ class FreeWebSearch {
       position: i + 1,
       engine: result.engine || 'unknown'
     }));
+  }
+
+  /**
+   * Search using Brave Search API (fallback when SearXNG/DDG unavailable)
+   * @param {string} query - Search query
+   * @param {number} maxResults - Maximum results to return
+   * @returns {Promise<Array>} Search results
+   */
+  async searchBrave(query, maxResults) {
+    const encodedQuery = encodeURIComponent(query);
+    const url = `${this.braveEndpoint}?q=${encodedQuery}&count=${maxResults}`;
+
+    return new Promise((resolve, reject) => {
+      const req = https.get(url, {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': this.userAgent,
+          'X-Subscription-Token': this.braveApiKey
+        },
+        timeout: this.timeout
+      }, (res) => {
+        if (res.statusCode !== 200) {
+          reject(new Error(`Brave API HTTP ${res.statusCode}`));
+          return;
+        }
+
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            const results = json.web?.results || [];
+            resolve(results.slice(0, maxResults).map((result, i) => ({
+              title: result.title || 'Untitled',
+              url: result.url,
+              snippet: result.description || result.snippet || 'No description available',
+              position: i + 1,
+              engine: 'brave'
+            })));
+          } catch (e) {
+            reject(new Error('Invalid Brave JSON response'));
+          }
+        });
+        res.on('error', reject);
+      });
+
+      req.on('error', reject);
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Brave request timeout'));
+      });
+    });
   }
 
   /**

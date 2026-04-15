@@ -35,6 +35,7 @@ import { CommandHandler, type CommandContext } from './commands/handler.js';
 import { createEvobrewChatHandler, createHealthHandler, createStopHandler } from './routes/evobrew-bridge.js';
 import {
   createTurnStartHandler,
+  createModelsHandler,
   createTurnStreamHandler,
   createTurnStopHandler,
   createPendingTurnsHandler,
@@ -698,11 +699,13 @@ async function main(): Promise<void> {
     agent,
     history,
     token: bridgeToken || undefined,
+    modelAliases: MODEL_ALIASES,
   };
   bridgeApp.post('/api/chat/turn', createTurnStartHandler(chatTurnConfig));
   bridgeApp.get('/api/chat/stream', createTurnStreamHandler(chatTurnConfig));
   bridgeApp.post('/api/chat/stop-turn', createTurnStopHandler(chatTurnConfig));
   bridgeApp.get('/api/chat/pending', createPendingTurnsHandler(chatTurnConfig));
+  bridgeApp.get('/api/chat/models', createModelsHandler(chatTurnConfig));
 
   // Device registration routes (iOS push)
   const deviceConfig = { agentName: AGENT_NAME, registry: deviceRegistry, token: bridgeToken || undefined };
