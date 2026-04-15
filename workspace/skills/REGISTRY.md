@@ -13,7 +13,7 @@ Generated from live skill discovery. Total: 10 skills.
 - **Has manifest:** yes
 - **Has scripts:** yes
 - **Hooks:** none
-- **Description:** Iteratively improve a weak skill through score, tweak, and retest loops. Run against a target skill, define failure mode and rubric, execute the loop, and get a scored report with recommendations.
+- **Description:** Iteratively improve a weak skill through score, tweak, and retest loops. Runs prompts against a target skill, scores outputs across defined dimensions, auto-revises SKILL.md on the weakest dimension, and returns a scored report with recommendations. actionAutoresearchLoop runs in the AgentLoop (not Node.js) so it has direct access to skills_run, spawn_agent, and file tools.
 - **Actions:** autoresearch_loop
 - **Triggers:** improve this skill | autoresearch this skill | optimize the skill | why is this skill weak
 - **Requires tools:** skills_run, skills_list, skills_get, skills_audit

@@ -35,6 +35,9 @@ export class TTSService {
     if (this.config.provider === 'elevenlabs') {
       return this.speakElevenLabs(text);
     }
+    if (this.config.provider === 'minimax') {
+      return this.speakMiniMax(text);
+    }
 
     console.warn(`[tts] Unknown provider: ${this.config.provider}`);
     return null;
@@ -74,5 +77,55 @@ export class TTSService {
 
     const arrayBuffer = await res.arrayBuffer();
     return Buffer.from(arrayBuffer);
+  }
+
+  /**
+   * MiniMax Speech 2.8 TTS.
+   * Endpoint: POST https://api.minimax.io/v1/t2a_v2
+   * Model: speech-2.8-hd (default), speech-2.8-turbo for lower latency.
+   * Voice: voice_id string (e.g. "English_Graceful_Lady").
+   */
+  private async speakMiniMax(text: string): Promise<Buffer> {
+    const url = 'https://api.minimax.io/v1/t2a_v2';
+    const model = this.config.modelId || 'speech-2.8-hd';
+    const voiceId = this.config.voiceId || 'English_ReservedYoungMan';
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.config.apiKey!}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        text,
+        stream: false,
+        voice_setting: {
+          voice_id: voiceId,
+          speed: 1.0,
+          vol: 1.0,
+          pitch: 0,
+        },
+        audio_setting: {
+          sample_rate: 32000,
+          format: 'mp3',
+          channel: 1,
+        },
+        output_format: 'hex',
+      }),
+    });
+
+    if (!res.ok) {
+      throw new Error(`[tts] MiniMax ${res.status}: ${await res.text()}`);
+    }
+
+    const body = await res.json() as { data?: { audio?: string }; base_resp?: { status_code?: number; status_msg?: string } };
+    if (body.base_resp?.status_code && body.base_resp.status_code !== 0) {
+      throw new Error(`[tts] MiniMax error: ${body.base_resp.status_msg ?? 'unknown'}`);
+    }
+    const hex = body.data?.audio;
+    if (!hex) throw new Error('[tts] MiniMax response missing audio hex');
+
+    return Buffer.from(hex, 'hex');
   }
 }

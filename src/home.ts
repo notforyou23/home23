@@ -185,7 +185,20 @@ async function main(): Promise<void> {
   mkdirSync(tempDir, { recursive: true });
 
   // ── TTS Service (lazy) ──
-  const ttsService = config.tts.enabled ? new TTSService(config.tts) : null;
+  // If TTS is configured for a known provider but the apiKey is empty,
+  // hydrate it from the corresponding providers.<name>.apiKey block.
+  const ttsCfg = { ...config.tts };
+  if (ttsCfg.enabled && !ttsCfg.apiKey && ttsCfg.provider) {
+    const providers = config.providers as Record<string, { apiKey?: string }> | undefined;
+    const key = providers?.[ttsCfg.provider]?.apiKey;
+    if (key) ttsCfg.apiKey = key;
+  }
+  const ttsService = ttsCfg.enabled && ttsCfg.apiKey ? new TTSService(ttsCfg) : null;
+  if (ttsCfg.enabled && !ttsService) {
+    console.warn(`[home] TTS enabled but no apiKey resolved for provider=${ttsCfg.provider}`);
+  } else if (ttsService) {
+    console.log(`[home] TTS ready — provider=${ttsCfg.provider}, voice=${ttsCfg.voiceId}, auto=${ttsCfg.auto}`);
+  }
 
   // ── Browser Controller (lazy) ──
   const browser = config.browser.enabled ? new BrowserController(config.browser) : null;
