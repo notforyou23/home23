@@ -1,6 +1,6 @@
 # Skills Registry
 
-Generated from live skill discovery. Total: 9 skills.
+Generated from live skill discovery. Total: 10 skills.
 
 ## autoresearch
 
@@ -162,5 +162,23 @@ Generated from live skill discovery. Total: 9 skills.
 - **Triggers:** read this x link | search x for | check mentions | look at my timeline | reply on x
 - **Requires tools:** none
 - **Composes:** source-validation
+- **Depends on:** none
+
+## x-research
+
+- **ID:** `x-research`
+- **Type:** rich
+- **Runtime:** nodejs
+- **Category:** research
+- **Operational:** yes
+- **Has SKILL.md:** yes
+- **Has manifest:** yes
+- **Has scripts:** no
+- **Hooks:** none
+- **Description:** Research live discourse on X/Twitter when the task is to find what people are saying, follow threads, inspect profiles, or monitor key accounts without posting.
+- **Actions:** search, thread, profile, tweet, watchlist_show, watchlist_add, watchlist_remove, watchlist_check, cache_clear
+- **Triggers:** search x for | search twitter for | what are people saying on x | what's twitter saying | check x discourse | follow this x thread
+- **Requires tools:** none
+- **Composes:** source-validation, deep-research-synthesizer
 - **Depends on:** none
 

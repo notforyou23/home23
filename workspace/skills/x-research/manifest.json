@@ -1,0 +1,47 @@
+{
+  "id": "x-research",
+  "version": "1.0.0",
+  "name": "X Research",
+  "description": "Research live discourse on X/Twitter when the task is to find what people are saying, follow threads, inspect profiles, or monitor key accounts without posting.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "category": "research",
+  "author": "home23",
+  "entry": "index.js",
+  "keywords": [
+    "x research",
+    "twitter research",
+    "search x",
+    "what are people saying",
+    "twitter discourse",
+    "thread",
+    "profile",
+    "watchlist",
+    "recent reactions"
+  ],
+  "triggers": [
+    "search x for",
+    "search twitter for",
+    "what are people saying on x",
+    "what's twitter saying",
+    "check x discourse",
+    "follow this x thread"
+  ],
+  "requiresTools": [],
+  "dependsOn": [],
+  "composes": [
+    "source-validation",
+    "deep-research-synthesizer"
+  ],
+  "actions": [
+    "search",
+    "thread",
+    "profile",
+    "tweet",
+    "watchlist_show",
+    "watchlist_add",
+    "watchlist_remove",
+    "watchlist_check",
+    "cache_clear"
+  ]
+}

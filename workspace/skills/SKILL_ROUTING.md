@@ -11,6 +11,13 @@ Use `x` for:
 - checking timeline or mentions
 - posting or replying when the user explicitly wants X activity
 
+Use `x-research` for:
+- "what are people saying on X" questions
+- read-only X/Twitter research
+- thread follow-up from a tweet URL
+- checking recent posts from a specific account
+- watchlist-style monitoring of key accounts
+
 ### Browser tasks
 Use `browser-automation` for:
 - screenshots
