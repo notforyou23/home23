@@ -565,6 +565,16 @@ feeder:
       label: jtr_life
     - path: /Users/jtr/_JTR23_/release/home23/instances/jerry/workspace/sessions
       label: conversation_sessions
+    - path: /Users/jtr/_JTR23_/release/home23/instances/jerry/workspace/projects
+      label: jerry_projects
+    - path: /Users/jtr/_JTR23_/release/home23/instances/jerry/workspace/reports
+      label: jerry_reports
+    - path: /Users/jtr/_JTR23_/release/home23/instances/jerry/workspace/jtr
+      label: jerry_jtr_notes
+    - path: /Users/jtr/_JTR23_/release/home23/instances/jerry/workspace/memory
+      label: jerry_memory_snapshots
+    - path: /Users/jtr/_JTR23_/release/home23/instances/jerry/workspace/cron
+      label: jerry_cron_docs
   excludePatterns: []
 logging:
   level: info
