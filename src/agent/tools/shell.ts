@@ -21,7 +21,7 @@ export const shellTool: ToolDefinition = {
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const command = input.command as string;
     const cwd = (input.cwd as string) || ctx.projectRoot;
-    const timeoutMs = (input.timeout_ms as number) || 120_000;
+    const timeoutMs = (input.timeout_ms as number) || 300_000;
 
     return new Promise((resolve) => {
       const env = { ...process.env };
@@ -42,11 +42,11 @@ export const shellTool: ToolDefinition = {
         const exitCode = execError?.killed ? `KILLED (signal: ${execError.signal ?? 'unknown'})` : (execError?.code ?? 0);
         const parts: string[] = [];
 
-        if (stdout) parts.push(`STDOUT:\n${stdout.slice(0, 4000)}`);
-        if (stderr) parts.push(`STDERR:\n${stderr.slice(0, 2000)}`);
+        if (stdout) parts.push(`STDOUT:\n${stdout.slice(0, 8000)}`);
+        if (stderr) parts.push(`STDERR:\n${stderr.slice(0, 4000)}`);
         parts.push(`Exit code: ${exitCode}`);
 
-        if (stdout.length > 4000) parts.push(`(stdout truncated, ${stdout.length} total chars)`);
+        if (stdout.length > 8000) parts.push(`(stdout truncated, ${stdout.length} total chars)`);
 
         resolve({
           content: parts.join('\n\n'),

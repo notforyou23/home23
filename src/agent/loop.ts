@@ -26,7 +26,7 @@ import { TurnStore } from '../chat/turn-store.js';
 import { turnBus } from '../chat/turn-bus.js';
 import { newTurnId, type TurnEvent } from '../chat/turn-types.js';
 
-const MAX_ITERATIONS = 100;
+const MAX_ITERATIONS = 500;
 const TYPING_INTERVAL_MS = 4000;
 
 function hashText(text: string): string {
@@ -252,7 +252,7 @@ export class AgentLoop {
         });
     this.model = opts.model;
     this.provider = opts.provider ?? (opts.model.includes('claude') ? 'anthropic' : 'unknown');
-    this.maxTokens = opts.maxTokens ?? 8192;
+    this.maxTokens = opts.maxTokens ?? 16384;
     this.temperature = opts.temperature ?? 0.7;
     this.registry = opts.registry;
     this.contextManager = opts.contextManager;

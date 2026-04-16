@@ -103,7 +103,7 @@ async function queryEngine(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body,
-    signal: AbortSignal.timeout(opts?.timeoutMs ?? 120_000),
+    signal: AbortSignal.timeout(opts?.timeoutMs ?? 300_000),
   });
 
   if (!res.ok) {
@@ -551,7 +551,7 @@ async function main(): Promise<void> {
       try {
         if (job.payload.kind === 'agentTurn') {
           // Full AgentLoop — 19 tools, isolated chat history per job
-          const timeoutMs = (job.payload.timeoutSeconds ?? 300) * 1000;
+          const timeoutMs = (job.payload.timeoutSeconds ?? 900) * 1000;
           let timeoutId: ReturnType<typeof setTimeout>;
           const timeoutPromise = new Promise<never>((_, reject) => {
             timeoutId = setTimeout(() => {
