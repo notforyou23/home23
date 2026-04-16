@@ -59,7 +59,7 @@ function loadYamlFile(filePath) {
 
 function normalizeRemoteProvider(provider) {
   const value = String(provider || '').trim().toLowerCase();
-  if (value === 'openai' || value === 'ollama-cloud') return value;
+  if (value === 'openai' || value === 'ollama-cloud' || value === 'minimax') return value;
   return null;
 }
 
@@ -144,11 +144,12 @@ function resolveEngineConfig(engineConfig, homeConfig, agentConfig) {
 function applyHome23ImageGenerationConfig(config, homeConfig) {
   const configured = homeConfig?.media?.imageGeneration || {};
   const provider = pickFirstString([configured.provider, config.active, 'openai']) || 'openai';
+  const defaultModel = provider === 'minimax' ? 'image-01' : 'gpt-image-1.5';
   const model = pickFirstString([
     configured.model,
     config.providers?.[provider]?.model,
-    DEFAULT_CONFIG.providers?.openai?.model,
-  ]) || 'gpt-image-1.5';
+    defaultModel,
+  ]) || defaultModel;
 
   config.active = provider;
   config.providers = config.providers || {};
@@ -378,9 +379,83 @@ function createImageProvider(runtime = {}) {
    * Saves PNG locally to data/images/{uuid}.png (no Supabase).
    * Returns normalized result: { url, b64, mimeType, provider, model, prompt, generatedAt, localPath }
    */
+  function sizeToAspectRatio(size) {
+    if (!size) return undefined;
+    const map = {
+      '1024x1024': '1:1', '1536x1024': '3:2', '1024x1536': '2:3',
+      '1792x1024': '16:9', '1024x1792': '9:16',
+      '16:9': '16:9', '9:16': '9:16', '4:3': '4:3', '3:4': '3:4',
+      '1:1': '1:1', '3:2': '3:2', '2:3': '2:3', '21:9': '21:9',
+    };
+    return map[size] || undefined;
+  }
+
+  async function downloadImageToLocal(url) {
+    fs.mkdirSync(IMAGES_DIR, { recursive: true });
+    const filename = `${uuidv4()}.png`;
+    const localPath = path.join(IMAGES_DIR, filename);
+    const res = await fetch(url, { signal: AbortSignal.timeout(60000) });
+    if (!res.ok) throw new Error(`Image download failed: HTTP ${res.status}`);
+    const buf = Buffer.from(await res.arrayBuffer());
+    fs.writeFileSync(localPath, buf);
+    return localPath;
+  }
+
+  async function generateMiniMax(prompt, options = {}) {
+    const config = getConfig();
+    const providerCfg = config.providers?.minimax || {};
+    const model = options.model || providerCfg.model || 'image-01';
+    const apiKey = process.env.MINIMAX_API_KEY || '';
+    if (!apiKey) throw new Error('MINIMAX_API_KEY not configured');
+
+    const body = { model, prompt, n: 1, response_format: 'url' };
+    const aspect = sizeToAspectRatio(options.size || providerCfg.size);
+    if (aspect) body.aspect_ratio = aspect;
+
+    const res = await fetch('https://api.minimax.io/v1/image_generation', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(120000),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      throw new Error(`MiniMax Image API error: HTTP ${res.status} — ${errText.slice(0, 300)}`);
+    }
+
+    const data = await res.json();
+    const imageUrl = data.data?.image_urls?.[0];
+    if (!imageUrl) throw new Error('No image URL in MiniMax response');
+
+    const localPath = await downloadImageToLocal(imageUrl);
+
+    if (localPath) {
+      const metaPath = localPath.replace(/\.(png|jpg|jpeg)$/, '.json');
+      fs.writeFileSync(metaPath, JSON.stringify({
+        thought: prompt, generatedAt: new Date().toISOString(),
+        provider: 'minimax', model,
+      }));
+    }
+
+    return {
+      url: imageUrl, b64: null, mimeType: 'image/png',
+      provider: 'minimax', model, prompt,
+      generatedAt: new Date().toISOString(), localPath,
+    };
+  }
+
   async function generate(prompt, options = {}) {
     const config = getConfig();
     const active = options.provider || config.active || 'openai';
+
+    if (active === 'minimax') {
+      return generateMiniMax(prompt, options);
+    }
+
     const providerCfg = config.providers?.[active] || {};
     const model = options.model || providerCfg.model || 'gpt-image-1.5';
     const size = options.size || providerCfg.size || 'auto';
@@ -408,17 +483,7 @@ function createImageProvider(runtime = {}) {
       localPath = path.join(IMAGES_DIR, filename);
       fs.writeFileSync(localPath, Buffer.from(b64, 'base64'));
     } else if (url) {
-      // Download from URL if no b64
-      const https = require('https');
-      const http2 = require('http');
-      const fetchLib = url.startsWith('https') ? https : http2;
-      await new Promise((resolve, reject) => {
-        fs.mkdirSync(IMAGES_DIR, { recursive: true });
-        const filename = `${uuidv4()}.png`;
-        localPath = path.join(IMAGES_DIR, filename);
-        const file = fs.createWriteStream(localPath);
-        fetchLib.get(url, (res) => res.pipe(file).on('finish', resolve).on('error', reject)).on('error', reject);
-      });
+      localPath = await downloadImageToLocal(url);
     }
 
     // Write companion metadata file for dashboard caption
