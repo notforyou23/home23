@@ -500,7 +500,7 @@ function populateWizardModels() {
     const fallback = {
       'ollama-cloud': ['kimi-k2.5', 'minimax-m2.7'],
       'minimax': ['MiniMax-M2.7'],
-      'anthropic': ['claude-sonnet-4-6'],
+      'anthropic': ['claude-sonnet-4-6', 'claude-opus-4-7'],
       'openai': ['gpt-5.4'],
       'xai': ['grok-4-0709'],
     };

@@ -271,7 +271,7 @@ export const brainPgsTool: ToolDefinition = {
     'cross-domain connections. Slow (~20-60s) but most thorough. ' +
     'Dual-model control: sweeps run many parallel calls, so pick a cheap/fast model (e.g. ' +
     'minimax-m2.7-highspeed, nemotron-3-nano, gpt-5.4-mini). Synthesis is one final reasoning pass, so a ' +
-    'stronger model helps (e.g. claude-opus-4-6, MiniMax-M2.7, gpt-5.4). If models are omitted, uses the ' +
+    'stronger model helps (e.g. claude-opus-4-7, MiniMax-M2.7, gpt-5.4). If models are omitted, uses the ' +
     "engine's default model for both.",
   input_schema: {
     type: 'object',
@@ -292,7 +292,7 @@ export const brainPgsTool: ToolDefinition = {
       },
       synthesisModel: {
         type: 'string',
-        description: 'Model for the single cross-partition synthesis pass (pick stronger). E.g. claude-opus-4-6, MiniMax-M2.7, gpt-5.4.',
+        description: 'Model for the single cross-partition synthesis pass (pick stronger). E.g. claude-opus-4-7, MiniMax-M2.7, gpt-5.4.',
       },
       sweepProvider: {
         type: 'string',

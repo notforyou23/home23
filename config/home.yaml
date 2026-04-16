@@ -87,6 +87,7 @@ providers:
   anthropic:
     defaultModels:
       - claude-sonnet-4-6
+      - claude-opus-4-7
       - claude-opus-4-6
   openai:
     defaultModels:
@@ -138,7 +139,7 @@ models:
       model: claude-sonnet-4-6
     opus:
       provider: anthropic
-      model: claude-opus-4-6
+      model: claude-opus-4-7
     haiku:
       provider: anthropic
       model: claude-haiku-4-5
