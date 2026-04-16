@@ -568,7 +568,12 @@ async function main(): Promise<void> {
             const durationMs = Date.now() - startMs;
 
             const jobResult: JobResult = { status: 'ok', response: result.text, durationMs };
+            delivery.lastDeliveryError = null;
             await delivery.deliver(job, jobResult);
+            if (delivery.lastDeliveryError) {
+              jobResult.status = 'error';
+              jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
+            }
             return jobResult;
           } catch (err) {
             clearTimeout(timeoutId!);
@@ -577,23 +582,27 @@ async function main(): Promise<void> {
         }
 
         if (job.payload.kind === 'exec') {
-          // Direct shell execution — no LLM
           const timeoutMs = (job.payload.timeoutSeconds ?? 60) * 1000;
+          const execCwd = (job.payload as Record<string, unknown>).cwd as string | undefined;
           const output = execSync(job.payload.command, {
             timeout: timeoutMs,
             encoding: 'utf-8',
-            cwd: PROJECT_ROOT,
+            cwd: execCwd || PROJECT_ROOT,
             env: { ...process.env },
           });
           const durationMs = Date.now() - startMs;
 
           const jobResult: JobResult = { status: 'ok', response: output.trim(), durationMs };
+          delivery.lastDeliveryError = null;
           await delivery.deliver(job, jobResult);
+          if (delivery.lastDeliveryError) {
+            jobResult.status = 'error';
+            jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
+          }
           return jobResult;
         }
 
         if (job.payload.kind === 'query') {
-          // Lightweight brain query via engine API — no tools
           const timeoutMs = (job.payload.timeoutSeconds ?? 120) * 1000;
           const result = await queryEngine(job.payload.message, job.payload.mode ?? 'normal', {
             model: job.payload.model,
@@ -602,7 +611,12 @@ async function main(): Promise<void> {
           const durationMs = Date.now() - startMs;
 
           const jobResult: JobResult = { status: 'ok', response: result.answer, durationMs };
+          delivery.lastDeliveryError = null;
           await delivery.deliver(job, jobResult);
+          if (delivery.lastDeliveryError) {
+            jobResult.status = 'error';
+            jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
+          }
           return jobResult;
         }
 

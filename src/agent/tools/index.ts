@@ -12,7 +12,7 @@ import { readFileTool, writeFileTool, editFileTool, listFilesTool, searchFilesTo
 import { webBrowseTool, webSearchTool } from './web.js';
 import { brainSearchTool, brainQueryTool, brainStatusTool, brainMemoryGraphTool, brainSynthesizeTool, brainPgsTool } from './brain.js';
 import { generateImageTool, ttsTool } from './media.js';
-import { cronScheduleTool, cronListTool, cronDeleteTool } from './cron.js';
+import { cronScheduleTool, cronListTool, cronDeleteTool, cronEnableTool, cronDisableTool, cronUpdateTool } from './cron.js';
 import { selfUpdateTool, selfReadTool } from './identity.js';
 import { spawnAgentTool } from './subagent.js';
 import { promoteToMemoryTool } from './promote.js';
@@ -108,6 +108,9 @@ export function createToolRegistry(): ToolRegistry {
   registry.register(cronScheduleTool);
   registry.register(cronListTool);
   registry.register(cronDeleteTool);
+  registry.register(cronEnableTool);
+  registry.register(cronDisableTool);
+  registry.register(cronUpdateTool);
   registry.register(selfUpdateTool);
   registry.register(selfReadTool);
   registry.register(skillsListTool);

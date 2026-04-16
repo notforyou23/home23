@@ -1,0 +1,6 @@
+{
+  "query": "(\"Pentair\" OR \"SuperFlo VS\" OR \"IntelliFlo3\" OR \"IntelliFlo\") (pool pump OR variable speed) (quiet OR noisy OR noise OR loud OR reliability OR salt cell) -is:retweet -is:reply",
+  "params": "sort=likes&pages=1&since=7d",
+  "timestamp": 1776301893929,
+  "tweets": []
+}

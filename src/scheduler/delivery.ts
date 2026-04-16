@@ -79,10 +79,15 @@ export class DeliveryManager {
         await adapter.send(response);
         console.log(`[delivery] Job ${job.id} result delivered to ${target.channel}:${target.to}`);
       } catch (err) {
-        console.error(`[delivery] Failed to deliver job ${job.id} to ${target.channel}:`, err);
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[delivery] Failed to deliver job ${job.id} to ${target.channel}:${target.to}: ${msg}`);
+        this.lastDeliveryError = msg;
       }
     }
   }
+
+  /** Last delivery error from the most recent deliver() call. Null if success or no attempt. */
+  lastDeliveryError: string | null = null;
 
   private formatText(job: CronJob, result: JobResult): string | null {
     switch (job.delivery?.mode) {

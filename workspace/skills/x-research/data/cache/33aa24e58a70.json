@@ -1,0 +1,6 @@
+{
+  "query": "IntelliFlo3 VSF Pentair -is:retweet -is:reply",
+  "params": "sort=recent&pages=1&since=7d",
+  "timestamp": 1776301899395,
+  "tweets": []
+}

@@ -1,0 +1,6 @@
+{
+  "query": "Pentair SuperFlo VS pool pump -is:retweet -is:reply",
+  "params": "sort=recent&pages=1&since=7d",
+  "timestamp": 1776301897580,
+  "tweets": []
+}

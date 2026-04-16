@@ -123,31 +123,60 @@ function parseCronExpr(expr: string): ParsedCron {
   };
 }
 
-function cronMatches(parsed: ParsedCron, date: Date): boolean {
+/** Extract date fields in a specific timezone using Intl.DateTimeFormat. */
+function getFieldsInTz(date: Date, tz: string): { minute: number; hour: number; day: number; month: number; weekday: number } {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hour: 'numeric', minute: 'numeric', day: 'numeric',
+      month: 'numeric', weekday: 'short', hour12: false,
+    }).formatToParts(date);
+    const map: Record<string, string> = {};
+    for (const p of parts) map[p.type] = p.value;
+    const weekdayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    return {
+      minute: parseInt(map.minute ?? '0'),
+      hour: parseInt(map.hour ?? '0'),
+      day: parseInt(map.day ?? '1'),
+      month: parseInt(map.month ?? '1'),
+      weekday: weekdayMap[map.weekday ?? 'Sun'] ?? 0,
+    };
+  } catch {
+    // Fallback to local time if timezone is invalid
+    return {
+      minute: date.getMinutes(),
+      hour: date.getHours(),
+      day: date.getDate(),
+      month: date.getMonth() + 1,
+      weekday: date.getDay(),
+    };
+  }
+}
+
+function cronMatchesTz(parsed: ParsedCron, date: Date, tz: string): boolean {
+  const f = getFieldsInTz(date, tz);
   return (
-    parsed.minute.values.has(date.getMinutes()) &&
-    parsed.hour.values.has(date.getHours()) &&
-    parsed.dayOfMonth.values.has(date.getDate()) &&
-    parsed.month.values.has(date.getMonth() + 1) &&
-    parsed.dayOfWeek.values.has(date.getDay())
+    parsed.minute.values.has(f.minute) &&
+    parsed.hour.values.has(f.hour) &&
+    parsed.dayOfMonth.values.has(f.day) &&
+    parsed.month.values.has(f.month) &&
+    parsed.dayOfWeek.values.has(f.weekday)
   );
 }
 
 /**
  * Find the next matching time for a cron expression after the given date.
- * Searches minute-by-minute up to ~2 years out.
+ * Evaluates in the specified timezone. Searches minute-by-minute up to ~2 years.
  */
-export function nextMatch(expr: string, after: Date): Date {
+export function nextMatch(expr: string, after: Date, tz: string = 'America/New_York'): Date {
   const parsed = parseCronExpr(expr);
-  // Start from the next whole minute after `after`
   const candidate = new Date(after.getTime());
   candidate.setSeconds(0, 0);
   candidate.setMinutes(candidate.getMinutes() + 1);
 
-  // Safety: search up to 2 years (≈1,051,200 minutes)
   const maxIterations = 1_051_200;
   for (let i = 0; i < maxIterations; i++) {
-    if (cronMatches(parsed, candidate)) {
+    if (cronMatchesTz(parsed, candidate, tz)) {
       return candidate;
     }
     candidate.setMinutes(candidate.getMinutes() + 1);
@@ -341,7 +370,7 @@ export class CronScheduler {
 
     switch (schedule.kind) {
       case 'cron': {
-        const next = nextMatch(schedule.expr, now);
+        const next = nextMatch(schedule.expr, now, schedule.tz || 'America/New_York');
         return next.getTime();
       }
       case 'every': {
@@ -386,10 +415,47 @@ export class CronScheduler {
     try {
       const raw = readFileSync(this.jobsFilePath, 'utf-8');
       const arr: CronJob[] = JSON.parse(raw);
+      let skipped = 0;
+      let pruned = 0;
       for (const job of arr) {
+        // Validate: must have id, schedule.kind, and a valid payload
+        if (!job.id || !job.schedule?.kind || !job.payload?.kind) {
+          console.warn(`[scheduler] Skipping malformed job: ${JSON.stringify(job).slice(0, 100)}`);
+          skipped++;
+          continue;
+        }
+        // Validate schedule fields
+        if (job.schedule.kind === 'cron' && !(job.schedule as { expr?: string }).expr) {
+          console.warn(`[scheduler] Skipping cron job "${job.id}" with missing expr`);
+          skipped++;
+          continue;
+        }
+        if (job.schedule.kind === 'at' && !(job.schedule as { at?: string }).at) {
+          console.warn(`[scheduler] Skipping at job "${job.id}" with missing at field`);
+          skipped++;
+          continue;
+        }
+        // Fix null nextRunAtMs (corrupt state) — recompute
+        if (job.state.nextRunAtMs == null || isNaN(job.state.nextRunAtMs)) {
+          job.state.nextRunAtMs = this.computeNextRun(job);
+        }
+        // Auto-prune disabled one-shot jobs older than 7 days
+        if (job.schedule.kind === 'at' && !job.enabled && job.state.lastRunAtMs) {
+          const age = Date.now() - job.state.lastRunAtMs;
+          if (age > 7 * 24 * 60 * 60 * 1000) {
+            pruned++;
+            continue;
+          }
+        }
         this.jobs.set(job.id, job);
       }
-      console.log(`[scheduler] Loaded ${arr.length} job(s) from ${this.config.jobsFile}`);
+      const msgs = [`${this.jobs.size} job(s) from ${this.config.jobsFile}`];
+      if (skipped > 0) msgs.push(`${skipped} malformed skipped`);
+      if (pruned > 0) msgs.push(`${pruned} expired one-shots pruned`);
+      console.log(`[scheduler] Loaded ${msgs.join(', ')}`);
+
+      // Persist if we pruned or fixed anything
+      if (skipped > 0 || pruned > 0) this.saveJobs();
     } catch (err) {
       console.error('[scheduler] Failed to load jobs file:', err);
     }
