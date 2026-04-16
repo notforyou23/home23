@@ -1,4 +1,4 @@
-# Home23 v0.5.5
+# Home23 v0.6.0
 
 **An installable AI operating system — persistent agents with living brains.**
 
