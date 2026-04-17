@@ -31,6 +31,7 @@ export interface DeliveryConfig {
   channel?: string;
   channels?: Array<{ channel: string; to: string }>;
   to?: string;
+  profile?: string;
 }
 
 export interface JobState {

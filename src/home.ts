@@ -544,7 +544,7 @@ async function main(): Promise<void> {
   }
 
   // ── Delivery Manager & Cron Scheduler ──
-  const delivery = new DeliveryManager(adapterMap);
+  const delivery = new DeliveryManager(adapterMap, config.deliveryProfiles ?? {});
   let scheduler: CronScheduler | null = null;
 
   if (config.scheduler) {

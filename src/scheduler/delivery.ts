@@ -8,20 +8,25 @@
 
 import type { ChannelAdapter, OutgoingResponse } from '../channels/router.js';
 import type { CronJob, JobResult } from './cron.js';
+import type { DeliveryProfiles } from '../types.js';
+
+export type { DeliveryProfiles };
 
 // ─── DeliveryManager ─────────────────────────────────────────
 
 export class DeliveryManager {
   private adapters: Map<string, ChannelAdapter>;
+  private profiles: DeliveryProfiles;
 
-  constructor(adapters: Map<string, ChannelAdapter>) {
+  constructor(adapters: Map<string, ChannelAdapter>, profiles: DeliveryProfiles = {}) {
     this.adapters = adapters;
+    this.profiles = profiles;
   }
 
   /**
    * Deliver a job result to the configured channel(s).
    * Respects job.delivery.mode — if 'none' or missing, does nothing.
-   * Supports both single channel (delivery.channel) and multi-channel (delivery.channels[]).
+   * Supports profile (expanded from the profiles map), channels[] (multi), and channel/to (single).
    */
   async deliver(job: CronJob, result: JobResult): Promise<void> {
     if (!job.delivery || job.delivery.mode === 'none') {
@@ -39,7 +44,14 @@ export class DeliveryManager {
 
     const targets: Array<{ channel: string; to: string }> = [];
 
-    if (job.delivery.channels && job.delivery.channels.length > 0) {
+    if (job.delivery.profile) {
+      const profile = this.profiles[job.delivery.profile];
+      if (!profile) {
+        console.warn(`[delivery] Job ${job.id} references unknown profile "${job.delivery.profile}"`);
+      } else {
+        for (const t of profile.channels) targets.push({ channel: t.channel, to: t.to });
+      }
+    } else if (job.delivery.channels && job.delivery.channels.length > 0) {
       for (const t of job.delivery.channels) {
         targets.push({ channel: t.channel, to: t.to });
       }
@@ -54,16 +66,12 @@ export class DeliveryManager {
 
     for (const target of targets) {
       // 'auto' channel: pick the first available adapter
-      let adapter = target.channel === 'auto'
+      const adapter = target.channel === 'auto'
         ? this.adapters.values().next().value
         : this.adapters.get(target.channel);
 
       if (!adapter) {
-        // Try any adapter as last resort
-        adapter = this.adapters.values().next().value;
-      }
-      if (!adapter) {
-        console.warn(`[delivery] No adapters available for job ${job.id} (channel: ${target.channel})`);
+        console.warn(`[delivery] No adapter registered for channel "${target.channel}" (job ${job.id}), skipping`);
         continue;
       }
 

@@ -151,6 +151,7 @@ export interface HomeConfig {
   channels: ChannelsConfig;
   sessions: SessionsConfig;
   scheduler: SchedulerConfig;
+  deliveryProfiles?: DeliveryProfiles;
   sibling: SiblingConfig;
   acp: ACPConfig;
   browser: BrowserConfig;
@@ -234,6 +235,10 @@ export interface SchedulerConfig {
   jobsFile: string;
   runsDir: string;
 }
+
+export type DeliveryProfiles = Record<string, {
+  channels: Array<{ channel: string; to: string }>;
+}>;
 
 export interface SiblingConfig {
   enabled: boolean;
