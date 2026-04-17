@@ -2814,6 +2814,33 @@ class Orchestrator {
             this._criticOutputsDiscardedCount24h || 0
           );
         }
+
+        // Back-pressure: if N cycles have passed without a fresh file in
+        // outputs/, inject a concrete digest goal with situational context.
+        try {
+          const { checkAndMaybeTrigger } = require('../goals/force-output');
+          const forceCfg = this.config?.architecture?.goals?.forceOutput || {};
+          const workspaceDir = process.env.COSMO_WORKSPACE_PATH || null;
+          const outputsDir = require('path').join(this.logsDir, 'outputs');
+          this._forceOutputState = this._forceOutputState || { lastOutputCycle: 0, lastOutputCheckTime: 0 };
+          const r = await checkAndMaybeTrigger({
+            outputsDir, workspaceDir, memory: this.memory, goals: this.goals,
+            cycle: this.cycleCount, state: this._forceOutputState,
+            config: forceCfg, logger: this.logger,
+          });
+          this._forceOutputState = r.state || this._forceOutputState;
+          if (r.triggered) this._forceOutputTriggered24h = (this._forceOutputTriggered24h || 0) + 1;
+          if (r.skipped)   this._forceOutputSkipped24h   = (this._forceOutputSkipped24h   || 0) + 1;
+        } catch (err) {
+          this.logger?.warn?.('[force-output] check failed', { error: err.message });
+        }
+        if (typeof this.goals.setForceOutputCounts === 'function') {
+          this.goals.setForceOutputCounts({
+            triggered: this._forceOutputTriggered24h || 0,
+            skipped: this._forceOutputSkipped24h || 0,
+          });
+        }
+
         const closer = this.goals.getCloserStatus?.();
         if (closer) this.logger?.info?.('[closer-status]', closer);
       } catch (err) {

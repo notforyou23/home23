@@ -1475,7 +1475,14 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
       // orchestrator sums it into closer-status via setAgentExecutor().
       agentSpawnsDedupedLast24h: this._agentSpawnsDedupedCount24h || 0,
       criticOutputsDiscardedLast24h: this._criticOutputsDiscardedCount24h || 0,
+      forceOutputTriggeredLast24h: this._forceOutputTriggeredCount24h || 0,
+      forceOutputSkippedLast24h: this._forceOutputSkippedCount24h || 0,
     };
+  }
+
+  setForceOutputCounts({ triggered, skipped }) {
+    this._forceOutputTriggeredCount24h = Number(triggered) || 0;
+    this._forceOutputSkippedCount24h = Number(skipped) || 0;
   }
 
   // Called by the orchestrator each cycle to ferry counters from other

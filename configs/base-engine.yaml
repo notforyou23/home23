@@ -244,6 +244,16 @@ architecture:
       minGoalsForCampaign: 3
       campaignDuration: 30
       synthesisThreshold: 3
+    forceOutput:
+      # Back-pressure: when N cycles pass without a fresh file in outputs/,
+      # inject a concrete digest goal. Material comes from top-5 answer-
+      # tagged memory nodes + workspace surfaces (RECENT.md, PROJECTS.md).
+      # Set HOME23_FORCE_OUTPUT_DISABLE=1 to opt out.
+      enabled: true
+      everyNCycles: 100
+      surfaceFiles:
+        - RECENT.md
+        - PROJECTS.md
     doneWhen:
       # Closer primitive: every goal must declare a termination criterion.
       # addGoal() gate validates presence + non-vagueness. When a caller
