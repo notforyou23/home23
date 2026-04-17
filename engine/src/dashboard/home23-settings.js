@@ -761,6 +761,92 @@ async function saveModels() {
   }
 }
 
+// ── Query ──
+//
+// Defaults for the Query tab. Persisted to home.yaml under `query:`. The Query
+// tab JS reads these at init time to seed the dropdowns; users override
+// per-query in the UI.
+
+async function loadQuerySettings() {
+  try {
+    const [qRes, cosmoModels] = await Promise.all([
+      fetch(`${API}/query`),
+      // Model list comes from cosmo23 (same source the Query tab uses), so
+      // the sweep/synth dropdowns show every model the engine can actually route.
+      fetch(`http://${window.location.hostname}:43210/api/providers/models`).catch(() => null),
+    ]);
+    const settings = qRes.ok ? await qRes.json() : {};
+    let models = [];
+    if (cosmoModels && cosmoModels.ok) {
+      const mj = await cosmoModels.json();
+      models = Array.isArray(mj) ? mj : (mj.models || []);
+    }
+
+    const fill = (id, selected) => {
+      const sel = document.getElementById(id);
+      if (!sel) return;
+      sel.innerHTML = '';
+      const byProvider = new Map();
+      for (const m of models) {
+        const p = m.provider || 'other';
+        if (!byProvider.has(p)) byProvider.set(p, []);
+        byProvider.get(p).push(m);
+      }
+      for (const [provider, ms] of byProvider) {
+        const og = document.createElement('optgroup');
+        og.label = provider;
+        for (const m of ms) {
+          const opt = document.createElement('option');
+          opt.value = m.id;
+          opt.textContent = m.name || m.id;
+          if (m.id === selected) opt.selected = true;
+          og.appendChild(opt);
+        }
+        sel.appendChild(og);
+      }
+    };
+
+    fill('query-default-model', settings.defaultModel || '');
+    fill('query-pgs-sweep-model', settings.pgsSweepModel || '');
+    fill('query-pgs-synth-model', settings.pgsSynthModel || settings.defaultModel || '');
+
+    const modeSel = document.getElementById('query-default-mode');
+    if (modeSel) modeSel.value = settings.defaultMode || 'full';
+    const depthSel = document.getElementById('query-pgs-depth');
+    if (depthSel) depthSel.value = String(settings.pgsDepth ?? 0.25);
+    const pgsChk = document.getElementById('query-pgs-default');
+    if (pgsChk) pgsChk.checked = !!settings.enablePGSByDefault;
+  } catch (err) {
+    console.error('Failed to load Query settings:', err);
+  }
+}
+
+async function saveQuerySettings() {
+  const body = {
+    defaultModel: document.getElementById('query-default-model')?.value || '',
+    defaultMode: document.getElementById('query-default-mode')?.value || 'full',
+    enablePGSByDefault: !!document.getElementById('query-pgs-default')?.checked,
+    pgsSweepModel: document.getElementById('query-pgs-sweep-model')?.value || '',
+    pgsSynthModel: document.getElementById('query-pgs-synth-model')?.value || '',
+    pgsDepth: parseFloat(document.getElementById('query-pgs-depth')?.value || '0.25'),
+  };
+  const statusEl = document.getElementById('query-status');
+  try {
+    const res = await fetch(`${API}/query`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    statusEl.textContent = data.ok ? 'Saved' : ('Error: ' + (data.error || 'unknown'));
+    statusEl.style.color = data.ok ? 'var(--accent-green)' : 'var(--accent-red)';
+    setTimeout(() => { statusEl.textContent = ''; }, 3000);
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    statusEl.style.color = 'var(--accent-red)';
+  }
+}
+
 // ── System ──
 
 async function loadSystem() {
@@ -3600,10 +3686,12 @@ async function init() {
   loadVibe();
   loadOAuthStatus();
   loadTilesPanel();
+  loadQuerySettings();
 
   document.getElementById('btn-save-providers').addEventListener('click', saveProviders);
   document.getElementById('btn-create-agent').addEventListener('click', showWizard);
   document.getElementById('btn-save-models').addEventListener('click', saveModels);
+  document.getElementById('btn-save-query')?.addEventListener('click', saveQuerySettings);
   document.getElementById('btn-save-assignments')?.addEventListener('click', saveAssignments);
   document.getElementById('btn-reset-assignments')?.addEventListener('click', resetAssignments);
   document.getElementById('btn-save-agency')?.addEventListener('click', saveAgency);

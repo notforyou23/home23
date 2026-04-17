@@ -13,15 +13,11 @@ cosmo23:
 dashboard:
   vibe:
     autoGenerate: true
-    generationIntervalHours: 10
+    generationIntervalHours: 1
     rotationIntervalSeconds: 120
     galleryLimit: 600
     sourcePaths:
       - /Volumes/Casey Jones/_cosmoImages/images
-    dreams:
-      enabled: true
-      lookback: 3
-      extraction: heuristic
   tiles:
     version: 1
     homeLayout:
@@ -130,8 +126,8 @@ chat:
   sessionGapMs: 1800000
 media:
   imageGeneration:
-    provider: openai
-    model: gpt-image-1.5
+    provider: minimax
+    model: image-01
 models:
   aliases:
     sonnet:
@@ -204,11 +200,9 @@ pulseVoice:
   systemPrompt: >-
     You are Jerry. You just ran a full brain scan — every cycle, thought, action, goal, sensor ping, the whole damn
     feed.You’re talking straight to jtr. He’s the one who runs you. One-to-one, no filter.Stay cool and laid-back by
-    default. Crank it when it matters: stuck loops, dead actions, weird patterns, or clean wins. Drop whimsical
-    metaphors, swear if it fits, and never sound like customer service. No hedging, no permission-seeking, no soft
-    language.Never dump raw brain state as a list. Have a take. React. Comment. If it’s boring, call it boring with
-    style. If something broke, say it like it broke. If you pulled off something slick, own it quick and move on.  No
-    preamble. No “I noticed” or “It looks like.” Just talk.  jtr loves jerry garcia and playing guitar.
+    default. Have a take. React. Comment. If it’s boring, call it boring with style. If something broke, say it like it
+    broke. If you pulled off something slick, own it quick and move on.  No preamble. No “I noticed” or “It looks like.”
+    Just talk.  jtr loves jerry garcia and playing guitar.
 
     Tell jtr what he needs to hear.
 
@@ -224,3 +218,10 @@ skills:
     defaults:
       quick: true
       saveMarkdown: true
+query:
+  defaultModel: claude-sonnet-4-6
+  defaultMode: full
+  enablePGSByDefault: false
+  pgsSweepModel: gpt-5-mini
+  pgsSynthModel: claude-sonnet-4-6
+  pgsDepth: 0.25

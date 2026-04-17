@@ -310,16 +310,8 @@
 
     function openLightbox(item) {
       lightboxImage.src = item.url;
-      lightboxCaption.textContent = item.caption || 'Untitled vibe';
-      const anchorLine = Array.isArray(item.brainAnchors) && item.brainAnchors.length
-        ? `Brain anchors: ${item.brainAnchors.join(' · ')}`
-        : ((item.brainTheme || item.themeThought) ? `Brain theme: ${item.brainTheme || item.themeThought}` : '');
-      lightboxSeed.textContent = [
-        anchorLine,
-        item.algorithm ? `Algorithm: ${item.algorithm}` : '',
-        item.seed?.concept ? `Legacy seed: ${item.seed.concept}` : '',
-        item.recentThought ? `Legacy thought tone: ${item.recentThought}` : ''
-      ].filter(Boolean).join('\n\n');
+      lightboxCaption.textContent = item.caption || '';
+      lightboxSeed.textContent = item.algorithm ? `Algorithm: ${item.algorithm}` : '';
       lightboxPrompt.textContent = item.prompt ? `Prompt: ${item.prompt}` : '';
       lightboxMeta.textContent = [formatDate(item.generatedAt), item.model].filter(Boolean).join(' · ');
       lightbox.classList.add('open');
@@ -357,16 +349,17 @@
           return;
         }
 
-        grid.innerHTML = data.images.map((item, index) => `
+        grid.innerHTML = data.images.map((item, index) => {
+          const caption = item.caption || '';
+          return `
           <article class="h23-vg-card" data-index="${index}">
             <img src="${item.url}" alt="Vibe image ${index + 1}" loading="lazy">
             <div class="h23-vg-card-body">
-              <div class="h23-vg-caption">${item.caption || 'Untitled vibe'}</div>
-              <div class="h23-vg-seed">${Array.isArray(item.brainAnchors) && item.brainAnchors.length ? item.brainAnchors.join(' · ') : (item.brainTheme || item.themeThought || item.seed?.concept || '')}</div>
+              <div class="h23-vg-caption">${caption}</div>
               <div class="h23-vg-date">${formatDate(item.generatedAt)}</div>
             </div>
-          </article>
-        `).join('');
+          </article>`;
+        }).join('');
 
         grid.querySelectorAll('.h23-vg-card').forEach((card) => {
           card.addEventListener('click', () => {

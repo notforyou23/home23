@@ -144,6 +144,10 @@ export interface HomeConfig {
 
   providers?: Record<string, unknown>;
 
+  search?: {
+    searxngUrl?: string;
+  };
+
   channels: ChannelsConfig;
   sessions: SessionsConfig;
   scheduler: SchedulerConfig;

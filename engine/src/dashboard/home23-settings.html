@@ -26,6 +26,7 @@
     <button class="h23s-tab active" data-stab="providers">Providers</button>
     <button class="h23s-tab" data-stab="agents">Agents</button>
     <button class="h23s-tab" data-stab="models">Models</button>
+    <button class="h23s-tab" data-stab="query">Query</button>
     <button class="h23s-tab" data-stab="feeder">Feeder</button>
     <button class="h23s-tab" data-stab="skills">Skills</button>
     <button class="h23s-tab" data-stab="vibe">Vibe</button>
@@ -399,6 +400,56 @@
       <div class="h23s-actions">
         <button class="h23s-btn-primary" id="btn-save-models">Save</button>
         <span class="h23s-save-status" id="models-status"></span>
+      </div>
+    </div>
+
+    <!-- Query Panel -->
+    <div class="h23s-panel" id="panel-query">
+      <h2 class="h23s-panel-title">Query</h2>
+      <p class="h23s-panel-desc">Defaults for the Query tab. These seed the dropdowns when the tab loads; users can still override per-query.</p>
+
+      <h3 class="h23s-section-title">Default Query</h3>
+      <div class="h23s-field">
+        <label class="h23s-label">Model</label>
+        <select id="query-default-model" class="h23s-select"></select>
+      </div>
+      <div class="h23s-field">
+        <label class="h23s-label">Depth</label>
+        <select id="query-default-mode" class="h23s-select">
+          <option value="quick">Quick — fast answers</option>
+          <option value="full" selected>Full — comprehensive</option>
+          <option value="expert">Expert — maximum depth</option>
+          <option value="dive">Dive — exploratory synthesis</option>
+        </select>
+      </div>
+
+      <h3 class="h23s-section-title">PGS (Partitioned Graph Synthesis)</h3>
+      <div class="h23s-field">
+        <label class="h23s-label">
+          <input type="checkbox" id="query-pgs-default"> Enable PGS by default
+        </label>
+      </div>
+      <div class="h23s-field">
+        <label class="h23s-label">Sweep Model</label>
+        <select id="query-pgs-sweep-model" class="h23s-select" title="Runs many times across partitions — pick something cheap/fast"></select>
+      </div>
+      <div class="h23s-field">
+        <label class="h23s-label">Synthesis Model</label>
+        <select id="query-pgs-synth-model" class="h23s-select" title="Runs once over aggregated sweeps — pick something smart"></select>
+      </div>
+      <div class="h23s-field">
+        <label class="h23s-label">Default Depth</label>
+        <select id="query-pgs-depth" class="h23s-select">
+          <option value="0.10">Skim (10%)</option>
+          <option value="0.25" selected>Sample (25%)</option>
+          <option value="0.50">Deep (50%)</option>
+          <option value="1.0">Full (100%)</option>
+        </select>
+      </div>
+
+      <div class="h23s-actions">
+        <button class="h23s-btn-primary" id="btn-save-query">Save</button>
+        <span class="h23s-save-status" id="query-status"></span>
       </div>
     </div>
 

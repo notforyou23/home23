@@ -63,15 +63,6 @@ module.exports = {
       env: { ...commonEnv, COSMO_RUNTIME_DIR: path.join(HOME23, 'instances', 'jerry', 'brain'), COSMO_WORKSPACE_PATH: path.join(HOME23, 'instances', 'jerry', 'workspace'), DASHBOARD_PORT: '5002', COSMO_DASHBOARD_PORT: '5002', REALTIME_PORT: '5001', MCP_HTTP_PORT: '5003', INSTANCE_ID: 'home23-jerry' },
     },
     {
-      name: 'home23-jerry-feeder',
-      script: 'server.js',
-      cwd: path.join(HOME23, 'feeder'),
-      autorestart: true, watch: false, merge_logs: true,
-      out_file: path.join(HOME23, 'instances', 'jerry', 'logs') + '/feeder-out.log',
-      error_file: path.join(HOME23, 'instances', 'jerry', 'logs') + '/feeder-err.log',
-      env: { FEEDER_CONFIG: path.join(HOME23, 'instances', 'jerry', 'feeder.yaml') },
-    },
-    {
       name: 'home23-jerry-harness',
       script: 'dist/home.js',
       cwd: HOME23,
@@ -79,6 +70,17 @@ module.exports = {
       out_file: path.join(HOME23, 'instances', 'jerry', 'logs') + '/harness-out.log',
       error_file: path.join(HOME23, 'instances', 'jerry', 'logs') + '/harness-err.log',
       env: { HOME23_AGENT: 'jerry', OLLAMA_CLOUD_API_KEY: commonEnv.OLLAMA_CLOUD_API_KEY, MINIMAX_API_KEY: commonEnv.MINIMAX_API_KEY, ANTHROPIC_AUTH_TOKEN: commonEnv.ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY: commonEnv.OPENAI_API_KEY, XAI_API_KEY: commonEnv.XAI_API_KEY },
+    },
+
+    // ── chrome-cdp (shared) ──
+    {
+      name: 'home23-chrome-cdp',
+      script: path.join(HOME23, 'scripts', 'chrome-cdp.sh'),
+      interpreter: 'none',
+      autorestart: true, watch: false, merge_logs: true,
+      out_file: path.join(HOME23, 'logs', 'chrome-cdp-out.log'),
+      error_file: path.join(HOME23, 'logs', 'chrome-cdp-err.log'),
+      env: { CDP_PORT: '9222' },
     },
 
     // ── evobrew (shared) ──

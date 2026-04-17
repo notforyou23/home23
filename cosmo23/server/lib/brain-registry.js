@@ -236,6 +236,13 @@ async function listBrains(options) {
 
       try {
         const brain = await inspectBrain(runPath, { sourceType, sourceLabel });
+        // HOME23 PATCH — skip directories that don't hold a state file.
+        // When home23 agent roots (instances/<agent>) are passed as reference
+        // paths, their siblings (workspace/, conversations/, logs/, etc.) would
+        // otherwise surface as empty "brains" next to the real brain/ dir.
+        if (!brain.hasState) {
+          continue;
+        }
         brain.isActive = activeRunPath ? path.resolve(activeRunPath) === key : false;
         brains.push(brain);
       } catch {

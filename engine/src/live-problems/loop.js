@@ -19,6 +19,7 @@
 
 const { runVerifier } = require('./verifiers');
 const { runRemediator } = require('./remediators');
+const { appendSignal } = require('../cognition/signals');
 
 const DEFAULT_INTERVAL_MS = 90 * 1000;          // 1.5 min between ticks
 const DEFAULT_STEP_COOLDOWN_MIN = 10;           // cooldown per step if not specified
@@ -82,12 +83,36 @@ class LiveProblemsLoop {
 
   async _processOne(p) {
     const ctx = this.ctxProvider();
+    const priorState = p.state;
+    const priorRemediation = Array.isArray(p.remediationLog) ? p.remediationLog.slice(-5) : [];
     // 1. Verify
     const result = await runVerifier(p.verifier, ctx);
     this.store.recordVerification(p.id, result);
     if (result.ok) {
-      // Problem resolved. If an agent was dispatched, clear dispatch state
-      // so a future re-opening starts fresh.
+      // Emit a resolved-signal on the edge transition open/chronic → resolved.
+      if (priorState === 'open' || priorState === 'chronic') {
+        try {
+          const fixRecipe = summarizeRemediation(priorRemediation);
+          appendSignal(ctx.brainDir || this.store.brainDir, {
+            type: 'resolved',
+            source: 'live-problems',
+            title: `resolved: ${p.claim || p.id}`,
+            message: fixRecipe
+              ? `${p.claim || p.id} — ${fixRecipe}`
+              : p.claim || p.id,
+            evidence: {
+              problemId: p.id,
+              verifierDetail: result.detail || null,
+              fixRecipe: fixRecipe || null,
+              priorState,
+            },
+          });
+        } catch (err) {
+          this.logger.warn?.(`[live-problems] signal emit failed: ${err.message}`);
+        }
+      }
+      // If an agent was dispatched, clear dispatch state so a future re-opening
+      // starts fresh.
       if (p.dispatchedAt) this.store.clearDispatch(p.id);
       return;
     }
@@ -170,6 +195,18 @@ class LiveProblemsLoop {
     // re-verifies; if the fix worked → resolved. If not, cooldown expires and
     // we try the same step again until it rolls to the next one via failure.
   }
+}
+
+function summarizeRemediation(entries) {
+  if (!entries || entries.length === 0) return '';
+  const useful = entries.filter(e => e && e.outcome && e.outcome !== 'rejected');
+  if (useful.length === 0) return '';
+  const parts = useful.slice(-3).map(e => {
+    const head = `${e.type}${e.outcome === 'success' ? ' ✓' : ` (${e.outcome})`}`;
+    const detail = e.detail ? ` — ${String(e.detail).slice(0, 120)}` : '';
+    return `${head}${detail}`;
+  });
+  return parts.join(' · ');
 }
 
 module.exports = { LiveProblemsLoop, DEFAULT_INTERVAL_MS };

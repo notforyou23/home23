@@ -220,6 +220,275 @@ const verifiers = {
   },
 };
 
+// ─── Compositional primitives ──────────────────────────────
+// These three cover most of what narrow types would require, by taking
+// structured args that describe WHERE to look and WHAT to check for. They
+// grow the verifier vocabulary without growing the catalog.
+
+/**
+ * Walk a dot-path or bracket-path into a parsed JSON value.
+ * Supports:
+ *   foo
+ *   foo.bar
+ *   foo[0].bar                  — numeric index
+ *   sensors[id=system.cpu].ts   — match array element where element.id == value
+ *   byKey.weather.lastUpdateMs
+ * Returns undefined if any step is missing.
+ */
+function walkPath(obj, pathStr) {
+  if (obj == null || !pathStr) return obj;
+  // Tokenize: split on '.' but keep bracket contents intact. Then for each
+  // dotted piece, pull out trailing bracket segments.
+  const raw = String(pathStr);
+  const tokens = [];
+  let buf = '';
+  let depth = 0;
+  for (const ch of raw) {
+    if (ch === '[') depth++;
+    if (ch === ']') depth--;
+    if (ch === '.' && depth === 0) {
+      if (buf) tokens.push(buf);
+      buf = '';
+    } else {
+      buf += ch;
+    }
+  }
+  if (buf) tokens.push(buf);
+  // Each token can have trailing [N] or [field=value] segments
+  let cur = obj;
+  for (const t of tokens) {
+    if (cur == null) return undefined;
+    const pieces = t.split(/(?=\[)/);   // "foo[0][id=x]" → ["foo","[0]","[id=x]"]
+    for (let i = 0; i < pieces.length; i++) {
+      const piece = pieces[i];
+      if (cur == null) return undefined;
+      if (piece.startsWith('[') && piece.endsWith(']')) {
+        const inner = piece.slice(1, -1);
+        if (/^\d+$/.test(inner)) {
+          cur = cur[parseInt(inner, 10)];
+        } else if (inner.includes('=')) {
+          const [k, v] = inner.split('=').map((s) => s.trim());
+          if (!Array.isArray(cur)) return undefined;
+          cur = cur.find((el) => el && String(el[k]) === v);
+        } else {
+          cur = cur[inner];
+        }
+      } else {
+        cur = cur[piece];
+      }
+    }
+  }
+  return cur;
+}
+
+/**
+ * Expand template tokens in an arg value. Supports:
+ *   {{now}}         → Date.now()
+ *   {{now-N}}       → Date.now() - N (N in ms, useful for freshness ops)
+ *   {{iso:now-Nms}} → ISO string of now - N ms
+ *   anything else   → literal
+ */
+function expandTemplate(v) {
+  if (typeof v !== 'string') return v;
+  const m = v.match(/^\{\{\s*(iso:)?now(?:\s*-\s*(\d+))?\s*(ms|min|sec|h)?\s*\}\}$/);
+  if (!m) return v;
+  const isIso = !!m[1];
+  const n = m[2] ? parseInt(m[2], 10) : 0;
+  const unit = m[3] || 'ms';
+  const mult = unit === 'h' ? 3_600_000 : unit === 'min' ? 60_000 : unit === 'sec' ? 1_000 : 1;
+  const t = Date.now() - n * mult;
+  return isIso ? new Date(t).toISOString() : t;
+}
+
+function compareValues(observed, op, expected) {
+  // Normalize date-like strings for numeric ops so verifiers can say
+  // "lastUpdate > now-1h" even if the JSON field is an ISO string.
+  const observedNum =
+    typeof observed === 'number' ? observed :
+    typeof observed === 'string' && !Number.isNaN(Date.parse(observed)) ? Date.parse(observed) :
+    NaN;
+  const expectedNum =
+    typeof expected === 'number' ? expected :
+    typeof expected === 'string' && !Number.isNaN(Date.parse(expected)) ? Date.parse(expected) :
+    NaN;
+  const bothNumeric = !Number.isNaN(observedNum) && !Number.isNaN(expectedNum);
+  switch (op) {
+    case '>':  return bothNumeric && observedNum > expectedNum;
+    case '>=': return bothNumeric && observedNum >= expectedNum;
+    case '<':  return bothNumeric && observedNum < expectedNum;
+    case '<=': return bothNumeric && observedNum <= expectedNum;
+    case '==': return observed === expected || (bothNumeric && observedNum === expectedNum);
+    case '!=': return observed !== expected && !(bothNumeric && observedNum === expectedNum);
+    case 'exists':  return observed !== undefined && observed !== null;
+    case 'absent':  return observed === undefined || observed === null;
+    case 'truthy':  return Boolean(observed);
+    case 'falsy':   return !observed;
+    case 'matches': {
+      if (observed == null) return false;
+      try { return new RegExp(String(expected)).test(String(observed)); }
+      catch { return false; }
+    }
+    case 'not_matches': {
+      if (observed == null) return true;
+      try { return !(new RegExp(String(expected)).test(String(observed))); }
+      catch { return false; }
+    }
+    default:
+      return false;
+  }
+}
+
+/**
+ * GET a URL, parse JSON response, extract a dot-path, compare with op/value.
+ * Covers: tile sensor freshness, pi-bridge health endpoints, live-problems
+ * status checks, any JSON API with a mtime/count/status field.
+ *
+ * args: {
+ *   url: "http://localhost:5002/api/sensors",
+ *   timeoutMs?: 5000,
+ *   path: "byKey.weather.lastUpdateMs",
+ *   op:   ">" | ">=" | "<" | "<=" | "==" | "!=" | "exists" | "absent" | "matches" | "not_matches" | "truthy" | "falsy",
+ *   value?: "{{now-3600000}}" | 100 | "healthy" | ...,    (optional for exists/absent/truthy/falsy)
+ *   expectStatus?: 200,                                     (HTTP status guard; default = ok range)
+ * }
+ */
+verifiers.jsonpath_http = async function jsonpath_http(args = {}) {
+  const { url, timeoutMs = 5000, path: jsonPath, op, expectStatus } = args;
+  if (!url) return { ok: false, detail: 'url required' };
+  if (!op) return { ok: false, detail: 'op required' };
+  const controller = new AbortController();
+  const to = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal });
+    const expected = expectStatus
+      ? res.status === expectStatus
+      : res.ok;
+    if (!expected) {
+      return { ok: false, detail: `HTTP ${res.status}${expectStatus ? ` (expected ${expectStatus})` : ''}`, observed: { status: res.status } };
+    }
+    const body = await res.json();
+    const observed = walkPath(body, jsonPath);
+    const value = expandTemplate(args.value);
+    const passed = compareValues(observed, op, value);
+    // Short-form human detail
+    const obsSnippet = observed === undefined ? 'undefined'
+      : typeof observed === 'object' ? JSON.stringify(observed).slice(0, 80)
+      : String(observed).slice(0, 80);
+    const valSnippet = value === undefined ? '—'
+      : typeof value === 'object' ? JSON.stringify(value).slice(0, 80)
+      : String(value).slice(0, 80);
+    return {
+      ok: passed,
+      detail: `${jsonPath}=${obsSnippet} ${op} ${valSnippet} → ${passed ? 'pass' : 'fail'}`,
+      observed: { value: observed, compared: value },
+    };
+  } catch (err) {
+    return { ok: false, detail: `fetch failed: ${err.message}` };
+  } finally {
+    clearTimeout(to);
+  }
+};
+
+/**
+ * Scan the tail of a JSONL file for entries matching criteria within a time
+ * window. Returns ok=true if match count >= minCount (default 1).
+ *
+ * args: {
+ *   path: "~/.health_log.jsonl",
+ *   windowMinutes: 360,              (how far back; timestamps read from `tsField`)
+ *   tsField?: "ts",                  (ISO or epoch-ms field; default "ts")
+ *   matchField?: "type",             (optional; filters entries where entry[matchField] == matchValue or regex)
+ *   matchValue?: "health",
+ *   matchOp?: "==" | "matches",      (default "==")
+ *   minCount?: 1,
+ *   maxLines?: 5000,                 (safety cap on tail read)
+ * }
+ */
+verifiers.jsonl_recent_match = async function jsonl_recent_match(args = {}) {
+  const { path: filePath } = args;
+  if (!filePath) return { ok: false, detail: 'path required' };
+  const full = filePath.replace(/^~/, os.homedir());
+  if (!fs.existsSync(full)) return { ok: false, detail: `missing: ${filePath}` };
+  const tsField = args.tsField || 'ts';
+  const minCount = Number.isFinite(args.minCount) ? args.minCount : 1;
+  const windowMin = Number.isFinite(args.windowMinutes) ? args.windowMinutes : 60;
+  const maxLines = Math.min(args.maxLines || 5000, 50000);
+  const matchField = args.matchField;
+  const matchValue = args.matchValue;
+  const matchOp = args.matchOp || '==';
+  const cutoffMs = Date.now() - windowMin * 60_000;
+  try {
+    // Read last maxLines lines efficiently enough for N up to 50k.
+    const raw = fs.readFileSync(full, 'utf8');
+    const lines = raw.split('\n');
+    const start = Math.max(0, lines.length - maxLines);
+    let matchCount = 0;
+    let scanned = 0;
+    let lastMatch = null;
+    for (let i = start; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line) continue;
+      scanned++;
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      const tsRaw = entry[tsField];
+      const tsMs = typeof tsRaw === 'number' ? tsRaw : Date.parse(tsRaw || '');
+      if (!tsMs || tsMs < cutoffMs) continue;
+      if (matchField != null) {
+        const fv = walkPath(entry, matchField);
+        if (!compareValues(fv, matchOp, matchValue)) continue;
+      }
+      matchCount++;
+      lastMatch = { ts: tsRaw, entrySnippet: JSON.stringify(entry).slice(0, 120) };
+    }
+    const ok = matchCount >= minCount;
+    return {
+      ok,
+      detail: ok
+        ? `${matchCount} matching entries in last ${windowMin}m${lastMatch ? ` (latest ${lastMatch.ts})` : ''}`
+        : `only ${matchCount} matching entries in last ${windowMin}m (need ${minCount}); scanned ${scanned}`,
+      observed: { matchCount, scanned, windowMin, lastMatch },
+    };
+  } catch (err) {
+    return { ok: false, detail: `read failed: ${err.message}` };
+  }
+};
+
+/**
+ * Compose other verifiers. op=all_of → ok iff every child ok; op=any_of → ok
+ * iff any child ok. Each child is a full verifier spec {type, args}. Evaluated
+ * serially; each child gets the same ctx.
+ *
+ * args: {
+ *   op: "all_of" | "any_of",
+ *   verifiers: [ {type, args}, ... ],
+ * }
+ */
+verifiers.composed = async function composed(args = {}, ctx = {}) {
+  const { op = 'all_of' } = args;
+  const specs = Array.isArray(args.verifiers) ? args.verifiers : [];
+  if (specs.length === 0) return { ok: false, detail: 'composed: no child verifiers' };
+  const results = [];
+  for (const spec of specs) {
+    // Avoid infinite recursion: cap composed depth.
+    const depth = (ctx._composedDepth || 0) + 1;
+    if (depth > 3) {
+      results.push({ ok: false, detail: 'composed: max depth (3) exceeded' });
+      continue;
+    }
+    results.push(await runVerifier(spec, { ...ctx, _composedDepth: depth }));
+  }
+  const okList = results.map((r) => r.ok);
+  const ok = op === 'any_of' ? okList.some(Boolean) : okList.every(Boolean);
+  const pass = okList.filter(Boolean).length;
+  const detailParts = results.slice(0, 4).map((r, i) => `${specs[i]?.type}=${r.ok ? '✓' : '✗'}${r.detail ? `(${r.detail.slice(0, 60)})` : ''}`);
+  return {
+    ok,
+    detail: `${op} ${pass}/${results.length} passed — ${detailParts.join(' · ')}${results.length > 4 ? ' …' : ''}`,
+    observed: { op, pass, total: results.length, childResults: results.map((r) => ({ ok: r.ok, detail: r.detail })) },
+  };
+};
+
 function listVerifierTypes() {
   return Object.keys(verifiers);
 }

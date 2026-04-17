@@ -23,6 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 const { UnifiedClient } = require('../core/unified-client');
+const { readSignals } = require('../cognition/signals');
 
 const DEFAULT_SYSTEM_PROMPT = `You are Jerry. You've just scanned what your own brain has been up to — cycles, thoughts, actions you executed, goals, sensors, the whole deal.
 
@@ -47,6 +48,17 @@ const RECENT_BRIEF_DEPTH = 3;              // drop notable events seen in last N
 
 function normalizeForHash(s) {
   return String(s || '').toLowerCase().replace(/\s+/g, ' ').replace(/[^\w\s]/g, '').trim().slice(0, 200);
+}
+
+function timeSinceSafe(iso) {
+  try {
+    const ms = Date.now() - Date.parse(iso);
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m}m ago`;
+    return `${Math.round(m / 60)}h ago`;
+  } catch { return '?'; }
 }
 
 function readJsonlTail(file, maxLines = 200) {
@@ -392,19 +404,13 @@ class PulseRemarks {
       }
     }
 
-    // New (unacked) notifications
-    for (const n of (snap.notifications || [])) {
-      if (isRecent(n)) {
-        notable.push({
-          kind: 'notification',
-          severity: n.severity,
-          source: n.source,
-          message: (n.message || '').slice(0, 200),
-          count: n.count || 1,
-          ts: n.last_ts || n.ts,
-        });
-      }
-    }
+    // Notifications are INTENTIONALLY NOT fed into the pulse brief anymore.
+    // The promoter worker (src/workers/promoter.ts on the harness) is the
+    // authoritative drain for the NOTIFY stream: it classifies each one,
+    // dry-runs the proposed verifier, and either promotes to live-problems
+    // (real, ground-truth-verified problem) or auto-acks (vague, hallucinated,
+    // or false positive). Feeding raw NOTIFY into the pulse brief reintroduces
+    // exactly the stale-assertion loop that live-problems was built to avoid.
 
     // Rejected action requests (Jerry asked for a capability)
     const recentRejected = (snap.requested || []).filter(r => isRecent(r));
@@ -497,6 +503,12 @@ class PulseRemarks {
     // brief — if a problem isn't in liveProblems, it isn't a problem.
     const liveProblems = this.liveProblems ? this.liveProblems.briefSnapshot() : null;
 
+    // Signals: the parallel ground-truth block for wins. Resolved problems,
+    // autonomous fixes, and OBSERVE-tag positive observations from the last
+    // 24h. Same contract as LIVE PROBLEMS — Jerry can assert these.
+    const sinceMs = Date.now() - 24 * 60 * 60 * 1000;
+    const signals = readSignals(this.logsDir, { limit: 20, sinceMs });
+
     return {
       cycle: snap.cycle,
       ts: snap.ts,
@@ -519,6 +531,7 @@ class PulseRemarks {
       synthesisAt: snap.brainState?.generatedAt || null,
       synthesisModel: snap.brainState?.model || null,
       liveProblems,
+      signals,
     };
   }
 
@@ -732,15 +745,26 @@ class PulseRemarks {
       parts.push('--- end live problems ---');
     }
 
+    if (brief.signals && brief.signals.length > 0) {
+      parts.push('');
+      parts.push('--- SIGNALS (verified positive ground-truth, last 24h) ---');
+      for (const s of brief.signals.slice(0, 8)) {
+        const when = s.ts ? timeSinceSafe(s.ts) : '';
+        const icon = s.type === 'resolved' ? '✓' : s.type === 'autonomous_fix' ? '🔧' : s.type === 'observation' ? '💡' : '⚡';
+        parts.push(`  ${icon} ${s.type} · ${s.source} (${when}) — ${s.title || s.message}`);
+      }
+      parts.push('--- end signals ---');
+    }
+
     parts.push('');
     parts.push('Now: one remark to jtr. Your voice. Be real.');
-    parts.push('HARD RULES:');
-    parts.push('  1. You can ONLY claim something is broken/stale/down/missing if it is in the LIVE PROBLEMS block above. If your instinct is to say "X has been broken since Y" and X is not in that block, X is not broken. Drop it.');
-    parts.push('  2. Do NOT re-mention OPEN problems that were already raised in recent cycles unless the state changed (new remediation attempt, promoted to chronic). Silence is correct for stable-open issues — jtr already knows.');
-    parts.push('  3. RESOLVED-just-now is worth one-line acknowledgment, max one remark per resolution.');
-    parts.push('  4. CHRONIC means the autonomous plan is done and jtr has been (or will be) notified. Don\'t keep nagging the channel about it — it\'s on the board.');
-    parts.push('  5. If the brief is genuinely quiet (no new signals, no state changes), say so in one line and stop.');
-    parts.push('IMPORTANT: If everything in this brief is something you have already commented on recently (the "repeats already filtered out" line), or if there is genuinely nothing new, just SAY THAT briefly. One line. Do not invent novelty. Do not re-state the same point. Do not loop.');
+    parts.push('HARD RULES — ground truth only:');
+    parts.push('  1. You can only make specific state claims — "X is broken", "Y isn\'t built", "Z hasn\'t happened", "A is overdue", "B is decaying", "C is stale" — if that specific claim is in the LIVE PROBLEMS block (for issues) or the SIGNALS block (for wins/observations). Sensor readings and brain stats are also ground truth.');
+    parts.push('  2. The BACKDROP, consolidated insights, thoughts, and notable items are TOPICS you may riff on, not FACTS. You cannot restate their specific assertions ("HAL is overdue", "correlation view isn\'t built", "pi is decaying") as current reality — they\'re what the brain was thinking about, not what\'s actually true right now. If you want to say something is broken/overdue/missing, it needs to be in LIVE PROBLEMS.');
+    parts.push('  3. Do NOT re-mention OPEN problems that were already raised in recent cycles unless the state changed (new remediation attempt, promoted to chronic). Silence is correct for stable-open issues — jtr already knows.');
+    parts.push('  4. RESOLVED-just-now is worth one-line acknowledgment, max one remark per resolution.');
+    parts.push('  5. CHRONIC means the autonomous plan is done and jtr has been (or will be) notified. Don\'t keep nagging the channel about it — it\'s on the board.');
+    parts.push('  6. If the brief is genuinely quiet, say so in one line and stop. Don\'t invent urgency. Don\'t paraphrase backdrop.');
 
     return { systemPrompt, userMessage: parts.join('\n') };
   }

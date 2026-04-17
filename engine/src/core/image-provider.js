@@ -572,8 +572,6 @@ function createImageProvider(runtime = {}) {
    * Saves locally, writes metadata JSON.
    */
   async function generateChaos(thought, opts = {}) {
-    const { sensorContext, dreamMotifs, brainAnchors } = opts;
-
     // Step 2: Select subject with history guard
     const subject    = selectRandomSubject();
     const style      = randomPick(IMAGE_CATEGORIES.styles);
@@ -582,13 +580,10 @@ function createImageProvider(runtime = {}) {
     const composition = randomPick(IMAGE_CATEGORIES.compositions);
 
     // Step 3: 4 optional context overlays, each 40% chance
-    // Weather overlay: use REAL sensor data if available, else random
     const contextHints = [];
     const timeContexts = ['dawn','morning','noon','afternoon','dusk','evening','midnight','night'];
     if (Math.random() < 0.4) contextHints.push(`time: ${randomPick(timeContexts)}`);
 
-    // Sensor data (weather/sauna) is brain cognitive context only — not used in image prompts.
-    // Use random evocative weather hints instead so temperatures never appear in images.
     if (Math.random() < 0.4) {
       const weatherContexts = ['crisp autumn air','sweltering summer heat','fresh spring breeze','bitter winter cold',
         'tropical humidity','desert dryness','mountain freshness','coastal mist'];
@@ -603,26 +598,8 @@ function createImageProvider(runtime = {}) {
       'hint of nostalgia','spark of creativity','whisper of adventure','echo of memories'];
     if (Math.random() < 0.4) contextHints.push(randomPick(atmosphereContexts));
 
-    // Direct brain anchors can be referenced more literally than the old
-    // theme line when they harmonize with the random scene.
     const thoughtHint = thought && thought.length > 20
       ? `\nTheme (subtle inspiration, do not illustrate literally): ${thought.slice(0, 120)}`
-      : '';
-    const anchorList = Array.isArray(brainAnchors)
-      ? brainAnchors.filter(anchor => typeof anchor === 'string' && anchor.trim()).slice(0, 5)
-      : [];
-    const brainHint = anchorList.length
-      ? `\nBrain anchors (mine these concepts directly when they fit the scene; they may appear as symbols, references, or depicted elements): ${anchorList.join(' | ')}`
-      : '';
-
-    // Dream motifs adds symbolic texture pulled from recent dreams. They must
-    // not become the literal subject — they color the atmosphere, materials,
-    // and strange details.
-    const motifList = Array.isArray(dreamMotifs)
-      ? dreamMotifs.filter(m => typeof m === 'string' && m.trim()).slice(0, 5)
-      : [];
-    const dreamHint = motifList.length
-      ? `\nDream motifs (weave subtly into texture, material, and atmosphere — do not make them the subject): ${motifList.join(', ')}`
       : '';
 
     // Step 4: CHAOS PROMPT ENGINE — LLM assembles the final prompt
@@ -632,7 +609,7 @@ Subject: ${subject}
 Style: ${style}
 Lighting: ${lighting}
 Mood: ${mood}
-Composition: ${composition}${contextHints.length ? '\nContext: ' + contextHints.join(', ') : ''}${brainHint}${thoughtHint}${dreamHint}
+Composition: ${composition}${contextHints.length ? '\nContext: ' + contextHints.join(', ') : ''}${thoughtHint}
 
 Combine these into a vivid, specific scene description. Respond in JSON format.`;
 

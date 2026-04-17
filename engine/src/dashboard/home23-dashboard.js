@@ -75,6 +75,10 @@ async function init() {
   updateProblemsBadge();
   setInterval(updateProblemsBadge, 20000);
 
+  // Signals badge — wins, resolutions, positive observations. Polls 30s.
+  updateSignalsBadge();
+  setInterval(updateSignalsBadge, 30000);
+
   // Brain storage badge — polls every 30s. Shows disk node count and flags
   // mismatch between disk-side snapshot and in-memory state.
   updateBrainStorageBadge();
@@ -370,13 +374,31 @@ function renderProblemCard(p) {
   const lastChecked = p.lastCheckedAt ? ` · checked ${timeSinceSafe(p.lastCheckedAt)}` : '';
   const recentRem = (p.remediationLog || []).slice(-3).reverse();
   const stepsLabel = `step ${(p.stepIndex || 0)}/${(p.remediation || []).length}`;
+  const originTag = p.seedOrigin && p.seedOrigin !== 'system'
+    ? ` <span style="color:rgba(255,255,255,0.4);font-size:10px;background:rgba(255,255,255,0.04);padding:1px 5px;border-radius:3px;text-transform:uppercase;letter-spacing:0.5px;">${escapeHtml(p.seedOrigin)}</span>`
+    : '';
+  // Active dispatch banner — Tier-2 agent is working on this right now.
+  let dispatchBanner = '';
+  if (p.dispatchedAt && !p.lastResult?.ok) {
+    const step = (p.remediation || [])[p.stepIndex || 0];
+    const budget = step?.args?.budgetHours ?? 12;
+    const elapsed = (Date.now() - Date.parse(p.dispatchedAt)) / 3600000;
+    const pct = Math.min(100, Math.round((elapsed / budget) * 100));
+    dispatchBanner = `<div style="background:rgba(90,200,250,0.08);border:1px solid rgba(90,200,250,0.2);border-radius:6px;padding:7px 10px;margin:6px 0;font-size:12px;color:#5ac8fa;display:flex;align-items:center;gap:10px;">
+      <span>🔍 Agent working</span>
+      <span style="color:rgba(255,255,255,0.65);">${elapsed.toFixed(1)}h / ${budget}h</span>
+      <div style="flex:1;height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;"><div style="width:${pct}%;height:100%;background:#5ac8fa;"></div></div>
+      ${p.dispatchedTurnId ? `<code style="font-size:10px;color:rgba(255,255,255,0.4);">${escapeHtml(p.dispatchedTurnId)}</code>` : ''}
+    </div>`;
+  }
   return `<div style="background:rgba(255,255,255,0.03);border:1px solid ${stateColor}33;border-left:3px solid ${stateColor};border-radius:8px;padding:12px 14px;margin-bottom:10px;">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
       <span style="color:${stateColor};font-weight:600;font-size:12px;letter-spacing:0.5px;">${stateLabel}${ageMin !== null && p.state !== 'resolved' ? ' · ' + ageMin + 'm' : ''}</span>
-      <span style="color:#fff;font-size:14px;flex:1;">${escapeHtml(p.claim)}</span>
+      <span style="color:#fff;font-size:14px;flex:1;">${escapeHtml(p.claim)}${originTag}</span>
       <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;font-size:11px;color:rgba(255,255,255,0.5);">${escapeHtml(p.id)}</code>
       <button onclick="openProblemEditor('${escapeAttr(p.id)}')" style="background:transparent;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.7);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;">edit</button>
     </div>
+    ${dispatchBanner}
     <div style="font-size:12px;color:rgba(255,255,255,0.6);margin-bottom:6px;">
       <span>verifier: <code style="background:rgba(255,255,255,0.04);padding:1px 4px;border-radius:3px;">${escapeHtml(p.verifier?.type || '—')}</code></span>
       <span style="margin-left:12px;">last: ${last}${lastChecked}</span>
@@ -589,21 +611,89 @@ async function renderBrainStoragePanel() {
 // ── Notifications (thought-action queue) ──
 
 async function updateNotificationBadge() {
+  // NOTIFY stream now drains off-engine via the promoter worker into the
+  // live-problems registry — not shown as a primary pulse-bar surface anymore.
+  // Panel still reachable via openNotificationsPanel() for debugging.
+  const el = document.getElementById('pulse-notifs');
+  if (el) el.style.display = 'none';
+}
+
+// ── Signals (wins, resolutions, positive observations) ──
+
+async function updateSignalsBadge() {
   try {
-    const r = await fetch(`${dashboardBaseUrl()}/api/notifications`);
+    const r = await fetch(`${dashboardBaseUrl()}/api/signals?limit=50&sinceHours=48`);
     if (!r.ok) return;
     const data = await r.json();
-    const el = document.getElementById('pulse-notifs');
-    const badge = document.getElementById('pulse-notifs-badge');
+    const signals = data.signals || [];
+    const el = document.getElementById('pulse-signals');
+    const sep = document.getElementById('pulse-signals-sep');
+    const badge = document.getElementById('pulse-signals-badge');
     if (!el || !badge) return;
-    if (data.pending > 0) {
-      el.style.display = '';
-      badge.textContent = `🔔 ${data.pending}`;
-      badge.style.color = data.pending > 5 ? '#ffb347' : '#5ac8fa';
-    } else {
+    if (signals.length === 0) {
       el.style.display = 'none';
+      if (sep) sep.style.display = 'none';
+      return;
     }
-  } catch { /* silent — dashboard refresh handles retries */ }
+    el.style.display = '';
+    if (sep) sep.style.display = '';
+    badge.textContent = `✨ ${signals.length}`;
+    badge.style.color = '#30d158';
+  } catch { /* silent */ }
+}
+
+async function openSignalsPanel() {
+  const overlay = document.getElementById('signals-overlay');
+  const list = document.getElementById('signals-list');
+  if (!overlay || !list) return;
+  overlay.style.display = 'flex';
+  list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Loading...</div>';
+  try {
+    const r = await fetch(`${dashboardBaseUrl()}/api/signals?limit=200&sinceHours=48`);
+    const data = await r.json();
+    const signals = data.signals || [];
+    if (signals.length === 0) {
+      list.innerHTML = '<div style="color:rgba(255,255,255,0.5);padding:20px;">No signals yet. Wins and positive observations show up here as the system resolves problems and observes healthy patterns.</div>';
+      return;
+    }
+    list.innerHTML = signals.map(s => renderSignalCard(s)).join('');
+  } catch (err) {
+    list.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
+  }
+}
+
+function closeSignalsPanel() {
+  const overlay = document.getElementById('signals-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+function renderSignalCard(s) {
+  const typeMeta = {
+    resolved:             { icon: '✓', color: '#30d158', label: 'RESOLVED' },
+    autonomous_fix:       { icon: '🔧', color: '#5ac8fa', label: 'AUTO-FIX' },
+    observation:          { icon: '💡', color: '#ffb347', label: 'OBSERVATION' },
+    action_success:       { icon: '⚡', color: '#bf5af2', label: 'ACTION' },
+    registry_suggestion:  { icon: '📋', color: '#ff9f0a', label: 'REGISTRY SUGGESTION' },
+  }[s.type] || { icon: '•', color: '#888', label: (s.type || 'SIGNAL').toUpperCase() };
+  const ts = s.ts ? new Date(s.ts).toLocaleString() : '—';
+  const evidenceBits = [];
+  if (s.evidence?.problemId) evidenceBits.push(`problem: <code style="font-size:11px;background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:3px;">${escapeHtml(s.evidence.problemId)}</code>`);
+  if (s.evidence?.fixRecipe) evidenceBits.push(`fix: ${escapeHtml(s.evidence.fixRecipe)}`);
+  if (s.evidence?.verifierDetail) evidenceBits.push(`check: ${escapeHtml(s.evidence.verifierDetail)}`);
+  if (s.evidence?.category && s.evidence?.target) evidenceBits.push(`<code style="font-size:11px;background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:3px;">${escapeHtml(s.evidence.category)}:${escapeHtml(s.evidence.target)}</code>`);
+  if (typeof s.evidence?.rejectionCount === 'number') evidenceBits.push(`${s.evidence.rejectionCount} rejections`);
+  return `<div style="background:rgba(255,255,255,0.03);border:1px solid ${typeMeta.color}33;border-left:3px solid ${typeMeta.color};border-radius:8px;padding:10px 14px;margin-bottom:8px;">
+    <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;">
+      <span style="color:${typeMeta.color};font-size:16px;">${typeMeta.icon}</span>
+      <span style="color:${typeMeta.color};font-weight:600;font-size:11px;letter-spacing:0.5px;">${typeMeta.label}</span>
+      <span style="color:rgba(255,255,255,0.45);font-size:12px;">${escapeHtml(s.source || '—')}</span>
+      ${typeof s.cycle === 'number' ? `<span style="color:rgba(255,255,255,0.35);font-size:11px;">cycle ${s.cycle}</span>` : ''}
+      <span style="color:rgba(255,255,255,0.35);font-size:11px;margin-left:auto;">${ts}</span>
+    </div>
+    ${s.title ? `<div style="color:#fff;font-size:13px;margin-bottom:3px;">${escapeHtml(s.title)}</div>` : ''}
+    ${s.message && s.message !== s.title ? `<div style="color:rgba(255,255,255,0.7);font-size:12px;line-height:1.4;">${escapeHtml(s.message)}</div>` : ''}
+    ${evidenceBits.length ? `<div style="color:rgba(255,255,255,0.5);font-size:11px;margin-top:5px;">${evidenceBits.join(' · ')}</div>` : ''}
+  </div>`;
 }
 
 async function openNotificationsPanel() {
@@ -1180,6 +1270,11 @@ function setupTabHandlers() {
       // Brain Map tab: initialize on first visit
       if (currentTab === 'brain-map') {
         if (typeof initBrainMap === 'function') initBrainMap();
+      }
+
+      // Query tab: initialize on first visit (resolves primary agent brain via cosmo23).
+      if (currentTab === 'query') {
+        if (typeof initQueryTab === 'function') initQueryTab();
       }
 
       // Intelligence tab: load content and start refresh
@@ -2336,7 +2431,7 @@ async function loadVibeTile(agent, { imageId, captionId, galleryHrefId = null })
       imageEl.innerHTML = `<img src="${data.item.url}" alt="Vibe image for ${agent.displayName || agent.name}" loading="lazy">`;
       imageEl.classList.add('clickable');
       imageEl.onclick = () => { window.location.href = galleryUrl; };
-      captionEl.textContent = data.item.caption || 'Latest chaos vibe';
+      captionEl.textContent = data.item.caption || '';
       return;
     }
 

@@ -85,7 +85,6 @@ class DashboardServer {
       home23Root: this.getHome23Root(),
       agentName: this.getHome23AgentName(),
       loadState: () => this.loadState(),
-      getRecentThoughts: (limit) => this.getRecentThoughts(limit),
       logger: this.logger,
     });
     
@@ -4800,6 +4799,112 @@ Be specific, actionable, and maintain research continuity.`;
       res.json({ removed: true });
     });
 
+    // Targets registry — the canonical vocabulary for verifier targets.
+    // Hand-curated yaml at config/targets.yaml; promoter reads via this endpoint.
+    // Exposes both the raw registry (for LLM system prompt) and a validator
+    // endpoint so the promoter can pre-check a verifier spec without loading
+    // the yaml itself.
+    this.app.get('/api/targets', (req, res) => {
+      try {
+        const { TargetsRegistry } = require('../live-problems/registry');
+        const registry = new TargetsRegistry();
+        const reg = registry.load();
+        res.json({
+          registry: reg,
+          promptText: registry.toPromptText(),
+        });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    this.app.post('/api/targets/validate', (req, res) => {
+      try {
+        const { TargetsRegistry } = require('../live-problems/registry');
+        const registry = new TargetsRegistry();
+        const result = registry.validateVerifier(req.body?.verifier);
+        res.json(result);
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // Capture what the Tier-2 dispatch agent actually did to fix this problem.
+    // The harness calls this after agent.runWithTurn resolves. We:
+    //   1. stash the recipe on the problem (rolling last 5 entries)
+    //   2. emit an autonomous_fix signal so the dashboard Signals tile shows it
+    // Next time this problem re-opens, the engine's diagnose mission prompt
+    // can include the prior recipe so the agent doesn't start from scratch.
+    this.app.post('/api/live-problems/:id/fix-recipe', (req, res) => {
+      try {
+        const data = loadLiveProblems();
+        const list = data.problems || [];
+        const idx = list.findIndex(x => x.id === req.params.id);
+        if (idx < 0) return res.status(404).json({ error: 'not found' });
+        const { summary, turnId, toolCallCount, durationMs } = req.body || {};
+        if (!summary || typeof summary !== 'string') {
+          return res.status(400).json({ error: 'summary (string) required' });
+        }
+        const recipe = {
+          at: new Date().toISOString(),
+          summary: String(summary).slice(0, 2000),
+          turnId: turnId || null,
+          toolCallCount: typeof toolCallCount === 'number' ? toolCallCount : null,
+          durationMs: typeof durationMs === 'number' ? durationMs : null,
+        };
+        const p = list[idx];
+        const history = Array.isArray(p.fixRecipeHistory) ? p.fixRecipeHistory : [];
+        history.push(recipe);
+        // Keep last 5
+        p.fixRecipeHistory = history.slice(-5);
+        p.fixRecipe = recipe;  // shortcut — most recent
+        saveLiveProblems({ problems: list });
+
+        // Emit an autonomous_fix signal so the dashboard Signals tile shows it.
+        try {
+          const { appendSignal } = require('../cognition/signals');
+          appendSignal(this.logsDir || '', {
+            type: 'autonomous_fix',
+            source: 'agent-dispatch',
+            title: `agent fix: ${p.claim || p.id}`,
+            message: recipe.summary,
+            evidence: {
+              problemId: p.id,
+              turnId: recipe.turnId,
+              toolCallCount: recipe.toolCallCount,
+              durationMs: recipe.durationMs,
+            },
+          });
+        } catch (sigErr) {
+          console.warn(`[live-problems] fix-recipe signal emit failed: ${sigErr.message}`);
+        }
+        res.json({ ok: true, fixRecipe: recipe });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // Dry-run a verifier spec without writing anything. Promoter uses this
+    // to test LLM-proposed verifiers before committing them to the registry.
+    // Only supports verifier types that don't need engine internals (brain
+    // memory, etc.); returns { supported: false } for those.
+    this.app.post('/api/live-problems/dry-run', async (req, res) => {
+      try {
+        const body = req.body || {};
+        const v = body.verifier;
+        if (!v || !v.type) return res.status(400).json({ error: 'verifier.type required' });
+        const UNSUPPORTED = new Set(['graph_not_empty', 'node_count_stable']);
+        if (UNSUPPORTED.has(v.type)) {
+          return res.json({ supported: false, reason: `verifier type ${v.type} needs engine memory context` });
+        }
+        const { runVerifier } = require('../live-problems/verifiers');
+        const result = await runVerifier(v, {});
+        res.json({ supported: true, result });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
     // Force an immediate tick by nudging the engine's file mtime — the loop
     // picks up external edits on each tick. This endpoint doesn't literally
     // force a tick (engine runs on its own cadence) but does ensure the next
@@ -4813,6 +4918,42 @@ Be specific, actionable, and maintain research continuity.`;
           note: 'file rewritten; engine will re-verify on its next tick (within ~90s)',
           snapshot: buildSnapshot(data.problems || []),
         });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // ── Signals API ──
+    // Positive-signal stream: resolved problems (with fix recipe), successful
+    // autonomous fixes, positive pattern observations from cognition (OBSERVE
+    // tag). Dashboard "Signals" tile reads from this.
+    this.app.get('/api/signals', (req, res) => {
+      try {
+        const { readSignals } = require('../cognition/signals');
+        const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+        const sinceHours = parseFloat(req.query.sinceHours);
+        const sinceMs = Number.isFinite(sinceHours) && sinceHours > 0
+          ? Date.now() - (sinceHours * 3600 * 1000)
+          : 0;
+        const typesRaw = typeof req.query.types === 'string' ? req.query.types : '';
+        const types = typesRaw ? typesRaw.split(',').map(s => s.trim()).filter(Boolean) : null;
+        const signals = readSignals(this.logsDir || '', { limit, sinceMs, types });
+        res.json({ signals });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    // External signal emission (promoter + other off-engine workers POST here).
+    this.app.post('/api/signals', (req, res) => {
+      try {
+        const { appendSignal } = require('../cognition/signals');
+        const body = req.body || {};
+        if (!body.type || !body.source) {
+          return res.status(400).json({ error: 'type + source required' });
+        }
+        const entry = appendSignal(this.logsDir || '', body);
+        res.json({ ok: true, signal: entry });
       } catch (err) {
         res.status(500).json({ error: err.message });
       }
@@ -5127,15 +5268,28 @@ Be specific, actionable, and maintain research continuity.`;
         
         const baselineNodes = state.memory?.nodes || [];
         const baselineEdges = state.memory?.edges || [];
-        
+
         // NEW: Load and merge live journals (works even on fresh runs)
         const liveJournals = await this.loadLiveJournalsForRun(this.logsDir);
         const mergedNodes = this.mergeNodesWithJournals(baselineNodes, liveJournals);
-        
+
+        // Strip embedding vectors before serializing. With a sidecar-loaded
+        // brain, mergedNodes can exceed V8's ~536MB max string length once
+        // embeddings (~3KB/node × 30k nodes) are stringified. Consumers of
+        // /api/memory (UI graph, MCP brain_memory_graph) don't need the raw
+        // vectors; search uses /api/memory/search which keeps them server-side.
+        const slimNodes = mergedNodes.map(n => {
+          if (n && n.embedding) {
+            const { embedding: _drop, ...rest } = n;
+            return rest;
+          }
+          return n;
+        });
+
         res.json({
-          nodes: mergedNodes,
+          nodes: slimNodes,
           edges: baselineEdges,
-          _liveJournalCount: mergedNodes.filter(n => n._liveJournal).length
+          _liveJournalCount: slimNodes.filter(n => n._liveJournal).length
         });
       } catch (error) {
         res.json({ error: error.message, nodes: [], edges: [] });
@@ -8370,14 +8524,23 @@ You are empowered to explore and understand. The user trusts you to discover the
     const statePath = path.join(this.logsDir, 'state.json');
     try {
       const gzPath = statePath + '.gz';
-      let mtime = 0;
+      let stateMtime = 0;
+      let sidecarMtime = 0;
       try {
         const fsSync = require('fs');
         const target = fsSync.existsSync(gzPath) ? gzPath : statePath;
         if (fsSync.existsSync(target)) {
-          mtime = fsSync.statSync(target).mtimeMs;
+          stateMtime = fsSync.statSync(target).mtimeMs;
+        }
+        // Invalidate the cache when sidecars rotate too — they're written
+        // independently of state.json.gz, so their mtime matters.
+        const { nodesPath } = require('../core/memory-sidecar');
+        const np = nodesPath(this.logsDir);
+        if (fsSync.existsSync(np)) {
+          sidecarMtime = fsSync.statSync(np).mtimeMs;
         }
       } catch { /* file may not exist yet */ }
+      const mtime = Math.max(stateMtime, sidecarMtime);
 
       const now = Date.now();
       const cache = this._stateCache;
@@ -8386,6 +8549,32 @@ You are empowered to explore and understand. The user trusts you to discover the
       }
 
       const data = await StateCompression.loadCompressed(statePath);
+
+      // Sidecar hydration: post-migration, memory.nodes/edges live in
+      // memory-{nodes,edges}.jsonl.gz, and state.json.gz stores empty arrays.
+      // Endpoints that read loadState().memory need the actual records, so
+      // merge them back in when sidecars are the source of truth.
+      try {
+        const { sidecarsExist, readMemorySidecars } = require('../core/memory-sidecar');
+        if (sidecarsExist(this.logsDir)) {
+          if (!data.memory) data.memory = {};
+          const inlineNodes = Array.isArray(data.memory.nodes) ? data.memory.nodes : [];
+          const inlineEdges = Array.isArray(data.memory.edges) ? data.memory.edges : [];
+          if (inlineNodes.length === 0 || inlineEdges.length === 0) {
+            const nodes = inlineNodes.length > 0 ? inlineNodes : [];
+            const edges = inlineEdges.length > 0 ? inlineEdges : [];
+            await readMemorySidecars(this.logsDir, {
+              onNode: (rec) => { if (inlineNodes.length === 0) nodes.push(rec); },
+              onEdge: (rec) => { if (inlineEdges.length === 0) edges.push(rec); },
+            });
+            data.memory.nodes = nodes;
+            data.memory.edges = edges;
+          }
+        }
+      } catch (err) {
+        this.logger?.warn?.('Sidecar hydration failed', { error: err.message });
+      }
+
       this._stateCache = { data, mtime, loadedAt: now };
       return data;
     } catch (error) {

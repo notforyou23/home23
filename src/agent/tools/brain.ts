@@ -29,7 +29,7 @@ export const brainSearchTool: ToolDefinition = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, topK: limit, minSimilarity: 0.15, tag: tag || null }),
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(120_000),
       });
 
       if (!res.ok) return { content: `Brain search failed: HTTP ${res.status}`, is_error: true };
@@ -103,7 +103,7 @@ export const brainQueryTool: ToolDefinition = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(120_000),
+        signal: AbortSignal.timeout(1_800_000),
       });
 
       if (!res.ok) {
@@ -150,7 +150,7 @@ export const brainMemoryGraphTool: ToolDefinition = {
 
     try {
       const url = `http://localhost:${ctx.enginePort}/api/memory`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+      const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
       if (!res.ok) return { content: `brain_memory_graph failed: HTTP ${res.status}`, is_error: true };
 
       const data = await res.json() as {
@@ -235,7 +235,7 @@ export const brainSynthesizeTool: ToolDefinition = {
     try {
       if (action === 'run') {
         const url = `http://localhost:${ctx.enginePort}/api/synthesis/run`;
-        const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(10_000) });
+        const res = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(60_000) });
         if (!res.ok) return { content: `brain_synthesize run failed: HTTP ${res.status}`, is_error: true };
         const data = await res.json() as { started?: boolean; message?: string };
         return {
@@ -247,7 +247,7 @@ export const brainSynthesizeTool: ToolDefinition = {
 
       if (action === 'status') {
         const url = `http://localhost:${ctx.enginePort}/api/synthesis/state`;
-        const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+        const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
         if (!res.ok) return { content: `brain_synthesize status failed: HTTP ${res.status}`, is_error: true };
         const data = await res.json() as Record<string, unknown>;
         return { content: JSON.stringify(data, null, 2).slice(0, 8000) };
@@ -327,7 +327,7 @@ export const brainPgsTool: ToolDefinition = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(300_000),
+        signal: AbortSignal.timeout(1_800_000),
       });
 
       if (!res.ok) {
@@ -385,7 +385,7 @@ export const brainStatusTool: ToolDefinition = {
   async execute(_input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     try {
       const url = `http://localhost:${ctx.enginePort}/api/state`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+      const res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
 
       if (!res.ok) return { content: `Brain status check failed: HTTP ${res.status}`, is_error: true };
 

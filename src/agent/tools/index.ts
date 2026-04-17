@@ -9,7 +9,7 @@
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { shellTool } from './shell.js';
 import { readFileTool, writeFileTool, editFileTool, listFilesTool, searchFilesTool } from './files.js';
-import { webBrowseTool, webSearchTool } from './web.js';
+import { webBrowseTool, createWebSearchTool, type WebToolsConfig } from './web.js';
 import { brainSearchTool, brainQueryTool, brainStatusTool, brainMemoryGraphTool, brainSynthesizeTool, brainPgsTool } from './brain.js';
 import { generateImageTool, generateMusicTool, ttsTool } from './media.js';
 import { cronScheduleTool, cronListTool, cronDeleteTool, cronEnableTool, cronDisableTool, cronUpdateTool } from './cron.js';
@@ -86,7 +86,7 @@ export class ToolRegistry {
 }
 
 /** Create a fully loaded registry with all tools. */
-export function createToolRegistry(): ToolRegistry {
+export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolRegistry {
   const registry = new ToolRegistry();
 
   registry.register(shellTool);
@@ -96,7 +96,7 @@ export function createToolRegistry(): ToolRegistry {
   registry.register(listFilesTool);
   registry.register(searchFilesTool);
   registry.register(webBrowseTool);
-  registry.register(webSearchTool);
+  registry.register(createWebSearchTool(opts.web));
   registry.register(brainSearchTool);
   registry.register(brainQueryTool);
   registry.register(brainStatusTool);

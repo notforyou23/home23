@@ -772,6 +772,42 @@ function createSettingsRouter(home23Root) {
     res.json({ ok: true });
   });
 
+  // ── Query (Query-tab defaults) ──
+  //
+  // Stored under home.yaml:query. Read by the Query tab and by Settings.
+
+  router.get('/query', (req, res) => {
+    const homeConfig = loadHomeConfig();
+    const q = homeConfig.query || {};
+    res.json({
+      defaultModel: q.defaultModel || '',
+      defaultMode: q.defaultMode || 'full',
+      enablePGSByDefault: !!q.enablePGSByDefault,
+      pgsSweepModel: q.pgsSweepModel || '',
+      pgsSynthModel: q.pgsSynthModel || '',
+      pgsDepth: typeof q.pgsDepth === 'number' ? q.pgsDepth : 0.25,
+    });
+  });
+
+  router.put('/query', (req, res) => {
+    try {
+      const configPath = getHomeConfigPath();
+      const homeConfig = loadYaml(configPath);
+      if (!homeConfig.query) homeConfig.query = {};
+      const b = req.body || {};
+      if (typeof b.defaultModel === 'string') homeConfig.query.defaultModel = b.defaultModel;
+      if (typeof b.defaultMode === 'string') homeConfig.query.defaultMode = b.defaultMode;
+      if (typeof b.enablePGSByDefault === 'boolean') homeConfig.query.enablePGSByDefault = b.enablePGSByDefault;
+      if (typeof b.pgsSweepModel === 'string') homeConfig.query.pgsSweepModel = b.pgsSweepModel;
+      if (typeof b.pgsSynthModel === 'string') homeConfig.query.pgsSynthModel = b.pgsSynthModel;
+      if (typeof b.pgsDepth === 'number') homeConfig.query.pgsDepth = b.pgsDepth;
+      saveYaml(configPath, homeConfig);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // ── Model Assignments (per-slot cognitive routing) ──
 
   function resolveTargetAgent() {

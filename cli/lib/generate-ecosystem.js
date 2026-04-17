@@ -119,17 +119,6 @@ export function generateEcosystem(home23Root) {
     lines.push(`      env: { ...commonEnv, COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
-    // Feeder
-    lines.push(`    {`);
-    lines.push(`      name: 'home23-${agent.name}-feeder',`);
-    lines.push(`      script: 'server.js',`);
-    lines.push(`      cwd: path.join(HOME23, 'feeder'),`);
-    lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
-    lines.push(`      out_file: ${logsDir} + '/feeder-out.log',`);
-    lines.push(`      error_file: ${logsDir} + '/feeder-err.log',`);
-    lines.push(`      env: { FEEDER_CONFIG: path.join(HOME23, 'instances', '${agent.name}', 'feeder.yaml') },`);
-    lines.push(`    },`);
-
     // Harness
     lines.push(`    {`);
     lines.push(`      name: 'home23-${agent.name}-harness',`);
@@ -141,6 +130,19 @@ export function generateEcosystem(home23Root) {
     lines.push(`      env: { HOME23_AGENT: '${agent.name}', OLLAMA_CLOUD_API_KEY: commonEnv.OLLAMA_CLOUD_API_KEY, MINIMAX_API_KEY: commonEnv.MINIMAX_API_KEY, ANTHROPIC_AUTH_TOKEN: commonEnv.ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY: commonEnv.OPENAI_API_KEY, XAI_API_KEY: commonEnv.XAI_API_KEY },`);
     lines.push(`    },`);
   }
+
+  // Chrome CDP — shared headless browser for web_browse tool
+  lines.push(``);
+  lines.push(`    // ── chrome-cdp (shared) ──`);
+  lines.push(`    {`);
+  lines.push(`      name: 'home23-chrome-cdp',`);
+  lines.push(`      script: path.join(HOME23, 'scripts', 'chrome-cdp.sh'),`);
+  lines.push(`      interpreter: 'none',`);
+  lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+  lines.push(`      out_file: path.join(HOME23, 'logs', 'chrome-cdp-out.log'),`);
+  lines.push(`      error_file: path.join(HOME23, 'logs', 'chrome-cdp-err.log'),`);
+  lines.push(`      env: { CDP_PORT: '9222' },`);
+  lines.push(`    },`);
 
   // Evobrew — shared process (one per installation)
   lines.push(``);

@@ -6,14 +6,75 @@
  * handles everything else (model selection, run settings, etc.).
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import yaml from 'js-yaml';
 
 function loadYaml(filePath) {
   if (!existsSync(filePath)) return {};
   return yaml.load(readFileSync(filePath, 'utf8')) || {};
+}
+
+function loadJson(filePath) {
+  if (!existsSync(filePath)) return {};
+  try { return JSON.parse(readFileSync(filePath, 'utf8')) || {}; }
+  catch { return {}; }
+}
+
+// Compute the brain-root set cosmo23's picker should see. Mirrors the logic in
+// cli/lib/evobrew-config.js so both pickers enumerate the same brains: every
+// home23 agent instance + any external roots the user has configured (evobrew
+// config, standalone cosmo2.3 config, env vars). cosmo23 scans each root one
+// level deep for state.json.gz, which matches `instances/<name>/brain/*`.
+function computeBrainRoots(home23Root) {
+  home23Root = resolve(home23Root);
+  const instancesDir = join(home23Root, 'instances');
+  const managed = [];
+  if (existsSync(instancesDir)) {
+    for (const name of readdirSync(instancesDir).sort()) {
+      const agentDir = join(instancesDir, name);
+      if (existsSync(join(agentDir, 'config.yaml'))) {
+        managed.push(resolve(agentDir));
+      }
+    }
+  }
+
+  const external = [];
+  const externalConfigs = [
+    join(homedir(), '.evobrew', 'config.json'),
+    join(homedir(), '.cosmo2.3', 'config.json'),
+  ];
+  for (const configPath of externalConfigs) {
+    const cfg = loadJson(configPath);
+    const dirs = Array.isArray(cfg?.features?.brains?.directories)
+      ? cfg.features.brains.directories
+      : Array.isArray(cfg?.brains?.directories)
+        ? cfg.brains.directories
+        : [];
+    for (const dir of dirs) {
+      const t = String(dir || '').trim();
+      if (t) external.push(resolve(t));
+    }
+  }
+  for (const envVar of [process.env.COSMO_BRAIN_DIRS, process.env.BRAIN_DIRS]) {
+    if (!envVar) continue;
+    for (const part of String(envVar).split(',')) {
+      const t = part.trim();
+      if (t) external.push(resolve(t));
+    }
+  }
+
+  const all = [...managed, ...external];
+  const seen = new Set();
+  const unique = [];
+  for (const dir of all) {
+    if (!dir || dir === home23Root || seen.has(dir)) continue;
+    seen.add(dir);
+    unique.push(dir);
+  }
+  return unique;
 }
 
 export function seedCosmo23Config(home23Root) {
@@ -43,10 +104,14 @@ export function seedCosmo23Config(home23Root) {
   if (!config.server) config.server = {};
   if (!config.features) config.features = {};
 
-  // Home23 owns brain discovery — never leak stale reference paths from a prior
-  // install or from a standalone COSMO tutorial run. Always start with the
-  // local runs/ dir only (COSMO scans that automatically).
-  config.features.brains = { enabled: true, directories: [] };
+  // Home23 owns brain discovery. Seed the full root set (every agent instance +
+  // any external roots the user has configured via ~/.evobrew or ~/.cosmo2.3 or
+  // env vars) so cosmo23's picker sees every brain evobrew sees. Local cosmo23
+  // runs/ is scanned automatically by the server and doesn't need to be listed.
+  config.features.brains = {
+    enabled: true,
+    directories: computeBrainRoots(home23Root),
+  };
 
   // Pre-seed API keys from Home23 secrets (plaintext — config dir is gitignored).
   // The cosmo23 server's launch path prefers process.env under Home23 (PM2

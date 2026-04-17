@@ -33,8 +33,11 @@ architecture:
           NOT about Home23's internals. 2-4 sentences. Then propose ONE concrete
           action on its own line:
             INVESTIGATE: <specific thing in jtr's world to look into>
-            NOTIFY: <message to send jtr>
+            NOTIFY: <concern about something possibly broken/stale — will be
+                     routed through verification before reaching jtr>
             TRIGGER: <external condition to watch for>
+            OBSERVE: <positive pattern, win, or working system worth cataloguing —
+                      goes to signals, not concerns>
           If nothing about jtr's world stands out this cycle, end with: NO_ACTION
           Forbidden topics: the cognitive loop, the enforcer, evidence receipts,
           loop closure, Home23's own architecture.
@@ -50,8 +53,9 @@ architecture:
           internals. 3-5 sentences. Then propose ONE concrete action on its
           own line:
             INVESTIGATE: <specific thing in jtr's world to verify or examine>
-            NOTIFY: <message for jtr>
+            NOTIFY: <concern worth surfacing — will be routed through verification>
             TRIGGER: <condition to watch for>
+            OBSERVE: <positive pattern or working system worth cataloguing>
           If no action is warranted, end with: NO_ACTION
           Forbidden topics: the cognitive loop, the enforcer, evidence receipts,
           loop closure, Home23's own architecture.
@@ -66,8 +70,9 @@ architecture:
           current context — NOT Home23's internals. 3-5 sentences. Then propose
           ONE concrete test on its own line:
             INVESTIGATE: <specific check to run in jtr's world>
-            NOTIFY: <message for jtr about the weak assumption>
+            NOTIFY: <message for jtr about the weak assumption — will be verified>
             TRIGGER: <condition that would validate or falsify>
+            OBSERVE: <positive finding — an assumption that held up well>
           If no action is warranted, end with: NO_ACTION
           Forbidden topics: the cognitive loop, the enforcer, evidence receipts,
           loop closure, Home23's own architecture.
@@ -120,8 +125,11 @@ architecture:
 
           Fallback tags (use only when ACT doesn't fit):
             INVESTIGATE: <specific thing in jtr's world to look into>
-            NOTIFY: <message for jtr about something worth his attention>
+            NOTIFY: <concern about something possibly broken/stale — will be
+                     verified before reaching jtr>
             TRIGGER: <external condition to watch for going forward>
+            OBSERVE: <positive pattern or working system worth cataloguing —
+                      goes to the signals stream>
           Do NOT output NO_ACTION. If nothing stands out, propose
           NOTIFY: <brief observation about jtr's world worth surfacing>.
           Forbidden topics: the cognitive loop, the enforcer, evidence receipts,
@@ -575,7 +583,24 @@ feeder:
       label: jerry_memory_snapshots
     - path: /Users/jtr/_JTR23_/release/home23/instances/jerry/workspace/cron
       label: jerry_cron_docs
-  excludePatterns: []
+  excludePatterns:
+    - "**/node_modules/**"
+    - "**/dist/**"
+    - "**/build/**"
+    - "**/out/**"
+    - "**/target/**"
+    - "**/coverage/**"
+    - "**/__pycache__/**"
+    - "**/venv/**"
+    - "**/*.min.js"
+    - "**/*.min.css"
+    - "**/*.map"
+    - "**/*.lock"
+    - "**/*.log"
+    - "**/package-lock.json"
+    - "**/yarn.lock"
+    - "**/pnpm-lock.yaml"
+    - "**/*.pyc"
 logging:
   level: info
   thoughtJournal: true

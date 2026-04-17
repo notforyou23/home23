@@ -15,6 +15,9 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
   const harnessPort = bridgePort || process.env.BRIDGE_PORT || '5004';
   const harnessProc = `home23-${agent}-harness`;
   const dashProc = `home23-${agent}-dash`;
+  const instanceRoot = process.cwd().replace(/\/engine$/, '') + `/instances/${agent}`;
+  const brainStatePath = `${instanceRoot}/brain/brain-state.json`;
+  const thoughtsPath = `${instanceRoot}/brain/thoughts.jsonl`;
 
   return [
     {
@@ -149,6 +152,133 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
             text: 'Brain node count dropped >10% from high-water mark. Agent investigated but could not restore. Possible data loss — check backups/.',
           },
           cooldownMin: 360,
+        },
+      ],
+      seedOrigin: 'system',
+    },
+    // ── New invariants using compositional primitives ──
+    {
+      id: 'synthesis_fresh',
+      claim: 'Synthesis agent output is fresh (brain-state.json modified within 6h)',
+      verifier: {
+        type: 'file_mtime',
+        args: { path: brainStatePath, maxAgeMin: 360 },
+      },
+      // Stale synthesis = pulse brief's "BACKDROP" and consolidatedInsights
+      // are feeding Jerry from old context. The brain keeps running but its
+      // narrative layer goes stale.
+      remediation: [
+        { type: 'dispatch_to_agent', args: { budgetHours: 2 }, cooldownMin: 30 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'normal',
+            text: "Synthesis hasn't run in 6h+ — insights are going stale. Intelligence tab should be kicking this every 4h. Check the scheduler.",
+          },
+          cooldownMin: 720,
+        },
+      ],
+      seedOrigin: 'system',
+    },
+    {
+      id: 'thoughts_flowing',
+      claim: 'Cognitive loop producing thoughts (thoughts.jsonl has an entry within 20 min)',
+      verifier: {
+        type: 'jsonl_recent_match',
+        args: { path: thoughtsPath, tsField: 'timestamp', windowMinutes: 20, minCount: 1 },
+      },
+      // If thoughts.jsonl stops growing, the cognitive loop is stalled —
+      // either the engine deadlocked, the loop errored out of the catch, or
+      // a model provider is failing and no branches are landing. Immediate
+      // pm2 restart is the right first move; otherwise the whole brain
+      // appears alive (process up) but isn't actually thinking.
+      remediation: [
+        { type: 'pm2_restart', args: { name: `home23-${agent}` }, cooldownMin: 15 },
+        { type: 'dispatch_to_agent', args: { budgetHours: 2 }, cooldownMin: 15 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'alert',
+            text: "Cognitive loop stalled — no new thoughts in 20+ min. Restarted the engine once, no recovery. Model provider or deeper stall.",
+          },
+          cooldownMin: 60,
+        },
+      ],
+      seedOrigin: 'system',
+    },
+    {
+      id: 'chrome_cdp_reachable',
+      claim: 'Headless Chrome CDP responding on :9222 (required for web_browse tool)',
+      verifier: {
+        type: 'http_ping',
+        args: { url: 'http://127.0.0.1:9222/json/version', timeoutMs: 3000 },
+      },
+      // The agent's web_browse tool needs this. pm2_restart of the wrapper
+      // process brings it back cleanly.
+      remediation: [
+        { type: 'pm2_restart', args: { name: 'home23-chrome-cdp' }, cooldownMin: 5 },
+        { type: 'dispatch_to_agent', args: { budgetHours: 1 }, cooldownMin: 15 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'normal',
+            text: "Chrome CDP is down and won't come back via pm2 restart. web_browse tool is unusable until this is fixed.",
+          },
+          cooldownMin: 720,
+        },
+      ],
+      seedOrigin: 'system',
+    },
+    {
+      id: 'sauna_sensor_fresh',
+      claim: 'Sauna tile sensor refreshing within last 10 min',
+      verifier: {
+        type: 'jsonpath_http',
+        args: {
+          url: `http://127.0.0.1:${dashPort}/api/sensors`,
+          path: 'sensors[id=tile.sauna-control].ts',
+          op: '>',
+          value: '{{iso:now-10min}}',
+          timeoutMs: 4000,
+        },
+      },
+      // Tile-backed sensors refresh on their own cadence; if stale, the
+      // tile handler itself may be wedged. Agent can probe it.
+      remediation: [
+        { type: 'dispatch_to_agent', args: { budgetHours: 1 }, cooldownMin: 15 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'normal',
+            text: "Sauna sensor hasn't refreshed in 10+ min — the Huum tile integration might be wedged. Low priority unless you're actively using it.",
+          },
+          cooldownMin: 720,
+        },
+      ],
+      seedOrigin: 'system',
+    },
+    {
+      id: 'weather_sensor_fresh',
+      claim: 'Weather tile sensor refreshing within last 15 min',
+      verifier: {
+        type: 'jsonpath_http',
+        args: {
+          url: `http://127.0.0.1:${dashPort}/api/sensors`,
+          path: 'sensors[id=tile.outside-weather].ts',
+          op: '>',
+          value: '{{iso:now-15min}}',
+          timeoutMs: 4000,
+        },
+      },
+      remediation: [
+        { type: 'dispatch_to_agent', args: { budgetHours: 1 }, cooldownMin: 15 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'normal',
+            text: "Weather sensor hasn't refreshed in 15+ min — Ecowitt tile integration might be wedged.",
+          },
+          cooldownMin: 720,
         },
       ],
       seedOrigin: 'system',

@@ -16,25 +16,12 @@ const MIN_GENERATION_INTERVAL_HOURS = 1;
 const MIN_ROTATION_INTERVAL_SECONDS = 15;
 const AUTO_RETRY_BACKOFF_MS = 30 * 60 * 1000;
 
-const DEFAULT_DREAM_LOOKBACK = 3;
-const MAX_DREAM_LOOKBACK = 10;
-const DREAM_TAIL_BYTES = 128 * 1024;
-const MAX_MOTIFS = 5;
-const DREAM_MOTIF_LLM_TIMEOUT_MS = 30_000;
-const PULSE_TAIL_BYTES = 256 * 1024;
-const MAX_BRAIN_ANCHORS = 4;
-
 const DEFAULT_VIBE_CONFIG = Object.freeze({
   autoGenerate: true,
   generationIntervalHours: DEFAULT_GENERATION_INTERVAL_HOURS,
   rotationIntervalSeconds: DEFAULT_ROTATION_INTERVAL_SECONDS,
   galleryLimit: DEFAULT_GALLERY_LIMIT,
   sourcePaths: [],
-  dreams: {
-    enabled: true,
-    lookback: DEFAULT_DREAM_LOOKBACK,
-    extraction: 'heuristic',
-  },
 });
 
 function expandPath(p) {
@@ -60,40 +47,6 @@ function normalizeSourcePaths(raw) {
   }
   return out;
 }
-
-// Heuristic stop-word list for motif extraction — drops filler so concrete
-// nouns/adjectives surface from dream text.
-const MOTIF_STOPWORDS = new Set([
-  'the','a','an','and','or','but','if','while','when','then','than','that','this','these','those',
-  'i','me','my','mine','you','your','he','she','it','its','we','us','our','they','them','their',
-  'is','was','were','are','be','been','being','am','do','does','did','doing','have','has','had',
-  'of','in','on','at','to','for','with','from','by','as','into','onto','upon','over','under','about',
-  'up','down','out','off','through','between','around','against','within','without','across',
-  'not','no','yes','so','too','very','just','only','also','still','even','ever','never','always',
-  'here','there','where','why','how','what','which','who','whom','whose','can','could','should','would',
-  'will','shall','may','might','must','ought','like','seems','feels','looks','felt','seemed','looked',
-  'one','two','some','any','each','every','all','both','few','many','most','other','another',
-  'thing','things','something','nothing','anything','everything','someone','anyone','everyone',
-  'dream','dreams','dreamt','dreaming','moment','moments','time','times',
-  'actually','really','perhaps','maybe','almost','nearly','mostly','often','sometimes','usually',
-  'quite','rather','somewhat','truly','simply','suddenly','finally','again','already','instead',
-  'next','last','first','second','third','another','chapter','part','section','existence',
-]);
-
-const DREAM_MOTIF_EXTRACTOR_SYSTEM = `You extract symbolic motifs from dream text for surreal image prompting.
-
-Return valid JSON only:
-{
-  "motifs": ["motif one", "motif two", "motif three"]
-}
-
-Rules:
-- Return 3 to 5 motifs.
-- Each motif must be 1 to 3 words.
-- Favor symbolic nouns or short evocative phrases, not plot summary.
-- Keep unusual or vivid words when they are visually useful.
-- These motifs are for texture, atmosphere, and materials, not the literal subject.
-- No commentary, no markdown, no extra keys.`;
 
 function toArray(value) {
   if (Array.isArray(value)) return value;
@@ -143,68 +96,6 @@ function isoNow() {
   return new Date().toISOString();
 }
 
-function normalizeDreamMotifList(raw) {
-  const source = Array.isArray(raw)
-    ? raw
-    : (Array.isArray(raw?.motifs) ? raw.motifs : []);
-  const motifs = [];
-  const seen = new Set();
-  for (const entry of source) {
-    const clean = String(entry || '')
-      .replace(/[*_`~"'[\]{}()<>]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .toLowerCase();
-    if (!clean) continue;
-    if (clean.split(/\s+/).length > 4) continue;
-    if (seen.has(clean)) continue;
-    seen.add(clean);
-    motifs.push(clean);
-    if (motifs.length >= MAX_MOTIFS) break;
-  }
-  return motifs;
-}
-
-function normalizeBrainAnchor(text, maxLen = 120) {
-  const clean = String(text || '')
-    .replace(/[*_`~"]/g, ' ')
-    .replace(/\[[^\]]+\]\s*/g, ' ')
-    .replace(/^brain anchors?:\s*/i, '')
-    .replace(/^brain theme:\s*/i, '')
-    .replace(/^theme:\s*/i, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return clean.length > maxLen ? `${clean.slice(0, maxLen).trim()}...` : clean;
-}
-
-function isOperationalAnchor(text) {
-  const lower = String(text || '').toLowerCase();
-  return [
-    'dashboard',
-    'server',
-    'crash',
-    'loop',
-    'api',
-    'port ',
-    ' pid',
-    'pipeline',
-    'shortcut',
-    'cron',
-    'pm2',
-    'site ',
-    'health data',
-    'correlation view',
-  ].some(token => lower.includes(token));
-}
-
-function truncateList(values, limit = 4, maxLen = 160) {
-  if (!Array.isArray(values)) return [];
-  return values
-    .map(value => normalizeThought(value, maxLen))
-    .filter(Boolean)
-    .slice(0, limit);
-}
-
 function withTimeout(promise, ms, label) {
   return Promise.race([
     promise,
@@ -219,7 +110,6 @@ class Home23VibeService {
     this.home23Root = options.home23Root;
     this.agentName = options.agentName;
     this.loadState = options.loadState;
-    this.getRecentThoughts = options.getRecentThoughts;
     this.logger = options.logger || console;
     this.imageProvider = createImageProvider({
       home23Root: this.home23Root,
@@ -251,14 +141,6 @@ class Home23VibeService {
 
   get agentConfigPath() {
     return path.join(this.home23Root, 'instances', this.agentName, 'config.yaml');
-  }
-
-  get dreamsPath() {
-    return path.join(this.home23Root, 'instances', this.agentName, 'brain', 'dreams.jsonl');
-  }
-
-  get pulseRemarksPath() {
-    return path.join(this.home23Root, 'instances', this.agentName, 'brain', 'pulse-remarks.jsonl');
   }
 
   async ensureDirs() {
@@ -330,19 +212,6 @@ class Home23VibeService {
       Math.floor(positiveNumber(config.galleryLimit, DEFAULT_GALLERY_LIMIT))
     );
 
-    const dreamsRaw = (config.dreams && typeof config.dreams === 'object') ? config.dreams : {};
-    const dreamExtraction = String(dreamsRaw.extraction || 'heuristic').toLowerCase() === 'llm'
-      ? 'llm'
-      : 'heuristic';
-    const dreams = {
-      enabled: dreamsRaw.enabled !== false,
-      lookback: Math.min(
-        MAX_DREAM_LOOKBACK,
-        Math.max(1, Math.floor(positiveNumber(dreamsRaw.lookback, DEFAULT_DREAM_LOOKBACK)))
-      ),
-      extraction: dreamExtraction,
-    };
-
     return {
       autoGenerate: config.autoGenerate !== false,
       generationIntervalHours,
@@ -351,7 +220,6 @@ class Home23VibeService {
       rotationIntervalMs: rotationIntervalSeconds * 1000,
       galleryLimit,
       sourcePaths: normalizeSourcePaths(config.sourcePaths),
-      dreams,
     };
   }
 
@@ -362,7 +230,6 @@ class Home23VibeService {
       rotationIntervalSeconds: config.rotationIntervalSeconds,
       galleryLimit: config.galleryLimit,
       sourcePaths: config.sourcePaths,
-      dreams: config.dreams,
     };
   }
 
@@ -388,6 +255,10 @@ class Home23VibeService {
       try { stat = await fsp.stat(root); } catch { continue; }
       if (!stat.isDirectory()) continue;
 
+      // Look for a manifest.json in the parent or same directory — it carries
+      // the real metadata (prompt / thought / generatedAt) for each image.
+      const manifestLookup = await this._loadExternalManifest(root);
+
       let entries;
       try { entries = await fsp.readdir(root); } catch { continue; }
 
@@ -399,14 +270,17 @@ class Home23VibeService {
         try { fileStat = await fsp.stat(abs); } catch { continue; }
         if (!fileStat.isFile()) continue;
 
+        const baseName = path.basename(name, ext);
+        const meta = manifestLookup.get(baseName);
+
         items.push({
           id: `ext:${crypto.createHash('sha1').update(abs).digest('hex').slice(0, 16)}`,
           agentName: this.agentName,
           imagePath: abs,
-          generatedAt: fileStat.mtime.toISOString(),
-          createdAt: fileStat.mtime.toISOString(),
-          caption: path.basename(name, ext).replace(/[-_]+/g, ' '),
-          prompt: '',
+          generatedAt: meta?.generatedAt || fileStat.mtime.toISOString(),
+          createdAt: meta?.generatedAt || fileStat.mtime.toISOString(),
+          caption: meta?.thought || '',
+          prompt: meta?.thought || '',
           source: 'external',
           sourceRoot: root,
         });
@@ -415,14 +289,38 @@ class Home23VibeService {
     return items;
   }
 
+  /**
+   * Load a manifest.json from the parent directory of an images folder.
+   * Returns a Map keyed by image id (UUID filename without extension).
+   */
+  async _loadExternalManifest(imagesDir) {
+    const lookup = new Map();
+    // manifest.json sits one level above the images/ folder
+    const parentDir = path.dirname(imagesDir);
+    const manifestPath = path.join(parentDir, 'manifest.json');
+    if (!fs.existsSync(manifestPath)) return lookup;
+    try {
+      const raw = await fsp.readFile(manifestPath, 'utf8');
+      const parsed = JSON.parse(raw);
+      const entries = Array.isArray(parsed.images) ? parsed.images : (Array.isArray(parsed.items) ? parsed.items : []);
+      for (const entry of entries) {
+        if (entry?.id) lookup.set(entry.id, entry);
+      }
+    } catch (err) {
+      this.logger.warn?.('[Home23 Vibe] Failed to load external manifest', { path: manifestPath, error: err.message });
+    }
+    return lookup;
+  }
+
   mergeItems(storedItems, externalItems) {
-    const combined = [...storedItems, ...externalItems];
-    combined.sort((a, b) => {
+    // Local (agent-generated) images first; external images fill the tail.
+    // Within each group, newest first.
+    const byDate = (a, b) => {
       const ta = new Date(a.generatedAt || a.createdAt || 0).getTime();
       const tb = new Date(b.generatedAt || b.createdAt || 0).getTime();
       return tb - ta;
-    });
-    return combined;
+    };
+    return [...storedItems].sort(byDate).concat([...externalItems].sort(byDate));
   }
 
   getStoredItems(manifest) {
@@ -537,26 +435,10 @@ class Home23VibeService {
 
   async generateNow() {
     const config = this.getConfig();
-    const brainAnchors = await this.getLatestBrainAnchors();
-
-    let dreamMotifs = [];
-    let sourceDreamCount = 0;
-    let dreamExtractionMethod = config.dreams.extraction;
-    if (config.dreams.enabled) {
-      const dreams = await this.getRecentDreams(config.dreams.lookback);
-      sourceDreamCount = dreams.length;
-      const extracted = await this.extractDreamMotifs(dreams, config.dreams.extraction);
-      dreamMotifs = extracted.motifs;
-      dreamExtractionMethod = extracted.method;
-    }
 
     this.logger.info?.('[Home23 Vibe] Starting CHAOS MODE generation', {
       agent: this.agentName,
       algorithm: 'chaos-mode',
-      brainAnchors,
-      dreamMotifs,
-      sourceDreamCount,
-      dreamExtractionMethod,
     });
 
     if (typeof this.imageProvider.generateChaos !== 'function') {
@@ -564,7 +446,7 @@ class Home23VibeService {
     }
 
     const image = await withTimeout(
-      this.imageProvider.generateChaos('', { dreamMotifs, brainAnchors }),
+      this.imageProvider.generateChaos(''),
       120_000,
       'Image generation'
     );
@@ -595,19 +477,10 @@ class Home23VibeService {
       caption,
       prompt,
       thought: prompt || null,
-      promptTemplate: dreamMotifs.length
-        ? 'CHAOS MODE random category assembly plus brain anchors plus dream motifs'
-        : 'CHAOS MODE random category assembly plus brain anchors',
+      promptTemplate: 'CHAOS MODE random category assembly',
       provider: image.provider,
       model: image.model,
-      algorithm: dreamMotifs.length ? 'chaos-mode-dream-augmented' : 'chaos-mode',
-      brainAnchors: brainAnchors.length ? brainAnchors : null,
-      brainTheme: null,
-      themeThought: null,
-      themeSource: brainAnchors.length ? 'brain-pulse' : null,
-      dreamMotifs: dreamMotifs.length ? dreamMotifs : null,
-      sourceDreamCount: sourceDreamCount || null,
-      dreamExtractionMethod: dreamMotifs.length ? dreamExtractionMethod : null,
+      algorithm: 'chaos-mode',
     };
 
     await fsp.writeFile(
@@ -624,222 +497,9 @@ class Home23VibeService {
       agent: this.agentName,
       imagePath,
       algorithm: 'chaos-mode',
-      brainAnchors,
     });
 
     return this.enrichItem(item);
-  }
-
-  async getRecentDreams(n) {
-    const limit = Math.min(MAX_DREAM_LOOKBACK, Math.max(1, Math.floor(n || DEFAULT_DREAM_LOOKBACK)));
-    if (!fs.existsSync(this.dreamsPath)) return [];
-    try {
-      const stats = await fsp.stat(this.dreamsPath);
-      const start = Math.max(0, stats.size - DREAM_TAIL_BYTES);
-      const handle = await fsp.open(this.dreamsPath, 'r');
-      try {
-        const length = stats.size - start;
-        const buffer = Buffer.alloc(length);
-        await handle.read(buffer, 0, length, start);
-        const text = buffer.toString('utf8');
-        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-        // If we seeked mid-line, drop the first partial line unless start was 0.
-        const usable = start === 0 ? lines : lines.slice(1);
-        const tail = usable.slice(-limit);
-        const dreams = [];
-        for (const line of tail) {
-          try {
-            const parsed = JSON.parse(line);
-            if (parsed && typeof parsed.content === 'string' && parsed.content.trim()) {
-              dreams.push({
-                id: parsed.id || null,
-                cycle: parsed.cycle || null,
-                timestamp: parsed.timestamp || null,
-                content: parsed.content,
-              });
-            }
-          } catch { /* skip malformed */ }
-        }
-        return dreams;
-      } finally {
-        await handle.close();
-      }
-    } catch (error) {
-      this.logger.warn?.('[Home23 Vibe] Failed to read dreams', { error: error.message });
-      return [];
-    }
-  }
-
-  async extractDreamMotifs(dreams, method = 'heuristic') {
-    if (!Array.isArray(dreams) || dreams.length === 0) {
-      return { motifs: [], method: String(method).toLowerCase() === 'llm' ? 'llm' : 'heuristic' };
-    }
-    if (String(method).toLowerCase() !== 'llm') {
-      return {
-        motifs: this.extractDreamMotifsHeuristic(dreams),
-        method: 'heuristic',
-      };
-    }
-
-    try {
-      const motifs = await this.extractDreamMotifsWithLLM(dreams);
-      if (motifs.length) {
-        return { motifs, method: 'llm' };
-      }
-    } catch (error) {
-      this.logger.warn?.('[Home23 Vibe] LLM dream motif extraction failed, falling back to heuristic', {
-        error: error.message,
-      });
-    }
-
-    return {
-      motifs: this.extractDreamMotifsHeuristic(dreams),
-      method: 'heuristic-fallback',
-    };
-  }
-
-  extractDreamMotifsHeuristic(dreams) {
-    if (!Array.isArray(dreams) || dreams.length === 0) return [];
-    const counts = new Map();
-    const phraseHits = new Map();
-    // Pass 1: two-word evocative adjective+noun phrases (lowercased), since
-    // dream text is often rich in "quantum foam library" / "cold humming metal".
-    const phraseRe = /([\p{L}]{4,})\s+([\p{L}]{4,})/giu;
-    for (const dream of dreams) {
-      const text = String(dream.content || '')
-        .replace(/[*_`~]+/g, ' ')
-        .replace(/[^\p{L}\s\-]/gu, ' ')
-        .toLowerCase();
-      let match;
-      while ((match = phraseRe.exec(text)) !== null) {
-        const [, a, b] = match;
-        if (MOTIF_STOPWORDS.has(a) || MOTIF_STOPWORDS.has(b)) continue;
-        const phrase = `${a} ${b}`;
-        phraseHits.set(phrase, (phraseHits.get(phrase) || 0) + 1);
-      }
-      for (const word of text.split(/\s+/)) {
-        if (word.length < 5) continue;
-        if (MOTIF_STOPWORDS.has(word)) continue;
-        counts.set(word, (counts.get(word) || 0) + 1);
-      }
-    }
-    // Prefer repeated phrases first, then uncommon single tokens.
-    const rankedPhrases = Array.from(phraseHits.entries())
-      .filter(([, c]) => c >= 1)
-      .sort((a, b) => b[1] - a[1])
-      .map(([p]) => p);
-    const rankedWords = Array.from(counts.entries())
-      .sort((a, b) => b[1] - a[1])
-      .map(([w]) => w);
-    const merged = [];
-    const seen = new Set();
-    for (const token of [...rankedPhrases, ...rankedWords]) {
-      if (merged.length >= MAX_MOTIFS) break;
-      // Skip single-words that are already inside a chosen phrase.
-      if (!token.includes(' ') && merged.some(m => m.includes(` ${token}`) || m.startsWith(`${token} `))) continue;
-      if (seen.has(token)) continue;
-      seen.add(token);
-      merged.push(token);
-    }
-    return merged;
-  }
-
-  async extractDreamMotifsWithLLM(dreams) {
-    if (typeof this.imageProvider?.callPromptEngine !== 'function') {
-      throw new Error('Image provider does not expose callPromptEngine()');
-    }
-
-    const serializedDreams = dreams
-      .slice(-MAX_DREAM_LOOKBACK)
-      .map((dream, index) => {
-        const content = String(dream.content || '')
-          .replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, 1200);
-        return `Dream ${index + 1}:\n${content}`;
-      })
-      .join('\n\n');
-
-    const response = await withTimeout(
-      this.imageProvider.callPromptEngine(
-        DREAM_MOTIF_EXTRACTOR_SYSTEM,
-        `Extract symbolic motifs from these recent dreams:\n\n${serializedDreams}`,
-        true
-      ),
-      DREAM_MOTIF_LLM_TIMEOUT_MS,
-      'Dream motif extraction'
-    );
-
-    return normalizeDreamMotifList(response);
-  }
-
-  async getLatestPulseRemark() {
-    if (!fs.existsSync(this.pulseRemarksPath)) return null;
-    try {
-      const stats = await fsp.stat(this.pulseRemarksPath);
-      const start = Math.max(0, stats.size - PULSE_TAIL_BYTES);
-      const handle = await fsp.open(this.pulseRemarksPath, 'r');
-      try {
-        const length = stats.size - start;
-        const buffer = Buffer.alloc(length);
-        await handle.read(buffer, 0, length, start);
-        const text = buffer.toString('utf8');
-        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-        const usable = start === 0 ? lines : lines.slice(1);
-        const last = usable[usable.length - 1];
-        if (!last) return null;
-        return JSON.parse(last);
-      } finally {
-        await handle.close();
-      }
-    } catch (error) {
-      this.logger.warn?.('[Home23 Vibe] Failed to read pulse remarks', { error: error.message });
-      return null;
-    }
-  }
-
-  buildBrainSignalInput(pulse) {
-    const brief = pulse?.brief || {};
-    const self = brief.selfUnderstanding || {};
-    const goals = brief.goals || {};
-    const topActive = Array.isArray(brief.brain?.topActive) ? brief.brain.topActive : [];
-    const insights = Array.isArray(brief.insights) ? brief.insights : [];
-
-    return {
-      obsessions: truncateList(self.currentObsessions, 4, 120),
-      insights: truncateList(insights.map(item => item?.title || ''), 4, 120),
-      goals: truncateList(goals.activeDescriptions, 4, 120),
-      topActive: truncateList(topActive.map(item => item?.concept || ''), 4, 120),
-    };
-  }
-
-  buildBrainAnchors(signal) {
-    const anchors = [];
-    const seen = new Set();
-    for (const candidate of [
-      ...(signal.topActive || []),
-      ...(signal.obsessions || []),
-      ...(signal.insights || []),
-      ...(signal.goals || []),
-    ]) {
-      const clean = normalizeBrainAnchor(candidate);
-      if (!clean) continue;
-      if (isOperationalAnchor(clean)) continue;
-      const key = clean.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      anchors.push(clean);
-      if (anchors.length >= MAX_BRAIN_ANCHORS) break;
-    }
-    return anchors;
-  }
-
-  async getLatestBrainAnchors() {
-    const pulse = await this.getLatestPulseRemark();
-    if (!pulse) return [];
-
-    const signal = this.buildBrainSignalInput(pulse);
-    return this.buildBrainAnchors(signal);
   }
 }
 

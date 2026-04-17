@@ -326,6 +326,34 @@ curl -s http://localhost:43210/api/setup/status | python3 -m json.tool | grep ma
 
 ---
 
+## Patch 6 — `cosmo23/server/lib/brain-registry.js` · `listBrains`
+
+**Problem:** `listBrains()` enumerates direct children of every configured
+root and calls `inspectBrain()` on each, unconditionally adding the result to
+the returned list. When Home23 passes `instances/<agent>` as a root so cosmo23
+can see agent brains, every sibling of `brain/` (like `workspace/`,
+`conversations/`, `logs/`, `scripts/`, `projects/`) is also surfaced as an
+empty "brain" with `hasState: false`, polluting the picker.
+
+**Fix:** skip entries where `brain.hasState === false`. The field is already
+returned by `inspectBrain()`; we just act on it.
+
+```js
+// HOME23 PATCH
+if (!brain.hasState) {
+  continue;
+}
+```
+
+**Effect under Home23:** agent picker shows one entry per agent (the real
+`brain/`) instead of six. Reference runs directories still surface all their
+brains since those dirs do contain state files.
+
+**Effect under standalone COSMO:** unchanged — standalone roots contain only
+real run dirs, so no entries were being filtered anyway.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -336,3 +364,7 @@ curl -s http://localhost:43210/api/setup/status | python3 -m json.tool | grep ma
   are how the two systems stay in sync.
 - **2026-04-13** — Patch 5 added during Step 21 (Provider Authority).
   Suppresses cosmo23 setup UI when running under Home23.
+- **2026-04-16** — Patch 6 added when the cosmo23 brain picker was expanded
+  to parity with evobrew (all agent + external roots). Without the filter,
+  each agent root surfaced sibling dirs (workspace, conversations, logs) as
+  empty brains.

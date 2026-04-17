@@ -31,10 +31,13 @@ function publish(snapshot) {
   if (!snapshot || !snapshot.id) return;
   const existing = snapshots.get(snapshot.id);
   const merged = {
-    ts: new Date().toISOString(),
     ok: true,
     ...existing,
     ...snapshot,
+    // Always refresh ts on republish — explicit ts in snapshot wins, otherwise now.
+    // (Previous code placed ts before ...existing, which caused the very first
+    //  publish ts to be permanently stuck.)
+    ts: snapshot.ts || new Date().toISOString(),
   };
   snapshots.set(snapshot.id, merged);
   for (const fn of subscribers) {

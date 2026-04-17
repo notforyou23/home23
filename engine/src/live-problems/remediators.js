@@ -33,6 +33,25 @@ function isRestartableProcess(name) {
   return true;
 }
 
+/**
+ * EXEC_CATALOG entries are either:
+ *   - static:   { cmd, args, timeoutMs, description }
+ *   - dynamic:  { resolve: () => {cmd, args, timeoutMs, description}, description? }
+ *
+ * Dynamic entries let a remediator compute paths from runtime state (HOME23_AGENT,
+ * instance dir, etc.) without allowing free-form shell. The resolve() function
+ * must return a static shape before exec.
+ */
+function home23RootFromEnv() {
+  // engine/src/live-problems/remediators.js → engine/src → engine → home23/
+  return path.resolve(__dirname, '..', '..', '..');
+}
+function agentBrainDir() {
+  const agent = process.env.HOME23_AGENT;
+  if (!agent) return null;
+  return path.join(home23RootFromEnv(), 'instances', agent);
+}
+
 const EXEC_CATALOG = {
   clean_pm2_logs: {
     cmd: 'pm2',
@@ -40,11 +59,60 @@ const EXEC_CATALOG = {
     timeoutMs: 10000,
     description: 'pm2 flush — truncate all PM2 log files',
   },
+  reload_pm2_logs: {
+    cmd: 'pm2',
+    args: ['reloadLogs'],
+    timeoutMs: 10000,
+    description: 'pm2 reloadLogs — reopen log file handles (safe for rotation tools)',
+  },
   clean_npm_cache: {
     cmd: 'npm',
     args: ['cache', 'clean', '--force'],
     timeoutMs: 30000,
     description: 'npm cache clean --force',
+  },
+  clean_docker_build_cache: {
+    cmd: 'docker',
+    args: ['builder', 'prune', '-f'],
+    timeoutMs: 60000,
+    description: 'docker builder prune -f — remove unused build layers',
+  },
+  clean_docker_dangling_images: {
+    cmd: 'docker',
+    args: ['image', 'prune', '-f'],
+    timeoutMs: 60000,
+    description: 'docker image prune -f — remove dangling (untagged) images',
+  },
+  clean_conv_tmp: {
+    // Per-agent temp dir under conversations/. Files older than 3 days.
+    resolve: () => {
+      const base = agentBrainDir();
+      if (!base) throw new Error('HOME23_AGENT not set');
+      const tmp = path.join(base, 'conversations', 'tmp');
+      return {
+        cmd: 'find',
+        args: [tmp, '-mindepth', '1', '-mtime', '+3', '-delete'],
+        timeoutMs: 20000,
+        description: `clean conversations/tmp files older than 3d in ${path.relative(home23RootFromEnv(), tmp)}`,
+      };
+    },
+    description: 'clean agent conv tmp older than 3d',
+  },
+  clean_old_engine_logs: {
+    // Engine/harness/dashboard log files older than 30 days. Engine keeps live
+    // logs via pm2-logrotate on its own cadence; this is for straggler archives.
+    resolve: () => {
+      const base = agentBrainDir();
+      if (!base) throw new Error('HOME23_AGENT not set');
+      const logs = path.join(base, 'logs');
+      return {
+        cmd: 'find',
+        args: [logs, '-mindepth', '1', '-type', 'f', '-mtime', '+30', '-delete'],
+        timeoutMs: 20000,
+        description: `clean agent logs older than 30d in ${path.relative(home23RootFromEnv(), logs)}`,
+      };
+    },
+    description: 'clean agent logs older than 30d',
   },
   // Add more named snippets here. Never allow free-form shell.
 };
@@ -118,20 +186,33 @@ const remediators = {
 
   /**
    * Run a named command from the internal catalog. No raw shell.
+   * Supports both static and dynamic (resolve-fn) catalog entries.
    * args: { name }
    */
   exec_command({ name }) {
     const entry = EXEC_CATALOG[name];
     if (!entry) return { outcome: 'rejected', detail: `unknown command: ${name}` };
+    let resolved;
     try {
-      execFileSync(entry.cmd, entry.args, {
+      resolved = typeof entry.resolve === 'function'
+        ? entry.resolve()
+        : entry;
+    } catch (err) {
+      return { outcome: 'rejected', detail: `resolve failed: ${err.message}` };
+    }
+    const { cmd, args, timeoutMs, description } = resolved;
+    if (!cmd || !Array.isArray(args)) {
+      return { outcome: 'rejected', detail: `invalid catalog entry: ${name}` };
+    }
+    try {
+      execFileSync(cmd, args, {
         encoding: 'utf8',
-        timeout: entry.timeoutMs,
+        timeout: timeoutMs || 10000,
         stdio: 'pipe',
       });
-      return { outcome: 'success', detail: entry.description };
+      return { outcome: 'success', detail: description || `${cmd} ok` };
     } catch (err) {
-      return { outcome: 'failed', detail: `${entry.cmd} failed: ${err.message}` };
+      return { outcome: 'failed', detail: `${cmd} failed: ${err.message}` };
     }
   },
 

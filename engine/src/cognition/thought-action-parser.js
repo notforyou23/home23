@@ -17,6 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const { executeAction } = require('./action-dispatcher');
+const { appendSignal } = require('./signals');
 
 // Match action tags liberally: model may emit "INVESTIGATE:", "INVESTIGATE ",
 // "INVESTIGATE\n", or even just "INVESTIGATE" at the start/end of a line
@@ -26,6 +27,7 @@ const ACTION_PATTERNS = {
   investigate: /(?:^|\n)[\s`*_>]*(?:INVESTIGATE|investigate)\b[\s`*_]*[:：\-—]?\s*(.*?)(?:\n|$)/,
   notify: /(?:^|\n)[\s`*_>]*(?:NOTIFY|notify)\b[\s`*_]*[:：\-—]?\s*(.*?)(?:\n|$)/,
   trigger: /(?:^|\n)[\s`*_>]*(?:TRIGGER|trigger)\b[\s`*_]*[:：\-—]?\s*(.*?)(?:\n|$)/,
+  observe: /(?:^|\n)[\s`*_>]*(?:OBSERVE|observe)\b[\s`*_]*[:：\-—]?\s*(.*?)(?:\n|$)/,
   noAction: /(?:^|\n)\s*NO_ACTION\s*$/i,
 };
 
@@ -168,7 +170,7 @@ function scrubToolArtifacts(text) {
 function stripActionTags(hypothesis) {
   if (!hypothesis) return hypothesis;
   let out = hypothesis
-    .replace(/(?:^|\n)\s*(?:INVESTIGATE|NOTIFY|TRIGGER)\s*[:：].+?(?:\n|$)/gi, '\n')
+    .replace(/(?:^|\n)\s*(?:INVESTIGATE|NOTIFY|TRIGGER|OBSERVE)\s*[:：].+?(?:\n|$)/gi, '\n')
     .replace(/(?:^|\n)\s*NO_ACTION\s*$/i, '');
 
   // Also strip ACT: {...} blocks (balanced-brace aware)
@@ -430,6 +432,20 @@ async function routeThoughtAction(opts) {
         cycle, role, id: entry.id, message: parsed.payload.substring(0, 80),
       });
       return { action: 'notify', payload: parsed.payload, routed: 'notifications.jsonl' };
+    }
+
+    if (parsed.type === 'observe') {
+      const entry = appendSignal(brainDir, {
+        type: 'observation',
+        source: role,
+        title: parsed.payload.slice(0, 120),
+        message: parsed.payload,
+        cycle,
+      });
+      logger?.info?.('✨ Thought-action: positive observation recorded', {
+        cycle, role, id: entry?.id, message: parsed.payload.substring(0, 80),
+      });
+      return { action: 'observe', payload: parsed.payload, routed: 'signals.jsonl' };
     }
 
     if (parsed.type === 'trigger') {

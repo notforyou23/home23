@@ -47,6 +47,7 @@ import { ApnsPusher } from './push/apns-pusher.js';
 import { createRegisterDeviceHandler, createUnregisterDeviceHandler, createListDevicesHandler } from './routes/device.js';
 import { createChatHistoryHandler, createChatListHandler } from './routes/chat-history.js';
 import { syncSharedSkillsRegistry } from './skills/runtime.js';
+import { PromoterWorker } from './workers/promoter.js';
 
 // ─── Constants ──────────────────────────────────────────────
 
@@ -177,8 +178,11 @@ async function main(): Promise<void> {
   const history = new ConversationHistory(CONVERSATIONS_DIR, config.chat.historyBudget ?? 400_000, AGENT_NAME);
 
   // ── Tool Registry ──
-  const registry = createToolRegistry();
-  console.log(`[home] Tool registry: ${registry.size} tools`);
+  const providersCfg = config.providers as Record<string, { apiKey?: string }> | undefined;
+  const braveApiKey = providersCfg?.brave?.apiKey || process.env.BRAVE_API_KEY || process.env.BRAVE_SEARCH_API_KEY;
+  const searxngUrl = (config.search as { searxngUrl?: string } | undefined)?.searxngUrl || process.env.SEARXNG_URL;
+  const registry = createToolRegistry({ web: { braveApiKey, searxngUrl } });
+  console.log(`[home] Tool registry: ${registry.size} tools (brave=${braveApiKey ? 'yes' : 'no'}, searxng=${searxngUrl || 'default'})`);
 
   // ── Temp dir for media ──
   const tempDir = join(RUNTIME_DIR, 'tmp');
@@ -683,6 +687,33 @@ async function main(): Promise<void> {
     console.log('[home] Scheduler started');
   }
 
+  // ── Promoter worker ──
+  // Drains cognition's NOTIFY stream into live-problems via LLM classification
+  // + verifier dry-run. Unverified concerns get empirically tested before they
+  // become tracked problems; vague/subjective ones get dropped. See
+  // src/workers/promoter.ts for the full contract.
+  try {
+    // Classification uses a fixed small model regardless of the agent's chat
+    // default. Reason: we need well-behaved structured JSON output; haiku is
+    // reliable and cheap. anthropicClient is already configured for Anthropic
+    // (OAuth or API key), so this always resolves correctly.
+    const promoter = new PromoterWorker({
+      brainDir: BRAIN_DIR,
+      dashboardBaseUrl: ENGINE_BASE,
+      client: anthropicClient,
+      model: 'claude-haiku-4-5',
+      logger: {
+        info: (m) => console.log(m),
+        warn: (m) => console.warn(m),
+        error: (m) => console.error(m),
+      },
+    });
+    promoter.start();
+    console.log('[home] Promoter worker started');
+  } catch (err) {
+    console.warn('[home] Promoter worker start failed:', err instanceof Error ? err.message : String(err));
+  }
+
   // ── Push notifications (APNs) — optional ──
   const apnsConfig = config.apns;
   const deviceRegistryPath = join(process.env.COSMO_RUNTIME_DIR ?? process.cwd(), 'device-registry.json');
@@ -821,6 +852,16 @@ async function main(): Promise<void> {
     const verifierSpec = problem.verifier
       ? `${problem.verifier.type}(${JSON.stringify(problem.verifier.args || {})})`
       : '(none)';
+    // Prior fix recipe — what worked the last time this problem was dispatched.
+    // Gives the agent a strong head start instead of starting from scratch.
+    const priorRecipe = problem.fixRecipe?.summary
+      ? [
+          '',
+          'Prior successful fix recipe (last time this problem was dispatched):',
+          `  ${String(problem.fixRecipe.summary).slice(0, 500)}`,
+          '  → try this approach first; if conditions have changed, investigate why.',
+        ].join('\n')
+      : '';
 
     const mission = [
       `SYSTEM DIAGNOSTIC REQUEST — Live Problem: ${problem.id}`,
@@ -837,6 +878,7 @@ async function main(): Promise<void> {
       '',
       'Prior remediation attempts (already tried, do not repeat):',
       priorAttempts,
+      priorRecipe,
       '',
       `Budget: ~${budgetHours}h wall clock. You don't need to rush, but don't loop either.`,
       '',
@@ -862,7 +904,28 @@ async function main(): Promise<void> {
     try {
       const { turnId, response } = await agent.runWithTurn(chatId, mission);
       // Detach. The engine tracks budget separately via wall clock.
-      response.catch((err: any) => {
+      // When the agent finishes, capture a fix-recipe back to the engine so
+      // (a) the dashboard Signals tile can show it, and (b) the next dispatch
+      // for this same problem gets it injected into the mission prompt.
+      response.then(async (resp: import('./agent/types.js').AgentResponse) => {
+        try {
+          const minutes = Math.max(1, Math.round(resp.durationMs / 60000));
+          const summary = `agent ran ${resp.toolCallCount} tool calls in ~${minutes}min (model=${resp.model}). outcome: ${resp.text.replace(/\s+/g, ' ').trim().slice(0, 500)}`;
+          await fetch(`${ENGINE_BASE}/api/live-problems/${encodeURIComponent(problem.id)}/fix-recipe`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              summary,
+              turnId,
+              toolCallCount: resp.toolCallCount,
+              durationMs: resp.durationMs,
+            }),
+          });
+          console.log(`[diagnose] ${problem.id} turn ${turnId} → fix-recipe captured (${resp.toolCallCount} tools, ${minutes}m)`);
+        } catch (err: any) {
+          console.warn(`[diagnose] ${problem.id} fix-recipe post failed:`, err?.message || err);
+        }
+      }).catch((err: any) => {
         console.error(`[diagnose] ${problem.id} turn ${turnId} error:`, err?.message || err);
       });
       console.log(`[diagnose] ${problem.id}: dispatched agent turn ${turnId}`);

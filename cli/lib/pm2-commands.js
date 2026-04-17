@@ -22,7 +22,6 @@ function agentProcessNames(agentName) {
   return [
     `home23-${agentName}`,
     `home23-${agentName}-dash`,
-    `home23-${agentName}-feeder`,
     `home23-${agentName}-harness`,
   ];
 }

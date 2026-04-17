@@ -1,8 +1,13 @@
 /**
- * Web tools — browse pages via CDP, search via Brave Search API.
+ * Web tools — browse pages via CDP, search via searxng + Brave fallback.
  */
 
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
+
+export interface WebToolsConfig {
+  braveApiKey?: string;
+  searxngUrl?: string;
+}
 
 export const webBrowseTool: ToolDefinition = {
   name: 'web_browse',
@@ -70,78 +75,102 @@ export const webBrowseTool: ToolDefinition = {
   },
 };
 
-export const webSearchTool: ToolDefinition = {
-  name: 'web_search',
-  description: 'Search the internet via local searxng instance. Returns top results with title, URL, and snippet.',
-  input_schema: {
-    type: 'object',
-    properties: {
-      query: { type: 'string', description: 'Search query' },
-      count: { type: 'number', description: 'Number of results (default: 10, max: 20)' },
+export function createWebSearchTool(cfg: WebToolsConfig = {}): ToolDefinition {
+  const searxngUrl = cfg.searxngUrl || process.env.SEARXNG_URL || 'http://localhost:8888';
+  const braveApiKey = cfg.braveApiKey || process.env.BRAVE_API_KEY || process.env.BRAVE_SEARCH_API_KEY || '';
+
+  return {
+    name: 'web_search',
+    description: 'Search the internet via local searxng instance with Brave Search API fallback. Returns top results with title, URL, and snippet.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+        count: { type: 'number', description: 'Number of results (default: 10, max: 20)' },
+      },
+      required: ['query'],
     },
-    required: ['query'],
-  },
 
-  async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const query = input.query as string;
-    const count = Math.min((input.count as number) || 10, 20);
+    async execute(input: Record<string, unknown>): Promise<ToolResult> {
+      const query = input.query as string;
+      const count = Math.min((input.count as number) || 10, 20);
 
-    // Try searxng first (local, no API key needed)
-    const searxngUrl = process.env.SEARXNG_URL || 'http://localhost:8888';
-    try {
-      const url = `${searxngUrl}/search?q=${encodeURIComponent(query)}&format=json&pageno=1`;
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(10_000),
-      });
+      // ── Try searxng first (local, no API key needed) ──
+      let searxngStatus: 'ok' | 'zero_results' | 'degraded' | 'unreachable' | 'http_error' = 'unreachable';
+      let searxngDetail = '';
+      try {
+        const url = `${searxngUrl}/search?q=${encodeURIComponent(query)}&format=json&pageno=1`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
 
-      if (res.ok) {
-        const data = await res.json() as { results?: Array<{ title: string; url: string; content: string }> };
-        const results = (data.results ?? []).slice(0, count);
+        if (!res.ok) {
+          searxngStatus = 'http_error';
+          searxngDetail = `HTTP ${res.status}`;
+        } else {
+          const data = await res.json() as {
+            results?: Array<{ title: string; url: string; content: string }>;
+            unresponsive_engines?: Array<[string, string]>;
+          };
+          const results = (data.results ?? []).slice(0, count);
+          const blocked = (data.unresponsive_engines ?? []).map(([n, r]) => `${n}: ${r}`).join('; ');
 
-        if (results.length > 0) {
-          const formatted = results
-            .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.content}`)
-            .join('\n\n');
+          if (results.length > 0) {
+            const formatted = results
+              .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.content}`)
+              .join('\n\n');
+            return { content: formatted };
+          }
 
-          return { content: formatted };
+          searxngStatus = 'zero_results';
+          searxngDetail = blocked ? `no results; blocked engines: ${blocked}` : 'no results';
         }
-      }
-    } catch {
-      // searxng not available — fall through to Brave
-    }
-
-    // Fallback to Brave Search
-    const apiKey = process.env.BRAVE_SEARCH_API_KEY;
-    if (!apiKey) {
-      return {
-        content: 'Web search unavailable — searxng not running and BRAVE_SEARCH_API_KEY not configured.',
-        is_error: true,
-      };
-    }
-
-    try {
-      const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`;
-      const res = await fetch(url, {
-        headers: { 'X-Subscription-Token': apiKey, 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(10_000),
-      });
-
-      if (!res.ok) {
-        return { content: `Brave Search error: HTTP ${res.status}`, is_error: true };
+      } catch (err) {
+        searxngStatus = 'unreachable';
+        searxngDetail = err instanceof Error ? err.message : String(err);
       }
 
-      const data = await res.json() as { web?: { results?: Array<{ title: string; url: string; description: string }> } };
-      const results = data.web?.results ?? [];
+      // ── Fallback to Brave Search ──
+      if (!braveApiKey) {
+        return {
+          content: `Web search unavailable — searxng at ${searxngUrl} returned ${searxngStatus} (${searxngDetail}); Brave fallback has no key configured (providers.brave.apiKey).`,
+          is_error: true,
+        };
+      }
 
-      if (results.length === 0) return { content: 'No search results found.' };
+      try {
+        const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`;
+        const res = await fetch(url, {
+          headers: { 'X-Subscription-Token': braveApiKey, 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(10_000),
+        });
 
-      const formatted = results
-        .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.description}`)
-        .join('\n\n');
+        if (!res.ok) {
+          return {
+            content: `Search fallback failed — searxng: ${searxngStatus} (${searxngDetail}); Brave: HTTP ${res.status}`,
+            is_error: true,
+          };
+        }
 
-      return { content: formatted };
-    } catch (err) {
-      return { content: `Search error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
-    }
-  },
-};
+        const data = await res.json() as { web?: { results?: Array<{ title: string; url: string; description: string }> } };
+        const results = data.web?.results ?? [];
+
+        if (results.length === 0) {
+          return { content: `No search results found (searxng: ${searxngStatus}; Brave: empty).` };
+        }
+
+        const formatted = results
+          .map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.description}`)
+          .join('\n\n');
+
+        return { content: formatted };
+      } catch (err) {
+        return {
+          content: `Search fallback failed — searxng: ${searxngStatus} (${searxngDetail}); Brave error: ${err instanceof Error ? err.message : String(err)}`,
+          is_error: true,
+        };
+      }
+    },
+  };
+}
+
+/** Env/default-only web_search — retained for callers that don't thread config. */
+export const webSearchTool: ToolDefinition = createWebSearchTool();

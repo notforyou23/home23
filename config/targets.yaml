@@ -1,0 +1,93 @@
+# Home23 Targets Registry
+#
+# Hand-curated enumeration of everything the live-problems system is allowed
+# to reference. The off-engine promoter rejects any proposed verifier whose
+# args point outside this registry — it is the permanent fix for LLM
+# hallucinations (made-up paths, fake hostnames, etc).
+#
+# Expand this file as jtr's world grows. No automation writes to it; it's
+# the canonical vocabulary.
+
+# ── Files the system can check mtime/existence/JSONL-tail on ──
+files:
+  - path: "~/.health_log.jsonl"
+    description: "iOS Health Shortcut writes here every N min when the bridge fires"
+  - path: "/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/brain-state.json"
+    description: "Synthesis output from the intelligence tab. mtime = last synthesis run."
+  - path: "/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/live-problems.json"
+    description: "Live-problems registry snapshot (engine rewrites on every tick)"
+  - path: "/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/actions.jsonl"
+    description: "Autonomous action execution log (ACT dispatcher)"
+  - path: "/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/thoughts.jsonl"
+    description: "Cognitive-cycle thought stream (timestamp field)"
+  - path: "/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/event-ledger.jsonl"
+    description: "Continuity proof chain"
+  - path: "/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/signals.jsonl"
+    description: "Positive-signal stream (resolved problems, autonomous fixes, OBSERVE tags)"
+
+# ── HTTP/HTTPS endpoints the system can poll ──
+urls:
+  - url: "http://localhost:5001/"
+    description: "Engine realtime WebSocket + /admin/feeder HTTP"
+  - url: "http://localhost:5002/api/sensors"
+    description: "Dashboard sensor registry (stock + tile-backed)"
+  - url: "http://localhost:5002/api/live-problems"
+    description: "Live-problems registry via dashboard CRUD"
+  - url: "http://localhost:5002/api/signals"
+    description: "Signals stream read endpoint"
+  - url: "http://localhost:5002/api/notifications"
+    description: "Notifications queue (for debugging — promoter drains this)"
+  - url: "http://localhost:5002/home23/"
+    description: "Dashboard HTML entry point"
+  - url: "http://localhost:5004/health"
+    description: "Harness bridge health check"
+  - url: "http://localhost:9222/json/version"
+    description: "Chrome CDP for web_browse tool"
+  - url: "http://localhost:8888/search"
+    description: "SearXNG local metasearch"
+  - url: "http://localhost:43210/"
+    description: "Cosmo23 research engine"
+  - url: "http://localhost:3415/"
+    description: "Evobrew AI IDE"
+
+# ── PM2 processes the system can check status of / restart ──
+# Must start with 'home23-' — other names are jtr's personal domain and off-limits.
+pm2:
+  - name: "home23-jerry"
+    description: "Cognitive engine (JS, brain + loops + ingestion)"
+  - name: "home23-jerry-dash"
+    description: "Dashboard HTTP API (port 5002)"
+  - name: "home23-jerry-feeder"
+    description: "Legacy feeder process"
+  - name: "home23-jerry-harness"
+    description: "TS agent harness (AgentLoop, tools, channels)"
+  - name: "home23-evobrew"
+    description: "Shared AI IDE"
+  - name: "home23-cosmo23"
+    description: "Shared research engine"
+  - name: "home23-dashboard"
+    description: "Home-level dashboard (if separate from jerry-dash)"
+  - name: "home23-chrome-cdp"
+    description: "Headless Chrome for web_browse"
+
+# ── Filesystem mounts the system can run disk-free on ──
+mounts:
+  - mount: "/System/Volumes/Data"
+    description: "Main macOS user data volume"
+  - mount: "/"
+    description: "macOS root (read-only on modern Macs)"
+
+# ── Sensor IDs in /api/sensors (for jsonpath_http verifiers targeting freshness) ──
+sensors:
+  - id: "system.cpu"
+    description: "CPU load + uptime (stock, refreshes frequently)"
+  - id: "system.disk"
+    description: "Disk usage (stock)"
+  - id: "system.memory"
+    description: "Memory pressure (stock)"
+  - id: "system.process"
+    description: "PM2 process states (stock)"
+  - id: "tile.outside-weather"
+    description: "Ecowitt weather (tile-backed, refreshes per tile config)"
+  - id: "tile.sauna-control"
+    description: "Huum sauna state (tile-backed)"
