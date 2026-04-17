@@ -148,4 +148,19 @@ async function checkCriterion(crit, env) {
   }
 }
 
-module.exports = { checkCriterion, DISPATCH, JUDGE_TTL_MS };
+async function checkDoneWhen(goal, env) {
+  const criteria = goal?.doneWhen?.criteria;
+  if (!Array.isArray(criteria) || criteria.length === 0) {
+    return { satisfied: 0, total: 0, details: [] };
+  }
+  const details = [];
+  let satisfied = 0;
+  for (const crit of criteria) {
+    const r = await checkCriterion(crit, env);
+    details.push({ type: crit.type, passed: !!r.passed, note: r.note, judgedAt: r.judgedAt });
+    if (r.passed) satisfied++;
+  }
+  return { satisfied, total: criteria.length, details };
+}
+
+module.exports = { checkCriterion, checkDoneWhen, DISPATCH, JUDGE_TTL_MS };

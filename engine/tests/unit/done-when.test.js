@@ -202,3 +202,44 @@ describe('done-when primitives', () => {
     });
   });
 });
+
+describe('checkDoneWhen aggregate', () => {
+  const { checkDoneWhen } = require('../../src/goals/done-when');
+
+  it('computes satisfied/total across multiple criteria', async () => {
+    const env = makeEnv();
+    fs.writeFileSync(path.join(env.outputsDir, 'a.md'), 'x');
+    const goal = {
+      id: 'g1',
+      doneWhen: {
+        version: 1,
+        criteria: [
+          { type: 'file_exists', path: 'a.md' },
+          { type: 'file_exists', path: 'b.md' }
+        ]
+      }
+    };
+    const r = await checkDoneWhen(goal, env);
+    expect(r.satisfied).to.equal(1);
+    expect(r.total).to.equal(2);
+    expect(r.details).to.have.length(2);
+    expect(r.details[0].passed).to.equal(true);
+    expect(r.details[1].passed).to.equal(false);
+  });
+
+  it('handles empty criteria as 0/0 (caller decides semantics)', async () => {
+    const env = makeEnv();
+    const goal = { id: 'g1', doneWhen: { version: 1, criteria: [] } };
+    const r = await checkDoneWhen(goal, env);
+    expect(r.satisfied).to.equal(0);
+    expect(r.total).to.equal(0);
+  });
+
+  it('handles missing doneWhen as 0/0', async () => {
+    const env = makeEnv();
+    const goal = { id: 'g1' };
+    const r = await checkDoneWhen(goal, env);
+    expect(r.satisfied).to.equal(0);
+    expect(r.total).to.equal(0);
+  });
+});
