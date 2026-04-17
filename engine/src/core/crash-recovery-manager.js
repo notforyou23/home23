@@ -67,16 +67,24 @@ class CrashRecoveryManager {
       return false;
     } catch (error) {
       // File doesn't exist = previous shutdown was clean OR first run
-      // Check if state.json exists to differentiate
-      const statePath = path.join(this.logsDir, 'state.json');
-      try {
-        await fs.access(statePath);
-        // State exists but no clean marker = crash
-        return true;
-      } catch (error) {
-        // No state file = first run
-        return false;
+      // Check if a persisted state artifact exists to differentiate. The
+      // engine now saves the real runtime state as state.json.gz, but older
+      // code and tests may still use state.json.
+      const stateArtifacts = [
+        path.join(this.logsDir, 'state.json.gz'),
+        path.join(this.logsDir, 'state.json'),
+      ];
+      for (const statePath of stateArtifacts) {
+        try {
+          await fs.access(statePath);
+          // State exists but no clean marker = crash
+          return true;
+        } catch (accessError) {
+          // Try the next known state artifact
+        }
       }
+      // No state file = first run
+      return false;
     }
   }
 
@@ -276,15 +284,35 @@ class CrashRecoveryManager {
   async cleanupOldCheckpoints(currentCycle) {
     try {
       const checkpoints = await this.listCheckpoints();
+      const checkpointsDir = path.join(this.logsDir, 'checkpoints');
       
       // Keep only last maxCheckpoints
       if (checkpoints.length > this.maxCheckpoints) {
         const toDelete = checkpoints.slice(0, checkpoints.length - this.maxCheckpoints);
         
         for (const file of toDelete) {
-          const filePath = path.join(this.logsDir, 'checkpoints', file);
+          const filePath = path.join(checkpointsDir, file);
           await fs.unlink(filePath);
+          const auditPath = filePath.replace('.json', '_audit.json');
+          await fs.unlink(auditPath).catch(() => {});
           this.logger.info('[CrashRecovery] Deleted old checkpoint', { file });
+        }
+      }
+
+      const auxiliaryFiles = await fs.readdir(checkpointsDir);
+      for (const file of auxiliaryFiles) {
+        if (file.startsWith('checkpoint-') && file.endsWith('.json.tmp')) {
+          await fs.unlink(path.join(checkpointsDir, file)).catch(() => {});
+          this.logger.info('[CrashRecovery] Deleted stale checkpoint temp', { file });
+          continue;
+        }
+
+        if (file.startsWith('checkpoint-') && file.endsWith('_audit.json')) {
+          const checkpointFile = file.replace('_audit.json', '.json');
+          if (!checkpoints.includes(checkpointFile)) {
+            await fs.unlink(path.join(checkpointsDir, file)).catch(() => {});
+            this.logger.info('[CrashRecovery] Deleted orphaned checkpoint audit', { file });
+          }
         }
       }
     } catch (error) {
@@ -432,4 +460,3 @@ class CrashRecoveryManager {
 }
 
 module.exports = { CrashRecoveryManager };
-

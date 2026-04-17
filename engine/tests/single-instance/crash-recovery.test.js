@@ -47,7 +47,7 @@ describe('Single-Instance: Crash Recovery', () => {
   describe('Crash Detection', () => {
     it('should detect unclean shutdown', async () => {
       // Simulate crash: create state file but no clean marker
-      const statePath = path.join(testLogsDir, 'state.json');
+      const statePath = path.join(testLogsDir, 'state.json.gz');
       await fs.writeFile(statePath, JSON.stringify({ cycleCount: 10 }), 'utf8');
       
       const crashDetected = await manager.detectCrash();
@@ -56,7 +56,7 @@ describe('Single-Instance: Crash Recovery', () => {
 
     it('should detect clean shutdown', async () => {
       // Simulate clean shutdown: state + clean marker
-      const statePath = path.join(testLogsDir, 'state.json');
+      const statePath = path.join(testLogsDir, 'state.json.gz');
       const cleanPath = path.join(testLogsDir, '.clean_shutdown');
       await fs.writeFile(statePath, JSON.stringify({ cycleCount: 10 }), 'utf8');
       await fs.writeFile(cleanPath, new Date().toISOString(), 'utf8');
@@ -117,6 +117,18 @@ describe('Single-Instance: Crash Recovery', () => {
       expect(recovered.cycleCount).to.equal(5);
       expect(recovered.status).to.equal('valid');
     });
+
+    it('should delete stale checkpoint temp files during cleanup', async () => {
+      await manager.saveCheckpoint({ cycleCount: 5, status: 'valid' }, 5);
+
+      const staleTemp = path.join(testLogsDir, 'checkpoints', 'checkpoint-999.json.tmp');
+      await fs.writeFile(staleTemp, 'partial checkpoint', 'utf8');
+
+      await manager.cleanupOldCheckpoints(5);
+
+      const exists = await fs.access(staleTemp).then(() => true).catch(() => false);
+      expect(exists).to.be.false;
+    });
   });
 
   describe('Clean Shutdown Marker', () => {
@@ -151,4 +163,3 @@ describe('Single-Instance: Crash Recovery', () => {
     });
   });
 });
-

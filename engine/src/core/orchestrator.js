@@ -2657,23 +2657,34 @@ class Orchestrator {
       // Phase A: Save checkpoint periodically (every 5 cycles)
       if (this.cycleCount % 5 === 0) {
         try {
-          // Build checkpoint state (same structure as saveState())
+          // Keep crash-recovery checkpoints small. The full brain is already
+          // persisted every cycle via state.json.gz + JSONL sidecars, so
+          // serializing memory.exportGraph() here just duplicates hundreds of
+          // MB on disk every few cycles.
           const checkpointState = {
             cycleCount: this.cycleCount,
             journal: this.journal.slice(-100),
-            memory: this.memory.exportGraph(),
-            goals: this.goals.export(),
-            roles: this.roles.getRoles(),
-            reflection: this.reflection.export(),
-            oscillator: this.oscillator.getStats(),
-            coordinator: this.coordinator ? this.coordinator.export() : null,
-            agentExecutor: this.agentExecutor ? this.agentExecutor.exportState() : null,
-            forkSystem: this.forkSystem ? this.forkSystem.export() : null,
-            topicQueue: this.topicQueue ? this.topicQueue.export() : null,
-            goalCurator: this.goalCurator ? this.goalCurator.export() : null,
-            guidedMissionPlan: this.guidedMissionPlan || null,
-            completionTracker: this.completionTracker || null,
-            lastSummarization: this.lastSummarization
+            lastSummarization: this.lastSummarization,
+            savedAt: new Date().toISOString(),
+            recoverySource: 'state.json.gz+sidecars',
+            memorySummary: {
+              nodes: this.memory.nodes?.size || 0,
+              edges: this.memory.edges?.size || 0,
+              clusters: this.memory.clusters?.size || 0,
+            },
+            guidedMissionPlan: this.guidedMissionPlan
+              ? { hasPlan: true, phases: this.guidedMissionPlan?.phases?.length || 0 }
+              : null,
+            completionTracker: this.completionTracker
+              ? {
+                  totalObjectives: Array.isArray(this.completionTracker.objectives)
+                    ? this.completionTracker.objectives.length
+                    : 0,
+                  completedObjectives: Array.isArray(this.completionTracker.objectives)
+                    ? this.completionTracker.objectives.filter((objective) => objective?.completed).length
+                    : 0,
+                }
+              : null,
           };
           await this.crashRecovery.saveCheckpoint(checkpointState, this.cycleCount);
         } catch (error) {
