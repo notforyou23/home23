@@ -46,8 +46,11 @@ Delivery:
       delivery_to: { type: 'string', description: 'Durable chat ID for delivery (Telegram numeric ID, Discord channel ID). REQUIRED for delivery to work.' },
       announce_mode: { type: 'string', enum: ['none', 'failures', 'summary', 'full'], description: 'When to deliver results (default: failures)' },
       cwd: { type: 'string', description: 'Working directory for exec commands (default: home23 project root)' },
+      message_path: { type: 'string', description: 'Path to a prompt file (alternative to message). Relative paths resolve from the home23 project root. Preferred for long prompts — makes them editable as files.' },
+      session_history: { type: 'string', enum: ['persistent', 'fresh'], description: 'Session lifecycle for agentTurn jobs. "fresh" rotates chat history before each run (cleanest for stateless jobs). Default: "persistent".' },
+      delivery_profile: { type: 'string', description: 'Name of a delivery profile from config.yaml deliveryProfiles. If set, overrides delivery_channel/delivery_to.' },
     },
-    required: ['name', 'schedule_kind', 'message'],
+    required: ['name', 'schedule_kind'],
   },
 
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
@@ -87,23 +90,41 @@ Delivery:
 
     // Build payload
     const payloadKind = (input.payload_kind as string) || 'agentTurn';
-    const message = input.message as string;
     const timeoutSeconds = typeof input.timeout_seconds === 'number' ? input.timeout_seconds : undefined;
     const model = typeof input.model === 'string' ? input.model : undefined;
     const cwd = typeof input.cwd === 'string' ? input.cwd : undefined;
 
+    const msgPath = typeof input.message_path === 'string' ? input.message_path : undefined;
+    const msg = typeof input.message === 'string' ? input.message : undefined;
+    if (!msg && !msgPath) {
+      return { content: 'Either "message" or "message_path" is required.', is_error: true };
+    }
+    if (msgPath && payloadKind !== 'agentTurn') {
+      return { content: `message_path is only valid for payload_kind=agentTurn (got "${payloadKind}").`, is_error: true };
+    }
+
+    const sessionHistory = input.session_history === 'fresh' ? 'fresh' : undefined;
+
     let payload: JobPayload;
     if (payloadKind === 'exec') {
-      payload = { kind: 'exec', command: message, ...(timeoutSeconds ? { timeoutSeconds } : {}), ...(cwd ? { cwd } : {}) } as JobPayload;
+      payload = { kind: 'exec', command: msg ?? '', ...(timeoutSeconds ? { timeoutSeconds } : {}), ...(cwd ? { cwd } : {}) } as JobPayload;
     } else if (payloadKind === 'query') {
-      payload = { kind: 'query', message, ...(model ? { model } : {}), ...(timeoutSeconds ? { timeoutSeconds } : {}) };
+      payload = { kind: 'query', message: msg ?? '', ...(model ? { model } : {}), ...(timeoutSeconds ? { timeoutSeconds } : {}) };
     } else {
-      payload = { kind: 'agentTurn', message, ...(model ? { model } : {}), ...(timeoutSeconds ? { timeoutSeconds } : {}) };
+      payload = {
+        kind: 'agentTurn',
+        ...(msg ? { message: msg } : {}),
+        ...(msgPath ? { messagePath: msgPath } : {}),
+        ...(model ? { model } : {}),
+        ...(timeoutSeconds ? { timeoutSeconds } : {}),
+        ...(sessionHistory ? { sessionHistory } : {}),
+      };
     }
 
     // Delivery — warn about ephemeral chatIds
     const deliveryTo = (input.delivery_to as string) || '';
-    if (!deliveryTo) {
+    const hasProfile = typeof input.delivery_profile === 'string' && input.delivery_profile !== '';
+    if (!deliveryTo && !hasProfile) {
       console.warn(`[cron_schedule] Job "${input.name}" created with no delivery_to — delivery will fail.`);
     } else if (deliveryTo.startsWith('dashboard-')) {
       console.warn(`[cron_schedule] Job "${input.name}" has ephemeral dashboard chatId as delivery_to — this won't survive browser close.`);
@@ -120,8 +141,12 @@ Delivery:
       payload,
       delivery: {
         mode: ((input.announce_mode as 'none' | 'failures' | 'summary' | 'full') || 'failures'),
-        channel: (input.delivery_channel as string) || 'auto',
-        to: deliveryTo,
+        ...(typeof input.delivery_profile === 'string' && input.delivery_profile
+          ? { profile: input.delivery_profile }
+          : {
+              channel: (input.delivery_channel as string) || 'auto',
+              to: deliveryTo,
+            }),
       },
       state: { nextRunAtMs: 0, consecutiveErrors: 0 },
     };
@@ -129,7 +154,7 @@ Delivery:
     ctx.scheduler.addJob(job);
 
     const warnings: string[] = [];
-    if (!deliveryTo) warnings.push('⚠ No delivery_to set — results won\'t be delivered anywhere.');
+    if (!deliveryTo && !hasProfile) warnings.push('⚠ No delivery_to set — results won\'t be delivered anywhere.');
     if (deliveryTo.startsWith('dashboard-')) warnings.push('⚠ delivery_to is a dashboard session ID — use a Telegram numeric ID instead.');
 
     return { content: `Job "${job.name}" scheduled (id: ${id}, ${kind}, payload: ${payloadKind})${warnings.length ? '\n' + warnings.join('\n') : ''}` };
@@ -281,6 +306,9 @@ export const cronUpdateTool: ToolDefinition = {
       announce_mode: { type: 'string', enum: ['none', 'failures', 'summary', 'full'], description: 'New delivery mode' },
       timeout_seconds: { type: 'number', description: 'New timeout in seconds' },
       model: { type: 'string', description: 'New model alias override' },
+      message_path: { type: 'string', description: 'New messagePath for agentTurn jobs (clears any inline message when set)' },
+      session_history: { type: 'string', enum: ['persistent', 'fresh'], description: 'New sessionHistory value' },
+      delivery_profile: { type: 'string', description: 'New delivery profile name (replaces channel/to when set; pass empty string to clear and fall back to channel/to)' },
     },
     required: ['job_id'],
   },
@@ -332,6 +360,29 @@ export const cronUpdateTool: ToolDefinition = {
     if (typeof input.model === 'string') {
       (job.payload as Record<string, unknown>).model = input.model;
       changes.push(`model → "${input.model}"`);
+    }
+
+    if (typeof input.message_path === 'string' && job.payload.kind === 'agentTurn') {
+      (job.payload as Record<string, unknown>).messagePath = input.message_path;
+      // Clear inline message — messagePath takes precedence
+      delete (job.payload as Record<string, unknown>).message;
+      changes.push(`messagePath → "${input.message_path}"`);
+    }
+    if (typeof input.session_history === 'string' && job.payload.kind === 'agentTurn') {
+      if (input.session_history === 'persistent') {
+        delete (job.payload as Record<string, unknown>).sessionHistory;
+      } else {
+        (job.payload as Record<string, unknown>).sessionHistory = input.session_history;
+      }
+      changes.push(`sessionHistory → "${input.session_history}"`);
+    }
+    if (typeof input.delivery_profile === 'string' && job.delivery) {
+      if (input.delivery_profile === '') {
+        delete job.delivery.profile;
+      } else {
+        job.delivery.profile = input.delivery_profile;
+      }
+      changes.push(`delivery.profile → "${input.delivery_profile}"`);
     }
 
     if (changes.length === 0) return { content: `No changes specified for job ${id}.` };
