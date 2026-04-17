@@ -58,3 +58,59 @@ describe('migration planner', () => {
     expect(plan.skipped).to.have.length(2);
   });
 });
+
+describe('migration applier', () => {
+  const { applyMigration } = require('../../src/goals/migrations/2026-04-17-done-when');
+
+  function fakeSystem() {
+    const archived = [];
+    const retrofitted = [];
+    return {
+      archiveGoal(id, reason) { archived.push({ id, reason }); return true; },
+      _applyRetrofit(id, dw) { retrofitted.push({ id, dw }); return true; },
+      _archived: archived,
+      _retrofitted: retrofitted,
+    };
+  }
+
+  it('applies archive and retrofit actions; skips llmRetrofit when no llmClient', async () => {
+    const sys = fakeSystem();
+    const plan = {
+      archive: [{ id: 'g1', reason: 'audit-tumor-purge-2026-04-17' }],
+      retrofit: [{ id: 'g6', doneWhen: { version: 1, criteria: [{ type: 'file_exists', path: 'x.md' }] } }],
+      llmRetrofit: [{ id: 'g99', description: 'pending' }],
+      skipped: []
+    };
+    const receipt = await applyMigration(plan, sys, {});
+    expect(sys._archived).to.have.length(1);
+    expect(sys._retrofitted).to.have.length(1);
+    expect(receipt.applied.archive).to.equal(1);
+    expect(receipt.applied.retrofit).to.equal(1);
+    expect(receipt.applied.llmRetrofit).to.equal(0);
+    expect(receipt.deferred.llmRetrofit).to.equal(1);
+  });
+
+  it('calls llmClient per llmRetrofit goal and archives when LLM declines', async () => {
+    const sys = fakeSystem();
+    const llmClient = {
+      async chat({ messages }) {
+        const userText = messages.find(m => m.role === 'user').content;
+        if (userText.includes('pending')) return { content: JSON.stringify({ decline: true, reason: 'no concrete termination' }) };
+        return { content: JSON.stringify({ doneWhen: { version: 1, criteria: [{ type: 'file_exists', path: 'x.md' }] } }) };
+      }
+    };
+    const plan = {
+      archive: [], retrofit: [],
+      llmRetrofit: [
+        { id: 'g99', description: 'pending forever' },
+        { id: 'g100', description: 'ship the sketch' }
+      ],
+      skipped: []
+    };
+    const receipt = await applyMigration(plan, sys, { llmClient });
+    expect(sys._archived.find(a => a.id === 'g99')).to.exist;
+    expect(sys._retrofitted.find(r => r.id === 'g100')).to.exist;
+    expect(receipt.applied.llmRetrofit).to.equal(1);
+    expect(receipt.applied.archive).to.equal(1);
+  });
+});

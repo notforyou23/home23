@@ -1434,6 +1434,15 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
     return this.goals.get(id);
   }
 
+  _applyRetrofit(goalId, doneWhen) {
+    const g = this.goals.get(goalId);
+    if (!g) return false;
+    g.doneWhen = doneWhen;
+    g.progress = 0;
+    this.logger?.info?.('[migration] retrofit doneWhen', { id: goalId });
+    return true;
+  }
+
   async refreshProgressFromDoneWhen() {
     if (!this.doneWhenEnv) {
       this.logger?.debug?.('[closer] no doneWhen env, skipping refresh');

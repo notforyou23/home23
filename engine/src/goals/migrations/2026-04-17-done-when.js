@@ -75,8 +75,78 @@ function planMigration(goalsMap) {
   return plan;
 }
 
+const { validateDoneWhen } = require('../done-when-gate');
+
+async function askLlmForDoneWhen(description, llmClient) {
+  const prompt = [
+    { role: 'system', content:
+      'You produce a concrete, verifiable termination criterion for an AI-system research goal. Output ONLY JSON — either {"doneWhen": {"version": 1, "criteria": [ ... ]}} or {"decline": true, "reason": "<one sentence>"}. Allowed criterion types: file_exists, file_created_after, memory_node_tagged, memory_node_matches, output_count_since, judged. Prefer file_exists in outputs/. If the goal is too vague to have a concrete output, decline.' },
+    { role: 'user', content: `Goal: ${description}\n\nRespond with JSON only.` }
+  ];
+  const resp = await llmClient.chat({
+    model: 'gpt-5-mini', messages: prompt, max_completion_tokens: 400, temperature: 0.2
+  });
+  try {
+    const parsed = JSON.parse((resp.content || '').trim());
+    return parsed;
+  } catch (err) {
+    return { decline: true, reason: `parse error: ${err.message}` };
+  }
+}
+
+async function applyMigration(plan, goalsSystem, opts = {}) {
+  const receipt = {
+    startedAt: new Date().toISOString(),
+    applied: { archive: 0, retrofit: 0, llmRetrofit: 0 },
+    deferred: { llmRetrofit: 0 },
+    actions: []
+  };
+
+  for (const a of plan.archive) {
+    goalsSystem.archiveGoal(a.id, a.reason);
+    receipt.applied.archive++;
+    receipt.actions.push({ action: 'archive', ...a });
+  }
+
+  for (const r of plan.retrofit) {
+    goalsSystem._applyRetrofit(r.id, r.doneWhen);
+    receipt.applied.retrofit++;
+    receipt.actions.push({ action: 'retrofit', id: r.id });
+  }
+
+  for (const item of plan.llmRetrofit) {
+    if (!opts.llmClient) {
+      receipt.deferred.llmRetrofit++;
+      receipt.actions.push({ action: 'defer', id: item.id, reason: 'no llmClient' });
+      continue;
+    }
+    const reply = await askLlmForDoneWhen(item.description, opts.llmClient);
+    if (reply?.decline || !reply?.doneWhen) {
+      goalsSystem.archiveGoal(item.id, `no-concrete-done-when (llm-decline: ${reply?.reason || 'unknown'})`);
+      receipt.applied.archive++;
+      receipt.actions.push({ action: 'archive-llm-decline', id: item.id, reason: reply?.reason });
+      continue;
+    }
+    const v = validateDoneWhen(reply.doneWhen);
+    if (!v.valid) {
+      goalsSystem.archiveGoal(item.id, `no-concrete-done-when (llm-invalid: ${v.reason})`);
+      receipt.applied.archive++;
+      receipt.actions.push({ action: 'archive-llm-invalid', id: item.id, reason: v.reason });
+      continue;
+    }
+    goalsSystem._applyRetrofit(item.id, reply.doneWhen);
+    receipt.applied.llmRetrofit++;
+    receipt.actions.push({ action: 'llm-retrofit', id: item.id });
+  }
+
+  receipt.finishedAt = new Date().toISOString();
+  return receipt;
+}
+
 module.exports = {
   planMigration,
+  applyMigration,
+  askLlmForDoneWhen,
   AUDIT_TUMOR_PATTERNS,
   KOAN_PATTERNS,
   CRDT_PATTERN,
