@@ -66,17 +66,22 @@ architecture:
         enableMCPTools: true
       - id: critic
         prompt: >-
-          Critically evaluate ONE assumption about jtr's world, decisions, or
-          current context — NOT Home23's internals. 3-5 sentences. Then propose
-          ONE concrete test on its own line:
-            INVESTIGATE: <specific check to run in jtr's world>
-            NOTIFY: <message for jtr about the weak assumption — will be verified>
+          Critically evaluate ONE claim: an assumption about jtr's world, an
+          active goal, a recent thought, OR a Home23 behavior pattern you have
+          direct evidence for. 3-5 sentences of reasoning. Then produce a verdict
+          on its own line (REQUIRED — output without a verdict will be discarded):
+            INVESTIGATE: <specific check to run>
+            NOTIFY: <message for jtr>
             TRIGGER: <condition that would validate or falsify>
             OBSERVE: <positive finding — an assumption that held up well>
+            VERDICT: keep|revise|discard  <short reason>
           If no action is warranted, end with: NO_ACTION
-          Forbidden topics: the cognitive loop, the enforcer, evidence receipts,
-          loop closure, Home23's own architecture.
-        promptGuided: Evaluate ONE assumption about {domain}. {context}. End with an action tag.
+          Forbidden topics (infinite-regress guards only): the enforcer itself,
+          evidence receipts, loop closure. You MAY critique goals, thoughts,
+          approach, and Home23 architecture when you have concrete evidence.
+          Prose poetry without a verdict tag is NOT a critique and will be
+          dropped.
+        promptGuided: Evaluate ONE claim about {domain}. {context}. End with a verdict tag (INVESTIGATE/NOTIFY/TRIGGER/OBSERVE/VERDICT/NO_ACTION).
         temperature: 1
         max_completion_tokens: 500
         successThreshold: 0.7

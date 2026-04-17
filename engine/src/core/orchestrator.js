@@ -2188,6 +2188,27 @@ class Orchestrator {
         });
       }
 
+      // Critic-verdict gate: tagless critic outputs are prose-poem noise,
+      // not critiques. Discard them so they don't pollute the journal or
+      // the thought stream. Jerry's 2026-04-17 diagnosis (cycle 1181
+      // seizure) showed 6 consecutive critic outputs, zero verdicts —
+      // the quality ratchet had no teeth. This gate gives it teeth.
+      if (role.id === 'critic' && process.env.HOME23_CRITIC_GATE_DISABLE !== '1') {
+        try {
+          const { hasVerdictTag } = require('../cognition/critic-verdict-parser');
+          if (!hasVerdictTag(thought.hypothesis)) {
+            this.logger?.info?.('[critic-discard] no verdict tag — discarded', {
+              cycle: this.cycleCount,
+              preview: String(thought.hypothesis || '').slice(0, 120)
+            });
+            this._criticOutputsDiscardedCount24h = (this._criticOutputsDiscardedCount24h || 0) + 1;
+            return; // Skip journal push + downstream side-effects
+          }
+        } catch (err) {
+          this.logger?.warn?.('[critic-discard] parser failed', { error: err.message });
+        }
+      }
+
       // 14. Record in journal
       const entry = {
         cycle: this.cycleCount,
@@ -2786,6 +2807,11 @@ class Orchestrator {
         if (typeof this.goals.setAgentSpawnsDedupedCount === 'function') {
           this.goals.setAgentSpawnsDedupedCount(
             this.agentExecutor?._agentSpawnsDedupedCount24h || 0
+          );
+        }
+        if (typeof this.goals.setCriticOutputsDiscardedCount === 'function') {
+          this.goals.setCriticOutputsDiscardedCount(
+            this._criticOutputsDiscardedCount24h || 0
           );
         }
         const closer = this.goals.getCloserStatus?.();

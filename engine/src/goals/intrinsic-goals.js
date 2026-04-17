@@ -1474,13 +1474,18 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
       // Dedup-before-spawn counter lives on the AgentExecutor; the
       // orchestrator sums it into closer-status via setAgentExecutor().
       agentSpawnsDedupedLast24h: this._agentSpawnsDedupedCount24h || 0,
+      criticOutputsDiscardedLast24h: this._criticOutputsDiscardedCount24h || 0,
     };
   }
 
-  // Called by the orchestrator each cycle to ferry the AgentExecutor's
-  // dedup counter into closer-status — avoids cross-module coupling.
+  // Called by the orchestrator each cycle to ferry counters from other
+  // subsystems (AgentExecutor, orchestrator-level critic gate) into
+  // closer-status — avoids cross-module coupling.
   setAgentSpawnsDedupedCount(n) {
     this._agentSpawnsDedupedCount24h = Number(n) || 0;
+  }
+  setCriticOutputsDiscardedCount(n) {
+    this._criticOutputsDiscardedCount24h = Number(n) || 0;
   }
 
   _applyRetrofit(goalId, doneWhen) {
