@@ -10,9 +10,229 @@ let tileConnectionsState = null;
 let editingCustomTileId = null;
 let editingTileConnectionId = null;
 let layoutDragTileId = null;
+let settingsAgents = [];
+let settingsPrimaryAgent = null;
+let settingsCurrentAgent = null;
+let selectedSettingsAgent = null;
+let activeSettingsTab = 'providers';
 const tilesBroadcast = typeof BroadcastChannel !== 'undefined'
   ? new BroadcastChannel('home23-dashboard-tiles')
   : null;
+
+const DEFAULT_SETTINGS_SCOPE_REGISTRY = {
+  providers: {
+    kind: 'global',
+    chip: 'Global',
+    agentTarget: 'none',
+    summaryTemplate: 'Providers is house-wide. Changes here affect every Home23 agent, harness, and shared model surface.',
+  },
+  agents: {
+    kind: 'roster',
+    chip: 'Roster',
+    agentTarget: 'roster',
+    summaryTemplate: 'Agents manages the multi-agent roster. Create agents, choose the home primary, and control each runtime independently.',
+  },
+  models: {
+    kind: 'mixed',
+    chip: 'Mixed',
+    agentTarget: 'selected',
+    summaryTemplate: 'Models is mixed-scope. {{selectedAgent}} gets the runtime defaults above, while provider catalogs, aliases, and image generation stay house-wide.',
+  },
+  query: {
+    kind: 'agent',
+    chip: 'Agent',
+    agentTarget: 'selected',
+    summaryTemplate: 'Query defaults are saved on {{selectedAgent}}. They seed that agent\'s Query tab only.',
+  },
+  feeder: {
+    kind: 'agent',
+    chip: 'Agent',
+    agentTarget: 'selected',
+    summaryTemplate: 'Document Feeder belongs to {{selectedAgent}}. Watch paths, live status, uploads, and restarts target that agent\'s ingestion pipeline.',
+  },
+  skills: {
+    kind: 'global',
+    chip: 'Global',
+    agentTarget: 'none',
+    summaryTemplate: 'Skills is house-wide. Skill configuration and credentials are shared across the Home23 system.',
+  },
+  vibe: {
+    kind: 'global',
+    chip: 'Global',
+    agentTarget: 'none',
+    summaryTemplate: 'Vibe is house-wide. Changes here affect the visual generation layer for the whole Home23 install.',
+  },
+  tiles: {
+    kind: 'global',
+    chip: 'Global',
+    agentTarget: 'none',
+    summaryTemplate: 'Tiles is house-wide. Home tile definitions and layout rules are shared across dashboards.',
+  },
+  agency: {
+    kind: 'mixed',
+    chip: 'Mixed',
+    agentTarget: 'selected',
+    summaryTemplate: 'Agency is mixed-scope. The allow-list is house-wide, while the audit trails below show what {{selectedAgent}} actually attempted.',
+  },
+  system: {
+    kind: 'global',
+    chip: 'Global',
+    agentTarget: 'none',
+    summaryTemplate: 'System is house-wide. Ports, shared services, and install/build actions affect the Home23 host itself.',
+  },
+};
+let settingsScopeRegistry = { ...DEFAULT_SETTINGS_SCOPE_REGISTRY };
+
+function settingsApiUrl(path = '', options = {}) {
+  const { agentScoped = false, params = {} } = options;
+  const url = new URL(`${API}${path}`, window.location.origin);
+  if (agentScoped && selectedSettingsAgent) {
+    url.searchParams.set('agent', selectedSettingsAgent);
+  }
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== '') {
+      url.searchParams.set(key, value);
+    }
+  }
+  return `${url.pathname}${url.search}`;
+}
+
+function getSelectedAgentMeta() {
+  return settingsAgents.find(agent => agent.name === selectedSettingsAgent) || null;
+}
+
+function selectedAgentLabel(fallback = 'selected agent') {
+  const meta = getSelectedAgentMeta();
+  return meta?.displayName || meta?.name || fallback;
+}
+
+function getScopeMeta(tabKey = activeSettingsTab) {
+  return settingsScopeRegistry[tabKey] || DEFAULT_SETTINGS_SCOPE_REGISTRY[tabKey] || DEFAULT_SETTINGS_SCOPE_REGISTRY.providers;
+}
+
+function resolveScopeSummary(meta) {
+  const currentMeta = settingsAgents.find(agent => agent.name === settingsCurrentAgent) || null;
+  const primaryMeta = settingsAgents.find(agent => agent.name === settingsPrimaryAgent) || null;
+  const replacements = {
+    selectedAgent: selectedAgentLabel('the selected agent'),
+    dashboardAgent: currentMeta?.displayName || currentMeta?.name || 'this dashboard agent',
+    primaryAgent: primaryMeta?.displayName || primaryMeta?.name || 'the Home23 primary agent',
+  };
+  return String(meta?.summaryTemplate || '').replace(/\{\{(\w+)\}\}/g, (_, key) => replacements[key] || '');
+}
+
+async function loadScopeRegistry() {
+  try {
+    const res = await fetch(settingsApiUrl('/scope', {
+      agentScoped: !!selectedSettingsAgent,
+    }));
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data?.tabs && typeof data.tabs === 'object') {
+      settingsScopeRegistry = { ...DEFAULT_SETTINGS_SCOPE_REGISTRY, ...data.tabs };
+    }
+  } catch {
+    settingsScopeRegistry = { ...DEFAULT_SETTINGS_SCOPE_REGISTRY };
+  }
+}
+
+function renderSettingsScopeChrome() {
+  document.querySelectorAll('.h23s-tab').forEach(tab => {
+    const tabKey = tab.dataset.stab;
+    const label = tab.dataset.tabLabel || tab.textContent.trim();
+    const meta = getScopeMeta(tabKey);
+    tab.innerHTML = `<span class="h23s-tab-label">${label}</span><span class="h23s-scope-chip scope-${meta.kind}">${meta.chip}</span>`;
+  });
+
+  document.querySelectorAll('.h23s-panel').forEach(panel => {
+    const tabKey = panel.id.replace('panel-', '');
+    const meta = getScopeMeta(tabKey);
+    const title = panel.querySelector('.h23s-panel-title');
+    if (!title) return;
+    if (!title.dataset.baseTitle) title.dataset.baseTitle = title.textContent.trim();
+
+    let row = title.parentElement;
+    if (!row || !row.classList.contains('h23s-panel-title-row')) {
+      row = document.createElement('div');
+      row.className = 'h23s-panel-title-row';
+      title.parentNode.insertBefore(row, title);
+      row.appendChild(title);
+    }
+
+    let badge = row.querySelector('.h23s-scope-chip');
+    if (!badge) {
+      badge = document.createElement('span');
+      row.appendChild(badge);
+    }
+    badge.className = `h23s-scope-chip scope-${meta.kind}`;
+    badge.textContent = meta.chip;
+    title.textContent = title.dataset.baseTitle;
+  });
+}
+
+function refreshSettingsDocumentTitle() {
+  const scopeMeta = getScopeMeta();
+  const selected = selectedAgentLabel('No Agent');
+  document.title = `Home23 Settings — ${scopeMeta.chip} — ${selected}`;
+}
+
+function refreshAgentScopeUI() {
+  const select = document.getElementById('settings-agent-select');
+  const kicker = document.getElementById('settings-scope-kicker');
+  const summary = document.getElementById('settings-scope-summary');
+  const scopeMeta = getScopeMeta();
+  if (select) {
+    select.innerHTML = settingsAgents.map(agent => {
+      const badges = [
+        agent.name === settingsCurrentAgent ? 'this dashboard' : '',
+        agent.isPrimary ? 'primary' : '',
+      ].filter(Boolean).join(' · ');
+      const label = badges ? `${agent.displayName || agent.name} — ${badges}` : (agent.displayName || agent.name);
+      return `<option value="${agent.name}" ${agent.name === selectedSettingsAgent ? 'selected' : ''}>${label}</option>`;
+    }).join('');
+    select.disabled = settingsAgents.length === 0;
+  }
+  if (kicker) {
+    const scopeLabel = scopeMeta.kind === 'agent'
+      ? 'Selected Agent Scope'
+      : scopeMeta.kind === 'mixed'
+        ? 'Mixed Scope'
+        : scopeMeta.kind === 'roster'
+          ? 'Multi-Agent Scope'
+          : 'House-Wide Scope';
+    kicker.textContent = `${scopeLabel} · ${scopeMeta.chip}`;
+  }
+  if (summary) {
+    summary.textContent = settingsAgents.length
+      ? resolveScopeSummary(scopeMeta)
+      : 'No agents found yet. Create one to unlock agent-scoped settings.';
+  }
+  document.querySelectorAll('[data-scope-label="models"], [data-scope-label="query"], [data-scope-label="agency"]').forEach(el => {
+    el.textContent = selectedAgentLabel('selected agent');
+  });
+  renderSettingsScopeChrome();
+  refreshSettingsDocumentTitle();
+}
+
+async function refreshAgentScopedPanels() {
+  if (!selectedSettingsAgent && settingsAgents.length > 0) return;
+  await loadModels();
+  loadAssignments();
+  loadPulseVoice();
+  loadQuerySettings();
+  loadFeeder();
+  loadAgencyRecent();
+  loadAgencyRequested();
+}
+
+async function setSelectedSettingsAgent(name, options = {}) {
+  const { reload = true } = options;
+  selectedSettingsAgent = name || null;
+  refreshAgentScopeUI();
+  if (reload) {
+    await refreshAgentScopedPanels();
+  }
+}
 
 // ── Sub-tab switching ──
 
@@ -22,8 +242,10 @@ function setupSubTabs() {
       document.querySelectorAll('.h23s-tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.h23s-panel').forEach(p => p.classList.remove('active'));
       tab.classList.add('active');
+      activeSettingsTab = tab.dataset.stab || 'providers';
       const panel = document.getElementById(`panel-${tab.dataset.stab}`);
       if (panel) panel.classList.add('active');
+      refreshAgentScopeUI();
     });
   });
 }
@@ -160,6 +382,17 @@ async function loadAgents() {
   try {
     const res = await fetch(`${API}/agents`);
     const data = await res.json();
+    settingsAgents = data.agents || [];
+    settingsPrimaryAgent = data.primaryAgent || null;
+    settingsCurrentAgent = data.currentAgent || null;
+    const nextSelected = selectedSettingsAgent && settingsAgents.some(agent => agent.name === selectedSettingsAgent)
+      ? selectedSettingsAgent
+      : settingsCurrentAgent
+        || settingsPrimaryAgent
+        || settingsAgents[0]?.name
+        || null;
+    selectedSettingsAgent = nextSelected;
+    refreshAgentScopeUI();
     renderAgents(data.agents);
   } catch (err) {
     console.error('Failed to load agents:', err);
@@ -269,6 +502,7 @@ function renderAgents(agents) {
         </div>
         <div style="display:flex;gap:8px;margin-top:12px;">
           <button class="h23s-btn-primary" onclick="saveAgent('${a.name}')" style="font-size:13px;padding:7px 16px;">Save</button>
+          ${a.isPrimary ? '' : `<button class="h23s-btn-secondary" onclick="makePrimary('${a.name}')" style="font-size:13px;padding:7px 16px;">Make Primary</button>`}
           ${a.isPrimary ? '' : `<button class="h23s-btn-danger" onclick="deleteAgent('${a.name}')">Delete Agent</button>`}
           <span class="h23s-save-status" id="agent-status-${a.name}"></span>
         </div>
@@ -373,6 +607,23 @@ async function saveAgent(name) {
   }
 }
 
+async function makePrimary(name) {
+  if (!confirm(`Make ${name} the primary Home23 agent? Query, models, and shared links will follow it.`)) return;
+  try {
+    const res = await fetch(`${API}/agents/${name}/primary`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadAgents();
+    if (!selectedSettingsAgent) {
+      await setSelectedSettingsAgent(name);
+    } else {
+      refreshAgentScopeUI();
+    }
+  } catch (err) {
+    alert('Failed to set home primary agent: ' + err.message);
+  }
+}
+
 async function restartAgent(name) {
   const statusEl = document.getElementById(`agent-status-${name}`);
   try {
@@ -398,7 +649,8 @@ async function deleteAgent(name) {
   if (!confirm(`Delete agent "${name}"? This removes the instance directory and all data.`)) return;
   try {
     await fetch(`${API}/agents/${name}`, { method: 'DELETE' });
-    loadAgents();
+    await loadAgents();
+    await refreshAgentScopedPanels();
   } catch (err) {
     alert('Failed to delete: ' + err.message);
   }
@@ -538,7 +790,10 @@ async function createAgent() {
     const data = await res.json();
     if (data.ok) {
       hideWizard();
-      loadAgents();
+      await loadAgents();
+      if (data.agent?.name) {
+        await setSelectedSettingsAgent(data.agent.name);
+      }
     } else {
       alert('Error: ' + data.error);
     }
@@ -554,7 +809,7 @@ async function createAgent() {
 
 async function loadModels() {
   try {
-    const res = await fetch(`${API}/models`);
+    const res = await fetch(settingsApiUrl('/models', { agentScoped: true }));
     modelsData = await res.json();
     renderModels(modelsData);
   } catch (err) {
@@ -586,7 +841,10 @@ function renderModels(data) {
       modelSelect.appendChild(opt);
     }
   }
-  provSelect.addEventListener('change', fillModelSelect);
+  if (!provSelect.dataset.bound) {
+    provSelect.addEventListener('change', fillModelSelect);
+    provSelect.dataset.bound = 'true';
+  }
   fillModelSelect();
 
   // Image generation config — used by generate_image + Vibe
@@ -731,6 +989,7 @@ async function saveModels() {
   }
 
   const body = {
+    agent: selectedSettingsAgent,
     chat: {
       defaultProvider: document.getElementById('models-default-provider').value,
       defaultModel: document.getElementById('models-default-model').value,
@@ -752,7 +1011,9 @@ async function saveModels() {
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    statusEl.textContent = data.ok ? 'Saved' : ('Error: ' + data.error);
+    statusEl.textContent = data.ok
+      ? `Saved for ${selectedAgentLabel()}.${data.restartedAgent ? ' Engine restarting.' : ''}`
+      : ('Error: ' + data.error);
     statusEl.style.color = data.ok ? 'var(--accent-green)' : 'var(--accent-red)';
     setTimeout(() => { statusEl.textContent = ''; }, 3000);
   } catch (err) {
@@ -770,7 +1031,7 @@ async function saveModels() {
 async function loadQuerySettings() {
   try {
     const [qRes, cosmoModels] = await Promise.all([
-      fetch(`${API}/query`),
+      fetch(settingsApiUrl('/query', { agentScoped: true })),
       // Model list comes from cosmo23 (same source the Query tab uses), so
       // the sweep/synth dropdowns show every model the engine can actually route.
       fetch(`http://${window.location.hostname}:43210/api/providers/models`).catch(() => null),
@@ -823,6 +1084,7 @@ async function loadQuerySettings() {
 
 async function saveQuerySettings() {
   const body = {
+    agent: selectedSettingsAgent,
     defaultModel: document.getElementById('query-default-model')?.value || '',
     defaultMode: document.getElementById('query-default-mode')?.value || 'full',
     enablePGSByDefault: !!document.getElementById('query-pgs-default')?.checked,
@@ -838,7 +1100,7 @@ async function saveQuerySettings() {
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    statusEl.textContent = data.ok ? 'Saved' : ('Error: ' + (data.error || 'unknown'));
+    statusEl.textContent = data.ok ? `Saved for ${selectedAgentLabel()}` : ('Error: ' + (data.error || 'unknown'));
     statusEl.style.color = data.ok ? 'var(--accent-green)' : 'var(--accent-red)';
     setTimeout(() => { statusEl.textContent = ''; }, 3000);
   } catch (err) {
@@ -1311,9 +1573,17 @@ function escapeHtml(s) {
   return String(s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+function feederAgentUrl(path) {
+  const url = new URL(path, window.location.origin);
+  if (selectedSettingsAgent) {
+    url.searchParams.set('agent', selectedSettingsAgent);
+  }
+  return `${url.pathname}${url.search}`;
+}
+
 async function loadFeeder() {
   try {
-    const res = await fetch(`${API}/feeder`);
+    const res = await fetch(settingsApiUrl('/feeder', { agentScoped: true }));
     const data = await res.json();
     renderFeeder(data);
   } catch (err) {
@@ -1463,7 +1733,7 @@ async function saveFeeder() {
   const statusEl = document.getElementById('feeder-status');
   const feeder = collectFeederConfig();
   try {
-    const res = await fetch(`${API}/feeder`, {
+    const res = await fetch(settingsApiUrl('/feeder', { agentScoped: true }), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ feeder }),
@@ -1482,7 +1752,7 @@ async function saveFeeder() {
 
     if (hotCompiler) {
       try {
-        await fetch('/home23/feeder/update-compiler', {
+        await fetch(feederAgentUrl('/home23/feeder/update-compiler'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ enabled: feeder.compiler.enabled, model: feeder.compiler.model }),
@@ -1493,7 +1763,7 @@ async function saveFeeder() {
       const p = addStr.slice('watchPath:+'.length);
       const entry = feeder.additionalWatchPaths.find((w) => w.path === p);
       try {
-        await fetch('/home23/feeder/add-watch-path', {
+        await fetch(feederAgentUrl('/home23/feeder/add-watch-path'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path: p, label: entry?.label || null }),
@@ -1511,7 +1781,7 @@ async function saveFeeder() {
       banner.style.display = 'none';
     }
 
-    statusEl.textContent = 'Saved ' + (applied.length ? `(${applied.length} hot-applied)` : '');
+    statusEl.textContent = `Saved for ${selectedAgentLabel()}` + (applied.length ? ` (${applied.length} hot-applied)` : '');
     statusEl.style.color = 'var(--accent-green)';
     setTimeout(() => { statusEl.textContent = ''; }, 4000);
     loadFeederLiveStatus();
@@ -1524,8 +1794,8 @@ async function saveFeeder() {
 async function loadFeederLiveStatus() {
   try {
     const [liveRes, summaryRes] = await Promise.all([
-      fetch('/home23/feeder/live-status').catch(() => null),
-      fetch('/home23/feeder-status').catch(() => null),
+      fetch(feederAgentUrl('/home23/feeder/live-status')).catch(() => null),
+      fetch(feederAgentUrl('/home23/feeder-status')).catch(() => null),
     ]);
 
     let started = '—', watchers = '—', converter = '—';
@@ -1573,9 +1843,9 @@ async function feederForceFlush() {
   const statusEl = document.getElementById('feeder-action-status');
   statusEl.textContent = 'Flushing…';
   try {
-    const res = await fetch('/home23/feeder/flush', { method: 'POST' });
+    const res = await fetch(feederAgentUrl('/home23/feeder/flush'), { method: 'POST' });
     const data = await res.json();
-    statusEl.textContent = data.ok ? 'Flushed' : ('Error: ' + (data.error || 'unknown'));
+    statusEl.textContent = data.ok ? `Flushed ${selectedAgentLabel()}` : ('Error: ' + (data.error || 'unknown'));
     statusEl.style.color = data.ok ? 'var(--accent-green)' : 'var(--accent-red)';
     setTimeout(() => loadFeederLiveStatus(), 500);
     setTimeout(() => { statusEl.textContent = ''; }, 3000);
@@ -1629,14 +1899,14 @@ async function uploadFiles(files) {
     fd.append('label', label);
     for (const f of files) fd.append('files', f, f.name);
 
-    const res = await fetch('/home23/feeder/upload', { method: 'POST', body: fd });
+    const res = await fetch(feederAgentUrl('/home23/feeder/upload'), { method: 'POST', body: fd });
     const data = await res.json();
     if (!data.ok) {
       row.innerHTML = `<div style="color:var(--accent-red);">Upload failed: ${escapeHtml(data.error || 'unknown')}</div>`;
       return;
     }
     const fileList = (data.files || []).map((f) => `<div style="font-family:monospace; font-size:0.8em; opacity:0.8;">→ ${escapeHtml(f.name)} (${Math.round(f.size / 1024)}KB)</div>`).join('');
-    row.innerHTML = `<div style="color:var(--accent-green);">✓ Uploaded ${data.count} file(s) to ${escapeHtml(data.label)}. Feeder will pick them up within ~1s.</div>${fileList}`;
+    row.innerHTML = `<div style="color:var(--accent-green);">✓ Uploaded ${data.count} file(s) to ${escapeHtml(data.label)} for ${escapeHtml(selectedAgentLabel('the selected agent'))}. Feeder will pick them up within ~1s.</div>${fileList}`;
     // Poll for ingestion
     setTimeout(() => loadFeederLiveStatus(), 1500);
     setTimeout(() => loadFeederLiveStatus(), 4000);
@@ -1649,11 +1919,21 @@ async function restartEngine() {
   const statusEl = document.getElementById('feeder-action-status');
   statusEl.textContent = 'Restarting engine…';
   try {
-    // Best-effort: use the existing PM2-restart pattern already in the settings API.
-    // If no dedicated endpoint exists, surface the CLI command to the user.
-    statusEl.innerHTML = 'Open a terminal and run: <code>pm2 restart home23-$(whoami)</code> — or use the Agents tab stop/start buttons.';
+    if (!selectedSettingsAgent) {
+      throw new Error('No selected agent');
+    }
+    const res = await fetch(`${API}/agents/${encodeURIComponent(selectedSettingsAgent)}/restart-engine`, { method: 'POST' });
+    const data = await res.json();
+    if (!data.ok) {
+      throw new Error(data.error || 'restart failed');
+    }
+    statusEl.textContent = `Restarted ${selectedAgentLabel()}'s engine.`;
+    statusEl.style.color = 'var(--accent-green)';
+    setTimeout(() => loadFeederLiveStatus(), 2000);
+    setTimeout(() => { statusEl.textContent = ''; }, 4000);
   } catch (err) {
     statusEl.textContent = 'Error: ' + err.message;
+    statusEl.style.color = 'var(--accent-red)';
   }
 }
 
@@ -3204,7 +3484,7 @@ function escapeSlotText(s) {
 
 async function loadAssignments() {
   try {
-    const res = await fetch(`${API}/model-assignments`);
+    const res = await fetch(settingsApiUrl('/model-assignments', { agentScoped: true }));
     assignmentsData = await res.json();
     renderAssignments(assignmentsData);
   } catch (err) {
@@ -3330,11 +3610,11 @@ async function saveAssignments() {
     const res = await fetch(`${API}/model-assignments`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ assignments }),
+      body: JSON.stringify({ agent: selectedSettingsAgent, assignments }),
     });
     const data = await res.json();
     if (data.ok) {
-      statusEl.textContent = `Saved (${data.overrideCount} override${data.overrideCount === 1 ? '' : 's'}). Engine restarting.`;
+      statusEl.textContent = `Saved for ${selectedAgentLabel()} (${data.overrideCount} override${data.overrideCount === 1 ? '' : 's'}). Engine restarting.`;
       statusEl.style.color = 'var(--accent-green)';
       setTimeout(() => loadAssignments(), 1500);
     } else {
@@ -3348,7 +3628,7 @@ async function saveAssignments() {
 }
 
 async function resetAssignments() {
-  if (!confirm('Reset all cognitive assignments to the base-engine.yaml defaults? The primary agent will restart.')) return;
+  if (!confirm(`Reset all cognitive assignments for ${selectedAgentLabel()} to the base-engine.yaml defaults? The engine will restart.`)) return;
   const statusEl = document.getElementById('assignments-status');
   statusEl.textContent = 'Resetting…';
   statusEl.style.color = '';
@@ -3356,11 +3636,11 @@ async function resetAssignments() {
     const res = await fetch(`${API}/model-assignments`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ assignments: {} }),
+      body: JSON.stringify({ agent: selectedSettingsAgent, assignments: {} }),
     });
     const data = await res.json();
     if (data.ok) {
-      statusEl.textContent = 'Reset. Engine restarting.';
+      statusEl.textContent = `Reset for ${selectedAgentLabel()}. Engine restarting.`;
       statusEl.style.color = 'var(--accent-green)';
       setTimeout(() => loadAssignments(), 1500);
     } else {
@@ -3373,14 +3653,14 @@ async function resetAssignments() {
   }
 }
 
-// ── Pulse Voice (Jerry's remark layer) ──
+// ── Pulse Voice (remark layer) ──
 
 let pulseVoiceData = null;
 let pulseVoiceDefaultPrompt = '';
 
 async function loadPulseVoice() {
   try {
-    const res = await fetch(`${API}/pulse-voice`);
+    const res = await fetch(settingsApiUrl('/pulse-voice', { agentScoped: true }));
     pulseVoiceData = await res.json();
     pulseVoiceDefaultPrompt = pulseVoiceData.defaultPrompt || '';
     renderPulseVoice(pulseVoiceData);
@@ -3420,6 +3700,7 @@ async function savePulseVoice() {
   statusEl.textContent = 'Saving…';
   statusEl.style.color = '';
   const body = {
+    agent: selectedSettingsAgent,
     provider: document.getElementById('pulse-voice-provider')?.value,
     model: document.getElementById('pulse-voice-model')?.value,
     systemPrompt: document.getElementById('pulse-voice-prompt')?.value,
@@ -3432,7 +3713,7 @@ async function savePulseVoice() {
     });
     const data = await res.json();
     if (data.ok) {
-      statusEl.textContent = 'Saved. Engine restarting, next remark uses this.';
+      statusEl.textContent = `Saved for ${selectedAgentLabel()}. Engine restarting, next remark uses this.`;
       statusEl.style.color = 'var(--accent-green)';
     } else {
       statusEl.textContent = 'Error: ' + (data.error || 'unknown');
@@ -3447,7 +3728,7 @@ async function savePulseVoice() {
 function resetPulsePrompt() {
   const prompt = document.getElementById('pulse-voice-prompt');
   if (!prompt || !pulseVoiceDefaultPrompt) return;
-  if (!confirm('Reset Jerry\'s voice prompt to the default? Your current text will be lost.')) return;
+  if (!confirm('Reset the remark voice prompt to the default? Your current text will be lost.')) return;
   prompt.value = pulseVoiceDefaultPrompt;
 }
 
@@ -3624,7 +3905,7 @@ function renderAgencyRecent(actions) {
 
 async function loadAgencyRecent() {
   try {
-    const res = await fetch(`${API}/agency/recent?limit=200`);
+    const res = await fetch(settingsApiUrl('/agency/recent', { agentScoped: true, params: { limit: 200 } }));
     const data = await res.json();
     renderAgencyRecent(data.actions || []);
   } catch { /* ok */ }
@@ -3634,7 +3915,7 @@ async function loadAgencyRequested() {
   const list = document.getElementById('agency-requested-list');
   if (!list) return;
   try {
-    const res = await fetch(`${API}/agency/requested?limit=50`);
+    const res = await fetch(settingsApiUrl('/agency/requested', { agentScoped: true, params: { limit: 50 } }));
     const data = await res.json();
     const requests = data.requests || [];
     if (requests.length === 0) {
@@ -3674,12 +3955,12 @@ function startAgencyPoll() {
 // ── Init ──
 
 async function init() {
+  await loadScopeRegistry();
+  renderSettingsScopeChrome();
   setupSubTabs();
-  // Load models first so provider cards can show model counts
-  await loadModels();
-  loadAssignments();
+  await loadAgents();
+  await refreshAgentScopedPanels();
   loadProviders();
-  loadAgents();
   loadSystem();
   loadFeeder();
   loadSkillsSettings();
@@ -3713,6 +3994,9 @@ async function init() {
   document.getElementById('vibe-save')?.addEventListener('click', saveVibe);
   setupOAuthHandlers();
   setupOnboardingHandlers();
+  document.getElementById('settings-agent-select')?.addEventListener('change', async (event) => {
+    await setSelectedSettingsAgent(event.target.value);
+  });
 
   setupWizard();
 

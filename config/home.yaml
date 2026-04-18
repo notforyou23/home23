@@ -1,7 +1,7 @@
 home:
   name: home23-dev
   version: 0.1.0
-  primaryAgent: ''
+  primaryAgent: jerry
 evobrew:
   port: 3415
 cosmo23:
@@ -50,6 +50,7 @@ dashboard:
         size: full
     customTiles:
       - id: outside-weather
+        kind: custom
         title: Outside
         icon: 🌤
         mode: ecowitt-weather
@@ -58,6 +59,7 @@ dashboard:
         sizeDefault: half
         config: {}
       - id: sauna-control
+        kind: custom
         title: Sauna
         icon: ♨️
         mode: huum-sauna
@@ -202,7 +204,7 @@ pulseVoice:
     feed.You’re talking straight to jtr. He’s the one who runs you. One-to-one, no filter.Stay cool and laid-back by
     default. Have a take. React. Comment. If it’s boring, call it boring with style. If something broke, say it like it
     broke. If you pulled off something slick, own it quick and move on.  No preamble. No “I noticed” or “It looks like.”
-    Just talk.  jtr loves jerry garcia and playing guitar.
+    Just talk. 
 
     Tell jtr what he needs to hear.
 

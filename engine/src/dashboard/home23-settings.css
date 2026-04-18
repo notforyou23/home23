@@ -22,6 +22,9 @@
   border: none;
   color: var(--text-secondary);
   padding: 7px 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   border-radius: 16px;
   font-size: 13px;
   cursor: pointer;
@@ -34,6 +37,63 @@
 .h23s-tab.active {
   background: var(--accent-blue);
   color: #fff;
+}
+
+.h23s-tab-label {
+  white-space: nowrap;
+}
+
+.h23s-scope-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.05);
+  color: var(--text-muted);
+}
+
+.h23s-tab.active .h23s-scope-chip {
+  border-color: rgba(255,255,255,0.28);
+  color: rgba(255,255,255,0.92);
+  background: rgba(255,255,255,0.12);
+}
+
+.h23s-scope-chip.scope-global {
+  color: #7ad9ff;
+  border-color: rgba(122,217,255,0.24);
+  background: rgba(122,217,255,0.08);
+}
+
+.h23s-scope-chip.scope-agent {
+  color: #7ef0a8;
+  border-color: rgba(126,240,168,0.24);
+  background: rgba(126,240,168,0.08);
+}
+
+.h23s-scope-chip.scope-mixed {
+  color: #ffd27a;
+  border-color: rgba(255,210,122,0.24);
+  background: rgba(255,210,122,0.08);
+}
+
+.h23s-scope-chip.scope-roster {
+  color: #c6a7ff;
+  border-color: rgba(198,167,255,0.24);
+  background: rgba(198,167,255,0.08);
+}
+
+.h23s-panel-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 /* ── Panels ── */

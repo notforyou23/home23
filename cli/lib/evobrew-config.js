@@ -115,6 +115,7 @@ export function generateEvobrewConfig(home23Root) {
 
   // Build allowed models from home.yaml providers.*.defaultModels
   const providers = homeConfig.providers || {};
+  const configuredPrimaryAgent = String(homeConfig?.home?.primaryAgent || '').trim();
   const allowedModels = {};
   for (const [providerId, providerConfig] of Object.entries(providers)) {
     if (providerConfig?.defaultModels?.length) {
@@ -177,7 +178,8 @@ export function generateEvobrewConfig(home23Root) {
     },
 
     brain: {
-      defaultPath: agents.length > 0 ? agents[0].brainPath : '',
+      defaultPath: agents.find(a => a.id === configuredPrimaryAgent)?.brainPath
+        || (agents.length > 0 ? agents[0].brainPath : ''),
       agentBrains: Object.fromEntries(
         agents.map(a => [a.id, a.brainPath])
       ),

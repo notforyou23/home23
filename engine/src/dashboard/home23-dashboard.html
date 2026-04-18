@@ -15,6 +15,7 @@
     <div class="h23-header-left">
       <div class="h23-logo">● Home23</div>
       <div class="h23-subtitle" id="header-subtitle">AUTONOMOUS INTELLIGENCE · <a href="/home23/vibe-gallery" style="color:inherit;text-decoration:none;">🎨GALLERY</a></div>
+      <div class="h23-dashboard-identity" id="dashboard-identity-chip">Dashboard: Agent</div>
     </div>
     <div class="h23-header-right">
       <div class="time-cluster">
@@ -129,7 +130,7 @@
           </label>
           <div style="font-size:11px;color:rgba(255,255,255,0.5);background:rgba(255,255,255,0.03);padding:8px 10px;border-radius:6px;">
             <div><b>Verifier types:</b> file_mtime, file_exists, pm2_status, http_ping, disk_free, graph_not_empty</div>
-            <div><b>Remediator types:</b> pm2_restart (home23-* only), run_shortcut, fetch_url, exec_command (clean_pm2_logs, clean_npm_cache), <b>dispatch_to_agent</b> (hands the problem to Jerry with full tools, args.budgetHours), notify_jtr</div>
+            <div><b>Remediator types:</b> pm2_restart (home23-* only), run_shortcut, fetch_url, exec_command (clean_pm2_logs, clean_npm_cache), <b>dispatch_to_agent</b> (hands the problem to the current agent with full tools, args.budgetHours), notify_jtr</div>
           </div>
           <div style="display:flex;gap:10px;margin-top:6px;">
             <button onclick="saveProblemEdit()" style="background:rgba(0,122,255,0.3);border:1px solid rgba(0,122,255,0.5);color:#fff;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;">Save</button>
@@ -201,18 +202,23 @@
 
   <!-- Tab bar -->
   <nav class="h23-tabs">
-    <button class="h23-tab active" data-tab="home">Home</button>
-    <button class="h23-tab" data-tab="intelligence">Intelligence</button>
-    <button class="h23-tab" data-tab="query">🔎 Query</button>
-    <button class="h23-tab" data-tab="brain-map">🧬 Brain Map</button>
-    <button class="h23-tab" data-tab="about">About</button>
+    <button class="h23-tab active" data-tab="home" data-tab-label="Home">Home</button>
+    <button class="h23-tab" data-tab="intelligence" data-tab-label="Intelligence">Intelligence</button>
+    <button class="h23-tab" data-tab="query" data-tab-label="🔎 Query">🔎 Query</button>
+    <button class="h23-tab" data-tab="brain-map" data-tab-label="🧬 Brain Map">🧬 Brain Map</button>
+    <button class="h23-tab" data-tab="about" data-tab-label="About">About</button>
     <div id="agent-tabs"></div>
-    <button class="h23-tab h23-tab-settings" id="settings-btn">&#9881; Settings</button>
-    <button class="h23-tab h23-tab-external h23-tab-cosmo23" id="cosmo23-btn">🔬 cosmo23</button>
-    <a class="h23-tab h23-tab-external h23-tab-evobrew" id="evobrew-btn" href="#" target="_blank">⚡ evobrew</a>
+    <button class="h23-tab h23-tab-settings" id="settings-btn" data-scope-tab="settings" data-tab-label="⚙ Settings">&#9881; Settings</button>
+    <button class="h23-tab h23-tab-external h23-tab-cosmo23" id="cosmo23-btn" data-scope-tab="cosmo23" data-tab-label="🔬 cosmo23">🔬 cosmo23</button>
+    <a class="h23-tab h23-tab-external h23-tab-evobrew" id="evobrew-btn" href="#" target="_blank" data-scope-tab="evobrew" data-tab-label="⚡ evobrew">⚡ evobrew</a>
   </nav>
 
-  <!-- Home panel — primary agent tiles (ReginaCosmo layout) -->
+  <div class="h23-tab-scope-bar">
+    <div class="h23-tab-scope-kicker" id="dashboard-scope-kicker">This Agent Surface</div>
+    <div class="h23-tab-scope-summary" id="dashboard-scope-summary">Home belongs to this dashboard agent.</div>
+  </div>
+
+  <!-- Home panel — current dashboard agent tiles (ReginaCosmo layout) -->
   <main class="h23-main">
     <div class="h23-panel active" id="panel-home">
 
@@ -273,7 +279,7 @@
       <iframe id="cosmo23-frame" style="width:100%; height:100%; border:none;"></iframe>
     </div>
 
-    <!-- Query panel — scoped to the home23 primary agent brain, powered by cosmo23's PGS. -->
+    <!-- Query panel — scoped to the current dashboard agent brain, powered by cosmo23's PGS. -->
     <div class="h23-panel" id="panel-query"></div>
 
     <!-- Brain Map panel -->

@@ -22,6 +22,7 @@ let chatConversationId = null;  // current conversation ID
 let chatConversations = [];     // list of all conversations
 let chatPersistTimer = null;
 let chatPersistenceBound = false;
+let chatCurrentAgentName = null;
 
 // ── Init ──
 
@@ -31,6 +32,7 @@ async function initChat(mode) {
     const res = await fetch('/home23/api/settings/agents');
     const data = await res.json();
     chatAgents = data.agents || [];
+    chatCurrentAgentName = data.currentAgent || null;
   } catch { chatAgents = []; }
 
   // Load models catalog
@@ -40,26 +42,27 @@ async function initChat(mode) {
     chatModels = data.providers || {};
   } catch { chatModels = {}; }
 
-  // Determine initial agent (URL param or primary)
+  // Determine initial agent (URL param or this dashboard's agent)
   const urlParams = new URLSearchParams(window.location.search);
   const urlAgent = urlParams.get('agent');
-  const primary = (urlAgent && chatAgents.find(a => a.name === urlAgent))
+  const initialAgent = (urlAgent && chatAgents.find(a => a.name === urlAgent))
+    || (chatCurrentAgentName && chatAgents.find(a => a.name === chatCurrentAgentName))
     || chatAgents.find(a => a.isPrimary)
     || chatAgents[0];
 
-  if (!primary) {
+  if (!initialAgent) {
     const empty = document.getElementById('chat-messages');
     if (empty) empty.innerHTML = '<div class="h23-chat-empty">No agents configured. Create one in Settings.</div>';
     return;
   }
 
   bindChatPersistence();
-  renderAgentSelectors(primary.name);
-  await switchAgent(primary.name, { preferRestore: true });
+  renderAgentSelectors(initialAgent.name);
+  await switchAgent(initialAgent.name, { preferRestore: true });
 
   // Model selector — use agent's current model (may have been changed in settings)
-  chatModel = primary.model;
-  populateModelSelect(primary.provider, primary.model);
+  chatModel = initialAgent.model;
+  populateModelSelect(initialAgent.provider, initialAgent.model);
 
   // Input bindings
   bindInput('chat-input', 'chat-send-btn', '');

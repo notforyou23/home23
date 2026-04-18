@@ -23,19 +23,31 @@
 
   <!-- Sub-tab bar -->
   <nav class="h23s-tabs">
-    <button class="h23s-tab active" data-stab="providers">Providers</button>
-    <button class="h23s-tab" data-stab="agents">Agents</button>
-    <button class="h23s-tab" data-stab="models">Models</button>
-    <button class="h23s-tab" data-stab="query">Query</button>
-    <button class="h23s-tab" data-stab="feeder">Feeder</button>
-    <button class="h23s-tab" data-stab="skills">Skills</button>
-    <button class="h23s-tab" data-stab="vibe">Vibe</button>
-    <button class="h23s-tab" data-stab="tiles">Tiles</button>
-    <button class="h23s-tab" data-stab="agency">Agency</button>
-    <button class="h23s-tab" data-stab="system">System</button>
+    <button class="h23s-tab active" data-stab="providers" data-tab-label="Providers">Providers</button>
+    <button class="h23s-tab" data-stab="agents" data-tab-label="Agents">Agents</button>
+    <button class="h23s-tab" data-stab="models" data-tab-label="Models">Models</button>
+    <button class="h23s-tab" data-stab="query" data-tab-label="Query">Query</button>
+    <button class="h23s-tab" data-stab="feeder" data-tab-label="Feeder">Feeder</button>
+    <button class="h23s-tab" data-stab="skills" data-tab-label="Skills">Skills</button>
+    <button class="h23s-tab" data-stab="vibe" data-tab-label="Vibe">Vibe</button>
+    <button class="h23s-tab" data-stab="tiles" data-tab-label="Tiles">Tiles</button>
+    <button class="h23s-tab" data-stab="agency" data-tab-label="Agency">Agency</button>
+    <button class="h23s-tab" data-stab="system" data-tab-label="System">System</button>
   </nav>
 
   <main class="h23s-main">
+    <div class="h23s-section" id="settings-agent-scope" style="margin-bottom:20px;padding:14px 16px;background:rgba(255,255,255,0.03);border:1px solid var(--glass-border);border-radius:12px;">
+      <div style="display:flex;align-items:end;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+        <div style="min-width:280px;flex:1;">
+          <div id="settings-scope-kicker" style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent-blue);margin-bottom:6px;">Settings Scope</div>
+          <div id="settings-scope-summary" style="font-size:13px;color:var(--text-secondary);line-height:1.5;">Agent-scoped tabs target the selected agent. Providers, Skills, Vibe, Tiles, and System stay house-wide.</div>
+        </div>
+        <div class="h23s-field" style="margin:0;min-width:260px;">
+          <label>Selected Agent</label>
+          <select id="settings-agent-select"></select>
+        </div>
+      </div>
+    </div>
 
     <!-- Onboarding Overlay (shown on first run when no providers + no agents) -->
     <div id="onboarding-overlay" class="h23s-onboarding" style="display:none;">
@@ -95,7 +107,7 @@
       <!-- Onboarding Step 2: Create Agent (embeds the existing wizard) -->
       <div class="h23s-onboarding-page" id="ob-step-2">
         <h2 class="h23s-panel-title">Create Your Agent</h2>
-        <p class="h23s-panel-desc">This will be your primary agent — the main intelligence for your Home23 system.</p>
+        <p class="h23s-panel-desc">This will be your initial home primary agent — the default intelligence Home23 falls back to when a surface needs the house-level default.</p>
         <div id="ob-wizard-host">
           <!-- The existing #agent-wizard will be moved here during onboarding step 2 -->
         </div>
@@ -201,7 +213,7 @@
       <!-- Agent creation wizard (hidden by default) -->
       <div class="h23s-wizard" id="agent-wizard" style="display:none;">
         <div id="wiz-primary-banner" style="display:none;background:rgba(10,132,255,0.08);border:1px solid rgba(10,132,255,0.2);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--accent-blue);">
-          This will be your <strong>primary agent</strong> &mdash; the main intelligence for your Home23 system. Its model becomes the system default.
+          This will be your <strong>home primary agent</strong> &mdash; the house-level default Home23 falls back to when a surface needs a primary. Its chat model becomes the initial system default.
         </div>
         <div class="h23s-wizard-steps">
           <span class="h23s-wizard-step active" data-step="1">1. Identity</span>
@@ -287,10 +299,10 @@
     <!-- Models Panel -->
     <div class="h23s-panel" id="panel-models">
       <h2 class="h23s-panel-title">Models</h2>
-      <p class="h23s-panel-desc">Manage which models appear in evobrew and dashboard chat. Add models by name — they must be available from the provider.</p>
+      <p class="h23s-panel-desc">The runtime sections below apply to <strong data-scope-label="models">the selected agent</strong>. The catalog sections at the bottom stay house-wide so every dashboard sees the same provider model list and aliases.</p>
 
       <div class="h23s-section">
-        <h3 class="h23s-section-title">Defaults</h3>
+        <h3 class="h23s-section-title">Selected Agent Defaults</h3>
         <div class="h23s-field-row">
           <div class="h23s-field">
             <label>Default Provider</label>
@@ -304,8 +316,8 @@
       </div>
 
       <div class="h23s-section">
-        <h3 class="h23s-section-title">Pulse Voice (Jerry's Remark)</h3>
-        <p class="h23s-panel-desc" style="margin-top:0;">The model that generates Jerry's dashboard remarks — the tile's top-left voice. Defaults to the chat default; change here to use a different model for remarks only.</p>
+        <h3 class="h23s-section-title">Pulse Voice</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">The model and voice prompt for <strong data-scope-label="models">the selected agent</strong>'s dashboard remarks. Defaults to that agent's chat default; override here to give its pulse a different voice.</p>
         <div class="h23s-field-row">
           <div class="h23s-field">
             <label>Provider</label>
@@ -317,9 +329,9 @@
           </div>
         </div>
         <div class="h23s-field" style="margin-top:8px;">
-          <label>System prompt (Jerry's voice)</label>
+          <label>System prompt (remark voice)</label>
           <textarea id="pulse-voice-prompt" rows="9" style="font-family:inherit;font-size:12px;line-height:1.5;width:100%;resize:vertical;"></textarea>
-          <p style="font-size:11px;color:var(--text-muted);margin-top:4px;">How Jerry talks. Tune freely — this is the personality.</p>
+          <p style="font-size:11px;color:var(--text-muted);margin-top:4px;">How the dashboard voice talks. Tune freely — this is the personality.</p>
         </div>
         <div class="h23s-actions" style="border-top:none;padding-top:8px;">
           <button class="h23s-btn-primary" id="btn-save-pulse-voice">Save</button>
@@ -345,7 +357,7 @@
 
       <div class="h23s-section">
         <h3 class="h23s-section-title">Engine Roles</h3>
-        <p class="h23s-panel-desc" style="margin-top:0;">Override which model each cognitive role uses. Leave on "Use Default" to follow the default model above.</p>
+        <p class="h23s-panel-desc" style="margin-top:0;">Override which model each cognitive role uses for <strong data-scope-label="models">the selected agent</strong>. Leave on "Use Default" to follow that agent's default model above.</p>
         <div class="h23s-field-row">
           <div class="h23s-field">
             <label>Thought</label>
@@ -370,7 +382,7 @@
 
       <div class="h23s-section">
         <h3 class="h23s-section-title">Cognitive Assignments</h3>
-        <p class="h23s-panel-desc" style="margin-top:0;">Per-slot control over which model every part of the engine uses. Each row is one place the engine calls out to a model. Set a provider + model, and optionally chain fallbacks that kick in on error or rate-limit. Saves to the primary agent's instance config and restarts its engine.</p>
+        <p class="h23s-panel-desc" style="margin-top:0;">Per-slot control over which model every part of <strong data-scope-label="models">the selected agent</strong>'s engine uses. Each row is one place the engine calls out to a model. Set a provider + model, and optionally chain fallbacks that kick in on error or rate-limit.</p>
         <div id="model-assignments-list" style="display:flex;flex-direction:column;gap:10px;"></div>
         <div class="h23s-actions" style="border-top:none;padding-top:8px;">
           <button class="h23s-btn-primary" id="btn-save-assignments">Save Assignments</button>
@@ -381,12 +393,13 @@
 
       <div class="h23s-section">
         <h3 class="h23s-section-title">Available Models per Provider</h3>
-        <p class="h23s-panel-desc" style="margin-top:0;">These are the models shown in evobrew's dropdown. Add or remove to control what's available.</p>
+        <p class="h23s-panel-desc" style="margin-top:0;">House-wide model catalog. These are the models shown in evobrew and shared pickers across Home23.</p>
         <div id="provider-models-list"></div>
       </div>
 
       <div class="h23s-section">
         <h3 class="h23s-section-title">Aliases</h3>
+        <p class="h23s-panel-desc" style="margin-top:0;">House-wide shortcuts that any agent can use when resolving model names.</p>
         <table class="h23s-table" id="aliases-table">
           <thead>
             <tr><th>Alias</th><th>Provider</th><th>Model</th><th></th></tr>
@@ -406,7 +419,7 @@
     <!-- Query Panel -->
     <div class="h23s-panel" id="panel-query">
       <h2 class="h23s-panel-title">Query</h2>
-      <p class="h23s-panel-desc">Defaults for the Query tab. These seed the dropdowns when the tab loads; users can still override per-query.</p>
+      <p class="h23s-panel-desc">Defaults for <strong data-scope-label="query">the selected agent</strong>'s Query tab. These seed the dropdowns when that dashboard loads; users can still override per-query.</p>
 
       <h3 class="h23s-section-title">Default Query</h3>
       <div class="h23s-field">
@@ -458,8 +471,8 @@
       <h2 class="h23s-panel-title">Document Feeder</h2>
       <p class="h23s-panel-desc">
         Configure what documents get ingested into your agent's brain and how they're processed.
-        Settings apply host-wide to all Home23 agents (stored in <code>configs/base-engine.yaml</code>).
-        Some changes hot-apply; others require an engine restart.
+        These settings target the selected agent and save to its <code>instances/&lt;agent&gt;/config.yaml</code>,
+        with <code>configs/base-engine.yaml</code> acting only as the fallback default. Some changes hot-apply; others require that agent's engine to restart.
       </p>
 
       <!-- Live status footer (also pinned at top for visibility) -->
@@ -578,8 +591,8 @@
       </div>
       <div class="h23s-section" id="feeder-restart-banner" style="display:none; margin-top:8px; padding:12px; background:rgba(251,146,60,0.1); border:1px solid #fb923c; border-radius:8px;">
         <strong style="color:#fb923c;">⚠️ Engine restart required</strong>
-        <p style="margin:4px 0 8px 0; font-size:0.9em;">Some settings you changed need a full engine restart to take effect: <span id="fd-restart-list"></span></p>
-        <button class="h23s-btn-secondary" id="btn-feeder-restart-engine">Restart Engine Now</button>
+        <p style="margin:4px 0 8px 0; font-size:0.9em;">Some settings you changed need the selected agent's engine to restart: <span id="fd-restart-list"></span></p>
+        <button class="h23s-btn-secondary" id="btn-feeder-restart-engine">Restart Selected Agent Engine</button>
       </div>
 
       <!-- Drop zone -->
@@ -858,7 +871,7 @@
     <!-- Agency Panel -->
     <div class="h23s-panel" id="panel-agency">
       <h2 class="h23s-panel-title">Agency — Autonomous Actions</h2>
-      <p class="h23s-panel-desc">Controls which actions the cognitive loop is allowed to execute on its own when a thought emits an <code>ACT:</code> tag. Every execution is receipt-logged. Rejected attempts are written to <code>brain/requested-actions.jsonl</code> for audit.</p>
+      <p class="h23s-panel-desc">The allow-list below is house-wide. The audit trails at the bottom show what <strong data-scope-label="agency">the selected agent</strong> actually tried and executed.</p>
 
       <div class="h23s-section">
         <h3 class="h23s-section-title">Global</h3>
@@ -904,13 +917,13 @@
 
       <div class="h23s-section">
         <h3 class="h23s-section-title">Recent Actions</h3>
-        <p class="h23s-panel-desc" style="margin-top:0;">Live audit trail. Intent is logged before the handler runs; outcome after. Refreshes every 5s.</p>
+        <p class="h23s-panel-desc" style="margin-top:0;">Live audit trail for <strong data-scope-label="agency">the selected agent</strong>. Intent is logged before the handler runs; outcome after. Refreshes every 5s.</p>
         <div id="agency-recent-list" style="max-height:420px;overflow-y:auto;border:1px solid var(--glass-border);border-radius:8px;padding:6px;background:rgba(0,0,0,0.15);"></div>
       </div>
 
       <div class="h23s-section">
         <h3 class="h23s-section-title">Rejected Requests</h3>
-        <p class="h23s-panel-desc" style="margin-top:0;">Actions the agent tried but weren't in the allow-list. Worth watching — these are requests for new capabilities.</p>
+        <p class="h23s-panel-desc" style="margin-top:0;">Actions <strong data-scope-label="agency">the selected agent</strong> tried but weren't in the allow-list. Worth watching — these are requests for new capabilities.</p>
         <div id="agency-requested-list" style="max-height:240px;overflow-y:auto;border:1px solid var(--glass-border);border-radius:8px;padding:6px;background:rgba(0,0,0,0.15);"></div>
       </div>
     </div>

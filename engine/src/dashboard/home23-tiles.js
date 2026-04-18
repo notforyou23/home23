@@ -50,7 +50,7 @@ const CORE_TILES = [
     title: 'Thought Feed',
     icon: '🌊',
     mode: 'core-thought-feed',
-    description: 'Latest thought rotation from the primary agent.',
+    description: 'Latest thought rotation from this dashboard agent.',
     sizeDefault: 'third',
     refreshMs: 30_000,
   },
@@ -70,7 +70,7 @@ const CORE_TILES = [
     title: 'Chat',
     icon: '💬',
     mode: 'core-chat',
-    description: 'Native dashboard chat to the primary agent.',
+    description: 'Native dashboard chat to this dashboard agent.',
     sizeDefault: 'third',
     refreshMs: 30_000,
   },
@@ -764,6 +764,44 @@ class Home23TileService {
     this.home23Root = home23Root;
     this.logger = logger;
     this.cache = new Map();
+    this.backgroundRefreshTimers = new Map();
+    this.backgroundRefreshInFlight = new Set();
+    this.startBackgroundRefresh();
+  }
+
+  startBackgroundRefresh() {
+    this.stopBackgroundRefresh();
+
+    const tiles = this.getTilesState();
+    const layout = materializeHomeLayout(tiles).filter((item) => item.enabled !== false);
+    for (const item of layout) {
+      const tile = item.tile;
+      if (!tile || tile.kind !== 'custom') continue;
+      if (tile.mode !== 'ecowitt-weather') continue;
+
+      const run = async () => {
+        if (this.backgroundRefreshInFlight.has(tile.id)) return;
+        this.backgroundRefreshInFlight.add(tile.id);
+        try {
+          await this.getTileData(tile.id);
+        } catch (err) {
+          this.logger?.warn?.(`[home23-tiles] background refresh failed for ${tile.id}: ${err.message}`);
+        } finally {
+          this.backgroundRefreshInFlight.delete(tile.id);
+        }
+      };
+
+      run().catch(() => {});
+      const intervalMs = Math.max(15_000, Math.min(tile.refreshMs || 60_000, 15 * 60_000));
+      this.backgroundRefreshTimers.set(tile.id, setInterval(() => {
+        run().catch(() => {});
+      }, intervalMs));
+    }
+  }
+
+  stopBackgroundRefresh() {
+    for (const timer of this.backgroundRefreshTimers.values()) clearInterval(timer);
+    this.backgroundRefreshTimers.clear();
   }
 
   getHomeConfigPath() {
@@ -835,6 +873,7 @@ class Home23TileService {
     homeConfig.dashboard.tiles = nextTiles;
     this.writeHomeConfig(homeConfig);
     this.invalidateTileCache();
+    this.startBackgroundRefresh();
     return nextTiles;
   }
 
@@ -867,6 +906,7 @@ class Home23TileService {
     secrets.dashboard.tileConnections = { connections: nextConnections };
     this.writeSecrets(secrets);
     this.invalidateTileCache();
+    this.startBackgroundRefresh();
     return { connections: nextConnections };
   }
 

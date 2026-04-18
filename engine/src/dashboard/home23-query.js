@@ -1,10 +1,10 @@
 /**
- * Home23 Query Tab — scoped to the home23 primary agent brain.
+ * Home23 Query Tab — scoped to the current dashboard agent's brain.
  *
  * Ported verbatim from cosmo23/public/js/query-tab.js (the reference impl used
  * by cosmo23's Query view and evobrew's Research view) with these home23-
  * specific changes:
- *   - brain is fixed to the home23 primary agent (no picker)
+ *   - brain is fixed to the current dashboard agent (no picker)
  *   - every /api/brain/<id>/... call is routed cross-origin to cosmo23
  *     (same box, port 43210), since cosmo23 owns the streaming PGS endpoints
  *   - models populated from cosmo23's catalog at init (no host app to do it)
@@ -29,7 +29,7 @@ let QT_AGENT_NAME = '';
 function getBrainSelector() { return null; }
 function getSelectedBrainId() { return QT_BRAIN_ID || ''; }
 function requireSelectedBrainId() {
-  if (!QT_BRAIN_ID) throw new Error('Primary agent brain not loaded yet');
+  if (!QT_BRAIN_ID) throw new Error('Current agent brain not loaded yet');
   return QT_BRAIN_ID;
 }
 function buildBrainApiPath(suffix) {
@@ -58,7 +58,7 @@ function initQueryTab() {
     <div class="qt-container">
       <!-- HOME23 — fixed-brain header -->
       <div class="qt-header">
-        <span class="qt-header-label">Querying <strong id="qt-brain-label">primary agent</strong> brain</span>
+        <span class="qt-header-label">Querying <strong id="qt-brain-label">current agent</strong> brain</span>
       </div>
 
       <!-- Query Input Section -->
@@ -219,16 +219,16 @@ function initQueryTab() {
   // Bind events
   bindQueryTabEvents();
   // HOME23 — cosmo23's app.js isn't present; do model + brain setup ourselves.
-  resolvePrimaryBrainThenLoad().catch(err => {
-    console.error('[home23-query] Failed to resolve primary brain:', err);
+  resolveCurrentAgentBrainThenLoad().catch(err => {
+    console.error('[home23-query] Failed to resolve current agent brain:', err);
     const ph = document.querySelector('.qt-result-placeholder p');
-    if (ph) ph.textContent = `Could not load primary agent brain: ${err.message}`;
+    if (ph) ph.textContent = `Could not load current agent brain: ${err.message}`;
   });
 }
 
-// HOME23 — look up the home23 primary agent, find its brain in cosmo23's
+// HOME23 — look up the current dashboard agent, find its brain in cosmo23's
 // registry by sourceLabel (agent name), and wire global query state.
-async function resolvePrimaryBrainThenLoad() {
+async function resolveCurrentAgentBrainThenLoad() {
   // Load Query-tab defaults from home23 settings; used after models populate.
   let qDefaults = {};
   try {
@@ -260,44 +260,66 @@ async function resolvePrimaryBrainThenLoad() {
     });
   }
 
-  // Primary agent: prefer config, fall back to first discovered agent.
-  let primaryAgent = '';
+  // Prefer explicit URL override, then the dashboard's own agent, then primary.
+  let dashboardAgent = '';
+  const urlAgent = new URLSearchParams(window.location.search).get('agent');
+  let currentBrainMeta = null;
   try {
-    const statusRes = await fetch('/home23/api/settings/status');
-    if (statusRes.ok) {
-      const s = await statusRes.json();
-      primaryAgent = (s.primaryAgent || '').trim();
-    }
-  } catch { /* try fallback */ }
-  if (!primaryAgent) {
-    try {
-      const agRes = await fetch('/home23/api/settings/agents');
-      if (agRes.ok) {
-        const a = await agRes.json();
-        const list = Array.isArray(a) ? a : (a.agents || []);
-        if (list.length > 0) primaryAgent = list[0].name || list[0].agentName || '';
+    const brainRes = await fetch('/home23/api/brain/current');
+    if (brainRes.ok) {
+      currentBrainMeta = await brainRes.json();
+      if (currentBrainMeta?.agent) {
+        dashboardAgent = String(currentBrainMeta.agent).trim();
       }
-    } catch { /* fall through */ }
+    }
+  } catch { /* fall through */ }
+  try {
+    const agRes = await fetch('/home23/api/settings/agents');
+    if (agRes.ok) {
+      const payload = await agRes.json();
+      const list = Array.isArray(payload) ? payload : (payload.agents || []);
+      if (urlAgent && list.some(agent => agent.name === urlAgent)) {
+        dashboardAgent = urlAgent;
+      } else {
+        dashboardAgent = (payload.currentAgent || '').trim()
+          || (payload.primaryAgent || '').trim()
+          || (list[0]?.name || list[0]?.agentName || '').trim();
+      }
+    }
+  } catch { /* fall through */ }
+  if (!dashboardAgent) {
+    try {
+      const statusRes = await fetch('/home23/api/settings/status');
+      if (statusRes.ok) {
+        const s = await statusRes.json();
+        dashboardAgent = (urlAgent || s.currentAgent || s.primaryAgent || '').trim();
+      }
+    } catch { /* try fallback */ }
   }
-  if (!primaryAgent) throw new Error('No agents configured in home23');
-  QT_AGENT_NAME = primaryAgent;
+  if (!dashboardAgent) throw new Error('No agents configured in home23');
+  QT_AGENT_NAME = dashboardAgent;
 
-  // Cosmo23 exposes each agent root at sourceLabel = <agent>, name = "brain".
-  const brRes = await fetch(`${QT_COSMO_BASE}/api/brains`);
-  if (!brRes.ok) throw new Error(`cosmo23 /api/brains HTTP ${brRes.status}`);
-  const bj = await brRes.json();
-  const brains = Array.isArray(bj) ? bj : (bj.brains || []);
-  const match = brains.find(b =>
-    String(b.sourceLabel || '').toLowerCase() === primaryAgent.toLowerCase() &&
-    (b.name === 'brain' || (b.path || '').endsWith(`/${primaryAgent}/brain`))
-  );
-  if (!match) throw new Error(`No brain found for agent "${primaryAgent}" in cosmo23 registry (roots may not be seeded — check Query settings)`);
-  QT_BRAIN_ID = match.routeKey || match.id;
-  QT_BRAIN_DISPLAY = match.displayName || primaryAgent;
+  if (currentBrainMeta?.routeKey) {
+    QT_BRAIN_ID = currentBrainMeta.routeKey;
+    QT_BRAIN_DISPLAY = currentBrainMeta.displayName || dashboardAgent;
+  } else {
+    // Fallback: ask cosmo23's registry if the direct mapping is unavailable.
+    const brRes = await fetch(`${QT_COSMO_BASE}/api/brains`);
+    if (!brRes.ok) throw new Error(`cosmo23 /api/brains HTTP ${brRes.status}`);
+    const bj = await brRes.json();
+    const brains = Array.isArray(bj) ? bj : (bj.brains || []);
+    const match = brains.find(b =>
+      String(b.sourceLabel || '').toLowerCase() === dashboardAgent.toLowerCase() &&
+      (b.name === 'brain' || (b.path || '').endsWith(`/${dashboardAgent}/brain`))
+    );
+    if (!match) throw new Error(`No brain found for agent "${dashboardAgent}" in cosmo23 registry (roots may not be seeded — check Query settings)`);
+    QT_BRAIN_ID = match.routeKey || match.id;
+    QT_BRAIN_DISPLAY = match.displayName || dashboardAgent;
+  }
 
   // Header label (if present) + placeholder text.
   const label = document.getElementById('qt-brain-label');
-  if (label) label.textContent = `Querying ${primaryAgent} brain`;
+  if (label) label.textContent = `Querying ${dashboardAgent} brain`;
 
   loadQueryHistory();
   checkBrainStatus();
@@ -362,7 +384,7 @@ function bindQueryTabEvents() {
   const modeSelect = document.getElementById('qt-mode');
   const modelSelect = document.getElementById('qt-model');
   const clearHistoryBtn = document.getElementById('qt-clear-history');
-  // HOME23 — no brain picker; primary agent is resolved once at init.
+  // HOME23 — no brain picker; current dashboard agent is resolved once at init.
 
   submitBtn?.addEventListener('click', () => executeQuery());
 
@@ -482,11 +504,11 @@ async function checkBrainStatus() {
   const ph = document.querySelector('.qt-result-placeholder p');
   if (!ph) return;
   if (!getSelectedBrainId()) {
-    ph.textContent = 'Resolving primary agent brain...';
+    ph.textContent = 'Resolving current agent brain...';
     return;
   }
-  // HOME23 — brain is fixed to primary agent; no picker.
-  ph.textContent = `Ask a question to query ${QT_AGENT_NAME || 'the primary agent'}'s brain`;
+  // HOME23 — brain is fixed to the current dashboard agent; no picker.
+  ph.textContent = `Ask a question to query ${QT_AGENT_NAME || 'the current agent'}'s brain`;
 }
 
 /* ═══════════════════════════════════════════════════════

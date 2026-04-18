@@ -715,6 +715,33 @@ class DashboardServer {
     return 'agent';
   }
 
+  resolveRequestedHome23Agent(candidate) {
+    const requested = String(candidate || '').replace(/^home23-/, '').trim();
+    if (!requested) return this.getHome23AgentName();
+    const home23Root = this.getHome23Root();
+    const configPath = path.join(home23Root, 'instances', requested, 'config.yaml');
+    return require('fs').existsSync(configPath) ? requested : this.getHome23AgentName();
+  }
+
+  getHome23AgentContext(candidate) {
+    const fsSync = require('fs');
+    const yaml = require('js-yaml');
+    const home23Root = this.getHome23Root();
+    const agentName = this.resolveRequestedHome23Agent(candidate);
+    const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
+    const config = fsSync.existsSync(configPath)
+      ? (yaml.load(fsSync.readFileSync(configPath, 'utf8')) || {})
+      : {};
+
+    return {
+      home23Root,
+      agentName,
+      runtimeDir: path.join(home23Root, 'instances', agentName, 'brain'),
+      workspacePath: path.join(home23Root, 'instances', agentName, 'workspace'),
+      realtimePort: Number(config.ports?.engine) || Number(process.env.REALTIME_PORT || '5001'),
+    };
+  }
+
   setupRoutes() {
     this.app.use(express.static(path.join(__dirname)));
 
@@ -950,10 +977,11 @@ class DashboardServer {
     // Home23 feeder status — reads from engine's DocumentFeeder manifest
     this.app.get('/home23/feeder-status', (req, res) => {
       const fsSync = require('fs');
-      const runtimeDir = process.env.COSMO_RUNTIME_DIR || path.join(__dirname, '..', 'runtime');
-      const workspacePath = process.env.COSMO_WORKSPACE_PATH;
+      const target = this.getHome23AgentContext(req.query?.agent);
+      const runtimeDir = target.runtimeDir;
+      const workspacePath = target.workspacePath;
       const manifestPath = path.join(runtimeDir, 'ingestion-manifest.json');
-      const agentName = (process.env.INSTANCE_ID || 'home23-agent').replace('home23-', '');
+      const agentName = target.agentName;
 
       try {
         // Count total files in workspace (what needs to be ingested)
@@ -1026,8 +1054,6 @@ class DashboardServer {
     try {
       const multer = require('multer');
       const fsSync = require('fs');
-      const runtimeDir = process.env.COSMO_RUNTIME_DIR || path.join(__dirname, '..', 'runtime');
-      const ingestBase = path.join(runtimeDir, 'ingestion', 'documents');
 
       const sanitizeLabel = (raw) => String(raw || 'dropzone')
         .toLowerCase()
@@ -1036,18 +1062,22 @@ class DashboardServer {
 
       const uploadStorage = multer.diskStorage({
         destination: (req, file, cb) => {
+          const target = this.getHome23AgentContext(req.query?.agent);
           const label = sanitizeLabel(req.body?.label);
+          const ingestBase = path.join(target.runtimeDir, 'ingestion', 'documents');
           const dest = path.join(ingestBase, label);
           fsSync.mkdirSync(dest, { recursive: true });
           cb(null, dest);
         },
         filename: (req, file, cb) => {
           // Preserve original filename; prefix timestamp only if collision
+          const agentCtx = this.getHome23AgentContext(req.query?.agent);
           const label = sanitizeLabel(req.body?.label);
+          const ingestBase = path.join(agentCtx.runtimeDir, 'ingestion', 'documents');
           const dest = path.join(ingestBase, label);
           const base = file.originalname || `upload-${Date.now()}`;
-          const target = path.join(dest, base);
-          if (fsSync.existsSync(target)) {
+          const targetFile = path.join(dest, base);
+          if (fsSync.existsSync(targetFile)) {
             const ts = new Date().toISOString().replace(/[:.]/g, '-');
             cb(null, `${ts}-${base}`);
           } else {
@@ -1061,21 +1091,22 @@ class DashboardServer {
       });
 
       this.app.post('/home23/feeder/upload', feederUpload.array('files', 20), (req, res) => {
+        const agentName = this.getHome23AgentContext(req.query?.agent).agentName;
         const files = (req.files || []).map((f) => ({
           name: f.originalname,
           stored: f.filename,
           size: f.size,
           dest: f.destination,
         }));
-        res.json({ ok: true, count: files.length, files, label: sanitizeLabel(req.body?.label) });
+        res.json({ ok: true, agent: agentName, count: files.length, files, label: sanitizeLabel(req.body?.label) });
       });
 
       // Proxy helper: forward a JSON request to the engine's admin endpoint
-      const realtimePort = parseInt(process.env.REALTIME_PORT || '5001', 10);
-      const adminUrl = (p) => `http://localhost:${realtimePort}${p}`;
-      const proxyJson = async (req, res, method, path) => {
+      const adminUrl = (port, p) => `http://localhost:${port}${p}`;
+      const proxyJson = async (req, res, method, requestPath) => {
         try {
-          const r = await fetch(adminUrl(path), {
+          const target = this.getHome23AgentContext(req.query?.agent || req.body?.agent);
+          const r = await fetch(adminUrl(target.realtimePort, requestPath), {
             method,
             headers: { 'Content-Type': 'application/json' },
             body: method === 'POST' ? JSON.stringify(req.body || {}) : undefined,

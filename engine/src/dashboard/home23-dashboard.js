@@ -1,7 +1,7 @@
 /**
  * Home23 Dashboard — Vanilla JS
  *
- * Primary agent view on Home tab (ReginaCosmo layout).
+ * Current dashboard agent view on Home tab (ReginaCosmo layout).
  * COSMO 2.3 embedded via iframe on COSMO tab.
  * Secondary agent tabs created on demand.
  */
@@ -11,8 +11,11 @@
 const REFRESH_MS = 30000;
 const HOME_THOUGHT_ROTATE_MS = 16000;
 let agents = [];
+// Back-compat variable name: this is the agent that owns the current dashboard.
 let primaryAgent = null;
+let homePrimaryAgent = null;
 let currentTab = 'home';
+let dashboardScopeRegistry = null;
 let cosmo23Url = '';
 let evobrewUrl = '';
 let cosmo23Loaded = false;
@@ -25,6 +28,130 @@ let homeTileCustomRefreshers = new Map();
 let homeTileCustomState = new Map();
 let tileActionDialogState = null;
 let homeTileBroadcast = null;
+
+function currentAgentLabel(fallback = 'This agent') {
+  return primaryAgent?.displayName || primaryAgent?.name || fallback;
+}
+
+const DASHBOARD_SCOPE_FALLBACK = {
+  home: {
+    kind: 'dashboard',
+    chip: 'This Agent',
+    summaryTemplate: 'Home is the live surface for {{dashboardAgent}}. Tiles, pulse, chat, and feed data belong to this dashboard agent.',
+  },
+  intelligence: {
+    kind: 'dashboard',
+    chip: 'This Agent',
+    summaryTemplate: "Intelligence is scoped to {{dashboardAgent}}. It reflects this dashboard agent's internal state and live system observations.",
+  },
+  query: {
+    kind: 'dashboard',
+    chip: 'This Agent',
+    summaryTemplate: "Query targets {{dashboardAgent}}'s brain by default. PGS and query defaults resolve against the current dashboard agent unless you override them.",
+  },
+  'brain-map': {
+    kind: 'dashboard',
+    chip: 'This Agent',
+    summaryTemplate: "Brain Map opens {{dashboardAgent}}'s graph by default. It uses the current dashboard brain route when resolving the graph view.",
+  },
+  about: {
+    kind: 'shared',
+    chip: 'Shared',
+    summaryTemplate: 'About is a shared system surface. It describes the Home23 install rather than one specific agent.',
+  },
+  settings: {
+    kind: 'mixed',
+    chip: 'Mixed',
+    summaryTemplate: 'Settings mixes house-wide and agent-scoped configuration. Use the Settings page scope controls to see which areas target {{dashboardAgent}} versus the whole house.',
+  },
+  cosmo23: {
+    kind: 'external',
+    chip: 'External',
+    summaryTemplate: 'cosmo23 is an external shared research surface. It is linked from this dashboard but not owned by one Home23 agent.',
+  },
+  evobrew: {
+    kind: 'external',
+    chip: 'External',
+    summaryTemplate: 'evobrew is an external shared surface. The dashboard deep-links it with the current agent, but the service itself is house-managed.',
+  },
+  agent: {
+    kind: 'peer',
+    chip: 'Other Agent',
+    summaryTemplate: 'This panel shows {{peerAgent}} from inside {{dashboardAgent}}\'s dashboard. It is a peer-agent view, not the owner of the current dashboard shell.',
+  },
+};
+
+function getDashboardScopeMeta(tabKey) {
+  const key = tabKey && tabKey.startsWith('agent-') ? 'agent' : (tabKey || currentTab);
+  const registry = dashboardScopeRegistry?.tabs || {};
+  return registry[key] || DASHBOARD_SCOPE_FALLBACK[key] || DASHBOARD_SCOPE_FALLBACK.home;
+}
+
+function renderDashboardScopeText(meta, tabKey = currentTab) {
+  const peerName = tabKey && tabKey.startsWith('agent-')
+    ? agents.find(a => a.name === tabKey.replace('agent-', ''))?.displayName || tabKey.replace('agent-', '')
+    : '';
+  const replacements = {
+    dashboardAgent: currentAgentLabel('this dashboard agent'),
+    primaryAgent: homePrimaryAgent?.displayName || homePrimaryAgent?.name || currentAgentLabel('the Home23 primary agent'),
+    peerAgent: peerName || 'the other agent',
+  };
+  return String(meta?.summaryTemplate || '').replace(/\{\{(\w+)\}\}/g, (_, key) => replacements[key] || '');
+}
+
+function refreshDashboardScopeUI() {
+  document.querySelectorAll('.h23-tab[data-tab], .h23-tab[data-scope-tab]').forEach(tab => {
+    const tabKey = tab.dataset.scopeTab || tab.dataset.tab;
+    const meta = getDashboardScopeMeta(tabKey);
+    if (!tab.dataset.tabLabel) tab.dataset.tabLabel = tab.textContent.trim();
+    const label = tab.dataset.tabLabel;
+    tab.innerHTML = `<span class="h23-tab-label">${label}</span><span class="h23-tab-scope-chip scope-${meta.kind}">${meta.chip}</span>`;
+    tab.title = renderDashboardScopeText(meta, tabKey);
+  });
+
+  const scopeMeta = getDashboardScopeMeta(currentTab);
+  const kicker = document.getElementById('dashboard-scope-kicker');
+  const summary = document.getElementById('dashboard-scope-summary');
+  if (kicker) {
+    const scopeLabel = scopeMeta.kind === 'dashboard'
+      ? 'This Dashboard Agent'
+      : scopeMeta.kind === 'peer'
+        ? 'Peer Agent Surface'
+        : scopeMeta.kind === 'mixed'
+          ? 'Mixed Surface'
+          : scopeMeta.kind === 'external'
+            ? 'External Surface'
+            : 'Shared Surface';
+    kicker.textContent = `${scopeLabel} · ${scopeMeta.chip}`;
+  }
+  if (summary) {
+    summary.textContent = renderDashboardScopeText(scopeMeta, currentTab);
+  }
+}
+
+async function loadDashboardScopeRegistry() {
+  try {
+    const res = await fetch('/home23/api/scope');
+    if (!res.ok) return;
+    dashboardScopeRegistry = await res.json();
+  } catch { /* best effort */ }
+}
+
+function refreshDashboardIdentityUI() {
+  const chip = document.getElementById('dashboard-identity-chip');
+  if (!chip || !primaryAgent) return;
+
+  const currentName = primaryAgent.displayName || primaryAgent.name || 'Agent';
+  const homePrimaryName = homePrimaryAgent?.displayName || homePrimaryAgent?.name || currentName;
+  const isHomePrimary = !!primaryAgent.isPrimary || primaryAgent.name === homePrimaryAgent?.name;
+  chip.textContent = isHomePrimary
+    ? `Dashboard: ${currentName} · primary agent`
+    : `Dashboard: ${currentName} · secondary · Home primary: ${homePrimaryName}`;
+  chip.title = isHomePrimary
+    ? `${currentName} is the current dashboard and the Home23 primary agent.`
+    : `${currentName} owns this dashboard. ${homePrimaryName} is the Home23 primary agent.`;
+  document.title = `Home23 — ${currentName}`;
+}
 
 // ── Engine Pulse State ──
 const enginePulse = {
@@ -42,8 +169,10 @@ async function init() {
   updateClocks();
   setInterval(updateClocks, 10000);
   initParticles();
+  await loadDashboardScopeRegistry();
   await loadAgents();
   renderAgentTabs();
+  refreshDashboardScopeUI();
   setupTabHandlers();
   setupHomeLayoutHandlers();
   setupTileActionHandlers();
@@ -114,7 +243,7 @@ function renderPulseTile() {
   if (!textEl) return;
 
   if (!_pulseLatest || !_pulseLatest.text) {
-    textEl.textContent = 'Jerry has not spoken yet. Waiting for the first pulse cycle.';
+    textEl.textContent = `${currentAgentLabel()} has not spoken yet. Waiting for the first pulse cycle.`;
     textEl.style.color = 'var(--text-muted)';
     textEl.style.fontStyle = 'italic';
     if (ageEl) ageEl.textContent = '';
@@ -165,7 +294,7 @@ async function openPulseHistoryPanel() {
   const list = document.getElementById('actions-list');
   const title = overlay?.querySelector('.h23-brainlog-title');
   if (!overlay || !list) return;
-  if (title) title.textContent = '💬 Pulse History — Jerry\'s Remarks';
+  if (title) title.textContent = `💬 Pulse History — ${currentAgentLabel('Agent')}'s Remarks`;
   overlay.style.display = 'flex';
   list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Loading...</div>';
   try {
@@ -1034,9 +1163,11 @@ async function loadAgents() {
     }];
   }
 
-  // Primary agent = the one whose dashboard we're on
+  // Current dashboard agent = the one whose dashboard we're on
   const currentPort = parseInt(window.location.port) || 5002;
   primaryAgent = agents.find(a => a.dashboardPort === currentPort) || agents[0];
+  homePrimaryAgent = agents.find(a => a.isPrimary) || primaryAgent;
+  refreshDashboardIdentityUI();
 
   // Set agent name in thoughts tile
   const primaryAgentName = document.getElementById('primary-agent-name');
@@ -1079,6 +1210,7 @@ async function loadAgents() {
       document.querySelectorAll('.h23-tab[data-tab]').forEach(t => t.classList.remove('active'));
       cosmoBtn.classList.add('active');
       currentTab = 'cosmo23';
+      refreshDashboardScopeUI();
       showCosmoFrame();
     });
   }
@@ -1234,10 +1366,10 @@ async function updateCosmoIndicator() {
 
 function renderAgentTabs() {
   const container = document.getElementById('agent-tabs');
-  // Only show tabs for other agents (not primary — that's "Home")
+  // Only show tabs for other agents; Home belongs to the current dashboard agent.
   const others = agents.filter(a => a.name !== primaryAgent.name);
   container.innerHTML = others.map(a =>
-    `<button class="h23-tab" data-tab="agent-${a.name}">🐢 ${a.displayName || a.name}</button>`
+    `<button class="h23-tab" data-tab="agent-${a.name}" data-tab-label="🐢 ${a.displayName || a.name}">🐢 ${a.displayName || a.name}</button>`
   ).join('');
 }
 
@@ -1257,6 +1389,7 @@ function setupTabHandlers() {
 
       tab.classList.add('active');
       currentTab = tab.dataset.tab;
+      refreshDashboardScopeUI();
 
       let panel = document.getElementById(`panel-${currentTab}`);
       if (!panel && currentTab.startsWith('agent-')) {
@@ -1272,7 +1405,7 @@ function setupTabHandlers() {
         if (typeof initBrainMap === 'function') initBrainMap();
       }
 
-      // Query tab: initialize on first visit (resolves primary agent brain via cosmo23).
+      // Query tab: initialize on first visit (resolves current dashboard agent brain via cosmo23).
       if (currentTab === 'query') {
         if (typeof initQueryTab === 'function') initQueryTab();
       }
@@ -1293,7 +1426,7 @@ function setupTabHandlers() {
   });
 }
 
-// ── Home Tiles (primary agent) ──
+// ── Home Tiles (current dashboard agent) ──
 
 function layoutHasTile(tileId) {
   return homeTileLayout.some((item) => item.tileId === tileId);
