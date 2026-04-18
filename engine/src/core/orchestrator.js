@@ -24,6 +24,10 @@ const { MemoryGovernor } = require('../system/memory-governor');
 
 // Curator cycle (Step 20: Situational Awareness Engine)
 const { filterEligibleNodes, checkSurfaceFreshness, SURFACE_BUDGETS } = require('./curator-cycle');
+const { buildTemporalContext } = require('./temporal-context');
+const { DiscoveryEngine } = require('../cognition/discovery-engine');
+const { ThinkingMachine } = require('../cognition/thinking-machine');
+const { ConversationSalience } = require('../cognition/conversation-salience');
 
 // Evidence Receipt Trail — Cryptographic Evidence Schema
 const {
@@ -128,6 +132,24 @@ class Orchestrator {
     this.lastCycleTime = new Date();
     this.lastSummarization = 0;
     this.lastConsolidation = new Date();
+
+    // Temporal substrate (Phase 1 of thinking-machine-cycle rebuild)
+    this.processStartedAt = Date.now();
+    this.lastSleepEndedAt = null;       // set when sleep session ends
+    this.lastConversationAt = null;     // set by harness via event (future wiring)
+    this.currentTemporalContext = null; // computed at start of each cycle
+
+    // Discovery engine (Phase 2 of thinking-machine-cycle rebuild).
+    // Runs continuously in background; produces ranked candidate queue.
+    // Under cognitionMode: legacy_roles it's purely observational.
+    // Under cognitionMode: thinking_machine it feeds the deep-thought pipeline.
+    // Initialized lazily in start() once memory is wired up.
+    this.discoveryEngine = null;
+
+    // Thinking-machine pipeline runner (Phase 3 — deep-dive → connect → critique).
+    // Only starts when cognitionMode is 'thinking_machine'. Legacy roles are
+    // completely untouched when flag is 'legacy_roles'.
+    this.thinkingMachine = null;
     
     // Sleep session tracking (cycle-based)
     this.sleepSession = {
@@ -555,6 +577,115 @@ class Orchestrator {
       this.logger.warn?.('live-problems start failed (non-fatal)', { error: e.message });
     }
 
+    // Start the discovery engine (Phase 2 of thinking-machine-cycle rebuild).
+    // Runs continuously in background, populating a ranked queue of graph-
+    // derived mining candidates. Pure graph math — no LLM calls, doesn't
+    // block the cycle, honors cognitionMode:legacy_roles by staying purely
+    // observational until the deep-thought pipeline wires up to consume it.
+    try {
+      if (!this.discoveryEngine && this.memory) {
+        // Conversation salience (Phase 7) — reads harness-written sidecar and
+        // scores graph clusters by overlap with recent conversations. Always
+        // constructed; degrades gracefully if sidecar is missing.
+        const salienceBrainDir = process.env.COSMO_RUNTIME_DIR
+          || (process.env.COSMO_WORKSPACE_PATH ? path.join(process.env.COSMO_WORKSPACE_PATH, '..', 'brain') : this.logsDir);
+        this.conversationSalience = salienceBrainDir
+          ? new ConversationSalience({ brainDir: salienceBrainDir, logger: this.logger })
+          : null;
+
+        this.discoveryEngine = new DiscoveryEngine({
+          memory: this.memory,
+          logger: this.logger,
+          config: this.config?.discovery || {},
+          getThoughtsHistory: () => this.journal.slice(-60),
+          getTemporalContext: () => this.currentTemporalContext,
+          getConversationSalience: () => this.conversationSalience,
+        });
+        this.discoveryEngine.start();
+      }
+    } catch (e) {
+      this.logger.warn?.('discovery engine start failed (non-fatal)', { error: e.message });
+    }
+
+    // Phase 3: thinking-machine pipeline runner. Gated on cognitionMode flag.
+    // Under 'legacy_roles' (default) this does nothing — the classic role
+    // rotation continues unchanged. Under 'thinking_machine' this replaces
+    // thought generation entirely.
+    try {
+      const cognitionMode = this.config?.architecture?.cognitionMode || 'legacy_roles';
+      if (cognitionMode === 'thinking_machine' && !this.thinkingMachine && this.memory && this.discoveryEngine) {
+        const { cosmoEvents } = require('../realtime/event-emitter');
+        const { UnifiedClient } = require('./unified-client');
+        const { EventLedger } = require('./event-ledger');
+        const { AgendaStore } = require('../cognition/agenda-store');
+        const pipelineClient = new UnifiedClient(this.config, this.logger);
+        const brainDir = process.env.COSMO_RUNTIME_DIR
+          || (process.env.COSMO_WORKSPACE_PATH ? path.join(process.env.COSMO_WORKSPACE_PATH, '..', 'brain') : this.logsDir);
+        const eventLedger = brainDir ? new EventLedger(brainDir, { logger: this.logger }) : null;
+        this.agendaStore = brainDir ? new AgendaStore({ brainDir, logger: this.logger }) : null;
+        if (this.agendaStore) this.agendaStore.startDecayReview();
+        this.thinkingMachine = new ThinkingMachine({
+          unifiedClient: pipelineClient,
+          memory: this.memory,
+          discoveryEngine: this.discoveryEngine,
+          config: {
+            discardedLogPath: brainDir ? path.join(brainDir, 'discarded-thoughts.jsonl') : null,
+            eventLedger,
+            agendaStore: this.agendaStore,
+          },
+          logger: this.logger,
+          getTemporalContext: () => this.currentTemporalContext,
+          emitThought: (thought) => {
+            // Emit to the real-time stream as a pipeline-origin thought.
+            cosmoEvents.emitThought({
+              cycle: this.cycleCount,
+              thought: thought.text,
+              role: 'deep_thought',
+              surprise: 0,
+              model: thought.deepDiveUsage?.model || null,
+              reasoning: thought.reasoning,
+              usedWebSearch: false,
+              temporalContext: thought.temporalContext,
+              provenance: thought.provenance,
+              connect: thought.connect,
+              verdict: thought.verdict,
+            });
+          },
+          logThought: async (thought) => {
+            // Append to journal for persistence via the standard path
+            const entry = {
+              cycle: this.cycleCount,
+              role: 'deep_thought',
+              thought: thought.text,
+              reasoning: thought.reasoning ? String(thought.reasoning).substring(0, 500) : null,
+              goal: null,
+              surprise: 0,
+              cognitiveState: { ...this.stateModulator.getState() },
+              oscillatorMode: this.oscillator.getCurrentMode(),
+              perturbation: null,
+              tunnel: false,
+              goalsAutoCaptured: 0,
+              usedWebSearch: false,
+              temporalContext: thought.temporalContext,
+              provenance: thought.provenance,
+              connect: thought.connect,
+              verdict: thought.verdict,
+              model: thought.deepDiveUsage?.model || null,
+              timestamp: new Date(),
+            };
+            this.journal.push(entry);
+            await this.logThought(entry);
+          },
+        });
+        this.thinkingMachine.start();
+        this.logger.info?.('[orchestrator] thinking-machine pipeline started (cognitionMode=thinking_machine)');
+      } else if (cognitionMode === 'thinking_machine') {
+        this.logger.warn?.('[orchestrator] cognitionMode=thinking_machine but thinking machine did not start — missing deps');
+      }
+    } catch (e) {
+      this.logger.warn?.('thinking-machine start failed (non-fatal)', { error: e?.message });
+    }
+
     // Start the pulse-remarks loop (Jerry's voice layer) once the orchestrator
     // is actually running. Lazy-loaded so engines without the pulse module
     // (if any) still boot cleanly.
@@ -743,6 +874,25 @@ class Orchestrator {
   async executeCycle() {
     const cycleStart = new Date();
     this.cycleCount++;
+
+    // Compute temporal context once per cycle. Attached to every thought
+    // emitted this cycle so jerry knows where-we-are-in-time. Pure utility;
+    // failure returns a sensible default context without throwing.
+    try {
+      const nowMs = cycleStart.getTime();
+      this.currentTemporalContext = buildTemporalContext({
+        now: cycleStart,
+        workspacePath: process.env.COSMO_WORKSPACE_PATH || null,
+        loopState: {
+          continuousRunMs: nowMs - (this.processStartedAt || nowMs),
+          lastSleptMs: this.lastSleepEndedAt ? nowMs - this.lastSleepEndedAt : null,
+          lastConversationMs: this.lastConversationAt ? nowMs - this.lastConversationAt : null,
+          awakeForMs: this.lastSleepEndedAt ? nowMs - this.lastSleepEndedAt : (nowMs - (this.processStartedAt || nowMs)),
+        },
+      });
+    } catch (e) {
+      this.currentTemporalContext = null; // graceful — temporal unavailable is non-fatal
+    }
 
     // Reload HEARTBEAT context at cycle start (optional, non-fatal)
     try {
@@ -1222,6 +1372,7 @@ class Orchestrator {
           this.sleepSession.noticePassRun = false;
           this.temporal.wake();
           this.stateModulator.transitionToMode('active');
+          this.lastSleepEndedAt = Date.now(); // for temporal.loopDuration.awakeForMs
 
           // Emit real-time wake event
           cosmoEvents.emitWakeTriggered({
@@ -1255,6 +1406,7 @@ class Orchestrator {
             tunnel: false,
             goalsAutoCaptured: 0,
             usedWebSearch: false,
+            temporalContext: this.currentTemporalContext,
             model: 'internal',
             timestamp: new Date()
           };
@@ -1269,7 +1421,8 @@ class Orchestrator {
             surprise: 0,
             model: 'internal',
             reasoning: null,
-            usedWebSearch: false
+            usedWebSearch: false,
+            temporalContext: this.currentTemporalContext,
           });
 
           // Save state periodically
@@ -1313,7 +1466,42 @@ class Orchestrator {
           this.logger.info('Generating thought despite low energy (dashboard freshness)');
           thinkingParams.shouldThink = true;
         } else {
-          this.logger.info('Skipping thought generation');
+          this.logger.info('Skipping thought generation; writing idle status thought for freshness');
+
+          const cognitiveState = this.stateModulator.getState();
+          const idleEntry = {
+            cycle: this.cycleCount,
+            role: 'idle',
+            thought: `Idle cycle — conserving energy at ${(cognitiveState.energy * 100).toFixed(0)}%`,
+            reasoning: null,
+            goal: null,
+            surprise: 0,
+            cognitiveState: { ...cognitiveState },
+            oscillatorMode: this.oscillator.getCurrentMode(),
+            perturbation: null,
+            tunnel: false,
+            goalsAutoCaptured: 0,
+            usedWebSearch: false,
+            temporalContext: this.currentTemporalContext,
+            model: 'internal',
+            timestamp: new Date()
+          };
+
+          this.journal.push(idleEntry);
+          await this.logThought(idleEntry);
+
+          cosmoEvents.emitThought({
+            cycle: this.cycleCount,
+            thought: idleEntry.thought,
+            role: 'idle',
+            surprise: 0,
+            model: 'internal',
+            reasoning: null,
+            usedWebSearch: false,
+            temporalContext: this.currentTemporalContext,
+          });
+
+          await this.saveState();
           return;
         }
       }
@@ -2285,6 +2473,7 @@ class Orchestrator {
         tunnel: tunnel !== null,
         goalsAutoCaptured: capturedGoals.length,
         usedWebSearch: thought.usedWebSearch || false,
+        temporalContext: this.currentTemporalContext,
         model: thought.model,
         timestamp: new Date()
       };
@@ -2300,7 +2489,8 @@ class Orchestrator {
         surprise: surprise,
         model: thought.model,
         reasoning: thought.reasoning,
-        usedWebSearch: thought.usedWebSearch || false
+        usedWebSearch: thought.usedWebSearch || false,
+        temporalContext: this.currentTemporalContext,
       });
 
       // 14b. Curator surface maintenance (Step 20)
@@ -6583,6 +6773,15 @@ class Orchestrator {
     }
     if (this.pulseRemarks) {
       try { this.pulseRemarks.stop(); } catch {}
+    }
+    if (this.discoveryEngine) {
+      try { this.discoveryEngine.stop(); } catch {}
+    }
+    if (this.thinkingMachine) {
+      try { this.thinkingMachine.stop(); } catch {}
+    }
+    if (this.agendaStore) {
+      try { this.agendaStore.stopDecayReview(); } catch {}
     }
     
     // Cluster cleanup (if enabled)

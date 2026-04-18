@@ -1,4 +1,11 @@
 architecture:
+  # Cognition mode selector. Scaffolded 2026-04-18 for the thinking-machine
+  # cycle rebuild (see docs/superpowers/specs/2026-04-18-thinking-machine-cycle.md).
+  # legacy_roles = current role rotation (curiosity/analyst/critic/curator/proposal).
+  # thinking_machine = new 4-phase pipeline (discover → deep-dive → connect → critique).
+  # Default stays legacy_roles until Phase 8 cutover. Flag exists now so subsequent
+  # phases can branch on it without disrupting the running engine.
+  cognitionMode: thinking_machine
   roleSystem:
     type: dynamic
     explorationMode: guided
@@ -357,6 +364,23 @@ modelAssignments:
   # Pulse voice — Jerry's remark layer on the dashboard tile.
   # Default tracks chat default (MiniMax). Tune in Settings → Models.
   pulseVoice:
+    provider: minimax
+    model: MiniMax-M2.7
+  # PGS sweep + synthesis (Phase 3 of thinking-machine-cycle rebuild).
+  # Used by the new autonomous pipeline; does not affect legacy_roles mode.
+  # Many small sweep calls in parallel → use the cheap fast tier.
+  pgsSweep:
+    provider: minimax
+    model: MiniMax-M2.7
+  pgsSynthesis:
+    provider: minimax
+    model: MiniMax-M2.7
+  # Deep-dive and critique — Phase 2 + 4 of thinking-machine-cycle. Both
+  # need reasoning headroom; critique needs tight JSON output discipline.
+  deepDive:
+    provider: minimax
+    model: MiniMax-M2.7
+  critique:
     provider: minimax
     model: MiniMax-M2.7
   quantumReasoner.branches:

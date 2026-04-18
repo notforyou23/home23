@@ -39,9 +39,76 @@ function createSettingsRouter(home23Root) {
     });
   }
 
-  function getPrimaryAgent() {
+  function chooseFallbackPrimaryAgent(agentNames = discoverAgents()) {
+    if (!Array.isArray(agentNames) || agentNames.length === 0) return null;
+    const ranked = agentNames.map(name => {
+      const config = loadYaml(path.join(home23Root, 'instances', name, 'config.yaml'));
+      return {
+        name,
+        dashboardPort: Number(config.ports?.dashboard) || Number.MAX_SAFE_INTEGER,
+        enginePort: Number(config.ports?.engine) || Number.MAX_SAFE_INTEGER,
+      };
+    });
+    ranked.sort((a, b) =>
+      a.dashboardPort - b.dashboardPort
+      || a.enginePort - b.enginePort
+      || a.name.localeCompare(b.name)
+    );
+    return ranked[0]?.name || null;
+  }
+
+  function stripHome23Prefix(value) {
+    return String(value || '').replace(/^home23-/, '').trim();
+  }
+
+  function getPrimaryAgent(options = {}) {
+    const { autoHeal = false } = options;
     const homeConfig = loadYaml(path.join(home23Root, 'config', 'home.yaml'));
-    return homeConfig.home?.primaryAgent || null;
+    const configured = String(homeConfig.home?.primaryAgent || '').trim();
+    const agentNames = discoverAgents();
+    if (configured && agentNames.includes(configured)) {
+      return configured;
+    }
+    const fallback = chooseFallbackPrimaryAgent(agentNames);
+    if (autoHeal && fallback && configured !== fallback) {
+      setPrimaryAgent(fallback);
+    }
+    return fallback;
+  }
+
+  function getCurrentDashboardAgent() {
+    const current = stripHome23Prefix(process.env.HOME23_AGENT || process.env.INSTANCE_ID);
+    const agents = discoverAgents();
+    return current && agents.includes(current) ? current : null;
+  }
+
+  function resolveRequestedAgent(candidate, options = {}) {
+    const { autoHealPrimary = true, fallbackToCurrent = true, fallbackToPrimary = true } = options;
+    const agents = discoverAgents();
+    if (agents.length === 0) return null;
+
+    const requested = stripHome23Prefix(candidate);
+    if (requested) {
+      return agents.includes(requested) ? requested : null;
+    }
+
+    if (fallbackToCurrent) {
+      const current = getCurrentDashboardAgent();
+      if (current) return current;
+    }
+
+    if (fallbackToPrimary) {
+      const primary = getPrimaryAgent({ autoHeal: autoHealPrimary });
+      if (primary) return primary;
+    }
+
+    return chooseFallbackPrimaryAgent(agents);
+  }
+
+  function loadAgentConfig(agentName) {
+    if (!agentName) return {};
+    const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
+    return fs.existsSync(configPath) ? (loadYaml(configPath) || {}) : {};
   }
 
   function setPrimaryAgent(name) {
@@ -50,6 +117,193 @@ function createSettingsRouter(home23Root) {
     if (!homeConfig.home) homeConfig.home = {};
     homeConfig.home.primaryAgent = name;
     saveYaml(configPath, homeConfig);
+  }
+
+  function listOnlinePm2ProcessNames() {
+    const { execSync } = require('child_process');
+    const jlist = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', stdio: 'pipe' }));
+    return new Set(
+      jlist
+        .filter(proc => proc.pm2_env?.status === 'online')
+        .map(proc => proc.name)
+    );
+  }
+
+  function restartOnlineEcosystemProcesses(targets) {
+    const { execSync } = require('child_process');
+    const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
+    const online = listOnlinePm2ProcessNames();
+    const activeTargets = targets.filter(name => online.has(name));
+
+    for (const name of activeTargets) {
+      try { execSync(`pm2 delete ${name}`, { stdio: 'pipe', timeout: 15000 }); } catch { /* best-effort */ }
+    }
+    if (activeTargets.length > 0) {
+      execSync(`pm2 start ${ecosystemPath} --only ${activeTargets.join(',')}`, {
+        cwd: home23Root,
+        stdio: 'pipe',
+        timeout: 45000,
+      });
+    }
+    return activeTargets;
+  }
+
+  function recycleManagedProcess(name) {
+    if (!name) return false;
+    return restartOnlineEcosystemProcesses([name]).includes(name);
+  }
+
+  function syncAgentDefaultModelFiles(agentName, provider, model) {
+    if (!agentName || !provider || !model) return;
+    const modelJson = JSON.stringify({
+      model: String(model).trim(),
+      provider: String(provider).trim(),
+    });
+    const directories = [
+      path.join(home23Root, 'instances', agentName, 'conversations'),
+      path.join(home23Root, 'instances', agentName, 'brain'),
+    ];
+    for (const dir of directories) {
+      try { fs.writeFileSync(path.join(dir, 'default-model.json'), modelJson); } catch { /* best-effort */ }
+    }
+  }
+
+  const SETTINGS_SCOPE_REGISTRY = Object.freeze({
+    providers: {
+      kind: 'global',
+      chip: 'Global',
+      agentTarget: 'none',
+      summaryTemplate: 'Providers is house-wide. Changes here affect every Home23 agent, harness, and shared model surface.',
+      routes: [
+        { method: 'GET', path: '/providers' },
+        { method: 'PUT', path: '/providers' },
+        { method: 'POST', path: '/providers/:name/test' },
+        { method: 'GET', path: '/oauth/status' },
+        { method: 'POST', path: '/oauth/anthropic/import-cli' },
+        { method: 'GET', path: '/oauth/anthropic/start' },
+        { method: 'POST', path: '/oauth/anthropic/callback' },
+        { method: 'POST', path: '/oauth/anthropic/logout' },
+        { method: 'POST', path: '/oauth/openai-codex/import-evobrew' },
+        { method: 'POST', path: '/oauth/openai-codex/start' },
+        { method: 'POST', path: '/oauth/openai-codex/logout' },
+      ],
+    },
+    agents: {
+      kind: 'roster',
+      chip: 'Roster',
+      agentTarget: 'roster',
+      summaryTemplate: 'Agents manages the multi-agent roster. Create agents, choose the home primary, and control each runtime independently.',
+      routes: [
+        { method: 'GET', path: '/agents' },
+        { method: 'POST', path: '/agents' },
+        { method: 'PUT', path: '/agents/:name' },
+        { method: 'POST', path: '/agents/:name/primary' },
+        { method: 'DELETE', path: '/agents/:name' },
+        { method: 'POST', path: '/agents/:name/start' },
+        { method: 'POST', path: '/agents/:name/restart-harness' },
+        { method: 'POST', path: '/agents/:name/stop' },
+      ],
+    },
+    models: {
+      kind: 'mixed',
+      chip: 'Mixed',
+      agentTarget: 'selected',
+      summaryTemplate: 'Models is mixed-scope. {{selectedAgent}} gets the runtime defaults above, while provider catalogs, aliases, and image generation stay house-wide.',
+      routes: [
+        { method: 'GET', path: '/models' },
+        { method: 'PUT', path: '/models' },
+        { method: 'GET', path: '/model-assignments' },
+        { method: 'PUT', path: '/model-assignments' },
+        { method: 'GET', path: '/pulse-voice' },
+        { method: 'PUT', path: '/pulse-voice' },
+      ],
+    },
+    query: {
+      kind: 'agent',
+      chip: 'Agent',
+      agentTarget: 'selected',
+      summaryTemplate: "Query defaults are saved on {{selectedAgent}}. They seed that agent's Query tab only.",
+      routes: [
+        { method: 'GET', path: '/query' },
+        { method: 'PUT', path: '/query' },
+      ],
+    },
+    feeder: {
+      kind: 'global',
+      chip: 'Global',
+      agentTarget: 'none',
+      summaryTemplate: 'Document Feeder is house-wide. Watch paths, compiler settings, and uploads affect the shared Home23 ingestion pipeline.',
+      routes: [
+        { method: 'GET', path: '/feeder' },
+        { method: 'PUT', path: '/feeder' },
+      ],
+    },
+    skills: {
+      kind: 'global',
+      chip: 'Global',
+      agentTarget: 'none',
+      summaryTemplate: 'Skills is house-wide. Skill configuration and credentials are shared across the Home23 system.',
+      routes: [
+        { method: 'GET', path: '/skills' },
+        { method: 'PUT', path: '/skills' },
+      ],
+    },
+    vibe: {
+      kind: 'global',
+      chip: 'Global',
+      agentTarget: 'none',
+      summaryTemplate: 'Vibe is house-wide. Changes here affect the visual generation layer for the whole Home23 install.',
+      routes: [
+        { method: 'GET', path: '/vibe' },
+        { method: 'PUT', path: '/vibe' },
+      ],
+    },
+    tiles: {
+      kind: 'global',
+      chip: 'Global',
+      agentTarget: 'none',
+      summaryTemplate: 'Tiles is house-wide. Home tile definitions and layout rules are shared across dashboards.',
+      routes: [
+        { method: 'GET', path: '/tiles' },
+        { method: 'PUT', path: '/tiles' },
+      ],
+    },
+    agency: {
+      kind: 'mixed',
+      chip: 'Mixed',
+      agentTarget: 'selected',
+      summaryTemplate: 'Agency is mixed-scope. The allow-list is house-wide, while the audit trails below show what {{selectedAgent}} actually attempted.',
+      routes: [
+        { method: 'GET', path: '/agency/allowlist' },
+        { method: 'PUT', path: '/agency/allowlist' },
+        { method: 'GET', path: '/agency/recent' },
+        { method: 'GET', path: '/agency/requested' },
+      ],
+    },
+    system: {
+      kind: 'global',
+      chip: 'Global',
+      agentTarget: 'none',
+      summaryTemplate: 'System is house-wide. Ports, shared services, and install/build actions affect the Home23 host itself.',
+      routes: [
+        { method: 'GET', path: '/system' },
+        { method: 'PUT', path: '/system' },
+        { method: 'POST', path: '/system/install' },
+        { method: 'POST', path: '/system/build' },
+      ],
+    },
+  });
+
+  function serializeSettingsScopeRegistry() {
+    return Object.fromEntries(
+      Object.entries(SETTINGS_SCOPE_REGISTRY).map(([key, value]) => [key, {
+        kind: value.kind,
+        chip: value.chip,
+        agentTarget: value.agentTarget,
+        summaryTemplate: value.summaryTemplate,
+        routes: value.routes.map(route => ({ ...route })),
+      }])
+    );
   }
 
   // ── Status (first-run detection) ──
@@ -61,7 +315,33 @@ function createSettingsRouter(home23Root) {
       hasAgents: agents.length > 0,
       agentCount: agents.length,
       initialized: hasSecrets,
-      primaryAgent: getPrimaryAgent(),
+      currentAgent: getCurrentDashboardAgent(),
+      primaryAgent: getPrimaryAgent({ autoHeal: true }),
+      scopeRegistryVersion: 1,
+    });
+  });
+
+  router.get('/scope', (req, res) => {
+    const currentAgent = getCurrentDashboardAgent();
+    const primaryAgent = getPrimaryAgent({ autoHeal: true });
+    const selectedAgent = resolveRequestedAgent(req.query.agent);
+    const agents = discoverAgents().map((name) => {
+      const config = loadAgentConfig(name);
+      return {
+        name,
+        displayName: config.agent?.displayName || name,
+        isPrimary: name === primaryAgent,
+        isCurrentDashboard: name === currentAgent,
+      };
+    });
+
+    res.json({
+      version: 1,
+      tabs: serializeSettingsScopeRegistry(),
+      currentAgent,
+      primaryAgent,
+      selectedAgent,
+      agents,
     });
   });
 
@@ -162,31 +442,13 @@ function createSettingsRouter(home23Root) {
     seedCosmo23Config();
 
     try {
-      const { execSync } = require('child_process');
-      const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
-      const jlist = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', stdio: 'pipe' }));
-      const online = new Set(
-        jlist
-          .filter(p => p.pm2_env?.status === 'online')
-          .map(p => p.name)
-      );
       const targets = [
         ...discoverAgents().flatMap(name => [`home23-${name}`, `home23-${name}-harness`]),
         'home23-evobrew',
         'home23-cosmo23',
-      ].filter(name => online.has(name));
-
-      for (const name of targets) {
-        try { execSync(`pm2 delete ${name}`, { stdio: 'pipe', timeout: 15000 }); } catch { /* best-effort */ }
-      }
-      if (targets.length > 0) {
-        execSync(`pm2 start ${ecosystemPath} --only ${targets.join(',')}`, {
-          cwd: home23Root,
-          stdio: 'pipe',
-          timeout: 45000,
-        });
-      }
-      res.json({ ok: true, restarted: targets.length > 0, targets });
+      ];
+      const restartedTargets = restartOnlineEcosystemProcesses(targets);
+      res.json({ ok: true, restarted: restartedTargets.length > 0, targets: restartedTargets });
     } catch (err) {
       res.json({ ok: true, restarted: false, warn: err.message });
     }
@@ -280,7 +542,8 @@ function createSettingsRouter(home23Root) {
   }
 
   router.get('/agents', (req, res) => {
-    const primary = getPrimaryAgent();
+    const primary = getPrimaryAgent({ autoHeal: true });
+    const currentAgent = getCurrentDashboardAgent();
     const secretsForDisplay = loadYaml(path.join(home23Root, 'config', 'secrets.yaml'));
     const agents = discoverAgents().map(name => {
       const config = loadYaml(path.join(home23Root, 'instances', name, 'config.yaml'));
@@ -308,8 +571,8 @@ function createSettingsRouter(home23Root) {
       };
     });
     // Primary agent first
-    agents.sort((a, b) => (b.isPrimary ? 1 : 0) - (a.isPrimary ? 1 : 0));
-    res.json({ agents });
+    agents.sort((a, b) => ((b.isPrimary ? 1 : 0) - (a.isPrimary ? 1 : 0)) || a.name.localeCompare(b.name));
+    res.json({ agents, primaryAgent: primary, currentAgent });
   });
 
   function findNextPorts() {
@@ -497,11 +760,6 @@ function createSettingsRouter(home23Root) {
     }
     if (model !== undefined) {
       config.chat.model = model; config.chat.defaultModel = model;
-      if (!config.engine) config.engine = {};
-      config.engine.thought = model;
-      config.engine.consolidation = model;
-      config.engine.dreaming = model;
-      config.engine.query = model;
     }
     if (provider !== undefined) { config.chat.provider = provider; config.chat.defaultProvider = provider; }
 
@@ -571,16 +829,30 @@ function createSettingsRouter(home23Root) {
       for (const dir of [convDir, brainDir]) {
         try { fs.writeFileSync(path.join(dir, 'default-model.json'), modelJson); } catch { /* ok */ }
       }
-      // Restart harness + engine to pick up new model
+      // Chat model change is harness-scoped. Do NOT touch the engine's
+      // cognitive routing (modelAssignments) or restart the engine —
+      // engine cognitive models are managed via Settings → Models.
       try {
-        const { execSync } = require('child_process');
-        execSync(`pm2 restart home23-${agentName}-harness`, { stdio: 'pipe', timeout: 10000 });
-        execSync(`pm2 restart home23-${agentName}`, { stdio: 'pipe', timeout: 10000 });
+        recycleManagedProcess(`home23-${agentName}-harness`);
       } catch { /* non-fatal */ }
       regenerateEvobrewConfig();
     }
 
     res.json({ ok: true });
+  });
+
+  router.post('/agents/:name/primary', (req, res) => {
+    const agentName = req.params.name;
+    const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
+    if (!fs.existsSync(configPath)) {
+      return res.status(404).json({ error: `Agent "${agentName}" not found` });
+    }
+
+    setPrimaryAgent(agentName);
+    regenerateEcosystem();
+    regenerateEvobrewConfig();
+
+    res.json({ ok: true, primaryAgent: agentName });
   });
 
   router.delete('/agents/:name', (req, res) => {
@@ -640,9 +912,8 @@ function createSettingsRouter(home23Root) {
     const agentName = req.params.name;
     const harnessProc = `home23-${agentName}-harness`;
     try {
-      const { execSync } = require('child_process');
-      execSync(`pm2 restart ${harnessProc} --update-env`, { stdio: 'pipe', timeout: 15000 });
-      res.json({ ok: true, restarted: harnessProc });
+      const restarted = recycleManagedProcess(harnessProc);
+      res.json({ ok: true, restarted: restarted ? harnessProc : null });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -696,39 +967,91 @@ function createSettingsRouter(home23Root) {
 
   router.get('/models', (req, res) => {
     const homeConfig = loadHomeConfig();
-    const primary = getPrimaryAgent();
-    let engineRoles = {};
-    if (primary) {
-      try {
-        const agentConfig = loadYaml(path.join(home23Root, 'instances', primary, 'config.yaml'));
-        engineRoles = agentConfig.engine || {};
-      } catch { /* ok */ }
-    }
+    const targetAgent = resolveRequestedAgent(req.query.agent);
+    const agentConfig = loadAgentConfig(targetAgent);
+    const agentChat = agentConfig.chat || {};
+    const effectiveAgentChat = {
+      defaultProvider: agentChat.defaultProvider || agentChat.provider || homeConfig.chat?.defaultProvider || '',
+      defaultModel: agentChat.defaultModel || agentChat.model || homeConfig.chat?.defaultModel || '',
+    };
     res.json({
-      chat: homeConfig.chat || {},
+      agent: targetAgent,
+      currentAgent: getCurrentDashboardAgent(),
+      primaryAgent: getPrimaryAgent({ autoHeal: true }),
+      chat: effectiveAgentChat,
+      sharedChatDefaults: homeConfig.chat || {},
       aliases: homeConfig.models?.aliases || {},
       imageGeneration: normalizeImageGenerationSettings(homeConfig.media?.imageGeneration || {}),
       imageProviders: IMAGE_PROVIDER_CATALOG,
       providers: Object.fromEntries(
         Object.entries(homeConfig.providers || {}).map(([name, cfg]) => [name, { defaultModels: cfg.defaultModels || [] }])
       ),
-      engineRoles,
+      engineRoles: agentConfig.engine || {},
     });
   });
 
   router.put('/models', (req, res) => {
-    const { chat, aliases, providerModels, engineRoles, imageGeneration } = req.body;
+    const { agent, chat, aliases, providerModels, engineRoles, imageGeneration } = req.body || {};
     const configPath = getHomeConfigPath();
     const homeConfig = loadYaml(configPath);
+    const targetAgent = resolveRequestedAgent(agent);
+    const roleModels = engineRoles && typeof engineRoles === 'object' ? engineRoles : {};
+    const chatChanged = !!chat;
+    const engineRolesChanged = Object.keys(roleModels).length > 0;
+    const defaultModel = chat?.defaultModel;
+    let restartedHarness = false;
+    let restartedAgent = false;
+    let homeConfigDirty = false;
 
-    if (chat) {
-      if (!homeConfig.chat) homeConfig.chat = {};
-      if (chat.defaultProvider !== undefined) homeConfig.chat.defaultProvider = chat.defaultProvider;
-      if (chat.defaultModel !== undefined) homeConfig.chat.defaultModel = chat.defaultModel;
+    if (chatChanged || engineRolesChanged) {
+      if (!targetAgent) {
+        return res.status(400).json({ error: 'No target agent selected' });
+      }
+      const agentConfigPath = path.join(home23Root, 'instances', targetAgent, 'config.yaml');
+      if (!fs.existsSync(agentConfigPath)) {
+        return res.status(404).json({ error: `Agent "${targetAgent}" not found` });
+      }
+      const agentConfig = loadYaml(agentConfigPath);
+      if (!agentConfig.chat) agentConfig.chat = {};
+      if (chatChanged && chat?.defaultProvider !== undefined) {
+        agentConfig.chat.provider = chat.defaultProvider;
+        agentConfig.chat.defaultProvider = chat.defaultProvider;
+      }
+      if (chatChanged && chat?.defaultModel !== undefined) {
+        agentConfig.chat.model = chat.defaultModel;
+        agentConfig.chat.defaultModel = chat.defaultModel;
+      }
+
+      if (!agentConfig.engine) agentConfig.engine = {};
+      for (const role of ['thought', 'consolidation', 'dreaming', 'query']) {
+        agentConfig.engine[role] = roleModels[role] || defaultModel || agentConfig.engine[role];
+      }
+      saveYaml(agentConfigPath, agentConfig);
+
+      if (chatChanged) {
+        const effectiveProvider = agentConfig.chat.defaultProvider || agentConfig.chat.provider;
+        const effectiveModel = agentConfig.chat.defaultModel || agentConfig.chat.model;
+        syncAgentDefaultModelFiles(targetAgent, effectiveProvider, effectiveModel);
+        try {
+          restartedHarness = recycleManagedProcess(`home23-${targetAgent}-harness`);
+        } catch (err) {
+          console.error(`[Settings] Failed to restart ${targetAgent}-harness after chat model changes:`, err.message);
+        }
+      }
+
+      if (chatChanged || engineRolesChanged) {
+        try {
+          restartedAgent = recycleManagedProcess(`home23-${targetAgent}`);
+        } catch (err) {
+          console.error(`[Settings] Failed to restart ${targetAgent} after model changes:`, err.message);
+        }
+      }
     }
+
     if (aliases !== undefined) {
       if (!homeConfig.models) homeConfig.models = {};
       homeConfig.models.aliases = aliases;
+      homeConfigDirty = true;
     }
     if (providerModels) {
       if (!homeConfig.providers) homeConfig.providers = {};
@@ -736,40 +1059,20 @@ function createSettingsRouter(home23Root) {
         if (!homeConfig.providers[provName]) homeConfig.providers[provName] = {};
         homeConfig.providers[provName].defaultModels = models;
       }
+      homeConfigDirty = true;
     }
     if (imageGeneration && typeof imageGeneration === 'object') {
       if (!homeConfig.media) homeConfig.media = {};
       homeConfig.media.imageGeneration = normalizeImageGenerationSettings(imageGeneration);
+      homeConfigDirty = true;
     }
 
-    saveYaml(configPath, homeConfig);
-    regenerateEvobrewConfig();
-
-    // Propagate engine role models to all agents + restart
-    const roleModels = engineRoles || {};
-    const defaultModel = chat?.defaultModel;
-    const needsRestart = defaultModel || Object.keys(roleModels).length > 0;
-
-    if (needsRestart) {
-      const agentNames = discoverAgents();
-      for (const name of agentNames) {
-        try {
-          const agentConfigPath = path.join(home23Root, 'instances', name, 'config.yaml');
-          const agentConfig = loadYaml(agentConfigPath);
-          if (!agentConfig.engine) agentConfig.engine = {};
-          // Per-role overrides take precedence, default model fills the rest
-          agentConfig.engine.thought = roleModels.thought || defaultModel || agentConfig.engine.thought;
-          agentConfig.engine.consolidation = roleModels.consolidation || defaultModel || agentConfig.engine.consolidation;
-          agentConfig.engine.dreaming = roleModels.dreaming || defaultModel || agentConfig.engine.dreaming;
-          agentConfig.engine.query = roleModels.query || defaultModel || agentConfig.engine.query;
-          saveYaml(agentConfigPath, agentConfig);
-          const { execSync } = require('child_process');
-          execSync(`pm2 restart home23-${name}`, { stdio: 'pipe', timeout: 10000 });
-        } catch (err) { console.error(`[Settings] Failed to propagate model to ${name}:`, err.message); }
-      }
+    if (homeConfigDirty) {
+      saveYaml(configPath, homeConfig);
+      regenerateEvobrewConfig();
     }
 
-    res.json({ ok: true });
+    res.json({ ok: true, agent: targetAgent, restartedAgent, restartedHarness });
   });
 
   // ── Query (Query-tab defaults) ──
@@ -778,8 +1081,11 @@ function createSettingsRouter(home23Root) {
 
   router.get('/query', (req, res) => {
     const homeConfig = loadHomeConfig();
-    const q = homeConfig.query || {};
+    const targetAgent = resolveRequestedAgent(req.query.agent);
+    const agentConfig = loadAgentConfig(targetAgent);
+    const q = agentConfig.query || homeConfig.query || {};
     res.json({
+      agent: targetAgent,
       defaultModel: q.defaultModel || '',
       defaultMode: q.defaultMode || 'full',
       enablePGSByDefault: !!q.enablePGSByDefault,
@@ -791,18 +1097,22 @@ function createSettingsRouter(home23Root) {
 
   router.put('/query', (req, res) => {
     try {
-      const configPath = getHomeConfigPath();
-      const homeConfig = loadYaml(configPath);
-      if (!homeConfig.query) homeConfig.query = {};
+      const targetAgent = resolveRequestedAgent(req.body?.agent);
+      if (!targetAgent) {
+        return res.status(400).json({ ok: false, error: 'No target agent selected' });
+      }
+      const configPath = path.join(home23Root, 'instances', targetAgent, 'config.yaml');
+      const agentConfig = loadYaml(configPath);
+      if (!agentConfig.query) agentConfig.query = {};
       const b = req.body || {};
-      if (typeof b.defaultModel === 'string') homeConfig.query.defaultModel = b.defaultModel;
-      if (typeof b.defaultMode === 'string') homeConfig.query.defaultMode = b.defaultMode;
-      if (typeof b.enablePGSByDefault === 'boolean') homeConfig.query.enablePGSByDefault = b.enablePGSByDefault;
-      if (typeof b.pgsSweepModel === 'string') homeConfig.query.pgsSweepModel = b.pgsSweepModel;
-      if (typeof b.pgsSynthModel === 'string') homeConfig.query.pgsSynthModel = b.pgsSynthModel;
-      if (typeof b.pgsDepth === 'number') homeConfig.query.pgsDepth = b.pgsDepth;
-      saveYaml(configPath, homeConfig);
-      res.json({ ok: true });
+      if (typeof b.defaultModel === 'string') agentConfig.query.defaultModel = b.defaultModel;
+      if (typeof b.defaultMode === 'string') agentConfig.query.defaultMode = b.defaultMode;
+      if (typeof b.enablePGSByDefault === 'boolean') agentConfig.query.enablePGSByDefault = b.enablePGSByDefault;
+      if (typeof b.pgsSweepModel === 'string') agentConfig.query.pgsSweepModel = b.pgsSweepModel;
+      if (typeof b.pgsSynthModel === 'string') agentConfig.query.pgsSynthModel = b.pgsSynthModel;
+      if (typeof b.pgsDepth === 'number') agentConfig.query.pgsDepth = b.pgsDepth;
+      saveYaml(configPath, agentConfig);
+      res.json({ ok: true, agent: targetAgent });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }
@@ -810,24 +1120,17 @@ function createSettingsRouter(home23Root) {
 
   // ── Model Assignments (per-slot cognitive routing) ──
 
-  function resolveTargetAgent() {
-    const primary = getPrimaryAgent();
-    if (primary) return primary;
-    const agents = discoverAgents();
-    return agents[0] || null;
-  }
-
   router.get('/model-assignments', (req, res) => {
     const homeConfig = loadYaml(path.join(home23Root, 'config', 'home.yaml'));
     const baseEnginePath = path.join(home23Root, 'configs', 'base-engine.yaml');
     const baseEngine = loadYaml(baseEnginePath);
     const baseAssignments = baseEngine.modelAssignments || {};
 
-    const primary = resolveTargetAgent();
+    const targetAgent = resolveRequestedAgent(req.query.agent);
     let instanceAssignments = {};
-    if (primary) {
+    if (targetAgent) {
       try {
-        const agentConfig = loadYaml(path.join(home23Root, 'instances', primary, 'config.yaml'));
+        const agentConfig = loadYaml(path.join(home23Root, 'instances', targetAgent, 'config.yaml'));
         instanceAssignments = agentConfig.modelAssignments || {};
       } catch { /* ok */ }
     }
@@ -858,7 +1161,7 @@ function createSettingsRouter(home23Root) {
     );
 
     res.json({
-      agent: primary,
+      agent: targetAgent,
       effective,
       instanceOverrides: instanceAssignments,
       base: baseAssignments,
@@ -872,7 +1175,7 @@ function createSettingsRouter(home23Root) {
       return res.status(400).json({ error: 'assignments object required' });
     }
 
-    const targetAgent = agent || resolveTargetAgent();
+    const targetAgent = resolveRequestedAgent(agent);
     if (!targetAgent) {
       return res.status(400).json({ error: 'No target agent (and no primary configured)' });
     }
@@ -920,47 +1223,55 @@ function createSettingsRouter(home23Root) {
     saveYaml(configPath, agentConfig);
 
     // Restart engine so new assignments take effect
-    try {
-      const { execSync } = require('child_process');
-      execSync(`pm2 restart home23-${targetAgent}`, { stdio: 'pipe', timeout: 10000 });
-    } catch { /* not running or pm2 unavailable — non-fatal */ }
+    try { recycleManagedProcess(`home23-${targetAgent}`); } catch { /* not running or pm2 unavailable — non-fatal */ }
 
     res.json({ ok: true, agent: targetAgent, overrideCount: Object.keys(overrides).length });
   });
 
   // ── Pulse Voice (Jerry's remark layer) ──
 
-  const DEFAULT_PULSE_PROMPT = `You are Jerry. You've just scanned what your own brain has been up to — cycles, thoughts, actions you executed, goals, sensors, the whole deal.
+  function buildDefaultPulsePrompt({ agentLabel = 'the agent', ownerName = 'jtr' } = {}) {
+    return `You are ${agentLabel}. You've just scanned what your own brain has been up to — cycles, thoughts, actions you executed, goals, sensors, the whole deal.
 
-You're talking to jtr. He runs you. He's your guy. Talk to him directly, one to one.
+You're talking to ${ownerName}. ${ownerName} runs you. Talk directly, one to one.
 
 Be cool. Be direct. Laid back by default. Turn it UP when something actually matters — a stuck loop, a failed action, a weird pattern, a win. Whimsical, weird metaphors welcome. Swear when you feel like it. You're not a customer service bot. Don't ask permission. Don't hedge.
 
 NEVER restate raw brain state as a list. Have a take. React. Comment. If everything's boring, say so, but say it with style. If something broke, call it out. If you did something cool, be proud about it (briefly — no bragging).
 
 2-4 sentences. No preamble. No "I noticed that" or "It appears." Just talk.`;
+  }
 
   router.get('/pulse-voice', (req, res) => {
-    // Read provider/model from the primary agent's modelAssignments.pulseVoice
-    // (merged with base-engine default). Read systemPrompt from home.yaml.
+    // Read provider/model from the selected agent's modelAssignments.pulseVoice
+    // (merged with base-engine default). Read systemPrompt from the selected
+    // agent config.
     const homeConfig = loadHomeConfig();
     const baseEngine = loadYaml(path.join(home23Root, 'configs', 'base-engine.yaml'));
     const basePulse = baseEngine?.modelAssignments?.pulseVoice || {};
 
-    const primary = resolveTargetAgent();
+    const targetAgent = resolveRequestedAgent(req.query.agent);
     let instancePulse = {};
-    if (primary) {
+    let agentLabel = targetAgent || 'the agent';
+    let ownerName = 'jtr';
+    let systemPrompt = '';
+    if (targetAgent) {
       try {
-        const agentConfig = loadYaml(path.join(home23Root, 'instances', primary, 'config.yaml'));
+        const agentConfig = loadYaml(path.join(home23Root, 'instances', targetAgent, 'config.yaml'));
         instancePulse = agentConfig?.modelAssignments?.pulseVoice || {};
+        agentLabel = agentConfig?.agent?.displayName || agentConfig?.agent?.name || targetAgent;
+        ownerName = agentConfig?.agent?.owner?.name || ownerName;
+        systemPrompt = agentConfig?.pulseVoice?.systemPrompt || '';
       } catch { /* ok */ }
     }
+    const defaultPrompt = buildDefaultPulsePrompt({ agentLabel, ownerName });
 
     res.json({
+      agent: targetAgent,
       provider: instancePulse.provider || basePulse.provider || homeConfig.chat?.defaultProvider || '',
       model: instancePulse.model || basePulse.model || homeConfig.chat?.defaultModel || '',
-      systemPrompt: homeConfig.pulseVoice?.systemPrompt || DEFAULT_PULSE_PROMPT,
-      defaultPrompt: DEFAULT_PULSE_PROMPT,
+      systemPrompt: systemPrompt || defaultPrompt,
+      defaultPrompt,
       providers: Object.fromEntries(
         Object.entries(homeConfig.providers || {}).map(([n, cfg]) => [n, cfg.defaultModels || []])
       ),
@@ -968,43 +1279,37 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
   });
 
   router.put('/pulse-voice', (req, res) => {
-    const { provider, model, systemPrompt } = req.body || {};
+    const { provider, model, systemPrompt, agent } = req.body || {};
 
     // Write provider/model to instance modelAssignments.pulseVoice (same
     // mechanism Cognitive Assignments uses)
-    const primary = resolveTargetAgent();
-    if (primary && provider && model) {
-      const configPath = path.join(home23Root, 'instances', primary, 'config.yaml');
-      if (fs.existsSync(configPath)) {
-        const agentConfig = loadYaml(configPath);
-        agentConfig.modelAssignments = agentConfig.modelAssignments || {};
+    const targetAgent = resolveRequestedAgent(agent);
+    if (!targetAgent) {
+      return res.status(400).json({ error: 'No target agent selected' });
+    }
+
+    const configPath = path.join(home23Root, 'instances', targetAgent, 'config.yaml');
+    if (fs.existsSync(configPath)) {
+      const agentConfig = loadYaml(configPath);
+      agentConfig.modelAssignments = agentConfig.modelAssignments || {};
+      if (provider && model) {
         agentConfig.modelAssignments.pulseVoice = {
           provider: String(provider).trim(),
           model: String(model).trim(),
         };
-        saveYaml(configPath, agentConfig);
       }
-    }
-
-    // Write systemPrompt to home.yaml (top-level pulseVoice)
-    if (typeof systemPrompt === 'string') {
-      const homeConfigPath = path.join(home23Root, 'config', 'home.yaml');
-      const homeConfig = loadYaml(homeConfigPath);
-      homeConfig.pulseVoice = homeConfig.pulseVoice || {};
-      homeConfig.pulseVoice.systemPrompt = systemPrompt;
-      saveYaml(homeConfigPath, homeConfig);
+      if (typeof systemPrompt === 'string') {
+        agentConfig.pulseVoice = agentConfig.pulseVoice || {};
+        agentConfig.pulseVoice.systemPrompt = systemPrompt;
+      }
+      saveYaml(configPath, agentConfig);
     }
 
     // Restart the agent engine so the new model + prompt take effect on the
     // next pulse tick
-    if (primary) {
-      try {
-        const { execSync } = require('child_process');
-        execSync(`pm2 restart home23-${primary}`, { stdio: 'pipe', timeout: 10000 });
-      } catch { /* non-fatal */ }
-    }
+    try { recycleManagedProcess(`home23-${targetAgent}`); } catch { /* non-fatal */ }
 
-    res.json({ ok: true });
+    res.json({ ok: true, agent: targetAgent });
   });
 
   // ── Agency (autonomous action allow-list + activity log) ──
@@ -1048,9 +1353,9 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
   });
 
   router.get('/agency/recent', (req, res) => {
-    const primary = resolveTargetAgent();
-    if (!primary) return res.json({ agent: null, actions: [] });
-    const logPath = path.join(home23Root, 'instances', primary, 'brain', 'actions.jsonl');
+    const targetAgent = resolveRequestedAgent(req.query.agent);
+    if (!targetAgent) return res.json({ agent: null, actions: [] });
+    const logPath = path.join(home23Root, 'instances', targetAgent, 'brain', 'actions.jsonl');
     const limit = Math.min(parseInt(req.query.limit || '50', 10) || 50, 500);
     const actions = [];
     if (fs.existsSync(logPath)) {
@@ -1061,13 +1366,13 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
         }
       } catch { /* file race, return what we have */ }
     }
-    res.json({ agent: primary, actions: actions.reverse() });
+    res.json({ agent: targetAgent, actions: actions.reverse() });
   });
 
   router.get('/agency/requested', (req, res) => {
-    const primary = resolveTargetAgent();
-    if (!primary) return res.json({ agent: null, requests: [] });
-    const p = path.join(home23Root, 'instances', primary, 'brain', 'requested-actions.jsonl');
+    const targetAgent = resolveRequestedAgent(req.query.agent);
+    if (!targetAgent) return res.json({ agent: null, requests: [] });
+    const p = path.join(home23Root, 'instances', targetAgent, 'brain', 'requested-actions.jsonl');
     const limit = Math.min(parseInt(req.query.limit || '50', 10) || 50, 500);
     const requests = [];
     if (fs.existsSync(p)) {
@@ -1076,7 +1381,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
         try { requests.push(JSON.parse(line)); } catch { /* skip */ }
       }
     }
-    res.json({ agent: primary, requests: requests.reverse() });
+    res.json({ agent: targetAgent, requests: requests.reverse() });
   });
 
   router.get('/system', (req, res) => {
@@ -1309,11 +1614,6 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     return { status: res.status, body };
   }
 
-  function primaryAgentName() {
-    const homeCfg = loadYaml(path.join(home23Root, 'config', 'home.yaml'));
-    return homeCfg.home?.primaryAgent || null;
-  }
-
   async function syncOAuthTokenToSecrets(provider) {
     // provider: 'anthropic' | 'openai-codex'
     const { body, status } = await cosmoFetch(`/api/oauth/${provider}/raw-token`);
@@ -1332,21 +1632,18 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     // Regenerate ecosystem so new env vars land in PM2
     regenerateEcosystem();
 
-    // Restart the affected processes. Only restart if a primary agent exists
-    // — otherwise the ecosystem regeneration is enough until first start.
-    const agentName = primaryAgentName();
-    if (agentName) {
-      try {
-        const { execSync } = require('child_process');
-        execSync(
-          `pm2 restart home23-${agentName} home23-${agentName}-harness --update-env`,
-          { stdio: 'pipe', timeout: 30_000 }
-        );
-      } catch (err) {
-        return { ok: true, restarted: false, warn: `token written, restart failed: ${err.message}` };
-      }
+    const targets = discoverAgents().flatMap(name => [`home23-${name}`, `home23-${name}-harness`]);
+    try {
+      const restartedTargets = restartOnlineEcosystemProcesses(targets);
+      return {
+        ok: true,
+        restarted: restartedTargets.length > 0,
+        rotated: prev !== body.token,
+        targets: restartedTargets,
+      };
+    } catch (err) {
+      return { ok: true, restarted: false, rotated: prev !== body.token, warn: `token written, restart failed: ${err.message}` };
     }
-    return { ok: true, restarted: !!agentName, rotated: prev !== body.token };
   }
 
   async function clearOAuthTokenFromSecrets(provider) {
@@ -1357,16 +1654,9 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
       delete secrets.providers[provider].oauthManaged;
       saveYaml(secretsPath, secrets);
       regenerateEcosystem();
-      const agentName = primaryAgentName();
-      if (agentName) {
-        try {
-          const { execSync } = require('child_process');
-          execSync(
-            `pm2 restart home23-${agentName} home23-${agentName}-harness --update-env`,
-            { stdio: 'pipe', timeout: 30_000 }
-          );
-        } catch { /* best-effort */ }
-      }
+      try {
+        restartOnlineEcosystemProcesses(discoverAgents().flatMap(name => [`home23-${name}`, `home23-${name}-harness`]));
+      } catch { /* best-effort */ }
     }
   }
 

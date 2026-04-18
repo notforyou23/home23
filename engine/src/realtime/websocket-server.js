@@ -88,6 +88,39 @@ class RealtimeServer {
             return;
           }
 
+          // ── Discovery engine observability (Phase 2 of thinking-machine-cycle) ──
+          if (req.url && req.url.startsWith('/admin/discovery/')) {
+            try {
+              await this._handleDiscoveryAdmin(req, res);
+            } catch (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            return;
+          }
+
+          // ── Agenda store (Phase 6 of thinking-machine-cycle — fruit layer) ──
+          if (req.url && req.url.startsWith('/admin/agenda')) {
+            try {
+              await this._handleAgendaAdmin(req, res);
+            } catch (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            return;
+          }
+
+          // ── Thinking machine observability (Phase 8) ──
+          if (req.url && req.url.startsWith('/admin/thinking')) {
+            try {
+              await this._handleThinkingAdmin(req, res);
+            } catch (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            return;
+          }
+
           // Default: not found
           res.writeHead(404);
           res.end('Not found');
@@ -219,6 +252,147 @@ class RealtimeServer {
     }
 
     return json(404, { ok: false, error: `Unknown admin route: ${req.method} ${url}` });
+  }
+
+  /**
+   * Handle /admin/discovery/* routes. Exposes the DiscoveryEngine's ranked
+   * candidate queue and per-signal stats for dashboard observability.
+   * Requires orchestrator.discoveryEngine to be wired (non-fatal if missing).
+   */
+  async _handleDiscoveryAdmin(req, res) {
+    const url = req.url;
+    const de = this.orchestrator?.discoveryEngine;
+    const json = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (!de) {
+      return json(503, { ok: false, error: 'Discovery engine not available' });
+    }
+
+    // GET /admin/discovery/stats — counters + queue depth + salience status
+    if (req.method === 'GET' && url === '/admin/discovery/stats') {
+      const stats = de.getStats();
+      const salience = this.orchestrator?.conversationSalience;
+      return json(200, {
+        ok: true,
+        stats,
+        salience: salience ? salience.stats() : null,
+      });
+    }
+
+    // GET /admin/discovery/peek?n=10 — top N candidates without draining
+    if (req.method === 'GET' && url.startsWith('/admin/discovery/peek')) {
+      const match = url.match(/[?&]n=(\d+)/);
+      const n = match ? Math.min(parseInt(match[1], 10), 100) : 10;
+      return json(200, { ok: true, candidates: de.peek(n) });
+    }
+
+    return json(404, { ok: false, error: `Unknown discovery route: ${req.method} ${url}` });
+  }
+
+  /**
+   * Handle /admin/agenda* routes. Exposes the agenda store for the dashboard
+   * fruit layer. Requires orchestrator.agendaStore to be wired (returns 503
+   * if missing — normal under cognitionMode: legacy_roles).
+   */
+  async _handleAgendaAdmin(req, res) {
+    const url = req.url;
+    const store = this.orchestrator?.agendaStore;
+    const json = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (!store) {
+      return json(503, { ok: false, error: 'Agenda store not available (is cognitionMode: thinking_machine?)' });
+    }
+
+    // GET /admin/agenda/list?status=candidate,surfaced&limit=50
+    if (req.method === 'GET' && url.startsWith('/admin/agenda/list')) {
+      const statusMatch = url.match(/[?&]status=([^&]+)/);
+      const limitMatch = url.match(/[?&]limit=(\d+)/);
+      const filter = {};
+      if (statusMatch) filter.status = decodeURIComponent(statusMatch[1]).split(',');
+      if (limitMatch) filter.limit = parseInt(limitMatch[1], 10);
+      return json(200, { ok: true, items: store.list(filter), counts: store.counts() });
+    }
+
+    // GET /admin/agenda/grouped — grouped by topic for dashboard surface
+    if (req.method === 'GET' && url.startsWith('/admin/agenda/grouped')) {
+      const statusMatch = url.match(/[?&]status=([^&]+)/);
+      const filter = {};
+      if (statusMatch) filter.status = decodeURIComponent(statusMatch[1]).split(',');
+      return json(200, { ok: true, groups: store.groupedByTopic(filter), counts: store.counts() });
+    }
+
+    // GET /admin/agenda/stats
+    if (req.method === 'GET' && url === '/admin/agenda/stats') {
+      return json(200, { ok: true, counts: store.counts() });
+    }
+
+    // GET /admin/agenda/:id
+    const getById = url.match(/^\/admin\/agenda\/([^/?]+)$/);
+    if (req.method === 'GET' && getById && getById[1] !== 'list' && getById[1] !== 'grouped' && getById[1] !== 'stats') {
+      const rec = store.get(getById[1]);
+      if (!rec) return json(404, { ok: false, error: 'not found' });
+      return json(200, { ok: true, item: rec });
+    }
+
+    // POST /admin/agenda/:id/status { status, note, actor }
+    const statusPost = url.match(/^\/admin\/agenda\/([^/]+)\/status$/);
+    if (req.method === 'POST' && statusPost) {
+      const body = await this._readJsonBody(req);
+      if (!body.status) return json(400, { ok: false, error: 'status is required' });
+      const rec = store.updateStatus(statusPost[1], body.status, { note: body.note, actor: body.actor || 'api' });
+      if (!rec) return json(404, { ok: false, error: 'not found or invalid status' });
+      return json(200, { ok: true, item: rec });
+    }
+
+    return json(404, { ok: false, error: `Unknown agenda route: ${req.method} ${url}` });
+  }
+
+  /**
+   * Handle /admin/thinking* routes — observability for the thinking-machine
+   * pipeline (kept/discarded ratio, convergence distribution, pgs stats,
+   * token budget, topic recurrence). Also exposes mode-flip endpoint.
+   */
+  async _handleThinkingAdmin(req, res) {
+    const url = req.url;
+    const tm = this.orchestrator?.thinkingMachine;
+    const json = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    // GET /admin/thinking/stats — always available (returns mode + any stats)
+    if (req.method === 'GET' && url === '/admin/thinking/stats') {
+      const mode = this.orchestrator?.config?.architecture?.cognitionMode || 'legacy_roles';
+      const stats = tm ? tm.getStats() : null;
+      const agendaStats = this.orchestrator?.agendaStore?.counts?.() || null;
+      const discoveryStats = this.orchestrator?.discoveryEngine?.getStats?.() || null;
+      const salienceStats = this.orchestrator?.conversationSalience?.stats?.() || null;
+      return json(200, {
+        ok: true,
+        cognitionMode: mode,
+        thinkingMachineRunning: Boolean(tm?.running),
+        thinkingMachine: stats,
+        agenda: agendaStats,
+        discovery: discoveryStats,
+        salience: salienceStats,
+      });
+    }
+
+    // GET /admin/thinking/recent?n=5 — last N kept thoughts with full provenance
+    if (req.method === 'GET' && url.startsWith('/admin/thinking/recent')) {
+      if (!tm) return json(503, { ok: false, error: 'Thinking machine not running' });
+      const match = url.match(/[?&]n=(\d+)/);
+      const n = match ? Math.min(parseInt(match[1], 10), 50) : 10;
+      return json(200, { ok: true, thoughts: tm.getRecentThoughts(n) });
+    }
+
+    return json(404, { ok: false, error: `Unknown thinking route: ${req.method} ${url}` });
   }
 
   /**

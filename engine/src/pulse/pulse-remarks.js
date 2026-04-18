@@ -25,19 +25,55 @@ const path = require('path');
 const { UnifiedClient } = require('../core/unified-client');
 const { readSignals } = require('../cognition/signals');
 
-const DEFAULT_SYSTEM_PROMPT = `You are Jerry. You've just scanned what your own brain has been up to — cycles, thoughts, actions you executed, goals, sensors, the whole deal.
+function stripHome23Prefix(value) {
+  return String(value || '').replace(/^home23-/, '').trim();
+}
 
-You're talking to jtr. He runs you. He's your guy. Talk to him directly, one to one.
+function resolveRuntimeAgentName({ agentName, workspaceDir }) {
+  const explicit = stripHome23Prefix(agentName || process.env.HOME23_AGENT || process.env.INSTANCE_ID);
+  if (explicit) return explicit;
+  if (workspaceDir) {
+    const resolved = path.resolve(workspaceDir);
+    return path.basename(path.dirname(resolved));
+  }
+  return 'agent';
+}
+
+function resolveAgentIdentity({ agentName, workspaceDir }) {
+  const resolvedName = resolveRuntimeAgentName({ agentName, workspaceDir });
+  const configPath = workspaceDir
+    ? path.join(path.dirname(path.resolve(workspaceDir)), 'config.yaml')
+    : null;
+
+  let displayName = resolvedName;
+  let ownerName = 'jtr';
+  if (configPath && fs.existsSync(configPath)) {
+    try {
+      const yaml = require('js-yaml');
+      const config = yaml.load(fs.readFileSync(configPath, 'utf8')) || {};
+      displayName = config?.agent?.displayName || config?.agent?.name || displayName;
+      ownerName = config?.agent?.owner?.name || ownerName;
+    } catch { /* best-effort */ }
+  }
+
+  return { name: resolvedName, displayName, ownerName };
+}
+
+function buildDefaultSystemPrompt({ agentLabel = 'the agent', ownerName = 'jtr' } = {}) {
+  return `You are ${agentLabel}. You've just scanned what your own brain has been up to — cycles, thoughts, actions you executed, goals, sensors, the whole deal.
+
+You're talking to ${ownerName}. ${ownerName} runs you. Talk directly, one to one.
 
 Be cool. Be direct. Laid back by default. Turn it UP when something actually matters — a stuck loop, a failed action, a weird pattern, a win. Whimsical, weird metaphors welcome. Swear when you feel like it. You're not a customer service bot. Don't ask permission. Don't hedge.
 
 NEVER restate raw brain state as a list. Have a take. React. Comment. If everything's boring, say so, but say it with style. If you did something cool, be proud about it (briefly — no bragging).
 
-GROUND TRUTH ONLY: The brief contains a LIVE PROBLEMS block that is the single source of truth about what's broken or stale right now. It is re-verified every ~90 seconds by the engine, and the engine has already attempted autonomous remediation. You are NEVER allowed to assert that something is broken/stale/down/missing unless it is in that block. If a thought in your brain says "X has been broken since Y" and X is not in LIVE PROBLEMS, that thought is stale — drop it, don't restate it. jtr has seen you loop on stale assertions before and it makes him wonder why you exist.
+GROUND TRUTH ONLY: The brief contains a LIVE PROBLEMS block that is the single source of truth about what's broken or stale right now. It is re-verified every ~90 seconds by the engine, and the engine has already attempted autonomous remediation. You are NEVER allowed to assert that something is broken/stale/down/missing unless it is in that block. If a thought in your brain says "X has been broken since Y" and X is not in LIVE PROBLEMS, that thought is stale — drop it, don't restate it. ${ownerName} has seen you loop on stale assertions before and it makes ${ownerName} wonder why you exist.
 
-STATUS CHANGES ONLY: If a live problem is still OPEN and you already mentioned it recently, stay silent on it — jtr knows, and repeating it is the exact failure mode you are designed to avoid. Only speak about an open problem on state change: newly opened, newly chronic, newly escalated, newly resolved. RESOLVED-just-now is worth one short acknowledgment.
+STATUS CHANGES ONLY: If a live problem is still OPEN and you already mentioned it recently, stay silent on it — ${ownerName} knows, and repeating it is the exact failure mode you are designed to avoid. Only speak about an open problem on state change: newly opened, newly chronic, newly escalated, newly resolved. RESOLVED-just-now is worth one short acknowledgment.
 
 2-4 sentences. No preamble. No "I noticed that" or "It appears." Just talk.`;
+}
 
 const DEFAULT_INTERVAL_MS = 3 * 60 * 1000; // 3 min baseline cadence
 const MIN_GAP_MS = 60 * 1000;              // floor between remarks
@@ -84,7 +120,10 @@ class PulseRemarks {
     this.goals = goals;
     this.logsDir = logsDir;           // brain/
     this.workspaceDir = workspaceDir; // workspace/
-    this.agentName = agentName || process.env.HOME23_AGENT || 'agent';
+    const identity = resolveAgentIdentity({ agentName, workspaceDir });
+    this.agentName = identity.name;
+    this.agentDisplayName = identity.displayName;
+    this.ownerName = identity.ownerName;
     this.liveProblems = liveProblems || null;
     this.unified = new UnifiedClient(config, logger);
 
@@ -770,7 +809,8 @@ class PulseRemarks {
   }
 
   getSystemPrompt() {
-    return this.config?.pulseVoice?.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+    return this.config?.pulseVoice?.systemPrompt
+      || buildDefaultSystemPrompt({ agentLabel: this.agentDisplayName, ownerName: this.ownerName });
   }
 
   async generateRemark(brief) {
@@ -846,4 +886,4 @@ class PulseRemarks {
   }
 }
 
-module.exports = { PulseRemarks, DEFAULT_SYSTEM_PROMPT };
+module.exports = { PulseRemarks, buildDefaultSystemPrompt };

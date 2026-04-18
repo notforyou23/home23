@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Home23 — Thinking Machine</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/home23-dashboard.css">
+  <style>
+    .h23t-container { max-width: 1200px; margin: 24px auto; padding: 0 24px; color: #e9e9f0; }
+    .h23t-header { display:flex; justify-content: space-between; align-items: baseline; margin-bottom: 20px; }
+    .h23t-title { font-size: 28px; font-weight: 700; }
+    .h23t-back { color: #8ab4ff; text-decoration: none; font-size: 13px; }
+    .h23t-mode { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; padding: 16px 20px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; }
+    .h23t-mode-label { font-size: 12px; color: #8a8a9a; text-transform: uppercase; letter-spacing: 0.12em; }
+    .h23t-mode-value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+    .h23t-mode-value.on { color: #86efac; }
+    .h23t-mode-value.off { color: #fbbf24; }
+    .h23t-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
+    .h23t-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 18px; }
+    .h23t-card-title { font-size: 12px; color: #8a8a9a; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px; }
+    .h23t-metric-row { display:flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
+    .h23t-metric-label { color: #a0a0ae; }
+    .h23t-metric-value { font-weight: 600; color: #e9e9f0; }
+    .h23t-big-value { font-size: 32px; font-weight: 700; }
+    .h23t-footnote { font-size: 11px; color: #6a6a78; margin-top: 8px; }
+    .h23t-ratio-bar { height: 6px; background: rgba(255,255,255,0.06); border-radius: 3px; overflow: hidden; margin-top: 8px; position: relative; }
+    .h23t-ratio-fill { height: 100%; background: linear-gradient(90deg, #86efac, #60a5fa); }
+    .h23t-signal-row { display:flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+    .h23t-error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px; }
+    .h23t-empty-hint { color: #6a6a78; font-style: italic; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div id="particles-js"></div>
+
+  <header class="h23-header">
+    <div class="h23-header-left">
+      <span class="h23-logo">&#129504; <span id="home-name">Home23</span></span>
+      <span class="h23-subtitle">THINKING MACHINE</span>
+    </div>
+    <div class="h23-header-right">
+      <a href="/home23" class="h23t-back">&larr; Dashboard</a>
+    </div>
+  </header>
+
+  <div class="h23t-container">
+    <div class="h23t-header">
+      <div class="h23t-title">The mind at work</div>
+      <div style="font-size: 13px; color: #8a8a9a;" id="last-update">Loading…</div>
+    </div>
+
+    <div id="thinking-error" class="h23t-error" style="display:none;"></div>
+
+    <div class="h23t-mode">
+      <div>
+        <div class="h23t-mode-label">Cognition mode</div>
+        <div class="h23t-mode-value" id="mode-value">—</div>
+      </div>
+      <div>
+        <div class="h23t-mode-label">Thinking-machine running</div>
+        <div class="h23t-mode-value" id="running-value">—</div>
+      </div>
+      <div>
+        <div class="h23t-mode-label">Last cycle</div>
+        <div class="h23t-mode-value" id="last-cycle" style="font-size:14px;">—</div>
+      </div>
+    </div>
+
+    <div class="h23t-grid">
+      <div class="h23t-card">
+        <div class="h23t-card-title">Kept vs discarded</div>
+        <div id="tm-ratio-body">
+          <div class="h23t-metric-row"><span class="h23t-metric-label">Cycles run</span><span class="h23t-metric-value" id="tm-run">—</span></div>
+          <div class="h23t-metric-row"><span class="h23t-metric-label">Kept</span><span class="h23t-metric-value" id="tm-kept" style="color:#86efac;">—</span></div>
+          <div class="h23t-metric-row"><span class="h23t-metric-label">Discarded</span><span class="h23t-metric-value" id="tm-discarded" style="color:#fbbf24;">—</span></div>
+          <div class="h23t-ratio-bar"><div class="h23t-ratio-fill" id="tm-ratio-fill" style="width:0%;"></div></div>
+          <div class="h23t-footnote" id="tm-ratio-label">Silence is honest. High discard rate means critique has teeth.</div>
+        </div>
+      </div>
+
+      <div class="h23t-card">
+        <div class="h23t-card-title">Discovery queue</div>
+        <div class="h23t-big-value" id="disc-queue">—</div>
+        <div class="h23t-footnote">candidates ready for mining</div>
+        <div style="margin-top: 14px;">
+          <div class="h23t-card-title" style="margin-bottom:6px;">Per signal</div>
+          <div id="disc-signals"></div>
+        </div>
+      </div>
+
+      <div class="h23t-card">
+        <div class="h23t-card-title">PGS connect phase</div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Available</span><span class="h23t-metric-value" id="pgs-available">—</span></div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Calls</span><span class="h23t-metric-value" id="pgs-calls">—</span></div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Success</span><span class="h23t-metric-value" id="pgs-success" style="color:#86efac;">—</span></div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Timeouts</span><span class="h23t-metric-value" id="pgs-timeout">—</span></div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Unavailable</span><span class="h23t-metric-value" id="pgs-unavail">—</span></div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Avg duration</span><span class="h23t-metric-value" id="pgs-avg">—</span></div>
+      </div>
+
+      <div class="h23t-card">
+        <div class="h23t-card-title">Fruit layer — agenda</div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Candidate</span><span class="h23t-metric-value" id="ag-candidate">—</span></div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Surfaced</span><span class="h23t-metric-value" id="ag-surfaced">—</span></div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Acknowledged</span><span class="h23t-metric-value" id="ag-ack">—</span></div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Acted on</span><span class="h23t-metric-value" id="ag-acted" style="color:#86efac;">—</span></div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Stale</span><span class="h23t-metric-value" id="ag-stale" style="color:#6a6a78;">—</span></div>
+        <div class="h23t-footnote"><a href="/home23/agenda" style="color:#8ab4ff;">Open agenda →</a></div>
+      </div>
+
+      <div class="h23t-card">
+        <div class="h23t-card-title">Conversation salience</div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Sessions cached</span><span class="h23t-metric-value" id="cs-total">—</span></div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Active (&lt;72h)</span><span class="h23t-metric-value" id="cs-active">—</span></div>
+        <div class="h23t-metric-row"><span class="h23t-metric-label">Sidecar present</span><span class="h23t-metric-value" id="cs-sidecar">—</span></div>
+        <div class="h23t-footnote">Written by the harness when a chat session compiles. Feeds discovery's salience probe.</div>
+      </div>
+
+      <div class="h23t-card">
+        <div class="h23t-card-title">How to flip</div>
+        <div style="font-size: 13px; line-height: 1.6; color:#a0a0ae;">
+          Edit <code style="color:#fbbf24;">configs/base-engine.yaml</code>:
+          <div style="margin: 8px 0; padding: 8px 12px; background: rgba(0,0,0,0.3); border-radius: 4px; font-family: monospace; font-size: 12px;">
+            architecture:<br>
+            &nbsp;&nbsp;cognitionMode: thinking_machine
+          </div>
+          Then restart <code style="color:#fbbf24;">home23-jerry</code>. Flip back by setting to <code>legacy_roles</code>.
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent deep thoughts with full provenance -->
+    <div style="margin-top: 16px;">
+      <div style="display:flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px;">
+        <div style="font-size: 20px; font-weight: 700;">Recent deep thoughts</div>
+        <div style="font-size: 12px; color: #6a6a78;">Full provenance — discovery candidate, graph context, PGS output, critique passes, agenda emitted</div>
+      </div>
+      <div id="recent-thoughts">
+        <div class="h23t-empty-hint" style="padding: 20px;">No kept thoughts yet.</div>
+      </div>
+    </div>
+  </div>
+
+  <style>
+    .h23t-thought { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 20px; margin-bottom: 14px; }
+    .h23t-thought-meta { display:flex; gap: 14px; font-size: 11px; color: #8a8a9a; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+    .h23t-thought-signal { background: rgba(132,204,22,0.12); color: #a3e635; padding: 2px 8px; border-radius: 3px; font-weight: 600; }
+    .h23t-thought-text { font-size: 14px; line-height: 1.65; color: #e9e9f0; white-space: pre-wrap; margin-bottom: 14px; }
+    .h23t-thought-section { margin-top: 14px; padding-top: 12px; border-top: 1px dashed rgba(255,255,255,0.08); }
+    .h23t-thought-section-title { font-size: 11px; color: #6a6a78; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 6px; font-weight: 600; }
+    .h23t-passes { display: flex; gap: 6px; flex-wrap: wrap; font-size: 11px; }
+    .h23t-pass { background: rgba(255,255,255,0.05); padding: 4px 8px; border-radius: 3px; border: 1px solid rgba(255,255,255,0.06); }
+    .h23t-pass-keep { border-color: rgba(132,204,22,0.4); color: #a3e635; }
+    .h23t-pass-revise { border-color: rgba(251,191,36,0.4); color: #fbbf24; }
+    .h23t-pass-discard { border-color: rgba(239,68,68,0.4); color: #fca5a5; }
+    .h23t-edge { font-size: 12px; color: #a0a0ae; padding: 3px 0; }
+    .h23t-edge-ids { color: #60a5fa; font-weight: 600; }
+    .h23t-ag-link { display:inline-block; font-size: 12px; padding: 2px 8px; margin-right: 6px; background: rgba(56,189,248,0.1); color: #60a5fa; border-radius: 3px; border: 1px solid rgba(56,189,248,0.2); text-decoration: none; }
+    .h23t-ag-link:hover { background: rgba(56,189,248,0.2); }
+    .h23t-toggle { background: none; border: 1px solid rgba(255,255,255,0.12); color: #8ab4ff; padding: 4px 10px; border-radius: 4px; font-size: 11px; cursor: pointer; font-family: inherit; }
+    .h23t-expand { display: none; }
+    .h23t-expand.open { display: block; }
+  </style>
+
+  <script>
+    function esc(s) { return String(s || '').replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch])); }
+    function fmtMs(ms) { if (ms == null) return '—'; if (ms < 1000) return ms + 'ms'; if (ms < 60000) return (ms/1000).toFixed(1)+'s'; return (ms/60000).toFixed(1)+'m'; }
+
+    async function load() {
+      const errEl = document.getElementById('thinking-error');
+      errEl.style.display = 'none';
+      try {
+        const r = await fetch('/api/thinking/stats');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+
+        // Mode
+        const mode = data.cognitionMode;
+        const modeEl = document.getElementById('mode-value');
+        modeEl.textContent = mode;
+        modeEl.className = 'h23t-mode-value ' + (mode === 'thinking_machine' ? 'on' : 'off');
+
+        const running = data.thinkingMachineRunning;
+        const runEl = document.getElementById('running-value');
+        runEl.textContent = running ? 'yes' : 'no';
+        runEl.className = 'h23t-mode-value ' + (running ? 'on' : 'off');
+
+        // Thinking machine stats
+        const tm = data.thinkingMachine;
+        if (tm) {
+          document.getElementById('tm-run').textContent = tm.cyclesRun ?? 0;
+          document.getElementById('tm-kept').textContent = tm.cyclesKept ?? 0;
+          document.getElementById('tm-discarded').textContent = tm.cyclesDiscarded ?? 0;
+          const total = (tm.cyclesKept || 0) + (tm.cyclesDiscarded || 0);
+          const keptPct = total > 0 ? Math.round((tm.cyclesKept / total) * 100) : 0;
+          document.getElementById('tm-ratio-fill').style.width = keptPct + '%';
+          document.getElementById('tm-ratio-label').textContent = total > 0
+            ? `${keptPct}% kept · silence is honest, high discard rate means critique has teeth`
+            : 'No cycles yet. Flip cognitionMode to start.';
+          document.getElementById('last-cycle').textContent = tm.lastRunAt
+            ? new Date(tm.lastRunAt).toLocaleTimeString() + ' · ' + fmtMs(tm.lastRunDurationMs)
+            : 'never';
+
+          // PGS
+          const pgs = tm.pgsAdapterStats;
+          if (pgs) {
+            document.getElementById('pgs-available').textContent = pgs.available ? 'yes' : 'no';
+            document.getElementById('pgs-calls').textContent = pgs.callCount ?? 0;
+            document.getElementById('pgs-success').textContent = pgs.successCount ?? 0;
+            document.getElementById('pgs-timeout').textContent = pgs.timeoutCount ?? 0;
+            document.getElementById('pgs-unavail').textContent = pgs.unavailableCount ?? 0;
+            document.getElementById('pgs-avg').textContent = fmtMs(pgs.avgDurationMs);
+          }
+        } else {
+          document.getElementById('tm-run').textContent = '0';
+          document.getElementById('tm-kept').textContent = '0';
+          document.getElementById('tm-discarded').textContent = '0';
+          document.getElementById('tm-ratio-label').innerHTML = '<span class="h23t-empty-hint">Not running — flip cognitionMode to thinking_machine to begin.</span>';
+        }
+
+        // Discovery
+        const disc = data.discovery;
+        if (disc) {
+          document.getElementById('disc-queue').textContent = disc.queueDepth ?? 0;
+          const signals = disc.candidatesByeSignal || {};
+          document.getElementById('disc-signals').innerHTML = Object.entries(signals)
+            .map(([k,v]) => `<div class="h23t-signal-row"><span class="h23t-metric-label">${esc(k)}</span><span class="h23t-metric-value">${v}</span></div>`)
+            .join('');
+        }
+
+        // Agenda
+        const ag = data.agenda;
+        if (ag) {
+          document.getElementById('ag-candidate').textContent = ag.candidate ?? 0;
+          document.getElementById('ag-surfaced').textContent = ag.surfaced ?? 0;
+          document.getElementById('ag-ack').textContent = ag.acknowledged ?? 0;
+          document.getElementById('ag-acted').textContent = ag.acted_on ?? 0;
+          document.getElementById('ag-stale').textContent = ag.stale ?? 0;
+        }
+
+        // Salience
+        const cs = data.salience;
+        if (cs) {
+          document.getElementById('cs-total').textContent = cs.totalCached ?? 0;
+          document.getElementById('cs-active').textContent = cs.active ?? 0;
+          document.getElementById('cs-sidecar').textContent = cs.sidecarExists ? 'yes' : 'no';
+        } else {
+          document.getElementById('cs-total').textContent = '—';
+          document.getElementById('cs-active').textContent = '—';
+          document.getElementById('cs-sidecar').textContent = '—';
+        }
+
+        document.getElementById('last-update').textContent = 'updated ' + new Date().toLocaleTimeString();
+      } catch (err) {
+        errEl.textContent = 'Failed to load: ' + err.message;
+        errEl.style.display = 'block';
+      }
+    }
+
+    function fmtAge(iso) {
+      if (!iso) return '?';
+      const ms = Date.now() - new Date(iso).getTime();
+      if (ms < 60_000) return Math.round(ms / 1000) + 's ago';
+      if (ms < 3_600_000) return Math.round(ms / 60_000) + 'm ago';
+      if (ms < 86_400_000) return Math.round(ms / 3_600_000) + 'h ago';
+      return Math.round(ms / 86_400_000) + 'd ago';
+    }
+
+    async function loadRecent() {
+      const body = document.getElementById('recent-thoughts');
+      try {
+        const r = await fetch('/api/thinking/recent?n=10');
+        if (r.status === 503) {
+          body.innerHTML = '<div class="h23t-empty-hint" style="padding:20px;">Thinking machine is not running — flip cognitionMode to thinking_machine to begin.</div>';
+          return;
+        }
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        const thoughts = data.thoughts || [];
+        if (thoughts.length === 0) {
+          body.innerHTML = '<div class="h23t-empty-hint" style="padding:20px;">No kept thoughts yet. First heartbeat fires ~5s after boot; then every 15 min.</div>';
+          return;
+        }
+        body.innerHTML = thoughts.map((t, i) => renderThought(t, i)).join('');
+        attachToggles();
+      } catch (err) {
+        body.innerHTML = '<div class="h23t-error" style="margin: 10px 0;">Failed to load thoughts: ' + esc(err.message) + '</div>';
+      }
+    }
+
+    function renderThought(t, idx) {
+      const passBadges = (t.critiquePasses || []).map(p =>
+        `<span class="h23t-pass h23t-pass-${p.verdict}">#${(t.critiquePasses.indexOf(p)+1)} ${p.verdict} ${p.confidence?.toFixed?.(2) ?? '?'}</span>`
+      ).join('');
+
+      const edges = (t.connect?.candidateEdges || []).map(e =>
+        `<div class="h23t-edge"><span class="h23t-edge-ids">${esc(e.from)} → ${esc(e.to)}</span> · ${esc((e.rationale || '').slice(0, 150))}</div>`
+      ).join('') || '<div class="h23t-edge" style="color:#6a6a78;">(no edges surfaced)</div>';
+
+      const notes = (t.connect?.connectionNotes || []).slice(0, 3).map(n =>
+        `<div class="h23t-edge">· ${esc((n.text || '').slice(0, 200))}</div>`
+      ).join('') || '<div class="h23t-edge" style="color:#6a6a78;">(no connection notes)</div>';
+
+      const agenda = (t.agendaIds || []).map(id =>
+        `<a class="h23t-ag-link" href="/home23/agenda#${esc(id)}">agenda: ${esc(id)}</a>`
+      ).join('') || '<span class="h23t-edge" style="color:#6a6a78;">(no agenda items emitted)</span>';
+
+      const refNodes = (t.referencedNodes || []).slice(0, 20).map(n => esc(n)).join(', ') || '(none)';
+
+      const temporal = t.temporalContext
+        ? `${esc(t.temporalContext.phase || '?')} ${esc(t.temporalContext.dayType || '?')} (${esc(t.temporalContext.dayName || '?')}) · rhythms: ${esc((t.temporalContext.activeRhythms || []).join(', ') || 'none')}`
+        : '—';
+
+      return `
+        <div class="h23t-thought">
+          <div class="h23t-thought-meta">
+            <span class="h23t-thought-signal">${esc(t.candidate?.signal || '?')}</span>
+            <span>score ${t.candidate?.score?.toFixed?.(2) ?? '?'}</span>
+            <span>${fmtAge(t.ts)}</span>
+            <span>${esc(t.model || 'unknown')}</span>
+            <span>${esc(temporal)}</span>
+            <span style="margin-left: auto;">
+              <button class="h23t-toggle" data-target="thought-${idx}">Details ▾</button>
+            </span>
+          </div>
+          <div style="font-size: 12px; color: #6a6a78; margin-bottom: 10px;"><em>${esc(t.candidate?.rationale || '')}</em></div>
+          <div class="h23t-thought-text">${esc(t.text || '')}</div>
+          <div class="h23t-thought-section">
+            <div class="h23t-thought-section-title">Agenda items produced</div>
+            ${agenda}
+          </div>
+
+          <div class="h23t-expand" id="thought-${idx}">
+            <div class="h23t-thought-section">
+              <div class="h23t-thought-section-title">Critique passes</div>
+              <div class="h23t-passes">${passBadges}</div>
+              ${(t.critiquePasses || []).map((p, i) => `
+                <div style="margin-top: 8px; font-size: 12px; color: #a0a0ae; padding-left: 12px; border-left: 2px solid rgba(255,255,255,0.08);">
+                  <strong>Pass ${i+1} · ${esc(p.verdict)} (${p.confidence?.toFixed?.(2) ?? '?'}):</strong> ${esc(p.rationale || '')}
+                  ${p.gaps?.length ? '<div style="margin-top: 4px; color:#fbbf24;">Gaps: ' + p.gaps.map(g => esc(g)).join(' · ') + '</div>' : ''}
+                </div>
+              `).join('')}
+            </div>
+            <div class="h23t-thought-section">
+              <div class="h23t-thought-section-title">PGS connect — ${t.connect?.available ? 'available' : 'unavailable ('+esc(t.connect?.note||'?')+')'} · ${t.connect?.partitionsTouched || 0} partitions · ${fmtMs(t.connect?.durationMs)}</div>
+              <div class="h23t-thought-section-title" style="color:#8a8a9a; text-transform:none; letter-spacing:0.02em; font-weight:500;">Candidate edges</div>
+              ${edges}
+              <div class="h23t-thought-section-title" style="color:#8a8a9a; text-transform:none; letter-spacing:0.02em; font-weight:500; margin-top: 8px;">Connection notes</div>
+              ${notes}
+            </div>
+            <div class="h23t-thought-section">
+              <div class="h23t-thought-section-title">Referenced nodes (${(t.referencedNodes || []).length})</div>
+              <div style="font-family: monospace; font-size: 11px; color: #8a8a9a; word-break: break-all;">${refNodes}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    function attachToggles() {
+      document.querySelectorAll('.h23t-toggle').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const target = document.getElementById(btn.dataset.target);
+          if (!target) return;
+          const open = target.classList.toggle('open');
+          btn.textContent = open ? 'Hide ▴' : 'Details ▾';
+        });
+      });
+    }
+
+    load();
+    loadRecent();
+    setInterval(() => { load(); loadRecent(); }, 15000);
+  </script>
+</body>
+</html>

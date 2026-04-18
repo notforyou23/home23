@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const { promisify } = require('util');
 const gunzip = promisify(zlib.gunzip);
 const { StateCompression } = require('../core/state-compression');
+const { buildTemporalContext, humanSummary: temporalSummary } = require('../core/temporal-context');
 const { InsightAnalyzer } = require('./insight-analyzer');
 const { NoveltyValidator } = require('./novelty-validator');
 const { QueryEngine } = require('./query-engine');
@@ -740,6 +741,16 @@ class DashboardServer {
       res.sendFile(path.join(__dirname, 'home23-settings.html'));
     });
 
+    // Agenda surface — fruit layer (Phase 6 of thinking-machine-cycle).
+    this.app.get('/home23/agenda', (req, res) => {
+      res.sendFile(path.join(__dirname, 'home23-agenda.html'));
+    });
+
+    // Thinking-machine observability (Phase 8 of thinking-machine-cycle).
+    this.app.get('/home23/thinking', (req, res) => {
+      res.sendFile(path.join(__dirname, 'home23-thinking.html'));
+    });
+
     this.app.get('/home23/agents.json', (req, res) => {
       const fsSync = require('fs');
       // COSMO_RUNTIME_DIR = instances/<name>/brain → go up 3 levels to Home23 root
@@ -758,6 +769,150 @@ class DashboardServer {
         evobrewPort: parseInt(process.env.EVOBREW_PORT || '3415', 10),
         cosmo23Port: parseInt(process.env.COSMO23_PORT || '43210', 10)
       });
+    });
+
+    this.app.get('/home23/api/scope', (req, res) => {
+      try {
+        const fsSync = require('fs');
+        const home23Root = this.getHome23Root();
+        const dashboardAgent = this.getHome23AgentName();
+        const manifestPath = path.join(home23Root, 'config', 'agents.json');
+        const agents = fsSync.existsSync(manifestPath)
+          ? JSON.parse(fsSync.readFileSync(manifestPath, 'utf8') || '[]')
+          : [];
+        const primaryAgent = agents.find((agent) => agent.isPrimary)?.name || dashboardAgent;
+
+        const tabs = {
+          home: {
+            kind: 'dashboard',
+            chip: 'This Agent',
+            summaryTemplate: 'Home is the live surface for {{dashboardAgent}}. Tiles, pulse, chat, and feed data belong to this dashboard agent.',
+            routes: [
+              { method: 'GET', path: '/home23' },
+              { method: 'GET', path: '/home23/agents.json' },
+              { method: 'GET', path: '/home23/config.json' },
+              { method: 'GET', path: '/home23/api/tiles/config' },
+              { method: 'GET', path: '/home23/api/tiles/:tileId/data' },
+              { method: 'POST', path: '/home23/api/tiles/:tileId/actions/:actionId' },
+              { method: 'GET', path: '/home23/api/vibe/current' },
+              { method: 'POST', path: '/home23/api/vibe/generate' },
+              { method: 'GET', path: '/home23/feeder-status' },
+            ],
+          },
+          intelligence: {
+            kind: 'dashboard',
+            chip: 'This Agent',
+            summaryTemplate: "Intelligence is scoped to {{dashboardAgent}}. It reflects this dashboard agent's internal state and live system observations.",
+            routes: [
+              { method: 'GET', path: '/api/state' },
+              { method: 'GET', path: '/api/pulse/latest' },
+              { method: 'GET', path: '/api/live-problems' },
+              { method: 'GET', path: '/home23/api/settings/update-status' },
+            ],
+          },
+          query: {
+            kind: 'dashboard',
+            chip: 'This Agent',
+            summaryTemplate: "Query targets {{dashboardAgent}}'s brain by default. PGS and query defaults resolve against the current dashboard agent unless you override them.",
+            routes: [
+              { method: 'GET', path: '/home23/api/brain/current' },
+              { method: 'GET', path: '/home23/api/settings/query' },
+              { method: 'GET', path: '/api/query' },
+            ],
+          },
+          'brain-map': {
+            kind: 'dashboard',
+            chip: 'This Agent',
+            summaryTemplate: "Brain Map opens {{dashboardAgent}}'s graph by default. It uses the current dashboard brain route when resolving the graph view.",
+            routes: [
+              { method: 'GET', path: '/home23/api/brain/current' },
+              { method: 'GET', path: '/home23/api/brain/graph' },
+            ],
+          },
+          about: {
+            kind: 'shared',
+            chip: 'Shared',
+            summaryTemplate: 'About is a shared system surface. It describes the Home23 install rather than one specific agent.',
+            routes: [
+              { method: 'GET', path: '/home23/config.json' },
+              { method: 'GET', path: '/home23/api/settings/status' },
+            ],
+          },
+          settings: {
+            kind: 'mixed',
+            chip: 'Mixed',
+            summaryTemplate: 'Settings mixes house-wide and agent-scoped configuration. Use the Settings page scope controls to see which areas target {{dashboardAgent}} versus the whole house.',
+            routes: [
+              { method: 'GET', path: '/home23/settings' },
+              { method: 'GET', path: '/home23/api/settings/status' },
+              { method: 'GET', path: '/home23/api/settings/scope' },
+            ],
+          },
+          cosmo23: {
+            kind: 'external',
+            chip: 'External',
+            summaryTemplate: 'cosmo23 is an external shared research surface. It is linked from this dashboard but not owned by one Home23 agent.',
+            routes: [
+              { method: 'GET', path: '/api/status' },
+            ],
+          },
+          evobrew: {
+            kind: 'external',
+            chip: 'External',
+            summaryTemplate: 'evobrew is an external shared surface. The dashboard deep-links it with the current agent, but the service itself is house-managed.',
+            routes: [
+              { method: 'GET', path: '/home23/config.json' },
+            ],
+          },
+          agent: {
+            kind: 'peer',
+            chip: 'Other Agent',
+            summaryTemplate: "This panel shows {{peerAgent}} from inside {{dashboardAgent}}'s dashboard. It is a peer-agent view, not the owner of the current dashboard shell.",
+            routes: [
+              { method: 'GET', path: '/home23/api/chat/config/:agent' },
+              { method: 'GET', path: '/home23/api/chat/history/:agent' },
+              { method: 'GET', path: '/home23/api/chat/conversations/:agent' },
+            ],
+          },
+        };
+
+        res.json({
+          version: 1,
+          dashboardAgent,
+          primaryAgent,
+          tabs,
+          agents,
+        });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    this.app.get('/home23/api/brain/current', (req, res) => {
+      try {
+        const crypto = require('crypto');
+        const fsSync = require('fs');
+        const home23Root = this.getHome23Root();
+        const agentName = this.getHome23AgentName();
+        const brainPath = path.join(home23Root, 'instances', agentName, 'brain');
+        const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
+        let displayName = agentName;
+        if (fsSync.existsSync(configPath)) {
+          try {
+            const cfg = yaml.load(fsSync.readFileSync(configPath, 'utf8')) || {};
+            displayName = cfg.agent?.displayName || cfg.agent?.name || displayName;
+          } catch { /* best effort */ }
+        }
+        const routeKey = crypto.createHash('sha1').update(path.resolve(brainPath)).digest('hex').slice(0, 16);
+        res.json({
+          agent: agentName,
+          displayName,
+          brainPath,
+          routeKey,
+        });
+      } catch (error) {
+        res.status(500).json({ error: error.message });
+      }
     });
 
     // Home23 tile runtime
@@ -938,6 +1093,36 @@ class DashboardServer {
       this.app.post('/home23/feeder/add-watch-path', (req, res) => proxyJson(req, res, 'POST', '/admin/feeder/addWatchPath'));
       this.app.post('/home23/feeder/remove-watch-path', (req, res) => proxyJson(req, res, 'POST', '/admin/feeder/removeWatchPath'));
       this.app.post('/home23/feeder/update-compiler', (req, res) => proxyJson(req, res, 'POST', '/admin/feeder/updateCompiler'));
+
+      // Discovery engine observability (Phase 2 of thinking-machine-cycle).
+      this.app.get('/api/discovery/stats', (req, res) => proxyJson(req, res, 'GET', '/admin/discovery/stats'));
+      this.app.get('/api/discovery/peek', (req, res) => {
+        const n = req.query.n ? `?n=${encodeURIComponent(req.query.n)}` : '';
+        return proxyJson(req, res, 'GET', `/admin/discovery/peek${n}`);
+      });
+
+      // Agenda / fruit layer (Phase 6 of thinking-machine-cycle).
+      this.app.get('/api/agenda/list', (req, res) => {
+        const qs = [
+          req.query.status ? `status=${encodeURIComponent(req.query.status)}` : null,
+          req.query.limit ? `limit=${encodeURIComponent(req.query.limit)}` : null,
+        ].filter(Boolean).join('&');
+        return proxyJson(req, res, 'GET', `/admin/agenda/list${qs ? '?' + qs : ''}`);
+      });
+      this.app.get('/api/agenda/grouped', (req, res) => {
+        const qs = req.query.status ? `?status=${encodeURIComponent(req.query.status)}` : '';
+        return proxyJson(req, res, 'GET', `/admin/agenda/grouped${qs}`);
+      });
+      this.app.get('/api/agenda/stats', (req, res) => proxyJson(req, res, 'GET', '/admin/agenda/stats'));
+      this.app.get('/api/agenda/:id', (req, res) => proxyJson(req, res, 'GET', `/admin/agenda/${encodeURIComponent(req.params.id)}`));
+      this.app.post('/api/agenda/:id/status', (req, res) => proxyJson(req, res, 'POST', `/admin/agenda/${encodeURIComponent(req.params.id)}/status`));
+
+      // Thinking-machine observability (Phase 8 of thinking-machine-cycle).
+      this.app.get('/api/thinking/stats', (req, res) => proxyJson(req, res, 'GET', '/admin/thinking/stats'));
+      this.app.get('/api/thinking/recent', (req, res) => {
+        const n = req.query.n ? `?n=${encodeURIComponent(req.query.n)}` : '';
+        return proxyJson(req, res, 'GET', `/admin/thinking/recent${n}`);
+      });
     } catch (err) {
       console.warn('[Feeder routes] Failed to mount:', err.message);
     }
@@ -1011,17 +1196,33 @@ class DashboardServer {
                 "`, { cwd: home23RootForPoll, stdio: 'pipe', timeout: 10_000 });
               } catch { /* fallback: restart anyway, ecosystem regen is optional */ }
 
-              // Find primary agent and restart
+              // Shared provider secrets affect every running Home23 agent/harness,
+              // not just the home primary. Restart only the processes that are
+              // currently online so refreshed env lands everywhere.
               try {
-                const homeCfg = yaml.load(fsSync.readFileSync(path.join(home23RootForPoll, 'config', 'home.yaml'), 'utf8')) || {};
-                const agentName = homeCfg.home?.primaryAgent;
-                if (agentName) {
-                  const { execSync } = require('child_process');
-                  execSync(
-                    `pm2 restart home23-${agentName} home23-${agentName}-harness --update-env`,
-                    { stdio: 'pipe', timeout: 30_000 }
-                  );
-                  console.log(`[OAuth refresh] rotated ${provider} token, restarted home23-${agentName}`);
+                const { execSync } = require('child_process');
+                const jlist = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', stdio: 'pipe', timeout: 10_000 }));
+                const online = new Set(
+                  jlist
+                    .filter(proc => proc.pm2_env?.status === 'online')
+                    .map(proc => proc.name)
+                );
+                const instancesDir = path.join(home23RootForPoll, 'instances');
+                const agentNames = fsSync.existsSync(instancesDir)
+                  ? fsSync.readdirSync(instancesDir).filter(name => fsSync.existsSync(path.join(instancesDir, name, 'config.yaml')))
+                  : [];
+                const targets = agentNames.flatMap(name => [`home23-${name}`, `home23-${name}-harness`]).filter(name => online.has(name));
+                if (targets.length > 0) {
+                  const ecosystemPath = path.join(home23RootForPoll, 'ecosystem.config.cjs');
+                  for (const name of targets) {
+                    try { execSync(`pm2 delete ${name}`, { stdio: 'pipe', timeout: 15_000 }); } catch { /* best-effort */ }
+                  }
+                  execSync(`pm2 start ${ecosystemPath} --only ${targets.join(',')}`, {
+                    cwd: home23RootForPoll,
+                    stdio: 'pipe',
+                    timeout: 45_000,
+                  });
+                  console.log(`[OAuth refresh] rotated ${provider} token, restarted ${targets.join(', ')}`);
                 }
               } catch (err) {
                 console.warn(`[OAuth refresh] ${provider} token written but restart failed:`, err.message);
@@ -4469,6 +4670,25 @@ Be specific, actionable, and maintain research continuity.`;
     // HTTP. Callers (dashboard, chat tools, harness) need cycle count, mode,
     // memory/goal counts, and recent thought — not the full graph. Pass
     // ?full=1 to get the full state for debugging (still gated by cache).
+    // Temporal inference — "brain thinks it's ___" verification surface.
+    // Phase 1 of the thinking-machine-cycle rebuild. Reads TEMPORAL.md from
+    // the agent's workspace and computes current jtr-time phase on demand.
+    this.app.get('/api/temporal/current', async (req, res) => {
+      try {
+        const workspacePath = process.env.COSMO_WORKSPACE_PATH
+          || path.join(__dirname, '..', '..', '..', 'instances', process.env.HOME23_AGENT || 'jerry', 'workspace');
+        const ctx = buildTemporalContext({ workspacePath });
+        res.json({
+          ok: true,
+          summary: temporalSummary(ctx),
+          context: ctx,
+          workspacePath,
+        });
+      } catch (error) {
+        res.status(500).json({ ok: false, error: error.message });
+      }
+    });
+
     this.app.get('/api/state', async (req, res) => {
       try {
         const state = await this.loadState();

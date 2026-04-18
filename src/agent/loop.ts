@@ -8,7 +8,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ToolRegistry } from './tools/index.js';
 import type { ContextManager } from './context.js';
@@ -322,6 +322,30 @@ export class AgentLoop {
       console.log(`[loop] Session transcript written: ${filename} (${sessionMessages.length} messages)`);
     } catch (err) {
       console.warn(`[loop] Failed to write session transcript: ${err}`);
+    }
+
+    // Phase 7 of thinking-machine-cycle: emit conversation salience sidecar.
+    // Engine-side discovery reads this to weight attention toward clusters
+    // the user is actively engaging with. Token-overlap based for v1; no
+    // embeddings required — keeps harness dependency footprint minimal.
+    try {
+      const salienceDir = join(this.workspacePath, '..', 'brain');
+      mkdirSync(salienceDir, { recursive: true });
+      const salienceEntry = {
+        ts: new Date().toISOString(),
+        chatId,
+        messageCount: sessionMessages.length,
+        // Compact summary for engine-side token overlap scoring: the joined
+        // lines trimmed to a reasonable size. Full text lives in sessions/.
+        summary: lines.join('\n\n').slice(0, 8000),
+      };
+      appendFileSync(
+        join(salienceDir, 'conversation-salience.jsonl'),
+        JSON.stringify(salienceEntry) + '\n'
+      );
+    } catch (err) {
+      // Non-fatal — discovery salience is an optimization, not a requirement
+      console.warn(`[loop] Failed to write conversation-salience: ${err}`);
     }
   }
 

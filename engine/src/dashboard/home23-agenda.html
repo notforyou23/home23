@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Home23 — Agenda</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/home23-dashboard.css">
+  <style>
+    .h23a-container { max-width: 1100px; margin: 24px auto; padding: 0 24px; color: #e9e9f0; }
+    .h23a-header { display:flex; justify-content: space-between; align-items: baseline; margin-bottom: 20px; }
+    .h23a-title { font-size: 28px; font-weight: 700; letter-spacing: 0.02em; }
+    .h23a-back { color: #8ab4ff; text-decoration: none; font-size: 13px; }
+    .h23a-back:hover { text-decoration: underline; }
+    .h23a-stats { display:flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+    .h23a-stat { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); border-radius: 6px; padding: 10px 14px; font-size: 13px; }
+    .h23a-stat-value { font-weight: 700; font-size: 18px; margin-right: 6px; }
+    .h23a-filters { display:flex; gap: 8px; margin-bottom: 20px; }
+    .h23a-filter { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 4px; color: #d0d0d8; padding: 6px 12px; cursor: pointer; font-size: 13px; font-family: inherit; }
+    .h23a-filter.active { background: #2a5bd7; color: #fff; border-color: #2a5bd7; }
+    .h23a-group { margin-bottom: 28px; }
+    .h23a-group-header { font-size: 14px; text-transform: uppercase; letter-spacing: 0.12em; color: #8a8a9a; margin-bottom: 10px; font-weight: 600; }
+    .h23a-item { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 16px; margin-bottom: 10px; }
+    .h23a-item-meta { display:flex; gap: 12px; font-size: 11px; color: #8a8a9a; text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 8px; flex-wrap: wrap; }
+    .h23a-kind { padding: 2px 8px; border-radius: 3px; font-weight: 600; }
+    .h23a-kind-decision { background: rgba(234,179,8,0.15); color: #fbbf24; }
+    .h23a-kind-question { background: rgba(56,189,248,0.15); color: #60a5fa; }
+    .h23a-kind-idea { background: rgba(132,204,22,0.15); color: #a3e635; }
+    .h23a-status { padding: 2px 8px; border-radius: 3px; background: rgba(255,255,255,0.05); }
+    .h23a-content { font-size: 15px; line-height: 1.5; color: #e9e9f0; margin-bottom: 10px; }
+    .h23a-actions { display:flex; gap: 8px; }
+    .h23a-action { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: #d0d0d8; padding: 4px 10px; border-radius: 4px; font-size: 12px; cursor: pointer; font-family: inherit; }
+    .h23a-action:hover { background: rgba(255,255,255,0.1); }
+    .h23a-empty { text-align: center; padding: 60px 20px; color: #6a6a78; font-size: 14px; }
+    .h23a-error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #fca5a5; padding: 12px 16px; border-radius: 6px; margin-bottom: 20px; }
+    .h23a-age { font-size: 11px; color: #6a6a78; }
+  </style>
+</head>
+<body>
+  <div id="particles-js"></div>
+
+  <header class="h23-header">
+    <div class="h23-header-left">
+      <span class="h23-logo">&#127808; <span id="home-name">Home23</span></span>
+      <span class="h23-subtitle">AGENDA</span>
+    </div>
+    <div class="h23-header-right">
+      <a href="/home23" class="h23a-back">&larr; Dashboard</a>
+    </div>
+  </header>
+
+  <div class="h23a-container">
+    <div class="h23a-header">
+      <div class="h23a-title">Fruit from the loop</div>
+      <div style="font-size: 13px; color: #8a8a9a;">Things the brain flagged for you. Acknowledge, act, or mark stale.</div>
+    </div>
+
+    <div id="agenda-error" class="h23a-error" style="display:none;"></div>
+    <div id="agenda-stats" class="h23a-stats"></div>
+
+    <div class="h23a-filters">
+      <button class="h23a-filter active" data-status="candidate,surfaced">Active</button>
+      <button class="h23a-filter" data-status="acknowledged">Acknowledged</button>
+      <button class="h23a-filter" data-status="acted_on">Acted on</button>
+      <button class="h23a-filter" data-status="stale,discarded">Archived</button>
+    </div>
+
+    <div id="agenda-body">
+      <div class="h23a-empty">Loading…</div>
+    </div>
+  </div>
+
+  <script>
+    const state = { filter: 'candidate,surfaced' };
+
+    function ageOf(iso) {
+      if (!iso) return '?';
+      const ms = Date.now() - new Date(iso).getTime();
+      if (ms < 60_000) return Math.round(ms / 1000) + 's ago';
+      if (ms < 3_600_000) return Math.round(ms / 60_000) + 'm ago';
+      if (ms < 86_400_000) return Math.round(ms / 3_600_000) + 'h ago';
+      return Math.round(ms / 86_400_000) + 'd ago';
+    }
+
+    function esc(s) {
+      return String(s || '').replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[ch]));
+    }
+
+    async function loadStats() {
+      try {
+        const r = await fetch('/api/agenda/stats');
+        if (!r.ok) return;
+        const data = await r.json();
+        const c = data.counts || {};
+        document.getElementById('agenda-stats').innerHTML = `
+          <div class="h23a-stat"><span class="h23a-stat-value">${c.total || 0}</span> total</div>
+          <div class="h23a-stat"><span class="h23a-stat-value">${c.candidate || 0}</span> candidate</div>
+          <div class="h23a-stat"><span class="h23a-stat-value">${c.surfaced || 0}</span> surfaced</div>
+          <div class="h23a-stat"><span class="h23a-stat-value">${c.acknowledged || 0}</span> acknowledged</div>
+          <div class="h23a-stat"><span class="h23a-stat-value">${c.acted_on || 0}</span> acted on</div>
+          <div class="h23a-stat"><span class="h23a-stat-value">${c.stale || 0}</span> stale</div>
+        `;
+      } catch {}
+    }
+
+    async function loadAgenda() {
+      const body = document.getElementById('agenda-body');
+      const errEl = document.getElementById('agenda-error');
+      errEl.style.display = 'none';
+      try {
+        const qs = state.filter ? `?status=${encodeURIComponent(state.filter)}` : '';
+        const r = await fetch(`/api/agenda/grouped${qs}`);
+        if (r.status === 503) {
+          errEl.textContent = 'Agenda store not available — is the thinking-machine pipeline active (cognitionMode: thinking_machine)?';
+          errEl.style.display = 'block';
+          body.innerHTML = '';
+          return;
+        }
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        const groups = data.groups || [];
+        if (groups.length === 0) {
+          body.innerHTML = '<div class="h23a-empty">Nothing in this view yet.</div>';
+          return;
+        }
+        body.innerHTML = groups.map(g => `
+          <div class="h23a-group">
+            <div class="h23a-group-header">${esc(g.topic)} <span style="color:#5a5a68;">&middot; ${g.count}</span></div>
+            ${g.records.map(r => renderItem(r)).join('')}
+          </div>
+        `).join('');
+        attachActionHandlers();
+      } catch (err) {
+        errEl.textContent = 'Failed to load: ' + err.message;
+        errEl.style.display = 'block';
+      }
+    }
+
+    function renderItem(rec) {
+      const kindClass = `h23a-kind-${rec.kind || 'idea'}`;
+      const actions = (rec.status === 'candidate' || rec.status === 'surfaced') ? `
+        <button class="h23a-action" data-id="${rec.id}" data-status="acknowledged">Acknowledge</button>
+        <button class="h23a-action" data-id="${rec.id}" data-status="acted_on">Mark acted on</button>
+        <button class="h23a-action" data-id="${rec.id}" data-status="discarded">Discard</button>
+      ` : '';
+      const sourceLink = rec.sourceCycleSessionId
+        ? `<a class="h23a-age" href="/home23/thinking" style="color:#8ab4ff;text-decoration:none;" title="${esc(rec.sourceCycleSessionId)}">source thought ↗</a>`
+        : '';
+      return `
+        <div class="h23a-item" id="${esc(rec.id)}">
+          <div class="h23a-item-meta">
+            <span class="h23a-kind ${kindClass}">${esc(rec.kind || 'idea')}</span>
+            <span class="h23a-status">${esc(rec.status)}</span>
+            <span class="h23a-age">${ageOf(rec.createdAt)}</span>
+            ${sourceLink}
+          </div>
+          <div class="h23a-content">${esc(rec.content)}</div>
+          <div class="h23a-actions">${actions}</div>
+        </div>
+      `;
+    }
+
+    function attachActionHandlers() {
+      document.querySelectorAll('.h23a-action').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.id;
+          const status = btn.dataset.status;
+          btn.disabled = true;
+          try {
+            const r = await fetch(`/api/agenda/${encodeURIComponent(id)}/status`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ status, actor: 'jtr' }),
+            });
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            await loadAgenda();
+            await loadStats();
+          } catch (err) {
+            alert('Failed: ' + err.message);
+            btn.disabled = false;
+          }
+        });
+      });
+    }
+
+    document.querySelectorAll('.h23a-filter').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.h23a-filter').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.filter = btn.dataset.status;
+        loadAgenda();
+      });
+    });
+
+    loadStats();
+    loadAgenda();
+    setInterval(() => { loadStats(); loadAgenda(); }, 30000);
+  </script>
+</body>
+</html>

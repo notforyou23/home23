@@ -810,6 +810,8 @@ class UnifiedClient extends GPT5Client {
     const {
       instructions = '',
       messages = [],
+      input = null,
+      query = null,
       maxTokens = 4096,
       temperature = 1.0,
       topP = 1.0,
@@ -820,9 +822,29 @@ class UnifiedClient extends GPT5Client {
     // Anthropic requires max_tokens - use default if not provided
     const finalMaxTokens = maxTokens || 4096;
 
+    // Many engine callers use the GPT5Client `input` / `query` shorthand
+    // (OpenAI Responses API style) rather than an explicit `messages`
+    // array. Translate so the Anthropic-compatible API doesn't reject
+    // with "messages must not be empty (2013)".
+    let finalMessages = Array.isArray(messages) ? [...messages] : [];
+    if (finalMessages.length === 0) {
+      const userContent = input != null ? input : query;
+      if (userContent != null) {
+        const text = typeof userContent === 'string'
+          ? userContent
+          : JSON.stringify(userContent);
+        if (text && text.trim().length > 0) {
+          finalMessages = [{ role: 'user', content: text }];
+        }
+      }
+    }
+    if (finalMessages.length === 0) {
+      throw new Error(`${providerName}: no messages, input, or query provided`);
+    }
+
     const payload = {
       model: assignment.model,
-      messages: messages, // Use messages as-is
+      messages: finalMessages,
       max_tokens: finalMaxTokens // REQUIRED by Anthropic
     };
 
@@ -871,7 +893,7 @@ class UnifiedClient extends GPT5Client {
       hasSystem: Boolean(payload.system),
       systemCached: Array.isArray(payload.system),
       toolCount: anthropicTools.length,
-      messageCount: messages.length
+      messageCount: finalMessages.length
     });
 
     // Call the API

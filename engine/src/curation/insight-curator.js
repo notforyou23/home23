@@ -5,6 +5,18 @@ const { createReadStream } = require('fs');
 const { createInterface } = require('readline');
 const path = require('path');
 
+// `response.content || response` falls through to the whole response object
+// whenever .content is an empty string (JS-falsy), which then blows up any
+// downstream .match/.trim/.includes call with "X is not a function". This
+// coerces safely: prefer .content, then .output_text, else a raw string
+// response, else empty — never an object.
+function extractResponseText(response) {
+  if (typeof response === 'string') return response;
+  if (response && typeof response.content === 'string') return response.content;
+  if (response && typeof response.output_text === 'string') return response.output_text;
+  return '';
+}
+
 /**
  * InsightCurator
  * 
@@ -398,7 +410,7 @@ Return ONLY a JSON array: [{"index": 1, "actionability": X, "specificity": X, "n
           // Parse scores from response content
           let scores = [];
           try {
-            const content = response.content || response;
+            const content = extractResponseText(response);
             const jsonMatch = content.match(/\[[\s\S]+\]/);
             if (jsonMatch) {
               scores = JSON.parse(jsonMatch[0]);
@@ -523,7 +535,7 @@ Return as JSON array: [{"index": 1, "category": "TECHNICAL", "title": "Brief spe
       });
 
       let categories = [];
-      const content = response.content || response.output_text || response;
+      const content = extractResponseText(response);
       const jsonMatch = content.match(/\[[\s\S]+?\]/);
       if (jsonMatch) {
         try {
@@ -692,7 +704,7 @@ Focus on business value and actionable insights.`;
         verbosity: 'medium' // Ensure we get substantial text output
       });
 
-      const content = response.content || response.output_text || response;
+      const content = extractResponseText(response);
       
       if (!content || content.trim().length < 50) {
         throw new Error('Insufficient summary content generated');
@@ -804,7 +816,7 @@ Focus on goal advancement and actionable next steps.`;
       });
 
       let goalAlignments = [];
-      const content = response.content || response.output_text || response;
+      const content = extractResponseText(response);
       
       // Use robust JSON parser from json-repair.js
       goalAlignments = parseWithFallback(content, 'array');
@@ -950,7 +962,7 @@ Return as JSON array:
         verbosity: 'medium'
       });
 
-      const content = response.content || response.output_text || response;
+      const content = extractResponseText(response);
       const jsonMatch = content.match(/\[[\s\S]+?\]/);
       if (jsonMatch) {
         return JSON.parse(jsonMatch[0]);
@@ -1006,7 +1018,7 @@ Return your analysis as a JSON array:
         verbosity: 'medium'
       });
 
-      const content = response.content || response.output_text || response;
+      const content = extractResponseText(response);
       const jsonMatch = content.match(/\[[\s\S]+?\]/);
       if (jsonMatch) {
         return JSON.parse(jsonMatch[0]);

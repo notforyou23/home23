@@ -46,18 +46,31 @@ class ConfigLoader {
 
     const applied = [];
 
+    // Enablement lives in base-engine.yaml providers (provider.enabled).
+    // home.yaml providers is just a model→provider catalog — no enabled
+    // field — so we must check enablement against base-engine only.
+    // Otherwise a model listed in home.yaml under a provider that's not
+    // enabled in base-engine silently slips through and the unified
+    // client fails at call-time with "X provider not initialized".
+    const baseProviders = this.config.providers || {};
+    const isProviderEnabled = (name) => {
+      const prov = baseProviders[name];
+      return prov && prov.enabled === true;
+    };
     const resolveProvider = (model) => {
       // Check base-engine config first
-      let providers = this.config.providers || {};
-      for (const [name, prov] of Object.entries(providers)) {
+      for (const [name, prov] of Object.entries(baseProviders)) {
+        if (!isProviderEnabled(name)) continue;
         if ((prov.defaultModels || []).includes(model)) return name;
       }
-      // Fall back to home.yaml providers
+      // Fall back to home.yaml providers (model catalog) — but only
+      // return a name that's actually enabled in base-engine.
       try {
         const homePath = path.join(path.dirname(path.dirname(this.configPath)), 'config', 'home.yaml');
         if (fs.existsSync(homePath)) {
           const home = yaml.load(fs.readFileSync(homePath, 'utf8')) || {};
           for (const [name, prov] of Object.entries(home.providers || {})) {
+            if (!isProviderEnabled(name)) continue;
             if ((prov.defaultModels || []).includes(model)) return name;
           }
         }
@@ -69,17 +82,30 @@ class ConfigLoader {
       const entry = this.config.modelAssignments[assignmentKey];
       if (entry && typeof entry === 'object' && typeof newModel === 'string' && newModel.trim()) {
         const prev = entry.model;
-        if (prev !== newModel) {
-          entry.model = newModel;
-          const resolvedProvider = resolveProvider(newModel);
-          if (resolvedProvider) entry.provider = resolvedProvider;
-          applied.push(`${assignmentKey}: ${prev} -> ${newModel} (${entry.provider})`);
+        if (prev === newModel) return;
+        const resolvedProvider = resolveProvider(newModel);
+        if (!resolvedProvider) {
+          // Refuse to rewrite into a disabled/unknown provider — leaves
+          // the slot on its original working assignment.
+          applied.push(`${assignmentKey}: SKIPPED (model "${newModel}" not mapped to any enabled provider)`);
+          return;
         }
+        entry.model = newModel;
+        entry.provider = resolvedProvider;
+        applied.push(`${assignmentKey}: ${prev} -> ${newModel} (${entry.provider})`);
       }
     };
 
+    // `thought` is a blunt multi-slot override. Limit which slots it can
+    // sweep so a single setting can't silently hijack UI voice layers
+    // (pulseVoice), chat routing, or anything non-cognitive.
+    const isCognitiveSlot = (key) => !key.startsWith('pulseVoice') && !key.startsWith('chat');
+
     if (typeof engineOverrides.thought === 'string' && engineOverrides.thought.trim()) {
-      for (const key of Object.keys(this.config.modelAssignments)) setModel(key, engineOverrides.thought.trim());
+      for (const key of Object.keys(this.config.modelAssignments)) {
+        if (!isCognitiveSlot(key)) continue;
+        setModel(key, engineOverrides.thought.trim());
+      }
     }
     if (typeof engineOverrides.consolidation === 'string' && engineOverrides.consolidation.trim()) {
       setModel('agents.synthesis', engineOverrides.consolidation.trim());
