@@ -455,7 +455,7 @@ export class AgentLoop {
   async runWithTurn(
     chatId: string,
     userText: string,
-    opts: { turnId?: string; media?: import('../types.js').MediaAttachment[]; onEvent?: import('./types.js').AgentEventCallback; modelOverride?: { model: string; provider?: string } } = {},
+    opts: { turnId?: string; media?: import('../types.js').MediaAttachment[]; onEvent?: import('./types.js').AgentEventCallback; modelOverride?: { model: string; provider?: string }; maxDurationMs?: number } = {},
   ): Promise<{ turnId: string; response: Promise<import('./types.js').AgentResponse> }> {
     const turnId = opts.turnId ?? newTurnId();
 
@@ -487,6 +487,21 @@ export class AgentLoop {
       }
     };
 
+    // Wall-clock watchdog. MAX_ITERATIONS=500 plus per-tool timeouts of 30s-5min
+    // means a runaway turn can burn 40+ hours. 25-minute stalls have been
+    // observed in practice. After MAX_TURN_DURATION_MS, fire the same
+    // AbortController this.run uses between iterations so tools/API calls
+    // that honor the signal unwind cleanly, then let the catch path write
+    // the error envelope. Configurable via opts.maxDurationMs.
+    const maxDurationMs = opts.maxDurationMs ?? 15 * 60 * 1000; // 15 minutes
+    let watchdog: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      const ac = this.activeRuns.get(chatId);
+      if (ac) {
+        console.warn(`[loop] turn ${turnId} exceeded ${maxDurationMs}ms — aborting`);
+        ac.abort(new Error(`turn timeout after ${maxDurationMs}ms`));
+      }
+    }, maxDurationMs);
+
     const response = (async () => {
       try {
         const result = await this.run(chatId, userText, opts.media, persistAndFanOut);
@@ -504,12 +519,14 @@ export class AgentLoop {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const isAbort = msg.includes('aborted') || msg.includes('AbortError');
-        const status = isAbort ? 'stopped' : 'error';
+        const isTimeout = msg.includes('turn timeout');
+        const status = isTimeout ? 'error' : (isAbort ? 'stopped' : 'error');
         const endEnv = this.turnStore.writeEnd(chatId, turnId, status, { last_seq: seq, error: msg });
         turnBus.emit(chatId, turnId, endEnv);
         turnBus.close(chatId, turnId);
         throw err;
       } finally {
+        if (watchdog) { clearTimeout(watchdog); watchdog = null; }
         // Restore class-level model state if we swapped it.
         if (opts.modelOverride?.model) {
           this.setModel(prevModel, prevProvider);

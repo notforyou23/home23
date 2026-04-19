@@ -144,14 +144,55 @@ export const searchFilesTool: ToolDefinition = {
     const pattern = input.pattern as string;
     const searchPath = (input.path as string) || ctx.projectRoot;
     const fileGlob = input.glob as string | undefined;
-    const maxResults = (input.max_results as number) || 50;
-    const globArg = fileGlob ? `--glob ${JSON.stringify(fileGlob)}` : '';
-    const includeArg = fileGlob ? `--include=${JSON.stringify(fileGlob)}` : '';
-    const cmd = `rg -n --max-count ${maxResults} ${globArg} -- ${JSON.stringify(pattern)} ${JSON.stringify(searchPath)} 2>/dev/null || grep -rn ${JSON.stringify(pattern)} ${JSON.stringify(searchPath)} ${includeArg} 2>/dev/null | head -${maxResults}`;
+    const maxResults = Math.max(1, Math.min(500, Number(input.max_results) || 50));
+
+    // Use rg if available, else fall back to grep. Each branch is a separate
+    // pipeline with its OWN `head -N` — previously the shell precedence
+    // `rg ... || grep ... | head -N` meant head only capped the fallback,
+    // and rg could blow past exec's maxBuffer, making the callback fire
+    // with empty stdout and the agent seeing a silent "No matches found".
+    //
+    // We also intentionally DO NOT swallow stderr — if rg fails (bad regex,
+    // permission issues) we surface the message so the agent can correct
+    // itself instead of retrying variants of the same broken search.
+    const globRg = fileGlob ? `--glob ${JSON.stringify(fileGlob)}` : '';
+    const includeGrep = fileGlob ? `--include=${JSON.stringify(fileGlob)}` : '';
+    const rgCmd = `rg -n --max-count ${maxResults} ${globRg} -- ${JSON.stringify(pattern)} ${JSON.stringify(searchPath)} | head -${maxResults}`;
+    const grepCmd = `grep -rn ${JSON.stringify(pattern)} ${JSON.stringify(searchPath)} ${includeGrep} | head -${maxResults}`;
+    // `{ rg; } || { grep; }` runs rg's pipeline; only if rg exits non-zero does grep run.
+    // `head` exiting early (SIGPIPE once it has N lines) counts as rg exit ≠ 0 too, but
+    // in that case stdout already contains N matches so the fallback is a no-op.
+    const cmd = `{ ${rgCmd}; } || { ${grepCmd}; }`;
+
     return new Promise((resolve) => {
-      exec(cmd, { maxBuffer: 1024 * 1024, timeout: 30_000 }, (_error, stdout) => {
-        if (!stdout.trim()) resolve({ content: 'No matches found.' });
-        else resolve({ content: stdout.slice(0, 6000) });
+      exec(cmd, { maxBuffer: 1024 * 1024, timeout: 30_000, shell: '/bin/bash' }, (error, stdout, stderr) => {
+        const execError = error as (Error & { code?: string | number; killed?: boolean; signal?: string }) | null;
+
+        // exec returns an error when the command times out or the shell
+        // exits non-zero. For our pipeline a non-zero exit usually just
+        // means "no matches". Distinguish real failures (timeout, spawn
+        // errors, ENOBUFS) from grep's "no matches" (exit 1 with empty
+        // stdout) so we can surface the former.
+        if (execError && !('code' in execError && typeof execError.code === 'number')) {
+          const errMsg = String(execError.code || execError.message || 'unknown');
+          resolve({
+            content: `search_files failed: ${errMsg}${stderr ? `\n\nSTDERR:\n${stderr.slice(0, 800)}` : ''}`,
+            is_error: true,
+          });
+          return;
+        }
+
+        const out = stdout.trim();
+        if (!out) {
+          const tail = stderr.trim();
+          resolve({
+            content: tail
+              ? `No matches found. (stderr: ${tail.slice(0, 400)})`
+              : 'No matches found.',
+          });
+          return;
+        }
+        resolve({ content: out.slice(0, 6000) });
       });
     });
   },
