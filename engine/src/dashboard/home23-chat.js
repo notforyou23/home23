@@ -126,8 +126,11 @@ async function initChat(mode) {
   setupMoreMenu();
   setupAgentPill();
 
-  // Keep tile's agent pill + overlay title in sync with state.
-  chatState.on('agent:switch', (snap) => {
+  // Keep tile's agent pill + overlay title in sync with state. Subscribe AND
+  // apply the current snapshot immediately — switchAgent() may have already
+  // fired 'agent:switch' before we got here, and without an initial paint
+  // the header reads "Loading…" forever.
+  const renderAgentHeader = (snap) => {
     const nameEl = document.getElementById('chat-agent-name');
     const avatarEl = document.getElementById('chat-agent-avatar');
     const title = snap.agent?.displayName || snap.agent?.agentName || snap.agent?.name || '…';
@@ -135,7 +138,9 @@ async function initChat(mode) {
     if (avatarEl) avatarEl.textContent = String(title).trim().slice(0, 1).toUpperCase() || '●';
     const overlayTitle = document.getElementById('chat-overlay-title-label');
     if (overlayTitle) overlayTitle.textContent = `Talk to ${title}`;
-  });
+  };
+  chatState.on('agent:switch', renderAgentHeader);
+  renderAgentHeader(chatState.get());
 }
 
 /** Wire the ⋯ more-menu — click button toggles the popover near it; clicking
@@ -201,32 +206,106 @@ function handleMenuAction(action) {
   }
 }
 
-function showModelPicker() {
-  // Reveal the hidden model <select> briefly via a prompt-driven picker.
-  // For v1, simple prompt() — power users already use the Settings page.
-  const select = document.getElementById('chat-model-select');
-  if (!select) return;
-  const options = Array.from(select.options).map(o => o.value).filter(Boolean);
-  if (options.length === 0) { alert('No models available for this provider.'); return; }
-  const current = select.value || chatModel || '(default)';
-  const picked = prompt(`Pick a model (current: ${current}):\n\n${options.join('\n')}`);
-  if (picked && options.includes(picked)) {
-    select.value = picked;
-    select.dispatchEvent(new Event('change', { bubbles: true }));
+/**
+ * Reusable list popover. Renders `items` as clickable rows anchored near
+ * `anchor`; calls onSelect(item) when a row is clicked. Closes on outside
+ * click or Esc. One popover instance lives at body level and is reused.
+ */
+function openListPopover({ anchor, items, onSelect, emptyText = 'Nothing to show' }) {
+  if (!anchor) return;
+  let pop = document.getElementById('chat-list-popover');
+  if (!pop) {
+    pop = document.createElement('div');
+    pop.id = 'chat-list-popover';
+    pop.className = 'h23-chat-menu';   // reuses menu styling
+    pop.setAttribute('role', 'menu');
+    document.body.appendChild(pop);
   }
+  if (!items || items.length === 0) {
+    pop.innerHTML = `<div style="padding:10px 12px;color:var(--text-muted);font-size:13px;font-style:italic;">${escapeHtml(emptyText)}</div>`;
+  } else {
+    pop.innerHTML = items.map((it, i) => `
+      <button class="h23-chat-menu-item" data-i="${i}" role="menuitem" type="button">
+        ${it.label ? escapeHtml(it.label) : escapeHtml(String(it))}${
+          it.hint ? `<span style="color:var(--text-muted);font-size:11px;margin-left:8px;">${escapeHtml(it.hint)}</span>` : ''
+        }${it.active ? ' <span style="color:var(--accent-color,#0a84ff);margin-left:6px;">●</span>' : ''}
+      </button>
+    `).join('');
+  }
+  const rect = anchor.getBoundingClientRect();
+  pop.style.position = 'fixed';
+  pop.style.top = `${rect.bottom + 4}px`;
+  pop.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 260))}px`;
+  pop.style.right = '';
+  pop.hidden = false;
+
+  const close = () => {
+    pop.hidden = true;
+    document.removeEventListener('click', onDocClick, true);
+    document.removeEventListener('keydown', onKey, true);
+  };
+  const onDocClick = (e) => {
+    if (pop.contains(e.target) || anchor.contains(e.target)) return;
+    close();
+  };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  // Defer attaching doc listeners to avoid the current click event immediately closing.
+  setTimeout(() => {
+    document.addEventListener('click', onDocClick, true);
+    document.addEventListener('keydown', onKey, true);
+  }, 0);
+
+  pop.onclick = (e) => {
+    const btn = e.target.closest('[data-i]');
+    if (!btn) return;
+    const i = Number(btn.dataset.i);
+    close();
+    if (typeof onSelect === 'function') onSelect(items[i]);
+  };
 }
 
-/** Clicking the agent pill opens a simple picker. For v1, prompt(); future
- *  tasks can swap for a proper popover listing agents with avatars. */
+function showModelPicker() {
+  const select = document.getElementById('chat-model-select');
+  if (!select) return;
+  const current = select.value || chatModel || '';
+  const items = Array.from(select.options)
+    .map(o => o.value)
+    .filter(Boolean)
+    .map(v => ({ label: v, active: v === current }));
+  // Anchor to whichever ⋯ button is currently visible (tile default).
+  const anchor = document.getElementById('chat-more-btn') || document.getElementById('chat-overlay-more-btn');
+  openListPopover({
+    anchor,
+    items,
+    emptyText: 'No models available for this provider.',
+    onSelect: (it) => {
+      select.value = it.label;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    },
+  });
+}
+
+/** Clicking the agent pill opens an inline list popover of agents. */
 function setupAgentPill() {
   const pill = document.getElementById('chat-agent-pill');
   if (!pill) return;
   pill.addEventListener('click', () => {
-    if (!Array.isArray(chatAgents) || chatAgents.length <= 1) return;
-    const names = chatAgents.map(a => `  ${a.name === chatAgent?.agentName ? '●' : ' '} ${a.name}`).join('\n');
-    const picked = prompt(`Switch agent to:\n\n${names}`);
-    const match = picked && chatAgents.find(a => a.name === picked.trim());
-    if (match) switchAgent(match.name, { preferRestore: false });
+    if (!Array.isArray(chatAgents) || chatAgents.length === 0) return;
+    const currentName = chatAgent?.agentName;
+    const items = chatAgents.map(a => ({
+      label: a.displayName || a.name,
+      hint: a.isPrimary ? 'primary' : '',
+      active: a.name === currentName,
+      _name: a.name,
+    }));
+    openListPopover({
+      anchor: pill,
+      items,
+      emptyText: 'No agents configured.',
+      onSelect: (it) => {
+        if (it?._name && it._name !== currentName) switchAgent(it._name, { preferRestore: false });
+      },
+    });
   });
 }
 
