@@ -7,14 +7,16 @@
 
 ## Summary
 
-The agent's `brain_*` tools were built against an older version of the cognitive-query API and now speak a different dialect than the dashboard's Query tab. They call engine-local endpoints (`/api/query`, `/api/pgs`) with outdated parameter shapes, cannot invoke the dashboard's new depth chips, synthesis toggles, or follow-up workflows, and are missing entirely the four dashboard endpoints (`followup`, `executive-view`, `export`, `ai-review`). Meanwhile, `research_launch` creates runs inside `cosmo23/runs/` where agents cannot see them and the feeder cannot ingest them.
+The agent's `brain_*` tools were built against an older version of the cognitive-query API and now speak a different dialect than the dashboard's Query tab. They call engine-local endpoints (`/api/query`, `/api/pgs`) with outdated parameter shapes, cannot invoke the dashboard's new depth chips, synthesis toggles, or follow-up workflows, and are missing entirely the four dashboard endpoints (`followup`, `executive-view`, `export`, `ai-review`). The four parallel endpoints on the engine-dashboard server (`/api/query/followup`, `/api/query/executive-view`, `/api/query/export`, `/api/query/ai-review`) turned out to be legacy — not actually used by the tab. The tab uses three cosmo23 routes: `/query`, `/query/stream`, `/export-query`. Follow-up is state on the tab, not an endpoint.
+
+Meanwhile, `research_launch` creates runs inside `cosmo23/runs/` where agents cannot see them and the feeder cannot ingest them.
 
 This design brings both surfaces into alignment. The dashboard Query tab becomes the canonical protocol: its payload shape, its endpoints, its vocabulary. Agent tools become thin wrappers over `${brainRoute}/<op>` — the same URLs the tab hits. Research runs relocate to `instances/<agent>/workspace/research-runs/<runName>/` with a symlink back to `cosmo23/runs/<runName>` so cosmo23 still finds them by its usual path. Feeder picks up research output automatically because it's inside the agent's workspace.
 
 ## Goals
 
 - Close the protocol drift between agent `brain_*` tools and the dashboard Query tab
-- Give agents access to every query capability the dashboard exposes (depth chips, synthesis, PGS toggle, follow-ups, executive view, export, AI review)
+- Give agents access to every query capability the dashboard tab actually exposes (depth chips, synthesis, PGS toggle, follow-up via `priorContext`, export)
 - Lock the tool↔dashboard protocol together with a regression test so future drift is caught in CI
 - Make research runs visible to their launching agent and ingestible by the feeder
 - Preserve backward compatibility for cosmo23 CLI/direct launches and for existing runs on disk
@@ -92,14 +94,17 @@ Endpoint: POST `${brainRoute}/query`. Non-streaming. The legacy 9 modes (`fast/n
 
 ### Added
 
-Four new tools, one per dashboard endpoint the tab uses beyond the base query:
+One new tool — the only sub-operation the tab actually hits beyond the base query:
 
-- **`brain_query_followup`** — `{ query, model?, priorContext: { query, answer } }` → POST `${brainRoute}/query/followup`. For "given the last answer, dig deeper on X."
-- **`brain_query_executive_view`** — `{ baseAnswer, baseMetadata }` → POST `${brainRoute}/query/executive-view`. Compresses a prior answer into an executive summary.
-- **`brain_query_export`** — `{ query, answer, format: 'markdown' | 'json', metadata? }` → POST `${brainRoute}/query/export`. Writes formatted file to the export dir.
-- **`brain_query_ai_review`** — `{ query, answer, metadata? }` → POST `${brainRoute}/query/ai-review`. AI critique of a prior answer.
+- **`brain_query_export`** — `{ query, answer, format: 'markdown' | 'json', metadata? }` → POST `${brainRoute}/export-query`. Writes formatted file to the brain's export dir.
 
-**Net:** 6 tools → 9 tools, but simpler schemas. No more 9-mode `brain_query` description bloating the system prompt. PGS is a flag, not a tool.
+Follow-up is handled in-band on `brain_query` via the optional `priorContext` field — no separate tool, matching how the tab's "Follow-up" button just flips state for the next query.
+
+**Deliberately not added** (endpoints exist on the engine-dashboard server but are not used by the tab):
+
+- `/api/query/followup`, `/api/query/executive-view`, `/api/query/ai-review` — parallel legacy surfaces. If agents ever demonstrate need, can be added later; no point preemptively wiring UI-dead endpoints as tools.
+
+**Net:** 6 tools → 6 tools (clean swap). Simpler system prompt, less clutter. PGS is a flag, not a tool.
 
 ## Research Run Storage Topology
 
@@ -231,7 +236,7 @@ Feeder sees new files appear in instances/jerry/workspace/research-runs/.../
 - **brainRoute unresolved** → tool returns `is_error: true` with cosmo23 verification hint
 - **HTTP 4xx/5xx** → tool returns the engine's error body (truncated to 500 chars) with HTTP code
 - **Timeout** → 30 min for `brain_query` with PGS enabled, 2 min otherwise; on timeout tool returns a message including the PGS depth as context
-- **Missing required field** (e.g., `priorContext` on `brain_query_followup`) → synchronous schema error before the HTTP call
+- **Missing required field** → synchronous schema error before the HTTP call
 - **Symlink creation failure** (research_launch) → run proceeds, cosmo23 logs warning, tool result notes "alias not created" in metadata
 - **runRoot collision** (rare — someone manually created that dir) → cosmo23 refuses, returns error, agent gets a clear message and can retry with a different runName
 
