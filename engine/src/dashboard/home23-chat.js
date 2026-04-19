@@ -85,6 +85,13 @@ async function initChat(mode) {
   }
 
   bindChatPersistence();
+
+  // Mount the shared message-list + input subtree into the active slot. This
+  // is the single DOM we move between tile and overlay via appendChild —
+  // moving the same nodes preserves event bindings and mid-stream state
+  // across expand/collapse.
+  mountSharedChatNodes();
+
   renderAgentSelectors(initialAgent.name);
   await switchAgent(initialAgent.name, { preferRestore: true });
 
@@ -92,20 +99,30 @@ async function initChat(mode) {
   chatModel = initialAgent.model;
   populateModelSelect(initialAgent.provider, initialAgent.model);
 
-  // Input bindings
+  // Input bindings — one input now (shared). 'overlay' binding removed; the
+  // same #chat-input serves both modes since we move the node between slots.
   bindInput('chat-input', 'chat-send-btn', '');
-  bindInput('chat-overlay-input', 'chat-overlay-send-btn', 'overlay');
 
-  // Expand/minimize/standalone
+  // Expand / close / standalone (standalone button moved into the ⋯ menu in
+  // Task 4; button IDs in the updated overlay markup are different).
   const expandBtn = document.getElementById('chat-expand-btn');
   if (expandBtn) expandBtn.addEventListener('click', openOverlay);
-  const minimizeBtn = document.getElementById('chat-minimize-btn');
-  if (minimizeBtn) minimizeBtn.addEventListener('click', closeOverlay);
-  const standaloneBtn = document.getElementById('chat-standalone-btn');
-  if (standaloneBtn) standaloneBtn.addEventListener('click', () => {
-    // Pass current agent + conversation cache via URL
-    cacheHistory();
-    window.open(`/home23/chat?agent=${chatAgent?.agentName || ''}`, '_blank');
+  const closeBtn = document.getElementById('chat-overlay-close-btn');
+  if (closeBtn) closeBtn.addEventListener('click', closeOverlay);
+
+  // <dialog> backdrop click → close. The dialog itself fills the panel area;
+  // clicks on padding around the panel bubble up to the dialog element.
+  const overlay = document.getElementById('chat-overlay');
+  overlay?.addEventListener('click', (e) => {
+    if (e.target === overlay) closeOverlay();
+  });
+  // Native <dialog> emits 'close' on Esc — make sure our appendChild-move
+  // back to the tile happens in that case too.
+  overlay?.addEventListener('close', () => {
+    const shared = document.getElementById('chat-shared');
+    const tileSlot = document.getElementById('chat-slot-tile');
+    const dest = tileSlot || document.getElementById('chat-slot-standalone');
+    if (shared && dest && shared.parentElement !== dest) dest.appendChild(shared);
   });
 }
 
@@ -215,7 +232,7 @@ function handleSlashCommand(text, source) {
   const cmd = text.split(/\s/)[0].toLowerCase();
   const handler = SLASH_COMMANDS[cmd];
   if (!handler) {
-    const containerId = source === 'overlay' ? 'chat-overlay-body' : 'chat-messages';
+    const containerId = 'chat-messages';
     appendError(`Unknown command: ${cmd}. Type /help for available commands.`, containerId);
     return true;
   }
@@ -228,7 +245,7 @@ function cmdNew(text, source) {
 }
 
 function cmdHelp(text, source) {
-  const containerId = source === 'overlay' ? 'chat-overlay-body' : 'chat-messages';
+  const containerId = 'chat-messages';
   const lines = Object.entries(SLASH_COMMANDS)
     .map(([cmd, info]) => `**${cmd}** — ${info.description}`)
     .join('\n');
@@ -305,15 +322,11 @@ async function loadHistory(agentName, conversationId) {
     } else {
       container.innerHTML = '<div class="h23-chat-empty">Start a conversation with your agent.</div>';
     }
-    const overlayBody = document.getElementById('chat-overlay-body');
-    if (overlayBody) overlayBody.innerHTML = container.innerHTML;
     scheduleChatPersist();
     scrollToBottom();
   } catch (err) {
     console.error('Failed to load history:', err);
     container.innerHTML = '<div class="h23-chat-empty">Start a conversation with your agent.</div>';
-    const overlayBody = document.getElementById('chat-overlay-body');
-    if (overlayBody) overlayBody.innerHTML = '';
     scheduleChatPersist();
   }
   await resumePendingTurns();
@@ -344,11 +357,9 @@ async function resumePendingTurns() {
     activeCursor = -1;
     chatStreaming = true;
 
-    // Button swap to Stop while resuming
+    // Button swap to Stop while resuming — single shared send button.
     const sendBtn = document.getElementById('chat-send-btn');
-    const overlaySendBtn = document.getElementById('chat-overlay-send-btn');
     if (sendBtn) { sendBtn.innerHTML = '&#9632;'; sendBtn.disabled = false; sendBtn.onclick = stopChat; sendBtn.title = 'Stop'; sendBtn.style.background = 'var(--accent-red)'; }
-    if (overlaySendBtn) { overlaySendBtn.innerHTML = '&#9632;'; overlaySendBtn.disabled = false; overlaySendBtn.onclick = stopChat; overlaySendBtn.title = 'Stop'; overlaySendBtn.style.background = 'var(--accent-red)'; }
 
     openTurnStream({ bridgeBase, chatId: activeChatId, turnId: turn.turn_id, cursor: -1 });
   } catch (err) {
@@ -362,8 +373,6 @@ function newConversation() {
   chatConversationId = `dashboard-${chatAgent?.agentName || 'agent'}-${Date.now()}`;
   const container = document.getElementById('chat-messages');
   if (container) container.innerHTML = '<div class="h23-chat-empty">Start a conversation with your agent.</div>';
-  const overlayBody = document.getElementById('chat-overlay-body');
-  if (overlayBody) overlayBody.innerHTML = '';
   // Highlight active in list
   updateConversationListHighlight();
   scheduleChatPersist();
@@ -431,7 +440,7 @@ function toggleConversationList() {
 // ── Send Message ──
 
 async function sendMessage(source) {
-  const inputId = source === 'overlay' ? 'chat-overlay-input' : 'chat-input';
+  const inputId = 'chat-input';
   const input = document.getElementById(inputId);
   if (!input || !chatAgent) return;
 
@@ -452,17 +461,15 @@ async function sendMessage(source) {
   if (empty) empty.remove();
 
   // Determine which messages container to use
-  const containerId = source === 'overlay' ? 'chat-overlay-body' : 'chat-messages';
+  const containerId = 'chat-messages';
   appendMessage('user', text, containerId);
   scrollContainer(containerId);
 
   chatStreaming = true;
   scheduleChatPersist();
+  // Swap send → stop button — single shared button.
   const sendBtn = document.getElementById('chat-send-btn');
-  const overlaySendBtn = document.getElementById('chat-overlay-send-btn');
-  // Swap send → stop button
   if (sendBtn) { sendBtn.innerHTML = '&#9632;'; sendBtn.disabled = false; sendBtn.onclick = stopChat; sendBtn.title = 'Stop'; sendBtn.style.background = 'var(--accent-red)'; }
-  if (overlaySendBtn) { overlaySendBtn.innerHTML = '&#9632;'; overlaySendBtn.disabled = false; overlaySendBtn.onclick = stopChat; overlaySendBtn.title = 'Stop'; overlaySendBtn.style.background = 'var(--accent-red)'; }
 
   // New turn protocol flow
   currentTurnCtx = {
@@ -608,9 +615,7 @@ function finalizeTurn(finalEnvelope) {
 
 function resetSendButtons() {
   const sendBtn = document.getElementById('chat-send-btn');
-  const overlaySendBtn = document.getElementById('chat-overlay-send-btn');
   if (sendBtn) { sendBtn.innerHTML = '&#9654;'; sendBtn.disabled = false; sendBtn.onclick = () => sendMessage(''); sendBtn.title = 'Send'; sendBtn.style.background = ''; }
-  if (overlaySendBtn) { overlaySendBtn.innerHTML = '&#9654;'; overlaySendBtn.disabled = false; overlaySendBtn.onclick = () => sendMessage('overlay'); overlaySendBtn.title = 'Send'; overlaySendBtn.style.background = ''; }
 }
 
 async function stopChat() {
@@ -809,7 +814,7 @@ function cacheHistory() {
       streaming: chatStreaming,
       savedAt: Date.now(),
       tileInput: document.getElementById('chat-input')?.value || '',
-      overlayInput: document.getElementById('chat-overlay-input')?.value || '',
+      // overlayInput removed — single shared input lives in the shared DOM
     }));
   } catch {
     // LocalStorage may be unavailable or full; keep chat functional.
@@ -818,31 +823,64 @@ function cacheHistory() {
 
 // ── Overlay ──
 
+/**
+ * Mount the shared message-list + input subtree into the active slot. Called
+ * once at init. The shared node is the single source of truth for rendered
+ * messages and the live input — on expand/collapse we physically relocate it
+ * via appendChild rather than copying innerHTML.
+ */
+function mountSharedChatNodes() {
+  const existing = document.getElementById('chat-shared');
+  if (existing) return existing;
+  const tpl = document.getElementById('chat-shared-template');
+  if (!tpl || !tpl.content) return null;
+  // Prefer the standalone slot if on the standalone page; otherwise tile.
+  const dest = document.getElementById('chat-slot-standalone')
+    || document.getElementById('chat-slot-tile');
+  if (!dest) return null;
+  const node = tpl.content.firstElementChild.cloneNode(true);
+  dest.appendChild(node);
+  return node;
+}
+
 function openOverlay() {
   const overlay = document.getElementById('chat-overlay');
-  if (!overlay) return;
+  const shared = document.getElementById('chat-shared');
+  const overlaySlot = document.getElementById('chat-slot-overlay');
+  if (!overlay || !shared || !overlaySlot) return;
 
-  const tileMessages = document.getElementById('chat-messages');
-  const overlayBody = document.getElementById('chat-overlay-body');
+  // Move (not clone) the shared DOM into the overlay slot. appendChild
+  // relocates the existing node, preserving all event bindings and any
+  // in-flight streaming handlers pointed at #chat-messages.
+  overlaySlot.appendChild(shared);
 
-  if (tileMessages && overlayBody) {
-    overlayBody.innerHTML = tileMessages.innerHTML;
+  if (typeof overlay.showModal === 'function') {
+    try { overlay.showModal(); } catch { overlay.classList.add('open'); }
+  } else {
+    overlay.classList.add('open');
   }
 
-  overlay.classList.add('open');
-  scrollContainer('chat-overlay-body');
+  document.getElementById('chat-input')?.focus();
+  scrollToBottom();
   scheduleChatPersist();
 }
 
 function closeOverlay() {
   const overlay = document.getElementById('chat-overlay');
-  if (overlay) overlay.classList.remove('open');
+  const shared = document.getElementById('chat-shared');
+  const tileSlot = document.getElementById('chat-slot-tile');
+  if (!overlay) return;
 
-  const overlayBody = document.getElementById('chat-overlay-body');
-  const tileMessages = document.getElementById('chat-messages');
-  if (overlayBody && tileMessages) {
-    tileMessages.innerHTML = overlayBody.innerHTML;
+  if (typeof overlay.close === 'function' && overlay.open) {
+    try { overlay.close(); } catch { overlay.classList.remove('open'); }
+  } else {
+    overlay.classList.remove('open');
   }
+
+  // Move shared DOM back to the tile slot (or standalone, whichever exists).
+  const dest = tileSlot || document.getElementById('chat-slot-standalone');
+  if (shared && dest) dest.appendChild(shared);
+
   scrollToBottom();
   scheduleChatPersist();
 }
@@ -873,10 +911,9 @@ function getChatSessionKey(agentName) {
 }
 
 function getActiveChatContainer() {
-  const overlay = document.getElementById('chat-overlay');
-  const isOverlayOpen = overlay && overlay.classList.contains('open');
-  const containerId = isOverlayOpen ? 'chat-overlay-body' : 'chat-messages';
-  return document.getElementById(containerId);
+  // The shared #chat-messages node moves between slots on expand/collapse;
+  // a single getElementById reaches it wherever it currently lives.
+  return document.getElementById('chat-messages');
 }
 
 function extractMessageHistory(container) {
@@ -904,26 +941,19 @@ function restoreChatState(agentName) {
 
     chatConversationId = saved.conversationId || `dashboard-${agentName}-${Date.now()}`;
 
-    const tileMessages = document.getElementById('chat-messages');
-    const overlayBody = document.getElementById('chat-overlay-body');
+    const messagesEl = document.getElementById('chat-messages');
     const html = saved.html || '<div class="h23-chat-empty">Start a conversation with your agent.</div>';
+    if (messagesEl) messagesEl.innerHTML = html;
 
-    if (tileMessages) tileMessages.innerHTML = html;
-    if (overlayBody) overlayBody.innerHTML = html;
+    const input = document.getElementById('chat-input');
+    if (input) input.value = saved.tileInput || '';
 
-    const tileInput = document.getElementById('chat-input');
-    const overlayInput = document.getElementById('chat-overlay-input');
-    if (tileInput) tileInput.value = saved.tileInput || '';
-    if (overlayInput) overlayInput.value = saved.overlayInput || '';
-
-    if (saved.streaming) {
-      if (tileMessages) appendError('Response interrupted by refresh.', 'chat-messages');
-      if (overlayBody) appendError('Response interrupted by refresh.', 'chat-overlay-body');
+    if (saved.streaming && messagesEl) {
+      appendError('Response interrupted by refresh.', 'chat-messages');
     }
 
     chatStreaming = false;
     scrollToBottom();
-    scrollContainer('chat-overlay-body');
     _syncState();
     return true;
   } catch {

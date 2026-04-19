@@ -537,3 +537,102 @@
     align-self: end;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Task 3 additions — native <dialog> support
+   The overlay is now a <dialog>. When opened via showModal(), browsers
+   render it as display:block with a ::backdrop pseudo-element. Override
+   for flex layout; restyle the backdrop to match the previous glass look.
+   Task 6 will clean these up alongside the full responsive sizing pass.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+dialog.h23-chat-overlay {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  max-width: min(80vw, 1100px);
+  max-height: min(85vh, 940px);
+  width: 100%;
+}
+dialog.h23-chat-overlay[open] {
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+}
+dialog.h23-chat-overlay::backdrop {
+  background:
+    radial-gradient(circle at top left, rgba(10, 132, 255, 0.16), transparent 34%),
+    radial-gradient(circle at bottom right, rgba(0, 199, 190, 0.12), transparent 30%),
+    rgba(3, 7, 18, 0.72);
+  backdrop-filter: blur(12px);
+}
+
+.h23-chat-overlay-layout {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.05)),
+    rgba(6, 12, 24, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-glass);
+  overflow: hidden;
+}
+
+.h23-chat-overlay-sidebar {
+  width: 300px;
+  border-right: 1px solid var(--glass-border);
+  overflow-y: auto;
+  padding: 12px 0;
+}
+.h23-chat-overlay-sidebar[hidden] { display: none; }
+
+.h23-chat-overlay-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.h23-chat-overlay-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.h23-chat-slot {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.h23-chat-shared {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.h23-chat-icon-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.h23-chat-icon-btn:hover {
+  background: var(--glass-hover, rgba(255,255,255,0.08));
+  border-color: var(--glass-border);
+}
+

@@ -1507,13 +1507,10 @@ function renderChatTile() {
         </div>
         <div class="h23-chat-conv-list" id="chat-conv-list"></div>
       </div>
-      <div class="h23-chat-messages" id="chat-messages">
-        <div class="h23-chat-empty">Loading...</div>
-      </div>
-      <div class="h23-chat-input-area" id="chat-input-area">
-        <textarea class="h23-chat-input" id="chat-input" placeholder="Message your agent..." rows="1"></textarea>
-        <button class="h23-chat-send-btn" id="chat-send-btn" type="button">&#9654;</button>
-      </div>
+      <!-- Slot: shared message-list + input subtree is cloned here from
+           #chat-shared-template at init, then moved in/out of the overlay
+           on expand/collapse via appendChild. -->
+      <div class="h23-chat-slot" id="chat-slot-tile" data-slot="tile"></div>
     </div>
   `;
 }
