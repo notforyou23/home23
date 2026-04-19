@@ -28,6 +28,7 @@ import { ContextManager } from './agent/context.js';
 import { ConversationHistory } from './agent/history.js';
 import { createToolRegistry } from './agent/tools/index.js';
 import type { ToolContext, SubAgentTracker } from './agent/types.js';
+import { resolveBrainRoute } from './agent/brain-route-resolver.js';
 import { TTSService } from './observability/tts.js';
 import { BrowserController } from './browser/cdp.js';
 import type { HomeConfig } from './types.js';
@@ -216,6 +217,17 @@ async function main(): Promise<void> {
   // ── Telegram adapter ref (captured during adapter creation) ──
   let telegramAdapterRef: TelegramAdapter | null = null;
 
+  // ── Resolve cosmo23 brainRoute at startup ──
+  const agentName = process.env.HOME23_AGENT || 'unknown';
+  const cosmo23Port = Number(process.env.COSMO23_PORT || 43210);
+  const cosmo23BaseUrl = `http://localhost:${cosmo23Port}`;
+  const brainRoute = await resolveBrainRoute(agentName, cosmo23BaseUrl);
+  if (brainRoute) {
+    console.log(`[home] brainRoute resolved: ${brainRoute}`);
+  } else {
+    console.warn(`[home] brainRoute NOT resolved for ${agentName} — brain_query tools will return is_error. Check: curl ${cosmo23BaseUrl}/api/brains`);
+  }
+
   // ── Tool Context (pre-wired, agent loop + scheduler added below) ──
   const toolContext: ToolContext = {
     scheduler: null,
@@ -223,6 +235,9 @@ async function main(): Promise<void> {
     browser,
     projectRoot: PROJECT_ROOT,
     enginePort: DASHBOARD_PORT,
+    agentName,
+    cosmo23BaseUrl,
+    brainRoute,
     workspacePath,
     tempDir,
     contextManager,
