@@ -123,6 +123,113 @@ async function initChat(mode) {
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && overlay?.classList.contains('open')) closeOverlay();
   });
+
+  // ⋯ menu + agent pill (replaces the old + / ☰ / model-select button row).
+  setupMoreMenu();
+  setupAgentPill();
+
+  // Keep tile's agent pill + overlay title in sync with state.
+  chatState.on('agent:switch', (snap) => {
+    const nameEl = document.getElementById('chat-agent-name');
+    const avatarEl = document.getElementById('chat-agent-avatar');
+    const title = snap.agent?.displayName || snap.agent?.agentName || snap.agent?.name || '…';
+    if (nameEl) nameEl.textContent = title;
+    if (avatarEl) avatarEl.textContent = String(title).trim().slice(0, 1).toUpperCase() || '●';
+    const overlayTitle = document.getElementById('chat-overlay-title-label');
+    if (overlayTitle) overlayTitle.textContent = `Talk to ${title}`;
+  });
+}
+
+/** Wire the ⋯ more-menu — click button toggles the popover near it; clicking
+ *  outside or pressing Esc closes; menu item clicks dispatch to handlers. */
+function setupMoreMenu() {
+  const menu = document.getElementById('chat-more-menu');
+  if (!menu) return;
+
+  function openAt(anchor) {
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.top = `${rect.bottom + 4}px`;
+    menu.style.right = `${Math.max(8, window.innerWidth - rect.right)}px`;
+    menu.hidden = false;
+    anchor.setAttribute('aria-expanded', 'true');
+  }
+  function closeAll() {
+    menu.hidden = true;
+    for (const id of ['chat-more-btn', 'chat-overlay-more-btn']) {
+      const b = document.getElementById(id);
+      if (b) b.setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  for (const id of ['chat-more-btn', 'chat-overlay-more-btn']) {
+    const btn = document.getElementById(id);
+    if (!btn) continue;
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (menu.hidden) openAt(btn); else closeAll();
+    });
+  }
+
+  menu.addEventListener('click', (e) => {
+    const item = e.target.closest('[data-action]');
+    if (!item) return;
+    closeAll();
+    handleMenuAction(item.dataset.action);
+  });
+
+  document.addEventListener('click', (e) => {
+    if (menu.hidden) return;
+    if (menu.contains(e.target)) return;
+    if (e.target.closest('#chat-more-btn, #chat-overlay-more-btn')) return;
+    closeAll();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !menu.hidden) closeAll();
+  });
+}
+
+function handleMenuAction(action) {
+  if (action === 'new-conversation') {
+    newConversation();
+  } else if (action === 'toggle-conversations') {
+    toggleConversationList();
+  } else if (action === 'change-model') {
+    showModelPicker();
+  } else if (action === 'open-standalone') {
+    cacheHistory();
+    window.open(`/home23/chat?agent=${chatAgent?.agentName || ''}`, '_blank');
+  }
+}
+
+function showModelPicker() {
+  // Reveal the hidden model <select> briefly via a prompt-driven picker.
+  // For v1, simple prompt() — power users already use the Settings page.
+  const select = document.getElementById('chat-model-select');
+  if (!select) return;
+  const options = Array.from(select.options).map(o => o.value).filter(Boolean);
+  if (options.length === 0) { alert('No models available for this provider.'); return; }
+  const current = select.value || chatModel || '(default)';
+  const picked = prompt(`Pick a model (current: ${current}):\n\n${options.join('\n')}`);
+  if (picked && options.includes(picked)) {
+    select.value = picked;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+}
+
+/** Clicking the agent pill opens a simple picker. For v1, prompt(); future
+ *  tasks can swap for a proper popover listing agents with avatars. */
+function setupAgentPill() {
+  const pill = document.getElementById('chat-agent-pill');
+  if (!pill) return;
+  pill.addEventListener('click', () => {
+    if (!Array.isArray(chatAgents) || chatAgents.length <= 1) return;
+    const names = chatAgents.map(a => `  ${a.name === chatAgent?.agentName ? '●' : ' '} ${a.name}`).join('\n');
+    const picked = prompt(`Switch agent to:\n\n${names}`);
+    const match = picked && chatAgents.find(a => a.name === picked.trim());
+    if (match) switchAgent(match.name, { preferRestore: false });
+  });
 }
 
 function bindInput(inputId, btnId, source) {

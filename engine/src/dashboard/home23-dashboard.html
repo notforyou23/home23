@@ -430,6 +430,15 @@
     </div>
   </div>
 
+  <!-- ⋯ menu popover — shared between tile and overlay (positioned on open
+       relative to whichever button was clicked). Hidden by default. -->
+  <div class="h23-chat-menu" id="chat-more-menu" role="menu" hidden>
+    <button class="h23-chat-menu-item" data-action="new-conversation" role="menuitem" type="button">New conversation</button>
+    <button class="h23-chat-menu-item" data-action="toggle-conversations" role="menuitem" type="button">Show conversations</button>
+    <button class="h23-chat-menu-item" data-action="change-model" role="menuitem" type="button">Change model</button>
+    <button class="h23-chat-menu-item" data-action="open-standalone" role="menuitem" type="button">Open in new tab</button>
+  </div>
+
   <!-- Shared message-list + input subtree. Cloned into #chat-slot-tile on
        init; moved via appendChild between tile and overlay slots. -->
   <template id="chat-shared-template">

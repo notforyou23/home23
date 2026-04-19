@@ -569,3 +569,92 @@
   overflow: hidden;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   Task 4 additions — agent pill + ⋯ menu popover
+   ═══════════════════════════════════════════════════════════════════════ */
+
+.h23-chat-agent-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 4px;
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  max-width: 60%;
+  min-width: 0;
+}
+.h23-chat-agent-pill:hover {
+  background: var(--glass-hover, rgba(255,255,255,0.06));
+}
+.h23-chat-agent-avatar {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent-color, #0a84ff);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.h23-chat-agent-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.h23-chat-menu {
+  min-width: 220px;
+  background: rgba(6, 12, 24, 0.96);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  padding: 4px;
+  z-index: 1100;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.35);
+}
+.h23-chat-menu[hidden] { display: none; }
+.h23-chat-menu-item {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  background: transparent;
+  color: inherit;
+  border: none;
+  text-align: left;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+.h23-chat-menu-item:hover {
+  background: var(--glass-hover, rgba(255,255,255,0.08));
+}
+
+/* Collapse the tile header to the essentials: agent pill on the left,
+   expand + ⋯ on the right. */
+.h23-chat-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.h23-chat-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+
+/* Narrow tile: hide agent name, show avatar only. */
+@media (max-width: 360px) {
+  .h23-chat-agent-name { display: none; }
+}
+

@@ -1486,19 +1486,22 @@ function renderChatTile() {
   return `
     <div class="h23-tile h23-tile-chat" id="tile-chat">
       <div class="h23-chat-header">
-        <div class="h23-chat-selects">
-          <select class="h23-chat-agent-select" id="chat-agent-select">
-            <option>Loading...</option>
-          </select>
-          <select class="h23-chat-model-select" id="chat-model-select">
-            <option>model</option>
-          </select>
-        </div>
+        <button class="h23-chat-agent-pill" id="chat-agent-pill" type="button" title="Switch agent">
+          <span class="h23-chat-agent-avatar" id="chat-agent-avatar">…</span>
+          <span class="h23-chat-agent-name" id="chat-agent-name">Loading…</span>
+        </button>
         <div class="h23-chat-actions">
-          <button class="h23-chat-expand-btn" id="chat-new-btn" type="button" title="New conversation" onclick="newConversation()">+</button>
-          <button class="h23-chat-expand-btn" id="chat-history-btn" type="button" title="Conversation history" onclick="toggleConversationList()">&#9776;</button>
           <button class="h23-chat-expand-btn" id="chat-expand-btn" type="button" title="Expand">&#8599;</button>
+          <button class="h23-chat-expand-btn" id="chat-more-btn" type="button" title="More" aria-haspopup="menu" aria-expanded="false">&#8230;</button>
         </div>
+        <!-- Hidden selects keep existing populate/select logic working without
+             cluttering the tile header. ⋯ menu exposes model/agent change. -->
+        <select class="h23-chat-agent-select" id="chat-agent-select" hidden>
+          <option>Loading...</option>
+        </select>
+        <select class="h23-chat-model-select" id="chat-model-select" hidden>
+          <option>model</option>
+        </select>
       </div>
       <div class="h23-chat-conv-panel" id="chat-conv-panel">
         <div style="padding:10px 14px;border-bottom:1px solid var(--glass-border);display:flex;justify-content:space-between;align-items:center;">
