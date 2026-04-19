@@ -279,6 +279,50 @@ export class AgentLoop {
     this.triggerIndex.loadFrom(this.memoryStore);
   }
 
+  /**
+   * Write (or overwrite) workspace/sessions/active-<chatId>.md with the
+   * current conversation so the feeder can ingest recent dialogue without
+   * waiting for the 30-min session-gap compile. Throttled so we only rewrite
+   * when the transcript has meaningfully grown (6+ new messages since last
+   * snapshot, ~3 user↔assistant exchanges).
+   */
+  private activeSnapshotLastCount: Map<string, number> = new Map();
+  private async updateActiveSnapshot(chatId: string): Promise<void> {
+    const records = this.history.load(chatId);
+    const messages = records.filter((r): r is StoredMessage => !('type' in r && r.type === 'session_boundary'));
+    if (messages.length < 2) return;
+
+    const prev = this.activeSnapshotLastCount.get(chatId) ?? 0;
+    if (messages.length - prev < 6 && prev !== 0) return;   // not enough new content yet
+
+    const lines: string[] = [];
+    for (const msg of messages) {
+      const role = msg.role === 'user' ? 'User' : 'Agent';
+      const content = typeof msg.content === 'string'
+        ? msg.content
+        : (msg.content as Array<{ type: string; text?: string }>)
+            .filter(b => b.type === 'text')
+            .map(b => b.text || '')
+            .join('');
+      if (content.trim()) lines.push(`**${role}:** ${content.trim()}`);
+    }
+    if (lines.length < 2) return;
+
+    const sessionsDir = join(this.workspacePath, 'sessions');
+    // Safe filename: replace any non-[A-Za-z0-9_-] with _
+    const safeChatId = String(chatId).replace(/[^A-Za-z0-9_-]/g, '_');
+    const filename = `active-${safeChatId}.md`;
+    const body = `# Active Conversation (live snapshot)\n\n- **chatId:** ${chatId}\n- **messages:** ${messages.length}\n- **updated:** ${new Date().toISOString()}\n\n---\n\n${lines.join('\n\n')}\n`;
+
+    try {
+      mkdirSync(sessionsDir, { recursive: true });
+      writeFileSync(join(sessionsDir, filename), body);
+      this.activeSnapshotLastCount.set(chatId, messages.length);
+    } catch (err) {
+      console.warn(`[loop] Failed to write active snapshot for ${chatId}: ${err}`);
+    }
+  }
+
   private async compileSessionTranscript(chatId: string, records: HistoryRecord[]): Promise<void> {
     let lastBoundaryIdx = -1;
     for (let i = records.length - 1; i >= 0; i--) {
@@ -515,6 +559,14 @@ export class AgentLoop {
             assistantText: result.text ?? '',
           }).catch(err => console.warn('[push] notifyTurnComplete failed:', err));
         }
+        // Active-conversation snapshot: write/overwrite a markdown file in
+        // workspace/sessions/active-<chatId>.md after each turn so the feeder
+        // can ingest recent dialogue without waiting for the 30-minute idle
+        // session-gap compile. Fire-and-forget — snapshot failure shouldn't
+        // poison turn completion.
+        this.updateActiveSnapshot(chatId).catch(err => {
+          console.warn(`[loop] active snapshot failed for ${chatId}:`, err?.message || err);
+        });
         return result;
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
