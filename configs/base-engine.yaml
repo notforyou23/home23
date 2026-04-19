@@ -652,6 +652,8 @@ feeder:
     - "**/yarn.lock"
     - "**/pnpm-lock.yaml"
     - "**/*.pyc"
+    - "**/research-runs/*/brain/**"
+    - "**/research-runs/*/*.jsonl"
 logging:
   level: info
   thoughtJournal: true
