@@ -60,69 +60,166 @@ export const brainSearchTool: ToolDefinition = {
 export const brainQueryTool: ToolDefinition = {
   name: 'brain_query',
   description:
-    'Query the brain knowledge graph with LLM synthesis + edge traversal. ' +
-    'Nine modes trade context breadth for reasoning depth: ' +
-    'fast (quick factual, 100 nodes, low reasoning), ' +
-    'normal (balanced, 200 nodes, default), ' +
-    'deep (multi-hop, 400 nodes, high reasoning), ' +
-    'raw (150 nodes, direct data dump with minimal synthesis), ' +
-    'report (600 nodes, academic-style full synthesis), ' +
-    'innovation (300 nodes, creative/novel discovery), ' +
-    'consulting (300 nodes, strategic advice), ' +
-    'grounded (300 nodes, every claim cited), ' +
-    'executive (compresses a prior answer, requires baseAnswer). ' +
-    'Pick a mode based on how much context you need and how much the answer should reason vs. just surface facts.',
+    'Query the brain with the same protocol the dashboard Query tab uses. ' +
+    'Three modes: full (balanced, default), expert (maximum depth, multi-pass), dive (exploratory synthesis, creative cross-domain). ' +
+    'Enable PGS for full graph coverage via parallel partition sweeps — set enablePGS=true and pick pgsConfig.sweepFraction ' +
+    '(0.10 skim, 0.25 sample, 0.50 deep, 1.0 full). Sweep model should be fast/cheap (many parallel calls); ' +
+    'synthesis model stronger (one final reasoning pass). For follow-up queries that build on a prior answer, pass priorContext.',
   input_schema: {
     type: 'object',
     properties: {
       query: { type: 'string', description: 'The research question' },
+      model: { type: 'string', description: 'Main query model (answer generation). Any model from cosmo23 catalog.' },
       mode: {
         type: 'string',
-        enum: ['fast', 'normal', 'deep', 'raw', 'report', 'innovation', 'consulting', 'grounded', 'executive'],
-        description: 'Query mode (see tool description). Default: normal.',
+        enum: ['full', 'expert', 'dive'],
+        description: 'full=balanced (default), expert=maximum depth, dive=exploratory synthesis',
       },
-      baseAnswer: {
-        type: 'string',
-        description: 'For executive mode only: the prior answer to compress. Ignored in other modes.',
+      enableSynthesis: { type: 'boolean', description: 'Enable synthesis layer over retrieved evidence (default true)' },
+      includeOutputs: { type: 'boolean', description: 'Include agent output files as evidence' },
+      includeThoughts: { type: 'boolean', description: 'Include thought journal entries as evidence' },
+      includeCoordinatorInsights: { type: 'boolean', description: 'Include coordinator reviews/insights' },
+      allowActions: { type: 'boolean', description: 'Permit the query to trigger tool actions (default false — safety)' },
+      enablePGS: { type: 'boolean', description: 'Enable Progressive Graph Search (full graph coverage)' },
+      pgsMode: { type: 'string', description: 'PGS mode — default "full"' },
+      pgsConfig: {
+        type: 'object',
+        properties: {
+          sweepFraction: { type: 'number', description: '0.10=skim, 0.25=sample, 0.50=deep, 1.0=full coverage' },
+        },
+      },
+      pgsSweepModel: { type: 'string', description: 'Model for parallel partition sweeps (pick fast/cheap)' },
+      pgsSynthModel: { type: 'string', description: 'Model for final synthesis pass (pick stronger)' },
+      priorContext: {
+        type: 'object',
+        properties: {
+          query: { type: 'string' },
+          answer: { type: 'string' },
+        },
+        description: 'For follow-up queries — pass the previous query + answer for context continuity',
       },
     },
     required: ['query'],
   },
 
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-    const query = input.query as string;
-    const mode = (input.mode as string) || 'normal';
-    const baseAnswer = input.baseAnswer as string | undefined;
+    if (!ctx.brainRoute) {
+      return {
+        content: `brain_query: agent brain not registered in cosmo23. Check: curl ${ctx.cosmo23BaseUrl}/api/brains`,
+        is_error: true,
+      };
+    }
+
+    const pgsConfig = input.pgsConfig as { sweepFraction?: number } | undefined;
+    const sweepFraction = pgsConfig?.sweepFraction;
+    const pgsFullSweep = typeof sweepFraction === 'number' && sweepFraction >= 1.0;
+
+    const body: Record<string, unknown> = {
+      query: input.query,
+      model: input.model,
+      mode: input.mode ?? 'full',
+      enableSynthesis: input.enableSynthesis ?? true,
+      includeOutputs: input.includeOutputs ?? false,
+      includeThoughts: input.includeThoughts ?? false,
+      includeCoordinatorInsights: input.includeCoordinatorInsights ?? false,
+      allowActions: input.allowActions ?? false,
+      enablePGS: input.enablePGS ?? false,
+      pgsMode: input.pgsMode ?? 'full',
+      pgsConfig: pgsConfig ?? {},
+      pgsFullSweep,
+      pgsSweepModel: input.pgsSweepModel,
+      pgsSynthModel: input.pgsSynthModel,
+      priorContext: input.priorContext ?? null,
+      exportFormat: 'markdown',
+      provider: null,
+    };
+
+    const timeoutMs = body.enablePGS ? 1_800_000 : 120_000;
 
     try {
-      const url = `http://localhost:${ctx.enginePort}/api/query`;
-      const body: Record<string, unknown> = { query, mode };
-      if (mode === 'executive' && baseAnswer) body.baseAnswer = baseAnswer;
-
-      const res = await fetch(url, {
+      const res = await fetch(`${ctx.brainRoute}/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(1_800_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
 
       if (!res.ok) {
         const errText = await res.text().catch(() => '');
-        return { content: `Brain query failed: HTTP ${res.status} — ${errText.slice(0, 300)}`, is_error: true };
+        return { content: `brain_query failed: HTTP ${res.status} — ${errText.slice(0, 500)}`, is_error: true };
       }
 
       const data = await res.json() as Record<string, unknown>;
       const answer = (data.answer ?? data.response ?? data.text ?? '') as string;
-      const evidence = data.evidence as Array<{ nodeId?: string | number; concept?: string }> | undefined;
+      const evidence = data.evidence as Array<unknown> | undefined;
       const meta = data.metadata as Record<string, unknown> | undefined;
 
-      const suffix = evidence && evidence.length
-        ? `\n\n---\n[${evidence.length} evidence nodes cited · mode=${mode}${meta?.evidenceQuality ? ` · quality=${JSON.stringify(meta.evidenceQuality)}` : ''}]`
-        : `\n\n---\n[mode=${mode}]`;
+      const parts: string[] = [];
+      parts.push(answer.slice(0, 10_000) || 'brain_query returned empty result.');
 
-      return { content: (answer.slice(0, 8000) || 'Query returned empty result.') + suffix };
+      const footer: string[] = [];
+      if (evidence?.length) footer.push(`${evidence.length} evidence nodes`);
+      if (body.enablePGS && meta?.pgsPartitions) footer.push(`PGS: ${JSON.stringify(meta.pgsPartitions)}`);
+      if (meta?.models) footer.push(`models=${JSON.stringify(meta.models)}`);
+      if (footer.length) parts.push(`\n\n---\n[${footer.join(' · ')} · mode=${body.mode}]`);
+
+      return { content: parts.join('') };
     } catch (err) {
-      return { content: `Brain query error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
+      return { content: `brain_query error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
+    }
+  },
+};
+
+// ── brain_query_export — write a query answer to the brain's export dir ──
+
+export const brainQueryExportTool: ToolDefinition = {
+  name: 'brain_query_export',
+  description:
+    'Export a prior brain_query answer to the brain export directory as markdown or json. ' +
+    'Pass the query, answer, and optionally metadata from the brain_query response. ' +
+    'The file is written inside the brain\'s own runs/<brain>/exports/ directory and the path is returned.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'The original query' },
+      answer: { type: 'string', description: 'The answer to export' },
+      format: { type: 'string', enum: ['markdown', 'json'], description: 'Output format (default markdown)' },
+      metadata: { type: 'object', description: 'Metadata from the brain_query response (models, mode, evidence counts, etc.)' },
+    },
+    required: ['query', 'answer'],
+  },
+
+  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+    if (!ctx.brainRoute) {
+      return {
+        content: `brain_query_export: agent brain not registered in cosmo23. Check: curl ${ctx.cosmo23BaseUrl}/api/brains`,
+        is_error: true,
+      };
+    }
+
+    const body = {
+      query: input.query,
+      answer: input.answer,
+      format: (input.format as string) ?? 'markdown',
+      metadata: input.metadata ?? {},
+    };
+
+    try {
+      const res = await fetch(`${ctx.brainRoute}/export-query`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        return { content: `brain_query_export failed: HTTP ${res.status} — ${errText.slice(0, 500)}`, is_error: true };
+      }
+      const data = await res.json() as { exportedTo?: string; error?: string };
+      if (data.error) return { content: `brain_query_export: ${data.error}`, is_error: true };
+      return { content: `Exported to: ${data.exportedTo ?? '(unknown path)'}` };
+    } catch (err) {
+      return { content: `brain_query_export error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
     }
   },
 };
@@ -256,120 +353,6 @@ export const brainSynthesizeTool: ToolDefinition = {
       return { content: `Unknown action: ${action}. Use 'run' or 'status'.`, is_error: true };
     } catch (err) {
       return { content: `brain_synthesize error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
-    }
-  },
-};
-
-// ── brain_pgs — Progressive Graph Search ─────────────────────────────────────
-
-export const brainPgsTool: ToolDefinition = {
-  name: 'brain_pgs',
-  description:
-    'Progressive Graph Search over the full brain. Four-phase pipeline: partition the graph (Louvain), ' +
-    'route the query to relevant partitions, run parallel LLM sweeps per partition, synthesize across. ' +
-    'Optimized for COVERAGE and finding what standard RAG misses — reports absences, discovers ' +
-    'cross-domain connections. Slow (~20-60s) but most thorough. ' +
-    'Dual-model control: sweeps run many parallel calls, so pick a cheap/fast model (e.g. ' +
-    'minimax-m2.7-highspeed, nemotron-3-nano, gpt-5.4-mini). Synthesis is one final reasoning pass, so a ' +
-    'stronger model helps (e.g. claude-opus-4-7, MiniMax-M2.7, gpt-5.4). If models are omitted, uses the ' +
-    "engine's default model for both.",
-  input_schema: {
-    type: 'object',
-    properties: {
-      query: { type: 'string', description: 'The research question' },
-      mode: {
-        type: 'string',
-        enum: ['full', 'targeted'],
-        description: 'full = sweep all routed partitions (default), targeted = single deepest partition only (faster)',
-      },
-      maxPartitions: {
-        type: 'integer',
-        description: 'Cap on how many partitions to sweep. Default 5. Higher = more coverage, slower.',
-      },
-      sweepModel: {
-        type: 'string',
-        description: 'Model for parallel partition sweeps (many calls — pick fast/cheap). E.g. MiniMax-M2.7-highspeed, gpt-5.4-mini, nemotron-3-super.',
-      },
-      synthesisModel: {
-        type: 'string',
-        description: 'Model for the single cross-partition synthesis pass (pick stronger). E.g. claude-opus-4-7, MiniMax-M2.7, gpt-5.4.',
-      },
-      sweepProvider: {
-        type: 'string',
-        description: 'Optional provider override for sweeps (minimax / anthropic / openai / openai-codex / xai / ollama-cloud). Usually auto-resolved from model name.',
-      },
-      synthesisProvider: {
-        type: 'string',
-        description: 'Optional provider override for synthesis.',
-      },
-    },
-    required: ['query'],
-  },
-
-  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
-    const query = input.query as string;
-    const mode = (input.mode as string) || 'full';
-    const maxPartitions = Number(input.maxPartitions) || 5;
-    const sweepModel = input.sweepModel as string | undefined;
-    const synthesisModel = input.synthesisModel as string | undefined;
-    const sweepProvider = input.sweepProvider as string | undefined;
-    const synthesisProvider = input.synthesisProvider as string | undefined;
-
-    try {
-      const url = `http://localhost:${ctx.enginePort}/api/pgs`;
-      const body: Record<string, unknown> = { query, mode, maxPartitions };
-      if (sweepModel) body.sweepModel = sweepModel;
-      if (synthesisModel) body.synthesisModel = synthesisModel;
-      if (sweepProvider) body.sweepProvider = sweepProvider;
-      if (synthesisProvider) body.synthesisProvider = synthesisProvider;
-
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(1_800_000),
-      });
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        return { content: `brain_pgs failed: HTTP ${res.status} — ${errText.slice(0, 500)}`, is_error: true };
-      }
-
-      const data = await res.json() as {
-        answer?: string;
-        synthesis?: string;
-        partitions?: Array<{ id?: string; size?: number; keywords?: string[]; score?: number }>;
-        sweeps?: Array<{ partitionId?: string; finding?: string }>;
-        absences?: string[];
-        crossDomain?: string[];
-        metadata?: { models?: { sweep?: string; sweepProvider?: string; synthesis?: string; synthesisProvider?: string } } & Record<string, unknown>;
-      };
-
-      const parts: string[] = [];
-      if (data.synthesis || data.answer) {
-        parts.push(`## Synthesis\n${data.synthesis ?? data.answer}`);
-      }
-      if (data.absences && data.absences.length) {
-        parts.push(`## Notable Absences\n- ${data.absences.join('\n- ')}`);
-      }
-      if (data.crossDomain && data.crossDomain.length) {
-        parts.push(`## Cross-Domain Connections\n- ${data.crossDomain.join('\n- ')}`);
-      }
-      if (data.partitions && data.partitions.length) {
-        const pList = data.partitions.slice(0, 10).map(p =>
-          `- [${p.id}] size=${p.size} score=${p.score?.toFixed?.(3) ?? '?'} keywords=${(p.keywords ?? []).slice(0, 5).join(', ')}`
-        ).join('\n');
-        parts.push(`## Partitions Swept (${data.partitions.length})\n${pList}`);
-      }
-      if (data.metadata?.models) {
-        const m = data.metadata.models;
-        parts.push(`---\n_[PGS models: sweep=${m.sweep} (${m.sweepProvider}), synthesis=${m.synthesis} (${m.synthesisProvider})]_`);
-      }
-
-      const out = parts.join('\n\n') || 'PGS returned no synthesis.';
-      return { content: out.slice(0, 10_000) };
-    } catch (err) {
-      return { content: `brain_pgs error: ${err instanceof Error ? err.message : String(err)}`, is_error: true };
     }
   },
 };
