@@ -107,21 +107,31 @@ class RunManager {
   }
 
   /**
-   * Create a new run
+   * Create a new run.
+   *
+   * @param {string} runName
+   * @param {object} [options]
+   * @param {string} [options.runPath] - Override run dir location (used when
+   *   a Home23 agent owns the run; also creates a symlink at the default
+   *   location so cosmo23/runs/<runName> still resolves).
+   * @param {string} [options.owner] - Owner agent name for run.json ownership record.
+   * @param {string} [options.topic] - Topic for run.json.
    */
-  async createRun(runName) {
-    const runPath = path.join(this.runsDir, runName);
+  async createRun(runName, options = {}) {
+    const defaultPath = path.join(this.runsDir, runName);
+    const runPath = options.runPath || defaultPath;
+    const needsSymlink = !!options.runPath && path.resolve(options.runPath) !== path.resolve(defaultPath);
 
     try {
-      // Check if already exists
+      // Check if the actual run path already exists
       try {
         await fs.access(runPath);
-        throw new Error(`Run "${runName}" already exists`);
+        throw new Error(`Run path "${runPath}" already exists`);
       } catch (e) {
         if (e.code !== 'ENOENT') throw e;
       }
 
-      // Create run directory structure
+      // Create run directory structure at runPath
       await fs.mkdir(runPath, { recursive: true });
       await fs.mkdir(path.join(runPath, 'coordinator'), { recursive: true });
       await fs.mkdir(path.join(runPath, 'agents'), { recursive: true });
@@ -131,7 +141,36 @@ class RunManager {
       await fs.mkdir(path.join(runPath, 'training'), { recursive: true });
       await fs.mkdir(path.join(runPath, 'ingestion', 'documents'), { recursive: true });
 
-      this.logger.info(`Created run: ${runName}`);
+      // If runPath diverges from the default, create symlink at default so
+      // existing cosmo23 consumers (dashboards, CLI) keep working.
+      if (needsSymlink) {
+        try {
+          await fs.mkdir(this.runsDir, { recursive: true });
+          try { await fs.unlink(defaultPath); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+          await fs.symlink(runPath, defaultPath, 'dir');
+          this.logger.info(`Created run: ${runName} at ${runPath} (symlink at ${defaultPath})`);
+        } catch (err) {
+          const warn = this.logger.warn || this.logger.info;
+          warn.call(this.logger, `Symlink creation failed for ${runName}: ${err.message}. Run still created at ${runPath}.`);
+        }
+      } else {
+        this.logger.info(`Created run: ${runName}`);
+      }
+
+      // Write run.json ownership record
+      try {
+        const ownerInfo = {
+          owner: options.owner || null,
+          createdAt: new Date().toISOString(),
+          topic: options.topic || null,
+          runName,
+        };
+        await fs.writeFile(path.join(runPath, 'run.json'), JSON.stringify(ownerInfo, null, 2));
+      } catch (err) {
+        const warn = this.logger.warn || this.logger.info;
+        warn.call(this.logger, `Failed to write run.json for ${runName}: ${err.message}`);
+      }
+
       return { success: true, runName, path: runPath };
     } catch (error) {
       this.logger.error(`Failed to create run ${runName}:`, error);

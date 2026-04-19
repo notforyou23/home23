@@ -613,9 +613,23 @@ async function ensureLocalBrainForLaunch(payload) {
     return selected;
   }
 
+  // Honor caller-supplied runName when present (harness-driven Home23 launches);
+  // otherwise derive from topic. Collision check still runs against LOCAL_RUNS_PATH.
   const baseName = sanitizeRunName(payload.runName || payload.topic || 'cosmo');
   const runName = await ensureUniqueRunName(baseName, LOCAL_RUNS_PATH);
-  const created = await runManager.createRun(runName);
+
+  // Home23 agents supply runRoot to relocate the run dir into their workspace.
+  // Without runRoot, legacy cosmo23 behavior (dir at LOCAL_RUNS_PATH/<runName>).
+  const createOpts = {};
+  if (payload.runRoot && typeof payload.runRoot === 'string') {
+    createOpts.runPath = payload.runRoot;
+  }
+  if (payload.owner || payload.agentName) {
+    createOpts.owner = payload.owner || payload.agentName;
+  }
+  if (payload.topic) createOpts.topic = payload.topic;
+
+  const created = await runManager.createRun(runName, createOpts);
   if (!created.success) {
     const error = new Error(created.error || 'Failed to create run');
     error.statusCode = 500;
