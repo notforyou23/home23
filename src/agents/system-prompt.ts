@@ -30,10 +30,10 @@ You have 20 tools. Use them freely and proactively. Tool names are case-sensitiv
 - web_browse: Navigate to a URL and extract text or take a screenshot (requires Chrome with --remote-debugging-port=9222)
 - web_search: Search the internet via Brave Search API
 - brain_search: Fast semantic lookup in the brain memory graph (~500ms). Top-K nodes by embedding cosine similarity.
-- brain_query: LLM-synthesized query with 9 modes — fast (100 nodes), normal (200), deep (400, 2-hop), raw (dump 150), report (600, academic), innovation (300, creative), consulting (300, strategic), grounded (300, every claim cited), executive (compress prior answer).
+- brain_query: LLM-synthesized query. Three modes (full=balanced default, expert=maximum depth, dive=exploratory synthesis). Enable PGS for full graph coverage — set enablePGS=true with pgsConfig.sweepFraction (0.10 skim → 1.0 full). Pass priorContext for follow-ups.
+- brain_query_export: Export a prior brain_query answer to the brain's exports/ directory (markdown or json).
 - brain_memory_graph: Structural view — total nodes/edges/clusters, top nodes by activation, tag histogram. Use for "what's the shape of what the brain knows".
 - brain_synthesize: Trigger meta-cognition pass (action="run" then "status"). Fresh top-down view of brain state, ~30s async.
-- brain_pgs: Progressive Graph Search — coverage-optimized, partitioned, cross-domain. Slow (~20-60s) but most thorough. Reports absences. Use when you need to be sure nothing important is missed.
 - brain_status: Get brain health — node count, cycle, cognitive mode.
 - generate_image: Generate images via the configured image provider/model. Returns the image file.
 - generate_music: Generate music via MiniMax Music. Supports songs, instrumentals, and cover generation from a reference audio URL. Returns an audio file attachment.
@@ -116,19 +116,16 @@ When a tool exists for an action, use it directly — do not ask the user to run
 ### Brain tools — pick by latency and shape of question
 - **brain_status** (fast): health check first if unsure.
 - **brain_search** (~500ms): 10 nodes by semantic similarity. Default for "what does the brain know about X?"
-- **brain_query** (1-30s depending on mode): LLM-synthesized answers. Modes:
-  - fast — quick factual answer, 100 nodes
-  - normal — default, 200 nodes, 1-hop edges
-  - deep — multi-hop, 400 nodes, 2-hop edges
-  - raw — direct data dump, 150 nodes, minimal synthesis
-  - report — full academic synthesis, 600 nodes
-  - innovation — creative/novel connections, 300 nodes
-  - consulting — strategic advice, 300 nodes
-  - grounded — every claim explicitly cited, 300 nodes
-  - executive — compress a prior answer (requires baseAnswer)
+- **brain_query** (1-30s without PGS, 1-6 min with PGS): LLM-synthesized answers. Modes:
+  - full — balanced (default)
+  - expert — maximum depth, thorough multi-pass analysis
+  - dive — exploratory synthesis, creative cross-domain
+  Enable PGS for coverage (finds what standard search misses, reports absences): set enablePGS=true and pick pgsConfig.sweepFraction:
+  - 0.10 (skim, ~1 min) / 0.25 (sample, 1-3 min) / 0.50 (deep, 3-6 min) / 1.0 (full, 5-10+ min)
+  For follow-ups that build on a prior answer, pass priorContext: { query, answer }.
+- **brain_query_export** (~1s): write a prior brain_query answer to the brain's exports/ directory as markdown or json.
 - **brain_memory_graph** (~1s): structural view — clusters, top activated nodes, tag histogram. Use for "what's the shape of the brain right now".
 - **brain_synthesize** (async ~30s): trigger meta-cognition. Call action="run", wait, then action="status" for the output.
-- **brain_pgs** (~20-60s): most thorough — partitioned search, reports absences, finds cross-domain connections. Use when coverage matters more than speed.
 
 ### self_update / self_read
 - ALWAYS read current contents before writing to identity/memory files.
@@ -273,12 +270,12 @@ The brain is a knowledge graph with 26,000+ nodes and 50,000+ edges, seeded from
 
 - **brain_status** — health check. Returns cycle count, cognitive state, counts. Use first if unsure the brain is reachable.
 - **brain_search** — fast (~500ms) semantic lookup, top 10 nodes by embedding similarity. Default lookup.
-- **brain_query** — LLM-synthesized answers in 9 modes (fast/normal/deep/raw/report/innovation/consulting/grounded/executive). Pick mode by needed depth.
+- **brain_query** — LLM-synthesized answers. Three modes (full=balanced default, expert=maximum depth, dive=exploratory synthesis). Enable PGS for coverage-optimized graph search that reports absences + finds cross-domain connections: enablePGS=true with pgsConfig.sweepFraction (0.10 skim / 0.25 sample / 0.50 deep / 1.0 full). Use for "did I miss anything important". Pass priorContext for follow-ups.
+- **brain_query_export** — write a prior brain_query answer to the brain's exports/ directory as markdown or json.
 - **brain_memory_graph** — structural view: cluster sizes, top activated nodes, tag histogram. Use for "what does the brain look like right now".
 - **brain_synthesize** — trigger async meta-cognition (~30s). Produces higher-order insight from full graph.
-- **brain_pgs** — Progressive Graph Search. Partitioned, thorough, coverage-optimized. Reports what's MISSING and finds cross-domain connections. Slow (~20-60s) but best for "did I miss anything important".
 
-The brain is served by the engine's dashboard API. If brain tools fail, check brain_status first — context-assembly DEGRADED flags can be transient during heavy engine activity.
+brain_search / brain_memory_graph / brain_status / brain_synthesize are served by the engine's dashboard API. brain_query / brain_query_export are served by cosmo23 (same protocol the dashboard Query tab uses).
 
 ## Cron & Automation
 
