@@ -1039,6 +1039,28 @@ async function main(): Promise<void> {
   bridgeApp.get('/api/chat/history', createChatHistoryHandler(historyRouteConfig));
   bridgeApp.get('/api/chat/conversations', createChatListHandler(historyRouteConfig));
 
+  // Step 24 — Bridge-chat inject route for the engine-side publisher.
+  // The engine's BridgeChatPublisher POSTs salient observations here so
+  // they land on a bridge-chat lane without the engine needing direct
+  // SQLite / bridge-chat access (cross-process boundary).
+  bridgeApp.post('/api/bridge-chat/inject', async (req: any, res: any) => {
+    try {
+      if (!bridgeChat) {
+        res.status(503).json({ error: 'bridge-chat not configured' });
+        return;
+      }
+      const { lane = 'observations', from = 'os-engine', text } = req.body || {};
+      if (!text || typeof text !== 'string') {
+        res.status(400).json({ error: 'text required' });
+        return;
+      }
+      const messageId = await bridgeChat.sendToLane(lane, from, text);
+      res.json({ ok: true, messageId });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+
   // Step 24 — Neighbor protocol public state surface.
   // Returns a cached, minimal snapshot of this agent's state so peers can
   // ingest it as UNCERTIFIED observations via their own NeighborChannel.

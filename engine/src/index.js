@@ -976,12 +976,42 @@ async function main() {
       ledger: publishLedger,
       logger,
     });
+    // Resolve the harness bridge port so the engine can POST into its
+    // /api/bridge-chat/inject route. Falls back to the agent's instance
+    // config; if no port is resolvable, sender stays null and publisher
+    // is a no-op at the network layer (salience gate + ledger still work).
+    let bridgeInjectUrl = null;
+    try {
+      const agentName = process.env.HOME23_AGENT || config.agent?.name;
+      if (agentName) {
+        const instancePath = path.join(home23RepoRoot, 'instances', agentName, 'config.yaml');
+        if (fs.existsSync(instancePath)) {
+          const inst = yaml.load(fs.readFileSync(instancePath, 'utf8')) || {};
+          const bridgePort = inst.ports?.bridge;
+          if (bridgePort) bridgeInjectUrl = `http://localhost:${bridgePort}/api/bridge-chat/inject`;
+        }
+      }
+    } catch { /* best-effort */ }
+
     const bridgePublisher = new BridgeChatPublisher({
       salienceThreshold: publishCfg.targets?.bridge_chat?.salience_threshold ?? 0.75,
-      sender: null,  // wired post-Phase-9 once bridge-chat out-path is routable from engine process
+      sender: bridgeInjectUrl
+        ? async ({ text }) => {
+            try {
+              await fetch(bridgeInjectUrl, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ lane: 'observations', from: 'os-engine', text }),
+              });
+            } catch (err) {
+              logger.warn?.('[publish] bridge-chat POST failed:', err?.message || err);
+            }
+          }
+        : null,
       ledger: publishLedger,
       logger,
     });
+    if (bridgeInjectUrl) logger.info(`[publish] bridge-chat sender → ${bridgeInjectUrl}`);
     // Hook bus observations into bridge salience evaluation (no-op until sender is wired).
     channelBus.on('observation', async (obs) => {
       const salience = computeSalience(obs);
