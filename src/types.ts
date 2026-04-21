@@ -167,12 +167,40 @@ export interface HomeConfig {
     };
   };
 
+  // OS-engine redesign (Step 24). Universal channel bus + verification gate +
+  // crystallization pipeline + closer + decay worker + role-integrity contract
+  // + neighbor protocol + publish layer. See docs/design/STEP24-OS-ENGINE-REDESIGN.md.
+  osEngine?: OsEngineConfig;
+
   apns?: {
     team_id: string;
     key_id: string;
     key_path: string;
     bundle_id: string;
     default_env: 'sandbox' | 'production';
+  };
+}
+
+export interface OsEngineConfig {
+  channels?: {
+    machine?:  { enabled?: boolean; polls?: Record<string, string> };
+    os?:       { enabled?: boolean; pm2?: { events?: boolean; poll?: string }; cron?: { events?: boolean }; fswatch?: { paths?: string[] } };
+    domain?:   { enabled?: boolean; readers?: Record<string, { path: string; tail?: boolean; enabled?: boolean }> };
+    build?:    { enabled?: boolean; git?: { poll?: string; watch_branches?: string[] }; gh?: { pr_state?: boolean; poll?: string; repo?: string } };
+    work?:     { enabled?: boolean; readers?: Record<string, { path: string; tail?: boolean; poll?: string; watch?: boolean }> };
+    neighbor?: { enabled?: boolean; poll?: string; peers?: 'auto' | string[] };
+  };
+  verification?: { flagRequired?: boolean; zeroContextAsLegal?: boolean };
+  crystallization?: {
+    backpressure?: { cyclesWithoutReceiptThreshold?: number };
+    confidenceCaps?: Record<string, number>;
+  };
+  decay?: { worker?: { cadence?: string }; halfLife?: Record<string, string> };
+  roleIntegrity?: { enforce?: boolean; rejectLogPath?: string };
+  closer?: { terminationContractRequired?: boolean; dedupeBeforeSpawn?: boolean };
+  publish?: {
+    targets?: Record<string, { cadence?: string; path?: string; salience_threshold?: number }>;
+    starvationFloor?: Record<string, string>;
   };
 }
 

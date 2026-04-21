@@ -131,6 +131,51 @@ situationalAwareness:
     reads:
       - NOW.md
       - PLAYBOOK.md
+osEngine:
+  channels:
+    machine:  { enabled: false }
+    os:       { enabled: false }
+    domain:   { enabled: false }
+    build:    { enabled: false }
+    work:     { enabled: false }
+    neighbor: { enabled: false }
+  verification:
+    flagRequired: true
+    zeroContextAsLegal: true
+  crystallization:
+    backpressure:
+      cyclesWithoutReceiptThreshold: 10
+    confidenceCaps:
+      sensor_primary: 0.95
+      sensor_derived: 0.80
+      build_event: 0.90
+      work_event: 0.90
+      neighbor_gossip: 0.70
+      zero_context_audit: 0.20
+  decay:
+    worker:
+      cadence: 30m
+    halfLife:
+      warning_node: 48h
+      surreal_transform: 24h
+      unfinished_goal_review: 72h
+      unreferenced_edge: 30d
+  roleIntegrity:
+    enforce: false
+    rejectLogPath: brain/role-integrity-violations.jsonl
+  closer:
+    terminationContractRequired: false
+    dedupeBeforeSpawn: false
+  publish:
+    targets:
+      workspace_insights: { cadence: 50cycles, path: workspace/insights/ }
+      signals:            { cadence: on_verdict_keep }
+      bridge_chat:        { salience_threshold: 0.75 }
+      dashboard:          { cadence: 5m }
+      dream_log:          { cadence: on_critic_keep, path: workspace/dreams/ }
+    starvationFloor:
+      workspace_insights: 6h
+      dashboard: 15m
 media:
   imageGeneration:
     provider: openai
