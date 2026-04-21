@@ -690,6 +690,38 @@ async function main() {
   // This was causing duplicate shutdown execution (state saved twice, etc)
   // GracefulShutdownHandler is registered in orchestrator.initialize() at line 162
   // and handles all signal-based shutdown with proper idempotency
+
+  // Step 24 — OS-engine channel bus + cognition scaffolds.
+  // Phase 0: construct but register no channels. Subsequent phases opt-in
+  // via config.osEngine.channels.<class>.enabled. See docs/design/STEP24.
+  let channelBus = null;
+  let closer = null;
+  let decayWorker = null;
+  try {
+    const { ChannelBus } = await import('./channels/bus.js');
+    const { Closer } = await import('./cognition/closer.js');
+    const { DecayWorker } = await import('./cognition/decay-worker.js');
+    const channelsDir = path.join(runtimeRoot, 'channels');
+    channelBus = new ChannelBus({ persistenceDir: channelsDir, logger });
+    closer = new Closer({
+      memory,
+      goals,
+      logger,
+      enabled: config.osEngine?.closer?.terminationContractRequired === true,
+    });
+    decayWorker = new DecayWorker({
+      memory,
+      logger,
+      enabled: false, // activated in Phase 5
+    });
+    await channelBus.start();
+    logger.info('[channels] bus started (Phase 0: no channels registered, scaffolds only)');
+    // Expose on config so subsystems can access later without threading refs.
+    config._osEngine = { channelBus, closer, decayWorker };
+  } catch (err) {
+    logger.warn?.('[channels] bus initialization failed — engine continues without it:', err?.message || err);
+  }
+
   // Start
   await orchestrator.start();
 }
