@@ -1,0 +1,62 @@
+/**
+ * NeighborChannel — polls a peer agent's GET /__state/public.json and
+ * emits UNCERTIFIED observations when the peer's lastMemoryWrite /
+ * snapshotAt advance. Default confidence 0.70 per channel_gossip cap.
+ *
+ * Crystallizes via neighbor_gossip so the bus MemoryIngest applies the
+ * hard 0.70 cap regardless of what confidence we pass through.
+ */
+
+'use strict';
+
+import { PollChannel } from '../base/poll-channel.js';
+import { ChannelClass, makeObservation } from '../contract.js';
+
+async function defaultFetch(url) {
+  try {
+    const res = await fetch(url, { method: 'GET', headers: { accept: 'application/json' } });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; }
+}
+
+export class NeighborChannel extends PollChannel {
+  constructor({ peerName, url, intervalMs = 3 * 60 * 1000, fetchState = null, id = null }) {
+    super({ id: id || `neighbor.${peerName}`, class: ChannelClass.NEIGHBOR, intervalMs });
+    this.peerName = peerName;
+    this.url = url;
+    this.fetchState = typeof fetchState === 'function' ? fetchState : (() => defaultFetch(url));
+    this._lastKey = null;
+  }
+
+  async poll() {
+    const st = await this.fetchState();
+    if (!st) return [];
+    const key = `${st.lastMemoryWrite || ''}:${st.snapshotAt || ''}`;
+    if (key === this._lastKey) return [];
+    this._lastKey = key;
+    return [st];
+  }
+
+  parse(raw) {
+    return {
+      payload: raw,
+      sourceRef: `neighbor:${raw.agent}:${raw.snapshotAt}`,
+      producedAt: raw.snapshotAt || new Date().toISOString(),
+    };
+  }
+
+  verify(parsed) {
+    return makeObservation({
+      channelId: this.id, sourceRef: parsed.sourceRef, payload: parsed.payload,
+      flag: 'UNCERTIFIED', confidence: 0.7, producedAt: parsed.producedAt,
+      verifierId: `neighbor:${this.peerName}`,
+    });
+  }
+
+  crystallize(obs) {
+    const tags = ['neighbor', this.peerName];
+    if (obs.payload.dispatchState) tags.push(obs.payload.dispatchState);
+    return { method: 'neighbor_gossip', type: 'observation', topic: 'neighbor-state', tags };
+  }
+}

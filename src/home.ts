@@ -1039,6 +1039,50 @@ async function main(): Promise<void> {
   bridgeApp.get('/api/chat/history', createChatHistoryHandler(historyRouteConfig));
   bridgeApp.get('/api/chat/conversations', createChatListHandler(historyRouteConfig));
 
+  // Step 24 — Neighbor protocol public state surface.
+  // Returns a cached, minimal snapshot of this agent's state so peers can
+  // ingest it as UNCERTIFIED observations via their own NeighborChannel.
+  // See docs/design/STEP24-OS-ENGINE-REDESIGN.md §Neighbor Protocol.
+  let publicStateCache: unknown = null;
+  let publicStateAt = 0;
+  const PUBLIC_STATE_CACHE_MS = 60_000;
+  bridgeApp.get('/__state/public.json', async (_req: any, res: any) => {
+    try {
+      const now = Date.now();
+      if (!publicStateCache || now - publicStateAt > PUBLIC_STATE_CACHE_MS) {
+        const brainDir = process.env.COSMO_RUNTIME_DIR
+          ? resolve(process.env.COSMO_RUNTIME_DIR)
+          : '';
+        let recentObservations: unknown[] = [];
+        let lastMemoryWrite = '';
+        if (brainDir) {
+          try {
+            const receiptsPath = join(brainDir, 'crystallization-receipts.jsonl');
+            if (existsSync(receiptsPath)) {
+              const raw = readFileSync(receiptsPath, 'utf8').trim().split('\n').slice(-20);
+              recentObservations = raw.map((line) => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean);
+              const last = recentObservations[recentObservations.length - 1] as any;
+              if (last?.at) lastMemoryWrite = last.at;
+            }
+          } catch { /* best-effort */ }
+        }
+        publicStateCache = {
+          agent: AGENT_NAME,
+          activeGoals: [],        // Goals live engine-side; not exposed in Phase 8.
+          recentObservations,     // Last 20 crystallization receipts.
+          currentFocus: config.agent?.displayName ?? AGENT_NAME,
+          dispatchState: 'idle',
+          lastMemoryWrite,
+          snapshotAt: new Date(now).toISOString(),
+        };
+        publicStateAt = now;
+      }
+      res.type('application/json').send(JSON.stringify(publicStateCache));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+
   bridgeApp.listen(BRIDGE_PORT, () => {
     console.log(`[home] Evobrew bridge listening on port ${BRIDGE_PORT} (/api/chat, /api/stop, /api/chat/turn, /api/chat/stream, /api/chat/pending, /api/chat/stop-turn, /api/chat/history, /api/chat/conversations, /api/device/register, /api/device/registry, /health)`);
   });

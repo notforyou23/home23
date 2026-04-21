@@ -144,7 +144,10 @@ osEngine:
         weather:  { enabled: false }
     build:    { enabled: true }   # Phase 2: git / gh / fswatch on home23 paths
     work:     { enabled: true }   # Phase 2: agenda / live-problems / goals / crons / heartbeat
-    neighbor: { enabled: false }
+    neighbor:                     # Phase 8: poll peer /__state/public.json
+      enabled: true
+      poll: 3m
+      peers: auto
   verification:
     flagRequired: true
     zeroContextAsLegal: true
