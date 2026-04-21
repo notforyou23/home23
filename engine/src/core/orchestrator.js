@@ -632,9 +632,17 @@ class Orchestrator {
             discardedLogPath: brainDir ? path.join(brainDir, 'discarded-thoughts.jsonl') : null,
             eventLedger,
             agendaStore: this.agendaStore,
+            // Step 24 back-pressure threshold (informational warn; strict
+            // gating deferred).
+            cyclesWithoutReceiptThreshold: this.config.osEngine?.crystallization?.backpressure?.cyclesWithoutReceiptThreshold || 10,
           },
           logger: this.logger,
           getTemporalContext: () => this.currentTemporalContext,
+          // Step 24 publisher hooks — propagated from engine/src/index.js
+          // via orchestrator.step24Hooks (set by the engine boot before
+          // orchestrator.start()).
+          onCycleComplete: this.step24Hooks?.onCycleComplete || null,
+          onCriticVerdict: this.step24Hooks?.onCriticVerdict || null,
           emitThought: (thought) => {
             // Emit to the real-time stream as a pipeline-origin thought.
             cosmoEvents.emitThought({

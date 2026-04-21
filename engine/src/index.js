@@ -1004,6 +1004,34 @@ async function main() {
     // once Phase 6/7 wires cycleComplete / criticVerdict emissions.
     config._osEngine = { ...(config._osEngine || {}), publishLedger, workspaceInsights, dreamLog, bridgePublisher };
 
+    // Step 24 — thinking-machine publisher hooks.
+    // Orchestrator reads these before constructing ThinkingMachine so they
+    // propagate cycleComplete → workspace-insights cadence + criticVerdict
+    // → dream-log (critic-keep gated). Also resets back-pressure counter
+    // whenever MemoryIngest writes a receipt.
+    orchestrator.step24Hooks = {
+      onCycleComplete: async ({ cycleIndex }) => {
+        try { await workspaceInsights.onCycle({ cycleIndex }); }
+        catch (err) { logger.warn?.('[publish] workspace-insights hook failed:', err?.message || err); }
+      },
+      onCriticVerdict: async (evt) => {
+        try { await dreamLog.onCriticVerdict(evt); }
+        catch (err) { logger.warn?.('[publish] dream-log hook failed:', err?.message || err); }
+      },
+    };
+    // Also route every crystallize event back to the thinking machine so
+    // it resets its cyclesWithoutReceipt counter.
+    channelBus.on('crystallize', () => {
+      try {
+        if (orchestrator?.thinkingMachine?.notifyCrystallizationReceipt) {
+          orchestrator.thinkingMachine.notifyCrystallizationReceipt();
+        }
+      } catch { /* best-effort */ }
+    });
+    // Propagate osEngineCfg onto the main config so orchestrator can read
+    // back-pressure threshold from it when constructing ThinkingMachine.
+    config.osEngine = osEngineCfg;
+
     await channelBus.start();
     logger.info(`[channels] bus started with ${registered.length} channels: ${registered.join(', ')}`);
     logger.info('[channels] memory-ingest wired to crystallize events');

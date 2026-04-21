@@ -59,7 +59,17 @@ class ThinkingMachine {
     this.getTemporalContext = opts.getTemporalContext || (() => null);
     this.emitThought = opts.emitThought || null;
     this.logThought = opts.logThought || null;
+    // Step 24 hooks: called at the end of each cycle and on each critic
+    // verdict. Used by the OS-engine publish layer to trigger workspace-
+    // insights (cadence) and dream-log (critic-keep gated).
+    this.onCycleComplete = typeof opts.onCycleComplete === 'function' ? opts.onCycleComplete : null;
+    this.onCriticVerdict = typeof opts.onCriticVerdict === 'function' ? opts.onCriticVerdict : null;
     this.config = { ...DEFAULT_CONFIG, ...(opts.config || {}) };
+    // Back-pressure: track cycles since last crystallization receipt. Warn
+    // when over threshold so slowness is observable. Receipts land on a
+    // separate file; index.js updates this via notifyCrystallizationReceipt().
+    this.cyclesWithoutReceipt = 0;
+    this.backpressureThreshold = this.config.cyclesWithoutReceiptThreshold || 10;
 
     this.deepDive = new DeepDive({
       unifiedClient: this.unifiedClient,
@@ -131,10 +141,20 @@ class ThinkingMachine {
     this.logger.info?.('[thinking-machine] stopped');
   }
 
+  /**
+   * Step 24 — reset back-pressure counter. Called by the engine boot's
+   * bus `crystallize` handler so the thinking-machine sees observation
+   * flow even though crystallization happens off-cycle.
+   */
+  notifyCrystallizationReceipt() {
+    this.cyclesWithoutReceipt = 0;
+  }
+
   getStats() {
     return {
       ...this.stats,
       running: this.running,
+      cyclesWithoutReceipt: this.cyclesWithoutReceipt,
       pgsAdapterStats: this.pgsAdapter.getStats(),
     };
   }
@@ -460,6 +480,35 @@ class ThinkingMachine {
 
       this.stats.lastRunAt = new Date().toISOString();
       this.stats.lastRunDurationMs = Date.now() - started;
+
+      // Step 24 — cycleComplete hook (publishers consume this to emit
+      // cadence-based workspace-insights artifacts).
+      this.cyclesWithoutReceipt += 1;
+      if (this.cyclesWithoutReceipt >= this.backpressureThreshold) {
+        this.logger.warn?.('[thinking-machine] back-pressure: ' + this.cyclesWithoutReceipt + ' cycles without crystallization receipt — observation flow may be stalled');
+      }
+      if (this.onCycleComplete) {
+        try {
+          await this.onCycleComplete({
+            cycleIndex: this.stats.cyclesRun,
+            verdict: finalVerdict?.verdict || 'discard',
+            cycleSessionId,
+            durationMs: this.stats.lastRunDurationMs,
+          });
+        } catch (e) { this.logger.warn?.('[thinking-machine] onCycleComplete failed', { error: e?.message }); }
+      }
+      // Critic-keep verdict hook (dream-log consumes this to publish
+      // creative outputs that pass the critic ratchet).
+      if (this.onCriticVerdict && finalVerdict?.verdict) {
+        try {
+          await this.onCriticVerdict({
+            verdict: finalVerdict.verdict,
+            cycleIndex: this.stats.cyclesRun,
+            creative: finalVerdict.verdict === 'keep' ? { title: (candidate?.rationale || '').slice(0, 60), text: dive?.text || '' } : null,
+            thought: finalVerdict.verdict === 'keep' ? dive?.text : null,
+          });
+        } catch (e) { this.logger.warn?.('[thinking-machine] onCriticVerdict failed', { error: e?.message }); }
+      }
     } finally {
       this.cycleInFlight = false;
     }
