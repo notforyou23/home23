@@ -128,7 +128,7 @@ class ProviderRegistry {
           'nemotron-3-super',
           'nemotron-3-nano:30b',
           'minimax-m2.7',
-          'kimi-k2.5',
+          'kimi-k2.6',
           'qwen3.5:397b',
           'qwen3-next:80b',
           'deepseek-v3.1:671b',

@@ -139,6 +139,8 @@ export function generateEcosystem(home23Root) {
     lines.push(`      name: 'home23-${agent.name}-dash',`);
     lines.push(`      script: 'src/dashboard/server.js',`);
     lines.push(`      cwd: ENGINE,`);
+    lines.push(`      node_args: '--max-old-space-size=2048',`);
+    lines.push(`      max_memory_restart: '3G',`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/dashboard-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/dashboard-err.log',`);
@@ -150,6 +152,19 @@ export function generateEcosystem(home23Root) {
     lines.push(`      name: 'home23-${agent.name}-harness',`);
     lines.push(`      script: 'dist/home.js',`);
     lines.push(`      cwd: HOME23,`);
+    // Heap raised from 1.5GB default to 4GB. Long-running agent sessions
+    // with many LLM calls + tool-use chains can accumulate response blobs
+    // in closure scope faster than GC reclaims. max_memory_restart acts
+    // as a safety net — if we ever do leak past 5GB, PM2 restarts instead
+    // of staying dead.
+    // --cpu-prof + --heap-prof write .cpuprofile and .heapprofile to logs/ on
+    // graceful exit (incl. cron_restart). cpu-prof shows JS main-thread time;
+    // heap-prof shows allocation hot paths — needed because the harness CPU
+    // climb manifests as V8 background-GC churn, invisible to cpu-prof.
+    // cron_restart every 30 min caps any degraded window during diagnosis.
+    lines.push(`      node_args: '--expose-gc --max-old-space-size=4096 --cpu-prof --cpu-prof-dir=' + ${logsDir} + ' --cpu-prof-interval=1000 --heap-prof --heap-prof-dir=' + ${logsDir},`);
+    lines.push(`      max_memory_restart: '5G',`);
+    lines.push(`      cron_restart: '*/30 * * * *',`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/harness-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/harness-err.log',`);

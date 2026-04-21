@@ -19,13 +19,32 @@ const path = require('path');
 const DEFAULT_BUDGET = {
   maxTokensIn: 10000,
   maxTokensOut: 3000,
-  timeoutMs: 90000,
+  timeoutMs: 45000,         // tight — timeouts are death on big brains
   maxPartitions: 8,
   maxEdgeCandidates: 10,
 };
 
 const DEFAULT_GRAPH_CAP = 5000;  // above this, degrade to focused subgraph
 const DEFAULT_FOCUS_HOPS = 2;
+
+// Adaptive config picked per-call based on graph size + seed connectivity.
+// Goal: PGS always completes fast OR skips cleanly. Never hangs.
+function pickAdaptiveConfig(graphSize, seedEdgeCount) {
+  // Very small graphs — full sweep is fine
+  if (graphSize < 500) {
+    return { maxSweepPartitions: 6, sweepMaxTokens: 1500, synthesisMaxTokens: 2500, hops: 2, hardGraphCap: 1000 };
+  }
+  // Medium graphs — moderate sweep
+  if (graphSize < 5000) {
+    return { maxSweepPartitions: 4, sweepMaxTokens: 1200, synthesisMaxTokens: 2000, hops: 2, hardGraphCap: 1500 };
+  }
+  // Large graphs — tight sweep, small focus
+  if (graphSize < 15000) {
+    return { maxSweepPartitions: 3, sweepMaxTokens: 1000, synthesisMaxTokens: 1500, hops: 1, hardGraphCap: 800 };
+  }
+  // Massive graphs (>15k) — bare-minimum sweep, tightest focus
+  return { maxSweepPartitions: 2, sweepMaxTokens: 800, synthesisMaxTokens: 1200, hops: 1, hardGraphCap: 500 };
+}
 
 class PGSAdapter {
   /**
@@ -116,12 +135,27 @@ class PGSAdapter {
       return emptyResult('unavailable');
     }
 
-    // Convert graph
+    // Pre-flight skip: isolated candidates have nothing for PGS to connect.
+    // Running sweeps on them is pure waste — they'll just produce absence
+    // reports that critique ignores. Save the LLM calls.
+    const referenced = args.referencedNodes || [];
+    const seedEdgeCount = this._countSeedEdges(referenced);
+    if (referenced.length === 0 || seedEdgeCount < 2) {
+      this.stats.skippedIsolatedCount = (this.stats.skippedIsolatedCount || 0) + 1;
+      return emptyResult('skipped_isolated');
+    }
+
+    // Adaptive config sized to the current brain. Keeps small brains fast
+    // and stops big brains from timing out mid-sweep.
+    const graphSize = this.memory.nodes?.size || 0;
+    const adaptive = pickAdaptiveConfig(graphSize, seedEdgeCount);
+
+    // Convert graph using adaptive cap + hops
     let graph;
     try {
-      graph = toPgsGraph(this.memory, args.referencedNodes || [], {
-        cap: DEFAULT_GRAPH_CAP,
-        hops: DEFAULT_FOCUS_HOPS,
+      graph = toPgsGraph(this.memory, referenced, {
+        cap: adaptive.hardGraphCap,
+        hops: adaptive.hops,
       });
     } catch (err) {
       this.logger.warn?.('[pgs-adapter] graph conversion failed', { error: err?.message });
@@ -131,6 +165,23 @@ class PGSAdapter {
     if (!graph.nodes.length) {
       return emptyResult('no_graph');
     }
+
+    // Apply adaptive config to the engine before calling. Adapter is
+    // single-threaded per agent, so mutating .config is safe.
+    const prevCfg = { ...this.engine.config };
+    this.engine.config.maxSweepPartitions = adaptive.maxSweepPartitions;
+    this.engine.config.sweepMaxTokens = adaptive.sweepMaxTokens;
+    this.engine.config.synthesisMaxTokens = adaptive.synthesisMaxTokens;
+
+    this.logger.info?.('[pgs-adapter] starting', {
+      graphSize,
+      seedEdgeCount,
+      scopedNodes: graph.nodes.length,
+      scopedEdges: graph.edges.length,
+      maxSweepPartitions: adaptive.maxSweepPartitions,
+      sweepMaxTokens: adaptive.sweepMaxTokens,
+      timeoutMs: budget.timeoutMs,
+    });
 
     // Build query from the thought. PGS takes natural-language queries.
     const query = this._buildQuery(args.thought, args.temporalContext);
@@ -183,6 +234,26 @@ class PGSAdapter {
         ? Math.round(this.stats.totalDurationMs / this.stats.successCount)
         : null,
     };
+  }
+
+  /**
+   * Count how many edges touch any of the seed nodes. Used to pre-flight
+   * skip PGS on isolated candidates — if seeds have <2 edges between them
+   * and the rest of the graph, PGS has no cross-partition signal to find.
+   */
+  _countSeedEdges(seedIds) {
+    if (!Array.isArray(seedIds) || seedIds.length === 0) return 0;
+    if (!this.memory?.edges) return 0;
+    const seeds = new Set(seedIds.map(String));
+    let count = 0;
+    for (const edgeKey of this.memory.edges.keys()) {
+      const [a, b] = edgeKey.split('->');
+      if (seeds.has(a) || seeds.has(b)) {
+        count++;
+        if (count >= 10) return count;  // early-out — we only need to know if ≥ 2
+      }
+    }
+    return count;
   }
 
   _buildQuery(thought, temporalContext) {

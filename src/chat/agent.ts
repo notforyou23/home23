@@ -60,8 +60,13 @@ export class ChatAgent {
   private heartbeatCache: string = '';
   private heartbeatLastLoad = 0;
 
-  // Conversation history per thread
+  // Conversation history per thread — LRU-bounded so idle dashboard/ios
+  // sessions don't accumulate forever. Each unique chatId would otherwise
+  // pin up to historyDepth*2 messages permanently (harness OOM after
+  // many hours of cross-channel activity).
   private threads: Map<string, ChatMessage[]> = new Map();
+  private threadLastAccess: Map<string, number> = new Map();
+  private readonly MAX_THREADS = 100;
 
   constructor(config: ChatConfig, projectRoot: string, enginePort: number = 4601) {
     this.config = config;
@@ -240,8 +245,28 @@ export class ChatAgent {
     if (!thread) {
       thread = [];
       this.threads.set(chatId, thread);
+      this.evictIfNeeded();
     }
+    this.threadLastAccess.set(chatId, Date.now());
     return thread;
+  }
+
+  /**
+   * LRU eviction — when threads Map exceeds MAX_THREADS, drop the oldest-
+   * accessed entry. Keeps memory bounded across dashboard/ios/evobrew/
+   * telegram/discord sessions over long runs.
+   */
+  private evictIfNeeded(): void {
+    if (this.threads.size <= this.MAX_THREADS) return;
+    let oldestId: string | null = null;
+    let oldestAt = Infinity;
+    for (const [id, ts] of this.threadLastAccess.entries()) {
+      if (ts < oldestAt) { oldestAt = ts; oldestId = id; }
+    }
+    if (oldestId) {
+      this.threads.delete(oldestId);
+      this.threadLastAccess.delete(oldestId);
+    }
   }
 
   // ── Brain Memory Search (lightweight) ──────────────────────

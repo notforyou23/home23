@@ -27,6 +27,10 @@
     return str.length <= n ? str : str.slice(0, n - 1) + '\u2026';
   }
 
+  function statLabel(value, suffix, fallback) {
+    return Number.isFinite(value) ? `${value} ${suffix}` : fallback;
+  }
+
   function showToast(message, type = 'info') {
     if (window.cosmoStandaloneApp) {
       window.cosmoStandaloneApp.showToast(message, type);
@@ -90,9 +94,9 @@
           <div class="hub-brain-name">${esc(b.displayName || b.name)}</div>
           <div class="hub-brain-topic">${esc(truncate(b.topic || b.domain || '', 60))}</div>
           <div class="hub-brain-meta">
-            <span>${b.nodes || 0} nodes</span>
-            <span>${b.edges || 0} edges</span>
-            <span>${b.cycleCount || b.cycles || 0} cycles</span>
+            <span>${esc(statLabel(b.nodes, 'nodes', 'Open for stats'))}</span>
+            <span>${esc(statLabel(b.edges, 'edges', 'Edges on open'))}</span>
+            <span>${esc(statLabel(b.cycleCount ?? b.cycles, 'cycles', 'Saved run'))}</span>
           </div>
         </div>
         <span class="source-badge">${esc(b.sourceLabel || 'Local')}</span>

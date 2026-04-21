@@ -765,7 +765,7 @@ function populateWizardModels() {
     }
   } else {
     const fallback = {
-      'ollama-cloud': ['kimi-k2.5', 'minimax-m2.7'],
+      'ollama-cloud': ['kimi-k2.6', 'minimax-m2.7'],
       'minimax': ['MiniMax-M2.7'],
       'anthropic': ['claude-sonnet-4-6', 'claude-opus-4-7'],
       'openai': ['gpt-5.4'],

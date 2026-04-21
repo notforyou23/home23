@@ -57,12 +57,15 @@ export class MemoryObjectStore {
     console.log(`[memory-objects] Loaded ${this.objects.length} objects, ${this.threads.length} threads`);
   }
 
+  // Drop pretty-print on hot-path saves: 1.26 MB pretty JSON costs ~50 ms
+  // CPU per stringify, blocking the harness event loop. Compact JSON is
+  // ~30 % smaller and ~5x faster to serialize. Files remain valid JSON.
   private saveObjects(): void {
-    writeFileSync(this.objectsPath, JSON.stringify({ objects: this.objects }, null, 2));
+    writeFileSync(this.objectsPath, JSON.stringify({ objects: this.objects }));
   }
 
   private saveThreads(): void {
-    writeFileSync(this.threadsPath, JSON.stringify({ threads: this.threads }, null, 2));
+    writeFileSync(this.threadsPath, JSON.stringify({ threads: this.threads }));
   }
 
   createObject(partial: Omit<MemoryObject, 'memory_id' | 'created_at' | 'updated_at' | 'reuse_count'>): MemoryObject {

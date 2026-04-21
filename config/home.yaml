@@ -74,7 +74,7 @@ providers:
   ollama-cloud:
     baseUrl: https://ollama.com/v1
     defaultModels:
-      - kimi-k2.5
+      - kimi-k2.6
       - gemma4:31b
       - glm-5.1
       - qwen3.5:397b
@@ -126,10 +126,15 @@ chat:
   temperature: 0.7
   historyBudget: 400000
   sessionGapMs: 1800000
+situationalAwareness:
+  bootstrap:
+    reads:
+      - NOW.md
+      - PLAYBOOK.md
 media:
   imageGeneration:
-    provider: minimax
-    model: image-01
+    provider: openai
+    model: gpt-image-1.5
 models:
   aliases:
     sonnet:
@@ -158,10 +163,10 @@ models:
       model: grok-4-0709
     kimi:
       provider: ollama-cloud
-      model: kimi-k2.5
-    kimi-k2.5:
+      model: kimi-k2.6
+    kimi-k2.6:
       provider: ollama-cloud
-      model: kimi-k2.5
+      model: kimi-k2.6
     qwen:
       provider: ollama-cloud
       model: qwen3.5:397b

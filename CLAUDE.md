@@ -204,6 +204,7 @@ Config loader merges: `home.yaml` <- `agent config.yaml` <- `secrets.yaml` <- pe
 | `docs/design/STEP20-SITUATIONAL-AWARENESS-ENGINE-DESIGN.md` | **CORE:** Brain-driven pre-turn context assembly, governed memory objects, event ledger, curator cycle |
 | `docs/design/STEP21-PROVIDER-AUTHORITY-DESIGN.md` | **CORE:** Home23 owns all provider config — single encryption key, guided onboarding, cosmo23/evobrew as consumers |
 | `docs/design/STEP22-UPDATE-SYSTEM-DESIGN.md` | Update system — one command, versioned releases, migration system |
+| `docs/design/STEP23-SITUATIONAL-AWARENESS-PRIMITIVE.md` | **CORE:** Per-session NOW.md + PLAYBOOK.md bootstrap. System-level primitive; every agent + subagent + cron run grounded on fresh sessions |
 | `docs/design/COSMO23-VENDORED-PATCHES.md` | **CRITICAL:** patches to vendored cosmo23 that must survive updates |
 | `docs/design/SLEEP-WAKE-DESIGN.md` | Engine sleep/wake tuning for Home23 |
 | `docs/vision/HOME23_CANONICAL_VISION.md` | Product thesis |

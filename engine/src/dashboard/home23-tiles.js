@@ -777,7 +777,7 @@ class Home23TileService {
     for (const item of layout) {
       const tile = item.tile;
       if (!tile || tile.kind !== 'custom') continue;
-      if (tile.mode !== 'ecowitt-weather') continue;
+      if (tile.mode !== 'ecowitt-weather' && tile.mode !== 'huum-sauna') continue;
 
       const run = async () => {
         if (this.backgroundRefreshInFlight.has(tile.id)) return;

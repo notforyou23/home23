@@ -435,7 +435,7 @@ function getQueryFallbackModelHtml() {
     <option value="openai-codex/latest-nano" data-provider="openai-codex">GPT-5.4 Nano</option>
     <option value="xai/latest-4-20" data-provider="xai">Grok 4.20</option>
     <option value="xai/latest-4-20-moe" data-provider="xai">Grok 4.20 Multi-Agent</option>
-    <option value="ollama-cloud/latest-kimi" data-provider="ollama-cloud">Kimi K2.5</option>
+    <option value="ollama-cloud/latest-kimi" data-provider="ollama-cloud">Kimi K2.6</option>
     <option value="ollama-cloud/latest-minimax" data-provider="ollama-cloud">MiniMax M2.7</option>
     <option value="ollama-cloud/latest-nemotron" data-provider="ollama-cloud">Nemotron 3 Super</option>
     <option value="openclaw/openclaw:coz" data-provider="openclaw">COZ — Agent with Memory</option>

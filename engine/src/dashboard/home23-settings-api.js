@@ -666,9 +666,9 @@ function createSettingsRouter(home23Root) {
       system: { name: 'home23', version: '0.1.0', workspace: 'workspace' },
       chat: {
         provider: provider || 'ollama-cloud',
-        model: model || 'kimi-k2.5',
+        model: model || 'kimi-k2.6',
         defaultProvider: provider || 'ollama-cloud',
-        defaultModel: model || 'kimi-k2.5',
+        defaultModel: model || 'kimi-k2.6',
         maxTokens: 4096, temperature: 0.7, historyDepth: 20, historyBudget: 400000, sessionGapMs: 1800000,
         memorySearch: { enabled: false, timeoutMs: 10000, topK: 5 },
         identityFiles: ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'LEARNINGS.md', 'COSMO_RESEARCH.md'],

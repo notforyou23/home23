@@ -84,7 +84,12 @@ function populateBrainSelect(select, brains, selectedId) {
     items.forEach(b => {
       const opt = document.createElement('option');
       opt.value = b.routeKey;
-      opt.textContent = b.displayName;
+      const meta = [];
+      if (b.isActive) meta.push('Running');
+      if (b.topic || b.domain) meta.push(b.topic || b.domain);
+      opt.textContent = meta.length > 0
+        ? `${b.displayName} (${meta.join(' · ')})`
+        : b.displayName;
       optgroup.appendChild(opt);
     });
     select.appendChild(optgroup);
@@ -155,9 +160,9 @@ class CosmoStandaloneApp {
       this.loadSetupStatus(),
       this.loadModels(),
       this.loadModelCatalog(),
-      this.loadBrains(),
       this.loadStatus()
     ]);
+    await this.loadBrains();
   }
 
   bindEvents() {
@@ -973,8 +978,11 @@ class CosmoStandaloneApp {
         return;
       }
 
+      const activePreferredId = this.getActiveBrainId();
       const preferredId = options.preferredId && this.brains.some(brain => brain.routeKey === options.preferredId)
         ? options.preferredId
+        : activePreferredId
+          ? activePreferredId
         : this.selectedBrainId && this.brains.some(brain => brain.routeKey === this.selectedBrainId)
           ? this.selectedBrainId
           : this.brains[0].routeKey;
@@ -1064,14 +1072,17 @@ class CosmoStandaloneApp {
       card.className = `brain-card ${brain.routeKey === this.selectedBrainId ? 'active' : ''}`.trim();
       card.addEventListener('click', () => this.selectBrain(brain.routeKey, { syncQuery: true }));
       const topicText = brain.topic || brain.domain || '';
+      const nodeLabel = Number.isFinite(brain.nodes) ? `${brain.nodes} nodes` : 'Open for stats';
+      const cycleLabel = Number.isFinite(brain.cycles) ? `${brain.cycles} cy` : 'Saved run';
+      const sourceLabel = brain.sourceType === 'local' ? 'Local' : brain.sourceLabel;
       card.innerHTML = `
         <div class="brain-card-head">
           <h3 class="brain-card-title">${escapeHtml(brain.displayName)}${topicText ? `<span class="brain-card-topic"> — ${escapeHtml(topicText)}</span>` : ''}</h3>
-          ${brain.sourceType !== 'local' ? `<span class="source-badge">${escapeHtml(brain.sourceLabel)}</span>` : ''}
+          <span class="source-badge">${escapeHtml(sourceLabel)}</span>
         </div>
         <div class="brain-card-info">
-          <span>${brain.nodes} nodes</span>
-          <span>${brain.cycles} cy</span>
+          <span>${escapeHtml(nodeLabel)}</span>
+          <span>${escapeHtml(cycleLabel)}</span>
           ${brain.isActive ? '<span class="brain-active-dot">running</span>' : ''}
         </div>
       `;
@@ -1288,14 +1299,16 @@ class CosmoStandaloneApp {
     if (isActiveRun) {
       try {
         const detail = await this.api(`/api/brains/${encodeURIComponent(brain.routeKey)}`);
-        nodes = detail.nodes ?? brain.nodes;
-        edges = detail.edges ?? brain.edges;
+        nodes = detail?.brain?.nodes ?? brain.nodes;
+        edges = detail?.brain?.edges ?? brain.edges;
       } catch { /* use cached values */ }
     }
 
     const source = brain.sourceType === 'local' ? 'Local' : `Reference · ${brain.sourceLabel}`;
     const liveTag = isActiveRun ? ' · Running' : '';
-    note.textContent = `${brain.displayName} · ${source}${liveTag} · ${nodes} nodes · ${edges} edges`;
+    const nodeLabel = Number.isFinite(nodes) ? `${nodes} nodes` : 'stats on open';
+    const edgeLabel = Number.isFinite(edges) ? `${edges} edges` : 'edges on open';
+    note.textContent = `${brain.displayName} · ${source}${liveTag} · ${nodeLabel} · ${edgeLabel}`;
   }
 
   renderMapBrains() {
@@ -1479,6 +1492,16 @@ class CosmoStandaloneApp {
         this.disconnectWebSocket();
       }
 
+      const activeBrainId = this.getActiveBrainId();
+      if (
+        activeBrainId &&
+        this.brains.length > 0 &&
+        activeBrainId !== this.selectedBrainId &&
+        !this.selectedBrainDetail
+      ) {
+        this.selectBrain(activeBrainId, { syncQuery: true, silent: true });
+      }
+
       if (this.views.get('watch')?.classList.contains('active')) {
         if (running || this.watchLogCursor === 0) {
           this.startWatchLogPolling();
@@ -1487,6 +1510,22 @@ class CosmoStandaloneApp {
     } catch (error) {
       this.showToast(`Status load failed: ${error.message}`, 'error');
     }
+  }
+
+  getActiveBrainId() {
+    if (!this.activeContext || this.brains.length === 0) {
+      return null;
+    }
+
+    const byId = this.activeContext.brainId
+      && this.brains.find(brain => brain.routeKey === this.activeContext.brainId);
+    if (byId) {
+      return byId.routeKey;
+    }
+
+    const byName = this.activeContext.runName
+      && this.brains.find(brain => brain.name === this.activeContext.runName);
+    return byName?.routeKey || null;
   }
 
   connectWebSocket(wsUrl) {

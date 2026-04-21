@@ -114,7 +114,7 @@ export async function runAgentCreate(home23Root, name) {
   console.log('');
   const botToken = await askSecret('Telegram bot token (from BotFather)');
   console.log('');
-  const defaultModel = await askWithDefault('Default chat model', 'kimi-k2.5');
+  const defaultModel = await askWithDefault('Default chat model', 'kimi-k2.6');
   const defaultProvider = await askWithDefault('Default provider', 'ollama-cloud');
 
   closeRL();
@@ -125,7 +125,7 @@ export async function runAgentCreate(home23Root, name) {
   console.log(`Creating instances/${name}/...`);
 
   // Create directories
-  for (const dir of ['workspace', 'brain', 'conversations', 'conversations/sessions', 'logs', 'cron-runs']) {
+  for (const dir of ['workspace', 'workspace/scripts', 'brain', 'conversations', 'conversations/sessions', 'logs', 'cron-runs']) {
     mkdirSync(join(instanceDir, dir), { recursive: true });
     console.log(`  ${dir.padEnd(16)} \u2713`);
   }
@@ -232,7 +232,7 @@ export async function runAgentCreate(home23Root, name) {
 
   // Write identity files from templates
   const templateVars = { displayName, name, ownerName };
-  for (const file of ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'MEMORY.md', 'LEARNINGS.md', 'COSMO_RESEARCH.md']) {
+  for (const file of ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'MEMORY.md', 'LEARNINGS.md', 'COSMO_RESEARCH.md', 'NOW.md', 'PLAYBOOK.md']) {
     const template = loadTemplate(home23Root, file);
     const content = renderTemplate(template, templateVars);
     writeFileSync(join(instanceDir, 'workspace', file), content, 'utf8');
@@ -271,7 +271,12 @@ export async function runAgentCreate(home23Root, name) {
   generateEcosystem(home23Root);
 
   console.log('');
-  console.log(`Agent "${name}" is ready. Start it:`);
-  console.log(`  node cli/home23.js start ${name}`);
+  console.log(`Agent "${name}" is ready.`);
+  console.log('');
+  console.log('Next steps:');
+  console.log(`  • Tailor workspace/NOW.md + PLAYBOOK.md to ${displayName}'s domain`);
+  console.log(`  • Write workspace/scripts/update_now.py + add a 5-min cron job in`);
+  console.log(`    conversations/cron-jobs.json to keep NOW.md live (see jerry/forrest for examples)`);
+  console.log(`  • Start: node cli/home23.js start ${name}`);
   console.log('');
 }

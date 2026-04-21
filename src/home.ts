@@ -9,7 +9,15 @@
  */
 
 import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { execSync, exec } from 'node:child_process';
+import { promisify } from 'node:util';
+
+// Async exec for cron shell-jobs. execSync blocks the harness's main event
+// loop for the entire duration of the script — Telegram polls timeout, SSE
+// streams stall, /health stops responding. Each shell-cron firing was
+// causing visible chat drops. Async exec runs in a worker subprocess and
+// resolves via callback, leaving the event loop free.
+const execAsync = promisify(exec);
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { loadConfig } from './config.js';
@@ -248,7 +256,7 @@ async function main(): Promise<void> {
   };
 
   // ── Model from config.yaml (single source of truth) ──
-  const startupModel = config.chat.defaultModel ?? config.chat.model ?? 'kimi-k2.5';
+  const startupModel = config.chat.defaultModel ?? config.chat.model ?? 'kimi-k2.6';
   const startupProvider = config.chat.defaultProvider ?? config.chat.provider ?? 'ollama-cloud';
   console.log(`[home] Model: ${startupModel} (${startupProvider}) — from config.yaml`);
 
@@ -313,6 +321,7 @@ async function main(): Promise<void> {
     workspacePath,
     compaction,
     sessionGapMs: config.chat.sessionGapMs,
+    situationalAwareness: config.situationalAwareness,
     cacheDiagnostics: CACHE_DIAGNOSTICS_ENABLED
       ? {
           enabled: true,
@@ -431,9 +440,14 @@ async function main(): Promise<void> {
 
   if (config.channels?.telegram?.enabled) {
     const tc = config.channels.telegram;
-    // Env var takes precedence — allows per-instance bot tokens via PM2 config
-    const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || tc.botToken;
-    console.log(`[home] Telegram bot token: ${telegramBotToken.slice(0, 10)}... (env=${!!process.env.TELEGRAM_BOT_TOKEN}, config=${tc.botToken?.slice(0, 10)}...)`);
+    // Per-agent config is authoritative — env is only a last-resort fallback.
+    // (Env-first precedence caused a cross-agent token leak on 2026-04-18 when
+    // pm2 child processes inherited a TELEGRAM_BOT_TOKEN from a polluted shell.)
+    const telegramBotToken = tc.botToken || process.env.TELEGRAM_BOT_TOKEN;
+    if (!telegramBotToken) {
+      throw new Error('[home] Telegram enabled but no botToken found in config or TELEGRAM_BOT_TOKEN env');
+    }
+    console.log(`[home] Telegram bot token: ${telegramBotToken.slice(0, 10)}... (config=${tc.botToken?.slice(0, 10)}..., env=${!!process.env.TELEGRAM_BOT_TOKEN})`);
     const adapter = new TelegramAdapter(
       {
         botToken: telegramBotToken,
@@ -630,15 +644,16 @@ async function main(): Promise<void> {
         if (job.payload.kind === 'exec') {
           const timeoutMs = (job.payload.timeoutSeconds ?? 60) * 1000;
           const execCwd = (job.payload as Record<string, unknown>).cwd as string | undefined;
-          const output = execSync(job.payload.command, {
+          const { stdout } = await execAsync(job.payload.command, {
             timeout: timeoutMs,
             encoding: 'utf-8',
             cwd: execCwd || PROJECT_ROOT,
             env: { ...process.env },
+            maxBuffer: 10 * 1024 * 1024,
           });
           const durationMs = Date.now() - startMs;
 
-          const jobResult: JobResult = { status: 'ok', response: output.trim(), durationMs };
+          const jobResult: JobResult = { status: 'ok', response: stdout.trim(), durationMs };
           delivery.lastDeliveryError = null;
           await delivery.deliver(job, jobResult);
           if (delivery.lastDeliveryError) {

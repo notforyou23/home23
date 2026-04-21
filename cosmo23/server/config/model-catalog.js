@@ -23,7 +23,7 @@ const BUILTIN_MODEL_CATALOG = {
       label: 'Ollama Cloud',
       models: [
         { id: 'qwen3.5:397b', label: 'Qwen 3.5 397B', kind: 'chat' },
-        { id: 'kimi-k2.5', label: 'Kimi K2.5', kind: 'chat' },
+        { id: 'kimi-k2.6', label: 'Kimi K2.6', kind: 'chat' },
         { id: 'nemotron-3-super', label: 'Nemotron 3 Super 120B', kind: 'chat' },
         { id: 'minimax-m2.7', label: 'Minimax M2.7', kind: 'chat' },
         { id: 'glm-5', label: 'GLM-5 744B', kind: 'chat' },

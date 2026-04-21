@@ -23,6 +23,13 @@ async function makeTempDir() {
 
 async function writeRunMetadata(runPath, overrides = {}) {
   await fs.mkdir(runPath, { recursive: true });
+  await fs.writeFile(path.join(runPath, 'state.json'), JSON.stringify({
+    cycleCount: overrides.cycleCount || 5,
+    memory: {
+      nodes: [{ id: 'n1' }],
+      edges: []
+    }
+  }, null, 2));
   await fs.writeFile(path.join(runPath, 'run-metadata.json'), JSON.stringify({
     explorationMode: 'guided',
     effectiveExecutionMode: 'guided-exclusive',

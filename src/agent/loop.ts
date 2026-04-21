@@ -224,6 +224,7 @@ export class AgentLoop {
   private memoryStore: MemoryObjectStore;
   private turnStore: TurnStore;
   private pusher: import('../push/apns-pusher.js').ApnsPusher | null = null;
+  private situationalAwareness?: import('./session-bootstrap.js').SituationalAwarenessConfig;
 
   constructor(opts: {
     apiKey: string;
@@ -240,6 +241,7 @@ export class AgentLoop {
     compaction?: CompactionManager;
     cacheDiagnostics?: CacheDiagnosticsConfig;
     sessionGapMs?: number;
+    situationalAwareness?: import('./session-bootstrap.js').SituationalAwarenessConfig;
   }) {
     // OAuth tokens (sk-ant-oat*) need stealth headers + authToken param
     this.isOAuth = opts.apiKey.startsWith('sk-ant-oat');
@@ -272,6 +274,7 @@ export class AgentLoop {
     this.cacheDiagnostics = opts.cacheDiagnostics;
     this.sessionGapMs = opts.sessionGapMs ?? 30 * 60 * 1000;
     this.workspacePath = opts.workspacePath;
+    this.situationalAwareness = opts.situationalAwareness;
     this.eventLedger = new EventLedger(join(this.workspacePath, '..', 'brain'));
     const brainDir = join(this.workspacePath, '..', 'brain');
     this.memoryStore = new MemoryObjectStore(brainDir);
@@ -705,6 +708,23 @@ export class AgentLoop {
       // are kept separate so the static prefix hits cache on every call.
       const staticSystemPrompt = this.contextManager.getSystemPrompt(this.provider);
       let rawSystemPrompt = staticSystemPrompt;
+
+      // ── Session Bootstrap (situational + temporal awareness) ──
+      // Fresh session OR resumed after idle-gap → inject the files listed in
+      // config.situationalAwareness.bootstrap.reads (NOW.md + PLAYBOOK.md by default).
+      // Turns 2+ within the same session skip this — content persists via history.
+      if (needsBoundary) {
+        try {
+          const { buildBootstrapBlock } = await import('./session-bootstrap.js');
+          const bootstrap = buildBootstrapBlock(this.workspacePath, this.situationalAwareness);
+          if (bootstrap) {
+            rawSystemPrompt += `\n\n${bootstrap}`;
+            console.log(`[agent] Session bootstrap injected (${bootstrap.length} chars)`);
+          }
+        } catch (err) {
+          console.warn('[agent] Session bootstrap failed:', err instanceof Error ? err.message : err);
+        }
+      }
 
       // ── Situational Awareness: Context Assembly (Step 20) ──
       // Replaces: hardcoded evobrew/cosmo checks + semanticRecall

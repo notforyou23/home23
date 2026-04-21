@@ -141,9 +141,18 @@ ${(args.pgsResult.connectionNotes || []).slice(0, 3).map(n => `- ${n.text?.slice
 
 PGS answer:
 ${(args.pgsResult.answer || '').slice(0, 2000)}`
-      : args.pgsResult
-        ? `## Connect-phase (PGS) output\nPGS unavailable (${args.pgsResult.note || 'unknown'}). Evaluate the thought without cross-partition context.`
-        : '';
+      : args.pgsResult?.note === 'skipped_isolated'
+        ? `## Connect-phase (PGS) output
+PGS was intentionally SKIPPED — the seed node is isolated (no cross-partition signal to find).
+
+IMPORTANT: do not penalize the thought for lacking cross-partition connections. There were none to find. On isolated/novelty candidates the bar is different:
+- KEEP if the thought extracts meaningful characterization, framing, or understanding of the seed content — especially if it grounds an observation about jtr's world.
+- KEEP even if it partially restates the node, provided it adds genuine interpretive framing ("this is a particular kind of self-tracking practice", "this suggests X about his rhythm", etc.).
+- DISCARD only if the thought is pure verbatim restatement with zero added framing, or if it drifts into meta-commentary about graph structure.
+- REVISE if the framing is present but thin — ask for the specific connection to jtr's known world, patterns, or rhythms that makes the fresh content load-bearing.`
+        : args.pgsResult
+          ? `## Connect-phase (PGS) output\nPGS unavailable (${args.pgsResult.note || 'unknown'}). Evaluate the thought on its own merits; cross-partition absence is not a discard reason.`
+          : '';
 
     const conversationBlock = args.conversationContext
       ? `## Recent conversation with jtr\n${args.conversationContext}`

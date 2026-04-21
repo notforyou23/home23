@@ -1,7 +1,6 @@
 const express = require('express');
 const {
   getBrainContinuationState,
-  getBrainSnapshotSummary,
   mergeContinuationPayload,
   getChangedFields,
   ensureInitialLaunchSnapshot,
@@ -32,17 +31,14 @@ function createBrainsRouter(options) {
   router.get('/api/brains', async (_req, res) => {
     try {
       const runsOptions = await getRunsOptions();
-      const brains = await listBrains(runsOptions);
-      const brainsWithSnapshots = await Promise.all(
-        brains.map(async brain => ({
-          ...brain,
-          ...(await getBrainSnapshotSummary(brain))
-        }))
-      );
+      const brains = await listBrains({
+        ...runsOptions,
+        includeStateSummary: false
+      });
 
       res.json({
-        brains: brainsWithSnapshots,
-        count: brainsWithSnapshots.length,
+        brains,
+        count: brains.length,
         activeContext: getActiveContext()
       });
     } catch (error) {

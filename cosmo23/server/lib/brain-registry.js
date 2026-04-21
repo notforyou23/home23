@@ -7,6 +7,13 @@ const { promisify } = require('util');
 const yaml = require('js-yaml');
 
 const gunzip = promisify(zlib.gunzip);
+const EMPTY_STATE_SUMMARY = Object.freeze({
+  hasState: false,
+  cycleCount: null,
+  nodes: null,
+  edges: null,
+  hasStateSummary: false
+});
 
 function sanitizeRunName(input) {
   const normalized = String(input || '')
@@ -19,6 +26,22 @@ function sanitizeRunName(input) {
 
 function buildBrainId(brainPath) {
   return crypto.createHash('sha1').update(path.resolve(brainPath)).digest('hex').slice(0, 16);
+}
+
+function buildDisplayName(runPath, sourceLabel) {
+  const name = path.basename(runPath);
+  const genericNames = new Set(['brain', 'runtime', 'default']);
+  if (!genericNames.has(String(name || '').toLowerCase())) {
+    return name;
+  }
+
+  const parentName = path.basename(path.dirname(runPath));
+  const preferredPrefix = sourceLabel || parentName || name;
+  if (String(preferredPrefix || '').toLowerCase() === String(name || '').toLowerCase()) {
+    return name;
+  }
+
+  return `${preferredPrefix} Brain`;
 }
 
 async function pathExists(targetPath) {
@@ -54,7 +77,7 @@ async function loadYamlIfPresent(filePath) {
   }
 }
 
-async function loadStateSummary(runPath) {
+async function findStateFile(runPath) {
   const candidates = [
     path.join(runPath, 'state.json.gz'),
     path.join(runPath, 'coordinator', 'state.json.gz'),
@@ -63,42 +86,46 @@ async function loadStateSummary(runPath) {
   ];
 
   for (const candidate of candidates) {
-    if (!(await pathExists(candidate))) {
-      continue;
-    }
-
-    try {
-      let state;
-      if (candidate.endsWith('.gz')) {
-        const compressed = await fsp.readFile(candidate);
-        const decompressed = await gunzip(compressed);
-        state = JSON.parse(decompressed.toString());
-      } else {
-        state = JSON.parse(await fsp.readFile(candidate, 'utf8'));
-      }
-
-      return {
-        hasState: true,
-        cycleCount: state.cycleCount || 0,
-        nodes: state.memory?.nodes?.length || 0,
-        edges: state.memory?.edges?.length || 0
-      };
-    } catch {
-      return {
-        hasState: true,
-        cycleCount: 0,
-        nodes: 0,
-        edges: 0
-      };
+    if (await pathExists(candidate)) {
+      return candidate;
     }
   }
 
-  return {
-    hasState: false,
-    cycleCount: 0,
-    nodes: 0,
-    edges: 0
-  };
+  return null;
+}
+
+async function loadStateSummary(runPath, stateFile = null) {
+  const candidate = stateFile || await findStateFile(runPath);
+  if (!candidate) {
+    return { ...EMPTY_STATE_SUMMARY };
+  }
+
+  try {
+    let state;
+    if (candidate.endsWith('.gz')) {
+      const compressed = await fsp.readFile(candidate);
+      const decompressed = await gunzip(compressed);
+      state = JSON.parse(decompressed.toString());
+    } else {
+      state = JSON.parse(await fsp.readFile(candidate, 'utf8'));
+    }
+
+    return {
+      hasState: true,
+      cycleCount: state.cycleCount || 0,
+      nodes: state.memory?.nodes?.length || 0,
+      edges: state.memory?.edges?.length || 0,
+      hasStateSummary: true
+    };
+  } catch {
+    return {
+      hasState: true,
+      cycleCount: 0,
+      nodes: 0,
+      edges: 0,
+      hasStateSummary: true
+    };
+  }
 }
 
 async function loadMetadata(runPath) {
@@ -141,9 +168,21 @@ async function loadMetadata(runPath) {
 }
 
 async function inspectBrain(runPath, options = {}) {
-  const stat = await fsp.stat(runPath);
-  const metadata = await loadMetadata(runPath);
-  const summary = await loadStateSummary(runPath);
+  const stateFile = await findStateFile(runPath);
+  const includeStateSummary = options.includeStateSummary !== false;
+  const [stat, metadata, summary] = await Promise.all([
+    fsp.stat(runPath),
+    loadMetadata(runPath),
+    includeStateSummary
+      ? loadStateSummary(runPath, stateFile)
+      : Promise.resolve({
+          hasState: !!stateFile,
+          cycleCount: null,
+          nodes: null,
+          edges: null,
+          hasStateSummary: false
+        })
+  ]);
   const name = path.basename(runPath);
   const sourceType = options.sourceType || 'local';
   const sourceLabel = options.sourceLabel || (sourceType === 'local' ? 'Local' : 'Reference');
@@ -152,7 +191,7 @@ async function inspectBrain(runPath, options = {}) {
     id: buildBrainId(runPath),
     routeKey: buildBrainId(runPath),
     name,
-    displayName: name,
+    displayName: buildDisplayName(runPath, sourceLabel),
     path: runPath,
     sourceType,
     sourceLabel,
@@ -164,6 +203,7 @@ async function inspectBrain(runPath, options = {}) {
     nodes: summary.nodes,
     edges: summary.edges,
     hasState: summary.hasState,
+    hasStateSummary: summary.hasStateSummary,
     hasMetadata: Object.keys(metadata || {}).length > 0,
     mode: metadata.explorationMode || metadata.mode || 'guided',
     topic: metadata.topic || metadata.domain || '',
@@ -212,7 +252,12 @@ function deriveSourceLabel(dirPath) {
 }
 
 async function listBrains(options) {
-  const { localRunsPath, referenceRunsPaths = [], activeRunPath = null } = options;
+  const {
+    localRunsPath,
+    referenceRunsPaths = [],
+    activeRunPath = null,
+    includeStateSummary = true
+  } = options;
   const brains = [];
   const seenPaths = new Set();
 
@@ -235,7 +280,7 @@ async function listBrains(options) {
       seenPaths.add(key);
 
       try {
-        const brain = await inspectBrain(runPath, { sourceType, sourceLabel });
+        const brain = await inspectBrain(runPath, { sourceType, sourceLabel, includeStateSummary });
         // HOME23 PATCH — skip directories that don't hold a state file.
         // When home23 agent roots (instances/<agent>) are passed as reference
         // paths, their siblings (workspace/, conversations/, logs/, etc.) would
@@ -261,13 +306,26 @@ async function listBrains(options) {
 }
 
 async function resolveBrainBySelector(selector, options) {
-  const brains = await listBrains(options);
   const normalized = String(selector || '').trim();
-  return brains.find(brain =>
+  const brains = await listBrains({
+    ...options,
+    includeStateSummary: false
+  });
+  const match = brains.find(brain =>
     brain.id === normalized ||
     brain.routeKey === normalized ||
     brain.name === normalized
-  ) || null;
+  );
+
+  if (!match) {
+    return null;
+  }
+
+  return inspectBrain(match.path, {
+    sourceType: match.sourceType,
+    sourceLabel: match.sourceLabel,
+    includeStateSummary: true
+  });
 }
 
 async function copyDirectory(sourcePath, targetPath) {

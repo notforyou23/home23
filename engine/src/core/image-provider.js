@@ -103,7 +103,7 @@ function resolveModelForProvider(provider, engineConfig, homeConfig, agentConfig
   const defaultModel = pickFirstString(providerDefaults);
   if (defaultModel) return defaultModel;
 
-  return provider === 'ollama-cloud' ? 'kimi-k2.5' : 'gpt-4o-mini';
+  return provider === 'ollama-cloud' ? 'kimi-k2.6' : 'gpt-4o-mini';
 }
 
 function resolveEngineConfig(engineConfig, homeConfig, agentConfig) {

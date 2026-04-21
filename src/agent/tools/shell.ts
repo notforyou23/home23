@@ -12,7 +12,7 @@ export const shellTool: ToolDefinition = {
     type: 'object',
     properties: {
       command: { type: 'string', description: 'The bash command to execute' },
-      cwd: { type: 'string', description: 'Working directory (default: project root)' },
+      cwd: { type: 'string', description: 'Working directory (default: project root; pass an absolute path to run elsewhere)' },
       timeout_ms: { type: 'number', description: 'Timeout in milliseconds (default: 120000)' },
     },
     required: ['command'],

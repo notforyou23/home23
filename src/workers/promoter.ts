@@ -209,11 +209,20 @@ export class PromoterWorker {
 
   private scheduleNext(): void {
     if (!this.running) return;
+    // Clear any prior pending timer before scheduling a new one. Without this,
+    // each scheduleNext call leaks a setTimeout — the old timer still fires
+    // after intervalMs, alongside the new one. Combined with the re-entry
+    // path (see tick()), the timer chain compounds until the harness pins
+    // at 100% CPU re-running tick() faster than 60s.
+    if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => this.tick(), this.intervalMs);
   }
 
   async tick(): Promise<void> {
-    if (this._ticking) { this.scheduleNext(); return; }
+    // Re-entry guard. The previously-running tick will call scheduleNext()
+    // when it finishes — DO NOT scheduleNext from here. Calling scheduleNext
+    // on every re-entry stacks parallel timer chains that never converge.
+    if (this._ticking) return;
     this._ticking = true;
     try {
       const initialState = this.loadState();

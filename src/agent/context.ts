@@ -118,6 +118,8 @@ export class ContextManager implements ContextManagerRef {
       `Machine: ${hostname()}`,
       `User: ${this.config.ownerName ?? 'unknown'}${this.config.ownerTelegramId ? ` (Telegram ID: ${this.config.ownerTelegramId})` : ''}`,
       `Engine: http://localhost:${this.config.enginePort}`,
+      `Project root: ${this.config.workspacePath.replace(/\/workspace$/, '')}`,
+      `Workspace: ${this.config.workspacePath}`,
     ].join('\n');
 
     this.systemPrompt = `${buildSystemPrompt(provider)}\n\n---\n\n${identity}\n\n---\n\n${contextBlock}`;

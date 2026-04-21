@@ -467,7 +467,7 @@ async function routeThoughtAction(opts) {
         try {
           const missionSpec = {
             missionId: `mission_thoughtaction_${cycle}_${Date.now()}`,
-            agentType: 'ResearchAgent',
+            agentType: 'research',
             description: parsed.payload,
             successCriteria: ['Produce a concise finding (1-3 paragraphs) addressing the investigation topic'],
             maxDuration: 360000, // 6 minutes

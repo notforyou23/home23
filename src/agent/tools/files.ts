@@ -3,24 +3,30 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { exec } from 'node:child_process';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 
+function resolvePath(inputPath: string, workspacePath: string): string {
+  if (inputPath.startsWith('/')) return inputPath;
+  if (inputPath.startsWith('~')) return inputPath; // let shell expand
+  return resolve(workspacePath, inputPath);
+}
+
 export const readFileTool: ToolDefinition = {
   name: 'read_file',
-  description: 'Read the contents of a file. Supports offset/limit for large files.',
+  description: 'Read the contents of a file. Supports offset/limit for large files. Path can be absolute or relative to your workspace.',
   input_schema: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Absolute path to the file' },
+      path: { type: 'string', description: 'Path to the file (absolute, or relative to your workspace)' },
       offset: { type: 'number', description: 'Line number to start from (0-based)' },
       limit: { type: 'number', description: 'Max lines to return' },
     },
     required: ['path'],
   },
-  async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const path = input.path as string;
+  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+    const path = resolvePath(input.path as string, ctx.workspacePath);
     const offset = (input.offset as number) || 0;
     const limit = input.limit as number | undefined;
     if (!existsSync(path)) return { content: `File not found: ${path}`, is_error: true };
@@ -42,17 +48,17 @@ export const readFileTool: ToolDefinition = {
 
 export const writeFileTool: ToolDefinition = {
   name: 'write_file',
-  description: 'Create or overwrite a file. Creates parent directories if needed.',
+  description: 'Create or overwrite a file. Creates parent directories if needed. Path can be absolute or relative to your workspace.',
   input_schema: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Absolute path to the file' },
+      path: { type: 'string', description: 'Path to the file (absolute, or relative to your workspace)' },
       content: { type: 'string', description: 'Content to write' },
     },
     required: ['path', 'content'],
   },
-  async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const path = input.path as string;
+  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+    const path = resolvePath(input.path as string, ctx.workspacePath);
     const content = input.content as string;
     try {
       mkdirSync(dirname(path), { recursive: true });
@@ -66,19 +72,19 @@ export const writeFileTool: ToolDefinition = {
 
 export const editFileTool: ToolDefinition = {
   name: 'edit_file',
-  description: 'Replace a string in an existing file. The old_string must appear exactly once (or use replace_all).',
+  description: 'Replace a string in an existing file. The old_string must appear exactly once (or use replace_all). Path can be absolute or relative to your workspace.',
   input_schema: {
     type: 'object',
     properties: {
-      path: { type: 'string', description: 'Absolute path to the file' },
+      path: { type: 'string', description: 'Path to the file (absolute, or relative to your workspace)' },
       old_string: { type: 'string', description: 'The exact text to find and replace' },
       new_string: { type: 'string', description: 'The replacement text' },
       replace_all: { type: 'boolean', description: 'Replace all occurrences (default: false)' },
     },
     required: ['path', 'old_string', 'new_string'],
   },
-  async execute(input: Record<string, unknown>): Promise<ToolResult> {
-    const path = input.path as string;
+  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+    const path = resolvePath(input.path as string, ctx.workspacePath);
     const oldStr = input.old_string as string;
     const newStr = input.new_string as string;
     const replaceAll = (input.replace_all as boolean) || false;
@@ -103,18 +109,18 @@ export const editFileTool: ToolDefinition = {
 
 export const listFilesTool: ToolDefinition = {
   name: 'list_files',
-  description: 'List files matching a glob pattern. Returns file paths.',
+  description: 'List files matching a glob pattern. Returns file paths. Defaults to your workspace; pass cwd to search elsewhere.',
   input_schema: {
     type: 'object',
     properties: {
       pattern: { type: 'string', description: 'Glob pattern (e.g., "src/**/*.ts", "*.json")' },
-      cwd: { type: 'string', description: 'Base directory (default: project root)' },
+      cwd: { type: 'string', description: 'Base directory (default: your workspace)' },
     },
     required: ['pattern'],
   },
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const pattern = input.pattern as string;
-    const cwd = (input.cwd as string) || ctx.projectRoot;
+    const cwd = (input.cwd as string) || ctx.workspacePath;
     // Use rg --files which properly supports ** recursive globs (find -path does not)
     const cmd = `rg --files --glob ${JSON.stringify(pattern)} ${JSON.stringify(cwd)} 2>/dev/null | head -200`;
     return new Promise((resolve) => {
@@ -129,12 +135,12 @@ export const listFilesTool: ToolDefinition = {
 
 export const searchFilesTool: ToolDefinition = {
   name: 'search_files',
-  description: 'Search file contents using ripgrep or grep. Returns matching lines with paths and line numbers.',
+  description: 'Search file contents using ripgrep or grep. Returns matching lines with paths and line numbers. Defaults to your workspace; pass path to search elsewhere.',
   input_schema: {
     type: 'object',
     properties: {
       pattern: { type: 'string', description: 'Regex pattern to search for' },
-      path: { type: 'string', description: 'Directory or file to search (default: project root)' },
+      path: { type: 'string', description: 'Directory or file to search (default: your workspace)' },
       glob: { type: 'string', description: 'File glob filter (e.g., "*.ts")' },
       max_results: { type: 'number', description: 'Max matching lines (default: 50)' },
     },
@@ -142,7 +148,7 @@ export const searchFilesTool: ToolDefinition = {
   },
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const pattern = input.pattern as string;
-    const searchPath = (input.path as string) || ctx.projectRoot;
+    const searchPath = (input.path as string) || ctx.workspacePath;
     const fileGlob = input.glob as string | undefined;
     const maxResults = Math.max(1, Math.min(500, Number(input.max_results) || 50));
 

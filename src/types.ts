@@ -157,6 +157,16 @@ export interface HomeConfig {
   browser: BrowserConfig;
   tts: TTSConfig;
 
+  // Situational + temporal awareness primitive. On the first turn of every
+  // fresh session (empty history OR idle-gap exceeded), the harness injects
+  // the listed files into the system prompt once. See src/agent/session-bootstrap.ts.
+  situationalAwareness?: {
+    bootstrap?: {
+      reads?: string[];
+      maxBytesPerFile?: number;
+    };
+  };
+
   apns?: {
     team_id: string;
     key_id: string;

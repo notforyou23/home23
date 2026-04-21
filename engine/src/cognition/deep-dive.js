@@ -122,11 +122,9 @@ class DeepDive {
       frontier = next;
     }
 
-    // Fallback: if N-hop yielded almost nothing (common for orphan/novelty
-    // candidates whose seed nodes have 0 edges), pull peers from the same
-    // cluster so jerry has actual content to think about rather than a
-    // graph-theoretic fragment. Cluster membership is a weaker relation
-    // than edges but still beats empty context.
+    // Fallback 1: cluster peers. Pull peers from the same cluster so jerry
+    // has actual content to think about rather than a graph-theoretic
+    // fragment. Cluster membership is weaker than edges but beats empty.
     if (visited.size < 3 && validSeeds.length > 0) {
       const clustersSeen = new Set();
       for (const seedId of validSeeds) {
@@ -141,6 +139,27 @@ class DeepDive {
           if (this.memory.nodes.has(peerId)) visited.add(peerId);
         }
         if (visited.size >= this.config.maxNeighborhoodNodes) break;
+      }
+    }
+
+    // Fallback 2: temporal neighbors. Fresh feeder nodes on busy brains
+    // arrive before Watts-Strogatz assigns a cluster. In that case fallback
+    // 1 is empty too. Pull the N most-recent-created nodes as weak context
+    // — they're likely from the same ingestion batch / related subject
+    // matter. Not as strong as edge or cluster links, but better than a
+    // single isolated seed.
+    if (visited.size < 3 && validSeeds.length > 0) {
+      const targetCount = Math.min(30, this.config.maxNeighborhoodNodes);
+      const recent = [];
+      for (const [nodeId, node] of this.memory.nodes.entries()) {
+        if (visited.has(nodeId)) continue;
+        if (!node?.created) continue;
+        recent.push({ id: nodeId, created: new Date(node.created).getTime() });
+      }
+      recent.sort((a, b) => b.created - a.created);
+      for (const r of recent.slice(0, targetCount)) {
+        if (visited.size >= this.config.maxNeighborhoodNodes) break;
+        visited.add(r.id);
       }
     }
 
