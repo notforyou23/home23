@@ -753,11 +753,11 @@ async function main() {
       logger,
       enabled: config.osEngine?.closer?.terminationContractRequired === true,
     });
-    decayWorker = new DecayWorker({
-      memory,
-      logger,
-      enabled: false, // activated in Phase 5
-    });
+    // Phase 5: DecayWorker enabled, backed by MemoryIngest (MemoryIngest
+    // implements applyDecay against memory-objects.json with file-locking).
+    // The 'memory' backend here is a minimal adapter — MemoryIngest is
+    // constructed below and re-passed after.
+    decayWorker = null;  // will be constructed after memoryIngest below
     // Phase 1: NotifyChannel is always on as the first bus consumer, mirroring
     // the cognition NOTIFY stream into the bus. The harness-side PromoterWorker
     // continues to tail the same file in parallel — this is idempotent.
@@ -773,6 +773,28 @@ async function main() {
       try { await memoryIngest.writeFromObservation(observation, draft); }
       catch (err) { logger.warn?.('[memory-ingest] write failed from bus:', err?.message || err); }
     });
+
+    // Phase 5: activate DecayWorker against MemoryIngest.
+    const parseDurMs = (s, fallbackMs) => {
+      if (!s) return fallbackMs;
+      const m = /^(\d+)\s*(s|m|h|d)$/i.exec(String(s).trim());
+      if (!m) return fallbackMs;
+      const n = parseInt(m[1], 10);
+      return n * { s: 1000, m: 60_000, h: 3600_000, d: 86400_000 }[m[2].toLowerCase()];
+    };
+    decayWorker = new DecayWorker({
+      memory: memoryIngest,
+      logger,
+      enabled: true,
+      cadenceMs: parseDurMs(osEngineCfg?.decay?.worker?.cadence, 30 * 60_000),
+      halfLife: {
+        warning_node:            parseDurMs(osEngineCfg?.decay?.halfLife?.warning_node, 48 * 3600_000),
+        surreal_transform:       parseDurMs(osEngineCfg?.decay?.halfLife?.surreal_transform, 24 * 3600_000),
+        unfinished_goal_review:  parseDurMs(osEngineCfg?.decay?.halfLife?.unfinished_goal_review, 72 * 3600_000),
+      },
+    });
+    decayWorker.start();
+    logger.info(`[decay] worker started (cadence=${Math.round(decayWorker.cadenceMs / 60_000)}m)`);
 
     // Phase 2: register build + work channels per osEngine config.
     const repoRoot = path.resolve(__dirname, '..', '..');

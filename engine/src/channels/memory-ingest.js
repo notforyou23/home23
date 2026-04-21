@@ -107,6 +107,57 @@ class MemoryIngest {
     };
   }
 
+  /**
+   * applyDecay — reduces confidence on MemoryObjects whose tags match a
+   * decay rule. Uses an exponential half-life model: factor = 0.5 ^ (age/halfLife).
+   *
+   * Tags checked are the MemoryObject's scope.applies_to list (which the
+   * ingest path populates from the crystallize draft's tags).
+   *
+   * Returns the list of updated MemoryObjects.
+   */
+  async applyDecay({ now = Date.now(), rules = {} } = {}) {
+    if (!Object.keys(rules).length) return [];
+    if (!fs.existsSync(this.objectsPath)) return [];
+
+    const updated = [];
+    await lockfile.lock(this.objectsPath, { retries: { retries: 10, minTimeout: 20, maxTimeout: 200 } })
+      .then(async (release) => {
+        try {
+          const store = this._loadSafe();
+          for (const mo of store.objects) {
+            const tags = Array.isArray(mo.scope?.applies_to) ? mo.scope.applies_to : [];
+            let matchedRule = null;
+            for (const tag of tags) {
+              if (rules[tag]) { matchedRule = rules[tag]; break; }
+            }
+            if (!matchedRule) continue;
+            const createdMs = Date.parse(mo.created_at);
+            if (!Number.isFinite(createdMs)) continue;
+            const age = now - createdMs;
+            if (age <= 0) continue;
+            const halfLives = age / matchedRule.halfLifeMs;
+            const factor = Math.pow(0.5, halfLives);
+            const prev = mo.confidence?.score ?? 0;
+            const decayed = prev * factor;
+            // Only record a change if it's meaningful (>= 0.01 delta).
+            if (decayed < prev - 0.01) {
+              mo.confidence = { ...mo.confidence, score: decayed, basis: `${mo.confidence?.basis || ''} + decay(${(1 - factor).toFixed(2)})` };
+              mo.updated_at = new Date(now).toISOString();
+              mo.last_decayed_at = mo.updated_at;
+              updated.push(mo);
+            }
+          }
+          if (updated.length) fs.writeFileSync(this.objectsPath, JSON.stringify(store));
+        } finally {
+          await release();
+        }
+      })
+      .catch((err) => { this.logger.warn?.('[memory-ingest] applyDecay failed:', err?.message || err); });
+
+    return updated;
+  }
+
   async writeFromObservation(obs, draft) {
     if (!obs || !obs.channelId) throw new Error('writeFromObservation requires obs with channelId');
     if (!draft) draft = { method: 'build_event', type: 'observation', topic: obs.channelId, tags: [] };
