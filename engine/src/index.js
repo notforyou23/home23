@@ -813,6 +813,28 @@ async function main() {
       registered.push('work.agenda', 'work.live-problems', 'work.goals', 'work.crons', 'work.heartbeat');
     }
 
+    // Phase 4: machine + OS channels (opt-in per config).
+    const machineCfg = osEngineCfg?.channels?.machine;
+    if (machineCfg?.enabled) {
+      const { CpuChannel }    = await import('./channels/machine/cpu-channel.js');
+      const { MemoryChannel } = await import('./channels/machine/memory-channel.js');
+      const { DiskChannel }   = await import('./channels/machine/disk-channel.js');
+      channelBus.register(new CpuChannel({ intervalMs: 30 * 1000 }));
+      channelBus.register(new MemoryChannel({ intervalMs: 30 * 1000 }));
+      channelBus.register(new DiskChannel({ intervalMs: 5 * 60 * 1000 }));
+      registered.push('machine.cpu', 'machine.memory', 'machine.disk');
+    }
+    const osCfg = osEngineCfg?.channels?.os;
+    if (osCfg?.enabled) {
+      const { Pm2Channel }            = await import('./channels/os/pm2-channel.js');
+      const { CronChannel }           = await import('./channels/os/cron-channel.js');
+      const { FsWatchHome23Channel }  = await import('./channels/os/fswatch-home23-channel.js');
+      channelBus.register(new Pm2Channel({ intervalMs: 30 * 1000 }));
+      channelBus.register(new CronChannel({ intervalMs: 5 * 60 * 1000 }));
+      channelBus.register(new FsWatchHome23Channel({ repoPath: repoRoot }));
+      registered.push('os.pm2', 'os.cron', 'os.fswatch-home23');
+    }
+
     // Phase 3: domain channels (pressure, health, sauna, weather).
     // Enable per-agent via osEngine.channels.domain.readers in home.yaml
     // or instance config.yaml.

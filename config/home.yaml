@@ -133,8 +133,8 @@ situationalAwareness:
       - PLAYBOOK.md
 osEngine:
   channels:
-    machine:  { enabled: false }
-    os:       { enabled: false }
+    machine:  { enabled: true }   # Phase 4: CPU / memory / disk (threshold crystallize)
+    os:       { enabled: true }   # Phase 4: pm2 / cron / fswatch-home23
     domain:                       # Phase 3: pressure / health / sauna / weather
       enabled: true
       readers:
