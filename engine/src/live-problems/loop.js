@@ -25,6 +25,42 @@ const DEFAULT_INTERVAL_MS = 90 * 1000;          // 1.5 min between ticks
 const DEFAULT_STEP_COOLDOWN_MIN = 10;           // cooldown per step if not specified
 const WARMUP_DELAY_MS = 20 * 1000;              // wait 20s after start before first tick
 
+function getCompletedDispatchRecipe(problem) {
+  if (!problem?.dispatchedAt || !problem?.fixRecipe?.at) return null;
+  const dispatchedAtMs = Date.parse(problem.dispatchedAt);
+  const recipeAtMs = Date.parse(problem.fixRecipe.at);
+  if (!dispatchedAtMs || !recipeAtMs || recipeAtMs < dispatchedAtMs) return null;
+  if (problem.dispatchedTurnId && problem.fixRecipe.turnId && problem.fixRecipe.turnId !== problem.dispatchedTurnId) {
+    return null;
+  }
+  return problem.fixRecipe;
+}
+
+function classifyDispatchRecipe(recipe) {
+  const summary = String(recipe?.summary || '');
+  const summaryLower = summary.toLowerCase();
+  const explicitOutcome = String(recipe?.dispatchOutcome || '').toLowerCase();
+  const explicitVerifier = String(recipe?.verifierStatus || '').toLowerCase();
+
+  if (explicitOutcome === 'fixed' || explicitVerifier === 'pass') {
+    return { outcome: 'success', advance: false };
+  }
+  if (explicitOutcome === 'failed' || explicitOutcome === 'blocked' || explicitVerifier === 'fail') {
+    return { outcome: 'failed', advance: true };
+  }
+  if (
+    summaryLower.includes('operation was aborted due to timeout')
+    || summaryLower.includes('error calling ')
+    || summaryLower.includes('timed out')
+    || summaryLower.includes('timeout')
+    || summaryLower.includes('no tool calls')
+    || summaryLower.includes('tool calls in ~') && summaryLower.includes('outcome: error')
+  ) {
+    return { outcome: 'failed', advance: true };
+  }
+  return { outcome: 'completed', advance: false };
+}
+
 class LiveProblemsLoop {
   constructor({ store, logger, ctxProvider, intervalMs }) {
     this.store = store;
@@ -143,6 +179,21 @@ class LiveProblemsLoop {
     // dispatched — avoids 480 unnecessary HTTP calls + log entries + file
     // writes over a 12h budget window. Just check budget expiry directly.
     if (step.type === 'dispatch_to_agent' && p.dispatchedAt) {
+      const completedRecipe = getCompletedDispatchRecipe(p);
+      if (completedRecipe) {
+        const completion = classifyDispatchRecipe(completedRecipe);
+        const summary = String(completedRecipe.summary || 'agent run completed').replace(/\s+/g, ' ').trim().slice(0, 240);
+        this.logger.info?.(`[live-problems] ${p.id}: agent finished (${completion.outcome})`);
+        this.store.recordRemediation(p.id, {
+          step: p.stepIndex,
+          type: step.type,
+          outcome: completion.outcome,
+          detail: summary,
+        });
+        this.store.clearDispatch(p.id);
+        if (completion.advance) this.store.advanceRemediationStep(p.id);
+        return;
+      }
       const budgetHours = step.args?.budgetHours ?? 12;
       const elapsedHours = (Date.now() - Date.parse(p.dispatchedAt)) / 3600000;
       if (elapsedHours < budgetHours) return;  // agent still working

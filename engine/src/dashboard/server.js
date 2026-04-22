@@ -4968,6 +4968,14 @@ Be specific, actionable, and maintain research continuity.`;
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
       fs.renameSync(tmp, liveProblemsFile());
     };
+    const normalizeDispatchOutcome = (value) => {
+      const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
+      return ['fixed', 'failed', 'blocked', 'unknown'].includes(v) ? v : null;
+    };
+    const normalizeVerifierStatus = (value) => {
+      const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
+      return ['pass', 'fail', 'unknown'].includes(v) ? v : null;
+    };
     const auditLiveProblem = (problem) => {
       try {
         const { auditProblemSpec } = require('../live-problems/audit');
@@ -5133,7 +5141,14 @@ Be specific, actionable, and maintain research continuity.`;
         const list = data.problems || [];
         const idx = list.findIndex(x => x.id === req.params.id);
         if (idx < 0) return res.status(404).json({ error: 'not found' });
-        const { summary, turnId, toolCallCount, durationMs } = req.body || {};
+        const {
+          summary,
+          turnId,
+          toolCallCount,
+          durationMs,
+          dispatchOutcome,
+          verifierStatus,
+        } = req.body || {};
         if (!summary || typeof summary !== 'string') {
           return res.status(400).json({ error: 'summary (string) required' });
         }
@@ -5143,6 +5158,8 @@ Be specific, actionable, and maintain research continuity.`;
           turnId: turnId || null,
           toolCallCount: typeof toolCallCount === 'number' ? toolCallCount : null,
           durationMs: typeof durationMs === 'number' ? durationMs : null,
+          dispatchOutcome: normalizeDispatchOutcome(dispatchOutcome),
+          verifierStatus: normalizeVerifierStatus(verifierStatus),
         };
         const p = list[idx];
         const history = Array.isArray(p.fixRecipeHistory) ? p.fixRecipeHistory : [];

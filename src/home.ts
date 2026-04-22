@@ -875,6 +875,41 @@ async function main(): Promise<void> {
   // turnId immediately (fire-and-forget from the engine's POV; budget
   // tracking lives in the engine's loop). The agent uses its standard
   // toolbox: shell, files, cron, brain, web.
+  const parseDiagnosticCompletion = (text: string, toolCallCount: number) => {
+    const clean = String(text || '').replace(/\s+/g, ' ').trim();
+    const pick = (re: RegExp) => {
+      const m = clean.match(re);
+      return m && m[1] ? m[1].trim().toLowerCase() : '';
+    };
+    let verifierStatus = pick(/VERIFIER_STATUS:\s*(pass|fail|unknown)/i);
+    let dispatchOutcome = pick(/DISPATCH_OUTCOME:\s*(fixed|failed|blocked|unknown|not_fixed)/i);
+    const summaryMatch = clean.match(/SUMMARY:\s*(.+)$/i);
+    const lower = clean.toLowerCase();
+
+    if (dispatchOutcome === 'not_fixed') dispatchOutcome = 'failed';
+    if (!verifierStatus) {
+      if (/\bverifier(?: now)? passes\b|\bverifier passed\b/i.test(clean)) verifierStatus = 'pass';
+      else if (/\bverifier(?: still)? fails\b|\bverifier failed\b|\bdoes not pass\b|\bdoesn't pass\b/i.test(clean)) verifierStatus = 'fail';
+      else verifierStatus = 'unknown';
+    }
+    if (!dispatchOutcome) {
+      if (verifierStatus === 'pass') dispatchOutcome = 'fixed';
+      else if (
+        lower.includes('operation was aborted due to timeout')
+        || lower.includes('error calling ')
+        || lower.includes('timed out')
+        || (toolCallCount === 0 && lower.includes('error'))
+      ) dispatchOutcome = 'failed';
+      else dispatchOutcome = 'unknown';
+    }
+
+    return {
+      verifierStatus,
+      dispatchOutcome,
+      summary: (summaryMatch?.[1] || clean || 'agent run completed').slice(0, 500),
+    };
+  };
+
   bridgeApp.post('/api/diagnose', async (req: any, res: any) => {
     if (bridgeToken) {
       const header = req.headers.authorization || '';
@@ -954,12 +989,21 @@ async function main(): Promise<void> {
       '    no rm -rf on user data, no force pushes)',
       '  - pretend it\'s fixed when the verifier still fails',
       '',
-      'End your session with 2-3 sentences describing what you did and whether the',
-      'verifier now passes. This goes into the live-problems remediation log.',
+      'End your session with 2-3 sentences plus this exact trailer:',
+      '  VERIFIER_STATUS: pass|fail|unknown',
+      '  DISPATCH_OUTCOME: fixed|failed|blocked|unknown',
+      '  SUMMARY: one sentence on what happened',
     ].join('\n');
 
     try {
       const { turnId, response } = await agent.runWithTurn(chatId, mission);
+      const postFixRecipe = async (payload: Record<string, unknown>) => {
+        await fetch(`${ENGINE_BASE}/api/live-problems/${encodeURIComponent(problem.id)}/fix-recipe`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      };
       // Detach. The engine tracks budget separately via wall clock.
       // When the agent finishes, capture a fix-recipe back to the engine so
       // (a) the dashboard Signals tile can show it, and (b) the next dispatch
@@ -967,16 +1011,15 @@ async function main(): Promise<void> {
       response.then(async (resp: import('./agent/types.js').AgentResponse) => {
         try {
           const minutes = Math.max(1, Math.round(resp.durationMs / 60000));
-          const summary = `agent ran ${resp.toolCallCount} tool calls in ~${minutes}min (model=${resp.model}). outcome: ${resp.text.replace(/\s+/g, ' ').trim().slice(0, 500)}`;
-          await fetch(`${ENGINE_BASE}/api/live-problems/${encodeURIComponent(problem.id)}/fix-recipe`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              summary,
-              turnId,
-              toolCallCount: resp.toolCallCount,
-              durationMs: resp.durationMs,
-            }),
+          const report = parseDiagnosticCompletion(resp.text, resp.toolCallCount);
+          const summary = `agent ran ${resp.toolCallCount} tool calls in ~${minutes}min (model=${resp.model}). ${report.summary}`;
+          await postFixRecipe({
+            summary,
+            turnId,
+            toolCallCount: resp.toolCallCount,
+            durationMs: resp.durationMs,
+            dispatchOutcome: report.dispatchOutcome,
+            verifierStatus: report.verifierStatus,
           });
           console.log(`[diagnose] ${problem.id} turn ${turnId} → fix-recipe captured (${resp.toolCallCount} tools, ${minutes}m)`);
         } catch (err: any) {
@@ -984,6 +1027,16 @@ async function main(): Promise<void> {
         }
       }).catch((err: any) => {
         console.error(`[diagnose] ${problem.id} turn ${turnId} error:`, err?.message || err);
+        postFixRecipe({
+          summary: `agent turn failed before completion: ${String(err?.message || err).slice(0, 500)}`,
+          turnId,
+          toolCallCount: 0,
+          durationMs: 0,
+          dispatchOutcome: 'failed',
+          verifierStatus: 'unknown',
+        }).catch((postErr: any) => {
+          console.warn(`[diagnose] ${problem.id} failure post failed:`, postErr?.message || postErr);
+        });
       });
       console.log(`[diagnose] ${problem.id}: dispatched agent turn ${turnId}`);
       res.json({ ok: true, turnId, chatId, problemId: problem.id, budgetHours });
