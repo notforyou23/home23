@@ -345,9 +345,28 @@ class RealtimeServer {
     if (req.method === 'POST' && statusPost) {
       const body = await this._readJsonBody(req);
       if (!body.status) return json(400, { ok: false, error: 'status is required' });
-      const rec = store.updateStatus(statusPost[1], body.status, { note: body.note, actor: body.actor || 'api' });
+      const agendaId = statusPost[1];
+      const existing = store.get(agendaId);
+      if (!existing) return json(404, { ok: false, error: 'not found or invalid status' });
+
+      let execution = null;
+      let note = body.note || null;
+      if (body.status === 'acted_on') {
+        try {
+          execution = await this.orchestrator?.executeAgendaItem?.(existing, { actor: body.actor || 'api' });
+          const detail = [
+            execution?.goalId ? `goal ${execution.goalId}` : null,
+            execution?.taskId ? `task ${execution.taskId}` : null,
+          ].filter(Boolean).join(', ');
+          note = detail ? `executed via ${detail}` : (note || 'executed');
+        } catch (error) {
+          return json(500, { ok: false, error: `agenda execution failed: ${error.message}` });
+        }
+      }
+
+      const rec = store.updateStatus(agendaId, body.status, { note, actor: body.actor || 'api' });
       if (!rec) return json(404, { ok: false, error: 'not found or invalid status' });
-      return json(200, { ok: true, item: rec });
+      return json(200, { ok: true, item: rec, execution });
     }
 
     return json(404, { ok: false, error: `Unknown agenda route: ${req.method} ${url}` });

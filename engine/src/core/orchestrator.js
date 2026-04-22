@@ -16,6 +16,7 @@ const { TelemetryCollector } = require('./telemetry-collector');
 // Planning modules
 const PlanScheduler = require('../planning/plan-scheduler');
 const AcceptanceValidator = require('../planning/acceptance-validator');
+const { generateTaskId } = require('../planning/types');
 const { IntrospectionModule } = require('../system/introspection');
 const { RealityLayer } = require('../system/reality-layer');
 const { IntrospectionRouter } = require('../system/introspection-router');
@@ -6874,6 +6875,118 @@ class Orchestrator {
         error: error.message
       });
     }
+  }
+
+  async ensureBacklogPlan() {
+    if (!this.clusterStateStore) {
+      throw new Error('clusterStateStore unavailable');
+    }
+
+    let backlogPlan = await this.clusterStateStore.getPlan('plan:backlog');
+    if (!backlogPlan) {
+      backlogPlan = {
+        id: 'plan:backlog',
+        title: 'Migrated Goals Backlog',
+        version: 1,
+        status: 'ACTIVE',
+        milestones: ['ms:backlog'],
+        activeMilestone: 'ms:backlog',
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      await this.clusterStateStore.createPlan(backlogPlan);
+    }
+
+    const backlogMilestone = await this.clusterStateStore.getMilestone('ms:backlog');
+    if (!backlogMilestone) {
+      await this.clusterStateStore.upsertMilestone({
+        id: 'ms:backlog',
+        planId: backlogPlan.id,
+        title: 'Backlog',
+        order: 1,
+        status: 'ACTIVE',
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      });
+    }
+
+    return backlogPlan;
+  }
+
+  async executeAgendaItem(item, opts = {}) {
+    if (!item?.id || !item?.content) {
+      throw new Error('agenda item with id and content required');
+    }
+
+    const actor = opts.actor || 'agenda';
+    const summary = {
+      goalId: null,
+      goalCreated: false,
+      taskId: null,
+      taskCreated: false,
+    };
+
+    if (this.coordinator && this.goals) {
+      const injectedGoals = await this.coordinator.injectUrgentGoals([{
+        description: item.content,
+        agentType: item.kind === 'question' ? 'research' : 'analysis',
+        priority: 0.9,
+        urgency: 'high',
+        rationale: `Agenda item ${item.id} marked acted_on by ${actor}`,
+      }], this.goals);
+
+      if (Array.isArray(injectedGoals) && injectedGoals[0]?.id) {
+        summary.goalId = injectedGoals[0].id;
+        summary.goalCreated = true;
+      }
+    }
+
+    if (this.clusterStateStore) {
+      await this.ensureBacklogPlan();
+      const now = Date.now();
+      const taskId = generateTaskId();
+      const tags = Array.from(new Set([
+        'agenda',
+        'agenda-execution',
+        item.kind || 'idea',
+        ...(Array.isArray(item.topicTags) ? item.topicTags : []),
+      ].filter(Boolean)));
+
+      await this.clusterStateStore.upsertTask({
+        id: taskId,
+        planId: 'plan:backlog',
+        milestoneId: 'ms:backlog',
+        title: item.content.substring(0, 100),
+        description: item.content,
+        tags,
+        deps: [],
+        priority: 0.9,
+        state: 'PENDING',
+        acceptanceCriteria: [{ type: 'qa', rubric: 'Agenda item materially advanced or resolved', threshold: 0.7 }],
+        artifacts: [],
+        createdAt: now,
+        updatedAt: now,
+        metadata: {
+          source: 'agenda',
+          agendaId: item.id,
+          sourceCycleSessionId: item.sourceCycleSessionId || null,
+          goalId: summary.goalId,
+          actor,
+        }
+      });
+
+      summary.taskId = taskId;
+      summary.taskCreated = true;
+    }
+
+    this.logger.info('✋ Agenda item executed', {
+      agendaId: item.id,
+      actor,
+      taskId: summary.taskId,
+      goalId: summary.goalId,
+    });
+
+    return summary;
   }
 
   async stop() {
