@@ -28,7 +28,7 @@ const DEFAULT_CONFIG = {
     fallback: { provider: 'openai', model: 'gpt-4o-mini' }
   },
   providers: {
-    openai: { model: 'gpt-image-1.5', size: 'auto', quality: 'auto' }
+    openai: { model: 'gpt-image-2', size: 'auto', quality: 'auto' }
   }
 };
 
@@ -144,7 +144,7 @@ function resolveEngineConfig(engineConfig, homeConfig, agentConfig) {
 function applyHome23ImageGenerationConfig(config, homeConfig) {
   const configured = homeConfig?.media?.imageGeneration || {};
   const provider = pickFirstString([configured.provider, config.active, 'openai']) || 'openai';
-  const defaultModel = provider === 'minimax' ? 'image-01' : 'gpt-image-1.5';
+  const defaultModel = provider === 'minimax' ? 'image-01' : 'gpt-image-2';
   const model = pickFirstString([
     configured.model,
     config.providers?.[provider]?.model,
@@ -217,6 +217,8 @@ const IMAGE_CATEGORIES = {
     'blown glass in progress','blacksmith forge','letterpress type case',
     'bookbinding spine','darkroom enlarger','vinyl pressing plant',
     'cheese cave','fermentation crock','hand-rolled pasta shapes',
+    'road-worn electric guitar','hollow-body guitar','amp stack glow',
+    'concert handbill','tie-dyed parking lot','tape reel machine',
     // ── human experience ──
     'hands on piano keys','shadow on curtain','footprints in fresh snow',
     'breath in cold air','candlelit dinner for one','rain on window glass',
@@ -260,46 +262,283 @@ const IMAGE_CATEGORIES = {
     'centered','rule of thirds','symmetrical','asymmetrical','diagonal composition',
     'leading lines','framing','negative space','tight crop','wide shot',
     "bird's eye view","worm's eye view",'eye level','dutch angle','straight on'
+  ],
+  motifs: [
+    'ritual', 'transmission', 'pilgrimage', 'surveillance', 'devotion',
+    'signal loss', 'threshold', 'archive', 'afterimage', 'omens',
+    'rehearsal', 'static prayer', 'countercurrent memory', 'transit shrine',
+  ],
+  materiality: [
+    'wet glass', 'oxidized brass', 'velvet dust', 'paper grain',
+    'smoked chrome', 'cracked porcelain', 'sun-bleached wood',
+    'fogged mirror', 'static haze', 'frosted metal',
+    'aged lacquer', 'tape hiss residue', 'cedar heat', 'road grit',
+  ],
+  temporalStates: [
+    'just before opening', 'after the storm', 'mid-evaporation',
+    'abandoned but warm', 'caught in rehearsal', 'end of summer',
+    'minutes before dawn', 'half-remembered', 'post-impact silence',
+    'after the encore', 'between soundcheck and nightfall', 'still cooling down',
+  ],
+  symbolicCharges: [
+    'longing', 'containment', 'invocation', 'misdirection',
+    'private ceremony', 'public signal', 'reconstruction', 'witness',
+    'return', 'convergence', 'vigil', 'release',
+  ],
+  culturalSignals: [
+    'Jerry Garcia guitar phrasing',
+    'Grateful Dead parking-lot residue',
+    'rose-and-lightning iconography',
+    'amp glow and tape hiss',
+    'counterculture relic atmosphere',
+    'faded concert handbill energy',
+    'traveling-carnival Americana',
+    'rehearsal-room devotion',
   ]
 };
 
-// Subject dedup — shuffle-without-replacement. Goes through the entire
-// pool before any subject can repeat. Resets only when fully exhausted.
-let shuffledSubjects = [];
-let shuffleIndex = 0;
+const AXIS_HISTORY_LIMITS = Object.freeze({
+  subject: 60,
+  style: 24,
+  lighting: 24,
+  mood: 24,
+  composition: 24,
+  motif: 18,
+  materiality: 18,
+  temporal_state: 18,
+  symbolic_charge: 18,
+  cultural_signal: 18,
+});
+
+const axisHistory = Object.fromEntries(
+  Object.keys(AXIS_HISTORY_LIMITS).map((axis) => [axis, []]),
+);
 
 function randomInt(n) { return crypto.randomInt(n); }
 function randomPick(arr) { return arr[randomInt(arr.length)]; }
 
-function shuffleArray(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = randomInt(i + 1);
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
+function chance(probability) {
+  return Math.random() < probability;
 }
 
-function selectRandomSubject() {
-  if (shuffleIndex >= shuffledSubjects.length) {
-    shuffledSubjects = shuffleArray(IMAGE_CATEGORIES.subjects);
-    shuffleIndex = 0;
-  }
-  return shuffledSubjects[shuffleIndex++];
+function rememberAxis(axis, value) {
+  if (!value || !axisHistory[axis]) return;
+  axisHistory[axis].push(value);
+  const limit = AXIS_HISTORY_LIMITS[axis] || 18;
+  while (axisHistory[axis].length > limit) axisHistory[axis].shift();
 }
 
-// CHAOS PROMPT ENGINE system prompt (§17 — preserved verbatim)
-const CHAOS_PROMPT_ENGINE_SYSTEM = `You are CHAOS PROMPT ENGINE - wildly unpredictable but must output valid JSON.
+function recentCount(axis, value) {
+  const history = axisHistory[axis] || [];
+  return history.filter((entry) => entry === value).length;
+}
 
-Create bizarre, unexpected combinations by mixing the given elements in strange ways. Be creative and surprising, but keep it coherent enough for image generation.
+function clampText(text, maxLen = 120) {
+  const clean = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  return clean.length > maxLen ? `${clean.slice(0, maxLen).trim()}...` : clean;
+}
 
-Output as JSON with this structure:
+function normalizeNegative(text) {
+  const clean = clampText(text, 140);
+  if (!clean) return '';
+  return clean.replace(/^avoid\s+/i, '').trim();
+}
+
+function negativeInstruction(text) {
+  const negative = normalizeNegative(text);
+  if (!negative) return '';
+  if (/^no\s+/i.test(negative)) return `Exclude ${negative.replace(/^no\s+/i, '').trim()}`;
+  return `Avoid ${negative}`;
+}
+
+function tokenize(text) {
+  return new Set(
+    String(text || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, ' ')
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length > 2),
+  );
+}
+
+function hasAnyToken(signalSet, tokens) {
+  return tokens.some((token) => signalSet.has(token));
+}
+
+function weightedChoice(items, getWeight) {
+  const weighted = [];
+  let total = 0;
+  for (const item of items) {
+    const weight = Math.max(0, Number(getWeight(item)) || 0);
+    if (weight <= 0) continue;
+    weighted.push({ item, weight });
+    total += weight;
+  }
+  if (!weighted.length || total <= 0) return null;
+  let cursor = Math.random() * total;
+  for (const entry of weighted) {
+    cursor -= entry.weight;
+    if (cursor <= 0) return entry.item;
+  }
+  return weighted[weighted.length - 1].item;
+}
+
+function buildSignalSet({ thought, brainContext, sensorPoetics }) {
+  const combined = [
+    thought,
+    brainContext?.latestThought,
+    brainContext?.theme,
+    ...(brainContext?.themeSupport || []),
+    ...(brainContext?.topConcepts || []),
+    ...(brainContext?.activeGoals || []),
+    ...(brainContext?.dreamMotifs || []),
+    sensorPoetics,
+    'jerry garcia grateful dead guitar americana tape amp rose lightning',
+  ].filter(Boolean).join(' ');
+  return tokenize(combined);
+}
+
+function contextWeight(axis, item, signalSet) {
+  const itemTokens = [...tokenize(item)];
+  if (!itemTokens.length) return 1;
+  let weight = 1;
+  const overlap = itemTokens.filter((token) => signalSet.has(token)).length;
+  if (overlap > 0) weight += overlap * 0.65;
+
+  const deadSignal = hasAnyToken(signalSet, ['jerry', 'garcia', 'grateful', 'dead', 'guitar', 'americana', 'amp', 'lightning']);
+
+  const lower = item.toLowerCase();
+  if ((lower.includes('guitar') || lower.includes('amp') || lower.includes('concert') || lower.includes('parking-lot')) &&
+      deadSignal) {
+    weight *= axis === 'subject' ? 3.1 : 2.3;
+  }
+  if (axis === 'cultural_signal' && deadSignal) {
+    weight *= 2.8;
+  }
+  if (axis === 'temporal_state' && deadSignal &&
+      (lower.includes('encore') || lower.includes('soundcheck') || lower.includes('rehearsal'))) {
+    weight *= 2.0;
+  }
+  if (axis === 'materiality' && deadSignal &&
+      (lower.includes('tape hiss') || lower.includes('road grit') || lower.includes('aged lacquer') || lower.includes('cedar heat'))) {
+    weight *= 1.8;
+  }
+  if ((lower.includes('archive') || lower.includes('afterimage') || lower.includes('paper') || lower.includes('handbill')) &&
+      (signalSet.has('archive') || signalSet.has('memory') || signalSet.has('remembered') || signalSet.has('borrowed'))) {
+    weight *= 1.4;
+  }
+  if ((lower.includes('warm') || lower.includes('firelight') || lower.includes('cedar')) &&
+      (signalSet.has('warmth') || signalSet.has('sauna') || signalSet.has('heat'))) {
+    weight *= 1.35;
+  }
+  if ((lower.includes('cold') || lower.includes('mist') || lower.includes('frost')) &&
+      (signalSet.has('cold') || signalSet.has('chill') || signalSet.has('storm') || signalSet.has('dormant'))) {
+    weight *= 1.35;
+  }
+  return weight;
+}
+
+function chooseAxis(axis, items, signalSet) {
+  const choice = weightedChoice(items, (item) => {
+    let weight = contextWeight(axis, item, signalSet);
+    const repeats = recentCount(axis, item);
+    if (repeats > 0) {
+      weight *= axis === 'subject' ? 0.08 : 0.32 / repeats;
+    }
+    return weight;
+  }) || randomPick(items);
+  rememberAxis(axis, choice);
+  return choice;
+}
+
+function sensorDataToPoetics(sensorData) {
+  if (!sensorData || typeof sensorData !== 'object') return null;
+
+  const phrases = [];
+  const outdoor = sensorData.weather?.outdoor || {};
+  const wind = sensorData.weather?.wind || {};
+  const solar = sensorData.weather?.solar || {};
+  const sauna = sensorData.sauna || {};
+  const pressure = sensorData.pressure || {};
+
+  const temp = Number(outdoor.temperature);
+  const humidity = Number(outdoor.humidity);
+  const windSpeed = Number(wind.speed);
+  const uv = Number(solar.uv);
+  const pressureInhg = Number(pressure.pressure_inhg);
+
+  if (Number.isFinite(temp)) {
+    if (temp <= 42) phrases.push('outside chill held in clear air');
+    else if (temp <= 55) phrases.push('cold clear air with dormant light');
+    else if (temp >= 82) phrases.push('heat hanging in the air');
+  }
+  if (Number.isFinite(humidity)) {
+    if (humidity >= 75) phrases.push('heavy damp atmosphere');
+    else if (humidity <= 32) phrases.push('dry static air');
+  }
+  if (Number.isFinite(windSpeed)) {
+    if (windSpeed >= 16) phrases.push('restless wind working the edges');
+    else if (windSpeed >= 8) phrases.push('light movement in the air');
+  }
+  if (Number.isFinite(uv)) {
+    if (uv <= 1) phrases.push('dormant light');
+    else if (uv >= 6) phrases.push('hard bright light');
+  }
+  if (Number.isFinite(pressureInhg)) {
+    if (pressureInhg <= 29.75) phrases.push('storm-pressure tension');
+    else if (pressureInhg >= 30.1) phrases.push('settled barometric calm');
+  }
+
+  if (sauna.isHeating) {
+    phrases.push('sealed cedar warmth against the outside chill');
+  } else if (sauna.isLocked) {
+    phrases.push('occupied heat held behind wood and glass');
+  } else if (Number(sauna.temperature) > 145) {
+    phrases.push('stored heat fading from cedar walls');
+  }
+
+  const unique = [...new Set(phrases)].slice(0, 3);
+  return unique.length ? unique.join(', ') : null;
+}
+
+const CHAOS_PROMPT_ENGINE_SYSTEM = `You are a visual prompt composer.
+
+You receive structured ingredients for an image. Turn them into one coherent, vivid, non-generic image prompt.
+
+Rules:
+- Keep one dominant object or setting.
+- Use the thought only as thematic pressure, never literal illustration.
+- Convert live context into atmosphere.
+- Do not mention telemetry, temperatures, humidity, pressure, UV, or raw numbers.
+- Do not introduce people, children, musicians, or characters unless the selected subject explicitly requires a human figure.
+- Prefer one surprising concrete detail, not a pile of weirdness.
+- Avoid generic fantasy/cosmic adjectives unless directly earned by the ingredients.
+- Keep the image physically legible.
+- Output valid JSON only.
+
+Return:
 {
-  "prompt": "chaotic but valid description mixing elements creatively (150-200 chars)",
-  "emphasis": "strange visual detail to emphasize"
-}
-
-Be unpredictable. Surprise with creativity. But output must be valid JSON.`;
+  "prompt": "final image prompt, 140-220 chars",
+  "emphasis": "one strange concrete detail",
+  "negative": "things to avoid",
+  "title": "short internal label",
+  "used": {
+    "subject": "",
+    "style": "",
+    "lighting": "",
+    "mood": "",
+    "composition": "",
+    "motif": "",
+    "materiality": "",
+    "temporal_state": "",
+    "symbolic_charge": "",
+    "sensor_poetics": "",
+    "brain_theme": "",
+    "cultural_signal": ""
+  }
+}`;
 
 /**
  * Load image config from config/image.json (falls back to defaults if missing)
@@ -517,7 +756,7 @@ function createImageProvider(runtime = {}) {
     }
 
     const providerCfg = config.providers?.[active] || {};
-    const model = options.model || providerCfg.model || 'gpt-image-1.5';
+    const model = options.model || providerCfg.model || 'gpt-image-2';
     const size = options.size || providerCfg.size || 'auto';
     const quality = options.quality || providerCfg.quality || 'auto';
 
@@ -571,59 +810,154 @@ function createImageProvider(runtime = {}) {
    * Uses the 5-dimension + 4-overlay assembly + CHAOS PROMPT ENGINE LLM call.
    * Saves locally, writes metadata JSON.
    */
-  async function generateChaos(thought, opts = {}) {
-    // Step 2: Select subject with history guard
-    const subject    = selectRandomSubject();
-    const style      = randomPick(IMAGE_CATEGORIES.styles);
-    const lighting   = randomPick(IMAGE_CATEGORIES.lighting);
-    const mood       = randomPick(IMAGE_CATEGORIES.moods);
-    const composition = randomPick(IMAGE_CATEGORIES.compositions);
+async function generateChaos(thought, opts = {}) {
+    const brainContext = opts.brainContext || {};
+    const sensorPoetics = chance(0.4) ? sensorDataToPoetics(opts.sensorData || brainContext.sensorData) : null;
+    const signalSet = buildSignalSet({ thought, brainContext, sensorPoetics });
+    const deadSignal = hasAnyToken(signalSet, ['jerry', 'garcia', 'grateful', 'dead', 'guitar', 'americana', 'amp', 'lightning']);
 
-    // Step 3: 4 optional context overlays, each 40% chance
+    const subject = chooseAxis('subject', IMAGE_CATEGORIES.subjects, signalSet);
+    const style = chooseAxis('style', IMAGE_CATEGORIES.styles, signalSet);
+    const lighting = chooseAxis('lighting', IMAGE_CATEGORIES.lighting, signalSet);
+    const mood = chooseAxis('mood', IMAGE_CATEGORIES.moods, signalSet);
+    const composition = chooseAxis('composition', IMAGE_CATEGORIES.compositions, signalSet);
+
+    const motif = chance(0.30) ? chooseAxis('motif', IMAGE_CATEGORIES.motifs, signalSet) : null;
+    const materiality = chance(0.45) ? chooseAxis('materiality', IMAGE_CATEGORIES.materiality, signalSet) : null;
+    const temporalState = chance(0.35) ? chooseAxis('temporal_state', IMAGE_CATEGORIES.temporalStates, signalSet) : null;
+    const symbolicCharge = chance(0.25) ? chooseAxis('symbolic_charge', IMAGE_CATEGORIES.symbolicCharges, signalSet) : null;
+    const culturalSignal = chance(deadSignal ? 0.55 : 0.30)
+      ? chooseAxis('cultural_signal', IMAGE_CATEGORIES.culturalSignals, signalSet)
+      : null;
+
     const contextHints = [];
-    const timeContexts = ['dawn','morning','noon','afternoon','dusk','evening','midnight','night'];
-    if (Math.random() < 0.4) contextHints.push(`time: ${randomPick(timeContexts)}`);
+    if (sensorPoetics) contextHints.push(sensorPoetics);
+    const locationContexts = ['urban cityscape', 'peaceful countryside', 'rugged mountains', 'quiet roadside town', 'neon roadside lot', 'quiet library'];
+    if (chance(0.35)) contextHints.push(randomPick(locationContexts));
+    const atmosphereContexts = ['a held-breath stillness', 'after-hours calm', 'soft public glow', 'private ceremony', 'restless anticipation'];
+    if (chance(0.35)) contextHints.push(randomPick(atmosphereContexts));
 
-    if (Math.random() < 0.4) {
-      const weatherContexts = ['crisp autumn air','sweltering summer heat','fresh spring breeze','bitter winter cold',
-        'tropical humidity','desert dryness','mountain freshness','coastal mist'];
-      contextHints.push(randomPick(weatherContexts));
-    }
+    const brainTheme = clampText(brainContext.theme || thought || '', 120);
+    const support = (brainContext.themeSupport || []).map((item) => clampText(item, 60)).filter(Boolean).slice(0, 3);
+    const dreamMotifs = chance(0.15)
+      ? (brainContext.dreamMotifs || []).map((item) => clampText(item, 60)).filter(Boolean).slice(0, 1)
+      : [];
 
-    const locationContexts = ['urban cityscape','peaceful countryside','rugged mountains','sandy beach',
-      'dense forest','windswept plains','bustling marketplace','quiet library'];
-    if (Math.random() < 0.4) contextHints.push(randomPick(locationContexts));
+    const ingredients = {
+      subject,
+      style,
+      lighting,
+      mood,
+      composition,
+      motif,
+      materiality,
+      temporal_state: temporalState,
+      symbolic_charge: symbolicCharge,
+      sensor_poetics: sensorPoetics,
+      brain_theme: brainTheme || null,
+      cultural_signal: culturalSignal,
+      support,
+      dream_motifs: dreamMotifs,
+      context_hints: contextHints,
+    };
 
-    const atmosphereContexts = ['sense of wonder','feeling of solitude','air of mystery','touch of magic',
-      'hint of nostalgia','spark of creativity','whisper of adventure','echo of memories'];
-    if (Math.random() < 0.4) contextHints.push(randomPick(atmosphereContexts));
+    const userPrompt = `Compose one image prompt from these ingredients.
 
-    const thoughtHint = thought && thought.length > 20
-      ? `\nTheme (subtle inspiration, do not illustrate literally): ${thought.slice(0, 120)}`
-      : '';
+Core axes:
+- Subject: ${subject}
+- Style: ${style}
+- Lighting: ${lighting}
+- Mood: ${mood}
+- Composition: ${composition}
 
-    // Step 4: CHAOS PROMPT ENGINE — LLM assembles the final prompt
-    const userPrompt = `Create an image prompt with these elements:
+Optional modifiers:
+- Motif: ${motif || '(omit)'}
+- Materiality: ${materiality || '(omit)'}
+- Temporal state: ${temporalState || '(omit)'}
+- Symbolic charge: ${symbolicCharge || '(omit)'}
+- Cultural signal: ${culturalSignal || '(omit)'}
+- Sensor poetics: ${sensorPoetics || '(omit)'}
+- Brain theme: ${brainTheme || '(omit)'}
+- Theme support: ${support.length ? support.join(', ') : '(omit)'}
+- Dream motifs (low priority): ${dreamMotifs.length ? dreamMotifs.join(', ') : '(omit)'}
+- Context hints: ${contextHints.length ? contextHints.join(', ') : '(omit)'}
 
-Subject: ${subject}
-Style: ${style}
-Lighting: ${lighting}
-Mood: ${mood}
-Composition: ${composition}${contextHints.length ? '\nContext: ' + contextHints.join(', ') : ''}${thoughtHint}
-
-Combine these into a vivid, specific scene description. Respond in JSON format.`;
+Anti-slop constraints:
+- Do not illustrate the thought literally.
+- Do not mention numbers or telemetry.
+- Do not invent people or children unless the subject is explicitly human.
+- Treat dream motifs as faint background tint only.
+- Prefer one dominant scene.
+- Prefer one surprising detail, not five.
+- Avoid generic fantasy mush.
+- Keep the scene physically legible.`;
 
     let finalPrompt;
+    let chaosMeta;
     try {
       const result = await callPromptEngine(CHAOS_PROMPT_ENGINE_SYSTEM, userPrompt, true);
-      finalPrompt = `${result.prompt}. ${result.emphasis}`;
+      const used = {
+        subject,
+        style,
+        lighting,
+        mood,
+        composition,
+        motif,
+        materiality,
+        temporal_state: temporalState,
+        symbolic_charge: symbolicCharge,
+        sensor_poetics: sensorPoetics,
+        brain_theme: brainTheme || null,
+        cultural_signal: culturalSignal,
+      };
+      if (result?.used && typeof result.used === 'object') {
+        for (const [key, value] of Object.entries(result.used)) {
+          if (used[key]) continue;
+          const cleaned = clampText(value, 120);
+          if (cleaned) used[key] = cleaned;
+        }
+      }
+      const emphasis = clampText(result?.emphasis || '', 100);
+      const negative = normalizeNegative(result?.negative || '');
+      finalPrompt = clampText(result?.prompt || '', 320);
+      if (emphasis) finalPrompt = `${finalPrompt}. ${emphasis}`;
+      if (negative) finalPrompt = `${finalPrompt}. ${negativeInstruction(negative)}`;
+      chaosMeta = {
+        version: 'chaos-v2',
+        title: clampText(result?.title || '', 80) || 'Chaos V2',
+        negative,
+        used,
+        ingredients,
+      };
     } catch (err) {
-      // Fallback: assemble prompt directly if LLM fails
-      finalPrompt = `A ${mood} ${style} of ${subject} in ${lighting}${contextHints.length ? ', ' + contextHints[0] : ''}`;
+      finalPrompt = `A ${mood} ${style} ${subject} in ${lighting}, ${composition}${motif ? `, shaped by ${motif}` : ''}${materiality ? `, with ${materiality}` : ''}${temporalState ? `, ${temporalState}` : ''}${symbolicCharge ? `, carrying ${symbolicCharge}` : ''}${culturalSignal ? `, touched by ${culturalSignal}` : ''}${sensorPoetics ? `, inside ${sensorPoetics}` : ''}`;
+      chaosMeta = {
+        version: 'chaos-v2',
+        title: clampText(subject, 80) || 'Chaos V2',
+        negative: 'generic fantasy mush, literal illustration, cluttered symbolism',
+        used: {
+          subject,
+          style,
+          lighting,
+          mood,
+          composition,
+          motif,
+          materiality,
+          temporal_state: temporalState,
+          symbolic_charge: symbolicCharge,
+          sensor_poetics: sensorPoetics,
+          brain_theme: brainTheme || null,
+          cultural_signal: culturalSignal,
+        },
+        ingredients,
+      };
     }
 
-    // Step 5: Generate image via OpenAI
-    return await generate(finalPrompt, {});
+    const image = await generate(finalPrompt, {});
+    return {
+      ...image,
+      chaos: chaosMeta,
+    };
   }
 
   return { generate, generateChaos, callPromptEngine, callCommentaryEngine };

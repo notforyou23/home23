@@ -12,6 +12,11 @@
 files:
   - path: "~/.health_log.jsonl"
     description: "iOS Health Shortcut writes here every N min when the bridge fires"
+    cadenceMin: 15
+    minimumFreshnessMin: 30
+    minimumWindowMin: 30
+    jsonlTsFields: ["ts"]
+    jsonlTopLevelFields: ["ts", "export_info", "metrics"]
   - path: "/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/brain-state.json"
     description: "Synthesis output from the intelligence tab. mtime = last synthesis run."
   - path: "/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/live-problems.json"
@@ -20,6 +25,7 @@ files:
     description: "Autonomous action execution log (ACT dispatcher)"
   - path: "/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/thoughts.jsonl"
     description: "Cognitive-cycle thought stream (timestamp field)"
+    jsonlTsFields: ["timestamp"]
   - path: "/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/event-ledger.jsonl"
     description: "Continuity proof chain"
   - path: "/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/signals.jsonl"

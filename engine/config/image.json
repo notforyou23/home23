@@ -21,7 +21,7 @@
   },
   "providers": {
     "openai": {
-      "model": "gpt-image-1",
+      "model": "gpt-image-2",
       "size": "auto",
       "quality": "auto"
     },

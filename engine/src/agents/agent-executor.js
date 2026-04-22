@@ -192,6 +192,28 @@ class AgentExecutor {
       }
     }
 
+    if (missionSpec.goalId && this.goals) {
+      const liveGoal = this.goals.getGoal?.(missionSpec.goalId) || null;
+      const archivedGoal = Array.isArray(this.goals.archivedGoals)
+        ? this.goals.archivedGoals.find(goal => goal?.id === missionSpec.goalId)
+        : null;
+      const completedGoal = Array.isArray(this.goals.completedGoals)
+        ? this.goals.completedGoals.find(goal => goal?.id === missionSpec.goalId)
+        : null;
+      const nonActiveGoal = archivedGoal || completedGoal || (
+        liveGoal && liveGoal.status && liveGoal.status !== 'active' ? liveGoal : null
+      );
+
+      if (nonActiveGoal) {
+        this.logger.warn('❌ Refusing to spawn agent for non-active goal', {
+          goalId: missionSpec.goalId,
+          status: nonActiveGoal.status || 'unknown',
+          agentType: missionSpec.agentType
+        }, 3);
+        return null;
+      }
+    }
+
     // Get agent class for this type
     const AgentClass = this.agentTypes.get(missionSpec.agentType);
     if (!AgentClass) {

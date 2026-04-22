@@ -13,11 +13,15 @@ cosmo23:
 dashboard:
   vibe:
     autoGenerate: true
-    generationIntervalHours: 1
+    generationIntervalHours: 0.5
     rotationIntervalSeconds: 120
     galleryLimit: 600
     sourcePaths:
       - /Volumes/Casey Jones/_cosmoImages/images
+    dreams:
+      enabled: true
+      lookback: 3
+      extraction: llm
   tiles:
     version: 1
     homeLayout:
@@ -133,18 +137,32 @@ situationalAwareness:
       - PLAYBOOK.md
 osEngine:
   channels:
-    machine:  { enabled: true }   # Phase 4: CPU / memory / disk (threshold crystallize)
-    os:       { enabled: true }   # Phase 4: pm2 / cron / fswatch-home23
-    domain:                       # Phase 3: pressure / health / sauna / weather
+    machine:
+      enabled: true
+    os:
+      enabled: true
+    domain:
       enabled: true
       readers:
-        pressure: { path: ~/.pressure_log.jsonl, tail: true, enabled: true }
-        health:   { path: ~/.health_log.jsonl, tail: true, enabled: true }
-        sauna:    { path: ~/.sauna_usage_log.jsonl, tail: true, enabled: true }
-        weather:  { enabled: false }
-    build:    { enabled: true }   # Phase 2: git / gh / fswatch on home23 paths
-    work:     { enabled: true }   # Phase 2: agenda / live-problems / goals / crons / heartbeat
-    neighbor:                     # Phase 8: poll peer /__state/public.json
+        pressure:
+          path: ~/.pressure_log.jsonl
+          tail: true
+          enabled: true
+        health:
+          path: ~/.health_log.jsonl
+          tail: true
+          enabled: true
+        sauna:
+          path: ~/.sauna_usage_log.jsonl
+          tail: true
+          enabled: true
+        weather:
+          enabled: false
+    build:
+      enabled: true
+    work:
+      enabled: true
+    neighbor:
       enabled: true
       poll: 3m
       peers: auto
@@ -156,11 +174,11 @@ osEngine:
       cyclesWithoutReceiptThreshold: 10
     confidenceCaps:
       sensor_primary: 0.95
-      sensor_derived: 0.80
-      build_event: 0.90
-      work_event: 0.90
-      neighbor_gossip: 0.70
-      zero_context_audit: 0.20
+      sensor_derived: 0.8
+      build_event: 0.9
+      work_event: 0.9
+      neighbor_gossip: 0.7
+      zero_context_audit: 0.2
   decay:
     worker:
       cadence: 30m
@@ -177,18 +195,25 @@ osEngine:
     dedupeBeforeSpawn: false
   publish:
     targets:
-      workspace_insights: { cadence: 50cycles, path: workspace/insights/ }
-      signals:            { cadence: on_verdict_keep }
-      bridge_chat:        { salience_threshold: 0.75 }
-      dashboard:          { cadence: 5m }
-      dream_log:          { cadence: on_critic_keep, path: workspace/dreams/ }
+      workspace_insights:
+        cadence: 50cycles
+        path: workspace/insights/
+      signals:
+        cadence: on_verdict_keep
+      bridge_chat:
+        salience_threshold: 0.75
+      dashboard:
+        cadence: 5m
+      dream_log:
+        cadence: on_critic_keep
+        path: workspace/dreams/
     starvationFloor:
       workspace_insights: 6h
       dashboard: 15m
 media:
   imageGeneration:
     provider: openai
-    model: gpt-image-1.5
+    model: gpt-image-2
 models:
   aliases:
     sonnet:

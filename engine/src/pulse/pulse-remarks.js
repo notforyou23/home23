@@ -83,6 +83,7 @@ const QUIET_INTERVAL_MS = 30 * 60 * 1000;  // if nothing verified changed, stay 
 const NOVELTY_WINDOW = 30;                 // cycles for thought novelty dedup
 const REMARKED_TTL_MS = 30 * 60 * 1000;    // 30 min: don't re-remark on same hash within this window
 const RECENT_BRIEF_DEPTH = 3;              // drop notable events seen in last N briefs (regardless of remark)
+const PULSE_SIGNAL_WINDOW_MS = 60 * 60 * 1000; // pulse only speaks about signals from the last hour
 
 function normalizeForHash(s) {
   return String(s || '').toLowerCase().replace(/\s+/g, ' ').replace(/[^\w\s]/g, '').trim().slice(0, 200);
@@ -189,7 +190,7 @@ class PulseRemarks {
     else if (notable.kind === 'goal') parts.push(notable.status, normalizeForHash(notable.description || ''));
     else if (notable.kind === 'notification') parts.push(notable.source, normalizeForHash((notable.message || '').slice(0, 120)));
     else if (notable.kind === 'action_request_rejected') parts.push(notable.action, notable.target || '');
-    else if (notable.kind === 'synthesis_complete') parts.push(notable.generatedAt || '');
+    else if (notable.kind === 'synthesis_complete') parts.push(notable.model || '', String(notable.insightCount || ''));
     else parts.push(JSON.stringify(notable).slice(0, 120));
     return parts.join('::');
   }
@@ -200,8 +201,77 @@ class PulseRemarks {
 
   _signalStreamHash(signal) {
     if (!signal) return '';
-    if (signal.id) return `signal::${signal.id}`;
-    return `signal::${signal.type || '?'}::${signal.source || '?'}::${normalizeForHash(signal.title || signal.message || '')}`;
+    const semantic = [
+      signal.type || '?',
+      signal.source || '?',
+      normalizeForHash(signal.title || ''),
+      normalizeForHash(signal.message || ''),
+      normalizeForHash(signal.evidence?.problemId || ''),
+    ].join('::');
+    return `signal::${semantic}`;
+  }
+
+  _looksOperationalText(text) {
+    const t = normalizeForHash(text || '');
+    if (!t) return false;
+    return /(health|shortcut|bridge|pipeline|dashboard|correlation view|disk|jsonl|cron|sensor|sauna|pressure|port|pm2|telemetry|data stream|offline|online|resolved|blocked|stale|fresh data|last sent|not sending|not flowing)/i.test(t);
+  }
+
+  _hasCurrentOperationalBacking(text, { liveProblems, signals } = {}) {
+    if (!this._looksOperationalText(text)) return false;
+
+    const problemPool = [
+      ...((liveProblems && liveProblems.open) || []),
+      ...((liveProblems && liveProblems.chronic) || []),
+      ...((liveProblems && liveProblems.resolvedJustNow) || []),
+    ];
+    for (const p of problemPool) {
+      const hay = normalizeForHash(`${p.id || ''} ${p.claim || ''} ${p.detail || ''}`);
+      if (!hay) continue;
+      if (hay.includes('health') && /health|shortcut|pipeline|bridge/.test(text.toLowerCase())) return true;
+      if (hay.includes('disk') && /disk|volume|space/.test(text.toLowerCase())) return true;
+      if (hay.includes('sauna') && /sauna/.test(text.toLowerCase())) return true;
+      if (hay.includes('pressure') && /pressure/.test(text.toLowerCase())) return true;
+      if (hay.includes('cron') && /cron/.test(text.toLowerCase())) return true;
+    }
+
+    for (const s of signals || []) {
+      const hay = normalizeForHash(`${s.title || ''} ${s.message || ''} ${s.evidence?.problemId || ''}`);
+      if (!hay) continue;
+      if (hay.includes('health') && /health|shortcut|pipeline|bridge/.test(text.toLowerCase())) return true;
+      if (hay.includes('disk') && /disk|volume|space/.test(text.toLowerCase())) return true;
+      if (hay.includes('sauna') && /sauna/.test(text.toLowerCase())) return true;
+      if (hay.includes('pressure') && /pressure/.test(text.toLowerCase())) return true;
+      if (hay.includes('cron') && /cron/.test(text.toLowerCase())) return true;
+    }
+
+    return false;
+  }
+
+  _isPulseWorthySignal(signal, now = Date.now()) {
+    if (!signal) return false;
+    const tsMs = Date.parse(signal.ts || 0);
+    if (!tsMs || (now - tsMs) > PULSE_SIGNAL_WINDOW_MS) return false;
+
+    // Registry suggestions belong in the Signals tile, not the pulse voice.
+    if (signal.type === 'registry_suggestion') return false;
+
+    // Failed dispatch receipts are not "wins" just because they emitted a signal.
+    const msg = String(signal.message || '').toLowerCase();
+    if (
+      signal.type === 'autonomous_fix' &&
+      (
+        msg.includes('error calling') ||
+        msg.includes('timed out') ||
+        msg.includes('timeout') ||
+        msg.includes('0 tool calls') ||
+        msg.includes('operation was aborted')
+      )
+    ) {
+      return false;
+    }
+
+    return true;
   }
 
   _shouldSurfaceOpenProblem(problem) {
@@ -574,18 +644,37 @@ class PulseRemarks {
     // 24h. Same contract as LIVE PROBLEMS — Jerry can assert these.
     const sinceMs = Date.now() - 24 * 60 * 60 * 1000;
     const rawSignals = readSignals(this.logsDir, { limit: 20, sinceMs });
-    const filteredSignals = [];
+    const dedupedSignals = new Map();
     for (const s of rawSignals) {
+      if (!this._isPulseWorthySignal(s, now)) continue;
       const h = this._signalStreamHash(s);
       if (this._remarkedSignals.has(h)) continue;
       if (allRecentBriefSignals.has(h)) continue;
-      filteredSignals.push({ ...s, _hash: h });
+      if (!dedupedSignals.has(h)) dedupedSignals.set(h, { ...s, _hash: h });
     }
+    const filteredSignals = Array.from(dedupedSignals.values());
 
     for (const s of filteredSignals) thisBriefSignals.add(s._hash);
 
+    const liveProblemOpenNow = [
+      ...((liveProblems && liveProblems.open) || []),
+      ...((liveProblems && liveProblems.chronic) || []),
+    ];
+    const activeGoals = (snap.goals?.active || []).filter((g) => {
+      const description = g?.description || '';
+      if (!this._looksOperationalText(description)) return true;
+      return this._hasCurrentOperationalBacking(description, {
+        liveProblems: { open: liveProblemOpenNow, chronic: [], resolvedJustNow: [] },
+        signals: [],
+      });
+    });
+
     // Stats card data for tile rotation
-    const stats = this.buildStats(snap, filteredNotable, filteredThoughts);
+    const stats = this.buildStats(snap, filteredNotable, filteredThoughts, {
+      activeGoals,
+      liveProblems,
+      signals: filteredSignals,
+    });
 
     const groundedSignalCount =
       filteredNotable.length +
@@ -606,8 +695,8 @@ class PulseRemarks {
       sensorSummary,
       brain: snap.brain,
       goals: {
-        activeCount: snap.goals?.active?.length || 0,
-        activeDescriptions: (snap.goals?.active || []).slice(0, 3).map(g => (g.description || '').slice(0, 120)),
+        activeCount: activeGoals.length,
+        activeDescriptions: activeGoals.slice(0, 3).map(g => (g.description || '').slice(0, 120)),
       },
       stats,
       liveProblems,
@@ -644,11 +733,11 @@ class PulseRemarks {
     return moving.slice(0, 5);
   }
 
-  buildStats(snap, notable, novelThoughts) {
+  buildStats(snap, notable, novelThoughts, { activeGoals, liveProblems, signals } = {}) {
     const cards = [];
     if (snap.brain?.nodes) cards.push({ icon: '🧠', label: 'nodes', value: snap.brain.nodes });
     if (snap.brain?.edges) cards.push({ icon: '🔗', label: 'edges', value: snap.brain.edges });
-    if (snap.goals?.active?.length) cards.push({ icon: '🎯', label: 'active goals', value: snap.goals.active.length });
+    if ((activeGoals || []).length) cards.push({ icon: '🎯', label: 'active goals', value: activeGoals.length });
 
     // Action counts (last hour)
     const hourAgo = Date.now() - 3600 * 1000;
@@ -663,7 +752,11 @@ class PulseRemarks {
     if (pending) cards.push({ icon: '🔔', label: 'pending notifs', value: pending });
 
     // Top activated concept
-    const top = snap.brain?.topActive?.[0];
+    const top = (snap.brain?.topActive || []).find((item) => {
+      const concept = item?.concept || '';
+      if (!this._looksOperationalText(concept)) return true;
+      return this._hasCurrentOperationalBacking(concept, { liveProblems, signals });
+    });
     if (top) cards.push({ icon: '✨', label: 'top active', value: top.concept.slice(0, 60) });
 
     // Sensor highlights (from tile-backed sensors via registry)

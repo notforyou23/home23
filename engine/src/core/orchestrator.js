@@ -341,6 +341,55 @@ class Orchestrator {
       this.logger?.error?.('[un-archive] failed', { error: err.message, stack: err.stack });
     }
 
+    // One-shot archive hook driven by a request file in brain/control/.
+    // This keeps the archival path inside the live goal system instead of
+    // hand-editing state.json.gz, and is consumed exactly once on startup.
+    try {
+      const fsSync = require('fs');
+      const controlDir = path.join(this.logsDir, 'control');
+      const requestPath = path.join(controlDir, 'archive-goals-request.json');
+      if (fsSync.existsSync(requestPath)) {
+        const request = JSON.parse(fsSync.readFileSync(requestPath, 'utf8'));
+        const goalIds = Array.isArray(request.goalIds)
+          ? request.goalIds.map((id) => String(id).trim()).filter(Boolean)
+          : [];
+        const reason = typeof request.reason === 'string' && request.reason.trim()
+          ? request.reason.trim()
+          : 'maintenance_archive_request';
+        let archived = 0;
+        const archivedIds = [];
+        const skippedIds = [];
+
+        for (const id of goalIds) {
+          if (this.goals.archiveGoal(id, reason)) {
+            archived += 1;
+            archivedIds.push(id);
+          } else {
+            skippedIds.push(id);
+          }
+        }
+
+        const receipt = {
+          requestedAt: request.requestedAt || null,
+          appliedAt: new Date().toISOString(),
+          requested: goalIds.length,
+          archived,
+          reason,
+          archivedIds,
+          skippedIds,
+        };
+        const receiptPath = path.join(controlDir, `archive-goals-applied-${Date.now()}.json`);
+        fsSync.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
+        fsSync.rmSync(requestPath, { force: true });
+        if (archived > 0) {
+          await this.saveState();
+        }
+        this.logger?.info?.('[archive-goals] complete', receipt);
+      }
+    } catch (err) {
+      this.logger?.error?.('[archive-goals] failed', { error: err.message, stack: err.stack });
+    }
+
     // One-shot canonical-node pinning. HOME23_PIN_CANONICAL_NODES=1
     // seeds answer-tagged memory nodes so dedup-before-spawn has real
     // targets. Idempotent (skips when the tag already exists).
@@ -1970,6 +2019,7 @@ class Orchestrator {
           mcpBridge,
           workspacePath,
           brainDir: this.logsDir,
+          liveProblems: this.liveProblems,
           logger: this.logger,
         });
       }
@@ -2015,6 +2065,19 @@ class Orchestrator {
         'architecture, the evidence schema, the enforcer, or loop closure.',
         'Those questions are SETTLED. Move on. The living brain loop is closed',
         'and durable — treat it as background, not subject matter.',
+        '',
+      ].join('\n');
+
+      const operationalTruthDirective = [
+        '═══ OPERATIONAL TRUTH PROTOCOL ═══',
+        'If you make ANY claim about current system or world state — broken, stale, blocked, resolved, online, offline, fresh, empty, not built, next build, current blocker, what is live now, what is quiet now — you MUST ground it first.',
+        'Grounding means using fresh tools, not memory alone.',
+        'Required tools for operational claims:',
+        '  • get_live_problems → for what is broken, stale, blocked, or recently resolved',
+        '  • get_system_state → for current counts / cycle / active state',
+        '  • read_surface HEARTBEAT.md or RECENT.md → for current workspace posture / recent build reality',
+        '  • get_recent_signals → for recent verified wins and positive changes',
+        'If you did not check fresh state, do not state it as fact. Phrase uncertainty or skip it.',
         '',
       ].join('\n');
 
@@ -2064,7 +2127,7 @@ class Orchestrator {
         }
       }
 
-      const rolePromptWithDiagnosis = focusDirective + role.prompt + recentRoleBlock + roleDedupPrefix + footerDiagnosis;
+      const rolePromptWithDiagnosis = focusDirective + operationalTruthDirective + role.prompt + recentRoleBlock + roleDedupPrefix + footerDiagnosis;
 
       const superposition = await this.quantum.generateSuperposition(
         rolePromptWithDiagnosis,
@@ -2262,6 +2325,19 @@ class Orchestrator {
       //     2173 / 2183 / 2423.
       if (thought && typeof thought.hypothesis === 'string') {
         thought.hypothesis = scrubToolArtifacts(thought.hypothesis);
+      }
+
+      if (
+        cycleTools &&
+        this._thoughtLooksOperational(thought?.hypothesis) &&
+        !this._hasFreshOperationalGrounding(thought)
+      ) {
+        this.logger?.info?.('[operational-truth-discard] ungrounded operational claim — discarded', {
+          cycle: this.cycleCount,
+          role: role.id,
+          preview: String(thought?.hypothesis || '').slice(0, 140),
+        });
+        return;
       }
 
       let memoryNode = null;
@@ -5717,6 +5793,34 @@ class Orchestrator {
     } catch (error) {
       this.logger.error('Failed to log', { error: error.message });
     }
+  }
+
+  _thoughtLooksOperational(text) {
+    const s = String(text || '').toLowerCase();
+    if (!s) return false;
+
+    const domain =
+      /\b(health|shortcut|bridge|pipeline|dashboard|correlation view|disk|volume|jsonl|cron|sensor|sauna|pressure|port|pm2|telemetry|signal|data stream|streams|http|endpoint)\b/i.test(s);
+    const status =
+      /\b(blocked|unblocked|broken|stale|dead|down|offline|online|resolved|back online|fresh data|fresh|last sent|not sending|not flowing|quiet right now|current blocker|next build|next logical build|highestleverage next move|not built|live now|live|stable|healthy|operational|all green|all clear|running steady|no open issues|nothing new to report)\b/i.test(s);
+
+    return domain && status;
+  }
+
+  _hasFreshOperationalGrounding(thought) {
+    const toolCalls = Array.isArray(thought?.toolCallLog) ? thought.toolCallLog : [];
+    if (toolCalls.length === 0) return false;
+
+    const liveGroundingTools = new Set([
+      'get_live_problems',
+      'get_system_state',
+      'get_recent_signals',
+    ]);
+
+    return toolCalls.some((call) => {
+      const name = call?.name;
+      return liveGroundingTools.has(name);
+    });
   }
 
   /**

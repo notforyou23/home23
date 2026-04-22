@@ -163,15 +163,33 @@ class MCPBridge {
     const state = await this.readSystemState();
     if (!state?.goals) return { filter: status, count: 0, goals: [] };
 
+    const normalizeActiveEntries = (entries = []) => entries.map(entry => {
+      if (Array.isArray(entry)) {
+        const [id, goal] = entry;
+        return { id, ...(goal || {}) };
+      }
+      return entry || {};
+    });
+
     let goals = [];
     if (status === 'all') {
       goals = [
-        ...(state.goals.active || []).map(g => ({ ...g, status: 'active' })),
-        ...(state.goals.completed || []).map(g => ({ ...g, status: 'completed' })),
-        ...(state.goals.archived || []).map(g => ({ ...g, status: 'archived' })),
+        ...normalizeActiveEntries(state.goals.active || []).map(g => ({
+          ...g,
+          status: g.status || 'active'
+        })),
+        ...(state.goals.completed || []).map(g => ({ ...g, status: g.status || 'completed' })),
+        ...(state.goals.archived || []).map(g => ({ ...g, status: g.status || 'archived' })),
       ];
     } else {
-      goals = (state.goals[status] || []).map(g => ({ ...g, status }));
+      if (status === 'active') {
+        goals = normalizeActiveEntries(state.goals.active || []).map(g => ({
+          ...g,
+          status: g.status || 'active'
+        }));
+      } else {
+        goals = (state.goals[status] || []).map(g => ({ ...g, status: g.status || status }));
+      }
     }
 
     goals = goals
@@ -582,4 +600,3 @@ class MCPBridge {
 }
 
 module.exports = { MCPBridge };
-

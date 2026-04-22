@@ -327,7 +327,7 @@ const toolDefinitions = [
     type: 'function',
     function: {
       name: 'create_image',
-      description: 'Generate high-quality images using GPT-Image-1.5. Best for photorealistic, artistic, or illustrative images. Always create detailed, specific prompts.',
+      description: 'Generate high-quality images using GPT-Image-2. Best for photorealistic, artistic, or illustrative images. Always create detailed, specific prompts.',
       parameters: {
         type: 'object',
         properties: {
@@ -346,8 +346,8 @@ const toolDefinitions = [
           },
           quality: {
             type: 'string',
-            enum: ['auto', 'high', 'standard'],
-            description: 'Image quality - default "high" for best detail. Use "standard" for faster generation'
+            enum: ['auto', 'low', 'medium', 'high', 'standard'],
+            description: 'Image quality - default "high" for best detail. Use "medium" for faster generation.'
           }
         },
         required: ['prompt', 'file_path', 'size', 'quality'],
@@ -359,7 +359,7 @@ const toolDefinitions = [
     type: 'function',
     function: {
       name: 'edit_image',
-      description: 'Edit existing images using GPT-Image-1.5. Can modify images, combine multiple reference images, or use masks for precise editing (inpainting). Perfect for iterative refinements, style changes, or adding/removing elements.',
+      description: 'Edit existing images using GPT-Image-2. Can modify images, combine multiple reference images, or use masks for precise editing (inpainting). Perfect for iterative refinements, style changes, or adding/removing elements.',
       parameters: {
         type: 'object',
         properties: {
@@ -383,7 +383,7 @@ const toolDefinitions = [
           input_fidelity: {
             type: 'string',
             enum: ['low', 'high'],
-            description: 'Input fidelity - "high" preserves details like faces/logos. Use "high" for best results.'
+            description: 'Legacy option. GPT-Image-2 always uses high input fidelity automatically, so this can be omitted.'
           },
           size: {
             type: 'string',
@@ -392,11 +392,11 @@ const toolDefinitions = [
           },
           quality: {
             type: 'string',
-            enum: ['auto', 'high', 'standard'],
+            enum: ['auto', 'low', 'medium', 'high', 'standard'],
             description: 'Quality - use "high" for best detail'
           }
         },
-        required: ['prompt', 'input_images', 'output_path', 'mask_image', 'input_fidelity', 'size', 'quality'],
+        required: ['prompt', 'input_images', 'output_path', 'mask_image', 'size', 'quality'],
         additionalProperties: false
       }
     }
@@ -1405,12 +1405,12 @@ class ToolExecutor {
       console.log(`[IMAGE GEN] 📝 Prompt: "${prompt}"`);
       console.log(`[IMAGE GEN] 📐 Size: ${size || '1536x1024'}, Quality: ${quality || 'high'}`);
       
-      // Use better defaults: high quality and 1536x1024 (landscape, max for gpt-image-1.5)
+      // Use better defaults: high quality and 1536x1024 landscape. GPT Image 2 supports larger sizes too.
       const response = await openai.images.generate({
-        model: 'gpt-image-1.5',
+        model: 'gpt-image-2',
         prompt: prompt.trim(),
         size: size || '1536x1024',  // Default to landscape HD (max supported)
-        quality: quality || 'high',  // Default to high quality
+        quality: quality === 'standard' ? 'medium' : (quality || 'high'),  // Map legacy "standard" to GPT Image 2's "medium"
         n: 1
       });
 
@@ -1499,12 +1499,11 @@ class ToolExecutor {
 
       // Prepare parameters
       const params = {
-        model: 'gpt-image-1.5',
+        model: 'gpt-image-2',
         prompt: prompt.trim(),
         image: imageFiles,
-        input_fidelity: inputFidelity || 'high',
         size: size || '1536x1024',
-        quality: quality || 'high'
+        quality: quality === 'standard' ? 'medium' : (quality || 'high')
       };
 
       // Add mask if provided (treat empty string as no mask)
@@ -1574,4 +1573,3 @@ module.exports = {
   anthropicTools,
   ToolExecutor
 };
-

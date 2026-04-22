@@ -7,7 +7,7 @@ Home23 now has a real `Vibe` system on the dashboard. The center tile is no long
 - hidden manual trigger via triple-click on the `Vibe` header
 - per-agent storage under the agent workspace
 - remote-only text generation path for prompt assembly (`ollama-cloud` or `openai`)
-- final image generation through OpenAI `gpt-image-1`
+- final image generation through OpenAI `gpt-image-2`
 
 This document is the implementation handoff for finishing the feature cleanly and wiring it into onboarding/settings.
 
@@ -147,7 +147,7 @@ This matters because onboarding/settings already own the provider choice and cre
 The final image still goes through OpenAI:
 
 - provider: `openai`
-- model: `gpt-image-1`
+- model: `gpt-image-2`
 
 The prompt-engine model can be `ollama-cloud` or `openai`, but the image call itself is OpenAI.
 
@@ -170,7 +170,7 @@ New-style item shape:
   "thought": "same as prompt for tile/gallery compatibility",
   "promptTemplate": "CHAOS MODE random category assembly plus brain anchors",
   "provider": "openai",
-  "model": "gpt-image-1",
+  "model": "gpt-image-2",
   "algorithm": "chaos-mode",
   "brainAnchors": ["direct brain concept", "current obsession", "top active memory"],
   "brainTheme": null,

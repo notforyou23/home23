@@ -46,7 +46,7 @@ function resolveImageGeneratorConfig(): ImageGeneratorConfig {
     : 'openai';
   const model = typeof configured.model === 'string' && configured.model.trim()
     ? configured.model.trim()
-    : provider === 'minimax' ? 'image-01' : 'gpt-image-1.5';
+    : provider === 'minimax' ? 'image-01' : 'gpt-image-2';
 
   const providers = config.providers as Record<string, { apiKey?: string; baseUrl?: string }> | undefined;
 
@@ -437,7 +437,7 @@ async function generateMiniMaxMusic(
 
 export const generateImageTool: ToolDefinition = {
   name: 'generate_image',
-  description: 'Generate an image from a text prompt. Supports OpenAI (gpt-image-1.5, DALL-E) and MiniMax (image-01). The image is returned to the current channel when that channel supports media. Size can be dimensions (1024x1024) or aspect ratio (16:9).',
+  description: 'Generate an image from a text prompt. Supports OpenAI (gpt-image-2, GPT Image legacy models, DALL-E) and MiniMax (image-01). The image is returned to the current channel when that channel supports media. Size can be dimensions (1024x1024) or aspect ratio (16:9).',
   input_schema: {
     type: 'object',
     properties: {

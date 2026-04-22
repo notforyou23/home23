@@ -4968,6 +4968,21 @@ Be specific, actionable, and maintain research continuity.`;
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
       fs.renameSync(tmp, liveProblemsFile());
     };
+    const auditLiveProblem = (problem) => {
+      try {
+        const { auditProblemSpec } = require('../live-problems/audit');
+        return auditProblemSpec(problem);
+      } catch (err) {
+        return {
+          ok: true,
+          findings: [{
+            severity: 'warning',
+            code: 'audit_unavailable',
+            message: `live-problems audit unavailable: ${err.message}`,
+          }],
+        };
+      }
+    };
     const buildSnapshot = (problems) => {
       const now = Date.now();
       const open = [], chronic = [], resolvedJustNow = [];
@@ -5038,9 +5053,13 @@ Be specific, actionable, and maintain research continuity.`;
         remediation: Array.isArray(body.remediation) ? body.remediation : [],
         seedOrigin: body.seedOrigin || base.seedOrigin || 'user',
       };
+      const audit = next.verifier ? auditLiveProblem(next) : { ok: true, findings: [] };
+      if (!audit.ok) {
+        return res.status(400).json({ error: 'verifier audit failed', findings: audit.findings });
+      }
       if (existingIdx >= 0) list[existingIdx] = next; else list.push(next);
       saveLiveProblems({ problems: list });
-      res.json({ problem: next });
+      res.json({ problem: next, audit });
     });
 
     this.app.put('/api/live-problems/:id', (req, res) => {
@@ -5052,9 +5071,14 @@ Be specific, actionable, and maintain research continuity.`;
       const ALLOWED = ['claim', 'verifier', 'remediation', 'seedOrigin'];
       const update = {};
       for (const key of ALLOWED) { if (body[key] !== undefined) update[key] = body[key]; }
-      list[idx] = { ...list[idx], ...update };
+      const next = { ...list[idx], ...update };
+      const audit = next.verifier ? auditLiveProblem(next) : { ok: true, findings: [] };
+      if (!audit.ok) {
+        return res.status(400).json({ error: 'verifier audit failed', findings: audit.findings });
+      }
+      list[idx] = next;
       saveLiveProblems({ problems: list });
-      res.json({ problem: list[idx] });
+      res.json({ problem: list[idx], audit });
     });
 
     this.app.delete('/api/live-problems/:id', (req, res) => {

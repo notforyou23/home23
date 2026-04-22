@@ -382,7 +382,7 @@ function createSettingsRouter(home23Root) {
   const IMAGE_PROVIDER_CATALOG = Object.freeze({
     openai: {
       displayName: 'OpenAI',
-      models: ['gpt-image-1.5', 'gpt-image-1', 'gpt-image-1-mini', 'dall-e-3', 'dall-e-2'],
+      models: ['gpt-image-2', 'gpt-image-1.5', 'gpt-image-1', 'gpt-image-1-mini', 'dall-e-3', 'dall-e-2'],
     },
     minimax: {
       displayName: 'MiniMax',

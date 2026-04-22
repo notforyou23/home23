@@ -1012,7 +1012,7 @@ async function saveModels() {
     aliases,
     imageGeneration: {
       provider: document.getElementById('image-gen-provider')?.value || 'openai',
-      model: document.getElementById('image-gen-model')?.value || 'gpt-image-1.5',
+      model: document.getElementById('image-gen-model')?.value || 'gpt-image-2',
     },
     providerModels: collectProviderModels(),
     engineRoles,

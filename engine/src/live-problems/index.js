@@ -19,6 +19,8 @@ const yaml = require('js-yaml');
 const { LiveProblemStore } = require('./store');
 const { LiveProblemsLoop } = require('./loop');
 const { seedAll } = require('./seed');
+const { auditProblemList } = require('./audit');
+const { TargetsRegistry } = require('./registry');
 
 function loadActionAllowlistIntegrations() {
   try {
@@ -33,7 +35,23 @@ function loadActionAllowlistIntegrations() {
 
 function initLiveProblems({ brainDir, memory, logger, agentName, dashboardPort, bridgePort, harnessNotifyToken }) {
   const store = new LiveProblemStore({ brainDir, logger });
-  seedAll(store, { agentName, dashboardPort, bridgePort });
+  const seeded = seedAll(store, { agentName, dashboardPort, bridgePort });
+  try {
+    const registry = new TargetsRegistry().load();
+    for (const result of auditProblemList(seeded, { registry })) {
+      for (const finding of result.findings) {
+        const log = finding.severity === 'error' ? logger?.warn : logger?.info;
+        log?.call(logger, '[live-problems] seed audit', {
+          problemId: result.id,
+          severity: finding.severity,
+          code: finding.code,
+          message: finding.message,
+        });
+      }
+    }
+  } catch (err) {
+    logger?.warn?.('[live-problems] seed audit unavailable', { error: err.message });
+  }
 
   const bport = bridgePort || process.env.BRIDGE_PORT || '5004';
   const harnessNotifyUrl = `http://127.0.0.1:${bport}/api/notify`;

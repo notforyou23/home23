@@ -35,6 +35,36 @@ const READABLE_SURFACES = [
 function buildCycleTools() {
   return [
     {
+      name: 'get_system_state',
+      description:
+        'Read the current saved system state: cycle, memory counts, goal counts, and cognitive state. ' +
+        'Use this before making current operational claims about what is active, blocked, or stable.',
+      input_schema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
+      name: 'get_live_problems',
+      description:
+        'Read the current live-problems snapshot. This is the single source of truth for what is broken, stale, blocked, or recently resolved right now.',
+      input_schema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
+      name: 'get_recent_signals',
+      description:
+        'Read recent positive ground-truth signals such as resolved issues, autonomous fixes, and verified observations from the last 24 hours.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'integer', description: 'Max signals (default 10, max 20)', default: 10 },
+        },
+      },
+    },
+    {
       name: 'read_surface',
       description:
         "Read a domain surface file from jtr's workspace. Use this to ground " +
@@ -114,7 +144,7 @@ function buildCycleTools() {
  * @param {Object} ctx.logger
  */
 function buildCycleToolExecutor(ctx) {
-  const { mcpBridge, workspacePath, brainDir, logger } = ctx;
+  const { mcpBridge, workspacePath, brainDir, logger, liveProblems } = ctx;
 
   return async function execute(toolName, toolInput) {
     logger?.info?.('🛠 Cycle tool call', {
@@ -124,6 +154,31 @@ function buildCycleToolExecutor(ctx) {
 
     try {
       switch (toolName) {
+        case 'get_system_state': {
+          if (!mcpBridge?.get_system_state) {
+            return { error: 'Unavailable' };
+          }
+          return await mcpBridge.get_system_state();
+        }
+
+        case 'get_live_problems': {
+          if (!liveProblems?.briefSnapshot) {
+            return { error: 'Live problems unavailable' };
+          }
+          return liveProblems.briefSnapshot();
+        }
+
+        case 'get_recent_signals': {
+          if (!brainDir) return { error: 'brainDir unavailable' };
+          const limit = Math.min(Number(toolInput?.limit) || 10, 20);
+          const { readSignals } = require('./signals');
+          const sinceMs = Date.now() - 24 * 60 * 60 * 1000;
+          return {
+            count: limit,
+            signals: readSignals(brainDir, { limit, sinceMs }),
+          };
+        }
+
         case 'read_surface': {
           const surface = String(toolInput?.surface || '').trim();
           if (!READABLE_SURFACES.includes(surface)) {

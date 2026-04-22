@@ -110,6 +110,8 @@ Rules:
 - If verdict is "keep" or "discard", gaps MUST be [].
 - If verdict is "revise", gaps MUST be concrete, specific, and actionable by the deep-dive phase.
 - agendaCandidates: ONLY on verdict "keep". Extract things that warrant jtr's attention — decisions to make, questions worth answering, concrete next-step ideas. MUST be [] on "discard" or "revise". 0-3 items typical. Each item: 1-2 short sentences, actionable, reference specific graph material where relevant. Leave agendaCandidates: [] if nothing genuinely actionable emerged — not every kept thought needs an agenda item.
+- Do NOT emit agendaCandidates for broad theory prompts, graph archaeology, or open-ended "consider/explore/map/trace" questions unless they cash out into a named decision, a bounded investigation against a specific artifact, or a direct question to jtr that would change what gets built next.
+- Prefer no agenda item over a vague one. If the thought is mainly interpretive/philosophical framing, agendaCandidates should usually be [].
 
 Do not pad. Do not restate the thought. Output the JSON block and nothing else.`;
 
@@ -203,7 +205,8 @@ ${args.thought || '(empty thought)'}`;
           content: String(a.content).trim(),
           kind: ['decision', 'question', 'idea'].includes(a.kind) ? a.kind : 'idea',
           topicTags: Array.isArray(a.topicTags) ? a.topicTags.filter(t => typeof t === 'string') : [],
-        }));
+        }))
+        .filter(a => this._isActionableAgendaCandidate(a));
     }
 
     return { verdict, confidence, gaps: finalGaps, rationale, agendaCandidates, raw: rawText, model: response?.model || null };
@@ -226,6 +229,21 @@ ${args.thought || '(empty thought)'}`;
     if (n < 0) return 0;
     if (n > 1) return n > 1 && n <= 100 ? n / 100 : 1; // tolerate 0-100 scale
     return n;
+  }
+
+  _isActionableAgendaCandidate(item) {
+    if (!item || typeof item.content !== 'string') return false;
+    const text = item.content.trim();
+    if (text.length < 24) return false;
+
+    const lower = text.toLowerCase();
+    const concreteAnchor = /(?:node\s+\d+|goal[_-]\d+|api\b|dashboard\b|shortcut\b|health\b|sauna\b|pressure\b|correlation\b|cron\b|pm2\b|log\b|config\b|workflow\b|forrest\b|jerry\b|recent\.md\b|heartbeat\.md\b|home23\b)/i.test(text);
+    const directUserDecision = /^(clarify focus:|decide:|answer explicitly:|what should|which should|is jtr)/i.test(text);
+    const broadTheoryPrompt = /^(consider|explore|trace|map|locate|look for|find any|corroborate|cross-reference|re-examine)\b/i.test(lower);
+
+    if (broadTheoryPrompt && !concreteAnchor && !directUserDecision) return false;
+    if (item.kind === 'idea' && !concreteAnchor && !directUserDecision) return false;
+    return true;
   }
 }
 

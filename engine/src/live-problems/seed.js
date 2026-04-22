@@ -289,7 +289,7 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
 function seedAll(store, opts) {
   const seeds = defaultSeeds(opts || {});
   for (const s of seeds) store.upsert(s);
-  return seeds.map(s => s.id);
+  return seeds;
 }
 
 module.exports = { seedAll, defaultSeeds };

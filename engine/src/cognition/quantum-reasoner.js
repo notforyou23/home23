@@ -162,6 +162,7 @@ class QuantumReasoner {
             startedAt: new Date(branchStart).toISOString(),
             completedAt: new Date(completedAt).toISOString(),
             durationMs: completedAt - branchStart,
+            toolCallLog: response.toolCallLog || [],
             promptDigest,
             promptPreview,
             decisionSource: branchPlan.source || 'default',
@@ -525,7 +526,7 @@ Respond with ONLY the number (1-${hypotheses.length}) of the best hypothesis.`;
     // Conversation state accumulated across tool-use turns
     const messages = [{
       role: 'user',
-      content: 'Produce your output per the system instructions above, including the required action tag (INVESTIGATE/NOTIFY/TRIGGER/NO_ACTION) on its own line if the role specifies one. You have tools available — use read_surface / query_brain / get_active_goals / etc. to ground your thought in jtr\'s actual world before producing your final answer.',
+      content: 'Produce your output per the system instructions above, including the required action tag (INVESTIGATE/NOTIFY/TRIGGER/NO_ACTION) on its own line if the role specifies one. You have tools available — use them. If you make any current operational claim (broken, stale, blocked, resolved, live now, next build, current blocker, fresh data, online/offline), you must first call fresh grounding tools like get_live_problems, get_system_state, get_recent_signals, or read_surface on HEARTBEAT.md / RECENT.md. Memory alone is not enough for current-state claims.',
     }];
 
     let response = null;
@@ -608,6 +609,8 @@ Respond with ONLY the number (1-${hypotheses.length}) of the best hypothesis.`;
     if (aggregatedReasoning.length > 0) {
       response.reasoning = aggregatedReasoning.join('\n\n---\n\n');
     }
+
+    response.toolCallLog = toolCallLog;
 
     return response;
   }

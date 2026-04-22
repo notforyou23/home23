@@ -418,6 +418,24 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
       return existing;
     }
 
+    const archived = (this.archivedGoals || []).find(goal => goal?.id === goalId);
+    if (archived) {
+      this.logger?.warn('Skipped external goal upsert for archived goal', {
+        goalId,
+        description: archived.description?.substring?.(0, 60)
+      });
+      return null;
+    }
+
+    const completed = (this.completedGoals || []).find(goal => goal?.id === goalId);
+    if (completed) {
+      this.logger?.warn('Skipped external goal upsert for completed goal', {
+        goalId,
+        description: completed.description?.substring?.(0, 60)
+      });
+      return null;
+    }
+
     const desc =
       (description && description.trim().length >= 10)
         ? description.trim().substring(0, 500)
@@ -1122,6 +1140,13 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
   updateGoalProgress(goalId, progressDelta, notes = '') {
     const goal = this.goals.get(goalId);
     if (!goal) return;
+    if (goal.status && goal.status !== 'active') {
+      this.logger?.debug('Ignoring progress update for non-active goal', {
+        goalId,
+        status: goal.status
+      });
+      return;
+    }
 
     goal.progress = Math.max(0, Math.min(1, goal.progress + progressDelta));
     goal.lastPursued = Date.now(); // Store as epoch ms
@@ -1205,6 +1230,10 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
     const goal = this.goals.get(goalId);
     if (!goal) return;
     if (goal.status === 'completed') return; // Already completed, avoid duplicate emit
+    if (goal.status === 'archived') {
+      this.logger?.debug('Ignoring completion for archived goal', { goalId });
+      return;
+    }
 
     goal.status = 'completed';  // Mark as completed, don't delete yet
     goal.completedAt = Date.now(); // Store as epoch ms
@@ -1302,7 +1331,8 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
    * Get statistics
    */
   getStats() {
-    const goals = Array.from(this.goals.values());
+    const goals = Array.from(this.goals.values())
+      .filter(g => g.status === 'active' || !g.status);
 
     return {
       activeGoals: goals.length,
@@ -1545,6 +1575,11 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
   archiveGoal(goalId, reason = 'archived') {
     const goal = this.goals.get(goalId);
     if (!goal) return false;
+    if (goal.status === 'archived') return false;
+    if (goal.status === 'completed') {
+      this.logger?.debug('Skipping archive for completed goal', { goalId });
+      return false;
+    }
 
     goal.status = 'archived';  // Mark as archived
     goal.archivedAt = Date.now();
@@ -1771,10 +1806,40 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
    * Export goals for persistence
    */
   export() {
+    const active = [];
+    const completed = new Map(
+      (this.completedGoals || [])
+        .filter(goal => goal?.id)
+        .map(goal => [goal.id, goal])
+    );
+    const archived = new Map(
+      (this.archivedGoals || [])
+        .filter(goal => goal?.id)
+        .map(goal => [goal.id, goal])
+    );
+
+    for (const [goalId, goal] of this.goals.entries()) {
+      if (!goal) continue;
+
+      if (!goal.status || goal.status === 'active') {
+        active.push([goalId, goal]);
+        continue;
+      }
+
+      if (goal.status === 'completed' && goal.id) {
+        completed.set(goal.id, goal);
+        continue;
+      }
+
+      if (goal.status === 'archived' && goal.id) {
+        archived.set(goal.id, goal);
+      }
+    }
+
     return {
-      active: Array.from(this.goals.entries()),
-      completed: this.completedGoals,
-      archived: this.archivedGoals || [],
+      active,
+      completed: Array.from(completed.values()),
+      archived: Array.from(archived.values()),
       nextGoalId: this.nextGoalId,
       schemaVersion: this.schemaVersion || 0
     };
