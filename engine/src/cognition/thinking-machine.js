@@ -423,6 +423,7 @@ class ThinkingMachine {
               kind: ac.kind,
               topicTags: ac.topicTags,
               sourceCycleSessionId: cycleSessionId,
+              sourceSignal: candidate.signal,
               referencedNodes: dive.referencedNodes,
               temporalContext,
             });

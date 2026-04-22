@@ -28,6 +28,7 @@ const DEFAULT_CONFIG = {
   surfaceLimit: 12,                         // bounded working set visible to jtr
   mergeSimilarityThreshold: 0.9,           // only merge near-identical candidates
   surfaceSimilarityThreshold: 0.62,        // diversify surfaced set across active topics
+  legacyUngroundedActiveStaleAfterMs: 60 * 60 * 1000, // old pre-grounding items should not keep resurfacing
 };
 
 const ACTIVE_STATUSES = new Set(['candidate', 'surfaced']);
@@ -57,6 +58,12 @@ const ABSTRACT_OPENERS = [
   'cross-reference ',
   're-examine ',
 ];
+const OPERATIONAL_AGENDA_ANCHORS = /(?:api\b|endpoint\b|dashboard\b|shortcut\b|health\b|sauna\b|pressure\b|sensor\b|bridge\b|correlation\b|cron\b|pm2\b|process\b|syntaxerror\b|harness\b|chrome cdp\b|disk\b|port\b|run-intraday-review\.js\b|lib\/time\.js\b|ettimehm\b|ticker-home23\b|health shortcut\b|brain-housekeeping\b|node count\b|regression\b|recent\.md\b|heartbeat\.md\b|cleanup\b|alerting\b|watchdog\b)/i;
+const BOUNDED_ARTIFACT_HINTS = /(?:goal[_-]\d+|run-intraday-review\.js|lib\/time\.js|ettimehm|health shortcut|shortcut bridge|ticker-home23|chrome cdp|recent\.md|heartbeat\.md|personal\.md|field-report-cycle|test-discord-delivery)/i;
+const DIRECT_DECISION_OPENERS = /^(clarify focus:|decide:|what should|which should|is the pragmatic answer|should the|does the system|does monitoring|should monitoring)/i;
+const RESEARCH_ARCHEOLOGY_OPENERS = /^(follow the node|consider what deliberate absence|map which other nodes|locate and read|answer explicitly: why is jtr|answer the stated question: what is the primary purpose|test whether home23 can be induced|re-examine the truncated node|trace the|map the|locate the|find any documented instances|corroborate whether|cross-reference the)/i;
+const ACTION_OPENERS = /^(fix|resolve|verify|investigate|check|audit|restore|re-trigger|retrigger|re-enable|reenable|update|implement|diagnose|execute|determine|distinguish)\b/i;
+const META_RESEARCH_PHRASES = /(?:design aspiration|not fully interrogated|documented in the graph|connect it explicitly to|this documents a systematic gap|highest-leverage re-engagement point|operational viability of home23-style frameworks|what is the primary purpose of home23|why is jtr building|whether retrocausal narrative systems|if this claim holds|worth examining$)/i;
 
 class AgendaStore {
   constructor(opts = {}) {
@@ -76,6 +83,8 @@ class AgendaStore {
     } catch {}
 
     this._loadFromDisk();
+    this._applyBootstrapGroundingDecay();
+    this._applyPolicyDecay('bootstrap');
     this.applyStaleDecay(Date.now());
     this._reconcileSurfaced({ actor: 'bootstrap', note: 'initialize surfaced working set' });
   }
@@ -106,6 +115,18 @@ class AgendaStore {
       topicTags: Array.isArray(params.topicTags) ? params.topicTags : [],
     });
 
+    if (!this._passesAgendaPolicy(incoming, params)) {
+      this._appendEvent({
+        type: 'policy_reject',
+        at: now,
+        content,
+        kind: incoming.kind,
+        topicTags: incoming.topicTags,
+        sourceSignal: params.sourceSignal || null,
+      });
+      return null;
+    }
+
     const mergeTarget = this._findMergeTarget(incoming);
     if (mergeTarget) {
       this._mergeIntoExisting(mergeTarget, params, incoming, now);
@@ -121,6 +142,7 @@ class AgendaStore {
       topicTags: incoming.topicTags,
       sourceThoughtId: params.sourceThoughtId || null,
       sourceCycleSessionId: params.sourceCycleSessionId || null,
+      sourceSignal: params.sourceSignal || null,
       referencedNodes: Array.isArray(params.referencedNodes) ? params.referencedNodes : [],
       temporalContext: params.temporalContext || null,
       createdAt: now,
@@ -254,6 +276,50 @@ class AgendaStore {
       this._reconcileSurfaced({ actor: 'decay', note: 'refresh surfaced set after stale decay' });
     }
     if (marked > 0) this.logger.info?.('[agenda-store] decay marked stale', { count: marked });
+    return marked;
+  }
+
+  _applyPolicyDecay(actor = 'policy') {
+    let marked = 0;
+    for (const rec of this.items.values()) {
+      if (!ACTIVE_STATUSES.has(rec.status)) continue;
+      if (this._passesAgendaPolicy(rec, rec)) continue;
+      this.updateStatus(rec.id, 'stale', {
+        actor,
+        note: 'auto-stale non-operational agenda item',
+        skipReconcile: true,
+      });
+      marked++;
+    }
+    if (marked > 0) {
+      this.logger.info?.('[agenda-store] policy marked stale', { count: marked });
+    }
+    return marked;
+  }
+
+  _applyBootstrapGroundingDecay() {
+    const now = Date.now();
+    const threshold = Math.max(0, parseInt(this.config.legacyUngroundedActiveStaleAfterMs || 0, 10) || 0);
+    if (threshold <= 0) return 0;
+
+    let marked = 0;
+    for (const rec of this.items.values()) {
+      if (!ACTIVE_STATUSES.has(rec.status)) continue;
+      if (rec.sourceSignal) continue;
+      const seenMs = new Date(rec.lastSeenAt || rec.updatedAt || rec.createdAt || 0).getTime();
+      if (!Number.isFinite(seenMs)) continue;
+      if ((now - seenMs) < threshold) continue;
+      this.updateStatus(rec.id, 'stale', {
+        actor: 'bootstrap',
+        note: 'auto-stale legacy ungrounded agenda item',
+        skipReconcile: true,
+      });
+      marked++;
+    }
+
+    if (marked > 0) {
+      this.logger.info?.('[agenda-store] grounding decay marked stale', { count: marked });
+    }
     return marked;
   }
 
@@ -471,6 +537,7 @@ class AgendaStore {
     if (params.sourceCycleSessionId) rec.sourceCycleSessionId = params.sourceCycleSessionId;
     rec.topicTags = Array.from(new Set([...(rec.topicTags || []), ...envelope.topicTags]));
     rec.referencedNodes = Array.from(new Set([...(rec.referencedNodes || []), ...(Array.isArray(params.referencedNodes) ? params.referencedNodes : [])]));
+    if (params.sourceSignal) rec.sourceSignal = params.sourceSignal;
     if (params.temporalContext) rec.temporalContext = params.temporalContext;
     this._hydrateRecord(rec);
     this._appendEvent({
@@ -501,11 +568,15 @@ class AgendaStore {
 
     const active = Array.from(this.items.values())
       .filter(rec => ACTIVE_STATUSES.has(rec.status))
+      .filter(rec => this._passesAgendaPolicy(rec, rec))
       .sort((a, b) => this._compareSurfacePriority(a, b));
 
     const surfaced = [];
+    const surfacedFamilies = new Set();
     for (const rec of active) {
       if (surfaced.length >= limit) break;
+      const family = this._surfaceFamily(rec);
+      if (family && surfacedFamilies.has(family)) continue;
       const tooSimilar = surfaced.some(existing =>
         this._similarityScore(
           { kind: rec.kind, normContent: rec._normContent, tokenSet: rec._tokenSet, tagSet: rec._tagSet, anchorSet: rec._anchorSet },
@@ -514,6 +585,7 @@ class AgendaStore {
       );
       if (tooSimilar) continue;
       surfaced.push(rec);
+      if (family) surfacedFamilies.add(family);
     }
 
     const surfacedIds = new Set(surfaced.map(rec => rec.id));
@@ -563,13 +635,63 @@ class AgendaStore {
     const text = String(rec.content || '');
     let score = 0;
 
-    if (/\bnode\s+\d+\b/i.test(text)) score += 3;
     if (/\bgoal[_-]\d+\b/i.test(text)) score += 3;
     if (/(?:api\b|dashboard\b|shortcut\b|pm2\b|cron\b|log\b|config\b|workflow\b|recent\.md\b|heartbeat\.md\b|lib\/time\.js\b|ettimehm\b)/i.test(text)) score += 2;
     if (/(?:health\b|sauna\b|pressure\b|correlation\b|brain-housekeeping\b|forrest\b|jerry\b)/i.test(text)) score += 2;
     if (/^(build|fix|resolve|verify|investigate|audit|restore|re-enable|determine|check)\b/i.test(text.trim())) score += 1;
+    if (/\bnode\s+\d+\b/i.test(text) && OPERATIONAL_AGENDA_ANCHORS.test(text)) score += 1;
+    if (rec.sourceSignal === 'observation-delta' || rec.sourceSignal === 'anomaly') score += 2;
+    if (rec.sourceSignal === 'novelty') score -= 1;
 
     return score;
+  }
+
+  _passesAgendaPolicy(envelope, params = {}) {
+    const text = String(envelope.content || '').trim();
+    if (!text) return false;
+
+    const lower = text.toLowerCase();
+    const sourceSignal = String(params.sourceSignal || envelope.sourceSignal || '').toLowerCase();
+    const operationalAnchor = OPERATIONAL_AGENDA_ANCHORS.test(text);
+    const boundedArtifact = BOUNDED_ARTIFACT_HINTS.test(text)
+      || (/\bnode\s+\d+\b/i.test(text) && operationalAnchor);
+    const directDecision = DIRECT_DECISION_OPENERS.test(lower);
+    const actionOpener = ACTION_OPENERS.test(lower);
+    const researchArcheology = RESEARCH_ARCHEOLOGY_OPENERS.test(lower);
+    const broadTheoryPrompt = ABSTRACT_OPENERS.some(prefix => lower.startsWith(prefix));
+
+    if (researchArcheology) return false;
+    if (META_RESEARCH_PHRASES.test(text)) return false;
+    if (sourceSignal === 'novelty' && !operationalAnchor && !boundedArtifact) return false;
+    if (broadTheoryPrompt && !operationalAnchor && !boundedArtifact) return false;
+    if ((envelope.kind || params.kind) === 'idea' && !(operationalAnchor && actionOpener) && !boundedArtifact) return false;
+    if (directDecision) return operationalAnchor || boundedArtifact;
+    if (!(operationalAnchor || boundedArtifact)) return false;
+    if (!actionOpener && !boundedArtifact) return false;
+    return true;
+  }
+
+  _surfaceFamily(rec) {
+    const text = String(rec?.content || '').toLowerCase();
+    const tags = Array.isArray(rec?.topicTags) ? rec.topicTags.map(t => String(t).toLowerCase()) : [];
+    const joinedTags = tags.join(' ');
+
+    if (/(health shortcut|health stream|health data|correlation|pressure|sauna|forrest)/.test(text) || /(health|correlation|data-streams|health-bridge|health-pipeline)/.test(joinedTags)) {
+      return 'health-correlation';
+    }
+    if (/(run-intraday-review\.js|ettimehm|lib\/time\.js|intraday review|syntaxerror)/.test(text) || /(intraday-review|crash|data-quality|tick-orb-bot|esm)/.test(joinedTags)) {
+      return 'intraday-review';
+    }
+    if (/(cron fleet|brain-housekeeping|ticker-home23|timeout|ram patterns|cron job)/.test(text) || /(cron-fleet|monitoring|system-reliability)/.test(joinedTags)) {
+      return 'cron-fleet';
+    }
+    if (/(pi-sauna bridge|sensor|chrome cdp|harness|bridge)/.test(text) || /(physical-sensors|sauna-bridge|sensor)/.test(joinedTags)) {
+      return 'sensor-bridge';
+    }
+    if (/(node count|brain node|regression|brain-housekeeping)/.test(text) || /(brain|regression|integrity)/.test(joinedTags)) {
+      return 'brain-regression';
+    }
+    return tags[0] || rec.kind || 'misc';
   }
 }
 

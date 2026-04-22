@@ -112,6 +112,9 @@ Rules:
 - agendaCandidates: ONLY on verdict "keep". Extract things that warrant jtr's attention — decisions to make, questions worth answering, concrete next-step ideas. MUST be [] on "discard" or "revise". 0-3 items typical. Each item: 1-2 short sentences, actionable, reference specific graph material where relevant. Leave agendaCandidates: [] if nothing genuinely actionable emerged — not every kept thought needs an agenda item.
 - Do NOT emit agendaCandidates for broad theory prompts, graph archaeology, or open-ended "consider/explore/map/trace" questions unless they cash out into a named decision, a bounded investigation against a specific artifact, or a direct question to jtr that would change what gets built next.
 - Prefer no agenda item over a vague one. If the thought is mainly interpretive/philosophical framing, agendaCandidates should usually be [].
+- For Home23 specifically: agendaCandidates should overwhelmingly be operational. Good examples: fix a broken bridge, verify a stale sensor, resolve a recurring SyntaxError, audit a specific cron/process/log/API mismatch, or ask jtr for a decision that changes what gets built now. Bad examples: "follow this node", "map the mythology", "trace this theme", "answer what Home23 really is", "consider whether absence means X".
+- A node id by itself is NOT enough to justify an agenda item. "Investigate node 77762" is only valid if tied to a concrete operational failure mode, artifact, or fix path.
+- If the thought is fresh research, speculative synthesis, philosophy, or worldbuilding, keep the thought if it deserves to be kept — but agendaCandidates should be [].
 
 Do not pad. Do not restate the thought. Output the JSON block and nothing else.`;
 
@@ -237,12 +240,16 @@ ${args.thought || '(empty thought)'}`;
     if (text.length < 24) return false;
 
     const lower = text.toLowerCase();
-    const concreteAnchor = /(?:node\s+\d+|goal[_-]\d+|api\b|dashboard\b|shortcut\b|health\b|sauna\b|pressure\b|correlation\b|cron\b|pm2\b|log\b|config\b|workflow\b|forrest\b|jerry\b|recent\.md\b|heartbeat\.md\b|home23\b)/i.test(text);
+    const operationalAnchor = /(?:api\b|endpoint\b|dashboard\b|shortcut\b|health\b|sauna\b|pressure\b|sensor\b|bridge\b|pipeline\b|correlation\b|cron\b|pm2\b|process\b|syntaxerror\b|log\b|config\b|workflow\b|harness\b|chrome cdp\b|disk\b|port\b|recent\.md\b|heartbeat\.md\b|run-intraday-review\.js\b|brain-housekeeping\b|node count\b|regression\b)/i.test(text);
+    const boundedArtifact = /(?:node\s+\d+.*(?:syntaxerror|pipeline|sensor|bridge|cron|health|dashboard|regression|metadata|corruption)|goal[_-]\d+|run-intraday-review\.js|lib\/time\.js|ettimehm|ticker-home23|health shortcut|shortcut bridge)/i.test(text);
     const directUserDecision = /^(clarify focus:|decide:|answer explicitly:|what should|which should|is jtr)/i.test(text);
     const broadTheoryPrompt = /^(consider|explore|trace|map|locate|look for|find any|corroborate|cross-reference|re-examine)\b/i.test(lower);
+    const archeologyPrompt = /^(follow the node|map which other nodes|locate and read|answer explicitly: why is jtr|answer the stated question: what is the primary purpose|consider what deliberate absence|test whether home23 can be induced|re-examine the truncated node)/i.test(lower);
 
-    if (broadTheoryPrompt && !concreteAnchor && !directUserDecision) return false;
-    if (item.kind === 'idea' && !concreteAnchor && !directUserDecision) return false;
+    if (archeologyPrompt) return false;
+    if (broadTheoryPrompt && !operationalAnchor && !boundedArtifact && !directUserDecision) return false;
+    if (item.kind === 'idea' && !operationalAnchor && !boundedArtifact && !directUserDecision) return false;
+    if (!operationalAnchor && !boundedArtifact && !directUserDecision) return false;
     return true;
   }
 }
