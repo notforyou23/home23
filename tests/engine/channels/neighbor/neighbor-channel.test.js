@@ -38,3 +38,25 @@ test('NeighborChannel.crystallize uses neighbor_gossip method', () => {
   assert.equal(d.method, 'neighbor_gossip');
   assert.ok(d.tags.includes('idle'));
 });
+
+test('NeighborChannel sends bearer token when configured', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedHeaders = null;
+  globalThis.fetch = async (_url, opts) => {
+    capturedHeaders = opts.headers;
+    return { ok: true, json: async () => ({ agent: 'axiom', snapshotAt: 's-1' }) };
+  };
+
+  try {
+    const ch = new NeighborChannel({
+      peerName: 'axiom',
+      url: 'http://jtrpi.local:5014/__state/public.json',
+      token: 'secret',
+      intervalMs: 10,
+    });
+    assert.equal((await ch.poll()).length, 1);
+    assert.equal(capturedHeaders.authorization, 'Bearer secret');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

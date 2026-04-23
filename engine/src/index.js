@@ -877,35 +877,25 @@ async function main() {
     const neighborCfg = osEngineCfg?.channels?.neighbor;
     if (neighborCfg?.enabled) {
       const { NeighborChannel } = await import('./channels/neighbor/neighbor-channel.js');
+      const { resolveNeighborPeers } = await import('./channels/neighbor/peer-config.js');
       const instancesDir = path.join(home23RepoRoot, 'instances');
       const thisAgent = process.env.HOME23_AGENT || config.agent?.name;
-      let peers = [];
-      if (neighborCfg.peers === 'auto' || !neighborCfg.peers) {
-        try {
-          peers = fs.readdirSync(instancesDir)
-            .filter((name) => name !== thisAgent && fs.statSync(path.join(instancesDir, name)).isDirectory());
-        } catch { peers = []; }
-      } else if (Array.isArray(neighborCfg.peers)) {
-        peers = neighborCfg.peers;
-      }
       const pollMs = (() => {
         const s = neighborCfg.poll || '3m';
         const m = /^(\d+)\s*(s|m|h|d)$/i.exec(String(s).trim());
         if (!m) return 3 * 60 * 1000;
         return parseInt(m[1], 10) * { s: 1000, m: 60_000, h: 3600_000, d: 86400_000 }[m[2].toLowerCase()];
       })();
+      const peers = resolveNeighborPeers({ neighborCfg, instancesDir, thisAgent });
       for (const peer of peers) {
-        // Resolve peer bridge port from its instance config.yaml
-        const peerCfgPath = path.join(instancesDir, peer, 'config.yaml');
-        let bridgePort = null;
-        try {
-          const peerCfg = yaml.load(fs.readFileSync(peerCfgPath, 'utf8')) || {};
-          bridgePort = peerCfg.ports?.bridge;
-        } catch { /* skip peer */ }
-        if (!bridgePort) continue;
-        const url = `http://localhost:${bridgePort}/__state/public.json`;
-        channelBus.register(new NeighborChannel({ peerName: peer, url, intervalMs: pollMs }));
-        registered.push(`neighbor.${peer}`);
+        channelBus.register(new NeighborChannel({
+          peerName: peer.peerName,
+          url: peer.url,
+          token: peer.token,
+          headers: peer.headers,
+          intervalMs: pollMs,
+        }));
+        registered.push(`neighbor.${peer.peerName}`);
       }
     }
 

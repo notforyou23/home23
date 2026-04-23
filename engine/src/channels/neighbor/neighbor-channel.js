@@ -12,20 +12,24 @@
 import { PollChannel } from '../base/poll-channel.js';
 import { ChannelClass, makeObservation } from '../contract.js';
 
-async function defaultFetch(url) {
+async function defaultFetch(url, { token = null, headers = null } = {}) {
   try {
-    const res = await fetch(url, { method: 'GET', headers: { accept: 'application/json' } });
+    const requestHeaders = { accept: 'application/json', ...(headers || {}) };
+    if (token && !requestHeaders.authorization && !requestHeaders.Authorization) {
+      requestHeaders.authorization = `Bearer ${token}`;
+    }
+    const res = await fetch(url, { method: 'GET', headers: requestHeaders });
     if (!res.ok) return null;
     return await res.json();
   } catch { return null; }
 }
 
 export class NeighborChannel extends PollChannel {
-  constructor({ peerName, url, intervalMs = 3 * 60 * 1000, fetchState = null, id = null }) {
+  constructor({ peerName, url, intervalMs = 3 * 60 * 1000, fetchState = null, id = null, token = null, headers = null }) {
     super({ id: id || `neighbor.${peerName}`, class: ChannelClass.NEIGHBOR, intervalMs });
     this.peerName = peerName;
     this.url = url;
-    this.fetchState = typeof fetchState === 'function' ? fetchState : (() => defaultFetch(url));
+    this.fetchState = typeof fetchState === 'function' ? fetchState : (() => defaultFetch(url, { token, headers }));
     this._lastKey = null;
   }
 

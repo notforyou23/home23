@@ -188,7 +188,7 @@ export interface OsEngineConfig {
     domain?:   { enabled?: boolean; readers?: Record<string, { path: string; tail?: boolean; enabled?: boolean }> };
     build?:    { enabled?: boolean; git?: { poll?: string; watch_branches?: string[] }; gh?: { pr_state?: boolean; poll?: string; repo?: string } };
     work?:     { enabled?: boolean; readers?: Record<string, { path: string; tail?: boolean; poll?: string; watch?: boolean }> };
-    neighbor?: { enabled?: boolean; poll?: string; peers?: 'auto' | string[] };
+    neighbor?: { enabled?: boolean; poll?: string; peers?: 'auto' | Array<string | NeighborPeerConfig>; remotePeers?: NeighborPeerConfig[] };
   };
   verification?: { flagRequired?: boolean; zeroContextAsLegal?: boolean };
   crystallization?: {
@@ -202,6 +202,16 @@ export interface OsEngineConfig {
     targets?: Record<string, { cadence?: string; path?: string; salience_threshold?: number }>;
     starvationFloor?: Record<string, string>;
   };
+}
+
+export interface NeighborPeerConfig {
+  name?: string;
+  id?: string;
+  agent?: string;
+  url?: string;
+  publicStateUrl?: string;
+  token?: string;
+  headers?: Record<string, string>;
 }
 
 export interface ChannelsConfig {
