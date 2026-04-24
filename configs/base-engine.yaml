@@ -620,6 +620,7 @@ capabilities:
   defaultMode: observe
 feeder:
   enabled: true
+  maxFileBytes: 5242880
   chunking:
     maxChunkSize: 3000
     overlap: 300

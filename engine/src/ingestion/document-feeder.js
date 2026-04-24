@@ -25,6 +25,9 @@ class DocumentFeeder {
     this.logger = logger;
     this.embeddingFn = embeddingFn || (text => memory.embed(text));
     this.compilerConfig = config.compiler || {};
+    this.maxFileBytes = Number.isFinite(Number(config.maxFileBytes))
+      ? Number(config.maxFileBytes)
+      : 5 * 1024 * 1024;
 
     this._watchers = [];
     this._flushTimer = null;
@@ -270,16 +273,6 @@ class DocumentFeeder {
       return;
     }
 
-    // Build ignored matchers: always ignore dotfiles, plus any user-provided
-    // exclude patterns from config.feeder.excludePatterns (array of glob strings)
-    const userPatterns = Array.isArray(this.config.excludePatterns)
-      ? this.config.excludePatterns.filter(p => typeof p === 'string' && p.trim())
-      : [];
-    const ignored = [
-      /(^|[/\\])\../,  // dotfiles
-      ...userPatterns,
-    ];
-
     // ignoreInitial: false — fire 'add' for every pre-existing file on
     // startup so files that predate the watcher get a one-time scan. The
     // downstream _processFile() hash-staleness gate means already-manifested
@@ -289,7 +282,7 @@ class DocumentFeeder {
       ignoreInitial: false,
       awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 },
       depth: 99,
-      ignored
+      ignored: (candidatePath) => this._shouldIgnorePath(candidatePath)
     });
 
     watcher.on('add', (filePath) => this._onFileEvent(filePath, fixedLabel, watchPath));
@@ -320,6 +313,7 @@ class DocumentFeeder {
       const basename = path.basename(filePath);
       if (basename.startsWith('.')) return;
       if (basename === 'ingestion-manifest.json' || basename === 'ingestion-pending.json') return;
+      if (this._shouldIgnorePath(filePath)) return;
       if (this._isManagedArtifact(basename)) {
         await this._purgeManagedArtifact(filePath, basename);
         return;
@@ -330,6 +324,14 @@ class DocumentFeeder {
       try {
         const stat = fs.statSync(filePath);
         if (!stat.isFile()) return;
+        if (this.maxFileBytes > 0 && stat.size > this.maxFileBytes) {
+          this.logger?.info?.('Skipping file above feeder maxFileBytes', {
+            filePath,
+            size: stat.size,
+            maxFileBytes: this.maxFileBytes
+          });
+          return;
+        }
         fileContent = fs.readFileSync(filePath);
       } catch {
         return; // File gone or unreadable
@@ -439,6 +441,7 @@ class DocumentFeeder {
         for (const entry of entries) {
           if (entry.name.startsWith('.')) continue;
           const full = path.join(dir, entry.name);
+          if (this._shouldIgnorePath(full)) continue;
           if (entry.isDirectory()) {
             files = files.concat(walk(full));
           } else if (entry.isFile()) {
@@ -458,6 +461,32 @@ class DocumentFeeder {
     }
 
     this.logger?.debug?.('Directory scan complete', { dirPath, filesFound: files.length });
+  }
+
+  _shouldIgnorePath(candidatePath) {
+    const basename = path.basename(candidatePath);
+    if (basename.startsWith('.')) return true;
+    if (basename === 'ingestion-manifest.json' || basename === 'ingestion-pending.json') return true;
+
+    const normalized = String(candidatePath).replace(/\\/g, '/');
+    const patterns = Array.isArray(this.config.excludePatterns)
+      ? this.config.excludePatterns.filter(p => typeof p === 'string' && p.trim())
+      : [];
+    return patterns.some(pattern => this._matchesGlob(normalized, pattern));
+  }
+
+  _matchesGlob(normalizedPath, pattern) {
+    const raw = String(pattern || '').trim().replace(/\\/g, '/');
+    if (!raw) return false;
+
+    const escaped = raw
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*\*/g, '\u0000')
+      .replace(/\*/g, '[^/]*')
+      .replace(/\?/g, '[^/]')
+      .replace(/\u0000/g, '.*');
+
+    return new RegExp(`^${escaped}$`).test(normalizedPath);
   }
 
   /**
