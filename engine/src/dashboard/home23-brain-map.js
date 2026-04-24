@@ -16,6 +16,7 @@
   let isLoading = false;
   let initialized = false;
   let activeResizeObserver = null;
+  let clusterCentroids = {};
 
   // ── Color palette ─────────────────────────────────────────────────────────
 
@@ -38,8 +39,8 @@
   };
 
   const EDGE_COLORS = {
-    associative:  'rgba(120, 181, 163, 0.25)',
-    bridge:       'rgba(155, 89, 182, 0.35)',
+    associative:  'rgba(120, 181, 163, 0.45)',
+    bridge:       'rgba(155, 89, 182, 0.12)',
     validates:    'rgba(46, 204, 113, 0.35)',
     contradicts:  'rgba(231, 76, 60, 0.40)',
     synthesizes:  'rgba(69, 183, 209, 0.35)',
@@ -57,6 +58,39 @@
     if (clusterId == null) return '#78b5a3';
     const hue = (clusterId * 137.508) % 360;
     return `hsl(${hue}, 55%, 60%)`;
+  }
+
+  // Fibonacci-sphere centroids — one fixed anchor per cluster so communities
+  // settle into distinct spatial regions instead of collapsing at origin.
+  function computeClusterCentroids(nodes) {
+    const unique = Array.from(new Set(nodes.map(n => n.cluster).filter(c => c != null)));
+    const N = unique.length;
+    if (N === 0) return {};
+    const R = Math.max(260, 70 * Math.cbrt(nodes.length) + N * 14);
+    const phi = Math.PI * (Math.sqrt(5) - 1);
+    const centroids = {};
+    unique.forEach((id, i) => {
+      const y = N === 1 ? 0 : 1 - (i / (N - 1)) * 2;
+      const ring = Math.sqrt(Math.max(0, 1 - y * y));
+      const theta = phi * i;
+      centroids[id] = {
+        x: Math.cos(theta) * ring * R,
+        y: y * R,
+        z: Math.sin(theta) * ring * R
+      };
+    });
+    return centroids;
+  }
+
+  function seedPositions(nodes, centroids) {
+    nodes.forEach(n => {
+      const c = centroids[n.cluster];
+      if (!c) return;
+      const jitter = 45;
+      n.x = c.x + (Math.random() - 0.5) * jitter;
+      n.y = c.y + (Math.random() - 0.5) * jitter;
+      n.z = c.z + (Math.random() - 0.5) * jitter;
+    });
   }
 
   function nodeColor(node) {
@@ -79,6 +113,7 @@
   }
 
   function edgeWidth(edge) {
+    if (edge.type === 'bridge') return 0.15 + edge.weight * 0.4;
     return 0.3 + edge.weight * 1.5;
   }
 
@@ -139,32 +174,44 @@
       .onNodeClick(handleNodeClick)
       .onBackgroundClick(handleBackgroundClick);
 
-    // Cluster force
+    // Pull each node toward its cluster's FIXED centroid on the Fibonacci
+    // sphere — prevents the drift-to-origin collapse that hides communities.
     g.d3Force('cluster', alpha => {
       if (!graphData) return;
-      const centroids = {};
+      const strength = alpha * 0.55;
       graphData.nodes.forEach(n => {
-        if (n.cluster == null) return;
-        if (!centroids[n.cluster]) centroids[n.cluster] = { x: 0, y: 0, z: 0, count: 0 };
-        centroids[n.cluster].x += n.x || 0;
-        centroids[n.cluster].y += n.y || 0;
-        centroids[n.cluster].z += n.z || 0;
-        centroids[n.cluster].count++;
-      });
-      Object.values(centroids).forEach(c => {
-        c.x /= c.count;
-        c.y /= c.count;
-        c.z /= c.count;
-      });
-      const strength = alpha * 0.3;
-      graphData.nodes.forEach(n => {
-        if (n.cluster == null || !centroids[n.cluster]) return;
-        const c = centroids[n.cluster];
+        const c = clusterCentroids[n.cluster];
+        if (!c) return;
         n.vx = (n.vx || 0) + (c.x - (n.x || 0)) * strength;
         n.vy = (n.vy || 0) + (c.y - (n.y || 0)) * strength;
         n.vz = (n.vz || 0) + (c.z - (n.z || 0)) * strength;
       });
     });
+
+    // Stronger, shorter-range repulsion separates clusters spatially while
+    // letting intra-cluster links keep each region tight.
+    const charge = g.d3Force('charge');
+    if (charge && charge.strength) charge.strength(-75).distanceMax(280);
+
+    // Default center force fights the sphere layout — drop it.
+    g.d3Force('center', null);
+
+    // Bridge edges are Watts-Strogatz random shortcuts (dream rewiring) — they
+    // cross clusters by design. Letting them pull at full force drags hub
+    // nodes out of their home cluster with 200+ vectors. Keep them visible
+    // but weaken their layout pull so clusters stay coherent.
+    const linkForce = g.d3Force('link');
+    if (linkForce) {
+      if (linkForce.distance) {
+        linkForce.distance(e => {
+          const base = e.type === 'bridge' ? 180 : 28;
+          return base + (1 - (e.weight || 0)) * 40;
+        });
+      }
+      if (linkForce.strength) {
+        linkForce.strength(e => e.type === 'bridge' ? 0.04 : 0.6);
+      }
+    }
 
     // Responsive resize
     activeResizeObserver = new ResizeObserver(() => {
@@ -321,6 +368,9 @@
 
       graphData = { nodes: data.nodes, edges: validEdges, clusters: data.clusters, meta: data.meta };
 
+      clusterCentroids = computeClusterCentroids(data.nodes);
+      seedPositions(data.nodes, clusterCentroids);
+
       if (!graph) {
         graph = createGraph('brain-map-container');
       }
@@ -334,11 +384,12 @@
           statsEl.textContent = data.meta.nodeCount + ' nodes \u00b7 ' + data.meta.edgeCount + ' edges \u00b7 ' + data.meta.clusterCount + ' clusters';
         }
 
-        // Start zoomed out, then fit to view
-        graph.cameraPosition({ x: 0, y: 0, z: 800 });
+        // Start zoomed out, then fit to view — delay fit so the sphere layout
+        // has time to settle before the camera locks on.
+        graph.cameraPosition({ x: 0, y: 0, z: 1400 });
         setTimeout(() => {
-          if (graph) graph.zoomToFit(800, 80);
-        }, 1500);
+          if (graph) graph.zoomToFit(1000, 120);
+        }, 2200);
       }
     } catch (err) {
       console.error('[BrainMap] Load failed:', err);

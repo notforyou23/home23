@@ -173,6 +173,12 @@ architecture:
       baseFactor: 0.995
       minimumWeight: 0.1
       decayInterval: 3600
+      # Bridges (Watts-Strogatz dream shortcuts) age on a shorter window so
+      # they drain faster than semantic associative edges. Measured in
+      # seconds — any bridge whose `accessed` timestamp is older than this
+      # gets its weight multiplied by hebbian.weakenFactor each decay pass.
+      # Set equal to decayInterval*2 to match old behavior.
+      bridgeDecayInterval: 1800
       exemptTags:
         - agent_insight
         - agent_finding
@@ -183,6 +189,11 @@ architecture:
       maxDepth: 3
       activationThreshold: 0.1
       decayFactor: 0.7
+      # Damping applied to Watts-Strogatz bridge edges during wake-state
+      # traversal and cluster voting. Bridges still carry full weight in
+      # dream rewiring; this only prevents them from dominating semantic
+      # retrieval and cluster assignment. 1.0 = no damping, 0 = ignore bridges.
+      bridgeTraversalFactor: 0.2
     hebbian:
       enabled: true
       reinforcementStrength: 0.1
@@ -192,6 +203,12 @@ architecture:
       averagePathLength: 3
       bridgeProbability: 0.05
       rewireInterval: 600
+      # Fan-out cap: max Watts-Strogatz bridge edges allowed on any single
+      # node. When a new bridge would exceed this, the weakest existing
+      # bridge on the endpoint is evicted to make room. Prevents hub
+      # super-attractors that contaminate traversals. Historical observed
+      # ceiling before cap: 235 on one node. Set to 0 to disable.
+      maxBridgesPerNode: 40
     contextDiversity:
       enabled: true
       noContextProbability: 0.15

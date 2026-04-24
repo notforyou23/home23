@@ -416,18 +416,56 @@ class NetworkMemory {
       if (type !== 'associative' && existing.type !== type) {
         existing.type = type;
       }
-    } else {
-      // CRITICAL FIX: Store explicit source/target (not just key)
-      // Required for proper JSON serialization with string IDs
-      this.edges.set(edgeKey, {
-        source: sortedPair[0],
-        target: sortedPair[1],
-        weight,
-        type,
-        created: new Date(),
-        accessed: new Date()
-      });
+      return;
     }
+
+    // Fan-out cap for bridges: Watts-Strogatz rewiring picks random targets,
+    // so without a cap a handful of nodes win the lottery repeatedly and
+    // become super-attractors (observed: 235 bridges on a single node).
+    // Preserves dream creativity — the new bridge still lands — but evicts
+    // the weakest existing bridge on a saturated endpoint first.
+    if (type === 'bridge') {
+      const cap = this.config.smallWorld?.maxBridgesPerNode ?? 40;
+      this.enforceBridgeCap(sortedPair[0], cap);
+      this.enforceBridgeCap(sortedPair[1], cap);
+    }
+
+    this.edges.set(edgeKey, {
+      source: sortedPair[0],
+      target: sortedPair[1],
+      weight,
+      type,
+      created: new Date(),
+      accessed: new Date()
+    });
+  }
+
+  /**
+   * If `nodeId` already holds `cap` or more bridge edges, evict the weakest
+   * one(s) to make room. O(E) per call; called only when inserting bridges,
+   * which happens during sleep/dream — not on the hot path.
+   */
+  enforceBridgeCap(nodeId, cap) {
+    if (!cap || cap <= 0) return;
+    const nodeStr = String(nodeId);
+    const bridges = [];
+    for (const [key, edge] of this.edges) {
+      if (edge.type !== 'bridge') continue;
+      if (String(edge.source) === nodeStr || String(edge.target) === nodeStr) {
+        bridges.push([key, edge]);
+      }
+    }
+    if (bridges.length < cap) return;
+    bridges.sort((a, b) => a[1].weight - b[1].weight);
+    const toEvict = bridges.length - (cap - 1);
+    for (let i = 0; i < toEvict; i++) {
+      this.edges.delete(bridges[i][0]);
+    }
+    this.logger?.debug?.('Bridge cap enforced', {
+      node: nodeId,
+      evicted: toEvict,
+      cap
+    });
   }
 
   /**
@@ -463,13 +501,20 @@ class NetworkMemory {
           continue;
         }
         
-        const newActivation = activation * edge.weight * decay;
-        
+        // Bridge edges are Watts-Strogatz dream shortcuts (random cross-cluster
+        // rewires), not semantic associations. Damp their pull on wake-state
+        // retrieval so traversals stay on-topic. Bridges still participate in
+        // dream cycles at full weight — this only affects spreadActivation.
+        const typeFactor = edge.type === 'bridge'
+          ? (this.config.spreading.bridgeTraversalFactor ?? 0.2)
+          : 1.0;
+        const newActivation = activation * edge.weight * decay * typeFactor;
+
         if (newActivation >= threshold) {
-          queue.push({ 
-            nodeId: neighborId, 
-            activation: newActivation, 
-            depth: currentDepth + 1 
+          queue.push({
+            nodeId: neighborId,
+            activation: newActivation,
+            depth: currentDepth + 1
           });
         }
       }
@@ -714,12 +759,18 @@ class NetworkMemory {
     // Find most connected cluster
     const clusterScores = new Map();
     
+    const bridgeVote = this.config.spreading.bridgeTraversalFactor ?? 0.2;
     for (const neighborId of this.getNeighbors(nodeId)) {
       const neighbor = this.nodes.get(neighborId);
       if (neighbor && neighbor.cluster !== null) {
+        const edge = this.getEdge(nodeId, neighborId);
+        // Associative edges are full-weight evidence of cluster belonging.
+        // Bridges are random long-range shortcuts — count them fractionally
+        // so they don't overpower semantic signal in cluster assignment.
+        const vote = edge?.type === 'bridge' ? bridgeVote : 1.0;
         clusterScores.set(
           neighbor.cluster,
-          (clusterScores.get(neighbor.cluster) || 0) + 1
+          (clusterScores.get(neighbor.cluster) || 0) + vote
         );
       }
     }
@@ -939,11 +990,17 @@ class NetworkMemory {
       }
     }
     
-    // Also decay edges
+    // Also decay edges. Bridges (Watts-Strogatz dream shortcuts) age on a
+    // shorter window than semantic/associative edges so they drain naturally
+    // instead of accumulating indefinitely. Associative edges keep the
+    // original slower decay so real semantic structure survives.
     if (this.config.hebbian.enabled) {
+      const assocAgeThreshold = decayInterval * 2;
+      const bridgeAgeThreshold = this.config.decay.bridgeDecayInterval ?? decayInterval;
       for (const [key, edge] of this.edges) {
         const age = (now - edge.accessed) / 1000;
-        if (age > decayInterval * 2) { // Edges decay slower
+        const threshold = edge.type === 'bridge' ? bridgeAgeThreshold : assocAgeThreshold;
+        if (age > threshold) {
           edge.weight *= this.config.hebbian.weakenFactor;
         }
       }
