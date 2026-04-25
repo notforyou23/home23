@@ -4784,30 +4784,37 @@ Be specific, actionable, and maintain research continuity.`;
 
     this.app.get('/api/state', async (req, res) => {
       try {
-        const state = await this.loadState();
         const wantsFull = req.query.full === '1' || req.query.full === 'true';
         if (wantsFull) {
+          const state = await this.loadState();
           return res.json(state);
         }
-        // Cheap projection: counts instead of arrays, latest thought summary
-        const memory = state.memory || {};
-        const goals = state.goals || {};
+
+        const summary = await this.getHomeSummary();
         const projection = {
-          cycleCount: state.cycleCount || 0,
-          oscillatorMode: state.oscillatorMode || state.currentMode || 'focus',
-          cognitiveState: state.cognitiveState || {},
+          cycleCount: summary.cycleCount || 0,
+          thoughtCount: summary.thoughtCount || 0,
+          oscillatorMode: summary.temporalState === 'sleeping' ? 'sleep' : 'focus',
+          cognitiveState: {},
           memory: {
-            nodes: Array.isArray(memory.nodes) ? memory.nodes.length : 0,
-            edges: Array.isArray(memory.edges) ? memory.edges.length : 0,
-            clusters: Array.isArray(memory.clusters) ? memory.clusters.length : 0,
+            nodes: Number.isFinite(summary.memoryNodes) ? summary.memoryNodes : 0,
+            edges: 0,
+            clusters: 0,
           },
           goals: {
-            active: Array.isArray(goals.active) ? goals.active.length : 0,
-            completed: Array.isArray(goals.completed) ? goals.completed.length : 0,
-            archived: Array.isArray(goals.archived) ? goals.archived.length : 0,
+            active: 0,
+            completed: 0,
+            archived: 0,
           },
-          temporal: state.temporal || null,
-          lastUpdated: state.lastUpdated || null,
+          temporal: summary.temporalState ? { state: summary.temporalState } : null,
+          journal: summary.lastThoughtText ? [{
+            cycle: summary.cycleCount || 0,
+            role: summary.lastThoughtRole || null,
+            thought: summary.lastThoughtText,
+            timestamp: summary.lastThoughtAt || null,
+          }] : [],
+          lastThoughtAt: summary.lastThoughtAt || null,
+          lastUpdated: summary.generatedAt || null,
           projection: true,
         };
         res.json(projection);

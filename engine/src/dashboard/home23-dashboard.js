@@ -1077,7 +1077,7 @@ function setEngineOfflineStatus() {
 
 async function fetchEngineHealth(agent) {
   const enginePort = agent ? agent.enginePort || 5001 : 5001;
-  return apiFetch(`http://${window.location.hostname}:${enginePort}/health`, { timeoutMs: 3000 });
+  return apiFetch(`http://${window.location.hostname}:${enginePort}/health`, { timeoutMs: 10000 });
 }
 
 function seedPulseFromSummary(summary, engineHealth = null) {
@@ -1983,6 +1983,8 @@ async function loadHomeTiles() {
   if (summary) {
     updateSystemTile(summary);
     seedPulseFromSummary(summary, engineHealth);
+    renderPulse();
+    updatePulseAgo();
   }
 
   if (systemState || summary) {
@@ -1993,9 +1995,9 @@ async function loadHomeTiles() {
     updatePulseFromState(systemState);
   }
 
-  if (engineHealth) {
+  if (engineHealth || summary) {
     setEngineOnlineStatus(enginePulse.state);
-    setText('sys-uptime', formatDurationMs(engineHealth.uptime));
+    if (engineHealth) setText('sys-uptime', formatDurationMs(engineHealth.uptime));
   } else if (!enginePulse.lastEventTime && (!enginePulse.state || enginePulse.state === 'unknown')) {
     setEngineOfflineStatus();
   }
