@@ -98,7 +98,7 @@
           <div id="settings-scope-kicker" style="font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent-blue);margin-bottom:6px;">Settings Scope</div>
           <div id="settings-scope-summary" style="font-size:13px;color:var(--text-secondary);line-height:1.5;">Agent-scoped tabs target the selected agent. Providers, Skills, Vibe, Tiles, and System stay house-wide.</div>
         </div>
-        <div class="h23s-field" style="margin:0;min-width:260px;">
+        <div class="h23s-field" id="settings-agent-select-field" style="margin:0;min-width:260px;">
           <label>Selected Agent</label>
           <select id="settings-agent-select"></select>
         </div>
@@ -258,16 +258,20 @@
       <div class="h23s-panel-header">
         <div>
           <h2 class="h23s-panel-title">Agents</h2>
-          <p class="h23s-panel-desc">Manage your AI agent instances.</p>
+          <p class="h23s-panel-desc">Roster and runtime controls for each Home23 agent.</p>
         </div>
         <button class="h23s-btn-primary" id="btn-create-agent">+ Create Agent</button>
       </div>
 
-      <div class="h23s-agent-list" id="agent-list">
-      </div>
-
       <!-- Agent creation wizard (hidden by default) -->
       <div class="h23s-wizard" id="agent-wizard" style="display:none;">
+        <div class="h23s-wizard-header">
+          <div>
+            <h3 class="h23s-section-title">Create Agent</h3>
+            <p class="h23s-panel-desc">Create a new runtime with its own ports, channels, workspace, and chat default.</p>
+          </div>
+          <button class="h23s-btn-secondary" id="wiz-close" type="button">Close</button>
+        </div>
         <div id="wiz-primary-banner" style="display:none;background:rgba(10,132,255,0.08);border:1px solid rgba(10,132,255,0.2);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--accent-blue);">
           This will be your <strong>home primary agent</strong> &mdash; the house-level default Home23 falls back to when a surface needs a primary. Its chat model becomes the initial system default.
         </div>
@@ -349,6 +353,9 @@
             <button class="h23s-btn-primary" id="wiz-create">Create Agent</button>
           </div>
         </div>
+      </div>
+
+      <div class="h23s-agent-list" id="agent-list">
       </div>
     </div>
 

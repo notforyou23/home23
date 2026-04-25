@@ -36,7 +36,7 @@ const DEFAULT_SETTINGS_SCOPE_REGISTRY = {
     kind: 'mixed',
     chip: 'Mixed',
     agentTarget: 'selected',
-    summaryTemplate: 'Models is mixed-scope. {{selectedAgent}} gets the runtime defaults above, while provider catalogs, aliases, and image generation stay house-wide.',
+    summaryTemplate: 'Models is mixed-scope. {{selectedAgent}} gets chat defaults and cognitive routing, while provider catalogs and aliases stay house-wide.',
   },
   query: {
     kind: 'agent',
@@ -178,9 +178,13 @@ function refreshSettingsDocumentTitle() {
 
 function refreshAgentScopeUI() {
   const select = document.getElementById('settings-agent-select');
+  const selectField = document.getElementById('settings-agent-select-field');
   const kicker = document.getElementById('settings-scope-kicker');
   const summary = document.getElementById('settings-scope-summary');
   const scopeMeta = getScopeMeta();
+  if (selectField) {
+    selectField.style.display = scopeMeta.agentTarget === 'selected' ? '' : 'none';
+  }
   if (select) {
     select.innerHTML = settingsAgents.map(agent => {
       const badges = [
@@ -410,30 +414,37 @@ function renderAgents(agents) {
     const provLabel = PROVIDER_DISPLAY[a.provider] || a.provider || '?';
     const dashUrl = `http://${window.location.hostname}:${a.ports.dashboard || '?'}`;
     return `
-    <div class="h23s-agent-card" data-agent="${a.name}" ${a.isPrimary ? 'style="border-color:var(--accent-blue);"' : ''}>
-      <div class="h23s-agent-summary" onclick="toggleAgentDetail('${a.name}')">
+    <div class="h23s-agent-card ${a.isPrimary ? 'is-primary' : ''}" data-agent="${a.name}">
+      <div class="h23s-agent-summary">
         <div class="h23s-agent-info">
           <span class="h23s-agent-name">${a.displayName || a.name}</span>
           ${a.isPrimary ? '<span class="h23s-agent-badge" style="background:rgba(88,166,255,0.12);color:var(--accent-blue);">PRIMARY</span>' : ''}
           <span class="h23s-agent-badge ${a.status}">${a.status}</span>
         </div>
-        <div style="display:flex;align-items:center;gap:12px;">
+        <div class="h23s-agent-actions">
+          ${a.status === 'running' ? `<a class="h23s-agent-open" href="${dashUrl}/home23" target="_blank" onclick="event.stopPropagation();">Open Dashboard</a>` : ''}
           ${a.status === 'running'
             ? `<button class="h23s-btn-secondary" onclick="event.stopPropagation(); stopAgent('${a.name}')" style="font-size:12px;padding:5px 12px;">Stop</button>`
             : `<button class="h23s-btn-secondary" onclick="event.stopPropagation(); startAgent('${a.name}')" style="font-size:12px;padding:5px 12px;">Start</button>`
           }
-          <span style="color:var(--text-muted);font-size:16px;" id="chevron-${a.name}">&#9656;</span>
+          <button class="h23s-btn-secondary h23s-agent-edit-btn" onclick="event.stopPropagation(); toggleAgentDetail('${a.name}')" id="edit-toggle-${a.name}" type="button">Edit Settings</button>
         </div>
       </div>
-      <div style="display:flex;gap:20px;margin-top:8px;font-size:12px;color:var(--text-muted);flex-wrap:wrap;">
-        <span>Model: <strong style="color:var(--text-secondary);">${a.model || '?'}</strong></span>
-        <span>Provider: <strong style="color:var(--text-secondary);">${provLabel}</strong></span>
-        <span>Owner: <strong style="color:var(--text-secondary);">${a.owner || 'not set'}</strong></span>
-        <span>Ports: <strong style="color:var(--text-secondary);">${a.ports.engine || '?'} / ${a.ports.dashboard || '?'}</strong></span>
-        <span>Channels: <strong style="color:var(--text-secondary);">${[a.channels?.telegram?.enabled && 'Telegram', a.channels?.discord?.enabled && 'Discord'].filter(Boolean).join(', ') || 'Direct only'}</strong></span>
-        ${a.status === 'running' ? `<a href="${dashUrl}/home23" target="_blank" style="color:var(--accent-blue);text-decoration:none;" onclick="event.stopPropagation();">Open Dashboard &rarr;</a>` : ''}
+      <div class="h23s-agent-meta-grid">
+        <span><b>Model</b><strong>${a.model || '?'}</strong></span>
+        <span><b>Provider</b><strong>${provLabel}</strong></span>
+        <span><b>Owner</b><strong>${a.owner || 'not set'}</strong></span>
+        <span><b>Ports</b><strong>${a.ports.engine || '?'} / ${a.ports.dashboard || '?'}</strong></span>
+        <span><b>Channels</b><strong>${[a.channels?.telegram?.enabled && 'Telegram', a.channels?.discord?.enabled && 'Discord'].filter(Boolean).join(', ') || 'Direct only'}</strong></span>
       </div>
       <div class="h23s-agent-detail" id="detail-${a.name}">
+        <div class="h23s-agent-detail-header">
+          <div>
+            <h3 class="h23s-section-title">Agent Settings</h3>
+            <p class="h23s-panel-desc">Identity, chat default, and channel wiring for this agent. Save writes config; restart applies runtime changes.</p>
+          </div>
+          <button class="h23s-btn-secondary" onclick="toggleAgentDetail('${a.name}')" type="button">Close</button>
+        </div>
         <div class="h23s-field-row">
           <div class="h23s-field">
             <label>Display Name</label>
@@ -513,10 +524,10 @@ function renderAgents(agents) {
 
 function toggleAgentDetail(name) {
   const detail = document.getElementById(`detail-${name}`);
-  const chevron = document.getElementById(`chevron-${name}`);
+  const toggle = document.getElementById(`edit-toggle-${name}`);
   if (detail) {
     detail.classList.toggle('open');
-    if (chevron) chevron.innerHTML = detail.classList.contains('open') ? '&#9662;' : '&#9656;';
+    if (toggle) toggle.textContent = detail.classList.contains('open') ? 'Hide Settings' : 'Edit Settings';
   }
 }
 
@@ -678,8 +689,12 @@ let wizardStep = 1;
 let isCreatingPrimary = false;
 
 async function showWizard() {
-  document.getElementById('agent-wizard').style.display = 'block';
-  document.getElementById('btn-create-agent').disabled = true;
+  const wizard = document.getElementById('agent-wizard');
+  const createButton = document.getElementById('btn-create-agent');
+  wizard.style.display = 'block';
+  wizard.classList.add('open');
+  createButton.disabled = true;
+  createButton.textContent = 'Creating Agent';
   wizardStep = 1;
   updateWizardStep();
   document.getElementById('wiz-timezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York';
@@ -693,11 +708,16 @@ async function showWizard() {
 
   const banner = document.getElementById('wiz-primary-banner');
   if (banner) banner.style.display = isCreatingPrimary ? 'block' : 'none';
+  wizard.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function hideWizard() {
-  document.getElementById('agent-wizard').style.display = 'none';
-  document.getElementById('btn-create-agent').disabled = false;
+  const wizard = document.getElementById('agent-wizard');
+  const createButton = document.getElementById('btn-create-agent');
+  wizard.style.display = 'none';
+  wizard.classList.remove('open');
+  createButton.disabled = false;
+  createButton.textContent = '+ Create Agent';
   for (const id of ['wiz-name', 'wiz-display-name', 'wiz-owner', 'wiz-timezone', 'wiz-bot-token', 'wiz-telegram-id']) {
     const el = document.getElementById(id);
     if (el) el.value = '';
@@ -719,6 +739,7 @@ function updateWizardStep() {
 
 function setupWizard() {
   document.getElementById('wiz-cancel').addEventListener('click', hideWizard);
+  document.getElementById('wiz-close')?.addEventListener('click', hideWizard);
 
   document.getElementById('wiz-next-1').addEventListener('click', () => {
     const name = document.getElementById('wiz-name').value.trim();
