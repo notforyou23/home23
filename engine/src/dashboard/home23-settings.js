@@ -36,7 +36,7 @@ const DEFAULT_SETTINGS_SCOPE_REGISTRY = {
     kind: 'mixed',
     chip: 'Mixed',
     agentTarget: 'selected',
-    summaryTemplate: 'Models is mixed-scope. {{selectedAgent}} gets chat defaults and cognitive routing, while provider catalogs and aliases stay house-wide.',
+    summaryTemplate: 'Models is mixed-scope. {{selectedAgent}} gets chat defaults, pulse voice, and cognitive routing. Provider catalogs and aliases stay house-wide.',
   },
   query: {
     kind: 'agent',
@@ -975,7 +975,13 @@ async function saveModels() {
     providerModels: collectProviderModels(),
   };
 
-  const statusEl = document.getElementById('models-status');
+  const statusEls = Array.from(document.querySelectorAll('[data-models-status]'));
+  const setStatus = (text, color) => {
+    for (const el of statusEls) {
+      el.textContent = text;
+      if (color) el.style.color = color;
+    }
+  };
   try {
     const res = await fetch(`${API}/models`, {
       method: 'PUT',
@@ -983,14 +989,15 @@ async function saveModels() {
       body: JSON.stringify(body),
     });
     const data = await res.json();
-    statusEl.textContent = data.ok
-      ? `Saved for ${selectedAgentLabel()}.${data.restartedAgent ? ' Engine restarting.' : ''}`
-      : ('Error: ' + data.error);
-    statusEl.style.color = data.ok ? 'var(--accent-green)' : 'var(--accent-red)';
-    setTimeout(() => { statusEl.textContent = ''; }, 3000);
+    setStatus(
+      data.ok
+        ? `Saved for ${selectedAgentLabel()}.${data.restartedAgent ? ' Engine restarting.' : ''}`
+        : ('Error: ' + data.error),
+      data.ok ? 'var(--accent-green)' : 'var(--accent-red)'
+    );
+    setTimeout(() => setStatus('', ''), 3000);
   } catch (err) {
-    statusEl.textContent = 'Error: ' + err.message;
-    statusEl.style.color = 'var(--accent-red)';
+    setStatus('Error: ' + err.message, 'var(--accent-red)');
   }
 }
 
@@ -3982,6 +3989,7 @@ async function init() {
   document.getElementById('btn-save-providers').addEventListener('click', saveProviders);
   document.getElementById('btn-create-agent').addEventListener('click', showWizard);
   document.getElementById('btn-save-models').addEventListener('click', saveModels);
+  document.getElementById('btn-save-model-catalog')?.addEventListener('click', saveModels);
   document.getElementById('btn-save-query')?.addEventListener('click', saveQuerySettings);
   document.getElementById('btn-save-assignments')?.addEventListener('click', saveAssignments);
   document.getElementById('btn-reset-assignments')?.addEventListener('click', resetAssignments);

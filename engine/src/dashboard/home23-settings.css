@@ -212,6 +212,97 @@
   margin: 0 0 12px 0;
 }
 
+.h23s-disclosure {
+  margin: 14px 0 18px;
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: var(--radius-md);
+  background: rgba(255,255,255,0.025);
+}
+
+.h23s-disclosure summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  color: var(--text-primary);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.h23s-disclosure summary::-webkit-details-marker {
+  display: none;
+}
+
+.h23s-disclosure summary::after {
+  content: '+';
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 999px;
+  color: var(--text-muted);
+}
+
+.h23s-disclosure[open] summary::after {
+  content: '-';
+}
+
+.h23s-disclosure summary strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.h23s-disclosure summary small {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.h23s-disclosure-body {
+  padding: 0 16px 16px;
+}
+
+.h23s-models-advanced {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.015));
+}
+
+.h23s-actions-compact {
+  margin-top: 6px;
+  padding-top: 12px;
+}
+
+.h23s-assign-row select,
+.h23s-assign-fb select,
+#provider-models-list input {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: var(--text-primary);
+  border-radius: 9px;
+  padding: 7px 9px;
+  font-family: inherit;
+  outline: none;
+}
+
+.h23s-assign-row select:focus,
+.h23s-assign-fb select:focus,
+#provider-models-list input:focus {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 2px rgba(10, 132, 255, 0.15);
+}
+
+.h23s-assign-row option,
+.h23s-assign-fb option {
+  color: #111827;
+}
+
 /* ── Form Fields ── */
 
 .h23s-field {

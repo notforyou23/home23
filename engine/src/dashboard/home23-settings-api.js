@@ -215,7 +215,7 @@ function createSettingsRouter(home23Root) {
       kind: 'mixed',
       chip: 'Mixed',
       agentTarget: 'selected',
-      summaryTemplate: 'Models is mixed-scope. {{selectedAgent}} gets the runtime defaults above, while provider catalogs, aliases, and image generation stay house-wide.',
+      summaryTemplate: 'Models is mixed-scope. {{selectedAgent}} gets chat defaults, pulse voice, and cognitive routing. Provider catalogs and aliases stay house-wide.',
       routes: [
         { method: 'GET', path: '/models' },
         { method: 'PUT', path: '/models' },

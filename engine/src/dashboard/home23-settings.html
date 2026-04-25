@@ -362,7 +362,7 @@
     <!-- Models Panel -->
     <div class="h23s-panel" id="panel-models">
       <h2 class="h23s-panel-title">Models</h2>
-      <p class="h23s-panel-desc">Chat defaults and cognitive routing for <strong data-scope-label="models">the selected agent</strong>. House-wide provider catalogs and aliases are still here because they feed shared model pickers.</p>
+      <p class="h23s-panel-desc">Pick the normal chat model for <strong data-scope-label="models">the selected agent</strong>. Advanced routing and house-wide model catalogs are still available below, but they stay out of the main path.</p>
 
       <div class="h23s-section">
         <h3 class="h23s-section-title">Chat Default</h3>
@@ -377,11 +377,15 @@
             <select id="models-default-model"></select>
           </div>
         </div>
+        <div class="h23s-actions h23s-actions-compact">
+          <button class="h23s-btn-primary" id="btn-save-models">Save Chat Default</button>
+          <span class="h23s-save-status" id="models-status" data-models-status></span>
+        </div>
       </div>
 
       <div class="h23s-section">
         <h3 class="h23s-section-title">Pulse Voice</h3>
-        <p class="h23s-panel-desc" style="margin-top:0;">The model and voice prompt for <strong data-scope-label="models">the selected agent</strong>'s dashboard remarks. Defaults to that agent's chat default; override here to give its pulse a different voice.</p>
+        <p class="h23s-panel-desc" style="margin-top:0;">Optional model override for <strong data-scope-label="models">the selected agent</strong>'s dashboard remarks. Leave it aligned with chat unless the pulse needs a different voice model.</p>
         <div class="h23s-field-row">
           <div class="h23s-field">
             <label>Provider</label>
@@ -392,11 +396,21 @@
             <select id="pulse-voice-model"></select>
           </div>
         </div>
-        <div class="h23s-field" style="margin-top:8px;">
-          <label>System prompt (remark voice)</label>
-          <textarea id="pulse-voice-prompt" rows="9" style="font-family:inherit;font-size:12px;line-height:1.5;width:100%;resize:vertical;"></textarea>
-          <p style="font-size:11px;color:var(--text-muted);margin-top:4px;">How the dashboard voice talks. Tune freely — this is the personality.</p>
-        </div>
+        <details class="h23s-disclosure h23s-models-advanced">
+          <summary>
+            <span>
+              <strong>Voice Prompt Editor</strong>
+              <small>Dashboard remark personality for this agent.</small>
+            </span>
+          </summary>
+          <div class="h23s-disclosure-body">
+            <div class="h23s-field" style="margin-top:8px;">
+              <label>System prompt (remark voice)</label>
+              <textarea id="pulse-voice-prompt" rows="9" style="font-family:inherit;font-size:12px;line-height:1.5;width:100%;resize:vertical;"></textarea>
+              <p class="h23s-inline-note">How the dashboard voice talks. Tune this when the pulse remarks need a different personality.</p>
+            </div>
+          </div>
+        </details>
         <div class="h23s-actions" style="border-top:none;padding-top:8px;">
           <button class="h23s-btn-primary" id="btn-save-pulse-voice">Save</button>
           <button class="h23s-btn-secondary" id="btn-reset-pulse-prompt" style="margin-left:8px;">Reset Prompt to Default</button>
@@ -404,40 +418,57 @@
         </div>
       </div>
 
-      <div class="h23s-section">
-        <h3 class="h23s-section-title">Cognitive Assignments</h3>
-        <p class="h23s-panel-desc" style="margin-top:0;">Advanced per-slot routing for the thinking engine. Each row is one internal model call path, with optional fallbacks for errors or rate limits.</p>
-        <div id="model-assignments-list" style="display:flex;flex-direction:column;gap:10px;"></div>
-        <div class="h23s-actions" style="border-top:none;padding-top:8px;">
-          <button class="h23s-btn-primary" id="btn-save-assignments">Save Assignments</button>
-          <button class="h23s-btn-secondary" id="btn-reset-assignments" style="margin-left:8px;">Reset All to Base Defaults</button>
-          <span class="h23s-save-status" id="assignments-status"></span>
+      <details class="h23s-disclosure h23s-models-advanced">
+        <summary>
+          <span>
+            <strong>Advanced Cognitive Routing</strong>
+            <small>Internal engine slots, primary models, and fallbacks.</small>
+          </span>
+        </summary>
+        <div class="h23s-disclosure-body">
+          <p class="h23s-panel-desc" style="margin-top:0;">Per-slot routing for the thinking engine. Each row is one internal model call path, with optional fallbacks for errors or rate limits.</p>
+          <div id="model-assignments-list" style="display:flex;flex-direction:column;gap:10px;"></div>
+          <div class="h23s-actions" style="border-top:none;padding-top:8px;">
+            <button class="h23s-btn-primary" id="btn-save-assignments">Save Assignments</button>
+            <button class="h23s-btn-secondary" id="btn-reset-assignments" style="margin-left:8px;">Reset All to Base Defaults</button>
+            <span class="h23s-save-status" id="assignments-status"></span>
+          </div>
         </div>
-      </div>
+      </details>
 
-      <div class="h23s-section">
-        <h3 class="h23s-section-title">Available Models per Provider</h3>
-        <p class="h23s-panel-desc" style="margin-top:0;">House-wide model catalog. These are the models shown in evobrew and shared pickers across Home23.</p>
-        <div id="provider-models-list"></div>
-      </div>
+      <details class="h23s-disclosure h23s-models-advanced">
+        <summary>
+          <span>
+            <strong>House-Wide Catalog and Aliases</strong>
+            <small>Shared provider model lists and shortcut names.</small>
+          </span>
+        </summary>
+        <div class="h23s-disclosure-body">
+          <div class="h23s-section">
+            <h3 class="h23s-section-title">Available Models per Provider</h3>
+            <p class="h23s-panel-desc" style="margin-top:0;">House-wide model catalog. These are the models shown in evobrew and shared pickers across Home23.</p>
+            <div id="provider-models-list"></div>
+          </div>
 
-      <div class="h23s-section">
-        <h3 class="h23s-section-title">Aliases</h3>
-        <p class="h23s-panel-desc" style="margin-top:0;">House-wide shortcuts that any agent can use when resolving model names.</p>
-        <table class="h23s-table" id="aliases-table">
-          <thead>
-            <tr><th>Alias</th><th>Provider</th><th>Model</th><th></th></tr>
-          </thead>
-          <tbody id="aliases-body">
-          </tbody>
-        </table>
-        <button class="h23s-btn-secondary" id="btn-add-alias" style="margin-top:8px;">+ Add Alias</button>
-      </div>
+          <div class="h23s-section">
+            <h3 class="h23s-section-title">Aliases</h3>
+            <p class="h23s-panel-desc" style="margin-top:0;">House-wide shortcuts that any agent can use when resolving model names.</p>
+            <table class="h23s-table" id="aliases-table">
+              <thead>
+                <tr><th>Alias</th><th>Provider</th><th>Model</th><th></th></tr>
+              </thead>
+              <tbody id="aliases-body">
+              </tbody>
+            </table>
+            <button class="h23s-btn-secondary" id="btn-add-alias" style="margin-top:8px;">+ Add Alias</button>
+          </div>
 
-      <div class="h23s-actions">
-        <button class="h23s-btn-primary" id="btn-save-models">Save</button>
-        <span class="h23s-save-status" id="models-status"></span>
-      </div>
+          <div class="h23s-actions">
+            <button class="h23s-btn-primary" id="btn-save-model-catalog">Save Catalog</button>
+            <span class="h23s-save-status" data-models-status></span>
+          </div>
+        </div>
+      </details>
     </div>
 
     <!-- Query Panel -->
