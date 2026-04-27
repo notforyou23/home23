@@ -650,7 +650,9 @@ export class AgentLoop {
       if (userText) {
         userContent.push({ type: 'text', text: userText });
       }
-      // Add images as vision blocks
+      // Add images as vision blocks. Carry path/fileName on the block so
+      // history.ts can persist an image_ref pointer (instead of base64) and
+      // rehydrate from disk on the next load — survives across turns.
       if (userMedia) {
         for (const m of userMedia) {
           if (m.type === 'image') {
@@ -663,6 +665,8 @@ export class AgentLoop {
                 media_type: m.mimeType || 'image/jpeg',
                 data,
               },
+              path: m.path,
+              fileName: m.fileName,
             });
           }
         }

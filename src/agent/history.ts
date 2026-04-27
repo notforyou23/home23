@@ -25,7 +25,8 @@ export type HistoryRecord = StoredMessage | SessionBoundary;
 
 export type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string }; path?: string; fileName?: string }
+  | { type: 'image_ref'; path: string; mimeType: string; fileName?: string }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
   | { type: 'thinking'; thinking: string; signature?: string }
@@ -46,6 +47,56 @@ function stripThinking(msg: StoredMessage): StoredMessage {
   // empty content array.
   const content = filtered.length > 0 ? filtered : [{ type: 'text' as const, text: '' }];
   return { ...msg, content };
+}
+
+// Replace base64 image blocks with image_ref pointers (path + mime). The
+// bytes already live on disk under instances/<agent>/uploads/chat/ or the
+// channel-specific download dir, so we don't need to keep them in JSONL —
+// we re-read on load(). Falls back to a text placeholder when no path is
+// available (legacy in-memory image without source path).
+function stripImageData(msg: StoredMessage): StoredMessage {
+  if (!Array.isArray(msg.content)) return msg;
+  let changed = false;
+  const replaced = msg.content.map(b => {
+    if (b.type === 'image' && 'source' in b && b.source?.type === 'base64') {
+      changed = true;
+      if (b.path) {
+        return { type: 'image_ref' as const, path: b.path, mimeType: b.source.media_type, fileName: b.fileName };
+      }
+      return { type: 'text' as const, text: `[image: ${b.source.media_type}]` };
+    }
+    return b;
+  });
+  return changed ? { ...msg, content: replaced } : msg;
+}
+
+// Re-read image_ref blocks from disk into full base64 image blocks so the
+// model can see the bytes on subsequent turns. Files that no longer exist
+// fall back to a text placeholder with a "(file unavailable)" note.
+function hydrateImageRefs(msg: StoredMessage): StoredMessage {
+  if (!Array.isArray(msg.content)) return msg;
+  let changed = false;
+  const hydrated = msg.content.map(b => {
+    if (b.type === 'image_ref') {
+      changed = true;
+      try {
+        if (existsSync(b.path)) {
+          const data = readFileSync(b.path).toString('base64');
+          return {
+            type: 'image' as const,
+            source: { type: 'base64' as const, media_type: b.mimeType, data },
+            path: b.path,
+            fileName: b.fileName,
+          };
+        }
+      } catch {
+        // fall through to placeholder
+      }
+      return { type: 'text' as const, text: `[image: ${b.mimeType} (file unavailable)]` };
+    }
+    return b;
+  });
+  return changed ? { ...msg, content: hydrated } : msg;
 }
 
 export class ConversationHistory {
@@ -82,7 +133,7 @@ export class ConversationHistory {
             continue;
           }
           if (rec && typeof rec === 'object' && !('type' in rec && (rec as { type: string }).type === 'session_boundary')) {
-            records.push(stripThinking(rec as StoredMessage));
+            records.push(hydrateImageRefs(stripThinking(rec as StoredMessage)));
           } else {
             records.push(rec);
           }
@@ -100,29 +151,20 @@ export class ConversationHistory {
     }
   }
 
-  /** Append records to a chat's history. Adds timestamps to messages. Strips base64 image data to prevent context bloat. */
+  /** Append records to a chat's history. Adds timestamps to messages. Strips base64 image data (replaced by image_ref pointing at the on-disk file) to prevent context bloat. */
   append(chatId: string, records: HistoryRecord[]): void {
     const filePath = this.filePath(chatId);
     const now = new Date().toISOString();
     const timestamped = records.map(r => {
-      // Session boundaries already have ts
       if ('type' in r && r.type === 'session_boundary') return r;
-      // Add ts to messages that don't have one
       const msg = r as StoredMessage;
       const withTs = msg.ts ? msg : { ...msg, ts: now };
-      // Strip base64 image data — store a placeholder instead
-      if (Array.isArray(withTs.content)) {
-        withTs.content = withTs.content.map(b => {
-          if (b.type === 'image' && 'source' in b && b.source?.type === 'base64') {
-            return { type: 'text' as const, text: `[image: ${b.source.media_type}]` };
-          }
-          return b;
-        });
-      }
       // Strip thinking blocks — they're intra-turn only; storing them leads
       // to "Invalid signature in thinking block" on replay when the signature
       // format no longer matches the current provider (e.g., MiniMax → Anthropic).
-      return stripThinking(withTs);
+      // Then strip base64 image data — keep the disk path via image_ref so a
+      // future load() can rehydrate the bytes back into a full image block.
+      return stripImageData(stripThinking(withTs));
     });
     const lines = timestamped.map(r => JSON.stringify(r)).join('\n') + '\n';
     appendFileSync(filePath, lines);
@@ -252,10 +294,14 @@ export class ConversationHistory {
     return result;
   }
 
-  /** Rewrite the history file with provided records. */
+  /** Rewrite the history file with provided records. Strips thinking blocks and base64 image data on the way out, same as append(). */
   compact(chatId: string, records: HistoryRecord[]): void {
     const filePath = this.filePath(chatId);
-    const content = records.map(r => JSON.stringify(r)).join('\n') + '\n';
+    const stripped = records.map(r => {
+      if ('type' in r && r.type === 'session_boundary') return r;
+      return stripImageData(stripThinking(r as StoredMessage));
+    });
+    const content = stripped.map(r => JSON.stringify(r)).join('\n') + '\n';
     writeFileSync(filePath, content);
   }
 
