@@ -2273,6 +2273,71 @@ body.h23-external-focus #cosmo23-frame-wrap {
   min-height: 100vh;
 }
 
+body.h23-external-focus .cosmo23-home-toggle {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  z-index: 60;
+  min-height: 34px;
+  padding: 0 13px;
+  border: 1px solid rgba(26, 92, 82, 0.24);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #174840;
+  box-shadow: 0 8px 22px rgba(13, 40, 36, 0.16);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+body:not(.h23-external-focus) .cosmo23-home-toggle {
+  display: none;
+}
+
+body.h23-external-focus.h23-external-drawer-open .h23-sidebar {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: 55;
+  display: flex !important;
+  width: var(--sidebar-width);
+  height: calc(100vh - 24px);
+  max-height: calc(100vh - 24px);
+  overflow: hidden;
+}
+
+body.h23-external-focus.h23-external-drawer-open .h23-sidebar-scroll {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+body.h23-external-focus.h23-external-drawer-open .h23-tabs,
+body.h23-external-focus.h23-external-drawer-open .h23-linked-tabs,
+body.h23-external-focus.h23-external-drawer-open #agent-tabs {
+  flex-direction: column;
+  flex-wrap: nowrap;
+}
+
+body.h23-external-focus.h23-external-drawer-open .h23-tab {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+body.h23-external-focus.h23-external-drawer-open .h23-sidebar-card {
+  display: none;
+}
+
+body.h23-external-focus.h23-external-drawer-open #cosmo23-home-toggle-btn {
+  left: calc(var(--sidebar-width) + 28px);
+}
+
 body.h23-external-focus #cosmo23-refresh-btn {
   top: 14px !important;
   right: 18px !important;

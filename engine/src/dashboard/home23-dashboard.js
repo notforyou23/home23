@@ -100,7 +100,9 @@ function renderDashboardScopeText(meta, tabKey = currentTab) {
 }
 
 function refreshDashboardScopeUI() {
-  document.body.classList.toggle('h23-external-focus', currentTab === 'cosmo23');
+  const isCosmoTab = currentTab === 'cosmo23';
+  document.body.classList.toggle('h23-external-focus', isCosmoTab);
+  if (!isCosmoTab) setCosmoHomeDrawerOpen(false);
 
   document.querySelectorAll('.h23-tab[data-tab], .h23-tab[data-scope-tab]').forEach(tab => {
     const tabKey = tab.dataset.scopeTab || tab.dataset.tab;
@@ -1229,6 +1231,7 @@ async function loadAgents() {
       cosmoBtn.classList.add('active');
       currentTab = 'cosmo23';
       refreshDashboardScopeUI();
+      setCosmoHomeDrawerOpen(false);
       showCosmoFrame();
     });
   }
@@ -1245,6 +1248,13 @@ async function loadAgents() {
   const refreshBtn = document.getElementById('cosmo23-refresh-btn');
   if (refreshBtn) {
     refreshBtn.addEventListener('click', () => refreshCosmoFrame());
+  }
+
+  const homeToggleBtn = document.getElementById('cosmo23-home-toggle-btn');
+  if (homeToggleBtn) {
+    homeToggleBtn.addEventListener('click', () => {
+      setCosmoHomeDrawerOpen(!document.body.classList.contains('h23-external-drawer-open'));
+    });
   }
 
   // Wire Intelligence tab synthesis button
@@ -1276,6 +1286,17 @@ function showCosmoFrame() {
 function hideCosmoFrame() {
   const wrap = document.getElementById('cosmo23-frame-wrap');
   if (wrap) wrap.style.display = 'none';
+  setCosmoHomeDrawerOpen(false);
+}
+
+function setCosmoHomeDrawerOpen(open) {
+  const enabled = currentTab === 'cosmo23' && !!open;
+  document.body.classList.toggle('h23-external-drawer-open', enabled);
+  const button = document.getElementById('cosmo23-home-toggle-btn');
+  if (button) {
+    button.setAttribute('aria-expanded', String(enabled));
+    button.textContent = enabled ? 'Close Home23' : 'Home23';
+  }
 }
 
 function refreshCosmoFrame() {

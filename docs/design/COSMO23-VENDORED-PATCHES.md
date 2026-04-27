@@ -609,8 +609,7 @@ could not immediately tell that this was the Home23-managed COSMO workspace.
 - launch form promoted as the primary workflow
 - managed setup panel replaced with research-at-a-glance and recent local runs
 - refresh action that reloads setup, models, status, and brain library together
-- responsive rules that keep the COSMO rail on the left in normal embedded
-  Home23 widths, only collapsing it to a top strip on phone-sized screens
+- responsive rules for collapsing the rail and preserving readable launch cards
 - Brains, Watch, Query, Map, Intelligence, Hub, Interactive, and Ingest share
   bounded Home23 card layouts instead of unbounded standalone stacks
 - Brain Map has a no-WebGL fallback so browsers without 3D context still show
