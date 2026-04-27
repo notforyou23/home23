@@ -912,20 +912,43 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               ? systemPrompt
               : (systemPrompt as Array<{ text: string }>).map(b => b.text).join('\n');
 
-            // Convert Anthropic-format history to plain OAI messages
+            // Convert Anthropic-format history to OAI messages.
+            // For user messages with image blocks, build a Responses API content
+            // array so vision models can actually see the bytes.
             const chatMsgs: Array<Record<string, unknown>> = [];
             for (const m of truncated) {
               if (typeof m.content === 'string') {
                 chatMsgs.push({ role: m.role, content: m.content });
               } else {
-                const parts: string[] = [];
-                for (const block of m.content as Array<Record<string, unknown>>) {
-                  if (block.type === 'text' && block.text) parts.push(block.text as string);
-                  else if (block.type === 'tool_use') parts.push(`[Used tool: ${block.name}]`);
-                  else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 200)}]`);
-                  else if (block.type === 'image') parts.push('[image]');
+                const blocks = m.content as Array<Record<string, unknown>>;
+                const hasImage = m.role === 'user' && blocks.some(b => b.type === 'image');
+                if (hasImage) {
+                  const respContent: Array<Record<string, unknown>> = [];
+                  for (const block of blocks) {
+                    if (block.type === 'text' && block.text) {
+                      respContent.push({ type: 'input_text', text: block.text as string });
+                    } else if (block.type === 'image') {
+                      const src = block.source as { type?: string; media_type?: string; data?: string } | undefined;
+                      if (src?.type === 'base64' && src.data && src.media_type) {
+                        respContent.push({
+                          type: 'input_image',
+                          image_url: `data:${src.media_type};base64,${src.data}`,
+                        });
+                      }
+                    }
+                  }
+                  if (respContent.length === 0) respContent.push({ type: 'input_text', text: '(empty)' });
+                  chatMsgs.push({ role: m.role, content: respContent });
+                } else {
+                  const parts: string[] = [];
+                  for (const block of blocks) {
+                    if (block.type === 'text' && block.text) parts.push(block.text as string);
+                    else if (block.type === 'tool_use') parts.push(`[Used tool: ${block.name}]`);
+                    else if (block.type === 'tool_result') parts.push(`[Tool result: ${((block.content as string) || '').slice(0, 200)}]`);
+                    else if (block.type === 'image') parts.push('[image]');
+                  }
+                  chatMsgs.push({ role: m.role, content: parts.join('\n') || '(empty)' });
                 }
-                chatMsgs.push({ role: m.role, content: parts.join('\n') || '(empty)' });
               }
             }
 
@@ -965,14 +988,16 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
               for (const msg of apiMessages.slice(1)) {
                 const role = msg.role as string;
-                const content = msg.content as string | null | undefined;
+                const content = msg.content as string | Array<Record<string, unknown>> | null | undefined;
                 const toolCalls = msg.tool_calls as ToolCallObj[] | undefined;
 
                 if (role === 'user') {
                   inputItems.push({
                     type: 'message',
                     role: 'user',
-                    content: [{ type: 'input_text', text: content ?? '' }],
+                    content: Array.isArray(content)
+                      ? content
+                      : [{ type: 'input_text', text: (content as string | null | undefined) ?? '' }],
                   });
                 } else if (role === 'assistant') {
                   // Emit text message first if content is non-empty
