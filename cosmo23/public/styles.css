@@ -558,12 +558,12 @@ button {
 }
 
 .brains-layout {
-  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  grid-template-columns: minmax(310px, 360px) minmax(0, 1fr);
 }
 
 .watch-layout {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  align-items: start;
+  grid-template-columns: minmax(240px, 0.85fr) minmax(0, 1fr) minmax(0, 1fr);
+  align-items: stretch;
 }
 
 /* ── Panels ───────────────────────────────────────────────────────────────── */
@@ -595,6 +595,14 @@ button {
   color: var(--text-secondary);
   line-height: 1.5;
   font-size: 13px;
+}
+
+.panel-title {
+  margin: 0 0 12px;
+  font-family: var(--sans);
+  font-size: 1.35rem;
+  font-weight: 800;
+  letter-spacing: 0;
 }
 
 /* ── Chips, badges, cards ─────────────────────────────────────────────────── */
@@ -1183,12 +1191,19 @@ button {
 /* ── Brain library ────────────────────────────────────────────────────────── */
 
 .brain-library-panel {
-  max-height: calc(100vh - 180px);
+  max-height: calc(100vh - 335px);
+  min-height: 560px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   position: sticky;
-  top: 16px;
+  top: 24px;
+}
+
+.brain-detail-panel {
+  min-height: 560px;
+  max-height: calc(100vh - 335px);
+  overflow: auto;
 }
 
 .brain-filter-bar {
@@ -1236,10 +1251,12 @@ button {
 
 .brain-library-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  min-width: 0;
   padding-right: 4px;
 }
 
@@ -1253,6 +1270,8 @@ button {
 
 .brain-card {
   display: grid;
+  min-width: 0;
+  width: 100%;
   gap: 3px;
   padding: 8px 10px;
   border-radius: var(--radius-sm);
@@ -1277,6 +1296,8 @@ button {
   justify-content: space-between;
   gap: 6px;
   align-items: center;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .brain-card-meta {
@@ -1284,10 +1305,14 @@ button {
   justify-content: space-between;
   gap: 6px;
   align-items: center;
+  min-width: 0;
 }
 
 .brain-card-title {
   margin: 0;
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
@@ -1350,7 +1375,7 @@ button {
 /* ── Empty state ──────────────────────────────────────────────────────────── */
 
 .empty-state {
-  min-height: 520px;
+  min-height: 460px;
   display: grid;
   place-content: center;
   gap: 8px;
@@ -1370,6 +1395,15 @@ button {
 .brain-detail-shell {
   display: grid;
   gap: 14px;
+}
+
+.brain-detail-panel,
+.hub-preview,
+.intel-content,
+#view-query > .panel,
+#view-map > .panel,
+.interactive-panel {
+  min-height: calc(100vh - 335px);
 }
 
 .brain-detail-head {
@@ -1531,14 +1565,15 @@ button {
   position: relative;
   border-radius: var(--radius-md);
   overflow: hidden;
-  min-height: 500px;
+  height: clamp(420px, calc(100vh - 500px), 620px);
+  min-height: 0;
   background: var(--console-bg);
 }
 
 .map-canvas {
   width: 100%;
   height: 100%;
-  min-height: 500px;
+  min-height: 0;
 }
 
 .map-loading {
@@ -1734,14 +1769,16 @@ button {
 
 .intel-layout {
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
+  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
 
 .intel-sidebar {
   position: sticky;
-  top: 16px;
+  top: 24px;
+  max-height: calc(100vh - 335px);
+  overflow: auto;
 }
 
 .intel-brain-bar {
@@ -1780,7 +1817,7 @@ button {
 }
 
 .intel-content {
-  min-height: 600px;
+  overflow: hidden;
 }
 
 .intel-content-head {
@@ -1793,6 +1830,9 @@ button {
 .intel-content-body {
   display: grid;
   gap: 8px;
+  max-height: calc(100vh - 440px);
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .intel-empty {
@@ -2098,7 +2138,7 @@ button {
    ══════════════════════════════════════════════════════════════════════════ */
 
 .watch-status-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: 1fr;
 }
 
 .stat-card {
@@ -2107,9 +2147,18 @@ button {
 
 .activity-feed,
 .console-feed {
-  max-height: 760px;
+  max-height: calc(100vh - 455px);
+  min-height: 360px;
   overflow: auto;
   padding-right: 4px;
+}
+
+#view-watch .panel:first-child {
+  align-self: stretch;
+}
+
+#view-watch .panel-feed {
+  min-height: calc(100vh - 335px);
 }
 
 .feed-item {
@@ -2179,7 +2228,11 @@ button {
 }
 
 .query-tab-host {
-  min-height: 720px;
+  min-height: calc(100vh - 470px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.52);
 }
 
 /* ── Toast ────────────────────────────────────────────────────────────────── */
@@ -2214,12 +2267,6 @@ button {
    ══════════════════════════════════════════════════════════════════════════ */
 
 @media (max-width: 1200px) {
-  .brains-layout,
-  .watch-layout,
-  .intel-layout {
-    grid-template-columns: 1fr;
-  }
-
   .panel-feed {
     min-height: 420px;
   }
@@ -2290,6 +2337,10 @@ button {
 
   .summary-grid,
   .launch-layout,
+  .brains-layout,
+  .watch-layout,
+  .intel-layout,
+  .hub-layout,
   .brain-stats,
   .overview-grid,
   .watch-status-grid,
@@ -2301,6 +2352,21 @@ button {
 
   .top-nav-btn {
     flex: 0 0 auto;
+  }
+
+  .brain-library-panel,
+  .hub-sidebar,
+  .intel-sidebar {
+    position: static;
+    max-height: none;
+  }
+
+  .brain-library-list,
+  .hub-brain-list,
+  .intel-content-body,
+  .activity-feed,
+  .console-feed {
+    max-height: none;
   }
 
   .continue-intro {
@@ -2349,6 +2415,10 @@ button {
   .brand-lockup {
     align-items: flex-start;
   }
+
+  .brain-card-topic {
+    display: none;
+  }
 }
 
 @media (max-width: 480px) {
@@ -2389,14 +2459,18 @@ button {
 .interactive-layout {
   display: grid;
   grid-template-rows: auto 1fr auto;
-  height: calc(100vh - 80px);
-  max-width: 900px;
-  margin: 0 auto;
+  height: calc(100vh - 455px);
+  min-height: 520px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.52);
+  overflow: hidden;
 }
 
 .interactive-context-bar {
   display: flex;
   gap: 16px;
+  flex-wrap: wrap;
   padding: 12px 16px;
   font-family: var(--mono);
   font-size: 11px;
@@ -2515,6 +2589,13 @@ button {
   align-items: center;
   gap: 8px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+#interactive-model {
+  max-width: 260px;
+  min-height: 36px;
+  font-size: 0.82rem;
 }
 
 .interactive-status {
@@ -2572,18 +2653,19 @@ button {
 
 .hub-layout {
   display: grid;
-  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  grid-template-columns: minmax(310px, 360px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
 
 .hub-sidebar {
-  max-height: calc(100vh - 180px);
+  max-height: calc(100vh - 335px);
+  min-height: 560px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   position: sticky;
-  top: 16px;
+  top: 24px;
 }
 
 .hub-toolbar-actions {
@@ -2593,16 +2675,20 @@ button {
 
 .hub-brain-list {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   overflow-y: auto;
   flex: 1;
   min-height: 0;
+  min-width: 0;
   padding-right: 4px;
   margin-top: 8px;
 }
 
 .hub-brain-item {
   display: flex;
+  min-width: 0;
+  width: 100%;
   align-items: flex-start;
   gap: 10px;
   padding: 10px 12px;
@@ -2668,7 +2754,7 @@ button {
 /* ── Preview panel ──────────────────────────────────────────── */
 
 .hub-preview {
-  min-height: 500px;
+  min-height: calc(100vh - 335px);
 }
 
 .hub-empty {
@@ -2947,7 +3033,7 @@ button {
 
 /* ── Responsive ─────────────────────────────────────────────── */
 
-@media (max-width: 1200px) {
+@media (max-width: 900px) {
   .hub-layout {
     grid-template-columns: 1fr;
   }
@@ -2973,8 +3059,7 @@ button {
   display: grid;
   grid-template-columns: minmax(300px, 1fr) minmax(300px, 1.2fr);
   gap: 20px;
-  padding: 20px;
-  max-width: 1200px;
+  max-width: none;
 }
 
 .ingest-label-row {
@@ -2982,6 +3067,14 @@ button {
   align-items: center;
   gap: 10px;
   margin-bottom: 12px;
+}
+
+.ingest-label-row label {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0;
+  color: var(--text-secondary);
 }
 
 .ingest-dropzone {

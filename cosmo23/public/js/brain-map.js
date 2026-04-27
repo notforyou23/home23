@@ -92,6 +92,15 @@
     return text.slice(0, maxLen - 1) + '\u2026';
   }
 
+  function canUseWebGL() {
+    try {
+      const canvas = document.createElement('canvas');
+      return !!(canvas.getContext('webgl2') || canvas.getContext('webgl') || canvas.getContext('experimental-webgl'));
+    } catch (_) {
+      return false;
+    }
+  }
+
   // ── Graph rendering ───────────────────────────────────────────────────────
 
   function createGraph(containerId) {
@@ -110,7 +119,7 @@
         const tag = n.tag || 'general';
         const safeTag = escapeHtml(tag);
         return `<div style="background:rgba(20,26,23,0.95);color:#e8e5df;padding:8px 12px;border-radius:6px;font-family:'DM Sans',sans-serif;font-size:12px;max-width:300px;line-height:1.45;border:1px solid rgba(255,255,255,0.06)">
-          <div style="color:${TAG_COLORS[tag] || '#78b5a3'};font-family:'JetBrains Mono',monospace;font-size:9.5px;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:3px">${safeTag}</div>
+          <div style="color:${TAG_COLORS[tag] || '#78b5a3'};font-family:'JetBrains Mono',monospace;font-size:9.5px;text-transform:uppercase;letter-spacing:0;margin-bottom:3px">${safeTag}</div>
           <div>${label}</div>
           <div style="color:#706c64;font-family:'JetBrains Mono',monospace;font-size:10px;margin-top:4px">w ${n.weight?.toFixed(2)} / a ${n.activation?.toFixed(2)}</div>
         </div>`;
@@ -338,6 +347,19 @@
       graphData = { nodes: data.nodes, edges: validEdges, clusters: data.clusters, meta: data.meta };
       currentBrainKey = brainRouteKey;
 
+      const statsEl = document.getElementById('brain-map-stats');
+      if (statsEl) {
+        statsEl.textContent = `${data.meta.nodeCount} nodes \u00b7 ${data.meta.edgeCount} edges \u00b7 ${data.meta.clusterCount} clusters`;
+      }
+
+      if (!window.ForceGraph3D || !canUseWebGL()) {
+        if (container) {
+          container.innerHTML = '<div class="map-empty">3D graph rendering is unavailable in this browser. Node and edge stats are still loaded for this run.</div>';
+        }
+        if (toolbar) toolbar.classList.remove('visible');
+        return;
+      }
+
       // Initialize or update graph
       if (!graph) {
         graph = createGraph('brain-map-container');
@@ -345,12 +367,6 @@
 
       if (graph) {
         graph.graphData({ nodes: data.nodes, links: validEdges });
-
-        // Update stats
-        const statsEl = document.getElementById('brain-map-stats');
-        if (statsEl) {
-          statsEl.textContent = `${data.meta.nodeCount} nodes \u00b7 ${data.meta.edgeCount} edges \u00b7 ${data.meta.clusterCount} clusters`;
-        }
 
         // Show toolbar
         if (toolbar) toolbar.classList.add('visible');

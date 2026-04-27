@@ -744,23 +744,33 @@
       </section>
 
       <section class="view" id="view-interactive">
-        <div class="interactive-layout">
-          <div class="interactive-context-bar" id="interactive-context"></div>
-          <div class="interactive-messages" id="interactive-messages"></div>
-          <div class="interactive-input-area">
-            <div class="interactive-controls">
-              <select id="interactive-model" class="qt-select" style="max-width: 220px; font-size: 0.82rem;">
-                <option value="">Loading models...</option>
-              </select>
-              <button class="ghost-btn" id="interactive-session-btn">Start Session</button>
-              <span class="interactive-status" id="interactive-status">No active session</span>
+        <section class="panel interactive-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Interactive</p>
+              <h2>Run Chat</h2>
             </div>
-            <div class="interactive-compose">
-              <textarea id="interactive-input" placeholder="Ask about the research, request actions, spawn agents..." rows="3" disabled></textarea>
-              <button class="primary-btn" id="interactive-send" disabled>Send</button>
+            <div class="panel-head-copy">Work directly against the selected COSMO run with model-backed session context.</div>
+          </div>
+
+          <div class="interactive-layout">
+            <div class="interactive-context-bar" id="interactive-context"></div>
+            <div class="interactive-messages" id="interactive-messages"></div>
+            <div class="interactive-input-area">
+              <div class="interactive-controls">
+                <select id="interactive-model" class="qt-select">
+                  <option value="">Loading models...</option>
+                </select>
+                <button class="ghost-btn" id="interactive-session-btn">Start Session</button>
+                <span class="interactive-status" id="interactive-status">No active session</span>
+              </div>
+              <div class="interactive-compose">
+                <textarea id="interactive-input" placeholder="Ask about the research, request actions, spawn agents..." rows="3" disabled></textarea>
+                <button class="primary-btn" id="interactive-send" disabled>Send</button>
+              </div>
             </div>
           </div>
-        </div>
+        </section>
       </section>
 
     <!-- ═══ Ingest ═══ -->
@@ -768,9 +778,9 @@
       <div class="ingest-layout">
         <!-- Upload Panel -->
         <div class="panel ingest-upload-panel">
-          <h2 class="panel-title" style="font-family:var(--display);font-size:1.4rem;margin-bottom:12px;">Upload Documents</h2>
+          <h2 class="panel-title">Upload Documents</h2>
           <div class="ingest-label-row">
-            <label for="ingest-label" style="font-family:var(--mono);font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-secondary);">Folder Label</label>
+            <label for="ingest-label">Folder Label</label>
             <input type="text" id="ingest-label" value="documents" placeholder="documents"
               style="font-family:var(--mono);font-size:0.85rem;padding:4px 8px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);width:180px;">
           </div>
@@ -786,7 +796,7 @@
 
         <!-- Status Panel -->
         <div class="panel ingest-status-panel">
-          <h2 class="panel-title" style="font-family:var(--display);font-size:1.4rem;margin-bottom:12px;">Ingested Files</h2>
+          <h2 class="panel-title">Ingested Files</h2>
           <div class="ingest-stats" id="ingest-stats">
             <span class="ingest-stat"><strong id="ingest-file-count">0</strong> files</span>
             <span class="ingest-stat-sep">&middot;</span>

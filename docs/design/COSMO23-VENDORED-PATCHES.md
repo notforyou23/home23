@@ -593,6 +593,7 @@ running, launching, context-without-process, and process-without-context states.
 - `cosmo23/public/index.html`
 - `cosmo23/public/app.js`
 - `cosmo23/public/styles.css`
+- `cosmo23/public/js/brain-map.js`
 
 **Problem:** after Patch 11 fixed the data defaults, the bundled COSMO23 UI
 still looked and behaved like a bolted-on standalone app. The launch surface
@@ -609,6 +610,10 @@ could not immediately tell that this was the Home23-managed COSMO workspace.
 - managed setup panel replaced with research-at-a-glance and recent local runs
 - refresh action that reloads setup, models, status, and brain library together
 - responsive rules for collapsing the rail and preserving readable launch cards
+- Brains, Watch, Query, Map, Intelligence, Hub, Interactive, and Ingest share
+  bounded Home23 card layouts instead of unbounded standalone stacks
+- Brain Map has a no-WebGL fallback so browsers without 3D context still show
+  loaded graph stats without throwing renderer errors
 
 **Effect under Home23:** the first screen now matches the Home23 workspace
 model: launch on the left, local knowledge context on the right, recent runs
