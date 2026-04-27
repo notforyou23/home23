@@ -602,8 +602,8 @@ could not immediately tell that this was the Home23-managed COSMO workspace.
 
 **Fix:** the public UI now uses a Home23 shell:
 
-- left rail with Home23 branding, primary workspace links, linked spaces, and
-  status card
+- COSMO23-owned left rail with every COSMO tab in one vertical workspace nav,
+  plus compact Home23 links for home/settings
 - masthead card with status and active profile cards
 - cleaner horizontal tab navigation
 - launch form promoted as the primary workflow

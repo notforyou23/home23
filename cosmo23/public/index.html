@@ -10,46 +10,51 @@
 </head>
 <body>
   <div class="app-shell">
-    <aside class="side-rail" aria-label="Home23 linked spaces">
+    <aside class="side-rail" aria-label="COSMO23 workspace">
       <div class="brand-lockup">
         <div class="brand-orbit" aria-hidden="true"><span></span></div>
         <div>
-          <div class="brand-name">Home23</div>
-          <div class="brand-subtitle">Autonomous Intelligence</div>
+          <div class="brand-name">COSMO23</div>
+          <div class="brand-subtitle">Home23 Managed Research</div>
         </div>
       </div>
 
-      <nav class="side-nav" aria-label="Home23">
+      <nav class="side-nav" aria-label="COSMO23 tabs">
+        <button class="side-nav-btn" type="button" data-view-target="launch"><span class="side-icon">↗</span>Launch</button>
+        <button class="side-nav-btn" type="button" data-view-target="brains"><span class="side-icon">♧</span>Brains</button>
+        <button class="side-nav-btn" type="button" data-view-target="watch"><span class="side-icon">◎</span>Watch</button>
         <button class="side-nav-btn" type="button" data-view-target="query"><span class="side-icon">⌕</span>Query</button>
-        <button class="side-nav-btn" type="button" data-view-target="map"><span class="side-icon">✧</span>Brain Map</button>
-        <a class="side-nav-btn" href="http://localhost:5002/home23" target="_top"><span class="side-icon">ⓘ</span>About</a>
-        <a class="side-nav-btn" href="http://localhost:5002/home23/settings" target="_top"><span class="side-icon">⚙</span>Settings</a>
+        <button class="side-nav-btn" type="button" data-view-target="map"><span class="side-icon">✣</span>Brain Map</button>
+        <button class="side-nav-btn" type="button" data-view-target="intelligence"><span class="side-icon">∥</span>Intelligence</button>
+        <button class="side-nav-btn" type="button" data-view-target="hub"><span class="side-icon">▦</span>Hub</button>
+        <button class="side-nav-btn" type="button" data-view-target="interactive"><span class="side-icon">▱</span>Interactive</button>
+        <button class="side-nav-btn disabled" type="button" data-view-target="ingest" disabled><span class="side-icon">☁</span>Ingest</button>
       </nav>
 
       <div class="side-section">
-        <div class="side-section-title">Linked Spaces</div>
+        <div class="side-section-title">Home23 Links</div>
         <a class="space-link" href="http://localhost:5002/home23" target="_top">
           <span class="space-mark">◇</span>
-          <span>Jerry</span>
+          <span>Home</span>
           <strong>Agent</strong>
         </a>
-        <div class="space-link active">
+        <a class="space-link" href="http://localhost:5002/home23/settings" target="_top">
+          <span class="space-mark">⚙</span>
+          <span>Settings</span>
+          <strong>Config</strong>
+        </a>
+        <div class="space-link active compact-space">
           <span class="space-mark">⌁</span>
           <span>cosmo23</span>
-          <strong>External</strong>
+          <strong>Open</strong>
         </div>
-        <a class="space-link" href="http://localhost:3415" target="_top">
-          <span class="space-mark">↯</span>
-          <span>evobrew</span>
-          <strong>External</strong>
-        </a>
       </div>
 
       <div class="version-card">
-        <h2>Home23 v0.5.5</h2>
-        <div class="version-line"><span class="ok-dot"></span>Engine online</div>
-        <div class="version-line"><span class="info-dot"></span>Update ready: v0.6.0.</div>
-        <a class="review-update" href="http://localhost:5002/home23/settings" target="_top">Review update</a>
+        <h2>COSMO 2.3</h2>
+        <div class="version-line"><span class="ok-dot"></span>Workspace online</div>
+        <div class="version-line"><span class="info-dot"></span>Managed by Home23</div>
+        <button class="review-update" type="button" data-view-target="launch">New research run</button>
       </div>
     </aside>
 

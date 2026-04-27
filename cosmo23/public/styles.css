@@ -113,7 +113,7 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: 252px minmax(0, 1fr);
   width: 100%;
   min-height: 100vh;
   margin: 0;
@@ -141,20 +141,20 @@ button {
   box-shadow: var(--shadow-sm);
 }
 
-/* ── Home23 rail ─────────────────────────────────────────────────────────── */
+/* ── COSMO23 rail ────────────────────────────────────────────────────────── */
 
 .side-rail {
   position: sticky;
   top: 0;
   min-height: 100vh;
-  padding: 34px 22px 24px;
+  padding: 28px 18px 22px;
   color: #eafcff;
   background:
-    radial-gradient(circle at 17% 8%, rgba(26, 215, 255, 0.32), transparent 18%),
-    radial-gradient(circle at 72% 58%, rgba(31, 186, 153, 0.22), transparent 22%),
-    linear-gradient(180deg, #051a25 0%, #041821 52%, #021518 100%);
+    radial-gradient(circle at 15% 7%, rgba(26, 215, 255, 0.22), transparent 17%),
+    radial-gradient(circle at 78% 56%, rgba(31, 186, 153, 0.17), transparent 23%),
+    linear-gradient(180deg, #051923 0%, #04181f 54%, #021316 100%);
   box-shadow: 12px 0 36px rgba(5, 26, 37, 0.12);
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .side-rail::after {
@@ -169,13 +169,13 @@ button {
 .brand-lockup {
   display: flex;
   align-items: center;
-  gap: 16px;
-  margin-bottom: 48px;
+  gap: 13px;
+  margin-bottom: 28px;
 }
 
 .brand-orbit {
-  width: 54px;
-  height: 54px;
+  width: 46px;
+  height: 46px;
   border-radius: 50%;
   border: 1px solid rgba(91, 230, 255, 0.8);
   display: grid;
@@ -184,15 +184,15 @@ button {
 }
 
 .brand-orbit span {
-  width: 18px;
-  height: 18px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
   background: #55e3ff;
   box-shadow: 0 0 18px #55e3ff;
 }
 
 .brand-name {
-  font-size: 30px;
+  font-size: 25px;
   line-height: 1;
   font-weight: 800;
 }
@@ -214,7 +214,7 @@ button {
 }
 
 .side-nav {
-  margin-bottom: 34px;
+  margin-bottom: 22px;
 }
 
 .side-nav-btn,
@@ -227,17 +227,17 @@ button {
 .side-nav-btn,
 .space-link {
   width: 100%;
-  min-height: 48px;
+  min-height: 42px;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   border: 1px solid transparent;
-  border-radius: 14px;
+  border-radius: 12px;
   background: transparent;
   color: rgba(234, 252, 255, 0.9);
   font-weight: 700;
   cursor: pointer;
-  padding: 0 14px;
+  padding: 0 12px;
   text-align: left;
 }
 
@@ -245,6 +245,18 @@ button {
 .space-link:hover {
   background: rgba(255, 255, 255, 0.06);
   border-color: rgba(118, 246, 226, 0.12);
+}
+
+.side-nav-btn.active {
+  color: #f8ffff;
+  background: rgba(23, 156, 132, 0.44);
+  border-color: rgba(80, 239, 217, 0.2);
+  box-shadow: inset 3px 0 0 #70f1e5, 0 12px 28px rgba(24, 184, 151, 0.11);
+}
+
+.side-nav-btn.disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
 }
 
 .side-icon,
@@ -256,7 +268,7 @@ button {
 }
 
 .side-section {
-  padding-top: 20px;
+  padding-top: 16px;
   border-top: 1px solid rgba(142, 247, 235, 0.24);
 }
 
@@ -268,7 +280,7 @@ button {
 
 .space-link {
   position: relative;
-  min-height: 56px;
+  min-height: 44px;
   border-color: rgba(255, 255, 255, 0.05);
   background: rgba(255, 255, 255, 0.03);
 }
@@ -296,20 +308,17 @@ button {
 }
 
 .version-card {
-  position: absolute;
-  left: 22px;
-  right: 22px;
-  bottom: 24px;
-  padding: 22px;
+  margin-top: 18px;
+  padding: 18px;
   border: 1px solid rgba(112, 241, 229, 0.28);
-  border-radius: 18px;
+  border-radius: 14px;
   background: rgba(3, 36, 42, 0.64);
   box-shadow: inset 0 0 24px rgba(112, 241, 229, 0.05);
 }
 
 .version-card h2 {
-  margin: 0 0 16px;
-  font-size: 20px;
+  margin: 0 0 12px;
+  font-size: 18px;
 }
 
 .version-line {
@@ -335,6 +344,7 @@ button {
 
 .review-update {
   margin-top: 18px;
+  width: 100%;
   min-height: 40px;
   border: 1px solid rgba(112, 241, 229, 0.22);
   border-radius: 10px;
@@ -342,6 +352,7 @@ button {
   place-items: center;
   font-weight: 800;
   background: rgba(0, 0, 0, 0.12);
+  cursor: pointer;
 }
 
 /* ── Masthead ─────────────────────────────────────────────────────────────── */
@@ -443,7 +454,7 @@ button {
 /* ── Navigation ───────────────────────────────────────────────────────────── */
 
 .top-nav {
-  display: flex;
+  display: none;
   gap: 10px;
   margin: 14px 0 12px;
   flex-wrap: nowrap;
@@ -2398,7 +2409,7 @@ button {
   }
 
   .top-nav {
-    display: grid;
+    display: none;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     overflow-x: visible;
   }
@@ -2423,6 +2434,7 @@ button {
 
 @media (max-width: 480px) {
   .top-nav {
+    display: none;
     grid-template-columns: 1fr;
   }
 

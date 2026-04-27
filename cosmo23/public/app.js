@@ -114,6 +114,7 @@ function formatTextBlock(value) {
 class CosmoStandaloneApp {
   constructor() {
     this.viewTabs = [...document.querySelectorAll('.top-nav-btn[data-view]')];
+    this.sideTabs = [...document.querySelectorAll('.side-nav-btn[data-view-target]')];
     this.views = new Map([
       ['launch', document.getElementById('view-launch')],
       ['brains', document.getElementById('view-brains')],
@@ -311,6 +312,7 @@ class CosmoStandaloneApp {
   switchView(viewName) {
     this.activeView = viewName;
     this.viewTabs.forEach(tab => tab.classList.toggle('active', tab.dataset.view === viewName));
+    this.sideTabs.forEach(tab => tab.classList.toggle('active', tab.dataset.viewTarget === viewName));
     this.views.forEach((view, key) => view.classList.toggle('active', key === viewName));
 
     if (viewName === 'watch') {
