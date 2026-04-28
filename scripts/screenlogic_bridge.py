@@ -206,6 +206,21 @@ def active_circuit_names(circuits: list[dict[str, Any]]) -> list[str]:
     return active
 
 
+COLOR_LIGHT_COMMANDS = {
+    "all_off": 0,
+    "all_on": 1,
+    "blue": 13,
+    "green": 14,
+    "red": 15,
+    "white": 16,
+    "magenta": 17,
+}
+
+
+def is_on(value: Any) -> bool:
+    return value is True or value == 1 or str(value).lower() in {"1", "on", "true"}
+
+
 def normalize_pump(raw: Any) -> dict[str, Any]:
     pump = first_value(raw, ("pump", "pumps")) or {}
     if isinstance(pump, dict):
@@ -220,6 +235,40 @@ def normalize_pump(raw: Any) -> dict[str, Any]:
         "rpm": first_display_value(primary, ("rpm_now", "rpm", "speed")),
         "watts": first_display_value(primary, ("watts_now", "watts", "power")),
         "gpm": first_display_value(primary, ("gpm_now", "gpm", "flow")),
+    }
+
+
+def normalize_lights(raw: Any, circuits: list[dict[str, Any]]) -> dict[str, Any]:
+    light = next((circuit for circuit in circuits if str(circuit.get("name", "")).lower() == "lights"), None)
+    if light is None:
+        light = next((circuit for circuit in circuits if "light" in str(circuit.get("name", "")).lower()), None)
+    if light is None:
+        light = next((circuit for circuit in circuits if str(circuit.get("id")) == "501"), None)
+
+    raw_circuit = None
+    circuit_id = str(light.get("id")) if light else None
+    raw_circuits = raw.get("circuit") or raw.get("circuits") if isinstance(raw, dict) else None
+    if isinstance(raw_circuits, dict) and circuit_id is not None:
+        raw_circuit = raw_circuits.get(circuit_id) or raw_circuits.get(int(circuit_id)) if circuit_id.isdigit() else None
+
+    color_set = first_display_value(raw_circuit, ("color_set",)) if raw_circuit else None
+    if color_set is None and isinstance(raw_circuit, dict):
+        color_set = first_display_value(raw_circuit.get("color"), ("color_set",))
+
+    color_name = None
+    colors = first_value(raw, ("color",))
+    if isinstance(colors, list) and isinstance(color_set, int) and 0 <= color_set < len(colors):
+        color_name = first_display_value(colors[color_set], ("name",))
+
+    state = light.get("state") if light else None
+    return {
+        "id": light.get("id") if light else None,
+        "name": light.get("name") if light else "Lights",
+        "state": state,
+        "stateText": "On" if is_on(state) else "Off",
+        "colorSet": color_set,
+        "colorName": color_name,
+        "summary": f"{'On' if is_on(state) else 'Off'} · {color_name}" if color_name else ("On" if is_on(state) else "Off"),
     }
 
 
@@ -241,6 +290,7 @@ def normalize_status(raw: Any, connected: bool, bridge_status: str, error: str |
     circuits = normalize_circuits(raw)
     active = active_circuit_names(circuits)
     pump = normalize_pump(raw)
+    lights = normalize_lights(raw, circuits)
     chlorinator = normalize_chlorinator(raw)
 
     summary_bits = []
@@ -253,17 +303,29 @@ def normalize_status(raw: Any, connected: bool, bridge_status: str, error: str |
     if not summary_bits:
         summary_bits.append("Waiting for ScreenLogic data" if not connected else "Connected")
 
+    pool_bits = []
+    if pool.get("temperature") is not None:
+        pool_bits.append(f"{pool['temperature']}F water")
+    if pump.get("rpm") is not None:
+        pool_bits.append(f"{pump['rpm']} rpm")
+    if pump.get("gpm") is not None:
+        pool_bits.append(f"{pump['gpm']} gpm")
+    if not pool_bits:
+        pool_bits.append("Waiting for ScreenLogic data" if not connected else "Connected")
+
     return {
         "ok": connected and not error,
         "status": bridge_status,
         "connected": connected,
         "summary": " · ".join(summary_bits),
+        "poolSummary": " · ".join(pool_bits),
         "pool": pool,
         "spa": spa,
         "circuits": circuits,
         "activeCircuits": active,
         "activeCircuitsText": ", ".join(active) if active else "None",
         "pump": pump,
+        "lights": lights,
         "chlorinator": chlorinator,
         "chemistry": first_value(raw, ("chemistry", "chem", "intellichem")),
         "raw": raw,
@@ -404,6 +466,25 @@ class ScreenLogicWorker:
                 "status": "applied",
             }
 
+    async def set_color_lights(self, command: int) -> dict[str, Any]:
+        if command < 0 or command > 21:
+            raise ValueError("color command must be between 0 and 21")
+        if self.io_lock is None:
+            raise RuntimeError("ScreenLogic worker is not ready")
+
+        async with self.io_lock:
+            if self.gateway is None:
+                await self.connect()
+            await self.gateway.async_set_color_lights(int(command))
+            await asyncio.sleep(1.25)
+            await self.gateway.async_update()
+            self.set_state(raw=self.gateway.get_data(), status="connected", connected=True)
+            return {
+                "ok": True,
+                "command": int(command),
+                "status": "applied",
+            }
+
     def submit(self, coro: Any) -> Any:
         if self.loop_obj is None:
             raise RuntimeError("ScreenLogic worker loop is not ready")
@@ -488,6 +569,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         parts = [part for part in path.split("/") if part]
+        if len(parts) == 2 and parts[0] == "lights" and parts[1] == "color":
+            try:
+                payload = self.read_json_body()
+                command = payload.get("command")
+                if isinstance(command, str):
+                    normalized_command = command.lower()
+                    command = COLOR_LIGHT_COMMANDS[normalized_command] if normalized_command in COLOR_LIGHT_COMMANDS else int(command)
+                future = worker.submit(worker.set_color_lights(int(command)))
+                result = future.result(timeout=20)
+                self.send_json(200, result)
+            except Exception as exc:
+                self.send_json(400, {"ok": False, "error": str(exc)})
+            return
         if len(parts) == 2 and parts[0] == "circuits":
             try:
                 circuit_id = int(parts[1])

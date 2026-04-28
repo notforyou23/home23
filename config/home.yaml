@@ -90,27 +90,23 @@ dashboard:
             path: /status
             method: GET
           display:
-            valuePath: summary
+            valuePath: poolSummary
             statusPath: status
-            subtitlePath: bridge.lastUpdate
+            subtitlePath: lights.summary
             metrics:
               - label: Pool
                 path: pool.temperature
-              - label: Spa
-                path: spa.temperature
-              - label: Pool Heat
-                path: pool.heatState
-              - label: Spa Heat
-                path: spa.heatState
               - label: Pump RPM
                 path: pump.rpm
               - label: Flow
                 path: pump.gpm
-              - label: Active
-                path: activeCircuitsText
+              - label: Lights
+                path: lights.stateText
+              - label: Color
+                path: lights.colorName
           actions:
             - id: lights-on
-              label: Lights On
+              label: On
               method: POST
               path: /circuits/501
               confirmationText: Turn pool lights on?
@@ -118,13 +114,53 @@ dashboard:
               bodyTemplate:
                 state: 1
             - id: lights-off
-              label: Lights Off
+              label: Off
               method: POST
               path: /circuits/501
               confirmationText: Turn pool lights off?
               fields: []
               bodyTemplate:
                 state: 0
+            - id: lights-blue
+              label: Blue
+              method: POST
+              path: /lights/color
+              confirmationText: Set pool lights to blue?
+              fields: []
+              bodyTemplate:
+                command: 13
+            - id: lights-green
+              label: Green
+              method: POST
+              path: /lights/color
+              confirmationText: Set pool lights to green?
+              fields: []
+              bodyTemplate:
+                command: 14
+            - id: lights-red
+              label: Red
+              method: POST
+              path: /lights/color
+              confirmationText: Set pool lights to red?
+              fields: []
+              bodyTemplate:
+                command: 15
+            - id: lights-white
+              label: White
+              method: POST
+              path: /lights/color
+              confirmationText: Set pool lights to white?
+              fields: []
+              bodyTemplate:
+                command: 16
+            - id: lights-magenta
+              label: Magenta
+              method: POST
+              path: /lights/color
+              confirmationText: Set pool lights to magenta?
+              fields: []
+              bodyTemplate:
+                command: 17
 screenlogic:
   enabled: true
   host: ''
