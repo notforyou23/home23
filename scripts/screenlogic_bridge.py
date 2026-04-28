@@ -292,6 +292,8 @@ def normalize_status(raw: Any, connected: bool, bridge_status: str, error: str |
     pump = normalize_pump(raw)
     lights = normalize_lights(raw, circuits)
     chlorinator = normalize_chlorinator(raw)
+    pool["temperatureText"] = f"{pool['temperature']}F" if pool.get("temperature") is not None else None
+    pool["operatingState"] = "Running" if is_on(pump.get("state")) or "Pool" in active else "Idle"
 
     summary_bits = []
     if pool.get("temperature") is not None:

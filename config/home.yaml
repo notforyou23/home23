@@ -35,10 +35,10 @@ dashboard:
         enabled: true
         size: third
       - tileId: outside-weather
-        enabled: false
+        enabled: true
         size: half
       - tileId: sauna-control
-        enabled: false
+        enabled: true
         size: half
       - tileId: pool-screenlogic
         enabled: true
@@ -90,13 +90,11 @@ dashboard:
             path: /status
             method: GET
           display:
-            valuePath: poolSummary
-            statusPath: status
+            valuePath: pool.temperatureText
+            statusPath: pool.operatingState
             subtitlePath: lights.summary
             metrics:
-              - label: Pool
-                path: pool.temperature
-              - label: Pump RPM
+              - label: RPM
                 path: pump.rpm
               - label: Flow
                 path: pump.gpm
