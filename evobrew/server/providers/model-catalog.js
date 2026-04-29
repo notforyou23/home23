@@ -100,14 +100,6 @@ function sortDiscoveredModels(providerId, models = []) {
     }
 
     const provider = String(providerId || '').trim();
-    if (provider === 'openai-codex') {
-      const leftCodex = /codex/i.test(left);
-      const rightCodex = /codex/i.test(right);
-      if (leftCodex !== rightCodex) {
-        return leftCodex ? -1 : 1;
-      }
-    }
-
     if (provider === 'xai') {
       const leftFast = /fast/i.test(left);
       const rightFast = /fast/i.test(right);
@@ -152,7 +144,7 @@ function buildModelAliases(providerId, models = []) {
       addAlias('latest-nano', 'Latest Nano', (model) => /nano/i.test(model));
       break;
     case 'openai-codex':
-      addAlias('latest-codex', 'Latest Codex', () => true);
+      addAlias('latest-codex', 'Latest Codex', (model) => /codex/i.test(model));
       addAlias('latest-mini', 'Latest Mini', (model) => /mini/i.test(model));
       addAlias('latest-nano', 'Latest Nano', (model) => /nano/i.test(model));
       break;

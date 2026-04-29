@@ -74,6 +74,7 @@ export function generateEvobrewConfig(home23Root) {
   const homeConfig = loadYaml(join(home23Root, 'config', 'home.yaml'));
   const instancesDir = join(home23Root, 'instances');
   const externalBrainDirs = loadExternalBrainDirectories(home23Root);
+  const configuredPrimaryAgent = String(homeConfig?.home?.primaryAgent || '').trim();
 
   // Scan instances for agents
   const agents = [];
@@ -115,11 +116,27 @@ export function generateEvobrewConfig(home23Root) {
 
   // Build allowed models from home.yaml providers.*.defaultModels
   const providers = homeConfig.providers || {};
-  const configuredPrimaryAgent = String(homeConfig?.home?.primaryAgent || '').trim();
+  const primaryAgentConfig = configuredPrimaryAgent
+    ? loadYaml(join(instancesDir, configuredPrimaryAgent, 'config.yaml'))
+    : {};
+  const defaultProvider = primaryAgentConfig.chat?.defaultProvider
+    || primaryAgentConfig.chat?.provider
+    || homeConfig.chat?.defaultProvider
+    || '';
+  const defaultModel = primaryAgentConfig.chat?.defaultModel
+    || primaryAgentConfig.chat?.model
+    || homeConfig.chat?.defaultModel
+    || '';
   const allowedModels = {};
   for (const [providerId, providerConfig] of Object.entries(providers)) {
     if (providerConfig?.defaultModels?.length) {
-      allowedModels[providerId] = providerConfig.defaultModels;
+      allowedModels[providerId] = [...providerConfig.defaultModels];
+    }
+  }
+  if (defaultProvider && defaultModel) {
+    allowedModels[defaultProvider] = allowedModels[defaultProvider] || [];
+    if (!allowedModels[defaultProvider].includes(defaultModel)) {
+      allowedModels[defaultProvider].unshift(defaultModel);
     }
   }
 
@@ -173,8 +190,8 @@ export function generateEvobrewConfig(home23Root) {
 
     // Default selections from home.yaml chat section
     defaults: {
-      provider: homeConfig.chat?.defaultProvider || '',
-      model: homeConfig.chat?.defaultModel || '',
+      provider: defaultProvider,
+      model: defaultModel,
     },
 
     brain: {

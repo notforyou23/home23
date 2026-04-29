@@ -153,13 +153,22 @@ async function createRegistry(options = {}) {
   // Codex OAuth is served via the legacy Codex client (chatgpt.com/backend-api/codex/responses)
   // because ChatGPT OAuth tokens often lack OpenAI Platform scopes (api.responses.write).
   // We still register the model IDs so the UI can select them.
-  // Codex model IDs registered for routing only; listing handled in /api/providers/models handler
-  registry.registerModel('gpt-5.4', 'openai-codex');
-  registry.registerModel('gpt-5.4-mini', 'openai-codex');
-  registry.registerModel('gpt-5.4-nano', 'openai-codex');
-  registry.registerModel('gpt-5.2', 'openai-codex');
-  registry.registerModel('gpt-5.3-codex', 'openai-codex');
-  registry.registerModel('gpt-5.3-codex-spark', 'openai-codex');
+  // Codex model IDs registered for routing only; listing handled in /api/providers/models handler.
+  // Home23 writes the current Codex allow-list into evobrew/config.json so new models do not
+  // require an Evobrew code change before they appear in the dropdown.
+  const codexModels = [
+    ...(evobrewConfig?.allowedModels?.['openai-codex'] || []),
+    evobrewConfig?.defaults?.provider === 'openai-codex' ? evobrewConfig?.defaults?.model : null,
+    'gpt-5.4',
+    'gpt-5.4-mini',
+    'gpt-5.4-nano',
+    'gpt-5.2',
+    'gpt-5.3-codex',
+    'gpt-5.3-codex-spark'
+  ].filter(Boolean);
+  for (const modelId of new Set(codexModels)) {
+    registry.registerModel(modelId, 'openai-codex');
+  }
   console.log('[Providers] ℹ️ OpenAI Codex models available (OAuth via legacy backend client)');
 
   // Initialize xAI (Grok)

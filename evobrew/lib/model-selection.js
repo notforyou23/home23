@@ -1,4 +1,5 @@
 const CODEX_MODEL_IDS = [
+  'gpt-5.5',
   'gpt-5.4',
   'gpt-5.4-mini',
   'gpt-5.4-nano',
@@ -70,7 +71,8 @@ function isLegacyCodexModelId(modelId) {
     normalized === 'gpt-5.3-codex' ||
     normalized === 'gpt-5.3-codex-spark' ||
     normalized.startsWith('gpt-5.3-codex') ||
-    normalized.startsWith('gpt-5.4')
+    normalized.startsWith('gpt-5.4') ||
+    normalized.startsWith('gpt-5.5')
   );
 }
 
