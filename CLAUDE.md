@@ -2,6 +2,13 @@
 
 Installable AI operating system — persistent agents with living brains.
 
+## Current Checkout State (2026-05-07)
+
+- This checkout is the live Home23 system and the public GitHub repo. Worktree was checkpointed and pushed at `6746e86` (`chore: checkpoint active home23 work`) on `origin/main`.
+- Treat local modifications as intended Home23/Codex work unless jtr explicitly says otherwise. Preserve them, inspect overlap before editing, and do not use "dirty" as a dismissive label.
+- COSMO23 Query/PGS Patch 20 is current: small PGS brains (default <=200 nodes) fall back to the normal Query path, and one-partition PGS skips cross-partition synthesis.
+- Live May 7 check: Home23-family PM2 processes online, Jerry brain ~65.1k nodes / ~110.9k edges, Good Life policy `help` with zero open live problems, COSMO23 active run `labor23` on port 43210.
+
 ## What This Is
 
 Home23 takes the proven COSMO engine (JS, cognitive loops, dreaming, brain) and the TS agent harness (AgentLoop, tools, channels, scheduler) and packages them into something installable and portable — any machine, any OS, with an internet connection.
@@ -31,7 +38,7 @@ Home23/
     src/ingestion/     <- Document feeder (chokidar, compiler, converter, manifest)
     src/realtime/      <- WebSocket + /admin/feeder/* HTTP on port 5001
   src/                 <- TS harness layer
-    agent/tools/       <- 31 agent tools (files, web, brain, research_*, promote_to_memory, etc.)
+    agent/tools/       <- 48 registered agent tools (files, web, brain, research_*, workers, skills, cron, media, promote_to_memory, etc.)
     agent/context-assembly.ts  <- Situational awareness: pre-turn brain query + surface loading
     agent/memory-objects.ts    <- MemoryObject + ProblemThread CRUD (Step 20)
     agent/event-ledger.ts      <- Continuity proof chain (append-only JSONL)
@@ -69,7 +76,7 @@ Each agent runs 3 processes managed by PM2, plus 2 shared processes:
 |---|---|---|---|
 | `home23-<name>` | `engine/src/index.js` | Cognitive engine (loops, dreaming, brain growth, **document ingestion**) | 5001 (WS + admin HTTP) |
 | `home23-<name>-dash` | `engine/src/dashboard/server.js` | HTTP API (brain queries, state, settings, feeder upload/proxy) | 5002 (HTTP) |
-| `home23-<name>-harness` | `dist/home.js` | TS agent (Telegram, 31 tools incl. research_* + promote_to_memory, LLM loop, situational awareness engine) | 5004 (bridge) |
+| `home23-<name>-harness` | `dist/home.js` | TS agent (Telegram, 48 registered tools incl. research_* + workers + skills + promote_to_memory, LLM loop, situational awareness engine) | 5004 (bridge) |
 | `home23-evobrew` | `evobrew/server/server.js` | AI IDE (shared, all agents) | 3415 |
 | `home23-cosmo23` | `cosmo23/server/index.js` | Research engine (shared, on-demand runs) | 43210 |
 
@@ -116,7 +123,7 @@ Full COSMO UI embedded in dashboard via iframe (all 9 tabs). The agent has 11 `r
 
 **OAuth broker**: cosmo23 doubles as Home23's OAuth provider for Anthropic and OpenAI Codex. cosmo23 has a battle-tested PKCE implementation with encrypted token storage (SQLite + Prisma + AES-256-GCM) and automatic refresh. Home23's Settings → Providers → OAuth Sign-in UI proxies to cosmo23's `/api/oauth/anthropic/*` and `/api/oauth/openai-codex/*` routes, then mirrors the resulting access tokens into `config/secrets.yaml` where they flow to the engine/harness via PM2 env injection. A 30-minute background poller in `engine/src/dashboard/server.js` catches cosmo23-side token rotations and re-syncs secrets.yaml + restarts the engine + harness (skipped during active research runs).
 
-**Critical:** `cosmo23/` has been patched with 5 structural fixes (config dir unification, env-first key resolution, decrypt-safe bootstrap, raw-token admin endpoints, and HOME23_MANAGED provider suppression). All patches are tracked in `docs/design/COSMO23-VENDORED-PATCHES.md`.
+**Critical:** `cosmo23/` is vendored and patched for Home23. All patches are tracked in `docs/design/COSMO23-VENDORED-PATCHES.md`; read it before touching COSMO23. Patch 20 is the current Query/PGS small-run fallback and one-partition synthesis repair.
 
 ### Ingestion Compiler + Feeder
 
@@ -176,7 +183,7 @@ Config loader merges: `home.yaml` <- `agent config.yaml` <- `secrets.yaml` <- pe
 
 - Do NOT rewrite engine/. It is battle-tested JS. Fix root-cause bugs directly; avoid wholesale rewrites.
 - Do NOT rewrite `engine/src/ingestion/`. It is the ingestion pipeline — the legacy `feeder/` dir is gone.
-- Do NOT edit `cosmo23/` without reading `docs/design/COSMO23-VENDORED-PATCHES.md` first. Five vendored patches must survive every upstream resync.
+- Do NOT edit `cosmo23/` without reading `docs/design/COSMO23-VENDORED-PATCHES.md` first. The vendored patch log currently runs through Patch 20 and must survive every upstream resync.
 - ecosystem.config.cjs is auto-generated — do not edit manually.
 
 ## Key Documents

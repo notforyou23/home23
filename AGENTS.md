@@ -21,7 +21,7 @@ Home23 is a running AI operating system. The repo at `/Users/jtr/_JTR23_/release
 3. Verify the system is running:
 ```bash
 pm2 jlist | python3 -c "import sys,json; [print(f\"{p['name']:30s} {p['pm2_env']['status']}\") for p in json.load(sys.stdin) if 'home23' in p['name']]"
-curl -s http://localhost:5002/api/state | python3 -c "import sys,json; d=json.load(sys.stdin); m=d.get('memory',{}); print(f'cycle={d.get(\"cycleCount\",0)} nodes={len(m.get(\"nodes\",[]))}')"
+curl -s http://localhost:5002/api/state | python3 -c "import sys,json; d=json.load(sys.stdin); m=d.get('memory',{}); n=m.get('nodes',[]); print(f'cycle={d.get(\"cycleCount\",0)} nodes={len(n) if isinstance(n,list) else n}')"
 curl -s http://localhost:43210/api/status | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'cosmo23 running={d.get(\"running\")}')"
 ```
 
@@ -29,14 +29,25 @@ curl -s http://localhost:43210/api/status | python3 -c "import sys,json; d=json.
 
 Good Life autonomy is the current first-class direction for the Home23 engine loop. Treat it as live engine governance, not research theater and not COSMO23 work.
 
-Immediate operational truth as of 2026-05-01:
-- The staleness architecture problem is now an active engine concern: memory retrieval must distinguish "what was believed then" from "what is true now." State snapshots and goal resolution receipts are first-class memory objects.
-- Health bridge wrapper writes can be fresh while HealthKit metric dates are stale. Do not trust `~/.health_log.jsonl` mtime alone.
-- The Pi health endpoint `http://jtrpi.local:8765/api/health/dashboard` was unreachable from the Mac at 2026-05-01 15:06 EDT (`No route to host`), and the newest HRV metric date in the Mac log was `2026-04-21`.
-- The next real repair is upstream health/Pi reachability or HealthKit export freshness, not another correlation UI.
-- Remaining Good Life operational issue: diagnose the host CPU/contention signal that may explain catalog-refresh / heartbeat / Pi-health regressions.
+Immediate operational truth as of 2026-05-07:
+- Good Life is still the first-class engine-governance direction. Live check at 2026-05-07 10:34 EDT showed policy `help`, viability healthy, continuity strained, usefulness watch, zero open live problems, and Jerry's brain at ~65.1k nodes / ~110.9k edges.
+- Health freshness is semantic, not file-mtime-only. The `health_log_fresh` verifier passed on 2026-05-07 with `metrics.heartRateVariability.date=2026-05-07`.
+- COSMO23 Query/PGS was repaired for small completed runs. PGS is a large-graph tool; <=200-node PGS requests now fall back to the normal Query path, and larger one-partition graphs skip fake cross-partition synthesis. See Patch 20 in `docs/design/COSMO23-VENDORED-PATCHES.md`.
+- The repo was checkpointed, committed, and pushed at `6746e86` (`chore: checkpoint active home23 work`) on 2026-05-07. Treat future local changes as intended Home23/Codex work unless jtr explicitly says otherwise; do not describe them as "dirty" in a dismissive way or discard them.
+- COSMO23 was live on port 43210 with active run `labor23` at the May 7 handoff. Verify the active run before diagnosing Query, PGS, or run-output issues.
 
 ### Recent completions (most recent first)
+
+#### Done: COSMO23 Query/PGS Small-Run Repair + Checkpoint (2026-05-07)
+
+The Query tab was routing a 24-node / 75-edge completed research brain through PGS, loading one cached partition, spending ~80s on a sweep, and then synthesizing "cross-domain" caveats from a single partition. That made tiny run queries worse than the normal Query path.
+
+- `cosmo23/lib/pgs-engine.js` — added `PGS_DIRECT_QUERY_MAX_NODES` / `directQueryMaxNodes` default `200`; small PGS brains now fall back to direct enhanced Query with PGS disabled. Larger graphs that collapse to one partition return the sweep output directly instead of running cross-partition synthesis.
+- `cosmo23/lib/query-engine.js` — PGS dispatch now passes through output-file, follow-up, prior-context, provider, and model options so the small-run fallback preserves normal Query behavior.
+- `tests/cosmo23/pgs-engine.test.cjs` — covers direct fallback, single-partition synthesis skip, failed-sweep accounting, and full-mode session update counts.
+- `docs/design/COSMO23-VENDORED-PATCHES.md` — Patch 20 records the Home23 vendored change and its verification.
+- Verification passed: `node --test --test-concurrency=1 tests/cosmo23/pgs-engine.test.cjs`, `node --test --test-concurrency=1 tests/cosmo23/query-engine-context.test.cjs tests/cosmo23/query-engine-runtime.test.cjs tests/cosmo23/anthropic-client-request.test.cjs`, and syntax checks for the patched COSMO23 files.
+- Git checkpoint complete: active work was staged, committed as `6746e86 chore: checkpoint active home23 work`, pushed to `origin/main`, and the worktree was clean afterward.
 
 #### Done: Temporal State Snapshots + Retrieval Recency (2026-05-01)
 
@@ -73,11 +84,11 @@ Good Life is now operational inside the Home23 engine loop. The PDF proposal at 
 - Fix shipped after bad Brain Log behavior: Good Life telemetry no longer flows into generic deep-thought/personal diagnosis. `discovery-engine.js`, `deep-dive.js`, `orchestrator.js`, and `snapshot.js` now keep Good Life governance receipts separate from live-problem diagnostics and forbid personal/life/psychology inference from engine telemetry.
 - Verified: focused Good Life/cognition tests pass, `home23-jerry` and `home23-jerry-dash` restarted only by name, `/api/good-life` live.
 
-Current live Good Life state at 2026-05-01 14:25 EDT:
+Historical live Good Life state at 2026-05-01 14:25 EDT (superseded by the May 7 live check above):
 - policy: `repair`
 - lanes: viability critical, continuity strained, usefulness watch, development healthy, coherence healthy, friction strained, recovery watch
 - evidence: ~44.3k nodes / 63.2k edges, 1 open live problem, 16 open goals, 111 pending agenda items, maintenance ratio ~40%
-- remaining open live problem: `agenda_ag-mon1jjgl-4467ce` — identify what process/job started roughly 14h before the CPU signal and whether regressions are host contention symptoms.
+- remaining open live problem then: `agenda_ag-mon1jjgl-4467ce` — identify what process/job started roughly 14h before the CPU signal and whether regressions are host contention symptoms. May 7 `/api/live-problems` check showed zero open live problems.
 
 #### Done: Crash-Recovery Latch + May 1 Diagnostics (2026-05-01)
 
@@ -144,6 +155,7 @@ Engine pulse bar on dashboard via WebSocket (port 5001). Shows state, phase, ene
 - **NEVER** modify `/Users/jtr/_JTR23_/Home23/` — that's the archived old repo
 - Engine modifications for root-cause fixes are OK — wholesale rewrites are not
 - Don't add features without asking jtr first
+- Don't dismiss modified files as "dirty" or unrelated. In this repo, uncommitted work is usually jtr/Codex work. Preserve it; if jtr asks to checkpoint everything, stage/commit/push intentionally.
 - After making changes, restart only the specific process: `pm2 restart home23-jerry` (engine), `pm2 restart home23-jerry-dash` (dashboard)
 - Commit and push when work is verified: `cd /Users/jtr/_JTR23_/release/home23 && git add -A && git commit -m "..." && git push`
 
@@ -162,11 +174,11 @@ jtr is the architect. He doesn't write code — he works through AI agents. He's
 - Settings (incl. Feeder tab): http://localhost:5002/home23/settings
 - Evobrew: http://localhost:3415 (managed by Home23, config.json gitignored + auto-generated)
 - Evobrew brain picker inherits standalone/external roots in addition to Home23 roots; verified live at 10 locations / 328 brains on 2026-04-14
-- COSMO 2.3: http://localhost:43210
-- Engine: thinking-machine cognition, Good Life regulator, cognitive loops with config-driven sleep/wake (~90s naps), pulse bar on dashboard
+- COSMO 2.3: http://localhost:43210 (active run at May 7 handoff: `labor23`, brain `e3f63b402a2ff674`)
+- Engine: currently `legacy_roles` cognition mode in config/live `/api/thinking/stats`; Good Life regulator, cognitive loops with config-driven sleep/wake (~90s naps), pulse bar on dashboard
 - Ingestion: engine DocumentFeeder processing thousands of files through LLM compiler (minimax-m2.7 default, configurable in Feeder tab)
-- Jerry has 30 tools including the 11 `research_*` tools for COSMO 2.3
-- Jerry's model: configurable via dashboard dropdown (currently grok-4.20-non-reasoning-latest / xai)
+- Jerry's agent tool registry has 48 registered tools including the 11 `research_*` tools for COSMO 2.3, brain tools, cron, media, workers, skills, and `promote_to_memory`
+- Jerry's chat model: configurable via dashboard dropdown; current `instances/jerry/config.yaml` chat default is `openai-codex / gpt-5.5`
 - Model change flow: dashboard dropdown → config.yaml → harness auto-restart → evobrew config regen
 - Config single source of truth: `config/home.yaml` + `config/secrets.yaml` + `instances/jerry/config.yaml` + `configs/base-engine.yaml` (feeder block)
 - Engine heap: `--max-old-space-size=4096`, `max_memory_restart: 5G` (raised from 768M / 900M to prevent OOM flap with growing brains)

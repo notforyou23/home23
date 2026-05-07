@@ -6,7 +6,7 @@ Home23 is not another chatbot framework. It is a complete AI operating system th
 
 Four integrated systems, one install:
 
-- **Agent** — always-on AI with a cognitive loop, 34 tools (full COSMO research toolkit, 6-tool brain-tier access incl. Progressive Graph Search, `promote_to_memory` for governed memory promotion), multi-channel (Telegram, Discord, iMessage, webhooks), and an LLM-powered conversation interface with **situational awareness** — the agent queries its brain and loads domain-specific context before every response
+- **Agent** — always-on AI with a cognitive loop, 48 registered tools (full COSMO research toolkit, brain-tier access incl. Progressive Graph Search, workers, skills, cron/media tools, and `promote_to_memory` for governed memory promotion), multi-channel (Telegram, Discord, iMessage, webhooks), and an LLM-powered conversation interface with **situational awareness** — the agent queries its brain and loads domain-specific context before every response
 - **COSMO 2.3** — multi-phase research engine with guided runs, brain integration, and a 9-tab UI. Fully agent-drivable: your agent can launch runs, monitor them, query completed brains, and compile findings into its own memory
 - **Evobrew** — AI-powered IDE with brain connectivity, multi-provider LLM support, and code editing
 - **Dashboard** — OS home screen with real-time thoughts, chat (with mobile-first standalone page), intelligence synthesis, live-problems monitoring, brain storage visibility, settings (incl. **per-slot cognitive model assignments** for every place the engine calls a model), and full access to COSMO and Evobrew
@@ -54,6 +54,8 @@ The web dashboard is the primary interface for everything — provider configura
 - **Chat:** `http://localhost:5002/home23/chat` — standalone chat page (mobile-first; bookmark on your phone or use Safari → Share → Add to Home Screen to launch as a full-screen PWA)
 - **Evobrew IDE:** `http://localhost:3415` — AI code editor with brain access
 - **COSMO Research:** `http://localhost:43210` — research engine UI
+
+COSMO Query uses normal direct Query for small completed brains and Progressive Graph Search for large-graph coverage. As of Patch 20, small PGS requests fall back to direct Query and one-partition graphs skip fake cross-partition synthesis; vendored COSMO changes are tracked in `docs/design/COSMO23-VENDORED-PATCHES.md`.
 
 ## Commands
 
@@ -116,11 +118,11 @@ Unlike embeddings, you can switch LLM providers freely. Configure providers from
 | Provider | What you need | Models |
 |---|---|---|
 | **Anthropic** | OAuth (recommended, requires Claude Max plan) OR API key | Claude Sonnet, Claude Opus |
-| **OpenAI Codex** | OAuth (recommended, requires ChatGPT Plus/Pro) | GPT-5, Codex |
+| **OpenAI Codex** | OAuth (recommended, requires ChatGPT Plus/Pro) | GPT-5.5, GPT-5.5 Pro, Codex |
 | **OpenAI** | API key | GPT-5.4, GPT-5.4-mini |
-| **Ollama Cloud** | API key from ollama.com | kimi-k2.5, minimax-m2.7, qwen3.5, deepseek-v3.2, and more |
+| **Ollama Cloud** | API key from ollama.com | kimi-k2.6, qwen3.5, deepseek-v4, nemotron-3, gemma4, GLM-5.1, and more |
 | **MiniMax** | API key | MiniMax-M2.7 |
-| **xAI** | API key | Grok-4 |
+| **xAI** | API key | Grok-4.3, Grok-4.20 variants |
 | **Ollama Local** | Ollama running locally | Any pulled model |
 
 Model aliases are defined in `config/home.yaml` — use short names like `sonnet`, `gpt`, `kimi` instead of full model IDs.
@@ -169,7 +171,7 @@ Home23/
     src/cognition/     Dynamic roles, thought-action parser, action dispatcher + handlers
     src/dashboard/     Dashboard server, settings API, tiles, home page
   src/                 TS agent harness
-    agent/tools/       34 agent tools (shell, files, web, brain, research_*, promote, cron, skills)
+    agent/tools/       48 registered agent tools (shell, files, web, brain, research_*, workers, skills, cron, media, promote)
     agent/             Context assembly, memory objects, event ledger, trigger index
     channels/          Telegram, Discord, iMessage, webhooks adapters + session router
     routes/            Evobrew bridge, chat turn, device registration, chat history
@@ -194,7 +196,7 @@ Each agent runs 3 PM2 processes, plus 2 shared:
 |---|---|---|
 | `home23-<name>` | Cognitive engine — thinking, dreaming, brain growth, document ingestion, **live-problems loop** | 5001 (WS + admin HTTP) |
 | `home23-<name>-dash` | Dashboard API — brain queries, state, settings, feeder drop zone, model assignments, live-problems API, brain storage API | 5002 (HTTP) |
-| `home23-<name>-harness` | Agent runtime — Telegram, Discord, iMessage, 34 tools, LLM loop, situational awareness, `/api/notify` + `/api/diagnose` endpoints | 5004 (bridge) |
+| `home23-<name>-harness` | Agent runtime — Telegram, Discord, iMessage, 48 registered tools, LLM loop, situational awareness, `/api/notify` + `/api/diagnose` endpoints | 5004 (bridge) |
 | `home23-evobrew` | AI IDE (shared across all agents) | 3415 |
 | `home23-cosmo23` | Research engine (shared, on-demand) | 43210 |
 
@@ -347,7 +349,7 @@ The pulse brief includes a **live-problems block** (ground truth, re-verified ev
 
 The agent doesn't just respond to messages — it **shows up already knowing what it needs to know**. Before every LLM call, a context assembly layer:
 
-1. **Queries the brain** via semantic search (30,000+ nodes, cosine similarity)
+1. **Queries the brain** via semantic search (Jerry's live brain was ~65,000 nodes on 2026-05-07; installed agents grow over time)
 2. **Evaluates trigger conditions** on durable memory objects (keyword, temporal, domain-entry triggers)
 3. **Loads domain surfaces** — living workspace documents maintained by the curator cycle:
    - `TOPOLOGY.md` — active ports, services, URLs (fact surface, registry-backed)
