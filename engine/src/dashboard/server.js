@@ -17,6 +17,10 @@ const { ClusterDataProxy } = require('../cluster/cluster-data-proxy');
 const { MissionTracer } = require('../../scripts/TRACE_RESEARCH_MISSIONS');
 const { Home23VibeService } = require('./home23-vibe/service');
 const { Home23TileService } = require('./home23-tiles');
+const {
+  buildGoodLifeOperatorModel,
+  buildLiveProblemSnapshot,
+} = require('./good-life-operator');
 
 /**
  * Phase 2B Dashboard Server
@@ -4894,13 +4898,33 @@ Be specific, actionable, and maintain research continuity.`;
             return [];
           }
         };
+        const state = readJson('good-life-state.json');
+        const commitments = readJson('good-life-commitments.json');
+        const trends = readJson('good-life-trends-current.json');
+        const regulator = readJson('good-life-regulator-state.json');
+        const ledgerTail = tailJsonl('good-life-ledger.jsonl', 10);
+        const liveProblemData = readJson('live-problems.json') || { problems: [] };
+        const liveProblemList = Array.isArray(liveProblemData.problems) ? liveProblemData.problems : [];
+        const liveProblems = {
+          problems: liveProblemList,
+          snapshot: buildLiveProblemSnapshot(liveProblemList),
+        };
         res.json({
           ok: true,
-          state: readJson('good-life-state.json'),
-          commitments: readJson('good-life-commitments.json'),
-          trends: readJson('good-life-trends-current.json'),
-          regulator: readJson('good-life-regulator-state.json'),
-          ledgerTail: tailJsonl('good-life-ledger.jsonl', 10),
+          state,
+          commitments,
+          trends,
+          regulator,
+          liveProblems,
+          ledgerTail,
+          operator: buildGoodLifeOperatorModel({
+            state,
+            commitments,
+            trends,
+            regulator,
+            liveProblems: liveProblemList,
+            ledgerTail,
+          }),
         });
       } catch (error) {
         res.status(500).json({ ok: false, error: error.message });

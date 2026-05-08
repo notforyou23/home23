@@ -2047,7 +2047,7 @@ function fallbackHomeLayout() {
     { tileId: 'outside-weather', size: 'half', tile: { id: 'outside-weather', kind: 'custom' } },
     { tileId: 'sauna-control', size: 'half', tile: { id: 'sauna-control', kind: 'custom' } },
     { tileId: 'system-summary', size: 'full', tile: { id: 'system-summary', kind: 'core' } },
-    { tileId: 'good-life', size: 'third', tile: { id: 'good-life', kind: 'core' } },
+    { tileId: 'good-life', size: 'full', tile: { id: 'good-life', kind: 'core' } },
     { tileId: 'brain-log', size: 'half', tile: { id: 'brain-log', kind: 'core' } },
     { tileId: 'dream-log', size: 'half', tile: { id: 'dream-log', kind: 'core' } },
     { tileId: 'feeder', size: 'full', tile: { id: 'feeder', kind: 'core' } },
@@ -2146,14 +2146,38 @@ function renderSystemSummaryTile() {
   `;
 }
 
-function renderGoodLifeTile() {
+function goodLifeDomId(base, scope = 'home') {
+  return scope === 'home' ? base : `${base}-${scope}`;
+}
+
+function renderGoodLifeTile(scope = 'home', title = 'Good Life') {
+  const id = (base) => goodLifeDomId(base, scope);
   return `
     <div class="h23-tile h23-tile-goodlife">
-      <div class="h23-tile-header"><span class="icon">⊙</span> Good Life</div>
-      <div class="h23-goodlife-policy" id="goodlife-policy">Loading...</div>
-      <div class="h23-goodlife-summary" id="goodlife-summary"></div>
-      <div class="h23-goodlife-lanes" id="goodlife-lanes"></div>
-      <div class="h23-goodlife-meta" id="goodlife-meta"></div>
+      <div class="h23-tile-header"><span class="icon">⊙</span> ${escapeHtml(title)}</div>
+      <div class="h23-goodlife-head">
+        <div>
+          <div class="h23-goodlife-policy" id="${id('goodlife-policy')}">Loading...</div>
+          <div class="h23-goodlife-summary" id="${id('goodlife-summary')}"></div>
+        </div>
+        <div class="h23-goodlife-status unknown" id="${id('goodlife-status')}">UNKNOWN</div>
+      </div>
+      <div class="h23-goodlife-grid">
+        <section class="h23-goodlife-section">
+          <div class="h23-goodlife-section-title">Why</div>
+          <div class="h23-goodlife-answer" id="${id('goodlife-answer')}"></div>
+        </section>
+        <section class="h23-goodlife-section">
+          <div class="h23-goodlife-section-title">Live Problems</div>
+          <div id="${id('goodlife-problems')}"></div>
+        </section>
+        <section class="h23-goodlife-section">
+          <div class="h23-goodlife-section-title">Action Card</div>
+          <div class="h23-goodlife-action" id="${id('goodlife-action')}"></div>
+        </section>
+      </div>
+      <div class="h23-goodlife-lanes" id="${id('goodlife-lanes')}"></div>
+      <div class="h23-goodlife-meta" id="${id('goodlife-meta')}"></div>
     </div>
   `;
 }
@@ -2627,27 +2651,123 @@ async function loadHomeTiles() {
   }
 }
 
-function updateGoodLifeTile(data) {
+function goodLifeCssClass(value) {
+  return String(value || 'unknown').toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+}
+
+function setGoodLifeStatus(scope, operator) {
+  const el = document.getElementById(goodLifeDomId('goodlife-status', scope));
+  if (!el) return;
+  const status = operator?.status || 'unknown';
+  const label = status === 'current' && operator?.safeToInherit
+    ? 'CURRENT'
+    : status.toUpperCase();
+  el.textContent = label;
+  el.className = `h23-goodlife-status ${goodLifeCssClass(status)}`;
+}
+
+function renderGoodLifeProblems(operator, data) {
+  const live = operator?.liveProblems || data?.liveProblems?.snapshot || {};
+  const counts = live.counts || {};
+  const openRows = Array.isArray(live.open) ? live.open : [];
+  const chronicRows = Array.isArray(live.chronic) ? live.chronic : [];
+  const rows = [...openRows, ...chronicRows].slice(0, 5);
+  const stats = `
+    <div class="h23-goodlife-problem-stats">
+      <span><strong>${Number(counts.open || 0)}</strong> open</span>
+      <span><strong>${Number(counts.chronic || 0)}</strong> chronic</span>
+      <span><strong>${Number(counts.unverifiable || 0)}</strong> unverifiable</span>
+    </div>
+  `;
+
+  if (rows.length === 0) {
+    return `${stats}<div class="h23-goodlife-empty">No open or chronic problems</div>`;
+  }
+
+  return `${stats}<div class="h23-goodlife-problem-list">
+    ${rows.map((row) => `
+      <div class="h23-goodlife-problem-row">
+        <span class="h23-goodlife-problem-state ${goodLifeCssClass(row.state)}">${escapeHtml(row.state)}</span>
+        <span class="h23-goodlife-problem-id">${escapeHtml(row.id)}</span>
+        <span class="h23-goodlife-problem-claim">${escapeHtml(row.claim)}</span>
+      </div>
+      ${row.detail ? `<div class="h23-goodlife-problem-detail">${escapeHtml(row.detail)}</div>` : ''}
+    `).join('')}
+  </div>`;
+}
+
+function renderGoodLifeActionCard(operator, state) {
+  const card = operator?.actionCard || state?.policy?.actionCard || null;
+  if (!card) return '<div class="h23-goodlife-empty">No routed action card</div>';
+
+  const risk = [
+    card.riskTier != null ? `risk ${card.riskTier}` : null,
+    card.reversible === true ? 'reversible' : null,
+    card.evidenceRequired === true ? 'evidence required' : null,
+  ].filter(Boolean).join(', ');
+  const rows = [
+    ['Intent', card.intent],
+    ['Outcome', card.expectedOutcome],
+    ['Stop', card.stopCondition],
+    ['Checks', risk],
+  ].filter(([, value]) => value);
+
+  return rows.map(([label, value]) => `
+    <div class="h23-goodlife-action-row">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `).join('');
+}
+
+function updateGoodLifeTile(data, scope = 'home') {
+  const id = (base) => goodLifeDomId(base, scope);
   const state = data?.state || null;
   if (!state) {
-    setText('goodlife-policy', 'No Good Life state yet');
-    setText('goodlife-summary', '');
-    setHtml('goodlife-lanes', '');
-    setText('goodlife-meta', '');
+    setText(id('goodlife-policy'), 'No Good Life state yet');
+    setText(id('goodlife-summary'), '');
+    setHtml(id('goodlife-answer'), '');
+    setHtml(id('goodlife-problems'), '');
+    setHtml(id('goodlife-action'), '');
+    setHtml(id('goodlife-lanes'), '');
+    setText(id('goodlife-meta'), '');
+    setGoodLifeStatus(scope, { status: 'unknown', safeToInherit: false });
     return;
   }
-  const policy = state.policy?.mode || 'observe';
-  setText('goodlife-policy', policy.toUpperCase());
-  setText('goodlife-summary', state.summary || state.policy?.reason || '');
-  const laneHtml = Object.entries(state.lanes || {}).map(([name, lane]) => {
+  const operator = data?.operator || null;
+  const policy = operator?.policy?.mode || state.policy?.mode || 'observe';
+  setText(id('goodlife-policy'), policy.toUpperCase());
+  setText(id('goodlife-summary'), operator?.summary || state.summary || state.policy?.reason || '');
+  setGoodLifeStatus(scope, operator || { status: 'current', safeToInherit: true });
+
+  const answerLines = operator?.operatorAnswer?.length
+    ? operator.operatorAnswer
+    : [state.summary || state.policy?.reason || ''];
+  setHtml(id('goodlife-answer'), answerLines.filter(Boolean).slice(0, 6).map((line) => (
+    `<div class="h23-goodlife-answer-line">${escapeHtml(line)}</div>`
+  )).join(''));
+  setHtml(id('goodlife-problems'), renderGoodLifeProblems(operator, data));
+  setHtml(id('goodlife-action'), renderGoodLifeActionCard(operator, state));
+
+  const lanes = operator?.lanes || Object.entries(state.lanes || {}).map(([name, lane]) => ({
+    name,
+    status: lane?.status || 'unknown',
+    reasons: lane?.reasons || [],
+    active: false,
+  }));
+  const laneHtml = lanes.map((lane) => {
+    const name = lane.name;
     const status = lane?.status || 'unknown';
-    return `<span class="h23-goodlife-lane ${escapeHtml(status)}">${escapeHtml(name)} · ${escapeHtml(status)}</span>`;
+    const title = Array.isArray(lane.reasons) && lane.reasons.length > 0 ? lane.reasons.join(' - ') : status;
+    const active = lane.active ? ' active' : '';
+    return `<span class="h23-goodlife-lane ${goodLifeCssClass(status)}${active}" title="${escapeHtml(title)}">${escapeHtml(name)} - ${escapeHtml(status)}</span>`;
   }).join('');
-  setHtml('goodlife-lanes', laneHtml);
-  const reg = data?.regulator || {};
-  const latest = Object.entries(reg).filter(([k]) => k !== 'daily').slice(-1)[0]?.[1];
+  setHtml(id('goodlife-lanes'), laneHtml);
+  const latest = operator?.latestRegulatorAction;
   const action = latest?.agendaId ? `agenda ${latest.agendaId}` : 'no routed action yet';
-  setText('goodlife-meta', `${state.evaluatedAt ? timeSince(new Date(state.evaluatedAt)) + ' ago' : 'freshness unknown'} · ${action}`);
+  const evaluatedAt = operator?.freshness?.evaluatedAt || state.evaluatedAt;
+  const freshness = evaluatedAt ? `evaluated ${timeSince(new Date(evaluatedAt))}` : 'freshness unknown';
+  setText(id('goodlife-meta'), `${freshness} - ${action}`);
 }
 
 function updateSystemTile(state) {
@@ -3091,11 +3211,12 @@ function createAgentPanel(agentName) {
 
   const panel = document.createElement('div');
   panel.className = 'h23-panel';
-  panel.id = `panel-agent-${agentName}`;
-  panel.innerHTML = `
-    <div class="h23-grid-top">
-      <div class="h23-tile h23-tile-thoughts">
-        <div class="h23-tile-header"><span class="icon">🧠</span> ${displayName}</div>
+	  panel.id = `panel-agent-${agentName}`;
+	  panel.innerHTML = `
+	    ${renderGoodLifeTile(`agent-${agentName}`, `Good Life - ${displayName}`)}
+	    <div class="h23-grid-top">
+	      <div class="h23-tile h23-tile-thoughts">
+	        <div class="h23-tile-header"><span class="icon">🧠</span> ${displayName}</div>
         <div class="h23-thought-text" id="thought-${agentName}">Loading...</div>
         <div class="h23-thought-meta" id="thought-meta-${agentName}"></div>
       </div>
@@ -3112,11 +3233,11 @@ function createAgentPanel(agentName) {
           <div class="h23-system-item"><label>NODES</label><div class="value" id="sys2-nodes-${agentName}">—</div></div>
           <div class="h23-system-item"><label>LAST THOUGHT</label><div class="value" id="sys2-last-${agentName}">—</div></div>
         </div>
-      </div>
-    </div>
-    <div class="h23-tile h23-tile-brainlog">
-      <div class="h23-tile-header"><span class="icon">🧠</span> BRAIN LOG</div>
-      <div class="h23-brain-log" id="brainlog-${agentName}"><p class="h23-muted">Loading...</p></div>
+	      </div>
+	    </div>
+	    <div class="h23-tile h23-tile-brainlog">
+	      <div class="h23-tile-header"><span class="icon">🧠</span> BRAIN LOG</div>
+	      <div class="h23-brain-log" id="brainlog-${agentName}"><p class="h23-muted">Loading...</p></div>
     </div>
   `;
   return panel;
@@ -3127,10 +3248,12 @@ async function loadAgentPanel(agentName) {
   if (!agent) return;
   const base = apiBase(agent);
 
-  const [summary, engineHealth] = await Promise.all([
+  const [summary, engineHealth, goodLifeData] = await Promise.all([
     apiFetch(`${base}/api/home/summary`, { timeoutMs: 4000 }).catch(() => null),
-    fetchEngineHealth(agent).catch(() => null)
+    fetchEngineHealth(agent).catch(() => null),
+    apiFetch(`${base}/api/good-life`, { timeoutMs: 4000 }).catch(() => null)
   ]);
+  updateGoodLifeTile(goodLifeData, `agent-${agentName}`);
 
   if (summary) {
     setText(`sys2-thoughts-${agentName}`, summary.thoughtCount != null ? String(summary.thoughtCount) : '—');

@@ -15,7 +15,7 @@ test('Good Life is a core tile for every agent dashboard', () => {
   assert.ok(tile, 'good-life must be registered as a core tile');
   assert.equal(tile.kind, 'core');
   assert.equal(tile.mode, 'core-good-life');
-  assert.equal(tile.sizeDefault, 'third');
+  assert.equal(tile.sizeDefault, 'full');
 });
 
 test('dashboard tile normalization appends Good Life to older layouts', () => {
@@ -30,7 +30,7 @@ test('dashboard tile normalization appends Good Life to older layouts', () => {
 
   assert.ok(item, 'good-life must be inserted when an existing layout is missing it');
   assert.equal(item.enabled, true);
-  assert.equal(item.size, 'third');
+  assert.equal(item.size, 'full');
 });
 
 test('materialized default layout exposes Good Life as a core tile', () => {

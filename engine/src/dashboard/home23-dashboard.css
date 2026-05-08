@@ -2634,18 +2634,52 @@ body.h23-external-focus #cosmo23-refresh-btn {
 }
 
 .h23-home-item[data-home-tile-id="good-life"] {
-  grid-column: span 4;
-  min-height: var(--home-summary-tile-min-height);
+  grid-column: span 12;
+  min-height: 300px;
+  order: -30;
 }
 
 .h23-tile-goodlife {
-  gap: 10px;
+  gap: 12px;
+}
+
+.h23-goodlife-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
 }
 
 .h23-goodlife-policy {
-  font-size: 22px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text-primary);
+}
+
+.h23-goodlife-status {
+  flex: 0 0 auto;
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: rgba(255,255,255,0.05);
+}
+
+.h23-goodlife-status.current {
+  color: #9ee8bf;
+  border-color: rgba(120,220,160,0.45);
+}
+
+.h23-goodlife-status.conflicted,
+.h23-goodlife-status.stale {
+  color: #ffd38a;
+  border-color: rgba(255,190,90,0.5);
+}
+
+.h23-goodlife-status.unknown {
+  color: var(--text-muted);
 }
 
 .h23-goodlife-summary,
@@ -2653,6 +2687,132 @@ body.h23-external-focus #cosmo23-refresh-btn {
   font-size: 12px;
   line-height: 1.4;
   color: var(--text-muted);
+}
+
+.h23-goodlife-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.h23-goodlife-section {
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  padding: 10px;
+  background: rgba(255,255,255,0.035);
+  min-width: 0;
+}
+
+.h23-goodlife-section-title {
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+}
+
+.h23-goodlife-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.h23-goodlife-answer-line,
+.h23-goodlife-empty,
+.h23-goodlife-problem-detail {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.h23-goodlife-problem-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.h23-goodlife-problem-stats span {
+  border: 1px solid var(--glass-border);
+  border-radius: 6px;
+  padding: 4px 7px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: rgba(0,0,0,0.12);
+}
+
+.h23-goodlife-problem-stats strong {
+  color: var(--text-primary);
+}
+
+.h23-goodlife-problem-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.h23-goodlife-problem-row {
+  display: grid;
+  grid-template-columns: auto minmax(110px, 150px) minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+  font-size: 11px;
+}
+
+.h23-goodlife-problem-state {
+  border-radius: 5px;
+  padding: 2px 5px;
+  font-weight: 700;
+  color: var(--text-primary);
+  background: rgba(255,255,255,0.07);
+}
+
+.h23-goodlife-problem-state.chronic {
+  color: #ffd38a;
+  background: rgba(255,190,90,0.12);
+}
+
+.h23-goodlife-problem-state.open {
+  color: #ff9f9f;
+  background: rgba(255,120,120,0.12);
+}
+
+.h23-goodlife-problem-id,
+.h23-goodlife-problem-claim {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.h23-goodlife-problem-id {
+  color: var(--text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.h23-goodlife-action {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.h23-goodlife-action-row {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.h23-goodlife-action-row span {
+  color: var(--text-muted);
+}
+
+.h23-goodlife-action-row strong {
+  color: var(--text-secondary);
+  font-weight: 500;
 }
 
 .h23-goodlife-lanes {
@@ -2672,7 +2832,19 @@ body.h23-external-focus #cosmo23-refresh-btn {
 
 .h23-goodlife-lane.critical { color: #ff9f9f; border-color: rgba(255,120,120,0.45); }
 .h23-goodlife-lane.strained { color: #ffd38a; border-color: rgba(255,190,90,0.45); }
+.h23-goodlife-lane.watch { color: #9bc8ff; border-color: rgba(120,170,255,0.35); }
 .h23-goodlife-lane.healthy { color: #9ee8bf; border-color: rgba(120,220,160,0.35); }
+.h23-goodlife-lane.active { background: rgba(255,255,255,0.09); }
+
+@media (max-width: 980px) {
+  .h23-goodlife-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .h23-goodlife-head {
+    flex-direction: column;
+  }
+}
 
 .h23-home-item[data-home-tile-id="brain-log"],
 .h23-home-item[data-home-tile-id="dream-log"] {

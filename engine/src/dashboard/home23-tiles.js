@@ -108,7 +108,7 @@ const CORE_TILES = [
     icon: '⊙',
     mode: 'core-good-life',
     description: 'Current autonomous policy, lane health, commitments, and regulator action.',
-    sizeDefault: 'third',
+    sizeDefault: 'full',
     refreshMs: 30_000,
   },
   {
