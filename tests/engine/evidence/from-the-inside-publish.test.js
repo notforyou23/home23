@@ -58,6 +58,7 @@ test('verifyFromTheInsidePublish writes an evidence.v1 receipt for a clean publi
     projectDir,
     siteDir,
     writeReceipt: true,
+    writeEventLog: true,
     createdAt: '2026-05-08T12:00:00.000Z',
   });
 
@@ -70,6 +71,10 @@ test('verifyFromTheInsidePublish writes an evidence.v1 receipt for a clean publi
   assert.ok(result.receipt.sourceArtifacts.some(a => a.path.endsWith('/issues/099.json')));
   assert.ok(result.receipt.derivedArtifacts.some(a => a.path.endsWith('/public/issues/099.html')));
   assert.ok(existsSync(result.receiptPath));
+  assert.equal(result.event.event_type, 'issue.published');
+  assert.equal(result.event.payload.subject, 'from-the-inside/099');
+  assert.equal(result.event.payload.evidence.receiptId, result.receipt.receiptId);
+  assert.ok(existsSync(result.eventLogPath));
 });
 
 test('verifyFromTheInsidePublish fails the receipt when rendered HTML loses the body ending', async () => {

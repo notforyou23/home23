@@ -20,7 +20,8 @@ async function main(argv) {
     projectDir: args.projectDir || DEFAULT_PROJECT_DIR,
     siteDir: args.siteDir || DEFAULT_SITE_DIR,
     publicBaseUrl: args.publicBaseUrl,
-    writeReceipt: args.writeReceipt,
+    writeReceipt: args.writeReceipt || args.writeEventLog,
+    writeEventLog: args.writeEventLog || args.writeReceipt,
     checkRemote: args.checkRemote,
     correctionOf: args.correctionOf || null,
   });
@@ -31,6 +32,7 @@ async function main(argv) {
     const receipt = result.receipt;
     console.log(`[evidence] ${receipt.subject} ${receipt.result} ${receipt.receiptId}`);
     if (result.receiptPath) console.log(`[evidence] receipt: ${result.receiptPath}`);
+    if (result.eventLogPath) console.log(`[evidence] event log: ${result.eventLogPath}`);
     for (const check of receipt.checks) {
       const status = check.pass ? 'pass' : 'fail';
       console.log(`[check] ${status.padEnd(4)} ${check.name}${check.detail ? ` - ${check.detail}` : ''}`);
@@ -49,6 +51,7 @@ function parseArgs(argv) {
     writeReceipt: false,
     checkRemote: false,
     correctionOf: null,
+    writeEventLog: false,
     json: false,
     help: false,
   };
@@ -60,6 +63,7 @@ function parseArgs(argv) {
     else if (arg === '--site-dir') out.siteDir = path.resolve(argv[++i]);
     else if (arg === '--public-base-url') out.publicBaseUrl = argv[++i];
     else if (arg === '--write-receipt') out.writeReceipt = true;
+    else if (arg === '--write-event') out.writeEventLog = true;
     else if (arg === '--check-remote') out.checkRemote = true;
     else if (arg === '--correction-of') out.correctionOf = argv[++i];
     else if (arg === '--json') out.json = true;
@@ -71,7 +75,7 @@ function parseArgs(argv) {
 
 function printUsage() {
   console.error([
-    'Usage: scripts/verify-from-the-inside-publish <issue> [--write-receipt] [--check-remote]',
+    'Usage: scripts/verify-from-the-inside-publish <issue> [--write-receipt] [--write-event] [--check-remote]',
     '',
     'Checks local issue JSON, rendered public HTML, copied JSON, homepage, feed, sitemap,',
     'and next-issue state, then emits an evidence.v1 receipt.',

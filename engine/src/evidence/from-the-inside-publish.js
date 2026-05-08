@@ -9,6 +9,7 @@ const {
   safeReceiptPart,
   writeEvidenceReceipt,
 } = require('./evidence-v1');
+const { EventLedger } = require('../core/event-ledger');
 
 const DEFAULT_PROJECT_DIR = path.resolve(__dirname, '..', '..', '..', 'instances', 'jerry', 'projects', 'from-the-inside');
 const DEFAULT_SITE_DIR = '/Users/jtr/websites/olddeadshows.com';
@@ -185,7 +186,7 @@ async function verifyFromTheInsidePublish(opts = {}) {
 
   let receiptPath = null;
   let indexReceiptPath = null;
-  if (opts.writeReceipt) {
+  if (opts.writeReceipt || opts.writeEventLog) {
     receiptPath = opts.receiptPath
       ? path.resolve(opts.receiptPath)
       : path.join(projectDir, 'receipts', 'publish', `${padded}.evidence.json`);
@@ -195,7 +196,35 @@ async function verifyFromTheInsidePublish(opts = {}) {
     writeEvidenceReceipt({ receipt, receiptPath, indexPath: indexReceiptPath });
   }
 
-  return { receipt, receiptPath, indexPath: indexReceiptPath };
+  let event = null;
+  let eventLogPath = null;
+  if (opts.writeEventLog) {
+    eventLogPath = opts.eventLogPath
+      ? path.resolve(opts.eventLogPath)
+      : path.join(projectDir, 'events', 'state-events.jsonl');
+    const ledger = new EventLedger(projectDir, { ledgerPath: eventLogPath, logger: opts.logger || null });
+    event = ledger.recordStateTransition({
+      eventType: receipt.result === 'pass' ? 'issue.published' : 'issue.publish_verification_failed',
+      subject: `from-the-inside/${padded}`,
+      actor: opts.actor || 'jerry',
+      payload: {
+        issue: issueNumber,
+        title: issue?.title || null,
+        publicIssueUrl,
+        checks: receipt.checks.map((check) => ({ name: check.name, pass: check.pass })),
+      },
+      evidence: {
+        receiptId: receipt.receiptId,
+        receiptPath,
+        result: receipt.result,
+        claimLevel: receipt.claimLevel,
+      },
+      sourceSurface: receipt.sourceSurface,
+      occurredAt: receipt.createdAt,
+    });
+  }
+
+  return { receipt, receiptPath, indexPath: indexReceiptPath, event, eventLogPath };
 }
 
 function normalizeIssueNumber(issue) {

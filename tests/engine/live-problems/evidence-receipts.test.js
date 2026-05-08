@@ -39,6 +39,13 @@ test('LiveProblemStore writes evidence.v1 receipt when verifier resolves a live 
     assert.equal(receipt.checks.find(c => c.name === 'verifier_pass')?.pass, true);
     assert.equal(receipt.checks.find(c => c.name === 'state_resolved')?.pass, true);
     assert.equal(receipt.metadata.seedOrigin, 'good-life');
+
+    const events = readFileSync(join(dir, 'event-ledger.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    const fixed = events.find(e => e.event_type === 'live_problem.fixed');
+    assert.ok(fixed);
+    assert.equal(fixed.payload.schema, 'home23.state-event.v1');
+    assert.equal(fixed.payload.subject, 'live-problem/good_life_test_problem');
+    assert.equal(fixed.payload.evidence.receiptId, receipt.receiptId);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

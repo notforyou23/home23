@@ -33,6 +33,7 @@ const {
   safeReceiptPart,
   writeEvidenceReceipt,
 } = require('../evidence/evidence-v1');
+const { EventLedger } = require('../core/event-ledger');
 
 const RESOLVED_KEEP_MS = 24 * 60 * 60 * 1000;   // keep resolved 24h so pulse can mention once
 const CHRONIC_AFTER_MS = 6 * 60 * 60 * 1000;    // open >6h with no progress → chronic
@@ -322,6 +323,32 @@ class LiveProblemStore {
       const receiptPath = path.join(this.brainDir, 'evidence', 'live-problems', `${stamp}-${safeId}.evidence.json`);
       const indexPath = path.join(this.brainDir, 'evidence', 'live-problems.jsonl');
       writeEvidenceReceipt({ receipt, receiptPath, indexPath });
+      const ledger = new EventLedger(this.brainDir, { logger: this.logger });
+      ledger.recordStateTransition({
+        eventType: 'live_problem.fixed',
+        subject: `live-problem/${problem.id}`,
+        actor: 'home23-live-problems',
+        payload: {
+          problemId: problem.id,
+          claim: problem.claim || null,
+          priorState,
+          state: problem.state,
+          verifier: problem.verifier || null,
+          verifierDetail: verifierResult?.detail || null,
+        },
+        evidence: {
+          receiptId: receipt.receiptId,
+          receiptPath,
+          result: receipt.result,
+          claimLevel: receipt.claimLevel,
+        },
+        sourceSurface: {
+          type: 'live-problems',
+          path: this.filePath,
+          problemId: problem.id,
+        },
+        occurredAt: at,
+      });
     } catch (err) {
       this.logger.warn?.(`[live-problems] evidence receipt write failed: ${err.message}`);
     }
