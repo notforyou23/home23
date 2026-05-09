@@ -751,15 +751,19 @@ class DashboardServer {
 
   async getHome23RuntimeHealth(candidate) {
     const target = this.getHome23AgentContext(candidate);
+    const labelPrefix = target.agentName
+      ? target.agentName.charAt(0).toUpperCase() + target.agentName.slice(1)
+      : 'Agent';
+    const timeoutMs = 5000;
     const checks = [
       {
         id: 'engine',
-        label: 'Jerry engine admin',
+        label: `${labelPrefix} engine admin`,
         url: `http://127.0.0.1:${target.realtimePort}/admin/thinking/stats`,
       },
       {
         id: 'harness',
-        label: 'Jerry harness bridge',
+        label: `${labelPrefix} harness bridge`,
         url: `http://127.0.0.1:${target.bridgePort}/health`,
       },
     ];
@@ -770,7 +774,7 @@ class DashboardServer {
         const response = await fetch(check.url, {
           method: 'GET',
           headers: { accept: 'application/json' },
-          signal: AbortSignal.timeout(1500),
+          signal: AbortSignal.timeout(timeoutMs),
         });
         return {
           id: check.id,
