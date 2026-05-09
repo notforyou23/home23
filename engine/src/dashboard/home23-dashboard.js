@@ -3090,6 +3090,37 @@ function buildGoodLifeWorkerPrompt(problem) {
   ].join('\n');
 }
 
+function compactGoodLifeAgendaForWorker(item) {
+  if (!item) return {};
+  return {
+    id: item.id,
+    status: item.status,
+    content: item.content,
+    sourceSignal: item.sourceSignal,
+    topicTags: item.topicTags,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    ageMin: item.ageMin,
+    temporalContext: item.temporalContext,
+    workerRoute: item.workerRoute,
+  };
+}
+
+function buildGoodLifeAgendaWorkerPrompt(item) {
+  const scopeLabel = goodLifeLabelForScope(goodLifeOverlayState.scope);
+  const payload = compactGoodLifeAgendaForWorker(item);
+  return [
+    `Good Life routed work for ${scopeLabel}.`,
+    '',
+    'Inspect this Good Life agenda item with current evidence. Use the recommended worker lane as the starting point, verify the relevant files/endpoints when safe, and return a receipt with pass/fail/blocked evidence and the smallest concrete next action.',
+    '',
+    'Guardrails: do not use global PM2 stop/delete, do not discard local changes, do not restart unrelated services, and do not claim resolution without verifier evidence.',
+    '',
+    'Good Life agenda payload:',
+    JSON.stringify(payload, null, 2),
+  ].join('\n');
+}
+
 async function chooseGoodLifeWorker() {
   if (!workersState.workers.length) {
     const data = await workerApi('');
@@ -3114,6 +3145,11 @@ function renderGoodLifeWorkDetail(data) {
     item.ageMin != null ? `${item.ageMin}m` : null,
     item.workerRoute?.worker ? `worker: ${item.workerRoute.worker}` : null,
   ].filter(Boolean).join(' - ');
+  const agendaActions = (item) => `<div class="h23-goodlife-mini-actions">
+    ${item.workerRoute?.worker ? `<button type="button" onclick="runGoodLifeAgendaWorkerCheck('${escapeAttr(item.id || '')}')">Run ${escapeHtml(item.workerRoute.worker)}</button>` : ''}
+    <button type="button" onclick="updateGoodLifeAgendaStatus('${escapeAttr(item.id || '')}', 'acknowledged')">Acknowledge</button>
+    <button type="button" onclick="updateGoodLifeAgendaStatus('${escapeAttr(item.id || '')}', 'stale')">Dismiss</button>
+  </div>`;
   return `
     <h3>Current Work</h3>
     <div class="h23-goodlife-detail-grid">
@@ -3122,7 +3158,7 @@ function renderGoodLifeWorkDetail(data) {
       <div><label>Expected Outcome</label><p>${escapeHtml(card.expectedOutcome || 'not recorded')}</p></div>
       <div><label>Risk</label><p>${escapeHtml([card.riskTier != null ? `risk ${card.riskTier}` : null, card.reversible ? 'reversible' : null, card.evidenceRequired ? 'evidence required' : null].filter(Boolean).join(', ') || 'not recorded')}</p></div>
     </div>
-    <section><h4>Active Agenda</h4>${agenda.length ? agenda.map((item) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(item.id || 'agenda')}</strong><span>${escapeHtml(item.content || '')}</span><small>${escapeHtml(agendaMeta(item))}</small><div class="h23-goodlife-mini-actions"><button type="button" onclick="updateGoodLifeAgendaStatus('${escapeAttr(item.id || '')}', 'acknowledged')">Acknowledge</button><button type="button" onclick="updateGoodLifeAgendaStatus('${escapeAttr(item.id || '')}', 'stale')">Dismiss</button></div></div>`).join('') : '<div class="h23-goodlife-empty">No active agenda rows</div>'}</section>
+    <section><h4>Active Agenda</h4>${agenda.length ? agenda.map((item) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(item.id || 'agenda')}</strong><span>${escapeHtml(item.content || '')}</span><small>${escapeHtml(agendaMeta(item))}</small>${agendaActions(item)}</div>`).join('') : '<div class="h23-goodlife-empty">No active agenda rows</div>'}</section>
     <section><h4>Active Goals</h4>${goals.length ? goals.map((goal) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(goal.id || 'goal')}</strong><span>${escapeHtml(goal.description || '')}</span><small>${escapeHtml([goal.status, goal.source, goal.ageMin != null ? `${goal.ageMin}m` : null, goal.review?.recommended ? `review: ${goal.review.reason}` : null].filter(Boolean).join(' - '))}</small>${goal.review?.recommended ? `<p>${escapeHtml(goal.review.next || '')}</p><div class="h23-goodlife-mini-actions"><button type="button" onclick="archiveGoodLifeGoal('${escapeAttr(goal.id || '')}')">Archive Goal</button></div>` : ''}</div>`).join('') : '<div class="h23-goodlife-empty">No active goals</div>'}</section>
     <section><h4>Active Commitments</h4>${activeCommitments.length ? activeCommitments.map((item) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(item.title || item.id)}</strong><span>${escapeHtml((item.reasons || []).join(' - ') || item.status || '')}</span><small>${escapeHtml(item.lane || '')}</small></div>`).join('') : '<div class="h23-goodlife-empty">No active commitments</div>'}</section>
   `;
@@ -3372,6 +3408,52 @@ async function runGoodLifeWorkerCheck(problemId) {
     setText('goodlife-overlay-action-status', `Worker check complete: ${result.receipt?.status || result.runId || 'receipt recorded'}.`);
   } catch (err) {
     setText('goodlife-overlay-action-status', `Worker check failed: ${err.message}`);
+  }
+}
+
+async function runGoodLifeAgendaWorkerCheck(agendaId) {
+  const data = goodLifeSurfaceState.get(goodLifeOverlayState.scope);
+  const agenda = data?.operator?.detail?.work?.obligations?.activeAgenda || [];
+  const item = agenda.find((entry) => entry.id === agendaId);
+  if (!item) {
+    setText('goodlife-overlay-action-status', 'Select an active Good Life work item first.');
+    return;
+  }
+  const workerName = item.workerRoute?.worker;
+  if (!workerName) {
+    setText('goodlife-overlay-action-status', 'This Good Life work item does not have a recommended worker route.');
+    return;
+  }
+
+  const owner = goodLifeAgentForScope(goodLifeOverlayState.scope)?.name || primaryAgent?.name || undefined;
+  setText('goodlife-overlay-action-status', `Starting ${workerName} worker for ${agendaId}...`);
+  try {
+    const result = await workerApi(`/${encodeURIComponent(workerName)}/runs`, {
+      method: 'POST',
+      body: JSON.stringify({
+        prompt: buildGoodLifeAgendaWorkerPrompt(item),
+        requestedBy: 'good-life-operator',
+        requester: 'home23-dashboard',
+        ownerAgent: owner,
+        source: { type: 'good-life-agenda', id: agendaId },
+        metadata: {
+          surface: 'good-life',
+          scope: goodLifeOverlayState.scope,
+          agendaId,
+          workerRoute: item.workerRoute,
+        },
+      }),
+    });
+    workersState.receipt = result.receipt || null;
+    if (result.runId) {
+      await loadWorkersSurface().catch(() => {});
+      await openWorkerReceipt(result.runId).catch(() => {});
+    }
+    await loadGoodLifeForScope(goodLifeOverlayState.scope).catch(() => {});
+    renderGoodLifeOverlay();
+    setText('goodlife-overlay-action-status', `${workerName} worker complete: ${result.receipt?.status || result.runId || 'receipt recorded'}.`);
+  } catch (err) {
+    setText('goodlife-overlay-action-status', `${workerName} worker failed: ${err.message}`);
   }
 }
 
