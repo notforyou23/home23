@@ -3217,6 +3217,33 @@ body.h23-external-focus #cosmo23-refresh-btn {
   line-height: 1.4;
 }
 
+.h23-goodlife-worker-run-row {
+  grid-template-columns: minmax(90px, 0.22fr) minmax(0, 1fr) minmax(120px, 0.3fr) auto;
+}
+
+.h23-goodlife-worker-receipt-detail {
+  margin-top: 10px;
+  border: 1px solid rgba(112, 211, 162, 0.18);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(112, 211, 162, 0.055);
+}
+
+.h23-goodlife-worker-receipt-detail p {
+  margin: 8px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.h23-goodlife-worker-receipt-detail ul {
+  margin: 0 0 0 18px;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .h23-goodlife-section-actions {
   display: flex;
   justify-content: flex-end;

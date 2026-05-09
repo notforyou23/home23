@@ -14,6 +14,9 @@ export interface WorkerRunSummary {
   runId: string;
   worker: string;
   ownerAgent?: string;
+  requestedBy?: WorkerRunReceipt['requestedBy'];
+  requester?: string;
+  source?: WorkerRunReceipt['source'];
   status: WorkerRunStatus | 'running';
   verifierStatus?: string;
   startedAt?: string;
@@ -65,6 +68,9 @@ function listRunSummaries(projectRoot: string): WorkerRunSummary[] {
           runId: receipt.runId,
           worker: receipt.worker,
           ownerAgent: receipt.ownerAgent,
+          requestedBy: receipt.requestedBy,
+          requester: receipt.requester,
+          source: receipt.source,
           status: receipt.status,
           verifierStatus: receipt.verifierStatus,
           startedAt: receipt.startedAt,

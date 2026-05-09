@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 import { createWorkerHandlers } from '../../src/workers/connector.js';
 
@@ -76,4 +79,55 @@ test('worker handlers promote memory candidates for an existing receipt', async 
   assert.equal(result.runId, 'wr_1');
   assert.equal(result.candidates, 1);
   assert.equal(result.status, 'ready_for_memory_curator');
+});
+
+test('worker handlers preserve receipt source in run summaries', async () => {
+  const root = path.join(tmpdir(), `home23-worker-connector-${process.pid}-${Date.now()}`);
+  try {
+    const workerRoot = path.join(root, 'instances', 'workers', 'systems');
+    const runRoot = path.join(workerRoot, 'runs', 'wr_good_life');
+    mkdirSync(runRoot, { recursive: true });
+    writeFileSync(path.join(workerRoot, 'worker.yaml'), [
+      'kind: worker',
+      'name: systems',
+      'displayName: Systems',
+      'ownerAgent: jerry',
+      'class: ops',
+      'purpose: Diagnose host issues',
+      '',
+    ].join('\n'));
+    writeFileSync(path.join(runRoot, 'receipt.json'), `${JSON.stringify({
+      schema: 'home23.worker-run.v1',
+      runId: 'wr_good_life',
+      worker: 'systems',
+      ownerAgent: 'forrest',
+      requestedBy: 'good-life',
+      requester: 'home23-dashboard',
+      startedAt: '2026-05-09T15:00:00.000Z',
+      finishedAt: '2026-05-09T15:01:00.000Z',
+      status: 'no_change',
+      verifierStatus: 'pass',
+      summary: 'checked stale Good Life agenda',
+      actions: [],
+      evidence: [],
+      artifacts: [],
+      memoryCandidates: [],
+      source: { type: 'good-life-agenda', id: 'ag-123', url: '/api/agenda/ag-123' },
+    }, null, 2)}\n`);
+
+    const handlers = createWorkerHandlers({
+      projectRoot: root,
+      listWorkers: () => [],
+      listTemplates: () => [],
+      runWorker: async () => { throw new Error('not used'); },
+    });
+
+    const result = await handlers.listRuns();
+    assert.equal(result.runs.length, 1);
+    assert.equal(result.runs[0].requestedBy, 'good-life');
+    assert.equal(result.runs[0].requester, 'home23-dashboard');
+    assert.deepEqual(result.runs[0].source, { type: 'good-life-agenda', id: 'ag-123', url: '/api/agenda/ag-123' });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
