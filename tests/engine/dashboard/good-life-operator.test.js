@@ -900,6 +900,32 @@ test('Good Life operator brief ignores stale latest worker route when active goa
   });
 });
 
+test('Good Life operator brief includes active goal artifact status', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [{
+        id: 'goal-output',
+        description: 'Produce outputs/digest-6427.md',
+        rawDescription: 'Produce outputs/digest-6427.md. Synthesize current evidence.',
+        artifact: {
+          relativePath: 'outputs/digest-6427.md',
+          exists: false,
+        },
+        status: 'active',
+        createdAt: NOW,
+      }],
+      counts: { activeAgenda: 0, activeGoals: 1 },
+    },
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.operatorBrief.next, 'Top goal: goal-output - Produce outputs/digest-6427.md; artifact pending: outputs/digest-6427.md');
+  assert.ok(model.operatorAnswer.some((line) => line.includes('artifact pending: outputs/digest-6427.md')));
+});
+
 test('Good Life operator marks superseded repair agenda for review when registry is clear', () => {
   const model = buildGoodLifeOperatorModel({
     state: goodLifeState({

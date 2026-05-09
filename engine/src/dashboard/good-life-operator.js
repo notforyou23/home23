@@ -830,7 +830,8 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
     } else if (work.topAgenda?.id) {
       next = `Top agenda: ${work.topAgenda.id}`;
     } else if (work.topGoal?.id) {
-      next = topGoalText(work.topGoal);
+      const artifactText = goalArtifactText(work.topGoal);
+      next = `${topGoalText(work.topGoal)}${artifactText ? `; ${artifactText}` : ''}`;
     }
     target = {
       tab: 'work',
