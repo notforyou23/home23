@@ -20,6 +20,7 @@ const { Home23TileService } = require('./home23-tiles');
 const {
   buildGoodLifeOperatorModel,
   buildLiveProblemSnapshot,
+  buildGoodLifeObligationSnapshot,
 } = require('./good-life-operator');
 
 /**
@@ -5032,6 +5033,17 @@ Be specific, actionable, and maintain research continuity.`;
             return [];
           }
         };
+        const readJsonl = (name) => {
+          try {
+            const file = path.join(this.logsDir || '', name);
+            if (!fsSync.existsSync(file)) return [];
+            return fsSync.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => {
+              try { return JSON.parse(line); } catch { return null; }
+            }).filter(Boolean);
+          } catch {
+            return [];
+          }
+        };
         const state = readJson('good-life-state.json');
         const commitments = readJson('good-life-commitments.json');
         const trends = readJson('good-life-trends-current.json');
@@ -5043,6 +5055,11 @@ Be specific, actionable, and maintain research continuity.`;
           problems: liveProblemList,
           snapshot: buildLiveProblemSnapshot(liveProblemList),
         };
+        const dashboardState = await this.loadState().catch(() => null);
+        const obligations = buildGoodLifeObligationSnapshot({
+          agendaRows: readJsonl('agenda.jsonl'),
+          goals: dashboardState?.goals || null,
+        });
         const runtime = await this.getHome23RuntimeHealth(req.query?.agent);
         res.json({
           ok: true,
@@ -5052,6 +5069,7 @@ Be specific, actionable, and maintain research continuity.`;
           regulator,
           liveProblems,
           ledgerTail,
+          obligations,
           runtime,
           operator: buildGoodLifeOperatorModel({
             state,
@@ -5060,6 +5078,7 @@ Be specific, actionable, and maintain research continuity.`;
             regulator,
             liveProblems: liveProblemList,
             ledgerTail,
+            obligations,
             runtime,
           }),
         });

@@ -116,6 +116,73 @@ function normalizeProjection(state) {
   };
 }
 
+function buildGoodLifeObligationSnapshot({ agendaRows = [], goals = null, now = new Date() } = {}) {
+  const nowMs = toNowMs(now);
+  const agenda = new Map();
+  for (const row of Array.isArray(agendaRows) ? agendaRows : []) {
+    if (row?.type === 'add' && row.id) {
+      const record = row.record || {};
+      agenda.set(row.id, {
+        id: row.id,
+        status: record.status || row.status || 'candidate',
+        content: record.content || row.content || '',
+        sourceSignal: record.sourceSignal || row.sourceSignal || null,
+        topicTags: Array.isArray(record.topicTags) ? record.topicTags : [],
+        createdAt: record.createdAt || row.createdAt || row.at || null,
+        updatedAt: record.updatedAt || row.updatedAt || row.at || null,
+        temporalContext: record.temporalContext || row.temporalContext || null,
+      });
+    } else if (row?.type === 'status' && row.id) {
+      const rec = agenda.get(row.id) || { id: row.id, content: '' };
+      rec.status = row.status || rec.status || 'candidate';
+      rec.updatedAt = row.at || rec.updatedAt || null;
+      rec.statusNote = row.note || rec.statusNote || null;
+      agenda.set(row.id, rec);
+    }
+  }
+
+  const activeAgendaStatuses = new Set(['candidate', 'surfaced', 'acknowledged']);
+  const activeAgenda = [...agenda.values()]
+    .filter((row) => activeAgendaStatuses.has(row.status || 'candidate'))
+    .sort((a, b) => toTimeMs(b.updatedAt || b.createdAt) - toTimeMs(a.updatedAt || a.createdAt))
+    .slice(0, 12)
+    .map((row) => ({
+      ...row,
+      ageMin: ageMinutes(row.updatedAt || row.createdAt, nowMs),
+    }));
+
+  const activeGoals = normalizeActiveGoals(goals)
+    .sort((a, b) => toTimeMs(b.createdAt || b.created) - toTimeMs(a.createdAt || a.created))
+    .slice(0, 12)
+    .map((goal) => ({
+      id: goal.id || '',
+      description: goal.description || goal.title || goal.goal || '',
+      status: goal.status || 'active',
+      source: goal.source?.label || goal.source?.origin || goal.source || null,
+      priority: goal.priority ?? null,
+      progress: goal.progress ?? null,
+      createdAt: goal.createdAt || goal.created_at || goal.created || null,
+      ageMin: ageMinutes(goal.createdAt || goal.created_at || goal.created, nowMs),
+    }));
+
+  return {
+    activeAgenda,
+    activeGoals,
+    counts: {
+      activeAgenda: activeAgenda.length,
+      activeGoals: activeGoals.length,
+    },
+  };
+}
+
+function normalizeActiveGoals(goals) {
+  const active = Array.isArray(goals?.active) ? goals.active : [];
+  return active.map((entry) => {
+    if (Array.isArray(entry)) return entry[1] || { id: entry[0] };
+    return entry || {};
+  }).filter(Boolean);
+}
+
 function latestRegulatorAction(regulator = {}) {
   return Object.entries(regulator || {})
     .filter(([key, value]) => key !== 'daily' && value && toTimeMs(value.at))
@@ -250,7 +317,7 @@ function buildOperatorAnswer({ state, lanes, liveProblems, consistency }) {
   return lines;
 }
 
-function buildDetailSections({ commitments, trends, regulator, liveProblems, ledgerTail }) {
+function buildDetailSections({ commitments, trends, regulator, liveProblems, ledgerTail, obligations }) {
   const activeRows = [
     ...(Array.isArray(liveProblems.open) ? liveProblems.open : []),
     ...(Array.isArray(liveProblems.chronic) ? liveProblems.chronic : []),
@@ -273,6 +340,7 @@ function buildDetailSections({ commitments, trends, regulator, liveProblems, led
     work: {
       dailyActions,
       daily: regulator?.daily || null,
+      obligations: obligations || { activeAgenda: [], activeGoals: [], counts: { activeAgenda: 0, activeGoals: 0 } },
     },
     resolutions: {
       recent: (Array.isArray(liveProblems.resolved) ? liveProblems.resolved : []).slice(0, 12),
@@ -296,6 +364,7 @@ function buildGoodLifeOperatorModel({
   regulator = null,
   liveProblems = [],
   ledgerTail = [],
+  obligations = null,
   runtime = null,
   now = new Date(),
 } = {}) {
@@ -348,6 +417,7 @@ function buildGoodLifeOperatorModel({
     regulator: regulator || {},
     liveProblems: directLiveProblems,
     ledgerTail,
+    obligations,
   });
   model.operatorAnswer = buildOperatorAnswer({
     state,
@@ -361,4 +431,5 @@ function buildGoodLifeOperatorModel({
 module.exports = {
   buildGoodLifeOperatorModel,
   buildLiveProblemSnapshot,
+  buildGoodLifeObligationSnapshot,
 };

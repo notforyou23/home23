@@ -2851,13 +2851,37 @@ function renderGoodLifeProblemList(problems) {
 
 function renderGoodLifeWorkList(data) {
   const actions = data?.operator?.detail?.work?.dailyActions || [];
-  if (!actions.length) return '<div class="h23-goodlife-empty h23-goodlife-pad">No routed work today</div>';
-  return actions.map((action) => `<div class="h23-goodlife-list-row static">
+  const obligations = data?.operator?.detail?.work?.obligations || {};
+  const agenda = obligations.activeAgenda || [];
+  const goals = obligations.activeGoals || [];
+  const rows = [
+    ...agenda.map((item) => ({
+      badge: item.status || 'agenda',
+      title: item.id || 'agenda',
+      text: item.content || '',
+      age: item.ageMin != null ? `${item.ageMin}m` : '',
+    })),
+    ...goals.map((goal) => ({
+      badge: goal.status || 'goal',
+      title: goal.id || 'goal',
+      text: goal.description || '',
+      age: goal.ageMin != null ? `${goal.ageMin}m` : '',
+    })),
+  ];
+  if (!rows.length && !actions.length) return '<div class="h23-goodlife-empty h23-goodlife-pad">No routed work or active obligations</div>';
+  const obligationHtml = rows.map((row) => `<div class="h23-goodlife-list-row static">
+    <span class="h23-goodlife-problem-state ${goodLifeCssClass(row.badge)}">${escapeHtml(row.badge)}</span>
+    <strong>${escapeHtml(row.title)}</strong>
+    <span>${escapeHtml(row.text)}</span>
+    <small>${escapeHtml(row.age)}</small>
+  </div>`).join('');
+  const actionHtml = actions.slice(0, 6).map((action) => `<div class="h23-goodlife-list-row static">
     <span class="h23-goodlife-problem-state ${goodLifeCssClass(action.mode)}">${escapeHtml(action.mode || 'work')}</span>
     <strong>${escapeHtml(action.agendaId || 'agenda')}</strong>
     <span>${escapeHtml(action.category || action.summary || '')}</span>
     <small>${action.at ? escapeHtml(timeSince(new Date(action.at))) : ''}</small>
   </div>`).join('');
+  return obligationHtml + actionHtml;
 }
 
 function renderGoodLifeInsightsList(data) {
@@ -2903,9 +2927,13 @@ function renderGoodLifeTop(data) {
 function renderGoodLifeTabs(data) {
   const detail = data?.operator?.detail || {};
   const counts = data?.operator?.liveProblems?.counts || {};
+  const workCounts = detail.work?.obligations?.counts || {};
+  const workTotal = Number(workCounts.activeAgenda || 0)
+    + Number(workCounts.activeGoals || 0)
+    + Number((detail.work?.dailyActions || []).length);
   const tabs = [
     ['issues', `Issues ${Number(counts.open || 0) + Number(counts.chronic || 0) + Number(counts.unverifiable || 0)}`],
-    ['work', `Work ${(detail.work?.dailyActions || []).length}`],
+    ['work', `Work ${workTotal}`],
     ['resolutions', `Resolutions ${detail.resolutions?.totalResolved || counts.resolved || 0}`],
     ['insights', 'Insights'],
   ];
@@ -2988,6 +3016,9 @@ function renderGoodLifeWorkDetail(data) {
   const operator = data?.operator || {};
   const card = operator.actionCard || {};
   const activeCommitments = operator.detail?.insights?.activeCommitments || [];
+  const obligations = operator.detail?.work?.obligations || {};
+  const agenda = obligations.activeAgenda || [];
+  const goals = obligations.activeGoals || [];
   return `
     <h3>Current Work</h3>
     <div class="h23-goodlife-detail-grid">
@@ -2996,6 +3027,8 @@ function renderGoodLifeWorkDetail(data) {
       <div><label>Expected Outcome</label><p>${escapeHtml(card.expectedOutcome || 'not recorded')}</p></div>
       <div><label>Risk</label><p>${escapeHtml([card.riskTier != null ? `risk ${card.riskTier}` : null, card.reversible ? 'reversible' : null, card.evidenceRequired ? 'evidence required' : null].filter(Boolean).join(', ') || 'not recorded')}</p></div>
     </div>
+    <section><h4>Active Agenda</h4>${agenda.length ? agenda.map((item) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(item.id || 'agenda')}</strong><span>${escapeHtml(item.content || '')}</span><small>${escapeHtml([item.status, item.ageMin != null ? `${item.ageMin}m` : null].filter(Boolean).join(' - '))}</small></div>`).join('') : '<div class="h23-goodlife-empty">No active agenda rows</div>'}</section>
+    <section><h4>Active Goals</h4>${goals.length ? goals.map((goal) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(goal.id || 'goal')}</strong><span>${escapeHtml(goal.description || '')}</span><small>${escapeHtml([goal.status, goal.source, goal.ageMin != null ? `${goal.ageMin}m` : null].filter(Boolean).join(' - '))}</small></div>`).join('') : '<div class="h23-goodlife-empty">No active goals</div>'}</section>
     <section><h4>Active Commitments</h4>${activeCommitments.length ? activeCommitments.map((item) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(item.title || item.id)}</strong><span>${escapeHtml((item.reasons || []).join(' - ') || item.status || '')}</span><small>${escapeHtml(item.lane || '')}</small></div>`).join('') : '<div class="h23-goodlife-empty">No active commitments</div>'}</section>
   `;
 }

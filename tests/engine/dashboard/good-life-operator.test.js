@@ -6,6 +6,7 @@ const require = createRequire(import.meta.url);
 const {
   buildGoodLifeOperatorModel,
   buildLiveProblemSnapshot,
+  buildGoodLifeObligationSnapshot,
 } = require('../../../engine/src/dashboard/good-life-operator.js');
 
 const NOW = '2026-05-08T13:45:00.000Z';
@@ -58,6 +59,28 @@ test('live-problem snapshot separates open, chronic, resolved, and unverifiable 
   assert.equal(snapshot.resolvedJustNow[0].id, 'resolved_1');
   assert.equal(snapshot.resolved[0].id, 'resolved_1');
   assert.equal(snapshot.resolved[0].evidence.receiptId, 'ev_1');
+});
+
+test('Good Life obligation snapshot exposes active agenda rows and goals', () => {
+  const snapshot = buildGoodLifeObligationSnapshot({
+    agendaRows: [
+      { type: 'add', id: 'ag-1', record: { status: 'candidate', content: 'Check dashboard operator path', createdAt: '2026-05-08T13:00:00.000Z' } },
+      { type: 'add', id: 'ag-2', record: { status: 'candidate', content: 'Old Good Life item', createdAt: '2026-05-08T12:00:00.000Z', sourceSignal: 'good-life' } },
+      { type: 'status', id: 'ag-2', status: 'stale', at: '2026-05-08T13:10:00.000Z' },
+      { type: 'add', id: 'ag-3', record: { status: 'surfaced', content: 'Surface decision', createdAt: '2026-05-08T13:20:00.000Z' } },
+    ],
+    goals: {
+      active: [
+        ['goal_1', { id: 'goal_1', description: 'Resolve operator visibility gap', status: 'active', createdAt: '2026-05-08T13:30:00.000Z' }],
+      ],
+    },
+    now: NOW,
+  });
+
+  assert.equal(snapshot.counts.activeAgenda, 2);
+  assert.equal(snapshot.counts.activeGoals, 1);
+  assert.deepEqual(snapshot.activeAgenda.map((row) => row.id), ['ag-3', 'ag-1']);
+  assert.equal(snapshot.activeGoals[0].id, 'goal_1');
 });
 
 test('Good Life operator model exposes safe current help state with evidence and action card', () => {
@@ -212,6 +235,11 @@ test('Good Life operator model builds end-user detail sections for drill-down na
         ],
       },
     },
+    obligations: {
+      activeAgenda: [{ id: 'ag-visible', status: 'surfaced', content: 'Visible operator work' }],
+      activeGoals: [{ id: 'goal-visible', status: 'active', description: 'Visible operator goal' }],
+      counts: { activeAgenda: 1, activeGoals: 1 },
+    },
     liveProblems: [
       { id: 'chronic_1', state: 'chronic', claim: 'Chronic thing', openedAt: '2026-05-08T13:00:00.000Z', lastResult: { detail: 'still failing' } },
       {
@@ -232,6 +260,8 @@ test('Good Life operator model builds end-user detail sections for drill-down na
   assert.equal(model.detail.issues.activeCount, 1);
   assert.equal(model.detail.issues.rows[0].id, 'chronic_1');
   assert.equal(model.detail.work.dailyActions[0].agendaId, 'ag-new');
+  assert.equal(model.detail.work.obligations.activeAgenda[0].id, 'ag-visible');
+  assert.equal(model.detail.work.obligations.activeGoals[0].id, 'goal-visible');
   assert.equal(model.detail.resolutions.recent[0].id, 'resolved_1');
   assert.equal(model.detail.resolutions.recent[0].evidence.receiptId, 'ev_resolved_1');
   assert.equal(model.detail.insights.activeCommitments[0].id, 'continuity');
