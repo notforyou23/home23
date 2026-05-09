@@ -1393,7 +1393,7 @@ Your response:`
         // Write file via Capabilities (embodied cognition)
         if (this.capabilities) {
           const result = await this.capabilities.writeFile(
-            paths.relativePath,
+            paths.fullPath,
             content,
             {
               agentId: this.agentId,
@@ -1446,7 +1446,7 @@ Your response:`
         // Write metadata via Capabilities
         if (this.capabilities) {
           await this.capabilities.writeFile(
-            path.relative(process.cwd(), metadataPath),
+            metadataPath,
             JSON.stringify(metadata, null, 2),
             {
               agentId: this.agentId,
