@@ -1925,7 +1925,7 @@ function formatWorkerTime(value) {
 function workerStatusClass(value) {
   if (value === 'fixed' || value === 'pass') return 'pass';
   if (value === 'failed' || value === 'fail') return 'fail';
-  if (value === 'blocked' || value === 'cancelled') return 'blocked';
+  if (value === 'blocked' || value === 'cancelled' || value === 'stale') return 'blocked';
   return 'neutral';
 }
 

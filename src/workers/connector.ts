@@ -1,5 +1,5 @@
 import express from 'express';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { createWorkerFromTemplate } from './scaffold.js';
 import { listWorkerTemplates, listWorkers } from './registry.js';
@@ -17,14 +17,17 @@ export interface WorkerRunSummary {
   requestedBy?: WorkerRunReceipt['requestedBy'];
   requester?: string;
   source?: WorkerRunReceipt['source'];
-  status: WorkerRunStatus | 'running';
+  status: WorkerRunStatus | 'running' | 'stale';
   verifierStatus?: string;
   startedAt?: string;
   finishedAt?: string;
   summary?: string;
   runPath: string;
   receiptPath?: string;
+  stale?: boolean;
 }
+
+const STALE_RUNNING_RUN_MS = 6 * 60 * 60 * 1000;
 
 export interface WorkerHandlerDeps {
   projectRoot: string;
@@ -51,6 +54,31 @@ function findRunReceiptPath(projectRoot: string, runId: string): string | null {
     if (existsSync(receiptPath)) return receiptPath;
   }
   return null;
+}
+
+function runStartedAtFromId(runId: string): string | null {
+  const match = String(runId || '').match(/^wr_(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z_/);
+  if (!match) return null;
+  const [, year, month, day, hour, minute, second] = match;
+  const iso = `${year}-${month}-${day}T${hour}:${minute}:${second}.000Z`;
+  const time = Date.parse(iso);
+  return Number.isFinite(time) ? iso : null;
+}
+
+function runStartedAtFromPath(runId: string, runPath: string): string | null {
+  const fromId = runStartedAtFromId(runId);
+  if (fromId) return fromId;
+  try {
+    return statSync(runPath).mtime.toISOString();
+  } catch {
+    return null;
+  }
+}
+
+function isStaleRunningRun(startedAt: string | null, nowMs = Date.now()): boolean {
+  if (!startedAt) return false;
+  const startedMs = Date.parse(startedAt);
+  return Number.isFinite(startedMs) && nowMs - startedMs > STALE_RUNNING_RUN_MS;
 }
 
 function listRunSummaries(projectRoot: string): WorkerRunSummary[] {
@@ -80,12 +108,20 @@ function listRunSummaries(projectRoot: string): WorkerRunSummary[] {
           receiptPath
         });
       } else {
+        const startedAt = runStartedAtFromPath(entry.name, runPath);
+        const stale = isStaleRunningRun(startedAt);
         runs.push({
           runId: entry.name,
           worker: worker.name,
           ownerAgent: worker.ownerAgent,
-          status: 'running',
-          runPath
+          status: stale ? 'stale' : 'running',
+          verifierStatus: stale ? 'unknown' : undefined,
+          startedAt: startedAt || undefined,
+          summary: stale
+            ? 'No worker receipt found; this run is stale and is not active repair work.'
+            : undefined,
+          runPath,
+          stale
         });
       }
     }

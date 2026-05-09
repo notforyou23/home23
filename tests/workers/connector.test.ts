@@ -131,3 +131,38 @@ test('worker handlers preserve receipt source in run summaries', async () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('worker handlers mark old receiptless runs as stale instead of running', async () => {
+  const root = path.join(tmpdir(), `home23-worker-connector-stale-${process.pid}-${Date.now()}`);
+  try {
+    const workerRoot = path.join(root, 'instances', 'workers', 'systems');
+    const runRoot = path.join(workerRoot, 'runs', 'wr_20200101T000000Z_systems_dead');
+    mkdirSync(runRoot, { recursive: true });
+    writeFileSync(path.join(workerRoot, 'worker.yaml'), [
+      'kind: worker',
+      'name: systems',
+      'displayName: Systems',
+      'ownerAgent: jerry',
+      'class: ops',
+      'purpose: Diagnose host issues',
+      '',
+    ].join('\n'));
+    writeFileSync(path.join(runRoot, 'input.md'), 'diagnose host\n');
+
+    const handlers = createWorkerHandlers({
+      projectRoot: root,
+      listWorkers: () => [],
+      listTemplates: () => [],
+      runWorker: async () => { throw new Error('not used'); },
+    });
+
+    const result = await handlers.listRuns();
+    assert.equal(result.runs.length, 1);
+    assert.equal(result.runs[0].status, 'stale');
+    assert.equal(result.runs[0].stale, true);
+    assert.equal(result.runs[0].startedAt, '2020-01-01T00:00:00.000Z');
+    assert.match(result.runs[0].summary || '', /No worker receipt found/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
