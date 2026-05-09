@@ -420,6 +420,14 @@ verifiers.log_recent_count = async function logRecentCount(args = {}) {
       return { ok: false, detail: `invalid contextPattern: ${err.message}` };
     }
   }
+  let sinceRe = null;
+  if (args.sincePattern) {
+    try {
+      sinceRe = new RegExp(args.sincePattern);
+    } catch (err) {
+      return { ok: false, detail: `invalid sincePattern: ${err.message}` };
+    }
+  }
 
   const windowMin = Number.isFinite(args.windowMinutes) ? args.windowMinutes : 60;
   const maxLines = Math.min(args.maxLines || 5000, 50000);
@@ -432,7 +440,21 @@ verifiers.log_recent_count = async function logRecentCount(args = {}) {
   try {
     const raw = fs.readFileSync(full, 'utf8');
     const lines = raw.split('\n');
-    const start = Math.max(0, lines.length - maxLines);
+    let start = Math.max(0, lines.length - maxLines);
+    let sinceLineMatched = false;
+    if (sinceRe) {
+      for (let i = lines.length - 1; i >= start; i--) {
+        const line = lines[i];
+        if (!line) continue;
+        if (sinceRe.test(line)) {
+          start = i + 1;
+          sinceLineMatched = true;
+          sinceRe.lastIndex = 0;
+          break;
+        }
+        sinceRe.lastIndex = 0;
+      }
+    }
     let matchCount = 0;
     let scanned = 0;
     let timestamped = 0;
@@ -493,7 +515,7 @@ verifiers.log_recent_count = async function logRecentCount(args = {}) {
     return {
       ok,
       detail: `${matchCount} matching log entries in last ${windowMin}m (${threshold}); scanned ${scanned}${contextDetail}`,
-      observed: { matchCount, windowMin, maxCount, minCount, scanned, timestamped, firstMatch, lastMatch },
+      observed: { matchCount, windowMin, maxCount, minCount, scanned, timestamped, sinceLineMatched, firstMatch, lastMatch },
     };
   } catch (err) {
     return { ok: false, detail: `read failed: ${err.message}` };

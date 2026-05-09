@@ -116,6 +116,32 @@ test('log_recent_count ignores matches outside the configured window', async () 
   assert.equal(result.observed.matchCount, 0);
 });
 
+test('log_recent_count can ignore stale matches before the latest start marker', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verifier-log-since-'));
+  const file = path.join(dir, 'engine-err.log');
+  const now = new Date();
+  fs.writeFileSync(file, [
+    `[${hhmmss(now)}] ERROR: [TimeoutManager] Cycle timeout exceeded {"cycle":1}`,
+    `[${hhmmss(now)}] INFO: Starting cognitive loop...`,
+    '',
+  ].join('\n'));
+
+  const result = await runVerifier({
+    type: 'log_recent_count',
+    args: {
+      path: file,
+      pattern: '\\[TimeoutManager\\] Cycle timeout exceeded',
+      sincePattern: 'Starting cognitive loop',
+      windowMinutes: 30,
+      maxCount: 0,
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.observed.matchCount, 0);
+  assert.equal(result.observed.sinceLineMatched, true);
+});
+
 test('log_recent_count reports missing log files as failed', async () => {
   const result = await runVerifier({
     type: 'log_recent_count',
