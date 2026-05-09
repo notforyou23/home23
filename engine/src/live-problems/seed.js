@@ -293,14 +293,14 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
     },
     {
       id: 'weather_sensor_fresh',
-      claim: 'Weather tile sensor refreshing within last 15 min',
+      claim: 'Weather tile sensor refreshing within last 30 min',
       verifier: {
         type: 'jsonpath_http',
         args: {
           url: `http://127.0.0.1:${dashPort}/api/sensors`,
           path: 'sensors[id=tile.outside-weather].ts',
           op: '>',
-          value: '{{iso:now-15min}}',
+          value: '{{iso:now-30min}}',
           timeoutMs: 4000,
         },
       },
@@ -310,7 +310,7 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
           type: 'notify_jtr',
           args: {
             severity: 'normal',
-            text: "Weather sensor hasn't refreshed in 15+ min — Ecowitt tile integration might be wedged.",
+            text: "Weather sensor hasn't refreshed in 30+ min — Ecowitt tile integration might be wedged.",
           },
           cooldownMin: 720,
         },

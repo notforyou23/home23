@@ -164,9 +164,22 @@ class LiveProblemStore {
     let resolvedTransition = false;
     this._touch(p, now);
     p.lastCheckedAt = now;
+    if (!result.ok && p.state === 'resolved' && isTransientVerifierFailure(result)) {
+      // Keep the last successful verifier result authoritative while counting
+      // the transient miss separately. Otherwise dashboards/dispatchers that
+      // look at lastResult instead of state resurrect already-resolved problems.
+      p.transientFailureCount = (p.transientFailureCount || 0) + 1;
+      p.lastTransientFailure = { ...result, at: now };
+      if (p.lastResult?.ok) p.lastSuccessfulResult = p.lastSuccessfulResult || { ...p.lastResult };
+      if (!p.lastResult?.ok && p.lastSuccessfulResult?.ok) p.lastResult = { ...p.lastSuccessfulResult };
+      this.save();
+      return;
+    }
     p.lastResult = { ...result, at: now };
     if (result.ok) {
+      p.lastSuccessfulResult = { ...p.lastResult };
       delete p.transientFailureCount;
+      delete p.lastTransientFailure;
       if (p.state !== 'resolved') {
         resolvedTransition = true;
         p.state = 'resolved';
@@ -177,16 +190,8 @@ class LiveProblemStore {
       p.escalated = false;
       delete p.escalatedAt;
     } else {
-      // Do not reopen a resolved problem on a single transient transport
-      // failure. jsonpath_http already retries inside one check; this guards
-      // the next layer so a momentary localhost fetch failure does not
-      // dispatch an agent for a sensor that is otherwise healthy.
-      if (p.state === 'resolved' && isTransientVerifierFailure(result)) {
-        p.transientFailureCount = (p.transientFailureCount || 0) + 1;
-        this.save();
-        return;
-      }
       delete p.transientFailureCount;
+      delete p.lastTransientFailure;
       // Re-open if previously resolved
       if (p.state === 'resolved') {
         p.state = 'open';

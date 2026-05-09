@@ -128,6 +128,7 @@ export function generateEcosystem(home23Root) {
     lines.push(`      name: 'home23-${agent.name}',`);
     lines.push(`      script: 'src/index.js',`);
     lines.push(`      cwd: ENGINE,`);
+    lines.push(`      filter_env: ['HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH'],`);
     // Heap sized for a cognitive engine with a growing brain — see commit
     // 174c76c (Step: engine OOM fix). 768MB caused a restart loop at ~7k nodes.
     lines.push(`      node_args: '--expose-gc --max-old-space-size=4096',`);
@@ -143,6 +144,7 @@ export function generateEcosystem(home23Root) {
     lines.push(`      name: 'home23-${agent.name}-dash',`);
     lines.push(`      script: 'src/dashboard/server.js',`);
     lines.push(`      cwd: ENGINE,`);
+    lines.push(`      filter_env: ['HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH'],`);
     lines.push(`      node_args: '--max-old-space-size=2048',`);
     lines.push(`      max_memory_restart: '3G',`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
@@ -156,6 +158,7 @@ export function generateEcosystem(home23Root) {
     lines.push(`      name: 'home23-${agent.name}-harness',`);
     lines.push(`      script: 'dist/home.js',`);
     lines.push(`      cwd: HOME23,`);
+    lines.push(`      filter_env: ['cron_restart', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH'],`);
     // Heap raised from 1.5GB default to 4GB. Long-running agent sessions
     // with many LLM calls + tool-use chains can accumulate response blobs
     // in closure scope faster than GC reclaims. max_memory_restart acts
@@ -184,6 +187,7 @@ export function generateEcosystem(home23Root) {
   lines.push(`      name: 'home23-chrome-cdp',`);
   lines.push(`      script: path.join(HOME23, 'scripts', 'chrome-cdp.sh'),`);
   lines.push(`      interpreter: 'none',`);
+  lines.push(`      filter_env: ['cron_restart', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH'],`);
   lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
   lines.push(`      out_file: path.join(HOME23, 'logs', 'chrome-cdp-out.log'),`);
   lines.push(`      error_file: path.join(HOME23, 'logs', 'chrome-cdp-err.log'),`);

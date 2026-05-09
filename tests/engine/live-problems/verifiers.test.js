@@ -1,12 +1,37 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { runVerifier } = require('../../../engine/src/live-problems/verifiers.js');
+
+test('http_ping verifies a local HTTP status without fetch', async () => {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(204);
+    res.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const port = server.address().port;
+    const result = await runVerifier({
+      type: 'http_ping',
+      args: {
+        url: `http://127.0.0.1:${port}/health`,
+        expectStatus: 204,
+        timeoutMs: 1000,
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.observed.status, 204);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
 
 test('jsonl_metric_date_fresh fails when wrapper writes are fresh but metric date is stale', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verifier-health-'));

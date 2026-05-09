@@ -144,6 +144,11 @@ export interface HomeConfig {
 
   providers?: Record<string, unknown>;
 
+  homeAssistant?: {
+    url?: string;
+    token?: string;
+  };
+
   search?: {
     searxngUrl?: string;
   };

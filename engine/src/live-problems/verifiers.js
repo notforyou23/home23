@@ -14,6 +14,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execFileSync, execSync } = require('child_process');
+const http = require('http');
+const https = require('https');
 
 function expandPath(p) {
   if (!p) return p;
@@ -23,6 +25,25 @@ function expandPath(p) {
 
 function minutesSince(ts) {
   return (Date.now() - ts) / 60000;
+}
+
+function simpleHttpGet(url, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+    const client = parsed.protocol === 'https:' ? https : http;
+    const req = client.get(parsed, { timeout: timeoutMs }, (res) => {
+      res.resume();
+      res.on('end', () => resolve({ status: res.statusCode || 0 }));
+    });
+    req.on('timeout', () => req.destroy(new Error(`timeout after ${timeoutMs}ms`)));
+    req.on('error', reject);
+  });
 }
 
 const verifiers = {
@@ -101,10 +122,8 @@ const verifiers = {
    */
   async http_ping({ url, timeoutMs = 5000, expectStatus }) {
     if (!url) return { ok: false, detail: 'url required' };
-    const controller = new AbortController();
-    const to = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(url, { signal: controller.signal });
+      const res = await simpleHttpGet(url, timeoutMs);
       const status = res.status;
       const expected = expectStatus ?? 200;
       const ok = Array.isArray(expected)
@@ -116,9 +135,7 @@ const verifiers = {
         observed: { status },
       };
     } catch (err) {
-      return { ok: false, detail: `fetch failed: ${err.message}` };
-    } finally {
-      clearTimeout(to);
+      return { ok: false, detail: `http failed: ${err.message}` };
     }
   },
 

@@ -130,6 +130,16 @@ class LiveProblemsLoop {
     // 1. Verify
     const result = await runVerifier(p.verifier, ctx);
     this.store.recordVerification(p.id, result);
+
+    // recordVerification intentionally keeps already-resolved problems resolved
+    // on transient transport failures. Respect that decision here; otherwise a
+    // single aborted localhost fetch can still fall through into remediation and
+    // dispatch an agent for a healthy service.
+    const currentAfterVerification = this.store.get(p.id);
+    if (!result.ok && priorState === 'resolved' && currentAfterVerification?.state === 'resolved') {
+      return;
+    }
+
     if (result.ok) {
       // Emit a resolved-signal on the edge transition open/chronic → resolved.
       if (priorState === 'open' || priorState === 'chronic') {

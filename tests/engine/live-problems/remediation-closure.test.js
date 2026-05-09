@@ -60,6 +60,30 @@ test('resolved verification clears stale escalation state', () => {
   }
 });
 
+test('resolved live problem stays resolved on transient verifier failure', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-'));
+  try {
+    const store = new LiveProblemStore({ brainDir: dir });
+    store.upsert({
+      id: 'example',
+      claim: 'example problem',
+      verifier: { type: 'http_ping', args: { url: 'http://127.0.0.1:1' } },
+      remediation: [],
+    });
+
+    store.recordVerification('example', { ok: true, detail: 'fresh', observed: { status: 200 } });
+    store.recordVerification('example', { ok: false, detail: 'fetch failed: socket hang up' });
+
+    const p = store.get('example');
+    assert.equal(p.state, 'resolved');
+    assert.equal(p.lastResult.ok, true);
+    assert.equal(p.transientFailureCount, 1);
+    assert.match(p.lastTransientFailure.detail, /socket hang up/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('store stamps updatedAt on verification and remediation transitions', () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-'));
   try {

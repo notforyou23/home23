@@ -824,6 +824,72 @@ async function main(): Promise<void> {
   bridgeApp.post('/api/stop', createStopHandler(bridgeConfig));
   bridgeApp.get('/health', createHealthHandler({ agentName: AGENT_NAME, agent }));
 
+  bridgeApp.get('/api/house/state', async (_req: any, res: any) => {
+    const haUrl = config.homeAssistant?.url?.replace(/\/+$/, '');
+    const haToken = config.homeAssistant?.token;
+    if (!haUrl || !haToken) {
+      res.status(503).json({ ok: false, error: 'homeAssistant not configured' });
+      return;
+    }
+
+    try {
+      const startedAt = Date.now();
+      const [apiRes, statesRes] = await Promise.all([
+        fetch(`${haUrl}/api/`, {
+          headers: { Authorization: `Bearer ${haToken}`, 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(5000),
+        }),
+        fetch(`${haUrl}/api/states`, {
+          headers: { Authorization: `Bearer ${haToken}`, 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(8000),
+        }),
+      ]);
+
+      if (!apiRes.ok) throw new Error(`Home Assistant API HTTP ${apiRes.status}`);
+      if (!statesRes.ok) throw new Error(`Home Assistant states HTTP ${statesRes.status}`);
+
+      const states = await statesRes.json() as Array<any>;
+      const now = Date.now();
+      const staleAfterMs = 6 * 60 * 60 * 1000;
+      const interesting = /garage|door|lock|leak|water|smoke|carbon|co\b|motion|person|camera|eufy|meross|battery|thermostat|temperature|humidity|homekit/i;
+      const matched = states
+        .filter((s) => interesting.test(String(s.entity_id ?? '')) || interesting.test(String(s.attributes?.friendly_name ?? '')))
+        .map((s) => {
+          const updatedAt = s.last_updated ? new Date(s.last_updated).getTime() : 0;
+          return {
+            entity_id: s.entity_id,
+            name: s.attributes?.friendly_name ?? s.entity_id,
+            state: s.state,
+            domain: String(s.entity_id ?? '').split('.')[0] ?? 'unknown',
+            updated_at: s.last_updated,
+            stale: updatedAt > 0 ? now - updatedAt > staleAfterMs : true,
+          };
+        })
+        .sort((a, b) => String(a.entity_id).localeCompare(String(b.entity_id)));
+
+      const unavailable = matched.filter((s) => ['unavailable', 'unknown'].includes(String(s.state)));
+      const stale = matched.filter((s) => s.stale);
+      const open = matched.filter((s) => /garage|door|lock/i.test(`${s.entity_id} ${s.name}`) && ['open', 'opening', 'unlocked'].includes(String(s.state)));
+
+      res.json({
+        ok: true,
+        source: 'home-assistant',
+        url: haUrl,
+        response_ms: Date.now() - startedAt,
+        entity_count: states.length,
+        matched_count: matched.length,
+        alerts: [
+          ...open.map((s) => ({ severity: 'alert', kind: 'open_access_point', entity_id: s.entity_id, state: s.state })),
+          ...unavailable.map((s) => ({ severity: 'warn', kind: 'unavailable', entity_id: s.entity_id, state: s.state })),
+          ...stale.map((s) => ({ severity: 'warn', kind: 'stale', entity_id: s.entity_id, updated_at: s.updated_at })),
+        ],
+        entities: matched,
+      });
+    } catch (err) {
+      res.status(502).json({ ok: false, source: 'home-assistant', url: haUrl, error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
   // ── Notify endpoint — the engine's live-problems loop calls this when
   // autonomous remediation has been exhausted. Routes the message to the
   // owner's default channel (Telegram DM for now). Bearer-token gated so

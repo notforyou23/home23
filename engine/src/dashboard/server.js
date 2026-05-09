@@ -4928,6 +4928,87 @@ Be specific, actionable, and maintain research continuity.`;
       }
     });
 
+    this.app.get('/api/house/state', async (req, res) => {
+      try {
+        const fsSync = require('fs');
+        const yaml = require('js-yaml');
+        const root = this.getHome23Root();
+        const secretsPath = path.join(root, 'config', 'secrets.yaml');
+        const secrets = fsSync.existsSync(secretsPath)
+          ? (yaml.load(fsSync.readFileSync(secretsPath, 'utf8')) || {})
+          : {};
+        const ha = secrets.homeAssistant || {};
+        if (!ha.url || !ha.token) {
+          return res.status(503).json({ ok: false, error: 'homeAssistant config missing' });
+        }
+
+        const baseUrl = String(ha.url).replace(/\/$/, '');
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+        let response;
+        try {
+          response = await fetch(`${baseUrl}/api/states`, {
+            headers: { Authorization: `Bearer ${ha.token}` },
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
+        if (!response.ok) {
+          return res.status(502).json({ ok: false, error: `Home Assistant returned ${response.status}` });
+        }
+        const states = await response.json();
+        const now = Date.now();
+        const staleAfterMs = Number(ha.staleAfterMs || 6 * 60 * 60 * 1000);
+        const entityRows = Array.isArray(states) ? states.map((entity) => {
+          const updatedAt = entity.last_updated || entity.last_changed || null;
+          const ageMs = updatedAt ? Math.max(0, now - Date.parse(updatedAt)) : null;
+          return {
+            entityId: entity.entity_id,
+            domain: String(entity.entity_id || '').split('.')[0] || 'unknown',
+            state: entity.state,
+            name: entity.attributes?.friendly_name || entity.entity_id,
+            updatedAt,
+            ageMs,
+            stale: ageMs !== null && ageMs > staleAfterMs,
+          };
+        }) : [];
+        const byDomain = entityRows.reduce((acc, entity) => {
+          acc[entity.domain] = (acc[entity.domain] || 0) + 1;
+          return acc;
+        }, {});
+        const likelyCritical = entityRows.filter((entity) => {
+          const text = `${entity.entityId} ${entity.name}`.toLowerCase();
+          return /garage|\bdoor\b|lock|\bleak\b|water sensor|water leak|smoke|carbon monoxide|\bco detector\b|camera|eufy|meross|thermostat|temperature|humidity|motion|presence|\bperson\b/.test(text);
+        });
+        const alerts = [];
+        for (const entity of likelyCritical) {
+          const text = `${entity.entityId} ${entity.name}`.toLowerCase();
+          if (entity.stale) alerts.push({ level: 'warn', type: 'stale_entity', entityId: entity.entityId, name: entity.name, ageMs: entity.ageMs });
+          if (/garage|\bdoor\b/.test(text) && ['open', 'opening'].includes(String(entity.state).toLowerCase())) {
+            alerts.push({ level: 'urgent', type: 'entry_open', entityId: entity.entityId, name: entity.name, state: entity.state });
+          }
+          if (/\bleak\b|water sensor|water leak|smoke|carbon monoxide|\bco detector\b/.test(text) && ['on', 'detected', 'problem', 'unsafe'].includes(String(entity.state).toLowerCase())) {
+            alerts.push({ level: 'urgent', type: 'safety_sensor_active', entityId: entity.entityId, name: entity.name, state: entity.state });
+          }
+          if (['unavailable', 'unknown'].includes(String(entity.state).toLowerCase()) && /garage|\bdoor\b|lock|\bleak\b|water sensor|water leak|smoke|carbon monoxide|\bco detector\b|camera|eufy|meross/.test(text)) {
+            alerts.push({ level: 'warn', type: 'critical_unknown', entityId: entity.entityId, name: entity.name, state: entity.state });
+          }
+        }
+        res.json({
+          ok: true,
+          source: 'home-assistant',
+          url: baseUrl,
+          checkedAt: new Date(now).toISOString(),
+          counts: { entities: entityRows.length, domains: byDomain, likelyCritical: likelyCritical.length, alerts: alerts.length },
+          alerts,
+          likelyCritical,
+        });
+      } catch (error) {
+        res.status(500).json({ ok: false, error: error.message });
+      }
+    });
+
     this.app.get('/api/good-life', async (req, res) => {
       try {
         const fsSync = require('fs');

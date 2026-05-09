@@ -65,7 +65,7 @@ dashboard:
         icon: 🌤
         mode: ecowitt-weather
         connectionId: jtr-ecowitt
-        refreshMs: 60000
+        refreshMs: 600000
         sizeDefault: third
         config: {}
       - id: sauna-control
