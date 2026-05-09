@@ -732,6 +732,50 @@ test('Good Life operator answer hides worker route for stale latest agenda actio
   assert.equal(model.latestRegulatorAction.agendaStatus, 'stale');
   assert.equal(model.work.activeTotal, 0);
   assert.equal(model.operatorAnswer.some((line) => line.includes('Worker route: systems')), false);
+  assert.notEqual(model.operatorBrief.target.worker, 'systems');
+  assert.notEqual(model.operatorBrief.target.label, 'Open systems');
+});
+
+test('Good Life operator brief ignores stale latest worker route when active goals remain', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    regulator: {
+      'repair:viability:critical': {
+        at: NOW,
+        agendaId: 'ag-worker-route',
+        mode: 'repair',
+        summary: 'repair - critical viability drift',
+        workerRoute: {
+          worker: 'systems',
+          reason: 'system viability needs host/process evidence',
+        },
+      },
+    },
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [{
+        id: 'goal-visible-progress',
+        description: 'Produce visible progress from current evidence',
+        status: 'active',
+        createdAt: NOW,
+      }],
+      latestAgendaById: {
+        'ag-worker-route': { status: 'stale', updatedAt: NOW },
+      },
+      counts: { activeAgenda: 0, activeGoals: 1 },
+    },
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.work.activeTotal, 1);
+  assert.equal(model.operatorBrief.next, 'Top goal: goal-visible-progress');
+  assert.deepEqual(model.operatorBrief.target, {
+    tab: 'work',
+    id: 'goal-visible-progress',
+    label: 'Review Work',
+    worker: null,
+  });
 });
 
 test('Good Life operator marks superseded repair agenda for review when registry is clear', () => {

@@ -661,6 +661,8 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
   const warnings = consistency?.warnings || [];
   const projectionMismatch = buildProjectionMismatchText(projection, liveProblems);
   const latestResolution = Array.isArray(liveProblems.resolved) ? liveProblems.resolved[0] || null : null;
+  const latestActionAgendaActive = latestAction?.workerRoute?.worker
+    && isActiveAgendaStatus(latestAction.agendaStatus || 'candidate');
 
   let severity = 'clear';
   let status = 'Clear';
@@ -733,18 +735,20 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
     why = policy?.reason || 'Good Life has routed work but no active live problem.';
     if (work.topAgenda?.review?.recommended) {
       next = `Review: ${compactText(work.topAgenda.review.reason || 'operator review recommended', 140)}`;
-    } else if (latestAction?.workerRoute?.worker) {
+    } else if (latestActionAgendaActive) {
       next = `Worker route: ${latestAction.workerRoute.worker}${latestAction.workerRoute.reason ? ` - ${compactText(latestAction.workerRoute.reason, 140)}` : ''}`;
     } else if (work.topAgenda?.id) {
       next = `Top agenda: ${work.topAgenda.id}`;
+    } else if (work.topGoal?.id) {
+      next = `Top goal: ${work.topGoal.id}`;
     }
     target = {
       tab: 'work',
       id: work.topAgenda?.id || work.topGoal?.id || null,
       label: work.topAgenda?.review?.recommended
         ? 'Review Work'
-        : (latestAction?.workerRoute?.worker ? `Open ${latestAction.workerRoute.worker}` : 'Review Work'),
-      worker: work.topAgenda?.review?.recommended ? null : (latestAction?.workerRoute?.worker || null),
+        : (latestActionAgendaActive ? `Open ${latestAction.workerRoute.worker}` : 'Review Work'),
+      worker: work.topAgenda?.review?.recommended ? null : (latestActionAgendaActive ? latestAction.workerRoute.worker : null),
     };
   } else if (latestResolution) {
     headline = 'No active issues after recent repairs';
