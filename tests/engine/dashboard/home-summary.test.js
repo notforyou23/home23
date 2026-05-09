@@ -126,3 +126,65 @@ test('home summary reads goal counts from brain snapshot without state parse', a
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('goals API payload avoids full state memory hydration', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-dashboard-goals-'));
+  fs.writeFileSync(
+    path.join(dir, 'state.json.gz'),
+    zlib.gzipSync(JSON.stringify({
+      memory: { nodes: [], edges: [] },
+      goals: {
+        active: [['goal_1', { id: 'goal_1', description: 'current work' }]],
+        completed: [{ id: 'goal_done' }],
+        archived: [{ id: 'goal_old' }, { id: 'goal_older' }],
+      },
+    }))
+  );
+  fs.writeFileSync(path.join(dir, 'memory-nodes.jsonl.gz'), zlib.gzipSync('{"id":"n1"}\n'));
+
+  const server = Object.create(DashboardServer.prototype);
+  server.logsDir = dir;
+  server.logger = console;
+  server._stateScalarsCache = null;
+  server.loadState = async () => {
+    throw new Error('full state hydration should not run for /api/goals');
+  };
+
+  try {
+    const goals = await server.loadGoals();
+
+    assert.equal(goals.source, 'state');
+    assert.deepEqual(goals.counts, { active: 1, completed: 1, archived: 2 });
+    assert.equal(goals.active[0][0], 'goal_1');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('goals API payload falls back to brain snapshot summaries', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-dashboard-goals-'));
+  fs.writeFileSync(
+    path.join(dir, 'brain-snapshot.json'),
+    JSON.stringify({
+      goalCounts: { active: 1, completed: 34, archived: 5 },
+      activeGoalSummaries: [{ id: 'goal_7', description: 'snapshot goal' }],
+    })
+  );
+
+  const server = Object.create(DashboardServer.prototype);
+  server.logsDir = dir;
+  server.loadStateScalars = async () => ({});
+  server.loadState = async () => {
+    throw new Error('full state hydration should not run for snapshot fallback');
+  };
+
+  try {
+    const goals = await server.loadGoals();
+
+    assert.equal(goals.source, 'brain-snapshot');
+    assert.deepEqual(goals.counts, { active: 1, completed: 34, archived: 5 });
+    assert.equal(goals.active[0][0], 'goal_7');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -5867,8 +5867,8 @@ Be specific, actionable, and maintain research continuity.`;
     // API: Get goals
     this.app.get('/api/goals', async (req, res) => {
       try {
-        const state = await this.loadState();
-        res.json(state.goals || { active: [], completed: [] });
+        const goals = await this.loadGoals();
+        res.json(goals);
       } catch (error) {
         // Fallback: extract goals from thoughts
         const thoughts = await this.getRecentThoughts(100);
@@ -9406,6 +9406,61 @@ You are empowered to explore and understand. The user trusts you to discover the
       this.logger?.warn?.('Could not load scalar state.json', { path: statePath, error: error.message });
       return {};
     }
+  }
+
+  async loadGoals() {
+    const state = await this.loadStateScalars();
+    if (state?.goals) {
+      return this._normalizeGoalsPayload(state.goals, 'state');
+    }
+
+    try {
+      const snapshotPath = path.join(this.logsDir, 'brain-snapshot.json');
+      const snapshot = JSON.parse(await fs.readFile(snapshotPath, 'utf8'));
+      const activeSummaries = Array.isArray(snapshot.activeGoalSummaries)
+        ? snapshot.activeGoalSummaries
+        : [];
+      const counts = snapshot.goalCounts || {};
+      return {
+        active: activeSummaries.map((goal) => [goal.id, goal]),
+        completed: [],
+        archived: [],
+        counts: {
+          active: Number.isFinite(counts.active) ? counts.active : activeSummaries.length,
+          completed: Number.isFinite(counts.completed) ? counts.completed : 0,
+          archived: Number.isFinite(counts.archived) ? counts.archived : 0,
+        },
+        source: 'brain-snapshot',
+      };
+    } catch {
+      return {
+        active: [],
+        completed: [],
+        archived: [],
+        counts: { active: 0, completed: 0, archived: 0 },
+        source: null,
+      };
+    }
+  }
+
+  _normalizeGoalsPayload(goals = {}, source = null) {
+    const active = goals.active ?? (Array.isArray(goals.goals)
+      ? goals.goals.filter((goal) => goal?.status === 'active')
+      : []);
+    const completed = goals.completed ?? [];
+    const archived = goals.archived ?? [];
+    return {
+      ...goals,
+      active,
+      completed,
+      archived,
+      counts: {
+        active: this._countGoalEntries(active),
+        completed: this._countGoalEntries(completed),
+        archived: this._countGoalEntries(archived),
+      },
+      source,
+    };
   }
 
   async loadState() {
