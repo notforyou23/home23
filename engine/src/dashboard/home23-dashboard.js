@@ -2664,6 +2664,7 @@ function setupTileActionHandlers() {
 
 async function loadHomeTiles() {
   const base = apiBase(primaryAgent);
+  const goodLifeFleetPromise = loadGoodLifeFleet({ updateTiles: false }).catch(() => null);
 
   loadVibeTile(primaryAgent, {
     imageId: 'home-vibe-image',
@@ -2672,7 +2673,7 @@ async function loadHomeTiles() {
   }).catch(() => { /* best-effort */ });
 
   const stateUrl = `${base || ''}/api/state`;
-  const [engineHealth, summary, feederData, thoughtData, dreamData, systemState, goodLifeData, goodLifeFleetData] = await Promise.all([
+  const [engineHealth, summary, feederData, thoughtData, dreamData, systemState, goodLifeData] = await Promise.all([
     fetchEngineHealth(primaryAgent).catch(() => null),
     apiFetch(`${base}/api/home/summary`, { timeoutMs: 4000 }).catch(() => null),
     apiFetch('/home23/feeder-status', { timeoutMs: 4000 }).catch(() => null),
@@ -2682,7 +2683,6 @@ async function loadHomeTiles() {
       .then((res) => (res.ok ? res.json() : null))
       .catch(() => null),
     apiFetch(`${base}/api/good-life`, { timeoutMs: 4000 }).catch(() => null),
-    loadGoodLifeFleet({ updateTiles: false }).catch(() => null),
   ]);
 
   if (summary) {
@@ -2709,7 +2709,13 @@ async function loadHomeTiles() {
 
   if (feederData) updateFeederTile(feederData);
   if (goodLifeData) updateGoodLifeTile(goodLifeData);
-  if (goodLifeFleetData) renderGoodLifeFleetSummary();
+  goodLifeFleetPromise.then((rows) => {
+    const homeGoodLifeFromFleet = Array.isArray(rows)
+      ? rows.find((row) => row?.scope === 'home')?.data
+      : null;
+    if (!goodLifeSurfaceState.has('home') && homeGoodLifeFromFleet) updateGoodLifeTile(homeGoodLifeFromFleet);
+    if (rows) renderGoodLifeFleetSummary();
+  });
 
   if (thoughtData) {
     const thoughts = thoughtData.thoughts || thoughtData.journal || thoughtData || [];
