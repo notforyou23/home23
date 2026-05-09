@@ -78,6 +78,24 @@ test('GoodLifeRegulator appends agenda event when AgendaStore is not ready', asy
   assert.match(agenda, /"sourceSignal":"good-life"/);
 });
 
+test('GoodLifeRegulator fallback stales older Good Life agenda rows before appending a new one', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-regulator-'));
+  const regulator = new GoodLifeRegulator({ brainDir: dir, throttleMs: 1 });
+
+  await regulator.handleObservation(recoverObservation());
+  writeFileSync(join(dir, 'good-life-regulator-state.json'), '{}');
+  await regulator.handleObservation(recoverObservation());
+
+  const rows = readFileSync(join(dir, 'agenda.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const adds = rows.filter((row) => row.type === 'add');
+  const staleRows = rows.filter((row) => row.type === 'status' && row.status === 'stale');
+
+  assert.equal(adds.length, 2);
+  assert.equal(staleRows.length, 1);
+  assert.equal(staleRows[0].id, adds[0].id);
+  assert.equal(staleRows[0].actor, 'good-life-regulator');
+});
+
 test('GoodLifeRegulator throttles repeated equivalent policy pulses', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-regulator-'));
   let added = 0;

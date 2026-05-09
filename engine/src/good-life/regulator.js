@@ -136,6 +136,7 @@ class GoodLifeRegulator {
 
   _appendAgendaEvent(obs, agenda, evaluation) {
     const now = new Date().toISOString();
+    const staledPrior = this._stalePriorGoodLifeAgenda(now);
     const id = `ag-gl-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
     const record = {
       id,
@@ -158,10 +159,64 @@ class GoodLifeRegulator {
       lastSeenAt: now,
       seenCount: 1,
       status: 'candidate',
-      history: [{ status: 'candidate', at: now, note: 'created by Good Life regulator' }],
+      history: [{
+        status: 'candidate',
+        at: now,
+        note: staledPrior > 0
+          ? `created by Good Life regulator after staling ${staledPrior} prior Good Life item(s)`
+          : 'created by Good Life regulator',
+      }],
     };
     fs.appendFileSync(this.agendaPath, JSON.stringify({ type: 'add', id, record }) + '\n', 'utf8');
     return record;
+  }
+
+  _stalePriorGoodLifeAgenda(now = new Date().toISOString()) {
+    try {
+      if (!fs.existsSync(this.agendaPath)) return 0;
+      const items = new Map();
+      const lines = fs.readFileSync(this.agendaPath, 'utf8').split('\n').filter(Boolean);
+      for (const line of lines) {
+        let row = null;
+        try { row = JSON.parse(line); } catch { continue; }
+        if (row.type === 'add' && row.id) {
+          const record = row.record || {};
+          items.set(row.id, {
+            id: row.id,
+            status: record.status || row.status || 'candidate',
+            sourceSignal: record.sourceSignal || row.sourceSignal || null,
+            topicTags: Array.isArray(record.topicTags) ? record.topicTags : [],
+          });
+        } else if (row.type === 'status' && row.id) {
+          const rec = items.get(row.id) || { id: row.id };
+          rec.status = row.status || rec.status || 'candidate';
+          items.set(row.id, rec);
+        }
+      }
+
+      const active = new Set(['candidate', 'surfaced', 'acknowledged']);
+      const staleRows = [];
+      for (const item of items.values()) {
+        const isGoodLife = item.sourceSignal === 'good-life' || item.topicTags.includes('good-life');
+        if (isGoodLife && active.has(item.status)) {
+          staleRows.push({
+            type: 'status',
+            id: item.id,
+            status: 'stale',
+            at: now,
+            note: 'superseded by newer Good Life regulator action',
+            actor: 'good-life-regulator',
+          });
+        }
+      }
+      if (staleRows.length > 0) {
+        fs.appendFileSync(this.agendaPath, staleRows.map((row) => JSON.stringify(row)).join('\n') + '\n', 'utf8');
+      }
+      return staleRows.length;
+    } catch (err) {
+      this.logger.warn?.('[good-life] agenda stale sweep failed:', err?.message || err);
+      return 0;
+    }
   }
 
   _usefulnessContract(evaluation, agenda) {

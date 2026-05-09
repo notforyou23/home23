@@ -75,14 +75,45 @@ function summarizeGoals(goals) {
 
 function summarizeAgenda(runtimeRoot) {
   const file = path.join(runtimeRoot || '', 'agenda.jsonl');
-  const rows = tailJsonl(file, 200);
-  let pending = 0;
-  let actedOn = 0;
+  const rows = readJsonl(file);
+  const items = new Map();
   for (const row of rows) {
-    if (row.status === 'acted_on') actedOn++;
-    else if (!row.status || row.status === 'pending') pending++;
+    if (row.type === 'add' && row.id) {
+      const record = row.record || {};
+      items.set(row.id, {
+        status: record.status || row.status || 'candidate',
+      });
+    } else if (row.type === 'status' && row.id) {
+      const rec = items.get(row.id) || {};
+      rec.status = row.status || rec.status || 'candidate';
+      items.set(row.id, rec);
+    } else if (row.id && row.status) {
+      items.set(row.id, { status: row.status });
+    }
   }
-  return { pending, actedOn, sampled: rows.length };
+
+  const counts = { candidate: 0, surfaced: 0, acknowledged: 0, actedOn: 0, stale: 0, discarded: 0, total: 0 };
+  for (const rec of items.values()) {
+    const status = rec.status || 'candidate';
+    if (status === 'acted_on') counts.actedOn++;
+    else if (status === 'surfaced') counts.surfaced++;
+    else if (status === 'acknowledged') counts.acknowledged++;
+    else if (status === 'stale') counts.stale++;
+    else if (status === 'discarded') counts.discarded++;
+    else counts.candidate++;
+    counts.total++;
+  }
+  return {
+    pending: counts.candidate + counts.surfaced + counts.acknowledged,
+    actedOn: counts.actedOn,
+    stale: counts.stale,
+    discarded: counts.discarded,
+    candidate: counts.candidate,
+    surfaced: counts.surfaced,
+    acknowledged: counts.acknowledged,
+    total: counts.total,
+    sampled: rows.length,
+  };
 }
 
 function summarizePublish(runtimeRoot) {
@@ -146,6 +177,17 @@ function tailJsonl(file, limit) {
     if (!file || !fs.existsSync(file)) return [];
     const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
     return lines.slice(-limit).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function readJsonl(file) {
+  try {
+    if (!file || !fs.existsSync(file)) return [];
+    return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((line) => {
       try { return JSON.parse(line); } catch { return null; }
     }).filter(Boolean);
   } catch {

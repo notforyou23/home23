@@ -34,3 +34,29 @@ test('Good Life snapshot excludes its own diagnostic live-problems from viabilit
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('Good Life agenda summary counts latest item status, not raw JSONL events', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-agenda-'));
+  try {
+    const rows = [
+      { type: 'add', id: 'ag-1', record: { status: 'candidate', content: 'first' } },
+      { type: 'status', id: 'ag-1', status: 'stale' },
+      { type: 'add', id: 'ag-2', record: { status: 'candidate', content: 'second' } },
+      { type: 'status', id: 'ag-2', status: 'surfaced' },
+      { type: 'add', id: 'ag-3', record: { status: 'candidate', content: 'third' } },
+      { type: 'status', id: 'ag-3', status: 'acted_on' },
+      { type: 'add', id: 'ag-4', record: { status: 'candidate', content: 'fourth' } },
+    ];
+    writeFileSync(join(dir, 'agenda.jsonl'), `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`);
+
+    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    assert.equal(snapshot.agenda.pending, 2);
+    assert.equal(snapshot.agenda.candidate, 1);
+    assert.equal(snapshot.agenda.surfaced, 1);
+    assert.equal(snapshot.agenda.stale, 1);
+    assert.equal(snapshot.agenda.actedOn, 1);
+    assert.equal(snapshot.agenda.sampled, 7);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
