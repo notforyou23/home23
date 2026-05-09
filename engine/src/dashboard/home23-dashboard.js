@@ -2778,7 +2778,11 @@ function updateGoodLifeTile(data, scope = 'home') {
   }).join('');
   setHtml(id('goodlife-lanes'), laneHtml);
   const latest = operator?.latestRegulatorAction;
-  const action = latest?.agendaId ? `agenda ${latest.agendaId}` : 'no routed action yet';
+  const workCounts = operator?.detail?.work?.obligations?.counts || {};
+  const activeWork = Number(workCounts.activeAgenda || 0) + Number(workCounts.activeGoals || 0);
+  const action = latest?.agendaId
+    ? `active work ${activeWork}; latest routed ${latest.agendaId}`
+    : `active work ${activeWork}`;
   const evaluatedAt = operator?.freshness?.evaluatedAt || state.evaluatedAt;
   const freshness = evaluatedAt ? `evaluated ${timeSince(new Date(evaluatedAt))}` : 'freshness unknown';
   setText(id('goodlife-meta'), `${freshness} - ${action}`);
@@ -2899,6 +2903,8 @@ function renderGoodLifeTop(data) {
   const counts = operator.liveProblems?.counts || {};
   const freshness = operator.freshness || {};
   const latest = operator.latestRegulatorAction || {};
+  const workCounts = operator.detail?.work?.obligations?.counts || {};
+  const activeWork = Number(workCounts.activeAgenda || 0) + Number(workCounts.activeGoals || 0);
   const warnings = operator.consistency?.warnings || [];
   return `
     <div class="h23-goodlife-top-card">
@@ -2917,9 +2923,9 @@ function renderGoodLifeTop(data) {
       <span>${freshness.evaluatedAt ? `evaluated ${escapeHtml(timeSince(new Date(freshness.evaluatedAt)))}` : 'no evaluation timestamp'}</span>
     </div>
     <div class="h23-goodlife-top-card">
-      <label>Latest Work</label>
-      <strong>${escapeHtml(latest.agendaId || 'none')}</strong>
-      <span>${latest.at ? `routed ${escapeHtml(timeSince(new Date(latest.at)))}` : 'no routed agenda action'}</span>
+      <label>Active Work</label>
+      <strong>${activeWork}</strong>
+      <span>${latest.at ? `latest routed ${escapeHtml(timeSince(new Date(latest.at)))}` : 'no routed agenda action'}</span>
     </div>
   `;
 }
