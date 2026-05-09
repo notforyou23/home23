@@ -136,6 +136,7 @@ class UnifiedClient extends GPT5Client {
         defaultModel: localConfig.defaultModel,
         supportsTools: localConfig.supportsTools,
         supportsStreaming: localConfig.supportsStreaming,
+        requestTimeoutMs: localConfig.requestTimeoutMs || localConfig.timeoutMs || this.config.timeouts?.operationTimeoutMs,
         searxngUrl: localConfig.searxngUrl || process.env.SEARXNG_URL
       }, this.logger);
       this.logger?.info('✅ Local LLM provider initialized (Chat Completions API)');
@@ -152,7 +153,8 @@ class UnifiedClient extends GPT5Client {
           modelMapping: groqConfig.modelMapping || {},
           defaultModel: groqConfig.defaultModel || 'llama-3.3-70b-versatile',
           supportsTools: groqConfig.supportsTools !== false,
-          supportsStreaming: groqConfig.supportsStreaming !== false
+          supportsStreaming: groqConfig.supportsStreaming !== false,
+          requestTimeoutMs: groqConfig.requestTimeoutMs || groqConfig.timeoutMs || this.config.timeouts?.operationTimeoutMs
         }, this.logger);
         // Initialize rate limit tracking for Groq models
         this.initRateLimits('groq', groqConfig.rateLimits || {});
@@ -174,7 +176,8 @@ class UnifiedClient extends GPT5Client {
           modelMapping: cloudConfig.modelMapping || {},
           defaultModel: cloudConfig.defaultModel || 'nemotron-3-nano:30b',
           supportsTools: cloudConfig.supportsTools !== false,
-          supportsStreaming: cloudConfig.supportsStreaming !== false
+          supportsStreaming: cloudConfig.supportsStreaming !== false,
+          requestTimeoutMs: cloudConfig.requestTimeoutMs || cloudConfig.timeoutMs || this.config.timeouts?.operationTimeoutMs
         }, this.logger);
         this.logger?.info('✅ Ollama Cloud provider initialized');
       } else {
@@ -193,7 +196,8 @@ class UnifiedClient extends GPT5Client {
           modelMapping: hfConfig.modelMapping || {},
           defaultModel: hfConfig.defaultModel || 'deepseek-ai/DeepSeek-V3.1',
           supportsTools: hfConfig.supportsTools !== false,
-          supportsStreaming: hfConfig.supportsStreaming !== false
+          supportsStreaming: hfConfig.supportsStreaming !== false,
+          requestTimeoutMs: hfConfig.requestTimeoutMs || hfConfig.timeoutMs || this.config.timeouts?.operationTimeoutMs
         }, this.logger);
         this.logger?.info('✅ HuggingFace provider initialized (free tier)');
       } else {

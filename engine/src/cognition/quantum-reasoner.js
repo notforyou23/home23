@@ -3,6 +3,8 @@ const { BranchPolicyController } = require('./branch-policy');
 const { LatentProjector } = require('./latent-projector');
 const crypto = require('crypto');
 
+const DEFAULT_QUANTUM_REQUEST_TIMEOUT_MS = 90000;
+
 /**
  * Quantum Reasoner - GPT-5.5 Version
  * Parallel hypothesis generation with GPT-5.5's extended reasoning
@@ -15,6 +17,9 @@ class QuantumReasoner {
     // Use fullConfig if provided, otherwise assume config IS the full config
     this.fullConfig = fullConfig || config;
     this.gpt5 = new UnifiedClient(this.fullConfig, logger);
+    this.requestTimeoutMs = Number(this.fullConfig?.timeouts?.quantumRequestTimeoutMs)
+      || Number(this.fullConfig?.timeouts?.thoughtRequestTimeoutMs)
+      || DEFAULT_QUANTUM_REQUEST_TIMEOUT_MS;
     this.entanglements = new Map();
     this.branchSequence = 0;
     this.policyEnabled = Boolean(this.config?.features?.branchPolicy?.enabled);
@@ -109,11 +114,13 @@ class QuantumReasoner {
                 instructions: branchPrompt,
                 messages: [{ role: 'user', content: 'Produce your output per the system instructions above, including the required action tag (INVESTIGATE/NOTIFY/TRIGGER/NO_ACTION) on its own line if the role specifies one.' }],
                 max_completion_tokens: 8000,
-                reasoningEffort
+                reasoningEffort,
+                requestTimeoutMs: this.requestTimeoutMs
               })
             : await this._runBranchWithTools({
                 branchPrompt,
                 reasoningEffort,
+                requestTimeoutMs: this.requestTimeoutMs,
                 cycleTools: hasCycleTools ? context.cycleTools : null,
                 cycleToolExecutor: hasCycleTools ? context.cycleToolExecutor : null,
                 branchIndex: i,
@@ -513,7 +520,7 @@ Respond with ONLY the number (1-${hypotheses.length}) of the best hypothesis.`;
    * Returns the final response object (same shape as generate()) — with the
    * final text/reasoning that the branch produced after any tool interactions.
    */
-  async _runBranchWithTools({ branchPrompt, reasoningEffort, cycleTools, cycleToolExecutor, branchIndex }) {
+  async _runBranchWithTools({ branchPrompt, reasoningEffort, requestTimeoutMs, cycleTools, cycleToolExecutor, branchIndex }) {
     const baseOpts = {
       component: 'quantumReasoner',
       purpose: 'branches',
@@ -521,6 +528,7 @@ Respond with ONLY the number (1-${hypotheses.length}) of the best hypothesis.`;
       instructions: branchPrompt,
       max_completion_tokens: 8000,
       reasoningEffort,
+      requestTimeoutMs: requestTimeoutMs || this.requestTimeoutMs,
     };
 
     // Conversation state accumulated across tool-use turns
@@ -649,6 +657,7 @@ Respond with ONLY the number (1-${hypotheses.length}) of the best hypothesis.`;
       messages: [{ role: 'user', content: userMessage }],
       maxTokens: 25000, // Deep dream reasoning needs space for rich exploration
       reasoningEffort: 'high', // Deep dream = deep reasoning - this is exactly what high reasoning excels at
+      requestTimeoutMs: this.requestTimeoutMs,
       systemPrompt: isPureMode ? 'You are dreaming.' : undefined
     });
 

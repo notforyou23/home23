@@ -28,6 +28,7 @@ const OpenAI = require('openai');
 // ChatCompletionsClient instance sharing a baseURL shares the gate.
 
 const DEFAULT_MAX_CONCURRENT = Number(process.env.CHAT_COMPLETIONS_MAX_CONCURRENT) || 2;
+const DEFAULT_REQUEST_TIMEOUT_MS = Number(process.env.CHAT_COMPLETIONS_REQUEST_TIMEOUT_MS) || 120000;
 const CONCURRENCY_GATES = new Map(); // baseURL -> { inFlight, queue, limit }
 
 function getGate(baseURL) {
@@ -63,7 +64,48 @@ function is429(error) {
   return /\b429\b|too many concurrent requests|rate.?limit/i.test(msg);
 }
 
-async function createWithGateAndRetry(client, payload, logger) {
+function normalizeTimeoutMs(value, fallback = DEFAULT_REQUEST_TIMEOUT_MS) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+}
+
+function makeTimeoutError(label, timeoutMs) {
+  const error = new Error(`${label} timed out after ${timeoutMs}ms`);
+  error.name = 'TimeoutError';
+  error.code = 'ETIMEDOUT';
+  return error;
+}
+
+async function withTimeout(promise, timeoutMs, label, controller = null) {
+  const effectiveTimeout = normalizeTimeoutMs(timeoutMs, 0);
+  if (!effectiveTimeout) return promise;
+
+  let timer = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = makeTimeoutError(label, effectiveTimeout);
+          try {
+            controller?.abort?.(error);
+          } catch { /* best-effort abort */ }
+          reject(error);
+        }, effectiveTimeout);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function remainingTimeoutMs(deadlineMs) {
+  if (!deadlineMs) return null;
+  return Math.max(1, deadlineMs - Date.now());
+}
+
+async function createWithGateAndRetry(client, payload, logger, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS) {
   const baseURL = String(client.baseURL || '');
   const gate = getGate(baseURL);
   const maxAttempts = 5;
@@ -71,8 +113,17 @@ async function createWithGateAndRetry(client, payload, logger) {
   try {
     let lastErr = null;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const controller = new AbortController();
       try {
-        return await client.chat.completions.create(payload);
+        return await withTimeout(
+          client.chat.completions.create(payload, {
+            signal: controller.signal,
+            timeout: timeoutMs
+          }),
+          timeoutMs,
+          'Chat Completions request',
+          controller
+        );
       } catch (error) {
         lastErr = error;
         if (!is429(error) || attempt === maxAttempts - 1) throw error;
@@ -132,13 +183,18 @@ class ChatCompletionsClient {
     // Features supported by the local LLM server
     this.supportsTools = config.supportsTools !== false; // Default true
     this.supportsStreaming = config.supportsStreaming !== false; // Default true
+    this.requestTimeoutMs = normalizeTimeoutMs(
+      config.requestTimeoutMs ?? config.timeoutMs ?? config.operationTimeoutMs,
+      DEFAULT_REQUEST_TIMEOUT_MS
+    );
 
     this.logger?.info?.('ChatCompletionsClient initialized', {
       baseURL,
       defaultModel: this.defaultModel,
       hasApiKey: apiKey !== 'not-needed',
       supportsTools: this.supportsTools,
-      supportsStreaming: this.supportsStreaming
+      supportsStreaming: this.supportsStreaming,
+      requestTimeoutMs: this.requestTimeoutMs
     });
   }
 
@@ -319,7 +375,9 @@ class ChatCompletionsClient {
       parallel_tool_calls,
       previousResponseId,
       conversationId,
-      include
+      include,
+      requestTimeoutMs,
+      timeoutMs
     } = options;
 
     // Log unsupported options for debugging
@@ -373,20 +431,26 @@ class ChatCompletionsClient {
       payload.options = { ...(payload.options || {}), think: false };
     }
 
+    const effectiveRequestTimeoutMs = normalizeTimeoutMs(
+      requestTimeoutMs ?? timeoutMs,
+      this.requestTimeoutMs
+    );
+
     this.logger?.debug?.('Chat Completions request', {
       model: mappedModel,
       originalModel: model,
       messageCount: messages.length,
       maxTokens: effectiveMaxTokens,
       hasTools: transformedTools.length > 0,
-      streaming: this.supportsStreaming
+      streaming: this.supportsStreaming,
+      requestTimeoutMs: effectiveRequestTimeoutMs
     });
 
     try {
       if (this.supportsStreaming) {
-        return await this.generateStreaming(payload, model);
+        return await this.generateStreaming(payload, model, effectiveRequestTimeoutMs);
       } else {
-        return await this.generateNonStreaming(payload, model);
+        return await this.generateNonStreaming(payload, model, effectiveRequestTimeoutMs);
       }
     } catch (error) {
       this.logger?.error?.('Chat Completions API call failed', {
@@ -401,8 +465,10 @@ class ChatCompletionsClient {
   /**
    * Generate with streaming (preferred method)
    */
-  async generateStreaming(payload, originalModel) {
-    const stream = await createWithGateAndRetry(this.client, payload, this.logger);
+  async generateStreaming(payload, originalModel, timeoutMs = this.requestTimeoutMs) {
+    const startedAt = Date.now();
+    const deadlineMs = timeoutMs ? startedAt + timeoutMs : null;
+    const stream = await createWithGateAndRetry(this.client, payload, this.logger, timeoutMs);
 
     let aggregatedText = '';
     let finalResponse = null;
@@ -411,7 +477,20 @@ class ChatCompletionsClient {
     let toolCalls = [];
 
     try {
-      for await (const chunk of stream) {
+      const iterator = stream?.[Symbol.asyncIterator]?.();
+      if (!iterator) {
+        throw new Error('Chat Completions streaming response is not async iterable');
+      }
+
+      while (true) {
+        const next = await withTimeout(
+          iterator.next(),
+          remainingTimeoutMs(deadlineMs),
+          'Chat Completions stream'
+        );
+        if (next.done) break;
+
+        const chunk = next.value;
         const delta = chunk.choices?.[0]?.delta;
 
         if (delta?.content) {
@@ -449,6 +528,9 @@ class ChatCompletionsClient {
         }
       }
     } catch (streamError) {
+      if (streamError?.code === 'ETIMEDOUT' || streamError?.name === 'TimeoutError') {
+        throw streamError;
+      }
       this.logger?.error?.('Error during stream processing', {
         error: streamError.message,
         hasPartialText: aggregatedText.length > 0
@@ -480,10 +562,10 @@ class ChatCompletionsClient {
   /**
    * Generate without streaming (fallback)
    */
-  async generateNonStreaming(payload, originalModel) {
+  async generateNonStreaming(payload, originalModel, timeoutMs = this.requestTimeoutMs) {
     payload.stream = false;
 
-    const response = await createWithGateAndRetry(this.client, payload, this.logger);
+    const response = await createWithGateAndRetry(this.client, payload, this.logger, timeoutMs);
 
     const choice = response.choices?.[0];
     const content = choice?.message?.content || '';
