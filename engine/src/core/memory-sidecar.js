@@ -33,6 +33,7 @@ const pipelineAsync = promisify(pipeline);
 
 const NODES_FILE = 'memory-nodes.jsonl.gz';
 const EDGES_FILE = 'memory-edges.jsonl.gz';
+const DEFAULT_GZIP_LEVEL = zlib.constants.Z_BEST_SPEED;
 
 function nodesPath(brainDir) { return path.join(brainDir, NODES_FILE); }
 function edgesPath(brainDir) { return path.join(brainDir, EDGES_FILE); }
@@ -48,11 +49,13 @@ function uniqueTmpPath(outPath) {
  *
  * @param {string} outPath    final output path (will write .tmp first)
  * @param {Iterable<any>} records
+ * @param {{level?: number}} options
  * @returns {Promise<{count:number, bytes:number}>}
  */
-async function writeJsonlGz(outPath, records) {
+async function writeJsonlGz(outPath, records, options = {}) {
   const tmpPath = uniqueTmpPath(outPath);
-  const gz = zlib.createGzip({ level: zlib.constants.Z_BEST_COMPRESSION });
+  const level = Number.isInteger(options.level) ? options.level : DEFAULT_GZIP_LEVEL;
+  const gz = zlib.createGzip({ level });
   const sink = fs.createWriteStream(tmpPath);
 
   let count = 0;
@@ -132,9 +135,9 @@ async function readJsonlGz(inPath, onRecord) {
  * Write both sidecars for a memory object. Returns counts + sizes for the
  * brain-snapshot record.
  */
-async function writeMemorySidecars(brainDir, memory) {
-  const nodesResult = await writeJsonlGz(nodesPath(brainDir), iterateNodes(memory));
-  const edgesResult = await writeJsonlGz(edgesPath(brainDir), iterateEdges(memory));
+async function writeMemorySidecars(brainDir, memory, options = {}) {
+  const nodesResult = await writeJsonlGz(nodesPath(brainDir), iterateNodes(memory), options);
+  const edgesResult = await writeJsonlGz(edgesPath(brainDir), iterateEdges(memory), options);
   return {
     nodes: { file: NODES_FILE, count: nodesResult.count, bytes: nodesResult.bytes },
     edges: { file: EDGES_FILE, count: edgesResult.count, bytes: edgesResult.bytes },
@@ -196,6 +199,7 @@ module.exports = {
   iterateEdges,
   NODES_FILE,
   EDGES_FILE,
+  DEFAULT_GZIP_LEVEL,
   nodesPath,
   edgesPath,
   uniqueTmpPath,

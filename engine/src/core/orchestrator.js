@@ -6488,10 +6488,13 @@ class Orchestrator {
       const origEdges = state.memory?.edges;
       const expectedNodes = Array.isArray(origNodes) ? origNodes.length : 0;
       const expectedEdges = Array.isArray(origEdges) ? origEdges.length : 0;
+      const sidecarWriteOptions = {
+        level: this.config?.persistence?.memorySidecarGzipLevel,
+      };
 
       if (expectedNodes > 0 || expectedEdges > 0) {
         try {
-          sidecarsWritten = await writeMemorySidecars(this.logsDir, state.memory);
+          sidecarsWritten = await writeMemorySidecars(this.logsDir, state.memory, sidecarWriteOptions);
           // Post-write invariant: the sidecars must contain exactly the
           // counts we just tried to save. If they don't, abort the swap
           // and fall through to the legacy monolithic save.

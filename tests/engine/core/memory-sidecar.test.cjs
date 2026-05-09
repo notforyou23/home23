@@ -6,6 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const {
+  DEFAULT_GZIP_LEVEL,
   readJsonlGz,
   writeJsonlGz,
 } = require('../../../engine/src/core/memory-sidecar');
@@ -29,4 +30,8 @@ test('writeJsonlGz supports overlapping writes to the same output path', async (
 
   const leftovers = fs.readdirSync(dir).filter((name) => name.includes('.tmp'));
   assert.deepEqual(leftovers, []);
+});
+
+test('writeJsonlGz defaults to speed-oriented gzip for hot engine saves', () => {
+  assert.equal(DEFAULT_GZIP_LEVEL, 1);
 });
