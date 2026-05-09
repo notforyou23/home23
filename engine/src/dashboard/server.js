@@ -5201,7 +5201,10 @@ Be specific, actionable, and maintain research continuity.`;
         };
         const brainSnapshot = readJson('brain-snapshot.json');
         const snapshotGoals = Array.isArray(brainSnapshot?.activeGoalSummaries)
-          ? { active: brainSnapshot.activeGoalSummaries.map((goal) => [goal.id, goal]) }
+          ? {
+              active: brainSnapshot.activeGoalSummaries.map((goal) => [goal.id, goal]),
+              counts: brainSnapshot.goalCounts || null,
+            }
           : null;
         const obligations = buildGoodLifeObligationSnapshot({
           agendaRows: readJsonl('agenda.jsonl'),

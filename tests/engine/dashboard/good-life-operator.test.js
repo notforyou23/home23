@@ -396,6 +396,26 @@ test('Good Life operator brief calls out projection mismatch when registry is cl
   assert.equal(model.operatorBrief.target.tab, 'insights');
 });
 
+test('Good Life operator warns when projected open goals disagree with active goal list', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        goals: { open: 1, complete: 0, total: 1 },
+      },
+    }),
+    liveProblems: [],
+    obligations: { activeAgenda: [], activeGoals: [], counts: { activeAgenda: 0, activeGoals: 0, activeGoalsTrusted: true } },
+    now: NOW,
+  });
+
+  assert.equal(model.status, 'current');
+  assert.equal(model.safeToInherit, false);
+  assert.ok(model.consistency.warnings.some((warning) => warning.code === 'good_life_goal_projection_mismatch'));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Good Life goal count disagrees with active goals')));
+  assert.equal(model.operatorBrief.severity, 'attention');
+  assert.equal(model.operatorBrief.target.tab, 'insights');
+});
+
 test('Good Life operator brief names clear state and latest resolution receipt', () => {
   const model = buildGoodLifeOperatorModel({
     state: goodLifeState(),

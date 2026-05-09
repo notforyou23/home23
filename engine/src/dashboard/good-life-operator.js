@@ -240,7 +240,8 @@ function buildGoodLifeObligationSnapshot({ agendaRows = [], goals = null, now = 
     latestAgendaById,
     counts: {
       activeAgenda: activeAgenda.length,
-      activeGoals: activeGoals.length,
+      activeGoals: Number.isFinite(goals?.counts?.active) ? goals.counts.active : activeGoals.length,
+      activeGoalsTrusted: Number.isFinite(goals?.counts?.active),
     },
   };
 }
@@ -437,9 +438,11 @@ function annotateObligationsForCurrentGoodLife(obligations = {}, { policy, liveP
     counts: {
       ...(obligations.counts || {}),
       activeAgenda: annotatedAgenda.length,
-      activeGoals: Array.isArray(obligations.activeGoals)
-        ? obligations.activeGoals.length
-        : Number(obligations.counts?.activeGoals || 0),
+      activeGoals: obligations.counts?.activeGoalsTrusted
+        ? Number(obligations.counts?.activeGoals || 0)
+        : (Array.isArray(obligations.activeGoals)
+          ? obligations.activeGoals.length
+          : Number(obligations.counts?.activeGoals || 0)),
     },
   };
 }
@@ -511,7 +514,7 @@ function buildFreshness(state, commitments, nowMs) {
   };
 }
 
-function buildConsistency({ state, projection, liveProblems, freshness, runtime }) {
+function buildConsistency({ state, projection, liveProblems, obligations, hasObligationEvidence = false, freshness, runtime }) {
   const warnings = [];
   if (!state) {
     warnings.push({
@@ -547,6 +550,23 @@ function buildConsistency({ state, projection, liveProblems, freshness, runtime 
       severity: 'warning',
       message: `Good Life live-problem counts disagree with the live registry: ${mismatchKeys.join(', ')}`,
       fields: mismatchKeys,
+    });
+  }
+
+  const projectedOpenGoals = finiteCount(projection.goals?.open);
+  const activeGoalRows = finiteCount(obligations?.counts?.activeGoals);
+  if (
+    hasObligationEvidence
+    && obligations?.counts?.activeGoalsTrusted
+    && projectedOpenGoals != null
+    && activeGoalRows != null
+    && projectedOpenGoals !== activeGoalRows
+  ) {
+    warnings.push({
+      code: 'good_life_goal_projection_mismatch',
+      severity: 'warning',
+      message: `Good Life goal count disagrees with active goals: projected ${projectedOpenGoals}, active list ${activeGoalRows}`,
+      fields: ['goals.open'],
     });
   }
 
@@ -929,6 +949,8 @@ function buildGoodLifeOperatorModel({
     state,
     projection,
     liveProblems: directLiveProblems,
+    obligations: currentObligations,
+    hasObligationEvidence: !!obligations,
     freshness,
     runtime,
   });
