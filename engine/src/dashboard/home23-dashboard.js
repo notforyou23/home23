@@ -2946,27 +2946,36 @@ function renderGoodLifeTop(data) {
   const workCounts = operator.detail?.work?.obligations?.counts || {};
   const activeWork = Number(workCounts.activeAgenda || 0) + Number(workCounts.activeGoals || 0);
   const warnings = operator.consistency?.warnings || [];
+  const answerLines = (operator.operatorAnswer || [])
+    .filter(Boolean)
+    .slice(0, 5);
   return `
-    <div class="h23-goodlife-top-card">
-      <label>Mode</label>
-      <strong>${escapeHtml((operator.policy?.mode || 'unknown').toUpperCase())}</strong>
-      <span>${escapeHtml(operator.policy?.reason || operator.summary || '')}</span>
+    <div class="h23-goodlife-top-grid">
+      <div class="h23-goodlife-top-card">
+        <label>Mode</label>
+        <strong>${escapeHtml((operator.policy?.mode || 'unknown').toUpperCase())}</strong>
+        <span>${escapeHtml(operator.policy?.reason || operator.summary || '')}</span>
+      </div>
+      <div class="h23-goodlife-top-card">
+        <label>Issues</label>
+        <strong>${escapeHtml(goodLifeCountsText(counts))}</strong>
+        <span>${Number(counts.interventionRequired || 0) > 0 ? `${Number(counts.interventionRequired || 0)} need user intervention` : escapeHtml(warnings[0]?.message || 'projection current')}</span>
+      </div>
+      <div class="h23-goodlife-top-card">
+        <label>Freshness</label>
+        <strong>${escapeHtml(freshness.status || 'unknown')}</strong>
+        <span>${freshness.evaluatedAt ? `evaluated ${escapeHtml(timeSince(new Date(freshness.evaluatedAt)))}` : 'no evaluation timestamp'}</span>
+      </div>
+      <div class="h23-goodlife-top-card">
+        <label>Active Work</label>
+        <strong>${activeWork}</strong>
+        <span>${latest.at ? `latest routed ${escapeHtml(timeSince(new Date(latest.at)))}${latest.agendaStatus ? ` - ${escapeHtml(latest.agendaStatus)}` : ''}` : 'no routed agenda action'}</span>
+      </div>
     </div>
-    <div class="h23-goodlife-top-card">
-      <label>Issues</label>
-      <strong>${escapeHtml(goodLifeCountsText(counts))}</strong>
-      <span>${Number(counts.interventionRequired || 0) > 0 ? `${Number(counts.interventionRequired || 0)} need user intervention` : escapeHtml(warnings[0]?.message || 'projection current')}</span>
-    </div>
-    <div class="h23-goodlife-top-card">
-      <label>Freshness</label>
-      <strong>${escapeHtml(freshness.status || 'unknown')}</strong>
-      <span>${freshness.evaluatedAt ? `evaluated ${escapeHtml(timeSince(new Date(freshness.evaluatedAt)))}` : 'no evaluation timestamp'}</span>
-    </div>
-    <div class="h23-goodlife-top-card">
-      <label>Active Work</label>
-      <strong>${activeWork}</strong>
-      <span>${latest.at ? `latest routed ${escapeHtml(timeSince(new Date(latest.at)))}${latest.agendaStatus ? ` - ${escapeHtml(latest.agendaStatus)}` : ''}` : 'no routed agenda action'}</span>
-    </div>
+    ${answerLines.length ? `<div class="h23-goodlife-operator-answer-panel">
+      <label>Operator Readout</label>
+      ${answerLines.map((line) => `<div>${escapeHtml(line)}</div>`).join('')}
+    </div>` : ''}
   `;
 }
 

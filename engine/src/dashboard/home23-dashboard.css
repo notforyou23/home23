@@ -2939,6 +2939,12 @@ body.h23-external-focus #cosmo23-refresh-btn {
 }
 
 .h23-goodlife-overlay-top {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.h23-goodlife-top-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
@@ -2966,9 +2972,8 @@ body.h23-external-focus #cosmo23-refresh-btn {
   display: block;
   color: var(--text-primary);
   font-size: 15px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
 }
 
 .h23-goodlife-top-card span {
@@ -2980,6 +2985,29 @@ body.h23-external-focus #cosmo23-refresh-btn {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.h23-goodlife-operator-answer-panel {
+  border: 1px solid rgba(90,200,250,0.24);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: rgba(90,200,250,0.06);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.h23-goodlife-operator-answer-panel label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.h23-goodlife-operator-answer-panel div + div {
+  margin-top: 3px;
 }
 
 .h23-goodlife-overlay-tabs {
@@ -3219,7 +3247,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
     flex-direction: column;
   }
 
-  .h23-goodlife-overlay-top,
+  .h23-goodlife-top-grid,
   .h23-goodlife-overlay-workspace,
   .h23-goodlife-detail-grid {
     grid-template-columns: 1fr;
