@@ -1311,6 +1311,16 @@ class AgentExecutor {
       return;
     }
 
+    const agentState = this.registry.getAgent(agentId);
+    if (!this.shouldCreateDurableFollowUpGoals(agentState)) {
+      this.logger.info('Skipping durable follow-up goals for ephemeral investigation agent', {
+        agentId,
+        triggerSource: agentState?.mission?.triggerSource || null,
+        metadataSource: agentState?.mission?.metadata?.source || null
+      }, 3);
+      return;
+    }
+
     const followUpDirections = [];
     
     // Extract follow-up directions from all results
@@ -1355,6 +1365,27 @@ class AgentExecutor {
         }
       }
     }
+  }
+
+  /**
+   * Thought-action investigations are local curiosity probes. Their findings
+   * are integrated above, but model-suggested follow-up questions should not
+   * become durable goals unless explicitly enabled.
+   * @param {Object|null} agentState
+   * @returns {boolean}
+   */
+  shouldCreateDurableFollowUpGoals(agentState) {
+    const mission = agentState?.mission || {};
+    const coordinatorConfig = this.config?.coordinator || {};
+    const isThoughtActionInvestigation =
+      mission.triggerSource === 'thought_action_investigate' ||
+      mission.metadata?.source === 'thought_action_parser';
+
+    if (isThoughtActionInvestigation && coordinatorConfig.allowThoughtActionFollowUpGoals !== true) {
+      return false;
+    }
+
+    return true;
   }
 
   /**
