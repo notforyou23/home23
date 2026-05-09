@@ -522,6 +522,17 @@ function compactText(value, max = 160) {
   return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
+function compactLedgerEntry(entry = {}) {
+  return {
+    at: entry.at || entry.timestamp || null,
+    event: entry.event || entry.type || null,
+    mode: entry.mode || entry.policy?.mode || null,
+    summary: compactText(entry.summary || entry.message || entry.policy?.reason || '', 220),
+    problemId: entry.problemId || entry.evidence?.problemId || null,
+    agendaId: entry.agendaId || entry.evidence?.agendaId || null,
+  };
+}
+
 function summarizeTopLiveProblem(liveProblems = {}) {
   const rows = [
     ...(Array.isArray(liveProblems.open) ? liveProblems.open : []),
@@ -615,6 +626,11 @@ function buildDetailSections({ commitments, trends, regulator, liveProblems, led
       .slice(0, 12)
     : [];
   const commitmentsList = Array.isArray(commitments?.commitments) ? commitments.commitments : [];
+  const compactObligations = obligations ? {
+    activeAgenda: Array.isArray(obligations.activeAgenda) ? obligations.activeAgenda : [],
+    activeGoals: Array.isArray(obligations.activeGoals) ? obligations.activeGoals : [],
+    counts: obligations.counts || { activeAgenda: 0, activeGoals: 0 },
+  } : { activeAgenda: [], activeGoals: [], counts: { activeAgenda: 0, activeGoals: 0 } };
 
   return {
     issues: {
@@ -624,8 +640,11 @@ function buildDetailSections({ commitments, trends, regulator, liveProblems, led
     },
     work: {
       dailyActions,
-      daily: regulator?.daily || null,
-      obligations: obligations || { activeAgenda: [], activeGoals: [], counts: { activeAgenda: 0, activeGoals: 0 } },
+      daily: regulator?.daily ? {
+        date: regulator.daily.date || null,
+        selfMaintenanceActions: regulator.daily.selfMaintenanceActions || 0,
+      } : null,
+      obligations: compactObligations,
       summary: summarizeWork(obligations || {}),
     },
     resolutions: {
@@ -638,7 +657,7 @@ function buildDetailSections({ commitments, trends, regulator, liveProblems, led
       commitments: commitmentsList,
       trendMetrics: trends?.latest?.metrics || null,
       trend: trends?.latest || null,
-      ledgerTail: Array.isArray(ledgerTail) ? ledgerTail.slice(-12).reverse() : [],
+      ledgerTail: Array.isArray(ledgerTail) ? ledgerTail.slice(-12).reverse().map(compactLedgerEntry) : [],
     },
   };
 }
@@ -697,7 +716,7 @@ function buildGoodLifeOperatorModel({
     consistency,
     latestRegulatorAction: latestAction,
     trends: trends?.latest || null,
-    ledgerTail: Array.isArray(ledgerTail) ? ledgerTail.slice(-5) : [],
+    ledgerTail: Array.isArray(ledgerTail) ? ledgerTail.slice(-5).map(compactLedgerEntry) : [],
   };
   model.detail = buildDetailSections({
     commitments: commitments || {},

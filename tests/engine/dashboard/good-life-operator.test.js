@@ -474,7 +474,7 @@ test('Good Life operator model builds end-user detail sections for drill-down na
       },
     ],
     ledgerTail: [
-      { at: '2026-05-08T13:40:00.000Z', event: 'good_life.evaluated', summary: 'help mode' },
+      { at: '2026-05-08T13:40:00.000Z', event: 'good_life.evaluated', summary: 'help mode', evidence: { heavy: 'x'.repeat(10_000) } },
     ],
     now: NOW,
   });
@@ -482,14 +482,18 @@ test('Good Life operator model builds end-user detail sections for drill-down na
   assert.equal(model.detail.issues.activeCount, 1);
   assert.equal(model.detail.issues.rows[0].id, 'chronic_1');
   assert.equal(model.detail.work.dailyActions[0].agendaId, 'ag-new');
+  assert.equal(model.detail.work.daily.actions, undefined);
   assert.equal(model.detail.work.obligations.activeAgenda[0].id, 'ag-visible');
   assert.equal(model.detail.work.obligations.activeGoals[0].id, 'goal-visible');
+  assert.equal(model.detail.work.obligations.latestAgendaById, undefined);
   assert.equal(model.detail.work.summary.activeTotal, 2);
   assert.equal(model.detail.resolutions.recent[0].id, 'resolved_1');
   assert.equal(model.detail.resolutions.recent[0].evidence.receiptId, 'ev_resolved_1');
   assert.equal(model.detail.insights.activeCommitments[0].id, 'continuity');
   assert.equal(model.detail.insights.trendMetrics.pendingAgenda, 145);
   assert.equal(model.detail.insights.ledgerTail[0].event, 'good_life.evaluated');
+  assert.equal(model.detail.insights.ledgerTail[0].evidence, undefined);
+  assert.equal(model.ledgerTail[0].evidence, undefined);
 });
 
 test('Good Life operator answer includes active work and review-needed goals', () => {

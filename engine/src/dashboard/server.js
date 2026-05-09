@@ -5086,6 +5086,106 @@ Be specific, actionable, and maintain research continuity.`;
             return [];
           }
         };
+        const compactGoodLifeState = (value) => value ? {
+          schema: value.schema || null,
+          version: value.version || null,
+          evaluatedAt: value.evaluatedAt || null,
+          lanes: value.lanes || {},
+          policy: value.policy || null,
+          summary: value.summary || '',
+          evidence: {
+            memory: value.evidence?.memory || null,
+            liveProblems: value.evidence?.liveProblems || null,
+            goals: value.evidence?.goals || null,
+            agenda: value.evidence?.agenda || null,
+            actions: value.evidence?.actions || null,
+            discovery: value.evidence?.discovery ? {
+              queueDepth: value.evidence.discovery.queueDepth ?? null,
+              errors: value.evidence.discovery.errors ?? null,
+              running: value.evidence.discovery.running ?? null,
+            } : null,
+          },
+        } : null;
+        const compactGoodLifeCommitments = (value) => value ? {
+          schema: value.schema || null,
+          updatedAt: value.updatedAt || null,
+          policy: value.policy || null,
+          commitments: Array.isArray(value.commitments)
+            ? value.commitments.map((item) => ({
+              id: item.id || null,
+              lane: item.lane || null,
+              title: item.title || null,
+              status: item.status || null,
+              reasons: Array.isArray(item.reasons) ? item.reasons.slice(0, 3) : [],
+              lastEvaluatedAt: item.lastEvaluatedAt || null,
+              active: item.active === true,
+            }))
+            : [],
+        } : null;
+        const compactGoodLifeTrends = (value) => value ? {
+          schema: value.schema || null,
+          updatedAt: value.updatedAt || null,
+          latest: value.latest || null,
+          window: value.window ? {
+            samples: value.window.samples ?? null,
+            lanes: value.window.lanes || null,
+            policies: value.window.policies || null,
+            latestUsefulOutputAt: value.window.latestUsefulOutputAt || null,
+          } : null,
+        } : null;
+        const compactGoodLifeRegulator = (value) => {
+          if (!value) return null;
+          const entries = Object.entries(value)
+            .filter(([key, item]) => key !== 'daily' && item && item.at)
+            .sort((a, b) => Date.parse(b[1].at || 0) - Date.parse(a[1].at || 0))
+            .slice(0, 8)
+            .map(([key, item]) => ({ key, ...item }));
+          return {
+            recent: entries,
+            daily: value.daily ? {
+              date: value.daily.date || null,
+              selfMaintenanceActions: value.daily.selfMaintenanceActions || 0,
+              actions: Array.isArray(value.daily.actions) ? value.daily.actions.slice(-12) : [],
+            } : null,
+          };
+        };
+        const compactLiveProblemForGoodLifeApi = (problem) => problem ? {
+          id: problem.id || '',
+          state: problem.state || 'unknown',
+          claim: problem.claim || '',
+          openedAt: problem.openedAt || problem.firstSeenAt || null,
+          updatedAt: problem.updatedAt || null,
+          resolvedAt: problem.resolvedAt || null,
+          lastCheckedAt: problem.lastCheckedAt || null,
+          escalated: !!problem.escalated,
+          escalatedAt: problem.escalatedAt || null,
+          stepIndex: Number(problem.stepIndex || 0),
+          lastResult: problem.lastResult || null,
+          verifier: problem.verifier || null,
+          remediation: Array.isArray(problem.remediation) ? problem.remediation : [],
+          remediationLog: Array.isArray(problem.remediationLog) ? problem.remediationLog.slice(-6) : [],
+          fixRecipe: problem.fixRecipe || null,
+          fixRecipeHistory: Array.isArray(problem.fixRecipeHistory) ? problem.fixRecipeHistory.slice(-4) : [],
+          evidence: problem.evidence || null,
+        } : null;
+        const compactLiveProblemSnapshot = (snapshot) => ({
+          ...snapshot,
+          resolved: Array.isArray(snapshot?.resolved) ? snapshot.resolved.slice(0, 24) : [],
+          resolvedJustNow: Array.isArray(snapshot?.resolvedJustNow) ? snapshot.resolvedJustNow : [],
+        });
+        const compactGoodLifeObligations = (value) => value ? {
+          activeAgenda: Array.isArray(value.activeAgenda) ? value.activeAgenda : [],
+          activeGoals: Array.isArray(value.activeGoals) ? value.activeGoals : [],
+          counts: value.counts || { activeAgenda: 0, activeGoals: 0 },
+        } : null;
+        const compactGoodLifeLedgerEntry = (entry = {}) => ({
+          at: entry.at || entry.timestamp || null,
+          event: entry.event || entry.type || null,
+          mode: entry.mode || entry.policy?.mode || null,
+          summary: String(entry.summary || entry.message || entry.policy?.reason || '').replace(/\s+/g, ' ').trim().slice(0, 220),
+          problemId: entry.problemId || entry.evidence?.problemId || null,
+          agendaId: entry.agendaId || entry.evidence?.agendaId || null,
+        });
         const state = readJson('good-life-state.json');
         const commitments = readJson('good-life-commitments.json');
         const trends = readJson('good-life-trends-current.json');
@@ -5106,26 +5206,30 @@ Be specific, actionable, and maintain research continuity.`;
           goals: snapshotGoals,
         });
         const runtime = await this.getHome23RuntimeHealth(req.query?.agent);
-        res.json({
-          ok: true,
+        const operator = buildGoodLifeOperatorModel({
           state,
           commitments,
           trends,
           regulator,
-          liveProblems,
-          ledgerTail,
+          liveProblems: liveProblemList,
+          ledgerTail: ledgerTail.map(compactGoodLifeLedgerEntry),
           obligations,
           runtime,
-          operator: buildGoodLifeOperatorModel({
-            state,
-            commitments,
-            trends,
-            regulator,
-            liveProblems: liveProblemList,
-            ledgerTail,
-            obligations,
-            runtime,
-          }),
+        });
+        res.json({
+          ok: true,
+          state: compactGoodLifeState(state),
+          commitments: compactGoodLifeCommitments(commitments),
+          trends: compactGoodLifeTrends(trends),
+          regulator: compactGoodLifeRegulator(regulator),
+          liveProblems: {
+            problems: liveProblemList.map(compactLiveProblemForGoodLifeApi).filter(Boolean),
+            snapshot: compactLiveProblemSnapshot(liveProblems.snapshot),
+          },
+          ledgerTail: ledgerTail.map(compactGoodLifeLedgerEntry),
+          obligations: compactGoodLifeObligations(obligations),
+          runtime,
+          operator,
         });
       } catch (error) {
         res.status(500).json({ ok: false, error: error.message });
