@@ -378,8 +378,19 @@ class DocumentFeeder {
         text = fileContent.toString('utf8');
         format = path.extname(filePath).slice(1);
       } else if (this.converter.isConvertible(filePath)) {
-        const result = await this.converter.convert(filePath);
-        if (!result) return;
+        const result = typeof this.converter.convertDetailed === 'function'
+          ? await this.converter.convertDetailed(filePath)
+          : await this.converter.convert(filePath);
+        if (!result || result.ok === false) {
+          if (result && result.retryable === false) {
+            await this.manifest.trackQuarantined(filePath, label, fullHash, {
+              status: result.status || 'conversion_failed',
+              issues: [result.error || result.status || 'conversion failed'],
+              structuralSignature: null
+            });
+          }
+          return;
+        }
         text = result.text;
         format = result.format;
       } else {

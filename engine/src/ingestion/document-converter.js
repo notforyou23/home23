@@ -102,17 +102,30 @@ class DocumentConverter {
    * @returns {{ text: string, format: string } | null}
    */
   async convert(filePath) {
+    const result = await this.convertDetailed(filePath);
+    return result.ok ? { text: result.text, format: result.format } : null;
+  }
+
+  /**
+   * Convert a file with structured failure metadata so callers can distinguish
+   * transient converter availability from deterministic file conversion errors.
+   * @param {string} filePath - Absolute path to the file
+   * @returns {{ ok: true, text: string, format: string } | { ok: false, status: string, retryable: boolean, error?: string }}
+   */
+  async convertDetailed(filePath) {
     const ext = path.extname(filePath).toLowerCase();
 
     // Native text — read directly
     if (this.isNativeText(filePath)) {
       try {
         const text = fs.readFileSync(filePath, 'utf8');
-        if (!text || text.trim().length === 0) return null;
-        return { text, format: ext.slice(1) };
+        if (!text || text.trim().length === 0) {
+          return { ok: false, status: 'empty_text', retryable: false };
+        }
+        return { ok: true, text, format: ext.slice(1) };
       } catch (err) {
         this.logger?.error?.('Failed to read native text file', { filePath, error: err.message });
-        return null;
+        return { ok: false, status: 'read_failed', retryable: true, error: err.message };
       }
     }
 
@@ -123,7 +136,7 @@ class DocumentConverter {
           this.logger?.warn?.('MarkItDown not installed — binary files will be skipped. Install: pip install markitdown');
           this._availabilityWarned = true;
         }
-        return null;
+        return { ok: false, status: 'converter_unavailable', retryable: true };
       }
 
       try {
@@ -142,16 +155,17 @@ class DocumentConverter {
 
         if (!output || output.trim().length === 0) {
           this.logger?.warn?.('MarkItDown returned empty output', { filePath });
-          return null;
+          return { ok: false, status: 'conversion_empty', retryable: false };
         }
 
-        return { text: output, format: 'md' };
+        return { ok: true, text: output, format: 'md' };
       } catch (err) {
+        const error = (err.stderr || err.message || '').slice(0, 200);
         this.logger?.error?.('MarkItDown conversion failed', {
           filePath,
-          error: (err.stderr || err.message || '').slice(0, 200)
+          error
         });
-        return null;
+        return { ok: false, status: 'conversion_failed', retryable: false, error };
       }
     }
 
@@ -162,14 +176,16 @@ class DocumentConverter {
       const sample = buf.slice(0, 8192);
       if (sample.includes(0)) {
         this.logger?.debug?.('Skipping binary file with unknown extension', { filePath });
-        return null;
+        return { ok: false, status: 'unknown_binary', retryable: false };
       }
       const text = buf.toString('utf8');
-      if (!text || text.trim().length === 0) return null;
-      return { text, format: ext.slice(1) || 'txt' };
+      if (!text || text.trim().length === 0) {
+        return { ok: false, status: 'empty_text', retryable: false };
+      }
+      return { ok: true, text, format: ext.slice(1) || 'txt' };
     } catch (err) {
       this.logger?.debug?.('Failed to read unknown file type', { filePath, error: err.message });
-      return null;
+      return { ok: false, status: 'read_failed', retryable: true, error: err.message };
     }
   }
 }

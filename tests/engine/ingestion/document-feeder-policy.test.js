@@ -107,6 +107,83 @@ test('document feeder ignores duplicate in-flight processing for same file', asy
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('document feeder records deterministic conversion failures until file content changes', async () => {
+  const feeder = makeFeeder();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-'));
+  const filePath = path.join(dir, 'broken.pdf');
+  fs.writeFileSync(filePath, 'not a real pdf', 'utf8');
+
+  let recordedHash = null;
+  let convertCalls = 0;
+  const quarantined = [];
+
+  feeder.manifest = {
+    isStale: async (_filePath, fullHash) => fullHash !== recordedHash,
+    trackQuarantined: async (_filePath, label, fullHash, validation) => {
+      recordedHash = fullHash;
+      quarantined.push({ label, fullHash, validation });
+    },
+  };
+  feeder.converter = {
+    isNativeText: () => false,
+    isConvertible: () => true,
+    convertDetailed: async () => {
+      convertCalls += 1;
+      return {
+        ok: false,
+        status: 'conversion_failed',
+        retryable: false,
+        error: 'invalid pdf syntax',
+      };
+    },
+  };
+
+  await feeder._processFile(filePath, 'tmp');
+  await feeder._processFile(filePath, 'tmp');
+
+  assert.equal(convertCalls, 1);
+  assert.equal(quarantined.length, 1);
+  assert.equal(quarantined[0].validation.status, 'conversion_failed');
+
+  fs.writeFileSync(filePath, 'changed bad pdf', 'utf8');
+  await feeder._processFile(filePath, 'tmp');
+
+  assert.equal(convertCalls, 2);
+  assert.equal(quarantined.length, 2);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('document feeder does not quarantine retryable converter outages', async () => {
+  const feeder = makeFeeder();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-feeder-'));
+  const filePath = path.join(dir, 'retry.pdf');
+  fs.writeFileSync(filePath, 'pdf bytes', 'utf8');
+
+  let convertCalls = 0;
+  let quarantineCalls = 0;
+  feeder.manifest = {
+    isStale: async () => true,
+    trackQuarantined: async () => {
+      quarantineCalls += 1;
+    },
+  };
+  feeder.converter = {
+    isNativeText: () => false,
+    isConvertible: () => true,
+    convertDetailed: async () => {
+      convertCalls += 1;
+      return { ok: false, status: 'converter_unavailable', retryable: true };
+    },
+  };
+
+  await feeder._processFile(filePath, 'tmp');
+  await feeder._processFile(filePath, 'tmp');
+
+  assert.equal(convertCalls, 2);
+  assert.equal(quarantineCalls, 0);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('document feeder watcher leaves existing files to the explicit startup scan', () => {
   const feeder = makeFeeder();
 
