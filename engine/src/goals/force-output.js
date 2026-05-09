@@ -25,17 +25,42 @@ function countRecentOutputs(outputsDir, since) {
   if (!outputsDir || !fs.existsSync(outputsDir)) return 0;
   try {
     let n = 0;
-    for (const name of fs.readdirSync(outputsDir)) {
-      if (name.startsWith('.')) continue;
-      const full = path.join(outputsDir, name);
-      let st;
-      try { st = fs.statSync(full); } catch { continue; }
-      if (st.isFile() && st.mtimeMs > since) n++;
+    const stack = [outputsDir];
+    while (stack.length) {
+      const dir = stack.pop();
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+      catch { continue; }
+
+      for (const entry of entries) {
+        if (!entry?.name || entry.name.startsWith('.')) continue;
+        const full = path.join(dir, entry.name);
+        let st;
+        try { st = fs.statSync(full); } catch { continue; }
+        if (entry.isDirectory()) {
+          stack.push(full);
+          continue;
+        }
+        if (entry.isFile() && st.mtimeMs > since) n++;
+      }
     }
     return n;
   } catch {
     return 0;
   }
+}
+
+function hasActiveForceOutputGoal(goals) {
+  const activeGoals = typeof goals?.getGoals === 'function'
+    ? goals.getGoals()
+    : Array.isArray(goals?._added)
+      ? goals._added
+      : [];
+
+  return activeGoals.some(goal => {
+    if (!goal || (goal.status && goal.status !== 'active')) return false;
+    return goal.source === 'force-output' || goal.source?.origin === 'force-output';
+  });
 }
 
 function readSurface(workspaceDir, name, maxChars = 1200) {
@@ -123,6 +148,10 @@ async function checkAndMaybeTrigger(opts) {
 
   if (process.env.HOME23_FORCE_OUTPUT_DISABLE === '1' || config.enabled === false) {
     return { triggered: false, reason: 'disabled', state };
+  }
+
+  if (hasActiveForceOutputGoal(goals)) {
+    return { triggered: false, reason: 'active-force-output-goal', state };
   }
 
   const everyN = Number(config.everyNCycles) || DEFAULT_EVERY_N_CYCLES;

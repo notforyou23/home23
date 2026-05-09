@@ -81,6 +81,14 @@ describe('force-output.countRecentOutputs', () => {
     expect(countRecentOutputs(dir, since)).to.equal(2);
   });
 
+  it('counts fresh files in nested output directories', () => {
+    const dir = tmpDir();
+    fs.mkdirSync(path.join(dir, 'research', 'agent_1'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'research', 'agent_1', 'summary.md'), 'x');
+    const since = Date.now() - 60_000;
+    expect(countRecentOutputs(dir, since)).to.equal(1);
+  });
+
   it('returns 0 for non-existent dir', () => {
     expect(countRecentOutputs('/no/such/dir', Date.now())).to.equal(0);
   });
@@ -148,6 +156,29 @@ describe('force-output.checkAndMaybeTrigger', () => {
     });
     expect(r.triggered).to.equal(false);
     expect(r.reason).to.equal('under-threshold');
+  });
+
+  it('does not create another back-pressure goal while one is active', async () => {
+    const outputsDir = tmpDir();
+    const memory = mkMemory([
+      { id: 10, tag: 'finding', activation: 0.7, concept: 'finding 1' },
+      { id: 11, tag: 'resolved:x', activation: 0.5, concept: 'finding 2' }
+    ]);
+    const goals = {
+      getGoals() {
+        return [{ id: 'goal_existing', status: 'active', source: { origin: 'force-output' } }];
+      },
+      addGoal() {
+        throw new Error('should not add goal');
+      }
+    };
+    const r = await checkAndMaybeTrigger({
+      outputsDir, memory, goals,
+      cycle: 500, state: { lastOutputCycle: 0 },
+      config: { everyNCycles: 100 }, logger
+    });
+    expect(r.triggered).to.equal(false);
+    expect(r.reason).to.equal('active-force-output-goal');
   });
 
   it('respects disabled config', async () => {
