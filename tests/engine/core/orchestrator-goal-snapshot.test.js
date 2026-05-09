@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const {
   compactActiveGoalsForSnapshot,
+  getEmergencyCoordinatorWorkState,
   persistArchivedGoalsToState,
 } = require('../../../engine/src/core/orchestrator.js');
 const { StateCompression } = require('../../../engine/src/core/state-compression.js');
@@ -54,6 +55,50 @@ test('compactActiveGoalsForSnapshot writes bounded lightweight active goal summa
   assert.equal(goals[0].priority, 0.9);
   assert.equal(goals[0].progress, 0.25);
   assert.equal(goals[1].source, 'meta');
+});
+
+test('emergency coordinator work state ignores completed and archived goal history', () => {
+  const workState = getEmergencyCoordinatorWorkState(
+    {
+      getGoals() {
+        return [
+          { id: 'done', status: 'completed' },
+          { id: 'old', status: 'archived' },
+          { id: 'resolved', status: 'resolved' },
+        ];
+      },
+    },
+    { registry: { getActiveCount: () => 0 } },
+    6873,
+    6800,
+  );
+
+  assert.equal(workState.activeGoalCount, 0);
+  assert.equal(workState.totalGoalHistory, 3);
+  assert.equal(workState.activeAgents, 0);
+  assert.equal(workState.cyclesSinceLastReview, 73);
+});
+
+test('emergency coordinator work state counts active or blocked goals as live work', () => {
+  const workState = getEmergencyCoordinatorWorkState(
+    {
+      getGoals() {
+        return [
+          { id: 'active', status: 'active' },
+          { id: 'blocked', status: 'blocked' },
+          { id: 'done', status: 'completed' },
+        ];
+      },
+    },
+    { registry: { getActiveCount: () => 2 } },
+    50,
+    48,
+  );
+
+  assert.equal(workState.activeGoalCount, 2);
+  assert.equal(workState.totalGoalHistory, 3);
+  assert.equal(workState.activeAgents, 2);
+  assert.equal(workState.cyclesSinceLastReview, 2);
 });
 
 test('persistArchivedGoalsToState patches goals without full orchestrator save', async () => {

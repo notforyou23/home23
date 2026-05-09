@@ -274,6 +274,12 @@ class PulseRemarks {
     return true;
   }
 
+  _signalConflictsWithOpenProblem(signal, openProblemIds = new Set()) {
+    if (!signal || !openProblemIds.size) return false;
+    const problemId = String(signal.evidence?.problemId || signal.problemId || '').trim();
+    return problemId ? openProblemIds.has(problemId) : false;
+  }
+
   _shouldSurfaceOpenProblem(problem) {
     if (!problem) return false;
     const mentionedMs = Date.parse(problem.lastMentionedInPulseAt || 0);
@@ -638,6 +644,10 @@ class PulseRemarks {
       resolvedJustNow: (liveProblemsRaw.resolvedJustNow || []).filter((p) => this._shouldSurfaceResolvedProblem(p)),
       counts: liveProblemsRaw.counts || { open: 0, chronic: 0, resolved: 0, unverifiable: 0 },
     } : null;
+    const openProblemIds = new Set([
+      ...((liveProblemsRaw?.open || []).map((p) => p?.id).filter(Boolean)),
+      ...((liveProblemsRaw?.chronic || []).map((p) => p?.id).filter(Boolean)),
+    ]);
 
     // Signals: the parallel ground-truth block for wins. Resolved problems,
     // autonomous fixes, and OBSERVE-tag positive observations from the last
@@ -647,6 +657,7 @@ class PulseRemarks {
     const dedupedSignals = new Map();
     for (const s of rawSignals) {
       if (!this._isPulseWorthySignal(s, now)) continue;
+      if (this._signalConflictsWithOpenProblem(s, openProblemIds)) continue;
       const h = this._signalStreamHash(s);
       if (this._remarkedSignals.has(h)) continue;
       if (allRecentBriefSignals.has(h)) continue;

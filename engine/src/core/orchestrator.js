@@ -72,6 +72,24 @@ function shouldAddWorkspaceFeederFallback(feederConfig = {}) {
   return configured.length === 0;
 }
 
+function isCoordinatorActiveGoal(goal) {
+  if (!goal) return false;
+  const status = String(goal.status || 'active').toLowerCase();
+  if (['completed', 'archived', 'cancelled', 'canceled', 'resolved'].includes(status)) return false;
+  return ['active', 'pending', 'in_progress', 'blocked', 'open'].includes(status);
+}
+
+function getEmergencyCoordinatorWorkState(goalsSystem, agentExecutor, cycleCount, lastReviewCycle = 0) {
+  const goals = typeof goalsSystem?.getGoals === 'function' ? goalsSystem.getGoals() : [];
+  const activeGoals = goals.filter(isCoordinatorActiveGoal);
+  return {
+    activeGoalCount: activeGoals.length,
+    totalGoalHistory: goals.length,
+    activeAgents: agentExecutor?.registry?.getActiveCount?.() || 0,
+    cyclesSinceLastReview: cycleCount - (lastReviewCycle || 0),
+  };
+}
+
 /**
  * Phase 2B Orchestrator - GPT-5.5 Version
  * Uses GPT-5.5 Responses API with extended reasoning, web search, and tools
@@ -1394,18 +1412,29 @@ class Orchestrator {
       // NEW: Emergency coordinator review when system is idle with work to do
       // Prevents wasting cycles - coordinator can spawn agents to tackle goals/tasks
       if (this.coordinator && this.coordinator.enabled && !this.coordinator.shouldRunReview(this.cycleCount)) {
-        const totalGoals = this.goals.getGoals().length;
-        const activeAgents = this.agentExecutor?.registry?.getActiveCount() || 0;
-        const cyclesSinceLastReview = this.cycleCount - this.coordinator.lastReviewCycle;
+        const {
+          activeGoalCount,
+          totalGoalHistory,
+          activeAgents,
+          cyclesSinceLastReview,
+        } = getEmergencyCoordinatorWorkState(
+          this.goals,
+          this.agentExecutor,
+          this.cycleCount,
+          this.coordinator.lastReviewCycle,
+        );
         
-        // Idle condition: Work exists (goals or tasks) but no agents working on it
+        // Idle condition: active/open work exists, but no agents are working on it.
+        // Completed and archived goal history is not live work; treating it as
+        // work causes emergency reviews to fire on an otherwise empty board.
         // Wait 2 cycles before triggering (gives system brief chance to self-organize)
         // Prevents immediate spam while being responsive to idle state
-        if (totalGoals > 0 && activeAgents === 0 && cyclesSinceLastReview >= 2) {
+        if (activeGoalCount > 0 && activeAgents === 0 && cyclesSinceLastReview >= 2) {
           enterCyclePhase('emergency_coordinator_review');
           this.logger.info('🚨 Emergency coordinator review triggered', {
             reason: 'System idle with goals but no active agents',
-            totalGoals,
+            activeGoalCount,
+            totalGoalHistory,
             activeAgents,
             cyclesSinceLastReview,
             nextScheduledReview: this.coordinator.lastReviewCycle + this.coordinator.reviewInterval
@@ -8516,6 +8545,7 @@ async function persistArchivedGoalsToState(logsDir, archivedIds = [], reason = '
 module.exports = {
   Orchestrator,
   compactActiveGoalsForSnapshot,
+  getEmergencyCoordinatorWorkState,
   persistArchivedGoalsToState,
   shouldAddWorkspaceFeederFallback,
 };
