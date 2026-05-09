@@ -3124,7 +3124,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 
 .h23-goodlife-evidence-row {
   display: grid;
-  grid-template-columns: minmax(110px, 0.35fr) minmax(0, 1fr) minmax(80px, 0.25fr);
+  grid-template-columns: minmax(110px, 0.35fr) minmax(0, 1fr) minmax(80px, 0.25fr) auto;
   gap: 8px;
   border-bottom: 1px solid rgba(255,255,255,0.055);
   padding: 8px 0;
@@ -3142,6 +3142,31 @@ body.h23-external-focus #cosmo23-refresh-btn {
 
 .h23-goodlife-evidence-row small {
   color: var(--text-muted);
+}
+
+.h23-goodlife-mini-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.h23-goodlife-mini-actions button {
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1;
+  padding: 6px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.h23-goodlife-mini-actions button:hover {
+  border-color: rgba(112, 211, 162, 0.35);
+  color: var(--text-primary);
 }
 
 .h23-goodlife-evidence-receipt {
