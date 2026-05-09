@@ -3020,6 +3020,25 @@ function goodLifeFleetStatus(row = {}) {
   return { state: 'clear', label: 'Clear', text: brief.next || 'no user intervention needed' };
 }
 
+function goodLifeFleetTarget(row = {}) {
+  const operator = row.data?.operator || {};
+  const target = operator.operatorBrief?.target || {};
+  if (target.tab) {
+    return {
+      tab: target.tab,
+      id: target.id || '',
+    };
+  }
+  const status = goodLifeFleetStatus(row);
+  if (status.state === 'working' || status.state === 'review') {
+    return { tab: 'work', id: '' };
+  }
+  if (status.state === 'clear') {
+    return { tab: 'resolutions', id: '' };
+  }
+  return { tab: 'issues', id: '' };
+}
+
 function renderGoodLifeFleetSummary() {
   const el = document.getElementById('goodlife-fleet-summary');
   if (!el) return;
@@ -3053,11 +3072,14 @@ function renderGoodLifeFleetSummary() {
       <strong>${escapeHtml(headline)}</strong>
     </div>
     <div class="h23-goodlife-fleet-list">
-      ${statuses.map(({ row, status }) => `<button class="h23-goodlife-fleet-row ${goodLifeCssClass(status.state)}" type="button" onclick="openGoodLifeOperator('${escapeAttr(row.scope || 'home')}')">
+      ${statuses.map(({ row, status }) => {
+    const target = goodLifeFleetTarget(row);
+    return `<button class="h23-goodlife-fleet-row ${goodLifeCssClass(status.state)}" type="button" onclick="openGoodLifeOperator('${escapeAttr(row.scope || 'home')}', '${escapeAttr(target.id)}', '${escapeAttr(target.tab)}')">
         <span>${escapeHtml(goodLifeFleetAgentName(row))}</span>
         <strong>${escapeHtml(status.label)}</strong>
         <small>${escapeHtml(status.text)}</small>
-      </button>`).join('')}
+      </button>`;
+  }).join('')}
     </div>
   `;
 }
