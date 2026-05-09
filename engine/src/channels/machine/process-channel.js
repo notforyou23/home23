@@ -17,6 +17,18 @@ import topology from '../../system/home23-process-topology.js';
 const execFileAsync = promisify(execFile);
 const { annotateHome23ProcessList } = topology;
 
+function normalizePm2RestartCount(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function parsePsOutput(stdout, topN) {
   return String(stdout || '')
     .split(/\n/)
@@ -79,7 +91,7 @@ async function readPm2ByPid() {
       byPid.set(pid, {
         pm2Name: proc.name || null,
         pm2Status: proc.pm2_env?.status || null,
-        restarts: Number(proc.pm2_env?.restart_time || 0),
+        restarts: normalizePm2RestartCount(proc.pm2_env?.restart_time),
         pm2CpuPct: Number(proc.monit?.cpu || 0),
         pm2RssBytes: Number(proc.monit?.memory || 0) || null,
         script: proc.pm2_env?.pm_exec_path || null,
@@ -139,4 +151,4 @@ export class ProcessChannel extends PollChannel {
   }
 }
 
-export const _test = { parsePsOutput, readPm2ByPid };
+export const _test = { parsePsOutput, readPm2ByPid, normalizePm2RestartCount };

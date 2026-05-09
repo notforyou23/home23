@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Pm2Channel } from '../../../../engine/src/channels/os/pm2-channel.js';
+import { Pm2Channel, _test } from '../../../../engine/src/channels/os/pm2-channel.js';
 
 test('Pm2Channel seeds on first poll then emits on state change with topology metadata', async () => {
   let list = [{
@@ -32,4 +32,11 @@ test('Pm2Channel seeds on first poll then emits on state change with topology me
   assert.equal(changed[0].topology.role, 'agent-engine');
   assert.equal(changed[0].topology.agentName, 'jerry');
   assert.equal(changed[0].topology.expectedParallelRole, true);
+});
+
+test('Pm2Channel treats unsafe PM2 restart counters as unknown', async () => {
+  assert.equal(_test.normalizePm2RestartCount(12), 12);
+  assert.equal(_test.normalizePm2RestartCount('12'), 12);
+  assert.equal(_test.normalizePm2RestartCount('171111111111111111111111111111111'), null);
+  assert.equal(_test.normalizePm2RestartCount('not-a-count'), null);
 });

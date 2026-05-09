@@ -28,6 +28,18 @@ function mb(bytes) {
   return +(Number(bytes || 0) / 1024 / 1024).toFixed(1);
 }
 
+function normalizePm2RestartCount(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function formatDuration(ms) {
   if (!ms || !Number.isFinite(ms)) return 'unknown';
   const sec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
@@ -72,7 +84,7 @@ function poll() {
         cpuPercent,
         uptimeMs: proc.pm2_env?.pm_uptime || null,
         uptimeString,
-        restartTime: proc.pm2_env?.restart_time || 0,
+        restartTime: normalizePm2RestartCount(proc.pm2_env?.restart_time),
       },
     };
   } catch (err) {
@@ -80,4 +92,11 @@ function poll() {
   }
 }
 
-module.exports = { id: 'system.pm2-process', label: 'Engine PM2 Process', category: 'system', poll, intervalMs: 30 * 1000 };
+module.exports = {
+  id: 'system.pm2-process',
+  label: 'Engine PM2 Process',
+  category: 'system',
+  poll,
+  intervalMs: 30 * 1000,
+  _test: { normalizePm2RestartCount },
+};

@@ -17,6 +17,18 @@ const { execFileSync, execSync } = require('child_process');
 const http = require('http');
 const https = require('https');
 
+function normalizePm2RestartCount(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function expandPath(p) {
   if (!p) return p;
   if (p.startsWith('~')) return path.join(os.homedir(), p.slice(1));
@@ -110,7 +122,13 @@ const verifiers = {
         const statuses = matches.map(p => p.pm2_env?.status || '?').join(',');
         return { ok: false, detail: `status=${statuses}`, observed: { statuses } };
       }
-      return { ok: true, detail: 'online', observed: { restarts: online[0].pm2_env?.restart_time } };
+      return {
+        ok: true,
+        detail: 'online',
+        observed: {
+          restarts: normalizePm2RestartCount(online[0].pm2_env?.restart_time),
+        },
+      };
     } catch (err) {
       return { ok: false, detail: `pm2 jlist failed: ${err.message}` };
     }

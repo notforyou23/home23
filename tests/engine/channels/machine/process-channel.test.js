@@ -15,6 +15,13 @@ test('ProcessChannel parses ps output ordered by CPU', () => {
   assert.equal(rows[1].rssBytes, 12345 * 1024);
 });
 
+test('ProcessChannel treats unsafe PM2 restart counters as unknown', () => {
+  assert.equal(_test.normalizePm2RestartCount(3), 3);
+  assert.equal(_test.normalizePm2RestartCount('3'), 3);
+  assert.equal(_test.normalizePm2RestartCount('171111111111111111111111111111111'), null);
+  assert.equal(_test.normalizePm2RestartCount({}), null);
+});
+
 test('ProcessChannel emits collected observation with topology and crystallizes hot process', async () => {
   const channel = new ProcessChannel({
     sample: async () => ({

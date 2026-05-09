@@ -14,6 +14,18 @@ import topology from '../../system/home23-process-topology.js';
 const execP = promisify(exec);
 const { classifyHome23Process } = topology;
 
+function normalizePm2RestartCount(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 async function defaultList() {
   try {
     const { stdout } = await execP('pm2 jlist');
@@ -35,7 +47,8 @@ export class Pm2Channel extends PollChannel {
     for (const p of list) {
       const name = p.name;
       const status = p.pm2_env?.status;
-      const restartCount = p.pm2_env?.restart_time ?? 0;
+      const rawRestartCount = p.pm2_env?.restart_time ?? 0;
+      const restartCount = normalizePm2RestartCount(rawRestartCount);
       const script = p.pm2_env?.pm_exec_path;
       const prev = this._seen.get(name);
       const changed = !prev || prev.status !== status || prev.restartCount !== restartCount;
@@ -46,6 +59,7 @@ export class Pm2Channel extends PollChannel {
             name,
             status,
             restartCount,
+            rawRestartCount: restartCount === null ? rawRestartCount : undefined,
             prevStatus: prev?.status,
             prevRestartCount: prev?.restartCount,
             script,
@@ -79,3 +93,5 @@ export class Pm2Channel extends PollChannel {
     return { method: 'work_event', type: 'observation', topic: 'pm2-process', tags: ['os', 'pm2', obs.payload.status] };
   }
 }
+
+export const _test = { normalizePm2RestartCount };
