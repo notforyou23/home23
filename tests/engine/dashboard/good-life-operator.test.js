@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { createRequire } from 'node:module';
 
@@ -127,6 +130,56 @@ test('Good Life obligation snapshot compacts force-output goal prompts for opera
 
   assert.equal(snapshot.activeGoals[0].description, 'Produce outputs/digest-6427.md');
   assert.match(snapshot.activeGoals[0].rawDescription, /Synthesize these findings/);
+});
+
+test('Good Life obligation snapshot reports promised output artifact status', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-good-life-output-'));
+  const outputsDir = path.join(dir, 'outputs');
+  fs.mkdirSync(outputsDir, { recursive: true });
+  fs.writeFileSync(path.join(outputsDir, 'digest-6427.md'), '# Digest\n');
+
+  try {
+    const ready = buildGoodLifeObligationSnapshot({
+      goals: {
+        active: [
+          ['goal_ready', {
+            id: 'goal_ready',
+            description: 'Produce outputs/digest-6427.md. Synthesize current evidence.',
+            status: 'active',
+            source: 'force-output',
+            createdAt: '2026-05-08T13:30:00.000Z',
+          }],
+        ],
+      },
+      outputRoots: [dir],
+      now: NOW,
+    });
+
+    assert.equal(ready.activeGoals[0].artifact.exists, true);
+    assert.equal(ready.activeGoals[0].artifact.relativePath, 'outputs/digest-6427.md');
+    assert.match(ready.activeGoals[0].artifact.path, /digest-6427\.md$/);
+
+    const pending = buildGoodLifeObligationSnapshot({
+      goals: {
+        active: [
+          ['goal_pending', {
+            id: 'goal_pending',
+            description: 'Produce outputs/missing.md. Synthesize current evidence.',
+            status: 'active',
+            source: 'force-output',
+            createdAt: '2026-05-08T13:30:00.000Z',
+          }],
+        ],
+      },
+      outputRoots: [dir],
+      now: NOW,
+    });
+
+    assert.equal(pending.activeGoals[0].artifact.exists, false);
+    assert.equal(pending.activeGoals[0].artifact.relativePath, 'outputs/missing.md');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('Good Life obligation snapshot flags stale force-output goals for operator review', () => {

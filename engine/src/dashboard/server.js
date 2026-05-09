@@ -5209,6 +5209,7 @@ Be specific, actionable, and maintain research continuity.`;
         const obligations = buildGoodLifeObligationSnapshot({
           agendaRows: readJsonl('agenda.jsonl'),
           goals: snapshotGoals,
+          outputRoots: [goodLifeLogsDir, targetContext.workspacePath],
         });
         const runtime = await this.getHome23RuntimeHealth(targetContext.agentName);
         const operator = buildGoodLifeOperatorModel({

@@ -10,6 +10,8 @@ const USER_INTERVENTION_REMEDIATORS = new Set([
   'user_action',
 ]);
 const WORK_REVIEW_GOAL_AGE_MIN = 12 * 60;
+const fs = require('fs');
+const path = require('path');
 
 function toTimeMs(value) {
   const ms = Date.parse(value || '');
@@ -164,7 +166,7 @@ function normalizeProjection(state) {
   };
 }
 
-function buildGoodLifeObligationSnapshot({ agendaRows = [], goals = null, now = new Date() } = {}) {
+function buildGoodLifeObligationSnapshot({ agendaRows = [], goals = null, outputRoots = [], now = new Date() } = {}) {
   const nowMs = toNowMs(now);
   const agenda = new Map();
   for (const row of Array.isArray(agendaRows) ? agendaRows : []) {
@@ -213,10 +215,12 @@ function buildGoodLifeObligationSnapshot({ agendaRows = [], goals = null, now = 
       const source = goal.source?.label || goal.source?.origin || goal.source || null;
       const rawDescription = goal.description || goal.title || goal.goal || '';
       const description = summarizeGoalDescription(rawDescription);
+      const artifact = resolveGoalArtifact(rawDescription, outputRoots);
       const row = {
         id: goal.id || '',
         description,
         rawDescription,
+        artifact,
         status: goal.status || 'active',
         source,
         priority: goal.priority ?? null,
@@ -268,10 +272,56 @@ function summarizeGoalDescription(description) {
   return compactText(sentenceMatch?.[1] || text, 180);
 }
 
+function extractGoalArtifactPath(description) {
+  const text = String(description || '');
+  const match = text.match(/\b(outputs\/[^\s]+)/);
+  if (!match?.[1]) return null;
+  return match[1].replace(/[)\],;:]+$/g, '').replace(/\.$/, '');
+}
+
+function resolveGoalArtifact(description, outputRoots = []) {
+  const relativePath = extractGoalArtifactPath(description);
+  if (!relativePath) return null;
+  const roots = Array.isArray(outputRoots) ? outputRoots.filter(Boolean) : [];
+  const checkedPaths = [];
+  for (const root of roots) {
+    const absolutePath = path.resolve(root, relativePath);
+    checkedPaths.push(absolutePath);
+    try {
+      if (fs.existsSync(absolutePath)) {
+        const stat = fs.statSync(absolutePath);
+        return {
+          relativePath,
+          exists: true,
+          path: absolutePath,
+          bytes: stat.size,
+          updatedAt: stat.mtime.toISOString(),
+          checkedPaths,
+        };
+      }
+    } catch {
+      // Keep checking the remaining roots.
+    }
+  }
+  return {
+    relativePath,
+    exists: false,
+    path: checkedPaths[0] || null,
+    checkedPaths,
+  };
+}
+
 function topGoalText(goal = {}) {
   if (!goal?.id) return null;
   const description = summarizeGoalDescription(goal.description || goal.rawDescription || '');
   return description ? `Top goal: ${goal.id} - ${description}` : `Top goal: ${goal.id}`;
+}
+
+function goalArtifactText(goal = {}) {
+  if (!goal?.artifact?.relativePath) return null;
+  return goal.artifact.exists
+    ? `artifact ready: ${goal.artifact.relativePath}`
+    : `artifact pending: ${goal.artifact.relativePath}`;
 }
 
 function classifyAgendaReview(row = {}) {
@@ -869,7 +919,8 @@ function buildOperatorAnswer({ state, lanes, liveProblems, consistency, work, la
     const goalText = work.topReviewGoal?.id
       ? `; ${topGoalText(work.topReviewGoal).replace(/^Top goal:/, 'top review goal:')}`
       : (work.topGoal?.id ? `; ${topGoalText(work.topGoal).replace(/^Top goal:/, 'top goal:')}` : '');
-    lines.push(`Active work: ${work.activeTotal}${reviewText}${agendaText}${goalText}`);
+    const artifactText = goalArtifactText(work.topReviewGoal || work.topGoal);
+    lines.push(`Active work: ${work.activeTotal}${reviewText}${agendaText}${goalText}${artifactText ? `; ${artifactText}` : ''}`);
   }
 
   if (latestAction?.workerRoute?.worker && isActiveAgendaStatus(latestAction.agendaStatus || 'candidate')) {
