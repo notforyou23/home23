@@ -758,8 +758,8 @@ class DashboardServer {
     const checks = [
       {
         id: 'engine',
-        label: `${labelPrefix} engine admin`,
-        url: `http://127.0.0.1:${target.realtimePort}/admin/thinking/stats`,
+        label: `${labelPrefix} engine realtime`,
+        url: `http://127.0.0.1:${target.realtimePort}/health`,
       },
       {
         id: 'harness',
