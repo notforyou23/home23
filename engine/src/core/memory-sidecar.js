@@ -37,6 +37,11 @@ const EDGES_FILE = 'memory-edges.jsonl.gz';
 function nodesPath(brainDir) { return path.join(brainDir, NODES_FILE); }
 function edgesPath(brainDir) { return path.join(brainDir, EDGES_FILE); }
 
+function uniqueTmpPath(outPath) {
+  const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+  return `${outPath}.${suffix}.tmp`;
+}
+
 /**
  * Stream-write an array of records as gzipped JSONL to a tmp file, then
  * atomically rename into place. Never constructs a full-array string.
@@ -46,7 +51,7 @@ function edgesPath(brainDir) { return path.join(brainDir, EDGES_FILE); }
  * @returns {Promise<{count:number, bytes:number}>}
  */
 async function writeJsonlGz(outPath, records) {
-  const tmpPath = outPath + '.tmp';
+  const tmpPath = uniqueTmpPath(outPath);
   const gz = zlib.createGzip({ level: zlib.constants.Z_BEST_COMPRESSION });
   const sink = fs.createWriteStream(tmpPath);
 
@@ -58,25 +63,32 @@ async function writeJsonlGz(outPath, records) {
 
   const drain = (stream) => new Promise(r => stream.once('drain', r));
 
-  for (const rec of records) {
-    const line = JSON.stringify(rec) + '\n';
-    if (!gz.write(line)) await drain(gz);
-    count++;
+  try {
+    for (const rec of records) {
+      const line = JSON.stringify(rec) + '\n';
+      if (!gz.write(line)) await drain(gz);
+      count++;
+    }
+
+    // Flush and wait for sink to finish. Register sink listeners before
+    // calling gz.end(); otherwise a fast close can happen before the end
+    // callback attaches its listener and leave saveState hung with a .tmp file.
+    await new Promise((resolve, reject) => {
+      sink.once('close', resolve);
+      sink.once('error', reject);
+      gz.once('error', reject);
+      gz.end();
+    });
+
+    const bytes = fs.statSync(tmpPath).size;
+    fs.renameSync(tmpPath, outPath);
+    return { count, bytes };
+  } catch (error) {
+    try { gz.destroy(); } catch {}
+    try { sink.destroy(); } catch {}
+    try { fs.rmSync(tmpPath, { force: true }); } catch {}
+    throw error;
   }
-
-  // Flush and wait for sink to finish. Register sink listeners before
-  // calling gz.end(); otherwise a fast close can happen before the end
-  // callback attaches its listener and leave saveState hung with a .tmp file.
-  await new Promise((resolve, reject) => {
-    sink.once('close', resolve);
-    sink.once('error', reject);
-    gz.once('error', reject);
-    gz.end();
-  });
-
-  const bytes = fs.statSync(tmpPath).size;
-  fs.renameSync(tmpPath, outPath);
-  return { count, bytes };
 }
 
 /**
@@ -186,4 +198,5 @@ module.exports = {
   EDGES_FILE,
   nodesPath,
   edgesPath,
+  uniqueTmpPath,
 };

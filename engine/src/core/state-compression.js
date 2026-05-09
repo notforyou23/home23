@@ -5,6 +5,11 @@ const { promisify } = require('util');
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
 
+function uniqueTmpPath(targetPath) {
+  const suffix = `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+  return `${targetPath}.${suffix}.tmp`;
+}
+
 /**
  * State Compression Utilities
  * 
@@ -49,9 +54,14 @@ class StateCompression {
     
     // Atomic write: write to temp file, then rename (prevents corruption on crash/timeout)
     const targetPath = filepath + '.gz';
-    const tempPath = targetPath + '.tmp';
-    await fs.writeFile(tempPath, compressed);
-    await fs.rename(tempPath, targetPath);
+    const tempPath = uniqueTmpPath(targetPath);
+    try {
+      await fs.writeFile(tempPath, compressed);
+      await fs.rename(tempPath, targetPath);
+    } catch (error) {
+      try { await fs.rm(tempPath, { force: true }); } catch {}
+      throw error;
+    }
     
     return {
       size: compressed.length,
@@ -193,5 +203,4 @@ class StateCompression {
   }
 }
 
-module.exports = { StateCompression };
-
+module.exports = { StateCompression, uniqueTmpPath };

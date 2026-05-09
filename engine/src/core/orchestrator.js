@@ -6326,6 +6326,20 @@ class Orchestrator {
   }
 
   async saveState() {
+    if (this._saveStatePromise) {
+      this.logger?.warn?.('State save already in progress — joining existing save');
+      return this._saveStatePromise;
+    }
+
+    this._saveStatePromise = this._saveStateUnlocked();
+    try {
+      return await this._saveStatePromise;
+    } finally {
+      this._saveStatePromise = null;
+    }
+  }
+
+  async _saveStateUnlocked() {
     await this.maybeWriteCurrentStateSnapshot();
 
     // Save evaluation metrics
@@ -6464,9 +6478,10 @@ class Orchestrator {
       // holds only the small-shape stuff (goals, journal, clusters, etc.)
       // and is immune to scaling.
       //
-      // If sidecar write fails validation, we LEAVE the original
-      // memory.nodes/edges in place and let the legacy monolithic save
-      // handle them — so nothing ever writes empty sidecar → empty state.
+      // If sidecar write fails validation, small legacy brains may still use
+      // the monolithic save path. Large brains must fail closed instead of
+      // trying to JSON.stringify memory inline and hitting V8's max string
+      // length during shutdown or a hot save.
       const { writeMemorySidecars } = require('./memory-sidecar');
       let sidecarsWritten = null;
       const origNodes = state.memory?.nodes;
@@ -6494,10 +6509,29 @@ class Orchestrator {
             state.memory = { ...state.memory, nodes: [], edges: [] };
           }
         } catch (err) {
-          this.logger.warn('Memory sidecar write failed — keeping inline arrays in state.json.gz', {
+          this.logger.warn('Memory sidecar write failed', {
             error: err.message,
           });
           sidecarsWritten = null;
+          const inlineFallbackMaxNodes = this.config?.persistence?.inlineMemoryFallbackMaxNodes || 1000;
+          if (expectedNodes > inlineFallbackMaxNodes) {
+            this.logger.error('REFUSING STATE SAVE — sidecar write failed for large brain', {
+              error: err.message,
+              totalNodes: expectedNodes,
+              expectedEdges,
+              inlineFallbackMaxNodes,
+              cycle: this.cycleCount,
+            });
+            this.lastSaveResult = {
+              saved: false,
+              reason: 'memory_sidecar_write_failed',
+              error: err.message,
+              currentNodes: expectedNodes,
+              expectedEdges,
+              cycle: this.cycleCount,
+            };
+            return this.lastSaveResult;
+          }
         }
       }
 

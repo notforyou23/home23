@@ -25,3 +25,11 @@ test('cycle timeout callback logs phase context for slow-cycle diagnosis', () =>
   assert.match(source, /phaseElapsedMs/);
   assert.match(source, /completedPhases/);
 });
+
+test('saveState serializes overlapping saves and fails closed on large sidecar errors', () => {
+  assert.match(source, /if \(this\._saveStatePromise\) \{/);
+  assert.match(source, /return this\._saveStatePromise;/);
+  assert.match(source, /async _saveStateUnlocked\(\) \{/);
+  assert.match(source, /REFUSING STATE SAVE — sidecar write failed for large brain/);
+  assert.match(source, /reason: 'memory_sidecar_write_failed'/);
+});
