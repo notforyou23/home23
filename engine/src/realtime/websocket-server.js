@@ -121,6 +121,17 @@ class RealtimeServer {
             return;
           }
 
+          // ── Live-problems operator controls ──
+          if (req.url && req.url.startsWith('/admin/live-problems')) {
+            try {
+              await this._handleLiveProblemsAdmin(req, res);
+            } catch (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            return;
+          }
+
           // ── Thinking machine observability (Phase 8) ──
           if (req.url && req.url.startsWith('/admin/thinking')) {
             try {
@@ -424,6 +435,57 @@ class RealtimeServer {
     }
 
     return json(404, { ok: false, error: `Unknown goal route: ${req.method} ${url}` });
+  }
+
+  /**
+   * Handle /admin/live-problems* routes — immediate operator verification
+   * controls for the Good Life surface. These run inside the engine process
+   * so they can use live verifier/remediator context instead of waiting for
+   * the next scheduled loop.
+   */
+  async _handleLiveProblemsAdmin(req, res) {
+    const url = req.url;
+    const liveProblems = this.orchestrator?.liveProblems;
+    const json = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (!liveProblems) {
+      return json(503, { ok: false, error: 'Live-problems system is not available' });
+    }
+
+    if (req.method === 'POST' && url === '/admin/live-problems/tick') {
+      if (typeof liveProblems.processAllNow !== 'function') {
+        return json(503, { ok: false, error: 'Immediate live-problems processing is not available' });
+      }
+      const result = await liveProblems.processAllNow();
+      return json(200, {
+        ok: true,
+        mode: 'immediate',
+        note: `processed ${result.processed || 0} live problem${result.processed === 1 ? '' : 's'} now`,
+        ...result,
+      });
+    }
+
+    const processPost = url.match(/^\/admin\/live-problems\/([^/]+)\/process$/);
+    if (req.method === 'POST' && processPost) {
+      if (typeof liveProblems.processNow !== 'function') {
+        return json(503, { ok: false, error: 'Immediate live-problems processing is not available' });
+      }
+      const problemId = decodeURIComponent(processPost[1]);
+      const problem = await liveProblems.processNow(problemId);
+      if (!problem) return json(404, { ok: false, error: 'live problem not found' });
+      return json(200, {
+        ok: true,
+        mode: 'immediate',
+        note: `processed ${problemId} now`,
+        problem,
+        snapshot: liveProblems.briefSnapshot?.() || null,
+      });
+    }
+
+    return json(404, { ok: false, error: `Unknown live-problems route: ${req.method} ${url}` });
   }
 
   /**

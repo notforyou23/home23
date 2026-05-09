@@ -84,3 +84,60 @@ test('goal admin refuses to archive missing or inactive goals', async () => {
   assert.equal(res.statusCode, 404);
   assert.equal(res.json().ok, false);
 });
+
+test('live-problems admin immediately processes all problems', async () => {
+  const server = new RealtimeServer(0, { info: () => {}, warn: () => {}, error: () => {} });
+  let called = false;
+  server.setOrchestrator({
+    liveProblems: {
+      async processAllNow() {
+        called = true;
+        return {
+          processed: 2,
+          changed: [{ id: 'health_log_fresh', state: 'resolved' }],
+          snapshot: { counts: { open: 0, chronic: 0, resolved: 1, unverifiable: 0 } },
+        };
+      },
+    },
+  });
+
+  const res = makeResponse();
+  await server._handleLiveProblemsAdmin(makeRequest({
+    url: '/admin/live-problems/tick',
+    body: {},
+  }), res);
+
+  const payload = res.json();
+  assert.equal(res.statusCode, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.mode, 'immediate');
+  assert.equal(payload.processed, 2);
+  assert.deepEqual(payload.changed, [{ id: 'health_log_fresh', state: 'resolved' }]);
+  assert.equal(called, true);
+});
+
+test('live-problems admin processes one problem by id', async () => {
+  const server = new RealtimeServer(0, { info: () => {}, warn: () => {}, error: () => {} });
+  server.setOrchestrator({
+    liveProblems: {
+      async processNow(id) {
+        return id === 'p1' ? { id, state: 'resolved', lastCheckedAt: '2026-05-09T18:40:00.000Z' } : null;
+      },
+      briefSnapshot() {
+        return { counts: { open: 0, chronic: 0, resolved: 1, unverifiable: 0 } };
+      },
+    },
+  });
+
+  const res = makeResponse();
+  await server._handleLiveProblemsAdmin(makeRequest({
+    url: '/admin/live-problems/p1/process',
+    body: {},
+  }), res);
+
+  const payload = res.json();
+  assert.equal(res.statusCode, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.problem.id, 'p1');
+  assert.deepEqual(payload.snapshot, { counts: { open: 0, chronic: 0, resolved: 1, unverifiable: 0 } });
+});

@@ -5618,22 +5618,37 @@ Be specific, actionable, and maintain research continuity.`;
       }
     });
 
-    // Force an immediate tick by nudging the engine's file mtime — the loop
-    // picks up external edits on each tick. This endpoint doesn't literally
-    // force a tick (engine runs on its own cadence) but does ensure the next
-    // tick reloads from disk. For genuine instant verify, restart the engine.
+    // Ask the running engine to process live problems immediately. Falls back
+    // to the older file-mtime nudge when the engine admin route is unavailable.
     this.app.post('/api/live-problems/tick', (req, res) => {
-      try {
-        const data = loadLiveProblems();
-        saveLiveProblems(data);   // rewrites file, bumps mtime → engine reloads
-        res.json({
-          ok: true,
-          note: 'file rewritten; engine will re-verify on its next tick (within ~90s)',
-          snapshot: buildSnapshot(data.problems || []),
-        });
-      } catch (err) {
-        res.status(500).json({ error: err.message });
-      }
+      (async () => {
+        const target = this.getHome23AgentContext(req.query?.agent || req.body?.agent);
+        try {
+          const upstream = await fetch(`http://localhost:${target.realtimePort}/admin/live-problems/tick`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ actor: req.body?.actor || 'dashboard' }),
+            signal: AbortSignal.timeout(30_000),
+          });
+          const payload = await upstream.json().catch(() => ({ ok: false, error: 'invalid engine admin response' }));
+          if (upstream.status !== 503) return res.status(upstream.status).json(payload);
+        } catch {
+          // Fall back below for older/degraded engine admin surfaces.
+        }
+
+        try {
+          const data = loadLiveProblems();
+          saveLiveProblems(data);   // rewrites file, bumps mtime -> engine reloads
+          res.json({
+            ok: true,
+            mode: 'queued',
+            note: 'file rewritten; engine will re-verify on its next tick (within ~90s)',
+            snapshot: buildSnapshot(data.problems || []),
+          });
+        } catch (err) {
+          res.status(500).json({ error: err.message });
+        }
+      })();
     });
 
     // ── Signals API ──

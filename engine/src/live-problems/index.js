@@ -83,6 +83,49 @@ function initLiveProblems({ brainDir, memory, logger, agentName, dashboardPort, 
       store.reloadIfChanged();
       return store.get(id);
     },
+    async processAllNow() {
+      store.reloadIfChanged();
+      store.pruneResolved();
+      const all = store.all();
+      const resolvedReverifyMs = 10 * 60 * 1000;
+      let processed = 0;
+      const changed = [];
+      for (const problem of all) {
+        if (problem.state === 'unverifiable') continue;
+        if (problem.state === 'resolved') {
+          const lastMs = problem.lastCheckedAt ? Date.parse(problem.lastCheckedAt) : 0;
+          if (lastMs && Date.now() - lastMs < resolvedReverifyMs) continue;
+        }
+        const before = {
+          state: problem.state,
+          lastCheckedAt: problem.lastCheckedAt || null,
+          lastRemediationAt: problem.lastRemediationAt || null,
+          stepIndex: problem.stepIndex || 0,
+        };
+        await loop._processOne(problem);
+        processed += 1;
+        const after = store.get(problem.id);
+        if (
+          after
+          && (
+            after.state !== before.state
+            || (after.lastCheckedAt || null) !== before.lastCheckedAt
+            || (after.lastRemediationAt || null) !== before.lastRemediationAt
+            || (after.stepIndex || 0) !== before.stepIndex
+          )
+        ) {
+          changed.push({
+            id: after.id,
+            state: after.state,
+            lastCheckedAt: after.lastCheckedAt || null,
+            lastRemediationAt: after.lastRemediationAt || null,
+            stepIndex: after.stepIndex || 0,
+          });
+        }
+      }
+      store.reloadIfChanged();
+      return { processed, changed, snapshot: this.briefSnapshot() };
+    },
     /**
      * Snapshot for the pulse brief. Shape:
      * {
