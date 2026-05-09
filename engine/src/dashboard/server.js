@@ -5055,9 +5055,11 @@ Be specific, actionable, and maintain research continuity.`;
     this.app.get('/api/good-life', async (req, res) => {
       try {
         const fsSync = require('fs');
+        const targetContext = this.getHome23AgentContext(req.query?.agent);
+        const goodLifeLogsDir = targetContext.runtimeDir || this.logsDir || '';
         const readJson = (name) => {
           try {
-            const file = path.join(this.logsDir || '', name);
+            const file = path.join(goodLifeLogsDir, name);
             if (!fsSync.existsSync(file)) return null;
             return JSON.parse(fsSync.readFileSync(file, 'utf8'));
           } catch {
@@ -5066,7 +5068,7 @@ Be specific, actionable, and maintain research continuity.`;
         };
         const tailJsonl = (name, limit = 20) => {
           try {
-            const file = path.join(this.logsDir || '', name);
+            const file = path.join(goodLifeLogsDir, name);
             if (!fsSync.existsSync(file)) return [];
             return fsSync.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).slice(-limit).map(line => {
               try { return JSON.parse(line); } catch { return null; }
@@ -5077,7 +5079,7 @@ Be specific, actionable, and maintain research continuity.`;
         };
         const readJsonl = (name) => {
           try {
-            const file = path.join(this.logsDir || '', name);
+            const file = path.join(goodLifeLogsDir, name);
             if (!fsSync.existsSync(file)) return [];
             return fsSync.readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => {
               try { return JSON.parse(line); } catch { return null; }
@@ -5205,7 +5207,7 @@ Be specific, actionable, and maintain research continuity.`;
           agendaRows: readJsonl('agenda.jsonl'),
           goals: snapshotGoals,
         });
-        const runtime = await this.getHome23RuntimeHealth(req.query?.agent);
+        const runtime = await this.getHome23RuntimeHealth(targetContext.agentName);
         const operator = buildGoodLifeOperatorModel({
           state,
           commitments,
