@@ -1,5 +1,7 @@
 const GOOD_LIFE_STALE_MS = 10 * 60 * 1000;
 const RECENT_RESOLUTION_MS = 30 * 60 * 1000;
+const GOOD_LIFE_AGENDA_REVIEW_MIN = 60;
+const ACTIVE_AGENDA_REVIEW_MIN = 24 * 60;
 const USER_INTERVENTION_REMEDIATORS = new Set([
   'notify_jtr',
   'request_user_input',
@@ -193,10 +195,14 @@ function buildGoodLifeObligationSnapshot({ agendaRows = [], goals = null, now = 
     .filter((row) => activeAgendaStatuses.has(row.status || 'candidate'))
     .sort((a, b) => toTimeMs(b.updatedAt || b.createdAt) - toTimeMs(a.updatedAt || a.createdAt))
     .slice(0, 12)
-    .map((row) => ({
-      ...row,
-      ageMin: ageMinutes(row.updatedAt || row.createdAt, nowMs),
-    }));
+    .map((row) => {
+      const ageMin = ageMinutes(row.updatedAt || row.createdAt, nowMs);
+      const annotated = { ...row, ageMin };
+      return {
+        ...annotated,
+        review: classifyAgendaReview(annotated),
+      };
+    });
 
   const activeGoals = normalizeActiveGoals(goals)
     .sort((a, b) => toTimeMs(b.createdAt || b.created) - toTimeMs(a.createdAt || a.created))
@@ -247,6 +253,52 @@ function normalizeActiveGoals(goals) {
   }).filter(Boolean);
 }
 
+function classifyAgendaReview(row = {}) {
+  const ageMin = finiteCount(row.ageMin);
+  const status = String(row.status || 'candidate').toLowerCase();
+  const sourceSignal = String(row.sourceSignal || '').toLowerCase();
+  const tags = Array.isArray(row.topicTags) ? row.topicTags.map((tag) => String(tag || '').toLowerCase()) : [];
+  const isGoodLife = sourceSignal === 'good-life' || tags.some((tag) => tag === 'good-life' || tag.startsWith('good-life:'));
+
+  if (isGoodLife && !row.workerRoute && ageMin != null && ageMin >= GOOD_LIFE_AGENDA_REVIEW_MIN) {
+    return {
+      recommended: true,
+      required: false,
+      severity: 'watch',
+      reason: `Good Life agenda row is ${Math.round(ageMin / 60)}h old and has no worker route`,
+      next: 'dismiss it if live Good Life state has moved on; otherwise route it through a worker with fresh evidence',
+    };
+  }
+
+  if (status === 'acknowledged' && ageMin != null && ageMin >= ACTIVE_AGENDA_REVIEW_MIN) {
+    return {
+      recommended: true,
+      required: false,
+      severity: 'watch',
+      reason: `acknowledged agenda row is still active after ${Math.round(ageMin / 60)}h`,
+      next: 'dismiss it if it no longer represents current work',
+    };
+  }
+
+  if (ageMin != null && ageMin >= ACTIVE_AGENDA_REVIEW_MIN) {
+    return {
+      recommended: true,
+      required: false,
+      severity: 'watch',
+      reason: `agenda row has stayed active for ${Math.round(ageMin / 60)}h`,
+      next: 'run the routed worker if still current; dismiss it if stale',
+    };
+  }
+
+  return {
+    recommended: false,
+    required: false,
+    severity: 'ok',
+    reason: null,
+    next: null,
+  };
+}
+
 function latestRegulatorAction(regulator = {}) {
   return Object.entries(regulator || {})
     .filter(([key, value]) => key !== 'daily' && value && toTimeMs(value.at))
@@ -289,14 +341,18 @@ function summarizeWork(obligations = {}) {
   const activeAgenda = Array.isArray(obligations.activeAgenda) ? obligations.activeAgenda : [];
   const activeGoals = Array.isArray(obligations.activeGoals) ? obligations.activeGoals : [];
   const goalsNeedingReview = activeGoals.filter((goal) => goal.review?.recommended);
+  const agendaNeedingReview = activeAgenda.filter((row) => row.review?.recommended);
   const agendaNeedingUser = activeAgenda.filter((row) => row.intervention?.required);
   return {
     activeAgenda: activeAgenda.length,
     activeGoals: activeGoals.length,
     activeTotal: activeAgenda.length + activeGoals.length,
+    agendaNeedingReview: agendaNeedingReview.length,
     goalsNeedingReview: goalsNeedingReview.length,
     interventionRequired: agendaNeedingUser.length,
+    topAgenda: activeAgenda[0] || null,
     topGoal: activeGoals[0] || null,
+    agendaReviewRows: agendaNeedingReview.slice(0, 5),
     reviewRows: goalsNeedingReview.slice(0, 5),
   };
 }
@@ -433,11 +489,13 @@ function buildOperatorAnswer({ state, lanes, liveProblems, consistency, work, la
   }
 
   if (work?.activeTotal > 0) {
-    const reviewText = work.goalsNeedingReview > 0
-      ? `; ${work.goalsNeedingReview} goal(s) need operator review`
-      : '';
+    const reviewParts = [];
+    if (work.agendaNeedingReview > 0) reviewParts.push(`${work.agendaNeedingReview} agenda row(s) need review`);
+    if (work.goalsNeedingReview > 0) reviewParts.push(`${work.goalsNeedingReview} goal(s) need operator review`);
+    const reviewText = reviewParts.length ? `; ${reviewParts.join('; ')}` : '';
+    const agendaText = work.topAgenda?.id ? `; top agenda ${work.topAgenda.id}` : '';
     const goalText = work.topGoal?.id ? `; top goal ${work.topGoal.id}` : '';
-    lines.push(`Active work: ${work.activeTotal}${reviewText}${goalText}`);
+    lines.push(`Active work: ${work.activeTotal}${reviewText}${agendaText}${goalText}`);
   }
 
   if (latestAction?.workerRoute?.worker) {

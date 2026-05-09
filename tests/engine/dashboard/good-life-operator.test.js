@@ -130,6 +130,40 @@ test('Good Life obligation snapshot flags stale force-output goals for operator 
   assert.match(snapshot.activeGoals[0].review.reason, /force-output goal/);
 });
 
+test('Good Life obligation snapshot flags stale active agenda rows for operator review', () => {
+  const snapshot = buildGoodLifeObligationSnapshot({
+    agendaRows: [
+      {
+        type: 'add',
+        id: 'ag-old-good-life',
+        record: {
+          status: 'candidate',
+          content: 'Diagnose Good Life repair drift',
+          sourceSignal: 'good-life',
+          topicTags: ['good-life', 'good-life:repair'],
+          createdAt: '2026-05-08T11:30:00.000Z',
+        },
+      },
+      {
+        type: 'add',
+        id: 'ag-old-ack',
+        record: {
+          status: 'acknowledged',
+          content: 'Old acknowledged work',
+          createdAt: '2026-05-07T11:30:00.000Z',
+        },
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(snapshot.activeAgenda.length, 2);
+  assert.equal(snapshot.activeAgenda[0].review.recommended, true);
+  assert.match(snapshot.activeAgenda[0].review.reason, /Good Life agenda row/);
+  assert.equal(snapshot.activeAgenda[1].review.recommended, true);
+  assert.match(snapshot.activeAgenda[1].review.reason, /acknowledged agenda row/);
+});
+
 test('Good Life operator model exposes safe current help state with evidence and action card', () => {
   const model = buildGoodLifeOperatorModel({
     state: goodLifeState(),
@@ -412,6 +446,35 @@ test('Good Life operator answer includes active work and review-needed goals', (
   assert.equal(model.work.activeGoals, 1);
   assert.equal(model.work.goalsNeedingReview, 1);
   assert.ok(model.operatorAnswer.some((line) => line.includes('Active work: 1; 1 goal(s) need operator review; top goal goal_force')));
+});
+
+test('Good Life operator answer includes agenda rows needing review', () => {
+  const obligations = buildGoodLifeObligationSnapshot({
+    agendaRows: [
+      {
+        type: 'add',
+        id: 'ag-old-good-life',
+        record: {
+          status: 'candidate',
+          content: 'Diagnose Good Life repair drift',
+          sourceSignal: 'good-life',
+          topicTags: ['good-life', 'good-life:repair'],
+          createdAt: '2026-05-08T11:30:00.000Z',
+        },
+      },
+    ],
+    now: NOW,
+  });
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    obligations,
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.work.activeAgenda, 1);
+  assert.equal(model.work.agendaNeedingReview, 1);
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Active work: 1; 1 agenda row(s) need review; top agenda ag-old-good-life')));
 });
 
 test('Good Life operator answer exposes latest recommended worker route', () => {
