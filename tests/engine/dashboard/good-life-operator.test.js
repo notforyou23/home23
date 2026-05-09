@@ -277,6 +277,43 @@ test('Good Life operator answer surfaces live problems that need user interventi
 
   assert.equal(model.liveProblems.counts.interventionRequired, 1);
   assert.ok(model.operatorAnswer.some((line) => line.includes('need user intervention')));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Top live problem: needs_jtr')));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Next user action: notify_jtr - Pick the bridge owner.')));
+});
+
+test('Good Life operator answer names open live problem and latest fix attempt', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({ evidence: { liveProblems: { open: 1, chronic: 0, resolved: 0, unverifiable: 0, total: 1 } } }),
+    liveProblems: [
+      {
+        id: 'forrest_engine_cycle_timeouts_clear',
+        state: 'open',
+        claim: 'forrest engine has no cycle timeout exceeded events in the last 30 minutes',
+        openedAt: '2026-05-08T13:30:00.000Z',
+        lastResult: { detail: '2 matching log entries in last 30m (limit 0); scanned 498' },
+        stepIndex: 1,
+        remediation: [
+          { type: 'dispatch_to_worker', args: { worker: 'systems', budgetHours: 2 } },
+          { type: 'dispatch_to_agent', args: { budgetHours: 2 }, cooldownMin: 30 },
+        ],
+        remediationLog: [
+          {
+            step: 1,
+            type: 'dispatch_to_worker',
+            outcome: 'dispatched',
+            detail: 'Forrest is online and fresh, but the verifier window is still failing.',
+            at: '2026-05-08T13:42:00.000Z',
+          },
+        ],
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Top live problem: forrest_engine_cycle_timeouts_clear')));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Verifier: 2 matching log entries in last 30m')));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Latest fix attempt: dispatch_to_worker dispatched')));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Next autonomous step: dispatch_to_agent')));
 });
 
 test('Good Life operator model marks projection mismatch as conflicted and keeps direct live problems visible', () => {

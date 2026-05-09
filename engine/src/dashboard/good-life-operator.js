@@ -516,6 +516,50 @@ function buildConsistency({ state, projection, liveProblems, freshness, runtime 
   };
 }
 
+function compactText(value, max = 160) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
+}
+
+function summarizeTopLiveProblem(liveProblems = {}) {
+  const rows = [
+    ...(Array.isArray(liveProblems.open) ? liveProblems.open : []),
+    ...(Array.isArray(liveProblems.chronic) ? liveProblems.chronic : []),
+  ];
+  if (rows.length === 0) return [];
+
+  const problem = rows[0];
+  const lines = [];
+  const label = problem.state === 'chronic' ? 'Top chronic problem' : 'Top live problem';
+  const headline = [
+    `${label}: ${problem.id || 'unknown'}`,
+    problem.claim ? compactText(problem.claim, 120) : null,
+  ].filter(Boolean).join(' - ');
+  lines.push(headline);
+
+  if (problem.detail) {
+    lines.push(`Verifier: ${compactText(problem.detail, 140)}`);
+  }
+
+  if (problem.lastRemediation) {
+    const rem = problem.lastRemediation;
+    const status = [rem.type, rem.outcome].filter(Boolean).join(' ');
+    const detail = rem.detail ? ` - ${compactText(rem.detail, 140)}` : '';
+    lines.push(`Latest fix attempt: ${status || 'recorded'}${detail}`);
+  }
+
+  const next = problem.nextRemediation || {};
+  if (next.type) {
+    const prefix = next.requiresUser ? 'Next user action' : 'Next autonomous step';
+    lines.push(`${prefix}: ${next.type}${next.text && next.text !== next.type ? ` - ${compactText(next.text, 120)}` : ''}`);
+  } else if (next.text) {
+    lines.push(`Next step: ${compactText(next.text, 140)}`);
+  }
+
+  return lines;
+}
+
 function buildOperatorAnswer({ state, lanes, liveProblems, consistency, work, latestAction }) {
   const lines = [];
   if (state?.summary || state?.policy?.reason) {
@@ -527,6 +571,7 @@ function buildOperatorAnswer({ state, lanes, liveProblems, consistency, work, la
   if (Number(counts.interventionRequired || 0) > 0) {
     lines.push(`${counts.interventionRequired} live problem(s) need user intervention`);
   }
+  lines.push(...summarizeTopLiveProblem(liveProblems));
 
   if (work?.activeTotal > 0) {
     const reviewParts = [];
