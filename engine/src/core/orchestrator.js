@@ -79,14 +79,56 @@ function isCoordinatorActiveGoal(goal) {
   return ['active', 'pending', 'in_progress', 'blocked', 'open'].includes(status);
 }
 
+function isForceOutputGoal(goal) {
+  return goal?.source === 'force-output' || goal?.source?.origin === 'force-output';
+}
+
 function getEmergencyCoordinatorWorkState(goalsSystem, agentExecutor, cycleCount, lastReviewCycle = 0) {
   const goals = typeof goalsSystem?.getGoals === 'function' ? goalsSystem.getGoals() : [];
   const activeGoals = goals.filter(isCoordinatorActiveGoal);
+  const activeForceOutputGoals = activeGoals.filter(isForceOutputGoal);
+  const activeGeneralGoals = activeGoals.filter(goal => !isForceOutputGoal(goal));
   return {
     activeGoalCount: activeGoals.length,
+    activeForceOutputGoalCount: activeForceOutputGoals.length,
+    activeGeneralGoalCount: activeGeneralGoals.length,
+    activeForceOutputGoals,
     totalGoalHistory: goals.length,
     activeAgents: agentExecutor?.registry?.getActiveCount?.() || 0,
     cyclesSinceLastReview: cycleCount - (lastReviewCycle || 0),
+  };
+}
+
+function buildForceOutputMissionSpec(goal, cycleCount) {
+  if (!goal) return null;
+  const fileCriteria = Array.isArray(goal.doneWhen?.criteria)
+    ? goal.doneWhen.criteria
+        .filter(criterion => criterion?.type === 'file_exists' && criterion.path)
+        .map(criterion => criterion.path)
+    : [];
+  const target = fileCriteria[0] || 'requested digest file';
+  return {
+    goalId: goal.id,
+    agentType: 'document_creation',
+    description: goal.description || `Produce ${target}.`,
+    successCriteria: [
+      `Create ${target} in the outputs directory`,
+      'Synthesize the referenced memory findings into a concrete markdown deliverable',
+      'Include source references and a section naming what is still unknown'
+    ],
+    maxDuration: 10 * 60 * 1000,
+    rationale: 'Resolve force-output back-pressure directly without running a strategic coordinator review',
+    missionId: `mission_force_output_${cycleCount}_${goal.id || Date.now()}`,
+    createdBy: 'force_output_router',
+    spawnCycle: cycleCount,
+    createdAt: new Date().toISOString(),
+    spawningReason: 'force_output_back_pressure',
+    triggerSource: 'force_output',
+    metadata: {
+      strategicPriority: true,
+      forceOutput: true,
+      source: goal.source || null,
+    },
   };
 }
 
@@ -1414,6 +1456,9 @@ class Orchestrator {
       if (this.coordinator && this.coordinator.enabled && !this.coordinator.shouldRunReview(this.cycleCount)) {
         const {
           activeGoalCount,
+          activeForceOutputGoalCount,
+          activeGeneralGoalCount,
+          activeForceOutputGoals,
           totalGoalHistory,
           activeAgents,
           cyclesSinceLastReview,
@@ -1423,17 +1468,45 @@ class Orchestrator {
           this.cycleCount,
           this.coordinator.lastReviewCycle,
         );
+
+        if (
+          activeForceOutputGoalCount > 0 &&
+          activeGeneralGoalCount === 0 &&
+          activeAgents === 0 &&
+          cyclesSinceLastReview >= 2
+        ) {
+          const missionSpec = buildForceOutputMissionSpec(activeForceOutputGoals[0], this.cycleCount);
+          if (missionSpec && this.agentExecutor) {
+            const agentId = await this.agentExecutor.spawnAgent(missionSpec);
+            if (agentId) {
+              this.logger.info('[force-output] direct document agent spawned', {
+                goalId: missionSpec.goalId,
+                agentId,
+                cycle: this.cycleCount
+              });
+            } else {
+              this.logger.warn('[force-output] direct document agent spawn skipped', {
+                goalId: missionSpec.goalId,
+                cycle: this.cycleCount
+              });
+            }
+          }
+        }
         
         // Idle condition: active/open work exists, but no agents are working on it.
         // Completed and archived goal history is not live work; treating it as
         // work causes emergency reviews to fire on an otherwise empty board.
+        // Force-output goals are concrete digest deliverables and are routed
+        // directly above; the strategic review is too expensive for that path.
         // Wait 2 cycles before triggering (gives system brief chance to self-organize)
         // Prevents immediate spam while being responsive to idle state
-        if (activeGoalCount > 0 && activeAgents === 0 && cyclesSinceLastReview >= 2) {
+        if (activeGeneralGoalCount > 0 && activeAgents === 0 && cyclesSinceLastReview >= 2) {
           enterCyclePhase('emergency_coordinator_review');
           this.logger.info('🚨 Emergency coordinator review triggered', {
             reason: 'System idle with goals but no active agents',
             activeGoalCount,
+            activeForceOutputGoalCount,
+            activeGeneralGoalCount,
             totalGoalHistory,
             activeAgents,
             cyclesSinceLastReview,
@@ -8546,6 +8619,7 @@ module.exports = {
   Orchestrator,
   compactActiveGoalsForSnapshot,
   getEmergencyCoordinatorWorkState,
+  buildForceOutputMissionSpec,
   persistArchivedGoalsToState,
   shouldAddWorkspaceFeederFallback,
 };

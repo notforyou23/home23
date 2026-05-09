@@ -1,5 +1,9 @@
 const { UnifiedClient } = require('../core/unified-client');
 
+const DEFAULT_CONSOLIDATION_MAX_NODES = 80;
+const DEFAULT_CONSOLIDATION_MAX_CHARS = 50000;
+const DEFAULT_CONSOLIDATION_MAX_CONCEPT_CHARS = 600;
+
 /**
  * Memory Summarizer - GPT-5.5 Version
  * Uses GPT-5.5's extended reasoning for intelligent summarization
@@ -16,6 +20,16 @@ class MemorySummarizer {
     this.consolidationHistory = [];
     this.summaryThreshold = 20;
     this.tokenThreshold = 4000;
+    const consolidation = this.fullConfig?.memory?.consolidation || this.config?.consolidation || {};
+    this.consolidationMaxNodes = Number.isFinite(consolidation.maxClusterPromptNodes)
+      ? consolidation.maxClusterPromptNodes
+      : DEFAULT_CONSOLIDATION_MAX_NODES;
+    this.consolidationMaxChars = Number.isFinite(consolidation.maxClusterPromptChars)
+      ? consolidation.maxClusterPromptChars
+      : DEFAULT_CONSOLIDATION_MAX_CHARS;
+    this.consolidationMaxConceptChars = Number.isFinite(consolidation.maxConceptChars)
+      ? consolidation.maxConceptChars
+      : DEFAULT_CONSOLIDATION_MAX_CONCEPT_CHARS;
   }
 
   /**
@@ -146,7 +160,7 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
    * Create consolidated memory using GPT-5.5 extended reasoning
    */
   async createConsolidatedMemoryGPT5(cluster) {
-    const concepts = cluster.map(n => n.concept).join('\n\n');
+    const prompt = this.buildConsolidationPrompt(cluster);
 
     try {
       const response = await this.gpt5.generate({
@@ -154,7 +168,7 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
         instructions: `Create a single, generalized abstract statement that captures the common insight 
 across these related memory entries. This should be a higher-level understanding that encompasses 
 the specific instances.`,
-        messages: [{ role: 'user', content: concepts }],
+        messages: [{ role: 'user', content: prompt.content }],
         maxTokens: 12000, // Abstraction requires reasoning about commonalities
         reasoningEffort: 'medium' // Medium for insightful abstraction - already correct
       });
@@ -177,6 +191,57 @@ the specific instances.`,
       });
       return null; // Return null instead of error object
     }
+  }
+
+  buildConsolidationPrompt(cluster) {
+    const sorted = [...cluster].sort((a, b) => {
+      const weightA = Number.isFinite(a?.weight) ? a.weight : 0;
+      const weightB = Number.isFinite(b?.weight) ? b.weight : 0;
+      return weightB - weightA;
+    });
+
+    const selected = [];
+    let chars = 0;
+    const maxNodes = Math.max(1, this.consolidationMaxNodes);
+    const maxChars = Math.max(1000, this.consolidationMaxChars);
+    const maxConceptChars = Math.max(100, this.consolidationMaxConceptChars);
+
+    for (const node of sorted) {
+      if (selected.length >= maxNodes) break;
+
+      const concept = String(node?.concept || '').trim();
+      if (!concept) continue;
+
+      const truncated = concept.length > maxConceptChars
+        ? `${concept.slice(0, maxConceptChars)}...`
+        : concept;
+      const line = `[${selected.length + 1}] ${truncated}`;
+      const nextChars = chars + line.length + 2;
+
+      if (selected.length > 0 && nextChars > maxChars) break;
+
+      selected.push(line);
+      chars = nextChars;
+    }
+
+    const omitted = Math.max(0, cluster.length - selected.length);
+    if (omitted > 0) {
+      selected.push(`[omitted] ${omitted} additional related memory entries were omitted to keep this consolidation request bounded.`);
+      this.logger?.info?.('Large memory cluster compacted before consolidation', {
+        clusterSize: cluster.length,
+        selected: selected.length - 1,
+        omitted,
+        maxNodes,
+        maxChars,
+        maxConceptChars
+      });
+    }
+
+    return {
+      content: selected.join('\n\n'),
+      selected: selected.length - (omitted > 0 ? 1 : 0),
+      omitted
+    };
   }
 
   /**
@@ -390,4 +455,3 @@ the specific instances.`,
 }
 
 module.exports = { MemorySummarizer };
-

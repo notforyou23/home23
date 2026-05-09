@@ -9,6 +9,7 @@ const require = createRequire(import.meta.url);
 const {
   compactActiveGoalsForSnapshot,
   getEmergencyCoordinatorWorkState,
+  buildForceOutputMissionSpec,
   persistArchivedGoalsToState,
 } = require('../../../engine/src/core/orchestrator.js');
 const { StateCompression } = require('../../../engine/src/core/state-compression.js');
@@ -99,6 +100,42 @@ test('emergency coordinator work state counts active or blocked goals as live wo
   assert.equal(workState.totalGoalHistory, 3);
   assert.equal(workState.activeAgents, 2);
   assert.equal(workState.cyclesSinceLastReview, 2);
+});
+
+test('emergency coordinator work state separates force-output goals from general review work', () => {
+  const workState = getEmergencyCoordinatorWorkState(
+    {
+      getGoals() {
+        return [
+          { id: 'force', status: 'active', source: { origin: 'force-output' } },
+          { id: 'regular', status: 'active', source: 'operator' },
+          { id: 'done-force', status: 'completed', source: { origin: 'force-output' } },
+        ];
+      },
+    },
+    { registry: { getActiveCount: () => 0 } },
+    10,
+    8,
+  );
+
+  assert.equal(workState.activeGoalCount, 2);
+  assert.equal(workState.activeForceOutputGoalCount, 1);
+  assert.equal(workState.activeGeneralGoalCount, 1);
+});
+
+test('buildForceOutputMissionSpec creates direct document mission for digest goal', () => {
+  const mission = buildForceOutputMissionSpec({
+    id: 'goal_force',
+    description: 'Produce outputs/digest-1.md. Synthesize recent memory.',
+    doneWhen: { criteria: [{ type: 'file_exists', path: 'digest-1.md' }] },
+  }, 12);
+
+  assert.equal(mission.goalId, 'goal_force');
+  assert.equal(mission.agentType, 'document_creation');
+  assert.equal(mission.triggerSource, 'force_output');
+  assert.equal(mission.metadata.strategicPriority, true);
+  assert.match(mission.description, /Produce outputs\/digest-1\.md/);
+  assert.ok(mission.successCriteria.some((criterion) => criterion.includes('digest-1.md')));
 });
 
 test('persistArchivedGoalsToState patches goals without full orchestrator save', async () => {
