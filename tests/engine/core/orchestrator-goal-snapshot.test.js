@@ -134,6 +134,12 @@ test('buildForceOutputMissionSpec creates direct document mission for digest goa
   assert.equal(mission.agentType, 'document_creation');
   assert.equal(mission.triggerSource, 'force_output');
   assert.equal(mission.metadata.strategicPriority, true);
+  assert.deepEqual(mission.deliverable, {
+    location: '@outputs/',
+    filename: 'digest-1.md',
+    type: 'report',
+    format: 'markdown',
+  });
   assert.match(mission.description, /Produce outputs\/digest-1\.md/);
   assert.ok(mission.successCriteria.some((criterion) => criterion.includes('digest-1.md')));
 });

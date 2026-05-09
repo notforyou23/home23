@@ -111,6 +111,12 @@ function buildForceOutputMissionSpec(goal, cycleCount) {
     goalId: goal.id,
     agentType: 'document_creation',
     description: goal.description || `Produce ${target}.`,
+    deliverable: {
+      location: '@outputs/',
+      filename: target,
+      type: 'report',
+      format: 'markdown',
+    },
     successCriteria: [
       `Create ${target} in the outputs directory`,
       'Synthesize the referenced memory findings into a concrete markdown deliverable',
