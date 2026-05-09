@@ -1048,10 +1048,29 @@ class Orchestrator {
     // at cycle end will be filled by enforceFullLoop() with a no_change_detected
     // fallback, so the loop always closes with all 5 stages receipted.
     const evidenceStagesWritten = [];
+    let cycleHeartbeatTimer = null;
+    let currentCyclePhase = 'start';
+    let currentCyclePhaseStartedAt = Date.now();
+    const completedCyclePhases = [];
+    const enterCyclePhase = (phase) => {
+      const now = Date.now();
+      completedCyclePhases.push({
+        phase: currentCyclePhase,
+        durationMs: now - currentCyclePhaseStartedAt,
+      });
+      currentCyclePhase = phase;
+      currentCyclePhaseStartedAt = now;
+    };
+    const cyclePhaseContext = () => ({
+      phase: currentCyclePhase,
+      phaseElapsedMs: Date.now() - currentCyclePhaseStartedAt,
+      completedPhases: completedCyclePhases.slice(-8),
+    });
 
     try {
       // Generate run_id and link to previous run. Inside the try so any failure
       // here still triggers the finally-block enforcer below with sensible defaults.
+      enterCyclePhase('evidence_start');
       evidenceRunId = generateRunId(this.cycleCount);
       evidencePrevId = loadPrevRunId(this.logsDir);
 
@@ -1083,15 +1102,21 @@ class Orchestrator {
 
       // Phase A: Start cycle timeout (default 60s, configurable)
       const cycleTimeout = this.config.timeouts?.cycleTimeoutMs || 60000;
-      this.timeoutManager.startCycleTimer(this.cycleCount, cycleTimeout);
+      this.timeoutManager.startCycleTimer(this.cycleCount, cycleTimeout, (cycle, elapsedMs) => {
+        this.logger.error('[cycle-phase] timeout context', {
+          cycle,
+          elapsedMs,
+          ...cyclePhaseContext(),
+        });
+      });
 
       // Long-cycle heartbeat: the live-problem verifier checks thoughts.jsonl freshness,
       // but legitimate meta-coordinator/scoring cycles can run longer than the verifier
       // window before a normal role thought is recorded. Emit a lightweight internal
       // journal row while the cycle is still alive so freshness means loop liveness,
       // not only completed reflections.
+      enterCyclePhase('cycle_preflight');
       const heartbeatWindowMs = this.config?.architecture?.thoughtJournalHeartbeatMs || 10 * 60 * 1000;
-      let cycleHeartbeatTimer = null;
       const emitCycleHeartbeat = async () => {
         try {
           const entry = {
@@ -1183,6 +1208,7 @@ class Orchestrator {
       // This ensures coordinator sees up-to-date goal progress and completed work
       // Skip in dream mode (no agents should be running)
       if (this.agentExecutor && !this.config.execution?.dreamMode) {
+        enterCyclePhase('agent_result_integration');
         const processed = await this.agentExecutor.processCompletedResults();
         
         // EXECUTIVE RING: Record completed agents for pattern detection
@@ -1224,6 +1250,7 @@ class Orchestrator {
       if (this.introspection && 
           this.config.introspection?.enabled &&
           this.cycleCount % 3 === 0) {
+        enterCyclePhase('introspection');
         const files = await this.introspection.scan();
         if (files.length > 0) {
           const nodes = await this.introspection.integrate(files);
@@ -1312,6 +1339,7 @@ class Orchestrator {
       
       // Meta-Coordinator strategic review (check before sleep to avoid skipping)
       if (this.coordinator && this.coordinator.enabled && this.coordinator.shouldRunReview(this.cycleCount)) {
+        enterCyclePhase('meta_coordinator_review');
         await this.runMetaCoordinatorReview();
         
         // Recursive planning evaluation (meta-cognitive loop)
@@ -1374,6 +1402,7 @@ class Orchestrator {
         // Wait 2 cycles before triggering (gives system brief chance to self-organize)
         // Prevents immediate spam while being responsive to idle state
         if (totalGoals > 0 && activeAgents === 0 && cyclesSinceLastReview >= 2) {
+          enterCyclePhase('emergency_coordinator_review');
           this.logger.info('🚨 Emergency coordinator review triggered', {
             reason: 'System idle with goals but no active agents',
             totalGoals,
@@ -1621,6 +1650,7 @@ class Orchestrator {
 
       // 2. Poll environment
       if (this.environment) {
+        enterCyclePhase('environment_poll');
         const observations = await this.environment.pollSensors();
         
         for (const obs of observations) {
@@ -2248,7 +2278,7 @@ class Orchestrator {
       }
 
       const rolePromptWithDiagnosis = focusDirective + operationalTruthDirective + role.prompt + recentRoleBlock + roleDedupPrefix + footerDiagnosis;
-
+      enterCyclePhase('thought_generation');
       const superposition = await this.quantum.generateSuperposition(
         rolePromptWithDiagnosis,
         context
@@ -2533,6 +2563,7 @@ class Orchestrator {
         // Lazy-load sensors module — engine may not have it wired in every
         // deployment, so the dispatcher will reject refresh_sensor cleanly
         // if it's not present.
+        enterCyclePhase('thought_action_routing');
         let sensorsModule = null;
         try { sensorsModule = require('./sensors'); } catch { /* optional */ }
 
@@ -2893,6 +2924,7 @@ class Orchestrator {
       if (currentTask) {
         // Check if task needs validation
         // Tasks in IN_PROGRESS state with assigned agents should be checked for completion
+        enterCyclePhase('task_validation');
         const needsValidation = currentTask.state === 'IN_PROGRESS' && 
                                currentTask.claimedBy === this.instanceId &&
                                !currentTask.metadata?.validationAttempted;
@@ -3324,6 +3356,7 @@ class Orchestrator {
       }
 
       // Save state every cycle so dashboard/brain_search are always in sync
+      enterCyclePhase('state_save');
       await this.saveState();
 
       // Note: Agent results processing moved to before coordinator review (line ~129)
