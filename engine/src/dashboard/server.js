@@ -1290,7 +1290,18 @@ class DashboardServer {
           req.query.status ? `status=${encodeURIComponent(req.query.status)}` : null,
           req.query.limit ? `limit=${encodeURIComponent(req.query.limit)}` : null,
         ].filter(Boolean).join('&');
-        return proxyJson(req, res, 'GET', `/admin/agenda/list${qs ? '?' + qs : ''}`);
+        return (async () => {
+          const target = this.getHome23AgentContext(req.query?.agent);
+          try {
+            const result = await fetchAdminJson(target, 'GET', `/admin/agenda/list${qs ? '?' + qs : ''}`, null, 1500);
+            if (result.status !== 503) return res.status(result.status).json(result.body);
+          } catch {}
+          const items = await this.getAgendaItemsForDir(target.runtimeDir, {
+            status: req.query.status ? String(req.query.status).split(',') : undefined,
+            limit: req.query.limit ? Number(req.query.limit) : undefined,
+          });
+          return res.json({ ok: true, degraded: true, source: 'agenda-jsonl', items, counts: await this.getAgendaCountsForDir(target.runtimeDir) });
+        })();
       });
       this.app.get('/api/agenda/grouped', (req, res) => {
         const qs = req.query.status ? `?status=${encodeURIComponent(req.query.status)}` : '';
@@ -1300,6 +1311,9 @@ class DashboardServer {
         const target = this.getHome23AgentContext(req.query?.agent);
         try {
           const result = await fetchAdminJson(target, 'GET', '/admin/agenda/stats', null, 1500);
+          if (result.status === 503) {
+            return res.json({ ok: true, degraded: true, source: 'agenda-jsonl', counts: await this.getAgendaCountsForDir(target.runtimeDir) });
+          }
           return res.status(result.status).json(result.body);
         } catch {
           const payload = await this.buildThinkingFallbackPayload(target);
@@ -1307,7 +1321,20 @@ class DashboardServer {
         }
       });
       this.app.get('/api/agenda/:id', (req, res) => proxyJson(req, res, 'GET', `/admin/agenda/${encodeURIComponent(req.params.id)}`));
-      this.app.post('/api/agenda/:id/status', (req, res) => proxyJson(req, res, 'POST', `/admin/agenda/${encodeURIComponent(req.params.id)}/status`));
+      this.app.post('/api/agenda/:id/status', async (req, res) => {
+        const target = this.getHome23AgentContext(req.query?.agent || req.body?.agent);
+        const requestPath = `/admin/agenda/${encodeURIComponent(req.params.id)}/status`;
+        try {
+          const result = await fetchAdminJson(target, 'POST', requestPath, req.body || {}, 5000);
+          if (result.status !== 503) return res.status(result.status).json(result.body);
+        } catch {}
+        const fallback = await this.appendAgendaStatusForDir(target.runtimeDir, req.params.id, {
+          status: req.body?.status,
+          note: req.body?.note,
+          actor: req.body?.actor || 'dashboard',
+        });
+        return res.status(fallback.ok ? 200 : 400).json(fallback);
+      });
 
       // Thinking-machine observability (Phase 8 of thinking-machine-cycle).
       this.app.get('/api/thinking/stats', async (req, res) => {
@@ -9427,6 +9454,16 @@ You are empowered to explore and understand. The user trusts you to discover the
   }
 
   async getAgendaCountsForDir(brainDir) {
+    const items = await this.getAgendaItemsForDir(brainDir, { all: true });
+    const counts = { candidate: 0, surfaced: 0, acknowledged: 0, acted_on: 0, stale: 0, discarded: 0, total: 0 };
+    for (const rec of items) {
+      counts[rec.status] = (counts[rec.status] || 0) + 1;
+      counts.total += 1;
+    }
+    return counts;
+  }
+
+  async getAgendaItemsForDir(brainDir, opts = {}) {
     const agendaPath = path.join(brainDir, 'agenda.jsonl');
     const items = new Map();
 
@@ -9446,23 +9483,66 @@ You are empowered to explore and understand. The user trusts you to discover the
           continue;
         }
         if (evt.type === 'add' && evt.id && evt.record) {
-          items.set(evt.id, { status: evt.record.status || 'candidate' });
+          items.set(evt.id, {
+            ...(evt.record || {}),
+            id: evt.id,
+            status: evt.record.status || evt.status || 'candidate',
+            createdAt: evt.record.createdAt || evt.createdAt || evt.at || null,
+            updatedAt: evt.record.updatedAt || evt.updatedAt || evt.at || null,
+          });
         } else if (evt.type === 'status' && evt.id) {
-          const rec = items.get(evt.id) || {};
+          const rec = items.get(evt.id) || { id: evt.id };
           rec.status = evt.status;
+          rec.updatedAt = evt.at || rec.updatedAt || null;
+          rec.statusNote = evt.note || rec.statusNote || null;
+          rec.actor = evt.actor || rec.actor || null;
           items.set(evt.id, rec);
         }
       }
     } catch {
-      return { candidate: 0, surfaced: 0, acknowledged: 0, acted_on: 0, stale: 0, discarded: 0, total: 0 };
+      return [];
     }
 
-    const counts = { candidate: 0, surfaced: 0, acknowledged: 0, acted_on: 0, stale: 0, discarded: 0, total: 0 };
-    for (const rec of items.values()) {
-      counts[rec.status] = (counts[rec.status] || 0) + 1;
-      counts.total += 1;
+    const statuses = Array.isArray(opts.status) && opts.status.length ? new Set(opts.status) : null;
+    const limit = opts.all ? Infinity : (Number.isFinite(opts.limit) && opts.limit > 0 ? Math.min(opts.limit, 200) : 100);
+    const sorted = Array.from(items.values())
+      .filter((item) => !statuses || statuses.has(item.status))
+      .sort((a, b) => Date.parse(b.updatedAt || b.createdAt || 0) - Date.parse(a.updatedAt || a.createdAt || 0));
+    return opts.all ? sorted : sorted.slice(0, limit);
+  }
+
+  async appendAgendaStatusForDir(brainDir, agendaId, body = {}) {
+    const valid = new Set(['candidate', 'surfaced', 'acknowledged', 'acted_on', 'stale', 'discarded']);
+    const id = String(agendaId || '').trim();
+    const status = String(body.status || '').trim();
+    if (!id) return { ok: false, error: 'agenda id is required' };
+    if (!valid.has(status)) return { ok: false, error: 'not found or invalid status' };
+
+    const items = await this.getAgendaItemsForDir(brainDir, { all: true });
+    const existing = items.find((item) => item.id === id);
+    if (!existing) return { ok: false, error: 'not found or invalid status' };
+
+    const fsSync = require('fs');
+    const agendaPath = path.join(brainDir, 'agenda.jsonl');
+    const row = {
+      type: 'status',
+      id,
+      status,
+      at: new Date().toISOString(),
+      note: body.note || 'status updated by dashboard fallback',
+      actor: body.actor || 'dashboard',
+    };
+    try {
+      fsSync.appendFileSync(agendaPath, JSON.stringify(row) + '\n', 'utf8');
+    } catch (err) {
+      return { ok: false, error: `agenda append failed: ${err.message}` };
     }
-    return counts;
+    return {
+      ok: true,
+      degraded: true,
+      source: 'agenda-jsonl',
+      item: { ...existing, status, updatedAt: row.at, statusNote: row.note, actor: row.actor },
+    };
   }
 
   async getConversationSalienceStatsForDir(brainDir) {
