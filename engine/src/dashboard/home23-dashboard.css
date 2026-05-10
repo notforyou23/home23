@@ -3656,6 +3656,64 @@ body.h23-external-focus #cosmo23-refresh-btn {
   margin: 12px 0;
 }
 
+.h23-goodlife-intervention-console {
+  margin: 12px 0;
+  border: 1px solid rgba(255,190,90,0.26);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(255,190,90,0.055);
+}
+
+.h23-goodlife-intervention-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.h23-goodlife-intervention-grid > div {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 9px;
+  background: rgba(0,0,0,0.12);
+}
+
+.h23-goodlife-intervention-grid label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.h23-goodlife-intervention-grid p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.h23-goodlife-intervention-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.h23-goodlife-intervention-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.h23-goodlife-intervention-note strong {
+  color: var(--text-primary);
+}
+
 .h23-goodlife-json {
   margin: 0;
   border: 1px solid rgba(255,255,255,0.08);
@@ -3842,6 +3900,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
   .h23-problem-operator-grid,
   .h23-goodlife-issue-brief,
   .h23-goodlife-overlay-workspace,
+  .h23-goodlife-intervention-grid,
   .h23-goodlife-detail-grid {
     grid-template-columns: 1fr;
   }

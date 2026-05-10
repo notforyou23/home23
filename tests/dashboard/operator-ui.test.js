@@ -39,6 +39,12 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(js, /renderGoodLifeWorkerReceiptDetail/);
   assert.match(js, /renderGoodLifeIssueWorkerReceipt/);
   assert.match(js, /Latest Worker Receipt/);
+  assert.match(js, /renderGoodLifeIssueInterventionConsole/);
+  assert.match(js, /Operator Intervention/);
+  assert.match(js, /Recommended next step/);
+  assert.match(js, /Ask \$\{escapeHtml\(workerName\)\} Worker/);
+  assert.match(js, /openGoodLifeWorkers/);
+  assert.match(js, /Run Engine Check/);
   assert.match(js, /formatGoodLifeWorkerResult/);
   assert.match(js, /Worker check complete: \$\{formatGoodLifeWorkerResult/);
   assert.match(js, /last change/);
@@ -58,6 +64,8 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(css, /\.h23-goodlife-fleet-row\.resting/);
   assert.match(css, /\.h23-goodlife-evidence-row\.watch/);
   assert.match(css, /\.h23-goodlife-evidence-row\.info/);
+  assert.match(css, /\.h23-goodlife-intervention-console/);
+  assert.match(css, /\.h23-goodlife-intervention-grid/);
   assert.match(css, /\.h23-goodlife-overlay-action-status[\s\S]*pointer-events:\s*none/);
 });
 

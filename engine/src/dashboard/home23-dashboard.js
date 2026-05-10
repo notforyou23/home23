@@ -2232,16 +2232,31 @@ function renderGoodLifeWorkerReceiptDetail() {
   `;
 }
 
+function goodLifeIssueWorkerName(problem = {}) {
+  const plan = Array.isArray(problem.remediation) ? problem.remediation : [];
+  const workerStep = plan.find((step) => step?.type === 'dispatch_to_worker' && step.args?.worker);
+  return workerStep?.args?.worker || 'systems';
+}
+
+function goodLifeIssueLatestWorkerRun(problem = {}) {
+  if (!problem?.id) return null;
+  const matchesProblem = (run) => (
+    run?.source?.type === 'live-problem'
+    && run.source.id === problem.id
+  );
+  const runs = (workersState.runs || [])
+    .filter(matchesProblem)
+    .sort((a, b) => Date.parse(b.finishedAt || b.startedAt || b.createdAt || 0) - Date.parse(a.finishedAt || a.startedAt || a.createdAt || 0));
+  return runs[0] || null;
+}
+
 function renderGoodLifeIssueWorkerReceipt(problem = {}) {
   if (!problem?.id) return '';
   const receipt = workersState.receipt;
   if (receipt?.source?.type === 'live-problem' && receipt.source.id === problem.id) {
     return renderGoodLifeWorkerReceiptDetail();
   }
-  const latest = (workersState.runs || []).find((run) => (
-    run?.source?.type === 'live-problem'
-    && run.source.id === problem.id
-  ));
+  const latest = goodLifeIssueLatestWorkerRun(problem);
   if (!latest) return '';
   return `
     <section><h4>Latest Worker Receipt</h4>
@@ -2255,6 +2270,66 @@ function renderGoodLifeIssueWorkerReceipt(problem = {}) {
           <span class="h23-worker-status ${workerStatusClass(latest.verifierStatus)}">${escapeHtml(latest.verifierStatus || 'unknown')}</span>
           <button type="button" onclick="openGoodLifeWorkerReceipt('${escapeAttr(latest.runId || '')}')">Open Receipt</button>
         </div>
+      </div>
+    </section>
+  `;
+}
+
+function goodLifeIssueRecommendedStep(problem = {}) {
+  const lastOk = problem.lastResult?.ok === true;
+  if (problem.state === 'resolved' || lastOk) return 'Verifier is passing; no operator repair action is needed.';
+  const latest = goodLifeIssueLatestWorkerRun(problem);
+  const needsUser = goodLifeNeedsUser(problem);
+  if (latest?.status === 'running') return `${latest.worker || goodLifeIssueWorkerName(problem)} worker is running; wait for its receipt before marking handled.`;
+  if (latest?.summary) return latest.summary;
+  if (needsUser) return `Run the ${goodLifeIssueWorkerName(problem)} worker, inspect the receipt, then mark handled only after the verifier passes or the manual action is done.`;
+  const next = goodLifeNextRemediation(problem);
+  return next.type ? `Let autonomous remediation continue with ${next.type}.` : 'Re-run the verifier, then dispatch a worker if the issue still fails.';
+}
+
+function renderGoodLifeIssueInterventionConsole(problem = {}) {
+  if (!problem?.id) return '';
+  const latest = goodLifeIssueLatestWorkerRun(problem);
+  const workerName = goodLifeIssueWorkerName(problem);
+  const needsUser = goodLifeNeedsUser(problem);
+  const last = problem.lastResult || {};
+  const next = goodLifeNextRemediation(problem);
+  const verifierText = last.detail || 'not checked yet';
+  const receiptText = latest
+    ? `${latest.status || latest.verifierStatus || 'recorded'}${latest.runId ? ` - ${latest.runId}` : ''}`
+    : 'no worker receipt yet';
+  return `
+    <section class="h23-goodlife-intervention-console">
+      <h4>Operator Intervention</h4>
+      <div class="h23-goodlife-intervention-grid">
+        <div>
+          <label>Recommended next step</label>
+          <p>${escapeHtml(goodLifeIssueRecommendedStep(problem))}</p>
+        </div>
+        <div>
+          <label>Verifier gate</label>
+          <p>${escapeHtml(verifierText)}</p>
+        </div>
+        <div>
+          <label>Worker lane</label>
+          <p>${escapeHtml(workerName)}${latest?.worker ? ` - latest ${escapeHtml(latest.worker)}` : ''}</p>
+        </div>
+        <div>
+          <label>Current receipt</label>
+          <p>${escapeHtml(receiptText)}</p>
+        </div>
+      </div>
+      <div class="h23-goodlife-intervention-actions">
+        <button class="h23-goodlife-plain-btn" type="button" onclick="testGoodLifeVerifier('${escapeAttr(problem.id)}')">Check Verifier</button>
+        <button class="h23-goodlife-plain-btn" type="button" onclick="runGoodLifeWorkerCheck('${escapeAttr(problem.id)}')">Ask ${escapeHtml(workerName)} Worker</button>
+        ${latest?.runId ? `<button class="h23-goodlife-plain-btn" type="button" onclick="openGoodLifeWorkerReceipt('${escapeAttr(latest.runId)}')">Open Receipt</button>` : ''}
+        <button class="h23-goodlife-plain-btn" type="button" onclick="openGoodLifeWorkers()">Worker Desk</button>
+        <button class="h23-goodlife-plain-btn" type="button" onclick="reverifyGoodLifeOperator()">Run Engine Check</button>
+        ${needsUser ? `<button class="h23-goodlife-plain-btn" type="button" onclick="recordGoodLifeUserIntervention('${escapeAttr(problem.id)}')">Record Handled</button>` : ''}
+      </div>
+      <div class="h23-goodlife-intervention-note">
+        <strong>${escapeHtml(next.type || 'manual')}</strong>
+        <span>${escapeHtml(next.text || 'verifier remains the gate')}</span>
       </div>
     </section>
   `;
@@ -3637,6 +3712,7 @@ function renderGoodLifeIssueDetail(problem, data) {
       <button class="h23-goodlife-plain-btn" type="button" onclick="testGoodLifeVerifier('${escapeAttr(problem.id)}')">Test Verifier</button>
       <button class="h23-goodlife-plain-btn" type="button" onclick="runGoodLifeWorkerCheck('${escapeAttr(problem.id)}')">Run Worker Check</button>
     </div>
+    ${renderGoodLifeIssueInterventionConsole(problem)}
     <section><h4>Verifier</h4>${renderGoodLifeJson(problem.verifier)}</section>
     <section><h4>Remediation Plan</h4>${renderGoodLifeJson(problem.remediation || [])}</section>
     <section><h4>Recent Attempts</h4>${attempts.length ? attempts.map((attempt) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(attempt.type || 'attempt')}</strong><span>${escapeHtml(attempt.outcome || '')}</span><small>${escapeHtml(attempt.detail || '')}</small></div>`).join('') : '<div class="h23-goodlife-empty">No attempts recorded</div>'}</section>
@@ -4043,6 +4119,15 @@ async function refreshGoodLifeOperator() {
   await loadGoodLifeForScope(goodLifeOverlayState.scope);
   renderGoodLifeOverlay();
   setText('goodlife-overlay-action-status', 'Fresh data loaded.');
+}
+
+function openGoodLifeWorkers() {
+  const workerTab = document.querySelector('.h23-tab[data-tab="workers"]');
+  if (workerTab) {
+    workerTab.click();
+    setText('goodlife-overlay-action-status', 'Opened worker desk.');
+  }
+  loadWorkersSurface().catch(() => {});
 }
 
 async function reverifyGoodLifeOperator() {
