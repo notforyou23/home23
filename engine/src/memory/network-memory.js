@@ -2,6 +2,10 @@ const { getOpenAIClient, getEmbeddingClient } = require('../core/openai-client')
 const { ExtractiveSummarizer } = require('../utils/extractive-summarizer');
 const { cosmoEvents } = require('../realtime/event-emitter');
 
+function yieldToEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 /**
  * Network Memory Graph
  * Implements spreading activation, Hebbian learning, and small-world topology
@@ -429,7 +433,7 @@ class NetworkMemory {
    * Add/reinforce edge between nodes (Hebbian learning)
    * FIXED: Now handles both numeric and string IDs (for merged runs)
    */
-  addEdge(nodeA, nodeB, weight = 0.1, type = 'associative') {
+  addEdge(nodeA, nodeB, weight = 0.1, type = 'associative', options = {}) {
     // CRITICAL FIX: Prevent self-loops (they cause exponential accumulation)
     if (nodeA === nodeB) {
       this.logger?.debug?.('Skipping self-loop edge', { nodeId: nodeA });
@@ -462,7 +466,7 @@ class NetworkMemory {
     // become super-attractors (observed: 235 bridges on a single node).
     // Preserves dream creativity — the new bridge still lands — but evicts
     // the weakest existing bridge on a saturated endpoint first.
-    if (type === 'bridge') {
+    if (type === 'bridge' && options.enforceBridgeCap !== false) {
       const cap = this.config.smallWorld?.maxBridgesPerNode ?? 40;
       this.enforceBridgeCap(sortedPair[0], cap);
       this.enforceBridgeCap(sortedPair[1], cap);
@@ -1048,10 +1052,16 @@ class NetworkMemory {
   async rewire(p = null) {
     // Prune weak edges
     let pruned = 0;
+    let scanned = 0;
+    const yieldEvery = Number(this.config.smallWorld?.rewireYieldEvery) || 1000;
     for (const [edgeKey, edge] of this.edges) {
       if (edge.weight < 0.1) {
         this.edges.delete(edgeKey);
         pruned++;
+      }
+      scanned++;
+      if (yieldEvery > 0 && scanned % yieldEvery === 0) {
+        await yieldToEventLoop();
       }
     }
     
@@ -1112,11 +1122,34 @@ class NetworkMemory {
 
     const nodeArray = Array.from(this.nodes.keys());
     let rewired = 0;
+    let processed = 0;
+    const maxEdgesPerRun = Number(this.config.smallWorld?.maxRewireEdgesPerRun) || 5000;
+    const yieldEvery = Number(this.config.smallWorld?.rewireYieldEvery) || 500;
+    const bridgeCap = Number(this.config.smallWorld?.maxBridgesPerNode ?? 40);
+    const bridgeCounts = new Map();
+    if (bridgeCap > 0) {
+      for (const edge of this.edges.values()) {
+        if (edge?.type !== 'bridge') continue;
+        bridgeCounts.set(String(edge.source), (bridgeCounts.get(String(edge.source)) || 0) + 1);
+        bridgeCounts.set(String(edge.target), (bridgeCounts.get(String(edge.target)) || 0) + 1);
+      }
+    }
+    const canAddBridge = (nodeA, nodeB) => {
+      if (!bridgeCap || bridgeCap <= 0) return true;
+      return (bridgeCounts.get(String(nodeA)) || 0) < bridgeCap
+        && (bridgeCounts.get(String(nodeB)) || 0) < bridgeCap;
+    };
+    const noteBridge = (nodeA, nodeB) => {
+      if (!bridgeCap || bridgeCap <= 0) return;
+      bridgeCounts.set(String(nodeA), (bridgeCounts.get(String(nodeA)) || 0) + 1);
+      bridgeCounts.set(String(nodeB), (bridgeCounts.get(String(nodeB)) || 0) + 1);
+    };
     
     // Iterate over copy of edges to avoid concurrent modification
     const edgesToProcess = Array.from(this.edges.entries());
     
     for (const [edgeKey, edge] of edgesToProcess) {
+      if (maxEdgesPerRun > 0 && processed >= maxEdgesPerRun) break;
       // Only rewire local/associative edges, skip existing bridges
       if (edge.type === 'bridge') continue;
       
@@ -1126,12 +1159,14 @@ class NetworkMemory {
       const clusterA = this.nodes.get(nodeA)?.cluster;
       const clusterB = this.nodes.get(nodeB)?.cluster;
       if (clusterA !== clusterB) continue;
+
+      processed++;
+      if (yieldEvery > 0 && processed % yieldEvery === 0) {
+        await yieldToEventLoop();
+      }
       
       // Decide whether to rewire this edge
       if (Math.random() < p) {
-        // Remove the current edge
-        this.removeEdge(nodeA, nodeB);
-        
         // Find a new target node C for A to connect to
         // Requirements: C != A, no existing edge A-C, preferably different cluster
         let nodeC = null;
@@ -1163,9 +1198,13 @@ class NetworkMemory {
         }
         
         // If we found a valid target, create the new bridge
-        if (nodeC !== null) {
+        if (nodeC !== null && canAddBridge(nodeA, nodeC)) {
+          // Remove the current edge only after the replacement is known valid.
+          this.removeEdge(nodeA, nodeB);
+
           const newWeight = Math.min(0.3, edge.weight); // Moderate weight for new connections
-          this.addEdge(nodeA, nodeC, newWeight, 'bridge');
+          this.addEdge(nodeA, nodeC, newWeight, 'bridge', { enforceBridgeCap: false });
+          noteBridge(nodeA, nodeC);
           rewired++;
           
           this.logger?.debug?.('Edge rewired (Watts-Strogatz)', {
@@ -1174,11 +1213,17 @@ class NetworkMemory {
             oldCluster: clusterB,
             newCluster: this.nodes.get(nodeC)?.cluster
           });
-        } else {
-          // Couldn't find valid target, restore original edge
-          this.addEdge(nodeA, nodeB, edge.weight, edge.type);
         }
       }
+    }
+
+    if (maxEdgesPerRun > 0 && processed >= maxEdgesPerRun && edgesToProcess.length > processed) {
+      this.logger?.info?.('Watts-Strogatz rewiring capped for engine responsiveness', {
+        processedEdges: processed,
+        totalCandidateEdges: edgesToProcess.length,
+        maxEdgesPerRun,
+        rewired,
+      });
     }
     
     return rewired;

@@ -1316,6 +1316,32 @@ test('Good Life operator brief includes active goal artifact status', () => {
   assert.ok(model.operatorAnswer.some((line) => line.includes('artifact pending: outputs/digest-6427.md; review in 11h')));
 });
 
+test('Good Life operator digest names top active goal when no artifact is pending', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [{
+        id: 'synthesis_7004',
+        description: 'Consolidate recent cognitive work into a comprehensive knowledge report.',
+        rawDescription: 'Consolidate recent cognitive work into a comprehensive knowledge report.',
+        status: 'active',
+        source: 'system_scheduler',
+        progress: 0.42,
+        createdAt: NOW,
+        review: { recommended: false, required: false },
+      }],
+      counts: { activeAgenda: 0, activeGoals: 1, activeGoalsShown: 1, activeGoalsTrusted: true },
+    },
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.match(model.operatorDigest.currentWork, /synthesis_7004/);
+  assert.match(model.operatorDigest.currentWork, /Consolidate recent cognitive work/);
+  assert.notEqual(model.operatorDigest.currentWork, 'autonomous work active; no user intervention needed yet');
+});
+
 test('Good Life operator marks superseded repair agenda for review when registry is clear', () => {
   const model = buildGoodLifeOperatorModel({
     state: goodLifeState({

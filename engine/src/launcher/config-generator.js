@@ -157,6 +157,8 @@ architecture:
       averagePathLength: 3.0
       bridgeProbability: 0.05
       rewireInterval: 600
+      maxRewireEdgesPerRun: 5000
+      rewireYieldEvery: 500
     contextDiversity:
       enabled: true
       noContextProbability: 0.15
@@ -810,4 +812,3 @@ experimental:
 }
 
 module.exports = { ConfigGenerator };
-

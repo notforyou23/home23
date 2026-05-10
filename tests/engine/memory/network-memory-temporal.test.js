@@ -23,6 +23,34 @@ function makeMemory() {
   return memory;
 }
 
+function makeRewireMemory() {
+  const memory = makeMemory();
+  memory.config.smallWorld = {
+    ...(memory.config.smallWorld || {}),
+    maxRewireEdgesPerRun: 3,
+    rewireYieldEvery: 1,
+    maxBridgesPerNode: 40,
+  };
+  for (let id = 1; id <= 30; id++) {
+    const cluster = id <= 15 ? 1 : 2;
+    memory.nodes.set(id, {
+      id,
+      concept: `node ${id}`,
+      cluster,
+      activation: 0,
+      created: new Date(),
+      accessed: new Date(),
+    });
+    const set = memory.clusters.get(cluster) || new Set();
+    set.add(id);
+    memory.clusters.set(cluster, set);
+  }
+  for (let id = 1; id <= 12; id++) {
+    memory.addEdge(id, id + 1, 0.25, 'semantic');
+  }
+  return memory;
+}
+
 test('query boosts current state_snapshot above older cue-matched nodes', async () => {
   const memory = makeMemory();
 
@@ -105,4 +133,29 @@ test('exportPersistenceShell omits full node and edge payloads but keeps graph m
   assert.ok(Array.isArray(shell.clusters));
   assert.equal(shell.nextNodeId, memory.nextNodeId);
   assert.equal(shell.nextClusterId, memory.nextClusterId);
+});
+
+test('rewireSmallWorld caps large topology maintenance runs for engine responsiveness', async () => {
+  const memory = makeRewireMemory();
+
+  const rewired = await memory.rewireSmallWorld(1);
+
+  assert.ok(rewired <= 3);
+});
+
+test('rewireSmallWorld does not scan all bridges for each dream bridge insertion', async () => {
+  const memory = makeRewireMemory();
+  const originalRandom = Math.random;
+  Math.random = () => 0.75;
+  memory.enforceBridgeCap = () => {
+    throw new Error('rewireSmallWorld should use precomputed bridge counts');
+  };
+
+  try {
+    const rewired = await memory.rewireSmallWorld(1);
+
+    assert.ok(rewired > 0);
+  } finally {
+    Math.random = originalRandom;
+  }
 });

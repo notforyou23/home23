@@ -206,6 +206,10 @@ architecture:
       # super-attractors that contaminate traversals. Historical observed
       # ceiling before cap: 235 on one node. Set to 0 to disable.
       maxBridgesPerNode: 40
+      # Bound each topology-maintenance pass so sleep/dream rewiring cannot
+      # block the engine health server on large brains.
+      maxRewireEdgesPerRun: 5000
+      rewireYieldEvery: 500
     contextDiversity:
       enabled: true
       noContextProbability: 0.15

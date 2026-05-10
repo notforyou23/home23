@@ -624,6 +624,13 @@ function summarizeWorkStatus({
       text: `autonomous work active: ${topAgenda.id}`,
     };
   }
+  if (topGoal?.id) {
+    return {
+      status: 'working',
+      needsUser: false,
+      text: topGoalText(topGoal),
+    };
+  }
   if (activeAgenda.length + activeGoals.length > 0) {
     return {
       status: 'working',
