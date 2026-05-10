@@ -316,6 +316,38 @@ test('GoodLifeRegulator maps viability repair drift to systems worker route', as
   assert.equal(added[0].topicTags.includes('worker:systems'), true);
 });
 
+test('GoodLifeRegulator maps friction rest drift to systems worker route', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-regulator-'));
+  const added = [];
+  const obs = learnObservation();
+  obs.payload.summary = 'rest - strained friction drift';
+  obs.payload.policy.mode = 'rest';
+  obs.payload.policy.reason = 'strained friction drift';
+  obs.payload.policy.actionCard.intent = 'rest';
+  obs.payload.policy.actionCard.riskTier = 0;
+  obs.payload.lanes = {
+    usefulness: { status: 'watch', reasons: ['visible progress evidence needed'] },
+    friction: { status: 'strained', reasons: ['maintenance ratio is high'] },
+    recovery: { status: 'watch', reasons: ['recovery is available'] },
+  };
+  const regulator = new GoodLifeRegulator({
+    brainDir: dir,
+    getAgendaStore: () => ({
+      add(params) {
+        added.push(params);
+        return { id: 'ag-good-life-rest', content: params.content, status: 'candidate' };
+      },
+    }),
+  });
+
+  const result = await regulator.handleObservation(obs);
+
+  assert.equal(result.status, 'queued');
+  assert.equal(added[0].temporalContext.workerRoute.worker, 'systems');
+  assert.match(added[0].content, /Recommended worker: systems/);
+  assert.equal(added[0].topicTags.includes('worker:systems'), true);
+});
+
 test('GoodLifeRegulator uses the current agent brain path and worker route for learn agenda', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-regulator-'));
   const brainDir = join(dir, 'instances', 'forrest', 'brain');

@@ -387,7 +387,7 @@ function classifyAgendaReview(row = {}) {
     severity: 'ok',
     reason: null,
     next: null,
-    suggestedWorker: row.workerRoute || null,
+    suggestedWorker,
   };
 }
 
@@ -397,7 +397,7 @@ function suggestAgendaWorker(row = {}, context = {}) {
   if (context.isGoodLife && /repair|recover|viability|friction|engine|process|pm2|host|cpu|memory pressure/.test(text)) {
     return {
       worker: 'systems',
-      reason: 'legacy Good Life repair/recovery row needs current host and process evidence',
+      reason: 'Good Life host, process, or friction row needs current systems evidence',
       inferred: true,
     };
   }
@@ -920,6 +920,9 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
   const latestResolution = Array.isArray(liveProblems.resolved) ? liveProblems.resolved[0] || null : null;
   const latestActionAgendaActive = latestAction?.workerRoute?.worker
     && isActiveAgendaStatus(latestAction.agendaStatus || 'candidate');
+  const topAgendaWorkerRoute = !work?.topAgenda?.review?.recommended
+    ? (work?.topAgenda?.workerRoute || work?.topAgenda?.review?.suggestedWorker || null)
+    : null;
 
   let severity = 'clear';
   let status = 'Clear';
@@ -1005,8 +1008,12 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
       id: work.topAgenda?.id || work.topGoal?.id || null,
       label: work.topAgenda?.review?.recommended
         ? 'Review Work'
-        : (latestActionAgendaActive ? `Open ${latestAction.workerRoute.worker}` : 'Review Work'),
-      worker: work.topAgenda?.review?.recommended ? null : (latestActionAgendaActive ? latestAction.workerRoute.worker : null),
+        : (topAgendaWorkerRoute?.worker
+          ? `Open ${topAgendaWorkerRoute.worker}`
+          : (latestActionAgendaActive ? `Open ${latestAction.workerRoute.worker}` : 'Review Work')),
+      worker: work.topAgenda?.review?.recommended
+        ? null
+        : (topAgendaWorkerRoute?.worker || (latestActionAgendaActive ? latestAction.workerRoute.worker : null)),
     };
   } else if (budget?.exhausted) {
     severity = 'attention';

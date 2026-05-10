@@ -171,7 +171,7 @@ class GoodLifeRegulator {
         reason: 'learning progress needs freshness and visible-output evidence',
       };
     }
-    if (!AUTO_ACT_MODES.has(mode)) return null;
+    if (!AUTO_ACT_MODES.has(mode) && mode !== 'rest') return null;
 
     const laneText = lanes.join('|').toLowerCase();
     const has = (pattern) => pattern.test(laneText);

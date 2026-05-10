@@ -240,6 +240,31 @@ test('Good Life obligation snapshot flags stale active agenda rows for operator 
   assert.match(snapshot.activeAgenda[1].review.reason, /acknowledged agenda row/);
 });
 
+test('Good Life obligation snapshot suggests systems worker for fresh friction rest rows', () => {
+  const snapshot = buildGoodLifeObligationSnapshot({
+    agendaRows: [
+      {
+        type: 'add',
+        id: 'ag-fresh-good-life-rest',
+        record: {
+          status: 'candidate',
+          content: 'Diagnose Good Life friction drift and reduce loop pressure',
+          sourceSignal: 'good-life',
+          topicTags: ['good-life', 'good-life:friction', 'mode:rest'],
+          createdAt: '2026-05-08T13:30:00.000Z',
+        },
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(snapshot.activeAgenda.length, 1);
+  assert.equal(snapshot.activeAgenda[0].review.recommended, false);
+  assert.equal(snapshot.activeAgenda[0].review.severity, 'ok');
+  assert.equal(snapshot.activeAgenda[0].review.suggestedWorker.worker, 'systems');
+  assert.equal(snapshot.activeAgenda[0].review.suggestedWorker.inferred, true);
+});
+
 test('Good Life obligation snapshot suggests workers for stale legacy agenda topics', () => {
   const snapshot = buildGoodLifeObligationSnapshot({
     agendaRows: [
@@ -1143,6 +1168,39 @@ test('Good Life operator answer exposes latest recommended worker route', () => 
   assert.deepEqual(model.operatorBrief.target, {
     tab: 'work',
     id: 'ag-worker-route',
+    label: 'Open systems',
+    worker: 'systems',
+  });
+});
+
+test('Good Life operator brief uses inferred worker route for fresh agenda rows', () => {
+  const obligations = buildGoodLifeObligationSnapshot({
+    agendaRows: [
+      {
+        type: 'add',
+        id: 'ag-fresh-good-life-rest',
+        record: {
+          status: 'candidate',
+          content: 'Diagnose Good Life friction drift and reduce loop pressure',
+          sourceSignal: 'good-life',
+          topicTags: ['good-life', 'good-life:friction', 'mode:rest'],
+          createdAt: '2026-05-08T13:30:00.000Z',
+        },
+      },
+    ],
+    now: NOW,
+  });
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    obligations,
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.equal(model.operatorBrief.status, 'Working');
+  assert.deepEqual(model.operatorBrief.target, {
+    tab: 'work',
+    id: 'ag-fresh-good-life-rest',
     label: 'Open systems',
     worker: 'systems',
   });
