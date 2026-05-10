@@ -351,6 +351,34 @@ test('Good Life operator model exposes safe current help state with evidence and
   assert.equal(model.operatorDigest.userAction, 'No user action needed right now.');
 });
 
+test('Good Life operator detail carries host pressure evidence for the UI', () => {
+  const host = {
+    cpu: { load1: 8.4, cpuCount: 10, loadRatio: 0.84 },
+    memory: { freePct: 2.3, freeBytes: 398344192, totalBytes: 17179869184 },
+    swap: { usedPct: 86.6, usedMb: 7977.06, totalMb: 9216 },
+    disk: { mount: '/', usagePct: 32 },
+    process: {
+      topCpuPct: 126,
+      totalCpuPctTopN: 403.9,
+      topProcess: { command: 'node engine/src/dashboard/server.js', cpuPct: 126 },
+    },
+  };
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 12, unverifiable: 0, total: 12 },
+        goals: { open: 0, total: 0 },
+        agenda: { pending: 0 },
+        host,
+      },
+    }),
+    liveProblems: [],
+    now: NOW,
+  });
+
+  assert.deepEqual(model.detail.insights.host, host);
+});
+
 test('Good Life operator model annotates latest routed agenda status', () => {
   const model = buildGoodLifeOperatorModel({
     state: goodLifeState(),

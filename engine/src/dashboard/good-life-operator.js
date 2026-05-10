@@ -1364,7 +1364,7 @@ function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAc
   };
 }
 
-function buildDetailSections({ commitments, trends, regulator, liveProblems, ledgerTail, obligations, budget }) {
+function buildDetailSections({ commitments, trends, regulator, liveProblems, ledgerTail, obligations, budget, host }) {
   const activeRows = [
     ...(Array.isArray(liveProblems.open) ? liveProblems.open : []),
     ...(Array.isArray(liveProblems.chronic) ? liveProblems.chronic : []),
@@ -1412,6 +1412,7 @@ function buildDetailSections({ commitments, trends, regulator, liveProblems, led
       commitments: commitmentsList,
       trendMetrics: trends?.latest?.metrics || null,
       trend: trends?.latest || null,
+      host: host || null,
       autonomyBudget: budget || null,
       ledgerTail: Array.isArray(ledgerTail) ? ledgerTail.slice(-12).reverse().map(compactLedgerEntry) : [],
     },
@@ -1490,6 +1491,7 @@ function buildGoodLifeOperatorModel({
     ledgerTail,
     obligations: currentObligations,
     budget,
+    host: state?.evidence?.host || null,
   });
   model.work = work;
   model.operatorAnswer = buildOperatorAnswer({

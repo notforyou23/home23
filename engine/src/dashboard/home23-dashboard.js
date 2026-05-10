@@ -3704,11 +3704,75 @@ function renderGoodLifeResolutionDetail(problem) {
   `;
 }
 
+function formatGoodLifeGb(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value)) return null;
+  return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
+}
+
+function compactGoodLifeHostDetail(value, max = 180) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1)}...`;
+}
+
+function renderGoodLifeHostPressure(host) {
+  if (!host) return '';
+  const rows = [
+    host.cpu ? {
+      label: 'CPU Load',
+      value: host.cpu.loadRatio != null ? `${Math.round(Number(host.cpu.loadRatio) * 100)}% of cores` : null,
+      detail: [
+        host.cpu.load1 != null ? `load ${Number(host.cpu.load1).toFixed(2)}` : null,
+        host.cpu.cpuCount != null ? `${host.cpu.cpuCount} cores` : null,
+      ].filter(Boolean).join(' - '),
+    } : null,
+    host.memory ? {
+      label: 'Memory',
+      value: host.memory.freePct != null ? `${Number(host.memory.freePct).toFixed(1)}% raw free` : null,
+      detail: [
+        formatGoodLifeGb(host.memory.freeBytes),
+        host.memory.totalBytes != null ? `of ${formatGoodLifeGb(host.memory.totalBytes)}` : null,
+      ].filter(Boolean).join(' '),
+    } : null,
+    host.swap ? {
+      label: 'Swap',
+      value: host.swap.usedPct != null ? `${Math.round(Number(host.swap.usedPct))}% used` : null,
+      detail: [
+        host.swap.usedMb != null ? `${Math.round(Number(host.swap.usedMb))} MB used` : null,
+        host.swap.totalMb != null ? `of ${Math.round(Number(host.swap.totalMb))} MB` : null,
+      ].filter(Boolean).join(' '),
+    } : null,
+    host.disk ? {
+      label: 'Disk',
+      value: host.disk.usagePct != null ? `${Math.round(Number(host.disk.usagePct))}% used` : null,
+      detail: host.disk.mount || '',
+    } : null,
+    host.process ? {
+      label: 'Top Process',
+      value: host.process.topCpuPct != null ? `${Math.round(Number(host.process.topCpuPct))}% CPU` : null,
+      detail: compactGoodLifeHostDetail(host.process.topProcess?.pm2Name || host.process.topProcess?.command || ''),
+    } : null,
+  ].filter((row) => row && (row.value || row.detail));
+
+  if (!rows.length) return '';
+  return `
+    <section><h4>Host Pressure</h4>
+      ${rows.map((row) => `<div class="h23-goodlife-evidence-row">
+        <strong>${escapeHtml(row.label)}</strong>
+        <span>${escapeHtml(row.value || 'observed')}</span>
+        <small>${escapeHtml(row.detail || '')}</small>
+      </div>`).join('')}
+    </section>
+  `;
+}
+
 function renderGoodLifeInsightsDetail(data) {
   const detail = data?.operator?.detail || {};
   const metrics = detail.insights?.trendMetrics || {};
   const ledger = detail.insights?.ledgerTail || [];
   const budget = detail.insights?.autonomyBudget || data?.operator?.autonomyBudget || null;
+  const host = detail.insights?.host || data?.state?.evidence?.host || null;
   const budgetHtml = budget ? `
     <section><h4>Autonomy Budget</h4>
       <div class="h23-goodlife-evidence-row">
@@ -3724,6 +3788,7 @@ function renderGoodLifeInsightsDetail(data) {
       ${Object.entries(metrics).slice(0, 8).map(([key, value]) => `<div><label>${escapeHtml(key)}</label><p>${escapeHtml(value)}</p></div>`).join('') || '<div><label>Trend Metrics</label><p>not recorded</p></div>'}
     </div>
     ${budgetHtml}
+    ${renderGoodLifeHostPressure(host)}
     <section><h4>Recent Good Life Ledger</h4>${ledger.length ? ledger.map((entry) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(entry.event || entry.type || 'entry')}</strong><span>${escapeHtml(entry.summary || entry.message || entry.mode || '')}</span><small>${entry.at || entry.timestamp ? escapeHtml(timeSince(new Date(entry.at || entry.timestamp))) : ''}</small></div>`).join('') : '<div class="h23-goodlife-empty">No ledger entries</div>'}</section>
   `;
 }

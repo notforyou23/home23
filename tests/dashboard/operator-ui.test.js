@@ -22,6 +22,11 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(js, /nothing; this issue is resolved/);
   assert.match(js, /brief\.status === 'Paused'/);
   assert.match(js, /paused by budget/);
+  assert.match(js, /renderGoodLifeHostPressure/);
+  assert.match(js, /compactGoodLifeHostDetail/);
+  assert.match(js, /Host Pressure/);
+  assert.match(js, /CPU Load/);
+  assert.match(js, /Top Process/);
   assert.match(css, /\.h23-problems-operator/);
   assert.match(css, /\.h23-problem-operator-grid/);
   assert.match(css, /\.h23-problem-user-action/);
