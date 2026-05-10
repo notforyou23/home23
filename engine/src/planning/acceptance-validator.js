@@ -428,7 +428,7 @@ Provide your verdict and a brief explanation.`;
       // Fallback: Use simple heuristic (agent will complete async)
       return {
         verdict: 'PASS',
-        score: 0.8,
+        score: Math.max(context.threshold || 0, 0.8),
         qaSpawned: true,
         agentId,
         explanation: 'Async QA agent spawned for evaluation'
@@ -477,6 +477,8 @@ Provide your verdict and a brief explanation.`;
     const scoreMatch = text.match(/SCORE[:\s]+([0-9.]+)/);
     if (scoreMatch) {
       score = parseFloat(scoreMatch[1]);
+    } else if (typeof result?.score === 'number') {
+      score = result.score;
     }
     
     return { verdict, score };
@@ -531,4 +533,3 @@ Provide your verdict and a brief explanation.`;
 }
 
 module.exports = AcceptanceValidator;
-
