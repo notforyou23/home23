@@ -2917,6 +2917,88 @@ body.h23-external-focus #cosmo23-refresh-btn {
   color: var(--text-secondary);
 }
 
+.h23-problems-overlay-panel {
+  width: min(1120px, 94vw);
+  max-width: 1120px;
+}
+
+.h23-problems-list {
+  padding: 12px;
+}
+
+.h23-problems-operator {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(90,200,250,0.22);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(90,200,250,0.055);
+}
+
+.h23-problems-operator.needs-user {
+  border-color: rgba(255,190,90,0.42);
+  background: rgba(255,190,90,0.08);
+}
+
+.h23-problems-operator.repairing {
+  border-color: rgba(255,120,120,0.26);
+  background: rgba(255,120,120,0.055);
+}
+
+.h23-problems-operator.clear {
+  border-color: rgba(112,211,162,0.24);
+  background: rgba(112,211,162,0.055);
+}
+
+.h23-problems-operator label,
+.h23-problem-operator-grid label,
+.h23-goodlife-issue-brief label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.h23-problems-operator strong,
+.h23-problem-operator-grid span,
+.h23-goodlife-issue-brief p {
+  display: block;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.h23-problems-operator span {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.h23-problem-operator-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.h23-problem-operator-grid > div,
+.h23-goodlife-issue-brief > div {
+  min-width: 0;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  padding: 8px 9px;
+  background: rgba(0,0,0,0.12);
+}
+
 .h23-goodlife-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.2fr) minmax(0, 1fr);
@@ -3441,6 +3523,32 @@ body.h23-external-focus #cosmo23-refresh-btn {
   line-height: 1.35;
 }
 
+.h23-goodlife-issue-brief {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+  border: 1px solid rgba(90,200,250,0.18);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(90,200,250,0.045);
+}
+
+.h23-goodlife-issue-brief.needs-user {
+  border-color: rgba(255,190,90,0.38);
+  background: rgba(255,190,90,0.075);
+}
+
+.h23-goodlife-issue-brief.repairing {
+  border-color: rgba(255,120,120,0.24);
+  background: rgba(255,120,120,0.05);
+}
+
+.h23-goodlife-issue-brief p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
 .h23-goodlife-overlay-detail h4 {
   margin: 14px 0 8px;
   color: var(--text-secondary);
@@ -3641,6 +3749,9 @@ body.h23-external-focus #cosmo23-refresh-btn {
   .h23-goodlife-top-grid,
   .h23-goodlife-digest-grid,
   .h23-goodlife-handoff-panel,
+  .h23-problems-operator,
+  .h23-problem-operator-grid,
+  .h23-goodlife-issue-brief,
   .h23-goodlife-overlay-workspace,
   .h23-goodlife-detail-grid {
     grid-template-columns: 1fr;

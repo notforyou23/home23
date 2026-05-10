@@ -526,10 +526,80 @@ async function renderProblemsList() {
       list.innerHTML = '<div style="color:rgba(255,255,255,0.5);padding:20px;">No problems tracked. Add one below, or the engine will seed defaults on next start.</div>';
       return;
     }
-    list.innerHTML = problems.map(p => renderProblemCard(p)).join('');
+    list.innerHTML = `${renderProblemsOperatorSummary(data, problems)}${problems.map(p => renderProblemCard(p)).join('')}`;
   } catch (err) {
     list.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
   }
+}
+
+function problemLastAttempt(problem = {}) {
+  const attempts = Array.isArray(problem.remediationLog) ? problem.remediationLog : [];
+  return attempts.length ? attempts[attempts.length - 1] : null;
+}
+
+function problemRepairText(problem = {}) {
+  if (problem.state === 'resolved') {
+    if (problem.fixRecipe?.summary) return problem.fixRecipe.summary;
+    if (problem.lastResult?.detail) return `verified clear: ${problem.lastResult.detail}`;
+    return 'verified clear';
+  }
+  const latest = problemLastAttempt(problem);
+  if (latest?.detail) return latest.detail;
+  if (latest?.type) return `${latest.type} ${latest.outcome || 'recorded'}`;
+  const next = goodLifeNextRemediation(problem);
+  if (next.type) return `next step: ${next.type}${next.text ? ` - ${next.text}` : ''}`;
+  return next.text || 'no remediation plan recorded';
+}
+
+function problemUserText(problem = {}) {
+  if (problem.state === 'resolved') return 'nothing; this issue is resolved';
+  if (goodLifeNeedsUser(problem)) {
+    const next = goodLifeNextRemediation(problem);
+    return next.text || 'manual/user intervention is the next remediation step';
+  }
+  if (problem.escalated) return 'escalated; check the remediation log before taking manual action';
+  return 'not needed yet; autonomous remediation can continue';
+}
+
+function renderProblemsOperatorSummary(data, problems) {
+  const snapshot = data?.snapshot || {};
+  const counts = snapshot.counts || {};
+  const open = Number(counts.open || 0);
+  const chronic = Number(counts.chronic || 0);
+  const unverifiable = Number(counts.unverifiable || 0);
+  const interventionRequired = Number(counts.interventionRequired || 0);
+  const active = problems.filter((p) => ['open', 'chronic', 'unverifiable'].includes(p.state));
+  const primary = active.find(goodLifeNeedsUser) || active[0] || null;
+  const headline = interventionRequired > 0
+    ? `${interventionRequired} issue${interventionRequired === 1 ? '' : 's'} need jtr`
+    : active.length > 0
+      ? `${active.length} issue${active.length === 1 ? '' : 's'} under autonomous repair`
+      : 'No active verified issues';
+  const severity = interventionRequired > 0 ? 'needs-user' : active.length > 0 ? 'repairing' : 'clear';
+  return `
+    <div class="h23-problems-operator ${severity}">
+      <div>
+        <label>Operator Status</label>
+        <strong>${escapeHtml(headline)}</strong>
+        <span>${escapeHtml(`${open} open / ${chronic} chronic / ${unverifiable} unverifiable`)}</span>
+      </div>
+      <div>
+        <label>Current Issue</label>
+        <strong>${escapeHtml(primary?.claim || 'registry is clear')}</strong>
+        <span>${escapeHtml(primary?.lastResult?.detail || primary?.detail || 'no failing verifier result')}</span>
+      </div>
+      <div>
+        <label>Fix Path</label>
+        <strong>${escapeHtml(primary ? problemRepairText(primary) : 'no repair path active')}</strong>
+        <span>${escapeHtml(primary ? `remediation step ${Number(primary.stepIndex || 0)} / ${(primary.remediation || []).length}` : 'no active remediation')}</span>
+      </div>
+      <div>
+        <label>Needed From You</label>
+        <strong>${escapeHtml(primary ? problemUserText(primary) : 'nothing right now')}</strong>
+        <span>${escapeHtml(primary?.id || 'all tracked verifiers are clear or resolved')}</span>
+      </div>
+    </div>
+  `;
 }
 
 function renderProblemCard(p) {
@@ -542,6 +612,9 @@ function renderProblemCard(p) {
   const lastChecked = p.lastCheckedAt ? ` · checked ${timeSinceSafe(p.lastCheckedAt)}` : '';
   const recentRem = (p.remediationLog || []).slice(-3).reverse();
   const stepsLabel = `step ${(p.stepIndex || 0)}/${(p.remediation || []).length}`;
+  const needsUser = goodLifeNeedsUser(p);
+  const currentLabel = p.state === 'resolved' ? 'Verifier result' : 'What broke';
+  const repairLabel = p.state === 'resolved' ? 'Resolution' : 'What Home23 is doing';
   const originTag = p.seedOrigin && p.seedOrigin !== 'system'
     ? ` <span style="color:rgba(255,255,255,0.4);font-size:10px;background:rgba(255,255,255,0.04);padding:1px 5px;border-radius:3px;text-transform:uppercase;letter-spacing:0.5px;">${escapeHtml(p.seedOrigin)}</span>`
     : '';
@@ -563,10 +636,16 @@ function renderProblemCard(p) {
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
       <span style="color:${stateColor};font-weight:600;font-size:12px;letter-spacing:0.5px;">${stateLabel}${ageMin !== null && p.state !== 'resolved' ? ' · ' + ageMin + 'm' : ''}</span>
       <span style="color:#fff;font-size:14px;flex:1;">${escapeHtml(p.claim)}${originTag}</span>
+      ${needsUser ? '<span class="h23-goodlife-needs-user">needs you</span>' : ''}
       <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;font-size:11px;color:rgba(255,255,255,0.5);">${escapeHtml(p.id)}</code>
       <button onclick="openProblemEditor('${escapeAttr(p.id)}')" style="background:transparent;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.7);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;">edit</button>
     </div>
     ${dispatchBanner}
+    <div class="h23-problem-operator-grid">
+      <div><label>${escapeHtml(currentLabel)}</label><span>${escapeHtml(p.lastResult?.detail || p.detail || 'verifier has not run yet')}</span></div>
+      <div><label>${escapeHtml(repairLabel)}</label><span>${escapeHtml(problemRepairText(p))}</span></div>
+      <div><label>Needed from you</label><span>${escapeHtml(problemUserText(p))}</span></div>
+    </div>
     <div style="font-size:12px;color:rgba(255,255,255,0.6);margin-bottom:6px;">
       <span>verifier: <code style="background:rgba(255,255,255,0.04);padding:1px 4px;border-radius:3px;">${escapeHtml(p.verifier?.type || '—')}</code></span>
       <span style="margin-left:12px;">last: ${last}${lastChecked}</span>
@@ -3401,6 +3480,8 @@ function renderGoodLifeIssueDetail(problem, data) {
   const recipes = (problem.fixRecipeHistory || (problem.fixRecipe ? [problem.fixRecipe] : [])).slice().reverse();
   const next = goodLifeNextRemediation(problem);
   const needsUser = goodLifeNeedsUser(problem);
+  const repairText = problemRepairText(problem);
+  const userText = problemUserText(problem);
   return `
     <div class="h23-goodlife-detail-head">
       <span class="h23-goodlife-problem-state ${goodLifeCssClass(problem.state)}">${escapeHtml(problem.state)}</span>
@@ -3408,6 +3489,24 @@ function renderGoodLifeIssueDetail(problem, data) {
       ${needsUser ? '<span class="h23-goodlife-needs-user">needs you</span>' : ''}
     </div>
     <h3>${escapeHtml(problem.claim || '')}</h3>
+    <div class="h23-goodlife-issue-brief ${needsUser ? 'needs-user' : 'repairing'}">
+      <div>
+        <label>What is wrong</label>
+        <p>${escapeHtml(last.detail || problem.detail || 'The verifier has not produced detail yet.')}</p>
+      </div>
+      <div>
+        <label>What is happening</label>
+        <p>${escapeHtml(repairText)}</p>
+      </div>
+      <div>
+        <label>Needed from jtr</label>
+        <p>${escapeHtml(userText)}</p>
+      </div>
+      <div>
+        <label>Stop condition</label>
+        <p>${escapeHtml(problem.state === 'resolved' ? 'verifier is passing' : 'verifier passes or remediation escalates')}</p>
+      </div>
+    </div>
     <div class="h23-goodlife-detail-grid">
       <div><label>Last verifier result</label><p>${escapeHtml(last.detail || 'not checked')}</p><small>${last.at ? escapeHtml(timeSince(new Date(last.at))) : ''}</small></div>
       <div><label>Lifecycle</label><p>${escapeHtml(problem.escalated ? 'escalated' : 'normal')} - step ${Number(problem.stepIndex || 0)} / ${(problem.remediation || []).length}</p><small>${problem.openedAt ? `opened ${escapeHtml(timeSince(new Date(problem.openedAt)))}` : ''}</small></div>

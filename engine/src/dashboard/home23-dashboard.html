@@ -170,14 +170,14 @@
 
   <!-- Live Problems panel -->
   <div class="h23-log-overlay" id="problems-overlay" onclick="if(event.target===this)closeProblemsPanel()">
-    <div class="h23-log-overlay-panel" style="max-width:960px;">
+    <div class="h23-log-overlay-panel h23-problems-overlay-panel">
       <div class="h23-log-overlay-header">
         <span class="h23-brainlog-title">🩺 Live Problems</span>
         <span style="font-size:11px;color:rgba(255,255,255,0.4);margin-left:10px;">Ground truth — auto-verified every ~90s, auto-remediated before escalation.</span>
         <button class="h23-log-overlay-close" onclick="closeProblemsPanel()" style="margin-left:auto;">&#10005;</button>
       </div>
       <div class="h23-log-overlay-body">
-        <div id="problems-list" style="padding:12px;"></div>
+        <div id="problems-list" class="h23-problems-list"></div>
         <div style="padding:12px;border-top:1px solid rgba(255,255,255,0.1);display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
           <button onclick="tickProblemsNow()" style="background:rgba(0,122,255,0.2);border:1px solid rgba(0,122,255,0.4);color:#fff;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Re-verify now</button>
           <button onclick="openProblemEditor(null)" style="background:rgba(52,199,89,0.2);border:1px solid rgba(52,199,89,0.4);color:#fff;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;">+ Add problem</button>
