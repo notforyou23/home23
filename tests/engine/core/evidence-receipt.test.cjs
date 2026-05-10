@@ -46,3 +46,14 @@ test('enforceFullLoop closes early-return cycles with a canonical fixture', () =
   assert.equal(result.diagnosis.learning_proven_durable, true);
   assert.equal(logs.at(-1).meta.full_loop_closure, 'COMPLETE — durable learning proven');
 });
+
+test('orchestrator full-loop finally uses outer evidence context, not try-scoped role state', () => {
+  const source = fs.readFileSync(path.join(process.cwd(), 'engine/src/core/orchestrator.js'), 'utf8');
+  assert.match(source, /let evidenceRoleId = 'unknown';/);
+  assert.match(source, /let evidenceEnergy = 0;/);
+  assert.match(source, /evidenceRoleId = role\?\.id \|\| 'unknown';/);
+  assert.match(source, /roleId: evidenceRoleId,/);
+  assert.match(source, /energy: evidenceEnergy,/);
+  assert.doesNotMatch(source, /roleId: role\?\.id \|\| 'unknown'/);
+  assert.doesNotMatch(source, /energy: cognitiveState\?\.energy \|\| 0/);
+});

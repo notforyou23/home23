@@ -1132,6 +1132,8 @@ class Orchestrator {
     let cycleHeartbeatTimer = null;
     let currentCyclePhase = 'start';
     let currentCyclePhaseStartedAt = Date.now();
+    let evidenceRoleId = 'unknown';
+    let evidenceEnergy = 0;
     const completedCyclePhases = [];
     const enterCyclePhase = (phase) => {
       const now = Date.now();
@@ -1572,6 +1574,7 @@ class Orchestrator {
       // Deep sleep consolidation - COORDINATE BOTH SYSTEMS
       // Check both cognitive state (mental fatigue) and temporal state (biological rhythms)
       const cognitiveState = this.stateModulator.getState();
+      evidenceEnergy = Number.isFinite(cognitiveState?.energy) ? cognitiveState.energy : 0;
       const goodLifeSleep = readGoodLifeSleepPolicy(this.logsDir);
       const shouldSleepCognitive = (cognitiveState.mode === 'sleeping');
       const shouldSleepTemporal = (rhythmState.state === 'sleeping');
@@ -2232,6 +2235,7 @@ class Orchestrator {
         // No special context or disabled - use base role
         role = roleBase;
       }
+      evidenceRoleId = role?.id || 'unknown';
 
       // 7. Query memory with diversity controls (mode-aware)
       let memoryContext = [];
@@ -3713,9 +3717,9 @@ class Orchestrator {
           fixtureContext: {
             memoryNodeCount: this.memory?.nodes?.size || 0,
             goalCount: this.goals?.getGoals?.().length || 0,
-            roleId: role?.id || 'unknown',
+            roleId: evidenceRoleId,
             oscillatorMode: this.oscillator?.getCurrentMode?.() || 'unknown',
-            energy: cognitiveState?.energy || 0,
+            energy: evidenceEnergy,
           },
         });
       } catch (e) {
