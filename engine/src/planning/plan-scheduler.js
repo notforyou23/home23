@@ -59,8 +59,10 @@ class PlanScheduler {
         });
 
         if (activeInProgressTasks.length === 0) {
-          this.logger?.warn('[PlanScheduler] Ignoring expired in-progress task claim', {
-            taskIds: inProgressTasks.map((task) => task.id),
+          const releasedTaskIds = await this.releaseExpiredInProgressTasks(inProgressTasks);
+          this.logger?.warn('[PlanScheduler] Released expired in-progress task claim', {
+            taskIds: releasedTaskIds,
+            expiredTaskIds: inProgressTasks.map((task) => task.id),
             instanceId: this.instanceId
           });
         } else {
@@ -130,6 +132,41 @@ class PlanScheduler {
       });
       return null;
     }
+  }
+
+  /**
+   * Release this instance's expired in-progress claims back to pending work.
+   *
+   * This keeps an abandoned local task from suppressing a duplicate pending copy
+   * forever in listRunnableTasks().
+   *
+   * @param {array} tasks - Expired in-progress tasks claimed by this instance
+   * @returns {array} - Task ids that were released
+   */
+  async releaseExpiredInProgressTasks(tasks) {
+    const releasedTaskIds = [];
+
+    for (const task of tasks) {
+      try {
+        const released = await this.stateStore.releaseTask(task.id, this.instanceId);
+        if (released === false) {
+          this.logger?.warn('[PlanScheduler] Failed to release expired in-progress task claim', {
+            taskId: task.id,
+            instanceId: this.instanceId
+          });
+          continue;
+        }
+        releasedTaskIds.push(task.id);
+      } catch (error) {
+        this.logger?.warn('[PlanScheduler] Failed to release expired in-progress task claim', {
+          taskId: task.id,
+          instanceId: this.instanceId,
+          error: error.message
+        });
+      }
+    }
+
+    return releasedTaskIds;
   }
 
   /**
@@ -309,7 +346,7 @@ class PlanScheduler {
       // Release the task first
       const released = await this.stateStore.releaseTask(task.id, task.claimedBy);
       
-      if (!released) {
+      if (released === false) {
         continue; // Couldn't release, move to next
       }
       
