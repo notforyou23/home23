@@ -187,6 +187,7 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
         args: {
           path: engineErrPath,
           pattern: 'Chat Completions API call failed|Alternative provider failed|Scoring batch failed|All branches failed',
+          sincePattern: 'MODULE_TYPELESS_PACKAGE_JSON|\\[CrashRecovery\\] Unclean shutdown detected',
           windowMinutes: 30,
           maxCount: 3,
           maxLines: 3000,
@@ -214,6 +215,7 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
         args: {
           path: engineErrPath,
           pattern: '\\[publish\\] starvation:',
+          sincePattern: 'MODULE_TYPELESS_PACKAGE_JSON|\\[CrashRecovery\\] Unclean shutdown detected',
           windowMinutes: 30,
           maxCount: 2,
           maxLines: 3000,
@@ -241,6 +243,7 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
         args: {
           path: engineErrPath,
           pattern: '\\[ResourceMonitor\\] High CPU usage',
+          sincePattern: 'MODULE_TYPELESS_PACKAGE_JSON|\\[CrashRecovery\\] Unclean shutdown detected',
           windowMinutes: 30,
           maxCount: 3,
           maxLines: 3000,

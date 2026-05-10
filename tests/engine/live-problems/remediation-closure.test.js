@@ -48,6 +48,7 @@ test('default seeds include agent-local operational log pressure invariants', ()
   assert.equal(provider?.verifier?.type, 'log_recent_count');
   assert.match(provider.verifier.args.path, /\/instances\/forrest\/logs\/engine-err\.log$/);
   assert.match(provider.verifier.args.pattern, /Scoring batch failed/);
+  assert.match(provider.verifier.args.sincePattern, /CrashRecovery/);
   assert.equal(provider.verifier.args.windowMinutes, 30);
   assert.equal(provider.verifier.args.maxCount, 3);
   assert.equal(provider.remediation[0].type, 'dispatch_to_worker');
@@ -55,11 +56,13 @@ test('default seeds include agent-local operational log pressure invariants', ()
   const publish = byId.get('forrest_publish_starvation_clear');
   assert.equal(publish?.verifier?.type, 'log_recent_count');
   assert.equal(publish.verifier.args.pattern, '\\[publish\\] starvation:');
+  assert.match(publish.verifier.args.sincePattern, /CrashRecovery/);
   assert.equal(publish.verifier.args.maxCount, 2);
 
   const cpu = byId.get('forrest_cpu_pressure_clear');
   assert.equal(cpu?.verifier?.type, 'log_recent_count');
   assert.equal(cpu.verifier.args.pattern, '\\[ResourceMonitor\\] High CPU usage');
+  assert.match(cpu.verifier.args.sincePattern, /CrashRecovery/);
   assert.equal(cpu.verifier.args.maxCount, 3);
 });
 
