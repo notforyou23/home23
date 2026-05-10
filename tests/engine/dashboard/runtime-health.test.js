@@ -55,7 +55,7 @@ test('runtime health treats timed-out engine health as degraded when PM2 says pr
   assert.equal(engine.pm2.status, 'online');
 });
 
-test('runtime health default timeout is longer than the slow-service threshold', async () => {
+test('runtime health default timeout stays bounded for operator responsiveness', async () => {
   const server = Object.create(DashboardServer.prototype);
   server.getHome23AgentContext = () => ({
     agentName: 'jerry',
@@ -82,7 +82,7 @@ test('runtime health default timeout is longer than the slow-service threshold',
 
     assert.equal(health.ok, true);
     assert.ok(health.services.every((service) => service.ok));
-    assert.deepEqual(timeouts, [7500, 7500]);
+    assert.deepEqual(timeouts, [1500, 1500]);
   } finally {
     globalThis.AbortSignal = originalAbortSignal;
   }
