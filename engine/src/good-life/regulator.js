@@ -119,7 +119,7 @@ class GoodLifeRegulator {
       .filter(([, v]) => v?.status && v.status !== 'healthy')
       .map(([name, v]) => `${name}:${v.status}`);
     const laneText = lanes.length ? lanes.join(', ') : 'development:watch';
-    const base = 'using instances/jerry/brain/good-life-state.json, instances/jerry/brain/good-life-ledger.jsonl, and engine logs';
+    const base = this._evidenceBaseText();
 
     const workerRoute = this._workerRouteForEvaluation(evaluation, lanes);
     let content = null;
@@ -159,6 +159,12 @@ class GoodLifeRegulator {
 
   _workerRouteForEvaluation(evaluation, lanes = []) {
     const mode = evaluation?.policy?.mode || 'observe';
+    if (mode === 'learn') {
+      return {
+        worker: 'freshness',
+        reason: 'learning progress needs freshness and visible-output evidence',
+      };
+    }
     if (!AUTO_ACT_MODES.has(mode)) return null;
 
     const laneText = lanes.join('|').toLowerCase();
@@ -194,6 +200,15 @@ class GoodLifeRegulator {
       };
     }
     return null;
+  }
+
+  _evidenceBaseText() {
+    const repoRoot = path.resolve(__dirname, '..', '..', '..');
+    const relativeBrainDir = path.relative(repoRoot, this.brainDir);
+    const brainDir = relativeBrainDir && !relativeBrainDir.startsWith('..') && !path.isAbsolute(relativeBrainDir)
+      ? relativeBrainDir
+      : this.brainDir;
+    return `using ${path.join(brainDir, 'good-life-state.json')}, ${path.join(brainDir, 'good-life-ledger.jsonl')}, and engine logs`;
   }
 
   _appendAgendaEvent(obs, agenda, evaluation, opts = {}) {

@@ -652,6 +652,7 @@ test('Good Life operator model reports slow runtime services without calling the
   assert.match(warning?.message || '', /slow/);
   assert.equal(model.consistency.warnings.some((item) => item.code === 'runtime_engine_unavailable'), false);
   assert.ok(model.operatorAnswer.some((line) => line.includes('Forrest engine realtime is slow')));
+  assert.match(model.operatorDigest.userAction, /No user action needed; Home23 is watching/);
 });
 
 test('Good Life operator model builds end-user detail sections for drill-down navigation', () => {

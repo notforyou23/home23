@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -259,6 +259,39 @@ test('GoodLifeRegulator maps viability repair drift to systems worker route', as
   assert.equal(added[0].temporalContext.workerRoute.worker, 'systems');
   assert.match(added[0].temporalContext.workerRoute.reason, /host\/process evidence/);
   assert.equal(added[0].topicTags.includes('worker:systems'), true);
+});
+
+test('GoodLifeRegulator uses the current agent brain path and worker route for learn agenda', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-regulator-'));
+  const brainDir = join(dir, 'instances', 'forrest', 'brain');
+  mkdirSync(brainDir, { recursive: true });
+  const added = [];
+  const regulator = new GoodLifeRegulator({
+    brainDir,
+    getAgendaStore: () => ({
+      add(params) {
+        added.push(params);
+        return { id: 'ag-good-life-learn', content: params.content, status: 'candidate' };
+      },
+    }),
+  });
+
+  const result = await regulator.handleObservation(learnObservation());
+
+  assert.equal(result.status, 'queued');
+  assert.match(added[0].content, /instances\/forrest\/brain\/good-life-state\.json/);
+  assert.doesNotMatch(added[0].content, /instances\/jerry\/brain/);
+  assert.equal(added[0].temporalContext.workerRoute.worker, 'freshness');
+  assert.match(added[0].temporalContext.workerRoute.reason, /learning progress/);
+  assert.equal(added[0].topicTags.includes('worker:freshness'), true);
+});
+
+test('GoodLifeRegulator falls back to absolute brain paths outside the Home23 root', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-regulator-'));
+  const brainDir = join(dir, 'brain');
+  const regulator = new GoodLifeRegulator({ brainDir });
+
+  assert.match(regulator._evidenceBaseText(), new RegExp(`${brainDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\/good-life-state\\.json`));
 });
 
 test('GoodLifeRegulator fallback stales older Good Life agenda rows before appending a new one', async () => {

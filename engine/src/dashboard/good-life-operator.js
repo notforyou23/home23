@@ -1069,8 +1069,12 @@ function buildOperatorDigest({ brief, liveProblems, work }) {
       || 'User decision is required before autonomous repair can continue.';
   } else if (work?.agendaNeedingReview > 0 || work?.goalsNeedingReview > 0) {
     userAction = workStatus || 'Operator review is recommended for active work.';
-  } else if (brief?.severity === 'attention' || brief?.severity === 'critical') {
+  } else if (brief?.severity === 'critical') {
     userAction = brief.next || 'Review the warning before treating the projection as current.';
+  } else if (brief?.severity === 'attention') {
+    userAction = brief.headline
+      ? `No user action needed; Home23 is watching: ${brief.headline}`
+      : 'No user action needed; Home23 is watching the warning.';
   }
 
   return {
