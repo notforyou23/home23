@@ -3819,6 +3819,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
   min-height: 18px;
   color: var(--text-muted);
   font-size: 12px;
+  pointer-events: none;
 }
 
 @media (max-width: 980px) {

@@ -36,6 +36,11 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(js, /renderGoodLifeHostPressure/);
   assert.match(js, /renderGoodLifePm2Changes/);
   assert.match(js, /Runtime Changes/);
+  assert.match(js, /renderGoodLifeWorkerReceiptDetail/);
+  assert.match(js, /renderGoodLifeIssueWorkerReceipt/);
+  assert.match(js, /Latest Worker Receipt/);
+  assert.match(js, /formatGoodLifeWorkerResult/);
+  assert.match(js, /Worker check complete: \$\{formatGoodLifeWorkerResult/);
   assert.match(js, /last change/);
   assert.match(js, /currently not online/);
   assert.match(js, /repair signal/);
@@ -53,6 +58,7 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(css, /\.h23-goodlife-fleet-row\.resting/);
   assert.match(css, /\.h23-goodlife-evidence-row\.watch/);
   assert.match(css, /\.h23-goodlife-evidence-row\.info/);
+  assert.match(css, /\.h23-goodlife-overlay-action-status[\s\S]*pointer-events:\s*none/);
 });
 
 test('Good Life issue detail shows user-facing repair context before raw JSON', () => {

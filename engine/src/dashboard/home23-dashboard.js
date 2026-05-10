@@ -2232,6 +2232,42 @@ function renderGoodLifeWorkerReceiptDetail() {
   `;
 }
 
+function renderGoodLifeIssueWorkerReceipt(problem = {}) {
+  if (!problem?.id) return '';
+  const receipt = workersState.receipt;
+  if (receipt?.source?.type === 'live-problem' && receipt.source.id === problem.id) {
+    return renderGoodLifeWorkerReceiptDetail();
+  }
+  const latest = (workersState.runs || []).find((run) => (
+    run?.source?.type === 'live-problem'
+    && run.source.id === problem.id
+  ));
+  if (!latest) return '';
+  return `
+    <section><h4>Latest Worker Receipt</h4>
+      <div class="h23-goodlife-worker-receipt-detail">
+        <div class="h23-goodlife-detail-head">
+          <span class="h23-worker-status ${workerStatusClass(latest.status)}">${escapeHtml(latest.status || 'recorded')}</span>
+          <strong>${escapeHtml(latest.worker || 'worker')} · ${escapeHtml(latest.runId || '')}</strong>
+        </div>
+        <p>${escapeHtml(latest.summary || 'Worker receipt recorded.')}</p>
+        <div class="h23-goodlife-mini-actions">
+          <span class="h23-worker-status ${workerStatusClass(latest.verifierStatus)}">${escapeHtml(latest.verifierStatus || 'unknown')}</span>
+          <button type="button" onclick="openGoodLifeWorkerReceipt('${escapeAttr(latest.runId || '')}')">Open Receipt</button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function formatGoodLifeWorkerResult(receipt, fallback) {
+  if (!receipt) return fallback || 'receipt recorded';
+  const status = receipt.status || receipt.verifierStatus || 'recorded';
+  const summary = receipt.summary ? ` - ${receipt.summary}` : '';
+  const runId = receipt.runId ? ` (${receipt.runId})` : '';
+  return `${status}${runId}${summary}`;
+}
+
 // ── Home Tiles (current dashboard agent) ──
 
 function layoutHasTile(tileId) {
@@ -3605,6 +3641,7 @@ function renderGoodLifeIssueDetail(problem, data) {
     <section><h4>Remediation Plan</h4>${renderGoodLifeJson(problem.remediation || [])}</section>
     <section><h4>Recent Attempts</h4>${attempts.length ? attempts.map((attempt) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(attempt.type || 'attempt')}</strong><span>${escapeHtml(attempt.outcome || '')}</span><small>${escapeHtml(attempt.detail || '')}</small></div>`).join('') : '<div class="h23-goodlife-empty">No attempts recorded</div>'}</section>
     <section><h4>Fix Recipes</h4>${recipes.length ? recipes.map((recipe) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(recipe.verifierStatus || recipe.dispatchOutcome || 'recipe')}</strong><span>${escapeHtml(recipe.summary || '')}</span><small>${recipe.at ? escapeHtml(timeSince(new Date(recipe.at))) : ''}</small></div>`).join('') : '<div class="h23-goodlife-empty">No fix recipe recorded</div>'}</section>
+    ${renderGoodLifeIssueWorkerReceipt(problem)}
   `;
 }
 
@@ -4238,7 +4275,8 @@ async function runGoodLifeWorkerCheck(problemId) {
       await loadWorkersSurface().catch(() => {});
       await openWorkerReceipt(result.runId).catch(() => {});
     }
-    setText('goodlife-overlay-action-status', `Worker check complete: ${result.receipt?.status || result.runId || 'receipt recorded'}.`);
+    renderGoodLifeOverlay();
+    setText('goodlife-overlay-action-status', `Worker check complete: ${formatGoodLifeWorkerResult(workersState.receipt || result.receipt, result.runId)}.`);
   } catch (err) {
     setText('goodlife-overlay-action-status', `Worker check failed: ${err.message}`);
   }
@@ -4285,7 +4323,7 @@ async function runGoodLifeAgendaWorkerCheck(agendaId) {
     }
     await loadGoodLifeForScope(goodLifeOverlayState.scope).catch(() => {});
     renderGoodLifeOverlay();
-    setText('goodlife-overlay-action-status', `${workerName} worker complete: ${result.receipt?.status || result.runId || 'receipt recorded'}.`);
+    setText('goodlife-overlay-action-status', `${workerName} worker complete: ${formatGoodLifeWorkerResult(workersState.receipt || result.receipt, result.runId)}.`);
   } catch (err) {
     setText('goodlife-overlay-action-status', `${workerName} worker failed: ${err.message}`);
   }
