@@ -1535,7 +1535,7 @@ Your response:`
     // Write via Capabilities (embodied cognition)
     if (this.capabilities) {
       await this.capabilities.writeFile(
-        path.relative(process.cwd(), filePath),
+        filePath,
         content,
         {
           agentId: this.agentId,
@@ -1571,7 +1571,7 @@ Your response:`
     
     if (this.capabilities) {
       await this.capabilities.writeFile(
-        path.relative(process.cwd(), metadataPath),
+        metadataPath,
         JSON.stringify(metadata, null, 2),
         { agentId: this.agentId, agentType: 'document-creation', missionGoal: this.mission.goalId }
       );

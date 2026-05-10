@@ -71,6 +71,50 @@ test('saveDocument writes PathResolver deliverables through capabilities using a
   }
 });
 
+test('saveDocument fallback writes capabilities outputs to the resolved absolute path', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'home23-doc-agent-fallback-'));
+  const calls = [];
+  process.env.OPENAI_API_KEY ||= 'test-key';
+
+  const agent = new DocumentCreationAgent({
+    goalId: 'goal_doc',
+    description: 'Write a report.',
+  }, { logsDir: dir }, { info() {}, warn() {}, error() {}, debug() {} });
+
+  agent.capabilities = {
+    async writeFile(logicalPath, content) {
+      calls.push(logicalPath);
+      assert.equal(path.isAbsolute(logicalPath), true);
+      await fs.mkdir(path.dirname(logicalPath), { recursive: true });
+      await fs.writeFile(logicalPath, content, 'utf8');
+      return { success: true, path: logicalPath };
+    },
+  };
+
+  try {
+    const saved = await agent.saveDocument({
+      title: 'Generated report',
+      content: '# Report\n\nA concrete output.',
+      metadata: {},
+    }, {
+      type: 'report',
+      format: 'markdown',
+      audience: 'operator',
+      purpose: 'report',
+      requirements: [],
+    });
+
+    assert.equal(saved.filePath.startsWith(path.join(dir, 'outputs', 'document-creation')), true);
+    assert.equal(saved.deliverablePath, saved.filePath);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0], saved.filePath);
+    assert.equal(calls[1], saved.metadataPath);
+    assert.equal(await fs.readFile(saved.filePath, 'utf8'), '# Report\n\nA concrete output.');
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('force-output document missions bypass claim intake and emit deliverables', async () => {
   process.env.OPENAI_API_KEY ||= 'test-key';
   const agent = new DocumentCreationAgent({
