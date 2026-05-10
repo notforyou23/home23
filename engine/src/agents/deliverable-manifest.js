@@ -112,7 +112,7 @@ class DeliverableManifest {
     
     if (options?.capabilities && options.capabilities.writeFile) {
       const result = await options.capabilities.writeFile(
-        path.relative(process.cwd(), outputPath),
+        outputPath,
         payload,
         options.agentContext || { agentId: manifest?.agentId, agentType: manifest?.agentType, missionGoal: manifest?.goalId }
       );
@@ -227,4 +227,3 @@ class DeliverableManifest {
 }
 
 module.exports = { DeliverableManifest };
-

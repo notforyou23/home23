@@ -911,8 +911,8 @@ Generate the complete final deliverable now:`;
     
     // Write via Capabilities
     if (this.capabilities) {
-      await this.capabilities.writeFile(
-        path.relative(process.cwd(), outputPath),
+      const result = await this.capabilities.writeFile(
+        outputPath,
         content,
         {
           agentId: this.agentId,
@@ -920,6 +920,10 @@ Generate the complete final deliverable now:`;
           missionGoal: this.mission.goalId
         }
       );
+
+      if (!result?.success && !result?.skipped) {
+        throw new Error(`Capabilities declined write: ${result?.reason || result?.error || 'unknown reason'}`);
+      }
     } else {
       await fs.writeFile(outputPath, content, 'utf-8');
     }

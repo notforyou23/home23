@@ -98,3 +98,76 @@ test('reconcileTaskAssignmentBeforeSpawn fails repeatedly stale assigned agent',
   assert.equal(calls[0][1], 'task:phase5');
   assert.match(calls[0][2], /Assigned agent agent_missing is missing/);
 });
+
+test('getCompletedAgentsForTask matches goal-less final synthesis by taskId', () => {
+  const completed = {
+    agentId: 'agent_synthesis',
+    status: 'completed',
+    mission: {
+      goalId: null,
+      taskId: 'task:synthesis_final',
+    },
+    results: [{ type: 'deliverable', path: '/tmp/ai-os-research.md' }],
+    accomplishment: { accomplished: true },
+  };
+
+  const { orchestrator } = makeOrchestrator({
+    agentExecutor: {
+      registry: {
+        getAgent: () => null,
+        completedAgents: new Map(),
+        failedAgents: new Map(),
+      },
+      resultsQueue: {
+        getResultsForGoal: () => [],
+        queue: [],
+        history: [completed],
+      },
+    },
+  });
+
+  const matches = orchestrator.getCompletedAgentsForTask({
+    id: 'task:synthesis_final',
+    metadata: { isFinalSynthesis: true },
+  });
+
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].agentId, 'agent_synthesis');
+});
+
+test('getCompletedAgentsForTask matches assigned completed agent without goalId', () => {
+  const completed = {
+    agentId: 'agent_assigned',
+    status: 'completed',
+    mission: {
+      goalId: null,
+      taskId: null,
+    },
+    results: [{ type: 'finding', content: 'done' }],
+    accomplishment: { accomplished: true },
+  };
+
+  const { orchestrator } = makeOrchestrator({
+    agentExecutor: {
+      registry: {
+        getAgent: () => null,
+        completedAgents: new Map([['agent_assigned', completed]]),
+        failedAgents: new Map(),
+      },
+      resultsQueue: {
+        getResultsForGoal: () => [],
+        queue: [],
+        history: [],
+      },
+    },
+  });
+
+  const matches = orchestrator.getCompletedAgentsForTask({
+    id: 'task:synthesis_final',
+    assignedAgentId: 'agent_assigned',
+    metadata: {},
+  });
+
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0].agentId, 'agent_assigned');
+});

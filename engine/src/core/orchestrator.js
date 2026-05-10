@@ -1978,8 +1978,17 @@ class Orchestrator {
           currentTask = await this.reconcileTaskAssignmentBeforeSpawn(currentTask);
           
           // CRITICAL FIX: Spawn agent to actually DO the task!
-          // Tasks were being claimed but never executed - no agent assigned
+          // Tasks were being claimed but never executed - no agent assigned.
+          // If a goal-less task already has completed task-scoped results,
+          // validation below should close it instead of spawning a duplicate.
+          const completedTaskAgentsBeforeSpawn = await this.getCompletedAgentsForTask(currentTask);
           if (this.agentExecutor && !currentTask.assignedAgentId) {
+            if (completedTaskAgentsBeforeSpawn.length > 0) {
+              this.logger.info('⏭️  Task already has completed agent results, skipping duplicate spawn', {
+                taskId: currentTask.id,
+                agentIds: completedTaskAgentsBeforeSpawn.map(a => a.agentId || a.id).slice(0, 5)
+              });
+            } else {
             const agentType = this.determineAgentTypeForTask(currentTask);
             
             // Defensive: Ensure agentType is valid before spawning
@@ -2048,6 +2057,7 @@ class Orchestrator {
             }
             } // Close else block for goalAlreadyPursued check
             } // Close else block for agentType check
+            } // Close else block for completed task results
           }
         }
       }
@@ -3099,46 +3109,12 @@ class Orchestrator {
             claimedBy: currentTask.claimedBy
           });
           
-          // Check if agents for this task have completed
+          // Check if agents for this task have completed. Some guided final
+          // synthesis tasks intentionally have no goalId, so match by taskId
+          // and assignedAgentId as well as goalId.
           const taskGoalId = currentTask.metadata?.goalId;
-          let hasCompletedAgents = false;
-          let completedAgentsList = [];
-          
-          if (this.agentExecutor && taskGoalId) {
-            // Check registry for completed agents with this goal
-            const registry = this.agentExecutor.registry;
-            if (registry.completedAgents) {
-              completedAgentsList = Array.from(registry.completedAgents.values())
-                .filter(a => a.mission?.goalId === taskGoalId);
-              hasCompletedAgents = completedAgentsList.length > 0;
-            }
-            
-            // NEW: Also check results queue for integrated results
-            // This ensures tasks can be completed even after process restarts
-            if (this.agentExecutor.resultsQueue) {
-              const queueResults = this.agentExecutor.resultsQueue.getResultsForGoal(taskGoalId);
-              if (queueResults.length > 0) {
-                hasCompletedAgents = true;
-                // Avoid duplicates if already in completedAgentsList
-                for (const qr of queueResults) {
-                  if (!completedAgentsList.some(a => (a.agentId || a.id) === qr.agentId)) {
-                    completedAgentsList.push(qr);
-                  }
-                }
-              }
-            }
-          }
-          
-          // Also check current cycle's results queue
-          const currentCycleAgents = this.agentExecutor 
-            ? Array.from(this.resultsQueue?.pending || [])
-                .filter(r => r.status === 'completed' && r.mission?.goalId === taskGoalId)
-            : [];
-          
-          if (currentCycleAgents.length > 0) {
-            hasCompletedAgents = true;
-            completedAgentsList.push(...currentCycleAgents);
-          }
+          const completedAgentsList = await this.getCompletedAgentsForTask(currentTask);
+          const hasCompletedAgents = completedAgentsList.length > 0;
           
           if (hasCompletedAgents) {
             this.logger.info('🔍 Task has completed agents, checking accomplishment', {
@@ -5994,6 +5970,66 @@ class Orchestrator {
       title: task.title?.substring(0, 80)
     });
     return 'analysis';
+  }
+
+  getCompletedAgentsForTask(task) {
+    if (!task || !this.agentExecutor) {
+      return [];
+    }
+
+    const taskId = task.id;
+    const taskGoalId = task.metadata?.goalId || null;
+    const assignedAgentId = task.assignedAgentId || null;
+    const matchesTask = (entry) => {
+      if (!entry) return false;
+      const agent = entry.agent || entry;
+      const mission = agent.mission || entry.mission || {};
+      const agentId = agent.agentId || entry.agentId || agent.id || entry.id;
+      if (assignedAgentId && agentId === assignedAgentId) return true;
+      if (taskId && mission.taskId === taskId) return true;
+      if (taskGoalId && mission.goalId === taskGoalId) return true;
+      return false;
+    };
+
+    const isCompleted = (entry) => {
+      const agent = entry?.agent || entry;
+      return agent?.status === 'completed' || agent?.status === 'done';
+    };
+
+    const completedAgentsList = [];
+    const add = (entry) => {
+      if (!entry || !isCompleted(entry) || !matchesTask(entry)) return;
+      const agent = entry.agent || entry;
+      const agentId = agent.agentId || entry.agentId || agent.id || entry.id;
+      if (!completedAgentsList.some(a => (a.agentId || a.id || a.agent?.agentId) === agentId)) {
+        completedAgentsList.push(entry);
+      }
+    };
+
+    const registry = this.agentExecutor.registry;
+    if (registry?.completedAgents) {
+      for (const entry of registry.completedAgents.values()) {
+        add(entry);
+      }
+    }
+
+    const resultsQueue = this.agentExecutor.resultsQueue;
+    if (resultsQueue) {
+      if (taskGoalId && typeof resultsQueue.getResultsForGoal === 'function') {
+        for (const entry of resultsQueue.getResultsForGoal(taskGoalId)) {
+          add(entry);
+        }
+      }
+
+      for (const bucket of [resultsQueue.queue, resultsQueue.history]) {
+        if (!Array.isArray(bucket)) continue;
+        for (const entry of bucket) {
+          add(entry);
+        }
+      }
+    }
+
+    return completedAgentsList;
   }
 
   async reconcileTaskAssignmentBeforeSpawn(task) {
