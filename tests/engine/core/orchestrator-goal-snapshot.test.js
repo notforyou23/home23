@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const {
   compactActiveGoalsForSnapshot,
+  countActiveGoalsForSnapshot,
   getEmergencyCoordinatorWorkState,
   shouldRouteForceOutputDirectly,
   shouldRunEmergencyCoordinatorReview,
@@ -58,6 +59,17 @@ test('compactActiveGoalsForSnapshot writes bounded lightweight active goal summa
   assert.equal(goals[0].priority, 0.9);
   assert.equal(goals[0].progress, 0.25);
   assert.equal(goals[1].source, 'meta');
+});
+
+test('countActiveGoalsForSnapshot unwraps tuple goal entries before counting', () => {
+  const count = countActiveGoalsForSnapshot([
+    ['goal_active', { id: 'goal_active', status: 'active', progress: 0.5 }],
+    ['goal_done', { id: 'goal_done', status: 'completed', progress: 1 }],
+    ['goal_archived', { id: 'goal_archived', status: 'archived', progress: 0 }],
+    ['goal_default', { id: 'goal_default' }],
+  ]);
+
+  assert.equal(count, 2);
 });
 
 test('emergency coordinator work state ignores completed and archived goal history', () => {

@@ -6827,11 +6827,8 @@ class Orchestrator {
           if (typeof entries === 'object') return Object.keys(entries).length;
           return 0;
         };
-        const countActiveGoalEntries = (entries) => normalizeGoalEntries(entries)
-          .filter(isSnapshotActiveGoal)
-          .length;
         const goalCounts = {
-          active: countActiveGoalEntries(state.goals?.active),
+          active: countActiveGoalsForSnapshot(state.goals?.active),
           completed: countGoalEntries(state.goals?.completed),
           archived: countGoalEntries(state.goals?.archived),
         };
@@ -8713,6 +8710,13 @@ function compactActiveGoalsForSnapshot(entries, limit = 12) {
     .slice(0, limit);
 }
 
+function countActiveGoalsForSnapshot(entries) {
+  return normalizeGoalEntries(entries).filter((entry) => {
+    const goal = Array.isArray(entry) ? entry[1] : entry;
+    return isSnapshotActiveGoal(goal);
+  }).length;
+}
+
 function normalizeGoalEntries(entries) {
   if (!entries) return [];
   if (Array.isArray(entries)) return entries;
@@ -8778,7 +8782,7 @@ async function persistArchivedGoalsToState(logsDir, archivedIds = [], reason = '
 
   const snapshot = readSnapshot(logsDir) || {};
   const completedCount = Array.isArray(state.goals.completed) ? state.goals.completed.length : 0;
-  const activeCount = compactActiveGoalsForSnapshot(nextActive, Number.POSITIVE_INFINITY).length;
+  const activeCount = countActiveGoalsForSnapshot(nextActive);
   writeSnapshot(logsDir, {
     ...snapshot,
     savedAt: new Date().toISOString(),
@@ -8803,6 +8807,7 @@ async function persistArchivedGoalsToState(logsDir, archivedIds = [], reason = '
 module.exports = {
   Orchestrator,
   compactActiveGoalsForSnapshot,
+  countActiveGoalsForSnapshot,
   getEmergencyCoordinatorWorkState,
   shouldRouteForceOutputDirectly,
   shouldRunEmergencyCoordinatorReview,
