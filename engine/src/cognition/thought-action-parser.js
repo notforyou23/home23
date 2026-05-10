@@ -131,6 +131,21 @@ function parseThoughtAction(hypothesis) {
   return { type: 'none' };
 }
 
+function isLowValueInvestigation(payload) {
+  const text = String(payload || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+
+  const hasConcreteFailure = /\b(failed|failing|error|exception|timeout|blocked|broken|offline|unreachable|regression|missing|dropped|crash|oom|data loss)\b/.test(text);
+  if (hasConcreteFailure) return false;
+
+  const saysClear = /\b(0|zero|no)\s+(active\s+)?(live\s+)?(problems?|blockers?|alerts?|stale alerts?|fresh signals?)\b/.test(text) ||
+    /\bno immediate operational action\b/.test(text);
+  const saysQuiet = /\b(stable and quiet|environment is stable|quiet state|clear state)\b/.test(text);
+  const asksRoutineCheck = /\b(routine|surface check|latent drift|sustained silence|check for drift)\b/.test(text);
+
+  return saysClear && (saysQuiet || asksRoutineCheck);
+}
+
 /**
  * Strip action tags from hypothesis so they don't pollute the stored brain node.
  * The action is already captured separately.
@@ -461,6 +476,17 @@ async function routeThoughtAction(opts) {
     }
 
     if (parsed.type === 'investigate') {
+      if (isLowValueInvestigation(parsed.payload)) {
+        logger?.info?.('🔕 Thought-action: low-value investigation suppressed', {
+          cycle, role, mission: parsed.payload.substring(0, 120),
+        });
+        return {
+          action: 'investigate',
+          payload: parsed.payload,
+          routed: 'suppressed:low_value_investigation',
+        };
+      }
+
       // If we have an agent executor, spawn a research agent using the
       // standard missionSpec shape.
       if (agentExecutor?.spawnAgent) {
@@ -512,6 +538,7 @@ async function routeThoughtAction(opts) {
 
 module.exports = {
   parseThoughtAction,
+  isLowValueInvestigation,
   stripActionTags,
   scrubToolArtifacts,
   appendNotification,
