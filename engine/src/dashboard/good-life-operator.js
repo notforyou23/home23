@@ -834,7 +834,7 @@ function buildConsistency({ state, projection, liveProblems, obligations, hasObl
         : `${service.label || service.id || 'Runtime service'} is slow: ${service.latencyMs}ms health check exceeds ${service.slowThresholdMs || 5000}ms`;
       warnings.push({
         code: `runtime_${service.id || 'service'}_slow`,
-        severity: service.degraded ? 'info' : 'warning',
+        severity: 'warning',
         message: degradedText,
       });
     }

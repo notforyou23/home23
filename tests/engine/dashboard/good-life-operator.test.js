@@ -714,7 +714,7 @@ test('Good Life operator model reports slow runtime services without calling the
   assert.match(model.operatorDigest.userAction, /No user action needed; Home23 is watching/);
 });
 
-test('Good Life operator treats PM2-online degraded runtime health as advisory', () => {
+test('Good Life operator treats PM2-online degraded runtime health as attention', () => {
   const model = buildGoodLifeOperatorModel({
     state: goodLifeState(),
     liveProblems: [],
@@ -739,9 +739,9 @@ test('Good Life operator treats PM2-online degraded runtime health as advisory',
 
   const advisory = model.consistency.warnings.find((item) => item.code === 'runtime_engine_slow');
   assert.equal(model.status, 'current');
-  assert.equal(model.operatorBrief.status, 'Clear');
-  assert.equal(model.safeToInherit, true);
-  assert.equal(advisory?.severity, 'info');
+  assert.equal(model.operatorBrief.status, 'Attention');
+  assert.equal(model.safeToInherit, false);
+  assert.equal(advisory?.severity, 'warning');
   assert.match(advisory?.message || '', /home23-jerry is online/);
 });
 
