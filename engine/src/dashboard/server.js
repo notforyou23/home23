@@ -10027,11 +10027,17 @@ You are empowered to explore and understand. The user trusts you to discover the
     if (!Array.isArray(brainSnapshot?.activeGoalSummaries)) return null;
     const activeSummaries = brainSnapshot.activeGoalSummaries;
     const counts = brainSnapshot.goalCounts || {};
+    const activeCount = Number.isFinite(Number(counts.active))
+      && activeSummaries.length >= 12
+      && Number(counts.active) > activeSummaries.length
+      ? Number(counts.active)
+      : activeSummaries.length;
     return {
       active: activeSummaries.map((goal) => [goal.id, goal]),
       counts: {
         ...counts,
-        active: activeSummaries.length,
+        active: activeCount,
+        shown: activeSummaries.length,
       },
     };
   }

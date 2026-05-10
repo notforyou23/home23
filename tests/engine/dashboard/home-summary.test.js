@@ -232,6 +232,23 @@ test('Good Life snapshot goals trust active summaries over stale snapshot active
 
   assert.deepEqual(goals, {
     active: [],
-    counts: { active: 0, completed: 34, archived: 5 },
+    counts: { active: 0, completed: 34, archived: 5, shown: 0 },
   });
+});
+
+test('Good Life snapshot goals preserve capped active total when summaries hit cap', () => {
+  const server = Object.create(DashboardServer.prototype);
+  const activeGoalSummaries = Array.from({ length: 12 }, (_, index) => ({
+    id: `goal_${index + 1}`,
+    description: `Goal ${index + 1}`,
+  }));
+
+  const goals = server._goodLifeSnapshotGoals({
+    goalCounts: { active: 20, completed: 34, archived: 5 },
+    activeGoalSummaries,
+  });
+
+  assert.equal(goals.counts.active, 20);
+  assert.equal(goals.counts.shown, 12);
+  assert.equal(goals.active.length, 12);
 });

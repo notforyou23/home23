@@ -504,6 +504,37 @@ test('Good Life operator warns when projected open goals disagree with active go
   assert.equal(model.operatorBrief.target.tab, 'insights');
 });
 
+test('Good Life operator accepts capped active goal summaries when total count matches projection', () => {
+  const activeGoals = Array.from({ length: 12 }, (_, index) => ({
+    id: `goal_${index + 1}`,
+    description: `Visible goal ${index + 1}`,
+    status: 'active',
+    progress: 0,
+    createdAt: `2026-05-09T14:${String(index).padStart(2, '0')}:00.000Z`,
+  }));
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        goals: { open: 20, complete: 0, total: 20 },
+      },
+    }),
+    liveProblems: [],
+    obligations: {
+      activeAgenda: [],
+      activeGoals,
+      counts: { activeAgenda: 0, activeGoals: 20, activeGoalsShown: 12, activeGoalsTrusted: true },
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.safeToInherit, true);
+  assert.equal(model.work.activeGoals, 20);
+  assert.equal(model.work.activeGoalsShown, 12);
+  assert.equal(model.work.activeTotal, 20);
+  assert.ok(!model.consistency.warnings.some((warning) => warning.code === 'good_life_goal_projection_mismatch'));
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Active work: 20')));
+});
+
 test('Good Life operator brief names clear state and latest resolution receipt', () => {
   const model = buildGoodLifeOperatorModel({
     state: goodLifeState(),

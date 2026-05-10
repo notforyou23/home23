@@ -206,7 +206,8 @@ function buildGoodLifeObligationSnapshot({ agendaRows = [], goals = null, output
       };
     });
 
-  const activeGoals = normalizeActiveGoals(goals)
+  const allActiveGoals = normalizeActiveGoals(goals);
+  const activeGoals = allActiveGoals
     .sort((a, b) => toTimeMs(b.createdAt || b.created) - toTimeMs(a.createdAt || a.created))
     .slice(0, 12)
     .map((goal) => {
@@ -249,7 +250,8 @@ function buildGoodLifeObligationSnapshot({ agendaRows = [], goals = null, output
     latestAgendaById,
     counts: {
       activeAgenda: activeAgenda.length,
-      activeGoals: Number.isFinite(goals?.counts?.active) ? goals.counts.active : activeGoals.length,
+      activeGoals: Number.isFinite(goals?.counts?.active) ? goals.counts.active : allActiveGoals.length,
+      activeGoalsShown: activeGoals.length,
       activeGoalsTrusted: Number.isFinite(goals?.counts?.active),
     },
   };
@@ -468,6 +470,8 @@ function summarizeWork(obligations = {}) {
       artifactStatus: goal.artifactStatus || goalArtifactText(goal),
     }))
     : [];
+  const activeGoalTotal = finiteCount(obligations.counts?.activeGoals) ?? activeGoals.length;
+  const activeGoalShown = finiteCount(obligations.counts?.activeGoalsShown) ?? activeGoals.length;
   const goalsNeedingReview = activeGoals.filter((goal) => goal.review?.recommended);
   const agendaNeedingReview = activeAgenda.filter((row) => row.review?.recommended);
   const agendaNeedingUser = activeAgenda.filter((row) => row.intervention?.required);
@@ -486,8 +490,9 @@ function summarizeWork(obligations = {}) {
   });
   return {
     activeAgenda: activeAgenda.length,
-    activeGoals: activeGoals.length,
-    activeTotal: activeAgenda.length + activeGoals.length,
+    activeGoals: activeGoalTotal,
+    activeGoalsShown: activeGoalShown,
+    activeTotal: activeAgenda.length + activeGoalTotal,
     agendaNeedingReview: agendaNeedingReview.length,
     goalsNeedingReview: goalsNeedingReview.length,
     interventionRequired: agendaNeedingUser.length,
@@ -611,6 +616,9 @@ function annotateObligationsForCurrentGoodLife(obligations = {}, { policy, liveP
     counts: {
       ...(obligations.counts || {}),
       activeAgenda: annotatedAgenda.length,
+      activeGoalsShown: Array.isArray(obligations.activeGoals)
+        ? obligations.activeGoals.length
+        : finiteCount(obligations.counts?.activeGoalsShown),
       activeGoals: obligations.counts?.activeGoalsTrusted
         ? Number(obligations.counts?.activeGoals || 0)
         : (Array.isArray(obligations.activeGoals)
