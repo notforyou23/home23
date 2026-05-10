@@ -114,6 +114,9 @@ class DashboardServer {
     this._shutdownStarted = false;
     this._shutdownHandlersRegistered = false;
     this._logWatchInterval = null;
+    this._serverSockets = new Set();
+    this._serverCloseTimeoutMs = Number(process.env.HOME23_DASHBOARD_SERVER_CLOSE_TIMEOUT_MS || 5000);
+    this._socketDestroyGraceMs = Number(process.env.HOME23_DASHBOARD_SOCKET_DESTROY_GRACE_MS || 750);
     
     // Console log streaming clients (SSE)
     this.logStreamClients = new Set();
@@ -10865,6 +10868,12 @@ You are empowered to explore and understand. The user trusts you to discover the
         setTimeout(() => process.exit(1), 10).unref?.();
       }
     });
+    this.server.on('connection', (socket) => {
+      this._serverSockets.add(socket);
+      socket.on('close', () => {
+        this._serverSockets.delete(socket);
+      });
+    });
     this.registerShutdownHandlers();
 
     // Watch for log file changes and broadcast
@@ -10876,9 +10885,18 @@ You are empowered to explore and understand. The user trusts you to discover the
     this._shutdownHandlersRegistered = true;
     for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
       process.once(signal, () => {
+        const emergencyExit = setTimeout(() => {
+          console.error('[DashboardServer] shutdown timed out; forcing process exit');
+          process.exit(1);
+        }, Math.max(this._serverCloseTimeoutMs + 2000, 3000));
+        emergencyExit.unref?.();
         this.stop(signal)
-          .then(() => process.exit(0))
+          .then(() => {
+            clearTimeout(emergencyExit);
+            process.exit(0);
+          })
           .catch((err) => {
+            clearTimeout(emergencyExit);
             console.error('[DashboardServer] shutdown failed:', err?.message || err);
             process.exit(1);
           });
@@ -10900,6 +10918,7 @@ You are empowered to explore and understand. The user trusts you to discover the
     }
     for (const client of this.logStreamClients || []) {
       try { client.end(); } catch {}
+      try { client.destroy?.(); } catch {}
     }
     this.logStreamClients?.clear?.();
 
@@ -10907,11 +10926,31 @@ You are empowered to explore and understand. The user trusts you to discover the
       const server = this.server;
       this.server = null;
       await new Promise((resolve) => {
-        const timeout = setTimeout(resolve, 5000);
+        let resolved = false;
+        const finish = () => {
+          if (resolved) return;
+          resolved = true;
+          clearTimeout(forceClose);
+          clearTimeout(timeout);
+          this._serverSockets?.clear?.();
+          resolve();
+        };
+        const destroyTrackedSockets = () => {
+          try { server.closeAllConnections?.(); } catch {}
+          for (const socket of this._serverSockets || []) {
+            try { socket.destroy?.(); } catch {}
+          }
+        };
+        try { server.closeIdleConnections?.(); } catch {}
+        const forceClose = setTimeout(destroyTrackedSockets, this._socketDestroyGraceMs);
+        forceClose.unref?.();
+        const timeout = setTimeout(() => {
+          destroyTrackedSockets();
+          finish();
+        }, this._serverCloseTimeoutMs);
         timeout.unref?.();
         server.close(() => {
-          clearTimeout(timeout);
-          resolve();
+          finish();
         });
       });
     }

@@ -47,6 +47,7 @@ test('dashboard stop closes runtime handles used by PM2 restarts', async () => {
   let synthesisStopped = false;
   let intervalCleared = false;
   let clientEnded = false;
+  let clientDestroyed = false;
   let httpClosed = false;
   const originalClearInterval = globalThis.clearInterval;
   globalThis.clearInterval = (handle) => {
@@ -57,7 +58,11 @@ test('dashboard stop closes runtime handles used by PM2 restarts', async () => {
   server._shutdownStarted = false;
   server._synthesisAgent = { stopSchedule: () => { synthesisStopped = true; } };
   server._logWatchInterval = 'watch-handle';
-  server.logStreamClients = new Set([{ end: () => { clientEnded = true; } }]);
+  server.logStreamClients = new Set([{
+    end: () => { clientEnded = true; },
+    destroy: () => { clientDestroyed = true; },
+  }]);
+  server._serverSockets = new Set();
   server.server = { close: (cb) => { httpClosed = true; cb(); } };
 
   try {
@@ -66,6 +71,7 @@ test('dashboard stop closes runtime handles used by PM2 restarts', async () => {
     assert.equal(synthesisStopped, true);
     assert.equal(intervalCleared, true);
     assert.equal(clientEnded, true);
+    assert.equal(clientDestroyed, true);
     assert.equal(httpClosed, true);
     assert.equal(server.server, null);
     assert.equal(server._logWatchInterval, null);
@@ -73,6 +79,38 @@ test('dashboard stop closes runtime handles used by PM2 restarts', async () => {
   } finally {
     globalThis.clearInterval = originalClearInterval;
   }
+});
+
+test('dashboard stop force-closes tracked sockets when active connections block close', async () => {
+  const server = Object.create(DashboardServer.prototype);
+  let closeCalled = false;
+  let idleClosed = false;
+  let allClosed = false;
+  let socketDestroyed = false;
+
+  server._shutdownStarted = false;
+  server._synthesisAgent = null;
+  server._logWatchInterval = null;
+  server.logStreamClients = new Set();
+  server._serverCloseTimeoutMs = 25;
+  server._socketDestroyGraceMs = 1;
+  server._serverSockets = new Set([{
+    destroy: () => { socketDestroyed = true; },
+  }]);
+  server.server = {
+    close: () => { closeCalled = true; },
+    closeIdleConnections: () => { idleClosed = true; },
+    closeAllConnections: () => { allClosed = true; },
+  };
+
+  await server.stop('test-active-connections');
+
+  assert.equal(closeCalled, true);
+  assert.equal(idleClosed, true);
+  assert.equal(allClosed, true);
+  assert.equal(socketDestroyed, true);
+  assert.equal(server.server, null);
+  assert.equal(server._serverSockets.size, 0);
 });
 
 test('runtime health treats timed-out engine health as degraded when PM2 says process is online', async () => {
