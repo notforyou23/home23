@@ -3825,17 +3825,31 @@ function renderGoodLifeHostPressure(host) {
 }
 
 function renderGoodLifePm2Changes(pm2) {
-  if (!pm2 || !Array.isArray(pm2.processes) || pm2.processes.length === 0) return '';
+  if (!pm2) return '';
+  const processRows = Array.isArray(pm2.processes) ? pm2.processes : [];
+  const offlineRows = Array.isArray(pm2.offlineProcesses) ? pm2.offlineProcesses : [];
+  if (processRows.length === 0 && offlineRows.length === 0 && pm2.currentTotal == null) return '';
   const invalid = Number(pm2.invalidRestartCounters || 0);
+  const offline = Number(pm2.offline || 0);
+  const currentTotal = Number.isFinite(Number(pm2.currentTotal)) ? Number(pm2.currentTotal) : null;
+  const currentText = offline > 0
+    ? `${offline} currently not online`
+    : (currentTotal == null ? 'current PM2 status unavailable' : `${currentTotal} current Home23 processes online`);
   return `
     <section><h4>Runtime Changes</h4>
-      <div class="h23-goodlife-evidence-row ${invalid ? 'watch' : 'info'}">
+      <div class="h23-goodlife-evidence-row ${offline || invalid ? 'watch' : 'info'}">
         <strong>PM2 changes</strong>
         <span>${escapeHtml(`${Number(pm2.recentHome23Changes || 0)} Home23 process change${Number(pm2.recentHome23Changes || 0) === 1 ? '' : 's'}`)}</span>
-        <small>${escapeHtml(invalid ? `${invalid} unknown restart counter${invalid === 1 ? '' : 's'}` : 'restart counters normal')}</small>
-        <em>${escapeHtml(invalid ? 'verify counter' : 'observed')}</em>
+        <small>${escapeHtml([currentText, invalid ? `${invalid} unknown restart counter${invalid === 1 ? '' : 's'}` : null].filter(Boolean).join(' - '))}</small>
+        <em>${escapeHtml(offline ? 'repair signal' : (invalid ? 'verify counter' : 'observed'))}</em>
       </div>
-      ${pm2.processes.slice(0, 6).map((row) => `<div class="h23-goodlife-evidence-row">
+      ${offlineRows.slice(0, 4).map((row) => `<div class="h23-goodlife-evidence-row critical">
+        <strong>${escapeHtml(row.name || 'pm2 process')}</strong>
+        <span>${escapeHtml(row.status || 'not online')}</span>
+        <small>${escapeHtml(row.role || 'Home23 process')}</small>
+        <em>current</em>
+      </div>`).join('')}
+      ${processRows.slice(0, 6).map((row) => `<div class="h23-goodlife-evidence-row">
         <strong>${escapeHtml(row.name || 'pm2 process')}</strong>
         <span>${escapeHtml(`${Number(row.changes || 0)} change${Number(row.changes || 0) === 1 ? '' : 's'}`)}</span>
         <small>${escapeHtml([

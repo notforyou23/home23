@@ -977,6 +977,7 @@ async function main() {
               orchestrator,
               memory,
               goals,
+              includeCurrentPm2: true,
             });
           },
         }));

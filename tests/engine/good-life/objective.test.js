@@ -110,3 +110,21 @@ test('GoodLifeObjective treats critical host pressure as repair drift', () => {
   assert.match(evaluation.lanes.viability.reasons.join(' '), /host swap 96% used/);
   assert.equal(evaluation.policy.mode, 'repair');
 });
+
+test('GoodLifeObjective treats current Home23 PM2 offline state as repair drift', () => {
+  const objective = new GoodLifeObjective();
+  const evaluation = objective.evaluate({
+    now: '2026-05-10T09:35:00.000Z',
+    liveProblems: { open: 0, chronic: 0 },
+    crystallization: { lastReceiptAt: '2026-05-10T09:34:00.000Z' },
+    memory: { nodes: 100, edges: 180 },
+    pm2: {
+      offline: 1,
+      offlineProcesses: [{ name: 'home23-jerry-dash', status: 'stopped' }],
+    },
+  });
+
+  assert.equal(evaluation.lanes.viability.status, 'critical');
+  assert.match(evaluation.lanes.viability.reasons.join(' '), /1 home23 process\(es\) offline/);
+  assert.equal(evaluation.policy.mode, 'repair');
+});

@@ -212,6 +212,48 @@ test('Good Life snapshot summarizes recent PM2 restart observations', () => {
   }
 });
 
+test('Good Life snapshot includes current Home23 PM2 offline counts', () => {
+  const snapshot = buildGoodLifeSnapshot({
+    runtimeRoot: '',
+    currentPm2List: [
+      {
+        name: 'home23-jerry',
+        pm2_env: {
+          status: 'online',
+          restart_time: 18,
+          pm_exec_path: '/Users/jtr/_JTR23_/release/home23/engine/src/index.js',
+        },
+      },
+      {
+        name: 'home23-jerry-dash',
+        pm2_env: {
+          status: 'stopped',
+          restart_time: 955,
+          pm_exec_path: '/Users/jtr/_JTR23_/release/home23/engine/src/dashboard/server.js',
+        },
+      },
+      {
+        name: 'home23-forrest-dash',
+        pm2_env: {
+          status: 'online',
+          restart_time: '171111111111111111111111',
+          pm_exec_path: '/Users/jtr/_JTR23_/release/home23/engine/src/dashboard/server.js',
+        },
+      },
+      {
+        name: 'external-tool',
+        pm2_env: { status: 'stopped', restart_time: 2 },
+      },
+    ],
+  });
+
+  assert.equal(snapshot.pm2.currentTotal, 3);
+  assert.equal(snapshot.pm2.offline, 1);
+  assert.equal(snapshot.pm2.invalidCurrentRestartCounters, 1);
+  assert.deepEqual(snapshot.pm2.offlineProcesses.map((p) => p.name), ['home23-jerry-dash']);
+  assert.equal(snapshot.pm2.current.find((p) => p.name === 'home23-forrest-dash').restartCount, null);
+});
+
 test('Good Life action summary prefers structured recent failure counter over prose mentions', () => {
   const snapshot = buildGoodLifeSnapshot({
     runtimeRoot: '',

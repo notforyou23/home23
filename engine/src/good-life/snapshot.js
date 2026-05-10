@@ -2,6 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
+const topology = require('../system/home23-process-topology.js');
+
+const { classifyHome23Process } = topology;
 
 function buildGoodLifeSnapshot({
   runtimeRoot,
@@ -9,6 +13,8 @@ function buildGoodLifeSnapshot({
   orchestrator,
   memory,
   goals,
+  includeCurrentPm2 = false,
+  currentPm2List,
 } = {}) {
   const now = new Date().toISOString();
   return {
@@ -26,7 +32,7 @@ function buildGoodLifeSnapshot({
     thinkingMachine: orchestrator?.thinkingMachine?.getStats?.() || null,
     publish: summarizePublish(runtimeRoot),
     goodLife: summarizeGoodLife(runtimeRoot),
-    pm2: summarizePm2(runtimeRoot),
+    pm2: summarizePm2(runtimeRoot, includeCurrentPm2 ? readCurrentPm2List() : currentPm2List),
     surfaces: summarizeSurfaces(workspacePath),
     sleep: {
       active: Boolean(orchestrator?.sleepSession?.active),
@@ -106,7 +112,7 @@ function summarizeHostPressure(runtimeRoot) {
   };
 }
 
-function summarizePm2(runtimeRoot) {
+function summarizePm2(runtimeRoot, currentPm2List) {
   const rows = tailJsonl(path.join(runtimeRoot || '', 'channels', 'os.pm2.jsonl'), 80)
     .map((row) => row?.payload)
     .filter((payload) => payload && payload.topology?.family === 'home23');
@@ -135,11 +141,85 @@ function summarizePm2(runtimeRoot) {
   const processes = [...byName.values()]
     .sort((a, b) => b.changes - a.changes || String(a.name).localeCompare(String(b.name)))
     .slice(0, 8);
+  const current = summarizeCurrentPm2(currentPm2List);
   return {
     recentHome23Changes: rows.length,
     invalidRestartCounters,
     processes,
+    ...current,
   };
+}
+
+function summarizeCurrentPm2(list) {
+  if (!Array.isArray(list)) return {
+    currentSampledAt: null,
+    currentTotal: null,
+    offline: null,
+    invalidCurrentRestartCounters: null,
+    current: [],
+    offlineProcesses: [],
+  };
+
+  const sampledAt = new Date().toISOString();
+  let invalidCurrentRestartCounters = 0;
+  const current = [];
+  for (const p of list) {
+    const name = p?.name;
+    const status = p?.pm2_env?.status || null;
+    const script = p?.pm2_env?.pm_exec_path || null;
+    const topology = classifyHome23Process({
+      name,
+      script,
+      cwd: p?.pm2_env?.pm_cwd,
+    });
+    if (topology.family !== 'home23') continue;
+    const restartCount = normalizePm2RestartCount(p?.pm2_env?.restart_time ?? 0);
+    if (restartCount === null) invalidCurrentRestartCounters++;
+    current.push({
+      name,
+      role: topology.role || null,
+      agentName: topology.agentName || null,
+      status,
+      restartCount,
+      rawRestartCount: restartCount === null ? String(p?.pm2_env?.restart_time ?? '') : null,
+    });
+  }
+
+  current.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const offlineProcesses = current.filter((p) => p.status !== 'online');
+  return {
+    currentSampledAt: sampledAt,
+    currentTotal: current.length,
+    offline: offlineProcesses.length,
+    invalidCurrentRestartCounters,
+    current,
+    offlineProcesses,
+  };
+}
+
+function readCurrentPm2List() {
+  try {
+    const stdout = execFileSync('pm2', ['jlist'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+}
+
+function normalizePm2RestartCount(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value.trim());
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function latestChannelPayload(file) {
@@ -370,4 +450,4 @@ function sizeOf(maybeMap) {
   return 0;
 }
 
-module.exports = { buildGoodLifeSnapshot };
+module.exports = { buildGoodLifeSnapshot, readCurrentPm2List };

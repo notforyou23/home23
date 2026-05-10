@@ -30,6 +30,8 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(js, /renderGoodLifePm2Changes/);
   assert.match(js, /Runtime Changes/);
   assert.match(js, /last change/);
+  assert.match(js, /currently not online/);
+  assert.match(js, /repair signal/);
   assert.match(js, /compactGoodLifeHostDetail/);
   assert.match(js, /Host Pressure/);
   assert.match(js, /CPU Load/);
