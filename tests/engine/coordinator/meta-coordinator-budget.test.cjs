@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'test-key';
 const { MetaCoordinator } = require('../../../engine/src/coordinator/meta-coordinator');
 
@@ -80,4 +83,67 @@ test('strategic decision review honors configured coordinator LLM budget', async
   assert.equal(captured.maxTokens, 3000);
   assert.equal(captured.reasoningEffort, 'low');
   assert.equal(captured.verbosity, 'low');
+});
+
+test('agent result analysis uses a bounded recent sample', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-coordinator-results-'));
+  fs.mkdirSync(path.join(dir, 'coordinator'), { recursive: true });
+  const queuePath = path.join(dir, 'coordinator', 'results_queue.jsonl');
+  const rows = [];
+  for (let i = 0; i < 8; i += 1) {
+    rows.push(JSON.stringify({
+      agentId: `agent_${i}`,
+      agentType: 'AnalysisAgent',
+      status: 'completed',
+      startTime: `2026-05-10T10:0${i}:00.000Z`,
+      endTime: `2026-05-10T10:0${i}:30.000Z`,
+      durationFormatted: '30s',
+      mission: { description: `Mission ${i} ${'x'.repeat(120)}` },
+      results: [
+        { type: 'insight', content: `Insight ${i} ${'a'.repeat(500)}` },
+        { type: 'finding', content: `Finding ${i} ${'b'.repeat(500)}` },
+      ],
+    }));
+    rows.push(JSON.stringify({ type: 'integration_marker', agentId: `agent_${i}`, timestamp: `2026-05-10T10:0${i}:31.000Z` }));
+  }
+  fs.writeFileSync(queuePath, `${rows.join('\n')}\n`);
+
+  const coordinator = new MetaCoordinator({
+    logsDir: dir,
+    coordinator: {
+      agentResultsMaxBytes: 1024 * 1024,
+      agentResultsMaxResults: 3,
+      agentResultsMaxSummaries: 2,
+      agentResultsMaxInsights: 4,
+      agentResultsMaxFindings: 2,
+      agentResultSampleChars: 120,
+    },
+  }, {
+    info() {},
+    warn() {},
+    error() {},
+    debug() {},
+  });
+
+  const result = await coordinator.analyzeAgentResults(0);
+  assert.equal(result.sourceStats.reviewedResults, 3);
+  assert.equal(result.agentSummaries.length, 2);
+  assert.equal(result.insights.length, 3);
+  assert.equal(result.findings.length, 2);
+  assert.ok(result.insights.every((item) => item.content.length <= 120));
+
+  const report = await coordinator.generateReport({
+    cycleRange: [1, 2],
+    cognitiveAnalysis: {},
+    goalEvaluation: {},
+    memoryAnalysis: {},
+    agentResults: result,
+    deliverables: {},
+    systemHealth: {},
+    decisions: {},
+    reviewDuration: 10,
+  });
+  assert.equal(report.agentWork.agentSummaries.length, 2);
+  assert.equal(report.agentWork.sourceStats.reviewedResults, 3);
+  assert.ok(Buffer.byteLength(JSON.stringify(report)) < 20_000);
 });

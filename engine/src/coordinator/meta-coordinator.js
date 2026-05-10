@@ -10,6 +10,13 @@ const { getAgentTimeout } = require('../config/agent-timeouts');
 const { parseWithFallback } = require('../core/json-repair');
 const { cosmoEvents } = require('../realtime/event-emitter');
 
+const DEFAULT_AGENT_RESULTS_MAX_BYTES = 5 * 1024 * 1024;
+const DEFAULT_AGENT_RESULTS_MAX_RESULTS = 24;
+const DEFAULT_AGENT_RESULTS_MAX_SUMMARIES = 12;
+const DEFAULT_AGENT_RESULTS_MAX_INSIGHTS = 60;
+const DEFAULT_AGENT_RESULTS_MAX_FINDINGS = 40;
+const DEFAULT_AGENT_RESULT_SAMPLE_CHARS = 500;
+
 /**
  * Meta-Coordinator Agent
  * 
@@ -90,6 +97,12 @@ class MetaCoordinator {
 
   coordinatorVerbosity(fallback = 'low') {
     return this.config.verbosity || fallback;
+  }
+
+  coordinatorLimit(key, fallback, floor = 0, ceiling = Number.MAX_SAFE_INTEGER) {
+    const configured = Number(this.config[key]);
+    const value = Number.isFinite(configured) ? configured : fallback;
+    return Math.max(floor, Math.min(value, ceiling));
   }
 
   /**
@@ -1112,6 +1125,12 @@ Provide insights on:
    */
   async analyzeAgentResults(sinceReviewCycle) {
     const resultsPath = path.join(this.coordinatorDir, 'results_queue.jsonl');
+    const maxBytes = this.coordinatorLimit('agentResultsMaxBytes', DEFAULT_AGENT_RESULTS_MAX_BYTES, 64 * 1024, 50 * 1024 * 1024);
+    const maxResults = this.coordinatorLimit('agentResultsMaxResults', DEFAULT_AGENT_RESULTS_MAX_RESULTS, 1, 500);
+    const maxSummaries = this.coordinatorLimit('agentResultsMaxSummaries', DEFAULT_AGENT_RESULTS_MAX_SUMMARIES, 1, 200);
+    const maxInsights = this.coordinatorLimit('agentResultsMaxInsights', DEFAULT_AGENT_RESULTS_MAX_INSIGHTS, 0, 1000);
+    const maxFindings = this.coordinatorLimit('agentResultsMaxFindings', DEFAULT_AGENT_RESULTS_MAX_FINDINGS, 0, 1000);
+    const sampleChars = this.coordinatorLimit('agentResultSampleChars', DEFAULT_AGENT_RESULT_SAMPLE_CHARS, 80, 2000);
     
     const allResults = [];
     const insights = [];
@@ -1119,13 +1138,21 @@ Provide insights on:
     const agentSummaries = [];
 
     try {
-      const fileStream = createReadStream(resultsPath);
+      const stats = await fs.stat(resultsPath);
+      const start = Math.max(0, stats.size - maxBytes);
+      const fileStream = createReadStream(resultsPath, { start });
       const rl = createInterface({
         input: fileStream,
         crlfDelay: Infinity
       });
 
+      let firstLine = true;
       for await (const line of rl) {
+        if (start > 0 && firstLine) {
+          firstLine = false;
+          continue;
+        }
+        firstLine = false;
         if (line.trim()) {
           try {
             const result = JSON.parse(line);
@@ -1147,7 +1174,7 @@ Provide insights on:
         // This is approximate - we don't have exact cycle timestamps in results
         // so we use a simple heuristic: include all recent results
         return true; // For now, review all recent results
-      });
+      }).slice(-maxResults);
 
       // Extract insights and findings from each agent result
       for (const agentResult of recentResults) {
@@ -1156,40 +1183,46 @@ Provide insights on:
 
         for (const item of agentResult.results || []) {
           if (item.type === 'insight') {
-            insights.push({
-              content: item.content,
-              agentType: agentResult.agentType,
-              agentId: agentResult.agentId,
-              goal: agentResult.mission?.description,
-              timestamp: item.timestamp || agentResult.endTime
-            });
             // Extract string content (handle both strings and objects)
             const insightText = typeof item.content === 'string' 
               ? item.content 
               : item.content?.content || item.content?.summary || JSON.stringify(item.content);
-            agentInsights.push(insightText);
+            const compactInsight = insightText.slice(0, sampleChars);
+            if (insights.length < maxInsights) {
+              insights.push({
+                content: compactInsight,
+                agentType: agentResult.agentType,
+                agentId: agentResult.agentId,
+                goal: agentResult.mission?.description,
+                timestamp: item.timestamp || agentResult.endTime
+              });
+            }
+            agentInsights.push(compactInsight);
           } else if (item.type === 'finding') {
-            findings.push({
-              content: item.content,
-              agentType: agentResult.agentType,
-              agentId: agentResult.agentId,
-              goal: agentResult.mission?.description,
-              timestamp: item.timestamp || agentResult.endTime
-            });
             // Extract string content (handle both strings and objects)
             const findingText = typeof item.content === 'string' 
               ? item.content 
               : item.content?.content || item.content?.summary || JSON.stringify(item.content);
-            agentFindings.push(findingText);
+            const compactFinding = findingText.slice(0, sampleChars);
+            if (findings.length < maxFindings) {
+              findings.push({
+                content: compactFinding,
+                agentType: agentResult.agentType,
+                agentId: agentResult.agentId,
+                goal: agentResult.mission?.description,
+                timestamp: item.timestamp || agentResult.endTime
+              });
+            }
+            agentFindings.push(compactFinding);
           }
         }
 
         // Create summary for this agent
-        if (agentInsights.length > 0 || agentFindings.length > 0) {
+        if ((agentInsights.length > 0 || agentFindings.length > 0) && agentSummaries.length < maxSummaries) {
           agentSummaries.push({
             agentType: agentResult.agentType,
             agentId: agentResult.agentId,
-            goal: agentResult.mission?.description || 'No description',
+            goal: String(agentResult.mission?.description || 'No description').slice(0, 500),
             status: agentResult.status,
             insightsCount: agentInsights.length,
             findingsCount: agentFindings.length,
@@ -1205,7 +1238,9 @@ Provide insights on:
         totalAgents: recentResults.length,
         agentsWithResults: agentSummaries.length,
         totalInsights: insights.length,
-        totalFindings: findings.length
+        totalFindings: findings.length,
+        queueBytes: stats.size,
+        scannedBytes: Math.min(stats.size, maxBytes)
       });
 
       return {
@@ -1213,6 +1248,13 @@ Provide insights on:
         insights,
         findings,
         agentSummaries,
+        sourceStats: {
+          queueBytes: stats.size,
+          scannedBytes: Math.min(stats.size, maxBytes),
+          parsedResults: allResults.length,
+          reviewedResults: recentResults.length,
+          truncated: stats.size > maxBytes || allResults.length > recentResults.length
+        },
         timestamp: new Date()
       };
 
@@ -1229,6 +1271,13 @@ Provide insights on:
         insights: [],
         findings: [],
         agentSummaries: [],
+        sourceStats: {
+          queueBytes: 0,
+          scannedBytes: 0,
+          parsedResults: 0,
+          reviewedResults: 0,
+          truncated: false
+        },
         timestamp: new Date()
       };
     }
@@ -2073,8 +2122,10 @@ Requirements:
         agentCount: agentResults?.agentCount || 0,
         totalInsights: agentResults?.insights?.length || 0,
         totalFindings: agentResults?.findings?.length || 0,
+        sourceStats: agentResults?.sourceStats || null,
         agentSummaries: Array.isArray(agentResults?.agentSummaries) ? agentResults.agentSummaries : [],
-        // Store full insights and findings for reference
+        // Store bounded samples. results_queue.jsonl remains the canonical raw
+        // history; review artifacts must stay cheap to write, load, and query.
         insights: Array.isArray(agentResults?.insights) ? agentResults.insights : [],
         findings: Array.isArray(agentResults?.findings) ? agentResults.findings : []
       },
