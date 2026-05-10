@@ -1067,8 +1067,9 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
   } else if (budget?.exhausted) {
     severity = work?.activeTotal > 0 ? 'attention' : 'clear';
     status = 'Paused';
-    headline = 'Good Life self-maintenance budget is spent';
-    why = budget.reason;
+    const requestedMode = policy?.mode ? `${policy.mode} requested` : 'current work requested';
+    headline = `Good Life self-maintenance budget is spent; ${requestedMode}`;
+    why = policy?.reason ? `${budget.reason}; current signal: ${policy.reason}` : budget.reason;
     const resetText = budget.resetText ? `the daily budget reset (${budget.resetText})` : 'the daily budget reset';
     next = work?.activeTotal > 0
       ? `${work.activeTotal} active work item${work.activeTotal === 1 ? '' : 's'} waiting for ${resetText} or fresh repair/help drift.`

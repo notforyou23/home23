@@ -1072,6 +1072,8 @@ test('Good Life operator surfaces exhausted self-maintenance budget as paused au
   assert.equal(model.operatorBrief.severity, 'clear');
   assert.equal(model.operatorBrief.status, 'Paused');
   assert.match(model.operatorBrief.headline, /self-maintenance budget is spent/);
+  assert.match(model.operatorBrief.headline, /learn requested/);
+  assert.match(model.operatorBrief.why, /current signal: no critical drift/);
   assert.match(model.operatorBrief.next, /resets in 10h 15m/);
   assert.match(model.operatorHandoff.repair, /self-maintenance budget is 4\/4/);
   assert.match(model.operatorHandoff.userAction, /self-maintenance resets in 10h 15m/);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -111,6 +111,39 @@ test('Good Life goal summary includes active goal obligations from brain snapsho
       complete: 7,
       total: 10,
     });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Good Life snapshot includes latest machine host pressure evidence', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-snapshot-'));
+  try {
+    const channelsDir = join(dir, 'channels');
+    writeFileSync(join(dir, '.keep'), '');
+    mkdirSync(channelsDir, { recursive: true });
+    writeFileSync(join(channelsDir, 'machine.cpu.jsonl'), `${JSON.stringify({
+      payload: { at: '2026-05-10T08:54:40.024Z', loadAvg: [10.348, 7.56, 6.69], cpuCount: 10 },
+    })}\n`);
+    writeFileSync(join(channelsDir, 'machine.memory.jsonl'), `${JSON.stringify({
+      payload: { at: '2026-05-10T08:54:40.024Z', total: 17179869184, free: 372604928, freePct: 2.2 },
+    })}\n`);
+    writeFileSync(join(channelsDir, 'machine.swap.jsonl'), `${JSON.stringify({
+      payload: {
+        at: '2026-05-10T08:54:11.692Z',
+        swap: { totalMb: 8192, usedMb: 7502.75, usedPct: 91.6 },
+      },
+    })}\n`);
+    writeFileSync(join(channelsDir, 'machine.disk.jsonl'), `${JSON.stringify({
+      payload: { at: '2026-05-10T08:52:09.784Z', mount: '/', usagePct: 32 },
+    })}\n`);
+
+    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+
+    assert.equal(snapshot.host.cpu.loadRatio, 1.03);
+    assert.equal(snapshot.host.memory.freePct, 2.2);
+    assert.equal(snapshot.host.swap.usedPct, 91.6);
+    assert.equal(snapshot.host.disk.usagePct, 32);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

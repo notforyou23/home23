@@ -21,6 +21,7 @@ function buildGoodLifeSnapshot({
     goals: summarizeGoals(goals, runtimeRoot),
     agenda: summarizeAgenda(runtimeRoot),
     crystallization: summarizeJsonl(path.join(runtimeRoot || '', 'crystallization-receipts.jsonl')),
+    host: summarizeHostPressure(runtimeRoot),
     discovery: orchestrator?.discoveryEngine?.getStats?.() || null,
     thinkingMachine: orchestrator?.thinkingMachine?.getStats?.() || null,
     publish: summarizePublish(runtimeRoot),
@@ -54,6 +55,59 @@ function summarizeLiveProblems(orchestrator, runtimeRoot) {
     else if (p.state === 'unverifiable') out.unverifiable++;
   }
   return out;
+}
+
+function summarizeHostPressure(runtimeRoot) {
+  const channelsDir = path.join(runtimeRoot || '', 'channels');
+  const cpu = latestChannelPayload(path.join(channelsDir, 'machine.cpu.jsonl'));
+  const memory = latestChannelPayload(path.join(channelsDir, 'machine.memory.jsonl'));
+  const swap = latestChannelPayload(path.join(channelsDir, 'machine.swap.jsonl'));
+  const disk = latestChannelPayload(path.join(channelsDir, 'machine.disk.jsonl'));
+  const process = latestChannelPayload(path.join(channelsDir, 'machine.process.jsonl'));
+  const load1 = Array.isArray(cpu?.loadAvg) ? Number(cpu.loadAvg[0]) : null;
+  const cpuCount = Number(cpu?.cpuCount || 0);
+  return {
+    cpu: cpu ? {
+      at: toIsoTime(cpu.at),
+      load1: Number.isFinite(load1) ? load1 : null,
+      cpuCount: Number.isFinite(cpuCount) && cpuCount > 0 ? cpuCount : null,
+      loadRatio: Number.isFinite(load1) && cpuCount > 0 ? +(load1 / cpuCount).toFixed(2) : null,
+    } : null,
+    memory: memory ? {
+      at: toIsoTime(memory.at),
+      freePct: Number.isFinite(Number(memory.freePct)) ? Number(memory.freePct) : null,
+      freeBytes: Number.isFinite(Number(memory.free)) ? Number(memory.free) : null,
+      totalBytes: Number.isFinite(Number(memory.total)) ? Number(memory.total) : null,
+    } : null,
+    swap: swap ? {
+      at: toIsoTime(swap.at),
+      usedPct: Number.isFinite(Number(swap.swap?.usedPct)) ? Number(swap.swap.usedPct) : null,
+      usedMb: Number.isFinite(Number(swap.swap?.usedMb)) ? Number(swap.swap.usedMb) : null,
+      totalMb: Number.isFinite(Number(swap.swap?.totalMb)) ? Number(swap.swap.totalMb) : null,
+    } : null,
+    disk: disk ? {
+      at: toIsoTime(disk.at),
+      mount: disk.mount || null,
+      usagePct: Number.isFinite(Number(disk.usagePct)) ? Number(disk.usagePct) : null,
+    } : null,
+    process: process ? {
+      at: toIsoTime(process.at),
+      topCpuPct: Number.isFinite(Number(process.topCpuPct)) ? Number(process.topCpuPct) : null,
+      totalCpuPctTopN: Number.isFinite(Number(process.totalCpuPctTopN)) ? Number(process.totalCpuPctTopN) : null,
+      topProcess: Array.isArray(process.processes) && process.processes[0]
+        ? {
+          command: process.processes[0].command || null,
+          pm2Name: process.processes[0].pm2Name || null,
+          cpuPct: Number.isFinite(Number(process.processes[0].cpuPct)) ? Number(process.processes[0].cpuPct) : null,
+        }
+        : null,
+    } : null,
+  };
+}
+
+function latestChannelPayload(file) {
+  const row = tailJsonl(file, 1)[0];
+  return row?.payload || null;
 }
 
 function isGoodLifeDiagnosticProblem(problem) {

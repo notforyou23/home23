@@ -50,3 +50,43 @@ test('GoodLifeObjective accepts numeric useful-output timestamps', () => {
   assert.equal(evaluation.lanes.usefulness.status, 'strained');
   assert.equal(evaluation.policy.mode, 'help');
 });
+
+test('GoodLifeObjective treats host resource pressure as friction drift', () => {
+  const objective = new GoodLifeObjective();
+  const evaluation = objective.evaluate({
+    now: '2026-05-10T08:55:00.000Z',
+    liveProblems: { open: 0, chronic: 0 },
+    crystallization: { lastReceiptAt: '2026-05-10T08:54:00.000Z' },
+    memory: { nodes: 100, edges: 180 },
+    host: {
+      cpu: { loadRatio: 1.04 },
+      swap: { usedPct: 91.6 },
+      disk: { usagePct: 32 },
+    },
+  });
+
+  assert.equal(evaluation.lanes.viability.status, 'healthy');
+  assert.equal(evaluation.lanes.friction.status, 'strained');
+  assert.match(evaluation.lanes.friction.reasons.join(' '), /host load 104% of cores/);
+  assert.match(evaluation.lanes.friction.reasons.join(' '), /host swap 92% used/);
+  assert.equal(evaluation.policy.mode, 'rest');
+  assert.equal(evaluation.evidence.host.swap.usedPct, 91.6);
+});
+
+test('GoodLifeObjective treats critical host pressure as repair drift', () => {
+  const objective = new GoodLifeObjective();
+  const evaluation = objective.evaluate({
+    now: '2026-05-10T08:55:00.000Z',
+    liveProblems: { open: 0, chronic: 0 },
+    crystallization: { lastReceiptAt: '2026-05-10T08:54:00.000Z' },
+    memory: { nodes: 100, edges: 180 },
+    host: {
+      swap: { usedPct: 96 },
+      disk: { usagePct: 32 },
+    },
+  });
+
+  assert.equal(evaluation.lanes.viability.status, 'critical');
+  assert.match(evaluation.lanes.viability.reasons.join(' '), /host swap 96% used/);
+  assert.equal(evaluation.policy.mode, 'repair');
+});

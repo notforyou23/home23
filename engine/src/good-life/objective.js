@@ -8,6 +8,10 @@ const DEFAULT_THRESHOLDS = Object.freeze({
   openGoalsHigh: 12,
   frictionFailuresHigh: 3,
   maintenanceRatioHigh: 0.3,
+  hostLoadRatioHigh: 1,
+  hostSwapPressureHigh: 85,
+  hostSwapPressureCritical: 95,
+  hostDiskUsageCritical: 95,
 });
 
 const LANE_ORDER = Object.freeze([
@@ -65,12 +69,18 @@ class GoodLifeObjective {
     const receiptsAgeMin = ageMinutes(s.crystallization?.lastReceiptAt, s.now);
     const pm2Offline = Number(s.pm2?.offline || 0);
     const staleReceipt = receiptsAgeMin != null && receiptsAgeMin > this.thresholds.receiptStaleMinutes;
+    const diskUsagePct = Number(s.host?.disk?.usagePct);
+    const swapUsedPct = Number(s.host?.swap?.usedPct);
+    const diskCritical = Number.isFinite(diskUsagePct) && diskUsagePct >= this.thresholds.hostDiskUsageCritical;
+    const swapCritical = Number.isFinite(swapUsedPct) && swapUsedPct >= this.thresholds.hostSwapPressureCritical;
 
-    if (pm2Offline > 0 || problems >= this.thresholds.liveProblemsCritical || staleReceipt) {
+    if (pm2Offline > 0 || problems >= this.thresholds.liveProblemsCritical || staleReceipt || diskCritical || swapCritical) {
       return lane('critical', [
         pm2Offline > 0 ? `${pm2Offline} home23 process(es) offline` : null,
         problems > 0 ? `${problems} unresolved live problem(s)` : null,
         staleReceipt ? `no crystallization receipt for ${Math.round(receiptsAgeMin)}m` : null,
+        diskCritical ? `host disk ${Math.round(diskUsagePct)}% used` : null,
+        swapCritical ? `host swap ${Math.round(swapUsedPct)}% used` : null,
       ]);
     }
     return lane('healthy', ['core engine evidence is flowing']);
@@ -120,10 +130,19 @@ class GoodLifeObjective {
   _friction(s) {
     const failures = Number(s.actions?.recentFailures || 0);
     const maintenanceRatio = Number(s.actions?.maintenanceRatio || 0);
-    if (failures >= this.thresholds.frictionFailuresHigh || maintenanceRatio > this.thresholds.maintenanceRatioHigh) {
+    const loadRatio = Number(s.host?.cpu?.loadRatio);
+    const swapUsedPct = Number(s.host?.swap?.usedPct);
+    const hostLoadHigh = Number.isFinite(loadRatio) && loadRatio >= this.thresholds.hostLoadRatioHigh;
+    const hostSwapHigh = Number.isFinite(swapUsedPct) && swapUsedPct >= this.thresholds.hostSwapPressureHigh;
+    if (failures >= this.thresholds.frictionFailuresHigh
+      || maintenanceRatio > this.thresholds.maintenanceRatioHigh
+      || hostLoadHigh
+      || hostSwapHigh) {
       return lane('strained', [
         failures >= this.thresholds.frictionFailuresHigh ? `${failures} recent action failure(s)` : null,
         maintenanceRatio > this.thresholds.maintenanceRatioHigh ? `maintenance ratio ${(maintenanceRatio * 100).toFixed(0)}%` : null,
+        hostLoadHigh ? `host load ${(loadRatio * 100).toFixed(0)}% of cores` : null,
+        hostSwapHigh ? `host swap ${Math.round(swapUsedPct)}% used` : null,
       ]);
     }
     return lane('healthy', ['friction is not dominating the loop']);
@@ -167,6 +186,7 @@ class GoodLifeObjective {
       thinkingMachine: s.thinkingMachine || null,
       publish: s.publish || null,
       actions: s.actions || null,
+      host: s.host || null,
       goodLife: s.goodLife || null,
     };
   }
