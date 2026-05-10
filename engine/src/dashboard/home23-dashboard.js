@@ -2882,6 +2882,25 @@ function renderGoodLifeBrief(operator, scope = 'home') {
   `;
 }
 
+function renderGoodLifeDigestList(operator) {
+  const digest = operator?.operatorDigest || null;
+  if (!digest) return '';
+  const rows = [
+    ['Issue', digest.issue],
+    ['Now', digest.currentWork],
+    ['Fixed', digest.latestFix],
+    ['You', digest.userAction],
+  ].filter(([, value]) => value);
+  return `<div class="h23-goodlife-digest-list">
+    ${rows.map(([label, value]) => `
+      <div class="h23-goodlife-digest-row">
+        <label>${escapeHtml(label)}</label>
+        <span>${escapeHtml(value)}</span>
+      </div>
+    `).join('')}
+  </div>`;
+}
+
 function updateGoodLifeTile(data, scope = 'home') {
   const id = (base) => goodLifeDomId(base, scope);
   const state = data?.state || null;
@@ -2916,7 +2935,8 @@ function updateGoodLifeTile(data, scope = 'home') {
   const answerLines = operator?.operatorAnswer?.length
     ? operator.operatorAnswer
     : [state.summary || state.policy?.reason || ''];
-  setHtml(id('goodlife-answer'), answerLines.filter(Boolean).slice(0, 6).map((line) => (
+  const digestHtml = renderGoodLifeDigestList(operator);
+  setHtml(id('goodlife-answer'), digestHtml || answerLines.filter(Boolean).slice(0, 6).map((line) => (
     `<div class="h23-goodlife-answer-line">${escapeHtml(line)}</div>`
   )).join(''));
   setHtml(id('goodlife-problems'), renderGoodLifeProblems(operator, data));

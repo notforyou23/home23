@@ -2953,6 +2953,33 @@ body.h23-external-focus #cosmo23-refresh-btn {
   color: var(--text-secondary);
 }
 
+.h23-goodlife-digest-list {
+  display: grid;
+  gap: 7px;
+}
+
+.h23-goodlife-digest-row {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.h23-goodlife-digest-row label {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.h23-goodlife-digest-row span {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .h23-goodlife-problem-stats {
   display: flex;
   flex-wrap: wrap;
