@@ -482,6 +482,17 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
       return existing;
     }
 
+    const duplicate = this.findGoalByDescription(description);
+    if (duplicate) {
+      this.logger?.warn('Skipped external goal upsert for duplicate goal description', {
+        goalId,
+        existingGoalId: duplicate.id,
+        existingStatus: duplicate.status || 'active',
+        description: duplicate.description?.substring?.(0, 60)
+      });
+      return duplicate;
+    }
+
     const archived = (this.archivedGoals || []).find(goal => goal?.id === goalId);
     if (archived) {
       this.logger?.warn('Skipped external goal upsert for archived goal', {

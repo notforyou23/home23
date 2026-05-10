@@ -62,6 +62,26 @@ test('completed goal descriptions suppress rediscovery loops', () => {
   assert.equal(goals.completedGoals.length, 1);
 });
 
+test('external goal upsert reuses an active goal with the same description', () => {
+  const goals = makeGoals();
+  const first = goals.upsertExternalGoal(
+    'synthesis_7004',
+    'Consolidate and synthesize recent cognitive work into a comprehensive knowledge report.',
+    { source: 'system_scheduler' },
+  );
+
+  const duplicate = goals.upsertExternalGoal(
+    'synthesis_7014',
+    'Consolidate and synthesize recent cognitive work into a comprehensive knowledge report.',
+    { source: 'system_scheduler' },
+  );
+
+  assert.ok(first);
+  assert.equal(duplicate.id, first.id);
+  assert.equal(goals.getGoals().length, 1);
+  assert.equal(goals.getGoal('synthesis_7014'), undefined);
+});
+
 test('observation-only dream, sleep, and notice outputs are not promoted to active goals', () => {
   const goals = makeGoals();
 
