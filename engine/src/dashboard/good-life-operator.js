@@ -1013,6 +1013,20 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
       label: 'Review Warning',
       worker: null,
     };
+  } else if (budget?.exhausted) {
+    severity = 'attention';
+    status = 'Paused';
+    headline = 'Good Life self-maintenance budget is spent';
+    why = budget.reason;
+    next = work?.activeTotal > 0
+      ? `${work.activeTotal} active work item${work.activeTotal === 1 ? '' : 's'} waiting for the daily budget reset or fresh repair/help drift.`
+      : 'Autonomous repair/help can still run if drift appears; learning/rest work resumes when the daily budget resets.';
+    target = {
+      tab: work?.activeTotal > 0 ? 'work' : 'insights',
+      id: work?.topAgenda?.id || work?.topGoal?.id || null,
+      label: work?.activeTotal > 0 ? 'Review Paused Work' : 'Review Budget',
+      worker: null,
+    };
   } else if (work?.activeTotal > 0) {
     severity = 'working';
     status = 'Working';
@@ -1039,18 +1053,6 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
       worker: work.topAgenda?.review?.recommended
         ? null
         : (topAgendaWorkerRoute?.worker || (latestActionAgendaActive ? latestAction.workerRoute.worker : null)),
-    };
-  } else if (budget?.exhausted) {
-    severity = 'attention';
-    status = 'Paused';
-    headline = 'Good Life self-maintenance budget is spent';
-    why = budget.reason;
-    next = 'Autonomous repair/help can still run if drift appears; learning/rest work resumes when the daily budget resets.';
-    target = {
-      tab: 'insights',
-      id: null,
-      label: 'Review Budget',
-      worker: null,
     };
   } else if (latestResolution) {
     headline = 'No active issues after recent repairs';
@@ -1184,7 +1186,9 @@ function buildOperatorDigest({ brief, liveProblems, work, budget }) {
     issue: activeCount > 0
       ? compactText(`${activeCount} active live problem${activeCount === 1 ? '' : 's'}: ${activeProblem?.issue || activeProblem?.claim || activeProblem?.id || 'operator issue'}`, 220)
       : 'No active live problems',
-    currentWork: work?.activeTotal > 0 ? workStatus : 'No active routed work',
+    currentWork: budget?.exhausted && work?.activeTotal > 0
+      ? `Paused by daily budget: ${workStatus}`
+      : (work?.activeTotal > 0 ? workStatus : 'No active routed work'),
     latestFix: latestResolution
       ? compactText(latestResolution.fixRecipe?.summary || latestResolution.claim || latestResolution.id || 'recent verified resolution', 220)
       : 'No recent verified repair receipt',
@@ -1218,10 +1222,10 @@ function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAc
   if (activeCount > 0) {
     repair = formatRemediationLine('Next repair step', activeProblem?.nextRemediation)
       || 'Autonomous remediation can continue from the recorded plan.';
-  } else if (work?.activeTotal > 0) {
-    repair = work.statusText || `${work.activeTotal} active Good Life work item${work.activeTotal === 1 ? '' : 's'}`;
   } else if (budget?.exhausted) {
     repair = budget.reason;
+  } else if (work?.activeTotal > 0) {
+    repair = work.statusText || `${work.activeTotal} active Good Life work item${work.activeTotal === 1 ? '' : 's'}`;
   } else if (latestResolution) {
     repair = latestResolution.fixRecipe?.summary
       ? compactText(latestResolution.fixRecipe.summary, 240)

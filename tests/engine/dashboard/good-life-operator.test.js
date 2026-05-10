@@ -968,6 +968,69 @@ test('Good Life operator surfaces exhausted self-maintenance budget as paused au
   assert.equal(model.detail.insights.autonomyBudget.status, 'exhausted');
 });
 
+test('Good Life operator does not present active learn work as working when budget is exhausted', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      summary: 'learn - no critical drift; pursue learning progress while staying useful (usefulness:watch)',
+      policy: {
+        mode: 'learn',
+        reason: 'no critical drift; pursue learning progress while staying useful',
+        actionCard: {
+          intent: 'learn',
+          goodLifeLanes: ['usefulness'],
+          evidenceRequired: true,
+          riskTier: 0,
+          reversible: true,
+          expectedOutcome: 'new learning-progress evidence is produced and grounded',
+          stopCondition: 'finding is crystallized or discarded with evidence',
+        },
+      },
+      lanes: {
+        usefulness: { status: 'watch', reasons: ['usefulness must be proven by visible progress'] },
+      },
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+        goals: { open: 1, total: 1 },
+        agenda: { pending: 0 },
+      },
+    }),
+    regulator: {
+      daily: {
+        date: '2026-05-08',
+        actions: [
+          { at: '2026-05-08T09:00:00.000Z', agendaId: 'ag-learn-1', mode: 'learn', category: 'grounded-learning' },
+          { at: '2026-05-08T10:00:00.000Z', agendaId: 'ag-rest-1', mode: 'rest', category: 'reduces-friction' },
+          { at: '2026-05-08T11:00:00.000Z', agendaId: 'ag-learn-2', mode: 'learn', category: 'grounded-learning' },
+          { at: '2026-05-08T12:00:00.000Z', agendaId: 'ag-rest-2', mode: 'rest', category: 'reduces-friction' },
+        ],
+      },
+    },
+    liveProblems: [],
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [{
+        id: 'synthesis_7004',
+        description: 'Consolidate recent cognitive work into a comprehensive knowledge report.',
+        rawDescription: 'Consolidate recent cognitive work into a comprehensive knowledge report.',
+        status: 'active',
+        source: 'system_scheduler',
+        progress: 0.42,
+        createdAt: NOW,
+        review: { recommended: false, required: false },
+      }],
+      counts: { activeAgenda: 0, activeGoals: 1, activeGoalsShown: 1, activeGoalsTrusted: true },
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.operatorBrief.status, 'Paused');
+  assert.match(model.operatorBrief.next, /1 active work item waiting/);
+  assert.equal(model.operatorBrief.target.tab, 'work');
+  assert.match(model.operatorDigest.currentWork, /^Paused by daily budget:/);
+  assert.match(model.operatorDigest.userAction, /self-maintenance is paused by daily budget/);
+  assert.match(model.operatorHandoff.repair, /self-maintenance budget is 4\/4/);
+});
+
 test('Good Life operator shows repair mode bypasses spent self-maintenance budget', () => {
   const model = buildGoodLifeOperatorModel({
     state: goodLifeState({
