@@ -125,8 +125,14 @@ function buildLiveProblemSnapshot(problems = [], now = new Date()) {
         resolvedAt: problem.resolvedAt || null,
         ageMin: resolvedMs ? Math.max(0, Math.round((nowMs - resolvedMs) / 60000)) : null,
         fixRecipe: problem.fixRecipe || null,
+        fixRecipeHistory: Array.isArray(problem.fixRecipeHistory) ? problem.fixRecipeHistory : [],
         lastResult: problem.lastResult || null,
         evidence: problem.evidence || null,
+        remediation: Array.isArray(problem.remediation) ? problem.remediation : [],
+        remediationLog: Array.isArray(problem.remediationLog) ? problem.remediationLog : [],
+        lastRemediation: Array.isArray(problem.remediationLog)
+          ? problem.remediationLog.slice(-1)[0] || null
+          : null,
       });
       if (resolvedMs && nowMs - resolvedMs < RECENT_RESOLUTION_MS) {
         resolvedJustNow.push({
@@ -1106,6 +1112,24 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
   };
 }
 
+function latestResolutionSummary(latestResolution) {
+  if (!latestResolution) return 'No recent verified repair receipt';
+  const verifier = latestResolution.lastResult?.detail
+    || latestResolution.fixRecipe?.verifierStatus
+    || latestResolution.evidence?.result
+    || null;
+  if (latestResolution.fixRecipe?.summary) {
+    return latestResolution.fixRecipe.summary;
+  }
+  if (verifier) {
+    return `Verifier passed: ${verifier}`;
+  }
+  if (latestResolution.evidence?.receiptId || latestResolution.evidence?.receiptPath) {
+    return `Evidence receipt recorded for ${latestResolution.id || 'recent resolution'}`;
+  }
+  return latestResolution.claim || latestResolution.id || 'recent verified resolution';
+}
+
 function buildOperatorAnswer({ state, lanes, liveProblems, consistency, work, latestAction, budget }) {
   const lines = [];
   if (state?.summary || state?.policy?.reason) {
@@ -1125,11 +1149,7 @@ function buildOperatorAnswer({ state, lanes, liveProblems, consistency, work, la
   if (openCount === 0 && chronicCount === 0 && interventionCount === 0) {
     const latestResolution = Array.isArray(liveProblems.resolved) ? liveProblems.resolved[0] || null : null;
     if (latestResolution) {
-      const fixed = latestResolution.fixRecipe?.summary
-        || latestResolution.claim
-        || latestResolution.id
-        || 'recent repair';
-      lines.push(`Latest verified resolution: ${compactText(fixed, 180)}`);
+      lines.push(`Latest verified resolution: ${compactText(latestResolutionSummary(latestResolution), 180)}`);
       const verifier = latestResolution.lastResult?.detail
         || latestResolution.fixRecipe?.verifierStatus
         || latestResolution.evidence?.result
@@ -1209,7 +1229,7 @@ function buildOperatorDigest({ brief, liveProblems, work, budget }) {
       ? `Paused by daily budget: ${workStatus}`
       : (work?.activeTotal > 0 ? workStatus : 'No active routed work'),
     latestFix: latestResolution
-      ? compactText(latestResolution.fixRecipe?.summary || latestResolution.claim || latestResolution.id || 'recent verified resolution', 220)
+      ? compactText(latestResolutionSummary(latestResolution), 220)
       : 'No recent verified repair receipt',
     userAction: compactText(userAction, 220),
     evidence: {
@@ -1246,9 +1266,7 @@ function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAc
   } else if (work?.activeTotal > 0) {
     repair = work.statusText || `${work.activeTotal} active Good Life work item${work.activeTotal === 1 ? '' : 's'}`;
   } else if (latestResolution) {
-    repair = latestResolution.fixRecipe?.summary
-      ? compactText(latestResolution.fixRecipe.summary, 240)
-      : `Latest verifier passed: ${compactText(latestResolution.lastResult?.detail || latestResolution.claim || latestResolution.id || 'recent resolution', 200)}`;
+    repair = compactText(latestResolutionSummary(latestResolution), 260);
   }
 
   let userAction = 'No user action needed right now.';

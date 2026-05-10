@@ -3551,6 +3551,8 @@ function renderGoodLifeWorkDetail(data) {
 function renderGoodLifeResolutionDetail(problem) {
   if (!problem) return '<div class="h23-goodlife-empty h23-goodlife-pad">Select a resolution to inspect what closed.</div>';
   const evidence = problem.evidence || null;
+  const attempts = (problem.remediationLog || []).slice().reverse();
+  const recipes = (problem.fixRecipeHistory || (problem.fixRecipe ? [problem.fixRecipe] : [])).slice().reverse();
   return `
     <div class="h23-goodlife-detail-head">
       <span class="h23-goodlife-problem-state resolved">resolved</span>
@@ -3568,7 +3570,9 @@ function renderGoodLifeResolutionDetail(problem) {
         ${evidence.receiptPath ? `<code>${escapeHtml(evidence.receiptPath)}</code>` : ''}
       </div>
     ` : '<div class="h23-goodlife-empty">No evidence receipt linked</div>'}</section>
-    <section><h4>Fix Recipe</h4>${problem.fixRecipe ? renderGoodLifeJson(problem.fixRecipe) : '<div class="h23-goodlife-empty">No fix recipe recorded</div>'}</section>
+    <section><h4>Remediation Plan</h4>${(problem.remediation || []).length ? renderGoodLifeJson(problem.remediation) : '<div class="h23-goodlife-empty">No remediation plan recorded</div>'}</section>
+    <section><h4>Recent Attempts</h4>${attempts.length ? attempts.map((attempt) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(attempt.type || 'attempt')}</strong><span>${escapeHtml(attempt.outcome || '')}</span><small>${escapeHtml(attempt.detail || '')}</small></div>`).join('') : '<div class="h23-goodlife-empty">No attempts recorded</div>'}</section>
+    <section><h4>Fix Recipes</h4>${recipes.length ? recipes.map((recipe) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(recipe.verifierStatus || recipe.dispatchOutcome || 'recipe')}</strong><span>${escapeHtml(recipe.summary || '')}</span><small>${recipe.at ? escapeHtml(timeSince(new Date(recipe.at))) : ''}</small></div>`).join('') : '<div class="h23-goodlife-empty">No fix recipe recorded; closure is based on verifier/evidence state.</div>'}</section>
   `;
 }
 

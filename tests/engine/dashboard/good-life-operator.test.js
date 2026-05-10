@@ -49,7 +49,15 @@ test('live-problem snapshot separates open, chronic, resolved, and unverifiable 
   const snapshot = buildLiveProblemSnapshot([
     { id: 'open_1', state: 'open', claim: 'Open thing', openedAt: '2026-05-08T13:40:00.000Z' },
     { id: 'chronic_1', state: 'chronic', claim: 'Chronic thing', openedAt: '2026-05-08T13:00:00.000Z', lastResult: { detail: 'still failing' } },
-    { id: 'resolved_1', state: 'resolved', claim: 'Resolved thing', resolvedAt: '2026-05-08T13:44:00.000Z', evidence: { receiptId: 'ev_1', result: 'pass' } },
+    {
+      id: 'resolved_1',
+      state: 'resolved',
+      claim: 'Resolved thing',
+      resolvedAt: '2026-05-08T13:44:00.000Z',
+      evidence: { receiptId: 'ev_1', result: 'pass' },
+      remediation: [{ type: 'dispatch_to_worker', args: { worker: 'systems' } }],
+      remediationLog: [{ type: 'dispatch_to_worker', outcome: 'failed', detail: 'window still failing' }],
+    },
     { id: 'unv_1', state: 'unverifiable', claim: 'No verifier' },
   ], NOW);
 
@@ -63,6 +71,8 @@ test('live-problem snapshot separates open, chronic, resolved, and unverifiable 
   assert.equal(snapshot.resolvedJustNow[0].id, 'resolved_1');
   assert.equal(snapshot.resolved[0].id, 'resolved_1');
   assert.equal(snapshot.resolved[0].evidence.receiptId, 'ev_1');
+  assert.equal(snapshot.resolved[0].remediation[0].type, 'dispatch_to_worker');
+  assert.equal(snapshot.resolved[0].lastRemediation.outcome, 'failed');
 });
 
 test('live-problem snapshot marks current user-intervention remediation steps', () => {
@@ -649,6 +659,43 @@ test('Good Life operator answer names latest verified resolution in clear state'
   assert.ok(model.operatorAnswer.some((line) => line.includes('Latest verified resolution: Weather freshness passed')));
   assert.ok(model.operatorAnswer.some((line) => line.includes('Resolution verifier: weather sensor timestamp passed freshness check')));
   assert.ok(model.operatorAnswer.some((line) => line.includes('Resolution receipt: ev_weather')));
+});
+
+test('Good Life operator explains verifier-only resolutions without a fix recipe', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [
+      {
+        id: 'jerry_cpu_pressure_clear',
+        state: 'resolved',
+        claim: 'jerry engine is not under repeated high CPU pressure in the last 30 minutes',
+        resolvedAt: '2026-05-08T13:44:00.000Z',
+        lastResult: { detail: '1 matching log entries in last 30m (limit 3); scanned 4' },
+        evidence: {
+          receiptId: 'ev_cpu',
+          receiptPath: 'instances/jerry/brain/evidence/live-problems/cpu.evidence.json',
+        },
+        remediation: [
+          { type: 'dispatch_to_worker', args: { worker: 'systems', budgetHours: 2 } },
+        ],
+        remediationLog: [
+          {
+            type: 'dispatch_to_worker',
+            outcome: 'failed',
+            detail: 'window still failing before cooldown cleared',
+            at: '2026-05-08T13:40:00.000Z',
+          },
+        ],
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.match(model.operatorDigest.latestFix, /Verifier passed: 1 matching log entries/);
+  assert.ok(model.operatorAnswer.some((line) => line.includes('Latest verified resolution: Verifier passed')));
+  assert.match(model.operatorHandoff.repair, /Verifier passed: 1 matching log entries/);
+  assert.equal(model.liveProblems.resolved[0].remediationLog[0].outcome, 'failed');
+  assert.equal(model.liveProblems.resolved[0].lastRemediation.detail, 'window still failing before cooldown cleared');
 });
 
 test('Good Life operator model treats old evaluations as stale even if counts agree', () => {
