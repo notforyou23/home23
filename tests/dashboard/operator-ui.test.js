@@ -16,8 +16,11 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(js, /Needed From You/);
   assert.match(js, /problemRepairText/);
   assert.match(js, /nothing; this issue is resolved/);
+  assert.match(js, /brief\.status === 'Paused'/);
+  assert.match(js, /paused by budget/);
   assert.match(css, /\.h23-problems-operator/);
   assert.match(css, /\.h23-problem-operator-grid/);
+  assert.match(css, /\.h23-goodlife-fleet-row\.paused/);
 });
 
 test('Good Life issue detail shows user-facing repair context before raw JSON', () => {

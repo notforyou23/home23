@@ -3183,6 +3183,9 @@ function goodLifeFleetStatus(row = {}) {
   if (brief.severity === 'working' || work.status === 'working' || Number(work.activeTotal || 0) > 0) {
     return { state: 'working', label: 'Working', text: work.statusText || brief.next || 'autonomous work active' };
   }
+  if (brief.status === 'Paused') {
+    return { state: 'paused', label: 'Paused', text: brief.next || brief.why || 'self-maintenance paused by budget' };
+  }
   return { state: 'clear', label: 'Clear', text: brief.next || 'no user intervention needed' };
 }
 
@@ -3223,6 +3226,7 @@ function renderGoodLifeFleetSummary() {
   const repairing = statuses.filter((item) => item.status.state === 'repairing');
   const review = statuses.filter((item) => item.status.state === 'review');
   const working = statuses.filter((item) => item.status.state === 'working');
+  const paused = statuses.filter((item) => item.status.state === 'paused');
   const unknown = statuses.filter((item) => item.status.state === 'unknown');
   const headline = needsUser.length
     ? `${needsUser.length} agent${needsUser.length === 1 ? '' : 's'} need jtr`
@@ -3232,9 +3236,11 @@ function renderGoodLifeFleetSummary() {
         ? `${review.length} agent${review.length === 1 ? '' : 's'} need review`
         : working.length
           ? `${working.length} agent${working.length === 1 ? '' : 's'} working autonomously`
-          : unknown.length
-            ? `${unknown.length} agent${unknown.length === 1 ? '' : 's'} status unknown`
-            : 'All agents clear or monitoring';
+          : paused.length
+            ? `${paused.length} agent${paused.length === 1 ? '' : 's'} paused by budget`
+            : unknown.length
+              ? `${unknown.length} agent${unknown.length === 1 ? '' : 's'} status unknown`
+              : 'All agents clear or monitoring';
   el.innerHTML = `
     <div class="h23-goodlife-fleet-head">
       <span>Fleet</span>
