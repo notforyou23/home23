@@ -1974,6 +1974,8 @@ class Orchestrator {
           
           // Mark as in progress
           await this.clusterStateStore.startTask(currentTask.id, this.instanceId);
+
+          currentTask = await this.reconcileTaskAssignmentBeforeSpawn(currentTask);
           
           // CRITICAL FIX: Spawn agent to actually DO the task!
           // Tasks were being claimed but never executed - no agent assigned
@@ -5992,6 +5994,69 @@ class Orchestrator {
       title: task.title?.substring(0, 80)
     });
     return 'analysis';
+  }
+
+  async reconcileTaskAssignmentBeforeSpawn(task) {
+    if (!task?.assignedAgentId || !this.agentExecutor || !this.clusterStateStore) {
+      return task;
+    }
+
+    const assignedAgentId = task.assignedAgentId;
+    const registry = this.agentExecutor.registry;
+    const registeredAgent = registry?.getAgent?.(assignedAgentId)
+      || registry?.completedAgents?.get?.(assignedAgentId)
+      || registry?.failedAgents?.get?.(assignedAgentId)
+      || null;
+
+    if (registeredAgent) {
+      return task;
+    }
+
+    const queuedResult = this.agentExecutor.resultsQueue
+      ?.getResultsForGoal?.(task.metadata?.goalId)
+      ?.some((result) => result?.agentId === assignedAgentId);
+
+    if (queuedResult) {
+      return task;
+    }
+
+    const retries = Number(task.metadata?.staleAssignedAgentRetries || 0);
+    const maxRetries = this.config?.planning?.scheduler?.staleAssignedAgentMaxRetries ?? 1;
+
+    if (retries >= maxRetries) {
+      await this.clusterStateStore.failTask(
+        task.id,
+        `Assigned agent ${assignedAgentId} is missing from registry/results after ${retries} retry attempt(s)`
+      );
+      this.logger.warn('⚠️ Task failed because assigned agent disappeared', {
+        taskId: task.id,
+        assignedAgentId,
+        retries
+      });
+      return { ...task, state: 'FAILED' };
+    }
+
+    const reconciledTask = {
+      ...task,
+      assignedAgentId: null,
+      metadata: {
+        ...(task.metadata || {}),
+        staleAssignedAgentRetries: retries + 1,
+        staleAssignedAgentId: assignedAgentId,
+        staleAssignedAgentClearedAt: new Date().toISOString()
+      },
+      updatedAt: Date.now()
+    };
+
+    await this.clusterStateStore.upsertTask(reconciledTask);
+    this.logger.warn('⚠️ Cleared stale task agent assignment for retry', {
+      taskId: task.id,
+      assignedAgentId,
+      retry: retries + 1,
+      maxRetries
+    });
+
+    return reconciledTask;
   }
 
   async maybeTriggerConsistencyReview() {
