@@ -180,6 +180,87 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
       seedOrigin: 'system',
     },
     {
+      id: `${agent}_provider_scoring_failures_clear`,
+      claim: `${agent} engine has no repeated provider or scoring failures in the last 30 minutes`,
+      verifier: {
+        type: 'log_recent_count',
+        args: {
+          path: engineErrPath,
+          pattern: 'Chat Completions API call failed|Alternative provider failed|Scoring batch failed|All branches failed',
+          windowMinutes: 30,
+          maxCount: 3,
+          maxLines: 3000,
+        },
+      },
+      remediation: [
+        { type: 'dispatch_to_worker', args: { worker: 'systems', budgetHours: 2 }, cooldownMin: 15 },
+        { type: 'dispatch_to_agent', args: { budgetHours: 2 }, cooldownMin: 30 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'normal',
+            text: `${agent} has repeated provider/scoring failures. Worker and agent diagnosis did not clear it; model routing or provider health needs review.`,
+          },
+          cooldownMin: 120,
+        },
+      ],
+      seedOrigin: 'system',
+    },
+    {
+      id: `${agent}_publish_starvation_clear`,
+      claim: `${agent} engine publish channels are not starving`,
+      verifier: {
+        type: 'log_recent_count',
+        args: {
+          path: engineErrPath,
+          pattern: '\\[publish\\] starvation:',
+          windowMinutes: 30,
+          maxCount: 2,
+          maxLines: 3000,
+        },
+      },
+      remediation: [
+        { type: 'dispatch_to_worker', args: { worker: 'systems', budgetHours: 2 }, cooldownMin: 15 },
+        { type: 'dispatch_to_agent', args: { budgetHours: 2 }, cooldownMin: 30 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'normal',
+            text: `${agent} publish channels are starving repeatedly. Worker and agent diagnosis did not clear it; engine throughput needs review.`,
+          },
+          cooldownMin: 120,
+        },
+      ],
+      seedOrigin: 'system',
+    },
+    {
+      id: `${agent}_cpu_pressure_clear`,
+      claim: `${agent} engine is not under repeated high CPU pressure in the last 30 minutes`,
+      verifier: {
+        type: 'log_recent_count',
+        args: {
+          path: engineErrPath,
+          pattern: '\\[ResourceMonitor\\] High CPU usage',
+          windowMinutes: 30,
+          maxCount: 3,
+          maxLines: 3000,
+        },
+      },
+      remediation: [
+        { type: 'dispatch_to_worker', args: { worker: 'systems', budgetHours: 2 }, cooldownMin: 15 },
+        { type: 'dispatch_to_agent', args: { budgetHours: 2 }, cooldownMin: 30 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'normal',
+            text: `${agent} is under repeated high CPU pressure. Worker and agent diagnosis did not clear it; host contention or loop efficiency needs review.`,
+          },
+          cooldownMin: 120,
+        },
+      ],
+      seedOrigin: 'system',
+    },
+    {
       id: 'brain_graph_populated',
       claim: 'Brain graph has at least 100 nodes in memory',
       verifier: {

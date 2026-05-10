@@ -1,9 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const { DashboardServer } = require('../../../engine/src/dashboard/server.js');
+
+test('live-problems file resolves through requested agent context', () => {
+  const server = Object.create(DashboardServer.prototype);
+  server.getHome23AgentContext = (candidate) => ({
+    agentName: candidate || 'jerry',
+    runtimeDir: path.join('/tmp/home23-test', 'instances', candidate || 'jerry', 'brain'),
+  });
+
+  assert.equal(
+    server.getHome23LiveProblemsFile('forrest'),
+    path.join('/tmp/home23-test', 'instances', 'forrest', 'brain', 'live-problems.json'),
+  );
+});
 
 test('runtime health treats timed-out engine health as degraded when PM2 says process is online', async () => {
   const server = Object.create(DashboardServer.prototype);

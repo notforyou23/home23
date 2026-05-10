@@ -749,6 +749,11 @@ class DashboardServer {
     };
   }
 
+  getHome23LiveProblemsFile(candidate) {
+    const target = this.getHome23AgentContext(candidate);
+    return path.join(target.runtimeDir || this.logsDir || '', 'live-problems.json');
+  }
+
   async getHome23RuntimeHealth(candidate) {
     const target = this.getHome23AgentContext(candidate);
     const labelPrefix = target.agentName
@@ -5523,20 +5528,21 @@ Be specific, actionable, and maintain research continuity.`;
     // loop re-verifies every ~90s and writes live-problems.json. This API
     // reads/writes that file directly (dashboard is a separate process from
     // the engine); the engine's store reloads on each tick so UI edits apply.
-    const liveProblemsFile = () => require('path').join(this.logsDir || '', 'live-problems.json');
-    const loadLiveProblems = () => {
+    const liveProblemsFile = (candidate) => this.getHome23LiveProblemsFile(candidate);
+    const liveProblemTarget = (req) => req.query?.agent || req.body?.agent;
+    const loadLiveProblems = (candidate) => {
       try {
         const fs = require('fs');
-        const file = liveProblemsFile();
+        const file = liveProblemsFile(candidate);
         if (!fs.existsSync(file)) return { problems: [] };
         return JSON.parse(fs.readFileSync(file, 'utf8')) || { problems: [] };
       } catch { return { problems: [] }; }
     };
-    const saveLiveProblems = (data) => {
+    const saveLiveProblems = (data, candidate) => {
       const fs = require('fs');
-      const tmp = liveProblemsFile() + '.tmp';
+      const tmp = liveProblemsFile(candidate) + '.tmp';
       fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-      fs.renameSync(tmp, liveProblemsFile());
+      fs.renameSync(tmp, liveProblemsFile(candidate));
     };
     const normalizeDispatchOutcome = (value) => {
       const v = typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -5591,7 +5597,7 @@ Be specific, actionable, and maintain research continuity.`;
     };
 
     this.app.get('/api/live-problems', (req, res) => {
-      const data = loadLiveProblems();
+      const data = loadLiveProblems(liveProblemTarget(req));
       res.json({
         available: true,
         problems: data.problems || [],
@@ -5600,7 +5606,7 @@ Be specific, actionable, and maintain research continuity.`;
     });
 
     this.app.get('/api/live-problems/:id', (req, res) => {
-      const data = loadLiveProblems();
+      const data = loadLiveProblems(liveProblemTarget(req));
       const p = (data.problems || []).find(x => x.id === req.params.id);
       if (!p) return res.status(404).json({ error: 'not found' });
       res.json({ problem: p });
@@ -5609,7 +5615,8 @@ Be specific, actionable, and maintain research continuity.`;
     this.app.post('/api/live-problems', (req, res) => {
       const body = req.body || {};
       if (!body.id || !body.claim) return res.status(400).json({ error: 'id + claim required' });
-      const data = loadLiveProblems();
+      const targetAgent = liveProblemTarget(req);
+      const data = loadLiveProblems(targetAgent);
       const list = data.problems || [];
       const id = String(body.id).trim();
       const existingIdx = list.findIndex(x => x.id === id);
@@ -5636,12 +5643,13 @@ Be specific, actionable, and maintain research continuity.`;
         return res.status(400).json({ error: 'verifier audit failed', findings: audit.findings });
       }
       if (existingIdx >= 0) list[existingIdx] = next; else list.push(next);
-      saveLiveProblems({ problems: list });
+      saveLiveProblems({ problems: list }, targetAgent);
       res.json({ problem: next, audit });
     });
 
     this.app.put('/api/live-problems/:id', (req, res) => {
-      const data = loadLiveProblems();
+      const targetAgent = liveProblemTarget(req);
+      const data = loadLiveProblems(targetAgent);
       const list = data.problems || [];
       const idx = list.findIndex(x => x.id === req.params.id);
       if (idx < 0) return res.status(404).json({ error: 'not found' });
@@ -5655,17 +5663,18 @@ Be specific, actionable, and maintain research continuity.`;
         return res.status(400).json({ error: 'verifier audit failed', findings: audit.findings });
       }
       list[idx] = next;
-      saveLiveProblems({ problems: list });
+      saveLiveProblems({ problems: list }, targetAgent);
       res.json({ problem: list[idx], audit });
     });
 
     this.app.delete('/api/live-problems/:id', (req, res) => {
-      const data = loadLiveProblems();
+      const targetAgent = liveProblemTarget(req);
+      const data = loadLiveProblems(targetAgent);
       const list = data.problems || [];
       const idx = list.findIndex(x => x.id === req.params.id);
       if (idx < 0) return res.json({ removed: false });
       list.splice(idx, 1);
-      saveLiveProblems({ problems: list });
+      saveLiveProblems({ problems: list }, targetAgent);
       res.json({ removed: true });
     });
 
@@ -5707,7 +5716,9 @@ Be specific, actionable, and maintain research continuity.`;
     // can include the prior recipe so the agent doesn't start from scratch.
     this.app.post('/api/live-problems/:id/fix-recipe', (req, res) => {
       try {
-        const data = loadLiveProblems();
+        const targetAgent = liveProblemTarget(req);
+        const targetContext = this.getHome23AgentContext(targetAgent);
+        const data = loadLiveProblems(targetAgent);
         const list = data.problems || [];
         const idx = list.findIndex(x => x.id === req.params.id);
         if (idx < 0) return res.status(404).json({ error: 'not found' });
@@ -5737,12 +5748,12 @@ Be specific, actionable, and maintain research continuity.`;
         // Keep last 5
         p.fixRecipeHistory = history.slice(-5);
         p.fixRecipe = recipe;  // shortcut — most recent
-        saveLiveProblems({ problems: list });
+        saveLiveProblems({ problems: list }, targetAgent);
 
         // Emit an autonomous_fix signal so the dashboard Signals tile shows it.
         try {
           const { appendSignal } = require('../cognition/signals');
-          appendSignal(this.logsDir || '', {
+          appendSignal(targetContext.runtimeDir || this.logsDir || '', {
             type: 'autonomous_fix',
             source: 'agent-dispatch',
             title: `agent fix: ${p.claim || p.id}`,
@@ -5803,8 +5814,8 @@ Be specific, actionable, and maintain research continuity.`;
         }
 
         try {
-          const data = loadLiveProblems();
-          saveLiveProblems(data);   // rewrites file, bumps mtime -> engine reloads
+          const data = loadLiveProblems(target.agentName);
+          saveLiveProblems(data, target.agentName);   // rewrites file, bumps mtime -> engine reloads
           res.json({
             ok: true,
             mode: 'queued',

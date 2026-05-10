@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { LiveProblemStore } = require('../../../engine/src/live-problems/store.js');
-const { seedAll } = require('../../../engine/src/live-problems/seed.js');
+const { seedAll, defaultSeeds } = require('../../../engine/src/live-problems/seed.js');
 const { isRestartableProcess } = require('../../../engine/src/live-problems/remediators.js');
 const {
   classifyDispatchRecipe,
@@ -38,6 +38,29 @@ test('seedAll prunes obsolete generic agent live-problem seeds', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('default seeds include agent-local operational log pressure invariants', () => {
+  const seeds = defaultSeeds({ agentName: 'forrest', dashboardPort: '5012', bridgePort: '5014' });
+  const byId = new Map(seeds.map((seed) => [seed.id, seed]));
+
+  const provider = byId.get('forrest_provider_scoring_failures_clear');
+  assert.equal(provider?.verifier?.type, 'log_recent_count');
+  assert.match(provider.verifier.args.path, /\/instances\/forrest\/logs\/engine-err\.log$/);
+  assert.match(provider.verifier.args.pattern, /Scoring batch failed/);
+  assert.equal(provider.verifier.args.windowMinutes, 30);
+  assert.equal(provider.verifier.args.maxCount, 3);
+  assert.equal(provider.remediation[0].type, 'dispatch_to_worker');
+
+  const publish = byId.get('forrest_publish_starvation_clear');
+  assert.equal(publish?.verifier?.type, 'log_recent_count');
+  assert.equal(publish.verifier.args.pattern, '\\[publish\\] starvation:');
+  assert.equal(publish.verifier.args.maxCount, 2);
+
+  const cpu = byId.get('forrest_cpu_pressure_clear');
+  assert.equal(cpu?.verifier?.type, 'log_recent_count');
+  assert.equal(cpu.verifier.args.pattern, '\\[ResourceMonitor\\] High CPU usage');
+  assert.equal(cpu.verifier.args.maxCount, 3);
 });
 
 test('resolved verification clears stale escalation state', () => {
