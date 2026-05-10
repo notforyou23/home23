@@ -659,6 +659,7 @@ function renderProblemCard(p) {
 function renderProblemUserAction(problem = {}) {
   if (!goodLifeNeedsUser(problem)) return '';
   const next = goodLifeNextRemediation(problem);
+  const canRecordHandled = problem.escalated || next.requiresUser;
   const stepText = problem.escalated
     ? 'manual review'
     : next.type
@@ -674,6 +675,7 @@ function renderProblemUserAction(problem = {}) {
       </div>
       <div class="h23-problem-user-action-controls">
         <button type="button" onclick="openProblemEditor('${escapeAttr(problem.id)}')">Inspect Plan</button>
+        ${canRecordHandled ? `<button type="button" onclick="recordProblemUserIntervention('${escapeAttr(problem.id)}')">Mark Handled + Re-check</button>` : ''}
         <button type="button" onclick="tickProblemsNow()">Re-check</button>
       </div>
     </div>
@@ -693,6 +695,33 @@ async function tickProblemsNow() {
     const r = await fetch(`${dashboardBaseUrl()}/api/live-problems/tick`, { method: 'POST' });
     if (r.ok) await renderProblemsList();
   } catch { /* silent */ }
+}
+
+async function recordProblemUserIntervention(id) {
+  if (!id) return;
+  try {
+    const detail = window.prompt('What did you handle for this issue?', 'Manual intervention completed.');
+    if (detail === null) return;
+    const res = await fetch(`${dashboardBaseUrl()}/api/live-problems/${encodeURIComponent(id)}/user-intervention`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        actor: 'good-life-operator',
+        note: detail || 'Manual intervention completed.',
+      }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    await tickProblemsNow();
+    await renderProblemsList();
+  } catch (err) {
+    const list = document.getElementById('problems-list');
+    if (list) {
+      list.insertAdjacentHTML('afterbegin', `<div style="color:#ff6b6b;padding:8px 12px;">Failed to record intervention: ${escapeHtml(err.message)}</div>`);
+    }
+  }
 }
 
 function openProblemEditor(id) {
@@ -3568,6 +3597,7 @@ function renderGoodLifeIssueDetail(problem, data) {
       <div><label>User intervention</label><p>${needsUser ? 'needed' : 'not needed yet'}</p><small>${needsUser ? 'Home23 has reached a notify/manual step' : 'autonomous remediation can continue'}</small></div>
     </div>
     <div class="h23-goodlife-detail-actions">
+      ${needsUser ? `<button class="h23-goodlife-plain-btn" type="button" onclick="recordGoodLifeUserIntervention('${escapeAttr(problem.id)}')">Mark Handled + Re-check</button>` : ''}
       <button class="h23-goodlife-plain-btn" type="button" onclick="testGoodLifeVerifier('${escapeAttr(problem.id)}')">Test Verifier</button>
       <button class="h23-goodlife-plain-btn" type="button" onclick="runGoodLifeWorkerCheck('${escapeAttr(problem.id)}')">Run Worker Check</button>
     </div>
@@ -4015,6 +4045,33 @@ async function testGoodLifeVerifier(problemId) {
       : `Verifier result: ${result.result?.ok ? 'pass' : 'fail'} - ${result.result?.detail || 'no detail'}`);
   } catch (err) {
     setText('goodlife-overlay-action-status', `Verifier test failed: ${err.message}`);
+  }
+}
+
+async function recordGoodLifeUserIntervention(problemId) {
+  if (!problemId) return;
+  const base = goodLifeBaseForScope(goodLifeOverlayState.scope);
+  const note = window.prompt('What did you handle for this issue?', 'Manual intervention completed.');
+  if (note === null) return;
+  setText('goodlife-overlay-action-status', 'Recording user intervention...');
+  try {
+    const res = await fetch(`${base}/api/live-problems/${encodeURIComponent(problemId)}/user-intervention`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        actor: 'good-life-operator',
+        note: note || 'Manual intervention completed.',
+      }),
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok || result.ok === false) throw new Error(result.error || `HTTP ${res.status}`);
+    setText('goodlife-overlay-action-status', 'Intervention recorded; re-checking verifier...');
+    await fetch(`${base}/api/live-problems/tick`, { method: 'POST' }).catch(() => null);
+    await loadGoodLifeForScope(goodLifeOverlayState.scope);
+    renderGoodLifeOverlay();
+    setText('goodlife-overlay-action-status', 'Intervention receipt recorded. Verifier remains the source of truth.');
+  } catch (err) {
+    setText('goodlife-overlay-action-status', `Intervention record failed: ${err.message}`);
   }
 }
 

@@ -5841,6 +5841,40 @@ Be specific, actionable, and maintain research continuity.`;
       res.json({ problem: list[idx], audit });
     });
 
+    this.app.post('/api/live-problems/:id/user-intervention', (req, res) => {
+      const targetAgent = liveProblemTarget(req);
+      const data = loadLiveProblems(targetAgent);
+      const list = data.problems || [];
+      const idx = list.findIndex(x => x.id === req.params.id);
+      if (idx < 0) return res.status(404).json({ error: 'not found' });
+
+      const nowIso = new Date().toISOString();
+      const body = req.body || {};
+      const note = String(body.note || body.detail || 'jtr marked the requested intervention handled').slice(0, 1000);
+      const p = list[idx];
+      p.updatedAt = nowIso;
+      p.userIntervention = {
+        status: 'handled',
+        at: nowIso,
+        actor: body.actor || 'good-life-operator',
+        note,
+      };
+      p.remediationLog = Array.isArray(p.remediationLog) ? p.remediationLog : [];
+      p.remediationLog.push({
+        step: Number(p.stepIndex || 0),
+        type: 'user_intervention',
+        outcome: 'handled',
+        detail: note,
+        at: nowIso,
+      });
+      if (p.remediationLog.length > 50) p.remediationLog = p.remediationLog.slice(-50);
+      // Keep state/escalation intact. The verifier remains the authority; the
+      // follow-up tick can close the issue only if the deterministic check passes.
+      p.lastRemediationAt = null;
+      saveLiveProblems({ problems: list }, targetAgent);
+      res.json({ ok: true, problem: p });
+    });
+
     this.app.delete('/api/live-problems/:id', (req, res) => {
       const targetAgent = liveProblemTarget(req);
       const data = loadLiveProblems(targetAgent);

@@ -18,6 +18,11 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(js, /renderProblemUserAction/);
   assert.match(js, /Action Needed/);
   assert.match(js, /Inspect Plan/);
+  assert.match(js, /Mark Handled \+ Re-check/);
+  assert.match(js, /recordProblemUserIntervention/);
+  assert.match(js, /recordGoodLifeUserIntervention/);
+  assert.match(js, /user-intervention/);
+  assert.match(js, /Verifier remains the source of truth/);
   assert.match(js, /Re-check/);
   assert.match(js, /manual review needed; autonomous remediation has escalated this issue/);
   assert.match(js, /problem\.escalated === true/);
