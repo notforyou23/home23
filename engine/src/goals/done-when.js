@@ -17,6 +17,8 @@ const fs = require('fs');
 const path = require('path');
 
 const JUDGE_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_ARTIFACT_BYTES = 12_000;
+const MAX_ARTIFACT_CHARS = 8_000;
 
 function resolveSafe(baseDir, relPath) {
   const full = path.resolve(baseDir, relPath);
@@ -84,6 +86,40 @@ async function checkOutputCountSince(crit, env) {
   return { passed: count >= gte, note: `count=${count} gte=${gte}` };
 }
 
+function referencedOutputPaths(crit) {
+  const text = String([crit?.path, crit?.file, crit?.artifact, crit?.criterion].filter(Boolean).join('\n'));
+  const paths = new Set();
+  for (const match of text.matchAll(/\boutputs\/([A-Za-z0-9._/-]+\.[A-Za-z0-9]+)\b/g)) {
+    paths.add(match[1]);
+  }
+  for (const match of text.matchAll(/\b([A-Za-z0-9._/-]+\.(?:md|txt|json|html|csv))\b/g)) {
+    const candidate = match[1].replace(/^outputs\//, '');
+    if (!candidate.includes('..')) paths.add(candidate);
+  }
+  return [...paths];
+}
+
+function readOutputArtifactSnippets(crit, env) {
+  if (!env?.outputsDir) return [];
+  const snippets = [];
+  for (const relPath of referencedOutputPaths(crit)) {
+    const resolved = resolveSafe(env.outputsDir, relPath);
+    if (!resolved || !fs.existsSync(resolved)) continue;
+    let stat;
+    try { stat = fs.statSync(resolved); } catch { continue; }
+    if (!stat.isFile()) continue;
+    let raw;
+    try { raw = fs.readFileSync(resolved, 'utf8'); } catch { continue; }
+    snippets.push({
+      path: relPath,
+      size: stat.size,
+      content: raw.slice(0, MAX_ARTIFACT_CHARS),
+      truncated: Buffer.byteLength(raw, 'utf8') > MAX_ARTIFACT_BYTES || raw.length > MAX_ARTIFACT_CHARS,
+    });
+  }
+  return snippets;
+}
+
 async function checkJudged(crit, env) {
   const cachedValid = crit.judgedVerdict && crit.judgedAt
     && (Date.now() - Number(crit.judgedAt) < JUDGE_TTL_MS);
@@ -97,11 +133,20 @@ async function checkJudged(crit, env) {
   if (!env.llmClient) {
     return { passed: false, note: 'no llmClient available' };
   }
+  const artifacts = readOutputArtifactSnippets(crit, env);
+  const artifactBlock = artifacts.length
+    ? artifacts.map((artifact) => [
+      `Path: outputs/${artifact.path}`,
+      `Size: ${artifact.size} bytes${artifact.truncated ? ' (truncated)' : ''}`,
+      'Content:',
+      artifact.content,
+    ].join('\n')).join('\n\n---\n\n')
+    : 'No referenced output artifacts were found under outputsDir.';
   const prompt = [
     { role: 'system', content:
       'You are a strict verifier. Given a goal success criterion, decide whether the criterion is currently satisfied by observable artifacts in the environment. Return ONLY JSON: {"verdict":"pass"|"fail","reason":"<one sentence>"}.' },
     { role: 'user', content:
-      `Criterion: ${crit.criterion}\n\nRespond with JSON only.` }
+      `Criterion: ${crit.criterion}\n\nObservable output artifacts:\n${artifactBlock}\n\nRespond with JSON only.` }
   ];
   let verdict, reason;
   try {

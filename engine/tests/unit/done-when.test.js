@@ -142,10 +142,11 @@ describe('done-when primitives', () => {
 
     it('calls LLM when judgedVerdict is null, caches the result', async () => {
       const env = makeEnv();
+      fs.writeFileSync(path.join(env.outputsDir, 'digest-1.md'), '# Digest\n\nThree concrete examples.');
       env.llmClient = mockLlm('pass');
       const crit = {
         type: 'judged',
-        criterion: 'An output file exists with at least 3 examples.',
+        criterion: 'The file outputs/digest-1.md exists with at least 3 examples.',
         judgeModel: 'gpt-5-mini',
         judgedAt: null,
         judgedVerdict: null
@@ -153,6 +154,9 @@ describe('done-when primitives', () => {
       const r1 = await checkCriterion(crit, env);
       expect(r1.passed).to.equal(true);
       expect(env.llmClient.calls).to.have.length(1);
+      expect(env.llmClient.calls[0][1].content).to.include('Observable output artifacts');
+      expect(env.llmClient.calls[0][1].content).to.include('Path: outputs/digest-1.md');
+      expect(env.llmClient.calls[0][1].content).to.include('Three concrete examples.');
       expect(crit.judgedVerdict).to.equal('pass');
       expect(crit.judgedAt).to.be.a('number');
 
@@ -160,6 +164,21 @@ describe('done-when primitives', () => {
       const r2 = await checkCriterion(crit, env);
       expect(r2.passed).to.equal(true);
       expect(env.llmClient.calls).to.have.length(1);
+    });
+
+    it('does not expose referenced artifacts outside outputsDir to the judge', async () => {
+      const env = makeEnv();
+      env.llmClient = mockLlm('fail', 'artifact not visible');
+      const crit = {
+        type: 'judged',
+        criterion: 'The file outputs/../../secret.md exists with a receipt.',
+        judgedAt: null,
+        judgedVerdict: null
+      };
+      await checkCriterion(crit, env);
+      expect(env.llmClient.calls).to.have.length(1);
+      expect(env.llmClient.calls[0][1].content).to.include('No referenced output artifacts were found');
+      expect(env.llmClient.calls[0][1].content).not.to.include('Path: outputs/../../secret.md');
     });
 
     it('treats fail verdict as passed=false', async () => {
