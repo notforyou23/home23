@@ -6223,7 +6223,7 @@ Be specific, actionable, and maintain research continuity.`;
     // API: Get specialist agents
     this.app.get('/api/agents', async (req, res) => {
       try {
-        const state = await this.loadState();
+        const state = await this.loadStateLean();
         const agents = state.agentExecutor || {
           activeAgents: [],
           recentActivity: [],
@@ -6273,7 +6273,7 @@ Be specific, actionable, and maintain research continuity.`;
         const allResults = await this.readAgentResultsFull(resultsPath);
         
         // Get current state for active agents
-        const state = await this.loadState();
+        const state = await this.loadStateLean();
         const activeAgents = state.agentExecutor?.activeAgents || [];
         
         // Categorize agents
@@ -6333,7 +6333,7 @@ Be specific, actionable, and maintain research continuity.`;
         
         // If not in results queue, check active agents in state
         if (!agentResult) {
-          const state = await this.loadState();
+          const state = await this.loadStateLean();
           const activeAgent = state.agentExecutor?.activeAgents?.find(a => a.agentId === req.params.agentId);
           
           if (activeAgent) {
@@ -9807,6 +9807,32 @@ You are empowered to explore and understand. The user trusts you to discover the
     } catch (error) {
       // Return empty state object if file doesn't exist or is corrupted
       this.logger?.warn?.('Could not load state.json', { path: statePath, error: error.message });
+      return {};
+    }
+  }
+
+  async loadStateLean() {
+    const statePath = path.join(this.logsDir, 'state.json');
+    try {
+      const gzPath = statePath + '.gz';
+      let mtime = 0;
+      try {
+        const fsSync = require('fs');
+        const target = fsSync.existsSync(gzPath) ? gzPath : statePath;
+        if (fsSync.existsSync(target)) mtime = fsSync.statSync(target).mtimeMs;
+      } catch { /* file may not exist yet */ }
+
+      const now = Date.now();
+      const cache = this._stateLeanCache;
+      if (cache && cache.mtime === mtime && (now - cache.loadedAt) < 30000) {
+        return cache.data;
+      }
+
+      const data = await StateCompression.loadCompressed(statePath);
+      this._stateLeanCache = { data, mtime, loadedAt: now };
+      return data || {};
+    } catch (error) {
+      this.logger?.warn?.('Could not load lean state.json', { path: statePath, error: error.message });
       return {};
     }
   }

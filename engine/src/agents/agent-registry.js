@@ -238,11 +238,25 @@ class AgentRegistry {
     const distribution = {};
     
     for (const agentState of this.agents.values()) {
-      const type = agentState.agent.constructor.name;
+      const type = this.getAgentType(agentState);
       distribution[type] = (distribution[type] || 0) + 1;
     }
     
     return distribution;
+  }
+
+  getAgentType(agentState = {}) {
+    return agentState.agentType
+      || agentState.agent?.agentType
+      || agentState.agent?.constructor?.name
+      || 'Unknown';
+  }
+
+  getAgentTime(value) {
+    if (!value) return 0;
+    if (value instanceof Date) return value.getTime();
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : 0;
   }
 
   /**
@@ -253,16 +267,16 @@ class AgentRegistry {
   getRecentActivity(limit = 10) {
     return Array.from(this.agents.values())
       .sort((a, b) => {
-        const aTime = a.endTime || a.startTime || a.registeredAt;
-        const bTime = b.endTime || b.startTime || b.registeredAt;
+        const aTime = this.getAgentTime(a.endTime || a.startTime || a.registeredAt);
+        const bTime = this.getAgentTime(b.endTime || b.startTime || b.registeredAt);
         return bTime - aTime;
       })
       .slice(0, limit)
       .map(a => ({
-        agentId: a.agent.agentId,
-        type: a.agent.constructor.name,
+        agentId: a.agent?.agentId || a.agentId || a.id,
+        type: this.getAgentType(a),
         status: a.status,
-        goal: a.mission.goalId,
+        goal: a.mission?.goalId,
         startTime: a.startTime,
         endTime: a.endTime,
         duration: a.duration
