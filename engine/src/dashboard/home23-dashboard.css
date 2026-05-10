@@ -2903,7 +2903,8 @@ body.h23-external-focus #cosmo23-refresh-btn {
   border-color: rgba(255,190,90,0.45);
 }
 
-.h23-goodlife-fleet-row.working {
+.h23-goodlife-fleet-row.working,
+.h23-goodlife-fleet-row.resting {
   border-color: rgba(120,170,255,0.4);
 }
 

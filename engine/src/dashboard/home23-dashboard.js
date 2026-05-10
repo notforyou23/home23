@@ -3179,6 +3179,7 @@ function goodLifeFleetRank(row = {}) {
   if (brief.severity === 'repairing' || Number(counts.open || 0) + Number(counts.chronic || 0) > 0) return 2;
   if (brief.severity === 'attention' || operator.status === 'conflicted' || operator.status === 'stale') return 3;
   if (work.status === 'review' || Number(work.agendaNeedingReview || 0) + Number(work.goalsNeedingReview || 0) > 0) return 4;
+  if (brief.status === 'Resting') return 5;
   if (brief.severity === 'working' || work.status === 'working' || Number(work.activeTotal || 0) > 0) return 5;
   return 6;
 }
@@ -3202,6 +3203,9 @@ function goodLifeFleetStatus(row = {}) {
   }
   if (work.status === 'review' || Number(work.agendaNeedingReview || 0) + Number(work.goalsNeedingReview || 0) > 0) {
     return { state: 'review', label: 'Review', text: work.statusText || brief.next || 'operator review recommended' };
+  }
+  if (brief.status === 'Resting') {
+    return { state: 'resting', label: 'Resting', text: brief.next || brief.why || 'sleep/wake lowering pressure' };
   }
   if (brief.severity === 'working' || work.status === 'working' || Number(work.activeTotal || 0) > 0) {
     return { state: 'working', label: 'Working', text: work.statusText || brief.next || 'autonomous work active' };
@@ -3264,6 +3268,7 @@ function renderGoodLifeFleetSummary() {
   const needsUser = statuses.filter((item) => item.status.state === 'needs-user');
   const repairing = statuses.filter((item) => item.status.state === 'repairing');
   const review = statuses.filter((item) => item.status.state === 'review');
+  const resting = statuses.filter((item) => item.status.state === 'resting');
   const working = statuses.filter((item) => item.status.state === 'working');
   const paused = statuses.filter((item) => item.status.state === 'paused');
   const unknown = statuses.filter((item) => item.status.state === 'unknown');
@@ -3273,7 +3278,9 @@ function renderGoodLifeFleetSummary() {
       ? `${repairing.length} agent${repairing.length === 1 ? '' : 's'} repairing`
       : review.length
         ? `${review.length} agent${review.length === 1 ? '' : 's'} need review`
-        : working.length
+        : resting.length
+          ? `${resting.length} agent${resting.length === 1 ? '' : 's'} resting autonomously`
+          : working.length
           ? `${working.length} agent${working.length === 1 ? '' : 's'} working autonomously`
           : paused.length
             ? `${paused.length} agent${paused.length === 1 ? '' : 's'} paused by budget`

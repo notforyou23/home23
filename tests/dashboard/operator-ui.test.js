@@ -22,6 +22,8 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(js, /nothing; this issue is resolved/);
   assert.match(js, /brief\.status === 'Paused'/);
   assert.match(js, /paused by budget/);
+  assert.match(js, /brief\.status === 'Resting'/);
+  assert.match(js, /resting autonomously/);
   assert.match(js, /goodLifePausedFleetText/);
   assert.match(js, /budget \$\{reset\}/);
   assert.match(js, /renderGoodLifeHostPressure/);
@@ -36,6 +38,7 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(css, /\.h23-problem-operator-grid/);
   assert.match(css, /\.h23-problem-user-action/);
   assert.match(css, /\.h23-goodlife-fleet-row\.paused/);
+  assert.match(css, /\.h23-goodlife-fleet-row\.resting/);
   assert.match(css, /\.h23-goodlife-evidence-row\.watch/);
   assert.match(css, /\.h23-goodlife-evidence-row\.info/);
 });
