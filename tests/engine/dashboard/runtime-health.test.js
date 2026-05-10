@@ -42,6 +42,39 @@ test('readJsonlTail reads only the requested recent JSONL rows from a bounded wi
   }
 });
 
+test('dashboard stop closes runtime handles used by PM2 restarts', async () => {
+  const server = Object.create(DashboardServer.prototype);
+  let synthesisStopped = false;
+  let intervalCleared = false;
+  let clientEnded = false;
+  let httpClosed = false;
+  const originalClearInterval = globalThis.clearInterval;
+  globalThis.clearInterval = (handle) => {
+    if (handle === 'watch-handle') intervalCleared = true;
+    return originalClearInterval(handle);
+  };
+
+  server._shutdownStarted = false;
+  server._synthesisAgent = { stopSchedule: () => { synthesisStopped = true; } };
+  server._logWatchInterval = 'watch-handle';
+  server.logStreamClients = new Set([{ end: () => { clientEnded = true; } }]);
+  server.server = { close: (cb) => { httpClosed = true; cb(); } };
+
+  try {
+    await server.stop('test');
+
+    assert.equal(synthesisStopped, true);
+    assert.equal(intervalCleared, true);
+    assert.equal(clientEnded, true);
+    assert.equal(httpClosed, true);
+    assert.equal(server.server, null);
+    assert.equal(server._logWatchInterval, null);
+    assert.equal(server.logStreamClients.size, 0);
+  } finally {
+    globalThis.clearInterval = originalClearInterval;
+  }
+});
+
 test('runtime health treats timed-out engine health as degraded when PM2 says process is online', async () => {
   const server = Object.create(DashboardServer.prototype);
   server.getHome23AgentContext = () => ({

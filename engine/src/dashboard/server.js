@@ -110,6 +110,10 @@ class DashboardServer {
     
     // Orchestrator reference (for query actions)
     this.orchestrator = null;
+    this.server = null;
+    this._shutdownStarted = false;
+    this._shutdownHandlersRegistered = false;
+    this._logWatchInterval = null;
     
     // Console log streaming clients (SSE)
     this.logStreamClients = new Set();
@@ -10675,7 +10679,7 @@ You are empowered to explore and understand. The user trusts you to discover the
       console.warn('[DashboardServer] sensors boot failed (non-fatal):', e.message);
     }
 
-    this.app.listen(this.port, () => {
+    this.server = this.app.listen(this.port, () => {
       console.log(`\n╔══════════════════════════════════════════════════╗`);
       console.log(`║   Phase 2B Dashboard Server Running             ║`);
       console.log(`╚══════════════════════════════════════════════════╝`);
@@ -10693,16 +10697,70 @@ You are empowered to explore and understand. The user trusts you to discover the
       console.log(`    • Agent Network:      http://localhost:${this.port}/agent-network.html`);
       console.log(`    • Provenance Trails:  http://localhost:${this.port}/provenance-explorer.html\n`);
     });
+    this.server.on('error', (err) => {
+      console.error('[DashboardServer] listen failed:', err?.message || err);
+      if (err?.code === 'EADDRINUSE') {
+        process.exitCode = 1;
+        setTimeout(() => process.exit(1), 10).unref?.();
+      }
+    });
+    this.registerShutdownHandlers();
 
     // Watch for log file changes and broadcast
     this.watchLogs();
+  }
+
+  registerShutdownHandlers() {
+    if (this._shutdownHandlersRegistered) return;
+    this._shutdownHandlersRegistered = true;
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+      process.once(signal, () => {
+        this.stop(signal)
+          .then(() => process.exit(0))
+          .catch((err) => {
+            console.error('[DashboardServer] shutdown failed:', err?.message || err);
+            process.exit(1);
+          });
+      });
+    }
+  }
+
+  async stop(reason = 'manual') {
+    if (this._shutdownStarted) return;
+    this._shutdownStarted = true;
+    console.log(`[DashboardServer] shutting down (${reason})`);
+
+    if (this._synthesisAgent?.stopSchedule) {
+      try { this._synthesisAgent.stopSchedule(); } catch {}
+    }
+    if (this._logWatchInterval) {
+      clearInterval(this._logWatchInterval);
+      this._logWatchInterval = null;
+    }
+    for (const client of this.logStreamClients || []) {
+      try { client.end(); } catch {}
+    }
+    this.logStreamClients?.clear?.();
+
+    if (this.server) {
+      const server = this.server;
+      this.server = null;
+      await new Promise((resolve) => {
+        const timeout = setTimeout(resolve, 5000);
+        timeout.unref?.();
+        server.close(() => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
+    }
   }
 
   async watchLogs() {
     const thoughtsPath = path.join(this.logsDir, 'thoughts.jsonl');
     let lastSize = 0;
 
-    setInterval(async () => {
+    this._logWatchInterval = setInterval(async () => {
       try {
         const stats = await fs.stat(thoughtsPath);
         if (stats.size > lastSize) {
