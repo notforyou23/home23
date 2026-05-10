@@ -147,6 +147,8 @@ class NoticePass {
     // Heuristic: concepts containing explicit dates or time markers.
     const { nodes } = this._getGraph();
     const now = Date.now();
+    const today = new Date(now).toISOString().slice(0, 10);
+    const todayStart = new Date(`${today}T00:00:00Z`).getTime();
     const horizonMs = this.thresholds.timeSensitiveDays * 24 * 60 * 60 * 1000;
 
     const candidates = [];
@@ -158,12 +160,13 @@ class NoticePass {
       if (!date) continue;
 
       const dt = date.getTime();
-      if (dt < now - (2 * 24 * 60 * 60 * 1000)) continue; // ignore old
+      if (dt < todayStart) continue; // ignore past calendar dates
       if (dt > now + horizonMs) continue; // too far
+      const dateKey = date.toISOString().slice(0, 10);
 
       candidates.push({
         type: 'time-sensitive',
-        subject: `Upcoming date mentioned: ${date.toISOString().slice(0, 10)}`,
+        subject: dateKey === today ? `Date mentioned today: ${dateKey}` : `Upcoming date mentioned: ${dateKey}`,
         evidence: `node=${node.id} "${this._snippet(text)}"`,
         implication: 'Time-bound item detected in memory; consider turning it into a reminder or near-term plan.',
         routing: 'reminder',
