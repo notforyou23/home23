@@ -81,6 +81,7 @@ class DashboardServer {
     this.metadataErrorCache = new Set();
     this.homeSummaryCache = { data: null, expiresAt: 0 };
     this._stateScalarsCache = null;
+    this._thoughtSummaryCache = new Map();
     
     // Logger for route handlers - using console for consistency
     this.logger = console;
@@ -9634,7 +9635,9 @@ You are empowered to explore and understand. The user trusts you to discover the
 
     return {
       cycleCount: lastThought?.cycle || 0,
-      thoughtCount: thoughtSummary.count,
+      thoughtCount: Number.isFinite(thoughtSummary.count)
+        ? thoughtSummary.count
+        : (Number.isFinite(lastThought?.cycle) ? lastThought.cycle : 0),
       memoryNodes: Number.isFinite(memoryGraph?.nodes) ? memoryGraph.nodes : null,
       memoryGraph,
       goals,
@@ -9652,6 +9655,57 @@ You are empowered to explore and understand. The user trusts you to discover the
 
   async getThoughtsSummaryForDir(brainDir) {
     const thoughtsPath = path.join(brainDir, 'thoughts.jsonl');
+    const largeLogThresholdBytes = 5 * 1024 * 1024;
+    const tailBytes = 512 * 1024;
+
+    try {
+      const stats = await fs.stat(thoughtsPath);
+      const cache = this._thoughtSummaryCache?.get?.(thoughtsPath);
+      if (cache && cache.size === stats.size && cache.mtimeMs === stats.mtimeMs) {
+        return cache.summary;
+      }
+
+      if (stats.size > largeLogThresholdBytes) {
+        const start = Math.max(0, stats.size - tailBytes);
+        const length = stats.size - start;
+        const handle = await fs.open(thoughtsPath, 'r');
+        let buffer;
+        try {
+          buffer = Buffer.alloc(length);
+          await handle.read(buffer, 0, length, start);
+        } finally {
+          await handle.close();
+        }
+
+        let text = buffer.toString('utf8');
+        if (start > 0) {
+          const firstNewline = text.indexOf('\n');
+          text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
+        }
+
+        const lines = text.split('\n').filter((line) => line.trim());
+        let lastThought = null;
+        for (let i = lines.length - 1; i >= 0; i -= 1) {
+          try {
+            lastThought = JSON.parse(lines[i]);
+            break;
+          } catch {
+            // Keep walking backward until a valid thought row is found.
+          }
+        }
+
+        const summary = {
+          count: cache?.summary?.count ?? null,
+          lastThought,
+          source: 'tail',
+        };
+        this._thoughtSummaryCache?.set?.(thoughtsPath, { size: stats.size, mtimeMs: stats.mtimeMs, summary });
+        return summary;
+      }
+    } catch {
+      return { count: 0, lastThought: null, source: null };
+    }
+
     let count = 0;
     let lastThought = null;
 
@@ -9672,10 +9726,17 @@ You are empowered to explore and understand. The user trusts you to discover the
         }
       }
     } catch {
-      return { count: 0, lastThought: null };
+      return { count: 0, lastThought: null, source: null };
     }
 
-    return { count, lastThought };
+    const summary = { count, lastThought, source: 'scan' };
+    try {
+      const stats = await fs.stat(thoughtsPath);
+      this._thoughtSummaryCache?.set?.(thoughtsPath, { size: stats.size, mtimeMs: stats.mtimeMs, summary });
+    } catch {
+      // Cache is advisory.
+    }
+    return summary;
   }
 
   async getRecentThoughtsForDir(brainDir, limit = 20) {
