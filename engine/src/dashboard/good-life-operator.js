@@ -998,7 +998,7 @@ function summarizeTopLiveProblem(liveProblems = {}) {
   const next = problem.nextRemediation || {};
   if (next.type) {
     const prefix = next.requiresUser ? 'Next user action' : 'Next autonomous step';
-    lines.push(`${prefix}: ${next.type}${next.text && next.text !== next.type ? ` - ${compactText(next.text, 120)}` : ''}`);
+    lines.push(formatRemediationLine(prefix, next, problem));
   } else if (next.text) {
     lines.push(`Next step: ${compactText(next.text, 140)}`);
   }
@@ -1017,8 +1017,28 @@ function firstActiveLiveProblem(liveProblems = {}) {
     || null;
 }
 
-function formatRemediationLine(prefix, next = {}) {
+function remediationCooldownStatus(problem = {}, next = {}, nowMs = Date.now()) {
+  const cooldownMin = finiteCount(next?.cooldownMin);
+  const lastAt = toTimeMs(problem?.lastRemediation?.at);
+  if (cooldownMin == null || cooldownMin <= 0 || !lastAt) return null;
+  const elapsedMin = Math.max(0, Math.floor((nowMs - lastAt) / 60000));
+  const remainingMin = Math.max(0, cooldownMin - elapsedMin);
+  if (remainingMin <= 0) return null;
+  const latest = problem.lastRemediation
+    ? [problem.lastRemediation.type, problem.lastRemediation.outcome].filter(Boolean).join(' ')
+    : null;
+  return {
+    remainingMin,
+    text: `waiting ${formatMinutes(remainingMin)} before ${next.type || 'next step'} cooldown clears${latest ? `; latest attempt: ${latest}` : ''}`,
+  };
+}
+
+function formatRemediationLine(prefix, next = {}, problem = null, nowMs = Date.now()) {
   if (!next?.type && !next?.text) return null;
+  const cooldown = remediationCooldownStatus(problem, next, nowMs);
+  if (cooldown?.text) {
+    return `${prefix}: ${cooldown.text}`;
+  }
   const text = next.text && next.text !== next.type
     ? ` - ${compactText(next.text, 140)}`
     : '';
@@ -1037,7 +1057,7 @@ function buildProjectionMismatchText(projection = {}, liveProblems = {}) {
   return fields.length ? fields.join('; ') : null;
 }
 
-function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAction, projection, freshness, budget, host }) {
+function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAction, projection, freshness, budget, host, nowMs = Date.now() }) {
   const counts = liveProblems.counts || {};
   const activeCount = Number(counts.open || 0) + Number(counts.chronic || 0);
   const interventionCount = Number(counts.interventionRequired || 0);
@@ -1069,7 +1089,7 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
     status = 'Needs jtr';
     headline = `${interventionCount} live problem${interventionCount === 1 ? '' : 's'} need user intervention`;
     why = activeProblem?.issue || activeProblem?.detail || activeProblem?.claim || 'Good Life reached a manual remediation step.';
-    next = formatRemediationLine('User action', activeProblem?.nextRemediation)
+    next = formatRemediationLine('User action', activeProblem?.nextRemediation, activeProblem, nowMs)
       || 'User decision is required before autonomous repair can continue.';
     target = {
       tab: 'issues',
@@ -1082,7 +1102,7 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
     status = 'Repairing';
     headline = `${activeCount} active live problem${activeCount === 1 ? '' : 's'}`;
     why = activeProblem?.issue || activeProblem?.detail || activeProblem?.claim || policy?.reason || 'Good Life is repairing verified drift.';
-    next = formatRemediationLine('Home23 next', activeProblem?.nextRemediation)
+    next = formatRemediationLine('Home23 next', activeProblem?.nextRemediation, activeProblem, nowMs)
       || 'Autonomous remediation can continue.';
     target = {
       tab: 'issues',
@@ -1301,7 +1321,7 @@ function buildOperatorAnswer({ state, lanes, liveProblems, consistency, work, la
   return lines;
 }
 
-function buildOperatorDigest({ brief, liveProblems, work, budget, host }) {
+function buildOperatorDigest({ brief, liveProblems, work, budget, host, nowMs = Date.now() }) {
   const counts = liveProblems?.counts || {};
   const activeCount = Number(counts.open || 0) + Number(counts.chronic || 0);
   const interventionCount = Number(counts.interventionRequired || 0);
@@ -1311,7 +1331,7 @@ function buildOperatorDigest({ brief, liveProblems, work, budget, host }) {
 
   let userAction = 'No user action needed right now.';
   if (interventionCount > 0) {
-    userAction = formatRemediationLine('User action', activeProblem?.nextRemediation)
+    userAction = formatRemediationLine('User action', activeProblem?.nextRemediation, activeProblem, nowMs)
       || 'User decision is required before autonomous repair can continue.';
   } else if (work?.agendaNeedingReview > 0 || work?.goalsNeedingReview > 0) {
     userAction = workStatus || 'Operator review is recommended for active work.';
@@ -1350,7 +1370,7 @@ function buildOperatorDigest({ brief, liveProblems, work, budget, host }) {
   };
 }
 
-function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAction, budget, host }) {
+function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAction, budget, host, nowMs = Date.now() }) {
   const counts = liveProblems?.counts || {};
   const activeCount = Number(counts.open || 0) + Number(counts.chronic || 0);
   const interventionCount = Number(counts.interventionRequired || 0);
@@ -1366,7 +1386,7 @@ function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAc
 
   let repair = 'No autonomous repair is active; Home23 is monitoring verifier evidence.';
   if (activeCount > 0) {
-    repair = formatRemediationLine('Next repair step', activeProblem?.nextRemediation)
+    repair = formatRemediationLine('Next repair step', activeProblem?.nextRemediation, activeProblem, nowMs)
       || 'Autonomous remediation can continue from the recorded plan.';
   } else if (budget?.pressureRest && budget?.exhausted) {
     repair = budget.reason;
@@ -1380,7 +1400,7 @@ function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAc
 
   let userAction = 'No user action needed right now.';
   if (interventionCount > 0) {
-    userAction = formatRemediationLine('User action', activeProblem?.nextRemediation)
+    userAction = formatRemediationLine('User action', activeProblem?.nextRemediation, activeProblem, nowMs)
       || 'User decision is required before autonomous repair can continue.';
   } else if (work?.agendaNeedingReview > 0 || work?.goalsNeedingReview > 0) {
     userAction = work.statusText || 'Operator review is recommended for active work.';
@@ -1606,6 +1626,7 @@ function buildGoodLifeOperatorModel({
     freshness,
     budget,
     host: state?.evidence?.host || null,
+    nowMs,
   });
   if (status === 'conflicted') {
     model.summary = `${String(model.operatorBrief.status || 'Reconciling').toLowerCase()} - ${model.operatorBrief.headline}`;
@@ -1616,6 +1637,7 @@ function buildGoodLifeOperatorModel({
     work,
     budget,
     host: state?.evidence?.host || null,
+    nowMs,
   });
   model.operatorHandoff = buildOperatorHandoff({
     brief: model.operatorBrief,
@@ -1625,6 +1647,7 @@ function buildGoodLifeOperatorModel({
     latestAction,
     budget,
     host: state?.evidence?.host || null,
+    nowMs,
   });
   return model;
 }
