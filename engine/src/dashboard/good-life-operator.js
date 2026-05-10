@@ -1482,6 +1482,118 @@ function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAc
   };
 }
 
+function buildOperatorRings({ brief, liveProblems, work, consistency, freshness, latestAction, budget }) {
+  const counts = liveProblems?.counts || {};
+  const openCount = Number(counts.open || 0);
+  const chronicCount = Number(counts.chronic || 0);
+  const interventionCount = Number(counts.interventionRequired || 0);
+  const activeCount = openCount + chronicCount;
+  const warnings = Array.isArray(consistency?.warnings) ? consistency.warnings : [];
+  const actionableWarning = warnings.find((warning) => warning.severity !== 'info') || null;
+  const workActive = Number(work?.activeTotal || 0);
+
+  let goodLifeState = brief?.severity || 'clear';
+  let goodLifeLabel = brief?.status || 'Clear';
+  let goodLifeDetail = brief?.needsUser
+    ? (brief.next || 'User intervention is required before the loop can close.')
+    : (brief?.headline || 'Good Life has no active user-facing issue.');
+  if (!brief) {
+    goodLifeState = 'unknown';
+    goodLifeLabel = 'Unknown';
+    goodLifeDetail = 'Good Life has not produced an operator brief yet.';
+  }
+
+  let internalState = 'clear';
+  let internalLabel = 'Clear';
+  let internalDetail = 'Verifier registry is clear and current.';
+  if (interventionCount > 0) {
+    internalState = 'needs-user';
+    internalLabel = 'Needs jtr';
+    internalDetail = `${interventionCount} verifier-gated issue${interventionCount === 1 ? '' : 's'} reached a user-intervention step.`;
+  } else if (activeCount > 0) {
+    internalState = 'repairing';
+    internalLabel = 'Repairing';
+    internalDetail = `${activeCount} verifier-gated issue${activeCount === 1 ? '' : 's'} still active.`;
+  } else if (actionableWarning) {
+    internalState = actionableWarning.severity === 'critical' ? 'critical' : 'attention';
+    internalLabel = actionableWarning.severity === 'critical' ? 'Critical' : 'Attention';
+    internalDetail = actionableWarning.message || actionableWarning.code || 'Operator consistency warning is present.';
+  } else if (freshness?.status && freshness.status !== 'current') {
+    internalState = freshness.status === 'stale' ? 'attention' : 'unknown';
+    internalLabel = freshness.status === 'stale' ? 'Stale' : 'Unknown';
+    internalDetail = freshness.evaluatedAt
+      ? `Good Life evaluation is ${freshness.ageMin}m old.`
+      : 'Good Life freshness is unknown.';
+  }
+
+  let workState = 'clear';
+  let workLabel = 'Idle';
+  let workDetail = 'No active routed work; monitoring continues.';
+  if (budget?.pressureRest && budget?.exhausted) {
+    workState = 'resting';
+    workLabel = 'Resting';
+    workDetail = budget.resetText
+      ? `Pressure rest active; self-maintenance ${budget.resetText}.`
+      : 'Pressure rest active; self-maintenance waits for reset.';
+  } else if (budget?.exhausted) {
+    workState = 'paused';
+    workLabel = 'Paused';
+    workDetail = budget.resetText
+      ? `Daily self-maintenance budget spent; ${budget.resetText}.`
+      : 'Daily self-maintenance budget spent.';
+  } else if (work?.agendaNeedingReview > 0 || work?.goalsNeedingReview > 0) {
+    workState = 'review';
+    workLabel = 'Review';
+    workDetail = work.statusText || 'Routed work needs operator review.';
+  } else if (workActive > 0) {
+    workState = 'working';
+    workLabel = 'Working';
+    workDetail = work.statusText || `${workActive} active routed work item${workActive === 1 ? '' : 's'}.`;
+  } else if (latestAction?.workerRoute?.worker && isActiveAgendaStatus(latestAction.agendaStatus || 'candidate')) {
+    workState = 'working';
+    workLabel = 'Working';
+    workDetail = `Worker route: ${latestAction.workerRoute.worker}${latestAction.workerRoute.reason ? ` - ${latestAction.workerRoute.reason}` : ''}`;
+  }
+
+  return [
+    {
+      id: 'good-life',
+      name: 'Good Life',
+      state: goodLifeState,
+      label: goodLifeLabel,
+      detail: compactText(goodLifeDetail, 180),
+      action: brief?.target || { tab: 'issues', id: null, label: 'Open Details' },
+    },
+    {
+      id: 'internal-check',
+      name: 'Internal Check',
+      state: internalState,
+      label: internalLabel,
+      detail: compactText(internalDetail, 180),
+      action: { tab: activeCount > 0 || interventionCount > 0 ? 'issues' : 'insights', id: brief?.activeProblemId || null, label: activeCount > 0 ? 'Review Verifier' : 'Review Signals' },
+      evidence: {
+        open: openCount,
+        chronic: chronicCount,
+        interventionRequired: interventionCount,
+        freshness: freshness?.status || 'unknown',
+      },
+    },
+    {
+      id: 'work-loop',
+      name: 'Work Loop',
+      state: workState,
+      label: workLabel,
+      detail: compactText(workDetail, 180),
+      action: { tab: workActive > 0 ? 'work' : 'resolutions', id: work?.topAgenda?.id || work?.topGoal?.id || null, label: workActive > 0 ? 'Review Work' : 'View Receipts' },
+      evidence: {
+        activeWork: workActive,
+        agendaNeedingReview: Number(work?.agendaNeedingReview || 0),
+        goalsNeedingReview: Number(work?.goalsNeedingReview || 0),
+      },
+    },
+  ];
+}
+
 function buildDetailSections({ commitments, trends, regulator, liveProblems, ledgerTail, obligations, budget, host, pm2 }) {
   const activeRows = [
     ...(Array.isArray(liveProblems.open) ? liveProblems.open : []),
@@ -1657,6 +1769,15 @@ function buildGoodLifeOperatorModel({
     budget,
     host: state?.evidence?.host || null,
     nowMs,
+  });
+  model.operatorRings = buildOperatorRings({
+    brief: model.operatorBrief,
+    liveProblems: directLiveProblems,
+    work,
+    consistency,
+    freshness,
+    latestAction,
+    budget,
   });
   return model;
 }

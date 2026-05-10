@@ -1829,3 +1829,42 @@ test('Good Life operator marks superseded repair agenda for review when registry
   });
   assert.match(model.operatorBrief.next, /superseded by current learn mode/);
 });
+
+test('Good Life operator exposes three ring readiness for user action, verifier, and work loop', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [{
+      id: 'bridge_restart_needed',
+      state: 'open',
+      claim: 'Bridge needs a user restart decision',
+      openedAt: '2026-05-08T13:00:00.000Z',
+      stepIndex: 1,
+      remediation: [
+        { type: 'dispatch_to_worker', args: { worker: 'systems' } },
+        { type: 'notify_jtr', args: { text: 'Choose whether to restart the bridge.' } },
+      ],
+      lastResult: { ok: false, detail: 'bridge still unavailable' },
+    }],
+    obligations: {
+      activeAgenda: [{
+        id: 'ag-bridge',
+        status: 'candidate',
+        content: 'Diagnose bridge restart path',
+        createdAt: NOW,
+      }],
+      activeGoals: [],
+      counts: { activeAgenda: 1, activeGoals: 0 },
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.operatorRings.length, 3);
+  assert.deepEqual(model.operatorRings.map((ring) => ring.id), ['good-life', 'internal-check', 'work-loop']);
+  assert.equal(model.operatorRings[0].state, 'needs-user');
+  assert.equal(model.operatorRings[1].state, 'needs-user');
+  assert.match(model.operatorRings[1].detail, /1 verifier-gated issue/);
+  assert.equal(model.operatorRings[2].state, 'working');
+  assert.equal(model.operatorRings[0].action.tab, 'issues');
+  assert.equal(model.operatorRings[1].action.tab, 'issues');
+  assert.equal(model.operatorRings[2].action.tab, 'work');
+});

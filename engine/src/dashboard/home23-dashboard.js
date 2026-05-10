@@ -3170,6 +3170,25 @@ function renderGoodLifeDigestList(operator) {
   </div>`;
 }
 
+function renderGoodLifeRings(operator, scope = 'home') {
+  const rings = Array.isArray(operator?.operatorRings) ? operator.operatorRings : [];
+  if (!rings.length) return '';
+  return `<div class="h23-goodlife-rings" aria-label="Good Life three-ring status">
+    ${rings.map((ring) => {
+    const action = ring.action || {};
+    const tab = action.tab || 'issues';
+    const id = action.id || '';
+    const label = action.label || 'Open';
+    return `<button class="h23-goodlife-ring ${goodLifeCssClass(ring.state || ring.label || 'unknown')}" type="button" onclick="openGoodLifeOperator('${escapeAttr(scope)}', '${escapeAttr(id)}', '${escapeAttr(tab)}')">
+        <span>${escapeHtml(ring.name || '')}</span>
+        <strong>${escapeHtml(ring.label || ring.state || 'unknown')}</strong>
+        <small>${escapeHtml(ring.detail || '')}</small>
+        <em>${escapeHtml(label)}</em>
+      </button>`;
+  }).join('')}
+  </div>`;
+}
+
 function updateGoodLifeTile(data, scope = 'home') {
   const id = (base) => goodLifeDomId(base, scope);
   const state = data?.state || null;
@@ -3211,7 +3230,10 @@ function updateGoodLifeTile(data, scope = 'home') {
     ? operator.operatorAnswer
     : [state.summary || state.policy?.reason || ''];
   const digestHtml = renderGoodLifeDigestList(operator);
-  setHtml(id('goodlife-answer'), digestHtml || answerLines.filter(Boolean).slice(0, 6).map((line) => (
+  const ringHtml = renderGoodLifeRings(operator, scope);
+  setHtml(id('goodlife-answer'), (ringHtml || digestHtml)
+    ? `${ringHtml}${digestHtml}`
+    : answerLines.filter(Boolean).slice(0, 6).map((line) => (
     `<div class="h23-goodlife-answer-line">${escapeHtml(line)}</div>`
   )).join(''));
   setHtml(id('goodlife-problems'), renderGoodLifeProblems(operator, data));
@@ -3569,6 +3591,7 @@ function renderGoodLifeTop(data) {
     .slice(0, 5);
   return `
     ${renderGoodLifeBrief(operator, data?._scope || goodLifeOverlayState.scope || 'home')}
+    ${renderGoodLifeRings(operator, data?._scope || goodLifeOverlayState.scope || 'home')}
     ${handoff ? `<div class="h23-goodlife-handoff-panel ${goodLifeCssClass(handoff.needsUser ? 'needs-user' : operator.operatorBrief?.severity || operator.status)}">
       <div>
         <label>Situation</label>

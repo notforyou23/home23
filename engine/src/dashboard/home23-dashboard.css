@@ -3130,6 +3130,86 @@ body.h23-external-focus #cosmo23-refresh-btn {
   overflow-wrap: anywhere;
 }
 
+.h23-goodlife-rings {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.h23-goodlife-ring {
+  min-width: 0;
+  min-height: 104px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(255,255,255,0.055);
+  color: var(--text-primary);
+  text-align: left;
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  gap: 5px;
+  cursor: pointer;
+}
+
+.h23-goodlife-ring:hover {
+  border-color: rgba(90,200,250,0.45);
+  background: rgba(90,200,250,0.08);
+}
+
+.h23-goodlife-ring span {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.h23-goodlife-ring strong {
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.h23-goodlife-ring small {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.h23-goodlife-ring em {
+  color: var(--accent-cyan);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.h23-goodlife-ring.needs-user,
+.h23-goodlife-ring.critical {
+  border-color: rgba(255,69,58,0.42);
+  background: rgba(255,69,58,0.10);
+}
+
+.h23-goodlife-ring.repairing,
+.h23-goodlife-ring.attention,
+.h23-goodlife-ring.review {
+  border-color: rgba(255,204,0,0.34);
+  background: rgba(255,204,0,0.08);
+}
+
+.h23-goodlife-ring.working,
+.h23-goodlife-ring.resting {
+  border-color: rgba(90,200,250,0.34);
+  background: rgba(90,200,250,0.08);
+}
+
+.h23-goodlife-ring.clear,
+.h23-goodlife-ring.healthy {
+  border-color: rgba(52,199,89,0.34);
+  background: rgba(52,199,89,0.08);
+}
+
 .h23-goodlife-problem-stats {
   display: flex;
   flex-wrap: wrap;
@@ -4642,6 +4722,10 @@ body.h23-external-focus #cosmo23-refresh-btn {
     grid-column: span 1 !important;
     height: auto;
     max-height: none;
+  }
+
+  .h23-goodlife-rings {
+    grid-template-columns: 1fr;
   }
 
   .h23-about-grid {
