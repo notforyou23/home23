@@ -5763,41 +5763,16 @@ Be specific, actionable, and maintain research continuity.`;
         };
       }
     };
-    const buildSnapshot = (problems) => {
-      const now = Date.now();
-      const open = [], chronic = [], resolvedJustNow = [];
-      let resolved = 0, unverifiable = 0;
-      for (const p of problems) {
-        if (p.state === 'open' || p.state === 'chronic') {
-          const openedMs = p.openedAt ? Date.parse(p.openedAt) : now;
-          const ageMin = Math.max(0, Math.round((now - openedMs) / 60000));
-          const row = {
-            id: p.id, claim: p.claim, ageMin,
-            detail: p.lastResult?.detail || null,
-            state: p.state, escalated: !!p.escalated,
-            lastRemediation: (p.remediationLog || []).slice(-1)[0] || null,
-          };
-          if (p.state === 'chronic') chronic.push(row); else open.push(row);
-        } else if (p.state === 'resolved') {
-          resolved++;
-          const at = p.resolvedAt ? Date.parse(p.resolvedAt) : 0;
-          if (at && (now - at) < 30 * 60 * 1000) {
-            resolvedJustNow.push({ id: p.id, claim: p.claim, resolvedAt: p.resolvedAt });
-          }
-        } else if (p.state === 'unverifiable') {
-          unverifiable++;
-        }
-      }
-      return { open, chronic, resolvedJustNow,
-        counts: { open: open.length, chronic: chronic.length, resolved, unverifiable } };
-    };
+    const buildSnapshot = (problems) => buildLiveProblemSnapshot(problems);
 
     this.app.get('/api/live-problems', (req, res) => {
       const data = loadLiveProblems(liveProblemTarget(req));
+      const snapshot = buildSnapshot(data.problems || []);
       res.json({
         available: true,
         problems: data.problems || [],
-        snapshot: buildSnapshot(data.problems || []),
+        snapshot,
+        counts: snapshot.counts,
       });
     });
 
