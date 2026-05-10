@@ -419,6 +419,13 @@ function expandTemplate(v) {
   return isIso ? new Date(t).toISOString() : t;
 }
 
+function isRetryableMissingJsonPath(jsonPath, op, observed) {
+  if (observed !== undefined) return false;
+  if (op === 'absent' || op === 'falsy') return false;
+  const path = String(jsonPath || '');
+  return path.includes('[') && path.includes('=') && path.includes(']');
+}
+
 function compareValues(observed, op, expected) {
   // Normalize date-like strings for numeric ops so verifiers can say
   // "lastUpdate > now-1h" even if the JSON field is an ISO string.
@@ -660,6 +667,10 @@ verifiers.jsonpath_http = async function jsonpath_http(args = {}) {
       const observed = walkPath(body, jsonPath);
       const value = expandTemplate(args.value);
       const passed = compareValues(observed, op, value);
+      if (!passed && isRetryableMissingJsonPath(jsonPath, op, observed) && attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, Math.min(500 * attempt, 1500)));
+        continue;
+      }
       // Short-form human detail
       const obsSnippet = observed === undefined ? 'undefined'
         : typeof observed === 'object' ? JSON.stringify(observed).slice(0, 80)
@@ -668,9 +679,10 @@ verifiers.jsonpath_http = async function jsonpath_http(args = {}) {
         : typeof value === 'object' ? JSON.stringify(value).slice(0, 80)
         : String(value).slice(0, 80);
       const retryDetail = attempt > 1 ? ` after ${attempt} attempts` : '';
+      const missingDetail = !passed && isRetryableMissingJsonPath(jsonPath, op, observed) ? ' (missing selected array element)' : '';
       return {
         ok: passed,
-        detail: `${jsonPath}=${obsSnippet} ${op} ${valSnippet} → ${passed ? 'pass' : 'fail'}${retryDetail}`,
+        detail: `${jsonPath}=${obsSnippet} ${op} ${valSnippet} → ${passed ? 'pass' : 'fail'}${retryDetail}${missingDetail}`,
         observed: { value: observed, compared: value },
       };
     } catch (err) {

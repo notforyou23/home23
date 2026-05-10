@@ -292,3 +292,64 @@ test('jsonpath_http retries one transient fetch failure before marking problem o
     globalThis.fetch = originalFetch;
   }
 });
+
+test('jsonpath_http retries a missing selected array element before failing', async () => {
+  let calls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls += 1;
+    const sensors = calls === 1
+      ? []
+      : [{ id: 'tile.sauna-control', ts: new Date().toISOString() }];
+    return new Response(JSON.stringify({ sensors }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+
+  try {
+    const result = await runVerifier({
+      type: 'jsonpath_http',
+      args: {
+        url: 'http://127.0.0.1:5012/api/sensors',
+        path: 'sensors[id=tile.sauna-control].ts',
+        op: '>',
+        value: '{{iso:now-10min}}',
+        timeoutMs: 4000,
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(calls, 2);
+    assert.match(result.detail, /after 2 attempts/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('jsonpath_http marks repeated missing selected array element in detail', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ sensors: [] }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+
+  try {
+    const result = await runVerifier({
+      type: 'jsonpath_http',
+      args: {
+        url: 'http://127.0.0.1:5012/api/sensors',
+        path: 'sensors[id=tile.sauna-control].ts',
+        op: '>',
+        value: '{{iso:now-10min}}',
+        timeoutMs: 4000,
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.detail, /after 2 attempts/);
+    assert.match(result.detail, /missing selected array element/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

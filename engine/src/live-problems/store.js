@@ -46,7 +46,8 @@ function isTransientVerifierFailure(result) {
     || detail.includes('operation was aborted')
     || detail.includes('timeout')
     || detail.includes('econnreset')
-    || detail.includes('econnrefused');
+    || detail.includes('econnrefused')
+    || detail.includes('missing selected array element');
 }
 
 class LiveProblemStore {

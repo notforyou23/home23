@@ -128,6 +128,30 @@ test('resolved live problem stays resolved on transient verifier failure', () =>
   }
 });
 
+test('resolved live problem stays resolved when a selected JSON array element is briefly missing', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-'));
+  try {
+    const store = new LiveProblemStore({ brainDir: dir });
+    store.upsert({
+      id: 'sauna_sensor_fresh',
+      claim: 'Sauna tile sensor refreshing within last 10 min',
+      verifier: { type: 'jsonpath_http', args: { path: 'sensors[id=tile.sauna-control].ts' } },
+      remediation: [],
+    });
+
+    store.recordVerification('sauna_sensor_fresh', { ok: true, detail: 'fresh', observed: { value: new Date().toISOString() } });
+    store.recordVerification('sauna_sensor_fresh', { ok: false, detail: 'sensors[id=tile.sauna-control].ts=undefined > 2026-05-10T05:00:00.000Z -> fail after 2 attempts (missing selected array element)' });
+
+    const p = store.get('sauna_sensor_fresh');
+    assert.equal(p.state, 'resolved');
+    assert.equal(p.lastResult.ok, true);
+    assert.equal(p.transientFailureCount, 1);
+    assert.match(p.lastTransientFailure.detail, /missing selected array element/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('resolved log-backed problem re-verifies when source log changed inside cooldown', () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-'));
   try {
