@@ -6,7 +6,7 @@ const require = createRequire(import.meta.url);
 process.env.OPENAI_API_KEY ||= 'test-key';
 const { IntrinsicGoalSystem } = require('../../../engine/src/goals/intrinsic-goals');
 
-function makeGoals() {
+function makeGoals(loggerOverrides = {}) {
   return new IntrinsicGoalSystem({
     goals: {
       maxGoals: 20,
@@ -19,6 +19,7 @@ function makeGoals() {
     info() {},
     debug() {},
     error() {},
+    ...loggerOverrides,
   });
 }
 
@@ -83,7 +84,16 @@ test('external goal upsert reuses an active goal with the same description', () 
 });
 
 test('observation-only dream, sleep, and notice outputs are not promoted to active goals', () => {
-  const goals = makeGoals();
+  const warnings = [];
+  const infos = [];
+  const goals = makeGoals({
+    warn(message, meta) {
+      warnings.push({ message, meta });
+    },
+    info(message, meta) {
+      infos.push({ message, meta });
+    },
+  });
 
   assert.equal(goals.addGoal({
     description: 'Explore the motif of language as architecture.',
@@ -101,6 +111,9 @@ test('observation-only dream, sleep, and notice outputs are not promoted to acti
   }), null);
 
   assert.equal(goals.getGoals().length, 0);
+  assert.equal(warnings.length, 0);
+  assert.equal(infos.length, 3);
+  assert.ok(infos.every(entry => entry.message === 'Skipped observation-only auto goal candidate'));
 });
 
 test('explicit promotion can turn an observation into an active goal', () => {

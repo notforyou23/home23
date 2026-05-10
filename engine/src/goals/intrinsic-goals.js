@@ -375,7 +375,7 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
     }
 
     if (isAutoObservationGoalSource(goalData.source) && goalData.metadata?.allowActiveGoal !== true) {
-      this.logger?.warn('⚠️  Skipped observation-only auto goal', {
+      this.logger?.info?.('Skipped observation-only auto goal candidate', {
         source: goalSourceLabel(goalData.source),
         description: goalData.description.substring(0, 80)
       });
