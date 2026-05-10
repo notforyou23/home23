@@ -161,17 +161,29 @@ function summarizeSurfaces(workspacePath) {
 
 function summarizeActions(orchestrator) {
   const journal = Array.isArray(orchestrator?.journal) ? orchestrator.journal.slice(-40) : [];
-  let recentFailures = 0;
   let maintenance = 0;
+  const latestStructuredFailures = [...journal]
+    .reverse()
+    .map((entry) => Number(entry?.cognitiveState?.recentFailures))
+    .find((value) => Number.isFinite(value));
+  let textFailureMentions = 0;
   for (const j of journal) {
     const text = String(j?.thought || j?.reasoning || '').toLowerCase();
-    if (text.includes('failed') || text.includes('error') || text.includes('timeout')) recentFailures++;
+    if (latestStructuredFailures == null && isActionFailureText(text)) textFailureMentions++;
     if (text.includes('restart') || text.includes('maintenance') || text.includes('self') || text.includes('engine')) maintenance++;
   }
   return {
-    recentFailures,
+    recentFailures: latestStructuredFailures ?? textFailureMentions,
     maintenanceRatio: journal.length ? maintenance / journal.length : 0,
   };
+}
+
+function isActionFailureText(text) {
+  if (!text) return false;
+  if (/(resolved|healthy|clean state|zero open|no current operational issues|no_action)/i.test(text)) {
+    return false;
+  }
+  return /(failed|error|timeout)/i.test(text);
 }
 
 function summarizeJsonl(file) {

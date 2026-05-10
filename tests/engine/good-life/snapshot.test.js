@@ -83,3 +83,37 @@ test('Good Life goal summary does not count completed goals still present in act
     total: 6,
   });
 });
+
+test('Good Life action summary prefers structured recent failure counter over prose mentions', () => {
+  const snapshot = buildGoodLifeSnapshot({
+    runtimeRoot: '',
+    orchestrator: {
+      journal: [
+        {
+          thought: 'The forrest engine timeout problem is resolved and the system is healthy.',
+          cognitiveState: { recentFailures: 0 },
+        },
+        {
+          thought: 'No current operational issues require action. NO_ACTION',
+          cognitiveState: { recentFailures: 0 },
+        },
+      ],
+    },
+  });
+
+  assert.equal(snapshot.actions.recentFailures, 0);
+});
+
+test('Good Life action summary fallback ignores resolved failure mentions', () => {
+  const snapshot = buildGoodLifeSnapshot({
+    runtimeRoot: '',
+    orchestrator: {
+      journal: [
+        { thought: 'The engine timeout problem is resolved and the system is healthy.' },
+        { thought: 'A worker failed to complete the current action.' },
+      ],
+    },
+  });
+
+  assert.equal(snapshot.actions.recentFailures, 1);
+});
