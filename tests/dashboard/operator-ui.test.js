@@ -15,11 +15,16 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(js, /Operator Status/);
   assert.match(js, /Needed From You/);
   assert.match(js, /problemRepairText/);
+  assert.match(js, /renderProblemUserAction/);
+  assert.match(js, /Action Needed/);
+  assert.match(js, /Inspect Plan/);
+  assert.match(js, /Re-check/);
   assert.match(js, /nothing; this issue is resolved/);
   assert.match(js, /brief\.status === 'Paused'/);
   assert.match(js, /paused by budget/);
   assert.match(css, /\.h23-problems-operator/);
   assert.match(css, /\.h23-problem-operator-grid/);
+  assert.match(css, /\.h23-problem-user-action/);
   assert.match(css, /\.h23-goodlife-fleet-row\.paused/);
 });
 

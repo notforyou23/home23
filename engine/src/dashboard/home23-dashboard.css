@@ -3003,6 +3003,69 @@ body.h23-external-focus #cosmo23-refresh-btn {
   background: rgba(0,0,0,0.12);
 }
 
+.h23-problem-user-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 0;
+  border: 1px solid rgba(255,190,90,0.32);
+  border-radius: 6px;
+  padding: 9px 10px;
+  background: rgba(255,190,90,0.08);
+}
+
+.h23-problem-user-action label {
+  display: block;
+  margin-bottom: 4px;
+  color: rgba(255,210,130,0.82);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.h23-problem-user-action strong,
+.h23-problem-user-action span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.h23-problem-user-action strong {
+  color: var(--text-primary);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.h23-problem-user-action span {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.h23-problem-user-action-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.h23-problem-user-action-controls button {
+  border: 1px solid rgba(255,255,255,0.16);
+  border-radius: 5px;
+  padding: 5px 9px;
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.78);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.h23-problem-user-action-controls button:hover {
+  border-color: rgba(255,190,90,0.52);
+  color: var(--text-primary);
+}
+
 .h23-goodlife-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.2fr) minmax(0, 1fr);

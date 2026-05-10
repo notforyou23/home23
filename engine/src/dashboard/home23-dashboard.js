@@ -641,6 +641,7 @@ function renderProblemCard(p) {
       <button onclick="openProblemEditor('${escapeAttr(p.id)}')" style="background:transparent;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.7);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;">edit</button>
     </div>
     ${dispatchBanner}
+    ${renderProblemUserAction(p)}
     <div class="h23-problem-operator-grid">
       <div><label>${escapeHtml(currentLabel)}</label><span>${escapeHtml(p.lastResult?.detail || p.detail || 'verifier has not run yet')}</span></div>
       <div><label>${escapeHtml(repairLabel)}</label><span>${escapeHtml(problemRepairText(p))}</span></div>
@@ -653,6 +654,28 @@ function renderProblemCard(p) {
     </div>
     ${recentRem.length > 0 ? `<div style="font-size:11px;color:rgba(255,255,255,0.45);margin-top:4px;">recent attempts: ${recentRem.map(r => `<span style="margin-right:10px;">${escapeHtml(r.type)}=${escapeHtml(r.outcome)}</span>`).join('')}</div>` : ''}
   </div>`;
+}
+
+function renderProblemUserAction(problem = {}) {
+  if (!goodLifeNeedsUser(problem)) return '';
+  const next = goodLifeNextRemediation(problem);
+  const stepText = next.type
+    ? `${next.type}${next.total ? ` step ${next.index + 1} of ${next.total}` : ''}`
+    : 'manual intervention';
+  const actionText = next.text || problemUserText(problem);
+  return `
+    <div class="h23-problem-user-action">
+      <div>
+        <label>Action Needed</label>
+        <strong>${escapeHtml(stepText)}</strong>
+        <span>${escapeHtml(actionText)}</span>
+      </div>
+      <div class="h23-problem-user-action-controls">
+        <button type="button" onclick="openProblemEditor('${escapeAttr(problem.id)}')">Inspect Plan</button>
+        <button type="button" onclick="tickProblemsNow()">Re-check</button>
+      </div>
+    </div>
+  `;
 }
 
 function escapeHtml(s) {
