@@ -3732,6 +3732,34 @@ function compactGoodLifeHostDetail(value, max = 180) {
   return `${text.slice(0, max - 1)}...`;
 }
 
+function goodLifeHostPressureStatus(kind, host) {
+  if (kind === 'cpu') {
+    const loadRatio = Number(host?.cpu?.loadRatio);
+    if (Number.isFinite(loadRatio) && loadRatio >= 1) return { className: 'watch', label: 'drives rest' };
+    return { className: 'info', label: 'below rest threshold' };
+  }
+  if (kind === 'memory') {
+    return { className: 'info', label: 'informational; swap drives pressure' };
+  }
+  if (kind === 'swap') {
+    const usedPct = Number(host?.swap?.usedPct);
+    if (Number.isFinite(usedPct) && usedPct >= 95) return { className: 'critical', label: 'drives repair' };
+    if (Number.isFinite(usedPct) && usedPct >= 85) return { className: 'watch', label: 'drives rest' };
+    return { className: 'info', label: 'below rest threshold' };
+  }
+  if (kind === 'disk') {
+    const usagePct = Number(host?.disk?.usagePct);
+    if (Number.isFinite(usagePct) && usagePct >= 95) return { className: 'critical', label: 'drives repair' };
+    return { className: 'info', label: 'below repair threshold' };
+  }
+  if (kind === 'process') {
+    const topCpuPct = Number(host?.process?.topCpuPct);
+    if (Number.isFinite(topCpuPct) && topCpuPct >= 90) return { className: 'watch', label: 'spike; load/swap decide policy' };
+    return { className: 'info', label: 'informational' };
+  }
+  return { className: 'info', label: 'observed' };
+}
+
 function renderGoodLifeHostPressure(host) {
   if (!host) return '';
   const rows = [
@@ -3742,6 +3770,7 @@ function renderGoodLifeHostPressure(host) {
         host.cpu.load1 != null ? `load ${Number(host.cpu.load1).toFixed(2)}` : null,
         host.cpu.cpuCount != null ? `${host.cpu.cpuCount} cores` : null,
       ].filter(Boolean).join(' - '),
+      status: goodLifeHostPressureStatus('cpu', host),
     } : null,
     host.memory ? {
       label: 'Memory',
@@ -3750,6 +3779,7 @@ function renderGoodLifeHostPressure(host) {
         formatGoodLifeGb(host.memory.freeBytes),
         host.memory.totalBytes != null ? `of ${formatGoodLifeGb(host.memory.totalBytes)}` : null,
       ].filter(Boolean).join(' '),
+      status: goodLifeHostPressureStatus('memory', host),
     } : null,
     host.swap ? {
       label: 'Swap',
@@ -3758,26 +3788,30 @@ function renderGoodLifeHostPressure(host) {
         host.swap.usedMb != null ? `${Math.round(Number(host.swap.usedMb))} MB used` : null,
         host.swap.totalMb != null ? `of ${Math.round(Number(host.swap.totalMb))} MB` : null,
       ].filter(Boolean).join(' '),
+      status: goodLifeHostPressureStatus('swap', host),
     } : null,
     host.disk ? {
       label: 'Disk',
       value: host.disk.usagePct != null ? `${Math.round(Number(host.disk.usagePct))}% used` : null,
       detail: host.disk.mount || '',
+      status: goodLifeHostPressureStatus('disk', host),
     } : null,
     host.process ? {
       label: 'Top Process',
       value: host.process.topCpuPct != null ? `${Math.round(Number(host.process.topCpuPct))}% CPU` : null,
       detail: compactGoodLifeHostDetail(host.process.topProcess?.pm2Name || host.process.topProcess?.command || ''),
+      status: goodLifeHostPressureStatus('process', host),
     } : null,
   ].filter((row) => row && (row.value || row.detail));
 
   if (!rows.length) return '';
   return `
     <section><h4>Host Pressure</h4>
-      ${rows.map((row) => `<div class="h23-goodlife-evidence-row">
+      ${rows.map((row) => `<div class="h23-goodlife-evidence-row ${escapeHtml(row.status?.className || 'info')}">
         <strong>${escapeHtml(row.label)}</strong>
         <span>${escapeHtml(row.value || 'observed')}</span>
         <small>${escapeHtml(row.detail || '')}</small>
+        <em>${escapeHtml(row.status?.label || 'observed')}</em>
       </div>`).join('')}
     </section>
   `;

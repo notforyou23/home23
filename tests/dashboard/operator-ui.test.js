@@ -29,10 +29,15 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(js, /Host Pressure/);
   assert.match(js, /CPU Load/);
   assert.match(js, /Top Process/);
+  assert.match(js, /goodLifeHostPressureStatus/);
+  assert.match(js, /drives rest/);
+  assert.match(js, /informational/);
   assert.match(css, /\.h23-problems-operator/);
   assert.match(css, /\.h23-problem-operator-grid/);
   assert.match(css, /\.h23-problem-user-action/);
   assert.match(css, /\.h23-goodlife-fleet-row\.paused/);
+  assert.match(css, /\.h23-goodlife-evidence-row\.watch/);
+  assert.match(css, /\.h23-goodlife-evidence-row\.info/);
 });
 
 test('Good Life issue detail shows user-facing repair context before raw JSON', () => {

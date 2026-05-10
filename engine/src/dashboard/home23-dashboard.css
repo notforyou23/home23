@@ -3689,6 +3689,26 @@ body.h23-external-focus #cosmo23-refresh-btn {
   color: var(--text-muted);
 }
 
+.h23-goodlife-evidence-row em {
+  justify-self: end;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.h23-goodlife-evidence-row.info em {
+  color: rgba(255,255,255,0.5);
+}
+
+.h23-goodlife-evidence-row.watch em {
+  color: rgba(255, 200, 87, 0.95);
+}
+
+.h23-goodlife-evidence-row.critical em {
+  color: rgba(255, 112, 112, 0.95);
+}
+
 .h23-goodlife-evidence-row p {
   grid-column: 2 / -1;
   margin: -2px 0 0;
