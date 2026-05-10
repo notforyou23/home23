@@ -1164,6 +1164,26 @@ class UnifiedClient extends GPT5Client {
     return await super.generateWithWebSearch(options);
   }
 
+  supportsWebSearch(options = {}) {
+    const assignment = this.getModelAssignment(options.component, options.purpose);
+    if (!assignment || assignment.provider === 'openai' || assignment.provider === 'openai-codex') {
+      return { supported: true, provider: assignment?.provider || 'openai' };
+    }
+    if (assignment.provider === 'xai') {
+      return { supported: true, provider: assignment.provider };
+    }
+    if (assignment.provider === 'local') {
+      return { supported: Boolean(this.localClient?.generateWithWebSearch), provider: assignment.provider };
+    }
+    if (assignment.provider === 'groq' || assignment.provider === 'huggingface' || assignment.provider === 'ollama-cloud') {
+      const client = assignment.provider === 'groq' ? this.groqClient
+        : assignment.provider === 'ollama-cloud' ? this.ollamaCloudClient
+        : this.hfClient;
+      return { supported: Boolean(client?.generateWithWebSearch), provider: assignment.provider };
+    }
+    return { supported: false, provider: assignment.provider };
+  }
+
   /**
    * Override generateWithReasoning
    * Falls back to parent for most cases

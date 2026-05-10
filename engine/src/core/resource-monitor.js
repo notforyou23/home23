@@ -28,6 +28,7 @@ class ResourceMonitor {
     this.cpuSnapshots = [];
     this.startTime = Date.now();
     this.lastCheck = Date.now();
+    this.lastCPUUsage = null;
     
     // Stats
     this.peakMemoryMB = 0;
@@ -100,15 +101,21 @@ class ResourceMonitor {
   calculateCPUPercent(cpuUsage) {
     const now = Date.now();
     const elapsedMs = now - this.lastCheck;
-    
-    if (elapsedMs === 0) return 0;
 
-    // Total CPU time in microseconds
-    const totalCPU = (cpuUsage.user + cpuUsage.system) / 1000; // Convert to ms
-    
-    // CPU percentage (very rough approximation)
-    const cpuPercent = Math.min(100, (totalCPU / elapsedMs) * 100);
-    
+    if (elapsedMs <= 0 || !this.lastCPUUsage) {
+      this.lastCPUUsage = { user: cpuUsage.user, system: cpuUsage.system };
+      return 0;
+    }
+
+    const userDelta = Math.max(0, cpuUsage.user - this.lastCPUUsage.user);
+    const systemDelta = Math.max(0, cpuUsage.system - this.lastCPUUsage.system);
+    this.lastCPUUsage = { user: cpuUsage.user, system: cpuUsage.system };
+
+    // CPU time is cumulative since process start; compare only the interval
+    // delta to the wall-clock interval between resource snapshots.
+    const intervalCPU = (userDelta + systemDelta) / 1000; // Convert µs to ms
+    const cpuPercent = Math.min(100, (intervalCPU / elapsedMs) * 100);
+
     return cpuPercent;
   }
 
@@ -254,6 +261,7 @@ class ResourceMonitor {
   reset() {
     this.memorySnapshots = [];
     this.cpuSnapshots = [];
+    this.lastCPUUsage = null;
     this.peakMemoryMB = 0;
     this.avgMemoryMB = 0;
     this.avgCPUPercent = 0;
@@ -265,4 +273,3 @@ class ResourceMonitor {
 }
 
 module.exports = { ResourceMonitor };
-

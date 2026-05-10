@@ -123,7 +123,7 @@ class BranchPolicyController {
 
     this.logger.info?.('Recording branch policy outcome', {
       effortCount: effortAssignments.length,
-      webSearchCount: webSearchAssignments.length,
+      webSearchCount: webSearchAssignments.filter(Boolean).length,
       reward
     });
 

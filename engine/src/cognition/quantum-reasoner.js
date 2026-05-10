@@ -75,6 +75,14 @@ class QuantumReasoner {
     });
 
     const branches = Math.max(1, branchPlan.branchCount || defaultBranchCount);
+    const webSearchSupport = typeof this.gpt5.supportsWebSearch === 'function'
+      ? this.gpt5.supportsWebSearch({ component: 'quantumReasoner', purpose: 'branches' })
+      : { supported: true };
+    if (context.allowWebSearch && !webSearchSupport.supported) {
+      this.logger?.debug?.('Web search disabled for quantum branches; assigned provider does not support it', {
+        provider: webSearchSupport.provider || 'unknown'
+      });
+    }
     
     // Track actual efforts and web search usage per branch
     const resolvedEfforts = [];
@@ -94,7 +102,9 @@ class QuantumReasoner {
           const policyEffort = branchPlan.effortAssignments[i];
           const reasoningEffort = policyEffort || this.getBranchReasoningEffort(i, branches);
           const wantsWebSearch = branchPlan.webSearchAssignments[i] === 1;
-          const enableWebSearch = context.allowWebSearch && (wantsWebSearch || (branchPlan.source !== 'policy' && i < 2));
+          const enableWebSearch = context.allowWebSearch
+            && webSearchSupport.supported
+            && (wantsWebSearch || (branchPlan.source !== 'policy' && i < 2));
           
           // Record actual decisions made for this branch
           resolvedEfforts[i] = reasoningEffort;
