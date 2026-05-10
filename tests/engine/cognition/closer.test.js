@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Closer } from '../../../engine/src/cognition/closer.js';
+import { Closer } from '../../../engine/src/cognition/closer.mjs';
 
 test('Closer constructs and runs a no-op close when disabled', async () => {
   const c = new Closer({ memory: {}, goals: {}, logger: console, enabled: false });

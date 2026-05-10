@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ROLE_SCHEMAS, validateRoleOutput } from '../../../engine/src/cognition/role-schemas.js';
+import { ROLE_SCHEMAS, validateRoleOutput } from '../../../engine/src/cognition/role-schemas.mjs';
 
 test('ROLE_SCHEMAS has entries for the five phase roles', () => {
   for (const role of ['critic', 'discovery', 'deep_dive', 'connect', 'curator']) {

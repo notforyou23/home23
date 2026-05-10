@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { MemoryIngest } = require('../../../engine/src/channels/memory-ingest.js');
+const { MemoryIngest } = require('../../../engine/src/channels/memory-ingest.cjs');
 
 test('MemoryIngest defaults to an active object cap when no explicit max is set', () => {
   const previous = process.env.HOME23_MEMORY_OBJECTS_ACTIVE_LIMIT;

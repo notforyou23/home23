@@ -742,8 +742,8 @@ async function main() {
     config.osEngine = osEngineCfg;
 
     const { ChannelBus } = await import('./channels/bus.js');
-    const { Closer } = await import('./cognition/closer.js');
-    const { DecayWorker } = await import('./cognition/decay-worker.js');
+    const { Closer } = await import('./cognition/closer.mjs');
+    const { DecayWorker } = await import('./cognition/decay-worker.mjs');
     const { NotifyChannel } = await import('./channels/notify/notify-channel.js');
     const channelsDir = path.join(runtimeRoot, 'channels');
     channelBus = new ChannelBus({ persistenceDir: channelsDir, logger });
@@ -767,7 +767,7 @@ async function main() {
     // Phase 2: wire bus crystallize events into the memory-objects.json store.
     // MemoryIngest writes with proper-lockfile so the harness MemoryObjectStore
     // can coexist as a reader/writer on the same file.
-    const { MemoryIngest } = require('./channels/memory-ingest.js');
+    const { MemoryIngest } = require('./channels/memory-ingest.cjs');
     const memoryIngest = new MemoryIngest({ brainDir: runtimeRoot, logger });
     await memoryIngest.compactActiveStore({ reason: 'startup' });
     channelBus.on('crystallize', async ({ observation, draft }) => {

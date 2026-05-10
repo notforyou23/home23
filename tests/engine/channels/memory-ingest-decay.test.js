@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MemoryIngest } from '../../../engine/src/channels/memory-ingest.js';
+import { MemoryIngest } from '../../../engine/src/channels/memory-ingest.cjs';
 
 async function seedWithTag(ingest, tag, ageMs) {
   const obs = {

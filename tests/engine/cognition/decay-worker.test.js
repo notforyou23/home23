@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DecayWorker } from '../../../engine/src/cognition/decay-worker.js';
+import { DecayWorker } from '../../../engine/src/cognition/decay-worker.mjs';
 
 test('DecayWorker.tick returns 0 when disabled', async () => {
   const w = new DecayWorker({ memory: {}, logger: console, enabled: false });
