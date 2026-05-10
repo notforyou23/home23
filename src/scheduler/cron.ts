@@ -293,6 +293,19 @@ export class CronScheduler {
     return this.jobs.get(id);
   }
 
+  async runJobNow(id: string): Promise<JobResult> {
+    const job = this.jobs.get(id);
+    if (!job) {
+      return {
+        status: 'error',
+        error: `Job not found: ${id}`,
+        durationMs: 0,
+      };
+    }
+
+    return await this.executeJob(job);
+  }
+
   // ─── Tick Loop ─────────────────────────────────────────
 
   private tick(): void {
@@ -326,7 +339,7 @@ export class CronScheduler {
     }
   }
 
-  private async executeJob(job: CronJob): Promise<void> {
+  private async executeJob(job: CronJob): Promise<JobResult> {
     const startMs = Date.now();
     let result: JobResult;
 
@@ -373,6 +386,7 @@ export class CronScheduler {
 
     const statusTag = result.status === 'ok' ? 'OK' : 'ERROR';
     console.log(`[scheduler] Job ${job.id} ${statusTag} (${result.durationMs}ms)`);
+    return result;
   }
 
   // ─── Next Run Computation ─────────────────────────────

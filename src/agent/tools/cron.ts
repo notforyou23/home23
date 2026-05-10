@@ -209,6 +209,44 @@ export const cronListTool: ToolDefinition = {
   },
 };
 
+// ─── cron_run ───────────────────────────────────────────────
+
+export const cronRunTool: ToolDefinition = {
+  name: 'cron_run',
+  description: 'Run a scheduled job immediately through the live scheduler. This updates lastStatus, consecutiveErrors, next run time, delivery, and the cron run log.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      job_id: { type: 'string', description: 'The job ID to run now. Use cron_list to find IDs.' },
+    },
+    required: ['job_id'],
+  },
+
+  async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+    if (!ctx.scheduler) {
+      return { content: 'Scheduler not available.', is_error: true };
+    }
+
+    const id = input.job_id as string;
+    const job = ctx.scheduler.getJob(id);
+    if (!job) return { content: `Job not found: ${id}`, is_error: true };
+
+    const result = await ctx.scheduler.runJobNow(id);
+    const updated = ctx.scheduler.getJob(id) || job;
+    const next = updated.state.nextRunAtMs ? new Date(updated.state.nextRunAtMs).toISOString() : 'unknown';
+    const parts = [
+      `Ran job: ${updated.name} (${id})`,
+      `status: ${result.status}`,
+      `durationMs: ${result.durationMs}`,
+      `consecutiveErrors: ${updated.state.consecutiveErrors}`,
+      `next: ${next}`,
+    ];
+    if (result.error) parts.push(`error: ${result.error}`);
+    if (result.response) parts.push(`response: ${result.response.slice(0, 1200)}`);
+    return { content: parts.join('\n'), is_error: result.status !== 'ok' };
+  },
+};
+
 // ─── cron_delete ────────────────────────────────────────────
 
 export const cronDeleteTool: ToolDefinition = {
