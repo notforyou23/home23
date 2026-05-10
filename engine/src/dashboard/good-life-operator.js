@@ -765,14 +765,14 @@ function buildConsistency({ state, projection, liveProblems, obligations, hasObl
         : `${service.label || service.id || 'Runtime service'} is slow: ${service.latencyMs}ms health check exceeds ${service.slowThresholdMs || 5000}ms`;
       warnings.push({
         code: `runtime_${service.id || 'service'}_slow`,
-        severity: 'warning',
+        severity: service.degraded ? 'info' : 'warning',
         message: degradedText,
       });
     }
   }
 
   return {
-    ok: warnings.length === 0,
+    ok: warnings.every((warning) => warning.severity === 'info'),
     warnings,
   };
 }
@@ -871,6 +871,7 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
   const interventionCount = Number(counts.interventionRequired || 0);
   const activeProblem = firstActiveLiveProblem(liveProblems);
   const warnings = consistency?.warnings || [];
+  const actionableWarnings = warnings.filter((warning) => warning.severity !== 'info');
   const projectionMismatch = buildProjectionMismatchText(projection, liveProblems);
   const latestResolution = Array.isArray(liveProblems.resolved) ? liveProblems.resolved[0] || null : null;
   const latestActionAgendaActive = latestAction?.workerRoute?.worker
@@ -926,11 +927,11 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
       label: 'Review Signals',
       worker: null,
     };
-  } else if (warnings.length > 0) {
-    severity = warnings.some((warning) => warning.severity === 'critical') ? 'critical' : 'attention';
+  } else if (actionableWarnings.length > 0) {
+    severity = actionableWarnings.some((warning) => warning.severity === 'critical') ? 'critical' : 'attention';
     status = severity === 'critical' ? 'Critical' : 'Attention';
-    headline = warnings[0].message || 'Good Life has an operator warning';
-    why = policy?.reason || warnings[0].code || 'Operator consistency warning is present.';
+    headline = actionableWarnings[0].message || 'Good Life has an operator warning';
+    why = policy?.reason || actionableWarnings[0].code || 'Operator consistency warning is present.';
     next = freshness?.status === 'stale'
       ? 'Good Life needs a fresh evaluation before its projection is safe to inherit.'
       : 'Review the warning before treating the projection as current.';

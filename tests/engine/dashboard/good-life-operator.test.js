@@ -686,6 +686,37 @@ test('Good Life operator model reports slow runtime services without calling the
   assert.match(model.operatorDigest.userAction, /No user action needed; Home23 is watching/);
 });
 
+test('Good Life operator treats PM2-online degraded runtime health as advisory', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [],
+    runtime: {
+      ok: true,
+      services: [
+        {
+          id: 'engine',
+          label: 'Jerry engine realtime',
+          ok: true,
+          degraded: true,
+          fallback: 'pm2-online',
+          slow: true,
+          pm2: { name: 'home23-jerry', status: 'online' },
+          error: 'health endpoint timed out or did not answer; home23-jerry is online in PM2',
+        },
+        { id: 'harness', label: 'Jerry harness bridge', ok: true, status: 200, latencyMs: 12 },
+      ],
+    },
+    now: NOW,
+  });
+
+  const advisory = model.consistency.warnings.find((item) => item.code === 'runtime_engine_slow');
+  assert.equal(model.status, 'current');
+  assert.equal(model.operatorBrief.status, 'Clear');
+  assert.equal(model.safeToInherit, true);
+  assert.equal(advisory?.severity, 'info');
+  assert.match(advisory?.message || '', /home23-jerry is online/);
+});
+
 test('Good Life operator model builds end-user detail sections for drill-down navigation', () => {
   const model = buildGoodLifeOperatorModel({
     state: goodLifeState({
