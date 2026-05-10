@@ -27,6 +27,7 @@ let homeTileLayout = [];
 let homeTileLayoutSignature = '';
 let homeTileCustomRefreshers = new Map();
 let homeTileCustomState = new Map();
+let homeTilesRefreshPromise = null;
 let tileActionDialogState = null;
 let homeTileBroadcast = null;
 const goodLifeSurfaceState = new Map();
@@ -2413,14 +2414,22 @@ function setupHomeTileBroadcast() {
   if (typeof BroadcastChannel === 'undefined') return;
   homeTileBroadcast = new BroadcastChannel('home23-dashboard-tiles');
   homeTileBroadcast.addEventListener('message', async () => {
-    try {
-      await loadHomeLayoutConfig();
-      await loadHomeTiles();
-      await loadVisibleCustomTiles();
-    } catch {
-      /* best effort */
-    }
+    await refreshHomeTiles().catch(() => { /* best effort */ });
   });
+}
+
+async function refreshHomeTiles({ includeLayout = true } = {}) {
+  if (homeTilesRefreshPromise) return homeTilesRefreshPromise;
+
+  homeTilesRefreshPromise = (async () => {
+    if (includeLayout) await loadHomeLayoutConfig();
+    await loadHomeTiles();
+    await loadVisibleCustomTiles();
+  })().finally(() => {
+    homeTilesRefreshPromise = null;
+  });
+
+  return homeTilesRefreshPromise;
 }
 
 function syncCustomTileRefreshers() {
@@ -4382,9 +4391,7 @@ async function loadAgentPanel(agentName) {
 function startAutoRefresh() {
   setInterval(async () => {
     if (currentTab === 'home') {
-      await loadHomeLayoutConfig();
-      await loadHomeTiles();
-      await loadVisibleCustomTiles();
+      await refreshHomeTiles();
     } else if (currentTab.startsWith('agent-')) {
       await loadAgentPanel(currentTab.replace('agent-', ''));
     }
