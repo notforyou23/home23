@@ -681,7 +681,7 @@ function createSettingsRouter(home23Root) {
         defaultModel: model || 'kimi-k2.6',
         maxTokens: 4096, temperature: 0.7, historyDepth: 20, historyBudget: 400000, sessionGapMs: 1800000,
         memorySearch: { enabled: false, timeoutMs: 10000, topK: 5 },
-        identityFiles: ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'LEARNINGS.md', 'COSMO_RESEARCH.md'],
+        identityFiles: ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'LEARNINGS.md', 'GOOD_LIFE.md', 'COSMO_RESEARCH.md'],
         heartbeatRefreshMs: 60000,
       },
       sessions: {
@@ -708,7 +708,7 @@ function createSettingsRouter(home23Root) {
 
     const dName = displayName || name.charAt(0).toUpperCase() + name.slice(1);
     const templateVars = { displayName: dName, name, ownerName: ownerName || 'owner' };
-    for (const file of ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'LEARNINGS.md', 'COSMO_RESEARCH.md']) {
+    for (const file of ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'LEARNINGS.md', 'GOOD_LIFE.md', 'COSMO_RESEARCH.md']) {
       const template = loadTemplate(file);
       const content = renderTemplate(template, templateVars);
       fs.writeFileSync(path.join(instanceDir, 'workspace', file), content, 'utf8');

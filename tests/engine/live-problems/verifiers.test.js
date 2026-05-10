@@ -215,6 +215,71 @@ test('log_recent_count reports missing log files as failed', async () => {
   assert.match(result.detail, /missing/);
 });
 
+test('cron_job_errors fails when enabled jobs have repeated errors', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-cron-errors-'));
+  const cronPath = path.join(dir, 'cron-jobs.json');
+  fs.writeFileSync(cronPath, JSON.stringify([
+    {
+      id: 'job-ok',
+      name: 'Healthy job',
+      enabled: true,
+      state: { lastStatus: 'ok', consecutiveErrors: 0 },
+    },
+    {
+      id: 'job-bad',
+      name: 'HealthKit pipeline freshness check',
+      enabled: true,
+      state: { lastStatus: 'error', consecutiveErrors: 3, lastDurationMs: 6123 },
+    },
+    {
+      id: 'job-disabled',
+      name: 'Disabled broken job',
+      enabled: false,
+      state: { lastStatus: 'error', consecutiveErrors: 99 },
+    },
+  ]));
+
+  const result = await runVerifier({
+    type: 'cron_job_errors',
+    args: { path: cronPath, maxConsecutiveErrors: 0 },
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.detail, /HealthKit pipeline freshness check/);
+  assert.equal(result.observed.failingJobs.length, 1);
+  assert.equal(result.observed.failingJobs[0].id, 'job-bad');
+});
+
+test('cron_job_errors passes when enabled jobs are healthy or below threshold', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-cron-ok-'));
+  const cronPath = path.join(dir, 'cron-jobs.json');
+  fs.writeFileSync(cronPath, JSON.stringify({
+    jobs: [
+      {
+        id: 'job-starting',
+        name: 'Starting job',
+        enabled: true,
+        state: { lastStatus: 'error', consecutiveErrors: 1 },
+      },
+      {
+        id: 'job-ok',
+        name: 'Healthy job',
+        status: 'enabled',
+        lastStatus: 'ok',
+        consecutiveErrors: 0,
+      },
+    ],
+  }));
+
+  const result = await runVerifier({
+    type: 'cron_job_errors',
+    args: { path: cronPath, maxConsecutiveErrors: 1 },
+  });
+
+  assert.equal(result.ok, true);
+  assert.match(result.detail, /0 failing enabled cron jobs/);
+});
+
 test('jsonl_metric_date_fresh fails when wrapper writes are fresh but metric date is stale', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verifier-health-'));
   const file = path.join(dir, 'health.jsonl');

@@ -99,6 +99,12 @@ test('default seeds include agent-local operational log pressure invariants', ()
   assert.equal(cpu.verifier.args.pattern, '\\[ResourceMonitor\\] High CPU usage');
   assert.match(cpu.verifier.args.sincePattern, /CrashRecovery/);
   assert.equal(cpu.verifier.args.maxCount, 3);
+
+  const cron = byId.get('forrest_harness_cron_jobs_healthy');
+  assert.equal(cron?.verifier?.type, 'cron_job_errors');
+  assert.match(cron.verifier.args.path, /\/instances\/forrest\/conversations\/cron-jobs\.json$/);
+  assert.equal(cron.remediation[0].type, 'dispatch_to_worker');
+  assert.equal(cron.remediation[0].args.worker, 'systems');
 });
 
 test('default seeds verify dashboard port ownership separately from HTTP reachability', () => {

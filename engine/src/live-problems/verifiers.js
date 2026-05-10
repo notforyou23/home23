@@ -632,6 +632,91 @@ verifiers.log_recent_count = async function logRecentCount(args = {}) {
 };
 
 /**
+ * Verify a Home23 harness cron-jobs.json file has no enabled jobs stuck in an
+ * error streak.
+ *
+ * args: {
+ *   path: "instances/forrest/conversations/cron-jobs.json",
+ *   maxConsecutiveErrors?: 0,
+ *   jobNamePattern?: "HealthKit|dashboard"
+ * }
+ */
+verifiers.cron_job_errors = async function cronJobErrors(args = {}) {
+  const { path: filePath } = args;
+  if (!filePath) return { ok: false, detail: 'path required' };
+  const full = expandPath(filePath);
+  if (!fs.existsSync(full)) return { ok: false, detail: `missing: ${filePath}` };
+
+  let nameRe = null;
+  if (args.jobNamePattern) {
+    try {
+      nameRe = new RegExp(args.jobNamePattern, 'i');
+    } catch (err) {
+      return { ok: false, detail: `invalid jobNamePattern: ${err.message}` };
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(full, 'utf8'));
+    const jobs = Array.isArray(parsed) ? parsed : parsed?.jobs;
+    if (!Array.isArray(jobs)) {
+      return { ok: false, detail: 'cron state has no jobs array', observed: { path: filePath } };
+    }
+
+    const maxConsecutiveErrors = Number.isFinite(args.maxConsecutiveErrors)
+      ? args.maxConsecutiveErrors
+      : 0;
+    const isEnabled = (job) => {
+      if (Object.prototype.hasOwnProperty.call(job, 'enabled')) return job.enabled !== false;
+      if (Object.prototype.hasOwnProperty.call(job, 'status')) return job.status !== 'disabled';
+      return true;
+    };
+    const jobState = (job, key) => {
+      const state = job.state && typeof job.state === 'object' ? job.state : {};
+      return Object.prototype.hasOwnProperty.call(job, key) ? job[key] : state[key];
+    };
+
+    const failingJobs = jobs
+      .filter((job) => isEnabled(job))
+      .filter((job) => !nameRe || nameRe.test(String(job.name || job.id || '')))
+      .map((job) => {
+        const consecutiveErrors = Number(jobState(job, 'consecutiveErrors') || 0);
+        const lastStatus = String(jobState(job, 'lastStatus') || '').toLowerCase();
+        return {
+          id: job.id || null,
+          name: job.name || job.id || 'unnamed cron job',
+          lastStatus: lastStatus || null,
+          consecutiveErrors,
+          lastRunAtMs: jobState(job, 'lastRunAtMs') || null,
+          lastDurationMs: jobState(job, 'lastDurationMs') || null,
+        };
+      })
+      .filter((job) =>
+        job.lastStatus === 'error' && job.consecutiveErrors > maxConsecutiveErrors
+      );
+
+    if (failingJobs.length === 0) {
+      return {
+        ok: true,
+        detail: '0 failing enabled cron jobs',
+        observed: { totalJobs: jobs.length, failingJobs: [] },
+      };
+    }
+
+    const labels = failingJobs.slice(0, 4)
+      .map((job) => `${job.name} (${job.consecutiveErrors} errors)`)
+      .join('; ');
+    return {
+      ok: false,
+      detail: `${failingJobs.length} failing enabled cron job${failingJobs.length === 1 ? '' : 's'}: ${labels}`,
+      observed: { totalJobs: jobs.length, failingJobs },
+    };
+  } catch (err) {
+    return { ok: false, detail: `cron state read failed: ${err.message}`, observed: { path: filePath } };
+  }
+};
+
+/**
  * GET a URL, parse JSON response, extract a dot-path, compare with op/value.
  * Covers: tile sensor freshness, pi-bridge health endpoints, live-problems
  * status checks, any JSON API with a mtime/count/status field.

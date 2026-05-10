@@ -20,6 +20,7 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
   const brainStatePath = `${instanceRoot}/brain/brain-state.json`;
   const thoughtsPath = `${instanceRoot}/brain/thoughts.jsonl`;
   const engineErrPath = `${instanceRoot}/logs/engine-err.log`;
+  const cronJobsPath = `${instanceRoot}/conversations/cron-jobs.json`;
 
   return [
     {
@@ -194,6 +195,30 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
           args: {
             severity: 'normal',
             text: `${agent} has recent engine cycle timeouts. Worker and agent diagnosis did not clear it; engine efficiency needs review.`,
+          },
+          cooldownMin: 120,
+        },
+      ],
+      seedOrigin: 'system',
+    },
+    {
+      id: `${agent}_harness_cron_jobs_healthy`,
+      claim: `${agent} harness scheduler has no enabled jobs with repeated errors`,
+      verifier: {
+        type: 'cron_job_errors',
+        args: {
+          path: cronJobsPath,
+          maxConsecutiveErrors: 0,
+        },
+      },
+      remediation: [
+        { type: 'dispatch_to_worker', args: { worker: 'systems', budgetHours: 2 }, cooldownMin: 15 },
+        { type: 'dispatch_to_agent', args: { budgetHours: 2 }, cooldownMin: 30 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'normal',
+            text: `${agent} has repeated harness cron job failures. Worker and agent diagnosis did not clear the scheduler; data freshness or automation needs review.`,
           },
           cooldownMin: 120,
         },
