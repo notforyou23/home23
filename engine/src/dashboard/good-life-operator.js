@@ -1106,6 +1106,86 @@ function buildOperatorDigest({ brief, liveProblems, work }) {
   };
 }
 
+function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAction }) {
+  const counts = liveProblems?.counts || {};
+  const activeCount = Number(counts.open || 0) + Number(counts.chronic || 0);
+  const interventionCount = Number(counts.interventionRequired || 0);
+  const latestResolution = Array.isArray(liveProblems?.resolved) ? liveProblems.resolved[0] || null : null;
+  const activeProblem = firstActiveLiveProblem(liveProblems || {});
+  const actionableWarnings = (consistency?.warnings || []).filter((warning) => warning.severity !== 'info');
+
+  const situation = activeCount > 0
+    ? `${activeCount} active live problem${activeCount === 1 ? '' : 's'}: ${compactText(activeProblem?.claim || activeProblem?.id || 'operator issue', 180)}`
+    : actionableWarnings.length > 0
+      ? compactText(actionableWarnings[0].message || brief?.headline || 'Operator warning present', 220)
+      : 'No active live problems.';
+
+  let repair = 'No autonomous repair is active; Home23 is monitoring verifier evidence.';
+  if (activeCount > 0) {
+    repair = formatRemediationLine('Next repair step', activeProblem?.nextRemediation)
+      || 'Autonomous remediation can continue from the recorded plan.';
+  } else if (work?.activeTotal > 0) {
+    repair = work.statusText || `${work.activeTotal} active Good Life work item${work.activeTotal === 1 ? '' : 's'}`;
+  } else if (latestResolution) {
+    repair = latestResolution.fixRecipe?.summary
+      ? compactText(latestResolution.fixRecipe.summary, 240)
+      : `Latest verifier passed: ${compactText(latestResolution.lastResult?.detail || latestResolution.claim || latestResolution.id || 'recent resolution', 200)}`;
+  }
+
+  let userAction = 'No user action needed right now.';
+  if (interventionCount > 0) {
+    userAction = formatRemediationLine('User action', activeProblem?.nextRemediation)
+      || 'User decision is required before autonomous repair can continue.';
+  } else if (work?.agendaNeedingReview > 0 || work?.goalsNeedingReview > 0) {
+    userAction = work.statusText || 'Operator review is recommended for active work.';
+  } else if (brief?.severity === 'critical') {
+    userAction = brief.next || 'Review the warning before treating the projection as current.';
+  }
+
+  const evidence = [
+    {
+      label: 'Live registry',
+      value: `${Number(counts.open || 0)} open / ${Number(counts.chronic || 0)} chronic`,
+      detail: `${Number(counts.interventionRequired || 0)} ${Number(counts.interventionRequired || 0) === 1 ? 'needs' : 'need'} user intervention`,
+    },
+  ];
+  if (latestResolution) {
+    evidence.push({
+      label: 'Latest resolution',
+      value: latestResolution.id || 'resolution',
+      detail: latestResolution.lastResult?.detail
+        || latestResolution.fixRecipe?.verifierStatus
+        || latestResolution.evidence?.result
+        || latestResolution.claim
+        || '',
+    });
+  }
+  if (latestAction?.workerRoute?.worker && isActiveAgendaStatus(latestAction.agendaStatus || 'candidate')) {
+    evidence.push({
+      label: 'Worker route',
+      value: latestAction.workerRoute.worker,
+      detail: latestAction.workerRoute.reason || latestAction.agendaId || '',
+    });
+  }
+  if (actionableWarnings.length > 0) {
+    evidence.push({
+      label: 'Operator warning',
+      value: actionableWarnings[0].code || 'warning',
+      detail: actionableWarnings[0].message || '',
+    });
+  }
+
+  return {
+    status: brief?.status || 'Unknown',
+    situation: compactText(situation, 260),
+    repair: compactText(repair, 260),
+    userAction: compactText(userAction, 260),
+    needsUser: interventionCount > 0,
+    target: brief?.target || null,
+    evidence,
+  };
+}
+
 function buildDetailSections({ commitments, trends, regulator, liveProblems, ledgerTail, obligations }) {
   const activeRows = [
     ...(Array.isArray(liveProblems.open) ? liveProblems.open : []),
@@ -1247,6 +1327,13 @@ function buildGoodLifeOperatorModel({
     brief: model.operatorBrief,
     liveProblems: directLiveProblems,
     work,
+  });
+  model.operatorHandoff = buildOperatorHandoff({
+    brief: model.operatorBrief,
+    liveProblems: directLiveProblems,
+    work,
+    consistency,
+    latestAction,
   });
   return model;
 }

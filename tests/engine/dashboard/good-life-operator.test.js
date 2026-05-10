@@ -816,6 +816,70 @@ test('Good Life operator answer includes active work and review-needed goals', (
   assert.equal(model.work.status, 'review');
   assert.match(model.work.statusText, /review recommended: force-output goal has no observable progress/);
   assert.ok(model.operatorAnswer.some((line) => line.includes('Active work: 1; 1 goal(s) need operator review; top review goal: goal_force - Produce outputs/digest-6382.md')));
+  assert.match(model.operatorHandoff.situation, /No active live problems/);
+  assert.match(model.operatorHandoff.userAction, /review recommended/);
+  assert.equal(model.operatorHandoff.needsUser, false);
+});
+
+test('Good Life operator handoff names issue, repair path, and required user action', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 1, chronic: 0, resolved: 0, unverifiable: 0, total: 1 },
+      },
+    }),
+    liveProblems: [
+      {
+        id: 'bridge_auth',
+        state: 'open',
+        claim: 'OAuth bridge needs a user approval decision',
+        openedAt: '2026-05-08T13:00:00.000Z',
+        stepIndex: 1,
+        remediation: [
+          { type: 'dispatch_to_agent', args: { budgetHours: 2 } },
+          { type: 'request_user_input', args: { text: 'Approve the OAuth bridge import in Settings.' } },
+        ],
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.operatorHandoff.status, 'Needs jtr');
+  assert.equal(model.operatorHandoff.needsUser, true);
+  assert.match(model.operatorHandoff.situation, /OAuth bridge needs a user approval decision/);
+  assert.match(model.operatorHandoff.repair, /Next repair step: request_user_input/);
+  assert.match(model.operatorHandoff.userAction, /Approve the OAuth bridge import/);
+  assert.deepEqual(model.operatorHandoff.evidence[0], {
+    label: 'Live registry',
+    value: '1 open / 0 chronic',
+    detail: '1 needs user intervention',
+  });
+});
+
+test('Good Life operator handoff summarizes recent verified fixes when clear', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    liveProblems: [
+      {
+        id: 'runtime_fixed',
+        state: 'resolved',
+        claim: 'Runtime probe recovered',
+        resolvedAt: '2026-05-08T13:44:00.000Z',
+        fixRecipe: { summary: 'Restarted the scoped dashboard process and verified /api/good-life.' },
+        lastResult: { detail: '200 response in 34ms' },
+        evidence: { receiptId: 'ev_runtime_fixed', result: 'pass' },
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.operatorHandoff.status, 'Clear');
+  assert.equal(model.operatorHandoff.needsUser, false);
+  assert.match(model.operatorHandoff.situation, /No active live problems/);
+  assert.match(model.operatorHandoff.repair, /Restarted the scoped dashboard process/);
+  assert.match(model.operatorHandoff.userAction, /No user action needed/);
+  assert.equal(model.operatorHandoff.evidence[1].label, 'Latest resolution');
+  assert.equal(model.operatorHandoff.evidence[1].value, 'runtime_fixed');
 });
 
 test('Good Life operator answer names reviewed goal before first active goal', () => {

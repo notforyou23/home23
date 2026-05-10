@@ -3211,11 +3211,30 @@ function renderGoodLifeTop(data) {
   const activeWork = Number(workCounts.activeAgenda || 0) + Number(workCounts.activeGoals || 0);
   const warnings = operator.consistency?.warnings || [];
   const digest = operator.operatorDigest || null;
+  const handoff = operator.operatorHandoff || null;
   const answerLines = (operator.operatorAnswer || [])
     .filter(Boolean)
     .slice(0, 5);
   return `
     ${renderGoodLifeBrief(operator, data?._scope || goodLifeOverlayState.scope || 'home')}
+    ${handoff ? `<div class="h23-goodlife-handoff-panel ${goodLifeCssClass(handoff.needsUser ? 'needs-user' : operator.operatorBrief?.severity || operator.status)}">
+      <div>
+        <label>Situation</label>
+        <p>${escapeHtml(handoff.situation || '')}</p>
+      </div>
+      <div>
+        <label>Repair</label>
+        <p>${escapeHtml(handoff.repair || '')}</p>
+      </div>
+      <div>
+        <label>User Action</label>
+        <p>${escapeHtml(handoff.userAction || '')}</p>
+      </div>
+      <div>
+        <label>Evidence</label>
+        ${(handoff.evidence || []).slice(0, 3).map((item) => `<p><strong>${escapeHtml(item.label || '')}:</strong> ${escapeHtml([item.value, item.detail].filter(Boolean).join(' - '))}</p>`).join('') || '<p>No evidence recorded</p>'}
+      </div>
+    </div>` : ''}
     ${digest ? `<div class="h23-goodlife-digest-grid">
       <div class="h23-goodlife-digest-card"><label>Issue</label><span>${escapeHtml(digest.issue || '')}</span></div>
       <div class="h23-goodlife-digest-card"><label>Now</label><span>${escapeHtml(digest.currentWork || '')}</span></div>

@@ -3252,6 +3252,48 @@ body.h23-external-focus #cosmo23-refresh-btn {
   margin-top: 3px;
 }
 
+.h23-goodlife-handoff-panel {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 6px;
+  padding: 10px;
+  background: rgba(255,255,255,0.045);
+}
+
+.h23-goodlife-handoff-panel.needs-user {
+  border-color: rgba(255,204,102,0.38);
+  background: rgba(255,204,102,0.08);
+}
+
+.h23-goodlife-handoff-panel.attention,
+.h23-goodlife-handoff-panel.critical {
+  border-color: rgba(255,149,0,0.34);
+  background: rgba(255,149,0,0.07);
+}
+
+.h23-goodlife-handoff-panel label {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.h23-goodlife-handoff-panel p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.h23-goodlife-handoff-panel p + p {
+  margin-top: 4px;
+}
+
 .h23-goodlife-overlay-tabs {
   display: flex;
   gap: 7px;
@@ -3571,6 +3613,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 
   .h23-goodlife-top-grid,
   .h23-goodlife-digest-grid,
+  .h23-goodlife-handoff-panel,
   .h23-goodlife-overlay-workspace,
   .h23-goodlife-detail-grid {
     grid-template-columns: 1fr;
