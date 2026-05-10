@@ -2818,7 +2818,7 @@ function renderGoodLifeProblems(operator, data) {
       <button class="h23-goodlife-problem-row" type="button" onclick="openGoodLifeOperator('${escapeAttr(scope)}', '${escapeAttr(row.id)}')">
         <span class="h23-goodlife-problem-state ${goodLifeCssClass(row.state)}">${escapeHtml(row.state)}</span>
         <span class="h23-goodlife-problem-id">${escapeHtml(row.id)}</span>
-        <span class="h23-goodlife-problem-claim">${escapeHtml(row.claim)}</span>
+        <span class="h23-goodlife-problem-claim">${escapeHtml(row.issue || row.claim)}</span>
         ${goodLifeNeedsUser(row) ? '<span class="h23-goodlife-needs-user">needs you</span>' : ''}
       </button>
       ${row.detail ? `<div class="h23-goodlife-problem-detail">${escapeHtml(row.detail)}</div>` : ''}

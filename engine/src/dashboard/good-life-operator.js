@@ -63,6 +63,23 @@ function summarizeNextRemediation(problem = {}) {
   };
 }
 
+function liveProblemIssueText(problem = {}) {
+  if (!problem) return '';
+  const explicit = problem.issue || problem.failureClaim || problem.failure || problem.title;
+  if (explicit) return compactText(explicit, 220);
+
+  const claim = String(problem.claim || '').trim();
+  if (!claim) return problem.id || 'operator issue';
+
+  const noMatch = claim.match(/^(.+?)\s+has no\s+(.+)$/i);
+  if (noMatch) return compactText(`${noMatch[1]} has recent ${noMatch[2]}`, 220);
+
+  const notMatch = claim.match(/^(.+?)\s+is not\s+(.+)$/i);
+  if (notMatch) return compactText(`${notMatch[1]} is ${notMatch[2]}`, 220);
+
+  return compactText(`Not verified: ${claim}`, 220);
+}
+
 function buildLiveProblemSnapshot(problems = [], now = new Date()) {
   const nowMs = toNowMs(now);
   const open = [];
@@ -80,6 +97,7 @@ function buildLiveProblemSnapshot(problems = [], now = new Date()) {
       const row = {
         id: problem.id || '',
         claim: problem.claim || '',
+        issue: liveProblemIssueText(problem),
         ageMin: ageMinutes(problem.openedAt || problem.firstSeenAt, nowMs) ?? 0,
         detail: problem.lastResult?.detail || null,
         state: problem.state,
@@ -852,7 +870,7 @@ function summarizeTopLiveProblem(liveProblems = {}) {
   const label = problem.state === 'chronic' ? 'Top chronic problem' : 'Top live problem';
   const headline = [
     `${label}: ${problem.id || 'unknown'}`,
-    problem.claim ? compactText(problem.claim, 120) : null,
+    problem.issue || problem.claim ? compactText(problem.issue || problem.claim, 120) : null,
   ].filter(Boolean).join(' - ');
   lines.push(headline);
 
@@ -940,7 +958,7 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
     severity = 'needs-user';
     status = 'Needs jtr';
     headline = `${interventionCount} live problem${interventionCount === 1 ? '' : 's'} need user intervention`;
-    why = activeProblem?.claim || activeProblem?.detail || 'Good Life reached a manual remediation step.';
+    why = activeProblem?.issue || activeProblem?.detail || activeProblem?.claim || 'Good Life reached a manual remediation step.';
     next = formatRemediationLine('User action', activeProblem?.nextRemediation)
       || 'User decision is required before autonomous repair can continue.';
     target = {
@@ -953,7 +971,7 @@ function buildOperatorBrief({ policy, liveProblems, consistency, work, latestAct
     severity = 'repairing';
     status = 'Repairing';
     headline = `${activeCount} active live problem${activeCount === 1 ? '' : 's'}`;
-    why = activeProblem?.claim || activeProblem?.detail || policy?.reason || 'Good Life is repairing verified drift.';
+    why = activeProblem?.issue || activeProblem?.detail || activeProblem?.claim || policy?.reason || 'Good Life is repairing verified drift.';
     next = formatRemediationLine('Home23 next', activeProblem?.nextRemediation)
       || 'Autonomous remediation can continue.';
     target = {
@@ -1184,7 +1202,7 @@ function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAc
   const actionableWarnings = (consistency?.warnings || []).filter((warning) => warning.severity !== 'info');
 
   const situation = activeCount > 0
-    ? `${activeCount} active live problem${activeCount === 1 ? '' : 's'}: ${compactText(activeProblem?.claim || activeProblem?.id || 'operator issue', 180)}`
+    ? `${activeCount} active live problem${activeCount === 1 ? '' : 's'}: ${compactText(activeProblem?.issue || activeProblem?.claim || activeProblem?.id || 'operator issue', 180)}`
     : actionableWarnings.length > 0
       ? compactText(actionableWarnings[0].message || brief?.headline || 'Operator warning present', 220)
       : 'No active live problems.';
