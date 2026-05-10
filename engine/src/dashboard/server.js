@@ -760,7 +760,8 @@ class DashboardServer {
       ? target.agentName.charAt(0).toUpperCase() + target.agentName.slice(1)
       : 'Agent';
     const slowMs = 2000;
-    const timeoutMs = Number(this._home23RuntimeHealthTimeoutMs || 2500);
+    const defaultTimeoutMs = Number(this._home23RuntimeHealthTimeoutMs || 2500);
+    const engineTimeoutMs = Number(this._home23RuntimeEngineHealthTimeoutMs || 750);
     const fetchImpl = this._home23RuntimeHealthFetch || fetch;
     const processSnapshot = this._home23RuntimeProcessSnapshot?.()
       || this.getHome23RuntimeProcessSnapshot?.()
@@ -771,12 +772,14 @@ class DashboardServer {
         label: `${labelPrefix} engine realtime`,
         url: `http://127.0.0.1:${target.realtimePort}/health`,
         processName: `home23-${target.agentName}`,
+        timeoutMs: engineTimeoutMs,
       },
       {
         id: 'harness',
         label: `${labelPrefix} harness bridge`,
         url: `http://127.0.0.1:${target.bridgePort}/health`,
         processName: `home23-${target.agentName}-harness`,
+        timeoutMs: defaultTimeoutMs,
       },
     ];
 
@@ -787,7 +790,7 @@ class DashboardServer {
         const response = await fetchImpl(check.url, {
           method: 'GET',
           headers: { accept: 'application/json' },
-          signal: AbortSignal.timeout(timeoutMs),
+          signal: AbortSignal.timeout(check.timeoutMs),
         });
         const latencyMs = Date.now() - startedAt;
         return {
@@ -797,6 +800,7 @@ class DashboardServer {
           ok: response.ok,
           status: response.status,
           latencyMs,
+          timeoutMs: check.timeoutMs,
           slow: response.ok && latencyMs > slowMs,
           slowThresholdMs: slowMs,
           error: response.ok ? null : `HTTP ${response.status}`,
@@ -814,6 +818,7 @@ class DashboardServer {
             fallback: 'pm2-online',
             status: null,
             latencyMs,
+            timeoutMs: check.timeoutMs,
             slow: true,
             slowThresholdMs: slowMs,
             error: `health endpoint timed out or did not answer; ${pm2.name || check.processName} is online in PM2`,
@@ -827,6 +832,7 @@ class DashboardServer {
           ok: false,
           status: null,
           latencyMs,
+          timeoutMs: check.timeoutMs,
           error: error.message || String(error),
           pm2,
         };

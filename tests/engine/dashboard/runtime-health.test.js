@@ -26,7 +26,8 @@ test('runtime health treats timed-out engine health as degraded when PM2 says pr
     realtimePort: 5001,
     bridgePort: 5004,
   });
-  server._home23RuntimeHealthTimeoutMs = 25;
+  server._home23RuntimeEngineHealthTimeoutMs = 25;
+  server._home23RuntimeHealthTimeoutMs = 2500;
   server._home23RuntimeHealthFetch = async (url) => {
     if (url.includes(':5001/health')) {
       const error = new Error('The operation was aborted due to timeout');
@@ -51,6 +52,7 @@ test('runtime health treats timed-out engine health as degraded when PM2 says pr
   assert.equal(engine.degraded, true);
   assert.equal(engine.slow, true);
   assert.equal(engine.fallback, 'pm2-online');
+  assert.equal(engine.timeoutMs, 25);
   assert.match(engine.error, /health endpoint timed out/i);
   assert.equal(engine.pm2.status, 'online');
 });
@@ -82,7 +84,43 @@ test('runtime health default timeout stays bounded for operator responsiveness',
 
     assert.equal(health.ok, true);
     assert.ok(health.services.every((service) => service.ok));
-    assert.deepEqual(timeouts, [2500, 2500]);
+    assert.deepEqual(timeouts, [750, 2500]);
+  } finally {
+    globalThis.AbortSignal = originalAbortSignal;
+  }
+});
+
+test('runtime health lets callers override engine timeout separately from harness timeout', async () => {
+  const server = Object.create(DashboardServer.prototype);
+  server.getHome23AgentContext = () => ({
+    agentName: 'jerry',
+    realtimePort: 5001,
+    bridgePort: 5004,
+  });
+  server._home23RuntimeEngineHealthTimeoutMs = 125;
+  server._home23RuntimeHealthTimeoutMs = 1500;
+  server._home23RuntimeProcessSnapshot = () => ({});
+  const originalAbortSignal = globalThis.AbortSignal;
+  const timeouts = [];
+  globalThis.AbortSignal = {
+    ...originalAbortSignal,
+    timeout(ms) {
+      timeouts.push(ms);
+      return originalAbortSignal.timeout(ms);
+    },
+  };
+  server._home23RuntimeHealthFetch = async () => ({
+    ok: true,
+    status: 200,
+  });
+
+  try {
+    const health = await server.getHome23RuntimeHealth('jerry');
+
+    assert.equal(health.ok, true);
+    assert.deepEqual(timeouts, [125, 1500]);
+    assert.equal(health.services.find((service) => service.id === 'engine').timeoutMs, 125);
+    assert.equal(health.services.find((service) => service.id === 'harness').timeoutMs, 1500);
   } finally {
     globalThis.AbortSignal = originalAbortSignal;
   }
