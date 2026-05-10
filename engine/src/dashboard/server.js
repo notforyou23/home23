@@ -10130,7 +10130,8 @@ You are empowered to explore and understand. The user trusts you to discover the
       && Number(counts.active) > activeSummaries.length
       ? Number(counts.active)
       : activeSummaries.length;
-    return {
+    const sourceUpdatedAt = brainSnapshot.savedAt || null;
+    const result = {
       active: activeSummaries.map((goal) => [goal.id, goal]),
       counts: {
         ...counts,
@@ -10138,6 +10139,11 @@ You are empowered to explore and understand. The user trusts you to discover the
         shown: activeSummaries.length,
       },
     };
+    if (sourceUpdatedAt) {
+      result.sourceUpdatedAt = sourceUpdatedAt;
+      result.counts.sourceUpdatedAt = sourceUpdatedAt;
+    }
+    return result;
   }
 
   _countGoalEntries(entries) {

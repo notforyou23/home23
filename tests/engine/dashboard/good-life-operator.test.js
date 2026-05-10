@@ -533,6 +533,37 @@ test('Good Life operator warns when projected open goals disagree with active go
   assert.equal(model.operatorBrief.target.tab, 'insights');
 });
 
+test('Good Life operator treats newer goal snapshots as superseding stale goal projections', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evaluatedAt: '2026-05-08T13:42:00.000Z',
+      evidence: {
+        goals: { open: 2, complete: 10, total: 12 },
+      },
+    }),
+    liveProblems: [],
+    obligations: {
+      activeAgenda: [],
+      activeGoals: [],
+      counts: {
+        activeAgenda: 0,
+        activeGoals: 0,
+        activeGoalsShown: 0,
+        activeGoalsTrusted: true,
+        sourceUpdatedAt: '2026-05-08T13:43:00.000Z',
+      },
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.status, 'current');
+  assert.equal(model.safeToInherit, true);
+  assert.ok(!model.consistency.warnings.some((warning) => warning.code === 'good_life_goal_projection_mismatch'));
+  assert.ok(model.consistency.warnings.some((warning) => warning.code === 'good_life_goal_projection_superseded'));
+  assert.equal(model.operatorBrief.severity, 'clear');
+  assert.ok(model.operatorAnswer.some((line) => line.includes('current goal snapshot supersedes')));
+});
+
 test('Good Life operator accepts capped active goal summaries when total count matches projection', () => {
   const activeGoals = Array.from({ length: 12 }, (_, index) => ({
     id: `goal_${index + 1}`,

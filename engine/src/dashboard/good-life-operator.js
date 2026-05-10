@@ -272,6 +272,7 @@ function buildGoodLifeObligationSnapshot({ agendaRows = [], goals = null, output
       activeGoals: Number.isFinite(goals?.counts?.active) ? goals.counts.active : allActiveGoals.length,
       activeGoalsShown: activeGoals.length,
       activeGoalsTrusted: Number.isFinite(goals?.counts?.active),
+      sourceUpdatedAt: goals?.counts?.sourceUpdatedAt || goals?.sourceUpdatedAt || null,
     },
   };
 }
@@ -819,12 +820,23 @@ function buildConsistency({ state, projection, liveProblems, obligations, hasObl
     && activeGoalRows != null
     && projectedOpenGoals !== activeGoalRows
   ) {
-    warnings.push({
-      code: 'good_life_goal_projection_mismatch',
-      severity: 'warning',
-      message: `Good Life goal count disagrees with active goals: projected ${projectedOpenGoals}, active list ${activeGoalRows}`,
-      fields: ['goals.open'],
-    });
+    const projectionMs = toTimeMs(state?.evaluatedAt);
+    const obligationMs = toTimeMs(obligations?.counts?.sourceUpdatedAt || obligations?.sourceUpdatedAt);
+    if (projectionMs && obligationMs && obligationMs > projectionMs) {
+      warnings.push({
+        code: 'good_life_goal_projection_superseded',
+        severity: 'info',
+        message: `current goal snapshot supersedes Good Life goal projection: projected ${projectedOpenGoals}, active list ${activeGoalRows}`,
+        fields: ['goals.open'],
+      });
+    } else {
+      warnings.push({
+        code: 'good_life_goal_projection_mismatch',
+        severity: 'warning',
+        message: `Good Life goal count disagrees with active goals: projected ${projectedOpenGoals}, active list ${activeGoalRows}`,
+        fields: ['goals.open'],
+      });
+    }
   }
 
   for (const service of runtime?.services || []) {
