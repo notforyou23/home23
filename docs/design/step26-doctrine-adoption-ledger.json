@@ -225,10 +225,14 @@
       "title": "Health signals are context, not readiness commands",
       "status": "adopted",
       "sourceIssues": [83, 84],
-      "requirement": "Health observations, especially HRV, must carry humility: they are contextual signals about adaptation room, not red-green readiness tiles or direct instructions.",
+      "requirement": "Health observations, especially HRV, must carry humility: they are contextual signals about adaptation room, not red-green readiness tiles or direct instructions. HRV must be compared against jtr's own local baseline where possible, and interpretation must ask for neighboring signals before any recovery-load hypothesis is treated as more than thin context.",
       "implementationReceipts": [
         {
           "artifact": "engine/src/channels/domain/health-channel.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/domain/health-channel.test.js"
+        },
+        {
+          "artifact": "tests/engine/channels/domain/health-channel.test.js",
           "verifier": "node --test --test-concurrency=1 tests/engine/channels/domain/health-channel.test.js"
         }
       ],
