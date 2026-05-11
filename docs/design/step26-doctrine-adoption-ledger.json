@@ -330,6 +330,23 @@
         "engine/src/system/home23-process-topology.js",
         "tests/engine/system/home23-process-topology.test.js"
       ]
+    },
+    {
+      "id": "memory-update-repair-traces",
+      "title": "Same-source memory updates leave before and after repair traces",
+      "status": "adopted",
+      "sourceIssues": [85, 87],
+      "requirement": "When a memory surface changes under the same source identity, the persisted memory object and append-only crystallization receipt must show what changed, what it replaced, and whether the observation was updated or merely refreshed.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/memory-ingest.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/memory-ingest.cjs",
+        "tests/engine/channels/memory-ingest.test.js"
+      ]
     }
   ]
 }

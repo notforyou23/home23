@@ -174,6 +174,48 @@ test('MemoryIngest dedupes by {channelId, sourceRef} — same ref updates not du
   assert.equal(raw.objects.length, 1);
 });
 
+test('MemoryIngest same-source updates leave before and after repair trace', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mi-repair-trace-'));
+  const ingest = new MemoryIngest({ brainDir: dir });
+  const draft = { method: 'sensor_primary', type: 'observation', topic: 'health', tags: ['health', 'freshness'] };
+
+  const first = await ingest.writeFromObservation({
+    channelId: 'domain.health',
+    sourceRef: 'health:bridge',
+    receivedAt: '2026-05-11T15:30:00Z',
+    producedAt: '2026-05-11T15:30:00Z',
+    flag: 'UNCERTIFIED',
+    confidence: 0.4,
+    payload: { summary: 'health bridge is stale', status: 'stale' },
+  }, draft);
+
+  const second = await ingest.writeFromObservation({
+    channelId: 'domain.health',
+    sourceRef: 'health:bridge',
+    receivedAt: '2026-05-11T15:35:00Z',
+    producedAt: '2026-05-11T15:35:00Z',
+    flag: 'COLLECTED',
+    confidence: 0.95,
+    payload: { summary: 'health bridge is fresh', status: 'fresh' },
+  }, draft);
+
+  const raw = JSON.parse(readFileSync(join(dir, 'memory-objects.json'), 'utf8'));
+  const receipts = readFileSync(join(dir, 'crystallization-receipts.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const updateReceipt = receipts.at(-1);
+
+  assert.equal(first.memory_id, second.memory_id);
+  assert.equal(raw.objects.length, 1);
+  assert.equal(raw.objects[0].state_delta.delta_class, 'updated_observation');
+  assert.equal(raw.objects[0].state_delta.before.summary, 'health bridge is stale');
+  assert.equal(raw.objects[0].state_delta.before.flag, 'UNCERTIFIED');
+  assert.equal(raw.objects[0].state_delta.after.summary, 'health bridge is fresh');
+  assert.equal(raw.objects[0].state_delta.after.flag, 'COLLECTED');
+  assert.equal(raw.objects[0].state_delta.why, 'same source observation changed');
+  assert.equal(updateReceipt.updateKind, 'updated_observation');
+  assert.equal(updateReceipt.stateDelta.before.summary, 'health bridge is stale');
+  assert.equal(updateReceipt.stateDelta.after.summary, 'health bridge is fresh');
+});
+
 test('MemoryIngest caps zero-context audit confidence hard', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mi-zc-'));
   const ingest = new MemoryIngest({ brainDir: dir });

@@ -200,12 +200,7 @@ class MemoryIngest {
         score: confidence,
         basis: `bus-ingest/${obs.flag}/${draft.method || 'n/a'}`,
       },
-      state_delta: {
-        delta_class: 'no_change',
-        before: {},
-        after: {},
-        why: 'observation ingested',
-      },
+      state_delta: buildObservationStateDelta(existing, obs, { confidence, draft }),
       triggers: [],
       scope: {
         applies_to: (draft.tags || []).slice(),
@@ -403,6 +398,8 @@ class MemoryIngest {
         confidence: written.confidence.score,
         method: draft.method || null,
         origin: obs.origin || null,
+        updateKind: written.state_delta?.delta_class || 'no_change',
+        stateDelta: written.state_delta || null,
       };
       try { fs.appendFileSync(this.receiptsPath, JSON.stringify(receipt) + '\n'); }
       catch (err) { this.logger.warn?.('[memory-ingest] receipt append failed:', err?.message || err); }
@@ -427,6 +424,52 @@ function summarizePayload(payload) {
     if (typeof payload[k] === 'string' && payload[k].trim()) return payload[k];
   }
   return safeStringify(payload).slice(0, 280);
+}
+
+function buildObservationStateDelta(existing, obs, { confidence, draft } = {}) {
+  const after = {
+    summary: summarizePayload(obs.payload).slice(0, 280),
+    flag: obs.flag || null,
+    confidence: confidence ?? null,
+    method: draft?.method || null,
+    sourceRef: obs.sourceRef || null,
+    channelId: obs.channelId || null,
+  };
+
+  if (!existing) {
+    return {
+      delta_class: 'no_change',
+      before: {},
+      after: {},
+      why: 'observation ingested',
+    };
+  }
+
+  const before = {
+    summary: existing.summary || null,
+    flag: parseGroundingFlag(existing.evidence?.grounding_note),
+    confidence: existing.confidence?.score ?? null,
+    method: existing.provenance?.generation_method || null,
+    sourceRef: obs.sourceRef || null,
+    channelId: obs.channelId || null,
+  };
+
+  const changed = before.summary !== after.summary
+    || before.flag !== after.flag
+    || before.confidence !== after.confidence
+    || before.method !== after.method;
+
+  return {
+    delta_class: changed ? 'updated_observation' : 'refreshed_observation',
+    before,
+    after,
+    why: changed ? 'same source observation changed' : 'same source observation refreshed',
+  };
+}
+
+function parseGroundingFlag(note) {
+  const match = typeof note === 'string' ? /^flag=([^;,\s]+)/.exec(note) : null;
+  return match ? match[1] : null;
 }
 
 function ensureTraceId(obs) {
