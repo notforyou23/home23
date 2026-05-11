@@ -145,12 +145,24 @@
     {
       "id": "field-report-proof-packet",
       "title": "Small Field Report proof packet",
-      "status": "candidate",
+      "status": "adopted",
       "sourceIssues": [99],
       "requirement": "Add byte-disciplined proof packets where future action depends on exact evidence identity.",
-      "implementationReceipts": [],
-      "doctrineFiles": [],
-      "blocker": "No proof-packet writer or verifier exists in this slice."
+      "implementationReceipts": [
+        {
+          "id": "ev_496cd36312f937ff2d73140e",
+          "artifact": "instances/jerry/projects/from-the-inside/receipts/publish/099.proof-packet.json",
+          "verifier": "scripts/verify-from-the-inside-publish 099 --write-receipt"
+        },
+        {
+          "artifact": "engine/src/evidence/from-the-inside-publish.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/evidence/from-the-inside-publish.test.js tests/engine/evidence/evidence-v1.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/evidence/from-the-inside-publish.js",
+        "scripts/verify-from-the-inside-publish.cjs"
+      ]
     }
   ]
 }

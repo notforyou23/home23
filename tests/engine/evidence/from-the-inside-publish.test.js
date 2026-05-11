@@ -82,6 +82,32 @@ test('verifyFromTheInsidePublish writes an evidence.v1 receipt for a clean publi
   assert.equal(result.trustExplanation.safeToInherit, true);
 });
 
+test('verifyFromTheInsidePublish writes a small Field Report proof packet with byte identities', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-fti-proof-'));
+  const { projectDir, siteDir } = writeFixture(root);
+
+  const result = await verifyFromTheInsidePublish({
+    issue: 99,
+    projectDir,
+    siteDir,
+    writeReceipt: true,
+    writeProofPacket: true,
+    createdAt: '2026-05-08T12:00:00.000Z',
+  });
+
+  assert.equal(result.proofPacket.schema, 'home23.field-report-proof-packet.v1');
+  assert.equal(result.proofPacket.subject, 'from-the-inside/099');
+  assert.equal(result.proofPacket.evidenceReceiptId, result.receipt.receiptId);
+  assert.match(result.proofPacket.packetSha256, /^[a-f0-9]{64}$/);
+  assert.ok(result.proofPacket.sourceArtifacts.some(a => a.role === 'source_issue_json' && a.sha256));
+  assert.ok(result.proofPacket.derivedArtifacts.some(a => a.role === 'public_issue_html' && a.sha256));
+  assert.ok(result.proofPacket.checks.some(c => c.name === 'html_matches_issue' && c.pass === true));
+  assert.ok(existsSync(result.proofPacketPath));
+
+  const written = JSON.parse(readFileSync(result.proofPacketPath, 'utf8'));
+  assert.equal(written.packetSha256, result.proofPacket.packetSha256);
+});
+
 test('verifyFromTheInsidePublish fails the receipt when rendered HTML loses the body ending', async () => {
   const root = mkdtempSync(join(tmpdir(), 'home23-fti-publish-fail-'));
   const { projectDir, siteDir } = writeFixture(root);

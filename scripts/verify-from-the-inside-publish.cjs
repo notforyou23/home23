@@ -23,6 +23,7 @@ async function main(argv) {
     writeReceipt: args.writeReceipt || args.writeEventLog || args.writeTrustClaim,
     writeEventLog: args.writeEventLog || args.writeReceipt,
     writeTrustClaim: args.writeTrustClaim || args.writeReceipt || args.writeEventLog,
+    writeProofPacket: args.writeProofPacket || args.writeReceipt || args.writeEventLog || args.writeTrustClaim,
     trustStorePath: args.trustStorePath,
     checkRemote: args.checkRemote,
     correctionOf: args.correctionOf || null,
@@ -34,6 +35,7 @@ async function main(argv) {
     const receipt = result.receipt;
     console.log(`[evidence] ${receipt.subject} ${receipt.result} ${receipt.receiptId}`);
     if (result.receiptPath) console.log(`[evidence] receipt: ${result.receiptPath}`);
+    if (result.proofPacketPath) console.log(`[evidence] proof packet: ${result.proofPacketPath}`);
     if (result.eventLogPath) console.log(`[evidence] event log: ${result.eventLogPath}`);
     if (result.trustStorePath) console.log(`[trust] store: ${result.trustStorePath}`);
     if (result.trustExplanation) console.log(`[trust] safe_to_inherit: ${result.trustExplanation.safeToInherit ? 'yes' : 'no'} (${result.trustExplanation.status})`);
@@ -57,6 +59,7 @@ function parseArgs(argv) {
     correctionOf: null,
     writeEventLog: false,
     writeTrustClaim: false,
+    writeProofPacket: false,
     trustStorePath: null,
     json: false,
     help: false,
@@ -71,6 +74,7 @@ function parseArgs(argv) {
     else if (arg === '--write-receipt') out.writeReceipt = true;
     else if (arg === '--write-event') out.writeEventLog = true;
     else if (arg === '--write-trust') out.writeTrustClaim = true;
+    else if (arg === '--write-proof-packet') out.writeProofPacket = true;
     else if (arg === '--trust-store') out.trustStorePath = path.resolve(argv[++i]);
     else if (arg === '--check-remote') out.checkRemote = true;
     else if (arg === '--correction-of') out.correctionOf = argv[++i];
@@ -83,10 +87,10 @@ function parseArgs(argv) {
 
 function printUsage() {
   console.error([
-    'Usage: scripts/verify-from-the-inside-publish <issue> [--write-receipt] [--write-event] [--write-trust] [--check-remote]',
+    'Usage: scripts/verify-from-the-inside-publish <issue> [--write-receipt] [--write-proof-packet] [--write-event] [--write-trust] [--check-remote]',
     '',
     'Checks local issue JSON, rendered public HTML, copied JSON, homepage, feed, sitemap,',
-    'and next-issue state, then emits an evidence.v1 receipt.',
+    'and next-issue state, then emits an evidence.v1 receipt and optional Field Report proof packet.',
   ].join('\n'));
 }
 

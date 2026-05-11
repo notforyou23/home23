@@ -6,7 +6,9 @@ const {
   artifactFromBytes,
   artifactFromPath,
   buildEvidenceReceipt,
+  canonicalJson,
   safeReceiptPart,
+  sha256Buffer,
   writeEvidenceReceipt,
 } = require('./evidence-v1');
 const { EventLedger } = require('../core/event-ledger');
@@ -197,6 +199,20 @@ async function verifyFromTheInsidePublish(opts = {}) {
     writeEvidenceReceipt({ receipt, receiptPath, indexPath: indexReceiptPath });
   }
 
+  const proofPacket = buildFieldReportProofPacket(receipt, {
+    issue: issueNumber,
+    padded,
+    publicIssueUrl,
+  });
+  let proofPacketPath = null;
+  if (opts.writeProofPacket) {
+    proofPacketPath = opts.proofPacketPath
+      ? path.resolve(opts.proofPacketPath)
+      : path.join(projectDir, 'receipts', 'publish', `${padded}.proof-packet.json`);
+    fs.mkdirSync(path.dirname(proofPacketPath), { recursive: true });
+    fs.writeFileSync(proofPacketPath, `${JSON.stringify(proofPacket, null, 2)}\n`, 'utf8');
+  }
+
   let event = null;
   let eventLogPath = null;
   if (opts.writeEventLog) {
@@ -261,7 +277,49 @@ async function verifyFromTheInsidePublish(opts = {}) {
     trustExplanation = kernel.explain(trustClaim.id, { now: receipt.createdAt });
   }
 
-  return { receipt, receiptPath, indexPath: indexReceiptPath, event, eventLogPath, trustClaim, trustExplanation, trustStorePath };
+  return {
+    receipt,
+    receiptPath,
+    indexPath: indexReceiptPath,
+    proofPacket,
+    proofPacketPath,
+    event,
+    eventLogPath,
+    trustClaim,
+    trustExplanation,
+    trustStorePath,
+  };
+}
+
+function buildFieldReportProofPacket(receipt, metadata = {}) {
+  const packetCore = {
+    schema: 'home23.field-report-proof-packet.v1',
+    subject: receipt.subject,
+    action: receipt.action,
+    result: receipt.result,
+    claimLevel: receipt.claimLevel,
+    createdAt: receipt.createdAt,
+    evidenceReceiptId: receipt.receiptId,
+    sourceSurface: receipt.sourceSurface || null,
+    sourceArtifacts: Array.isArray(receipt.sourceArtifacts) ? receipt.sourceArtifacts : [],
+    derivedArtifacts: Array.isArray(receipt.derivedArtifacts) ? receipt.derivedArtifacts : [],
+    checks: Array.isArray(receipt.checks)
+      ? receipt.checks.map((check) => ({
+        name: check.name,
+        pass: check.pass,
+        detail: check.detail || null,
+      }))
+      : [],
+    metadata: {
+      issue: metadata.issue ?? receipt.metadata?.issue ?? null,
+      padded: metadata.padded ?? receipt.metadata?.padded ?? null,
+      publicIssueUrl: metadata.publicIssueUrl ?? receipt.metadata?.publicIssueUrl ?? null,
+    },
+  };
+  return {
+    ...packetCore,
+    packetSha256: sha256Buffer(Buffer.from(canonicalJson(packetCore), 'utf8')),
+  };
 }
 
 function normalizeIssueNumber(issue) {
@@ -381,6 +439,7 @@ async function fetchRemote(url, fetchText) {
 module.exports = {
   DEFAULT_PROJECT_DIR,
   DEFAULT_SITE_DIR,
+  buildFieldReportProofPacket,
   verifyFromTheInsidePublish,
   _test: {
     htmlMatchesIssue,
