@@ -187,6 +187,30 @@
         "engine/src/evidence/from-the-inside-publish.js",
         "scripts/verify-from-the-inside-publish.cjs"
       ]
+    },
+    {
+      "id": "scheduler-preflight-decisions",
+      "title": "Scheduler preflight decisions before durable state",
+      "status": "adopted",
+      "sourceIssues": [82, 96, 101],
+      "requirement": "Scheduled jobs must inspect state and record whether to run, repair, skip, catch up, defer, or escalate before mutating scheduler state or executing work.",
+      "implementationReceipts": [
+        {
+          "commit": "23f3d16",
+          "artifact": "src/scheduler/cron.ts",
+          "verifier": "npm test"
+        },
+        {
+          "commit": "23f3d16",
+          "artifact": "tests/scheduler/cron.test.ts",
+          "verifier": "node --import tsx --test --test-concurrency=1 tests/scheduler/cron.test.ts tests/agent/tools/cron.test.ts"
+        }
+      ],
+      "doctrineFiles": [
+        "src/scheduler/cron.ts",
+        "tests/scheduler/cron.test.ts",
+        "package.json"
+      ]
     }
   ]
 }
