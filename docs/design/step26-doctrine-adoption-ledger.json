@@ -456,6 +456,25 @@
         "tests/scheduler/cron.test.ts",
         "config/cron-jobs.json"
       ]
+    },
+    {
+      "id": "memory-topology-openness-posture",
+      "title": "Memory coherence includes topology openness, not just edge count",
+      "status": "adopted",
+      "sourceIssues": [72],
+      "requirement": "Good Life coherence must treat the brain as a topology of anchors and connections: diverse clusters, bridge edges, disconnected anchors, and dominant-region collapse are observable posture, so the loop can notice when memory is becoming closed rather than explorable.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/good-life/snapshot.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/good-life/snapshot.test.js tests/engine/good-life/objective.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/good-life/snapshot.js",
+        "engine/src/good-life/objective.js",
+        "tests/engine/good-life/snapshot.test.js",
+        "tests/engine/good-life/objective.test.js"
+      ]
     }
   ]
 }

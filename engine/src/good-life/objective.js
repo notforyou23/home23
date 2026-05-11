@@ -126,8 +126,19 @@ class GoodLifeObjective {
   _coherence(s) {
     const nodes = Number(s.memory?.nodes || 0);
     const edges = Number(s.memory?.edges || 0);
+    const topology = s.memory?.topology;
     if (nodes > 0 && edges === 0) return lane('critical', ['memory has nodes but no edges']);
     if (nodes > 0 && edges / nodes < 0.2) return lane('watch', ['memory graph is sparse relative to node count']);
+    if (topology?.posture === 'closed') {
+      return lane('watch', topology.reasons?.length
+        ? topology.reasons
+        : ['memory topology appears closed rather than explorable']);
+    }
+    if (topology?.posture === 'narrowing') {
+      return lane('watch', topology.reasons?.length
+        ? topology.reasons
+        : ['memory topology is narrowing around too few anchors']);
+    }
     return lane('healthy', ['memory graph has usable structure']);
   }
 

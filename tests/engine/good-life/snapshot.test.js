@@ -116,6 +116,66 @@ test('Good Life goal summary includes active goal obligations from brain snapsho
   }
 });
 
+test('Good Life snapshot summarizes memory topology openness', () => {
+  const memory = {
+    nodes: new Map([
+      ['n1', { cluster: 1 }],
+      ['n2', { cluster: 1 }],
+      ['n3', { cluster: 2 }],
+      ['n4', { cluster: 2 }],
+      ['n5', { cluster: 3 }],
+    ]),
+    edges: new Map([
+      ['n1->n2', { source: 'n1', target: 'n2', type: 'associative' }],
+      ['n3->n4', { source: 'n3', target: 'n4', type: 'associative' }],
+      ['n2->n3', { source: 'n2', target: 'n3', type: 'bridge' }],
+    ]),
+    clusters: new Map([
+      [1, new Set(['n1', 'n2'])],
+      [2, new Set(['n3', 'n4'])],
+      [3, new Set(['n5'])],
+    ]),
+  };
+
+  const snapshot = buildGoodLifeSnapshot({ memory });
+
+  assert.equal(snapshot.memory.nodes, 5);
+  assert.equal(snapshot.memory.edges, 3);
+  assert.deepEqual(snapshot.memory.topology, {
+    schema: 'home23.memory-topology-posture.v1',
+    sourceIssues: [72],
+    clusters: 3,
+    bridgeEdges: 1,
+    associativeEdges: 2,
+    averageDegree: 1.2,
+    bridgeRatio: 0.333,
+    orphanNodes: 1,
+    orphanRatio: 0.2,
+    largestClusterSize: 2,
+    largestClusterShare: 0.4,
+    posture: 'open',
+    reasons: ['multiple anchor regions connected by bridge edges'],
+  });
+});
+
+test('Good Life snapshot caps stale cluster membership before topology share math', () => {
+  const memory = {
+    nodes: new Map(Array.from({ length: 20 }, (_, index) => [`n${index}`, { cluster: 1 }])),
+    edges: new Map([
+      ['n1->n2', { source: 'n1', target: 'n2', type: 'associative' }],
+    ]),
+    clusters: new Map([
+      [1, new Set(Array.from({ length: 40 }, (_, index) => `n${index}`))],
+    ]),
+  };
+
+  const snapshot = buildGoodLifeSnapshot({ memory });
+
+  assert.equal(snapshot.memory.topology.largestClusterSize, 20);
+  assert.equal(snapshot.memory.topology.largestClusterShare, 1);
+  assert.match(snapshot.memory.topology.reasons.join(' '), /cluster membership count exceeds current node count/);
+});
+
 test('Good Life snapshot includes latest machine host pressure evidence', () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-snapshot-'));
   try {

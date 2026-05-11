@@ -153,3 +153,32 @@ test('GoodLifeObjective treats failing scheduler jobs as repair drift and preser
   assert.equal(evaluation.policy.mode, 'repair');
   assert.deepEqual(evaluation.evidence.scheduler, scheduler);
 });
+
+test('GoodLifeObjective marks closed memory topology as coherence drift', () => {
+  const objective = new GoodLifeObjective();
+  const memory = {
+    nodes: 120,
+    edges: 220,
+    topology: {
+      schema: 'home23.memory-topology-posture.v1',
+      sourceIssues: [72],
+      clusters: 4,
+      bridgeEdges: 0,
+      orphanRatio: 0.02,
+      largestClusterShare: 0.62,
+      posture: 'closed',
+      reasons: ['multiple anchor regions have no bridge edges'],
+    },
+  };
+  const evaluation = objective.evaluate({
+    now: '2026-05-11T14:15:00.000Z',
+    liveProblems: { open: 0, chronic: 0 },
+    crystallization: { lastReceiptAt: '2026-05-11T14:14:00.000Z' },
+    memory,
+  });
+
+  assert.equal(evaluation.lanes.coherence.status, 'watch');
+  assert.match(evaluation.lanes.coherence.reasons.join(' '), /multiple anchor regions have no bridge edges/);
+  assert.equal(evaluation.policy.mode, 'learn');
+  assert.deepEqual(evaluation.evidence.memory.topology.sourceIssues, [72]);
+});

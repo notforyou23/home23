@@ -19,10 +19,7 @@ function buildGoodLifeSnapshot({
   const now = new Date().toISOString();
   return {
     now,
-    memory: {
-      nodes: sizeOf(memory?.nodes),
-      edges: sizeOf(memory?.edges),
-    },
+    memory: summarizeMemory(memory),
     liveProblems: summarizeLiveProblems(orchestrator, runtimeRoot),
     goals: summarizeGoals(goals, runtimeRoot),
     agenda: summarizeAgenda(runtimeRoot),
@@ -43,6 +40,87 @@ function buildGoodLifeSnapshot({
       crashDetected: Boolean(orchestrator?.crashRecovery?.crashDetected),
     },
     actions: summarizeActions(orchestrator),
+  };
+}
+
+function summarizeMemory(memory) {
+  const summary = {
+    nodes: sizeOf(memory?.nodes),
+    edges: sizeOf(memory?.edges),
+  };
+  const topologyPosture = summarizeMemoryTopology(memory, summary.nodes, summary.edges);
+  if (topologyPosture) summary.topology = topologyPosture;
+  return summary;
+}
+
+function summarizeMemoryTopology(memory, nodeCount, edgeCount) {
+  if (!memory || nodeCount <= 0) return null;
+  const nodes = entriesOf(memory.nodes);
+  const edges = valuesOf(memory.edges);
+  if (nodes.length === 0) return null;
+
+  const clusterSizes = clusterSizesFor(memory, nodes);
+  const degree = new Map(nodes.map(([id]) => [String(id), 0]));
+  let bridgeEdges = 0;
+  let associativeEdges = 0;
+
+  for (const edge of edges) {
+    if (!edge) continue;
+    const source = edge.source ?? edge.from ?? edge[0];
+    const target = edge.target ?? edge.to ?? edge[1];
+    if (source != null) degree.set(String(source), (degree.get(String(source)) || 0) + 1);
+    if (target != null) degree.set(String(target), (degree.get(String(target)) || 0) + 1);
+    if (edge.type === 'bridge') bridgeEdges++;
+    else associativeEdges++;
+  }
+
+  const orphanNodes = Array.from(degree.values()).filter((count) => count === 0).length;
+  const rawLargestClusterSize = clusterSizes.length ? Math.max(...clusterSizes) : nodeCount;
+  const largestClusterSize = Math.min(rawLargestClusterSize, nodeCount);
+  const clusters = clusterSizes.length || 1;
+  const orphanRatio = ratio(orphanNodes, nodeCount);
+  const largestClusterShare = ratio(largestClusterSize, nodeCount);
+  const bridgeRatio = ratio(bridgeEdges, edgeCount);
+  const averageDegree = round((edgeCount * 2) / nodeCount, 3);
+  const reasons = [];
+  let posture = 'open';
+
+  if (clusters > 1 && bridgeEdges === 0) {
+    posture = 'closed';
+    reasons.push('multiple anchor regions have no bridge edges');
+  }
+  if (largestClusterShare >= 0.85 && nodeCount >= 20) {
+    posture = posture === 'closed' ? 'closed' : 'narrowing';
+    reasons.push('one anchor region dominates the memory topology');
+  }
+  if (orphanRatio >= 0.35 && nodeCount >= 20) {
+    posture = posture === 'closed' ? 'closed' : 'narrowing';
+    reasons.push('many memory anchors are disconnected from the graph');
+  }
+  if (rawLargestClusterSize > nodeCount) {
+    posture = posture === 'closed' ? 'closed' : 'narrowing';
+    reasons.push('cluster membership count exceeds current node count');
+  }
+  if (reasons.length === 0) {
+    reasons.push(clusters > 1
+      ? 'multiple anchor regions connected by bridge edges'
+      : 'single anchor region remains connected');
+  }
+
+  return {
+    schema: 'home23.memory-topology-posture.v1',
+    sourceIssues: [72],
+    clusters,
+    bridgeEdges,
+    associativeEdges,
+    averageDegree,
+    bridgeRatio,
+    orphanNodes,
+    orphanRatio,
+    largestClusterSize,
+    largestClusterShare,
+    posture,
+    reasons,
   };
 }
 
@@ -518,6 +596,56 @@ function toIsoTime(value) {
     if (!Number.isNaN(t)) return new Date(t).toISOString();
   }
   return null;
+}
+
+function entriesOf(collection) {
+  if (!collection) return [];
+  if (collection instanceof Map) return Array.from(collection.entries());
+  if (Array.isArray(collection)) {
+    return collection.map((value, index) => {
+      const id = value?.id ?? value?.nodeId ?? index;
+      return [id, value];
+    });
+  }
+  if (typeof collection === 'object') return Object.entries(collection);
+  return [];
+}
+
+function valuesOf(collection) {
+  if (!collection) return [];
+  if (collection instanceof Map) return Array.from(collection.values());
+  if (Array.isArray(collection)) return collection;
+  if (typeof collection === 'object') return Object.values(collection);
+  return [];
+}
+
+function clusterSizesFor(memory, nodeEntries) {
+  if (memory?.clusters instanceof Map) {
+    return Array.from(memory.clusters.values()).map((nodes) => sizeOf(nodes)).filter((size) => size > 0);
+  }
+  if (Array.isArray(memory?.clusters)) {
+    return memory.clusters.map((cluster) => sizeOf(cluster?.nodes ?? cluster)).filter((size) => size > 0);
+  }
+  if (memory?.clusters && typeof memory.clusters === 'object') {
+    return Object.values(memory.clusters).map((cluster) => sizeOf(cluster?.nodes ?? cluster)).filter((size) => size > 0);
+  }
+  const counts = new Map();
+  for (const [, node] of nodeEntries) {
+    const cluster = node?.cluster ?? node?.clusterId;
+    if (cluster == null) continue;
+    counts.set(String(cluster), (counts.get(String(cluster)) || 0) + 1);
+  }
+  return Array.from(counts.values()).filter((size) => size > 0);
+}
+
+function ratio(numerator, denominator) {
+  return denominator > 0 ? round(numerator / denominator, 3) : 0;
+}
+
+function round(value, places = 3) {
+  if (!Number.isFinite(value)) return 0;
+  const scale = 10 ** places;
+  return Math.round(value * scale) / scale;
 }
 
 function sizeOf(maybeMap) {
