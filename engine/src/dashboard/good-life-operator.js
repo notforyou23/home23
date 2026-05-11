@@ -980,6 +980,7 @@ function buildProjectionProvenance({
   freshness,
   runtime,
   sources = {},
+  issueArc = null,
   now = new Date(),
 } = {}) {
   const liveCounts = liveProblems?.counts || {};
@@ -1017,6 +1018,18 @@ function buildProjectionProvenance({
         requirement: 'current truth should be a projection with provenance',
       },
     ],
+    curriculumArc: issueArc ? {
+      schema: issueArc.schema || null,
+      source: sources.issueArc || null,
+      issuesRead: finiteCount(issueArc.count) || 0,
+      firstIssue: finiteCount(issueArc.range?.first),
+      lastIssue: finiteCount(issueArc.range?.last),
+      missingIssues: Array.isArray(issueArc.range?.missing) ? issueArc.range.missing : [],
+      themeCounts: Object.fromEntries(Object.entries(issueArc.themes || {}).map(([key, value]) => [
+        key,
+        Array.isArray(value) ? value.length : 0,
+      ])),
+    } : null,
     projection: {
       kind: 'projection',
       surface: source('state', 'good-life-state.json'),
@@ -1771,6 +1784,7 @@ function buildGoodLifeOperatorModel({
   obligations = null,
   runtime = null,
   sources = {},
+  issueArc = null,
   now = new Date(),
 } = {}) {
   const nowMs = toNowMs(now);
@@ -1831,6 +1845,7 @@ function buildGoodLifeOperatorModel({
       freshness,
       runtime,
       sources,
+      issueArc,
       now,
     }),
     latestRegulatorAction: latestAction,

@@ -4057,6 +4057,12 @@ function renderGoodLifeInsightsDetail(data) {
         <small>${escapeHtml(provenance.projection?.surface || '')}</small>
         <em>projection</em>
       </div>
+      ${provenance.curriculumArc ? `<div class="h23-goodlife-evidence-row">
+        <strong>From The Inside arc</strong>
+        <span>${escapeHtml(`${Number(provenance.curriculumArc.issuesRead || 0)} issues mapped from #${String(provenance.curriculumArc.firstIssue || '').padStart(3, '0')} to #${String(provenance.curriculumArc.lastIssue || '').padStart(3, '0')}`)}</span>
+        <small>${escapeHtml(provenance.curriculumArc.source || '')}</small>
+        <em>doctrine</em>
+      </div>` : ''}
       ${(provenance.evidence || []).slice(0, 5).map((row) => `<div class="h23-goodlife-evidence-row">
         <strong>${escapeHtml(row.surface || row.kind || 'evidence')}</strong>
         <span>${escapeHtml(row.authority || '')}</span>

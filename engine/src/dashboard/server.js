@@ -5455,6 +5455,10 @@ Be specific, actionable, and maintain research continuity.`;
         const commitments = readJson('good-life-commitments.json');
         const trends = readJson('good-life-trends-current.json');
         const regulator = readJson('good-life-regulator-state.json');
+        const issueArcPath = path.resolve(__dirname, '../../..', 'docs/design/step26-from-the-inside-issue-arc-map.json');
+        const issueArc = fsSync.existsSync(issueArcPath)
+          ? JSON.parse(fsSync.readFileSync(issueArcPath, 'utf8'))
+          : null;
         const ledgerTail = tailJsonl('good-life-ledger.jsonl', 10);
         const liveProblemData = readJson('live-problems.json') || { problems: [] };
         const liveProblemList = Array.isArray(liveProblemData.problems) ? liveProblemData.problems : [];
@@ -5487,7 +5491,9 @@ Be specific, actionable, and maintain research continuity.`;
             ledger: path.join(goodLifeLogsDir, 'good-life-ledger.jsonl'),
             liveProblems: path.join(goodLifeLogsDir, 'live-problems.json'),
             agenda: path.join(goodLifeLogsDir, 'agenda.jsonl'),
+            issueArc: issueArcPath,
           },
+          issueArc,
         });
         res.json({
           ok: true,

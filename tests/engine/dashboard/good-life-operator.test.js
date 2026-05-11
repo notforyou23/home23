@@ -371,11 +371,18 @@ test('Good Life operator provenance preserves explicit source surfaces and confl
     obligations: { activeAgenda: [], activeGoals: [], counts: { activeAgenda: 0, activeGoals: 0 } },
     ledgerTail: [{ event: 'good_life.evaluated', at: NOW }],
     runtime: { services: [{ id: 'dashboard', ok: true }] },
+    issueArc: {
+      schema: 'home23.from-the-inside.issue-arc.v1',
+      count: 93,
+      range: { first: 1, last: 102, missing: [6, 7] },
+      themes: { 'memory-coherence': [2, 85, 102], 'provenance-auditability': [86, 99, 100, 101, 102] },
+    },
     sources: {
       state: '/tmp/good-life-state.json',
       liveProblems: '/tmp/live-problems.json',
       ledger: '/tmp/good-life-ledger.jsonl',
       agenda: '/tmp/agenda.jsonl',
+      issueArc: '/tmp/issue-arc.json',
     },
     now: NOW,
   });
@@ -386,6 +393,9 @@ test('Good Life operator provenance preserves explicit source surfaces and confl
   assert.equal(model.provenance.evidence[1].entriesSampled, 1);
   assert.equal(model.provenance.evidence[2].surface, '/tmp/agenda.jsonl');
   assert.equal(model.provenance.evidence[3].services[0].id, 'dashboard');
+  assert.equal(model.provenance.curriculumArc.issuesRead, 93);
+  assert.equal(model.provenance.curriculumArc.source, '/tmp/issue-arc.json');
+  assert.equal(model.provenance.curriculumArc.themeCounts['provenance-auditability'], 5);
   assert.ok(model.provenance.conflicts.some((warning) => warning.code === 'good_life_projection_mismatch'));
 });
 
