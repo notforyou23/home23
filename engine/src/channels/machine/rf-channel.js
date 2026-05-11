@@ -59,6 +59,71 @@ function parseAirportInfo(stdout) {
   };
 }
 
+function firstFiniteNumber(value) {
+  const parsed = Number(String(value || '').match(/-?\d+(?:\.\d+)?/)?.[0]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function findValueByKeyFragment(source, fragments) {
+  if (!source || typeof source !== 'object') return null;
+  const queue = [source];
+  while (queue.length) {
+    const next = queue.shift();
+    if (!next || typeof next !== 'object') continue;
+    for (const [key, value] of Object.entries(next)) {
+      const lowered = key.toLowerCase();
+      if (fragments.some((fragment) => lowered.includes(fragment))) return value;
+      if (value && typeof value === 'object') queue.push(value);
+    }
+  }
+  return null;
+}
+
+function parseSystemProfilerWifiJson(stdout) {
+  let parsed;
+  try {
+    parsed = typeof stdout === 'string' ? JSON.parse(stdout) : stdout;
+  } catch {
+    return { error: 'system_profiler_wifi_json_parse_failed' };
+  }
+
+  const section = Array.isArray(parsed?.SPAirPortDataType) ? parsed.SPAirPortDataType[0] : null;
+  const iface = Array.isArray(section?.spairport_airport_interfaces)
+    ? section.spairport_airport_interfaces[0]
+    : null;
+  if (!iface) return { error: 'system_profiler_wifi_interface_missing' };
+
+  const current = iface.spairport_current_network_information || {};
+  const signalRaw = findValueByKeyFragment(current, ['signal']);
+  const noiseRaw = findValueByKeyFragment(current, ['noise']);
+  const channelRaw = findValueByKeyFragment(current, ['channel']);
+  const signalParts = String(signalRaw || '').match(/-?\d+(?:\.\d+)?/g) || [];
+  const rssi = signalParts[0] != null ? Number(signalParts[0]) : firstFiniteNumber(findValueByKeyFragment(current, ['rssi']));
+  const noise = noiseRaw != null
+    ? firstFiniteNumber(noiseRaw)
+    : signalParts[1] != null ? Number(signalParts[1]) : null;
+  const channelMatch = String(channelRaw || '').match(/(\d+)(?:,\s*(\d+))?/);
+  const statusRaw = iface.spairport_status_information || iface.status || '';
+  const inactive = /inactive|off|not[_ -]?connected/i.test(String(statusRaw));
+
+  return {
+    source: 'system_profiler',
+    interface: iface._name || null,
+    status: inactive ? 'inactive' : (statusRaw ? 'running' : null),
+    statusRaw,
+    ssid: current._name || current.spairport_network_name || null,
+    bssid: current.spairport_network_bssid || null,
+    rssi: Number.isFinite(rssi) ? rssi : null,
+    noise: Number.isFinite(noise) ? noise : null,
+    snr: Number.isFinite(rssi) && Number.isFinite(noise) ? rssi - noise : null,
+    phyMode: findValueByKeyFragment(current, ['phy']) || null,
+    channel: channelMatch ? Number(channelMatch[1]) : null,
+    channelWidthMhz: channelMatch?.[2] ? Number(channelMatch[2]) : null,
+    channelRaw: channelRaw == null ? null : String(channelRaw),
+    cardType: iface.spairport_wireless_card_type || null,
+  };
+}
+
 function classifyRfPosture(payload, thresholds = {}) {
   const wifi = payload?.wifi || {};
   const route = payload?.defaultRoute || {};
@@ -67,20 +132,29 @@ function classifyRfPosture(payload, thresholds = {}) {
   const weakSnr = thresholds.weakSnr ?? 20;
   const watchSnr = thresholds.watchSnr ?? 25;
   const reasons = [];
+  const routeInterface = route.interface || null;
+  const wifiInterface = wifi.interface || null;
+  const routeMatchesWifi = routeInterface && wifiInterface
+    ? routeInterface === wifiInterface
+    : true;
+  const wifiStatusRunning = !wifi.status || /^running$/i.test(wifi.status);
 
-  if (!route.interface) reasons.push('default_route_unknown');
+  if (!routeInterface) reasons.push('default_route_unknown');
   if (wifi.error) reasons.push('wifi_radio_unreadable');
 
-  const isLikelyWifi = route.interface && /^en\d+$/i.test(route.interface)
-    && (wifi.rssi != null || wifi.ssid || wifi.state);
+  const isLikelyWifi = routeInterface && /^en\d+$/i.test(routeInterface)
+    && routeMatchesWifi
+    && wifiStatusRunning
+    && (wifi.rssi != null || wifi.ssid || wifi.state || wifi.status);
 
-  if (wifi.rssi != null && wifi.rssi <= weakRssi) reasons.push('weak_rssi');
-  else if (wifi.rssi != null && wifi.rssi <= watchRssi) reasons.push('watch_rssi');
+  if (routeMatchesWifi && wifi.rssi != null && wifi.rssi <= weakRssi) reasons.push('weak_rssi');
+  else if (routeMatchesWifi && wifi.rssi != null && wifi.rssi <= watchRssi) reasons.push('watch_rssi');
 
-  if (wifi.snr != null && wifi.snr < weakSnr) reasons.push('weak_snr');
-  else if (wifi.snr != null && wifi.snr < watchSnr) reasons.push('watch_snr');
+  if (routeMatchesWifi && wifi.snr != null && wifi.snr < weakSnr) reasons.push('weak_snr');
+  else if (routeMatchesWifi && wifi.snr != null && wifi.snr < watchSnr) reasons.push('watch_snr');
 
   if (wifi.state && !/^running$/i.test(wifi.state)) reasons.push('wifi_not_running');
+  if (routeMatchesWifi && wifi.status && !/^running$/i.test(wifi.status)) reasons.push('wifi_not_running');
 
   const severity = reasons.some((reason) => reason.startsWith('weak_') || reason === 'wifi_not_running' || reason === 'default_route_unknown')
     ? 'degraded'
@@ -106,9 +180,28 @@ async function defaultSample() {
   const defaultRoute = routeResult.status === 'fulfilled'
     ? parseDefaultRoute(routeResult.value.stdout)
     : { error: routeResult.reason?.message || String(routeResult.reason) };
-  const wifi = wifiResult.status === 'fulfilled'
-    ? parseAirportInfo(wifiResult.value.stdout)
-    : { error: wifiResult.reason?.message || String(wifiResult.reason) };
+  let wifi = wifiResult.status === 'fulfilled'
+    ? { ...parseAirportInfo(wifiResult.value.stdout), source: 'airport' }
+    : { error: wifiResult.reason?.message || String(wifiResult.reason), source: 'airport' };
+  if (wifi.error) {
+    try {
+      const { stdout } = await execFileAsync('/usr/sbin/system_profiler', ['SPAirPortDataType', '-json'], {
+        encoding: 'utf8',
+        timeout: 10_000,
+        maxBuffer: 1024 * 1024,
+      });
+      wifi = {
+        ...parseSystemProfilerWifiJson(stdout),
+        airportError: wifi.error,
+      };
+    } catch (err) {
+      wifi = {
+        error: wifi.error,
+        systemProfilerError: err?.message || String(err),
+        source: 'airport+system_profiler',
+      };
+    }
+  }
   const payload = { at, defaultRoute, wifi };
   return {
     ...payload,
@@ -156,4 +249,4 @@ export class RfChannel extends PollChannel {
   }
 }
 
-export const _test = { parseDefaultRoute, parseAirportInfo, classifyRfPosture };
+export const _test = { parseDefaultRoute, parseAirportInfo, parseSystemProfilerWifiJson, classifyRfPosture };

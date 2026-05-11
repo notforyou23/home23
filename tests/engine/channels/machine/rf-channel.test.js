@@ -35,7 +35,7 @@ destination: default
 test('RfChannel classifies weak Wi-Fi as degraded physical substrate', () => {
   const posture = _test.classifyRfPosture({
     defaultRoute: { interface: 'en0' },
-    wifi: { state: 'running', rssi: -75, noise: -90, snr: 15 },
+    wifi: { interface: 'en0', state: 'running', rssi: -75, noise: -90, snr: 15 },
   });
 
   assert.equal(posture.physicalLayer, 'wifi');
@@ -43,6 +43,56 @@ test('RfChannel classifies weak Wi-Fi as degraded physical substrate', () => {
   assert.deepEqual(posture.sourceIssues, [81]);
   assert.ok(posture.reasons.includes('weak_rssi'));
   assert.ok(posture.reasons.includes('weak_snr'));
+});
+
+test('RfChannel parses system_profiler Wi-Fi fallback and distinguishes inactive non-route radios', () => {
+  const wifi = _test.parseSystemProfilerWifiJson(JSON.stringify({
+    SPAirPortDataType: [{
+      spairport_airport_interfaces: [{
+        _name: 'en1',
+        spairport_status_information: 'spairport_status_inactive',
+        spairport_wireless_card_type: 'spairport_wireless_card_type_wifi (0x14E4, 0x4388)',
+      }],
+    }],
+  }));
+  const posture = _test.classifyRfPosture({
+    defaultRoute: { interface: 'en0' },
+    wifi,
+  });
+
+  assert.equal(wifi.source, 'system_profiler');
+  assert.equal(wifi.interface, 'en1');
+  assert.equal(wifi.status, 'inactive');
+  assert.equal(posture.physicalLayer, 'wired_or_other');
+  assert.equal(posture.severity, 'clear');
+  assert.deepEqual(posture.reasons, []);
+});
+
+test('RfChannel parses active system_profiler network details', () => {
+  const wifi = _test.parseSystemProfilerWifiJson(JSON.stringify({
+    SPAirPortDataType: [{
+      spairport_airport_interfaces: [{
+        _name: 'en0',
+        spairport_status_information: 'spairport_status_connected',
+        spairport_current_network_information: {
+          _name: 'Home23',
+          spairport_network_bssid: 'aa:bb:cc:dd:ee:ff',
+          spairport_network_channel: '149,80',
+          spairport_network_signal: '-61 dBm / -90 dBm',
+          spairport_network_phymode: '802.11ax',
+        },
+      }],
+    }],
+  }));
+
+  assert.equal(wifi.interface, 'en0');
+  assert.equal(wifi.status, 'running');
+  assert.equal(wifi.ssid, 'Home23');
+  assert.equal(wifi.rssi, -61);
+  assert.equal(wifi.noise, -90);
+  assert.equal(wifi.snr, 29);
+  assert.equal(wifi.channel, 149);
+  assert.equal(wifi.channelWidthMhz, 80);
 });
 
 test('RfChannel keeps wired or clear transport informational', async () => {
