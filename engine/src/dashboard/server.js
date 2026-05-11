@@ -5479,6 +5479,15 @@ Be specific, actionable, and maintain research continuity.`;
           ledgerTail: ledgerTail.map(compactGoodLifeLedgerEntry),
           obligations,
           runtime,
+          sources: {
+            state: path.join(goodLifeLogsDir, 'good-life-state.json'),
+            commitments: path.join(goodLifeLogsDir, 'good-life-commitments.json'),
+            trends: path.join(goodLifeLogsDir, 'good-life-trends-current.json'),
+            regulator: path.join(goodLifeLogsDir, 'good-life-regulator-state.json'),
+            ledger: path.join(goodLifeLogsDir, 'good-life-ledger.jsonl'),
+            liveProblems: path.join(goodLifeLogsDir, 'live-problems.json'),
+            agenda: path.join(goodLifeLogsDir, 'agenda.jsonl'),
+          },
         });
         res.json({
           ok: true,

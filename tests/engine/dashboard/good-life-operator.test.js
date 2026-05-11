@@ -349,6 +349,44 @@ test('Good Life operator model exposes safe current help state with evidence and
   assert.equal(model.operatorDigest.issue, 'No active live problems');
   assert.equal(model.operatorDigest.currentWork, 'No active routed work');
   assert.equal(model.operatorDigest.userAction, 'No user action needed right now.');
+  assert.equal(model.provenance.schema, 'home23.good-life.provenance.v1');
+  assert.equal(model.provenance.projection.kind, 'projection');
+  assert.equal(model.provenance.evidence[0].surface, 'live-problems.json');
+  assert.equal(model.provenance.mergeDiscipline.latestWins, false);
+  assert.equal(model.provenance.correctionPolicy.tombstoneRequired, true);
+  assert.ok(model.provenance.doctrine.some((item) => item.issue === 102));
+});
+
+test('Good Life operator provenance preserves explicit source surfaces and conflicts', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evidence: {
+        liveProblems: { open: 0, chronic: 0, resolved: 0, unverifiable: 0, total: 0 },
+        goals: { open: 0, total: 0 },
+      },
+    }),
+    liveProblems: [
+      { id: 'open_1', state: 'open', claim: 'Open thing', openedAt: '2026-05-08T13:40:00.000Z' },
+    ],
+    obligations: { activeAgenda: [], activeGoals: [], counts: { activeAgenda: 0, activeGoals: 0 } },
+    ledgerTail: [{ event: 'good_life.evaluated', at: NOW }],
+    runtime: { services: [{ id: 'dashboard', ok: true }] },
+    sources: {
+      state: '/tmp/good-life-state.json',
+      liveProblems: '/tmp/live-problems.json',
+      ledger: '/tmp/good-life-ledger.jsonl',
+      agenda: '/tmp/agenda.jsonl',
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.status, 'conflicted');
+  assert.equal(model.provenance.projection.surface, '/tmp/good-life-state.json');
+  assert.equal(model.provenance.evidence[0].surface, '/tmp/live-problems.json');
+  assert.equal(model.provenance.evidence[1].entriesSampled, 1);
+  assert.equal(model.provenance.evidence[2].surface, '/tmp/agenda.jsonl');
+  assert.equal(model.provenance.evidence[3].services[0].id, 'dashboard');
+  assert.ok(model.provenance.conflicts.some((warning) => warning.code === 'good_life_projection_mismatch'));
 });
 
 test('Good Life operator detail carries host pressure evidence for the UI', () => {

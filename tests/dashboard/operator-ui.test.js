@@ -42,6 +42,9 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(js, /renderGoodLifeIssueInterventionConsole/);
   assert.match(js, /Operator Intervention/);
   assert.match(js, /Recommended next step/);
+  assert.match(js, /Projection Provenance/);
+  assert.match(js, /provenance\.projection\?\.authority/);
+  assert.match(js, /provenance\.conflicts/);
   assert.match(js, /Ask \$\{escapeHtml\(workerName\)\} Worker/);
   assert.match(js, /openGoodLifeWorkers/);
   assert.match(js, /Run Engine Check/);

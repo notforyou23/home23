@@ -4045,9 +4045,32 @@ function renderGoodLifeInsightsDetail(data) {
   const detail = data?.operator?.detail || {};
   const metrics = detail.insights?.trendMetrics || {};
   const ledger = detail.insights?.ledgerTail || [];
+  const provenance = data?.operator?.provenance || null;
   const budget = detail.insights?.autonomyBudget || data?.operator?.autonomyBudget || null;
   const host = detail.insights?.host || data?.state?.evidence?.host || null;
   const pm2 = detail.insights?.pm2 || data?.state?.evidence?.pm2 || null;
+  const provenanceHtml = provenance ? `
+    <section><h4>Projection Provenance</h4>
+      <div class="h23-goodlife-evidence-row">
+        <strong>${escapeHtml(provenance.projection?.status || 'unknown')}</strong>
+        <span>${escapeHtml(provenance.projection?.authority || '')}</span>
+        <small>${escapeHtml(provenance.projection?.surface || '')}</small>
+        <em>projection</em>
+      </div>
+      ${(provenance.evidence || []).slice(0, 5).map((row) => `<div class="h23-goodlife-evidence-row">
+        <strong>${escapeHtml(row.surface || row.kind || 'evidence')}</strong>
+        <span>${escapeHtml(row.authority || '')}</span>
+        <small>${escapeHtml(row.counts ? Object.entries(row.counts).map(([key, value]) => `${key}:${value}`).join(' - ') : (row.entriesSampled != null ? `${row.entriesSampled} sampled` : ''))}</small>
+        <em>${escapeHtml(row.kind || 'evidence')}</em>
+      </div>`).join('')}
+      ${(provenance.conflicts || []).slice(0, 4).map((row) => `<div class="h23-goodlife-evidence-row ${row.severity === 'critical' ? 'critical' : 'watch'}">
+        <strong>${escapeHtml(row.code || 'conflict')}</strong>
+        <span>${escapeHtml(row.message || '')}</span>
+        <small>${escapeHtml((row.fields || []).join(', '))}</small>
+        <em>${escapeHtml(row.severity || 'warning')}</em>
+      </div>`).join('')}
+    </section>
+  ` : '';
   const budgetHtml = budget ? `
     <section><h4>Autonomy Budget</h4>
       <div class="h23-goodlife-evidence-row">
@@ -4062,6 +4085,7 @@ function renderGoodLifeInsightsDetail(data) {
     <div class="h23-goodlife-detail-grid">
       ${Object.entries(metrics).slice(0, 8).map(([key, value]) => `<div><label>${escapeHtml(key)}</label><p>${escapeHtml(value)}</p></div>`).join('') || '<div><label>Trend Metrics</label><p>not recorded</p></div>'}
     </div>
+    ${provenanceHtml}
     ${budgetHtml}
     ${renderGoodLifeHostPressure(host)}
     ${renderGoodLifePm2Changes(pm2)}

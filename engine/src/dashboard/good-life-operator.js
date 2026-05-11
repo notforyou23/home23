@@ -971,6 +971,117 @@ function compactLedgerEntry(entry = {}) {
   };
 }
 
+function buildProjectionProvenance({
+  state,
+  liveProblems,
+  obligations,
+  ledgerTail,
+  consistency,
+  freshness,
+  runtime,
+  sources = {},
+  now = new Date(),
+} = {}) {
+  const liveCounts = liveProblems?.counts || {};
+  const obligationCounts = obligations?.counts || {};
+  const services = Array.isArray(runtime?.services) ? runtime.services : [];
+  const source = (key, fallback) => sources[key] || fallback;
+  const warnings = Array.isArray(consistency?.warnings) ? consistency.warnings : [];
+  return {
+    schema: 'home23.good-life.provenance.v1',
+    generatedAt: new Date(toNowMs(now)).toISOString(),
+    doctrine: [
+      {
+        issue: 86,
+        title: 'The Engineering of Auditability',
+        requirement: 'operator claims must be reconstructable from evidence, not just logs',
+      },
+      {
+        issue: 99,
+        title: 'Merkleized Evidence & Verifiable Audit Trails',
+        requirement: 'exact evidence identity matters where future action depends on proof',
+      },
+      {
+        issue: 100,
+        title: 'Event Sourcing for a Living Knowledge Graph',
+        requirement: 'current state should be explainable as a projection over durable events',
+      },
+      {
+        issue: 101,
+        title: 'Manifest-First Verification for Real Work',
+        requirement: 'allowed transitions need explicit verifier and receipt coverage',
+      },
+      {
+        issue: 102,
+        title: 'CRDTs for Narrative + State Coherence',
+        requirement: 'current truth should be a projection with provenance',
+      },
+    ],
+    projection: {
+      kind: 'projection',
+      surface: source('state', 'good-life-state.json'),
+      evaluatedAt: state?.evaluatedAt || null,
+      status: freshness?.status || 'unknown',
+      authority: 'summarizes Good Life policy and lane state; does not outrank direct registries when counts conflict',
+      claimTypes: ['policy', 'lane-status', 'summary', 'projection'],
+    },
+    evidence: [
+      {
+        kind: 'evidence',
+        surface: source('liveProblems', 'live-problems.json'),
+        authority: 'authoritative for current live-problem state',
+        counts: {
+          open: finiteCount(liveCounts.open) || 0,
+          chronic: finiteCount(liveCounts.chronic) || 0,
+          unverifiable: finiteCount(liveCounts.unverifiable) || 0,
+          resolved: finiteCount(liveCounts.resolved) || 0,
+        },
+      },
+      {
+        kind: 'evidence',
+        surface: source('ledger', 'good-life-ledger.jsonl'),
+        authority: 'append-only Good Life evaluations and operator events',
+        entriesSampled: Array.isArray(ledgerTail) ? ledgerTail.length : 0,
+      },
+      {
+        kind: 'evidence',
+        surface: source('agenda', 'agenda.jsonl'),
+        authority: 'event stream for active Good Life work routing',
+        counts: {
+          activeAgenda: finiteCount(obligationCounts.activeAgenda) || 0,
+          activeGoals: finiteCount(obligationCounts.activeGoals) || 0,
+        },
+      },
+      {
+        kind: 'evidence',
+        surface: 'runtime health endpoints',
+        authority: 'fresh process and service reachability sample',
+        services: services.map((service) => ({
+          id: service.id || null,
+          ok: service.ok !== false,
+          degraded: service.degraded === true,
+          slow: service.slow === true,
+        })),
+      },
+    ],
+    mergeDiscipline: {
+      dedupeKey: 'surface + authoritative subject + receipt/event identity',
+      latestWins: false,
+      rule: 'newer projections can summarize older evidence, but direct evidence wins for its own authority surface',
+    },
+    correctionPolicy: {
+      tombstoneRequired: true,
+      rule: 'operator corrections must demote the old governing claim without deleting the historical fact that it existed',
+    },
+    conflicts: warnings.map((warning) => ({
+      code: warning.code || 'warning',
+      severity: warning.severity || 'warning',
+      message: warning.message || '',
+      fields: Array.isArray(warning.fields) ? warning.fields : [],
+    })),
+  };
+}
+
 function summarizeTopLiveProblem(liveProblems = {}) {
   const rows = [
     ...(Array.isArray(liveProblems.open) ? liveProblems.open : []),
@@ -1659,6 +1770,7 @@ function buildGoodLifeOperatorModel({
   ledgerTail = [],
   obligations = null,
   runtime = null,
+  sources = {},
   now = new Date(),
 } = {}) {
   const nowMs = toNowMs(now);
@@ -1710,6 +1822,17 @@ function buildGoodLifeOperatorModel({
     projection,
     runtime,
     consistency,
+    provenance: buildProjectionProvenance({
+      state,
+      liveProblems: directLiveProblems,
+      obligations: currentObligations,
+      ledgerTail,
+      consistency,
+      freshness,
+      runtime,
+      sources,
+      now,
+    }),
     latestRegulatorAction: latestAction,
     autonomyBudget: budget,
     trends: trends?.latest || null,
