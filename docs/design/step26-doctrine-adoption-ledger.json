@@ -313,6 +313,23 @@
         "engine/src/channels/memory-ingest.cjs",
         "tests/engine/channels/memory-ingest.test.js"
       ]
+    },
+    {
+      "id": "sibling-process-topology",
+      "title": "Sibling agents are coordinated roles, not duplicate processes",
+      "status": "adopted",
+      "sourceIssues": [4],
+      "requirement": "Home23 must distinguish sibling agents, their engine/dashboard/harness roles, and shared services so Jerry, Forrest, and future siblings are interpreted as a division of labor rather than duplicate deployments.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/system/home23-process-topology.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/system/home23-process-topology.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/system/home23-process-topology.js",
+        "tests/engine/system/home23-process-topology.test.js"
+      ]
     }
   ]
 }
