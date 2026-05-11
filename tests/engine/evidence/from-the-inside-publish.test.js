@@ -73,9 +73,18 @@ test('verifyFromTheInsidePublish writes an evidence.v1 receipt for a clean publi
   assert.ok(result.receipt.sourceArtifacts.some(a => a.path.endsWith('/issues/099.json')));
   assert.ok(result.receipt.derivedArtifacts.some(a => a.path.endsWith('/public/issues/099.html')));
   assert.ok(existsSync(result.receiptPath));
+  assert.equal(result.auditEvent.event_type, 'field_report.issue.published');
+  assert.equal(result.auditEvent.payload.schema, 'home23.audit-event.v1');
+  assert.equal(result.auditEvent.payload.runId, 'field-report-099');
+  assert.equal(result.auditEvent.payload.correlationId, result.receipt.receiptId);
+  assert.ok(result.auditEvent.payload.artifactRefs.some(a => a.role === 'evidence_receipt' && a.sha256));
+  assert.ok(result.auditEvent.payload.artifactRefs.some(a => a.role === 'field_report_proof_packet' && a.sha256));
+  assert.ok(result.auditEvent.payload.claimBoundary.notAsserted.includes('remote CDN/browser reachability was not checked in this local audit event'));
   assert.equal(result.event.event_type, 'issue.published');
   assert.equal(result.event.payload.subject, 'from-the-inside/099');
+  assert.equal(result.event.payload.causedBy, result.auditEvent.event_id);
   assert.equal(result.event.payload.evidence.receiptId, result.receipt.receiptId);
+  assert.equal(result.event.payload.evidence.auditEventId, result.auditEvent.event_id);
   assert.ok(existsSync(result.eventLogPath));
   assert.equal(result.trustClaim.id, 'from-the-inside.issue.099.published');
   assert.equal(result.trustExplanation.status, 'known_verified');

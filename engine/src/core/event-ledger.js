@@ -28,6 +28,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const STATE_EVENT_SCHEMA = 'home23.state-event.v1';
+const AUDIT_EVENT_SCHEMA = 'home23.audit-event.v1';
 
 class EventLedger {
   constructor(brainDir, opts = {}) {
@@ -113,6 +114,80 @@ class EventLedger {
     });
   }
 
+  recordAuditEvent({
+    eventType,
+    subject,
+    actor = 'engine',
+    result = 'unknown',
+    operationId = null,
+    runId = null,
+    correlationId = null,
+    parentEventId = null,
+    sourceSurface = null,
+    artifactRefs = [],
+    evidence = null,
+    before = null,
+    after = null,
+    claimBoundary = null,
+    retention = null,
+    occurredAt = null,
+    payload = {},
+    sourceIssue = 86,
+    sessionId = null,
+    threadId = null,
+    objectId = null,
+    invocationId = null,
+  } = {}) {
+    if (!eventType) throw new Error('recordAuditEvent requires eventType');
+    if (!subject) throw new Error('recordAuditEvent requires subject');
+    const auditPayload = compactObject({
+      schema: AUDIT_EVENT_SCHEMA,
+      version: 1,
+      sourceIssue,
+      eventType,
+      subject,
+      actor,
+      result,
+      occurredAt: occurredAt || new Date().toISOString(),
+      operationId,
+      runId,
+      correlationId,
+      parentEventId,
+      sourceSurface,
+      artifactRefs: normalizeArtifactRefs(artifactRefs),
+      evidence,
+      before,
+      after,
+      claimBoundary,
+      retention,
+      payload,
+      payloadHash: sha256(canonicalJson({
+        eventType,
+        subject,
+        actor,
+        result,
+        operationId,
+        runId,
+        correlationId,
+        parentEventId,
+        sourceSurface,
+        artifactRefs: normalizeArtifactRefs(artifactRefs),
+        evidence,
+        before,
+        after,
+        claimBoundary,
+        retention,
+        payload,
+      })),
+    });
+    return this.record(eventType, sessionId || runId || `audit:${subject}`, auditPayload, {
+      actor,
+      threadId: threadId || correlationId || runId || `audit:${subject}`,
+      objectId: objectId || subject,
+      invocationId: invocationId || operationId || undefined,
+    });
+  }
+
   _append(envelope) {
     if (!this.ready) return;
     try {
@@ -151,6 +226,14 @@ class EventLedger {
       e.payload?.schema === STATE_EVENT_SCHEMA
       && e.payload?.subject === subject
     ));
+  }
+
+  readAuditEvents() {
+    return this.readAll().filter(e => e.payload?.schema === AUDIT_EVENT_SCHEMA);
+  }
+
+  readAuditChainByRun(runId) {
+    return this.readAuditEvents().filter(e => e.payload?.runId === runId);
   }
 
   projectSubject(subject) {
@@ -196,4 +279,33 @@ function compactObject(obj) {
   return out;
 }
 
-module.exports = { EventLedger, STATE_EVENT_SCHEMA };
+function normalizeArtifactRefs(refs) {
+  if (!Array.isArray(refs)) return [];
+  return refs
+    .filter(Boolean)
+    .map((ref) => {
+      const out = compactObject({
+        role: ref.role || null,
+        path: ref.path ? path.resolve(String(ref.path)) : null,
+        url: ref.url || null,
+        sha256: ref.sha256 || null,
+        bytes: Number.isFinite(ref.bytes) ? ref.bytes : null,
+        canonicalization: ref.canonicalization || null,
+        receiptId: ref.receiptId || null,
+        eventId: ref.eventId || null,
+      });
+      if (!out.sha256 && out.path && fs.existsSync(out.path)) {
+        try {
+          const bytes = fs.readFileSync(out.path);
+          out.sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+          out.bytes = bytes.length;
+          out.canonicalization = out.canonicalization || 'file-bytes.v1';
+        } catch {
+          // Keep the unresolved path; the audit event should show the evidence edge.
+        }
+      }
+      return out;
+    });
+}
+
+module.exports = { EventLedger, STATE_EVENT_SCHEMA, AUDIT_EVENT_SCHEMA };

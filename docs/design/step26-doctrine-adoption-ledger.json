@@ -416,6 +416,29 @@
       ]
     },
     {
+      "id": "audit-events-not-logs",
+      "title": "Audit events reconstruct consequential transitions",
+      "status": "adopted",
+      "sourceIssues": [86],
+      "requirement": "Consequential work must not rely on logs or final summaries as proof. It must emit structured audit events with actor, subject, result, run/correlation IDs, parent event linkage, source surface, artifact references with hashes, evidence boundary, and a replayable causal link to state transitions.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/core/event-ledger.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/core/event-ledger-state.test.js tests/engine/evidence/from-the-inside-publish.test.js"
+        },
+        {
+          "artifact": "engine/src/evidence/from-the-inside-publish.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/core/event-ledger-state.test.js tests/engine/evidence/from-the-inside-publish.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/core/event-ledger.js",
+        "engine/src/evidence/from-the-inside-publish.js",
+        "tests/engine/core/event-ledger-state.test.js",
+        "tests/engine/evidence/from-the-inside-publish.test.js"
+      ]
+    },
+    {
       "id": "phantom-completion-loop-guard",
       "title": "Completed work cannot remain active without integrity drift",
       "status": "adopted",

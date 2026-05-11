@@ -205,7 +205,7 @@ async function verifyFromTheInsidePublish(opts = {}) {
     publicIssueUrl,
   });
   let proofPacketPath = null;
-  if (opts.writeProofPacket) {
+  if (opts.writeProofPacket || opts.writeEventLog) {
     proofPacketPath = opts.proofPacketPath
       ? path.resolve(opts.proofPacketPath)
       : path.join(projectDir, 'receipts', 'publish', `${padded}.proof-packet.json`);
@@ -213,6 +213,7 @@ async function verifyFromTheInsidePublish(opts = {}) {
     fs.writeFileSync(proofPacketPath, `${JSON.stringify(proofPacket, null, 2)}\n`, 'utf8');
   }
 
+  let auditEvent = null;
   let event = null;
   let eventLogPath = null;
   if (opts.writeEventLog) {
@@ -220,6 +221,55 @@ async function verifyFromTheInsidePublish(opts = {}) {
       ? path.resolve(opts.eventLogPath)
       : path.join(projectDir, 'events', 'state-events.jsonl');
     const ledger = new EventLedger(projectDir, { ledgerPath: eventLogPath, logger: opts.logger || null });
+    const auditArtifactRefs = [
+      ...receipt.sourceArtifacts,
+      ...receipt.derivedArtifacts,
+    ];
+    if (receiptPath && fs.existsSync(receiptPath)) {
+      auditArtifactRefs.push(artifactFromPath(receiptPath, { role: 'evidence_receipt' }));
+    }
+    if (proofPacketPath && fs.existsSync(proofPacketPath)) {
+      auditArtifactRefs.push(artifactFromPath(proofPacketPath, { role: 'field_report_proof_packet' }));
+    }
+    auditEvent = ledger.recordAuditEvent({
+      eventType: receipt.result === 'pass'
+        ? 'field_report.issue.published'
+        : 'field_report.issue.publish_verification_failed',
+      subject: `from-the-inside/${padded}`,
+      actor: opts.actor || 'jerry',
+      result: receipt.result,
+      operationId: `publish_issue:${padded}`,
+      runId: `field-report-${padded}`,
+      correlationId: receipt.receiptId,
+      sourceSurface: receipt.sourceSurface,
+      artifactRefs: auditArtifactRefs,
+      evidence: {
+        receiptId: receipt.receiptId,
+        receiptPath,
+        proofPacketPath,
+        proofPacketSha256: proofPacket?.packetSha256 || null,
+        claimLevel: receipt.claimLevel,
+      },
+      claimBoundary: {
+        asserted: [
+          'local source issue JSON checked',
+          'public issue JSON checked',
+          'rendered HTML checked',
+          'homepage/feed/sitemap pointers checked',
+          'next issue state checked',
+        ],
+        notAsserted: opts.checkRemote
+          ? []
+          : ['remote CDN/browser reachability was not checked in this local audit event'],
+      },
+      payload: {
+        issue: issueNumber,
+        title: issue?.title || null,
+        publicIssueUrl,
+        checks: receipt.checks.map((check) => ({ name: check.name, pass: check.pass })),
+      },
+      occurredAt: receipt.createdAt,
+    });
     event = ledger.recordStateTransition({
       eventType: receipt.result === 'pass' ? 'issue.published' : 'issue.publish_verification_failed',
       subject: `from-the-inside/${padded}`,
@@ -235,9 +285,11 @@ async function verifyFromTheInsidePublish(opts = {}) {
         receiptPath,
         result: receipt.result,
         claimLevel: receipt.claimLevel,
+        auditEventId: auditEvent?.event_id || null,
       },
       sourceSurface: receipt.sourceSurface,
       occurredAt: receipt.createdAt,
+      causedBy: auditEvent?.event_id || null,
     });
   }
 
@@ -283,6 +335,7 @@ async function verifyFromTheInsidePublish(opts = {}) {
     indexPath: indexReceiptPath,
     proofPacket,
     proofPacketPath,
+    auditEvent,
     event,
     eventLogPath,
     trustClaim,

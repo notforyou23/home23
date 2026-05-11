@@ -54,3 +54,48 @@ test('EventLedger records replayable state-transition events by subject', () => 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('EventLedger records audit events with causal fields and artifact identities', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-audit-ledger-'));
+  try {
+    const artifactPath = join(dir, 'proof.json');
+    require('node:fs').writeFileSync(artifactPath, '{"ok":true}\n', 'utf8');
+    const ledger = new EventLedger(dir);
+
+    const event = ledger.recordAuditEvent({
+      eventType: 'field_report.issue.published',
+      subject: 'from-the-inside/099',
+      actor: 'jerry',
+      result: 'pass',
+      operationId: 'publish_issue:099',
+      runId: 'field-report-099',
+      correlationId: 'ev_abc',
+      sourceSurface: { type: 'from-the-inside-publish' },
+      artifactRefs: [{ role: 'proof_packet', path: artifactPath }],
+      evidence: { receiptId: 'ev_abc' },
+      claimBoundary: {
+        asserted: ['local publish artifacts match'],
+        notAsserted: ['remote CDN freshness'],
+      },
+      occurredAt: '2026-05-08T12:00:00.000Z',
+    });
+
+    const raw = readFileSync(join(dir, 'event-ledger.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    assert.equal(raw.length, 1);
+    assert.equal(raw[0].event_type, 'field_report.issue.published');
+    assert.equal(raw[0].payload.schema, 'home23.audit-event.v1');
+    assert.equal(raw[0].payload.sourceIssue, 86);
+    assert.equal(raw[0].payload.runId, 'field-report-099');
+    assert.equal(raw[0].payload.correlationId, 'ev_abc');
+    assert.equal(raw[0].payload.artifactRefs[0].role, 'proof_packet');
+    assert.match(raw[0].payload.artifactRefs[0].sha256, /^[a-f0-9]{64}$/);
+    assert.equal(raw[0].payload.claimBoundary.notAsserted[0], 'remote CDN freshness');
+    assert.equal(event.payload.payloadHash.length, 64);
+
+    const chain = ledger.readAuditChainByRun('field-report-099');
+    assert.equal(chain.length, 1);
+    assert.equal(chain[0].payload.subject, 'from-the-inside/099');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
