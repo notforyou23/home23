@@ -13,6 +13,7 @@ const USER_INTERVENTION_REMEDIATORS = new Set([
 const HUMAN_BLOCKER_SOURCE_ISSUES = [5, 17, 19, 21, 25];
 const OPERATOR_HANDOFF_SOURCE_ISSUES = [25, 86, 93, 101];
 const INTERVENTION_READINESS_SOURCE_ISSUES = [88];
+const PUBLISHING_DISTRIBUTION_SOURCE_ISSUES = [43, 44, 45, 46, 47, 50, 51];
 const WORK_REVIEW_GOAL_AGE_MIN = 12 * 60;
 const fs = require('fs');
 const path = require('path');
@@ -1282,6 +1283,132 @@ function buildDoctrineAdoptionSnapshot(ledger = null, { source = null, now = new
   };
 }
 
+function issueRowsByNumber(issueArc = null) {
+  const rows = Array.isArray(issueArc?.rows) ? issueArc.rows : [];
+  return new Map(rows.map((row) => [finiteCount(row?.number), row]).filter(([number]) => number != null));
+}
+
+function adoptedSourceIssueSet(doctrineAdoption = null) {
+  const out = new Set();
+  for (const entry of Array.isArray(doctrineAdoption?.entries) ? doctrineAdoption.entries : []) {
+    if (entry?.status && entry.status !== 'adopted') continue;
+    const receipt = firstImplementationReceipt(entry);
+    if (!receipt) continue;
+    const issues = Array.isArray(entry.sourceIssues)
+      ? entry.sourceIssues
+      : (entry.sourceIssue != null ? [entry.sourceIssue] : []);
+    for (const issue of issues) {
+      const number = finiteCount(issue);
+      if (number != null) out.add(number);
+    }
+  }
+  return out;
+}
+
+function directiveIncludes(row, pattern) {
+  const directives = Array.isArray(row?.directives) ? row.directives : [];
+  return directives.some((directive) => pattern.test(String(directive || '')));
+}
+
+function buildPublishingDistributionReadiness({ issueArc = null, doctrineAdoption = null, sources = {}, now = new Date() } = {}) {
+  const byNumber = issueRowsByNumber(issueArc);
+  const adopted = adoptedSourceIssueSet(doctrineAdoption);
+  const rows = PUBLISHING_DISTRIBUTION_SOURCE_ISSUES
+    .map((issue) => byNumber.get(issue))
+    .filter(Boolean);
+  const missingIssueRows = PUBLISHING_DISTRIBUTION_SOURCE_ISSUES.filter((issue) => !byNumber.has(issue));
+  const missingDoctrine = PUBLISHING_DISTRIBUTION_SOURCE_ISSUES.filter((issue) => !adopted.has(issue));
+  const issue = (number) => byNumber.get(number) || {};
+  const permissionRow = issue(44);
+  const counterRow = issue(51);
+  const fallbackRow = issue(43);
+  const audienceRows = [issue(45), issue(47)].filter((row) => row?.number);
+  const productionRows = [issue(46), issue(50)].filter((row) => row?.number);
+
+  const blockers = [
+    {
+      id: 'public-distribution-permission',
+      status: directiveIncludes(permissionRow, /without asking|permission boundary|do not send/i)
+        ? 'requires_operator_approval'
+        : 'needs_review',
+      sourceIssues: [44],
+      evidence: compactText(permissionRow.directives?.find((text) => /without asking|permission|public posts/i.test(String(text))) || permissionRow.summary || '', 220),
+      nextAction: 'prepare distribution artifacts, but do not send email, tweets, posts, or paid asks until jtr approves the channel and copy.',
+    },
+    {
+      id: 'audience-identity',
+      status: audienceRows.length ? 'needs_audience_receipt' : 'needs_review',
+      sourceIssues: [45, 47],
+      evidence: compactText(audienceRows.map((row) => row.summary || row.title).join(' '), 240),
+      nextAction: 'record target audience, trust reason, and channel fit before judging output value by persuasion quality alone.',
+    },
+    {
+      id: 'production-path',
+      status: productionRows.length ? 'needs_distribution_receipt' : 'needs_review',
+      sourceIssues: [46, 50],
+      evidence: compactText(productionRows.map((row) => row.summary || row.title).join(' '), 240),
+      nextAction: 'distinguish production readiness from production use; require a distribution, subscriber, or analytics receipt before claiming external value.',
+    },
+    {
+      id: 'counter-truth',
+      status: directiveIncludes(counterRow, /test accounts|counter|context/i)
+        ? 'requires_metric_context'
+        : 'needs_review',
+      sourceIssues: [51],
+      evidence: compactText(counterRow.directives?.find((text) => /test accounts|counter|context/i.test(String(text))) || counterRow.summary || '', 220),
+      nextAction: 'counters must separate test/internal subscribers from real external readers before they are used as value evidence.',
+    },
+    {
+      id: 'fallback-draft-pipeline',
+      status: directiveIncludes(fallbackRow, /heartbeat|fallback|source 1 runs dry/i)
+        ? 'needs_heartbeat_monitor'
+        : 'needs_review',
+      sourceIssues: [43],
+      evidence: compactText(fallbackRow.directives?.find((text) => /heartbeat|fallback|source 1 runs dry/i.test(String(text))) || fallbackRow.summary || '', 220),
+      nextAction: 'monitor fallback draft pipelines through heartbeat, but repair them only when primary operational output sources run dry.',
+    },
+  ];
+
+  return {
+    schema: 'home23.publishing-distribution-readiness.v1',
+    generatedAt: new Date(toNowMs(now)).toISOString(),
+    sourceIssues: PUBLISHING_DISTRIBUTION_SOURCE_ISSUES,
+    source: {
+      issueArc: sources.issueArc || null,
+      doctrineAdoption: sources.doctrineAdoption || null,
+    },
+    status: missingIssueRows.length
+      ? 'incomplete_issue_arc'
+      : (missingDoctrine.length ? 'needs_doctrine_adoption' : 'contracted'),
+    autonomousBoundary: 'prepare_only_until_operator_approval',
+    requiresHumanApproval: rows.length > 0,
+    rows: rows.map((row) => ({
+      issue: row.number,
+      title: row.title || '',
+      slug: row.slug || null,
+      directives: Array.isArray(row.directives) ? row.directives.slice(0, 4).map((text) => compactText(text, 220)) : [],
+    })),
+    blockers,
+    missingIssueRows,
+    missingDoctrine,
+    nextOperatorRequest: {
+      schema: 'home23.operator-request.v1',
+      sourceIssues: [44, 46, 50, 51],
+      actionText: 'Approve, defer, or reject public distribution channels before Home23 sends external marketing or subscriber-growth actions.',
+      channel: 'home23-dashboard',
+      deadlineAt: null,
+      staleData: null,
+      lastAutonomousAttempt: 'Issue arc reports prepared distribution strategy and working subscriber infrastructure, but public posting and outreach remain permission-gated.',
+    },
+    valueEvidenceContract: [
+      'public outputs require channel approval before sending',
+      'audience claims require target-audience and trust-context receipts',
+      'subscriber and counter metrics must label test/internal accounts separately from real readers',
+      'production readiness is not production value until distribution or analytics receipts exist',
+    ],
+  };
+}
+
 function buildProjectionProvenance({
   state,
   liveProblems,
@@ -1923,7 +2050,7 @@ function buildOperatorDigest({ brief, liveProblems, work, budget, host, nowMs = 
   };
 }
 
-function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAction, budget, host, nowMs = Date.now() }) {
+function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAction, budget, host, publishingDistribution, nowMs = Date.now() }) {
   const counts = liveProblems?.counts || {};
   const activeCount = Number(counts.open || 0) + Number(counts.chronic || 0);
   const interventionCount = Number(counts.interventionRequired || 0);
@@ -2020,6 +2147,13 @@ function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAc
         || latestResolution.evidence?.result
         || latestResolution.claim
         || '',
+    });
+  }
+  if (publishingDistribution?.requiresHumanApproval) {
+    evidence.push({
+      label: 'Output value',
+      value: publishingDistribution.autonomousBoundary || 'prepare_only_until_operator_approval',
+      detail: publishingDistribution.nextOperatorRequest?.actionText || 'Public distribution requires operator approval.',
     });
   }
 
@@ -2265,6 +2399,12 @@ function buildGoodLifeOperatorModel({
     runtime,
     work,
   });
+  const publishingDistribution = buildPublishingDistributionReadiness({
+    issueArc,
+    doctrineAdoption,
+    sources,
+    now,
+  });
 
   let status = 'current';
   if (!state) status = 'unknown';
@@ -2288,6 +2428,7 @@ function buildGoodLifeOperatorModel({
     runtime,
     consistency,
     interventionReadiness,
+    publishingDistribution,
     provenance: buildProjectionProvenance({
       state,
       liveProblems: directLiveProblems,
@@ -2321,6 +2462,7 @@ function buildGoodLifeOperatorModel({
   });
   model.detail.insights.correctionTombstones = model.provenance.correctionTombstones;
   model.detail.insights.doctrineAdoption = model.provenance.doctrineAdoption;
+  model.detail.insights.publishingDistribution = publishingDistribution;
   model.work = work;
   model.operatorAnswer = buildOperatorAnswer({
     state,
@@ -2363,6 +2505,7 @@ function buildGoodLifeOperatorModel({
     latestAction,
     budget,
     host: state?.evidence?.host || null,
+    publishingDistribution,
     nowMs,
   });
   model.operatorRings = buildOperatorRings({
@@ -2382,4 +2525,5 @@ module.exports = {
   buildLiveProblemSnapshot,
   buildGoodLifeObligationSnapshot,
   buildDoctrineAdoptionSnapshot,
+  buildPublishingDistributionReadiness,
 };

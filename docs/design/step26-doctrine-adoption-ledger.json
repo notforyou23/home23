@@ -420,6 +420,23 @@
       ]
     },
     {
+      "id": "publishing-distribution-readiness-contract",
+      "title": "Publishing value is permission-gated and metric-truth bounded",
+      "status": "adopted",
+      "sourceIssues": [43, 44, 45, 46, 47, 50, 51],
+      "requirement": "When Home23 prepares externally visible output, Good Life must preserve the difference between prepared distribution and approved public sending, carry audience/trust context before judging persuasive value, label internal/test subscriber metrics separately from real readers, and keep fallback draft pipelines on heartbeat instead of silently relying on dead sources.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
       "id": "operator-handoff-packets",
       "title": "Operator handoffs are reusable provenance packets",
       "status": "adopted",

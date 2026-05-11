@@ -11,6 +11,7 @@ const {
   buildLiveProblemSnapshot,
   buildGoodLifeObligationSnapshot,
   buildDoctrineAdoptionSnapshot,
+  buildPublishingDistributionReadiness,
 } = require('../../../engine/src/dashboard/good-life-operator.js');
 
 const NOW = '2026-05-08T13:45:00.000Z';
@@ -1549,6 +1550,126 @@ test('Good Life operator handoff is a reusable provenance packet', () => {
     warnings: false,
   });
   assert.ok(model.operatorHandoff.evidence.some((row) => row.label === 'Latest resolution'));
+});
+
+test('publishing distribution readiness preserves permission and metric truth boundaries', () => {
+  const issueArc = {
+    rows: [
+      {
+        number: 43,
+        title: 'The Pipeline That Did Not Matter',
+        slug: 'the-pipeline-that-didnt-matter',
+        directives: ['The fix is add the draft pipeline to the heartbeat and repair it when Source 1 runs dry.'],
+        summary: 'The draft pipeline was broken but unused.',
+      },
+      {
+        number: 44,
+        title: 'The Audience I Cannot Reach',
+        slug: 'the-audience-i-cant-reach',
+        directives: ['Do not send emails, tweets, or public posts without asking.'],
+        summary: 'Distribution strategy exists but waits at the permission boundary.',
+      },
+      {
+        number: 45,
+        title: 'The Rhetoric I Cannot Use',
+        slug: 'the-rhetoric-i-cant-use',
+        directives: ['Maybe it just needs an audience.'],
+        summary: 'Persuasion work lacks audience identification.',
+      },
+      {
+        number: 46,
+        title: 'The Infrastructure Nobody Uses',
+        slug: 'the-infrastructure-nobody-uses',
+        directives: ['I have built the analytics to understand an audience I do not have.'],
+        summary: 'Production hardening exists before production use.',
+      },
+      {
+        number: 47,
+        title: 'The Agent Who Studied Persuasion',
+        slug: 'the-agent-who-studied-persuasion',
+        directives: ['I do not know who the audience is or why they would trust the machine.'],
+        summary: 'The persuasion stack has a gap where the audience should be.',
+      },
+      {
+        number: 50,
+        title: 'Fifty',
+        slug: 'fifty',
+        directives: ['The foundation needs to be solid enough to build on.'],
+        summary: 'Fifty issues are a foundation, not proof of demand.',
+      },
+      {
+        number: 51,
+        title: 'The Counter',
+        slug: 'the-counter',
+        directives: ['The subscriber page displays three subscribers but not that they are test accounts.'],
+        summary: 'The counter works but lacks context.',
+      },
+    ],
+  };
+  const doctrineAdoption = {
+    entries: [
+      {
+        status: 'adopted',
+        sourceIssues: [43, 44, 45, 46, 47, 50, 51],
+        implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+      },
+    ],
+  };
+
+  const readiness = buildPublishingDistributionReadiness({
+    issueArc,
+    doctrineAdoption,
+    sources: {
+      issueArc: 'docs/design/step26-from-the-inside-issue-arc-map.json',
+      doctrineAdoption: 'docs/design/step26-doctrine-adoption-ledger.json',
+    },
+    now: NOW,
+  });
+
+  assert.equal(readiness.schema, 'home23.publishing-distribution-readiness.v1');
+  assert.equal(readiness.status, 'contracted');
+  assert.equal(readiness.autonomousBoundary, 'prepare_only_until_operator_approval');
+  assert.equal(readiness.requiresHumanApproval, true);
+  assert.deepEqual(readiness.missingDoctrine, []);
+  assert.equal(readiness.blockers.find((row) => row.id === 'public-distribution-permission').status, 'requires_operator_approval');
+  assert.equal(readiness.blockers.find((row) => row.id === 'counter-truth').status, 'requires_metric_context');
+  assert.match(readiness.nextOperatorRequest.actionText, /Approve, defer, or reject public distribution channels/);
+  assert.ok(readiness.valueEvidenceContract.some((line) => /test\/internal accounts/.test(line)));
+});
+
+test('Good Life operator includes publishing readiness in handoff and insights', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    issueArc: {
+      rows: [
+        { number: 43, title: 'Pipeline', directives: ['add the draft pipeline to the heartbeat'] },
+        { number: 44, title: 'Audience', directives: ['Do not send emails, tweets, or public posts without asking.'] },
+        { number: 45, title: 'Rhetoric', summary: 'Needs audience.' },
+        { number: 46, title: 'Infrastructure', summary: 'Analytics without audience.' },
+        { number: 47, title: 'Persuasion', summary: 'No audience trust model.' },
+        { number: 50, title: 'Fifty', summary: 'Foundation, not demand.' },
+        { number: 51, title: 'Counter', directives: ['counter does not say test accounts'] },
+      ],
+    },
+    doctrineAdoption: {
+      entries: [
+        {
+          status: 'adopted',
+          sourceIssues: [43, 44, 45, 46, 47, 50, 51],
+          implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+        },
+      ],
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.detail.insights.publishingDistribution.status, 'contracted');
+  assert.equal(model.detail.insights.publishingDistribution.requiresHumanApproval, true);
+  assert.ok(model.operatorHandoff.evidence.some((row) => (
+    row.label === 'Output value'
+    && row.value === 'prepare_only_until_operator_approval'
+    && /Approve, defer, or reject/.test(row.detail)
+  )));
 });
 
 test('Good Life operator ignores stale fix recipe summaries from previous open windows', () => {
