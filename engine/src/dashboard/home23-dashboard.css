@@ -3354,7 +3354,8 @@ body.h23-external-focus #cosmo23-refresh-btn {
 .h23-goodlife-overlay-panel {
   width: min(1180px, 94vw);
   max-width: 1180px;
-  max-height: 88vh;
+  height: min(900px, 92vh);
+  max-height: 92vh;
 }
 
 .h23-goodlife-overlay-header {
@@ -3397,18 +3398,22 @@ body.h23-external-focus #cosmo23-refresh-btn {
 }
 
 .h23-goodlife-overlay-body {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: minmax(180px, 0.82fr) auto minmax(260px, 1.18fr) auto;
   gap: 12px;
   overflow: hidden;
   padding: 16px 20px;
   flex: 1;
+  min-height: 0;
 }
 
 .h23-goodlife-overlay-top {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .h23-goodlife-top-grid {
@@ -3555,6 +3560,10 @@ body.h23-external-focus #cosmo23-refresh-btn {
   display: flex;
   gap: 7px;
   flex-wrap: wrap;
+  align-content: flex-start;
+  border-top: 1px solid rgba(255,255,255,0.07);
+  border-bottom: 1px solid rgba(255,255,255,0.07);
+  padding: 8px 0;
 }
 
 .h23-goodlife-tab {
@@ -3579,7 +3588,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
   grid-template-columns: minmax(300px, 0.85fr) minmax(0, 1.35fr);
   gap: 12px;
   min-height: 0;
-  flex: 1;
+  overflow: hidden;
 }
 
 .h23-goodlife-overlay-list,
@@ -3734,6 +3743,51 @@ body.h23-external-focus #cosmo23-refresh-btn {
   flex-wrap: wrap;
   gap: 8px;
   margin: 12px 0;
+}
+
+.h23-goodlife-primary-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 12px;
+  border: 1px solid rgba(90,200,250,0.24);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(90,200,250,0.055);
+}
+
+.h23-goodlife-primary-action > div {
+  min-width: 0;
+}
+
+.h23-goodlife-primary-action label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.h23-goodlife-primary-action strong,
+.h23-goodlife-primary-action p,
+.h23-goodlife-primary-action small {
+  display: block;
+  min-width: 0;
+}
+
+.h23-goodlife-primary-action p {
+  margin: 4px 0;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.h23-goodlife-primary-action small {
+  color: var(--text-muted);
+}
+
+.h23-goodlife-primary-action .h23-goodlife-mini-actions {
+  flex: 0 0 auto;
 }
 
 .h23-goodlife-intervention-console {
@@ -3987,21 +4041,31 @@ body.h23-external-focus #cosmo23-refresh-btn {
 
   .h23-goodlife-overlay-panel {
     width: 96vw;
+    height: min(900px, 92vh);
     max-height: 92vh;
   }
 
   .h23-goodlife-overlay-body {
-    overflow-y: auto;
+    grid-template-rows: minmax(180px, 0.7fr) auto minmax(280px, 1.3fr) auto;
+    overflow: hidden;
   }
 
   .h23-goodlife-overlay-workspace {
-    flex: 0 0 auto;
-    overflow: visible;
+    overflow: hidden;
   }
 
   .h23-goodlife-overlay-list,
   .h23-goodlife-overlay-detail {
-    overflow: visible;
+    overflow-y: auto;
+  }
+
+  .h23-goodlife-primary-action {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .h23-goodlife-primary-action .h23-goodlife-mini-actions {
+    justify-content: flex-start;
   }
 }
 

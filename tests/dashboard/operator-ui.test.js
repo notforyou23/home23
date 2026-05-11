@@ -45,6 +45,8 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(js, /Ask \$\{escapeHtml\(workerName\)\} Worker/);
   assert.match(js, /openGoodLifeWorkers/);
   assert.match(js, /Run Engine Check/);
+  assert.match(js, /h23-goodlife-primary-action/);
+  assert.match(js, /Next Action/);
   assert.match(js, /renderGoodLifeRings/);
   assert.match(js, /Good Life three-ring status/);
   assert.match(js, /operatorRings/);
@@ -69,8 +71,14 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(css, /\.h23-goodlife-evidence-row\.info/);
   assert.match(css, /\.h23-goodlife-intervention-console/);
   assert.match(css, /\.h23-goodlife-intervention-grid/);
+  assert.match(css, /\.h23-goodlife-primary-action/);
+  assert.match(css, /\.h23-goodlife-primary-action \.h23-goodlife-mini-actions[\s\S]*flex:\s*0 0 auto/);
   assert.match(css, /\.h23-goodlife-rings/);
   assert.match(css, /\.h23-goodlife-ring\.needs-user/);
+  assert.match(css, /\.h23-goodlife-overlay-body[\s\S]*grid-template-rows:\s*minmax\(180px,\s*0\.82fr\)\s*auto\s*minmax\(260px,\s*1\.18fr\)\s*auto/);
+  assert.match(css, /\.h23-goodlife-overlay-top[\s\S]*overflow-y:\s*auto/);
+  assert.match(css, /\.h23-goodlife-overlay-workspace[\s\S]*overflow:\s*hidden/);
+  assert.match(css, /\.h23-goodlife-overlay-list,\s*\n\.h23-goodlife-overlay-detail[\s\S]*overflow-y:\s*auto/);
   assert.match(css, /\.h23-goodlife-overlay-action-status[\s\S]*pointer-events:\s*none/);
 });
 

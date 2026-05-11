@@ -3724,16 +3724,16 @@ function renderGoodLifeIssueDetail(problem, data) {
         <p>${escapeHtml(problem.state === 'resolved' ? 'verifier is passing' : 'verifier passes or remediation escalates')}</p>
       </div>
     </div>
+    <div class="h23-goodlife-detail-actions">
+      ${needsUser ? `<button class="h23-goodlife-plain-btn" type="button" onclick="recordGoodLifeUserIntervention('${escapeAttr(problem.id)}')">Mark Handled + Re-check</button>` : ''}
+      <button class="h23-goodlife-plain-btn" type="button" onclick="testGoodLifeVerifier('${escapeAttr(problem.id)}')">Test Verifier</button>
+      <button class="h23-goodlife-plain-btn" type="button" onclick="runGoodLifeWorkerCheck('${escapeAttr(problem.id)}')">Run Worker Check</button>
+    </div>
     <div class="h23-goodlife-detail-grid">
       <div><label>Last verifier result</label><p>${escapeHtml(last.detail || 'not checked')}</p><small>${last.at ? escapeHtml(timeSince(new Date(last.at))) : ''}</small></div>
       <div><label>Lifecycle</label><p>${escapeHtml(problem.escalated ? 'escalated' : 'normal')} - step ${Number(problem.stepIndex || 0)} / ${(problem.remediation || []).length}</p><small>${problem.openedAt ? `opened ${escapeHtml(timeSince(new Date(problem.openedAt)))}` : ''}</small></div>
       <div><label>Next remediation</label><p>${escapeHtml(next.type || 'none')}</p><small>${escapeHtml(next.text || '')}</small></div>
       <div><label>User intervention</label><p>${needsUser ? 'needed' : 'not needed yet'}</p><small>${needsUser ? 'Home23 has reached a notify/manual step' : 'autonomous remediation can continue'}</small></div>
-    </div>
-    <div class="h23-goodlife-detail-actions">
-      ${needsUser ? `<button class="h23-goodlife-plain-btn" type="button" onclick="recordGoodLifeUserIntervention('${escapeAttr(problem.id)}')">Mark Handled + Re-check</button>` : ''}
-      <button class="h23-goodlife-plain-btn" type="button" onclick="testGoodLifeVerifier('${escapeAttr(problem.id)}')">Test Verifier</button>
-      <button class="h23-goodlife-plain-btn" type="button" onclick="runGoodLifeWorkerCheck('${escapeAttr(problem.id)}')">Run Worker Check</button>
     </div>
     ${renderGoodLifeIssueInterventionConsole(problem)}
     <section><h4>Verifier</h4>${renderGoodLifeJson(problem.verifier)}</section>
@@ -3852,8 +3852,18 @@ function renderGoodLifeWorkDetail(data) {
   const goalArtifact = (goal) => goal?.artifact?.relativePath
     ? `<p><strong>Artifact:</strong> ${escapeHtml(goal.artifact.exists ? 'ready' : 'pending')} - ${escapeHtml(goal.artifact.relativePath)}${goal.artifact.exists && goal.artifact.path ? ` <code>${escapeHtml(goal.artifact.path)}</code>` : ''}</p>`
     : '';
+  const primaryAgenda = agenda[0] || null;
   return `
     <h3>Current Work</h3>
+    ${primaryAgenda ? `<div class="h23-goodlife-primary-action">
+      <div>
+        <label>Next Action</label>
+        <strong>${escapeHtml(primaryAgenda.id || 'agenda')}</strong>
+        <p>${escapeHtml(primaryAgenda.content || '')}</p>
+        <small>${escapeHtml(agendaMeta(primaryAgenda))}</small>
+      </div>
+      ${agendaActions(primaryAgenda)}
+    </div>` : ''}
     <div class="h23-goodlife-detail-grid">
       <div><label>Intent</label><p>${escapeHtml(card.intent || operator.policy?.mode || 'unknown')}</p></div>
       <div><label>Stop Condition</label><p>${escapeHtml(card.stopCondition || 'not recorded')}</p></div>
