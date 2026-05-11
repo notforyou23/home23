@@ -7,7 +7,9 @@
 
 'use strict';
 
-import { classifyObservationAttention } from '../attention/attention-policy.js';
+import attentionPolicy from '../attention/attention-policy.cjs';
+
+const { classifyObservationAttention } = attentionPolicy;
 
 export class BridgeChatPublisher {
   constructor({ salienceThreshold = 0.75, sender, ledger, logger } = {}) {

@@ -29,7 +29,7 @@ function readPayload(obs) {
   return obs.payload && typeof obs.payload === 'object' ? obs.payload : {};
 }
 
-export function classifyAttentionRequest(input = {}) {
+function classifyAttentionRequest(input = {}) {
   const payload = input.payload && typeof input.payload === 'object' ? input.payload : input;
   const explicitMode = normalizeMode(
     payload.attentionMode
@@ -65,14 +65,21 @@ export function classifyAttentionRequest(input = {}) {
   return { mode: 'ambient', reason: 'routine_observation' };
 }
 
-export function classifyObservationAttention(obs = {}) {
+function classifyObservationAttention(obs = {}) {
+  const payload = readPayload(obs);
   return classifyAttentionRequest({
-    ...readPayload(obs),
-    payload: readPayload(obs),
-    severity: readPayload(obs).severity,
+    ...payload,
+    payload,
+    severity: payload.severity,
   });
 }
 
-export function shouldInterrupt(obs = {}) {
+function shouldInterrupt(obs = {}) {
   return classifyObservationAttention(obs).mode === 'interruptive';
 }
+
+module.exports = {
+  classifyAttentionRequest,
+  classifyObservationAttention,
+  shouldInterrupt,
+};

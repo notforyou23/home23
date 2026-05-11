@@ -536,12 +536,12 @@
       "requirement": "New data streams must be evaluated by attention cost: normal telemetry belongs on ambient surfaces, while bridge-chat or alert-style publication is reserved for action-required anomalies, exhausted automation, or explicit user intervention.",
       "implementationReceipts": [
         {
-          "artifact": "engine/src/attention/attention-policy.js",
+          "artifact": "engine/src/attention/attention-policy.cjs",
           "verifier": "node --test --test-concurrency=1 tests/engine/attention/attention-policy.test.js tests/engine/publish/bridge-chat-publisher.test.js"
         }
       ],
       "doctrineFiles": [
-        "engine/src/attention/attention-policy.js",
+        "engine/src/attention/attention-policy.cjs",
         "engine/src/publish/bridge-chat-publisher.js",
         "tests/engine/attention/attention-policy.test.js",
         "tests/engine/publish/bridge-chat-publisher.test.js"

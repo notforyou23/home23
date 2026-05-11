@@ -4,7 +4,7 @@ import {
   classifyAttentionRequest,
   classifyObservationAttention,
   shouldInterrupt,
-} from '../../../engine/src/attention/attention-policy.js';
+} from '../../../engine/src/attention/attention-policy.cjs';
 
 test('attention policy keeps routine telemetry ambient', () => {
   const decision = classifyAttentionRequest({
