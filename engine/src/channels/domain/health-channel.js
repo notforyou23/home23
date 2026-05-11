@@ -28,6 +28,22 @@ function newestMetricDate(metrics) {
   return { newest, metricDates };
 }
 
+function buildInterpretationPosture({ semanticStale, metricDates }) {
+  return {
+    schema: 'home23.health.interpretation-posture.v1',
+    sourceIssues: [83, 84],
+    actionPosture: 'context_only',
+    boundary: 'Health metrics are context signals, not a red-green readiness tile or direct instruction about what jtr should do.',
+    hrv: {
+      role: 'adaptive_capacity_shadow',
+      forbiddenUse: 'readiness_command',
+      posture: semanticStale ? 'historical_only' : 'fresh_context',
+      metricDate: metricDates.heartRateVariability || null,
+      note: 'HRV can suggest adaptation room, but it cannot explain the whole body or authorize action by itself.',
+    },
+  };
+}
+
 export class HealthChannel extends TailChannel {
   constructor({ path, id = 'domain.health' }) {
     super({ id, class: ChannelClass.DOMAIN, path });
@@ -60,6 +76,10 @@ export class HealthChannel extends TailChannel {
       healthDataAgeDays: obj.health_data_age_days ?? dataAgeDays,
       semanticStale: obj.semantic_stale ?? semanticStale,
     };
+    payload.interpretationPosture = buildInterpretationPosture({
+      semanticStale: payload.semanticStale,
+      metricDates,
+    });
     return { payload, sourceRef: `health:${obj.ts}`, producedAt: obj.ts };
   }
 

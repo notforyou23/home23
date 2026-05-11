@@ -29,6 +29,10 @@ test('HealthChannel extracts nested metrics into flat payload', async () => {
   assert.equal(out[0].payload.sleepMin, 502.99);
   assert.equal(out[0].payload.vo2, 31.04);
   assert.equal(out[0].payload.semanticStale, false);
+  assert.equal(out[0].payload.interpretationPosture.hrv.role, 'adaptive_capacity_shadow');
+  assert.equal(out[0].payload.interpretationPosture.hrv.forbiddenUse, 'readiness_command');
+  assert.equal(out[0].payload.interpretationPosture.actionPosture, 'context_only');
+  assert.match(out[0].payload.interpretationPosture.boundary, /not a red-green readiness tile/);
   assert.equal(out[0].flag, 'COLLECTED');
 });
 

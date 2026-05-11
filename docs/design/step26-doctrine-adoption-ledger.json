@@ -211,6 +211,23 @@
         "tests/scheduler/cron.test.ts",
         "package.json"
       ]
+    },
+    {
+      "id": "health-signal-humility",
+      "title": "Health signals are context, not readiness commands",
+      "status": "adopted",
+      "sourceIssues": [83, 84],
+      "requirement": "Health observations, especially HRV, must carry humility: they are contextual signals about adaptation room, not red-green readiness tiles or direct instructions.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/domain/health-channel.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/domain/health-channel.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/domain/health-channel.js",
+        "tests/engine/channels/domain/health-channel.test.js"
+      ]
     }
   ]
 }
