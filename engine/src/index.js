@@ -881,12 +881,14 @@ async function main() {
       const { DiskChannel }    = await import('./channels/machine/disk-channel.js');
       const { ProcessChannel } = await import('./channels/machine/process-channel.js');
       const { SwapChannel }    = await import('./channels/machine/swap-channel.js');
+      const { RfChannel }      = await import('./channels/machine/rf-channel.js');
       channelBus.register(new CpuChannel({ intervalMs: 30 * 1000 }));
       channelBus.register(new MemoryChannel({ intervalMs: 30 * 1000 }));
       channelBus.register(new DiskChannel({ intervalMs: 5 * 60 * 1000 }));
       channelBus.register(new ProcessChannel({ intervalMs: 60 * 1000 }));
       channelBus.register(new SwapChannel({ intervalMs: 60 * 1000 }));
-      registered.push('machine.cpu', 'machine.memory', 'machine.disk', 'machine.process', 'machine.swap');
+      channelBus.register(new RfChannel({ intervalMs: 5 * 60 * 1000 }));
+      registered.push('machine.cpu', 'machine.memory', 'machine.disk', 'machine.process', 'machine.swap', 'machine.rf');
     }
     const osCfg = osEngineCfg?.channels?.os;
     if (osCfg?.enabled) {

@@ -623,6 +623,24 @@
         "engine/src/dashboard/server.js",
         "tests/engine/dashboard/home23-tiles.test.js"
       ]
+    },
+    {
+      "id": "rf-substrate-measurement-channel",
+      "title": "Home transport is measured as physical substrate, not assumed abstractly healthy",
+      "status": "adopted",
+      "sourceIssues": [81],
+      "requirement": "Home23 must record RF and default-route evidence before treating bridge, tile, mDNS, Tailscale, or local API drift as a pure software bug: interface, Wi-Fi RSSI/noise/SNR, channel, and route facts become machine-channel telemetry with degraded substrate crystallization.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/machine/rf-channel.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/machine/rf-channel.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/machine/rf-channel.js",
+        "engine/src/index.js",
+        "tests/engine/channels/machine/rf-channel.test.js"
+      ]
     }
   ]
 }
