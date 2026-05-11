@@ -49,6 +49,9 @@ function classifyMemorySource(obs = {}, draft = {}) {
   const hasText = (...needles) => needles.some((needle) => (
     channelId.includes(needle) || sourceRef.includes(needle) || payloadText.includes(needle)
   ));
+  const hasAffectLanguage = hasTag('affect', 'emotion', 'mood', 'psychology', 'interior-state', 'interior_state')
+    || hasText('anxious', 'overwhelmed', 'depressed', 'angry', 'sad', 'happy', 'stressed', 'burned out', 'burnt out', 'interior state');
+  const isOperationalTelemetry = hasText('cpu', 'machine.', 'domain.good-life', 'good-life', 'memory pressure', 'swap', 'process:', 'host');
 
   if (obs.flag === 'ZERO_CONTEXT' || method === 'zero_context_audit' || hasTag('low-provenance', 'low_provenance')) {
     return {
@@ -56,6 +59,16 @@ function classifyMemorySource(obs = {}, draft = {}) {
       memory_role: 'orientation_only',
       action_posture: 'do_not_promote_to_doctrine',
       doctrine_eligible: false,
+    };
+  }
+
+  if (hasAffectLanguage && isOperationalTelemetry) {
+    return {
+      source_class: 'affect_inference',
+      memory_role: 'metaphor_or_interpretation',
+      action_posture: 'do_not_treat_as_personal_fact',
+      doctrine_eligible: false,
+      boundary: "Operational telemetry and metaphor cannot infer jtr's interior state.",
     };
   }
 

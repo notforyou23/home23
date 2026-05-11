@@ -262,6 +262,23 @@
         "engine/src/trust/trust-kernel.js",
         "tests/engine/trust/trust-kernel.test.js"
       ]
+    },
+    {
+      "id": "affect-memory-rails",
+      "title": "Affect-shaped memory cannot become personal fact",
+      "status": "adopted",
+      "sourceIssues": [95],
+      "requirement": "Emotion-shaped or interior-state language from telemetry must be treated as metaphor or interpretation, not as knowledge of jtr's interior state.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/memory-ingest.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/memory-ingest.cjs",
+        "tests/engine/channels/memory-ingest.test.js"
+      ]
     }
   ]
 }

@@ -97,6 +97,36 @@ test('MemoryIngest classifies source role and doctrine posture before reuse', as
   assert.equal(lowProvenance.provenance.doctrine_eligible, false);
 });
 
+test('MemoryIngest prevents affect-shaped telemetry from becoming personal fact', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mi-affect-rails-'));
+  const ingest = new MemoryIngest({ brainDir: dir });
+
+  const mo = await ingest.writeFromObservation({
+    channelId: 'machine.process',
+    sourceRef: 'process:cpu-pressure',
+    receivedAt: '2026-05-11T15:00:00Z',
+    producedAt: '2026-05-11T15:00:00Z',
+    flag: 'COLLECTED',
+    confidence: 0.95,
+    payload: {
+      summary: 'CPU pressure shows jtr is anxious and overwhelmed',
+      cpuPct: 91,
+    },
+    verifierId: 'os:ps-top-cpu',
+  }, {
+    method: 'sensor_primary',
+    type: 'observation',
+    topic: 'machine',
+    tags: ['machine', 'cpu', 'affect'],
+  });
+
+  assert.equal(mo.provenance.source_class, 'affect_inference');
+  assert.equal(mo.provenance.memory_role, 'metaphor_or_interpretation');
+  assert.equal(mo.provenance.action_posture, 'do_not_treat_as_personal_fact');
+  assert.equal(mo.provenance.doctrine_eligible, false);
+  assert.match(mo.provenance.boundary, /cannot infer jtr's interior state/);
+});
+
 test('MemoryIngest dedupes by {channelId, sourceRef} — same ref updates not duplicates', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mi-dedupe-'));
   const ingest = new MemoryIngest({ brainDir: dir });
