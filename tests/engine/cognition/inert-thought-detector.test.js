@@ -8,6 +8,7 @@ const {
   hasHallucinatedToolCall,
   isBareActionOnlyThought,
   isBareToolCommandText,
+  isRestlessStimulationLoop,
   isToolPlanWithoutResult,
 } = require('../../../engine/src/cognition/hallucinated-tool-call-detector.js');
 
@@ -37,4 +38,16 @@ test('classifyInertThought keeps grounded tool-result summaries', () => {
 
 test('classifyInertThought keeps real action payloads', () => {
   assert.equal(classifyInertThought('INVESTIGATE The transport sampler has failed five times; inspect the collector logs and compare the last successful timestamp.'), null);
+});
+
+test('classifyInertThought rejects restless stimulation loops', () => {
+  const text = 'The query returned thin results, so I should run the same query again and generate another check. It feels like action even though nothing is landing.';
+  assert.equal(isRestlessStimulationLoop(text), true);
+  assert.equal(classifyInertThought(text), 'restless_stimulation_loop');
+});
+
+test('classifyInertThought keeps boredom signals that choose rest or target acquisition', () => {
+  const text = 'The current thread has thin results, so the better target is genuine rest and fresh context before querying again.';
+  assert.equal(isRestlessStimulationLoop(text), false);
+  assert.equal(classifyInertThought(text), null);
 });

@@ -546,6 +546,23 @@
         "tests/engine/attention/attention-policy.test.js",
         "tests/engine/publish/bridge-chat-publisher.test.js"
       ]
+    },
+    {
+      "id": "boredom-signal-restless-loop-filter",
+      "title": "Boredom signals should route to rest or better targets, not tool-call scrolling",
+      "status": "adopted",
+      "sourceIssues": [77],
+      "requirement": "When the cognition loop describes thin results, idle-cycle restlessness, or repeated querying as action, it should treat that as an inert stimulation loop unless the thought explicitly chooses rest, waiting, drift, or better target acquisition.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/cognition/hallucinated-tool-call-detector.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/cognition/inert-thought-detector.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/cognition/hallucinated-tool-call-detector.js",
+        "tests/engine/cognition/inert-thought-detector.test.js"
+      ]
     }
   ]
 }

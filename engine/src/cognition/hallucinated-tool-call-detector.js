@@ -23,6 +23,8 @@ const KNOWN_CYCLE_TOOLS = [
 const ACTION_ONLY_PATTERN = /^(?:INVESTIGATE|NOTIFY|TRIGGER|OBSERVE|NO_ACTION|ACT)$/i;
 const TOOL_RESULT_PATTERN = /\b(returned|returns|reports|reported|shows|showed|reads|read|found|current state|state reads|heartbeat shows|live problems returned|no current|no active)\b/i;
 const TOOL_PLAN_PATTERN = /\b(i will|i'll|i am going to|i'm going to|i need to|let me|tool calls?|calling|call fresh|use fresh|using fresh|after receiving tool results|without fresh tool access)\b/i;
+const RESTLESS_STIMULATION_PATTERN = /\b(bored|boredom|restless|idle cycle|idle cycles|nothing (?:is )?landing|thin results|no interesting results|same query again|running (?:the )?same query|routine quer(?:y|ies)|tool calls? to feel productive|feels like action|scroll(?:ing)? equivalent|more stimulation)\b/i;
+const TARGET_ACQUISITION_PATTERN = /\b(rest|wait|drift|better target|target acquisition|fresh context|put it down|come back|re-engage|genuine engagement|genuine rest|discard the thread)\b/i;
 
 // Count occurrences — useful for "how hallucinogenic is this output?"
 function countHallucinatedToolCalls(text) {
@@ -42,6 +44,7 @@ function classifyInertThought(text) {
   if (isBareActionOnlyThought(text)) return 'bare_action_tag';
   if (isBareToolCommandText(text)) return 'bare_tool_command';
   if (isToolPlanWithoutResult(text)) return 'tool_plan_without_result';
+  if (isRestlessStimulationLoop(text)) return 'restless_stimulation_loop';
   return null;
 }
 
@@ -68,6 +71,14 @@ function isToolPlanWithoutResult(text) {
   return TOOL_PLAN_PATTERN.test(s);
 }
 
+function isRestlessStimulationLoop(text) {
+  const s = String(text || '');
+  if (!RESTLESS_STIMULATION_PATTERN.test(s)) return false;
+  if (TARGET_ACQUISITION_PATTERN.test(s)) return false;
+  const mentionsToolOrQuery = /\b(query|queries|tool calls?|brain|check|run|generate|refresh|stimulat(?:e|ion))\b/i.test(s);
+  return mentionsToolOrQuery;
+}
+
 function normalizeToolText(text) {
   return String(text || '')
     .toLowerCase()
@@ -86,5 +97,6 @@ module.exports = {
   isBareActionOnlyThought,
   isBareToolCommandText,
   isToolPlanWithoutResult,
+  isRestlessStimulationLoop,
   TOOL_CALL_PATTERN,
 };
