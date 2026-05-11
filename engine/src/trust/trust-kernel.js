@@ -141,6 +141,7 @@ class TrustKernel {
     if (isConsequential(claim) && !hasVerifiedReceipt) {
       reasons.push('consequential_claim_requires_verified_receipt');
     }
+    reasons.push(...analogyDisciplineReasons(claim));
     if (claim.privacyClass === 'sensitive' && claim.scope === 'public_artifact') {
       reasons.push('sensitive_claim_cannot_be_public_artifact');
     }
@@ -151,6 +152,9 @@ class TrustKernel {
       'freshness_ttl_expired',
       'claim_conflict_detected',
       'sensitive_claim_cannot_be_public_artifact',
+      'analogy_requires_structural_mapping',
+      'analogy_requires_mechanism',
+      'analogy_requires_falsifiable_predictions',
     ]);
     const safeToInherit = reasons.every((reason) => !blockers.has(reason));
 
@@ -223,11 +227,40 @@ function normalizeClaim(claim = {}) {
     actionPosture: String(claim.actionPosture || inferActionPosture(claim)),
     privacyClass: String(claim.privacyClass || 'operational_internal'),
     verifier: claim.verifier || null,
+    analogy: normalizeAnalogy(claim.analogy),
     status: claim.status || TRUST_STATUSES.CANDIDATE_CLAIM,
     supersedes: claim.supersedes || null,
     contradicts: claim.contradicts || null,
   });
   return normalized;
+}
+
+function normalizeAnalogy(analogy) {
+  if (!analogy || typeof analogy !== 'object') return null;
+  return compactObject({
+    sourceDomain: analogy.sourceDomain ? String(analogy.sourceDomain) : null,
+    targetDomain: analogy.targetDomain ? String(analogy.targetDomain) : null,
+    structuralMapping: Array.isArray(analogy.structuralMapping) ? analogy.structuralMapping : [],
+    mechanism: analogy.mechanism ? String(analogy.mechanism) : null,
+    falsifiablePredictions: Array.isArray(analogy.falsifiablePredictions) ? analogy.falsifiablePredictions.map(String).filter(Boolean) : [],
+    limits: Array.isArray(analogy.limits) ? analogy.limits.map(String).filter(Boolean) : [],
+  });
+}
+
+function analogyDisciplineReasons(claim = {}) {
+  if (claim.type !== 'analogy_hypothesis') return [];
+  const analogy = claim.analogy || {};
+  const reasons = [];
+  if (!Array.isArray(analogy.structuralMapping) || analogy.structuralMapping.length === 0) {
+    reasons.push('analogy_requires_structural_mapping');
+  }
+  if (!analogy.mechanism) {
+    reasons.push('analogy_requires_mechanism');
+  }
+  if (!Array.isArray(analogy.falsifiablePredictions) || analogy.falsifiablePredictions.length === 0) {
+    reasons.push('analogy_requires_falsifiable_predictions');
+  }
+  return reasons;
 }
 
 function buildClaimId(claim) {
@@ -352,6 +385,7 @@ function recommendedAction(reasons) {
   if (reasons.includes('claim_conflict_detected')) return 'write_reconciliation_receipt';
   if (reasons.includes('freshness_ttl_expired')) return 'refresh_claim_verification';
   if (reasons.includes('sensitive_claim_cannot_be_public_artifact')) return 'redact_or_reclassify_claim';
+  if (reasons.some((reason) => reason.startsWith('analogy_requires_'))) return 'refine_analogy_hypothesis';
   if (reasons.includes('consequential_claim_requires_verified_receipt')) return 'run_or_attach_verifier_receipt';
   if (reasons.includes('claim_not_verified')) return 'run_or_attach_verifier_receipt';
   return null;

@@ -267,3 +267,80 @@ test('TrustKernel lets user corrections outrank inherited assumptions without er
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('TrustKernel blocks analogy claims that lack structural hypothesis discipline', () => {
+  const { dir, kernel } = tempKernel();
+  try {
+    kernel.recordClaim({
+      id: 'analogy.house.low-pass-filter',
+      type: 'analogy_hypothesis',
+      subject: 'house-as-low-pass-filter',
+      predicate: 'structural_correspondence',
+      value: true,
+      actor: 'jerry',
+      observedAt: '2026-05-11T16:00:00.000Z',
+      scope: 'autonomous_action',
+      privacyClass: 'operational_internal',
+      status: 'candidate_claim',
+      analogy: {
+        sourceDomain: 'electronic low-pass filter',
+        targetDomain: 'house pressure envelope',
+      },
+    });
+
+    const explanation = kernel.explain('analogy.house.low-pass-filter', {
+      now: '2026-05-11T16:01:00.000Z',
+    });
+
+    assert.equal(explanation.safeToInherit, false);
+    assert.ok(explanation.reasons.includes('analogy_requires_structural_mapping'));
+    assert.ok(explanation.reasons.includes('analogy_requires_mechanism'));
+    assert.ok(explanation.reasons.includes('analogy_requires_falsifiable_predictions'));
+    assert.equal(explanation.recommendedAction, 'refine_analogy_hypothesis');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('TrustKernel can inherit verified analogy hypotheses with mapping, mechanism, and predictions', () => {
+  const { dir, kernel } = tempKernel();
+  try {
+    kernel.recordVerifiedClaim({
+      claim: {
+        id: 'analogy.house.low-pass-filter',
+        type: 'analogy_hypothesis',
+        subject: 'house-as-low-pass-filter',
+        predicate: 'structural_correspondence',
+        value: true,
+        actor: 'jerry',
+        observedAt: '2026-05-11T16:00:00.000Z',
+        scope: 'autonomous_action',
+        privacyClass: 'operational_internal',
+        analogy: {
+          sourceDomain: 'electronic low-pass filter',
+          targetDomain: 'house pressure envelope',
+          structuralMapping: [
+            { source: 'attenuates high-frequency signal', target: 'damps rapid pressure fluctuations' },
+          ],
+          mechanism: 'building envelope air exchange delays rapid outside pressure changes',
+          falsifiablePredictions: [
+            'rapid outside pressure changes should appear damped or delayed in the indoor pressure log',
+          ],
+        },
+      },
+      receipt: passReceipt('analogy/house-low-pass-filter'),
+      receiptPath: join(dir, 'analogy.evidence.json'),
+    });
+
+    const explanation = kernel.explain('analogy.house.low-pass-filter', {
+      now: '2026-05-11T16:01:00.000Z',
+    });
+
+    assert.equal(explanation.status, 'known_verified');
+    assert.equal(explanation.safeToInherit, true);
+    assert.deepEqual(explanation.claim.sourceIssues, undefined);
+    assert.equal(explanation.claim.analogy.falsifiablePredictions.length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

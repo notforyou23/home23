@@ -493,6 +493,23 @@
         "tests/engine/analyzers/pressure-house-dynamics.test.js",
         "config/cron-jobs.json"
       ]
+    },
+    {
+      "id": "analogy-hypothesis-trust-gate",
+      "title": "Analogies must carry structural mapping, mechanism, and falsifiable predictions before inheritance",
+      "status": "adopted",
+      "sourceIssues": [74],
+      "requirement": "Analogies and metaphors may be useful working language, but they must be treated as provisional hypotheses; an analogy claim cannot safely steer action unless it specifies the structural mapping, mechanism, and falsifiable predictions.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/trust/trust-kernel.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/trust/trust-kernel.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/trust/trust-kernel.js",
+        "tests/engine/trust/trust-kernel.test.js"
+      ]
     }
   ]
 }
