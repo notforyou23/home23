@@ -570,6 +570,33 @@
       ]
     },
     {
+      "id": "autostudy-canonical-topic-identity",
+      "title": "Autostudy state carries canonical topic identity",
+      "status": "adopted",
+      "sourceIssues": [53, 54, 66],
+      "requirement": "The From The Inside study loop must compare completed topics by canonical slug, not raw title text, and manual progress must update a state surface that preserves topic, slug, issue, and completion identity for future cycles.",
+      "implementationReceipts": [
+        {
+          "artifact": "scripts/from-the-inside-state.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/scripts/from-the-inside-state.test.cjs"
+        },
+        {
+          "artifact": "instances/jerry/projects/from-the-inside/bin/run-cycle.sh",
+          "verifier": "bash -n instances/jerry/projects/from-the-inside/bin/run-cycle.sh"
+        },
+        {
+          "artifact": "instances/jerry/projects/from-the-inside/curriculum/autostudy/STATE.json",
+          "verifier": "node scripts/from-the-inside-state.cjs --state instances/jerry/projects/from-the-inside/curriculum/autostudy/STATE.json --check"
+        }
+      ],
+      "doctrineFiles": [
+        "scripts/from-the-inside-state.cjs",
+        "tests/scripts/from-the-inside-state.test.cjs",
+        "instances/jerry/projects/from-the-inside/bin/run-cycle.sh",
+        "instances/jerry/projects/from-the-inside/curriculum/autostudy/STATE.json"
+      ]
+    },
+    {
       "id": "memory-activation-posture-receipts",
       "title": "Contextual amnesia becomes a visible retrieval posture",
       "status": "adopted",
