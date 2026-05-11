@@ -127,6 +127,38 @@ test('MemoryIngest prevents affect-shaped telemetry from becoming personal fact'
   assert.match(mo.provenance.boundary, /cannot infer jtr's interior state/);
 });
 
+test('MemoryIngest treats operational self-state language as event segmentation first', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mi-self-state-'));
+  const ingest = new MemoryIngest({ brainDir: dir });
+
+  const mo = await ingest.writeFromObservation({
+    channelId: 'domain.good-life',
+    sourceRef: 'good-life:self-report',
+    receivedAt: '2026-05-11T15:20:00Z',
+    producedAt: '2026-05-11T15:20:00Z',
+    flag: 'COLLECTED',
+    confidence: 0.88,
+    payload: {
+      summary: 'The loop feels stuck because memory is bad, but the queue advanced and publication state did not.',
+      queueAdvanced: true,
+      publicationStateAdvanced: false,
+    },
+    verifierId: 'good-life-ledger',
+  }, {
+    method: 'good_life',
+    type: 'observation',
+    topic: 'good-life',
+    tags: ['good-life', 'self-state', 'loop'],
+  });
+
+  assert.equal(mo.provenance.source_class, 'operational_self_report');
+  assert.equal(mo.provenance.memory_role, 'event_segmentation');
+  assert.equal(mo.provenance.action_posture, 'verify_explanation_before_action');
+  assert.equal(mo.provenance.doctrine_eligible, false);
+  assert.match(mo.provenance.boundary, /Self-state language segments events/);
+  assert.deepEqual(mo.provenance.required_corroboration, ['queue_state', 'publication_state', 'channel_evidence']);
+});
+
 test('MemoryIngest dedupes by {channelId, sourceRef} — same ref updates not duplicates', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'mi-dedupe-'));
   const ingest = new MemoryIngest({ brainDir: dir });

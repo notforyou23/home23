@@ -52,6 +52,8 @@ function classifyMemorySource(obs = {}, draft = {}) {
   const hasAffectLanguage = hasTag('affect', 'emotion', 'mood', 'psychology', 'interior-state', 'interior_state')
     || hasText('anxious', 'overwhelmed', 'depressed', 'angry', 'sad', 'happy', 'stressed', 'burned out', 'burnt out', 'interior state');
   const isOperationalTelemetry = hasText('cpu', 'machine.', 'domain.good-life', 'good-life', 'memory pressure', 'swap', 'process:', 'host');
+  const hasSelfStateLanguage = hasTag('self-state', 'self_state', 'loop', 'first-person', 'first_person')
+    || hasText('feels stuck', 'feel stuck', 'retrieval feels', 'loop feels', 'my state', 'own state', 'inside view');
 
   if (obs.flag === 'ZERO_CONTEXT' || method === 'zero_context_audit' || hasTag('low-provenance', 'low_provenance')) {
     return {
@@ -69,6 +71,17 @@ function classifyMemorySource(obs = {}, draft = {}) {
       action_posture: 'do_not_treat_as_personal_fact',
       doctrine_eligible: false,
       boundary: "Operational telemetry and metaphor cannot infer jtr's interior state.",
+    };
+  }
+
+  if (hasSelfStateLanguage && isOperationalTelemetry) {
+    return {
+      source_class: 'operational_self_report',
+      memory_role: 'event_segmentation',
+      action_posture: 'verify_explanation_before_action',
+      doctrine_eligible: false,
+      boundary: 'Self-state language segments events; it does not explain cause until corroborated by channel evidence.',
+      required_corroboration: ['queue_state', 'publication_state', 'channel_evidence'],
     };
   }
 
