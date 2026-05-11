@@ -23,6 +23,52 @@
       ]
     },
     {
+      "id": "autonomy-substrate-posture",
+      "title": "Always-on local runtime and model dependency are explicit autonomy substrate",
+      "status": "adopted",
+      "sourceIssues": [1, 3],
+      "requirement": "Home23 must expose that its product identity depends on an always-on home-hosted runtime, and must distinguish configured local model capability from external provider or billing dependency before claiming full autonomy.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js"
+        },
+        {
+          "artifact": "engine/src/dashboard/server.js",
+          "verifier": "curl -s http://localhost:5002/api/good-life"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/dashboard/server.js",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
+      "id": "memory-loss-save-safety",
+      "title": "Automated memory loss is catastrophic drift, not routine compaction",
+      "status": "adopted",
+      "sourceIssues": [2],
+      "requirement": "A process that would erase or massively shrink memory must fail closed, and current-state anchors plus resolution receipts must make memory inheritance temporal instead of pretending old or missing memory is current.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/core/brain-persistence-guard.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/core/brain-persistence-guard.test.js tests/engine/memory/network-memory-temporal.test.js"
+        },
+        {
+          "artifact": "engine/src/core/orchestrator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/core/brain-persistence-guard.test.js tests/engine/memory/network-memory-temporal.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/core/brain-persistence-guard.js",
+        "engine/src/core/orchestrator.js",
+        "engine/src/memory/network-memory.js",
+        "tests/engine/core/brain-persistence-guard.test.js",
+        "tests/engine/memory/network-memory-temporal.test.js"
+      ]
+    },
+    {
       "id": "projection-provenance",
       "title": "Projection provenance before inheritance",
       "status": "adopted",

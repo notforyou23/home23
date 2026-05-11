@@ -15,6 +15,7 @@ const OPERATOR_HANDOFF_SOURCE_ISSUES = [25, 86, 93, 101];
 const INTERVENTION_READINESS_SOURCE_ISSUES = [88];
 const PUBLISHING_DISTRIBUTION_SOURCE_ISSUES = [43, 44, 45, 46, 47, 50, 51];
 const RUNTIME_MAINTENANCE_SOURCE_ISSUES = [48, 49];
+const AUTONOMY_SUBSTRATE_SOURCE_ISSUES = [1, 3];
 const WORK_REVIEW_GOAL_AGE_MIN = 12 * 60;
 const fs = require('fs');
 const path = require('path');
@@ -1498,6 +1499,114 @@ function buildRuntimeMaintenancePosture({
   };
 }
 
+function normalizeProviderRows(providerConfig = {}) {
+  const providers = Array.isArray(providerConfig.providers)
+    ? providerConfig.providers
+    : Object.entries(providerConfig.providers || {}).map(([name, cfg]) => ({
+      name,
+      ...(cfg && typeof cfg === 'object' ? cfg : {}),
+    }));
+  return providers
+    .map((provider) => ({
+      name: String(provider.name || '').trim(),
+      baseUrl: provider.baseUrl || provider.baseURL || null,
+      defaultModels: Array.isArray(provider.defaultModels) ? provider.defaultModels.filter(Boolean).map(String) : [],
+    }))
+    .filter((provider) => provider.name);
+}
+
+function buildAutonomySubstratePosture({
+  state = null,
+  runtime = null,
+  providerConfig = null,
+  issueArc = null,
+  doctrineAdoption = null,
+  sources = {},
+  now = new Date(),
+} = {}) {
+  const byNumber = issueRowsByNumber(issueArc);
+  const adopted = adoptedSourceIssueSet(doctrineAdoption);
+  const rows = AUTONOMY_SUBSTRATE_SOURCE_ISSUES
+    .map((issue) => byNumber.get(issue))
+    .filter(Boolean);
+  const missingIssueRows = AUTONOMY_SUBSTRATE_SOURCE_ISSUES.filter((issue) => !byNumber.has(issue));
+  const missingDoctrine = AUTONOMY_SUBSTRATE_SOURCE_ISSUES.filter((issue) => !adopted.has(issue));
+  const providers = normalizeProviderRows(providerConfig || {});
+  const agentProvider = String(providerConfig?.agent?.provider || '').trim();
+  const agentModel = String(providerConfig?.agent?.model || '').trim();
+  const localProviders = providers.filter((provider) => (
+    provider.name === 'ollama-local'
+    || provider.name === 'ollama'
+    || /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::|\/|$)/i.test(String(provider.baseUrl || ''))
+  ));
+  const localModels = localProviders.flatMap((provider) => provider.defaultModels.map((model) => ({
+    provider: provider.name,
+    model,
+  })));
+  const currentProviderIsLocal = Boolean(agentProvider && localProviders.some((provider) => provider.name === agentProvider));
+  const runtimeServices = Array.isArray(runtime?.services) ? runtime.services : [];
+  const engineService = runtimeServices.find((service) => service.id === 'engine' || /engine/i.test(String(service.label || ''))) || null;
+  const dashboardService = runtimeServices.find((service) => service.id === 'dashboard' || /dashboard/i.test(String(service.label || ''))) || null;
+  const host = state?.evidence?.host || null;
+  const alwaysOnEvidence = Boolean(state?.evaluatedAt || engineService?.ok || dashboardService?.ok || host);
+  const externalDependencyOpen = !currentProviderIsLocal || localModels.length === 0;
+
+  return {
+    schema: 'home23.autonomy-substrate-posture.v1',
+    generatedAt: new Date(toNowMs(now)).toISOString(),
+    sourceIssues: AUTONOMY_SUBSTRATE_SOURCE_ISSUES,
+    source: {
+      issueArc: sources.issueArc || null,
+      doctrineAdoption: sources.doctrineAdoption || null,
+      providerConfig: sources.providerConfig || null,
+    },
+    status: missingIssueRows.length
+      ? 'incomplete_issue_arc'
+      : (missingDoctrine.length
+        ? 'needs_doctrine_adoption'
+        : (externalDependencyOpen ? 'external_model_dependency' : 'local_substrate_ready')),
+    rows: rows.map((row) => ({
+      issue: row.number,
+      title: row.title || '',
+      slug: row.slug || null,
+      directives: Array.isArray(row.directives) ? row.directives.slice(0, 4).map((text) => compactText(text, 220)) : [],
+    })),
+    missingIssueRows,
+    missingDoctrine,
+    homeRuntime: {
+      status: alwaysOnEvidence ? 'observed' : 'unknown',
+      contract: 'Home23 is an always-on home-hosted runtime; process, host, and dashboard evidence must stay visible before autonomy claims are inherited.',
+      evidence: {
+        evaluatedAt: state?.evaluatedAt || null,
+        runtimeOk: runtime?.ok ?? null,
+        engineOk: engineService?.ok ?? null,
+        dashboardOk: dashboardService?.ok ?? null,
+        hostObserved: Boolean(host),
+      },
+    },
+    modelSubstrate: {
+      configuredProvider: agentProvider || null,
+      configuredModel: agentModel || null,
+      localProviders: localProviders.map((provider) => ({
+        name: provider.name,
+        baseUrl: provider.baseUrl,
+        defaultModels: provider.defaultModels,
+      })),
+      localModelsAvailable: localModels,
+      currentProviderIsLocal,
+      externalDependencyOpen,
+      autonomyGate: externalDependencyOpen
+        ? 'core cognition still depends on an external model provider or has no confirmed local model inventory'
+        : 'current cognition can route to a configured local model substrate',
+    },
+    operatorContract: [
+      'Always-on local runtime is part of the product identity, not just deployment trivia.',
+      'Local inference is a capability boundary: when absent, autonomy depends on external billing and provider access.',
+      'Cheap local work should be routed to local models only when a configured local model inventory is actually present.',
+    ],
+  };
+}
+
 function buildProjectionProvenance({
   state,
   liveProblems,
@@ -2139,7 +2248,7 @@ function buildOperatorDigest({ brief, liveProblems, work, budget, host, nowMs = 
   };
 }
 
-function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAction, budget, host, publishingDistribution, runtimeMaintenance, nowMs = Date.now() }) {
+function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAction, budget, host, publishingDistribution, runtimeMaintenance, autonomySubstrate, nowMs = Date.now() }) {
   const counts = liveProblems?.counts || {};
   const activeCount = Number(counts.open || 0) + Number(counts.chronic || 0);
   const interventionCount = Number(counts.interventionRequired || 0);
@@ -2250,6 +2359,13 @@ function buildOperatorHandoff({ brief, liveProblems, work, consistency, latestAc
       label: 'Runtime maintenance',
       value: runtimeMaintenance.pressure || 'unknown',
       detail: runtimeMaintenance.resourceHeadroom?.reliabilityGap || 'resource headroom constrains reliability',
+    });
+  }
+  if (autonomySubstrate?.status === 'external_model_dependency') {
+    evidence.push({
+      label: 'Autonomy substrate',
+      value: autonomySubstrate.modelSubstrate?.configuredProvider || 'external dependency',
+      detail: autonomySubstrate.modelSubstrate?.autonomyGate || 'core cognition depends on an external model provider',
     });
   }
 
@@ -2458,6 +2574,7 @@ function buildGoodLifeOperatorModel({
   sources = {},
   issueArc = null,
   doctrineAdoption = null,
+  providerConfig = null,
   now = new Date(),
 } = {}) {
   const nowMs = toNowMs(now);
@@ -2510,6 +2627,15 @@ function buildGoodLifeOperatorModel({
     freshness,
     now,
   });
+  const autonomySubstrate = buildAutonomySubstratePosture({
+    state,
+    runtime,
+    providerConfig,
+    issueArc,
+    doctrineAdoption,
+    sources,
+    now,
+  });
 
   let status = 'current';
   if (!state) status = 'unknown';
@@ -2535,6 +2661,7 @@ function buildGoodLifeOperatorModel({
     interventionReadiness,
     publishingDistribution,
     runtimeMaintenance,
+    autonomySubstrate,
     provenance: buildProjectionProvenance({
       state,
       liveProblems: directLiveProblems,
@@ -2570,6 +2697,7 @@ function buildGoodLifeOperatorModel({
   model.detail.insights.doctrineAdoption = model.provenance.doctrineAdoption;
   model.detail.insights.publishingDistribution = publishingDistribution;
   model.detail.insights.runtimeMaintenance = runtimeMaintenance;
+  model.detail.insights.autonomySubstrate = autonomySubstrate;
   model.work = work;
   model.operatorAnswer = buildOperatorAnswer({
     state,
@@ -2614,6 +2742,7 @@ function buildGoodLifeOperatorModel({
     host: state?.evidence?.host || null,
     publishingDistribution,
     runtimeMaintenance,
+    autonomySubstrate,
     nowMs,
   });
   model.operatorRings = buildOperatorRings({
@@ -2635,4 +2764,5 @@ module.exports = {
   buildDoctrineAdoptionSnapshot,
   buildPublishingDistributionReadiness,
   buildRuntimeMaintenancePosture,
+  buildAutonomySubstratePosture,
 };

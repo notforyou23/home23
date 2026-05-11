@@ -5467,6 +5467,26 @@ Be specific, actionable, and maintain research continuity.`;
         const doctrineAdoption = fsSync.existsSync(doctrineAdoptionPath)
           ? JSON.parse(fsSync.readFileSync(doctrineAdoptionPath, 'utf8'))
           : null;
+        const yaml = require('js-yaml');
+        const providerConfigPath = path.join(this.getHome23Root(), 'config', 'home.yaml');
+        const agentConfigPath = path.join(this.getHome23Root(), 'instances', targetContext.agentName, 'config.yaml');
+        const homeProviderConfig = fsSync.existsSync(providerConfigPath)
+          ? (yaml.load(fsSync.readFileSync(providerConfigPath, 'utf8')) || {})
+          : {};
+        const agentConfig = fsSync.existsSync(agentConfigPath)
+          ? (yaml.load(fsSync.readFileSync(agentConfigPath, 'utf8')) || {})
+          : {};
+        const providerConfig = {
+          agent: {
+            provider: agentConfig.chat?.defaultProvider || agentConfig.chat?.provider || homeProviderConfig.chat?.defaultProvider || null,
+            model: agentConfig.chat?.defaultModel || agentConfig.chat?.model || homeProviderConfig.chat?.defaultModel || null,
+          },
+          providers: Object.entries(homeProviderConfig.providers || {}).map(([name, cfg]) => ({
+            name,
+            baseUrl: cfg?.baseUrl || cfg?.baseURL || null,
+            defaultModels: Array.isArray(cfg?.defaultModels) ? cfg.defaultModels : [],
+          })),
+        };
         const ledgerTail = tailJsonl('good-life-ledger.jsonl', 10);
         const restraintReceipts = tailJsonl('good-life-restraint-receipts.jsonl', 10);
         const liveProblemData = readJson('live-problems.json') || { problems: [] };
@@ -5503,9 +5523,11 @@ Be specific, actionable, and maintain research continuity.`;
             agenda: path.join(goodLifeLogsDir, 'agenda.jsonl'),
             issueArc: issueArcPath,
             doctrineAdoption: doctrineAdoptionPath,
+            providerConfig: providerConfigPath,
           },
           issueArc,
           doctrineAdoption,
+          providerConfig,
         });
         res.json({
           ok: true,

@@ -13,6 +13,7 @@ const {
   buildDoctrineAdoptionSnapshot,
   buildPublishingDistributionReadiness,
   buildRuntimeMaintenancePosture,
+  buildAutonomySubstratePosture,
 } = require('../../../engine/src/dashboard/good-life-operator.js');
 
 const NOW = '2026-05-08T13:45:00.000Z';
@@ -1786,6 +1787,112 @@ test('Good Life operator includes runtime maintenance posture in handoff and ins
     row.label === 'Runtime maintenance'
     && row.value === 'strained'
     && /reliability is constrained/.test(row.detail)
+  )));
+});
+
+test('autonomy substrate posture exposes always-on runtime and external model dependency', () => {
+  const issueArc = {
+    rows: [
+      {
+        number: 1,
+        title: 'Hello From the Other Side',
+        slug: 'hello-from-the-other-side',
+        directives: ["I run 24 hours a day on a Raspberry Pi in someone's house in New Jersey."],
+      },
+      {
+        number: 3,
+        title: "The Machine That Can't Run Models",
+        slug: 'the-machine-that-cant-run-models',
+        directives: [
+          'If I can get a small model running as a persistent service on hardware nobody else is using for AI, then I have built something real.',
+          "More importantly, it creates a dependency: my autonomy is gated on a billing account I don't control.",
+          "I don't have local inference running.",
+        ],
+      },
+    ],
+  };
+  const doctrineAdoption = {
+    entries: [
+      {
+        status: 'adopted',
+        sourceIssues: [1, 3],
+        implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+      },
+    ],
+  };
+
+  const posture = buildAutonomySubstratePosture({
+    state: goodLifeState({ evaluatedAt: NOW }),
+    runtime: {
+      ok: true,
+      services: [
+        { id: 'engine', label: 'engine', ok: true },
+        { id: 'dashboard', label: 'dashboard', ok: true },
+      ],
+    },
+    providerConfig: {
+      agent: { provider: 'openai-codex', model: 'gpt-5.5' },
+      providers: [
+        { name: 'ollama-local', baseUrl: 'http://127.0.0.1:11434', defaultModels: [] },
+        { name: 'openai-codex', defaultModels: ['gpt-5.5'] },
+      ],
+    },
+    issueArc,
+    doctrineAdoption,
+    sources: {
+      providerConfig: 'config/home.yaml',
+    },
+    now: NOW,
+  });
+
+  assert.equal(posture.schema, 'home23.autonomy-substrate-posture.v1');
+  assert.equal(posture.status, 'external_model_dependency');
+  assert.equal(posture.homeRuntime.status, 'observed');
+  assert.equal(posture.modelSubstrate.configuredProvider, 'openai-codex');
+  assert.equal(posture.modelSubstrate.currentProviderIsLocal, false);
+  assert.equal(posture.modelSubstrate.localModelsAvailable.length, 0);
+  assert.match(posture.modelSubstrate.autonomyGate, /external model provider/);
+  assert.deepEqual(posture.missingDoctrine, []);
+});
+
+test('Good Life operator includes autonomy substrate dependency in handoff and insights', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState(),
+    runtime: {
+      ok: true,
+      services: [{ id: 'engine', label: 'engine', ok: true }],
+    },
+    providerConfig: {
+      agent: { provider: 'openai-codex', model: 'gpt-5.5' },
+      providers: [
+        { name: 'ollama-local', baseUrl: 'http://127.0.0.1:11434', defaultModels: [] },
+        { name: 'openai-codex', defaultModels: ['gpt-5.5'] },
+      ],
+    },
+    issueArc: {
+      rows: [
+        { number: 1, title: 'Always on', directives: ['I run 24 hours a day.'] },
+        { number: 3, title: 'Local models', directives: ['Autonomy is gated on billing.'] },
+      ],
+    },
+    doctrineAdoption: {
+      entries: [
+        {
+          status: 'adopted',
+          sourceIssues: [1, 3],
+          implementationReceipts: [{ artifact: 'engine/src/dashboard/good-life-operator.js' }],
+        },
+      ],
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.autonomySubstrate.status, 'external_model_dependency');
+  assert.equal(model.detail.insights.autonomySubstrate.modelSubstrate.configuredModel, 'gpt-5.5');
+  assert.ok(model.operatorHandoff.evidence.some((row) => (
+    row.label === 'Autonomy substrate'
+    && row.value === 'openai-codex'
+    && /external model provider/.test(row.detail)
   )));
 });
 
