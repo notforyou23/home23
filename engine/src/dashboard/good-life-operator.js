@@ -12,6 +12,7 @@ const USER_INTERVENTION_REMEDIATORS = new Set([
 ]);
 const HUMAN_BLOCKER_SOURCE_ISSUES = [5, 17, 19, 21, 25];
 const OPERATOR_HANDOFF_SOURCE_ISSUES = [25, 86, 93, 101];
+const INTERVENTION_READINESS_SOURCE_ISSUES = [88];
 const WORK_REVIEW_GOAL_AGE_MIN = 12 * 60;
 const fs = require('fs');
 const path = require('path');
@@ -1083,6 +1084,77 @@ function buildConsistency({ state, projection, liveProblems, obligations, hasObl
   return {
     ok: warnings.every((warning) => warning.severity === 'info'),
     warnings,
+  };
+}
+
+function buildInterventionReadiness({ policy, liveProblems, consistency, freshness, runtime, work }) {
+  const activeProblem = liveProblems.open?.[0] || liveProblems.chronic?.[0] || null;
+  const next = activeProblem?.nextRemediation || null;
+  const decision = activeProblem
+    ? {
+      kind: 'repair_live_problem',
+      subject: activeProblem.id || null,
+      actuator: next?.type || 'worker_check',
+    }
+    : (work?.counts?.activeAgenda || work?.counts?.activeGoals)
+      ? {
+        kind: 'advance_good_life_work',
+        subject: work.currentWork || null,
+        actuator: policy.mode === 'ask' ? 'operator_request' : 'worker_or_goal_step',
+      }
+      : {
+        kind: 'observe',
+        subject: 'good-life-loop',
+        actuator: 'none',
+      };
+  const known = [];
+  const unknown = [];
+
+  if (freshness.status === 'current') known.push(`Good Life projection current at ${freshness.evaluatedAt}`);
+  else unknown.push(`Good Life projection freshness is ${freshness.status || 'unknown'}`);
+
+  const counts = liveProblems.counts || {};
+  known.push(`${Number(counts.open || 0)} open / ${Number(counts.chronic || 0)} chronic live problems in direct registry`);
+
+  if (activeProblem) {
+    known.push(`current problem state is ${activeProblem.state || 'unknown'} for ${activeProblem.id || 'unnamed problem'}`);
+    if (activeProblem.detail) known.push(`last verifier detail: ${compactText(activeProblem.detail, 140)}`);
+    else unknown.push('last verifier detail is absent');
+    if (next?.type) known.push(`next remediation actuator is ${next.type}`);
+    else unknown.push('next remediation actuator is not identified');
+  }
+
+  if (consistency.warnings.length) {
+    for (const warning of consistency.warnings.filter((item) => item.severity !== 'info').slice(0, 4)) {
+      unknown.push(warning.message || warning.code || 'operator consistency warning');
+    }
+  }
+  for (const service of runtime?.services || []) {
+    if (service?.ok === false || service?.slow === true || service?.degraded === true) {
+      unknown.push(`${service.label || service.id || 'runtime service'} is ${service.ok === false ? 'unavailable' : 'degraded'}`);
+    }
+  }
+
+  const identifiable = freshness.status === 'current'
+    && !consistency.warnings.some((warning) => warning.severity === 'critical' || warning.code === 'good_life_projection_mismatch')
+    && (!activeProblem || Boolean(activeProblem.detail || next?.type));
+  const smallestRealAction = activeProblem
+    ? (identifiable
+      ? (next?.text || next?.type || 'run the bounded verifier-gated repair step')
+      : 'run or dry-run the verifier before changing state')
+    : (decision.kind === 'advance_good_life_work'
+      ? 'advance one bounded worker or artifact step and return a receipt'
+      : 'observe; do not intervene');
+
+  return {
+    schema: 'home23.intervention-readiness.v1',
+    sourceIssues: INTERVENTION_READINESS_SOURCE_ISSUES,
+    decision,
+    identifiable,
+    known,
+    unknown,
+    smallestRealAction,
+    viewDiscipline: 'Dashboard and Good Life projection are views; direct registry, verifier receipts, and source artifacts win for their authority surface.',
   };
 }
 
@@ -2169,6 +2241,14 @@ function buildGoodLifeOperatorModel({
     freshness,
     runtime,
   });
+  const interventionReadiness = buildInterventionReadiness({
+    policy,
+    liveProblems: directLiveProblems,
+    consistency,
+    freshness,
+    runtime,
+    work,
+  });
 
   let status = 'current';
   if (!state) status = 'unknown';
@@ -2191,6 +2271,7 @@ function buildGoodLifeOperatorModel({
     projection,
     runtime,
     consistency,
+    interventionReadiness,
     provenance: buildProjectionProvenance({
       state,
       liveProblems: directLiveProblems,

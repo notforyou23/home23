@@ -97,6 +97,45 @@ test('live-problem snapshot marks current user-intervention remediation steps', 
   assert.equal(snapshot.open[0].intervention.reason, 'Choose whether to restart the external bridge.');
 });
 
+test('Good Life operator exposes intervention readiness before repair action', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({
+      evaluatedAt: NOW,
+      evidence: {
+        liveProblems: { open: 1, chronic: 0, resolved: 0, unverifiable: 0, total: 1 },
+        goals: { open: 1, total: 1 },
+        agenda: { pending: 0 },
+      },
+    }),
+    liveProblems: [
+      {
+        id: 'dashboard_ping',
+        state: 'open',
+        claim: 'dashboard should respond',
+        openedAt: '2026-05-08T13:30:00.000Z',
+        lastResult: { detail: 'HTTP 500 from dashboard ping', at: '2026-05-08T13:40:00.000Z' },
+        remediation: [
+          { type: 'run_verifier', args: { name: 'dashboard_ping' } },
+          { type: 'pm2_restart', args: { name: 'home23-jerry-dash' } },
+        ],
+      },
+    ],
+    runtime: {
+      ok: true,
+      services: [{ id: 'engine', label: 'engine', ok: true }],
+    },
+    now: NOW,
+  });
+
+  assert.equal(model.interventionReadiness.schema, 'home23.intervention-readiness.v1');
+  assert.deepEqual(model.interventionReadiness.sourceIssues, [88]);
+  assert.equal(model.interventionReadiness.decision.kind, 'repair_live_problem');
+  assert.equal(model.interventionReadiness.decision.subject, 'dashboard_ping');
+  assert.equal(model.interventionReadiness.identifiable, true);
+  assert.ok(model.interventionReadiness.known.some((line) => /last verifier detail/.test(line)));
+  assert.match(model.interventionReadiness.viewDiscipline, /projection are views/);
+});
+
 test('Good Life obligation snapshot exposes active agenda rows and goals', () => {
   const snapshot = buildGoodLifeObligationSnapshot({
     agendaRows: [

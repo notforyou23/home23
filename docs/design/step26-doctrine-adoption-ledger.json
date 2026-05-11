@@ -460,6 +460,29 @@
       ]
     },
     {
+      "id": "good-life-intervention-readiness",
+      "title": "Interventions expose decision, identifiability, and smallest action",
+      "status": "adopted",
+      "sourceIssues": [88],
+      "requirement": "Before Good Life repair/user action, the operator model must name the decision being made, the actuator, what is known, what is unknown, whether the evidence identifies the state enough to act, and the smallest real next move while reminding the dashboard that it is a view over direct evidence.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/dashboard/good-life-operator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/dashboard/good-life-operator.test.js tests/dashboard/operator-ui.test.js"
+        },
+        {
+          "artifact": "engine/src/dashboard/home23-dashboard.js",
+          "verifier": "node --test --test-concurrency=1 tests/dashboard/operator-ui.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/dashboard/good-life-operator.js",
+        "engine/src/dashboard/home23-dashboard.js",
+        "engine/src/dashboard/home23-dashboard.css",
+        "tests/engine/dashboard/good-life-operator.test.js"
+      ]
+    },
+    {
       "id": "phantom-completion-loop-guard",
       "title": "Completed work cannot remain active without integrity drift",
       "status": "adopted",

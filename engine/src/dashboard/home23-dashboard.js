@@ -3699,6 +3699,7 @@ function renderGoodLifeIssueDetail(problem, data) {
   const needsUser = goodLifeNeedsUser(problem);
   const repairText = problemRepairText(problem);
   const userText = problemUserText(problem);
+  const readiness = data?.operator?.interventionReadiness || {};
   return `
     <div class="h23-goodlife-detail-head">
       <span class="h23-goodlife-problem-state ${goodLifeCssClass(problem.state)}">${escapeHtml(problem.state)}</span>
@@ -3734,13 +3735,32 @@ function renderGoodLifeIssueDetail(problem, data) {
       <div><label>Lifecycle</label><p>${escapeHtml(problem.escalated ? 'escalated' : 'normal')} - step ${Number(problem.stepIndex || 0)} / ${(problem.remediation || []).length}</p><small>${problem.openedAt ? `opened ${escapeHtml(timeSince(new Date(problem.openedAt)))}` : ''}</small></div>
       <div><label>Next remediation</label><p>${escapeHtml(next.type || 'none')}</p><small>${escapeHtml(next.text || '')}</small></div>
       <div><label>User intervention</label><p>${needsUser ? 'needed' : 'not needed yet'}</p><small>${needsUser ? 'Home23 has reached a notify/manual step' : 'autonomous remediation can continue'}</small></div>
+      <div><label>Decision gate</label><p>${readiness.identifiable ? 'identified enough to act' : 'verify before intervention'}</p><small>${escapeHtml(readiness.smallestRealAction || 'run verifier before changing state')}</small></div>
     </div>
+    <section><h4>Known / Unknown</h4>${renderGoodLifeInterventionReadiness(readiness)}</section>
     ${renderGoodLifeIssueInterventionConsole(problem)}
     <section><h4>Verifier</h4>${renderGoodLifeJson(problem.verifier)}</section>
     <section><h4>Remediation Plan</h4>${renderGoodLifeJson(problem.remediation || [])}</section>
     <section><h4>Recent Attempts</h4>${attempts.length ? attempts.map((attempt) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(attempt.type || 'attempt')}</strong><span>${escapeHtml(attempt.outcome || '')}</span><small>${escapeHtml(attempt.detail || '')}</small></div>`).join('') : '<div class="h23-goodlife-empty">No attempts recorded</div>'}</section>
     <section><h4>Fix Recipes</h4>${recipes.length ? recipes.map((recipe) => `<div class="h23-goodlife-evidence-row"><strong>${escapeHtml(recipe.verifierStatus || recipe.dispatchOutcome || 'recipe')}</strong><span>${escapeHtml(recipe.summary || '')}</span><small>${recipe.at ? escapeHtml(timeSince(new Date(recipe.at))) : ''}</small></div>`).join('') : '<div class="h23-goodlife-empty">No fix recipe recorded</div>'}</section>
     ${renderGoodLifeIssueWorkerReceipt(problem)}
+  `;
+}
+
+function renderGoodLifeInterventionReadiness(readiness) {
+  if (!readiness?.schema) return '<div class="h23-goodlife-empty">No intervention-readiness receipt yet</div>';
+  const known = (readiness.known || []).slice(0, 5).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+  const unknown = (readiness.unknown || []).slice(0, 5).map((item) => `<li>${escapeHtml(item)}</li>`).join('');
+  return `
+    <div class="h23-goodlife-evidence-row ${readiness.identifiable ? 'healthy' : 'watch'}">
+      <strong>${escapeHtml(readiness.decision?.kind || 'decision')}</strong>
+      <span>${escapeHtml(readiness.decision?.subject || 'good-life-loop')}</span>
+      <small>${escapeHtml(readiness.viewDiscipline || '')}</small>
+    </div>
+    <div class="h23-goodlife-two-col">
+      <div><label>Known</label><ul>${known || '<li>none recorded</li>'}</ul></div>
+      <div><label>Unknown</label><ul>${unknown || '<li>none blocking</li>'}</ul></div>
+    </div>
   `;
 }
 
