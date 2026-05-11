@@ -17,7 +17,8 @@ function writeFixture(root) {
   const stateDir = join(projectDir, 'state');
   const publicIssues = join(siteDir, 'public', 'issues');
   const siteIssues = join(siteDir, 'issues');
-  for (const dir of [issueDir, stateDir, publicIssues, siteIssues]) {
+  const artifactDir = join(projectDir, 'curriculum', 'autostudy', 'artifacts', 'merkleized-evidence-verifiable-audit-trails');
+  for (const dir of [issueDir, stateDir, publicIssues, siteIssues, artifactDir]) {
     require('node:fs').mkdirSync(dir, { recursive: true });
   }
 
@@ -46,6 +47,7 @@ function writeFixture(root) {
   writeFileSync(join(siteDir, 'public', 'feed.xml'), '<rss><channel><item><link>https://olddeadshows.com/issues/099.html</link></item></channel></rss>', 'utf8');
   writeFileSync(join(siteDir, 'public', 'sitemap.xml'), '<urlset><url><loc>https://olddeadshows.com/issues/099.html</loc></url></urlset>', 'utf8');
   writeFileSync(join(stateDir, 'next-issue.txt'), '100\n', 'utf8');
+  writeFileSync(join(artifactDir, 'DISSERTATION.md'), '# Merkleized Evidence & Verifiable Audit Trails\n\nA dissertation with source material for the issue.\n', 'utf8');
   return { projectDir, siteDir };
 }
 
@@ -68,9 +70,12 @@ test('verifyFromTheInsidePublish writes an evidence.v1 receipt for a clean publi
   assert.equal(result.receipt.action, 'publish_issue');
   assert.equal(result.receipt.subject, 'from-the-inside/099');
   assert.equal(result.receipt.claimLevel, 'verified_claim');
+  assert.equal(result.receipt.checks.find(c => c.name === 'source_dissertation_exists')?.pass, true);
+  assert.equal(result.receipt.checks.find(c => c.name === 'source_dissertation_matches_issue')?.pass, true);
   assert.equal(result.receipt.checks.find(c => c.name === 'html_matches_issue')?.pass, true);
   assert.equal(result.receipt.checks.find(c => c.name === 'next_issue_incremented')?.pass, true);
   assert.ok(result.receipt.sourceArtifacts.some(a => a.path.endsWith('/issues/099.json')));
+  assert.ok(result.receipt.sourceArtifacts.some(a => a.role === 'source_dissertation' && a.path.endsWith('/DISSERTATION.md')));
   assert.ok(result.receipt.derivedArtifacts.some(a => a.path.endsWith('/public/issues/099.html')));
   assert.ok(existsSync(result.receiptPath));
   assert.equal(result.auditEvent.event_type, 'field_report.issue.published');
@@ -133,4 +138,25 @@ test('verifyFromTheInsidePublish fails the receipt when rendered HTML loses the 
   assert.equal(result.receipt.result, 'fail');
   assert.equal(result.receipt.claimLevel, 'candidate_claim');
   assert.equal(result.receipt.checks.find(c => c.name === 'html_matches_issue')?.pass, false);
+});
+
+test('verifyFromTheInsidePublish fails when issue state has no matching dissertation artifact', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-fti-persist-fail-'));
+  const { projectDir, siteDir } = writeFixture(root);
+  require('node:fs').rmSync(
+    join(projectDir, 'curriculum', 'autostudy', 'artifacts', 'merkleized-evidence-verifiable-audit-trails', 'DISSERTATION.md'),
+    { force: true },
+  );
+
+  const result = await verifyFromTheInsidePublish({
+    issue: 99,
+    projectDir,
+    siteDir,
+    writeReceipt: false,
+    createdAt: '2026-05-08T12:00:00.000Z',
+  });
+
+  assert.equal(result.receipt.result, 'fail');
+  assert.equal(result.receipt.claimLevel, 'candidate_claim');
+  assert.equal(result.receipt.checks.find(c => c.name === 'source_dissertation_exists')?.pass, false);
 });

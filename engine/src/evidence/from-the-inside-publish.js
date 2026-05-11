@@ -33,6 +33,7 @@ async function verifyFromTheInsidePublish(opts = {}) {
   const feedPath = path.join(siteDir, 'public', 'feed.xml');
   const sitemapPath = path.join(siteDir, 'public', 'sitemap.xml');
   const nextIssuePath = path.join(projectDir, 'state', 'next-issue.txt');
+  const artifactsDir = path.join(projectDir, 'curriculum', 'autostudy', 'artifacts');
   const publicIssueUrl = `${publicBaseUrl}/issues/${padded}.html`;
 
   const checks = [];
@@ -76,6 +77,37 @@ async function verifyFromTheInsidePublish(opts = {}) {
       pass: issue.published === true,
       detail: issue.published === true ? 'published=true' : `published=${String(issue.published)}`,
     });
+    const slug = String(issue.slug || '').trim();
+    const dissertationPath = slug ? path.join(artifactsDir, slug, 'DISSERTATION.md') : null;
+    const dissertationExists = Boolean(dissertationPath && fs.existsSync(dissertationPath));
+    checks.push({
+      name: 'source_dissertation_exists',
+      pass: dissertationExists,
+      detail: dissertationExists
+        ? dissertationPath
+        : `missing dissertation for issue slug: ${slug || '(missing slug)'}`,
+      observed: {
+        issueSlug: slug || null,
+        expectedPath: dissertationPath,
+      },
+    });
+    if (dissertationExists) {
+      sourceArtifacts.push(artifactFromPath(dissertationPath, { role: 'source_dissertation' }));
+      const dissertationText = fs.readFileSync(dissertationPath, 'utf8');
+      const dissertationMentionsTitle = String(issue.title || '').trim().length > 0
+        && dissertationText.toLowerCase().includes(String(issue.title).trim().toLowerCase());
+      checks.push({
+        name: 'source_dissertation_matches_issue',
+        pass: dissertationMentionsTitle,
+        detail: dissertationMentionsTitle
+          ? 'dissertation text contains issue title'
+          : 'dissertation exists but does not contain issue title',
+        observed: {
+          issueTitle: issue.title || null,
+          dissertationChars: dissertationText.length,
+        },
+      });
+    }
   }
 
   const siteJsonExists = fs.existsSync(siteIssuePath);
@@ -252,6 +284,7 @@ async function verifyFromTheInsidePublish(opts = {}) {
       },
       claimBoundary: {
         asserted: [
+          'source dissertation artifact checked',
           'local source issue JSON checked',
           'public issue JSON checked',
           'rendered HTML checked',

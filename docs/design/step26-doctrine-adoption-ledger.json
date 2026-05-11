@@ -439,6 +439,27 @@
       ]
     },
     {
+      "id": "field-report-persistence-chain",
+      "title": "Field Report publish proves upstream artifact persistence",
+      "status": "adopted",
+      "sourceIssues": [87],
+      "requirement": "A Field Report publish receipt must not prove only that the rendered issue exists. It must also prove the upstream dissertation artifact exists under the issue slug and is carried as a hashed source artifact before the state transition can be treated as verified.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/evidence/from-the-inside-publish.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/evidence/from-the-inside-publish.test.js tests/engine/core/event-ledger-state.test.js"
+        },
+        {
+          "artifact": "tests/engine/evidence/from-the-inside-publish.test.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/evidence/from-the-inside-publish.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/evidence/from-the-inside-publish.js",
+        "tests/engine/evidence/from-the-inside-publish.test.js"
+      ]
+    },
+    {
       "id": "phantom-completion-loop-guard",
       "title": "Completed work cannot remain active without integrity drift",
       "status": "adopted",
