@@ -279,6 +279,23 @@
         "engine/src/channels/memory-ingest.cjs",
         "tests/engine/channels/memory-ingest.test.js"
       ]
+    },
+    {
+      "id": "phase-transition-action-receipts",
+      "title": "Shared action crossings leave phase-transition proof",
+      "status": "adopted",
+      "sourceIssues": [92],
+      "requirement": "Shared state changes need a prior read, a narrow mutation, a read-back check, proof of what crossed, and an explicit remaining-work count before the action becomes reusable knowledge.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/core/orchestrator.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/core/action-receipts.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/core/orchestrator.js",
+        "tests/engine/core/action-receipts.test.js"
+      ]
     }
   ]
 }

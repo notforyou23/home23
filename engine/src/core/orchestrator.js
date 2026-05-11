@@ -4931,6 +4931,7 @@ class Orchestrator {
   async pollActionQueue() {
     const fs = require('fs').promises;
     const path = require('path');
+    const crypto = require('crypto');
     const logsDir = this.config.logsDir || './runtime';
     const actionsQueuePath = path.join(logsDir, 'actions-queue.json');
     const receiptsPath = path.join(logsDir, 'actions-receipts.jsonl');
@@ -4938,6 +4939,7 @@ class Orchestrator {
     try {
       // Read action queue
       const content = await fs.readFile(actionsQueuePath, 'utf-8');
+      const beforeQueueSha256 = crypto.createHash('sha256').update(content).digest('hex');
       const actionsData = JSON.parse(content);
       
       if (!actionsData.actions || actionsData.actions.length === 0) {
@@ -4953,6 +4955,7 @@ class Orchestrator {
       this.logger.info(`⚡ Processing ${pendingActions.length} pending action(s) from MCP queue`);
 
       const receiptIndex = await this.loadActionReceiptIndex(receiptsPath);
+      const receiptsToAppend = [];
       
       for (const action of pendingActions) {
         try {
@@ -4968,19 +4971,53 @@ class Orchestrator {
           }
 
           await this.processAction(action);
-          await this.appendActionReceipt(receiptsPath, {
+          const completedAt = new Date().toISOString();
+          const completedCycle = this.cycleCount;
+          action.status = 'completed';
+          action.completedAt = completedAt;
+          action.completedCycle = completedCycle;
+          receiptsToAppend.push({
             at: new Date().toISOString(),
             actionId: action.actionId,
             idempotencyKey: action.idempotencyKey || null,
             type: action.type,
             status: 'completed',
-            completedCycle: this.cycleCount,
+            completedCycle,
+            phaseTransition: {
+              schema: 'home23.phase-transition.v1',
+              sourceIssues: [92],
+              crossing: 'action_queue_pending_to_completed',
+              priorRead: {
+                path: actionsQueuePath,
+                sha256: beforeQueueSha256,
+                pendingCount: pendingActions.length,
+                cycle: this.cycleCount,
+              },
+              mutation: {
+                surface: 'actions-queue.json',
+                actionId: action.actionId || null,
+                idempotencyKey: action.idempotencyKey || null,
+                type: action.type,
+                scope: 'single_action_status_transition',
+                fieldsChanged: ['status', 'completedAt', 'completedCycle'],
+              },
+              postCheck: {
+                queuePath: actionsQueuePath,
+                queueReadBack: false,
+                actionStatus: null,
+                receiptAppended: true,
+              },
+              proof: {
+                beforeQueueSha256,
+                afterQueueSha256: null,
+              },
+              remaining: {
+                pendingActions: null,
+              },
+            },
           });
           if (action.actionId) receiptIndex.actionIds.add(action.actionId);
           if (action.idempotencyKey) receiptIndex.idempotencyKeys.add(action.idempotencyKey);
-          action.status = 'completed';
-          action.completedAt = new Date().toISOString();
-          action.completedCycle = this.cycleCount;
         } catch (error) {
           this.logger.error(`Failed to process action ${action.actionId}:`, error);
           action.status = 'failed';
@@ -4990,7 +5027,28 @@ class Orchestrator {
       }
       
       // Write back updated queue
-      await fs.writeFile(actionsQueuePath, JSON.stringify(actionsData, null, 2));
+      const updatedContent = JSON.stringify(actionsData, null, 2);
+      await fs.writeFile(actionsQueuePath, updatedContent);
+      const readBackContent = await fs.readFile(actionsQueuePath, 'utf-8');
+      const afterQueueSha256 = crypto.createHash('sha256').update(readBackContent).digest('hex');
+      const readBackData = JSON.parse(readBackContent);
+      const remainingPendingActions = Array.isArray(readBackData.actions)
+        ? readBackData.actions.filter(a => a.status === 'pending').length
+        : null;
+
+      for (const receipt of receiptsToAppend) {
+        const readBackAction = Array.isArray(readBackData.actions)
+          ? readBackData.actions.find((a) => {
+              if (receipt.actionId && a.actionId === receipt.actionId) return true;
+              return receipt.idempotencyKey && a.idempotencyKey === receipt.idempotencyKey;
+            })
+          : null;
+        receipt.phaseTransition.postCheck.queueReadBack = true;
+        receipt.phaseTransition.postCheck.actionStatus = readBackAction?.status || null;
+        receipt.phaseTransition.proof.afterQueueSha256 = afterQueueSha256;
+        receipt.phaseTransition.remaining.pendingActions = remainingPendingActions;
+        await this.appendActionReceipt(receiptsPath, receipt);
+      }
       
     } catch (error) {
       if (error.code === 'ENOENT') {

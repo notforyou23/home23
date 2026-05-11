@@ -48,6 +48,38 @@ test('pollActionQueue writes completion receipts and skips duplicate idempotency
   assert.equal(receipts[0].idempotencyKey, 'complete_task:t1');
 });
 
+test('pollActionQueue records phase transition proof for shared queue mutation', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-actions-'));
+  const queuePath = path.join(dir, 'actions-queue.json');
+  fs.writeFileSync(queuePath, JSON.stringify({
+    actions: [
+      { actionId: 'a1', idempotencyKey: 'complete_task:t1', type: 'complete_task', status: 'pending' },
+      { actionId: 'a2', idempotencyKey: 'complete_task:t2', type: 'complete_task', status: 'pending' },
+    ],
+  }), 'utf8');
+
+  const { orchestrator } = makeHarness(dir, async () => {});
+  await orchestrator.pollActionQueue();
+
+  const queue = JSON.parse(fs.readFileSync(queuePath, 'utf8'));
+  const receipts = fs.readFileSync(path.join(dir, 'actions-receipts.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+  const receipt = receipts.find((entry) => entry.actionId === 'a1');
+
+  assert.equal(receipt.phaseTransition.schema, 'home23.phase-transition.v1');
+  assert.equal(receipt.phaseTransition.sourceIssues.includes(92), true);
+  assert.equal(receipt.phaseTransition.crossing, 'action_queue_pending_to_completed');
+  assert.equal(receipt.phaseTransition.priorRead.path, queuePath);
+  assert.equal(receipt.phaseTransition.priorRead.pendingCount, 2);
+  assert.equal(receipt.phaseTransition.mutation.scope, 'single_action_status_transition');
+  assert.deepEqual(receipt.phaseTransition.mutation.fieldsChanged, ['status', 'completedAt', 'completedCycle']);
+  assert.equal(receipt.phaseTransition.postCheck.actionStatus, 'completed');
+  assert.equal(receipt.phaseTransition.postCheck.queueReadBack, true);
+  assert.equal(receipt.phaseTransition.postCheck.receiptAppended, true);
+  assert.equal(receipt.phaseTransition.proof.afterQueueSha256.length, 64);
+  assert.equal(receipt.phaseTransition.remaining.pendingActions, 0);
+  assert.equal(queue.actions.every((action) => action.status === 'completed'), true);
+});
+
 test('pollActionQueue skips stale pending actions already present in receipt log', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-actions-'));
   const queuePath = path.join(dir, 'actions-queue.json');
