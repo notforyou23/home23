@@ -361,6 +361,27 @@
       ]
     },
     {
+      "id": "eventual-memory-authority-routing",
+      "title": "Memory carries authority route and tense",
+      "status": "adopted",
+      "sourceIssues": [85],
+      "requirement": "Memory objects must not act like clean archive facts. Each ingested observation must carry source surface, temporal status, present-tense authority, authority order, and verification-before-reuse checks so stale replicas can route attention without ruling action.",
+      "implementationReceipts": [
+        {
+          "artifact": "engine/src/channels/memory-ingest.cjs",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js"
+        },
+        {
+          "artifact": "tests/engine/channels/memory-ingest.test.js",
+          "verifier": "node --test --test-concurrency=1 tests/engine/channels/memory-ingest.test.js"
+        }
+      ],
+      "doctrineFiles": [
+        "engine/src/channels/memory-ingest.cjs",
+        "tests/engine/channels/memory-ingest.test.js"
+      ]
+    },
+    {
       "id": "human-blocker-operator-requests",
       "title": "Human-only blockers are structured operator requests",
       "status": "adopted",

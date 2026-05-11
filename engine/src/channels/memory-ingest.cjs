@@ -189,6 +189,7 @@ class MemoryIngest {
         session_refs: [`bus-ingest-${obs.receivedAt.slice(0, 10)}`],
         generation_method: draft.method || 'build_event',
         ...sourceClassification,
+        authority: buildAuthorityProfile(obs, draft, sourceClassification),
         ...(obs.origin ? { origin: obs.origin } : {}),
       },
       evidence: {
@@ -465,6 +466,100 @@ function buildObservationStateDelta(existing, obs, { confidence, draft } = {}) {
     after,
     why: changed ? 'same source observation changed' : 'same source observation refreshed',
   };
+}
+
+function buildAuthorityProfile(obs = {}, draft = {}, sourceClassification = {}) {
+  const producedAt = obs.producedAt || obs.receivedAt || null;
+  const producedMs = Date.parse(producedAt || '');
+  const ageMs = Number.isFinite(producedMs) ? Date.now() - producedMs : null;
+  const ageHours = ageMs == null ? null : Math.max(0, ageMs / 3600000);
+  const tags = new Set((draft.tags || []).map((tag) => String(tag).toLowerCase()));
+  const channelId = String(obs.channelId || '');
+  const method = String(draft.method || '');
+  const topic = String(draft.topic || channelId);
+  const isHistorical = sourceClassification.source_class === 'historical_context'
+    || tags.has('historical')
+    || tags.has('archive')
+    || tags.has('historical-context')
+    || tags.has('historical_context');
+  const isCurrentStateSurface = /^(machine|domain|work|build|os|notify)\./.test(channelId)
+    || ['sensor_primary', 'sensor_derived', 'work_event', 'build_event', 'good_life'].includes(method);
+
+  let temporalStatus = 'unknown';
+  if (isHistorical) temporalStatus = 'historical';
+  else if (ageHours == null) temporalStatus = 'unknown';
+  else if (ageHours <= 6) temporalStatus = 'current';
+  else if (ageHours <= 72) temporalStatus = 'recent';
+  else temporalStatus = 'stale';
+
+  const presentTenseAuthority = obs.flag === 'COLLECTED'
+    && isCurrentStateSurface
+    && (temporalStatus === 'current' || temporalStatus === 'recent')
+    && sourceClassification.action_posture !== 'do_not_override_current_evidence';
+
+  return {
+    schema: 'home23.memory-authority.v1',
+    sourceIssue: 85,
+    sourceSurface: channelId || null,
+    sourceRef: obs.sourceRef || null,
+    topic,
+    producedAt,
+    receivedAt: obs.receivedAt || null,
+    temporalStatus,
+    ageHours: ageHours == null ? null : Number(ageHours.toFixed(2)),
+    appliesTo: (draft.tags || []).slice(),
+    presentTenseAuthority,
+    canRouteAttention: true,
+    canAuthorizeAction: Boolean(
+      presentTenseAuthority
+      && sourceClassification.action_posture === 'may_authorize_bounded_action'
+    ),
+    authorityOrder: authorityOrderFor({ channelId, method, isCurrentStateSurface, isHistorical }),
+    verificationBeforeReuse: verificationBeforeReuse({
+      obs,
+      temporalStatus,
+      presentTenseAuthority,
+      sourceClassification,
+    }),
+    wrongTenseGuard: 'Do not reuse this memory as present-tense operational truth unless the authorityOrder source for the question is checked now.',
+  };
+}
+
+function authorityOrderFor({ channelId, method, isCurrentStateSurface, isHistorical }) {
+  if (isHistorical) {
+    return ['append_only_history', 'source_file', 'memory_object', 'summary'];
+  }
+  if (channelId.startsWith('machine.') || channelId.startsWith('os.')) {
+    return ['live_machine_observation', 'verifier_receipt', 'memory_object', 'summary'];
+  }
+  if (channelId.startsWith('domain.health')) {
+    return ['latest_health_log_metric_date', 'health_bridge_status', 'memory_object', 'summary'];
+  }
+  if (channelId.startsWith('domain.good-life')) {
+    return ['good_life_snapshot', 'live_problem_registry', 'memory_object', 'summary'];
+  }
+  if (channelId.startsWith('work.') || method === 'work_event') {
+    return ['source_artifact_or_receipt', 'work_queue_state', 'memory_object', 'summary'];
+  }
+  if (channelId.startsWith('build.') || method === 'build_event') {
+    return ['git_or_build_receipt', 'source_file', 'memory_object', 'summary'];
+  }
+  if (isCurrentStateSurface) {
+    return ['current_source_surface', 'verifier_receipt', 'memory_object', 'summary'];
+  }
+  return ['source_ref', 'memory_object', 'summary'];
+}
+
+function verificationBeforeReuse({ obs, temporalStatus, presentTenseAuthority, sourceClassification }) {
+  const checks = [];
+  if (obs.flag !== 'COLLECTED') checks.push('observation_not_collected');
+  if (!presentTenseAuthority) checks.push('not_authoritative_for_present_tense');
+  if (temporalStatus === 'stale' || temporalStatus === 'historical' || temporalStatus === 'unknown') {
+    checks.push('check_current_source_of_truth');
+  }
+  if (sourceClassification.action_posture === 'verify_before_action') checks.push('verify_before_action');
+  if (sourceClassification.action_posture === 'do_not_override_current_evidence') checks.push('must_not_override_current_evidence');
+  return checks.length ? checks : ['none_for_same-scope_context_reuse'];
 }
 
 function parseGroundingFlag(note) {

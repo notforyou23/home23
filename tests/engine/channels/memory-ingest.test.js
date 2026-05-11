@@ -44,6 +44,11 @@ test('MemoryIngest.writeFromObservation creates a full MemoryObject and a receip
   assert.equal(raw.objects.length, 1);
   assert.equal(raw.objects[0].provenance.trace_id, makeTraceId('build.git', 'git:abc1234'));
   assert.ok(raw.objects[0].provenance.source_refs.includes(makeTraceId('build.git', 'git:abc1234')));
+  assert.equal(raw.objects[0].provenance.authority.schema, 'home23.memory-authority.v1');
+  assert.equal(raw.objects[0].provenance.authority.sourceIssue, 85);
+  assert.equal(raw.objects[0].provenance.authority.sourceSurface, 'build.git');
+  assert.equal(raw.objects[0].provenance.authority.presentTenseAuthority, false);
+  assert.ok(raw.objects[0].provenance.authority.verificationBeforeReuse.includes('check_current_source_of_truth'));
   const receiptLines = readFileSync(join(dir, 'crystallization-receipts.jsonl'), 'utf8').trim().split('\n');
   assert.equal(receiptLines.length, 1);
   const r = JSON.parse(receiptLines[0]);
@@ -214,6 +219,55 @@ test('MemoryIngest same-source updates leave before and after repair trace', asy
   assert.equal(updateReceipt.updateKind, 'updated_observation');
   assert.equal(updateReceipt.stateDelta.before.summary, 'health bridge is stale');
   assert.equal(updateReceipt.stateDelta.after.summary, 'health bridge is fresh');
+});
+
+test('MemoryIngest records authority routing so stale memories cannot pose as live truth', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mi-authority-'));
+  const ingest = new MemoryIngest({ brainDir: dir });
+  const now = new Date().toISOString();
+
+  const current = await ingest.writeFromObservation({
+    channelId: 'machine.process',
+    sourceRef: 'process:top',
+    receivedAt: now,
+    producedAt: now,
+    flag: 'COLLECTED',
+    confidence: 0.95,
+    payload: { summary: 'process sample is current', topProcess: 'node' },
+    verifierId: 'os:ps-top-cpu',
+  }, {
+    method: 'sensor_primary',
+    type: 'observation',
+    topic: 'machine',
+    tags: ['machine', 'process'],
+  });
+
+  assert.equal(current.provenance.authority.temporalStatus, 'current');
+  assert.equal(current.provenance.authority.presentTenseAuthority, true);
+  assert.equal(current.provenance.authority.authorityOrder[0], 'live_machine_observation');
+  assert.deepEqual(current.provenance.authority.verificationBeforeReuse, ['none_for_same-scope_context_reuse']);
+
+  const historical = await ingest.writeFromObservation({
+    channelId: 'memory.session',
+    sourceRef: 'archive:sessions/old-health-shortcut',
+    receivedAt: now,
+    producedAt: '2026-01-01T00:00:00Z',
+    flag: 'COLLECTED',
+    confidence: 0.9,
+    payload: { summary: 'old note said the health shortcut was broken' },
+  }, {
+    method: 'work_event',
+    type: 'observation',
+    topic: 'memory',
+    tags: ['historical-context', 'health'],
+  });
+
+  assert.equal(historical.provenance.source_class, 'historical_context');
+  assert.equal(historical.provenance.authority.temporalStatus, 'historical');
+  assert.equal(historical.provenance.authority.presentTenseAuthority, false);
+  assert.equal(historical.provenance.authority.authorityOrder[0], 'append_only_history');
+  assert.ok(historical.provenance.authority.verificationBeforeReuse.includes('must_not_override_current_evidence'));
+  assert.match(historical.provenance.authority.wrongTenseGuard, /present-tense operational truth/);
 });
 
 test('MemoryIngest caps zero-context audit confidence hard', async () => {
