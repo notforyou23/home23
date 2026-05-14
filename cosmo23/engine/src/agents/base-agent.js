@@ -2298,7 +2298,11 @@ Domain: ${domain} | Workspace: ${workspace}`;
           agentType: this.constructor.name,
           missionGoal: this.mission.goalId,
           // Link file writes to plan task when available
-          taskId: this.mission?.taskId || this.mission?.metadata?.originalTaskId || null
+          taskId: this.mission?.taskId || this.mission?.metadata?.originalTaskId || null,
+          lineagePacket: this.mission?.lineagePacket || null,
+          enforceReadBeforeWrite: Boolean(this.mission?.lineagePacket?.requiredArtifacts?.length),
+          consumedArtifactIds: this.getRequiredLineageArtifactIds(),
+          ignoredRequiredArtifacts: this.mission?.ignoredRequiredArtifacts || []
         }
       );
       
@@ -2343,6 +2347,14 @@ Domain: ${domain} | Workspace: ${workspace}`;
       
       throw error;
     }
+  }
+
+  getRequiredLineageArtifactIds() {
+    const required = this.mission?.lineagePacket?.requiredArtifacts;
+    if (!Array.isArray(required)) return [];
+    return required
+      .map(artifact => artifact?.artifactId || artifact?.path)
+      .filter(Boolean);
   }
 
   /**
@@ -2473,7 +2485,7 @@ Domain: ${domain} | Workspace: ${workspace}`;
     let description = this.mission.description;
     
     // Add artifact context if available
-    if (this.mission.artifactContext) {
+    if (this.mission.artifactContext && !this.mission.metadata?.artifactContextInjected) {
       description += this.mission.artifactContext;
     }
     
@@ -2668,4 +2680,3 @@ Domain: ${domain} | Workspace: ${workspace}`;
 }
 
 module.exports = { BaseAgent };
-

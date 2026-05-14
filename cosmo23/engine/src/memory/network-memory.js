@@ -41,7 +41,18 @@ class NetworkMemory {
     SUPERSEDES: 'supersedes',        // New version → old version
     DEPENDS_ON: 'depends_on',        // Task → prerequisite task
     EXECUTED_BY: 'executed_by',      // Task → agent
-    PRODUCED: 'produced'             // Agent → deliverable
+    PRODUCED: 'produced',            // Agent → deliverable
+
+    // Graph-native artifact loop
+    TASK_CONSUMED: 'task_consumed',  // Task → artifact consumed as input
+    TASK_PRODUCED: 'task_produced',  // Task → artifact produced as output
+    AGENT_PRODUCED: 'agent_produced', // Agent → artifact produced as output
+    ARTIFACT_DERIVED_FROM: 'artifact_derived_from',
+    ARTIFACT_SUPPORTS: 'artifact_supports',
+    ARTIFACT_SUPERSEDES: 'artifact_supersedes',
+    ARTIFACT_INVALIDATES: 'artifact_invalidates',
+    CLAIM_SUPPORTED_BY: 'claim_supported_by',
+    CLAIM_SUPERSEDED_BY: 'claim_superseded_by'
   };
   
   constructor(config, logger, eventEmitter = null) {
@@ -299,7 +310,7 @@ class NetworkMemory {
   /**
    * Add new concept node
    */
-  async addNode(concept, tag = 'general', embedding = null) {
+  async addNode(concept, tag = 'general', embedding = null, metadata = null) {
     // Quality gate (defense-in-depth): filter before expensive embedding
     // Only check when no pre-computed embedding (pre-embedded = intentional)
     if (!embedding) {
@@ -366,7 +377,9 @@ class NetworkMemory {
       weight: 1.0,
       created: new Date(),
       accessed: new Date(),
-      accessCount: 0
+      accessCount: 0,
+      metadata: metadata || null,
+      type: metadata?.type || null
     };
 
     this.nodes.set(node.id, node);
@@ -1385,4 +1398,3 @@ class NetworkMemory {
 }
 
 module.exports = { NetworkMemory };
-

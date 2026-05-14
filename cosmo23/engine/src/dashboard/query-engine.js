@@ -2680,6 +2680,11 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
     }
     
     await fs.writeFile(filepath, content, 'utf-8');
+    await this.registerQueryArtifact(filepath, {
+      kind: `query_export_${format}`,
+      query,
+      metadata
+    });
     return filepath;
   }
 
@@ -4195,6 +4200,11 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
         // Write file
         await fs.writeFile(filepath, artifact.content, 'utf-8');
         const stats = await fs.stat(filepath);
+        const registered = await this.registerQueryArtifact(filepath, {
+          kind: 'query_created_file',
+          query,
+          language: artifact.language
+        });
         
         const relPath = path.relative(this.runtimeDir, filepath);
         
@@ -4202,6 +4212,7 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
           filename,
           path: relPath,
           fullPath: filepath,
+          artifactId: registered?.artifactId || null,
           size: stats.size,
           language: artifact.language
         });
@@ -4253,6 +4264,53 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
       await fs.appendFile(actionsLog, JSON.stringify(logEntry) + '\n');
     } catch (error) {
       console.error('[QueryEngine] Failed to log action:', error);
+    }
+  }
+
+  async registerQueryArtifact(filepath, context = {}) {
+    try {
+      const { ArtifactRegistry } = require('../artifacts/artifact-registry');
+      const { ArtifactIngestor } = require('../artifacts/artifact-ingestor');
+      const registry = this.artifactRegistry || new ArtifactRegistry({
+        runDir: this.runtimeDir,
+        logger: console
+      });
+      this.artifactRegistry = registry;
+      const record = await registry.registerArtifact({
+        absolutePath: filepath,
+        producer: {
+          type: 'system',
+          id: 'query_engine'
+        },
+        kind: context.kind || null,
+        supports: {
+          artifactIds: [],
+          memoryNodeIds: [],
+          taskIds: [],
+          claimIds: []
+        },
+        derivedFrom: {
+          artifactIds: [],
+          memoryNodeIds: [],
+          taskIds: [],
+          claimIds: []
+        },
+        reuseContract: {
+          recommendedUse: 'query_export',
+          readBefore: [],
+          doNotUseIf: [],
+          supersededBy: null
+        }
+      });
+      const ingestor = this.artifactIngestor || new ArtifactIngestor({
+        registry,
+        logger: console
+      });
+      this.artifactIngestor = ingestor;
+      return await ingestor.ingest(record);
+    } catch (error) {
+      console.warn('[QueryEngine] Artifact registration skipped:', error.message);
+      return null;
     }
   }
 }

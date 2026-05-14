@@ -1,4 +1,5 @@
 const { expect } = require('chai');
+const EventEmitter = require('events');
 
 const { AgentExecutor } = require('../../src/agents/agent-executor');
 
@@ -92,5 +93,77 @@ describe('AgentExecutor guided follow-up and source indexing', () => {
     expect(storedValue.value.urls).to.include('https://new.example');
     expect(storedValue.value.urls).to.include('https://handoff.example');
     expect(storedValue.value.urls).to.include('https://agent.example');
+  });
+
+  it('does not bypass concurrency for strategic work unless governor approves bypass', async () => {
+    const executor = new AgentExecutor(
+      {
+        memory: null,
+        goals: {
+          getGoals: () => [],
+          archiveGoal: () => true
+        }
+      },
+      { logsDir: '.', coordinator: { maxConcurrent: 1 } },
+      logger
+    );
+    executor.initialized = true;
+    executor.registry.getActiveCount = () => 1;
+    executor.registry.canSpawnMore = () => false;
+    executor.registry.isGoalBeingPursued = () => false;
+    executor.spawnGate = { evaluate: async () => ({ allowed: true, action: 'proceed' }) };
+    executor.enrichMissionWithArtifacts = async () => {};
+    executor.executeAgentAsync = async () => {};
+    class DummyAnalysisAgent extends EventEmitter {
+      constructor(mission) {
+        super();
+        this.agentId = 'agent_dummy';
+        this.agentType = 'analysis';
+        this.mission = mission;
+        this.status = 'initialized';
+        this.startTime = new Date();
+      }
+    }
+    executor.agentTypes.set('analysis', DummyAnalysisAgent);
+
+    expect(executor.isApprovedStrategicBypass({
+      triggerSource: 'strategic_goal',
+      metadata: { strategicPriority: true }
+    })).to.equal(false);
+
+    const agentId = await executor.spawnAgent({
+      missionId: 'strategic-test',
+      agentType: 'analysis',
+      goalId: 'goal_critical',
+      description: 'Strategic but not system repair',
+      metadata: { strategicPriority: true }
+    });
+
+    expect(agentId).to.equal(null);
+  });
+
+  it('preserves synthesis and document roles when commitment governor requires differentiated work', async () => {
+    const executor = new AgentExecutor(
+      {
+        memory: null,
+        goals: { getGoals: () => [], archiveGoal: () => true }
+      },
+      {
+        logsDir: '.',
+        ideFirst: { enabled: true },
+        commitmentGovernor: { preserveDifferentiatedRoles: true }
+      },
+      logger
+    );
+
+    expect(executor.getEffectiveAgentType({
+      agentType: 'synthesis',
+      metadata: { commitmentRole: 'synthesis' }
+    })).to.equal('synthesis');
+
+    expect(executor.getEffectiveAgentType({
+      agentType: 'document_creation',
+      metadata: { expectedOutput: '@outputs/report.md' }
+    })).to.equal('document_creation');
   });
 });

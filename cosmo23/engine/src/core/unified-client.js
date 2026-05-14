@@ -23,6 +23,14 @@ const { wrapSystemPrompt } = require('./provider-prompts');
  * - new UnifiedClient(config, logger) with MCP servers -> MCP tools available
  */
 class UnifiedClient extends GPT5Client {
+  static onProviderError(handler) {
+    if (!UnifiedClient.providerErrorHandlers) {
+      UnifiedClient.providerErrorHandlers = new Set();
+    }
+    UnifiedClient.providerErrorHandlers.add(handler);
+    return () => UnifiedClient.providerErrorHandlers.delete(handler);
+  }
+
   constructor(config, logger) {
     // Call parent constructor (GPT5Client)
     super(logger);
@@ -121,6 +129,21 @@ class UnifiedClient extends GPT5Client {
     // Initialize MCP clients if configured
     if (this.config.mcp?.client?.enabled) {
       this.initializeMCPClients();
+    }
+  }
+
+  emitProviderError(event = {}) {
+    if (typeof this.onProviderError === 'function') {
+      this.onProviderError(event);
+    }
+
+    const handlers = UnifiedClient.providerErrorHandlers || new Set();
+    for (const handler of handlers) {
+      try {
+        handler(event);
+      } catch (error) {
+        this.logger?.debug?.('Provider error listener failed', { error: error.message });
+      }
     }
   }
 
@@ -389,6 +412,17 @@ class UnifiedClient extends GPT5Client {
           attempt: attempt + 1,
           maxRetries,
           error: error.message
+        });
+
+        this.emitProviderError({
+          provider: assignment.provider,
+          model: assignment.model,
+          component: options.component || null,
+          purpose: options.purpose || null,
+          attempt: attempt + 1,
+          maxRetries,
+          error,
+          timestamp: new Date().toISOString()
         });
         
         // Retry with backoff if we have attempts left

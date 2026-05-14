@@ -37,6 +37,8 @@ class Capabilities {
     this.executiveRing = executiveRing;
     this.frontierGate = frontierGate;
     this.pathResolver = pathResolver;
+    this.artifactRegistry = null;
+    this.artifactIngestor = null;
 
     // Feature flags
     this.enabled = config.capabilities?.enabled !== false;
@@ -80,6 +82,11 @@ class Capabilities {
       clusterMode: this.clusterEnabled,
       workingDir
     });
+  }
+
+  setArtifactLoop({ registry = null, ingestor = null } = {}) {
+    this.artifactRegistry = registry;
+    this.artifactIngestor = ingestor;
   }
 
   /**
@@ -484,6 +491,16 @@ class Capabilities {
       try {
         await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
         await fs.appendFile(resolvedPath, contentToAppend, 'utf8');
+        const artifactRecord = await this.registerCapabilityArtifact(resolvedPath, {
+          ...agentContext,
+          operation: 'append'
+        }).catch((error) => {
+          this.logger.debug('Artifact registration skipped for appendFile', {
+            path: resolvedPath,
+            error: error.message
+          });
+          return null;
+        });
         
         this.stats.actionsExecuted++;
         
@@ -511,7 +528,7 @@ class Capabilities {
           });
         }
         
-        return { success: true, path: resolvedPath };
+        return { success: true, path: resolvedPath, artifactId: artifactRecord?.artifactId || null };
       } finally {
         if (lockAcquired && lockPath) {
           await this.fsHelpers.releaseLock(lockPath);
@@ -573,6 +590,21 @@ class Capabilities {
     try {
       // 1. Resolve path canonically
       const resolvedPath = this.pathResolver.resolve(logicalPath);
+      const readGate = this.evaluateReadBeforeWriteGate(agentContext);
+      if (!readGate.allowed) {
+        this.stats.actionsBlocked++;
+        this.logger.warn('Read-before-write gate blocked durable output', {
+          path: resolvedPath,
+          agent: agentContext.agentId,
+          reason: readGate.reason
+        });
+        return {
+          success: false,
+          reason: readGate.reason,
+          readBeforeWriteBlocked: true,
+          requiredArtifacts: readGate.requiredArtifacts
+        };
+      }
       
       // 2. Classify action (if FrontierGate available)
       let classification = { risk: 'low', category: 'file_write' };
@@ -639,6 +671,16 @@ class Capabilities {
       try {
         // 5. Execute via ToolExecutor with atomic write
         await this._atomicWrite(resolvedPath, content);
+        const artifactRecord = await this.registerCapabilityArtifact(resolvedPath, {
+          ...agentContext,
+          operation: 'write'
+        }).catch((error) => {
+          this.logger.debug('Artifact registration skipped for writeFile', {
+            path: resolvedPath,
+            error: error.message
+          });
+          return null;
+        });
         
         this.stats.actionsExecuted++;
         
@@ -672,7 +714,7 @@ class Capabilities {
           agent: agentContext.agentId
         });
         
-        return { success: true, path: resolvedPath };
+        return { success: true, path: resolvedPath, artifactId: artifactRecord?.artifactId || null };
         
       } finally {
         // Always release lock
@@ -1180,6 +1222,80 @@ class Capabilities {
       throw error;
     }
   }
+
+  async registerCapabilityArtifact(resolvedPath, agentContext = {}) {
+    if (!this.artifactRegistry) return null;
+    if (!this.isDurableArtifactPath(resolvedPath)) return null;
+
+    const record = await this.artifactRegistry.registerArtifact({
+      absolutePath: resolvedPath,
+      taskId: agentContext.taskId || null,
+      goalId: agentContext.missionGoal || agentContext.goalId || null,
+      producer: {
+        type: agentContext.agentId ? 'agent' : 'system',
+        id: agentContext.agentId || 'capabilities'
+      },
+      kind: agentContext.kind || null,
+      derivedFrom: {
+        artifactIds: Array.isArray(agentContext.consumedArtifactIds) ? agentContext.consumedArtifactIds : [],
+        memoryNodeIds: [],
+        taskIds: agentContext.taskId ? [agentContext.taskId] : [],
+        claimIds: []
+      },
+      supports: {
+        artifactIds: [],
+        memoryNodeIds: [],
+        taskIds: agentContext.taskId ? [agentContext.taskId] : [],
+        claimIds: []
+      }
+    });
+
+    if (this.artifactIngestor) {
+      return this.artifactIngestor.ingest(record).catch(() => record);
+    }
+    return record;
+  }
+
+  isDurableArtifactPath(filePath) {
+    const normalized = String(filePath || '').replace(/\\/g, '/');
+    if (!normalized) return false;
+    return normalized.includes('/outputs/') || normalized.endsWith('/outputs');
+  }
+
+  evaluateReadBeforeWriteGate(agentContext = {}) {
+    if (!agentContext.enforceReadBeforeWrite) {
+      return { allowed: true };
+    }
+
+    const requiredArtifacts = Array.isArray(agentContext.lineagePacket?.requiredArtifacts)
+      ? agentContext.lineagePacket.requiredArtifacts
+      : [];
+    if (requiredArtifacts.length === 0) {
+      return { allowed: true };
+    }
+
+    const consumed = new Set(Array.isArray(agentContext.consumedArtifactIds)
+      ? agentContext.consumedArtifactIds.filter(Boolean)
+      : []);
+    const ignored = Array.isArray(agentContext.ignoredRequiredArtifacts)
+      ? agentContext.ignoredRequiredArtifacts.filter(Boolean)
+      : [];
+
+    const missing = requiredArtifacts
+      .map(artifact => artifact.artifactId || artifact.path)
+      .filter(Boolean)
+      .filter(id => !consumed.has(id) && !ignored.includes(id));
+
+    if (missing.length === 0) {
+      return { allowed: true };
+    }
+
+    return {
+      allowed: false,
+      reason: `Read-before-write requires consumed or ignored lineage artifacts: ${missing.join(', ')}`,
+      requiredArtifacts: missing
+    };
+  }
   
   /**
    * Execute terminal command with timeout (async)
@@ -1239,4 +1355,3 @@ class Capabilities {
 }
 
 module.exports = { Capabilities };
-

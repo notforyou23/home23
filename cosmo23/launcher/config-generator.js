@@ -532,6 +532,16 @@ synthesis:
     compile: true
     explore: false
 
+commitmentGovernor:
+  enabled: true
+  preserveDifferentiatedRoles: true
+  requireCommittedArtifacts: true
+  rateLimitWindowCycles: 8
+  rateLimitThreshold: 3
+  rateLimitCooldownCycles: 5
+  maxStrategicSpawnsPerCycle: 1
+  maxUrgentSpawnsPerCycle: 1
+
 coordinator:
   enabled: ${(dream_mode || enable_consolidation_mode) ? 'false' : 'true'}
   reviewCyclePeriod: ${usesLocalModels ? Math.max(review_period, 25) : (enable_stabilization ? 15 : review_period)}  # Increased for local LLM

@@ -141,4 +141,34 @@ describe('Orchestrator guided continuation handling', () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('does not run strategic spawner when commitment governor closes spawn gate', async () => {
+    const orchestrator = createOrchestrator();
+    let strategicSpawnerCalled = false;
+
+    orchestrator.commitmentGovernor = {
+      evaluate: () => ({
+        spawnAllowed: false,
+        rateLimited: true,
+        allowStrategicBypass: false,
+        strategicSpawnBudget: 0,
+        reasonCodes: ['provider_rate_limit_circuit_open'],
+        nextActions: [{ type: 'cooldown', reason: 'provider_rate_limit_burst' }]
+      })
+    };
+    orchestrator.collectCommitmentSnapshot = async () => ({
+      cycleCount: 40,
+      activeAgents: 0,
+      goals: [{ id: 'goal_1', metadata: { strategicPriority: true } }],
+      providerErrors: [{ cycle: 40, status: 429, type: 'rate_limit_error' }]
+    });
+    orchestrator.spawnStrategicGoals = async () => {
+      strategicSpawnerCalled = true;
+    };
+
+    const decision = await orchestrator.evaluateCommitmentGovernor();
+
+    expect(decision.spawnAllowed).to.equal(false);
+    expect(strategicSpawnerCalled).to.equal(false);
+  });
 });

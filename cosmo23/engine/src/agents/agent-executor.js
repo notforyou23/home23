@@ -6,6 +6,9 @@ const { ExternalBridge } = require('./external-bridge');
 const { FrontierGate } = require('../frontier/frontier-gate');
 const { DeliverableManifest } = require('./deliverable-manifest');
 const { SpawnGate } = require('../core/spawn-gate');
+const { ArtifactRegistry } = require('../artifacts/artifact-registry');
+const { ArtifactIngestor } = require('../artifacts/artifact-ingestor');
+const { ArtifactLifecycleManager } = require('../artifacts/artifact-lifecycle');
 const path = require('path');
 
 // Real-time event streaming - fallback singleton for CLI mode
@@ -59,6 +62,19 @@ class AgentExecutor {
     this.externalBridge = new ExternalBridge(config, logger);  // External API integrations
     this.frontierGate = new FrontierGate(config, logger);  // FrontierGate for governance
     this.capabilities = null;  // NEW: Capabilities (injected by Orchestrator after ExecutiveRing init)
+    this.artifactRegistry = new ArtifactRegistry({
+      runDir: config.logsDir,
+      memory: this.memory,
+      logger
+    });
+    this.artifactIngestor = new ArtifactIngestor({
+      registry: this.artifactRegistry,
+      logger
+    });
+    this.artifactLifecycle = new ArtifactLifecycleManager({
+      registry: this.artifactRegistry,
+      logger
+    });
     this.spawnGate = new SpawnGate({
       memory: this.memory,
       resultsQueue: this.resultsQueue
@@ -110,6 +126,7 @@ class AgentExecutor {
    */
   async initialize() {
     await this.resultsQueue.initialize();
+    await this.artifactRegistry.initialize();
     
     // Initialize FrontierGate if enabled
     if (this.frontierGate.enabled) {
@@ -166,17 +183,44 @@ class AgentExecutor {
    * @param {Object} missionSpec - Mission specification from Meta-Coordinator
    * @returns {string|null} Agent ID if spawned, null if unable
    */
+  isApprovedStrategicBypass(missionSpec = {}) {
+    const metadata = missionSpec.metadata || {};
+    const isRepair = metadata.systemRepair === true ||
+      metadata.commitmentBypassApproved === true ||
+      missionSpec.triggerSource === 'system_repair';
+
+    if (!isRepair) return false;
+
+    return metadata.urgentGoal === true ||
+      metadata.strategicPriority === true ||
+      missionSpec.triggerSource === 'urgent_goal' ||
+      missionSpec.triggerSource === 'system_repair';
+  }
+
+  getEffectiveAgentType(missionSpec = {}) {
+    const original = missionSpec.agentType;
+    if (!this.config?.ideFirst?.enabled) return original;
+
+    const metadata = missionSpec.metadata || {};
+    const alwaysPreserved = ['research', 'consistency', 'dataacquisition', 'datapipeline', 'infrastructure', 'automation'];
+    const commitmentPreserved = ['synthesis', 'document_creation', 'document_analysis', 'quality_assurance', 'completion'];
+    const preserveDifferentiatedRoles = this.config?.commitmentGovernor?.preserveDifferentiatedRoles !== false;
+
+    if (alwaysPreserved.includes(original)) return original;
+    if (preserveDifferentiatedRoles && commitmentPreserved.includes(original)) return original;
+    if (metadata.commitmentRole && commitmentPreserved.includes(metadata.commitmentRole)) return original;
+    if (metadata.expectedOutput && original === 'document_creation') return original;
+
+    return original === 'ide' ? 'ide' : 'ide';
+  }
+
   async spawnAgent(missionSpec) {
     if (!this.initialized) {
       this.logger.error('AgentExecutor not initialized');
       return null;
     }
 
-    // CRITICAL: Strategic/urgent goals bypass maxConcurrent limit
-    // These are system-critical fixes that shouldn't wait
-    const isStrategic = missionSpec.metadata?.urgentGoal === true || 
-                       missionSpec.metadata?.strategicPriority === true ||
-                       missionSpec.triggerSource === 'urgent_goal';
+    const isStrategic = this.isApprovedStrategicBypass(missionSpec);
     
     // Check concurrency limit (but skip for strategic goals)
     if (!isStrategic && !this.registry.canSpawnMore(this.maxConcurrent)) {
@@ -230,37 +274,18 @@ class AgentExecutor {
       missionSpec.maxDuration = Math.max(missionSpec.maxDuration || 0, 1800000); // 30 min minimum
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // IDE-FIRST PARADIGM - The IDE agent is the primary execution vehicle
-    // ═══════════════════════════════════════════════════════════════════════════
-    // The IDE agent can handle EVERYTHING via MCP tools:
-    // - Code creation, execution, analysis
-    // - Document creation, analysis, synthesis
-    // - Quality assurance, exploration, validation
-    // Only 'research' stays separate (specialized for web search with external APIs)
-    // This is the machine's primary way of DOING - executing autonomous thoughts
-    // ═══════════════════════════════════════════════════════════════════════════
-    let effectiveAgentType = missionSpec.agentType;
+    let effectiveAgentType = this.getEffectiveAgentType(missionSpec);
 
-    if (this.config?.ideFirst?.enabled) {
-      // In IDE-first mode, ONLY research agents stay separate
-      // Everything else becomes IDE - the universal executor
-      // Execution agents have their own specialized capabilities — never remap to IDE
-      const preservedTypes = ['research', 'consistency', 'dataacquisition', 'datapipeline', 'infrastructure', 'automation'];
-
-      if (!preservedTypes.includes(missionSpec.agentType) && missionSpec.agentType !== 'ide') {
-        this.logger.info('🖥️ IDE-FIRST: Routing to IDE agent (autonomous execution)', {
-          original: missionSpec.agentType,
-          remapped: 'ide',
-          goalId: missionSpec.goalId,
-          reason: 'IDE agent is the primary executor for autonomous goals'
-        });
-        effectiveAgentType = 'ide';
-        // Preserve original type so the IDE agent knows the intent
-        missionSpec.metadata = missionSpec.metadata || {};
-        missionSpec.metadata.originalAgentType = missionSpec.agentType;
-        missionSpec.metadata.ideFirstRouted = true;
-      }
+    if (effectiveAgentType !== missionSpec.agentType) {
+      this.logger.info('🖥️ IDE-FIRST: Routing to IDE agent (autonomous execution)', {
+        original: missionSpec.agentType,
+        remapped: effectiveAgentType,
+        goalId: missionSpec.goalId,
+        reason: 'IDE agent is the primary executor for autonomous goals'
+      });
+      missionSpec.metadata = missionSpec.metadata || {};
+      missionSpec.metadata.originalAgentType = missionSpec.agentType;
+      missionSpec.metadata.ideFirstRouted = true;
     }
 
     // Get agent class for this type
@@ -533,7 +558,11 @@ class AgentExecutor {
         const qaDecision = await this.qualityAssuranceCheck(result);
         
         if (qaDecision.shouldIntegrate) {
-          await this.integrateResults(result, qaDecision.qaMetadata);
+          await this.integrateResults(result, {
+            ...(qaDecision.qaMetadata || {}),
+            confidence: qaDecision.confidence,
+            reason: qaDecision.reason || null
+          });
           await this.resultsQueue.markIntegrated(result.agentId);
           newlyIntegrated.push(result);
           integrated++;
@@ -904,7 +933,7 @@ class AgentExecutor {
     // 5b. CRITICAL: Canonical artifact registration for plan tasks
     // Close the "ghost artifacts" gap by ensuring task.artifacts is always populated
     // with the agent's output files (best-effort, non-fatal).
-    await this.registerTaskArtifactsFromAgentRun(agentResults).catch((error) => {
+    await this.registerTaskArtifactsFromAgentRun(agentResults, qaMetadata).catch((error) => {
       this.logger.warn('Task artifact registration failed (non-fatal)', {
         agentId,
         taskId: mission?.taskId,
@@ -1322,7 +1351,20 @@ class AgentExecutor {
     return 'file';
   }
 
-  async registerTaskArtifactsFromAgentRun(agentResults) {
+  mergeArtifactRefs(existing = [], incoming = []) {
+    const merged = Array.isArray(existing) ? [...existing] : [];
+    const seen = new Set(merged.map(item => `${item.artifactId || item.path || ''}::${item.role || ''}`));
+    for (const item of Array.isArray(incoming) ? incoming : []) {
+      if (!item) continue;
+      const key = `${item.artifactId || item.path || ''}::${item.role || ''}`;
+      if (seen.has(key)) continue;
+      merged.push(item);
+      seen.add(key);
+    }
+    return merged;
+  }
+
+  async registerTaskArtifactsFromAgentRun(agentResults, qaMetadata = null) {
     if (!this.clusterStateStore) return;
     const mission = agentResults?.mission || {};
     const taskId = mission.taskId || null;
@@ -1369,6 +1411,21 @@ class AgentExecutor {
         deliverablePaths.add(abs); // P7: Track for semantic classification
         dirs.add(path.dirname(abs));
       } catch (_) {}
+    }
+
+    // Graph-native artifact loop: IDE and execution agents often report the
+    // real product files as modifiedFiles rather than deliverable results.
+    const explicitOutputPaths = new Set();
+    const modifiedFiles = [
+      ...(Array.isArray(agentResults.modifiedFiles) ? agentResults.modifiedFiles : []),
+      ...(Array.isArray(agentResults.agentSpecificData?.modifiedFiles) ? agentResults.agentSpecificData.modifiedFiles : []),
+      ...(Array.isArray(agentResults.agentSpecificData?.summary?.filesModified) ? agentResults.agentSpecificData.summary.filesModified : [])
+    ];
+    for (const filePath of modifiedFiles) {
+      if (typeof filePath !== 'string' || !filePath.trim()) continue;
+      const abs = path.isAbsolute(filePath) ? filePath : path.join(process.cwd(), filePath);
+      explicitOutputPaths.add(abs);
+      dirs.add(path.dirname(abs));
     }
 
     const artifacts = [];
@@ -1503,6 +1560,44 @@ class AgentExecutor {
       }
     }
 
+    for (const abs of explicitOutputPaths) {
+      try {
+        const st = await fs.stat(abs);
+        if (!st.isFile()) continue;
+        let outputsRoot;
+        if (this.pathResolver) {
+          outputsRoot = this.pathResolver.getOutputsRoot();
+        } else if (this.config?.logsDir) {
+          outputsRoot = path.join(this.config.logsDir, 'outputs');
+        } else {
+          outputsRoot = path.dirname(abs);
+        }
+        const relativeWithinOutputs = path.relative(outputsRoot, abs).split(path.sep).join('/');
+        artifacts.push({
+          path: relativeWithinOutputs.startsWith('..') ? path.relative(this.config.logsDir || process.cwd(), abs).split(path.sep).join('/') : relativeWithinOutputs,
+          workspacePath: relativeWithinOutputs.startsWith('..')
+            ? path.relative(this.config.logsDir || process.cwd(), abs).split(path.sep).join('/')
+            : path.join('outputs', relativeWithinOutputs).split(path.sep).join('/'),
+          absolutePath: abs,
+          size: st.size,
+          checksum: null,
+          agentId,
+          agentType: this.normalizeAgentTypeDir(agentType),
+          goalId,
+          taskId,
+          recordedAt: new Date().toISOString(),
+          kind: this.classifyArtifactKind(abs, deliverablePaths)
+        });
+      } catch (error) {
+        this.logger.debug('[AgentExecutor] Explicit modified file skipped', {
+          taskId,
+          agentId,
+          path: abs,
+          error: error.message
+        });
+      }
+    }
+
     if (artifacts.length === 0) {
       this.logger.debug('[AgentExecutor] No artifacts found for task', {
         taskId,
@@ -1520,13 +1615,68 @@ class AgentExecutor {
       dirsScanned: dirs.size
     });
 
-    // Merge into task.artifacts (dedupe by absolutePath + agentId)
+    const registeredArtifacts = [];
+    for (const artifact of artifacts) {
+      try {
+        const record = await this.artifactRegistry.registerArtifact({
+          ...artifact,
+          runId: path.basename(this.config.logsDir || ''),
+          producer: {
+            type: 'agent',
+            id: agentId
+          },
+          derivedFrom: {
+            taskIds: taskId ? [taskId] : [],
+            artifactIds: Array.isArray(mission.artifactInputs) ? mission.artifactInputs : [],
+            memoryNodeIds: [],
+            claimIds: []
+          },
+          supports: {
+            taskIds: taskId ? [taskId] : [],
+            artifactIds: [],
+            memoryNodeIds: [],
+            claimIds: []
+          }
+        });
+        const ingested = await this.artifactIngestor.ingest(record).catch((error) => {
+          this.logger.debug('[AgentExecutor] Artifact ingestion skipped', {
+            artifactId: record.artifactId,
+            path: record.path,
+            error: error.message
+          });
+          return record;
+        });
+        registeredArtifacts.push({
+          ...artifact,
+          artifactId: record.artifactId,
+          hash: record.hash,
+          checksum: record.hash,
+          lifecycleState: ingested?.lifecycleState || record.lifecycleState,
+          graphNodeId: ingested?.graphNodeId || record.graphNodeId || null,
+          parseStatus: ingested?.parseStatus || record.parseStatus || 'unparsed',
+          missingBindings: record.missingBindings || []
+        });
+      } catch (error) {
+        this.logger.warn('[AgentExecutor] Artifact registry write failed', {
+          taskId,
+          agentId,
+          path: artifact.absolutePath || artifact.path,
+          error: error.message
+        });
+        registeredArtifacts.push({
+          ...artifact,
+          registrationError: error.message
+        });
+      }
+    }
+
+    // Merge into task.artifacts (dedupe by artifactId, or absolutePath + agentId)
     const existing = Array.isArray(task.artifacts) ? task.artifacts : [];
-    const existingKey = new Set(existing.map(a => `${a.absolutePath || a.path}::${a.agentId || ''}`));
+    const existingKey = new Set(existing.map(a => `${a.artifactId || a.absolutePath || a.path}::${a.agentId || ''}`));
 
     const merged = [...existing];
-    for (const a of artifacts) {
-      const key = `${a.absolutePath || a.path}::${a.agentId || ''}`;
+    for (const a of registeredArtifacts) {
+      const key = `${a.artifactId || a.absolutePath || a.path}::${a.agentId || ''}`;
       if (existingKey.has(key)) continue;
       merged.push({
         ...a,
@@ -1536,7 +1686,68 @@ class AgentExecutor {
       existingKey.add(key);
     }
 
+    const consumedArtifacts = Array.isArray(mission.lineagePacket?.requiredArtifacts)
+      ? mission.lineagePacket.requiredArtifacts
+          .filter(a => a && a.artifactId)
+          .map(a => ({
+            artifactId: a.artifactId,
+            role: 'required_input',
+            path: a.path,
+            kind: a.kind || 'file',
+            sourceTaskId: a.sourceTaskId || null,
+            sourceAgentId: a.sourceAgentId || null,
+            hash: a.hash || null
+          }))
+      : [];
+
     task.artifacts = merged;
+    task.consumedArtifacts = this.mergeArtifactRefs(task.consumedArtifacts, consumedArtifacts);
+    task.producedArtifacts = merged.filter(a => a.artifactId).map(a => ({
+      artifactId: a.artifactId,
+      role: a.kind === 'deliverable' ? 'primary_output' : 'supporting_output',
+      path: a.workspacePath || a.path,
+      kind: a.kind || 'file',
+      producer: { type: 'agent', id: a.agentId || agentId },
+      hash: a.hash || a.checksum || null
+    }));
+    task.artifactClosure = {
+      status: task.producedArtifacts.length > 0 ? 'completed_cleanly' : 'completed_with_artifact_warnings',
+      artifactCount: task.producedArtifacts.length,
+      consumedCount: task.consumedArtifacts.length,
+      updatedAt: Date.now(),
+      source: 'artifact_registration'
+    };
+
+    if (task.producedArtifacts.length > 0 && consumedArtifacts.length > 0) {
+      for (const consumed of consumedArtifacts) {
+        await this.artifactLifecycle.markReused(consumed.artifactId, {
+          changedBy: agentId,
+          taskId,
+          reason: `Consumed by ${taskId} before producing ${task.producedArtifacts.length} artifact(s)`,
+          supportingArtifacts: task.producedArtifacts.map(a => a.artifactId)
+        }).catch((error) => {
+          this.logger.debug('[AgentExecutor] Artifact reuse transition skipped', {
+            artifactId: consumed.artifactId,
+            taskId,
+            error: error.message
+          });
+        });
+      }
+    }
+
+    const effectiveQaMetadata = qaMetadata || {
+      validation: 'guided_task_completed',
+      confidence: 0.75,
+      reason: 'Guided task completed and produced declared artifacts'
+    };
+
+    await this.promoteValidatedProducedArtifacts(task.producedArtifacts, {
+      agentId,
+      taskId,
+      goalId,
+      qaMetadata: effectiveQaMetadata
+    });
+
     task.updatedAt = Date.now();
     task.metadata = task.metadata || {};
     if (!task.metadata.goalId && goalId) task.metadata.goalId = goalId;
@@ -1556,6 +1767,58 @@ class AgentExecutor {
       // Fallback to direct write if queue not available (backward compatibility)
       await this.clusterStateStore.upsertTask(task);
     }
+  }
+
+  async promoteValidatedProducedArtifacts(producedArtifacts = [], context = {}) {
+    const validation = context.qaMetadata?.validation;
+    const confidence = context.qaMetadata?.confidence ?? 0;
+    const acceptedValidationTypes = [
+      'heuristic_pass',
+      'full_qa',
+      'execution_agent_bypass',
+      'acceptance_pass',
+      'literal_validation_pass',
+      'guided_task_completed'
+    ];
+    const minimumConfidence = validation === 'acceptance_pass' || validation === 'guided_task_completed' ? 0.7 : 0.85;
+    const canUseQaEvidence = acceptedValidationTypes.includes(validation) && confidence >= minimumConfidence;
+    if (!canUseQaEvidence || !this.artifactLifecycle) return [];
+
+    const promoted = [];
+    for (const artifact of producedArtifacts) {
+      if (!artifact?.artifactId) continue;
+      const kind = artifact.kind || 'file';
+      const role = artifact.role || '';
+      const promotable = role === 'primary_output' ||
+        ['deliverable', 'research_summary', 'summary', 'query_export_markdown'].includes(kind);
+      if (!promotable) continue;
+
+      const committed = await this.artifactLifecycle.promoteCommitted(artifact.artifactId, {
+        changedBy: context.agentId || 'agent_executor',
+        reason: `Promoted after ${validation} validation`,
+        validationResults: [{
+          type: validation,
+          confidence,
+          reason: context.qaMetadata?.reason || null,
+          taskId: context.taskId || null,
+          goalId: context.goalId || null
+        }]
+      }).catch((error) => {
+        this.logger.debug('[AgentExecutor] Validated artifact promotion skipped', {
+          artifactId: artifact.artifactId,
+          taskId: context.taskId,
+          error: error.message
+        });
+        return null;
+      });
+
+      if (committed) {
+        artifact.lifecycleState = committed.lifecycleState;
+        promoted.push(committed.artifactId);
+      }
+    }
+
+    return promoted;
   }
 
   async updateReviewPipelineArtifacts(agentResults, qaMetadata = null) {
@@ -2016,6 +2279,50 @@ class AgentExecutor {
           this.logger.debug('Task not found in state store', { taskId });
           return;
         }
+
+        // Graph-native artifact loop: task.artifacts is the canonical lineage
+        // source. Use it before falling back to semantic memory tag scraping.
+        const taskArtifacts = Array.isArray(task.artifacts) ? task.artifacts : [];
+        for (const artifact of taskArtifacts) {
+          if (artifacts.length >= MAX_ARTIFACTS || totalSize >= MAX_TOTAL_SIZE) {
+            break;
+          }
+
+          const fileSize = artifact.sizeBytes || artifact.size || 0;
+          if (totalSize + fileSize > MAX_TOTAL_SIZE) {
+            this.logger.warn('Skipping task artifact - would exceed size limit', {
+              artifactId: artifact.artifactId,
+              path: artifact.path || artifact.workspacePath,
+              size: fileSize,
+              currentTotal: totalSize
+            });
+            continue;
+          }
+
+          const isDuplicate = artifacts.some(a =>
+            (artifact.artifactId && a.artifactId === artifact.artifactId) ||
+            ((a.absolutePath || a.path || a.relativePath) === (artifact.absolutePath || artifact.path || artifact.workspacePath))
+          );
+          if (isDuplicate) continue;
+
+          totalSize += fileSize;
+          artifacts.push({
+            artifactId: artifact.artifactId || null,
+            filename: path.basename(artifact.absolutePath || artifact.path || artifact.workspacePath || 'artifact'),
+            relativePath: artifact.workspacePath || artifact.path,
+            absolutePath: artifact.absolutePath || null,
+            path: artifact.workspacePath || artifact.path,
+            hash: artifact.hash || artifact.checksum || null,
+            size: fileSize,
+            kind: artifact.kind || 'file',
+            sourceAgentId: artifact.agentId || artifact.producer?.id || task.assignedAgentId || null,
+            sourceTaskId: taskId,
+            goalId: artifact.goalId || task.goalId || task.metadata?.goalId || null,
+            lifecycleState: artifact.lifecycleState || null,
+            tag: 'task_artifact_lineage',
+            depth
+          });
+        }
         
         // If task has an assigned agent, gather its artifacts
         if (task.assignedAgentId) {
@@ -2179,20 +2486,34 @@ class AgentExecutor {
       const predecessorArtifacts = explicitArtifactRefs.length === 0
         ? await this.gatherPredecessorArtifacts(mission)
         : [];
-      const artifacts = [...explicitArtifactRefs, ...predecessorArtifacts];
+      const currentReusableArtifacts = explicitArtifactRefs.length === 0
+        ? await this.gatherCurrentReusableArtifacts(mission, predecessorArtifacts)
+        : [];
+      const artifacts = this.mergeArtifactCandidates([
+        ...explicitArtifactRefs,
+        ...predecessorArtifacts,
+        ...currentReusableArtifacts
+      ]);
       
       if (artifacts.length > 0) {
         // Add artifacts to mission
         mission.artifactsToUpload = artifacts;
+        mission.lineagePacket = this.buildLineagePacket(mission, artifacts);
         
         // Enhance mission context with artifact information
         mission.artifactContext = this.buildArtifactContext(artifacts);
+        if (mission.artifactContext && !mission.metadata?.artifactContextInjected) {
+          mission.description = `${mission.description || ''}${mission.artifactContext}`;
+          mission.metadata = mission.metadata || {};
+          mission.metadata.artifactContextInjected = true;
+        }
         
         this.logger.info('Mission enriched with predecessor artifacts', {
           missionId: mission.missionId,
           agentType: mission.agentType,
           artifactCount: artifacts.length,
           explicitArtifacts: explicitArtifactRefs.length,
+          currentReusableArtifacts: currentReusableArtifacts.length,
           sources: [...new Set(artifacts.map(a => a.sourceAgentId))]
         });
       }
@@ -2228,7 +2549,7 @@ class AgentExecutor {
     }
     
     let context = '\n\n## Available Predecessor Artifacts\n\n';
-    context += 'The following files from previous agents are available in your execution environment:\n\n';
+    context += 'Read these lineage artifacts before broad semantic memory search when continuing prior work:\n\n';
     
     for (const [sourceAgentId, files] of Object.entries(bySource)) {
       const sourceAgent = sourceAgentId.split('_')[1] || 'agent'; // Extract type from agent_timestamp_id
@@ -2244,6 +2565,117 @@ class AgentExecutor {
     context += 'Use the exact relative paths shown above when reading these files. Do not strip directory prefixes.\n';
     
     return context;
+  }
+
+  buildLineagePacket(mission, artifacts = []) {
+    const requiredArtifacts = [];
+    const candidateArtifacts = [];
+    const supersededArtifacts = [];
+
+    for (const artifact of artifacts) {
+      const entry = {
+        artifactId: artifact.artifactId || null,
+        path: this.getWorkspaceArtifactPath(artifact),
+        absolutePath: artifact.absolutePath || null,
+        hash: artifact.hash || artifact.checksum || null,
+        kind: artifact.kind || 'file',
+        sourceTaskId: artifact.sourceTaskId || null,
+        sourceAgentId: artifact.sourceAgentId || null,
+        lifecycleState: artifact.lifecycleState || null,
+        reuseContract: artifact.reuseContract || null
+      };
+
+      if (artifact.lifecycleState === 'superseded') {
+        supersededArtifacts.push({
+          ...entry,
+          supersededBy: artifact.supersededBy || null,
+          warning: 'Do not treat as current unless explicitly auditing history.'
+        });
+      } else if (artifact.lifecycleState === 'committed' || artifact.lifecycleState === 'reused' || artifact.tag === 'task_artifact_lineage') {
+        requiredArtifacts.push(entry);
+      } else {
+        candidateArtifacts.push(entry);
+      }
+    }
+
+    return {
+      taskId: mission.taskId || null,
+      runId: path.basename(this.config?.logsDir || ''),
+      goalId: mission.goalId || null,
+      requiredArtifacts,
+      candidateArtifacts,
+      supersededArtifacts,
+      openClaims: [],
+      committedClaims: [],
+      invalidatedClaims: [],
+      recommendedReadOrder: [
+        ...requiredArtifacts.map(a => a.artifactId || a.path),
+        ...candidateArtifacts.map(a => a.artifactId || a.path)
+      ].filter(Boolean),
+      semanticMemoryFallbackQuery: mission.description || mission.goal || ''
+    };
+  }
+
+  async gatherCurrentReusableArtifacts(mission, existingArtifacts = []) {
+    if (!this.artifactRegistry || typeof this.artifactRegistry.findReusableArtifacts !== 'function') {
+      return [];
+    }
+
+    await this.artifactRegistry.initialize?.();
+    const existingIds = new Set((existingArtifacts || []).map(a => a.artifactId).filter(Boolean));
+    const existingPaths = new Set((existingArtifacts || []).map(a => this.getWorkspaceArtifactPath(a)).filter(Boolean));
+    const query = [
+      mission.description,
+      mission.goal,
+      mission.goalId,
+      mission.metadata?.topic,
+      mission.metadata?.researchQuestion
+    ].filter(Boolean).join(' ');
+
+    const records = this.artifactRegistry.findReusableArtifacts(query, {
+      goalId: mission.goalId || null,
+      excludeTaskId: mission.taskId || null,
+      limit: 12,
+      includeCandidates: true
+    });
+
+    return records
+      .filter(record => {
+        const workspacePath = this.getWorkspaceArtifactPath(record);
+        return !existingIds.has(record.artifactId) && !existingPaths.has(workspacePath);
+      })
+      .map(record => ({
+        artifactId: record.artifactId,
+        filename: path.basename(record.path || record.absolutePath || 'artifact'),
+        relativePath: record.workspacePath || record.path,
+        workspacePath: record.workspacePath || record.path,
+        absolutePath: record.absolutePath || null,
+        path: record.workspacePath || record.path,
+        hash: record.hash || null,
+        size: record.sizeBytes || null,
+        kind: record.kind || 'file',
+        sourceAgentId: record.producer?.id || 'artifact_registry',
+        sourceTaskId: record.taskId || null,
+        goalId: record.goalId || null,
+        lifecycleState: record.lifecycleState || null,
+        reuseContract: record.reuseContract || record.structured?.reuseContract || null,
+        structured: record.structured || null,
+        tag: record.tag || 'current_candidate_artifact',
+        reuseScore: record.reuseScore || 0
+      }));
+  }
+
+  mergeArtifactCandidates(items = []) {
+    const merged = [];
+    const seen = new Set();
+    for (const item of Array.isArray(items) ? items : []) {
+      if (!item) continue;
+      const key = item.artifactId || this.getWorkspaceArtifactPath(item) || item.absolutePath || item.path;
+      if (!key || seen.has(key)) continue;
+      merged.push(item);
+      seen.add(key);
+    }
+    return merged;
   }
 
   getWorkspaceArtifactPath(file) {

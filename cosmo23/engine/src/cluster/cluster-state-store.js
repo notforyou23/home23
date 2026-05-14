@@ -550,9 +550,9 @@ class ClusterStateStore {
    * Complete a Task (mark DONE)
    * @param {string} taskId
    */
-  async completeTask(taskId) {
+  async completeTask(taskId, closure = {}) {
     if (this.backend.completeTask) {
-      return this.backend.completeTask(taskId);
+      return this.backend.completeTask(taskId, closure);
     }
     throw new Error('Backend does not support completeTask');
   }

@@ -1986,7 +1986,7 @@ class FilesystemStateStore {
    * BULLETPROOF ENTERPRISE FIX (Jan 20, 2026): Single-directory design
    * State stored in field, not directory. Atomic write. No cleanup. No duplicates.
    */
-  async completeTask(taskId) {
+  async completeTask(taskId, closure = {}) {
     try {
       // Deterministic path - always same location
       const taskPath = path.join(this.tasksDir, `${taskId}.json`);
@@ -2005,6 +2005,7 @@ class FilesystemStateStore {
       task.state = 'DONE';
       task.completedAt = Date.now();
       task.updatedAt = Date.now();
+      this.applyTaskArtifactClosure(task, closure);
       
       // Atomic write to SAME location (no move, no cleanup)
       await this.helpers.atomicWriteJSON(taskPath, task);
@@ -2025,6 +2026,57 @@ class FilesystemStateStore {
       });
       return false;
     }
+  }
+
+  applyTaskArtifactClosure(task, closure = {}) {
+    if (!closure || typeof closure !== 'object') return;
+
+    const normalizeRef = (item, fallbackRole = 'produced') => {
+      if (!item) return null;
+      if (typeof item === 'string') return { artifactId: item, role: fallbackRole };
+      const artifactId = item.artifactId || item.id || null;
+      return {
+        ...item,
+        artifactId,
+        role: item.role || fallbackRole
+      };
+    };
+
+    const mergeRefs = (existing = [], incoming = [], fallbackRole) => {
+      const merged = Array.isArray(existing) ? [...existing] : [];
+      const seen = new Set(merged.map(item => `${item.artifactId || item.path || item.absolutePath || ''}::${item.role || ''}`));
+      for (const raw of Array.isArray(incoming) ? incoming : []) {
+        const item = normalizeRef(raw, fallbackRole);
+        if (!item) continue;
+        const key = `${item.artifactId || item.path || item.absolutePath || ''}::${item.role || ''}`;
+        if (seen.has(key)) continue;
+        merged.push(item);
+        seen.add(key);
+      }
+      return merged;
+    };
+
+    const produced = closure.producedArtifacts || closure.artifacts || [];
+    task.artifacts = mergeRefs(task.artifacts, produced, 'produced');
+    task.consumedArtifacts = mergeRefs(task.consumedArtifacts, closure.consumedArtifacts, 'consumed');
+    task.producedArtifacts = mergeRefs(task.producedArtifacts, produced, 'produced');
+    task.updatedArtifacts = mergeRefs(task.updatedArtifacts, closure.updatedArtifacts, 'updated');
+    task.supersededArtifacts = mergeRefs(task.supersededArtifacts, closure.supersededArtifacts, 'superseded');
+    task.promotedArtifacts = mergeRefs(task.promotedArtifacts, closure.promotedArtifacts, 'promoted');
+    task.deprecatedArtifacts = mergeRefs(task.deprecatedArtifacts, closure.deprecatedArtifacts, 'deprecated');
+    task.failedArtifacts = mergeRefs(task.failedArtifacts, closure.failedArtifacts, 'failed_reuse');
+    task.openDependencies = Array.isArray(closure.openDependencies) ? closure.openDependencies : (task.openDependencies || []);
+    task.newClaims = Array.isArray(closure.newClaims) ? closure.newClaims : (task.newClaims || []);
+    task.supportedClaims = Array.isArray(closure.supportedClaims) ? closure.supportedClaims : (task.supportedClaims || []);
+    task.supersededClaims = Array.isArray(closure.supersededClaims) ? closure.supersededClaims : (task.supersededClaims || []);
+    task.nextReuseInstructions = Array.isArray(closure.nextReuseInstructions) ? closure.nextReuseInstructions : (task.nextReuseInstructions || []);
+    task.artifactClosure = {
+      status: closure.closureStatus || (task.producedArtifacts.length > 0 || task.consumedArtifacts.length > 0 ? 'completed_cleanly' : 'completed_unbound'),
+      artifactCount: task.producedArtifacts.length,
+      consumedCount: task.consumedArtifacts.length,
+      updatedAt: Date.now(),
+      source: closure.source || null
+    };
   }
 
   /**

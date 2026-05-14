@@ -1226,6 +1226,167 @@ returned `applied: false` with `reason: commitStep disabled`.
 
 ---
 
+## Patch 23 — Graph-native artifact loop substrate
+
+**Files touched:**
+- `cosmo23/engine/src/artifacts/artifact-registry.js`
+- `cosmo23/engine/src/artifacts/artifact-ingestor.js`
+- `cosmo23/engine/src/artifacts/artifact-audit.js`
+- `cosmo23/engine/src/artifacts/artifact-migration.js`
+- `cosmo23/engine/src/artifacts/artifact-lifecycle.js`
+- `cosmo23/engine/src/artifacts/artifact-loop-verifier.js`
+- `cosmo23/engine/scripts/artifact-loop.js`
+- `cosmo23/engine/src/agents/agent-executor.js`
+- `cosmo23/engine/src/core/capabilities.js`
+- `cosmo23/lib/query-engine.js`
+- `cosmo23/engine/src/dashboard/query-engine.js`
+- `cosmo23/engine/src/cluster/task-state-queue.js`
+- `cosmo23/engine/src/cluster/cluster-state-store.js`
+- `cosmo23/engine/src/cluster/backends/filesystem-state-store.js`
+- `cosmo23/engine/src/cluster/backends/redis-state-store.js`
+- `cosmo23/engine/src/core/orchestrator.js`
+- `cosmo23/engine/src/memory/network-memory.js`
+- `tests/cosmo23/artifact-loop.test.cjs`
+- `docs/design/STEP25-COSMO23-GRAPH-NATIVE-ARTIFACT-LOOP-PLAN.md`
+- `docs/design/STEP25-COSMO23-ARTIFACT-LOOP-CODE-MAP.md`
+
+**Problem:** COSMO23 produces valuable files and has a strong memory graph, but
+the output layer is too lossy. Runs could complete with artifact counts while
+final task records had no durable artifact IDs. IDE agents could write the real
+product files into root outputs while task artifact registration only saw
+per-agent manifests or logs. Introspection and memory could preserve semantic
+previews without preserving artifact identity, path, hash, producer, task
+binding, lifecycle, or future reuse obligation.
+
+**Fix:** added the first graph-native artifact substrate. Durable output files
+now register through an artifact registry at `coordinator/artifact_registry.json`
+with stable `artifactId`, run/task/goal/producer binding, path, hash, kind,
+lifecycle state, and missing-binding warnings. The registry exposes direct
+lookup APIs by artifact ID, path, hash, task ID, producer, lifecycle state, and
+topic-scored reusable artifact selection. Agent task artifact registration now
+includes IDE `modifiedFiles`, writes registry records, records parse status,
+and stores produced artifact IDs back onto tasks. Task completion now accepts
+and persists consumed/produced artifact closure lists instead of reducing
+completion to an artifact count. Predecessor artifact gathering loads task
+artifact lineage before falling back to memory tag scraping, and mission
+enrichment now attaches a lineage packet so future agents inherit required
+artifacts before broad semantic memory. When direct predecessor artifacts are
+absent, mission enrichment also selects current reusable artifact substrate
+from the registry by mission topic, preferring committed, reused, and parsed
+records while excluding superseded/deprecated records. When a task produces
+new artifacts after receiving required lineage artifacts, the consumed
+artifacts receive causal reuse lifecycle credit.
+Capabilities writes now register durable `/outputs/` files at write time when
+the artifact loop is available, giving common agent writers artifact IDs before
+the end-of-run result sweep. Capabilities also enforces read-before-write when
+a lineage packet declares required artifacts: durable writes are blocked unless
+the agent declares those required artifacts consumed or explicitly ignored.
+Standalone and dashboard Query exports/query-created files also register with
+the artifact loop, so Query markdown/JSON/HTML exports are no longer invisible
+to audit.
+Artifact context is injected into the mission description once during mission
+enrichment, so agent types that read `mission.description` directly still
+receive lineage-first predecessor artifacts.
+
+The memory graph now accepts node metadata and has explicit artifact edge types
+such as `TASK_PRODUCED`, `AGENT_PRODUCED`, `ARTIFACT_DERIVED_FROM`, and
+supersession/invalidation edge names for follow-on lifecycle work. Deterministic
+structured ingestion covers `findings.jsonl`, `research_findings.json`,
+`research_summary.md`, `sources.json`, and `bibliography.bib`; extracted claims
+now receive deterministic claim IDs and `ARTIFACT_SUPPORTS` graph edges. The
+audit helper reports unregistered output files, orphan artifacts, parsed and
+unparsed artifacts, committed and reused artifacts, current artifacts,
+superseded artifacts, never-reused artifacts, and completed tasks that still
+have no produced artifact IDs.
+The migration helper registers existing run outputs without inventing task
+lineage. It can bind historical completed tasks back to artifacts only when
+the task itself declared the exact expected output path, preserving uncertainty
+while repairing explicit task-output contracts.
+The verifier helper exercises the full intended loop in a fresh isolated run:
+create, register, parse, select as lineage, enforce read-before-write, reuse,
+promote, audit, and prove a `TASK_CONSUMED` graph edge.
+The lifecycle manager records explicit transitions, marks later causal reuse,
+and writes supersession state/edges so older artifacts stop loading as current.
+When a reused artifact is consumed by a task, the graph records `TASK_CONSUMED`
+from that task to the artifact. Promotion to `committed` is gated: an artifact
+must have causal reuse or validation evidence unless an operator explicitly
+forces the promotion. Agent integration now applies that gate automatically for
+validated primary/deliverable-style produced artifacts, using the existing QA
+decision as validation evidence.
+
+**Verification:** `node --test --test-concurrency=1
+tests/cosmo23/artifact-loop.test.cjs tests/cosmo23/pgs-engine.test.cjs
+tests/cosmo23/query-engine-context.test.cjs tests/cosmo23/query-engine-runtime.test.cjs
+tests/cosmo23/anthropic-client-request.test.cjs` passed with 45 tests. Syntax checks passed
+for the new artifact modules plus the modified agent executor, task queue,
+filesystem/Redis state stores, orchestrator, and memory graph. `labor23`
+migration registered 230/230 durable output/export files with 0 failures and
+the follow-up audit reported 0 unregistered files. Exact declared-output
+binding repaired 2 historical task-artifact closures; 4 completed historical
+tasks remain unbound because their declared outputs are not present at the
+declared paths. `node cosmo23/engine/scripts/artifact-loop.js verify` passed
+and wrote `artifact_loop_verification_report.json` for its isolated verification
+run. The stable operator entrypoint is `node cosmo23/engine/scripts/artifact-loop.js audit|migrate|verify
+<run-dir>`.
+
+---
+
+## Patch 24 — Run commitment governor and spawn discipline
+
+**Files touched:**
+- `cosmo23/engine/src/core/run-commitment-governor.js`
+- `cosmo23/engine/src/core/orchestrator.js`
+- `cosmo23/engine/src/core/unified-client.js`
+- `cosmo23/engine/src/agents/agent-executor.js`
+- `cosmo23/launcher/config-generator.js`
+- `cosmo23/engine/tests/unit/run-commitment-governor.test.js`
+- `cosmo23/engine/tests/unit/unified-client-provider-errors.test.js`
+- `cosmo23/engine/tests/unit/agent-executor-guided.test.js`
+- `cosmo23/engine/tests/unit/orchestrator-guided-continuation.test.js`
+- `tests/cosmo23/artifact-loop.test.cjs`
+- `tests/cosmo23/synthesis-config-generator.test.cjs`
+
+**Problem:** Guided COSMO23 runs could complete planned artifact tasks and then
+continue spawning mostly generic IDE/artifact producers. Strategic and urgent
+goal paths bypassed concurrency limits, provider 429s remained local generation
+errors instead of run-level cooldown signals, and artifact-rich runs could
+remain commitment-poor with zero committed artifacts.
+
+**Fix:** a run-level commitment governor now evaluates provider health,
+artifact commitment state, synthesis commit receipts, active agents, active
+goals, and guided-run status before allowing more spawns. Strategic and urgent
+bypasses require explicit governor approval and are capped to one spawn per
+cycle by default. IDE-first routing preserves differentiated synthesis,
+document, validation, completion, and execution roles when commitment pressure
+is active. Repeated 429/rate-limit errors open a cooldown circuit. Accepted
+guided deliverables can be promoted to committed artifacts with validation
+evidence, so graph knowledge can become a durable artifact commitment instead
+of another loose output.
+
+**Receipts:** orchestrator decisions append to
+`commitment-governor-receipts.jsonl` in the active run directory. Provider
+errors are captured through `UnifiedClient` provider-error notifications and
+normalized by `RunCommitmentGovernor.normalizeProviderError()`.
+
+**Verification:** focused tests cover provider rate-limit gating, artifact
+commitment gating, strategic spawn budgets, guided non-repair bypass refusal,
+completion stop decisions, provider-error notification plumbing, IDE-first role
+preservation, strategic bypass refusal, orchestrator spawn-gate closure, launch
+YAML serialization, and acceptance-based artifact promotion. Full regression
+coverage for this patch should include:
+`npx mocha cosmo23/engine/tests/unit/run-commitment-governor.test.js
+cosmo23/engine/tests/unit/unified-client-provider-errors.test.js
+cosmo23/engine/tests/unit/agent-executor-guided.test.js
+cosmo23/engine/tests/unit/orchestrator-guided-continuation.test.js` and
+`node --test --test-concurrency=1 tests/cosmo23/artifact-loop.test.cjs
+tests/cosmo23/synthesis-commit.test.cjs tests/cosmo23/pgs-engine.test.cjs
+tests/cosmo23/query-engine-context.test.cjs
+tests/cosmo23/query-engine-runtime.test.cjs
+tests/cosmo23/anthropic-client-request.test.cjs
+tests/cosmo23/synthesis-config-generator.test.cjs`.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -1324,3 +1485,10 @@ returned `applied: false` with `reason: commitStep disabled`.
   dive/PGS enumeration growth without commitment. Synthesis prompts now include
   configurable SPINE/FACET/ARTIFACT commitment pressure and run-local receipts
   record parsed bucket counts without altering graph storage.
+- **2026-05-10** — Patch 23 added from the Step 25 graph-native artifact loop
+  blueprint. COSMO23 now has the first durable artifact registry, task closure
+  artifact IDs, structured ingestion, lineage-first mission packets, and audit
+  primitives.
+- **2026-05-14** — Patch 24 added after a 40-cycle CrossFit-health run exposed
+  horizontal artifact-agent churn, strategic spawn bypass, provider 429
+  continuation, and zero committed artifacts despite a useful graph.

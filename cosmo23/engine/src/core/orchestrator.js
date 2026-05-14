@@ -24,6 +24,8 @@ const { RealityLayer } = require('../system/reality-layer');
 const { IntrospectionRouter } = require('../system/introspection-router');
 const { AgentRouter } = require('../system/agent-routing');
 const { MemoryGovernor } = require('../system/memory-governor');
+const { RunCommitmentGovernor } = require('./run-commitment-governor');
+const { UnifiedClient } = require('./unified-client');
 
 // EXECUTIVE RING: Executive function layer (dlPFC)
 const { ExecutiveCoordinator } = require('../coordinator/executive-coordinator');
@@ -92,6 +94,10 @@ class Orchestrator {
     this.coordinator = subsystems.coordinator;
     this.actionCoordinator = subsystems.actionCoordinator;
     this.agentExecutor = subsystems.agentExecutor;
+    this.commitmentGovernor = new RunCommitmentGovernor(this.config.commitmentGovernor || {}, this.logger);
+    this.lastCommitmentDecision = null;
+    this.providerErrorEvents = [];
+    this.unregisterProviderErrorHandler = UnifiedClient.onProviderError(event => this.recordProviderError(event));
     
     // Wire orchestrator reference to actionCoordinator (needed for agent spawning)
     if (this.actionCoordinator) {
@@ -427,6 +433,12 @@ class Orchestrator {
           this.agentExecutor.frontierGate,
           this.pathResolver
         );
+        if (this.capabilities.setArtifactLoop && this.agentExecutor.artifactRegistry) {
+          this.capabilities.setArtifactLoop({
+            registry: this.agentExecutor.artifactRegistry,
+            ingestor: this.agentExecutor.artifactIngestor
+          });
+        }
         
         // Inject into AgentExecutor so agents receive it
         this.agentExecutor.capabilities = this.capabilities;
@@ -1724,11 +1736,20 @@ class Orchestrator {
           });
         }
 
-        // FIRST: Spawn strategic goals (critical system improvements)
-        await this.spawnStrategicGoals();
+        const commitmentDecision = await this.getCommitmentDecisionForCycle();
+        if (!commitmentDecision.spawnAllowed) {
+          this.logger.warn('[CommitmentGovernor] Autonomous spawn gate closed', {
+            cycle: this.cycleCount,
+            reasonCodes: commitmentDecision.reasonCodes,
+            nextActions: commitmentDecision.nextActions
+          });
+        } else {
+          // FIRST: Spawn strategic goals (critical system improvements)
+          await this.spawnStrategicGoals(commitmentDecision);
+        }
 
         // THEN: Fill slots with autonomous goal agents
-        if (activeAgents < availableForGoals) {
+        if (commitmentDecision.spawnAllowed && activeAgents < availableForGoals) {
           await this.spawnExecutionAgents();
         }
       } else if (!isGuidedRun && goalCount > 0 && this.cycleCount % 20 === 0) {
@@ -2779,6 +2800,24 @@ class Orchestrator {
             await this.clusterStateStore.upsertTask(currentTask);
             
             if (validation.passed) {
+              const producedArtifacts = Array.isArray(currentTask.producedArtifacts) && currentTask.producedArtifacts.length > 0
+                ? currentTask.producedArtifacts
+                : (Array.isArray(currentTask.artifacts)
+                  ? currentTask.artifacts
+                      .filter(a => a && a.artifactId)
+                      .map(a => ({
+                        artifactId: a.artifactId,
+                        role: a.kind === 'deliverable' ? 'primary_output' : 'supporting_output',
+                        path: a.workspacePath || a.path,
+                        kind: a.kind || 'file',
+                        producer: a.agentId ? { type: 'agent', id: a.agentId } : null,
+                        hash: a.hash || a.checksum || null
+                      }))
+                  : []);
+              const consumedArtifacts = Array.isArray(currentTask.consumedArtifacts)
+                ? currentTask.consumedArtifacts
+                : [];
+
               // UNIFIED QUEUE ARCHITECTURE (Jan 20, 2026): Enqueue completion instead of direct write
               if (this.taskStateQueue) {
                 await this.taskStateQueue.enqueue({
@@ -2787,11 +2826,21 @@ class Orchestrator {
                   cycle: this.cycleCount,
                   phaseName: currentTask.title,
                   artifactCount: artifacts.length,
+                  producedArtifacts,
+                  consumedArtifacts,
+                  artifacts: producedArtifacts,
+                  closureStatus: producedArtifacts.length > 0 ? 'completed_cleanly' : 'completed_unbound',
                   source: 'validation_passed'
                 });
               } else {
                 // Fallback to direct write if queue not available
-                await this.clusterStateStore.completeTask(currentTask.id);
+                await this.clusterStateStore.completeTask(currentTask.id, {
+                  producedArtifacts,
+                  consumedArtifacts,
+                  artifacts: producedArtifacts,
+                  closureStatus: producedArtifacts.length > 0 ? 'completed_cleanly' : 'completed_unbound',
+                  source: 'validation_passed'
+                });
                 
                 // Record plan event for progress spine
                 const phaseNum = currentTask.id.match(/phase(\d+)/)?.[1] || '?';
@@ -3674,6 +3723,76 @@ class Orchestrator {
     }
   }
 
+  recordProviderError(event = {}) {
+    const normalized = this.commitmentGovernor.normalizeProviderError({
+      ...event,
+      cycle: event.cycle ?? this.cycleCount
+    });
+    this.providerErrorEvents = [...(this.providerErrorEvents || []), normalized].slice(-50);
+    return normalized;
+  }
+
+  async collectCommitmentSnapshot() {
+    const activeAgents = this.agentExecutor?.registry?.getActiveCount?.() || 0;
+    const goals = this.goals?.getGoals?.() || [];
+    const plan = await this.clusterStateStore?.getPlan?.('plan:main').catch(() => null);
+    const artifactAudit = await this.getArtifactAuditSummary().catch(() => ({}));
+    const synthesisCommit = await this.getLatestSynthesisCommitReceipt().catch(() => null);
+
+    return {
+      cycleCount: this.cycleCount,
+      guidedRun: this.isGuidedExclusiveRun?.() || false,
+      activeAgents,
+      goals,
+      plan,
+      providerErrors: this.providerErrorEvents || [],
+      artifactAudit,
+      synthesisCommit
+    };
+  }
+
+  async evaluateCommitmentGovernor() {
+    const snapshot = await this.collectCommitmentSnapshot();
+    const decision = this.commitmentGovernor.evaluate(snapshot);
+    this.lastCommitmentDecision = {
+      ...decision,
+      cycle: this.cycleCount,
+      evaluatedAt: new Date().toISOString()
+    };
+    await this.writeCommitmentReceipt(this.lastCommitmentDecision).catch(error => {
+      this.logger.debug('[CommitmentGovernor] receipt write skipped', { error: error.message });
+    });
+    return decision;
+  }
+
+  async getCommitmentDecisionForCycle() {
+    if (this.lastCommitmentDecision?.cycle === this.cycleCount) {
+      return this.lastCommitmentDecision;
+    }
+    return await this.evaluateCommitmentGovernor();
+  }
+
+  async getArtifactAuditSummary() {
+    if (!this.config?.logsDir) return {};
+    const { auditArtifactLoop } = require('../artifacts/artifact-audit');
+    const audit = await auditArtifactLoop(this.config.logsDir);
+    return audit.totals || {};
+  }
+
+  async getLatestSynthesisCommitReceipt() {
+    const receiptPath = path.join(this.config.logsDir || '.', 'synthesis-commit-receipts.jsonl');
+    const text = await fs.readFile(receiptPath, 'utf8').catch(() => '');
+    const lines = text.trim().split('\n').filter(Boolean);
+    if (lines.length === 0) return null;
+    const last = JSON.parse(lines[lines.length - 1]);
+    return last.synthesis_commit || null;
+  }
+
+  async writeCommitmentReceipt(decision) {
+    const file = path.join(this.config.logsDir || '.', 'commitment-governor-receipts.jsonl');
+    await fs.appendFile(file, JSON.stringify(decision) + '\n', 'utf8');
+  }
+
   /**
    * Run Meta-Coordinator strategic review
    */
@@ -3786,14 +3905,31 @@ class Orchestrator {
           }
         }
 
+        const commitmentDecision = this.agentExecutor
+          ? await this.getCommitmentDecisionForCycle()
+          : null;
+
+        if (commitmentDecision && !commitmentDecision.spawnAllowed) {
+          this.logger.warn('[CommitmentGovernor] Review spawn gate closed', {
+            cycle: this.cycleCount,
+            reasonCodes: commitmentDecision.reasonCodes,
+            nextActions: commitmentDecision.nextActions
+          });
+        }
+
         // NEW: Spawn specialist agents for top priority goals
-        if (this.agentExecutor) {
-          await this.spawnAgentsForPriorities(reviewResult);
+        if (this.agentExecutor && (!commitmentDecision || commitmentDecision.spawnAllowed)) {
+          await this.spawnAgentsForPriorities(reviewResult, commitmentDecision);
         }
         
         // CRITICAL: Spawn agents for urgent goals immediately after review
-        if (this.agentExecutor && reviewResult.urgentGoalsCreated && reviewResult.urgentGoalsCreated.length > 0) {
-          await this.spawnAgentsForUrgentGoals(reviewResult.urgentGoalsCreated);
+        if (
+          this.agentExecutor &&
+          (!commitmentDecision || commitmentDecision.spawnAllowed) &&
+          reviewResult.urgentGoalsCreated &&
+          reviewResult.urgentGoalsCreated.length > 0
+        ) {
+          await this.spawnAgentsForUrgentGoals(reviewResult.urgentGoalsCreated, commitmentDecision);
         }
 
         if (reviewResult.prioritizedGoals && reviewResult.prioritizedGoals.length > 0) {
@@ -6529,11 +6665,19 @@ OUTPUT FORMAT (JSON ONLY):
   /**
    * Spawn specialist agents based on Meta-Coordinator priorities
    */
-  async spawnAgentsForPriorities(reviewResult) {
+  async spawnAgentsForPriorities(reviewResult, commitmentDecision = null) {
     try {
       this.logger.info('');
       this.logger.info('🚀 SPAWNING SPECIALIST AGENTS');
       this.logger.info('');
+
+      if (commitmentDecision && !commitmentDecision.spawnAllowed) {
+        this.logger.warn('[CommitmentGovernor] Skipping priority spawns', {
+          reasonCodes: commitmentDecision.reasonCodes,
+          nextActions: commitmentDecision.nextActions
+        });
+        return;
+      }
 
       // ═══════════════════════════════════════════════════════════════════════
       // COSMO HANDS: Check for goals that can be handled directly FIRST
@@ -6743,11 +6887,19 @@ OUTPUT FORMAT (JSON ONLY):
    * Spawn agents for urgent goals created during Meta-Coordinator review
    * CRITICAL: Ensures urgent goals get immediate attention, not waiting in goal pool
    */
-  async spawnAgentsForUrgentGoals(urgentGoalSpecs) {
+  async spawnAgentsForUrgentGoals(urgentGoalSpecs, commitmentDecision = null) {
     try {
       this.logger.info('');
       this.logger.info('🚨 SPAWNING AGENTS FOR URGENT GOALS');
       this.logger.info('');
+
+      if (commitmentDecision && !commitmentDecision.spawnAllowed) {
+        this.logger.warn('[CommitmentGovernor] Skipping urgent spawns', {
+          reasonCodes: commitmentDecision.reasonCodes,
+          nextActions: commitmentDecision.nextActions
+        });
+        return;
+      }
       
       // Get the actual goal objects that were just created
       // They should be the most recently created goals with source: 'meta_coordinator_strategic'
@@ -6767,8 +6919,8 @@ OUTPUT FORMAT (JSON ONLY):
       
       this.logger.info(`Found ${urgentGoals.length} urgent goals for immediate agent spawning`);
       
-      // Limit to 3 agents to avoid overwhelming system
-      const goalsToSpawn = urgentGoals.slice(0, 3);
+      const maxToSpawn = Math.max(0, Number(commitmentDecision?.urgentSpawnBudget ?? 1));
+      const goalsToSpawn = urgentGoals.slice(0, maxToSpawn);
       
       this.logger.info('Spawning agents for top urgent goals', {
         count: goalsToSpawn.length,
@@ -6812,7 +6964,9 @@ OUTPUT FORMAT (JSON ONLY):
               urgentGoal: true,
               gapDriven: true,
               rationale: goal.metadata?.rationale,
-              urgency: goal.metadata?.urgency
+              urgency: goal.metadata?.urgency,
+              commitmentBypassApproved: commitmentDecision?.allowStrategicBypass === true,
+              systemRepair: goal.metadata?.systemRepair === true
             }
           };
           
@@ -6880,8 +7034,16 @@ OUTPUT FORMAT (JSON ONLY):
    * Spawn agents for strategic goals (bypasses maxConcurrent limit)
    * Strategic goals are critical system fixes that shouldn't wait
    */
-  async spawnStrategicGoals() {
+  async spawnStrategicGoals(commitmentDecision = null) {
     try {
+      if (commitmentDecision && !commitmentDecision.spawnAllowed) {
+        this.logger.warn('[CommitmentGovernor] Skipping strategic spawns', {
+          reasonCodes: commitmentDecision.reasonCodes,
+          nextActions: commitmentDecision.nextActions
+        });
+        return;
+      }
+
       // Find strategic goals: from Meta-Coordinator, insights, or escalated by tracker
       const allGoals = this.goals.getGoals();
       const strategicGoals = allGoals
@@ -6903,9 +7065,8 @@ OUTPUT FORMAT (JSON ONLY):
         return; // No strategic goals to spawn
       }
       
-      // Limit to 5 strategic agents per cycle to avoid overwhelming system
-      // But these bypass the maxConcurrent limit
-      const goalsToSpawn = strategicGoals.slice(0, 5);
+      const maxToSpawn = Math.max(0, Number(commitmentDecision?.strategicSpawnBudget ?? 1));
+      const goalsToSpawn = strategicGoals.slice(0, maxToSpawn);
       
       if (goalsToSpawn.length > 0) {
         this.logger.info('🚨 Spawning strategic agents (bypass maxConcurrent)', {
@@ -6949,11 +7110,13 @@ OUTPUT FORMAT (JSON ONLY):
             priority: goal.priority || 0.95,
             provenanceChain: [],
             metadata: {
-              urgentGoal: true,  // ← Triggers bypass in AgentExecutor
+              urgentGoal: true,
               strategicPriority: true,
               gapDriven: goal.metadata?.gapDriven || false,
               rationale: goal.metadata?.rationale,
-              urgency: goal.metadata?.urgency
+              urgency: goal.metadata?.urgency,
+              commitmentBypassApproved: commitmentDecision?.allowStrategicBypass === true,
+              systemRepair: goal.metadata?.systemRepair === true
             }
           };
           

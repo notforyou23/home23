@@ -159,7 +159,23 @@ class TaskStateQueue {
         return await stateStore.startTask(event.taskId, event.instanceId);
       
       case 'COMPLETE_TASK':
-        await stateStore.completeTask(event.taskId);
+        await stateStore.completeTask(event.taskId, {
+          artifacts: event.artifacts || event.producedArtifacts || [],
+          consumedArtifacts: event.consumedArtifacts || [],
+          producedArtifacts: event.producedArtifacts || event.artifacts || [],
+          updatedArtifacts: event.updatedArtifacts || [],
+          supersededArtifacts: event.supersededArtifacts || [],
+          promotedArtifacts: event.promotedArtifacts || [],
+          deprecatedArtifacts: event.deprecatedArtifacts || [],
+          failedArtifacts: event.failedArtifacts || [],
+          openDependencies: event.openDependencies || [],
+          newClaims: event.newClaims || [],
+          supportedClaims: event.supportedClaims || [],
+          supersededClaims: event.supersededClaims || [],
+          nextReuseInstructions: event.nextReuseInstructions || [],
+          closureStatus: event.closureStatus || null,
+          source: event.source || null
+        });
         
         // Update progress spine if orchestrator available
         if (orchestrator?.recordPlanEvent) {

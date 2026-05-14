@@ -32,6 +32,16 @@ test('launcher config emits synthesis commit-step defaults', async () => {
       explore: false
     }
   });
+  assert.deepEqual(parsed.commitmentGovernor, {
+    enabled: true,
+    preserveDifferentiatedRoles: true,
+    requireCommittedArtifacts: true,
+    rateLimitWindowCycles: 8,
+    rateLimitThreshold: 3,
+    rateLimitCooldownCycles: 5,
+    maxStrategicSpawnsPerCycle: 1,
+    maxUrgentSpawnsPerCycle: 1
+  });
 });
 
 test('launcher config honors commit-step launch overrides', async () => {
