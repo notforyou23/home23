@@ -76,6 +76,7 @@ function pickEnv(env, keys) {
 function inspectContract(expected, observed) {
   const pm2List = Array.isArray(observed.pm2List) ? observed.pm2List : [];
   const listeners = Array.isArray(observed.listeners) ? observed.listeners : [];
+  const isPidAlive = typeof observed.pidAlive === 'function' ? observed.pidAlive : () => true;
   const issues = [];
   const pm2ByName = groupBy(pm2List, (proc) => proc.name);
 
@@ -95,6 +96,8 @@ function inspectContract(expected, observed) {
     }
     if (!Number(proc.pid)) {
       issues.push({ type: 'pm2_missing_pid', role, name: spec.name, status, repair: 'start_triplet' });
+    } else if (!isPidAlive(Number(proc.pid))) {
+      issues.push({ type: 'pm2_pid_dead', role, name: spec.name, pid: Number(proc.pid), status, repair: 'delete_and_start' });
     }
     const env = proc.pm2_env || {};
     for (const [key, expectedValue] of Object.entries(spec.requiredEnv)) {
@@ -245,7 +248,7 @@ function collectObserved(expected) {
   for (const port of ports) {
     listeners.push(...collectListenersForPort(port));
   }
-  return { pm2List, listeners };
+  return { pm2List, listeners, pidAlive };
 }
 
 function parsePm2JlistOutput(output) {
@@ -340,11 +343,17 @@ async function repairContract(expected, plan, options = {}) {
   }
 
   if (plan.startNames.length > 0) {
-    actions.push({ action: 'pm2_start', names: plan.startNames });
-    execFileSync('pm2', ['start', expected.ecosystemPath, '--only', plan.startNames.join(','), '--update-env'], {
-      cwd: expected.root,
-      stdio: 'pipe',
-    });
+    const action = { action: 'pm2_start', names: plan.startNames };
+    actions.push(action);
+    try {
+      execFileSync('pm2', ['start', expected.ecosystemPath, '--only', plan.startNames.join(','), '--update-env', '--silent'], {
+        cwd: expected.root,
+        stdio: 'pipe',
+        timeout: 45_000,
+      });
+    } catch (err) {
+      action.error = commandError(err);
+    }
   }
 
   if (options.save && actions.length > 0) {
@@ -440,6 +449,7 @@ function describeIssue(issue) {
   if (issue.type === 'pm2_port_not_owned') return `${issue.name} not listening on ${issue.port}`;
   if (issue.type === 'orphan_port_listener' || issue.type === 'legacy_dashboard_listener') return `orphan listener pid ${issue.pid} on ${issue.port}`;
   if (issue.type === 'pm2_not_online') return `${issue.name} ${issue.status}`;
+  if (issue.type === 'pm2_pid_dead') return `${issue.name} pid ${issue.pid} is not alive`;
   return `${issue.type} ${issue.name || ''}`.trim();
 }
 

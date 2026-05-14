@@ -124,8 +124,7 @@ async function main() {
   if (agents.length === 0) throw new Error('No Home23 agent triplets found in ecosystem.config.cjs');
 
   if (!acquireDaemonLock()) {
-    console.log('[pm2-watchdog-daemon] another watchdog owns the repair lock; standing by');
-    setInterval(() => {}, 60 * 60 * 1000);
+    console.log('[pm2-watchdog-daemon] another watchdog owns the repair lock; exiting duplicate');
     return;
   }
 

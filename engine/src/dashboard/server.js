@@ -1719,11 +1719,16 @@ class DashboardServer {
               // not just the home primary. Restart only the processes that are
               // currently online so refreshed env lands everywhere.
               try {
-                const { execSync } = require('child_process');
-                const jlist = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', stdio: 'pipe', timeout: 10_000 }));
+                const { execFileSync } = require('child_process');
+                const { parsePm2JlistOutput } = require(path.join(home23RootForPoll, 'scripts', 'home23-pm2-watchdog.cjs'));
+                const jlist = parsePm2JlistOutput(execFileSync('pm2', ['jlist'], {
+                  encoding: 'utf8',
+                  stdio: 'pipe',
+                  timeout: 10_000,
+                }));
                 const online = new Set(
                   jlist
-                    .filter(proc => proc.pm2_env?.status === 'online')
+                    .filter(proc => proc.pm2_env?.status === 'online' && Number(proc.pid))
                     .map(proc => proc.name)
                 );
                 const instancesDir = path.join(home23RootForPoll, 'instances');
@@ -1733,14 +1738,19 @@ class DashboardServer {
                 const targets = agentNames.flatMap(name => [`home23-${name}`, `home23-${name}-harness`]).filter(name => online.has(name));
                 if (targets.length > 0) {
                   const ecosystemPath = path.join(home23RootForPoll, 'ecosystem.config.cjs');
-                  for (const name of targets) {
-                    try { execSync(`pm2 delete ${name}`, { stdio: 'pipe', timeout: 15_000 }); } catch { /* best-effort */ }
+                  try {
+                    execFileSync('pm2', ['restart', ecosystemPath, '--only', targets.join(','), '--update-env', '--silent'], {
+                      cwd: home23RootForPoll,
+                      stdio: 'pipe',
+                      timeout: 45_000,
+                    });
+                  } catch {
+                    execFileSync('pm2', ['start', ecosystemPath, '--only', targets.join(','), '--update-env', '--silent'], {
+                      cwd: home23RootForPoll,
+                      stdio: 'pipe',
+                      timeout: 45_000,
+                    });
                   }
-                  execSync(`pm2 start ${ecosystemPath} --only ${targets.join(',')}`, {
-                    cwd: home23RootForPoll,
-                    stdio: 'pipe',
-                    timeout: 45_000,
-                  });
                   console.log(`[OAuth refresh] rotated ${provider} token, restarted ${targets.join(', ')}`);
                 }
               } catch (err) {
@@ -1780,14 +1790,15 @@ class DashboardServer {
 
         // Check PM2 state before starting (avoid double-start race)
         try {
-          const { execSync } = require('child_process');
-          const jlist = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', timeout: 5000 }));
+          const { execFileSync } = require('child_process');
+          const { parsePm2JlistOutput } = require(path.join(home23RootForWatchdog, 'scripts', 'home23-pm2-watchdog.cjs'));
+          const jlist = parsePm2JlistOutput(execFileSync('pm2', ['jlist'], { encoding: 'utf8', timeout: 5000 }));
           const proc = jlist.find(p => p.name === 'home23-cosmo23');
           if (proc && proc.pm2_env?.status === 'online') return; // PM2 says online, just slow to respond
 
           console.log('[COSMO watchdog] cosmo23 not responding — starting...');
           const ecosystemPath = path.join(home23RootForWatchdog, 'ecosystem.config.cjs');
-          execSync(`pm2 start ${ecosystemPath} --only home23-cosmo23`, {
+          execFileSync('pm2', ['start', ecosystemPath, '--only', 'home23-cosmo23', '--update-env', '--silent'], {
             cwd: home23RootForWatchdog, stdio: 'pipe', timeout: 15_000
           });
           console.log('[COSMO watchdog] cosmo23 started');

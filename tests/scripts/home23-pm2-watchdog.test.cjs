@@ -112,6 +112,19 @@ test('pm2 watchdog detects missing engine and harness even when dashboard port r
   ]);
 });
 
+test('pm2 watchdog treats PM2 online rows with dead pids as repairable', () => {
+  const observed = healthyObserved();
+  observed.pidAlive = (pid) => pid !== 1001;
+
+  const inspection = inspectContract(expected(), observed);
+  const repair = planRepair(expected(), inspection);
+
+  assert.equal(inspection.ok, false);
+  assert.ok(inspection.issues.some((issue) => issue.type === 'pm2_pid_dead' && issue.name === 'home23-jerry'));
+  assert.deepEqual(repair.deleteNames, ['home23-jerry']);
+  assert.deepEqual(repair.startNames, ['home23-jerry', 'home23-jerry-dash', 'home23-jerry-harness']);
+});
+
 test('pm2 watchdog catches stale dashboard listener and wrong dash env', () => {
   const observed = healthyObserved();
   observed.pm2List[1] = {

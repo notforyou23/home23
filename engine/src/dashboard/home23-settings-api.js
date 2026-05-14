@@ -126,30 +126,37 @@ function createSettingsRouter(home23Root) {
   }
 
   function listOnlinePm2ProcessNames() {
-    const { execSync } = require('child_process');
-    const jlist = JSON.parse(execSync('pm2 jlist', { encoding: 'utf8', stdio: 'pipe' }));
+    const { execFileSync } = require('child_process');
+    const { parsePm2JlistOutput } = require(path.join(home23Root, 'scripts', 'home23-pm2-watchdog.cjs'));
+    const jlist = parsePm2JlistOutput(execFileSync('pm2', ['jlist'], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: 10000,
+    }));
     return new Set(
       jlist
-        .filter(proc => proc.pm2_env?.status === 'online')
+        .filter(proc => proc.pm2_env?.status === 'online' && Number(proc.pid))
         .map(proc => proc.name)
     );
   }
 
   function restartOnlineEcosystemProcesses(targets) {
-    const { execSync } = require('child_process');
+    const { execFileSync } = require('child_process');
     const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
     const online = listOnlinePm2ProcessNames();
     const activeTargets = targets.filter(name => online.has(name));
 
-    for (const name of activeTargets) {
-      try { execSync(`pm2 delete ${name}`, { stdio: 'pipe', timeout: 15000 }); } catch { /* best-effort */ }
-    }
     if (activeTargets.length > 0) {
-      execSync(`pm2 start ${ecosystemPath} --only ${activeTargets.join(',')}`, {
-        cwd: home23Root,
-        stdio: 'pipe',
-        timeout: 45000,
-      });
+      const args = ['restart', ecosystemPath, '--only', activeTargets.join(','), '--update-env', '--silent'];
+      try {
+        execFileSync('pm2', args, { cwd: home23Root, stdio: 'pipe', timeout: 45000 });
+      } catch {
+        execFileSync('pm2', ['start', ecosystemPath, '--only', activeTargets.join(','), '--update-env', '--silent'], {
+          cwd: home23Root,
+          stdio: 'pipe',
+          timeout: 45000,
+        });
+      }
     }
     return activeTargets;
   }
@@ -878,7 +885,7 @@ function createSettingsRouter(home23Root) {
 
     try {
       const { execSync } = require('child_process');
-      const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-feeder`, `home23-${agentName}-harness`];
+      const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-harness`];
       for (const n of names) {
         try { execSync(`pm2 stop ${n}`, { stdio: 'pipe' }); } catch { /* not running */ }
         try { execSync(`pm2 delete ${n}`, { stdio: 'pipe' }); } catch { /* not in list */ }
@@ -908,8 +915,8 @@ function createSettingsRouter(home23Root) {
     try {
       const { execSync } = require('child_process');
       const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
-      const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-feeder`, `home23-${agentName}-harness`];
-      execSync(`pm2 start ${ecosystemPath} --only ${names.join(',')}`, { cwd: home23Root, stdio: 'pipe', timeout: 30000 });
+      const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-harness`];
+      execSync(`pm2 start ${ecosystemPath} --only ${names.join(',')} --update-env --silent`, { cwd: home23Root, stdio: 'pipe', timeout: 30000 });
       res.json({ ok: true, status: 'running' });
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -949,10 +956,10 @@ function createSettingsRouter(home23Root) {
     const agentName = req.params.name;
     try {
       const { execSync } = require('child_process');
-      // Batch all four processes into one pm2 stop call — pm2 stops them in
+      // Batch the agent triplet into one pm2 stop call — pm2 stops them in
       // parallel internally, so the engine's ~1.6s kill_timeout is paid once,
       // not four times in series. Sequential stops used to take 6-12s.
-      const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-feeder`, `home23-${agentName}-harness`];
+      const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-harness`];
       try {
         execSync(`pm2 stop ${names.join(' ')}`, { stdio: 'pipe', timeout: 15000 });
       } catch { /* some processes may not be online — pm2 non-zero is fine */ }
@@ -985,7 +992,7 @@ function createSettingsRouter(home23Root) {
         const { seedCosmo23Config } = await import(path.join(home23Root, 'cli', 'lib', 'cosmo23-config.js'));
         seedCosmo23Config(home23Root);
       } catch { /* config seeding optional */ }
-      execSync(`pm2 start ${ecosystemPath} --only home23-cosmo23`, { cwd: home23Root, stdio: 'pipe', timeout: 15000 });
+      execSync(`pm2 start ${ecosystemPath} --only home23-cosmo23 --update-env --silent`, { cwd: home23Root, stdio: 'pipe', timeout: 15000 });
       res.json({ ok: true, status: 'started' });
     } catch (err) {
       res.status(500).json({ error: err.message });
