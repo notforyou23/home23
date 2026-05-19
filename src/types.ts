@@ -287,6 +287,7 @@ export interface SchedulerConfig {
   timezone: string;
   jobsFile: string;
   runsDir: string;
+  ownershipLeaseMs?: number;
 }
 
 export type DeliveryProfiles = Record<string, {

@@ -243,3 +243,40 @@ test('run logs separate mechanical completion from failed semantic outcome layer
   assert.equal(savedJobs[0].state.lastStatus, 'ok');
   assert.equal(savedJobs[0].state.lastSemanticStatus, 'failed');
 });
+
+test('only one scheduler instance owns a runtime cron lease at a time', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-owner-'));
+  const job = makeDueJob();
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+
+  const calls: string[] = [];
+  const first = new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' }, async (job): Promise<JobResult> => {
+    calls.push(`first:${job.id}`);
+    return { status: 'ok', response: 'owned', durationMs: 1 };
+  }, dir);
+  const second = new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' }, async (job): Promise<JobResult> => {
+    calls.push(`second:${job.id}`);
+    return { status: 'ok', response: 'duplicate', durationMs: 1 };
+  }, dir);
+
+  await (first as any).tick();
+  await (second as any).tick();
+
+  assert.deepEqual(calls, ['first:job-1']);
+  const runLog = readJsonl(join(dir, 'cron-runs', 'job-1.jsonl'));
+  assert.equal(runLog.length, 1);
+
+  first.stop();
+  const savedJobs = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'));
+  savedJobs[0].state.nextRunAtMs = Date.now() - 1_000;
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify(savedJobs, null, 2));
+
+  const third = new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' }, async (job): Promise<JobResult> => {
+    calls.push(`third:${job.id}`);
+    return { status: 'ok', response: 'took over', durationMs: 1 };
+  }, dir);
+
+  await (third as any).tick();
+
+  assert.deepEqual(calls, ['first:job-1', 'third:job-1']);
+});

@@ -8,7 +8,7 @@
  * Built-in cron parser — no external dependencies.
  */
 
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, renameSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, renameSync, unlinkSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { SchedulerConfig } from '../types.js';
@@ -269,6 +269,10 @@ export class CronScheduler {
   private jobsFilePath: string;
   private runsDirPath: string;
   private decisionsFilePath: string;
+  private ownerId = `${process.pid}-${randomUUID()}`;
+  private ownershipDirPath: string;
+  private ownershipFilePath: string;
+  private ownershipLeaseMs: number;
 
   constructor(config: SchedulerConfig, handler: JobHandler, runtimeDir: string) {
     this.config = config;
@@ -277,6 +281,9 @@ export class CronScheduler {
     this.jobsFilePath = join(runtimeDir, config.jobsFile);
     this.runsDirPath = join(runtimeDir, config.runsDir);
     this.decisionsFilePath = join(runtimeDir, 'cron-decisions.jsonl');
+    this.ownershipDirPath = join(runtimeDir, 'cron-scheduler.lock');
+    this.ownershipFilePath = join(this.ownershipDirPath, 'owner.json');
+    this.ownershipLeaseMs = config.ownershipLeaseMs ?? 2 * 60 * 1000;
 
     // Ensure directories exist
     mkdirSync(dirname(this.jobsFilePath), { recursive: true });
@@ -299,12 +306,16 @@ export class CronScheduler {
   }
 
   stop(): void {
-    if (!this.running) return;
+    if (!this.running) {
+      this.releaseOwnership();
+      return;
+    }
     this.running = false;
     if (this.tickTimer) {
       clearInterval(this.tickTimer);
       this.tickTimer = null;
     }
+    this.releaseOwnership();
     console.log('[scheduler] Stopped');
   }
 
@@ -367,6 +378,13 @@ export class CronScheduler {
   }
 
   async runJobNow(id: string): Promise<JobResult> {
+    if (!this.ensureOwnership()) {
+      return {
+        status: 'error',
+        error: 'scheduler lease held by another process',
+        durationMs: 0,
+      };
+    }
     const job = this.jobs.get(id);
     if (!job) {
       return {
@@ -388,6 +406,8 @@ export class CronScheduler {
   // ─── Tick Loop ─────────────────────────────────────────
 
   private async tick(): Promise<void> {
+    if (!this.ensureOwnership()) return;
+
     const now = Date.now();
     const dueJobs: CronJob[] = [];
 
@@ -952,6 +972,81 @@ export class CronScheduler {
       appendFileSync(this.decisionsFilePath, JSON.stringify(decision) + '\n');
     } catch (err) {
       console.error(`[scheduler] Failed to append decision log for ${decision.jobId}:`, err);
+    }
+  }
+
+  private ensureOwnership(): boolean {
+    const now = Date.now();
+
+    if (this.hasOwnership()) {
+      this.writeOwnership(now);
+      return true;
+    }
+
+    try {
+      mkdirSync(this.ownershipDirPath);
+      this.writeOwnership(now);
+      return true;
+    } catch {
+      if (!this.existingOwnerIsStale(now)) return false;
+      try {
+        rmSync(this.ownershipDirPath, { recursive: true, force: true });
+        mkdirSync(this.ownershipDirPath);
+        this.writeOwnership(now);
+        return true;
+      } catch {
+        return this.hasOwnership();
+      }
+    }
+  }
+
+  private hasOwnership(): boolean {
+    try {
+      const owner = JSON.parse(readFileSync(this.ownershipFilePath, 'utf8')) as { ownerId?: string };
+      return owner.ownerId === this.ownerId;
+    } catch {
+      return false;
+    }
+  }
+
+  private writeOwnership(now: number): void {
+    writeFileSync(this.ownershipFilePath, JSON.stringify({
+      schema: 'home23.scheduler.owner.v1',
+      ownerId: this.ownerId,
+      pid: process.pid,
+      acquiredAt: new Date(now).toISOString(),
+      heartbeatAtMs: now,
+    }, null, 2), 'utf8');
+  }
+
+  private existingOwnerIsStale(now: number): boolean {
+    try {
+      const owner = JSON.parse(readFileSync(this.ownershipFilePath, 'utf8')) as { ownerId?: string; pid?: number; heartbeatAtMs?: number };
+      if (owner.ownerId === this.ownerId) return false;
+      const heartbeatAtMs = Number(owner.heartbeatAtMs);
+      if (Number.isFinite(heartbeatAtMs) && now - heartbeatAtMs > this.ownershipLeaseMs) return true;
+      if (Number.isFinite(owner.pid) && !this.pidAlive(Number(owner.pid))) return true;
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  private releaseOwnership(): void {
+    if (!this.hasOwnership()) return;
+    try {
+      rmSync(this.ownershipDirPath, { recursive: true, force: true });
+    } catch {
+      // Best effort: stale owners are stealable by heartbeat timeout or dead pid.
+    }
+  }
+
+  private pidAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
     }
   }
 }
