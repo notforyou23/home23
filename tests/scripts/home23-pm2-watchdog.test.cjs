@@ -74,7 +74,6 @@ function healthyObserved() {
         pm2_env: {
           status: 'online',
           HOME23_AGENT: 'jerry',
-          cron_restart: '7,37 * * * *',
         },
       },
     ],
@@ -122,7 +121,20 @@ test('pm2 watchdog treats PM2 online rows with dead pids as repairable', () => {
   assert.equal(inspection.ok, false);
   assert.ok(inspection.issues.some((issue) => issue.type === 'pm2_pid_dead' && issue.name === 'home23-jerry'));
   assert.deepEqual(repair.deleteNames, ['home23-jerry']);
-  assert.deepEqual(repair.startNames, ['home23-jerry', 'home23-jerry-dash', 'home23-jerry-harness']);
+  assert.deepEqual(repair.startNames, ['home23-jerry']);
+});
+
+test('pm2 watchdog treats harness cron_restart as contamination', () => {
+  const observed = healthyObserved();
+  observed.pm2List[2].pm2_env.cron_restart = '7,37 * * * *';
+
+  const inspection = inspectContract(expected(), observed);
+  const repair = planRepair(expected(), inspection);
+
+  assert.equal(inspection.ok, false);
+  assert.ok(inspection.issues.some((issue) => issue.type === 'pm2_unexpected_cron_restart' && issue.name === 'home23-jerry-harness'));
+  assert.deepEqual(repair.deleteNames, ['home23-jerry-harness']);
+  assert.deepEqual(repair.startNames, ['home23-jerry-harness']);
 });
 
 test('pm2 watchdog catches stale dashboard listener and wrong dash env', () => {
@@ -151,7 +163,7 @@ test('pm2 watchdog catches stale dashboard listener and wrong dash env', () => {
   assert.ok(inspection.issues.some((issue) => issue.type === 'legacy_dashboard_listener' && issue.pid === 38221));
   assert.deepEqual(repair.killPids, [38221, 70870]);
   assert.deepEqual(repair.deleteNames, ['home23-jerry-dash']);
-  assert.deepEqual(repair.startNames, ['home23-jerry', 'home23-jerry-dash', 'home23-jerry-harness']);
+  assert.deepEqual(repair.startNames, ['home23-jerry-dash']);
 });
 
 test('pm2 watchdog ignores a non-Home23 process on legacy dashboard port', () => {

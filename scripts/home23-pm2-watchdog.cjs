@@ -124,7 +124,7 @@ function inspectContract(expected, observed) {
         issues.push({ type: 'pm2_env_mismatch', role, name: spec.name, key, expected: expectedValue, actual, repair: 'delete_and_start' });
       }
     }
-    if (role !== 'harness' && env.cron_restart) {
+    if (env.cron_restart) {
       issues.push({ type: 'pm2_unexpected_cron_restart', role, name: spec.name, cronRestart: String(env.cron_restart), repair: 'delete_and_start' });
     }
   }
@@ -231,25 +231,29 @@ function isHome23DashboardListener(listener, root) {
 function planRepair(expected, inspection) {
   const killPids = new Set();
   const deleteNames = new Set();
+  const startNames = new Set();
   let startTriplet = false;
 
   for (const issue of inspection.issues) {
     if (issue.repair === 'manual') continue;
     if (issue.repair === 'kill_orphan' || issue.repair === 'kill_orphan_and_start') {
       if (Number(issue.pid)) killPids.add(Number(issue.pid));
-      if (issue.repair === 'kill_orphan_and_start') startTriplet = true;
+      if (issue.repair === 'kill_orphan_and_start' && issue.name) startNames.add(issue.name);
     }
     if (issue.repair === 'start_triplet') startTriplet = true;
     if (issue.repair === 'delete_and_start') {
       deleteNames.add(issue.name);
-      startTriplet = true;
+      startNames.add(issue.name);
     }
   }
 
+  const roleNames = Object.values(expected.roles).map((role) => role.name);
   return {
     killPids: Array.from(killPids).sort((a, b) => a - b),
     deleteNames: Array.from(deleteNames).sort(),
-    startNames: startTriplet ? Object.values(expected.roles).map((role) => role.name) : [],
+    startNames: startTriplet
+      ? roleNames
+      : roleNames.filter((name) => startNames.has(name)),
     manualIssues: inspection.issues.filter((issue) => issue.repair === 'manual'),
   };
 }
