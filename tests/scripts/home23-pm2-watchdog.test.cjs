@@ -106,9 +106,22 @@ test('pm2 watchdog detects missing engine and harness even when dashboard port r
   assert.ok(issueTypes.includes('pm2_missing'));
   assert.deepEqual(planRepair(expected(), inspection).startNames, [
     'home23-jerry',
-    'home23-jerry-dash',
     'home23-jerry-harness',
   ]);
+});
+
+test('pm2 watchdog starts only a missing role instead of churning a healthy triplet', () => {
+  const observed = healthyObserved();
+  observed.pm2List = observed.pm2List.filter((proc) => proc.name !== 'home23-jerry');
+  observed.listeners = [
+    { port: '5002', pid: 1002, command: '/Users/jtr/_JTR23_/release/home23/engine/src/dashboard/server.js' },
+  ];
+
+  const inspection = inspectContract(expected(), observed);
+  const repair = planRepair(expected(), inspection);
+
+  assert.equal(inspection.ok, false);
+  assert.deepEqual(repair.startNames, ['home23-jerry']);
 });
 
 test('pm2 watchdog treats PM2 online rows with dead pids as repairable', () => {

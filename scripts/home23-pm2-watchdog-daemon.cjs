@@ -8,6 +8,7 @@ const { execFileSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '..');
 const WATCHDOG = path.join(ROOT, 'scripts', 'home23-pm2-watchdog.cjs');
 const DEFAULT_INTERVAL_MS = 60_000;
+const DUPLICATE_LOCK_RETRY_MS = 10_000;
 const STATUS_PATH = path.join(ROOT, 'logs', 'pm2-watchdog-daemon.status.jsonl');
 const LOCK_PATH = path.join(ROOT, 'logs', 'pm2-watchdog-daemon.lock');
 const PM2_ENV_BLOCKLIST = [
@@ -101,6 +102,14 @@ function commandForPid(pid) {
 
 function isPm2ManagedProcess() {
   return process.env.pm_id !== undefined || process.env.NODE_APP_INSTANCE !== undefined;
+}
+
+function duplicateLockMode(env = process.env) {
+  return env.pm_id !== undefined || env.NODE_APP_INSTANCE !== undefined ? 'retry' : 'exit';
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function waitSync(ms) {
@@ -208,14 +217,24 @@ function releaseDaemonLock() {
   }
 }
 
+async function waitForDaemonLock() {
+  while (!acquireDaemonLock()) {
+    console.log('[pm2-watchdog-daemon] another watchdog owns the repair lock; waiting to take over');
+    await sleep(DUPLICATE_LOCK_RETRY_MS);
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   const agents = args.agents.length ? args.agents : discoverAgents(ROOT);
   if (agents.length === 0) throw new Error('No Home23 agent triplets found in ecosystem.config.cjs');
 
   if (!acquireDaemonLock()) {
-    console.log('[pm2-watchdog-daemon] another watchdog owns the repair lock; exiting duplicate');
-    return;
+    if (duplicateLockMode() === 'exit') {
+      console.log('[pm2-watchdog-daemon] another watchdog owns the repair lock; exiting duplicate');
+      return;
+    }
+    await waitForDaemonLock();
   }
 
   process.once('exit', releaseDaemonLock);
@@ -266,4 +285,4 @@ if (require.main === module || process.env.NODE_APP_INSTANCE !== undefined || pr
   });
 }
 
-module.exports = { discoverAgents, parseArgs };
+module.exports = { discoverAgents, parseArgs, duplicateLockMode };

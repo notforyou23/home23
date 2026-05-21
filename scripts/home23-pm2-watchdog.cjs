@@ -240,7 +240,10 @@ function planRepair(expected, inspection) {
       if (Number(issue.pid)) killPids.add(Number(issue.pid));
       if (issue.repair === 'kill_orphan_and_start' && issue.name) startNames.add(issue.name);
     }
-    if (issue.repair === 'start_triplet') startTriplet = true;
+    if (issue.repair === 'start_triplet') {
+      if (issue.name) startNames.add(issue.name);
+      else startTriplet = true;
+    }
     if (issue.repair === 'delete_and_start') {
       deleteNames.add(issue.name);
       startNames.add(issue.name);
