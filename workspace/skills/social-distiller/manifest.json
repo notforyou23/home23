@@ -1,0 +1,58 @@
+{
+  "id": "social-distiller",
+  "version": "1.0.0",
+  "name": "Social Distiller",
+  "description": "Turn a source artifact, curriculum topic, dissertation, newsletter, or live lesson into useful public X posts/replies by distilling the lesson, researching live chatter, queueing candidates, and optionally posting through the canonical x skill.",
+  "layer": "skill",
+  "runtime": "nodejs",
+  "category": "social",
+  "author": "home23",
+  "entry": "index.js",
+  "keywords": [
+    "social distiller",
+    "x outreach",
+    "tweet distillation",
+    "newsletter promotion",
+    "curriculum topic",
+    "public lesson",
+    "reply queue",
+    "x post"
+  ],
+  "triggers": [
+    "distill this into a tweet",
+    "find a tweet to respond to from this article",
+    "turn this newsletter into x posts",
+    "make this curriculum topic useful on x",
+    "create a social reply queue",
+    "post the best distilled lesson"
+  ],
+  "requiresTools": [],
+  "dependsOn": [
+    "x",
+    "x-research"
+  ],
+  "composes": [
+    "x-research",
+    "x",
+    "source-validation",
+    "knowledge-structuring"
+  ],
+  "sideEffects": true,
+  "hooks": {
+    "beforeRun": "hooks/before-run.js"
+  },
+  "actions": [
+    "distill",
+    "research",
+    "queue",
+    "post",
+    "verify"
+  ],
+  "compositionHints": [
+    "Use distill first to create public lesson cards from internal artifacts.",
+    "Use research to find live X conversations before deciding reply vs standalone post.",
+    "Use queue for a full repeatable workflow: source -> lesson -> X chatter -> candidates -> recommendation.",
+    "Use post only with confirm:true; it delegates writes to the canonical x skill and verifies by reading the posted tweet.",
+    "For generated-image posts, generate the image first, then post with generatedImage:'latest', requireMedia:true, requireGeneratedImage:true."
+  ]
+}

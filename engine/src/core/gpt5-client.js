@@ -6,9 +6,16 @@ const { getOpenAIClient } = require('./openai-client');
  * Uses OpenAI's Responses API with current GPT-5-family models and tool support
  */
 class GPT5Client {
-  constructor(logger) {
-    this.client = getOpenAIClient();
+  constructor(logger, client = null) {
+    this.client = client;
     this.logger = logger;
+  }
+
+  getClient() {
+    if (!this.client) {
+      this.client = getOpenAIClient();
+    }
+    return this.client;
   }
 
   /**
@@ -112,7 +119,7 @@ class GPT5Client {
 
     // Call streaming API
     try {
-      const stream = await this.client.responses.stream(payload);
+      const stream = await this.getClient().responses.stream(payload);
 
       let aggregatedText = '';
       let reasoningSummary = '';
@@ -548,7 +555,7 @@ class GPT5Client {
     try {
       this.logger?.info?.('Creating code execution container...');
       const containerName = `code-exec-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-      const container = await this.client.containers.create({
+      const container = await this.getClient().containers.create({
         name: containerName
       });
       this.logger?.info?.('Container created', { containerId: container.id, name: containerName });
@@ -570,7 +577,7 @@ class GPT5Client {
     try {
       this.logger?.debug?.('Uploading file to container', { containerId, filename });
       const fileForUpload = file instanceof File ? file : await OpenAI.toFile(file, filename || 'container_file');
-      const result = await this.client.containers.files.create(containerId, {
+      const result = await this.getClient().containers.files.create(containerId, {
         file: fileForUpload
       });
       this.logger?.debug?.('File uploaded successfully', { containerId, filename });
@@ -596,7 +603,7 @@ class GPT5Client {
       this.logger?.debug?.('Listing container files', { containerId });
 
       const files = [];
-      const iterator = this.client.containers.files.list(containerId, options);
+      const iterator = this.getClient().containers.files.list(containerId, options);
 
       for await (const file of iterator) {
         files.push(file);
@@ -628,7 +635,7 @@ class GPT5Client {
     try {
       this.logger?.debug?.('Downloading file from container', { containerId, fileId });
 
-      const response = await this.client.containers.files.content.retrieve(fileId, {
+      const response = await this.getClient().containers.files.content.retrieve(fileId, {
         container_id: containerId
       });
 
@@ -834,7 +841,7 @@ class GPT5Client {
   async deleteContainer(containerId) {
     try {
       this.logger?.info?.('Deleting container', { containerId });
-      await this.client.containers.delete(containerId);
+      await this.getClient().containers.delete(containerId);
       this.logger?.info?.('Container deleted successfully', { containerId });
     } catch (error) {
       // Log but don't throw - cleanup should be best-effort

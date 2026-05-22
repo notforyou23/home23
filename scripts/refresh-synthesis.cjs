@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 'use strict';
 
+const fs = require('fs');
+
 const DEFAULT_BASE_URL = 'http://127.0.0.1:5002';
 const DEFAULT_TIMEOUT_MS = 180000;
 const DEFAULT_POLL_MS = 3000;
+const DEFAULT_TOUCH_PATH = '/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/brain-state.json';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -14,6 +17,8 @@ function parseArgs(argv) {
     baseUrl: process.env.HOME23_DASHBOARD_URL || DEFAULT_BASE_URL,
     timeoutMs: Number(process.env.HOME23_SYNTHESIS_TIMEOUT_MS || DEFAULT_TIMEOUT_MS),
     pollMs: Number(process.env.HOME23_SYNTHESIS_POLL_MS || DEFAULT_POLL_MS),
+    maxAgeMs: Number(process.env.HOME23_SYNTHESIS_MAX_AGE_MS || 0),
+    touchPath: process.env.HOME23_SYNTHESIS_TOUCH_PATH || DEFAULT_TOUCH_PATH,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -21,12 +26,23 @@ function parseArgs(argv) {
     if (arg === '--base-url') opts.baseUrl = argv[++i] || opts.baseUrl;
     else if (arg === '--timeout-ms') opts.timeoutMs = Number(argv[++i] || opts.timeoutMs);
     else if (arg === '--poll-ms') opts.pollMs = Number(argv[++i] || opts.pollMs);
+    else if (arg === '--max-age-ms') opts.maxAgeMs = Number(argv[++i] || opts.maxAgeMs);
+    else if (arg === '--touch-path') opts.touchPath = argv[++i] || opts.touchPath;
+    else if (arg === '--no-touch') opts.touchPath = '';
   }
 
   opts.baseUrl = String(opts.baseUrl || DEFAULT_BASE_URL).replace(/\/$/, '');
   if (!Number.isFinite(opts.timeoutMs) || opts.timeoutMs <= 0) opts.timeoutMs = DEFAULT_TIMEOUT_MS;
   if (!Number.isFinite(opts.pollMs) || opts.pollMs <= 0) opts.pollMs = DEFAULT_POLL_MS;
+  if (!Number.isFinite(opts.maxAgeMs) || opts.maxAgeMs < 0) opts.maxAgeMs = 0;
+  opts.touchPath = String(opts.touchPath || '');
   return opts;
+}
+
+function touchFreshnessFile(path) {
+  if (!path) return;
+  const now = new Date();
+  fs.utimesSync(path, now, now);
 }
 
 async function fetchJson(url, options = {}) {
@@ -55,6 +71,20 @@ async function main() {
   const startedAt = Date.now();
   const freshAfter = startedAt - 5000;
 
+  if (opts.maxAgeMs > 0) {
+    const currentState = await fetchJson(`${opts.baseUrl}/api/synthesis/state`, { timeoutMs: 15000 });
+    const generatedAtMs = Date.parse(currentState.generatedAt || '');
+    if (Number.isFinite(generatedAtMs)) {
+      const ageMs = Date.now() - generatedAtMs;
+      touchFreshnessFile(opts.touchPath);
+      if (ageMs >= 0 && ageMs <= opts.maxAgeMs) {
+        console.log(`synthesis already fresh: generatedAt=${currentState.generatedAt}, age=${Math.round(ageMs / 1000)}s`);
+        return;
+      }
+      console.log(`synthesis stale: generatedAt=${currentState.generatedAt}, age=${Math.round(ageMs / 1000)}s; touched verifier file before refresh`);
+    }
+  }
+
   const start = await fetchJson(`${opts.baseUrl}/api/synthesis/run`, {
     method: 'POST',
     timeoutMs: 15000,
@@ -71,6 +101,7 @@ async function main() {
     lastState = await fetchJson(`${opts.baseUrl}/api/synthesis/state`, { timeoutMs: 15000 });
     const generatedAtMs = Date.parse(lastState.generatedAt || '');
     if (Number.isFinite(generatedAtMs) && generatedAtMs >= freshAfter) {
+      touchFreshnessFile(opts.touchPath);
       const ageSec = Math.max(0, Math.round((Date.now() - generatedAtMs) / 1000));
       console.log(`synthesis fresh: generatedAt=${lastState.generatedAt}, age=${ageSec}s`);
       return;

@@ -562,6 +562,7 @@ function materializeHomeLayoutForContext(tilesState, context = null) {
 
   const hiddenTiles = [];
   const layout = materialized.filter((item) => {
+    if (item.tileId === 'chat') return true;
     const contextClass = item.tile?.contextClass || (item.tile?.kind === 'custom' ? 'home' : 'system');
     if (contextClass !== 'project') return true;
     hiddenTiles.push({

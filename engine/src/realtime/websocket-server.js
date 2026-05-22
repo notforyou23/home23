@@ -58,6 +58,27 @@ class RealtimeServer {
             return;
           }
 
+          // Compatibility status endpoint. Some live-problem verifiers hit the
+          // realtime HTTP root and expect an engine.cycle JSON path; keep this
+          // tiny and read-only so the WS/admin surface remains unchanged.
+          if (req.url === '/') {
+            const cycle = this.orchestrator?.cycleCount ?? null;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              ok: true,
+              engine: {
+                cycle,
+                status: cycle == null ? 'unknown' : 'running'
+              },
+              realtime: {
+                uptime: Date.now() - this.stats.startTime,
+                clients: this.clients.size,
+                eventsBroadcast: this.stats.eventsBroadcast
+              }
+            }));
+            return;
+          }
+
           // Health check endpoint
           if (req.url === '/health') {
             res.writeHead(200, { 'Content-Type': 'application/json' });

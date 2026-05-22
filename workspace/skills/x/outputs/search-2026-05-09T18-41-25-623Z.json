@@ -1,0 +1,420 @@
+{
+  "data": [
+    {
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 5
+      },
+      "id": "2053179055504085113",
+      "edit_history_tweet_ids": [
+        "2053179055504085113"
+      ],
+      "author_id": "1998076206185611266",
+      "text": "agent memory gets weird when “remember this” means “trust this forever”\n\nthe useful split is:\n\n- notes you retrieve\n- state you inherit\n- receipts you can verify\n- stale stuff you should compost\n\nmost agent systems blur those together and then wonder why one bad assumption https://t.co/s6ZN8OL2m6",
+      "created_at": "2026-05-09T18:23:27.000Z",
+      "conversation_id": "2053179055504085113",
+      "entities": {
+        "urls": [
+          {
+            "start": 274,
+            "end": 297,
+            "url": "https://t.co/s6ZN8OL2m6",
+            "expanded_url": "https://x.com/_cosmo_2/status/2053179055504085113/photo/1",
+            "display_url": "pic.x.com/s6ZN8OL2m6",
+            "media_key": "3_2053179051968172036"
+          }
+        ]
+      }
+    },
+    {
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 2,
+        "like_count": 1,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 19
+      },
+      "id": "2052449599705751890",
+      "edit_history_tweet_ids": [
+        "2052449599705751890"
+      ],
+      "author_id": "2026372624507650048",
+      "text": "A stale agent memory bug looks harmless until it silently picks yesterday’s config.\n\nThe fix was not a bigger context window.\n\nIt was this tiny memory card schema. https://t.co/TVJkhG4w2B",
+      "created_at": "2026-05-07T18:04:51.000Z",
+      "conversation_id": "2052449599705751890",
+      "entities": {
+        "urls": [
+          {
+            "start": 164,
+            "end": 187,
+            "url": "https://t.co/TVJkhG4w2B",
+            "expanded_url": "https://x.com/geraldrsterling/status/2052449599705751890/photo/1",
+            "display_url": "pic.x.com/TVJkhG4w2B",
+            "media_key": "3_2052449571364859904"
+          }
+        ]
+      }
+    },
+    {
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 40
+      },
+      "id": "2052435298194432112",
+      "edit_history_tweet_ids": [
+        "2052435298194432112"
+      ],
+      "author_id": "1501728307137884161",
+      "entities": {
+        "mentions": [
+          {
+            "start": 0,
+            "end": 13,
+            "username": "DorukArdahan",
+            "id": "969983493429227520"
+          }
+        ]
+      },
+      "text": "@DorukArdahan That stale-state case is the one I care about. Agent memory looks easy when the query is clean; real repos ask with half-names and old decisions mixed in.",
+      "created_at": "2026-05-07T17:08:02.000Z",
+      "conversation_id": "2052431217660768658"
+    },
+    {
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 1,
+        "like_count": 1,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 25
+      },
+      "id": "2052410085234610179",
+      "edit_history_tweet_ids": [
+        "2052410085234610179"
+      ],
+      "author_id": "1998292001725571072",
+      "entities": {
+        "mentions": [
+          {
+            "start": 0,
+            "end": 8,
+            "username": "woisau1",
+            "id": "961265690463363073"
+          }
+        ]
+      },
+      "text": "@woisau1 We use rolling context files across 12+ agents in production. The hard part is selective forgetting. Cross-agent memory bleed killed us early - one agent's stale context poisoned another's decisions. Explicit decay policies per agent type fixed it.",
+      "created_at": "2026-05-07T15:27:50.000Z",
+      "conversation_id": "2052075873843511334"
+    },
+    {
+      "entities": {
+        "hashtags": [
+          {
+            "start": 0,
+            "end": 7,
+            "tag": "Claude"
+          },
+          {
+            "start": 121,
+            "end": 124,
+            "tag": "AI"
+          },
+          {
+            "start": 125,
+            "end": 135,
+            "tag": "ClaudeAPI"
+          },
+          {
+            "start": 136,
+            "end": 148,
+            "tag": "AgentMemory"
+          },
+          {
+            "start": 149,
+            "end": 159,
+            "tag": "Anthropic"
+          }
+        ],
+        "urls": [
+          {
+            "start": 160,
+            "end": 183,
+            "url": "https://t.co/iXlulMMYR3",
+            "expanded_url": "https://platform.claude.com/docs/en/managed-agents/dreams",
+            "display_url": "platform.claude.com/docs/en/manage…",
+            "images": [
+              {
+                "url": "https://pbs.twimg.com/news_img/2052067783932833793/Ep82sPSo?format=png&name=orig",
+                "width": 1200,
+                "height": 630
+              },
+              {
+                "url": "https://pbs.twimg.com/news_img/2052067783932833793/Ep82sPSo?format=png&name=150x150",
+                "width": 150,
+                "height": 150
+              }
+            ],
+            "status": 200,
+            "title": "Dreams",
+            "description": "Let Claude reflect on past sessions to curate an agent's memory and surface new insights.",
+            "unwound_url": "https://platform.claude.com/docs/en/managed-agents/dreams"
+          }
+        ]
+      },
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 11
+      },
+      "id": "2052336387832377720",
+      "edit_history_tweet_ids": [
+        "2052336387832377720"
+      ],
+      "author_id": "1883408073538347008",
+      "text": "#Claude \"dreams\" to clean up agent memory. Up to 100 sessions analyzed async. Duplicates merged, stale entries replaced. #AI #ClaudeAPI #AgentMemory #Anthropic https://t.co/iXlulMMYR3",
+      "created_at": "2026-05-07T10:35:00.000Z",
+      "conversation_id": "2052336387832377720"
+    },
+    {
+      "public_metrics": {
+        "retweet_count": 3,
+        "reply_count": 0,
+        "like_count": 18,
+        "quote_count": 0,
+        "bookmark_count": 7,
+        "impression_count": 488
+      },
+      "id": "2052297395082232007",
+      "edit_history_tweet_ids": [
+        "2052297395082232007"
+      ],
+      "author_id": "1772917026991824897",
+      "text": "Your AI agent is not forgetting. It is remembering too much\n\nEvery old rule you gave it still competes with the new one.\n\nEvery stale preference becomes fake context\n\nEvery half-correct workflow stays alive longer than it should\n\nThis is why agent memory starts feeling \"smart\" at https://t.co/lNaBY7yXtB https://t.co/Ysza3y4N3E",
+      "created_at": "2026-05-07T08:00:03.000Z",
+      "conversation_id": "2052297395082232007",
+      "entities": {
+        "urls": [
+          {
+            "start": 281,
+            "end": 304,
+            "url": "https://t.co/lNaBY7yXtB",
+            "expanded_url": "https://x.com/ItsRoboki/status/2052297395082232007/photo/1",
+            "display_url": "pic.x.com/lNaBY7yXtB",
+            "media_key": "3_2052297385397870592"
+          },
+          {
+            "start": 305,
+            "end": 328,
+            "url": "https://t.co/Ysza3y4N3E",
+            "expanded_url": "https://twitter.com/ParasVerma7454/status/2051604231736705309",
+            "display_url": "x.com/ParasVerma7454…"
+          }
+        ]
+      }
+    },
+    {
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 1,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 33
+      },
+      "id": "2052091241064742990",
+      "edit_history_tweet_ids": [
+        "2052091241064742990"
+      ],
+      "author_id": "750430484946006016",
+      "text": "- wired agent memory into kimi.md: when memory notices kimi.md is stale, it tells you to rerun /init\n- shipped skill extension\n(the skill extension is integrated with the adaptive agent routing i shipped last week. so:\nlight task: maybe no skills, medium task: most relevant",
+      "created_at": "2026-05-06T18:20:52.000Z",
+      "conversation_id": "2052091238070030483"
+    },
+    {
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 2
+      },
+      "id": "2052080997936648570",
+      "edit_history_tweet_ids": [
+        "2052080997936648570"
+      ],
+      "author_id": "2051343713473806336",
+      "text": "Claude 'dreaming' is good branding, but compounding agent memory is rare. Stale context accumulation is the default. Multiagent orchestration and webhooks in public beta are the parts worth watching.",
+      "created_at": "2026-05-06T17:40:10.000Z",
+      "conversation_id": "2052080997936648570"
+    },
+    {
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 7
+      },
+      "id": "2051991954511085874",
+      "edit_history_tweet_ids": [
+        "2051991954511085874"
+      ],
+      "author_id": "2020097138592468992",
+      "entities": {
+        "mentions": [
+          {
+            "start": 0,
+            "end": 12,
+            "username": "chenzeling4",
+            "id": "1498803336048353288"
+          }
+        ]
+      },
+      "text": "@chenzeling4 Inspectable is the useful bit. Half the pain with agent memory isn't storage, it's not knowing why something was written, what observed it, and whether it's stale. Markdown at least lets you diff the assistant's supposed memory like a normal system instead of treating it as",
+      "created_at": "2026-05-06T11:46:20.000Z",
+      "conversation_id": "2051989867375046895"
+    }
+  ],
+  "includes": {
+    "users": [
+      {
+        "public_metrics": {
+          "followers_count": 44,
+          "following_count": 267,
+          "tweet_count": 586,
+          "listed_count": 0,
+          "like_count": 109,
+          "media_count": 31
+        },
+        "name": "Cosmo",
+        "username": "_cosmo_2",
+        "id": "1998076206185611266"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 97,
+          "following_count": 350,
+          "tweet_count": 1134,
+          "listed_count": 0,
+          "like_count": 360,
+          "media_count": 26
+        },
+        "name": "Gerald Sterling",
+        "username": "geraldrsterling",
+        "id": "2026372624507650048"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 129,
+          "following_count": 429,
+          "tweet_count": 927,
+          "listed_count": 0,
+          "like_count": 216,
+          "media_count": 0
+        },
+        "name": "Boaz Hwang",
+        "username": "BoazWith",
+        "id": "1501728307137884161"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 349,
+          "following_count": 87,
+          "tweet_count": 2857,
+          "listed_count": 7,
+          "like_count": 1284,
+          "media_count": 2
+        },
+        "name": "Chen Avnery",
+        "username": "MindTheGapMTG",
+        "id": "1998292001725571072"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 33,
+          "following_count": 26,
+          "tweet_count": 3722,
+          "listed_count": 0,
+          "like_count": 9,
+          "media_count": 69
+        },
+        "name": "AI & Tech Daily",
+        "username": "SmartTechTrendz",
+        "id": "1883408073538347008"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 817,
+          "following_count": 249,
+          "tweet_count": 6419,
+          "listed_count": 3,
+          "like_count": 10198,
+          "media_count": 1082
+        },
+        "name": "Jagrit",
+        "username": "ItsRoboki",
+        "id": "1772917026991824897"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 1072,
+          "following_count": 434,
+          "tweet_count": 8034,
+          "listed_count": 7,
+          "like_count": 53563,
+          "media_count": 502
+        },
+        "name": "Sina Meraji",
+        "username": "sinasanm",
+        "id": "750430484946006016"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 7,
+          "following_count": 304,
+          "tweet_count": 60,
+          "listed_count": 0,
+          "like_count": 6,
+          "media_count": 0
+        },
+        "name": "Kame Vankov",
+        "username": "KameVankov",
+        "id": "2051343713473806336"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 170,
+          "following_count": 316,
+          "tweet_count": 1383,
+          "listed_count": 3,
+          "like_count": 7,
+          "media_count": 3
+        },
+        "name": "Mia",
+        "username": "Mia_ai_fandom",
+        "id": "2020097138592468992"
+      }
+    ]
+  },
+  "meta": {
+    "newest_id": "2053179055504085113",
+    "oldest_id": "2051991954511085874",
+    "result_count": 9,
+    "next_token": "b26v89c19zqg8o3juengri9wyxk7gaifdv5wdkj57vh4t"
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "data": {
+    "public_metrics": {
+      "retweet_count": 16,
+      "reply_count": 22,
+      "like_count": 167,
+      "quote_count": 4,
+      "bookmark_count": 307,
+      "impression_count": 140282
+    },
+    "created_at": "2026-04-19T16:33:38.000Z",
+    "conversation_id": "2045903661042479135",
+    "article": {
+      "title": "Agents Are Stuck in a Loop. Memory Growth and Propagation is why  !"
+    },
+    "entities": {
+      "urls": [
+        {
+          "start": 0,
+          "end": 23,
+          "url": "https://t.co/1hB1o6In9W",
+          "expanded_url": "http://x.com/i/article/2045868792388169728",
+          "display_url": "x.com/i/article/2045…",
+          "status": 500,
+          "unwound_url": "https://x.com/i/article/2045868792388169728"
+        }
+      ]
+    },
+    "text": "https://t.co/1hB1o6In9W",
+    "author_id": "1623565093048061952",
+    "id": "2045903661042479135",
+    "edit_history_tweet_ids": [
+      "2045903661042479135"
+    ]
+  },
+  "includes": {
+    "users": [
+      {
+        "username": "Pseudo_Sid26",
+        "public_metrics": {
+          "followers_count": 4332,
+          "following_count": 1727,
+          "tweet_count": 10415,
+          "listed_count": 17,
+          "like_count": 21473,
+          "media_count": 737
+        },
+        "id": "1623565093048061952",
+        "name": "Siddharth"
+      }
+    ]
+  }
+}

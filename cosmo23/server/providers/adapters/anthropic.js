@@ -85,6 +85,10 @@ class AnthropicAdapter extends ProviderAdapter {
         }).map(model => model.id);
     this._useOAuthService = this._providerId === 'anthropic' && config.useOAuthService !== false && anthropicOAuth !== null;
     this._isOAuth = Boolean(config.authToken && isOAuthToken(config.authToken));
+    this._availableModelIds = null;
+    this._availableModelIdsFetchedAt = 0;
+    this._modelListHeaders = null;
+    this._modelListBaseURL = config.baseURL || config.baseUrl || 'https://api.anthropic.com';
 
     if (config.authToken) {
       this.config.authToken = config.authToken;
@@ -129,6 +133,8 @@ class AnthropicAdapter extends ProviderAdapter {
         if (credentials?.authToken) {
           this.config.authToken = credentials.authToken;
           this._isOAuth = isOAuthToken(credentials.authToken);
+          this._modelListHeaders = this._buildModelListHeaders(credentials);
+          this._modelListBaseURL = 'https://api.anthropic.com';
         }
       } catch (e) {
         console.warn('[AnthropicAdapter] Failed to get credentials from OAuth service:', e.message);
@@ -142,12 +148,19 @@ class AnthropicAdapter extends ProviderAdapter {
     const options = {};
 
     if (this._isOAuth && this.config.authToken) {
+      this._modelListHeaders = this._buildModelListHeaders({
+        authToken: this.config.authToken,
+        defaultHeaders: getStealthHeaders()
+      });
       options.apiKey = null;
       options.authToken = this.config.authToken;
       options.defaultHeaders = getStealthHeaders();
       options.dangerouslyAllowBrowser = true;
       console.log(`[${this.id.toUpperCase()}] Using OAuth stealth mode`);
     } else if (this.config.apiKey) {
+      this._modelListHeaders = this._buildModelListHeaders({
+        apiKey: this.config.apiKey
+      });
       options.apiKey = this.config.apiKey;
       console.log(`[${this.id.toUpperCase()}] Using API key mode`);
     } else {
@@ -403,10 +416,11 @@ class AnthropicAdapter extends ProviderAdapter {
       await this._initClientAsync();
     }
     const client = this._getClient();
+    const wireModel = await this._resolveWireModel(prepared.model);
 
     // Build Anthropic request
     const anthropicRequest = {
-      model: prepared.model,
+      model: wireModel,
       max_tokens: prepared.maxTokens || 8192,
       messages: this._convertMessages(prepared.messages)
     };
@@ -464,10 +478,11 @@ class AnthropicAdapter extends ProviderAdapter {
       await this._initClientAsync();
     }
     const client = this._getClient();
+    const wireModel = await this._resolveWireModel(prepared.model);
 
     // Build Anthropic request
     const anthropicRequest = {
-      model: prepared.model,
+      model: wireModel,
       max_tokens: prepared.maxTokens || 8192,
       messages: this._convertMessages(prepared.messages)
     };
@@ -620,6 +635,100 @@ class AnthropicAdapter extends ProviderAdapter {
     error.provider = this.id;
     error.classified = this.classifyError(error);
     return error;
+  }
+
+  async _resolveWireModel(model) {
+    if (this._providerId !== 'anthropic') {
+      return model;
+    }
+
+    const available = await this._getAvailableModelIds();
+    if (!available || available.has(model)) {
+      return model;
+    }
+
+    const fallbacks = this._rankModelFallbacks(model, available);
+    if (fallbacks.length > 0) {
+      const wireModel = fallbacks[0];
+      console.warn('[AnthropicAdapter] Selected model not available to OAuth token; using wire fallback', {
+        requestedModel: model,
+        wireModel
+      });
+      return wireModel;
+    }
+
+    return model;
+  }
+
+  async _getAvailableModelIds() {
+    const now = Date.now();
+    if (this._availableModelIds && now - this._availableModelIdsFetchedAt < 5 * 60 * 1000) {
+      return this._availableModelIds;
+    }
+
+    try {
+      const page = await this._listAvailableModels();
+      this._availableModelIds = new Set((page.data || []).map(model => model.id).filter(Boolean));
+      this._availableModelIdsFetchedAt = now;
+      return this._availableModelIds;
+    } catch (error) {
+      console.warn('[AnthropicAdapter] Could not refresh model availability:', error.message);
+      return this._availableModelIds;
+    }
+  }
+
+  async _listAvailableModels() {
+    const client = this._getClient();
+    const modelsResource = client.models || client.beta?.models;
+    if (modelsResource?.list) {
+      return await modelsResource.list({ limit: 100 });
+    }
+    return await this._fetchAvailableModels();
+  }
+
+  async _fetchAvailableModels() {
+    if (!this._modelListHeaders) {
+      throw new Error('Anthropic model-list credentials unavailable');
+    }
+
+    const baseURL = String(this._modelListBaseURL || 'https://api.anthropic.com').replace(/\/+$/, '');
+    const url = `${baseURL}${baseURL.endsWith('/v1') ? '' : '/v1'}/models?limit=100`;
+    const response = await fetch(url, {
+      headers: this._modelListHeaders
+    });
+    if (!response.ok) {
+      throw new Error(`Anthropic model list failed with HTTP ${response.status}`);
+    }
+    return await response.json();
+  }
+
+  _buildModelListHeaders(credentials = {}) {
+    const headers = {
+      'anthropic-version': '2023-06-01',
+      ...(credentials.defaultHeaders || {})
+    };
+
+    if (credentials.authToken) {
+      headers.authorization = `Bearer ${credentials.authToken}`;
+    } else if (credentials.apiKey) {
+      headers['x-api-key'] = credentials.apiKey;
+    }
+
+    return headers;
+  }
+
+  _rankModelFallbacks(model, available) {
+    const ids = [...available];
+    const prefix = model.startsWith('claude-sonnet-')
+      ? 'claude-sonnet-'
+      : model.startsWith('claude-opus-')
+        ? 'claude-opus-'
+        : model.startsWith('claude-haiku-')
+          ? 'claude-haiku-'
+          : null;
+
+    if (!prefix) return [];
+    return ids.filter(id => id.startsWith(prefix));
   }
 }
 

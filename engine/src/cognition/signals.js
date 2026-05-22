@@ -41,6 +41,7 @@ function appendSignal(brainDir, { type, source, title, message, evidence, cycle 
     message: message || '',
     evidence: evidence || null,
     ts: new Date().toISOString(),
+    timestamp: new Date().toISOString(),
     ...(typeof cycle === 'number' ? { cycle } : {}),
   };
   try {

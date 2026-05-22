@@ -41,6 +41,8 @@ capabilities:
 
 Use this skill for read-only X/Twitter research. It is separate from `x`: use `x` for direct account operations like posting, replying, or checking the authenticated timeline.
 
+For outreach workflows, this skill should find and qualify reply targets; it should not post. Produce a queue with candidate URL, why it fits, draft reply in the user's voice, include-link yes/no, priority, and posted/skipped/failed state. Then hand selected writes to the `x` skill.
+
 For X API details and query/operator notes, read [references/x-api.md](references/x-api.md) only if needed.
 
 ## When to use

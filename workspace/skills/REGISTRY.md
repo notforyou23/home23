@@ -1,6 +1,6 @@
 # Skills Registry
 
-Generated from live skill discovery. Total: 13 skills.
+Generated from live skill discovery. Total: 15 skills.
 
 ## autoresearch
 
@@ -164,6 +164,24 @@ Generated from live skill discovery. Total: 13 skills.
 - **Composes:** minimax-music-gen
 - **Depends on:** none
 
+## social-distiller
+
+- **ID:** `social-distiller`
+- **Type:** manifest
+- **Runtime:** nodejs
+- **Category:** social
+- **Operational:** no
+- **Has SKILL.md:** no
+- **Has manifest:** yes
+- **Has scripts:** no
+- **Hooks:** beforeRun
+- **Description:** Turn a source artifact, curriculum topic, dissertation, newsletter, or live lesson into useful public X posts/replies by distilling the lesson, researching live chatter, queueing candidates, and optionally posting through the canonical x skill.
+- **Actions:** distill, research, queue, post, verify
+- **Triggers:** distill this into a tweet | find a tweet to respond to from this article | turn this newsletter into x posts | make this curriculum topic useful on x | create a social reply queue | post the best distilled lesson
+- **Requires tools:** none
+- **Composes:** x-research, x, source-validation, knowledge-structuring
+- **Depends on:** x, x-research
+
 ## source-validation
 
 - **ID:** `source-validation`
@@ -211,8 +229,8 @@ Generated from live skill discovery. Total: 13 skills.
 - **Has manifest:** yes
 - **Has scripts:** no
 - **Hooks:** beforeRun
-- **Description:** Read, search, or post on X/Twitter when the task clearly involves tweets, mentions, timelines, or tweet URLs.
-- **Actions:** timeline, read, search, mentions, post, reply
+- **Description:** Canonical Home23 skill for X/Twitter work: official API-backed read/search/post/reply when configured, bird-backed timeline/mentions fallback. Use this instead of direct bird CLI for normal posting/replying.
+- **Actions:** timeline, read, search, mentions, mediaUploadTest, post, delete, reply
 - **Triggers:** read this x link | search x for | check mentions | look at my timeline | reply on x
 - **Requires tools:** none
 - **Composes:** source-validation
@@ -235,4 +253,22 @@ Generated from live skill discovery. Total: 13 skills.
 - **Requires tools:** none
 - **Composes:** source-validation, deep-research-synthesizer
 - **Depends on:** none
+
+## x-social-distiller
+
+- **ID:** `x-social-distiller`
+- **Type:** rich
+- **Runtime:** nodejs
+- **Category:** social
+- **Operational:** yes
+- **Has SKILL.md:** yes
+- **Has manifest:** yes
+- **Has scripts:** no
+- **Hooks:** beforeRun
+- **Description:** Turn source material into useful public X posts/replies: distill lessons, search live X chatter, rank opportunities, queue drafts, and optionally post through the canonical x skill with verification.
+- **Actions:** distill, search, queue, postQueued
+- **Triggers:** turn this into a tweet | find a tweet to respond to from this article | distill this newsletter for x | create a social reply queue | post a useful quick hit from this topic
+- **Requires tools:** none
+- **Composes:** source-validation, knowledge-structuring
+- **Depends on:** x, x-research
 

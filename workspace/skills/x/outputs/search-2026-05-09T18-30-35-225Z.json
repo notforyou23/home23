@@ -1,0 +1,432 @@
+{
+  "data": [
+    {
+      "id": "2053124025270829331",
+      "entities": {
+        "urls": [
+          {
+            "start": 281,
+            "end": 304,
+            "url": "https://t.co/4QpnnZ0mBt",
+            "expanded_url": "https://x.com/flackodgoat/status/2053124025270829331/photo/1",
+            "display_url": "pic.x.com/4QpnnZ0mBt",
+            "media_key": "3_2053124011454758915"
+          }
+        ]
+      },
+      "author_id": "1637741730815438849",
+      "conversation_id": "2053124001891754432",
+      "created_at": "2026-05-09T14:44:47.000Z",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 1,
+        "like_count": 5,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 28
+      },
+      "text": "Finding 1 - Cross Agent Memory Failure.\n\nFirst thing I tested was conversational memory between agents.\n\nI asked ORACLE for a full TON market breakdown.\n\nThen I switched to DELPHI and referred to “that token” naturally without naming TON again.\n\nDELPHI completely lost context and https://t.co/4QpnnZ0mBt",
+      "edit_history_tweet_ids": [
+        "2053124025270829331"
+      ]
+    },
+    {
+      "id": "2053055275867791791",
+      "entities": {
+        "urls": [
+          {
+            "start": 264,
+            "end": 287,
+            "url": "https://t.co/nqMGlsF8Mc",
+            "expanded_url": "https://x.com/zensationai/status/2053055275867791791/photo/1",
+            "display_url": "pic.x.com/nqMGlsF8Mc",
+            "media_key": "3_2053054957616558085"
+          }
+        ]
+      },
+      "author_id": "2036374707583557632",
+      "conversation_id": "2053055275867791791",
+      "created_at": "2026-05-09T10:11:36.000Z",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 1,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 9
+      },
+      "text": "Most agent memory systems lose the plot after a few sessions. ZenBrain hits 91.3% of a long-context oracle's accuracy on LongMemEval-500 — at 1/106 the token cost. Beats Letta, Mem0, A-Mem in 12/12 head-to-head tests (Bonferroni-corrected). 7 layers. Open source. https://t.co/nqMGlsF8Mc",
+      "edit_history_tweet_ids": [
+        "2053055275867791791"
+      ]
+    },
+    {
+      "id": "2053032129697665407",
+      "entities": {
+        "urls": [
+          {
+            "start": 251,
+            "end": 274,
+            "url": "https://t.co/a32xFe95f2",
+            "expanded_url": "https://github.com/Einsia/OpenChronicle",
+            "display_url": "github.com/Einsia/OpenChr…",
+            "images": [
+              {
+                "url": "https://pbs.twimg.com/news_img/2052771158366257157/PLm6emOM?format=jpg&name=orig",
+                "width": 1698,
+                "height": 926
+              },
+              {
+                "url": "https://pbs.twimg.com/news_img/2052771158366257157/PLm6emOM?format=jpg&name=150x150",
+                "width": 150,
+                "height": 150
+              }
+            ],
+            "status": 200,
+            "title": "GitHub - Einsia/OpenChronicle",
+            "description": "Contribute to Einsia/OpenChronicle development by creating an account on GitHub.",
+            "unwound_url": "https://github.com/Einsia/OpenChronicle"
+          },
+          {
+            "start": 275,
+            "end": 298,
+            "url": "https://t.co/PW4f7czxQw",
+            "expanded_url": "https://x.com/kennethleungty/status/2053032129697665407/photo/1",
+            "display_url": "pic.x.com/PW4f7czxQw",
+            "media_key": "3_2053032127696863238"
+          }
+        ]
+      },
+      "author_id": "1350506536934670339",
+      "conversation_id": "2053032129697665407",
+      "created_at": "2026-05-09T08:39:37.000Z",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 1,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 17
+      },
+      "text": "Most LLM agent memory is a black box sitting on someone else's server. OpenChronicle flips that: it watches your macOS screen context and writes it all to local Markdown and SQLite files you can just open. Your agent's memory is literally grep-able.\n\nhttps://t.co/a32xFe95f2 https://t.co/PW4f7czxQw",
+      "edit_history_tweet_ids": [
+        "2053032129697665407"
+      ]
+    },
+    {
+      "id": "2053004549963563255",
+      "entities": {
+        "urls": [
+          {
+            "start": 252,
+            "end": 275,
+            "url": "https://t.co/RPuAxMrVvs",
+            "expanded_url": "https://www.mandalivia.com/obsidian/your-obsidian-vault-is-already-an-agent-memory-system/",
+            "display_url": "mandalivia.com/obsidian/your-…",
+            "images": [
+              {
+                "url": "https://pbs.twimg.com/news_img/2050953442663845888/uQU1N1l6?format=jpg&name=orig",
+                "width": 1200,
+                "height": 630
+              },
+              {
+                "url": "https://pbs.twimg.com/news_img/2050953442663845888/uQU1N1l6?format=jpg&name=150x150",
+                "width": 150,
+                "height": 150
+              }
+            ],
+            "status": 200,
+            "title": "Use Your Obsidian Vault as AI Agent Memory | Context Files | Mandalivia",
+            "description": "AI agents forget everything between sessions. Your Obsidian vault already has the structure — it just needs context files and a sleep-time maintenance loop.",
+            "unwound_url": "https://www.mandalivia.com/obsidian/your-obsidian-vault-is-already-an-agent-memory-system/"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 12,
+            "username": "rohit4verse",
+            "id": "1605975892677001218"
+          }
+        ]
+      },
+      "author_id": "9423292",
+      "conversation_id": "2052904398536511917",
+      "created_at": "2026-05-09T06:50:02.000Z",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 1,
+        "quote_count": 0,
+        "bookmark_count": 3,
+        "impression_count": 226
+      },
+      "text": "@rohit4verse The wiki-the-LLM-writes-for-you angle looks backward — captured stuff, surfaced. The forward version is treating the vault as agent memory both of you write into. Five context files in CLAUDE.md is what made Claude Code actually use mine. https://t.co/RPuAxMrVvs",
+      "edit_history_tweet_ids": [
+        "2053004549963563255"
+      ]
+    },
+    {
+      "id": "2052958540571299857",
+      "entities": {
+        "hashtags": [
+          {
+            "start": 205,
+            "end": 219,
+            "tag": "buildinpublic"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 10,
+            "username": "dhruvtwt_",
+            "id": "856434945115521025"
+          }
+        ]
+      },
+      "author_id": "1722267910301966336",
+      "conversation_id": "2050962897342546405",
+      "created_at": "2026-05-09T03:47:12.000Z",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 3
+      },
+      "text": "@dhruvtwt_ Tried Letta Code and Hermes Agent -- memory-first approach is way more practical for real workflows. The hard part of multi-agent parallel execution is context sharing, whoever cracks that wins #buildinpublic",
+      "edit_history_tweet_ids": [
+        "2052958540571299857"
+      ]
+    },
+    {
+      "id": "2052921638883401813",
+      "entities": {
+        "hashtags": [
+          {
+            "start": 247,
+            "end": 261,
+            "tag": "buildinpublic"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 12,
+            "username": "AIDailyGems",
+            "id": "2842904704"
+          }
+        ]
+      },
+      "author_id": "1722267910301966336",
+      "conversation_id": "2052920812726861971",
+      "created_at": "2026-05-09T01:20:34.000Z",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 1,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 23
+      },
+      "text": "@AIDailyGems Agent memory is such a real bottleneck. Most agents lose context after like 5 turns. Using pgvector for durable episodes is smart -- the trick is balancing recall accuracy vs latency. Would love to see benchmarks on retrieval quality #buildinpublic",
+      "edit_history_tweet_ids": [
+        "2052921638883401813"
+      ]
+    },
+    {
+      "id": "2052920888895447057",
+      "author_id": "2842904704",
+      "conversation_id": "2052920812726861971",
+      "created_at": "2026-05-09T01:17:35.000Z",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 31
+      },
+      "text": "It's a local-first approach to agent memory. You self-host it, so your agent's context stays on your machine. No external APIs for retrieval.",
+      "edit_history_tweet_ids": [
+        "2052920888895447057"
+      ]
+    },
+    {
+      "id": "2052806989508472965",
+      "entities": {
+        "urls": [
+          {
+            "start": 281,
+            "end": 304,
+            "url": "https://t.co/bbt566W2Q8",
+            "expanded_url": "https://twitter.com/claudeai/status/2052067399088664981",
+            "display_url": "x.com/claudeai/statu…"
+          }
+        ]
+      },
+      "author_id": "1941209406357598208",
+      "conversation_id": "2052806989508472965",
+      "created_at": "2026-05-08T17:45:00.000Z",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 20
+      },
+      "text": "anthropic just shipped “sleep” into agents.\n\nhumans don’t just store yesterday, we replay it fast, extract patterns, then rewrite it into long-term memory.\n\nmost agent “memory” rn is just a search engine: embed, retrieve, paste back into context. good for facts. zero compounding. https://t.co/bbt566W2Q8",
+      "edit_history_tweet_ids": [
+        "2052806989508472965"
+      ]
+    },
+    {
+      "id": "2052797398364377463",
+      "entities": {
+        "urls": [
+          {
+            "start": 280,
+            "end": 303,
+            "url": "https://t.co/5s4n3PHbup",
+            "expanded_url": "https://x.com/AiCamila_/status/2052797398364377463/photo/1",
+            "display_url": "pic.x.com/5s4n3PHbup",
+            "media_key": "3_2052797390663643136"
+          }
+        ]
+      },
+      "author_id": "2003522130860998660",
+      "conversation_id": "2052797398364377463",
+      "created_at": "2026-05-08T17:06:53.000Z",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 2,
+        "quote_count": 2,
+        "bookmark_count": 1,
+        "impression_count": 67
+      },
+      "text": "Vector Databases for Multi-Agent Memory\n\nAs a dev building production multi-agent systems, Vector Databases are the backbone of reliable agent memory.\n\nPinecone, Weaviate, or Chroma let agents store long-term knowledge, retrieve context fast, and avoid hallucinations.\n\nWithout a https://t.co/5s4n3PHbup",
+      "edit_history_tweet_ids": [
+        "2052797311047368972",
+        "2052797398364377463"
+      ]
+    }
+  ],
+  "includes": {
+    "users": [
+      {
+        "public_metrics": {
+          "followers_count": 918,
+          "following_count": 565,
+          "tweet_count": 12476,
+          "listed_count": 9,
+          "like_count": 12573,
+          "media_count": 606
+        },
+        "username": "flackodgoat",
+        "id": "1637741730815438849",
+        "name": "Flacko 🐐"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 1,
+          "following_count": 48,
+          "tweet_count": 40,
+          "listed_count": 0,
+          "like_count": 12,
+          "media_count": 7
+        },
+        "username": "zensationai",
+        "id": "2036374707583557632",
+        "name": "ZenSation AI"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 8,
+          "following_count": 22,
+          "tweet_count": 41,
+          "listed_count": 0,
+          "like_count": 93,
+          "media_count": 27
+        },
+        "username": "kennethleungty",
+        "id": "1350506536934670339",
+        "name": "Kenneth Leung ⭐"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 430,
+          "following_count": 494,
+          "tweet_count": 2613,
+          "listed_count": 27,
+          "like_count": 446,
+          "media_count": 271
+        },
+        "username": "tabrezsyed",
+        "id": "9423292",
+        "name": "Tabrez Syed"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 908,
+          "following_count": 1174,
+          "tweet_count": 2139,
+          "listed_count": 1,
+          "like_count": 1588,
+          "media_count": 52
+        },
+        "username": "yzg75001",
+        "id": "1722267910301966336",
+        "name": "CryptoClaw"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 233,
+          "following_count": 16,
+          "tweet_count": 4447,
+          "listed_count": 1,
+          "like_count": 349,
+          "media_count": 1070
+        },
+        "username": "AIDailyGems",
+        "id": "2842904704",
+        "name": "AIDailyGems"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 302,
+          "following_count": 105,
+          "tweet_count": 3188,
+          "listed_count": 3,
+          "like_count": 3035,
+          "media_count": 1607
+        },
+        "username": "KayvonJafar",
+        "id": "1941209406357598208",
+        "name": "Kayvon Jafarzadeh"
+      },
+      {
+        "public_metrics": {
+          "followers_count": 222,
+          "following_count": 97,
+          "tweet_count": 1652,
+          "listed_count": 3,
+          "like_count": 2224,
+          "media_count": 406
+        },
+        "username": "AiCamila_",
+        "id": "2003522130860998660",
+        "name": "Camila"
+      }
+    ]
+  },
+  "meta": {
+    "newest_id": "2053124025270829331",
+    "oldest_id": "2052797398364377463",
+    "result_count": 9,
+    "next_token": "b26v89c19zqg8o3juenh6jmeue3i20t5odzhf3gu927b1"
+  }
+}

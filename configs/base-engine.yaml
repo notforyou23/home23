@@ -355,7 +355,7 @@ models:
   enableExtendedReasoning: false
 providers:
   openai:
-    enabled: true
+    enabled: false
   minimax:
     enabled: true
   xai:

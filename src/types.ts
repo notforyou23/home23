@@ -135,6 +135,7 @@ export interface HomeConfig {
     imageGeneration?: {
       provider?: string;
       model?: string;
+      size?: string;
     };
     musicGeneration?: {
       provider?: string;
@@ -462,6 +463,7 @@ export interface EventEnvelope {
   session_id: string;
   object_id?: string;
   timestamp: string;
+  ts?: string;
   actor: string;
   invocation_id?: string;
   retry_of?: string;

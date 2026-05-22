@@ -1,0 +1,260 @@
+{
+  "data": [
+    {
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 16
+      },
+      "edit_history_tweet_ids": [
+        "2052968378046775483"
+      ],
+      "conversation_id": "2051318562497716655",
+      "entities": {
+        "urls": [
+          {
+            "start": 194,
+            "end": 217,
+            "url": "https://t.co/O46ayVymAr",
+            "expanded_url": "http://github.com/aerf-spec/aerf",
+            "display_url": "github.com/aerf-spec/aerf",
+            "images": [
+              {
+                "url": "https://pbs.twimg.com/news_img/2052109204547403776/srBZ5YJM?format=jpg&name=orig",
+                "width": 1200,
+                "height": 600
+              },
+              {
+                "url": "https://pbs.twimg.com/news_img/2052109204547403776/srBZ5YJM?format=jpg&name=150x150",
+                "width": 150,
+                "height": 150
+              }
+            ],
+            "status": 200,
+            "title": "GitHub - aerf-spec/aerf: Agent Evidence Receipt Format (AERF) — an open specification for tamper-evident, independently verifiable records of AI agent actions.",
+            "description": "Agent Evidence Receipt Format (AERF) — an open specification for tamper-evident, independently verifiable records of AI agent actions. - aerf-spec/aerf",
+            "unwound_url": "https://github.com/aerf-spec/aerf"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 0,
+            "end": 11,
+            "username": "katie_haun",
+            "id": "857994826230374401"
+          },
+          {
+            "start": 12,
+            "end": 23,
+            "username": "katie_haun",
+            "id": "857994826230374401"
+          }
+        ]
+      },
+      "created_at": "2026-05-09T04:26:18.000Z",
+      "id": "2052968378046775483",
+      "author_id": "4806360754",
+      "text": "@katie_haun @katie_haun . Built the provenance and verification layer for AI agents Cryptographically signed receipts of every agent action up to inference, independently verifiable. Open spec. https://t.co/O46ayVymAr"
+    },
+    {
+      "public_metrics": {
+        "retweet_count": 1,
+        "reply_count": 1,
+        "like_count": 4,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 64
+      },
+      "edit_history_tweet_ids": [
+        "2052068904332062835"
+      ],
+      "conversation_id": "2052068904332062835",
+      "created_at": "2026-05-06T16:52:07.000Z",
+      "entities": {
+        "mentions": [
+          {
+            "start": 134,
+            "end": 147,
+            "username": "GeeqOfficial",
+            "id": "936632192658059264"
+          }
+        ]
+      },
+      "id": "2052068904332062835",
+      "author_id": "1352651274739720202",
+      "text": "AI agents will soon move money, trade assets, and automate workflows.\n\nBut who verifies their actions before execution?\n\nThat’s where @GeeqOfficial fits:\n👉 identity\n👉 verification\n👉 audit trails\n👉 provable receipts"
+    },
+    {
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 2,
+        "like_count": 5,
+        "quote_count": 1,
+        "bookmark_count": 0,
+        "impression_count": 5212
+      },
+      "edit_history_tweet_ids": [
+        "2051588804499095792"
+      ],
+      "conversation_id": "2051588804499095792",
+      "entities": {
+        "urls": [
+          {
+            "start": 277,
+            "end": 300,
+            "url": "https://t.co/RUqfFrRgjX",
+            "expanded_url": "https://twitter.com/AdxProtocol/status/2051268320523890904",
+            "display_url": "x.com/AdxProtocol/st…"
+          }
+        ]
+      },
+      "created_at": "2026-05-05T09:04:22.000Z",
+      "id": "2051588804499095792",
+      "author_id": "1038832740278444034",
+      "text": "This is huge for AI agents man. They're out here dropping real money with zero proof of what actually happened no receipts, no audit trail, nothing. That whole trust triangle (authorization, verification, attribution) is exactly why most companies are still scared to let them https://t.co/RUqfFrRgjX"
+    },
+    {
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 429
+      },
+      "edit_history_tweet_ids": [
+        "2051580149988995177"
+      ],
+      "conversation_id": "2051580149988995177",
+      "entities": {
+        "urls": [
+          {
+            "start": 247,
+            "end": 270,
+            "url": "https://t.co/xAk1BZSTBt",
+            "expanded_url": "https://twitter.com/AdxProtocol/status/2051268320523890904",
+            "display_url": "x.com/AdxProtocol/st…"
+          }
+        ],
+        "mentions": [
+          {
+            "start": 234,
+            "end": 246,
+            "username": "AdxProtocol",
+            "id": "2016935188291534848"
+          }
+        ]
+      },
+      "created_at": "2026-05-05T08:29:58.000Z",
+      "id": "2051580149988995177",
+      "author_id": "1953033245802807298",
+      "text": "This is the real bottleneck for AI agents going mainstream. No receipts, no audit trails, just “trust me bro” at $40K/mo spend levels. Authorization, verification &amp; attribution all broken.On-chain settlement is the missing piece. @AdxProtocol https://t.co/xAk1BZSTBt"
+    },
+    {
+      "public_metrics": {
+        "retweet_count": 2,
+        "reply_count": 13,
+        "like_count": 29,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 3563
+      },
+      "edit_history_tweet_ids": [
+        "2051570829746462978"
+      ],
+      "conversation_id": "2051570829746462978",
+      "entities": {
+        "urls": [
+          {
+            "start": 278,
+            "end": 301,
+            "url": "https://t.co/SGldhrXMic",
+            "expanded_url": "https://twitter.com/AdxProtocol/status/2051268320523890904",
+            "display_url": "x.com/AdxProtocol/st…"
+          }
+        ]
+      },
+      "created_at": "2026-05-05T07:52:56.000Z",
+      "id": "2051570829746462978",
+      "author_id": "1664028935116537857",
+      "text": "Your AI agent spent $40K this quarter, with zero verifiable receipts.\n\nThat’s not efficiency, that’s a blind spot.\n\nFirst: authorization. Agents buy tools, run ads, renew services… but who approved it? “The agent did” isn’t governance.\n\nSecond: verification. Vendor reports 12K https://t.co/SGldhrXMic"
+    }
+  ],
+  "includes": {
+    "users": [
+      {
+        "id": "4806360754",
+        "username": "aniketh745",
+        "name": "Aniketh Maddipati",
+        "public_metrics": {
+          "followers_count": 18,
+          "following_count": 59,
+          "tweet_count": 66,
+          "listed_count": 0,
+          "like_count": 54,
+          "media_count": 3
+        }
+      },
+      {
+        "id": "1352651274739720202",
+        "username": "jonasstarkx",
+        "name": "Jonas Stark",
+        "public_metrics": {
+          "followers_count": 200,
+          "following_count": 1107,
+          "tweet_count": 3407,
+          "listed_count": 5,
+          "like_count": 20709,
+          "media_count": 140
+        }
+      },
+      {
+        "id": "1038832740278444034",
+        "username": "HQsicy",
+        "name": "TrendHQ",
+        "public_metrics": {
+          "followers_count": 6020,
+          "following_count": 4890,
+          "tweet_count": 26506,
+          "listed_count": 16,
+          "like_count": 56041,
+          "media_count": 463
+        }
+      },
+      {
+        "id": "1953033245802807298",
+        "username": "ora_j3n",
+        "name": "jenny🥰",
+        "public_metrics": {
+          "followers_count": 774,
+          "following_count": 666,
+          "tweet_count": 4273,
+          "listed_count": 2,
+          "like_count": 11066,
+          "media_count": 244
+        }
+      },
+      {
+        "id": "1664028935116537857",
+        "username": "officialabdulak",
+        "name": "𝙸'𝚖 𝙰𝚋𝚍𝚘𝚞𝚕",
+        "public_metrics": {
+          "followers_count": 6675,
+          "following_count": 7497,
+          "tweet_count": 64395,
+          "listed_count": 16,
+          "like_count": 85461,
+          "media_count": 1110
+        }
+      }
+    ]
+  },
+  "meta": {
+    "newest_id": "2052968378046775483",
+    "oldest_id": "2051570829746462978",
+    "result_count": 5
+  }
+}

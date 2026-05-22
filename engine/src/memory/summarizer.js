@@ -339,6 +339,18 @@ the specific instances.`,
    * Memory garbage collection
    */
   garbageCollect(memoryNetwork, minWeight = 0.1, maxAge = 30 * 24 * 60 * 60 * 1000) {
+    // Disabled by default after repeated brain_node_count_stable regressions:
+    // this routine deletes durable knowledge based on weak access heuristics,
+    // and routine awake/sleep maintenance was bleeding thousands of nodes below
+    // the high-water floor. Re-enable only with explicit config after a safer
+    // archival/compaction policy exists.
+    if (!this.config?.memory?.enableGarbageCollection) {
+      this.logger?.info('Memory garbage collection skipped (disabled)', {
+        remaining: memoryNetwork?.nodes?.size ?? 0,
+      });
+      return 0;
+    }
+
     const now = Date.now();
     const toRemove = [];
 

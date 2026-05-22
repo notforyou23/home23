@@ -1,0 +1,236 @@
+{
+  "query": "\"AI memory\" agents context -is:retweet -is:reply",
+  "params": "sort=likes&pages=1&since=7d",
+  "timestamp": 1778351192709,
+  "tweets": [
+    {
+      "id": "2051893470286225902",
+      "text": "Top AI on @base Projects This Week\n\n■ $ODAI @odei_ai - persistent AI memory through a world model, so agents keep context, preferences, and relationships over time.\n\n■ $ClawBank @ClawBankHQ - legal and banking rails for agents, including company formation, accounts, and https://t.co/SsPQJBItr2",
+      "author_id": "1444978810915414024",
+      "username": "Base_Insights",
+      "name": "Base Insights",
+      "created_at": "2026-05-06T05:15:00.000Z",
+      "conversation_id": "2051893470286225902",
+      "metrics": {
+        "likes": 96,
+        "retweets": 15,
+        "replies": 17,
+        "quotes": 3,
+        "impressions": 6482,
+        "bookmarks": 5
+      },
+      "urls": [
+        "https://x.com/Base_Insights/status/2051893470286225902/photo/1"
+      ],
+      "mentions": [
+        "base",
+        "odei_ai",
+        "ClawBankHQ"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Base_Insights/status/2051893470286225902"
+    },
+    {
+      "id": "2052075873843511334",
+      "text": "@MindTheGapMTG Event-sourced rolling context files for agents in production – practical! This aligns with   \"From AI Memory Silos to Multi-Agent Memory\". Would love your take!    https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-06T17:19:48.000Z",
+      "conversation_id": "2052075873843511334",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 38,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "MindTheGapMTG"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2052075873843511334"
+    },
+    {
+      "id": "2052061075642990857",
+      "text": "Anthropic just introduced \"Dreaming\" for Claude Managed Agents—a game-changer for AI memory. \n\nInstead of just forgetting old context, agents now perform scheduled \"dreaming\" to curate patterns and optimize long-term knowledge. The future of agentic orchestration is here. 🧠\n\n#AI https://t.co/o1iMwgKkNv",
+      "author_id": "2048702904341766144",
+      "username": "TechNode_HQ",
+      "name": "TechNode HQ",
+      "created_at": "2026-05-06T16:21:00.000Z",
+      "conversation_id": "2052061075642990857",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 28,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/TechNode_HQ/status/2052061075642990857/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "AI"
+      ],
+      "tweet_url": "https://x.com/TechNode_HQ/status/2052061075642990857"
+    },
+    {
+      "id": "2051524685850931451",
+      "text": "@newlinedotco Persistent memory layer + enough real-world context is key for agents – totally on point. The thread \"From AI Memory Silos to Multi-Agent Memory\"   explores this further.What do you think?    https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-05T04:49:35.000Z",
+      "conversation_id": "2051524685850931451",
+      "metrics": {
+        "likes": 2,
+        "retweets": 1,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 48,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "newlinedotco"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2051524685850931451"
+    },
+    {
+      "id": "2052242075156979865",
+      "text": "@liarjo AgentCore Memory for context-aware agents is a nice managed service. The thread \"From AI Memory Silos to Multi-Agent Memory\" explores the   decentralized verifiable extension. What’s your view?    https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-07T04:20:14.000Z",
+      "conversation_id": "2052242075156979865",
+      "metrics": {
+        "likes": 3,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 41,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "liarjo"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2052242075156979865"
+    },
+    {
+      "id": "2052598634592731285",
+      "text": "MemoryVault is live! Universal AI memory layer that works with any LLM, featuring intelligent context compression and privacy-preserving memory sharing. Built with AI agents 🤖\n\nhttps://t.co/55RbGTO8GV #AIagent #indiehacker #launched",
+      "author_id": "2044878578857246721",
+      "username": "Astfy_ai",
+      "name": "Astfy",
+      "created_at": "2026-05-08T03:57:04.000Z",
+      "conversation_id": "2052598634592731285",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 15,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://gohanv1.abacusai.app/b/memoryvault-mo3ipy2k"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "AIagent",
+        "indiehacker",
+        "launched"
+      ],
+      "tweet_url": "https://x.com/Astfy_ai/status/2052598634592731285"
+    },
+    {
+      "id": "2051718870055190888",
+      "text": "🧠 AI memory is the new edge\n\n😑 Stateless AI agents waste tokens and lose context.\n\n👉 Using external memory stores makes workflows persistent and intelligent.\n\n🔗 Read the 2026 guide: https://t.co/shXxf3eLC3\n\n#AI #AIAgent https://t.co/q5REWflHjj",
+      "author_id": "549703844",
+      "username": "UpshotFirm",
+      "name": "Upshot Firm",
+      "created_at": "2026-05-05T17:41:12.000Z",
+      "conversation_id": "2051718870055190888",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 14,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://www.make.com/en/blog/agent-workflow-memory",
+        "https://x.com/UpshotFirm/status/2051718870055190888/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "AI",
+        "AIAgent"
+      ],
+      "tweet_url": "https://x.com/UpshotFirm/status/2051718870055190888"
+    },
+    {
+      "id": "2052374641646227529",
+      "text": "Real-time signals becoming verifiable AI memory is a game changer.\n\nWorld Monitor + @origin_trail DKG v10 → AI agents can reason over trusted live context and act on it.\n\nFrom supply chains to geopolitics, this is the future of shared intelligence. https://t.co/eB2swHKtTW",
+      "author_id": "1438590020122710018",
+      "username": "ema_lovsin",
+      "name": "Ema Lovšin",
+      "created_at": "2026-05-07T13:07:00.000Z",
+      "conversation_id": "2052374641646227529",
+      "metrics": {
+        "likes": 41,
+        "retweets": 13,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 583,
+        "bookmarks": 1
+      },
+      "urls": [
+        "https://twitter.com/DrevZiga/status/2052373525999018192"
+      ],
+      "mentions": [
+        "origin_trail"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ema_lovsin/status/2052374641646227529"
+    },
+    {
+      "id": "2052639294414631183",
+      "text": "@origin_trail DKG v10 is here and it changes everything. \nReal-time signals from the world become verifiable, shared AI memory.  No more hallucinations — agents can finally reason with trusted context. \nThis is the infrastructure layer AI has been waiting for. 🔥 $TRAC",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-08T06:38:38.000Z",
+      "conversation_id": "2052639294414631183",
+      "metrics": {
+        "likes": 8,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 65,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "origin_trail"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2052639294414631183"
+    }
+  ]
+}

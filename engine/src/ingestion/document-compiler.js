@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
 const OpenAI = require('openai');
+const { getOpenAICodexClient } = require('../services/openai-codex-oauth-engine');
 let Anthropic;
 try { Anthropic = require('@anthropic-ai/sdk'); } catch { Anthropic = null; }
 
@@ -80,7 +81,11 @@ class DocumentCompiler {
 
     const isAnthropicCompat = providerName && ANTHROPIC_COMPAT_PROVIDERS.has(providerName);
 
-    if (isAnthropicCompat && Anthropic) {
+    if (providerName === 'openai-codex') {
+      this.client = getOpenAICodexClient({ providers: { 'openai-codex': { baseURL } } }, this.logger);
+      this.clientType = 'codex';
+      this.authMode = 'oauth';
+    } else if (isAnthropicCompat && Anthropic) {
       apiKey = apiKey || process.env.MINIMAX_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
       this.client = new Anthropic({ apiKey, baseURL });
       this.clientType = 'anthropic';
@@ -113,7 +118,6 @@ class DocumentCompiler {
       'ollama-cloud': 'OLLAMA_CLOUD_API_KEY',
       'anthropic': 'ANTHROPIC_AUTH_TOKEN',
       'openai': 'OPENAI_API_KEY',
-      'openai-codex': 'OPENAI_API_KEY',
       'xai': 'XAI_API_KEY',
       'minimax': 'MINIMAX_API_KEY',
     };
@@ -127,7 +131,7 @@ class DocumentCompiler {
           return {
             providerName: name,
             baseUrl: prov.baseUrl || prov.baseURL,
-            apiKey: process.env[envKeyMap[name] || ''] || undefined,
+            apiKey: name === 'openai-codex' ? undefined : process.env[envKeyMap[name] || ''] || undefined,
           };
         }
       }
@@ -164,6 +168,12 @@ class DocumentCompiler {
         // Reasoning models return a "thinking" block first, then a "text" block.
         const textBlock = (response.content || []).find(b => b.type === 'text');
         synthesis = textBlock?.text || '';
+      } else if (this.clientType === 'codex') {
+        const response = await this.client.generate({
+          model: this.model,
+          messages: [{ role: 'user', content: prompt }],
+        });
+        synthesis = response.content || '';
       } else {
         const response = await this.client.chat.completions.create({
           model: this.model,

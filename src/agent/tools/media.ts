@@ -2,7 +2,7 @@
  * Media tools — image generation, music generation, and text-to-speech.
  */
 
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { extname, join } from 'node:path';
 import type { ToolDefinition, ToolContext, ToolResult } from '../types.js';
 import { loadConfig } from '../../config.js';
@@ -13,6 +13,15 @@ type ImageGeneratorConfig = {
   apiKey: string;
   baseUrl: string;
 };
+
+type ImageProvider = 'openai' | 'minimax' | 'xai';
+
+function normalizeImageProvider(provider: unknown): ImageProvider | null {
+  if (typeof provider !== 'string') return null;
+  const normalized = provider.trim().toLowerCase();
+  if (normalized === 'openai' || normalized === 'minimax' || normalized === 'xai') return normalized;
+  return null;
+}
 
 type MusicGeneratorConfig = {
   provider: string;
@@ -43,16 +52,18 @@ function defaultImageModel(provider: string): string {
   return 'gpt-image-2';
 }
 
-function resolveImageGeneratorConfig(): ImageGeneratorConfig {
+function resolveImageGeneratorConfig(overrides: { provider?: string; model?: string } = {}): ImageGeneratorConfig {
   const agentName = process.env.HOME23_AGENT ?? 'test-agent';
   const config = loadConfig(agentName);
   const configured = config.media?.imageGeneration || {};
-  const provider = typeof configured.provider === 'string' && configured.provider.trim()
-    ? configured.provider.trim()
-    : 'openai';
-  const model = typeof configured.model === 'string' && configured.model.trim()
-    ? configured.model.trim()
-    : defaultImageModel(provider);
+  const configuredProvider = normalizeImageProvider(configured.provider) ?? 'openai';
+  const overrideProvider = normalizeImageProvider(overrides.provider);
+  const provider = overrideProvider ?? configuredProvider;
+  const model = typeof overrides.model === 'string' && overrides.model.trim()
+    ? overrides.model.trim()
+    : (!overrideProvider && typeof configured.model === 'string' && configured.model.trim()
+      ? configured.model.trim()
+      : defaultImageModel(provider));
 
   const providers = config.providers as Record<string, { apiKey?: string; baseUrl?: string }> | undefined;
 
@@ -139,6 +150,56 @@ function sizeToAspectRatio(size?: string): string | undefined {
   return map[size] ?? undefined;
 }
 
+type ImageArtifactInfo = {
+  provider: string;
+  model: string;
+  prompt: string;
+  path: string;
+  receiptPath: string;
+  mimeType: string;
+  bytes: number;
+  createdAt: string;
+};
+
+function writeImageArtifact(
+  ctx: ToolContext,
+  cfg: ImageGeneratorConfig,
+  prompt: string,
+  buf: Buffer,
+  extra: Record<string, unknown> = {},
+): ImageArtifactInfo {
+  const createdAt = new Date().toISOString();
+  const safeProvider = cfg.provider.replace(/[^a-z0-9_-]/gi, '-').toLowerCase();
+  const artifactDir = join(ctx.workspacePath, 'media', 'generated-images');
+  mkdirSync(artifactDir, { recursive: true });
+  const stamp = createdAt.replace(/[:.]/g, '-');
+  const filePath = join(artifactDir, `${stamp}-${safeProvider}.png`);
+  const receiptPath = filePath.replace(/\.png$/, '.json');
+  writeFileSync(filePath, buf);
+  const receipt: ImageArtifactInfo & Record<string, unknown> = {
+    provider: cfg.provider,
+    model: cfg.model,
+    prompt,
+    path: filePath,
+    receiptPath,
+    mimeType: 'image/png',
+    bytes: buf.length,
+    createdAt,
+    ...extra,
+  };
+  writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
+  return receipt;
+}
+
+function imageResultContent(info: ImageArtifactInfo, details = ''): string {
+  return [
+    `Image generated via ${info.provider}/${info.model}${details}`,
+    `Path: ${info.path}`,
+    `Receipt: ${info.receiptPath}`,
+    `Bytes: ${info.bytes}`,
+  ].join('\n');
+}
+
 async function generateMiniMaxImage(
   prompt: string, size: string | undefined,
   cfg: ImageGeneratorConfig, ctx: ToolContext,
@@ -179,12 +240,11 @@ async function generateMiniMaxImage(
     return { content: `Image download failed: HTTP ${fileRes.status}`, is_error: true };
   }
   const buf = Buffer.from(await fileRes.arrayBuffer());
-  const filePath = join(ctx.tempDir, `minimax-${Date.now()}.png`);
-  writeFileSync(filePath, buf);
+  const artifact = writeImageArtifact(ctx, cfg, prompt, buf, { aspectRatio: aspect ?? null });
 
   return {
-    content: `Image generated via minimax/${cfg.model}${aspect ? ` (${aspect})` : ''}`,
-    media: [{ type: 'image', path: filePath, mimeType: 'image/png', caption: prompt.slice(0, 200) }],
+    content: imageResultContent(artifact, aspect ? ` (${aspect})` : ''),
+    media: [{ type: 'image', path: artifact.path, mimeType: artifact.mimeType, caption: prompt.slice(0, 200) }],
   };
 }
 
@@ -236,12 +296,12 @@ async function generateOpenAIImage(
 
   if (!buf) return { content: `No image bytes returned from ${cfg.model}.`, is_error: true };
 
-  const filePath = join(ctx.tempDir, `${cfg.provider}-${Date.now()}.png`);
-  writeFileSync(filePath, buf);
+  const artifact = writeImageArtifact(ctx, cfg, prompt, buf, { revisedPrompt: imgData.revised_prompt ?? null });
+  const details = imgData.revised_prompt ? ` (revised prompt: "${imgData.revised_prompt}")` : '';
 
   return {
-    content: `Image generated via ${cfg.provider}/${cfg.model}${imgData.revised_prompt ? ` (revised prompt: "${imgData.revised_prompt}")` : ''}`,
-    media: [{ type: 'image', path: filePath, mimeType: 'image/png', caption: prompt.slice(0, 200) }],
+    content: imageResultContent(artifact, details),
+    media: [{ type: 'image', path: artifact.path, mimeType: artifact.mimeType, caption: prompt.slice(0, 200) }],
   };
 }
 
@@ -290,12 +350,11 @@ async function generateXAIImage(
 
   if (!buf) return { content: `No image bytes returned from ${cfg.model}.`, is_error: true };
 
-  const filePath = join(ctx.tempDir, `xai-${Date.now()}.png`);
-  writeFileSync(filePath, buf);
+  const artifact = writeImageArtifact(ctx, cfg, prompt, buf, { aspectRatio: aspect ?? null });
 
   return {
-    content: `Image generated via xai/${cfg.model}${aspect ? ` (${aspect})` : ''}`,
-    media: [{ type: 'image', path: filePath, mimeType: 'image/png', caption: prompt.slice(0, 200) }],
+    content: imageResultContent(artifact, aspect ? ` (${aspect})` : ''),
+    media: [{ type: 'image', path: artifact.path, mimeType: artifact.mimeType, caption: prompt.slice(0, 200) }],
   };
 }
 
@@ -514,7 +573,9 @@ export const generateImageTool: ToolDefinition = {
     type: 'object',
     properties: {
       prompt: { type: 'string', description: 'Image generation prompt' },
-      size: { type: 'string', description: 'Optional image size override (for example: auto, 1024x1024, 1536x1024, 1024x1536)' },
+      size: { type: 'string', description: 'Optional image size override (for example: auto, 1024x1024, 1536x1024, 1024x1536, 16:9)' },
+      provider: { type: 'string', enum: ['openai', 'minimax', 'xai'], description: 'Optional provider override. Use xai for faster Grok image generation; openai for GPT Image.' },
+      model: { type: 'string', description: 'Optional model override, e.g. grok-imagine-image, grok-imagine-image-pro, gpt-image-2, image-01.' },
     },
     required: ['prompt'],
   },
@@ -522,9 +583,11 @@ export const generateImageTool: ToolDefinition = {
   async execute(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
     const prompt = input.prompt as string;
     const size = typeof input.size === 'string' && input.size.trim() ? input.size.trim() : undefined;
-    const imageConfig = resolveImageGeneratorConfig();
+    const provider = typeof input.provider === 'string' && input.provider.trim() ? input.provider.trim() : undefined;
+    const model = typeof input.model === 'string' && input.model.trim() ? input.model.trim() : undefined;
+    const imageConfig = resolveImageGeneratorConfig({ provider, model });
 
-      if (!imageConfig.apiKey) {
+    if (!imageConfig.apiKey) {
       return { content: `Image generation unavailable — ${imageConfig.provider} API key not configured.`, is_error: true };
     }
 

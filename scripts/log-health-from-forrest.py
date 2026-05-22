@@ -16,26 +16,42 @@ LOG_PATH = Path(os.environ.get('HEALTH_LOG_PATH', str(HOME / '.health_log.jsonl'
 STATUS_PATH = Path(os.environ.get('HEALTH_STATUS_PATH', str(HOME / '.health_log.status.json')))
 BASE = Path('/Users/jtr/_JTR23_/release/home23/instances/forrest/workspace/health_jtr')
 DAILY = BASE / 'ledgers' / 'daily_metrics.jsonl'
+IPHONE_LATEST = BASE / 'ledgers' / 'apple_health_latest.jsonl'
 SLEEP = BASE / 'ledgers' / 'sleep.jsonl'
 MAX_DATA_AGE_DAYS = int(os.environ.get('HEALTH_MAX_DATA_AGE_DAYS', '3'))
 
 ALIASES = {
     'heart_rate_variability': 'heartRateVariability',
+    'heartRateVariability': 'heartRateVariability',
     'resting_heart_rate': 'restingHeartRate',
+    'restingHeartRate': 'restingHeartRate',
     'vo2_max': 'vo2Max',
+    'vo2Max': 'vo2Max',
     'weight': 'weight',
     'body_fat_percentage': 'bodyFat',
+    'bodyFat': 'bodyFat',
     'body_mass_index': 'bmi',
+    'bmi': 'bmi',
     'lean_body_mass': 'leanBodyMass',
+    'leanBodyMass': 'leanBodyMass',
     'apple_sleeping_wrist_temperature': 'wristTemperature',
+    'wristTemperature': 'wristTemperature',
     'respiratory_rate': 'respiratoryRate',
+    'respiratoryRate': 'respiratoryRate',
     'blood_oxygen_saturation': 'oxygenSaturation',
+    'oxygenSaturation': 'oxygenSaturation',
     'active_energy': 'activeCalories',
+    'activeCalories': 'activeCalories',
     'basal_energy_burned': 'basalCalories',
+    'basalCalories': 'basalCalories',
     'step_count': 'stepCount',
+    'stepCount': 'stepCount',
     'flights_climbed': 'flightsClimbed',
+    'flightsClimbed': 'flightsClimbed',
     'walking_heart_rate_average': 'walkingHeartRate',
+    'walkingHeartRate': 'walkingHeartRate',
     'apple_exercise_time': 'exerciseMinutes',
+    'exerciseMinutes': 'exerciseMinutes',
 }
 
 
@@ -90,19 +106,26 @@ def fail(reason, code=1, extra=None):
 
 def main():
     ts = now_iso()
-    if not DAILY.exists():
-        return fail('forrest daily_metrics ledger missing')
+    if not DAILY.exists() and not IPHONE_LATEST.exists():
+        return fail('forrest health ledgers missing')
 
     latest = {}
-    for r in read_jsonl(DAILY):
-        alias = ALIASES.get(r.get('metric'))
-        date = r.get('date')
-        if not alias or not date or r.get('qty') is None:
-            continue
-        key = (alias, date)
-        prev = latest.get(key)
-        if prev is None or str(r.get('ingested_at', '')) > str(prev.get('ingested_at', '')):
-            latest[key] = r
+    for source_path in (DAILY, IPHONE_LATEST):
+        for r in read_jsonl(source_path):
+            alias = ALIASES.get(r.get('metric'))
+            date = r.get('date')
+            value = r.get('qty') if 'qty' in r else r.get('value')
+            if not alias or not date or value is None:
+                continue
+            normalized = dict(r)
+            normalized['qty'] = value
+            if not normalized.get('units') and normalized.get('unit'):
+                normalized['units'] = normalized.get('unit')
+            normalized['ledger_source'] = str(source_path)
+            key = (alias, date)
+            prev = latest.get(key)
+            if prev is None or str(normalized.get('ingested_at', '')) > str(prev.get('ingested_at', '')):
+                latest[key] = normalized
 
     metrics = {}
     metric_dates = {}
@@ -157,7 +180,7 @@ def main():
         'maxDataAgeDays': MAX_DATA_AGE_DAYS,
         'metricCount': len(metrics),
         'reason': 'fresh health data from forrest ledgers' if not stale else 'forrest health ledger is semantically stale',
-        'source': str(DAILY),
+        'source': str(IPHONE_LATEST if IPHONE_LATEST.exists() else DAILY),
     }
     write_status(status)
 

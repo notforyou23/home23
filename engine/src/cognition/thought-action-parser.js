@@ -318,6 +318,20 @@ function appendNotification(brainDir, { message, source, cycle, severity = 'info
   };
   fs.appendFileSync(file, JSON.stringify(entry) + '\n');
 
+  // Mirror queued notifications onto the positive-signal stream so external
+  // delivery-channel verifiers can prove the notification path is alive without
+  // parsing the dashboard-only queue format.
+  try {
+    appendSignal(brainDir, {
+      type: 'notification',
+      source: source || 'unknown',
+      title: 'notification queued',
+      message,
+      evidence: { notificationId: entry.id, cycle, severity },
+      cycle,
+    });
+  } catch { /* best-effort */ }
+
   // ── Opportunistic auto-expire of stale unacked notifications ──
   // Every time we append, take the chance to sweep stale entries into the
   // ack map (auto_expired=true) so coordinator context stops re-showing them.

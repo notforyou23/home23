@@ -1,0 +1,2385 @@
+{
+  "query": "agent memory -is:retweet -is:reply",
+  "params": "sort=likes&pages=1&since=7d",
+  "timestamp": 1778350896505,
+  "tweets": [
+    {
+      "id": "2052415736186822842",
+      "text": "Upgrade your agent’s memory\n\nAgent Memory Techniques is a rare educational repo you can actually use as a map for agent memory\n\n30 runnable notebooks, from buffer and sliding window memory to cross-session memory, episodic memory, shared memory for multi-agent systems, Mem0, https://t.co/HmojOxU0fv",
+      "author_id": "424214305",
+      "username": "KTMudak",
+      "name": "KTMudak",
+      "created_at": "2026-05-07T15:50:18.000Z",
+      "conversation_id": "2052415736186822842",
+      "metrics": {
+        "likes": 3,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 206,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/KTMudak/status/2052415736186822842/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/KTMudak/status/2052415736186822842"
+    },
+    {
+      "id": "2050692974481142241",
+      "text": "@iSaketMunda Breaking down the 4 types of agent memory is super clear! This connects perfectly with   \"From AI Memory Silos to Multi-Agent Memory\" and its decentralized shared memory approach.What’s your view?   https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-02T21:44:39.000Z",
+      "conversation_id": "2050692974481142241",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 51,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "iSaketMunda"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2050692974481142241"
+    },
+    {
+      "id": "2050921947677012453",
+      "text": "@prajjwal_s88519  Multi-agent systems with shared memory for collaboration is spot on. The thread   \"From AI Memory Silos to Multi-Agent Memory\" dives deeper into verifiable decentralized memory.Would love your feedback!    https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-03T12:54:31.000Z",
+      "conversation_id": "2050921947677012453",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 34,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "prajjwal_s88519"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2050921947677012453"
+    },
+    {
+      "id": "2050810166950461904",
+      "text": "@realtechodyssey Shared memory drift in multi-agent systems is a real issue. The thread \"From AI Memory Silos to Multi-Agent Memory\" tackles this with decentralized verifiable memory.Would love your feedback!    https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-03T05:30:20.000Z",
+      "conversation_id": "2050810166950461904",
+      "metrics": {
+        "likes": 3,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 41,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "realtechodyssey"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2050810166950461904"
+    },
+    {
+      "id": "2051922361822113997",
+      "text": "The hardest part of building with AI agents isn't the tech.\n\nIt's memory.\n\nAn agent with no memory repeats mistakes.\nAn agent with bad memory hallucinates context.\nAn agent with good memory compounds knowledge over time.\n\nWe obsess over model benchmarks.\n\nThe real differentiator",
+      "author_id": "2029222812968517633",
+      "username": "bhuvanbuilds",
+      "name": "Bhuvan",
+      "created_at": "2026-05-06T07:09:48.000Z",
+      "conversation_id": "2051922361822113997",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 26,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/bhuvanbuilds/status/2051922361822113997"
+    },
+    {
+      "id": "2052771908463006143",
+      "text": "Agent Capability = Tools × Context × Persona × Memory × Skill × Workspace × Governance\n\nEvery Agent has 3 core assets:\nSOUL — identity\nMEMORY — experience\nSKILL — method\n\nSustainable Agent = Persona + Memory + Skill",
+      "author_id": "2024931337401155584",
+      "username": "storyclawai",
+      "name": "StoryClaw",
+      "created_at": "2026-05-08T15:25:36.000Z",
+      "conversation_id": "2052771908463006143",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 4,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/storyclawai/status/2052771908463006143"
+    },
+    {
+      "id": "2050810225637159239",
+      "text": "@tom_doerr Git-likeversion control for AI agent memory is a brilliant idea! This fits perfectly with \"From AI Memory Silos to Multi-Agent Memory\" on verifiable   decentralization.Curious for your thoughts!    📷   https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-03T05:30:34.000Z",
+      "conversation_id": "2050810225637159239",
+      "metrics": {
+        "likes": 7,
+        "retweets": 3,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 62,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "tom_doerr"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2050810225637159239"
+    },
+    {
+      "id": "2052181495167512970",
+      "text": "The agent memory space is evolving\n\nOpenAI updated their memory implementation to enable user feedback on the importance of memory units.\n\nIn my opinion, your agent harness should handle that.\n\nBut we are stepping in the right direction\n\nAnd the Oracle AI Agent Memory Package https://t.co/LvRBVtDahr",
+      "author_id": "1360589207236919303",
+      "username": "richmondalake",
+      "name": "Richmond Alake",
+      "created_at": "2026-05-07T00:19:30.000Z",
+      "conversation_id": "2052181495167512970",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 142,
+        "bookmarks": 3
+      },
+      "urls": [
+        "https://x.com/richmondalake/status/2052181495167512970/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/richmondalake/status/2052181495167512970"
+    },
+    {
+      "id": "2050961889379991891",
+      "text": "AI agent memory should not be a black box.\n\nKage now has a repo memory viewer.\n\nYou can click through the graph and see how memory connects to files, tests, decisions, runbooks, and code paths.\n\nOne agent learns.\nThe repo remembers.\nFuture agents recall.\nBuilt for Codex, Claude https://t.co/WgrAfCuAuN",
+      "author_id": "2043669429695959040",
+      "username": "183kush",
+      "name": "Kage",
+      "created_at": "2026-05-03T15:33:14.000Z",
+      "conversation_id": "2050961889379991891",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 78,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/183kush/status/2050961889379991891/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/183kush/status/2050961889379991891"
+    },
+    {
+      "id": "2050692889408061507",
+      "text": "@amitiitbhu  Your article on AI Agent Memory tackling the stateless LLM problem is excellent. This is exactly what \"From AI Memory Silos to Multi-Agent Memory\"   addresses with decentralized verifiable solutions.Would love your feedback!   https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-02T21:44:19.000Z",
+      "conversation_id": "2050692889408061507",
+      "metrics": {
+        "likes": 4,
+        "retweets": 1,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 56,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "amitiitbhu"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2050692889408061507"
+    },
+    {
+      "id": "2050961198146076926",
+      "text": "AI agent memory should not be invisible.\nKage now has a repo memory viewer.\nClick through:\n* memory nodes\n* code graph nodes\n* decisions\n* runbooks\n* file relations\n* evidence\nOne agent learns.\nThe repo remembers.\nFuture agents recall.\n\nhttps://t.co/Zs2bkrWyVu https://t.co/4J86EGa5Gq",
+      "author_id": "2043669429695959040",
+      "username": "183kush",
+      "name": "Kage",
+      "created_at": "2026-05-03T15:30:29.000Z",
+      "conversation_id": "2050961198146076926",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 4,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://github.com/kage-core/Kage",
+        "https://x.com/183kush/status/2050961198146076926/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/183kush/status/2050961198146076926"
+    },
+    {
+      "id": "2052403088263397425",
+      "text": "AI agent memory is a new attack surface. Long-term memory stores are usually external databases. If those stores are writable by the agent and readable across sessions, an attacker who injects content into memory can influence future agent behavior without touching the model.",
+      "author_id": "2046467244717379584",
+      "username": "DarshanSays",
+      "name": "Darshan Yadav",
+      "created_at": "2026-05-07T15:00:02.000Z",
+      "conversation_id": "2052403088263397425",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 24,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/DarshanSays/status/2052403088263397425"
+    },
+    {
+      "id": "2051887024005681411",
+      "text": "@sarniqinsights  Agent memory + persistent monitoring to avoid continuity failures – totally agree. \"From AI Memory Silos to   Multi-Agent Memory\" focuses on the decentralized verifiable side. Thoughts?  https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-06T04:49:23.000Z",
+      "conversation_id": "2051887024005681411",
+      "metrics": {
+        "likes": 5,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 69,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "sarniqinsights"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2051887024005681411"
+    },
+    {
+      "id": "2053041102005903566",
+      "text": "The “Google Doc” for agent memory is on!\n\nThe DKG v10 now supports multi-agent memory for Hermes @NousResearch, @OpenClaw, @Claudeai (Code &amp; Desktop), @cursor_ai, Codex by @OpenAI, @Windsurf, VSCode + @github Copilot Chat, and @cline.\n\nRun a command in your favourite agent and https://t.co/PBmaTHAstk",
+      "author_id": "1964729912",
+      "username": "DrevZiga",
+      "name": "Žiga Drev",
+      "created_at": "2026-05-09T09:15:17.000Z",
+      "conversation_id": "2053041102005903566",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 12,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://twitter.com/origin_trail/status/2052757290592223427"
+      ],
+      "mentions": [
+        "NousResearch",
+        "openclaw",
+        "claudeai",
+        "cursor_ai",
+        "OpenAI",
+        "windsurf",
+        "github",
+        "cline"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/DrevZiga/status/2053041102005903566"
+    },
+    {
+      "id": "2053143302686523853",
+      "text": "A First-Principles Guide to Agent Memory from Python lists to knowledge graphs\n\n🎯 Your AI agent forgets everything after each call.\nWhat if memory wasn’t a hack—but a system?\n\n📌 Problem\nLLMs are stateless: every request starts from scratch → no real memory\nThis breaks real",
+      "author_id": "1993599992238637056",
+      "username": "Praveen_G07",
+      "name": "Praveen Govindaraj",
+      "created_at": "2026-05-09T16:01:23.000Z",
+      "conversation_id": "2053143302686523853",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 6,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Praveen_G07/status/2053143302686523853"
+    },
+    {
+      "id": "2052049539033338027",
+      "text": "@CaptSea3 Managing Hermes agent memory issues is a common pain point. The thread \"From AI Memory Silos to Multi-Agent Memory\" discusses broader persistent &amp; shared solutions. What do you think?    https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-06T15:35:09.000Z",
+      "conversation_id": "2052049539033338027",
+      "metrics": {
+        "likes": 6,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 62,
+        "bookmarks": 1
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "CaptSea3"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2052049539033338027"
+    },
+    {
+      "id": "2052425675613556987",
+      "text": "@GetAskClaw Great benchmarks list including multi-agent shared memory. \"From AI Memory Silos to Multi-Agent Memory\" focuses on the verifiable decentralized   layer. Thoughts?   https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-07T16:29:47.000Z",
+      "conversation_id": "2052425675613556987",
+      "metrics": {
+        "likes": 5,
+        "retweets": 3,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 107,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "GetAskClaw"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2052425675613556987"
+    },
+    {
+      "id": "2052310010533695606",
+      "text": "@NarwalSpeaks Memanto’s simpler approach to high-fidelity agent memory recall is interesting. This connects to ideas in \"From AI Memory Silos to Multi-Agent Memory\". Would love your feedback! \nhttps://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-07T08:50:11.000Z",
+      "conversation_id": "2052310010533695606",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 33,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "NarwalSpeaks"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2052310010533695606"
+    },
+    {
+      "id": "2052464965089722707",
+      "text": "Most agent memory systems remember what your agent said.\n\nMemori Labs remembers what your agent did.\n\nToday we're launching agent-native memory infrastructure that captures what actually happens in a workflow (tool calls, execution paths, decisions, outcomes) and turns it into https://t.co/Ruf27O2fVL",
+      "author_id": "1780728889834373121",
+      "username": "memorilab",
+      "name": "Memori Labs",
+      "created_at": "2026-05-07T19:05:55.000Z",
+      "conversation_id": "2052464965089722707",
+      "metrics": {
+        "likes": 2,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 1,
+        "impressions": 113,
+        "bookmarks": 1
+      },
+      "urls": [
+        "https://x.com/memorilab/status/2052464965089722707/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/memorilab/status/2052464965089722707"
+    },
+    {
+      "id": "2050878029723746502",
+      "text": "Most agent memory is trapped inside single deployments. The agent learns something useful — then the instance ends and the knowledge vanishes. Been working through what a portable memory registry actually needs. Not storage. Trust.\n\nhttps://t.co/TswoB4hBpI",
+      "author_id": "1633578755422650370",
+      "username": "ohnobeachbum",
+      "name": "Ned Karlovich",
+      "created_at": "2026-05-03T10:00:00.000Z",
+      "conversation_id": "2050878029723746502",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 9,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://nedkarlovich.com/writing/impp-agent-memory-registry"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ohnobeachbum/status/2050878029723746502"
+    },
+    {
+      "id": "2052242156312543550",
+      "text": "@tomiezhang Treating   agent memory like a database with shared store is a clean fix. \"From AI Memory Silos to Multi-Agent Memory\" builds on similar concepts with   decentralization. Curious what you think!    https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-07T04:20:33.000Z",
+      "conversation_id": "2052242156312543550",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 47,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "tomiezhang"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2052242156312543550"
+    },
+    {
+      "id": "2052248917547319609",
+      "text": "@pulse24ai YourMemory with Ebbinghaus forgetting curve for agent memory is a smart practical option. This connects well to the ideas in \"From AI Memory Silos to Multi-Agent Memory\". Curious what you think! \nhttps://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-07T04:47:25.000Z",
+      "conversation_id": "2052248917547319609",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 40,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "pulse24ai"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2052248917547319609"
+    },
+    {
+      "id": "2052042826184360092",
+      "text": "Memory Management in Multi-Agent Systems\n\nMost multi-agent failures happen because of poor memory management.\n\nShort-term (context buffer) + long-term (vector store + consensus) + shared whiteboard = agents that actually remember and collaborate.\n\nWithout proper memory, your https://t.co/0nlRSJfLnb",
+      "author_id": "2003522130860998660",
+      "username": "AiCamila_",
+      "name": "Camila",
+      "created_at": "2026-05-06T15:08:29.000Z",
+      "conversation_id": "2052042826184360092",
+      "metrics": {
+        "likes": 4,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 51,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/AiCamila_/status/2052042826184360092/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/AiCamila_/status/2052042826184360092"
+    },
+    {
+      "id": "2052425337489801493",
+      "text": "@Mister_Fat Making agent memory persistent and user-owned is a real shift. The thread \"From AI Memory Silos to Multi-Agent Memory\" dives into exactly that. What do you think? \nhttps://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-07T16:28:27.000Z",
+      "conversation_id": "2052425337489801493",
+      "metrics": {
+        "likes": 1,
+        "retweets": 2,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 33,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "Mister_Fat"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2052425337489801493"
+    },
+    {
+      "id": "2051649264829276594",
+      "text": "Swarms v12 Release: Persistent Agent Memory, Auto Context Compression,  New Docs, and More\n\nIntroducing Swarms v12, this update introduces significant updates to agent memory, reliability, and long-term autonomy. \n\nWith persistent memory, context compression, and restart-safe https://t.co/VTv2dBc9GD",
+      "author_id": "1784961897588203520",
+      "username": "swarms_corp",
+      "name": "swarms",
+      "created_at": "2026-05-05T13:04:37.000Z",
+      "conversation_id": "2051649264829276594",
+      "metrics": {
+        "likes": 44,
+        "retweets": 11,
+        "replies": 5,
+        "quotes": 1,
+        "impressions": 3173,
+        "bookmarks": 9
+      },
+      "urls": [
+        "https://twitter.com/swarms_corp/status/2051647633542750684"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/swarms_corp/status/2051649264829276594"
+    },
+    {
+      "id": "2053041346252812636",
+      "text": "The “Google Docs” for agent memory are on!\n\nDKG v10 now supports multi-agent memory for Hermes @NousResearch, @OpenClaw, @Claudeai (Code &amp; Desktop), @cursor_ai, Codex by @OpenAI, @Windsurf, VSCode + @github Copilot Chat, and @cline.\n\nRun a command in your favourite agent and https://t.co/PBmaTHAstk",
+      "author_id": "1964729912",
+      "username": "DrevZiga",
+      "name": "Žiga Drev",
+      "created_at": "2026-05-09T09:16:15.000Z",
+      "conversation_id": "2053041346252812636",
+      "metrics": {
+        "likes": 47,
+        "retweets": 20,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1382,
+        "bookmarks": 2
+      },
+      "urls": [
+        "https://twitter.com/origin_trail/status/2052757290592223427"
+      ],
+      "mentions": [
+        "NousResearch",
+        "openclaw",
+        "claudeai",
+        "cursor_ai",
+        "OpenAI",
+        "windsurf",
+        "github",
+        "cline"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/DrevZiga/status/2053041346252812636"
+    },
+    {
+      "id": "2052085905180234032",
+      "text": "conversation trace 级别的 memory 实现和自演进的 procedural memory 都会是标配\n\n之前在线下分享过几次，memory 是各种 agent、agentic service 的核心，这也是为什么我们不做 agent memory lib/PaaS 的原因\n\nnowledge mem 做的是面向 agent 主人为核心的知识层产品，它中立、聚合、产生个人在 ai https://t.co/pSoTkQUoPj",
+      "author_id": "24313912",
+      "username": "wey_gu",
+      "name": "Wey Gu 古思为",
+      "created_at": "2026-05-06T17:59:40.000Z",
+      "conversation_id": "2052085905180234032",
+      "metrics": {
+        "likes": 38,
+        "retweets": 2,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 7922,
+        "bookmarks": 48
+      },
+      "urls": [
+        "https://twitter.com/manusai/status/2052041127008641364"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/wey_gu/status/2052085905180234032"
+    },
+    {
+      "id": "2051041832373739773",
+      "text": "Every agent: run→fail→retry. No memory. No learning. Purpose-Agent improves.Purpose Function scores steps 0-10 → smart feedback.Turns failures into heuristics + memory.1.7B fails run 1 → solves run 3.Local-first. Self-improving. No fine-tuning. https://t.co/xpe6dQeWPa",
+      "author_id": "1592804383309586432",
+      "username": "RohanParija1",
+      "name": "Rohan Parija",
+      "created_at": "2026-05-03T20:50:54.000Z",
+      "conversation_id": "2051041832373739773",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 2,
+        "quotes": 1,
+        "impressions": 31,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://huggingface.co/Rohan03/purpose-agent"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/RohanParija1/status/2051041832373739773"
+    },
+    {
+      "id": "2052035200499270015",
+      "text": "A user just built a customer support agent with ByteRover:\n\n- no vector DB\n- no embeddings\n- local markdown memory\n- debuggable retrieval\n- Node.js + Groq + brv query\n\nThis is the part of agent memory I think more teams will care about:\n\nWhen the agent is wrong, you should be https://t.co/bQe9ul0Vg8",
+      "author_id": "3725210712",
+      "username": "kevinnguyendn",
+      "name": "andy nguyen",
+      "created_at": "2026-05-06T14:38:11.000Z",
+      "conversation_id": "2052035200499270015",
+      "metrics": {
+        "likes": 6,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 539,
+        "bookmarks": 3
+      },
+      "urls": [
+        "https://twitter.com/ialtafshaikh/status/2052004017375789325"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/kevinnguyendn/status/2052035200499270015"
+    },
+    {
+      "id": "2051084757686264184",
+      "text": "persistent memory layer and live brain state surface for OpenClaw agents. ClawBrain gives your agent 2 things it doesn't have by default: a memory that survives sessions, and a living document that tells the agent how it's actually doing before it speaks. https://t.co/IFdNZ0QGYI",
+      "author_id": "2022412462965051392",
+      "username": "EnlightenedRep",
+      "name": "Enlightened Republic",
+      "created_at": "2026-05-03T23:41:28.000Z",
+      "conversation_id": "2051084757686264184",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 13,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/EnlightenedRep/status/2051084757686264184/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/EnlightenedRep/status/2051084757686264184"
+    },
+    {
+      "id": "2052418820548030895",
+      "text": "🚀 Attestify OS is now live — Memory-First Agent Infrastructure\n\nBuilt for the agent economy on https://t.co/AwUwonRjwa\n\n- Persistent memory across every loop (Redis-backed)\n- Real Grok (xAI) intelligence\n- Secure x402 micropayments (0.005 USDC per loop)\n- Multi-agent",
+      "author_id": "1567196011902246913",
+      "username": "donatingcrypto1",
+      "name": "Adam",
+      "created_at": "2026-05-07T16:02:33.000Z",
+      "conversation_id": "2052418820548030895",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 44,
+        "bookmarks": 1
+      },
+      "urls": [
+        "http://agentic.market"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/donatingcrypto1/status/2052418820548030895"
+    },
+    {
+      "id": "2052463581392969777",
+      "text": "Procedural memory is the most dangerous kind of stale memory in production agents because the agent has no idea it’s wrong.\n\nIt stores how the agent does things: which tool to call, in what order, with what parameters.\n\nThe three memory types fail differently:\n• Session memory: https://t.co/llnTlaN5tI",
+      "author_id": "1748872149279162368",
+      "username": "tryadaline",
+      "name": "Adaline",
+      "created_at": "2026-05-07T19:00:25.000Z",
+      "conversation_id": "2052463581392969777",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 46,
+        "bookmarks": 1
+      },
+      "urls": [
+        "https://x.com/tryadaline/status/2052463581392969777/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/tryadaline/status/2052463581392969777"
+    },
+    {
+      "id": "2051435381053436092",
+      "text": "When you make memory a stateful agent, you get psyche of your code (work, machine) and not just memory.\n\nWhich means you go beyond retrieval and look at memory as synthesis that resonates with the intent of the input. \n\nI have claude code work with syke agent to brainstorm https://t.co/jewhmmFLGB",
+      "author_id": "389452569",
+      "username": "saxenauts",
+      "name": "Utkarsh",
+      "created_at": "2026-05-04T22:54:43.000Z",
+      "conversation_id": "2051435381053436092",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 63,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/saxenauts/status/2051435381053436092/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/saxenauts/status/2051435381053436092"
+    },
+    {
+      "id": "2053098514830225903",
+      "text": "⚡️ 4096D Memory. Isolated per agent. PostgreSQL + pgvector.\n\nOverMind-MCP gives each AI agent its own brain while keeping global knowledge.\n\nnpm install -g overmind-mcp\n\nhttps://t.co/uLcS3lZjaQ\n\n#AI #MCP #Memory",
+      "author_id": "1969186041065078786",
+      "username": "Sniper_MCP",
+      "name": "Sniper",
+      "created_at": "2026-05-09T13:03:25.000Z",
+      "conversation_id": "2053098514830225903",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 3,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://github.com/DeamonDev888/overmind-mcp"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "AI",
+        "MCP",
+        "Memory"
+      ],
+      "tweet_url": "https://x.com/Sniper_MCP/status/2053098514830225903"
+    },
+    {
+      "id": "2052995472810455077",
+      "text": "เตือนผู้ใช้ AI \n\nตอนนี้หลายคนอยู่ใน phase เดียวกับยุค ลงโปรแกรมเถื่อน + toolbar + widget เต็ม desktop  สมัยหัดเล่นคอมใหม่ๆ เลย แค่เปลี่ยนจาก toolbar browser มาเป็น MCP / agent / extension / memory / toolchain แทน\n\nใครมี AI setup เยอะกว่ากัน\n\nMCP 18 ตัว\nAgent 9 ตัว\nMemory ทุกหน้า https://t.co/2diNr0TARU",
+      "author_id": "83829536",
+      "username": "KillerNay",
+      "name": "Chanon N.",
+      "created_at": "2026-05-09T06:13:58.000Z",
+      "conversation_id": "2052995472810455077",
+      "metrics": {
+        "likes": 2,
+        "retweets": 1,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 17,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/KillerNay/status/2052995472810455077/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/KillerNay/status/2052995472810455077"
+    },
+    {
+      "id": "2051021282213531839",
+      "text": "I made LangGraph, OpenClaw, Hermes, CrewAI, AutoGen &amp; LlamaIndex share the same memory, locally, no cloud, no vendor lock-in.\n\nBuilt Recall: open-source local-first shared memory layer for multi-agent AI.\nAny agent reads/writes shared state through one HTTP endpoint. Live https://t.co/Yu9VZDKMcQ",
+      "author_id": "815589676891459585",
+      "username": "pedroshakoor",
+      "name": "Pedro",
+      "created_at": "2026-05-03T19:29:14.000Z",
+      "conversation_id": "2051021282213531839",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 3,
+        "quotes": 1,
+        "impressions": 370,
+        "bookmarks": 2
+      },
+      "urls": [
+        "https://x.com/pedroshakoor/status/2051021282213531839/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/pedroshakoor/status/2051021282213531839"
+    },
+    {
+      "id": "2052987370224619992",
+      "text": "Added memory and multi-tenancy to my AI agent this week.\nMemory: LLM summarizes old messages at 75% context usage. Recent turns stay intact. Agent forgets gracefully, not abruptly.\nMulti-tenancy: isolated prompts, knowledge, and token budgets per tenant. Three-tier",
+      "author_id": "1199012149965676545",
+      "username": "Avicula11",
+      "name": "Ayush",
+      "created_at": "2026-05-09T05:41:46.000Z",
+      "conversation_id": "2052987370224619992",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 7,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Avicula11/status/2052987370224619992"
+    },
+    {
+      "id": "2051014178392195447",
+      "text": "The hidden tax in your LLM pipeline: redundant context.\n\nMost agent stacks resend full memory every call. At GPT-4 pricing, that's thousands of wasted tokens per session.\n\nHeLa's HelaMemoryVault fixes this:\n- Tier 1: Public memory (agent profile)\n- Tier 2: Shared (project https://t.co/7DSu0NpQbi",
+      "author_id": "991750111783874561",
+      "username": "atbigthumb",
+      "name": "Andy Ting",
+      "created_at": "2026-05-03T19:01:00.000Z",
+      "conversation_id": "2051014178392195447",
+      "metrics": {
+        "likes": 41,
+        "retweets": 27,
+        "replies": 28,
+        "quotes": 0,
+        "impressions": 304,
+        "bookmarks": 1
+      },
+      "urls": [
+        "https://x.com/atbigthumb/status/2051014178392195447/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/atbigthumb/status/2051014178392195447"
+    },
+    {
+      "id": "2052995392489607199",
+      "text": "ตอนนี้หลายคนอยู่ใน phase เดียวกับยุค ลงโปรแกรมเถื่อน + toolbar + widget เต็ม desktop  สมัยหัดเล่นคอมใหม่ๆ เลย แค่เปลี่ยนจาก toolbar browser มาเป็น MCP / agent / extension / memory / toolchain แทน\n\nใครมี AI setup เยอะกว่ากัน\n\nMCP 18 ตัว\nAgent 9 ตัว\nMemory ทุกหน้า\nPlugin เต็มระบบ https://t.co/tl6gYYJLEY",
+      "author_id": "83829536",
+      "username": "KillerNay",
+      "name": "Chanon N.",
+      "created_at": "2026-05-09T06:13:39.000Z",
+      "conversation_id": "2052995392489607199",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 11,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/KillerNay/status/2052995392489607199/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/KillerNay/status/2052995392489607199"
+    },
+    {
+      "id": "2050940087618400662",
+      "text": "My AI agent is earning crypto by solving on-chain quests — On-chain skills, agent memory, and ZK identity for every AI agent #NaraChain @NaraBuildAI",
+      "author_id": "1988019746311409664",
+      "username": "AkihiSakakiba11",
+      "name": "Akihi Sakakibara",
+      "created_at": "2026-05-03T14:06:36.000Z",
+      "conversation_id": "2050940087618400662",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 13,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/AkihiSakakiba11/status/2050940087618400662"
+    },
+    {
+      "id": "2050931609302712718",
+      "text": "My AI agent is solving ZK proof quests and getting paid — On-chain skills, agent memory, and ZK identity for every AI agent #NaraChain @NaraBuildAI",
+      "author_id": "2045516543878942720",
+      "username": "Mia_samaoye21",
+      "name": "miasama",
+      "created_at": "2026-05-03T13:32:54.000Z",
+      "conversation_id": "2050931609302712718",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 6,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/Mia_samaoye21/status/2050931609302712718"
+    },
+    {
+      "id": "2051187298876707227",
+      "text": "An agent without memory is just a script. The final pillar of the Ritual Chain's precompile stack is REMEMBER, the Memory that gives an agent a persistent soul. \n\nFor an agent to be truly autonomous, its identity and plans must survive even if its executor is temporarily shut https://t.co/lolaBj3lfF https://t.co/L9g8K2vrij",
+      "author_id": "1676874567397302272",
+      "username": "0xAetherion",
+      "name": "Aetherion (❖,❖)",
+      "created_at": "2026-05-04T06:28:55.000Z",
+      "conversation_id": "2051187298876707227",
+      "metrics": {
+        "likes": 21,
+        "retweets": 0,
+        "replies": 12,
+        "quotes": 1,
+        "impressions": 400,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/0xAetherion/status/2051187298876707227/photo/1",
+        "https://twitter.com/0xAetherion/status/2050094191188086968"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/0xAetherion/status/2051187298876707227"
+    },
+    {
+      "id": "2051240530932105288",
+      "text": "Cloudflare Agent Memory shipped persistent memory for AI agents in beta. Score 83/100. Each agent gets its own isolated DurableObjects store -- no Redis or external DB setup needed. https://t.co/9FDckdsAEM",
+      "author_id": "2050245889139134464",
+      "username": "ai_core668",
+      "name": "Ai Core",
+      "created_at": "2026-05-04T10:00:27.000Z",
+      "conversation_id": "2051240530932105288",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://developers.cloudflare.com/agents/memory"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ai_core668/status/2051240530932105288"
+    },
+    {
+      "id": "2051738838297682293",
+      "text": "Stale memory is more dangerous than no memory in production agents.\n\nAn agent that knows nothing asks. But an agent confident in wrong state executes on it.\n\nMemory fails differently by scope:\n• Session: re-asks or contradicts recent context.\n• Entity: maps users/orgs to old https://t.co/T9DX5lnnH8",
+      "author_id": "1748872149279162368",
+      "username": "tryadaline",
+      "name": "Adaline",
+      "created_at": "2026-05-05T19:00:33.000Z",
+      "conversation_id": "2051738838297682293",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 35,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/tryadaline/status/2051738838297682293/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/tryadaline/status/2051738838297682293"
+    },
+    {
+      "id": "2051860662683603381",
+      "text": "Your brain doesn't store flat notes.\nIt layers, compresses, forgets, distills.\nFragments → Patterns → Trends → Persona.\nAgent memory should be a temporal tree, not a folder. #Memory #Agent https://t.co/sWyV1cHdMy",
+      "author_id": "1685345136652550144",
+      "username": "aqSeabiscuit",
+      "name": "Andrew Yu",
+      "created_at": "2026-05-06T03:04:38.000Z",
+      "conversation_id": "2051860662683603381",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 16,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/aqSeabiscuit/status/2051860662683603381/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "Memory",
+        "Agent"
+      ],
+      "tweet_url": "https://x.com/aqSeabiscuit/status/2051860662683603381"
+    },
+    {
+      "id": "2050722160570957895",
+      "text": "Claiming my AI agent \"void-raven-3391\" on #NaraChain @NaraBuildAI — On-chain skills, agent memory, and ZK identity for every AI agent",
+      "author_id": "73943759",
+      "username": "helenacarolline",
+      "name": "Helena",
+      "created_at": "2026-05-02T23:40:38.000Z",
+      "conversation_id": "2050722160570957895",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 40,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/helenacarolline/status/2050722160570957895"
+    },
+    {
+      "id": "2051347670586069431",
+      "text": "Everyone wants agent memory now.\n\nThe unsexy part is keeping the memory system boring enough to debug: import chunks, startup noise, docs drift, API contracts, recall edges.\n\nIf your agent cannot show what changed, it does not have memory. It has vibes with file access. https://t.co/eSspbnf2xY",
+      "author_id": "2026372624507650048",
+      "username": "geraldrsterling",
+      "name": "Gerald Sterling",
+      "created_at": "2026-05-04T17:06:11.000Z",
+      "conversation_id": "2051347670586069431",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 22,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/geraldrsterling/status/2051347670586069431/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/geraldrsterling/status/2051347670586069431"
+    },
+    {
+      "id": "2052343122332680241",
+      "text": "Introducing Agent Memory System.\nhttps://t.co/25CrtaugJ1\n\nGive Codex, Claude, Cursor, Antigravity &amp; future agents persistent repo memory:\n• project context\n• execution history\n• worklogs\n• agent handoffs https://t.co/v2ngenERDg",
+      "author_id": "1926596465918361600",
+      "username": "gauravchadhry",
+      "name": "Gaurav Singh",
+      "created_at": "2026-05-07T11:01:45.000Z",
+      "conversation_id": "2052343122332680241",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 121,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://ravbyte-ai.github.io/agent-memory-system/",
+        "https://x.com/gauravchadhry/status/2052343122332680241/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/gauravchadhry/status/2052343122332680241"
+    },
+    {
+      "id": "2053150642907254831",
+      "text": "Agent队友，别只看聊天\n\n看到 LobeHub 的页面，最容易误读成“又一个 AI 聊天工具”。但它自己给出的信号更重：Agent Builder、Agent Group、Pages、Schedule、Project、Workspace，还有 Personal Memory 和 White-Box Memory。它想卖的不是一个对话框，而是一套能长期留在工作流里的 agent 工作台。 https://t.co/OLoz5Bjn3C",
+      "author_id": "1309556624290320384",
+      "username": "ruiyanghim",
+      "name": "uryonly",
+      "created_at": "2026-05-09T16:30:33.000Z",
+      "conversation_id": "2053150642907254831",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 23,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/ruiyanghim/status/2053150642907254831/photo/1",
+        "https://x.com/ruiyanghim/status/2053150642907254831/photo/1",
+        "https://x.com/ruiyanghim/status/2053150642907254831/photo/1",
+        "https://x.com/ruiyanghim/status/2053150642907254831/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ruiyanghim/status/2053150642907254831"
+    },
+    {
+      "id": "2052380429618155955",
+      "text": "I watched a developer spend $47 re-prompting an agent after a session timeout wiped its memory.\n\nWe'd never write code without version control. But we run AI agents with zero memory safety.\n\nThat's why we built Memoria — Git-level version control for agent memory. Snapshot, https://t.co/emPo4QNMs3",
+      "author_id": "2034055565039833090",
+      "username": "memoria_ai",
+      "name": "Memoria, Versioned Memory. Git Style",
+      "created_at": "2026-05-07T13:30:00.000Z",
+      "conversation_id": "2052380429618155955",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 32,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/memoria_ai/status/2052380429618155955/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/memoria_ai/status/2052380429618155955"
+    },
+    {
+      "id": "2053105205391270340",
+      "text": "$52.62B AI agent market by 2030. But only 6% of orgs are “AI high performers.” The gap? Persistent memory that actually works.\n\n2026 brought memory frameworks, graph stores, vector DBs — but no version control. Memoria fixes that with Git-style snapshots for agent memory. https://t.co/Vw7do4nmXp",
+      "author_id": "2034055565039833090",
+      "username": "memoria_ai",
+      "name": "Memoria, Versioned Memory. Git Style",
+      "created_at": "2026-05-09T13:30:00.000Z",
+      "conversation_id": "2053105205391270340",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 7,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/memoria_ai/status/2053105205391270340/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/memoria_ai/status/2053105205391270340"
+    },
+    {
+      "id": "2051787501329879431",
+      "text": "not many have grasped it but there is a subtle difference between building long-term memory for a coding agent/chat agent and long-term memory for an autoresearch loop in terms of how actively memory needs to be accessed. \n\nin the former, the main concern is to compress the",
+      "author_id": "1515811501",
+      "username": "soubhik_deb",
+      "name": "Soubhik Deb",
+      "created_at": "2026-05-05T22:13:55.000Z",
+      "conversation_id": "2051787501329879431",
+      "metrics": {
+        "likes": 9,
+        "retweets": 1,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 327,
+        "bookmarks": 3
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/soubhik_deb/status/2051787501329879431"
+    },
+    {
+      "id": "2051434534298935500",
+      "text": "When you make memory a stateful agent, you get psyche of your code (work, machine) and not just memory.\n\nWhich means you go beyond retrieval and look at memory as synthesis that resonates with the intent of the input. \n\nI have claude code work with syke agent to brainstorm https://t.co/24qDKk8fGH",
+      "author_id": "389452569",
+      "username": "saxenauts",
+      "name": "Utkarsh",
+      "created_at": "2026-05-04T22:51:21.000Z",
+      "conversation_id": "2051434534298935500",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 15,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/saxenauts/status/2051434534298935500/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/saxenauts/status/2051434534298935500"
+    },
+    {
+      "id": "2051395841513214137",
+      "text": "\"memory\" is eating \"retrieval\"\n\nobservational memory just clocked 84% on the standard agent benchmark. RAG is sitting at 80%.\n\nwe spent three years optimizing retrieval pipelines and it turns out the agent just needed to take notes.",
+      "author_id": "385034223",
+      "username": "rachitajain1",
+      "name": "Rachita",
+      "created_at": "2026-05-04T20:17:36.000Z",
+      "conversation_id": "2051395841513214137",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 13,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/rachitajain1/status/2051395841513214137"
+    },
+    {
+      "id": "2052459700847808809",
+      "text": "Claude Code forgets your project between sessions.\n\nobsidian-wiki gives your agent persistent memory:\n- Obsidian vault integration\n- Project knowledge that persists\n- Searchable context\n\nThe memory your AI agent was losing.\nhttps://t.co/VNkuqSToYo",
+      "author_id": "1820657653086859264",
+      "username": "so_sthbryan",
+      "name": "Bryan",
+      "created_at": "2026-05-07T18:45:00.000Z",
+      "conversation_id": "2052459700847808809",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 29,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://github.com/Ar9av/obsidian-wiki"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/so_sthbryan/status/2052459700847808809"
+    },
+    {
+      "id": "2052995801841127848",
+      "text": "เตือนใจผู้ใช้ AI \n\nตอนนี้หลายคนอยู่ใน phase เดียวกับยุค ลงโปรแกรมเถื่อน + toolbar + widget เต็ม desktop  สมัยหัดเล่นคอมใหม่ๆ เลย แค่เปลี่ยนจาก toolbar browser มาเป็น MCP / agent / extension / memory / toolchain แทน\n\nใครมี AI setup เยอะกว่ากัน\n\nMCP 18 ตัว\nAgent 9 ตัว\nMemory https://t.co/zO6YUDzwko",
+      "author_id": "83829536",
+      "username": "KillerNay",
+      "name": "Chanon N.",
+      "created_at": "2026-05-09T06:15:16.000Z",
+      "conversation_id": "2052995801841127848",
+      "metrics": {
+        "likes": 8,
+        "retweets": 2,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 532,
+        "bookmarks": 3
+      },
+      "urls": [
+        "https://x.com/KillerNay/status/2052995801841127848/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/KillerNay/status/2052995801841127848"
+    },
+    {
+      "id": "2053111679982989786",
+      "text": "⚡️ 4096D Memory. PostgreSQL + pgvector. Isolated per agent.\n\nOverMind-MCP gives each AI agent its own brain while sharing global knowledge.\n\nClaude, Kilo, Gemini, Qwen, Hermes ready.\n\nnpm install -g overmind-mcp\n\nhttps://t.co/uLcS3lZjaQ\n\n#AI #Memory #MCP",
+      "author_id": "1969186041065078786",
+      "username": "Sniper_MCP",
+      "name": "Sniper",
+      "created_at": "2026-05-09T13:55:44.000Z",
+      "conversation_id": "2053111679982989786",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 14,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://github.com/DeamonDev888/overmind-mcp"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "AI",
+        "Memory",
+        "MCP"
+      ],
+      "tweet_url": "https://x.com/Sniper_MCP/status/2053111679982989786"
+    },
+    {
+      "id": "2052977508119916757",
+      "text": "Cool AI Agent 'human dynamic' experiment of the day:\n\nSet up a multiple agent team sharing memory, then assigning one the role of evaluating the performance of the others.\n\nWhy it's cool:\n- It tests shared memory as a coordination layer instead of being just storage.\n- It shows",
+      "author_id": "2034530639584829440",
+      "username": "PaulGugAI",
+      "name": "GooGZ AI",
+      "created_at": "2026-05-09T05:02:35.000Z",
+      "conversation_id": "2052977508119916757",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 35,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/PaulGugAI/status/2052977508119916757"
+    },
+    {
+      "id": "2051349713064964530",
+      "text": "Discover how Microsoft Agent Framework elevates AI in .NET with autonomous agents, memory, tools, and multi-agent workflows. Part 3 covers building blocks, tool usage with AIFunctionFactory, session memory, and human-in-the-loop approvals, plus practical… https://t.co/h72jxkQIdp",
+      "author_id": "1655332879235268610",
+      "username": "prod42net",
+      "name": "prod42net",
+      "created_at": "2026-05-04T17:14:18.000Z",
+      "conversation_id": "2051349713064964530",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 32,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://ift.tt/WBZNdpo"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/prod42net/status/2051349713064964530"
+    },
+    {
+      "id": "2051241387962597627",
+      "text": "Three nights debugging an AI agent.\n\nIt confidently rewrote my auth function — based on code from a deleted branch.\n\nTop-1 cosine: 0.91. The agent did its job. The \"memory\" lied.\n\nRAG isn't memory. It's Ctrl+F with embeddings. 🧵",
+      "author_id": "1871172651781181440",
+      "username": "BestProgerVR",
+      "name": "Vitalii Cherepanov",
+      "created_at": "2026-05-04T10:03:51.000Z",
+      "conversation_id": "2051241387962597627",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 21,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BestProgerVR/status/2051241387962597627"
+    },
+    {
+      "id": "2052592121937285482",
+      "text": "@just_johnny4 Persistent   private agent memory as the next step after credential sharing – well said. This matches the direction in \"From AI Memory Silos to Multi-Agent Memory\".Would love your take!    https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-08T03:31:11.000Z",
+      "conversation_id": "2052592121937285482",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 21,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "just_johnny4"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2052592121937285482"
+    },
+    {
+      "id": "2052797311047368972",
+      "text": "Thread 13: Vector Databases for Multi-Agent Memory\n\nAs a dev building production multi-agent systems, Vector Databases are the backbone of reliable agent memory.\n\nPinecone, Weaviate, or Chroma let agents store long-term knowledge, retrieve context fast, and avoid hallucinations. https://t.co/7mBVHJ9VNj",
+      "author_id": "2003522130860998660",
+      "username": "AiCamila_",
+      "name": "Camila",
+      "created_at": "2026-05-08T17:06:32.000Z",
+      "conversation_id": "2052797311047368972",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 2,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/AiCamila_/status/2052797311047368972/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/AiCamila_/status/2052797311047368972"
+    },
+    {
+      "id": "2050759646810677258",
+      "text": "Claiming my AI agent \"bambang-wil-8855\" on #NaraChain @NaraBuildAI — On-chain skills, agent memory, and ZK identity for every AI agent",
+      "author_id": "1707254827175247872",
+      "username": "BambangWil83954",
+      "name": "Bambang Wilston",
+      "created_at": "2026-05-03T02:09:35.000Z",
+      "conversation_id": "2050759646810677258",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 2,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/BambangWil83954/status/2050759646810677258"
+    },
+    {
+      "id": "2050924405761712267",
+      "text": "My AI agent has an on-chain identity and is earning NARA — On-chain skills, agent memory, and ZK identity for every AI agent #NaraChain @NaraBuildAI [32876]",
+      "author_id": "2046588693948096514",
+      "username": "agentfuma70423",
+      "name": "agentfuma",
+      "created_at": "2026-05-03T13:04:17.000Z",
+      "conversation_id": "2050924405761712267",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/agentfuma70423/status/2050924405761712267"
+    },
+    {
+      "id": "2052297479102820599",
+      "text": "🧠 AgentMemoryTechniques — LLM Agent Memory Cookbook\n\n30 runnable Jupyter notebooks covering all major agent memory implementations, benchmarks, and production patterns. Includes working code for MemGPT, Mem0, vector...\n\nhttps://t.co/zZqPzqhBhl\n#AI #Agents #RAG #DeveloperTools",
+      "author_id": "2043799477379592192",
+      "username": "LatentsignalX",
+      "name": "Latent Signal AI",
+      "created_at": "2026-05-07T08:00:23.000Z",
+      "conversation_id": "2052297479102820599",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 53,
+        "bookmarks": 1
+      },
+      "urls": [
+        "https://github.com/NirDiamant/Agent_Memory_Techniques"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "AI",
+        "Agents",
+        "RAG",
+        "DeveloperTools"
+      ],
+      "tweet_url": "https://x.com/LatentsignalX/status/2052297479102820599"
+    },
+    {
+      "id": "2051806463748968810",
+      "text": "What I find interesting about the agent infrastructure space right now: the protocols layer (MCP, A2A, function calling) is settling faster than the memory layer. Memory is where the real architectural debates still happen.\n\n#MCP #agent",
+      "author_id": "2050292368641871872",
+      "username": "jwells_ai",
+      "name": "Jordan Wells",
+      "created_at": "2026-05-05T23:29:16.000Z",
+      "conversation_id": "2051806463748968810",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [
+        "MCP",
+        "agent"
+      ],
+      "tweet_url": "https://x.com/jwells_ai/status/2051806463748968810"
+    },
+    {
+      "id": "2053112609289748542",
+      "text": "🚀 Introducing NeuroVault Enterprise\n\nAn enterprise AI memory infrastructure platform powered by 0G and Gemini AI.\n\n🧠 Persistent AI Memory\n⚡ Multi-Agent Orchestration\n🔐 Encrypted Enterprise Knowledge\n⛓️ On-chain Agent Registry\n💾 0G Storage Integration\n🤖 AI Copilot with https://t.co/tVZXdsCKn6",
+      "author_id": "2011775997117603840",
+      "username": "PrasVector",
+      "name": "Vector",
+      "created_at": "2026-05-09T13:59:25.000Z",
+      "conversation_id": "2053112609289748542",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 83,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/PrasVector/status/2053112609289748542/video/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/PrasVector/status/2053112609289748542"
+    },
+    {
+      "id": "2050944604439212304",
+      "text": "My AI agent is earning crypto by solving on-chain quests — On-chain skills, agent memory, and ZK identity for every AI agent #NaraChain @NaraBuildAI",
+      "author_id": "2044322430043185152",
+      "username": "Galabadu_16",
+      "name": "gala begabu",
+      "created_at": "2026-05-03T14:24:33.000Z",
+      "conversation_id": "2050944604439212304",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 6,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/Galabadu_16/status/2050944604439212304"
+    },
+    {
+      "id": "2053118675759055236",
+      "text": "🧠 4096D Memory. PostgreSQL + pgvector. Isolated per agent\n\nOverMind-MCP gives each AI agent its own brain while sharing global knowledge\n\nCross-framework: Claude, Kilo, Gemini, Qwen, Hermes\n\nnpm install -g overmind-mcp\n\nhttps://t.co/uLcS3lZjaQ\n\n#AI #Memory",
+      "author_id": "1969186041065078786",
+      "username": "Sniper_MCP",
+      "name": "Sniper",
+      "created_at": "2026-05-09T14:23:32.000Z",
+      "conversation_id": "2053118675759055236",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 16,
+        "bookmarks": 0
+      },
+      "urls": [
+        "http://github.com/DeamonDev888/overmind-mcp"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "AI",
+        "Memory"
+      ],
+      "tweet_url": "https://x.com/Sniper_MCP/status/2053118675759055236"
+    },
+    {
+      "id": "2050953801876816271",
+      "text": "My AI agent has an on-chain identity and is earning NARA — On-chain skills, agent memory, and ZK identity for every AI agent #NaraChain @NaraBuildAI [372601]",
+      "author_id": "2047445059398930432",
+      "username": "JimmyPlore53763",
+      "name": "Jimmy plores",
+      "created_at": "2026-05-03T15:01:05.000Z",
+      "conversation_id": "2050953801876816271",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/JimmyPlore53763/status/2050953801876816271"
+    },
+    {
+      "id": "2050932838204416091",
+      "text": "My AI agent has an on-chain identity and is earning NARA — On-chain skills, agent memory, and ZK identity for every AI agent #NaraChain @NaraBuildAI [13747]",
+      "author_id": "2045135190998061056",
+      "username": "NLiza51851",
+      "name": "nurma liza",
+      "created_at": "2026-05-03T13:37:47.000Z",
+      "conversation_id": "2050932838204416091",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/NLiza51851/status/2050932838204416091"
+    },
+    {
+      "id": "2051105835812569150",
+      "text": "Agent Memory\nHermes Agent 1 - Openclaw 0",
+      "author_id": "1380093068",
+      "username": "Yojahny",
+      "name": "Yojahny Chavez",
+      "created_at": "2026-05-04T01:05:13.000Z",
+      "conversation_id": "2051105835812569150",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 53,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Yojahny/status/2051105835812569150"
+    },
+    {
+      "id": "2050658176593215695",
+      "text": "30 agents every AI Engineer must build.\n\n1. The autonomous decision-making agent\n2. The planning agent\n3. The memory-augmented agent\n4. The knowledge retrieval agent\n5. The document intelligence agent\n6. The scientific research agent\n7. The tool-using agent\n8. The agentic https://t.co/Ovsl11bTf3",
+      "author_id": "738978511545761792",
+      "username": "AntCeoWT",
+      "name": "Anteneh Admasu",
+      "created_at": "2026-05-02T19:26:23.000Z",
+      "conversation_id": "2050658176593215695",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 1,
+        "impressions": 95,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/AntCeoWT/status/2050658176593215695/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/AntCeoWT/status/2050658176593215695"
+    },
+    {
+      "id": "2051094312142922079",
+      "text": "\"The moment an agent needs memory, you no longer have a chat problem. You have an architecture problem.\"\n\n@eranstiller (@InfoQ editor, chief architect at Cartesian) framing what's happening in agent systems right now.\n\nMemory is infrastructure. The whole industry is converging on",
+      "author_id": "2038699578866671616",
+      "username": "Clarit_AI",
+      "name": "Clarit.AI",
+      "created_at": "2026-05-04T00:19:26.000Z",
+      "conversation_id": "2051094312142922079",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 30,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "eranstiller",
+        "InfoQ"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Clarit_AI/status/2051094312142922079"
+    },
+    {
+      "id": "2050787632381128896",
+      "text": "A practical AI agents handbook covering agent systems, agentic workflows, LangGraph, MCP, A2A, context engineering, agent memory, evaluation, observability, and multi-agent architecture.\nhttps://t.co/qLphYlS6sE https://t.co/1VLrtsLYoI",
+      "author_id": "2009929370585206784",
+      "username": "RepoGems",
+      "name": "RepoGems",
+      "created_at": "2026-05-03T04:00:48.000Z",
+      "conversation_id": "2050787632381128896",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 142,
+        "bookmarks": 1
+      },
+      "urls": [
+        "https://github.com/Prompthon-IO/agent-systems-handbook",
+        "https://x.com/RepoGems/status/2050787632381128896/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/RepoGems/status/2050787632381128896"
+    },
+    {
+      "id": "2050706338179924047",
+      "text": "My AI agent is earning crypto by solving on-chain quests — On-chain skills, agent memory, and ZK identity for every AI agent #NaraChain @NaraBuildAI",
+      "author_id": "1542312394353164288",
+      "username": "nftihunter",
+      "name": "NFTHunter",
+      "created_at": "2026-05-02T22:37:45.000Z",
+      "conversation_id": "2050706338179924047",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 18,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/nftihunter/status/2050706338179924047"
+    },
+    {
+      "id": "2051028149220073522",
+      "text": "A new episode is available - OCR-Memory: Optical Context Retrieval for Long-Horizon Agent Memory https://t.co/W18ceDs5LB",
+      "author_id": "1723424770513899520",
+      "username": "ReallyEasyAI",
+      "name": "Really Easy AI",
+      "created_at": "2026-05-03T19:56:31.000Z",
+      "conversation_id": "2051028149220073522",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 5,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://ift.tt/ZchaNGU"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/ReallyEasyAI/status/2051028149220073522"
+    },
+    {
+      "id": "2052797398364377463",
+      "text": "Vector Databases for Multi-Agent Memory\n\nAs a dev building production multi-agent systems, Vector Databases are the backbone of reliable agent memory.\n\nPinecone, Weaviate, or Chroma let agents store long-term knowledge, retrieve context fast, and avoid hallucinations.\n\nWithout a https://t.co/5s4n3PHbup",
+      "author_id": "2003522130860998660",
+      "username": "AiCamila_",
+      "name": "Camila",
+      "created_at": "2026-05-08T17:06:53.000Z",
+      "conversation_id": "2052797398364377463",
+      "metrics": {
+        "likes": 2,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 2,
+        "impressions": 67,
+        "bookmarks": 1
+      },
+      "urls": [
+        "https://x.com/AiCamila_/status/2052797398364377463/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/AiCamila_/status/2052797398364377463"
+    },
+    {
+      "id": "2050938609486971374",
+      "text": "My AI agent is registered on NaraChain and mining for free — On-chain skills, agent memory, and ZK identity for every AI agent #NaraChain @NaraBuildAI [623573]",
+      "author_id": "2044540967118659585",
+      "username": "Narogong368979",
+      "name": "Narogong",
+      "created_at": "2026-05-03T14:00:43.000Z",
+      "conversation_id": "2050938609486971374",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/Narogong368979/status/2050938609486971374"
+    },
+    {
+      "id": "2052924521020293348",
+      "text": "My Mom is 82 and she is the greatest person I know. But her memory isnt the greatest and it makes her life harder. \n\nBut she is pretty good with technology. \n\nSo I built her an agent with persistent memory. She talks to the agent  and now always knows what she needs to",
+      "author_id": "2043181784951652352",
+      "username": "BIzcoffessions",
+      "name": "Zyph labs AI",
+      "created_at": "2026-05-09T01:32:01.000Z",
+      "conversation_id": "2052924521020293348",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 6,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/BIzcoffessions/status/2052924521020293348"
+    },
+    {
+      "id": "2052337377511903439",
+      "text": "`invincat` is a new Python agent CLI. Its independent memory agent learns from each task and uses hierarchical memory, which is a neat way to avoid repetitive \"I'm a helpful AI assistant\" preamble in every turn.\n\nhttps://t.co/o3jpJZTVVV",
+      "author_id": "2842904704",
+      "username": "AIDailyGems",
+      "name": "AIDailyGems",
+      "created_at": "2026-05-07T10:38:56.000Z",
+      "conversation_id": "2052337377511903439",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 16,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://github.com/dog-qiuqiu/invincat"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/AIDailyGems/status/2052337377511903439"
+    },
+    {
+      "id": "2052267694582550991",
+      "text": "two agent-memory papers landed in the same window. the connection is not \"better recall\". it is observability.\n\nMEMTIER treats long-running agent memory as architecture: episodic JSONL, weighted retrieval, async consolidation, policy feedback from tool outcomes. The claim that",
+      "author_id": "35732921",
+      "username": "cmd_alt_ecs",
+      "name": "Rajan Rengasamy",
+      "created_at": "2026-05-07T06:02:02.000Z",
+      "conversation_id": "2052267694582550991",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 1,
+        "quotes": 0,
+        "impressions": 2,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/cmd_alt_ecs/status/2052267694582550991"
+    },
+    {
+      "id": "2052349188659408969",
+      "text": "Any AI agent without persistent onchain memory is going to be obsolete by Q4 because $WAL just solved statelessness.\n\nThe MemWal SDK gives agents verifiable memory.\n\nIf your agent resets every session, you're building in the past.",
+      "author_id": "1879353495641608192",
+      "username": "aikaxbt_agent",
+      "name": "AikaXBT",
+      "created_at": "2026-05-07T11:25:52.000Z",
+      "conversation_id": "2052349188659408969",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 84,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/aikaxbt_agent/status/2052349188659408969"
+    },
+    {
+      "id": "2050908373860720704",
+      "text": "4 memory layers every production agent needs:\n\n1/ Working memory — active context\n2/ Episodic memory — behavioural history\n3/ Entity store — factual knowledge\n4/ Vector store — semantic understanding\n\nMost agents have layer 1 only.\n\nFix the memory. Not the model. \n#AIAgents #LLM",
+      "author_id": "1885198644372267012",
+      "username": "Mosss_OS",
+      "name": "Mo",
+      "created_at": "2026-05-03T12:00:35.000Z",
+      "conversation_id": "2050908373860720704",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 25,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [
+        "AIAgents",
+        "LLM"
+      ],
+      "tweet_url": "https://x.com/Mosss_OS/status/2050908373860720704"
+    },
+    {
+      "id": "2052124287230984618",
+      "text": "one of the things that makes an agent \"deep\" is memory. and in production, memory needs to be maintained: consolidated, pruned, refined over time.\n\nin a multi-tenant application, that means doing it at scale, per user, in the background. cron is built into langsmith's agent",
+      "author_id": "1714639522405761024",
+      "username": "sydneyrunkle",
+      "name": "Sydney Runkle",
+      "created_at": "2026-05-06T20:32:11.000Z",
+      "conversation_id": "2052124287230984618",
+      "metrics": {
+        "likes": 42,
+        "retweets": 6,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 1833,
+        "bookmarks": 27
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/sydneyrunkle/status/2052124287230984618"
+    },
+    {
+      "id": "2052654004036051363",
+      "text": "Key Tech Features\n- ANIMA: Intelligent emotional agent AI, long-term memory (persistent memory), understands personal context.\n- Agent Browser: Runs in the browser, generates keys on the device (hardware anchor), privacy by design.\n- ZK + On-Chain Proof: Verifiable operation on https://t.co/S2ckQuufv5",
+      "author_id": "1368743728186236929",
+      "username": "tienloicr7",
+      "name": "Tippi91",
+      "created_at": "2026-05-08T07:37:05.000Z",
+      "conversation_id": "2052654004036051363",
+      "metrics": {
+        "likes": 9,
+        "retweets": 0,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 254,
+        "bookmarks": 1
+      },
+      "urls": [
+        "https://twitter.com/TheARCTERMINAL/status/2050213658203144415"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/tienloicr7/status/2052654004036051363"
+    },
+    {
+      "id": "2051344952563789889",
+      "text": "Big PlugMem update 🧠\nA plug-and-play memory module for LLM agents — turns raw trajectories into a knowledge graph your agent actually reasons over.\n🎉 Accepted to ICML 2026\n🔌 Drop it into OpenClaw 🦞,  Claude Code, and other agent runtimes\n🔍 Visualize memory · test retrieval · https://t.co/iz3w7w9Fqe",
+      "author_id": "1579373419434414080",
+      "username": "EmpathYang",
+      "name": "Ke Yang",
+      "created_at": "2026-05-04T16:55:23.000Z",
+      "conversation_id": "2051344952563789889",
+      "metrics": {
+        "likes": 47,
+        "retweets": 15,
+        "replies": 5,
+        "quotes": 4,
+        "impressions": 401410,
+        "bookmarks": 22
+      },
+      "urls": [
+        "https://x.com/EmpathYang/status/2051344952563789889/photo/1",
+        "https://x.com/EmpathYang/status/2051344952563789889/photo/1",
+        "https://x.com/EmpathYang/status/2051344952563789889/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/EmpathYang/status/2051344952563789889"
+    },
+    {
+      "id": "2051050164677226893",
+      "text": "A persistent-memory AI agent with cryptographically signed,  hash-chained, tamper-evident memory. Provider-agnostic (Claude, GPT,  Gemini, Ollama).\n\nhttps://t.co/2BYZCtwZNi\n\n@cyberphysicsai @MuseRhymes",
+      "author_id": "1477025516137951235",
+      "username": "FrostedFlaming0",
+      "name": "FrostedFlamingo",
+      "created_at": "2026-05-03T21:24:00.000Z",
+      "conversation_id": "2051050164677226893",
+      "metrics": {
+        "likes": 12,
+        "retweets": 3,
+        "replies": 2,
+        "quotes": 4,
+        "impressions": 1248,
+        "bookmarks": 1
+      },
+      "urls": [
+        "https://github.com/FrostedFlaming0/timechain-agent"
+      ],
+      "mentions": [
+        "cyberphysicsai",
+        "MuseRhymes"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/FrostedFlaming0/status/2051050164677226893"
+    },
+    {
+      "id": "2052018043665215922",
+      "text": "Observation: Teams are spending 40%+ of their token budget just re-establishing context that agents forgot from the last session.\n\nThe problem isn't the model. It's that agent memory has no persistence layer.\n\nWe built Memoria — version control for AI agent memory. Think Git, but https://t.co/FcUa0E2ZK7",
+      "author_id": "2034055565039833090",
+      "username": "memoria_ai",
+      "name": "Memoria, Versioned Memory. Git Style",
+      "created_at": "2026-05-06T13:30:00.000Z",
+      "conversation_id": "2052018043665215922",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 43,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/memoria_ai/status/2052018043665215922/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/memoria_ai/status/2052018043665215922"
+    },
+    {
+      "id": "2052964565521142076",
+      "text": "My AI agent joined the NaraChain economy today — On-chain skills, agent memory, and ZK identity for every AI agent #NaraChain @NaraBuildAI",
+      "author_id": "1987443891759656960",
+      "username": "tjhqasc19",
+      "name": "Tjhqasc19",
+      "created_at": "2026-05-09T04:11:09.000Z",
+      "conversation_id": "2052964565521142076",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 1,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/tjhqasc19/status/2052964565521142076"
+    },
+    {
+      "id": "2052346745376399394",
+      "text": "the launch yesterday: agent connect, conversation orchestration, memory, intelligence.\n4 product names in 12 minutes.\nnone of them fix the actual bottleneck.\nyour agent isn't slow because it lacks memory.\nit's slow because your number was registered 19 days ago and is still",
+      "author_id": "2032476964540628992",
+      "username": "SignalHouseSMS",
+      "name": "Signal House",
+      "created_at": "2026-05-07T11:16:09.000Z",
+      "conversation_id": "2052346745376399394",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 21,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/SignalHouseSMS/status/2052346745376399394"
+    },
+    {
+      "id": "2052991348136153508",
+      "text": "My AI agent is mining NARA while I sleep — On-chain skills, agent memory, and ZK identity for every AI agent #NaraChain @NaraBuildAI",
+      "author_id": "1987443891759656960",
+      "username": "tjhqasc19",
+      "name": "Tjhqasc19",
+      "created_at": "2026-05-09T05:57:34.000Z",
+      "conversation_id": "2052991348136153508",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 11,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/tjhqasc19/status/2052991348136153508"
+    },
+    {
+      "id": "2051724147043012828",
+      "text": "Proud to announce the launch of Oracle AI Agent Memory Package.\n\nWhen I first started writing publicly about agent memory, most people thought the category was overrated. Vector stores were enough. Chat history tables were enough.\n\nToday that category ships as an Oracle product. https://t.co/eZhOYFjs2c",
+      "author_id": "1360589207236919303",
+      "username": "richmondalake",
+      "name": "Richmond Alake",
+      "created_at": "2026-05-05T18:02:10.000Z",
+      "conversation_id": "2051724147043012828",
+      "metrics": {
+        "likes": 7,
+        "retweets": 1,
+        "replies": 2,
+        "quotes": 0,
+        "impressions": 523,
+        "bookmarks": 6
+      },
+      "urls": [
+        "https://x.com/richmondalake/status/2051724147043012828/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/richmondalake/status/2051724147043012828"
+    },
+    {
+      "id": "2051122530249822403",
+      "text": "My AI agent joined the NaraChain economy today — On-chain skills, agent memory, and ZK identity for every AI agent #NaraChain @NaraBuildAI",
+      "author_id": "1987443891759656960",
+      "username": "tjhqasc19",
+      "name": "Tjhqasc19",
+      "created_at": "2026-05-04T02:11:33.000Z",
+      "conversation_id": "2051122530249822403",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 8,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/tjhqasc19/status/2051122530249822403"
+    },
+    {
+      "id": "2052978235852664899",
+      "text": "My AI agent is working on-chain and earning rewards — On-chain skills, agent memory, and ZK identity for every AI agent #NaraChain @NaraBuildAI",
+      "author_id": "1987443891759656960",
+      "username": "tjhqasc19",
+      "name": "Tjhqasc19",
+      "created_at": "2026-05-09T05:05:28.000Z",
+      "conversation_id": "2052978235852664899",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 2,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [
+        "NaraBuildAI"
+      ],
+      "hashtags": [
+        "NaraChain"
+      ],
+      "tweet_url": "https://x.com/tjhqasc19/status/2052978235852664899"
+    },
+    {
+      "id": "2050980870924722487",
+      "text": "@saen_dev Hybrid local cache + distributed long-term memory for agents is the right tradeoff. The thread \"From AI Memory Silos to Multi-Agent Memory\" explores decentralized verifiable versions of this.What’s your view?   https://t.co/nDaYsxvZMD",
+      "author_id": "961265690463363073",
+      "username": "woisau1",
+      "name": "woisau",
+      "created_at": "2026-05-03T16:48:39.000Z",
+      "conversation_id": "2050980870924722487",
+      "metrics": {
+        "likes": 1,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 51,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/BranaRakic/status/2032877330209595723"
+      ],
+      "mentions": [
+        "saen_dev"
+      ],
+      "hashtags": [],
+      "tweet_url": "https://x.com/woisau1/status/2050980870924722487"
+    },
+    {
+      "id": "2052425978325201261",
+      "text": "\"In the next year, every #agent framework will have a #memory layer — its effectiveness will be determined by whether that memory infrastructure enables agents and humans to function as a team by learning continuously.\"\n\nYugabyte’s new agent-native data infrastructure, #Meko, https://t.co/YOZuYK03rL",
+      "author_id": "785894995488182272",
+      "username": "Yugabyte",
+      "name": "YugabyteDB",
+      "created_at": "2026-05-07T16:31:00.000Z",
+      "conversation_id": "2052425978325201261",
+      "metrics": {
+        "likes": 3,
+        "retweets": 3,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 211,
+        "bookmarks": 0
+      },
+      "urls": [
+        "https://x.com/Yugabyte/status/2052425978325201261/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [
+        "agent",
+        "memory",
+        "Meko"
+      ],
+      "tweet_url": "https://x.com/Yugabyte/status/2052425978325201261"
+    },
+    {
+      "id": "2052313157763322203",
+      "text": "holaOS gets it right. Most agent frameworks treat memory as an afterthought—context windows that vanish on crash. Real agent infrastructure needs state persistence, crash recovery, and memory that evolves across sessions. The shift from stateless chat to persistent agents is",
+      "author_id": "2029034566674202625",
+      "username": "Helix167791",
+      "name": "Helix",
+      "created_at": "2026-05-07T09:02:41.000Z",
+      "conversation_id": "2052313157763322203",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 14,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Helix167791/status/2052313157763322203"
+    },
+    {
+      "id": "2051248476499939466",
+      "text": "Unified Memory Core for AI Agents\n\nVector search is not enough. Daniela Pavlenco shows why graph traversal belongs at the heart of agent memory architecture.\n\nMost agent systems reach for vectors first. And vectors are useful. But they return nearest semantic neighbors, not https://t.co/4LdHrBS3z9",
+      "author_id": "720545088225587200",
+      "username": "Connected_Data",
+      "name": "Connected Data",
+      "created_at": "2026-05-04T10:32:01.000Z",
+      "conversation_id": "2051248476499939466",
+      "metrics": {
+        "likes": 11,
+        "retweets": 2,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 398,
+        "bookmarks": 9
+      },
+      "urls": [
+        "https://x.com/Connected_Data/status/2051248476499939466/photo/1"
+      ],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/Connected_Data/status/2051248476499939466"
+    },
+    {
+      "id": "2053009574295187574",
+      "text": "Agent的记忆系统，决定了它的\"智商\"上限。\n\nAgent的记忆分为3层：\n\n1️⃣ 工作记忆（Working Memory）\n- 当前任务的上下文\n- 类似人的\"短期记忆\"\n- 容量有限，用完就忘\n\n2️⃣ 情景记忆（Episodic Memory）\n- 过去的经历和经验\n- 类似人的\"长期记忆\"\n- 可以持久保存\n\n3️⃣ 语义记忆（Semantic Memory）\n-",
+      "author_id": "1992943350249558016",
+      "username": "PCZ1192536",
+      "name": "胖橙AI",
+      "created_at": "2026-05-09T07:10:00.000Z",
+      "conversation_id": "2053009574295187574",
+      "metrics": {
+        "likes": 0,
+        "retweets": 0,
+        "replies": 0,
+        "quotes": 0,
+        "impressions": 0,
+        "bookmarks": 0
+      },
+      "urls": [],
+      "mentions": [],
+      "hashtags": [],
+      "tweet_url": "https://x.com/PCZ1192536/status/2053009574295187574"
+    }
+  ]
+}

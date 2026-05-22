@@ -5,7 +5,7 @@ const path = require('path');
 
 const { StateCompression } = require('../src/core/state-compression');
 const { readSnapshot } = require('../src/core/brain-snapshot');
-const { readMemorySidecars, sidecarsExist } = require('../src/core/memory-sidecar');
+const { readMemoryDeltas, readMemorySidecars, sidecarsExist } = require('../src/core/memory-sidecar');
 const { listBackups } = require('../src/core/brain-backups');
 
 function parseArgs(argv) {
@@ -118,18 +118,42 @@ async function main() {
   const sidecarPresent = sidecarsExist(brainDir);
 
   let sidecarCounts = { nodes: 0, edges: 0, nodeParseErrors: 0, edgeParseErrors: 0 };
+  let logicalSidecarCounts = { nodes: 0, edges: 0, deltaEntries: 0, deltaParseErrors: 0 };
   if (sidecarPresent) {
-    let countedNodes = 0;
-    let countedEdges = 0;
+    const nodeIds = new Set();
+    const edgeKeys = new Set();
+    const edgeKeyFor = (edge) => {
+      const source = edge?.source ?? edge?.from;
+      const target = edge?.target ?? edge?.to;
+      return [source, target].sort((a, b) => String(a).localeCompare(String(b))).join('->');
+    };
     const result = await readMemorySidecars(brainDir, {
-      onNode() { countedNodes += 1; },
-      onEdge() { countedEdges += 1; },
+      onNode(node) { if (node?.id !== undefined) nodeIds.add(node.id); },
+      onEdge(edge) { if (edge) edgeKeys.add(edgeKeyFor(edge)); },
+    });
+    const deltaResult = await readMemoryDeltas(brainDir, {
+      onNode(node) { if (node?.id !== undefined) nodeIds.add(node.id); },
+      onEdge(edge) { if (edge) edgeKeys.add(edgeKeyFor(edge)); },
+      onRemoveNode(id) {
+        nodeIds.delete(id);
+        // Edge deletions caused by node removal are accounted for by the
+        // engine at load time; this checker only has keys, not full edge
+        // records, so it treats explicit edge removals exactly and leaves
+        // node-cascade edge pruning to live load verification.
+      },
+      onRemoveEdge(key) { edgeKeys.delete(key); },
     });
     sidecarCounts = {
-      nodes: countedNodes,
-      edges: countedEdges,
+      nodes: result.nodes.count,
+      edges: result.edges.count,
       nodeParseErrors: result.nodes.parseErrors,
       edgeParseErrors: result.edges.parseErrors,
+    };
+    logicalSidecarCounts = {
+      nodes: nodeIds.size,
+      edges: edgeKeys.size,
+      deltaEntries: deltaResult.count,
+      deltaParseErrors: deltaResult.parseErrors,
     };
   }
 
@@ -195,18 +219,18 @@ async function main() {
     warnings,
     errors,
     'snapshot_vs_sidecars',
-    !!snapshot && snapshot.nodeCount === sidecarCounts.nodes && snapshot.edgeCount === sidecarCounts.edges,
+    !!snapshot && snapshot.nodeCount === logicalSidecarCounts.nodes && snapshot.edgeCount === logicalSidecarCounts.edges,
     'error',
-    `snapshot=${snapshot ? `${snapshot.nodeCount}/${snapshot.edgeCount}` : 'missing'} sidecars=${sidecarCounts.nodes}/${sidecarCounts.edges}`
+    `snapshot=${snapshot ? `${snapshot.nodeCount}/${snapshot.edgeCount}` : 'missing'} logicalSidecars=${logicalSidecarCounts.nodes}/${logicalSidecarCounts.edges} fullSidecars=${sidecarCounts.nodes}/${sidecarCounts.edges} deltaEntries=${logicalSidecarCounts.deltaEntries}`
   );
   addCheck(
     checks,
     warnings,
     errors,
     'sidecar_parse_errors',
-    sidecarCounts.nodeParseErrors === 0 && sidecarCounts.edgeParseErrors === 0,
+    sidecarCounts.nodeParseErrors === 0 && sidecarCounts.edgeParseErrors === 0 && logicalSidecarCounts.deltaParseErrors === 0,
     'warn',
-    `nodeParseErrors=${sidecarCounts.nodeParseErrors} edgeParseErrors=${sidecarCounts.edgeParseErrors}`
+    `nodeParseErrors=${sidecarCounts.nodeParseErrors} edgeParseErrors=${sidecarCounts.edgeParseErrors} deltaParseErrors=${logicalSidecarCounts.deltaParseErrors}`
   );
 
   const inlineNodes = Array.isArray(state?.memory?.nodes) ? state.memory.nodes.length : 0;
@@ -221,19 +245,23 @@ async function main() {
     `sidecarsPresent=${sidecarPresent} inlineNodes=${inlineNodes} inlineEdges=${inlineEdges}`
   );
 
-  const maxDriftMs = Math.max(
-    Math.abs(files.state.mtimeMs - files.snapshot.mtimeMs),
+  const stateSnapshotDriftMs = Math.abs(files.state.mtimeMs - files.snapshot.mtimeMs);
+  const fullSidecarSnapshotDriftMs = Math.max(
     Math.abs(files.nodesSidecar.mtimeMs - files.snapshot.mtimeMs),
     Math.abs(files.edgesSidecar.mtimeMs - files.snapshot.mtimeMs),
   );
+  const snapshotMatchesLogicalSidecars = !!snapshot &&
+    snapshot.nodeCount === logicalSidecarCounts.nodes &&
+    snapshot.edgeCount === logicalSidecarCounts.edges;
+  const deltaOverlayActive = logicalSidecarCounts.deltaEntries > 0;
   addCheck(
     checks,
     warnings,
     errors,
     'coherent_save_mtime_drift',
-    maxDriftMs <= 5 * 60 * 1000,
+    stateSnapshotDriftMs <= 5 * 60 * 1000 && (fullSidecarSnapshotDriftMs <= 5 * 60 * 1000 || (deltaOverlayActive && snapshotMatchesLogicalSidecars)),
     'warn',
-    `max drift ${(maxDriftMs / 1000).toFixed(1)}s across state/snapshot/sidecars`
+    `state/snapshot drift ${(stateSnapshotDriftMs / 1000).toFixed(1)}s; full-sidecar/snapshot drift ${(fullSidecarSnapshotDriftMs / 1000).toFixed(1)}s; deltaEntries=${logicalSidecarCounts.deltaEntries}`
   );
 
   const highWaterNodes = Number.isFinite(highWater?.maxNodeCount) ? highWater.maxNodeCount : null;
@@ -264,8 +292,11 @@ async function main() {
     counts: {
       snapshotNodes: snapshot?.nodeCount ?? 0,
       snapshotEdges: snapshot?.edgeCount ?? 0,
-      sidecarNodes: sidecarCounts.nodes,
-      sidecarEdges: sidecarCounts.edges,
+      sidecarNodes: logicalSidecarCounts.nodes || sidecarCounts.nodes,
+      sidecarEdges: logicalSidecarCounts.edges || sidecarCounts.edges,
+      fullSidecarNodes: sidecarCounts.nodes,
+      fullSidecarEdges: sidecarCounts.edges,
+      deltaEntries: logicalSidecarCounts.deltaEntries,
       highWaterNodes: highWaterNodes ?? 0,
       memoryObjects: Array.isArray(memoryObjects?.objects) ? memoryObjects.objects.length : 0,
       crystallizationReceipts: receipts.count,

@@ -2,7 +2,7 @@
   "id": "x",
   "version": "1.0.0",
   "name": "X",
-  "description": "Read, search, or post on X/Twitter when the task clearly involves tweets, mentions, timelines, or tweet URLs.",
+  "description": "Canonical Home23 skill for X/Twitter work: official API-backed read/search/post/reply when configured, bird-backed timeline/mentions fallback. Use this instead of direct bird CLI for normal posting/replying.",
   "layer": "skill",
   "runtime": "nodejs",
   "category": "social",
@@ -40,7 +40,12 @@
     "read",
     "search",
     "mentions",
+    "mediaUploadTest",
     "post",
+    "delete",
     "reply"
+  ],
+  "compositionHints": [
+    "For generate-image-then-post workflows, run generate_image first, then call x.post/x.reply with generatedImage:'latest', requireMedia:true, and requireGeneratedImage:true so only the generated artifact can be attached."
   ]
 }

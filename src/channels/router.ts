@@ -14,7 +14,7 @@
 
 import { randomUUID, createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { SessionsConfig, SessionRecord, ContentBlock, MediaAttachment } from '../types.js';
 
 /**
@@ -119,6 +119,7 @@ export class SessionRouter {
   private bindingsPath: string;
   private turnsDir: string;
   private deliveryReceiptsPath: string;
+  private eventLedgerPath: string;
   private activeRuns: Set<string> = new Set();
 
   constructor(config: SessionsConfig, handler: MessageHandler, sessionsDir: string) {
@@ -128,6 +129,7 @@ export class SessionRouter {
     this.bindingsPath = join(sessionsDir, 'thread-bindings.json');
     this.turnsDir = join(sessionsDir, 'turns');
     this.deliveryReceiptsPath = join(sessionsDir, 'delivery-receipts.jsonl');
+    this.eventLedgerPath = join(sessionsDir, '..', '..', 'brain', 'event-ledger.jsonl');
     mkdirSync(sessionsDir, { recursive: true });
     mkdirSync(this.turnsDir, { recursive: true });
     this.loadBindings();
@@ -547,16 +549,47 @@ export class SessionRouter {
   }
 
   private appendDeliveryReceipt(channel: string, chatId: string, turnId: string, response: OutgoingResponse): void {
+    const timestamp = new Date().toISOString();
+    const responseHash = this.hashResponse(response);
+
     try {
       appendFileSync(this.deliveryReceiptsPath, JSON.stringify({
-        timestamp: new Date().toISOString(),
+        timestamp,
         channel,
         chatId,
         turnId,
-        responseHash: this.hashResponse(response),
+        responseHash,
       }) + '\n');
     } catch (err) {
       console.warn('[router] Failed to append delivery receipt:', err);
+    }
+
+    this.appendDeliveryLedgerEvent({ channel, chatId, turnId, timestamp, responseHash });
+  }
+
+  private appendDeliveryLedgerEvent(receipt: { channel: string; chatId: string; turnId: string; timestamp: string; responseHash: string }): void {
+    try {
+      mkdirSync(dirname(this.eventLedgerPath), { recursive: true });
+      appendFileSync(this.eventLedgerPath, JSON.stringify({
+        event_id: randomUUID(),
+        event_type: 'NotificationDelivered',
+        thread_id: `channel:${receipt.channel}:${receipt.chatId}`,
+        session_id: `channel:${receipt.channel}:${receipt.chatId}`,
+        object_id: `delivery:${receipt.turnId}`,
+        timestamp: receipt.timestamp,
+        ts: receipt.timestamp,
+        actor: 'home23-session-router',
+        payload: {
+          schema: 'home23.notification-delivery.v1',
+          channel: receipt.channel,
+          chatId: receipt.chatId,
+          turnId: receipt.turnId,
+          responseHash: receipt.responseHash,
+          receiptPath: this.deliveryReceiptsPath,
+        },
+      }) + '\n');
+    } catch (err) {
+      console.warn('[router] Failed to append delivery ledger event:', err);
     }
   }
 

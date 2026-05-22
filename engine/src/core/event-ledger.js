@@ -56,13 +56,15 @@ class EventLedger {
    * @returns {object} the emitted event envelope
    */
   record(eventType, sessionId, payload, opts = {}) {
+    const timestamp = new Date().toISOString();
     const envelope = {
       event_id: crypto.randomUUID(),
       event_type: eventType,
       thread_id: opts.threadId,
       session_id: sessionId || 'engine',
       object_id: opts.objectId,
-      timestamp: new Date().toISOString(),
+      timestamp,
+      ts: timestamp,
       actor: opts.actor || 'engine',
       invocation_id: opts.invocationId,
       payload: payload || {},

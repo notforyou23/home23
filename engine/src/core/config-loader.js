@@ -220,6 +220,23 @@ class ConfigLoader {
     this.config._instanceFeederOverridesApplied = prior.concat(applied);
   }
 
+  applyInstanceTimeoutOverrides(instanceConfig) {
+    const timeoutOverrides = instanceConfig && instanceConfig.timeouts;
+    if (!timeoutOverrides || typeof timeoutOverrides !== 'object') return;
+
+    const baseTimeouts = this.config.timeouts && typeof this.config.timeouts === 'object'
+      ? this.config.timeouts
+      : {};
+
+    this.config.timeouts = {
+      ...baseTimeouts,
+      ...timeoutOverrides,
+    };
+
+    const prior = this.config._instanceTimeoutOverridesApplied || [];
+    this.config._instanceTimeoutOverridesApplied = prior.concat(['timeouts']);
+  }
+
   applyInstanceArchitectureOverrides(instanceConfig) {
     const architectureOverrides = instanceConfig && instanceConfig.architecture;
     if (!architectureOverrides || typeof architectureOverrides !== 'object') return;
@@ -257,6 +274,7 @@ class ConfigLoader {
           // specific assignments win over the sweep.
           this.applyInstanceModelAssignments(instanceConfig);
           this.applyInstanceFeederOverrides(instanceConfig);
+          this.applyInstanceTimeoutOverrides(instanceConfig);
           this.applyInstanceArchitectureOverrides(instanceConfig);
         } catch (_instanceErr) {
           // Instance config is best-effort — a malformed file should not break startup.

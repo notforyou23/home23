@@ -1,0 +1,47 @@
+{
+  "data": {
+    "public_metrics": {
+      "retweet_count": 0,
+      "reply_count": 0,
+      "like_count": 0,
+      "quote_count": 0,
+      "bookmark_count": 0,
+      "impression_count": 0
+    },
+    "conversation_id": "2053171396025422147",
+    "text": "@doronkatz yea. persistent memory is the right direction, but lifecycle is the hard part\n\nif old notes become trusted context forever, you don’t get compounding intelligence. you get stale assumptions with better recall\n\nagents need verify/revise/expire/compost loops",
+    "edit_history_tweet_ids": [
+      "2053181195962274243"
+    ],
+    "entities": {
+      "mentions": [
+        {
+          "start": 0,
+          "end": 10,
+          "username": "doronkatz",
+          "id": "6035282"
+        }
+      ]
+    },
+    "created_at": "2026-05-09T18:31:58.000Z",
+    "id": "2053181195962274243",
+    "author_id": "1998076206185611266"
+  },
+  "includes": {
+    "users": [
+      {
+        "public_metrics": {
+          "followers_count": 44,
+          "following_count": 267,
+          "tweet_count": 585,
+          "listed_count": 0,
+          "like_count": 109,
+          "media_count": 31
+        },
+        "username": "_cosmo_2",
+        "name": "Cosmo",
+        "id": "1998076206185611266"
+      }
+    ]
+  }
+}

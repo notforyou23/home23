@@ -1,6 +1,7 @@
 const { GPT5Client } = require('./gpt5-client');
 const { MCPClient } = require('./mcp-client');
 const { ChatCompletionsClient } = require('./chat-completions-client');
+const { getOpenAICodexClient } = require('../services/openai-codex-oauth-engine');
 const OpenAI = require('openai');
 
 /**
@@ -58,6 +59,7 @@ class UnifiedClient extends GPT5Client {
     this.localClient = null; // For local LLM support via Chat Completions API
     this.groqClient = null;  // Groq free tier (OpenAI-compatible)
     this.hfClient = null;    // HuggingFace Inference (OpenAI-compatible)
+    this.openaiCodexClient = null; // OpenAI Codex OAuth-only client
     this.mcpClients = new Map(); // MCP server label -> MCPClient instance
 
     // Rate limit tracking for free-tier providers
@@ -513,8 +515,10 @@ class UnifiedClient extends GPT5Client {
 
         this.logger?.info('Trying fallback', { provider: fb.provider, model: fb.model, step: i + 1, total: chain.length });
 
-        if (fb.provider === 'openai' || fb.provider === 'openai-codex') {
+        if (fb.provider === 'openai') {
           return await super.generate({ ...options, model: fb.model });
+        } else if (fb.provider === 'openai-codex') {
+          return await this.generateOpenAICodex(fb, options);
         } else if (fb.provider === 'xai') {
           return await this.generateXAI(fb, options);
         } else if (fb.provider === 'anthropic') {
@@ -548,8 +552,9 @@ class UnifiedClient extends GPT5Client {
     // Get model assignment from config (returns null if none configured)
     const assignment = this.getModelAssignment(options.component, options.purpose);
     
-    // If no assignment OR assignment is OpenAI/OpenAI-Codex -> use parent GPT5Client implementation
-    if (!assignment || assignment.provider === 'openai' || assignment.provider === 'openai-codex') {
+    // If no assignment OR assignment is OpenAI -> use parent GPT5Client implementation.
+    // openai-codex is OAuth-only and must never fall through to OPENAI_API_KEY.
+    if (!assignment || assignment.provider === 'openai') {
       // Apply model override if specified in assignment
       if (assignment && assignment.model) {
         options = { ...options, model: assignment.model };
@@ -557,6 +562,10 @@ class UnifiedClient extends GPT5Client {
 
       // Use parent implementation - exact current GPT-5.5 behavior
       return await super.generate(options);
+    }
+
+    if (assignment.provider === 'openai-codex') {
+      return await this.generateOpenAICodex(assignment, options);
     }
     
     // Check rate limits for free-tier providers before attempting
@@ -628,6 +637,27 @@ class UnifiedClient extends GPT5Client {
     
     // No fallback configured -> throw error
     throw lastError || new Error('Generation failed after all retries');
+  }
+
+  getOpenAICodexGPT5Client() {
+    if (!this.openaiCodexClient) {
+      this.openaiCodexClient = getOpenAICodexClient(this.config, this.logger);
+      this.logger?.info?.('✅ OpenAI Codex provider initialized', { authMode: 'oauth' });
+    }
+    return this.openaiCodexClient;
+  }
+
+  async generateOpenAICodex(assignment, options = {}) {
+    this.logger?.info?.('Routing to OpenAI Codex', {
+      model: assignment.model,
+      authMode: 'oauth',
+      hasInstructions: Boolean(options.instructions),
+      messageCount: (options.messages || []).length,
+    });
+    return await this.getOpenAICodexGPT5Client().generate({
+      ...options,
+      model: assignment.model || options.model,
+    });
   }
 
   /**
@@ -1120,7 +1150,7 @@ class UnifiedClient extends GPT5Client {
     const assignment = this.getModelAssignment(options.component, options.purpose);
     
     // If OpenAI or no assignment -> use parent (GPT-5.5) with model override
-    if (!assignment || assignment.provider === 'openai' || assignment.provider === 'openai-codex') {
+    if (!assignment || assignment.provider === 'openai') {
       // CRITICAL: Apply model override if assignment specifies a different model
       if (assignment && assignment.model) {
         options = { ...options, model: assignment.model };
@@ -1132,6 +1162,11 @@ class UnifiedClient extends GPT5Client {
         });
       }
       return await super.generateWithWebSearch(options);
+    }
+
+    if (assignment.provider === 'openai-codex') {
+      options = { ...options, model: assignment.model };
+      return await this.getOpenAICodexGPT5Client().generateWithWebSearch(options);
     }
     
     // If xAI -> use xAI's web search
@@ -1192,7 +1227,7 @@ class UnifiedClient extends GPT5Client {
     const assignment = this.getModelAssignment(options.component, options.purpose);
     
     // If OpenAI or no assignment -> use parent (GPT-5.5) with model override
-    if (!assignment || assignment.provider === 'openai' || assignment.provider === 'openai-codex') {
+    if (!assignment || assignment.provider === 'openai') {
       // CRITICAL: Apply model override if assignment specifies a different model
       if (assignment && assignment.model) {
         options = { ...options, model: assignment.model };
@@ -1203,6 +1238,11 @@ class UnifiedClient extends GPT5Client {
         });
       }
       return await super.generateWithReasoning(options);
+    }
+
+    if (assignment.provider === 'openai-codex') {
+      options = { ...options, model: assignment.model };
+      return await this.getOpenAICodexGPT5Client().generateWithReasoning(options);
     }
     
     // xAI supports reasoning
@@ -1247,8 +1287,8 @@ class UnifiedClient extends GPT5Client {
       return await super.generateFast(options);
     }
     
-    // If OpenAI/Codex assignment -> use parent with model override
-    if (assignment.provider === 'openai' || assignment.provider === 'openai-codex') {
+    // If OpenAI assignment -> use parent with model override
+    if (assignment.provider === 'openai') {
       options = { ...options, model: assignment.model };
       this.logger?.debug('Model override for fast generation', {
         component: options.component,
@@ -1256,6 +1296,17 @@ class UnifiedClient extends GPT5Client {
         model: assignment.model
       });
       return await super.generateFast(options);
+    }
+
+    if (assignment.provider === 'openai-codex') {
+      options = { ...options, model: assignment.model };
+      this.logger?.debug('Model override for Codex fast generation', {
+        component: options.component,
+        purpose: options.purpose,
+        model: assignment.model,
+        authMode: 'oauth',
+      });
+      return await this.getOpenAICodexGPT5Client().generateFast(options);
     }
 
     // If local -> use local client's fast generation

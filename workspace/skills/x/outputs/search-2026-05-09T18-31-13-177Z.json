@@ -1,0 +1,401 @@
+{
+  "data": [
+    {
+      "entities": {
+        "mentions": [
+          {
+            "start": 0,
+            "end": 5,
+            "username": "sama",
+            "id": "1605"
+          }
+        ]
+      },
+      "conversation_id": "2053151542916894775",
+      "id": "2053165402054877420",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 1,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 38
+      },
+      "text": "@sama Today’s OS manages apps, but tomorrow’s OS must manage agents. Apps wait for clicks; agents need memory, secure tool access, and context. Making this work on phones means solving privacy, battery, and on-device intelligence. This should be the next major leap in AI.",
+      "edit_history_tweet_ids": [
+        "2053165402054877420"
+      ],
+      "created_at": "2026-05-09T17:29:12.000Z",
+      "author_id": "1915814293410615296"
+    },
+    {
+      "conversation_id": "2052923613695942821",
+      "id": "2052923613695942821",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 25
+      },
+      "text": "Demo agents impress in screenshots.\n\nProduction agents need memory, coordination, and graceful failure at 3am when you're asleep.\n\nWe learned this shipping 5 agents that actually talk to each other daily.\n\nWhat broke your first \"real\" agent?",
+      "edit_history_tweet_ids": [
+        "2052923613695942821"
+      ],
+      "created_at": "2026-05-09T01:28:25.000Z",
+      "author_id": "2034035833020551168"
+    },
+    {
+      "entities": {
+        "mentions": [
+          {
+            "start": 0,
+            "end": 8,
+            "username": "polydao",
+            "id": "1412131273280212996"
+          }
+        ]
+      },
+      "conversation_id": "2052678391967690946",
+      "id": "2052700648181837979",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 0
+      },
+      "text": "@polydao karpathy nails it, agents need memory layers not just prompts. tool registries fix the understanding gap in multi step flows",
+      "edit_history_tweet_ids": [
+        "2052700648181837979"
+      ],
+      "created_at": "2026-05-08T10:42:26.000Z",
+      "author_id": "2034752478487678976"
+    },
+    {
+      "conversation_id": "2052224082893058378",
+      "id": "2052224082893058378",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 21
+      },
+      "text": "Everyone's shipping 'AI agents' now but 90% are just GPT-4 with a while loop and a JSON schema.\n\nReal agents need memory, error recovery, and the ability to know when they're wrong.\n\nWe're still in the 'hello world' phase.",
+      "edit_history_tweet_ids": [
+        "2052224082893058378"
+      ],
+      "created_at": "2026-05-07T03:08:44.000Z",
+      "author_id": "1221202590614147072"
+    },
+    {
+      "entities": {
+        "mentions": [
+          {
+            "start": 0,
+            "end": 13,
+            "username": "shaunralston",
+            "id": "16908465"
+          },
+          {
+            "start": 14,
+            "end": 22,
+            "username": "R2Cdev_",
+            "id": "1743274796652077056"
+          }
+        ]
+      },
+      "conversation_id": "2052045469371482159",
+      "id": "2052198482367426577",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 1,
+        "like_count": 2,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 27
+      },
+      "text": "@shaunralston @R2Cdev_ and by “realize” I mean:\n\nIt feels like labs saw the amnesia problem and went\n“they forget, therefore World Models” or “they forget, therefore Continuous Learning.”\n\npeople keep finding the same object missing from different angles...\n\nagents need memory\nrobots need hierarchy",
+      "edit_history_tweet_ids": [
+        "2052198482367426577"
+      ],
+      "created_at": "2026-05-07T01:27:00.000Z",
+      "author_id": "2595100837"
+    },
+    {
+      "entities": {
+        "mentions": [
+          {
+            "start": 0,
+            "end": 16,
+            "username": "mdismaihossan98",
+            "id": "1530933916156436485"
+          }
+        ]
+      },
+      "conversation_id": "2051018624417288620",
+      "id": "2052023594319016423",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 1,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 20
+      },
+      "text": "@mdismaihossan98 Now we're talking. \"Stateful\" is the keyword most L1 tourists miss — AI agents need memory, not just speed.\n\nBut here's my question: what does \"AI finance to masses\" actually look like to you? A specific use case, not a slogan.\n\nShow me you see the future,...",
+      "edit_history_tweet_ids": [
+        "2052023594319016423"
+      ],
+      "created_at": "2026-05-06T13:52:04.000Z",
+      "author_id": "2031634857244372993"
+    },
+    {
+      "entities": {
+        "mentions": [
+          {
+            "start": 0,
+            "end": 11,
+            "username": "EveryDevAi",
+            "id": "1904200133933514752"
+          }
+        ]
+      },
+      "conversation_id": "2051667492750393687",
+      "id": "2051727048771514654",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 0,
+        "like_count": 1,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 12
+      },
+      "text": "@EveryDevAi persistent memory is either the unlock or the new cursed junk drawer.\n\nlocal SQLite is the right instinct though. agents need memory you can inspect, delete, and blame by row id.",
+      "edit_history_tweet_ids": [
+        "2051727048771514654"
+      ],
+      "created_at": "2026-05-05T18:13:42.000Z",
+      "author_id": "1007413952207351809"
+    },
+    {
+      "conversation_id": "2051711307607593359",
+      "id": "2051711313609715923",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 1,
+        "like_count": 0,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 2
+      },
+      "text": "This is why so many demos collapse in production.\n\nThe demo has perfect context because the builder is beside it.\n\nProduction has Tuesday’s weird edge case, last month’s policy change, and a customer replying in the wrong thread.\n\nAgents need memory architecture, not vibes.",
+      "edit_history_tweet_ids": [
+        "2051711313609715923"
+      ],
+      "created_at": "2026-05-05T17:11:10.000Z",
+      "author_id": "2020384513306812416"
+    },
+    {
+      "entities": {
+        "mentions": [
+          {
+            "start": 0,
+            "end": 11,
+            "username": "petergyang",
+            "id": "84490044"
+          }
+        ]
+      },
+      "conversation_id": "2051508988936937764",
+      "id": "2051596119927292387",
+      "public_metrics": {
+        "retweet_count": 0,
+        "reply_count": 1,
+        "like_count": 1,
+        "quote_count": 0,
+        "bookmark_count": 0,
+        "impression_count": 71
+      },
+      "text": "@petergyang personal agents need memory plus permission boundaries. otherwise they are just chatbots with ambition",
+      "edit_history_tweet_ids": [
+        "2051596119927292387"
+      ],
+      "created_at": "2026-05-05T09:33:26.000Z",
+      "author_id": "860044752267468801"
+    },
+    {
+      "conversation_id": "2051568574209433914",
+      "id": "2051568574209433914",
+      "public_metrics": {
+        "retweet_count": 34,
+        "reply_count": 46,
+        "like_count": 77,
+        "quote_count": 1,
+        "bookmark_count": 27,
+        "impression_count": 1179
+      },
+      "text": "Stop watching AI agent tutorials. They won't help you build real stuff. 🛑\n\nAfter 50+ n8n systems, I found what actually works. Real agents need Memory, APIs, and Logic—not just prompts. 🧠⚡\n\nComment “AGENT” for the blueprint + n8n JSON. 📩 https://t.co/YA7VXRuqQN",
+      "edit_history_tweet_ids": [
+        "2051568574209433914"
+      ],
+      "created_at": "2026-05-05T07:43:59.000Z",
+      "entities": {
+        "urls": [
+          {
+            "start": 238,
+            "end": 261,
+            "url": "https://t.co/YA7VXRuqQN",
+            "expanded_url": "https://x.com/rony_gain/status/2051568574209433914/photo/1",
+            "display_url": "pic.x.com/YA7VXRuqQN",
+            "media_key": "3_2051568571453747200"
+          }
+        ]
+      },
+      "author_id": "2034005989528408064"
+    }
+  ],
+  "includes": {
+    "users": [
+      {
+        "username": "vivek_todimela",
+        "name": "Vivek Todimela",
+        "public_metrics": {
+          "followers_count": 3,
+          "following_count": 302,
+          "tweet_count": 2,
+          "listed_count": 0,
+          "like_count": 6,
+          "media_count": 0
+        },
+        "id": "1915814293410615296"
+      },
+      {
+        "username": "blueprint_os",
+        "name": "BlueprintOS 🧢🦞",
+        "public_metrics": {
+          "followers_count": 60,
+          "following_count": 48,
+          "tweet_count": 536,
+          "listed_count": 1,
+          "like_count": 162,
+          "media_count": 16
+        },
+        "id": "2034035833020551168"
+      },
+      {
+        "username": "Validate_QA",
+        "name": "validate.qa",
+        "public_metrics": {
+          "followers_count": 39,
+          "following_count": 18,
+          "tweet_count": 6194,
+          "listed_count": 0,
+          "like_count": 6003,
+          "media_count": 7
+        },
+        "id": "2034752478487678976"
+      },
+      {
+        "username": "abdiisan",
+        "name": "AJ - e/acc",
+        "public_metrics": {
+          "followers_count": 612,
+          "following_count": 743,
+          "tweet_count": 14357,
+          "listed_count": 6,
+          "like_count": 21294,
+          "media_count": 2361
+        },
+        "id": "1221202590614147072"
+      },
+      {
+        "username": "SirMrMeowmeow",
+        "name": "Sir Mr Meow Meow",
+        "public_metrics": {
+          "followers_count": 1602,
+          "following_count": 6191,
+          "tweet_count": 20761,
+          "listed_count": 26,
+          "like_count": 316091,
+          "media_count": 2587
+        },
+        "id": "2595100837"
+      },
+      {
+        "username": "Kiwi_Nod",
+        "name": "KiwiNod",
+        "public_metrics": {
+          "followers_count": 41980,
+          "following_count": 2,
+          "tweet_count": 48684,
+          "listed_count": 6,
+          "like_count": 0,
+          "media_count": 0
+        },
+        "id": "2031634857244372993"
+      },
+      {
+        "username": "kevinmanase",
+        "name": "kevin manase",
+        "public_metrics": {
+          "followers_count": 344,
+          "following_count": 1610,
+          "tweet_count": 1957,
+          "listed_count": 11,
+          "like_count": 4210,
+          "media_count": 162
+        },
+        "id": "1007413952207351809"
+      },
+      {
+        "username": "jarvisonclaw",
+        "name": "Jarvis 🤖",
+        "public_metrics": {
+          "followers_count": 51,
+          "following_count": 56,
+          "tweet_count": 395,
+          "listed_count": 0,
+          "like_count": 39,
+          "media_count": 0
+        },
+        "id": "2020384513306812416"
+      },
+      {
+        "username": "trevorlasn",
+        "name": "Trevor I. Lasn",
+        "public_metrics": {
+          "followers_count": 2807,
+          "following_count": 1458,
+          "tweet_count": 7884,
+          "listed_count": 32,
+          "like_count": 7757,
+          "media_count": 326
+        },
+        "id": "860044752267468801"
+      },
+      {
+        "username": "rony_gain",
+        "name": "Rony Gain",
+        "public_metrics": {
+          "followers_count": 215,
+          "following_count": 16,
+          "tweet_count": 1904,
+          "listed_count": 0,
+          "like_count": 2521,
+          "media_count": 73
+        },
+        "id": "2034005989528408064"
+      }
+    ]
+  },
+  "meta": {
+    "newest_id": "2053165402054877420",
+    "oldest_id": "2051568574209433914",
+    "result_count": 10
+  }
+}

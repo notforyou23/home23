@@ -2336,11 +2336,11 @@ class DashboardServer {
           return res.status(400).json({ error: 'messages array required' });
         }
 
-        const components = getV2Components.call(this);
         const chosenProvider = provider || 'openai';
         const chosenModel = model || 'gpt-4o';
         const finalMaxTokens = maxTokens || 2000;
         const finalTemperature = temperature ?? 0.7;
+        const components = chosenProvider === 'openai-codex' ? null : getV2Components.call(this);
 
         let answer = '';
         let usage = {};
@@ -2352,6 +2352,17 @@ class DashboardServer {
             messages: messages,
             maxTokens: finalMaxTokens,
             temperature: finalTemperature,
+            model: chosenModel,
+          });
+          answer = result.content || '';
+          usage = result.usage || {};
+        } else if (chosenProvider === 'openai-codex') {
+          const { getOpenAICodexClient } = require('../services/openai-codex-oauth-engine');
+          const codexClient = getOpenAICodexClient({}, console);
+          const result = await codexClient.generate({
+            instructions: system || '',
+            messages,
+            maxOutputTokens: finalMaxTokens,
             model: chosenModel,
           });
           answer = result.content || '';
@@ -6189,6 +6200,7 @@ Be specific, actionable, and maintain research continuity.`;
       const enriched = notifs.map(n => ({ ...n, acknowledged: !!acks[n.id] }));
       const pending = enriched.filter(n => !n.acknowledged);
       res.json({
+        status: 'ok',
         total: enriched.length,
         pending: pending.length,
         items: enriched.slice(-100).reverse(), // most recent first, cap at 100

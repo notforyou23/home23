@@ -33,7 +33,14 @@ export class EventLedger {
   emit(events: EventEnvelope | EventEnvelope[]): void {
     const arr = Array.isArray(events) ? events : [events];
     try {
-      const lines = arr.map(e => JSON.stringify(e)).join('\n') + '\n';
+      const lines = arr.map(e => {
+        const timestamp = e.timestamp ?? new Date().toISOString();
+        return JSON.stringify({
+          ...e,
+          timestamp,
+          ts: e.ts ?? timestamp,
+        });
+      }).join('\n') + '\n';
       appendFileSync(this.ledgerPath, lines);
     } catch (err) {
       console.warn('[event-ledger] Failed to write:', err instanceof Error ? err.message : err);
@@ -49,11 +56,13 @@ export class EventLedger {
     payload: Record<string, unknown>,
     opts?: { threadId?: string; objectId?: string; actor?: string },
   ): EventEnvelope {
+    const timestamp = new Date().toISOString();
     const event: EventEnvelope = {
       event_id: randomUUID(),
       event_type: eventType,
       session_id: sessionId,
-      timestamp: new Date().toISOString(),
+      timestamp,
+      ts: timestamp,
       actor: opts?.actor ?? 'system',
       thread_id: opts?.threadId,
       object_id: opts?.objectId,

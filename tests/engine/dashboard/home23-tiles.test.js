@@ -50,7 +50,7 @@ test('materialized default layout exposes Good Life as a core tile', () => {
   assert.equal(item.tile.mode, 'core-good-life');
 });
 
-test('family-evening context suppresses project-facing home tiles without mutating layout', () => {
+test('family-evening context suppresses project-facing home tiles but keeps enabled chat visible', () => {
   const normalized = normalizeDashboardTilesConfig({});
   const normalLayout = materializeHomeLayout(normalized);
   const contextual = materializeHomeLayoutForContext(normalized, {
@@ -62,11 +62,11 @@ test('family-evening context suppresses project-facing home tiles without mutati
   assert.ok(normalLayout.some((item) => item.tileId === 'brain-log'));
   assert.ok(!contextual.layout.some((item) => item.tileId === 'thought-feed'));
   assert.ok(!contextual.layout.some((item) => item.tileId === 'brain-log'));
+  assert.ok(contextual.layout.some((item) => item.tileId === 'chat'));
   assert.ok(contextual.layout.some((item) => item.tileId === 'system-summary'));
   assert.ok(contextual.layout.some((item) => item.tileId === 'good-life'));
   assert.deepEqual(contextual.hiddenTiles.map((item) => item.tileId).sort(), [
     'brain-log',
-    'chat',
     'dream-log',
     'feeder',
     'thought-feed',

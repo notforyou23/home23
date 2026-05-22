@@ -13,9 +13,9 @@ cosmo23:
 dashboard:
   vibe:
     autoGenerate: true
-    generationIntervalHours: 0.5
+    generationIntervalHours: 2
     rotationIntervalSeconds: 120
-    galleryLimit: 600
+    galleryLimit: 1600
     sourcePaths:
       - /Volumes/Casey Jones/_cosmoImages/images
     dreams:
@@ -253,8 +253,8 @@ embeddings:
   providers:
     - provider: ollama-local
       model: nomic-embed-text
-      endpoint: http://127.0.0.1:11434/api/embeddings
       dimensions: 768
+      endpoint: http://127.0.0.1:11434/api/embeddings
     - provider: openai
       model: text-embedding-3-small
       dimensions: 1536
@@ -262,8 +262,8 @@ embeddings:
       model: nomic-embed-text
       dimensions: 768
 chat:
-  defaultProvider: minimax
-  defaultModel: MiniMax-M2.7
+  defaultProvider: openai-codex
+  defaultModel: gpt-5.5
   maxTokens: 4096
   temperature: 0.7
   historyBudget: 400000
@@ -354,8 +354,8 @@ osEngine:
       dashboard: 15m
 media:
   imageGeneration:
-    provider: xai
-    model: grok-imagine-image
+    provider: minimax
+    model: image-01
 models:
   aliases:
     sonnet:
@@ -377,7 +377,7 @@ models:
       provider: openai-codex
       model: gpt-5.5-pro
     mini:
-      provider: openai
+      provider: openai-codex
       model: gpt-5.4-mini
     grok:
       provider: xai
