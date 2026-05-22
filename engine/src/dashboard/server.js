@@ -5473,6 +5473,7 @@ Be specific, actionable, and maintain research continuity.`;
           verifier: problem.verifier || null,
           remediation: Array.isArray(problem.remediation) ? problem.remediation : [],
           remediationLog: Array.isArray(problem.remediationLog) ? problem.remediationLog.slice(-6) : [],
+          userIntervention: problem.userIntervention || null,
           fixRecipe: problem.fixRecipe || null,
           fixRecipeHistory: Array.isArray(problem.fixRecipeHistory) ? problem.fixRecipeHistory.slice(-4) : [],
           evidence: problem.evidence || null,

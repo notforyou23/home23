@@ -861,6 +861,50 @@ test('Good Life operator keeps escalated open problems visible as user intervent
   assert.match(model.operatorHandoff.userAction, /review escalated problem/);
 });
 
+test('Good Life operator does not ask jtr again after user intervention is handled', () => {
+  const model = buildGoodLifeOperatorModel({
+    state: goodLifeState({ evidence: { liveProblems: { open: 0, chronic: 1, resolved: 0, unverifiable: 0, total: 1 } } }),
+    liveProblems: [
+      {
+        id: 'cron_chronic',
+        state: 'chronic',
+        claim: 'jerry harness scheduler has no enabled jobs with repeated errors',
+        openedAt: '2026-05-08T13:00:00.000Z',
+        stepIndex: 3,
+        escalated: true,
+        userIntervention: {
+          status: 'handled',
+          at: '2026-05-08T14:00:00.000Z',
+          actor: 'good-life-operator',
+          note: 'Manual intervention completed.',
+        },
+        remediation: [
+          { type: 'dispatch_to_worker', args: { worker: 'systems' } },
+          { type: 'dispatch_to_agent', args: { budgetHours: 2 } },
+          { type: 'notify_jtr', args: { text: 'Review cron failures.' } },
+        ],
+        remediationLog: [
+          {
+            step: 3,
+            type: 'user_intervention',
+            outcome: 'handled',
+            detail: 'Manual intervention completed.',
+            at: '2026-05-08T14:00:00.000Z',
+          },
+        ],
+      },
+    ],
+    now: NOW,
+  });
+
+  assert.equal(model.liveProblems.counts.interventionRequired, 0);
+  assert.equal(model.liveProblems.chronic[0].intervention.required, false);
+  assert.equal(model.liveProblems.chronic[0].intervention.handled.status, 'handled');
+  assert.equal(model.operatorBrief.severity, 'repairing');
+  assert.equal(model.operatorBrief.needsUser, false);
+  assert.equal(model.operatorHandoff.status, 'Repairing');
+});
+
 test('Good Life operator answer names open live problem and latest fix attempt', () => {
   const model = buildGoodLifeOperatorModel({
     state: goodLifeState({ evidence: { liveProblems: { open: 1, chronic: 0, resolved: 0, unverifiable: 0, total: 1 } } }),

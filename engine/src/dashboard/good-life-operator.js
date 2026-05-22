@@ -103,6 +103,30 @@ function summarizeNextRemediation(problem = {}) {
   };
 }
 
+function summarizeHandledUserIntervention(problem = {}) {
+  const intervention = problem.userIntervention;
+  if (intervention?.status === 'handled') {
+    return {
+      status: 'handled',
+      at: intervention.at || null,
+      actor: intervention.actor || null,
+      note: intervention.note || null,
+    };
+  }
+
+  const log = Array.isArray(problem.remediationLog) ? problem.remediationLog : [];
+  const handled = [...log].reverse().find((entry) =>
+    entry?.type === 'user_intervention' && entry?.outcome === 'handled'
+  );
+  if (!handled) return null;
+  return {
+    status: 'handled',
+    at: handled.at || null,
+    actor: handled.actor || null,
+    note: handled.detail || null,
+  };
+}
+
 function liveProblemIssueText(problem = {}) {
   if (!problem) return '';
   const explicit = problem.issue || problem.failureClaim || problem.failure || problem.title;
@@ -133,7 +157,8 @@ function buildLiveProblemSnapshot(problems = [], now = new Date()) {
   for (const problem of Array.isArray(problems) ? problems : []) {
     if (problem?.state === 'open' || problem?.state === 'chronic') {
       const nextRemediation = summarizeNextRemediation(problem);
-      const requiresUser = nextRemediation.requiresUser || problem.escalated === true;
+      const handledIntervention = summarizeHandledUserIntervention(problem);
+      const requiresUser = !handledIntervention && (nextRemediation.requiresUser || problem.escalated === true);
       if (requiresUser) interventionRequired += 1;
       const row = {
         id: problem.id || '',
@@ -148,8 +173,11 @@ function buildLiveProblemSnapshot(problems = [], now = new Date()) {
         nextRemediation,
         intervention: {
           required: requiresUser,
+          handled: handledIntervention,
           reason: problem.escalated
-            ? `escalated after autonomous remediation; ${nextRemediation.text || 'manual review required'}`
+            ? (handledIntervention
+              ? 'operator intervention recorded; verifier still failing'
+              : `escalated after autonomous remediation; ${nextRemediation.text || 'manual review required'}`)
             : (nextRemediation.requiresUser ? nextRemediation.text : null),
           request: nextRemediation.operatorRequest || null,
         },
