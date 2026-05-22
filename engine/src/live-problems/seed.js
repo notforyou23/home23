@@ -19,6 +19,7 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
   const instanceRoot = process.cwd().replace(/\/engine$/, '') + `/instances/${agent}`;
   const brainStatePath = `${instanceRoot}/brain/brain-state.json`;
   const thoughtsPath = `${instanceRoot}/brain/thoughts.jsonl`;
+  const notifyCognitionPath = `${instanceRoot}/brain/channels/work.notify.cognition.jsonl`;
   const engineErrPath = `${instanceRoot}/logs/engine-err.log`;
   const cronJobsPath = `${instanceRoot}/conversations/cron-jobs.json`;
 
@@ -400,6 +401,36 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
             text: "Cognitive loop stalled — no new thoughts in 20+ min. Agent diagnosis did not recover it. Model provider, sleep/recovery state, or deeper loop stall needs review.",
           },
           cooldownMin: 60,
+        },
+      ],
+      seedOrigin: 'system',
+    },
+    {
+      id: `${agent}_operator_attention_notifications_clear`,
+      claim: `${agent} has no unresolved operator-attention notifications in the last 24 hours`,
+      verifier: {
+        type: 'jsonl_recent_match',
+        args: {
+          path: notifyCognitionPath,
+          tsField: 'receivedAt',
+          windowMinutes: 1440,
+          minCount: 0,
+          maxCount: 0,
+          filters: [
+            { field: 'payload.severity', op: '==', value: 'attention' },
+            { field: 'payload.acknowledged', op: '==', value: false },
+          ],
+        },
+      },
+      remediation: [
+        { type: 'dispatch_to_agent', args: { budgetHours: 2 }, cooldownMin: 30 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'normal',
+            text: `${agent} has unresolved attention notifications that are not captured by other live-problem checks. Agent diagnosis did not clear them; review the operator signal.`,
+          },
+          cooldownMin: 120,
         },
       ],
       seedOrigin: 'system',

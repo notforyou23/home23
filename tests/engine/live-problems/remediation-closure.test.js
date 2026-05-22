@@ -105,6 +105,16 @@ test('default seeds include agent-local operational log pressure invariants', ()
   assert.match(cron.verifier.args.path, /\/instances\/forrest\/conversations\/cron-jobs\.json$/);
   assert.equal(cron.remediation[0].type, 'dispatch_to_worker');
   assert.equal(cron.remediation[0].args.worker, 'systems');
+
+  const attention = byId.get('forrest_operator_attention_notifications_clear');
+  assert.equal(attention?.verifier?.type, 'jsonl_recent_match');
+  assert.match(attention.verifier.args.path, /\/instances\/forrest\/brain\/channels\/work\.notify\.cognition\.jsonl$/);
+  assert.equal(attention.verifier.args.maxCount, 0);
+  assert.deepEqual(attention.verifier.args.filters, [
+    { field: 'payload.severity', op: '==', value: 'attention' },
+    { field: 'payload.acknowledged', op: '==', value: false },
+  ]);
+  assert.equal(attention.remediation[0].type, 'dispatch_to_agent');
 });
 
 test('default seeds verify dashboard port ownership separately from HTTP reachability', () => {

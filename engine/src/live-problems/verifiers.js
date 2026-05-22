@@ -804,11 +804,14 @@ verifiers.jsonl_recent_match = async function jsonl_recent_match(args = {}) {
   if (!fs.existsSync(full)) return { ok: false, detail: `missing: ${filePath}` };
   const tsField = args.tsField || 'ts';
   const minCount = Number.isFinite(args.minCount) ? args.minCount : 1;
+  const hasMax = Number.isFinite(args.maxCount);
+  const maxCount = hasMax ? args.maxCount : null;
   const windowMin = Number.isFinite(args.windowMinutes) ? args.windowMinutes : 60;
   const maxLines = Math.min(args.maxLines || 5000, 50000);
-  const matchField = args.matchField;
-  const matchValue = args.matchValue;
-  const matchOp = args.matchOp || '==';
+  const filters = Array.isArray(args.filters) ? args.filters.filter(f => f && f.field) : [];
+  if (args.matchField != null) {
+    filters.push({ field: args.matchField, op: args.matchOp || '==', value: args.matchValue });
+  }
   const cutoffMs = Date.now() - windowMin * 60_000;
   try {
     // Read last maxLines lines efficiently enough for N up to 50k.
@@ -827,20 +830,27 @@ verifiers.jsonl_recent_match = async function jsonl_recent_match(args = {}) {
       const tsRaw = entry[tsField];
       const tsMs = typeof tsRaw === 'number' ? tsRaw : Date.parse(tsRaw || '');
       if (!tsMs || tsMs < cutoffMs) continue;
-      if (matchField != null) {
-        const fv = walkPath(entry, matchField);
-        if (!compareValues(fv, matchOp, matchValue)) continue;
+      let matched = true;
+      for (const filter of filters) {
+        const fv = walkPath(entry, filter.field);
+        if (!compareValues(fv, filter.op || '==', filter.value)) {
+          matched = false;
+          break;
+        }
       }
+      if (!matched) continue;
       matchCount++;
       lastMatch = { ts: tsRaw, entrySnippet: JSON.stringify(entry).slice(0, 120) };
     }
-    const ok = matchCount >= minCount;
+    const ok = matchCount >= minCount && (!hasMax || matchCount <= maxCount);
     return {
       ok,
       detail: ok
-        ? `${matchCount} matching entries in last ${windowMin}m${lastMatch ? ` (latest ${lastMatch.ts})` : ''}`
-        : `only ${matchCount} matching entries in last ${windowMin}m (need ${minCount}); scanned ${scanned}`,
-      observed: { matchCount, scanned, windowMin, lastMatch },
+        ? `${matchCount} matching entries in last ${windowMin}m${hasMax ? ` (limit ${maxCount})` : ''}${lastMatch ? ` (latest ${lastMatch.ts})` : ''}`
+        : hasMax && matchCount > maxCount
+          ? `${matchCount} matching entries in last ${windowMin}m (limit ${maxCount}); scanned ${scanned}`
+          : `only ${matchCount} matching entries in last ${windowMin}m (need ${minCount}); scanned ${scanned}`,
+      observed: { matchCount, scanned, windowMin, minCount, maxCount, filters, lastMatch },
     };
   } catch (err) {
     return { ok: false, detail: `read failed: ${err.message}` };
