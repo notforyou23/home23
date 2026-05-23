@@ -72,7 +72,7 @@ test('quick query mode stays bounded on large brains', () => {
   assert.equal(limit, 50);
 });
 
-test('full query mode still uses adaptive coverage up to the model cap', () => {
+test('direct full query mode preserves the old bounded query contract', () => {
   const limit = QueryEngine.calculateMemoryNodeLimit({
     mode: 'full',
     totalNodes: 56210,
@@ -80,7 +80,16 @@ test('full query mode still uses adaptive coverage up to the model cap', () => {
     model: 'claude-opus-4-7'
   });
 
-  assert.equal(limit, 4200);
+  assert.equal(limit, 400);
+});
+
+test('direct query modes stay bounded while PGS owns large graph coverage', () => {
+  const base = { totalNodes: 56210, isMergedBrain: true, model: 'claude-opus-4-7' };
+
+  assert.equal(QueryEngine.calculateMemoryNodeLimit({ ...base, mode: 'deep' }), 400);
+  assert.equal(QueryEngine.calculateMemoryNodeLimit({ ...base, mode: 'report' }), 600);
+  assert.equal(QueryEngine.calculateMemoryNodeLimit({ ...base, mode: 'expert' }), 800);
+  assert.equal(QueryEngine.calculateMemoryNodeLimit({ ...base, mode: 'dive' }), 1000);
 });
 
 test('current Claude family query models keep deep context instead of falling to safety caps', () => {

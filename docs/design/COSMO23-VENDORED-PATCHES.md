@@ -1423,10 +1423,19 @@ now enforces a provider-family input budget before the model call and records a
 `Context budget reached` marker in the context. PGS remains the path for broader
 full-graph coverage.
 
+**Direct-query contract restoration:** the provider-family node profiles were
+still too broad for direct Query because they turned ordinary `full`, `deep`,
+`report`, `expert`, and `dive` requests into accidental large-context scans.
+Direct Query now uses the old bounded evidence contract again: `quick` stays at
+50 nodes, `normal` at 200, `full`/`deep` at 400, `report` at 600, `expert` at
+800, and `dive` at 1000. The larger provider context windows are kept for answer
+quality and completion safety, not for inflating direct-query retrieval. PGS is
+the thousands-of-nodes and full-graph coverage path.
+
 **Verification:** `node --test --test-concurrency=1
 tests/cosmo23/query-engine-context.test.cjs tests/cosmo23/query-engine-runtime.test.cjs
 tests/cosmo23/anthropic-client-request.test.cjs tests/cosmo23/pgs-engine.test.cjs`
-passed with 31 tests. Syntax checks passed for `cosmo23/lib/query-engine.js`,
+passed with 32 tests. Syntax checks passed for `cosmo23/lib/query-engine.js`,
 `cosmo23/lib/pgs-engine.js`, and `cosmo23/lib/anthropic-client.js`.
 
 ---
@@ -1537,5 +1546,7 @@ passed with 31 tests. Syntax checks passed for `cosmo23/lib/query-engine.js`,
   horizontal artifact-agent churn, strategic spawn bypass, provider 429
   continuation, and zero committed artifacts despite a useful graph.
 - **2026-05-23** — Patch 25 restored the original deep-query answer contract
-  for dashboard `full` mode and replaced brittle exact-model query sizing with
-  family profiles for current GPT-5, Claude 4, and Grok 4 model IDs.
+  for dashboard `full` mode, replaced brittle exact-model query sizing with
+  family profiles for current GPT-5, Claude 4, and Grok 4 model IDs, and then
+  restored direct Query's bounded node contract so PGS owns thousands-of-nodes
+  and full-graph coverage.

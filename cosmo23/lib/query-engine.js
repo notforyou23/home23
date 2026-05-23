@@ -1557,8 +1557,9 @@ STYLE:
   }
 
   // HOME23 PATCH 17 — keep quick agent brain_query calls bounded on large brains.
-  // Adaptive coverage is useful for full/expert/dive, but it turns "quick" into
-  // hundreds of nodes once Jerry's brain crosses 50k nodes.
+  // Direct Query should stay close to the original bounded query contract.
+  // PGS is the large/full-graph coverage path; direct Query is the rich answer
+  // path over the best bounded evidence set.
   static calculateMemoryNodeLimit({ mode = 'normal', totalNodes = 0, isMergedBrain = false, model = 'gpt-5.2' } = {}) {
     const baseLimits = {
       quick: 50, full: 400, expert: 800, dive: 1000,
@@ -1566,30 +1567,11 @@ STYLE:
       grounded: 300, report: 600, innovation: 300, consulting: 300, executive: 0
     };
 
-    const targetCoverage = {
-      quick: 0.10, full: 0.20, expert: 0.30, dive: 0.35,
-      fast: 0.10, normal: 0.15, deep: 0.25, raw: 0.10,
-      grounded: 0.20, report: 0.35, innovation: 0.20, consulting: 0.20, executive: 0
-    };
-
     const baseLimit = baseLimits[mode] || 200;
     const MAX_NODES = QueryEngine.resolveModelMaxNodes(model);
     const nodeCount = Number.isFinite(totalNodes) ? Math.max(0, totalNodes) : 0;
 
-    if (mode === 'quick' || mode === 'fast') {
-      return Math.min(nodeCount || baseLimit, baseLimit, MAX_NODES);
-    }
-
-    const MIN_NODES = 100;
-    const coverage = targetCoverage[mode] || 0.15;
-    let adaptiveLimit = Math.max(baseLimit, Math.ceil(nodeCount * coverage));
-    adaptiveLimit = Math.max(MIN_NODES, Math.min(adaptiveLimit, MAX_NODES));
-
-    if (isMergedBrain && adaptiveLimit < MAX_NODES) {
-      adaptiveLimit = Math.min(Math.ceil(adaptiveLimit * 1.3), MAX_NODES);
-    }
-
-    return adaptiveLimit;
+    return Math.min(nodeCount || baseLimit, baseLimit, MAX_NODES);
   }
 
   async _getCodexCredentials() {
