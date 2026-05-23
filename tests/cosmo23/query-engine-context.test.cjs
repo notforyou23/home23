@@ -96,6 +96,64 @@ test('current Grok family query models use the xAI context profile', () => {
   assert.equal(QueryEngine.resolveModelContextWindow('grok-4.20-multi-agent-0309'), 128000);
 });
 
+test('large Anthropic query contexts are capped before provider streaming', () => {
+  const engine = Object.create(QueryEngine.prototype);
+  const hugeNodes = Array.from({ length: 1000 }, (_, i) => ({
+    id: `n${i}`,
+    concept: `node ${i} ` + 'dense research finding. '.repeat(500),
+    score: 1,
+    semanticScore: 1,
+    keywordScore: 1
+  }));
+
+  const context = engine.buildContext(
+    {
+      cycleCount: 1,
+      memory: { nodes: hugeNodes, edges: [] },
+      goals: { active: [] }
+    },
+    hugeNodes,
+    [],
+    null,
+    null,
+    'dive',
+    null,
+    'claude-opus-4-7'
+  );
+
+  assert.ok(context.length <= QueryEngine.resolveContextCharLimit('claude-opus-4-7', 'dive'));
+  assert.match(context, /Context budget reached/);
+});
+
+test('large GPT-5.5 query contexts are capped before Codex/OpenAI provider calls', () => {
+  const engine = Object.create(QueryEngine.prototype);
+  const hugeNodes = Array.from({ length: 1000 }, (_, i) => ({
+    id: `g${i}`,
+    concept: `gpt node ${i} ` + 'dense research finding. '.repeat(500),
+    score: 1,
+    semanticScore: 1,
+    keywordScore: 1
+  }));
+
+  const context = engine.buildContext(
+    {
+      cycleCount: 1,
+      memory: { nodes: hugeNodes, edges: [] },
+      goals: { active: [] }
+    },
+    hugeNodes,
+    [],
+    null,
+    null,
+    'dive',
+    null,
+    'gpt-5.5'
+  );
+
+  assert.ok(context.length <= QueryEngine.resolveContextCharLimit('gpt-5.5', 'dive'));
+  assert.match(context, /Context budget reached/);
+});
+
 test('full query mode uses the deep answer contract', async () => {
   const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo-query-full-depth-'));
   const capture = {};

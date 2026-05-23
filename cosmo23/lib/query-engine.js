@@ -1534,6 +1534,28 @@ STYLE:
     return QueryEngine.MODEL_MAX_NODES.default;
   }
 
+  static resolveContextCharLimit(model = 'gpt-5.2', mode = 'normal') {
+    const contextWindow = QueryEngine.resolveModelContextWindow(model);
+    const utilizationByMode = {
+      quick: 0.25,
+      fast: 0.30,
+      normal: 0.50,
+      full: 0.62,
+      deep: 0.62,
+      expert: 0.68,
+      dive: 0.68,
+      raw: 0.50,
+      grounded: 0.55,
+      report: 0.62,
+      innovation: 0.55,
+      consulting: 0.55,
+      executive: 0.35
+    };
+    const utilization = utilizationByMode[mode] || utilizationByMode.normal;
+    const maxChars = Math.floor(contextWindow * utilization * 4);
+    return Math.max(64000, Math.min(maxChars, 650000));
+  }
+
   // HOME23 PATCH 17 — keep quick agent brain_query calls bounded on large brains.
   // Adaptive coverage is useful for full/expert/dive, but it turns "quick" into
   // hundreds of nodes once Jerry's brain crosses 50k nodes.
@@ -2298,6 +2320,8 @@ STYLE:
     let context = `# COSMO Research State\n\n`;
     const isGrounded = mode === 'grounded';
     const isQuickMode = mode === 'quick' || mode === 'fast';
+    const contextCharLimit = QueryEngine.resolveContextCharLimit(model, mode);
+    const memoryCharBudget = Math.floor(contextCharLimit * 0.82);
     
     // Run metadata
     if (state.runMetadata) {
@@ -2436,7 +2460,9 @@ STYLE:
       nodesToInclude = directMatches.slice(0, memoryNodeLimit);
     }
     
-    nodesToInclude.forEach((node, i) => {
+    let memoryBudgetReached = false;
+    for (let i = 0; i < nodesToInclude.length; i++) {
+      const node = nodesToInclude[i];
       // TIERED TRUNCATION (2025-12-11):
       // Top 20 nodes: 2000 chars (nearly full)
       // Next 80 nodes: 1000 chars (substantial detail)
@@ -2459,8 +2485,15 @@ STYLE:
       if (node.specializationProfile) {
         context += `   Specialization: ${node.specializationProfile}\n`;
       }
+      const entry = context.slice(context.lastIndexOf(`[Mem ${node.id}]`));
+      if (context.length > memoryCharBudget) {
+        memoryBudgetReached = true;
+        context = context.substring(0, context.length - entry.length);
+        context += `[Context budget reached: ${nodesToInclude.length - i} additional memory nodes omitted before provider call to keep the query inside ${Math.round(contextCharLimit / 4).toLocaleString()} input tokens. Use PGS for broader full-graph coverage.]\n\n`;
+        break;
+      }
       context += `\n`;
-    });
+    }
     
     // Include connected concepts
     if (connectedMatches.length > 0) {
@@ -2597,6 +2630,11 @@ STYLE:
           context += `${preview}\n\n`;
         });
       }
+    }
+
+    if (context.length > contextCharLimit) {
+      const marker = `\n\n[Context budget reached: trailing context trimmed before provider call to keep the query inside ${Math.round(contextCharLimit / 4).toLocaleString()} input tokens. Use PGS for broader full-graph coverage.]\n`;
+      context = this.smartTruncate(context, Math.max(0, contextCharLimit - marker.length)) + marker;
     }
     
     return context;

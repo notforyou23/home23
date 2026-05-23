@@ -1413,10 +1413,20 @@ instead of the temporary safety caps.
 PGS behavior is unchanged: small-run direct fallback, provider/model selection,
 and PGS sweep/synthesis options remain intact.
 
+**Follow-up completion guardrail:** live logs showed that the restored large
+node profiles could still build direct-query contexts far beyond the provider
+window, for example `claude-opus-4-7` at ~524k estimated input tokens against a
+200k window and `gpt-5.5` at ~404k estimated input tokens against a 128k window.
+That shape could stream partial text but never reach the final Query `complete`
+event, so the dashboard never saved the query or enabled follow-up. Direct Query
+now enforces a provider-family input budget before the model call and records a
+`Context budget reached` marker in the context. PGS remains the path for broader
+full-graph coverage.
+
 **Verification:** `node --test --test-concurrency=1
 tests/cosmo23/query-engine-context.test.cjs tests/cosmo23/query-engine-runtime.test.cjs
 tests/cosmo23/anthropic-client-request.test.cjs tests/cosmo23/pgs-engine.test.cjs`
-passed with 29 tests. Syntax checks passed for `cosmo23/lib/query-engine.js`,
+passed with 31 tests. Syntax checks passed for `cosmo23/lib/query-engine.js`,
 `cosmo23/lib/pgs-engine.js`, and `cosmo23/lib/anthropic-client.js`.
 
 ---
