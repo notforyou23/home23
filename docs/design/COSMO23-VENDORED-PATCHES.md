@@ -1387,6 +1387,40 @@ tests/cosmo23/synthesis-config-generator.test.cjs`.
 
 ---
 
+## Patch 25 — Query depth restoration for current model families
+
+**Files touched:**
+- `cosmo23/lib/query-engine.js`
+- `tests/cosmo23/query-engine-context.test.cjs`
+
+**Problem:** the dashboard Query tab kept the newer PGS/provider/model surface,
+but the effective answer contract drifted away from the original deep-query
+behavior. The `full` UI mode was labeled comprehensive while using the lighter
+standard prompt, medium reasoning, and a smaller output budget. New visible
+Anthropic model IDs also received hard low node caps (`claude-opus-4-7` at 900
+nodes, `claude-sonnet-4-7` at 800 nodes), far below the older Opus/Sonnet
+query profiles. Current OpenAI and xAI model IDs not listed exactly could fall
+through to generic defaults instead of inheriting their family profile.
+
+**Fix:** `full` mode is again the dashboard successor to the original `deep`
+query contract: it uses the complete deep-access prompt, high reasoning, high
+verbosity, and the 25k-token output budget. Query context sizing now resolves
+model capacity through exact IDs plus family fallback rules for GPT-5, Claude
+4 Opus/Sonnet/Haiku, and Grok 4 families, so catalog refreshes do not silently
+downgrade depth. Claude 4.7 caps now match the established family profiles
+instead of the temporary safety caps.
+
+PGS behavior is unchanged: small-run direct fallback, provider/model selection,
+and PGS sweep/synthesis options remain intact.
+
+**Verification:** `node --test --test-concurrency=1
+tests/cosmo23/query-engine-context.test.cjs tests/cosmo23/query-engine-runtime.test.cjs
+tests/cosmo23/anthropic-client-request.test.cjs tests/cosmo23/pgs-engine.test.cjs`
+passed with 29 tests. Syntax checks passed for `cosmo23/lib/query-engine.js`,
+`cosmo23/lib/pgs-engine.js`, and `cosmo23/lib/anthropic-client.js`.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -1492,3 +1526,6 @@ tests/cosmo23/synthesis-config-generator.test.cjs`.
 - **2026-05-14** — Patch 24 added after a 40-cycle CrossFit-health run exposed
   horizontal artifact-agent churn, strategic spawn bypass, provider 429
   continuation, and zero committed artifacts despite a useful graph.
+- **2026-05-23** — Patch 25 restored the original deep-query answer contract
+  for dashboard `full` mode and replaced brittle exact-model query sizing with
+  family profiles for current GPT-5, Claude 4, and Grok 4 model IDs.

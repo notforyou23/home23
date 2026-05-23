@@ -1459,6 +1459,8 @@ STYLE:
    * Used to safely increase node coverage without exceeding token limits.
    */
   static MODEL_CONTEXT_WINDOWS = {
+    'gpt-5.5': 128000,
+    'gpt-5.5-pro': 128000,
     'gpt-5.4': 128000,
     'gpt-5.2': 128000,
     'gpt-5': 128000,
@@ -1482,17 +1484,19 @@ STYLE:
   };
 
   static MODEL_MAX_NODES = {
+    'gpt-5.5': 3200,
+    'gpt-5.5-pro': 3200,
     'gpt-5.4': 3200,
     'gpt-5.2': 3000,       // 128K context, proven model
     'gpt-5': 3000,         // 128K context, max reasoning
     'gpt-5.1': 3000,       // 128K context
     'gpt-5-mini': 2500,    // 128K but smaller model, more conservative
     'gpt-5.1-codex-max': 3000,
-    'claude-opus-4-7': 900,
+    'claude-opus-4-7': 4200,
     'claude-opus-4-6': 4200,
     'claude-opus-4-5': 4000,  // ~200K context, excellent for large brains
     'claude-opus': 4000,
-    'claude-sonnet-4-7': 800,
+    'claude-sonnet-4-7': 3000,
     'claude-sonnet-4-6': 3000,
     'claude-sonnet-4-5': 2800,  // 128K context
     'claude-sonnet': 2800,
@@ -1503,6 +1507,32 @@ STYLE:
     'grok-2': 2200,
     'default': 2500
   };
+
+  static resolveModelContextWindow(model = 'gpt-5.2') {
+    const id = String(model || '').trim();
+    if (QueryEngine.MODEL_CONTEXT_WINDOWS[id]) {
+      return QueryEngine.MODEL_CONTEXT_WINDOWS[id];
+    }
+    if (/^gpt-5(?:[.-]|$)/.test(id)) return 128000;
+    if (/^claude-(opus|sonnet|haiku)-4/.test(id)) return 200000;
+    if (/^grok-4/.test(id)) return 128000;
+    if (/^grok-code/.test(id)) return 128000;
+    return QueryEngine.MODEL_CONTEXT_WINDOWS.default;
+  }
+
+  static resolveModelMaxNodes(model = 'gpt-5.2') {
+    const id = String(model || '').trim();
+    if (QueryEngine.MODEL_MAX_NODES[id]) {
+      return QueryEngine.MODEL_MAX_NODES[id];
+    }
+    if (/^gpt-5(?:[.-]|$)/.test(id)) return 3200;
+    if (/^claude-opus-4/.test(id)) return 4200;
+    if (/^claude-sonnet-4/.test(id)) return 3000;
+    if (/^claude-haiku-4/.test(id)) return 1200;
+    if (/^grok-4/.test(id)) return 2800;
+    if (/^grok-code/.test(id)) return 2400;
+    return QueryEngine.MODEL_MAX_NODES.default;
+  }
 
   // HOME23 PATCH 17 — keep quick agent brain_query calls bounded on large brains.
   // Adaptive coverage is useful for full/expert/dive, but it turns "quick" into
@@ -1521,7 +1551,7 @@ STYLE:
     };
 
     const baseLimit = baseLimits[mode] || 200;
-    const MAX_NODES = QueryEngine.MODEL_MAX_NODES[model] || QueryEngine.MODEL_MAX_NODES['default'];
+    const MAX_NODES = QueryEngine.resolveModelMaxNodes(model);
     const nodeCount = Number.isFinite(totalNodes) ? Math.max(0, totalNodes) : 0;
 
     if (mode === 'quick' || mode === 'fast') {
@@ -1749,8 +1779,8 @@ STYLE:
     const memoryNodesShown = Math.min(memoryNodesFound, modeLimit);
     
     // Model-aware context window (2026-01-23)
-    const contextWindow = QueryEngine.MODEL_CONTEXT_WINDOWS[model] || QueryEngine.MODEL_CONTEXT_WINDOWS['default'];
-    const modelMaxNodes = QueryEngine.MODEL_MAX_NODES[model] || QueryEngine.MODEL_MAX_NODES['default'];
+    const contextWindow = QueryEngine.resolveModelContextWindow(model);
+    const modelMaxNodes = QueryEngine.resolveModelMaxNodes(model);
 
     const contextStats = {
       mode: mode,
@@ -1818,10 +1848,10 @@ STYLE:
         maxTokens: 2500,
         verbosity: 'low' 
       },
-      full: { 
-        reasoningEffort: 'medium', 
-        maxTokens: 20000, 
-        verbosity: 'medium' 
+      full: {
+        reasoningEffort: 'high',
+        maxTokens: 25000,
+        verbosity: 'high'
       },
       expert: { 
         reasoningEffort: 'high', 
@@ -2371,7 +2401,7 @@ STYLE:
     const totalNodes = directMatches.length;
     const isMergedBrain = state.mergeV2 || state.runMetadata?.mergedFrom?.length > 0;
     
-    const MAX_NODES = QueryEngine.MODEL_MAX_NODES[model] || QueryEngine.MODEL_MAX_NODES['default'];
+    const MAX_NODES = QueryEngine.resolveModelMaxNodes(model);
     const memoryNodeLimit = QueryEngine.calculateMemoryNodeLimit({
       mode,
       totalNodes,
@@ -2389,7 +2419,7 @@ STYLE:
       Math.max(memoryNodeLimit - 300, 0) * 125  // Rest: 500 chars = 125 tokens
     );
 
-    const contextWindow = QueryEngine.MODEL_CONTEXT_WINDOWS[model] || QueryEngine.MODEL_CONTEXT_WINDOWS['default'];
+    const contextWindow = QueryEngine.resolveModelContextWindow(model);
     const estimatedTotalTokens = estimatedNodeTokens + 10000; // +10K for metadata, goals, connected
     const utilizationPercent = ((estimatedTotalTokens / contextWindow) * 100).toFixed(1);
 
@@ -2603,8 +2633,8 @@ RULES:
    * Updated 2026-01-21: Added UI modes (quick/full/expert) + substance-first guidance
    */
   getStandardSystemPrompt(mode) {
-    // expert and deep modes get the comprehensive prompt
-    if (mode === 'deep' || mode === 'expert') {
+    // Full is the dashboard successor to the original deep query contract.
+    if (mode === 'full' || mode === 'deep' || mode === 'expert') {
       return `You are an advanced interface to COSMO's autonomous research brain with COMPLETE DEEP ACCESS.
 
 CRITICAL: SUBSTANCE OVER PROCESS

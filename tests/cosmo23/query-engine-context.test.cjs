@@ -37,6 +37,8 @@ function createStubQueryEngine(runtimeDir, answer, capture) {
     client: {
       generate: async (request) => {
         capture.instructions = request.instructions;
+        capture.maxTokens = request.maxTokens;
+        capture.reasoningEffort = request.reasoningEffort;
         return { content: answer };
       }
     },
@@ -78,7 +80,34 @@ test('full query mode still uses adaptive coverage up to the model cap', () => {
     model: 'claude-opus-4-7'
   });
 
-  assert.equal(limit, 900);
+  assert.equal(limit, 4200);
+});
+
+test('current Claude family query models keep deep context instead of falling to safety caps', () => {
+  assert.equal(QueryEngine.resolveModelMaxNodes('claude-sonnet-4-7'), 3000);
+  assert.equal(QueryEngine.resolveModelMaxNodes('claude-opus-4-7'), 4200);
+  assert.equal(QueryEngine.resolveModelMaxNodes('claude-opus-4-8'), 4200);
+  assert.equal(QueryEngine.resolveModelMaxNodes('claude-sonnet-4-8'), 3000);
+});
+
+test('current Grok family query models use the xAI context profile', () => {
+  assert.equal(QueryEngine.resolveModelMaxNodes('grok-4.3'), 2800);
+  assert.equal(QueryEngine.resolveModelMaxNodes('grok-4.20-0309-reasoning'), 2800);
+  assert.equal(QueryEngine.resolveModelContextWindow('grok-4.20-multi-agent-0309'), 128000);
+});
+
+test('full query mode uses the deep answer contract', async () => {
+  const runtimeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo-query-full-depth-'));
+  const capture = {};
+  const engine = createStubQueryEngine(runtimeDir, 'full answer', capture);
+
+  await engine.executeQuery('explain the research', {
+    mode: 'full'
+  });
+
+  assert.match(capture.instructions, /COMPLETE DEEP ACCESS/);
+  assert.equal(capture.maxTokens, 25000);
+  assert.equal(capture.reasoningEffort, 'high');
 });
 
 test('dive query prompt includes commit step and records synthesis receipt when enabled', async () => {
