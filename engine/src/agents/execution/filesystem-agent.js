@@ -1,5 +1,6 @@
 const fs = require('fs').promises;
 const path = require('path');
+const { writeFileDurable } = require('../../utils/durable-write');
 
 /**
  * FileSystemAgent - Local file operations
@@ -59,7 +60,7 @@ class FileSystemAgent {
     // Ensure directory exists
     await fs.mkdir(path.dirname(absPath), { recursive: true });
     
-    await fs.writeFile(absPath, finalContent, 'utf8');
+    const durability = await writeFileDurable(absPath, finalContent, 'utf8');
     
     this.logger.info('✏️ File written', {
       path: absPath,
@@ -71,7 +72,8 @@ class FileSystemAgent {
       success: true,
       path: absPath,
       mode,
-      length: finalContent.length
+      length: finalContent.length,
+      durability
     };
   }
 }

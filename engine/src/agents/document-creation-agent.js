@@ -2,6 +2,7 @@ const { BaseAgent } = require('./base-agent');
 const { DocumentManager } = require('./document-manager');
 const fs = require('fs').promises;
 const path = require('path');
+const { writeFileDurable } = require('../utils/durable-write');
 
 /**
  * DocumentCreationAgent - Document generation and management specialist
@@ -1415,7 +1416,7 @@ Your response:`
           }
         } else {
           // Fallback for backwards compatibility
-          await fs.writeFile(paths.fullPath, content, 'utf8');
+          await writeFileDurable(paths.fullPath, content, 'utf8');
         }
         
         // Create metadata file in same directory (matches document filename)
@@ -1462,7 +1463,7 @@ Your response:`
             }
           );
         } else {
-          await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
+          await writeFileDurable(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
         }
 
         // Register document with document manager
@@ -1544,7 +1545,7 @@ Your response:`
         }
       );
     } else {
-      await fs.writeFile(filePath, content, 'utf8');
+      await writeFileDurable(filePath, content, 'utf8');
     }
 
     // Create metadata file in same directory as document (matches document filename)
@@ -1576,7 +1577,7 @@ Your response:`
         { agentId: this.agentId, agentType: 'document-creation', missionGoal: this.mission.goalId }
       );
     } else {
-      await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
+      await writeFileDurable(metadataPath, JSON.stringify(metadata, null, 2), 'utf8');
     }
 
     // Register document with document manager

@@ -2,6 +2,7 @@ const { UnifiedClient } = require('../core/unified-client');
 const EventEmitter = require('events');
 const fs = require('fs').promises;
 const path = require('path');
+const { writeFileDurable } = require('../utils/durable-write');
 
 /**
  * BaseAgent - Foundation class for all specialist agents
@@ -1663,28 +1664,15 @@ class BaseAgent extends EventEmitter {
       return;
     }
     
-    // FALLBACK: Direct atomic write for backwards compatibility
-    const tempPath = filePath + '.tmp';
-    
+    // FALLBACK: Direct durable write for backwards compatibility.
     try {
-      // Write to temporary file
-      await fs.writeFile(tempPath, content, options);
-      
-      // Atomic rename (POSIX guarantee: either succeeds completely or fails)
-      await fs.rename(tempPath, filePath);
+      await writeFileDurable(filePath, content, options);
       
       this.logger?.debug?.('Atomic file write successful', {
         file: path.basename(filePath),
         size: Buffer.isBuffer(content) ? content.length : content.length
       });
     } catch (error) {
-      // Cleanup temp file on error
-      try {
-        await fs.unlink(tempPath).catch(() => {});
-      } catch (cleanupError) {
-        // Ignore cleanup errors
-      }
-      
       this.logger?.error?.('Atomic file write failed', {
         file: filePath,
         error: error.message
@@ -1976,4 +1964,3 @@ class BaseAgent extends EventEmitter {
 }
 
 module.exports = { BaseAgent };
-
