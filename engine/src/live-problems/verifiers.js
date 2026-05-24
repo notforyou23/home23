@@ -426,6 +426,37 @@ function isRetryableMissingJsonPath(jsonPath, op, observed) {
   return path.includes('[') && path.includes('=') && path.includes(']');
 }
 
+function maybeLoadNotificationAcks(filePath, args) {
+  if (args.ackPath === false || args.overlayNotificationAcks === false) return null;
+  const explicit = typeof args.ackPath === 'string' ? expandPath(args.ackPath) : null;
+  const candidates = explicit
+    ? [explicit]
+    : [
+        path.join(path.dirname(filePath), '..', 'notifications-ack.json'),
+        path.join(path.dirname(filePath), 'notifications-ack.json'),
+      ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        return JSON.parse(fs.readFileSync(candidate, 'utf8')) || {};
+      }
+    } catch { /* ignore malformed/mid-write ack files */ }
+  }
+  return null;
+}
+
+function overlayNotificationAck(entry, acks) {
+  if (!acks || !entry?.payload?.id || !acks[entry.payload.id]) return entry;
+  return {
+    ...entry,
+    payload: {
+      ...entry.payload,
+      acknowledged: true,
+      acknowledged_at: acks[entry.payload.id].acknowledged_at,
+    },
+  };
+}
+
 function compareValues(observed, op, expected) {
   // Normalize date-like strings for numeric ops so verifiers can say
   // "lastUpdate > now-1h" even if the JSON field is an ISO string.
@@ -809,6 +840,7 @@ verifiers.jsonl_recent_match = async function jsonl_recent_match(args = {}) {
   const windowMin = Number.isFinite(args.windowMinutes) ? args.windowMinutes : 60;
   const maxLines = Math.min(args.maxLines || 5000, 50000);
   const filters = Array.isArray(args.filters) ? args.filters.filter(f => f && f.field) : [];
+  const notificationAcks = maybeLoadNotificationAcks(full, args);
   if (args.matchField != null) {
     filters.push({ field: args.matchField, op: args.matchOp || '==', value: args.matchValue });
   }
@@ -826,7 +858,7 @@ verifiers.jsonl_recent_match = async function jsonl_recent_match(args = {}) {
       if (!line) continue;
       scanned++;
       let entry;
-      try { entry = JSON.parse(line); } catch { continue; }
+      try { entry = overlayNotificationAck(JSON.parse(line), notificationAcks); } catch { continue; }
       const tsRaw = entry[tsField];
       const tsMs = typeof tsRaw === 'number' ? tsRaw : Date.parse(tsRaw || '');
       if (!tsMs || tsMs < cutoffMs) continue;

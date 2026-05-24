@@ -1107,34 +1107,8 @@ Prefer fewer, complete files over many partial ones. Always include error handli
         return;
       }
 
-      // FEATURE 8 FIX: Check for FILE_WRITTEN markers before marking as failed
-      // Parse response content for FILE_WRITTEN:path markers
-      const fileWrittenMatches = [];
-      if (response?.content) {
-        const lines = response.content.split('\n');
-        for (const line of lines) {
-          if (line.startsWith('FILE_WRITTEN:')) {
-            const writtenPath = line.slice('FILE_WRITTEN:'.length).trim();
-            if (writtenPath) {
-              fileWrittenMatches.push(this.normalizePlanPath(writtenPath));
-            }
-          }
-        }
-      }
-
-      // If FILE_WRITTEN marker present for this entry, trust it
-      const normalizedEntryPath = this.normalizePlanPath(entry.path);
-      if (fileWrittenMatches.length > 0 && fileWrittenMatches.includes(normalizedEntryPath)) {
-        this.logger.info('✓ FILE_WRITTEN marker found, marking as complete', {
-          path: entry.path,
-          attempt: attemptNumber
-        }, 3);
-        entry.status = 'complete';
-        entry.completedAt = new Date().toISOString();
-        return;  // Success - don't mark as failed
-      }
-
-      // No FILE_WRITTEN marker found - log error but continue trying
+      // HOME23 PATCH: FILE_WRITTEN logs are not artifact proof. Require
+      // codeResults metadata or a discoverable container file.
       const errorSummary = response?.errorType
         || (response?.content ? response.content.slice(-400) : 'File not found after execution');
 
@@ -1146,7 +1120,6 @@ Prefer fewer, complete files over many partial ones. Always include error handli
       });
     }
 
-    // Only mark as failed if we exhausted all attempts without FILE_WRITTEN marker
     if (entry.status !== 'complete') {
       entry.status = 'failed';
       entry.failedAt = new Date().toISOString();
@@ -1326,66 +1299,7 @@ ${requirementsList}
       }
     }
 
-    const fileWrittenMatches = [];
-    const outputs = Array.isArray(response?.output) ? response.output : [];
-    for (const block of outputs) {
-      const entries = Array.isArray(block?.outputs) ? block.outputs : [];
-      for (const outputEntry of entries) {
-        const logPayload = outputEntry?.logs || outputEntry?.text || outputEntry?.content || '';
-        if (typeof logPayload !== 'string' || logPayload.trim().length === 0) {
-          continue;
-        }
-
-        for (const rawLine of logPayload.split('\n')) {
-          const line = rawLine.trim();
-          if (!line) {
-            continue;
-          }
-
-          if (line.startsWith('FILE_WRITTEN:')) {
-            const writtenPath = line.slice('FILE_WRITTEN:'.length).trim();
-            if (writtenPath) {
-              fileWrittenMatches.push(this.normalizePlanPath(writtenPath));
-            }
-          }
-        }
-      }
-    }
-
-    for (const candidate of fileWrittenMatches) {
-      if (!candidate) {
-        continue;
-      }
-
-      if (candidate === target) {
-        return {
-          id: null,
-          name: candidate,
-          path: candidate
-        };
-      }
-
-      if (entry.stage) {
-        const stageSuffixes = [
-          `_stage${entry.stage}`,
-          `_stage-${entry.stage}`,
-          `_stage_${entry.stage}`,
-          `.stage${entry.stage}`,
-          `.stage-${entry.stage}`,
-          `.stage_${entry.stage}`
-        ];
-
-        if (stageSuffixes.some(suffix => candidate === `${target}${suffix}`)) {
-          return {
-            id: null,
-            name: candidate,
-            path: target,
-            originalPath: candidate
-          };
-        }
-      }
-    }
-
+    // HOME23 PATCH: do not synthesize metadata from FILE_WRITTEN logs.
     return null;
   }
 

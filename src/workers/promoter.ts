@@ -22,7 +22,7 @@
  *   bus observations through consumeFromBus() below to unify the flow,
  *   after the cross-process orchestration story is in place.
  */
-import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
 import type { VerifiedObservation } from '../agent/verification.js';
@@ -499,14 +499,49 @@ export class PromoterWorker {
     try {
       const acks: AckMap = this.loadAcks();
       if (acks[id]) return;   // already acked
+      const acknowledgedAt = new Date().toISOString();
       acks[id] = {
-        acknowledged_at: new Date().toISOString(),
+        acknowledged_at: acknowledgedAt,
         auto_expired: true,
         reason: detail ? `${reason}: ${detail.slice(0, 200)}` : reason,
       };
       writeFileSync(this.ackFile, JSON.stringify(acks, null, 2));
+      this.syncNotificationChannelAck(id, acknowledgedAt);
     } catch (err) {
       this.logger.warn(`[promoter] auto-ack failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private syncNotificationChannelAck(id: string, acknowledgedAt: string): void {
+    const channelFile = join(this.brainDir, 'channels', 'work.notify.cognition.jsonl');
+    try {
+      if (!existsSync(channelFile)) return;
+      const raw = readFileSync(channelFile, 'utf-8');
+      const lines = raw.split('\n');
+      let changed = false;
+      const updated = lines.map((line) => {
+        if (!line.trim()) return line;
+        try {
+          const obs = JSON.parse(line) as { payload?: { id?: string; acknowledged?: boolean; acknowledged_at?: string } };
+          if (obs.payload?.id !== id) return line;
+          if (obs.payload.acknowledged === true && obs.payload.acknowledged_at) return line;
+          obs.payload = {
+            ...obs.payload,
+            acknowledged: true,
+            acknowledged_at: acknowledgedAt,
+          };
+          changed = true;
+          return JSON.stringify(obs);
+        } catch {
+          return line;
+        }
+      });
+      if (!changed) return;
+      const tmp = `${channelFile}.tmp-${process.pid}`;
+      writeFileSync(tmp, updated.join('\n'));
+      renameSync(tmp, channelFile);
+    } catch (err) {
+      this.logger.warn(`[promoter] channel ack sync failed for ${id}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 

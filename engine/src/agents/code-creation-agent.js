@@ -780,6 +780,8 @@ class CodeCreationAgent extends BaseAgent {
       }
     }
 
+    // Console logs can claim FILE_WRITTEN without producing an artifact. Only
+    // returned file metadata or container listing proves completion.
     return null;
   }
 
@@ -1266,66 +1268,6 @@ ${requirementsList}
               path: candidate
             };
           }
-        }
-      }
-    }
-
-    const fileWrittenMatches = [];
-    const outputs = Array.isArray(response?.output) ? response.output : [];
-    for (const block of outputs) {
-      const entries = Array.isArray(block?.outputs) ? block.outputs : [];
-      for (const outputEntry of entries) {
-        const logPayload = outputEntry?.logs || outputEntry?.text || outputEntry?.content || '';
-        if (typeof logPayload !== 'string' || logPayload.trim().length === 0) {
-          continue;
-        }
-
-        for (const rawLine of logPayload.split('\n')) {
-          const line = rawLine.trim();
-          if (!line) {
-            continue;
-          }
-
-          if (line.startsWith('FILE_WRITTEN:')) {
-            const writtenPath = line.slice('FILE_WRITTEN:'.length).trim();
-            if (writtenPath) {
-              fileWrittenMatches.push(this.normalizePlanPath(writtenPath));
-            }
-          }
-        }
-      }
-    }
-
-    for (const candidate of fileWrittenMatches) {
-      if (!candidate) {
-        continue;
-      }
-
-      if (candidate === target) {
-        return {
-          id: null,
-          name: candidate,
-          path: candidate
-        };
-      }
-
-      if (entry.stage) {
-        const stageSuffixes = [
-          `_stage${entry.stage}`,
-          `_stage-${entry.stage}`,
-          `_stage_${entry.stage}`,
-          `.stage${entry.stage}`,
-          `.stage-${entry.stage}`,
-          `.stage_${entry.stage}`
-        ];
-
-        if (stageSuffixes.some(suffix => candidate === `${target}${suffix}`)) {
-          return {
-            id: null,
-            name: candidate,
-            path: target,
-            originalPath: candidate
-          };
         }
       }
     }

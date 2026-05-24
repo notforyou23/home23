@@ -452,6 +452,8 @@ Return ONLY a JSON array: [{"index": 1, "actionability": X, "specificity": X, "n
 
         try {
           const response = await this.gpt5.generate({
+            component: 'insightCurator',
+            purpose: 'scoring',
             model: this.config.models?.curatorModel || 'gpt-5.4-mini',
             input: scoringPrompt,
             maxTokens: 2500,

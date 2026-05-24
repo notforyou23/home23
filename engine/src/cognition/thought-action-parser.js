@@ -146,6 +146,24 @@ function isLowValueInvestigation(payload) {
   return saysClear && (saysQuiet || asksRoutineCheck);
 }
 
+function isInvestigationFallbackWorthy(payload, agentName = null) {
+  const text = String(payload || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!text) return false;
+
+  // Operator-attention fallback is a pager, not a backlog generator. Only page
+  // when the investigation describes a concrete live failure that needs a
+  // human-visible handoff if no agent can be spawned. Architectural questions,
+  // proposed code changes, cross-agent speculation, and stale meta-analysis
+  // should stay in cognition/goals.
+  const concreteFailure = /\b(failed|failing|error|exception|timeout|blocked|broken|offline|unreachable|regression|missing|dropped|crash|oom|data loss|corrupt|stuck|deadlock)\b/.test(text);
+  const operationalTarget = /\b(cron|scheduler|harness|engine|process|pm2|api|endpoint|port|service|write_to_recent|fsync|notification|notify|bus|live problem|verifier)\b/.test(text);
+  const decisionOnly = /\b(can|could|should|whether|would)\b/.test(text) && /\b(inject|add|implement|change|refactor|design|architecture)\b/.test(text);
+  const mentionsOtherAgent = /\b(jerry|forrest|axiom|claude)\b/.test(text) && agentName && !text.includes(String(agentName).toLowerCase());
+  const staleMeta = /\b(chronic|known problem|minutes old|hours old|days old|since\s+(?:may|january|february|march|april|june|july|august|september|october|november|december)|recurring|keeps cycling)\b/.test(text);
+
+  return concreteFailure && operationalTarget && !decisionOnly && !mentionsOtherAgent && !staleMeta;
+}
+
 /**
  * Strip action tags from hypothesis so they don't pollute the stored brain node.
  * The action is already captured separately.
@@ -501,6 +519,11 @@ async function routeThoughtAction(opts) {
         };
       }
 
+      // Agent-spawn dedup can correctly skip redundant investigations. Treat
+      // that as a completed routing outcome, not an operator-attention
+      // fallback, or stale rediscoveries become unresolved notifications.
+      const dedupedBefore = agentExecutor?._agentSpawnsDedupedCount24h || 0;
+
       // If we have an agent executor, spawn a research agent using the
       // standard missionSpec shape.
       if (agentExecutor?.spawnAgent) {
@@ -526,14 +549,35 @@ async function routeThoughtAction(opts) {
             });
             return { action: 'investigate', payload: parsed.payload, routed: `agent:${agentId}` };
           }
-          // spawnAgent returned falsy — fall through to notification fallback
+          if ((agentExecutor?._agentSpawnsDedupedCount24h || 0) > dedupedBefore) {
+            logger?.info?.('🔕 Thought-action: investigation deduped; no notification fallback', {
+              cycle, role, mission: parsed.payload.substring(0, 120),
+            });
+            return { action: 'investigate', payload: parsed.payload, routed: 'suppressed:deduped_investigation' };
+          }
+          // spawnAgent returned falsy for capacity/goal-state reasons. Do not
+          // turn every autonomous research idea into operator-attention: at
+          // capacity this creates a self-sustaining alert loop. Only fall back
+          // to notification for concrete live failures worth paging.
         } catch (err) {
-          logger?.warn?.('Investigation spawn failed, falling back to notification', {
+          logger?.warn?.('Investigation spawn failed', {
             error: err.message,
           });
         }
       }
-      // Fallback: record as notification so the request surfaces to the owner
+
+      if (!isInvestigationFallbackWorthy(parsed.payload, agentName)) {
+        logger?.info?.('🔕 Thought-action: investigation fallback suppressed', {
+          cycle, role, agentName, mission: parsed.payload.substring(0, 120),
+        });
+        return {
+          action: 'investigate',
+          payload: parsed.payload,
+          routed: 'suppressed:investigation_fallback_not_operator_attention',
+        };
+      }
+
+      // Fallback: record concrete live failures as notifications so the request surfaces to the owner
       appendNotification(brainDir, {
         message: `[investigate] ${parsed.payload}`,
         source: role,
@@ -553,6 +597,7 @@ async function routeThoughtAction(opts) {
 module.exports = {
   parseThoughtAction,
   isLowValueInvestigation,
+  isInvestigationFallbackWorthy,
   stripActionTags,
   scrubToolArtifacts,
   appendNotification,

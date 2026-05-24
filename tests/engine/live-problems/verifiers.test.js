@@ -217,11 +217,14 @@ test('log_recent_count reports missing log files as failed', async () => {
 
 test('jsonl_recent_match can cap unresolved attention notifications', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-jsonl-attention-'));
-  const file = path.join(dir, 'work.notify.cognition.jsonl');
+  const channelsDir = path.join(dir, 'channels');
+  fs.mkdirSync(channelsDir, { recursive: true });
+  const file = path.join(channelsDir, 'work.notify.cognition.jsonl');
   const now = new Date().toISOString();
   fs.writeFileSync(file, [
     JSON.stringify({
       payload: {
+        id: 'notif-unacked',
         severity: 'attention',
         acknowledged: false,
         message: 'operator-visible deadlock',
@@ -257,6 +260,47 @@ test('jsonl_recent_match can cap unresolved attention notifications', async () =
   assert.equal(result.ok, false);
   assert.equal(result.observed.matchCount, 1);
   assert.match(result.detail, /limit 0/);
+});
+
+test('jsonl_recent_match overlays notification ack state for append-only bus rows', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-jsonl-attention-acked-'));
+  const channelsDir = path.join(dir, 'channels');
+  fs.mkdirSync(channelsDir, { recursive: true });
+  const file = path.join(channelsDir, 'work.notify.cognition.jsonl');
+  const now = new Date().toISOString();
+  fs.writeFileSync(path.join(dir, 'notifications-ack.json'), JSON.stringify({
+    'notif-acked': { acknowledged_at: now, acknowledged_by: 'test' },
+  }));
+  fs.writeFileSync(file, [
+    JSON.stringify({
+      payload: {
+        id: 'notif-acked',
+        severity: 'attention',
+        acknowledged: false,
+        message: 'stale bus snapshot, canonical acked',
+      },
+      receivedAt: now,
+    }),
+    '',
+  ].join('\n'));
+
+  const result = await runVerifier({
+    type: 'jsonl_recent_match',
+    args: {
+      path: file,
+      tsField: 'receivedAt',
+      windowMinutes: 60,
+      minCount: 0,
+      maxCount: 0,
+      filters: [
+        { field: 'payload.severity', op: '==', value: 'attention' },
+        { field: 'payload.acknowledged', op: '==', value: false },
+      ],
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.observed.matchCount, 0);
 });
 
 test('cron_job_errors fails when enabled jobs have repeated errors', async () => {

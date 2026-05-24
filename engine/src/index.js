@@ -765,6 +765,41 @@ async function main() {
     const notifyPath = path.join(runtimeRoot, 'notifications.jsonl');
     channelBus.register(new NotifyChannel({ path: notifyPath }));
 
+    // Mirror notification-channel observations into the event ledger. This gives
+    // live-problem verifiers a durable heartbeat for the notification delivery
+    // path instead of relying on generic retrieval events.
+    try {
+      const { EventLedger } = require('./core/event-ledger');
+      const notificationLedger = new EventLedger(runtimeRoot, { logger });
+      channelBus.on('observation', (obs) => {
+        if (obs?.channelId !== 'notify.cognition') return;
+        try {
+          notificationLedger.recordStateTransition({
+            eventType: 'notification.delivery.observed',
+            subject: 'notification-ledger-heartbeat',
+            actor: 'home23-notify-channel',
+            payload: {
+              sourceRef: obs.sourceRef || null,
+              receivedAt: obs.receivedAt || null,
+              producedAt: obs.producedAt || null,
+              severity: obs.payload?.severity || null,
+              notificationId: obs.payload?.id || null,
+            },
+            sourceSurface: {
+              type: 'channel',
+              path: notifyPath,
+              channelId: obs.channelId,
+            },
+            occurredAt: obs.receivedAt || obs.producedAt || new Date().toISOString(),
+          });
+        } catch (err) {
+          logger.warn?.('[notify-ledger] event write failed:', err?.message || err);
+        }
+      });
+    } catch (err) {
+      logger.warn?.('[notify-ledger] initialization failed:', err?.message || err);
+    }
+
     // Phase 2: wire bus crystallize events into the memory-objects.json store.
     // MemoryIngest writes with proper-lockfile so the harness MemoryObjectStore
     // can coexist as a reader/writer on the same file.

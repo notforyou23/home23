@@ -209,7 +209,7 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
         type: 'cron_job_errors',
         args: {
           path: cronJobsPath,
-          maxConsecutiveErrors: 0,
+          maxConsecutiveErrors: 1,
         },
       },
       remediation: [

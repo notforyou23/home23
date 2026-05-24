@@ -1440,6 +1440,26 @@ passed with 32 tests. Syntax checks passed for `cosmo23/lib/query-engine.js`,
 
 ---
 
+## Patch 26 — CodeCreationAgent Requires Real Artifact Metadata
+
+**Files:**
+- `cosmo23/engine/src/agents/code-creation-agent.js`
+
+**Problem:** the vendored CodeCreationAgent accepted `FILE_WRITTEN:<path>`
+console logs as proof that an artifact existed. A code-interpreter run could
+therefore report success even when the response had no returned file metadata
+and no container-listing hit. Downstream goal tracking then believed the file
+was produced while the substrate had no durable artifact.
+
+**Fix:** `FILE_WRITTEN` markers are no longer a success path. Completion now
+requires either returned file metadata (`codeResults.files`) or a real
+container listing from `findContainerFileMetadata()`.
+
+**Verification:** `node --test --test-concurrency=1
+tests/engine/agents/code-creation-agent-metadata.test.js`
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -1550,3 +1570,6 @@ passed with 32 tests. Syntax checks passed for `cosmo23/lib/query-engine.js`,
   family profiles for current GPT-5, Claude 4, and Grok 4 model IDs, and then
   restored direct Query's bounded node contract so PGS owns thousands-of-nodes
   and full-graph coverage.
+- **2026-05-24** — Patch 26 removed `FILE_WRITTEN` log-marker trust from the
+  vendored CodeCreationAgent so artifact completion requires real file metadata
+  or a discoverable container file.

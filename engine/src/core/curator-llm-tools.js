@@ -26,6 +26,23 @@ const fs = require('fs');
 const path = require('path');
 const { UnifiedClient } = require('./unified-client');
 
+function writeFileDurable(filePath, content) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+  const fd = fs.openSync(tmpPath, 'w');
+  try {
+    fs.writeFileSync(fd, content, 'utf8');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+  fs.renameSync(tmpPath, filePath);
+  try {
+    const dirFd = fs.openSync(path.dirname(filePath), 'r');
+    try { fs.fsyncSync(dirFd); } finally { fs.closeSync(dirFd); }
+  } catch { /* directory fsync is best-effort on some filesystems */ }
+}
+
 // Match a single appended entry block. Format produced by orchestrator.js:2650
 //   ### {title}
 //   {statement}
@@ -250,7 +267,7 @@ Hard cap: ${maxBytes} characters total. No headers beyond the three above. No mo
   if (!digest) return { skipped: 'empty' };
 
   const header = `# Recent Activity\n\n_Generated: ${nowIso} — covers last ${windowHours}h_\n\n`;
-  fs.writeFileSync(recentPath, header + digest + '\n');
+  writeFileDurable(recentPath, header + digest + '\n');
   logger?.info?.('📋 RECENT.md regenerated', {
     bytes: header.length + digest.length,
     eventsConsidered: events.length,

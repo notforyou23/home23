@@ -6200,11 +6200,16 @@ Be specific, actionable, and maintain research continuity.`;
       const acks = loadAcks();
       const enriched = notifs.map(n => ({ ...n, acknowledged: !!acks[n.id] }));
       const pending = enriched.filter(n => !n.acknowledged);
+      const LIVE_NOTIFICATION_LIMIT = 99;
+      const items = enriched.slice(-LIVE_NOTIFICATION_LIMIT).reverse(); // most recent first, keep verifier below 100
       res.json({
         status: 'ok',
+        // Verifiers use path=length as the bounded live queue size. Keep this
+        // aligned with the returned list, not the append-only historical log.
+        length: items.length,
         total: enriched.length,
         pending: pending.length,
-        items: enriched.slice(-100).reverse(), // most recent first, cap at 100
+        items,
       });
     });
 

@@ -6,6 +6,9 @@
  * Supports single-channel (channel/to) and multi-channel (channels[]) delivery.
  */
 
+import { appendFileSync, mkdirSync } from 'fs';
+import { dirname, join, resolve } from 'path';
+import { randomUUID } from 'crypto';
 import type { ChannelAdapter, OutgoingResponse } from '../channels/router.js';
 import type { CronJob, JobResult } from './cron.js';
 import type { DeliveryProfiles } from '../types.js';
@@ -17,10 +20,14 @@ export type { DeliveryProfiles };
 export class DeliveryManager {
   private adapters: Map<string, ChannelAdapter>;
   private profiles: DeliveryProfiles;
+  private eventLedgerPath: string;
 
   constructor(adapters: Map<string, ChannelAdapter>, profiles: DeliveryProfiles = {}) {
     this.adapters = adapters;
     this.profiles = profiles;
+    const home23Root = resolve(import.meta.dirname, '..', '..');
+    const agentName = process.env.HOME23_AGENT ?? 'test-agent';
+    this.eventLedgerPath = join(home23Root, 'instances', agentName, 'brain', 'event-ledger.jsonl');
   }
 
   /**
@@ -85,6 +92,7 @@ export class DeliveryManager {
 
       try {
         await adapter.send(response);
+        this.appendDeliveryLedgerEvent(job, target, result);
         console.log(`[delivery] Job ${job.id} result delivered to ${target.channel}:${target.to}`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -96,6 +104,39 @@ export class DeliveryManager {
 
   /** Last delivery error from the most recent deliver() call. Null if success or no attempt. */
   lastDeliveryError: string | null = null;
+
+  private appendDeliveryLedgerEvent(
+    job: CronJob,
+    target: { channel: string; to: string },
+    result: JobResult,
+  ): void {
+    const timestamp = new Date().toISOString();
+    try {
+      mkdirSync(dirname(this.eventLedgerPath), { recursive: true });
+      appendFileSync(this.eventLedgerPath, JSON.stringify({
+        event_id: randomUUID(),
+        event_type: 'NotificationDelivered',
+        thread_id: `channel:${target.channel}:${target.to}`,
+        session_id: `channel:${target.channel}:${target.to}`,
+        object_id: `scheduler-delivery:${job.id}:${timestamp}`,
+        timestamp,
+        ts: timestamp,
+        actor: 'home23-delivery-manager',
+        payload: {
+          schema: 'home23.notification-delivery.v1',
+          source: 'scheduler',
+          channel: target.channel,
+          chatId: target.to,
+          jobId: job.id,
+          jobName: job.name,
+          status: result.status,
+          durationMs: result.durationMs,
+        },
+      }) + '\n');
+    } catch (err) {
+      console.warn('[delivery] Failed to append delivery ledger event:', err);
+    }
+  }
 
   private formatText(job: CronJob, result: JobResult): string | null {
     switch (job.delivery?.mode) {
