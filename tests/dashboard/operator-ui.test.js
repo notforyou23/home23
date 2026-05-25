@@ -290,6 +290,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(residentCommandRow, /id="resident-refresh"/);
   assert.doesNotMatch(residentCommandRow, />Refresh</);
   assert.match(html, /h23-system-rail/);
+  assert.match(html, /<div class="h23-system-rail" id="engine-pulse" hidden>/);
   assert.match(html, /h23-system-runtime/);
   assert.match(html, /<div class="h23-system-runtime" id="system-runtime" hidden>/);
   assert.doesNotMatch(html, /id="pulse-state">—<\/span>/);
@@ -488,6 +489,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /return p\.authorityLevel \|\| p\.risk \|\| 'L\?'/);
   assert.match(js, /if \(_pulseEls\.state\)/);
   assert.match(js, /const showRuntime = runtimeState && !\['awake', 'sleeping'\]\.includes\(runtimeState\)/);
+  assert.match(js, /_pulseEls\.rail\.hidden = !showRuntime/);
   assert.match(js, /_pulseEls\.runtime\.hidden = !showRuntime/);
   assert.doesNotMatch(js, /syncPulsePhaseText/);
   assert.doesNotMatch(js, /getElementById\('pulse-phase'\)/);

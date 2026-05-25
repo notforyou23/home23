@@ -838,6 +838,7 @@ function _renderPulseNow() {
   _pulseRafPending = false;
   if (!_pulseEls) {
     _pulseEls = {
+      rail: document.getElementById('engine-pulse'),
       runtime: document.getElementById('system-runtime'),
       dot: document.getElementById('pulse-dot'),
       state: document.getElementById('pulse-state'),
@@ -849,6 +850,7 @@ function _renderPulseNow() {
 
   const runtimeState = enginePulse.state && enginePulse.state !== 'unknown' ? enginePulse.state : '';
   const showRuntime = runtimeState && !['awake', 'sleeping'].includes(runtimeState);
+  if (_pulseEls.rail) _pulseEls.rail.hidden = !showRuntime;
   if (_pulseEls.runtime) _pulseEls.runtime.hidden = !showRuntime;
   _pulseEls.dot.className = 'h23-pulse-dot ' + runtimeState;
   if (_pulseEls.state) _pulseEls.state.textContent = runtimeState;
