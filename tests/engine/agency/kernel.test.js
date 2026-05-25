@@ -1201,6 +1201,44 @@ test('AgencyKernel reconciles preexisting pursuit overflow down to charter caps'
   assert.equal(statuses.includes('deferred'), true);
 });
 
+test('AgencyKernel enforces deferred attention cap by discarding overflow with receipts', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run', charter: { attention: { maxActivePursuits: 5, maxWatchItems: 20, maxDeferredItems: 2 } } },
+  });
+
+  const pursuits = [];
+  for (let i = 0; i < 4; i += 1) {
+    const candidate = kernel.router.normalize({
+      source: 'research',
+      kind: 'research_summary',
+      summary: `Deferred research overflow item ${i}.`,
+      evidence: [{ type: 'research', ref: `research-${i}` }],
+      authorityLevel: 'L1',
+      desiredChangedFuture: `Research overflow item ${i} is explicitly kept or killed.`,
+    });
+    const pursuit = kernel.store.createPursuit(candidate, {
+      route: 'watch',
+      reason: 'test_seed_deferred_overflow',
+    });
+    pursuits.push(kernel.store.updatePursuit(pursuit.id, { status: 'deferred' }, {
+      type: 'test_force_deferred',
+      reason: 'simulate deferred backlog',
+    }));
+  }
+
+  const state = kernel.state();
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const discarded = pursuits.filter(pursuit => kernel.pursuit(pursuit.id).status === 'discarded');
+
+  assert.equal(state.attention.deferredItems, 2);
+  assert.equal(state.attention.maxDeferredItems, 2);
+  assert.equal(discarded.length, 2);
+  assert.equal(receipts.filter(row => row.event === 'discarded' && row.reason === 'deferred_attention_budget_reconciled').length, 2);
+});
+
 test('AgencyKernel arbitrates behavioral deltas through bounded authority', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

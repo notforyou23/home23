@@ -149,6 +149,7 @@ export class AgencyKernel {
         deferredItems: deferred.length,
         maxActivePursuits: this.charter.attention.maxActivePursuits,
         maxWatchItems: this.charter.attention.maxWatchItems,
+        maxDeferredItems: this.charter.attention.maxDeferredItems,
       },
       self: {
         role: 'resident-agency-kernel',
@@ -392,8 +393,10 @@ export class AgencyKernel {
   enforceAttentionCaps() {
     const maxActive = Number(this.charter.attention.maxActivePursuits || 5);
     const maxWatch = Number(this.charter.attention.maxWatchItems || 20);
+    const maxDeferred = Number(this.charter.attention.maxDeferredItems || 200);
     const active = this.store.listPursuits({ status: 'active', limit: 10000 });
     const watch = this.store.listPursuits({ status: 'watch', limit: 10000 });
+    const deferred = this.store.listPursuits({ status: 'deferred', limit: 10000 });
     for (const pursuit of active.slice(maxActive)) {
       this.store.updatePursuit(pursuit.id, { status: 'deferred' }, {
         type: 'attention_cap_deferred',
@@ -421,6 +424,21 @@ export class AgencyKernel {
         pursuitId: pursuit.id,
         route: 'defer',
         reason: 'watch_attention_budget_reconciled',
+        mode: this.config.mode,
+      });
+    }
+    for (const pursuit of deferred.slice(maxDeferred)) {
+      this.store.updatePursuit(pursuit.id, { status: 'discarded' }, {
+        type: 'attention_cap_discarded',
+        reason: 'deferred_attention_budget_reconciled',
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'discarded',
+        pursuitId: pursuit.id,
+        route: 'discard',
+        reason: 'deferred_attention_budget_reconciled',
         mode: this.config.mode,
       });
     }
