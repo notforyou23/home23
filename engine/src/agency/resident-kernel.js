@@ -130,6 +130,7 @@ export class AgencyKernel {
     this.reconcileResolvedLiveProblemAttention();
     this.reconcileCronBootcampStopConditions();
     this.reconcileLowSignalAttention();
+    this.reconcileMisroutedCronReceiptAttention();
     this.reconcileDuplicateAttention();
     this.reconcileStaleTruthClaims();
     this.enforceAttentionCaps();
@@ -383,6 +384,62 @@ export class AgencyKernel {
     }
   }
 
+  reconcileMisroutedCronReceiptAttention() {
+    const pursuits = this.store.listPursuits({ status: ['active', 'watch'], limit: 10000 });
+    for (const pursuit of pursuits) {
+      if (!isMisroutedBoundCronReceiptPursuit(pursuit)) continue;
+      const targetPursuitId = impliedTargetPursuitId(pursuit);
+      const target = targetPursuitId ? this.store.getPursuit(targetPursuitId) : null;
+      const evidence = Array.isArray(pursuit.latestEvidence) && pursuit.latestEvidence.length
+        ? pursuit.latestEvidence
+        : (Array.isArray(pursuit.evidence) ? pursuit.evidence : []);
+      if (target && target.status !== 'closed' && target.status !== 'discarded') {
+        const mergedEvidence = mergeEvidenceItems([...(target.evidence || []), ...evidence]);
+        this.store.updatePursuit(target.id, {
+          evidence: mergedEvidence,
+          linkedEvidence: mergedEvidence,
+          latestEvidence: evidence.length ? evidence.slice(-3) : target.latestEvidence,
+          lastSeenAt: nowIso(),
+          lastTouched: nowIso(),
+          seenCount: Number(target.seenCount || 1) + 1,
+        }, {
+          type: 'cron_receipt_reattached',
+          reason: 'legacy_bound_cron_receipt_reattached',
+          detail: { sourcePursuitId: pursuit.id },
+        });
+      }
+      this.store.updatePursuit(pursuit.id, { status: 'discarded' }, {
+        type: 'cron_receipt_reattached',
+        reason: target ? 'legacy_bound_cron_receipt_reattached' : 'legacy_bound_cron_target_unavailable',
+        detail: { targetPursuitId },
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'cron_receipt_reattached',
+        pursuitId: pursuit.id,
+        targetPursuitId,
+        route: 'discard',
+        reason: target ? 'legacy_bound_cron_receipt_reattached' : 'legacy_bound_cron_target_unavailable',
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at: nowIso(),
+        pursuitId: pursuit.id,
+        status: 'discarded',
+        changeType: 'cron_receipt_reattached',
+        summary: target
+          ? `Cron receipt pursuit ${pursuit.id} reattached to ${target.id}.`
+          : `Cron receipt pursuit ${pursuit.id} discarded because target ${targetPursuitId || 'unknown'} was unavailable.`,
+        evidence: [
+          ...evidence,
+          ...(targetPursuitId ? [{ type: 'agency_pursuit', ref: targetPursuitId }] : []),
+        ],
+      });
+    }
+  }
+
   reconcileResolvedLiveProblemAttention() {
     const pursuits = this.store.listPursuits({ status: ['active', 'watch'], limit: 10000 });
     for (const pursuit of pursuits) {
@@ -621,6 +678,12 @@ export class AgencyKernel {
       candidateInput.summary = input.summary || 'World-stream item produced explicit no-change receipt.';
     }
     const candidate = this.router.normalize(candidateInput);
+    if (!candidate.pursuitId) {
+      const targetPursuitId = impliedTargetPursuitId(candidate);
+      if (targetPursuitId && this.store.getPursuit(targetPursuitId)) {
+        candidate.pursuitId = targetPursuitId;
+      }
+    }
     if (hasStructuredReportFanout(input)) {
       return this.assimilateStructuredReport(input, candidate);
     }
@@ -2523,6 +2586,26 @@ function isMechanicalCronNoChangePursuit(pursuit = {}) {
   const source = String(pursuit.source || '');
   const summary = String(pursuit.summary || '');
   return source.startsWith('cron.') && /finished with status ok/i.test(summary);
+}
+
+function isMisroutedBoundCronReceiptPursuit(pursuit = {}) {
+  if (pursuit.kind !== 'cron_report') return false;
+  if (!String(pursuit.source || '').startsWith('cron.')) return false;
+  if (!/finished with status ok/i.test(String(pursuit.summary || ''))) return false;
+  return Boolean(impliedTargetPursuitId(pursuit));
+}
+
+function impliedTargetPursuitId(input = {}) {
+  const text = [
+    input.pursuitId,
+    input.targetPursuitId,
+    input.desiredChangedFuture,
+    input.stopCondition,
+    input.nextMove,
+    input.summary,
+  ].filter(Boolean).join(' ');
+  const match = String(text).match(/\b(ap_[a-z0-9]+)\b/i);
+  return match ? match[1] : null;
 }
 
 function hasResolvedLiveProblemEvidence(pursuit = {}) {

@@ -160,6 +160,49 @@ test('AgencyKernel reconciles legacy duplicate active pursuits by dedupe key', a
   assert.equal(consequences.some(row => row.pursuitId === duplicate.id && row.changeType === 'duplicate_attention_deduped'), true);
 });
 
+test('AgencyKernel reattaches legacy bound cron receipt pursuits to their target pursuit', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const target = await kernel.intake({
+    source: 'scheduler.cron.bootcamp',
+    kind: 'cron_bootcamp_audit',
+    summary: 'Recurring cron needs resident oversight.',
+    evidence: [{ type: 'cron_job', ref: 'job-bound' }],
+    authorityLevel: 'L2',
+    desiredChangedFuture: 'Recurring cron is accountable to resident pursuit.',
+  });
+  const receiptCandidate = kernel.router.normalize({
+    source: 'cron.job-bound',
+    kind: 'cron_report',
+    summary: 'Cron job-bound (exec) finished with status ok.',
+    authorityLevel: 'L3',
+    desiredChangedFuture: `Cron outcome updates resident pursuit ${target.pursuit.id} with latest scheduler evidence.`,
+    nextMove: 'attach scheduler outcome to the bound resident pursuit and continue based on semantic status',
+    evidence: [{ type: 'cron_result', ref: 'job-bound' }],
+    tags: ['cron', 'world-stream'],
+  });
+  const misrouted = kernel.store.createPursuit(receiptCandidate, {
+    route: 'pursue',
+    reason: 'legacy_misrouted_cron_receipt',
+  });
+
+  const state = kernel.state();
+  const updatedTarget = kernel.pursuit(target.pursuit.id);
+  const discarded = kernel.pursuit(misrouted.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(state.activePursuits.some(pursuit => pursuit.id === misrouted.id), false);
+  assert.equal(updatedTarget.latestEvidence.at(-1).ref, 'job-bound');
+  assert.equal(discarded.status, 'discarded');
+  assert.equal(receipts.some(row => row.event === 'cron_receipt_reattached' && row.pursuitId === misrouted.id && row.targetPursuitId === target.pursuit.id), true);
+  assert.equal(consequences.some(row => row.pursuitId === misrouted.id && row.changeType === 'cron_receipt_reattached'), true);
+});
+
 test('AgencyKernel records low-signal Step24 machine observations as discard receipts instead of watch spam', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
