@@ -203,48 +203,6 @@
           </section>
         </div>
       </section>
-
-      <!-- Log overlay (full details) -->
-      <div class="h23-log-overlay" id="log-overlay" onclick="if(event.target===this)closeLogOverlay()">
-        <div class="h23-log-overlay-panel">
-          <div class="h23-log-overlay-header">
-            <span class="h23-brainlog-title" id="log-overlay-title"></span>
-            <button class="h23-log-overlay-close" onclick="closeLogOverlay()">&#10005;</button>
-          </div>
-          <div class="h23-log-overlay-body" id="log-overlay-body"></div>
-        </div>
-      </div>
-
-      <!-- Feeder overlay (click-to-expand details) -->
-      <div class="h23-log-overlay" id="feeder-overlay" onclick="if(event.target===this)closeFeederOverlay()">
-        <div class="h23-log-overlay-panel h23-feeder-overlay-panel">
-          <div class="h23-log-overlay-header">
-            <span class="h23-brainlog-title">📥 Ingestion Compiler</span>
-            <button class="h23-log-overlay-close" onclick="closeFeederOverlay()">&#10005;</button>
-          </div>
-          <div class="h23-log-overlay-body" id="feeder-overlay-body"></div>
-        </div>
-      </div>
-
-      <!-- Tile action overlay -->
-      <div class="h23-log-overlay" id="tile-action-overlay" onclick="if(event.target===this)closeTileActionOverlay()">
-        <div class="h23-log-overlay-panel h23-tile-action-overlay-panel">
-          <div class="h23-log-overlay-header">
-            <span class="h23-brainlog-title" id="tile-action-title">Tile Action</span>
-            <button class="h23-log-overlay-close" onclick="closeTileActionOverlay()">&#10005;</button>
-          </div>
-          <div class="h23-log-overlay-body">
-            <div class="h23-tile-action-confirmation" id="tile-action-confirmation"></div>
-            <form class="h23-tile-action-form" id="tile-action-form"></form>
-            <div class="h23-tile-action-status" id="tile-action-status"></div>
-          </div>
-          <div class="h23-tile-action-footer">
-            <button class="h23-tile-action-btn secondary" id="tile-action-cancel" type="button">Cancel</button>
-            <button class="h23-tile-action-btn primary" id="tile-action-submit" type="button">Run Action</button>
-          </div>
-        </div>
-      </div>
-
     </div>
 
     <!-- COSMO 2.3 iframe (full-bleed, hidden until tab click) -->
