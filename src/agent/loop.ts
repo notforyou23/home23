@@ -1610,10 +1610,15 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           } // end else (non-codex providers)
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
+          const errorText = `Error calling ${this.model}: ${errMsg}`;
+          if (onEvent) onEvent({ type: 'response_chunk', chunk: errorText });
+          turnMessages.push({ role: 'assistant', content: errorText });
+          this.history.append(chatId, turnMessages);
           return {
-            text: `Error calling ${this.model}: ${errMsg}`,
+            text: errorText,
+            media: allMedia.length > 0 ? allMedia : undefined,
             model: this.model,
-            toolCallCount: 0,
+            toolCallCount,
             durationMs: Date.now() - startMs,
           };
         }
