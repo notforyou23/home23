@@ -201,6 +201,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /setHtml\('resident-receipts'/);
   assert.doesNotMatch(js, /setHtml\('resident-inbox'/);
   assert.match(js, /residentBriefCountText/);
+  assert.match(js, /return needed \?/);
+  assert.doesNotMatch(js, /nothing needed from jtr/);
   assert.match(js, /renderResidentAttentionBudget/);
   assert.match(js, /toggleResidentOperatorPanel/);
   assert.doesNotMatch(js, />Nothing right now\.</);
@@ -253,6 +255,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /consequenceRows\.map\(renderResidentConsequenceRow\)/);
   assert.doesNotMatch(js, /\[c\.pursuitId, c\.at \? timeSinceSafe\(c\.at\) : null\]/);
   assert.doesNotMatch(js, /<h3>\$\{escapeHtml\(p\.title/);
+  assert.doesNotMatch(js, /<span>\$\{escapeHtml\(p\.status \|\| 'active'\)\}<\/span>/);
+  assert.match(js, /renderResidentPursuitAuthority\(p\)/);
   assert.match(js, /if \(_pulseEls\.state\)/);
   assert.match(js, /if \(_pulseEls\.energy\)/);
   assert.doesNotMatch(js, /currentTab === 'intelligence'/);

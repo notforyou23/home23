@@ -1743,7 +1743,8 @@ function residentBriefLine(brief, state) {
   const active = Number(state.attention?.activePursuits || 0);
   const watch = Number(state.attention?.watchItems || 0);
   const needed = Array.isArray(state.obligations) ? state.obligations.length : Number(brief?.questions?.whatNeedsJtr?.length || 0);
-  return `${residentBriefCountText(active, 'active pursuit')}, ${residentBriefCountText(watch, 'watch item')}; ${needed ? residentBriefCountText(needed, 'operator decision') : 'nothing needed from jtr'}.`;
+  const base = `${residentBriefCountText(active, 'active pursuit')}, ${residentBriefCountText(watch, 'watch item')}`;
+  return needed ? `${base}; ${residentBriefCountText(needed, 'operator decision')}.` : `${base}.`;
 }
 
 function residentBriefCountText(count, label) {
@@ -1833,6 +1834,10 @@ function renderResidentPursuitEvidence(p, updated) {
     .join(' · ');
 }
 
+function renderResidentPursuitAuthority(p) {
+  return p.authorityLevel || p.risk || 'L?';
+}
+
 function renderResidentNextActionTitle(pursuit, next) {
   const title = renderGoodLifeResidentPursuitTitle(pursuit) || renderGoodLifeResidentPursuitTitle({ title: next.title || next.reason });
   if (title) return title;
@@ -1897,8 +1902,7 @@ function renderResidentPursuitCard(p) {
   return `
     <article class="h23-resident-pursuit ${escapeAttr(statusClass)}">
       <div class="h23-resident-pursuit-head">
-        <span>${escapeHtml(p.status || 'active')}</span>
-        <code>${escapeHtml(p.authorityLevel || p.risk || 'L?')}</code>
+        <code>${escapeHtml(renderResidentPursuitAuthority(p))}</code>
       </div>
       <h3>${escapeHtml(renderResidentPursuitTitle(p))}</h3>
       <p>${escapeHtml(renderResidentPursuitBody(p))}</p>
