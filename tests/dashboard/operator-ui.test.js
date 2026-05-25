@@ -11,9 +11,17 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   const html = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.html'), 'utf8');
 
   assert.match(html, /h23-problems-overlay-panel/);
+  assert.doesNotMatch(html, /Seeded problems/);
+  assert.doesNotMatch(html, /seedOrigin: system/);
   assert.match(js, /renderProblemsOperatorSummary/);
   assert.match(js, /Operator Status/);
   assert.match(js, /Needed From You/);
+  assert.match(js, /const activeProblems = problems\.filter/);
+  assert.match(js, /const resolvedProblems = problems\.filter/);
+  assert.match(js, /renderProblemHistoryDrawer\(resolvedProblems\)/);
+  assert.match(js, /activeProblems\.map\(p => renderProblemCard\(p\)\)/);
+  assert.doesNotMatch(js, /problems\.map\(p => renderProblemCard\(p\)\)/);
+  assert.match(css, /\.h23-problems-history/);
   assert.match(js, /problemRepairText/);
   assert.match(js, /renderProblemUserAction/);
   assert.match(js, /Action Needed/);

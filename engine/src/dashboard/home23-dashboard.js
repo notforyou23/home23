@@ -512,10 +512,35 @@ async function renderProblemsList() {
       list.innerHTML = '<div style="color:rgba(255,255,255,0.5);padding:20px;">No problems tracked. Add one below, or the engine will seed defaults on next start.</div>';
       return;
     }
-    list.innerHTML = `${renderProblemsOperatorSummary(data, problems)}${problems.map(p => renderProblemCard(p)).join('')}`;
+    const activeProblems = problems.filter((p) => p.state !== 'resolved');
+    const resolvedProblems = problems.filter((p) => p.state === 'resolved');
+    const activeHtml = activeProblems.length
+      ? activeProblems.map(p => renderProblemCard(p)).join('')
+      : '<div class="h23-problems-clear-note">No active live problems. Resolved verifier history is available below.</div>';
+    list.innerHTML = `${renderProblemsOperatorSummary(data, problems)}${activeHtml}${renderProblemHistoryDrawer(resolvedProblems)}`;
   } catch (err) {
     list.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
   }
+}
+
+function renderProblemHistoryDrawer(resolvedProblems = []) {
+  if (!resolvedProblems.length) return '';
+  const rows = resolvedProblems.slice(0, 12).map((p) => `
+    <div class="h23-problems-history-row">
+      <span>${escapeHtml(p.claim || p.id || 'resolved problem')}</span>
+      <small>${escapeHtml([
+        p.id,
+        p.lastResult?.detail || p.fixRecipe?.summary || 'verified clear',
+        p.resolvedAt ? `resolved ${timeSinceSafe(p.resolvedAt)}` : null,
+      ].filter(Boolean).join(' · '))}</small>
+    </div>
+  `).join('');
+  return `
+    <details class="h23-problems-history">
+      <summary>Resolved verifier history (${resolvedProblems.length})</summary>
+      <div class="h23-problems-history-list">${rows}</div>
+    </details>
+  `;
 }
 
 function problemLastAttempt(problem = {}) {
