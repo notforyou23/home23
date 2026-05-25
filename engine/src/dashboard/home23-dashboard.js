@@ -1759,6 +1759,20 @@ function humanizeResidentMachineText(text, fallback = '') {
   if (neighborMatch) {
     return `Neighbor report from ${residentTitleCase(neighborMatch[1])}`;
   }
+  const bracketedJsonMatch = raw.match(/^\[([^\]]+)\]\s+\{/i);
+  if (bracketedJsonMatch) {
+    const source = bracketedJsonMatch[1];
+    const sourceLabels = {
+      'machine.memory': 'Machine memory telemetry',
+      'machine.cpu': 'Machine CPU telemetry',
+      'machine.process': 'Machine process telemetry',
+      'machine.swap': 'Machine swap telemetry',
+      'work.heartbeat': 'Work heartbeat',
+      'work.live-problems': 'Live problem check',
+    };
+    if (sourceLabels[source]) return sourceLabels[source];
+    return `${residentTitleCase(source.split('.').pop())} evidence`;
+  }
   if (/^[{\[]/.test(raw) && /"agent"\s*:/.test(raw)) {
     return 'Structured resident evidence';
   }
@@ -2430,10 +2444,17 @@ function renderAgencyInboxRow(c) {
   return `
     <div class="h23-worker-run-row" style="cursor:default;">
       <div><strong>${escapeHtml(decision.route || 'unrouted')}</strong> <span>${escapeHtml(c.authorityLevel || '')}</span></div>
-      <div>${escapeHtml(c.title || c.summary || c.candidateId)}</div>
+      <div>${escapeHtml(renderAgencyCandidateTitle(c))}</div>
       <small>${escapeHtml(c.source || '')} · ${escapeHtml(decision.reason || '')}</small>
     </div>
   `;
+}
+
+function renderAgencyCandidateTitle(candidate) {
+  return humanizeResidentMachineText(
+    candidate.title || candidate.summary || candidate.candidateId,
+    'Agency candidate'
+  );
 }
 
 function renderAgencyConsequenceRow(c) {

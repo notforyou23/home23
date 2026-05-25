@@ -132,6 +132,11 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
   assert.match(js, /summary !== 'pursuit_has_no_editor_block'/);
   assert.match(js, /kind !== 'explicit_no_change'/);
   assert.match(js, /Neighbor report from/);
+  assert.match(js, /renderAgencyCandidateTitle/);
+  assert.match(js, /Machine memory telemetry/);
+  assert.match(js, /Machine CPU telemetry/);
+  assert.match(js, /Work heartbeat/);
+  assert.doesNotMatch(js, /<div>\$\{escapeHtml\(c\.title \|\| c\.summary \|\| c\.candidateId\)\}<\/div>/);
   assert.doesNotMatch(js, /<pre style="white-space:pre-wrap/);
   assert.doesNotMatch(js, /brief\.text/);
   assert.match(css, /\.h23-agency-brief-block/);
