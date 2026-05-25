@@ -4719,13 +4719,18 @@ body.h23-external-focus #cosmo23-refresh-btn {
   font-size: 1.05rem;
 }
 
+.h23-resident-inline-next {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+
 .h23-resident-panel {
   padding: 16px;
   align-self: start;
   min-width: 0;
 }
 
-.h23-resident-next { grid-area: next; }
 .h23-resident-operator { grid-area: operator; }
 .h23-resident-attention { grid-area: attention; }
 .h23-resident-consequence { grid-area: consequence; }

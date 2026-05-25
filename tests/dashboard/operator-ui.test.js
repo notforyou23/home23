@@ -213,11 +213,14 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(html, /id="resident-consequence-panel"/);
   assert.match(html, /id="resident-operator-needed"/);
   assert.match(html, /id="resident-attention-panel"/);
-  const residentNextActionTag = html.match(/<section[^>]*id="resident-next-action"[^>]*>/)?.[0] || '';
+  const residentCommand = html.match(/<div class="h23-resident-command">[\s\S]*?<\/div>\s*<\/div>/)?.[0] || '';
+  const residentNextActionTag = html.match(/<div[^>]*id="resident-next-action"[^>]*>/)?.[0] || '';
   const residentAttentionTag = html.match(/<section[^>]*id="resident-attention-panel"[^>]*>/)?.[0] || '';
   const residentOperatorTag = html.match(/<section[^>]*id="resident-operator-needed"[^>]*>/)?.[0] || '';
   const residentConsequenceTag = html.match(/<section[^>]*id="resident-consequence-panel"[^>]*>/)?.[0] || '';
+  assert.match(residentCommand, /id="resident-next-action"/);
   assert.match(residentNextActionTag, /\bhidden\b/);
+  assert.doesNotMatch(html, /<section class="h23-resident-panel h23-resident-next" id="resident-next-action"/);
   assert.match(residentAttentionTag, /\bhidden\b/);
   assert.match(residentOperatorTag, /\bhidden\b/);
   assert.match(residentConsequenceTag, /\bhidden\b/);
@@ -493,6 +496,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
 
   assert.match(css, /\.h23-resident-home/);
   assert.match(css, /\.h23-resident-command/);
+  assert.match(css, /\.h23-resident-inline-next/);
   assert.match(css, /\.h23-resident-action-btn\.danger/);
   assert.match(css, /\.h23-resident-inspect-link::before/);
   assert.match(css, /content: "\\2197"/);
@@ -500,6 +504,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(css, /\.h23-resident-veto-btn::before/);
   assert.match(css, /content: "\\00d7"/);
   assert.match(css, /\.h23-resident-stream/);
+  assert.doesNotMatch(css, /\.h23-resident-next\s*\{/);
   assert.doesNotMatch(css, /\.h23-resident-next-move/);
   assert.doesNotMatch(css, /\.h23-resident-diagnostics/);
   assert.match(css, /\.h23-organ-drawer/);
