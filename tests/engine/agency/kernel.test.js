@@ -1019,12 +1019,18 @@ test('AgencyKernel decays stale truth claims out of current state projection', a
     at: '2026-05-25T10:00:00.000Z',
   });
   const state = kernel.state();
+  const truthRows = readJsonl(join(dir, 'agency', 'truth.jsonl'));
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
 
   assert.equal(stale.status, 'current');
   assert.equal(state.truth.staleClaims, 1);
   assert.equal(state.truth.currentClaims.some(row => row.id === stale.id), false);
   assert.equal(state.truth.currentClaims.some(row => row.id === current.id), true);
   assert.equal(state.truth.staleClaimRefs.some(row => row.id === stale.id && row.decayReason === 'old generated doctrine expired'), true);
+  assert.equal(truthRows.some(row => row.id === stale.id && row.status === 'stale' && row.staleReason === 'old generated doctrine expired'), true);
+  assert.equal(receipts.some(row => row.event === 'truth_claim_decayed' && row.claimId === stale.id), true);
+  assert.equal(consequences.some(row => row.changeType === 'stale_claim_demoted' && row.status === 'stale' && row.evidence?.[0]?.ref === stale.id), true);
 });
 
 test('AgencyKernel reconciles preexisting pursuit overflow down to charter caps', async () => {

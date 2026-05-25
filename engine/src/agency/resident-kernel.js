@@ -116,6 +116,7 @@ export class AgencyKernel {
     this.reconcileResolvedLiveProblemAttention();
     this.reconcileCronBootcampStopConditions();
     this.reconcileLowSignalAttention();
+    this.reconcileStaleTruthClaims();
     this.enforceAttentionCaps();
     const active = this.store.listPursuits({ status: 'active', limit: 10000 });
     const watch = this.store.listPursuits({ status: 'watch', limit: 10000 });
@@ -237,6 +238,34 @@ export class AgencyKernel {
       });
     }
     return obligations.slice(0, 50);
+  }
+
+  reconcileStaleTruthClaims() {
+    const claims = this.store.listTruth({ limit: 10000 }).reverse();
+    const staleClaims = this.truth.staleClaims(claims);
+    for (const claim of staleClaims) {
+      this.store.appendTruth(claim);
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'truth_claim_decayed',
+        claimId: claim.id,
+        sourceType: claim.sourceType,
+        sourceRef: claim.sourceRef,
+        route: 'stale',
+        reason: claim.staleReason || 'claim_decay_policy_elapsed',
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at: nowIso(),
+        pursuitId: null,
+        status: 'stale',
+        changeType: 'stale_claim_demoted',
+        summary: `Claim ${claim.id} decayed out of current state: ${claim.staleReason || 'claim_decay_policy_elapsed'}.`,
+        evidence: [{ type: 'truth_claim', ref: claim.id }],
+      });
+    }
   }
 
   reconcileLowSignalAttention() {

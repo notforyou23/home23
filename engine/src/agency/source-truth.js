@@ -82,17 +82,28 @@ export class SourceTruthHierarchy {
     return Array.from(latest.values());
   }
 
+  staleClaims(claims = []) {
+    return this.latestClaims(claims)
+      .filter(claim => claim.status === 'current' && isStaleClaim(claim))
+      .map(claim => ({
+        ...claim,
+        status: 'stale',
+        staleAt: claim.decay?.staleAt || nowIso(),
+        staleReason: claim.decay?.reason || 'claim_decay_policy_elapsed',
+      }));
+  }
+
   summarize(claims = []) {
     const latest = this.latestClaims(claims);
     const stale = latest
-      .filter(claim => claim.status === 'current' && isStaleClaim(claim))
+      .filter(claim => claim.status === 'stale' || (claim.status === 'current' && isStaleClaim(claim)))
       .map(claim => ({
         id: claim.id,
         claim: claim.claim,
         sourceType: claim.sourceType,
         sourceRef: claim.sourceRef,
-        staleAt: claim.decay?.staleAt || null,
-        decayReason: claim.decay?.reason || 'claim_decay_policy_elapsed',
+        staleAt: claim.staleAt || claim.decay?.staleAt || null,
+        decayReason: claim.staleReason || claim.decay?.reason || 'claim_decay_policy_elapsed',
       }));
     const staleIds = new Set(stale.map(claim => claim.id));
     const currentClaims = latest
