@@ -4688,6 +4688,10 @@ body.h23-external-focus #cosmo23-refresh-btn {
   font-size: 0.78rem;
 }
 
+.h23-resident-veto-btn::before {
+  content: "\00d7";
+}
+
 .h23-resident-action-btn:disabled {
   opacity: 0.55;
   cursor: wait;

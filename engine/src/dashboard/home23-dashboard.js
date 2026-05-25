@@ -1612,7 +1612,7 @@ function renderResidentPursuitCard(p) {
       <h3>${escapeHtml(renderResidentPursuitTitle(p))}</h3>
       <div class="h23-resident-pursuit-actions">
         ${renderResidentPursuitInspectLink(p)}
-        <button type="button" class="h23-resident-action-btn danger h23-resident-veto-btn" aria-label="Discard resident pursuit" title="Discard resident pursuit" data-requires-confirmation="true" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="discarded" data-transition-summary="Discarded from resident dashboard: no longer worth active operator attention.">X</button>
+        <button type="button" class="h23-resident-action-btn danger h23-resident-veto-btn" aria-label="Discard resident pursuit" title="Discard resident pursuit" data-requires-confirmation="true" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="discarded" data-transition-summary="Discarded from resident dashboard: no longer worth active operator attention."></button>
       </div>
     </article>
   `;
