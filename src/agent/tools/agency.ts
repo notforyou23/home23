@@ -32,6 +32,16 @@ export const agencyListTool: ToolDefinition = {
   },
 };
 
+export const agencyBriefTool: ToolDefinition = {
+  name: 'agency_brief',
+  description: 'Answer the resident success-test question from live agency state: what Jerry is following, what changed, what he is doing next, and what he needs from jtr.',
+  input_schema: { type: 'object', properties: {}, additionalProperties: false },
+  async execute(_input, ctx) {
+    const data = await jsonRequest(ctx, '/api/agency/brief') as { text?: string };
+    return { content: data.text || JSON.stringify(data, null, 2) };
+  },
+};
+
 export const agencyCreatePursuitTool: ToolDefinition = {
   name: 'agency_create_pursuit',
   description: 'Create or merge a resident agency pursuit from an explicit candidate/intake packet.',

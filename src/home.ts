@@ -919,6 +919,14 @@ async function main(): Promise<void> {
       res.status(500).json({ error: err?.message || String(err) });
     }
   });
+  bridgeApp.get('/api/agency/brief', async (_req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json(kernel.brief());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
   bridgeApp.get('/api/agency/inbox', async (req: any, res: any) => {
     try {
       const kernel = await getAgencyKernel();

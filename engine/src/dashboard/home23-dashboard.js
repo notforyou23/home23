@@ -1655,19 +1655,22 @@ function setupAgencySurface() {
 }
 
 async function loadAgencySurface() {
-  const [stateRes, pursuitsRes, eventsRes] = await Promise.all([
+  const [stateRes, briefRes, pursuitsRes, eventsRes] = await Promise.all([
     fetch(`${dashboardBaseUrl()}/home23/api/agency/state`),
+    fetch(`${dashboardBaseUrl()}/home23/api/agency/brief`),
     fetch(`${dashboardBaseUrl()}/home23/api/agency/pursuits?limit=24`),
     fetch(`${dashboardBaseUrl()}/home23/api/agency/events?limit=40`),
   ]);
-  if (!stateRes.ok || !pursuitsRes.ok || !eventsRes.ok) {
+  if (!stateRes.ok || !briefRes.ok || !pursuitsRes.ok || !eventsRes.ok) {
     throw new Error('agency surface unavailable');
   }
   const state = await stateRes.json();
+  const brief = await briefRes.json();
   const pursuits = await pursuitsRes.json();
   const events = await eventsRes.json();
   renderAgencySurface({
     state,
+    brief,
     pursuits: pursuits.pursuits || [],
     inbox: events.inbox || [],
     receipts: events.receipts || events.actions || [],
@@ -1677,7 +1680,7 @@ async function loadAgencySurface() {
   });
 }
 
-function renderAgencySurface({ state, pursuits, inbox, receipts, consequences, scratch, truth }) {
+function renderAgencySurface({ state, brief, pursuits, inbox, receipts, consequences, scratch, truth }) {
   const stats = document.getElementById('agency-stats');
   if (stats) {
     const active = Number(state.attention?.activePursuits || 0);
@@ -1695,6 +1698,11 @@ function renderAgencySurface({ state, pursuits, inbox, receipts, consequences, s
   const scratchEl = document.getElementById('agency-scratch');
   if (scratchEl) {
     scratchEl.innerHTML = renderAgencyScratchBlock(state, scratch);
+  }
+
+  const briefEl = document.getElementById('agency-brief');
+  if (briefEl) {
+    briefEl.innerHTML = renderAgencyBriefBlock(brief);
   }
 
   const truthEl = document.getElementById('agency-truth');
@@ -1779,6 +1787,15 @@ function renderAgencyScratchRow(row) {
       <div style="color:#fff;font-size:13px;">${escapeHtml(outcome)} ${row.pursuitId ? `→ ${escapeHtml(row.pursuitId)}` : ''}</div>
       <div style="font-size:12px;color:rgba(255,255,255,0.6);">${escapeHtml(reason)}</div>
     </div>
+  `;
+}
+
+function renderAgencyBriefBlock(brief) {
+  if (!brief) return '<p class="h23-muted">No resident brief reported.</p>';
+  const text = String(brief.text || '').trim();
+  if (!text) return '<p class="h23-muted">No resident brief reported.</p>';
+  return `
+    <pre style="white-space:pre-wrap;margin:0;color:rgba(255,255,255,0.86);font-size:12px;line-height:1.45;">${escapeHtml(text)}</pre>
   `;
 }
 

@@ -18,6 +18,7 @@ import { spawnAgentTool } from './subagent.js';
 import { promoteToMemoryTool } from './promote.js';
 import { workerListTool, workerRunTool, workerStatusTool, workerReceiptTool, workerPromoteMemoryTool } from './workers.js';
 import {
+  agencyBriefTool,
   agencyListTool,
   agencyCreatePursuitTool,
   agencyUpdatePursuitTool,
@@ -150,6 +151,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(workerStatusTool);
   registry.register(workerReceiptTool);
   registry.register(workerPromoteMemoryTool);
+  registry.register(agencyBriefTool);
   registry.register(agencyListTool);
   registry.register(agencyCreatePursuitTool);
   registry.register(agencyUpdatePursuitTool);

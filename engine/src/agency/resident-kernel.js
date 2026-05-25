@@ -11,6 +11,38 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function renderBriefText(questions = {}) {
+  const following = Array.isArray(questions.whatFollowing) && questions.whatFollowing.length
+    ? questions.whatFollowing.map(item => `- ${item.id}: ${briefText(item.title || 'untitled', 120)} (${item.status}, ${item.authorityLevel || 'L1'}) -> ${briefText(item.nextMove || item.desiredChangedFuture || 'no next move recorded', 160)}`).join('\n')
+    : '- nothing active; resident spine should rest or intake new evidence';
+  const changed = Array.isArray(questions.whatChanged) && questions.whatChanged.length
+    ? questions.whatChanged.map(item => `- ${item.changeType || 'change'}: ${briefText(item.summary || item.status || 'recorded', 180)}${item.pursuitId ? ` (${item.pursuitId})` : ''}`).join('\n')
+    : '- no meaningful change recorded yet';
+  const next = questions.whatDoingNext || {};
+  const needs = Array.isArray(questions.whatNeedFromJtr) && questions.whatNeedFromJtr.length
+    ? questions.whatNeedFromJtr.map(item => `- ${item.authorityLevel || 'approval'}${item.pursuitId ? ` for ${item.pursuitId}` : ''}: ${briefText(item.reason || 'decision needed', 180)}`).join('\n')
+    : '- nothing right now';
+  return [
+    'What we are following:',
+    following,
+    '',
+    'What changed:',
+    changed,
+    '',
+    'What I am doing next:',
+    `- ${next.kind || 'none'}${next.pursuitId ? ` for ${next.pursuitId}` : ''}: ${briefText(next.reason || next.summary || next.nextMove || 'no next action recorded', 180)}`,
+    '',
+    'What I need from jtr:',
+    needs,
+  ].join('\n');
+}
+
+function briefText(value, max = 160) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 1))}…`;
+}
+
 export class AgencyKernel {
   constructor({ brainDir, agentName = 'jerry', config = {}, charterPath = null, logger = console } = {}) {
     if (!brainDir) throw new Error('AgencyKernel requires brainDir');
@@ -412,6 +444,76 @@ export class AgencyKernel {
       consequences: this.store.listConsequences(options),
       scratch: this.store.listScratch(options),
       truth: this.store.listTruth(options),
+    };
+  }
+
+  brief() {
+    const state = this.ensureState();
+    const following = [
+      ...this.store.listPursuits({ status: 'active', limit: 5 }),
+      ...this.store.listPursuits({ status: 'watch', limit: 5 }),
+    ].slice(0, 8).map(pursuit => ({
+      id: pursuit.id,
+      status: pursuit.status,
+      title: pursuit.title || pursuit.summary,
+      authorityLevel: pursuit.authorityLevel,
+      whyItMatters: pursuit.whyItMatters,
+      desiredChangedFuture: pursuit.desiredChangedFuture,
+      nextMove: pursuit.nextMove,
+      lastTouched: pursuit.lastTouched || pursuit.updatedAt,
+    }));
+    const consequences = this.store.listConsequences({ limit: 20 });
+    const changed = (Array.isArray(state.lastMeaningfulActions) && state.lastMeaningfulActions.length
+      ? state.lastMeaningfulActions
+      : consequences
+    ).slice(0, 8).map(row => ({
+      at: row.at,
+      pursuitId: row.pursuitId || null,
+      status: row.status || null,
+      changeType: row.changeType || row.event || 'change',
+      summary: row.summary || row.reason || null,
+    }));
+    const nextAction = state.nextAction || {
+      kind: 'rest',
+      reason: 'no_next_action_recorded',
+    };
+    const authorityNeeds = this.store.listReceipts({ limit: 100 })
+      .filter(row => row.event === 'authority_requested' || row.route === 'request-authority')
+      .map(row => ({
+        at: row.at,
+        pursuitId: row.pursuitId || null,
+        authorityLevel: row.authority?.level || row.authorityLevel || 'unknown',
+        reason: row.reason || row.authority?.reason || 'authority requested',
+      }));
+    const blockedNeeds = this.store.listPursuits({ status: 'blocked', limit: 20 })
+      .map(pursuit => ({
+        at: pursuit.updatedAt,
+        pursuitId: pursuit.id,
+        authorityLevel: pursuit.authorityLevel || 'unknown',
+        reason: pursuit.nextMove || pursuit.summary || 'blocked pursuit needs operator decision',
+      }));
+    const contradictionNeeds = Array.isArray(state.openContradictions)
+      ? state.openContradictions.slice(0, 5).map(claim => ({
+          at: claim.at,
+          pursuitId: null,
+          authorityLevel: 'jtr_correction',
+          reason: `Resolve contradiction: ${claim.claim || claim.id}`,
+        }))
+      : [];
+    const needFromJtr = [...authorityNeeds, ...blockedNeeds, ...contradictionNeeds].slice(0, 8);
+    const questions = {
+      whatFollowing: following,
+      whatChanged: changed,
+      whatDoingNext: nextAction,
+      whatNeedFromJtr: needFromJtr,
+    };
+    return {
+      schema: 'home23.agency.brief.v1',
+      agent: this.agentName,
+      at: nowIso(),
+      mode: state.mode,
+      questions,
+      text: renderBriefText(questions),
     };
   }
 

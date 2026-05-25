@@ -207,6 +207,60 @@ test('AgencyKernel exposes the body organ contract in canonical state', async ()
   assert.match(organs.chat.commandSurface, /agency tools/);
 });
 
+test('AgencyKernel builds the live success-test brief from resident state', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const active = await kernel.intake({
+    source: 'work.worker-runs',
+    kind: 'worker_receipt',
+    summary: 'Repair agency dashboard receipt chain.',
+    evidence: [{ type: 'worker_receipt', ref: 'wr-active' }],
+    authorityLevel: 'L2',
+    desiredChangedFuture: 'Agency dashboard shows consequence receipts.',
+  });
+  await kernel.intake({
+    source: 'research',
+    kind: 'research_summary',
+    summary: 'Watch agent agency interface patterns.',
+    evidence: [{ type: 'research', ref: 'research-watch' }],
+    tags: ['research'],
+  });
+  kernel.recordConsequence({
+    at: '2026-05-25T21:00:00.000Z',
+    pursuitId: active.pursuit.id,
+    status: 'applied',
+    changeType: 'dashboard_contract_changed',
+    summary: 'Agency dashboard now shows body organs.',
+    evidence: [{ type: 'file', ref: 'home23-dashboard.js' }],
+  });
+  await kernel.intake({
+    source: 'chat',
+    kind: 'operator_request',
+    summary: 'Publish public From The Inside issue.',
+    evidence: [{ type: 'chat', ref: 'msg-1' }],
+    authorityLevel: 'L4',
+    desiredChangedFuture: 'Public issue is published.',
+  });
+  const tick = await kernel.tick({ reason: 'test-brief', now: '2026-05-25T21:05:00.000Z' });
+
+  const brief = kernel.brief();
+
+  assert.equal(brief.schema, 'home23.agency.brief.v1');
+  assert.equal(brief.questions.whatFollowing.length > 0, true);
+  assert.equal(brief.questions.whatFollowing.some(item => item.id === active.pursuit.id), true);
+  assert.equal(brief.questions.whatChanged[0].changeType, 'dashboard_contract_changed');
+  assert.equal(brief.questions.whatDoingNext.kind, tick.nextAction.kind);
+  assert.equal(brief.questions.whatNeedFromJtr.some(item => item.authorityLevel === 'L4'), true);
+  assert.match(brief.text, /What we are following/);
+  assert.match(brief.text, /What changed/);
+  assert.match(brief.text, /What I need from jtr/);
+});
+
 test('AgencyKernel resident tick advances one pursuit and records scratch, editor, and consequence receipts', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

@@ -29,6 +29,7 @@ Status: implementation slice in progress.
 - New recurring `cron`/`every` jobs created through `cron_schedule` require a `pursuit_id` and persist that binding on the job, enforcing the bootcamp rule that recurring work must be tied to resident pursuit.
 - Pre-Step28 recurring crons are audited at harness startup. Any enabled recurring job without `agency.pursuitId` is turned into a resident bootcamp pursuit, bound back onto the scheduler job, and recorded as a `cron_bound_to_pursuit` consequence. External config reloads preserve existing runtime pursuit bindings.
 - Bound scheduler outcomes carry their `pursuitId` back through world-stream assimilation. Non-closing receipts attach evidence and `cron_report` consequences to the existing pursuit instead of creating disconnected "cron finished" items.
+- `AgencyKernel.brief()` and `GET /api/agency/brief` answer the Step28 success-test question from live resident state: what Jerry is following, what changed, what he is doing next, and what needs jtr. Chat exposes this through `agency_brief`, and the dashboard renders the same resident brief.
 
 ## Resident State
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  agencyBriefTool,
   agencyListTool,
   agencyCreatePursuitTool,
   agencyClosePursuitTool,
@@ -51,6 +52,25 @@ test('agency_list reads state and pursuits from bridge API', async () => {
   const result = await agencyListTool.execute({}, ctx(fakeFetch as typeof fetch));
   assert.deepEqual(calls, ['http://bridge.test/api/agency/state', 'http://bridge.test/api/agency/pursuits']);
   assert.match(result.content, /Verify dashboard/);
+});
+
+test('agency_brief answers the resident success-test questions from bridge API', async () => {
+  const fakeFetch = async (url: string | URL | Request) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/brief');
+    return new Response(JSON.stringify({
+      text: [
+        'What we are following: Repair agency dashboard receipt chain.',
+        'What changed: Agency dashboard now shows body organs.',
+        'What I am doing next: advance_one_step.',
+        'What I need from jtr: approve public publication.',
+      ].join('\n'),
+    }), { status: 200 });
+  };
+
+  const result = await agencyBriefTool.execute({}, ctx(fakeFetch as typeof fetch));
+  assert.match(result.content, /What we are following/);
+  assert.match(result.content, /What changed/);
+  assert.match(result.content, /What I need from jtr/);
 });
 
 test('agency_create_pursuit posts an intake packet', async () => {
