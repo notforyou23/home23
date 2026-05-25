@@ -1221,10 +1221,10 @@ function _renderPulseNow() {
   if (!_pulseEls.dot) return;
 
   _pulseEls.dot.className = 'h23-pulse-dot ' + (enginePulse.state || '');
-  _pulseEls.state.textContent = enginePulse.state || '—';
-  _pulseEls.phase.textContent = enginePulse.phase || '—';
-  _pulseEls.energy.textContent = `⚡ ${Math.round((enginePulse.energy || 0) * 100)}%`;
-  _pulseEls.cycle.textContent = `cycle ${enginePulse.cycle || '—'}`;
+  if (_pulseEls.state) _pulseEls.state.textContent = enginePulse.state || '—';
+  if (_pulseEls.phase) _pulseEls.phase.textContent = enginePulse.phase || '—';
+  if (_pulseEls.energy) _pulseEls.energy.textContent = `⚡ ${Math.round((enginePulse.energy || 0) * 100)}%`;
+  if (_pulseEls.cycle) _pulseEls.cycle.textContent = `cycle ${enginePulse.cycle || '—'}`;
 }
 
 function updatePulseAgo() {

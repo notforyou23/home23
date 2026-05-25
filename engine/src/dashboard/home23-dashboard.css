@@ -50,7 +50,7 @@ body::before {
   z-index: 0;
 }
 
-.h23-header, .h23-pills, .h23-pulse-bar, .h23-update-bar, .h23-tabs, .h23-main {
+.h23-header, .h23-pills, .h23-pulse-bar, .h23-update-bar, .h23-tabs, .h23-main, .h23-system-rail {
   position: relative;
   z-index: 1;
 }
@@ -2460,6 +2460,103 @@ body.h23-external-focus #cosmo23-refresh-btn {
   background: rgba(50, 77, 134, 0.32);
   border: 1px solid rgba(116, 162, 255, 0.2);
   font-size: 0.86rem;
+}
+
+.h23-system-rail {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(150px, 1.1fr) minmax(90px, 0.55fr) minmax(150px, 0.9fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 7px 10px;
+  border: 1px solid rgba(183, 203, 176, 0.12);
+  border-radius: 8px;
+  background: rgba(18, 21, 18, 0.88);
+  box-shadow: none;
+}
+
+.h23-system-agent,
+.h23-system-runtime,
+.h23-system-badges {
+  min-width: 0;
+}
+
+.h23-system-agent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.h23-system-agent .h23-header-agent-name {
+  font-family: var(--font-mono);
+  font-size: 0.98rem;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.h23-system-agent .h23-dashboard-identity {
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 0.58rem;
+}
+
+.h23-system-runtime {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border-left: 1px solid rgba(183, 203, 176, 0.1);
+  color: rgba(232, 238, 224, 0.86);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.h23-system-runtime .h23-pulse-phase {
+  color: rgba(183, 203, 176, 0.48);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.h23-system-label {
+  color: rgba(183, 203, 176, 0.5);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.h23-system-badges {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.h23-system-rail .time-cluster {
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.h23-system-rail .time-loc {
+  gap: 6px;
+}
+
+.h23-system-rail .time-display {
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  letter-spacing: 0;
+}
+
+.h23-system-rail .time-tz {
+  font-size: 0.62rem;
+}
+
+.h23-system-rail .cosmo-status {
+  justify-content: center;
+  padding: 6px 9px;
+  font-size: 0.68rem;
 }
 
 .h23-overview-band {

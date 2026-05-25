@@ -45,72 +45,26 @@
     </aside>
 
     <div class="h23-shell-main">
-      <!-- Header -->
-      <div class="h23-header">
-        <div class="h23-header-left">
-          <div class="h23-header-agent">
-            <div class="h23-header-agent-icon" aria-hidden="true">◔</div>
-            <div class="h23-header-agent-copy">
-              <div class="h23-header-kicker">Agent</div>
-              <div class="h23-header-agent-name" id="header-agent-name">Agent</div>
-            </div>
-          </div>
-          <div class="h23-dashboard-identity" id="dashboard-identity-chip">PRIMARY AGENT</div>
-        </div>
-        <div class="h23-header-right">
-          <div class="time-cluster">
-            <div class="time-loc">
-              <span class="time-flag" id="tz1-flag">🇺🇸</span>
-              <span class="time-display" id="tz1-time">--:--</span>
-              <span class="time-tz" id="tz1-label">--</span>
-            </div>
-            <div class="time-loc" id="tz2-container" style="display:none;">
-              <span class="time-flag" id="tz2-flag"></span>
-              <span class="time-display" id="tz2-time">--:--</span>
-              <span class="time-tz" id="tz2-label">--</span>
-            </div>
-          </div>
-          <div class="cosmo-status" id="engine-status" title="Home23 engine status">
-            <span class="status-dot" id="engine-dot"></span>
-            <span id="engine-status-text">ENGINE</span>
-          </div>
-        </div>
-      </div>
-
       <!-- Update notification bar -->
       <div id="update-notification" class="h23-update-bar" style="display:none;">
         <span id="update-notification-text"></span>
         <button id="update-dismiss" style="background:none; border:none; color:rgba(255,255,255,0.6); cursor:pointer; font-size:16px; margin-left:12px;">&times;</button>
       </div>
 
-      <!-- Runtime strip -->
-      <div class="h23-pulse-bar h23-overview-band" id="engine-pulse">
-        <div class="h23-overview-state-block">
+      <div class="h23-system-rail" id="engine-pulse">
+        <div class="h23-system-agent">
+          <div class="h23-header-agent-name" id="header-agent-name">Agent</div>
+          <div class="h23-dashboard-identity" id="dashboard-identity-chip">PRIMARY AGENT</div>
+        </div>
+
+        <div class="h23-system-runtime">
           <span class="h23-pulse-dot" id="pulse-dot"></span>
-          <div class="h23-overview-state-copy">
-            <div class="h23-overview-kicker">Runtime</div>
-            <div class="h23-pulse-state" id="pulse-state">—</div>
-            <div class="h23-pulse-phase" id="pulse-phase">—</div>
-          </div>
+          <span class="h23-system-label">Runtime</span>
+          <span class="h23-pulse-state" id="pulse-state">—</span>
+          <span class="h23-pulse-phase" id="pulse-phase">—</span>
         </div>
 
-        <div class="h23-overview-metric">
-          <label>Load</label>
-          <div class="h23-overview-value" id="pulse-energy">⚡ —</div>
-        </div>
-
-        <div class="h23-overview-metric">
-          <label>Last Cycle</label>
-          <div class="h23-overview-value" id="pulse-cycle">cycle —</div>
-          <div class="h23-overview-sub" id="pulse-ago">—</div>
-        </div>
-
-        <div class="h23-overview-metric">
-          <label>Memory</label>
-          <div class="h23-overview-value" id="pulse-node-count">—</div>
-        </div>
-
-        <div class="h23-overview-badges">
+        <div class="h23-system-badges">
           <!-- 🔔 Pending Actions badge hidden — the NOTIFY stream now drains off-engine
                via the promoter worker into the live-problems registry. -->
           <span class="h23-pulse-notifs" id="pulse-notifs" style="cursor:pointer;display:none;" onclick="openNotificationsPanel()">
@@ -133,11 +87,24 @@
             <span id="pulse-brain-badge">🧠 —</span>
           </span>
         </div>
-      </div>
 
-      <div class="h23-tab-scope-bar">
-        <div class="h23-tab-scope-kicker" id="dashboard-scope-kicker">This Agent Surface</div>
-        <div class="h23-tab-scope-summary" id="dashboard-scope-summary">Home belongs to this dashboard agent.</div>
+        <div class="time-cluster">
+          <div class="time-loc">
+            <span class="time-flag" id="tz1-flag">🇺🇸</span>
+            <span class="time-display" id="tz1-time">--:--</span>
+            <span class="time-tz" id="tz1-label">--</span>
+          </div>
+          <div class="time-loc" id="tz2-container" style="display:none;">
+            <span class="time-flag" id="tz2-flag"></span>
+            <span class="time-display" id="tz2-time">--:--</span>
+            <span class="time-tz" id="tz2-label">--</span>
+          </div>
+        </div>
+
+        <div class="cosmo-status" id="engine-status" title="Home23 engine status">
+          <span class="status-dot" id="engine-dot"></span>
+          <span id="engine-status-text">ENGINE</span>
+        </div>
       </div>
 
   <!-- Brain Storage panel -->
