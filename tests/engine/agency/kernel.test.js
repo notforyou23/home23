@@ -967,6 +967,12 @@ test('AgencyKernel fans structured report packets into child pursuits, claims, a
       contradicts: 'claim_delivery_not_completion',
       sourceRef: 'legacy-report-contract',
     }],
+    memoryCandidates: [{
+      summary: 'Timeline reports require resident agency outcomes before delivery.',
+      content: 'Timeline reports are incomplete unless they create discard, no-change, memory, watch, pursuit, task, handoff, or claim receipts.',
+      memoryDomain: 'doctrine',
+      evidenceRef: 'x-memory-outcome',
+    }],
     discarded: [{ ref: 'viral meta thread', reason: 'no durable Home23 action' }],
     desiredChangedFuture: 'Report digestion updates standing agency implementation pursuit.',
     nextMove: 'merge with Home23 agency spine pursuit',
@@ -979,18 +985,23 @@ test('AgencyKernel fans structured report packets into child pursuits, claims, a
   const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
   const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
   const truthRows = readJsonl(join(dir, 'agency', 'truth.jsonl'));
+  const memoryRows = readJsonl(join(dir, 'agency', 'memory-candidates.jsonl'));
 
   assert.equal(result.decision.route, 'fanout');
   assert.equal(result.children.actionWorthy.length, 1);
   assert.equal(result.children.watchItems.length, 1);
   assert.equal(result.children.contradictions.length, 1);
+  assert.equal(result.children.memoryCandidates.length, 1);
   assert.equal(result.children.discarded.length, 1);
   assert.equal(active.some(row => row.summary === 'Bind report outputs to resident pursuits.'), true);
   assert.equal(watch.some(row => row.summary === 'Watch repeated autonomy discourse for concrete implementation details.'), true);
   assert.equal(truthRows.some(row => row.claim === 'Delivery to Telegram is sufficient completion for timeline reports.'), true);
+  assert.equal(memoryRows.some(row => row.candidate?.domain === 'doctrine' && /Timeline reports are incomplete/.test(row.candidate.content)), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_selected' && row.route === 'pursue'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_selected' && row.route === 'watch'), true);
+  assert.equal(receipts.some(row => row.event === 'world_stream_child_memory_candidate_created'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_discarded' && row.reason === 'no durable Home23 action'), true);
+  assert.equal(consequences.some(row => row.changeType === 'memory_candidate_created' && row.status === 'applied'), true);
   assert.equal(consequences.some(row => row.changeType === 'structured_report_fanout' && row.status === 'fanout'), true);
 });
 

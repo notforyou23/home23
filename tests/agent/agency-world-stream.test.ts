@@ -148,6 +148,7 @@ test('buildCronResultPacket extracts machine-readable agency intake packets from
       '  "summary": "Timeline surfaced one agent-agency implementation signal.",',
       '  "actionWorthy": [{"summary": "Bind report outputs to resident pursuits."}],',
       '  "watchItems": [{"summary": "Watch repeated autonomy discourse."}],',
+      '  "memoryCandidates": [{"summary": "Remember timeline report agency contract.", "content": "Reports must create memory/watch/pursuit/discard receipts."}],',
       '  "contradictions": [],',
       '  "discardedNoise": [{"ref": "viral meta thread", "reason": "no durable action"}],',
       '  "desiredChangedFuture": "Report digestion updates standing agency implementation pursuit.",',
@@ -165,9 +166,10 @@ test('buildCronResultPacket extracts machine-readable agency intake packets from
   assert.deepEqual(packet.discarded, [{ ref: 'viral meta thread', reason: 'no durable action' }]);
   assert.deepEqual((packet as any).actionWorthy, [{ summary: 'Bind report outputs to resident pursuits.' }]);
   assert.deepEqual((packet as any).watchItems, [{ summary: 'Watch repeated autonomy discourse.' }]);
+  assert.deepEqual((packet as any).memoryCandidates, [{ summary: 'Remember timeline report agency contract.', content: 'Reports must create memory/watch/pursuit/discard receipts.' }]);
   assert.deepEqual((packet as any).contradictions, []);
   assert.equal(packet.tags.includes('x-timeline'), true);
-  assert.match(packet.seen.join('\n'), /Bind report outputs/);
+  assert.match(packet.seen.join('\n'), /Remember timeline report agency contract/);
 });
 
 test('buildCronResultPacket accepts raw JSON agency intake packets without the marker', () => {

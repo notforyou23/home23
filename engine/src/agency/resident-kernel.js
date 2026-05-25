@@ -730,6 +730,7 @@ export class AgencyKernel {
       actionWorthy: [],
       watchItems: [],
       contradictions: [],
+      memoryCandidates: [],
       discarded: [],
     };
     for (const item of normalizeStructuredItems(input.actionWorthy)) {
@@ -774,6 +775,32 @@ export class AgencyKernel {
         mode: this.config.mode,
       });
       children.contradictions.push({ claimId: claim.id, route: 'claim' });
+    }
+    for (const item of normalizeStructuredItems(input.memoryCandidates)) {
+      const evidence = structuredItemEvidence(item, candidate);
+      const memory = this.recordMemoryCandidate({
+        summary: item.summary || item.title || item.content,
+        memoryContent: item.memoryContent || item.content || item.summary || item.title,
+        memoryDomain: item.memoryDomain || item.domain || 'project',
+        pursuitId: item.pursuitId || item.targetPursuitId || null,
+        source: candidate.source,
+        evidence,
+        reason: 'structured_report_memory_candidate',
+        promoteHint: item.promoteHint || null,
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'world_stream_child_memory_candidate_created',
+        parentCandidateId: candidate.candidateId,
+        memoryCandidateId: memory.id,
+        source: candidate.source,
+        route: 'memory_candidate',
+        outcome: 'memory_candidate_created',
+        reason: 'structured_report_memory_candidate',
+        mode: this.config.mode,
+      });
+      children.memoryCandidates.push({ memoryCandidateId: memory.id, route: 'memory_candidate' });
     }
     for (const item of normalizeStructuredDiscards(candidate.discarded)) {
       this.store.appendReceipt({
@@ -2351,6 +2378,7 @@ function normalizeStructuredDiscards(value) {
 function hasStructuredReportFanout(input = {}) {
   return normalizeStructuredItems(input.actionWorthy).length > 0
     || normalizeStructuredItems(input.watchItems).length > 0
+    || normalizeStructuredItems(input.memoryCandidates).length > 0
     || normalizeStructuredItems(input.contradictions).length > 0;
 }
 
