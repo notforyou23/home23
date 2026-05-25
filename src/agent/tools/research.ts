@@ -300,8 +300,21 @@ export const searchAllBrainsTool: ToolDefinition = {
           content: `Searched ${brains.length} brain(s) for "${query}" — no relevant findings. Consider research_launch.`,
         };
       }
+      const content = `Found relevant research in ${results.length}/${brains.length} brain(s):\n\n${results.join('\n\n---\n\n')}`;
+      let agencyLine = '';
+      try {
+        agencyLine = `\n\n${await assimilateResearchOutput(ctx, {
+          brainId: 'multi-brain-search',
+          summary: content,
+          query,
+          evidenceType: 'research_query',
+          summaryOverride: `Searched COSMO research brains for "${query}".`,
+        })}`;
+      } catch (agencyErr) {
+        agencyLine = `\n\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
+      }
       return {
-        content: `Found relevant research in ${results.length}/${brains.length} brain(s):\n\n${results.join('\n\n---\n\n')}`,
+        content: `${content}${agencyLine}`,
       };
     } catch (err) {
       return errResult(
@@ -779,6 +792,7 @@ async function assimilateResearchOutput(
     path?: string;
     query?: string;
     evidenceType: 'research_compile' | 'research_query';
+    summaryOverride?: string;
     section?: string;
     sectionId?: string;
   }
@@ -794,7 +808,7 @@ async function assimilateResearchOutput(
     body: JSON.stringify({
       source: 'cosmo.research',
       kind: 'research_summary',
-      summary: `${action} COSMO research ${label}.`,
+      summary: input.summaryOverride || `${action} COSMO research ${label}.`,
       seen: [input.summary.slice(0, 2000)],
       discarded: [],
       explicitNoChange: false,
