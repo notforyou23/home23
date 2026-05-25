@@ -288,6 +288,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(residentCommandRow, />Refresh</);
   assert.match(html, /h23-system-rail/);
   assert.match(html, /h23-system-runtime/);
+  assert.match(html, /<div class="h23-system-runtime" id="system-runtime" hidden>/);
+  assert.doesNotMatch(html, /id="pulse-state">—<\/span>/);
+  assert.doesNotMatch(js, /enginePulse\.state \|\| '—'/);
   assert.doesNotMatch(html, /id="pulse-phase"/);
   assert.doesNotMatch(html, /id="pulse-phase">—<\/span>/);
   assert.doesNotMatch(html, /id="pulse-problems"/);

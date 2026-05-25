@@ -838,6 +838,7 @@ function _renderPulseNow() {
   _pulseRafPending = false;
   if (!_pulseEls) {
     _pulseEls = {
+      runtime: document.getElementById('system-runtime'),
       dot: document.getElementById('pulse-dot'),
       state: document.getElementById('pulse-state'),
       energy: document.getElementById('pulse-energy'),
@@ -846,8 +847,10 @@ function _renderPulseNow() {
   }
   if (!_pulseEls.dot) return;
 
-  _pulseEls.dot.className = 'h23-pulse-dot ' + (enginePulse.state || '');
-  if (_pulseEls.state) _pulseEls.state.textContent = enginePulse.state || '—';
+  const runtimeState = enginePulse.state && enginePulse.state !== 'unknown' ? enginePulse.state : '';
+  if (_pulseEls.runtime) _pulseEls.runtime.hidden = !runtimeState;
+  _pulseEls.dot.className = 'h23-pulse-dot ' + runtimeState;
+  if (_pulseEls.state) _pulseEls.state.textContent = runtimeState;
   if (_pulseEls.energy) _pulseEls.energy.textContent = `⚡ ${Math.round((enginePulse.energy || 0) * 100)}%`;
   if (_pulseEls.cycle) _pulseEls.cycle.textContent = `cycle ${enginePulse.cycle || '—'}`;
 }
