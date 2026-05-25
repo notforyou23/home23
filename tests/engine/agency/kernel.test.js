@@ -1215,6 +1215,37 @@ test('AgencyKernel live low-risk state posture deltas update canonical resident 
   assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'state_posture_updated'), true);
 });
 
+test('AgencyKernel live low-risk dashboard contract deltas update canonical governance state', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'live' },
+  });
+
+  const result = kernel.proposeDelta({
+    changeType: 'dashboard_contract_changed',
+    summary: 'Agency dashboard must show evidence chains before visual status.',
+    target: 'dashboard.agency',
+    surface: 'agency_inspector',
+    contractText: 'Render active pursuit, receipt, consequence, and authority evidence before visual polish.',
+    authorityLevel: 'L1',
+    reversible: true,
+    evidence: [{ type: 'dashboard_contract', ref: 'dashboard:agency-inspector' }],
+  });
+
+  const state = kernel.state();
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(result.decision.route, 'approved_live');
+  assert.equal(result.applied?.kind, 'dashboard_contract_changed');
+  assert.equal(state.governance.dashboardContracts.agency_inspector.contractText, 'Render active pursuit, receipt, consequence, and authority evidence before visual polish.');
+  assert.equal(state.governance.dashboardContracts.agency_inspector.reason, 'Agency dashboard must show evidence chains before visual status.');
+  assert.equal(receipts.some(row => row.event === 'dashboard_contract_changed' && row.surface === 'agency_inspector'), true);
+  assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'dashboard_contract_changed'), true);
+});
+
 test('AgencyKernel creates resident tasks and routed handoffs as bounded action records', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

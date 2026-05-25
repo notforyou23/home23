@@ -1477,6 +1477,62 @@ export class AgencyKernel {
         posture,
       };
     }
+    if (delta.changeType === 'dashboard_contract_changed') {
+      const surface = String(input.surface || input.target || 'dashboard').trim().replace(/[^a-zA-Z0-9_-]+/g, '_') || 'dashboard';
+      const contractText = String(input.contractText || input.contract || input.summary || '').trim();
+      if (!contractText) {
+        return {
+          kind: 'no_op',
+          reason: 'dashboard_contract_delta_requires_contract_text',
+          surface,
+        };
+      }
+      const evidence = Array.isArray(input.evidence) ? input.evidence : [];
+      const at = nowIso();
+      const existing = this.store.readState() || {};
+      const dashboardContracts = {
+        ...(existing.governance?.dashboardContracts || {}),
+        [surface]: {
+          surface,
+          target: input.target || null,
+          contractText,
+          reason: input.summary || 'approved_live_delta_dashboard_contract_changed',
+          evidence,
+          updatedAt: at,
+        },
+      };
+      this.store.writeState({
+        ...existing,
+        governance: {
+          ...(existing.governance || {}),
+          dashboardContracts,
+        },
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at,
+        event: 'dashboard_contract_changed',
+        route: 'state',
+        surface,
+        target: input.target || null,
+        reason: input.summary || 'approved_live_delta_dashboard_contract_changed',
+        evidence,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at,
+        pursuitId: input.pursuitId || null,
+        status: 'applied',
+        changeType: 'dashboard_contract_changed',
+        summary: input.summary || contractText,
+        evidence,
+      });
+      return {
+        kind: 'dashboard_contract_changed',
+        surface,
+      };
+    }
     if (delta.changeType === 'pursuit_note_added') {
       const pursuitId = input.pursuitId || input.targetPursuitId || null;
       if (!pursuitId) {

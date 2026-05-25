@@ -265,6 +265,32 @@ test('agency_propose_delta can pass a state posture delta through the bridge API
   assert.match(result.content, /approved_live/);
 });
 
+test('agency_propose_delta can pass a dashboard contract delta through the bridge API', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/deltas');
+    assert.equal(init?.method, 'POST');
+    const body = JSON.parse(String(init?.body || '{}'));
+    assert.equal(body.changeType, 'dashboard_contract_changed');
+    assert.equal(body.target, 'dashboard.agency');
+    assert.equal(body.surface, 'agency_inspector');
+    assert.equal(body.contractText, 'Show receipts before visual status.');
+    assert.deepEqual(body.evidence, [{ type: 'reference', ref: 'dashboard:agency' }]);
+    return new Response(JSON.stringify({ decision: { route: 'approved_live' }, authority: { reason: 'live_low_risk_allowed' } }), { status: 200 });
+  };
+
+  const result = await agencyProposeDeltaTool.execute({
+    changeType: 'dashboard_contract_changed',
+    target: 'dashboard.agency',
+    surface: 'agency_inspector',
+    contractText: 'Show receipts before visual status.',
+    summary: 'Dashboard contract now prioritizes evidence chains.',
+    evidenceRef: 'dashboard:agency',
+    authorityLevel: 'L1',
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /approved_live/);
+});
+
 test('agency_record_claim writes a resident truth claim through bridge API', async () => {
   const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
     assert.equal(String(url), 'http://bridge.test/api/agency/claims');
