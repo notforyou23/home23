@@ -144,7 +144,7 @@ test('buildCronResultPacket extracts machine-readable agency intake packets from
   assert.match(packet.seen.join('\n'), /Bind report outputs/);
 });
 
-test('buildCronResultPacket routes bound cron outcomes back to their resident pursuit', () => {
+test('buildCronResultPacket closes bound pursuits when cron satisfies the stop condition', () => {
   const packet = buildCronResultPacket({
     id: 'legacy-cron',
     name: 'Legacy Cron',
@@ -163,7 +163,8 @@ test('buildCronResultPacket routes bound cron outcomes back to their resident pu
   });
 
   assert.equal(packet.pursuitId, 'ap_cron');
-  assert.equal(packet.consequenceStatus, 'advanced');
+  assert.equal(packet.consequenceStatus, 'closed');
   assert.equal(packet.explicitNoChange, false);
   assert.match(packet.desiredChangedFuture || '', /resident pursuit ap_cron/);
+  assert.match((packet as { changedFuture?: string }).changedFuture || '', /satisfied the stop condition/);
 });

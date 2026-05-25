@@ -14,6 +14,7 @@ export interface AgencyWorldStreamPacket {
   explicitNoChange?: boolean;
   pursuitId?: string;
   consequenceStatus?: string;
+  changedFuture?: string;
   desiredChangedFuture?: string;
   nextMove?: string;
   claim?: {
@@ -211,8 +212,12 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
     ? payload.agencyNextMove
     : intakePacket?.nextMove
       || (pursuitId ? 'attach scheduler outcome to the bound resident pursuit and continue/repair based on semantic status' : undefined);
+  const satisfiedStopCondition = Boolean(pursuitId && result.status === 'ok' && result.semanticStatus === 'satisfied');
   const consequenceStatus = pursuitId
-    ? (result.status === 'ok' && result.semanticStatus !== 'failed' ? 'advanced' : 'failed')
+    ? (satisfiedStopCondition ? 'closed' : (result.status === 'ok' && result.semanticStatus !== 'failed' ? 'advanced' : 'failed'))
+    : undefined;
+  const changedFuture = satisfiedStopCondition
+    ? `Cron ${job.id} satisfied the stop condition for resident pursuit ${pursuitId}.`
     : undefined;
   return {
     source: `cron.${job.id}`,
@@ -223,6 +228,7 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
     explicitNoChange,
     pursuitId,
     consequenceStatus,
+    changedFuture,
     desiredChangedFuture,
     nextMove,
     evidence: [{ type: 'cron_result', ref: job.id }],
