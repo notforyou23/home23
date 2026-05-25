@@ -156,6 +156,10 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(html, /Live view of thoughts, vibe images, chat, brain log, dream log, feeder status/);
   assert.doesNotMatch(html, /dashboard-identity-chip/);
   assert.doesNotMatch(html, /PRIMARY AGENT/);
+  const primaryNav = html.match(/<nav class="h23-tabs h23-tabs-primary">[\s\S]*?<\/nav>/)?.[0] || '';
+  const organDrawer = html.match(/<details class="h23-organ-drawer" id="organs-drawer">[\s\S]*?<\/details>/)?.[0] || '';
+  assert.doesNotMatch(primaryNav, /data-tab="workers"/);
+  assert.match(organDrawer, /data-tab="workers"/);
   assert.match(html, /h23-system-rail/);
   assert.match(html, /h23-system-runtime/);
   assert.match(html, /id="organs-drawer"/);
