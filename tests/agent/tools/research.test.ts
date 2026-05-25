@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkCosmoActiveRun, compileBrainTool, launchTool } from '../../../src/agent/tools/research.js';
+import { checkCosmoActiveRun, compileBrainTool, launchTool, queryBrainTool } from '../../../src/agent/tools/research.js';
 import type { ToolContext } from '../../../src/agent/types.js';
 
 function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
@@ -134,6 +134,49 @@ describe('research_compile_brain agency assimilation', () => {
       else process.env.HOME23_AGENT = previousAgent;
       (globalThis as any).fetch = previousFetch;
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('research_query_brain agency assimilation', () => {
+  it('emits a resident agency world-stream intake packet for direct research answers', async () => {
+    const previousFetch = globalThis.fetch;
+    let capturedAgencyBody: any = null;
+    try {
+      (globalThis as any).fetch = async (url: any, init: any = {}) => {
+        const u = String(url);
+        if (u === 'http://localhost:43210/api/brain/brain-query/query') {
+          return {
+            ok: true,
+            json: async () => ({
+              response: 'Research answer: the existing brain already contains a concrete repair path that should update resident attention rather than remain a chat-only answer.',
+            }),
+          } as unknown as Response;
+        }
+        if (u === 'http://bridge.test/api/agency/world-stream') {
+          capturedAgencyBody = JSON.parse(String(init.body || '{}'));
+          return {
+            ok: true,
+            text: async () => JSON.stringify({ decision: { route: 'pursue' }, pursuit: { id: 'ap_research_query' } }),
+          } as unknown as Response;
+        }
+        throw new Error(`unexpected fetch ${u}`);
+      };
+
+      const result = await queryBrainTool.execute({
+        brainId: 'brain-query',
+        query: 'what should change now?',
+      }, makeCtx({ workerConnectorBaseUrl: 'http://bridge.test' }));
+
+      assert.equal(result.is_error, undefined);
+      assert.equal(capturedAgencyBody.source, 'cosmo.research');
+      assert.equal(capturedAgencyBody.kind, 'research_summary');
+      assert.match(capturedAgencyBody.summary, /Queried COSMO research brain/);
+      assert.match(capturedAgencyBody.nextMove, /triage research output/);
+      assert.equal(capturedAgencyBody.evidence[0].type, 'research_query');
+      assert.match(result.content, /Agency intake: pursue/);
+    } finally {
+      (globalThis as any).fetch = previousFetch;
     }
   });
 });

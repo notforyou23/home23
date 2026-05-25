@@ -220,7 +220,18 @@ export const queryBrainTool: ToolDefinition = {
       if (!answer) {
         return { content: `Brain "${brainId}" returned no response for query: ${query}` };
       }
-      return { content: answer };
+      let agencyLine = '';
+      try {
+        agencyLine = `\n\n${await assimilateResearchOutput(ctx, {
+          brainId,
+          summary: answer,
+          query,
+          evidenceType: 'research_query',
+        })}`;
+      } catch (agencyErr) {
+        agencyLine = `\n\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
+      }
+      return { content: `${answer}${agencyLine}` };
     } catch (err) {
       return errResult(`research_query_brain: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -760,12 +771,14 @@ function agencyBridgeBaseUrl(ctx: ToolContext): string {
   return ctx.workerConnectorBaseUrl || `http://127.0.0.1:${process.env.HOME23_BRIDGE_PORT || '5004'}`;
 }
 
-async function assimilateCompiledResearch(
+async function assimilateResearchOutput(
   ctx: ToolContext,
   input: {
     brainId: string;
     summary: string;
-    path: string;
+    path?: string;
+    query?: string;
+    evidenceType: 'research_compile' | 'research_query';
     section?: string;
     sectionId?: string;
   }
@@ -774,19 +787,24 @@ async function assimilateCompiledResearch(
   const label = input.section
     ? `section ${input.section}:${input.sectionId || 'unknown'} from brain "${input.brainId}"`
     : `brain "${input.brainId}"`;
+  const action = input.evidenceType === 'research_compile' ? 'Compiled' : 'Queried';
   const res = await fetchImpl(`${agencyBridgeBaseUrl(ctx)}/api/agency/world-stream`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       source: 'cosmo.research',
       kind: 'research_summary',
-      summary: `Compiled COSMO research ${label}.`,
+      summary: `${action} COSMO research ${label}.`,
       seen: [input.summary.slice(0, 2000)],
       discarded: [],
       explicitNoChange: false,
-      desiredChangedFuture: 'Compiled COSMO research enters resident agency as evidence for memory, watch, pursuit, task, question, handoff, or explicit discard instead of ending as a markdown artifact.',
-      nextMove: 'triage compiled research against active resident pursuits and decide whether it changes belief, attention, or behavior',
-      evidence: [{ type: 'research_compile', ref: input.path, brainId: input.brainId }],
+      desiredChangedFuture: 'COSMO research output enters resident agency as evidence for memory, watch, pursuit, task, question, handoff, or explicit discard instead of ending as chat content or a markdown artifact.',
+      nextMove: 'triage research output against active resident pursuits and decide whether it changes belief, attention, or behavior',
+      evidence: [{
+        type: input.evidenceType,
+        ref: input.path || input.query || input.brainId,
+        brainId: input.brainId,
+      }],
       tags: ['world-stream', 'research', 'cosmo'],
     }),
   });
@@ -854,7 +872,7 @@ export const compileBrainTool: ToolDefinition = {
       const path = await writeWorkspaceFile(filename, body);
       let agencyLine = '';
       try {
-        agencyLine = `\n${await assimilateCompiledResearch(ctx, { brainId, summary, path })}`;
+        agencyLine = `\n${await assimilateResearchOutput(ctx, { brainId, summary, path, evidenceType: 'research_compile' })}`;
       } catch (agencyErr) {
         agencyLine = `\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
       }
@@ -931,7 +949,7 @@ export const compileSectionTool: ToolDefinition = {
       const path = await writeWorkspaceFile(filename, body);
       let agencyLine = '';
       try {
-        agencyLine = `\n${await assimilateCompiledResearch(ctx, { brainId, summary, path, section, sectionId })}`;
+        agencyLine = `\n${await assimilateResearchOutput(ctx, { brainId, summary, path, evidenceType: 'research_compile', section, sectionId })}`;
       } catch (agencyErr) {
         agencyLine = `\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
       }
