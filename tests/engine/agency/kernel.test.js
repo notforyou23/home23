@@ -1108,6 +1108,46 @@ test('AgencyKernel live low-risk watch deltas apply bounded resident state chang
   assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'watch_item_created'), true);
 });
 
+test('AgencyKernel live low-risk watch close deltas close watch items with consequence receipts', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'live' },
+  });
+  const intake = await kernel.intake({
+    source: 'x.timeline',
+    kind: 'timeline_report',
+    summary: 'Watch agent agency product news until it changes Home23 behavior.',
+    authorityLevel: 'L1',
+    evidence: [{ type: 'timeline_post', ref: 'x:watch-close' }],
+    desiredChangedFuture: 'Jerry maintains a bounded watch item and closes it when the signal is exhausted.',
+  });
+  kernel.store.updatePursuit(intake.pursuit.id, { status: 'watch' }, {
+    type: 'test_force_watch',
+    reason: 'watch closure target',
+  });
+
+  const result = kernel.proposeDelta({
+    changeType: 'watch_item_closed',
+    pursuitId: intake.pursuit.id,
+    summary: 'The watched agent-agency product signal produced no further Home23 consequence.',
+    authorityLevel: 'L1',
+    reversible: true,
+    evidence: [{ type: 'manual_verification', ref: 'watch:closed' }],
+  });
+
+  const pursuit = kernel.pursuit(intake.pursuit.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(result.decision.route, 'approved_live');
+  assert.equal(result.applied?.kind, 'watch_item_closed');
+  assert.equal(pursuit.status, 'closed');
+  assert.equal(receipts.some(row => row.event === 'delta_applied' && row.changeType === 'watch_item_closed' && row.pursuitId === intake.pursuit.id), true);
+  assert.equal(consequences.some(row => row.status === 'closed' && row.changeType === 'watch_item_closed' && row.pursuitId === intake.pursuit.id), true);
+});
+
 test('AgencyKernel creates resident tasks and routed handoffs as bounded action records', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

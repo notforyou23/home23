@@ -195,6 +195,29 @@ test('agency_propose_delta can pass a pursuit note delta through the bridge API'
   assert.match(result.content, /approved_live/);
 });
 
+test('agency_propose_delta can pass a watch close delta through the bridge API', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/deltas');
+    assert.equal(init?.method, 'POST');
+    const body = JSON.parse(String(init?.body || '{}'));
+    assert.equal(body.changeType, 'watch_item_closed');
+    assert.equal(body.pursuitId, 'ap_watch');
+    assert.equal(body.summary, 'Watched signal exhausted without further consequence.');
+    assert.deepEqual(body.evidence, [{ type: 'reference', ref: 'watch:closed' }]);
+    return new Response(JSON.stringify({ decision: { route: 'approved_live' }, authority: { reason: 'live_low_risk_allowed' } }), { status: 200 });
+  };
+
+  const result = await agencyProposeDeltaTool.execute({
+    changeType: 'watch_item_closed',
+    pursuitId: 'ap_watch',
+    summary: 'Watched signal exhausted without further consequence.',
+    evidenceRef: 'watch:closed',
+    authorityLevel: 'L1',
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /approved_live/);
+});
+
 test('agency_record_claim writes a resident truth claim through bridge API', async () => {
   const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
     assert.equal(String(url), 'http://bridge.test/api/agency/claims');

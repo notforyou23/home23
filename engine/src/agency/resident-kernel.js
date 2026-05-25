@@ -1308,6 +1308,62 @@ export class AgencyKernel {
         pursuitId: pursuit.id,
       };
     }
+    if (delta.changeType === 'watch_item_closed') {
+      const pursuitId = input.pursuitId || input.targetPursuitId || null;
+      if (!pursuitId) {
+        return {
+          kind: 'no_op',
+          reason: 'watch_close_delta_requires_pursuit_id',
+        };
+      }
+      const existing = this.store.getPursuit(pursuitId);
+      if (!existing || existing.status !== 'watch') {
+        return {
+          kind: 'no_op',
+          reason: 'watch_close_delta_target_unavailable',
+          pursuitId,
+        };
+      }
+      const evidence = Array.isArray(input.evidence) ? input.evidence : [];
+      const at = nowIso();
+      this.store.updatePursuit(pursuitId, {
+        status: 'closed',
+        consequence: {
+          changed: true,
+          pursuitId,
+          summary: input.summary || 'watch item closed by approved delta',
+          evidence,
+        },
+        latestEvidence: evidence.length ? evidence.slice(-3) : existing.latestEvidence,
+        lastTouched: at,
+      }, {
+        type: 'watch_item_closed',
+        reason: input.summary || 'approved_live_delta_watch_item_closed',
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at,
+        event: 'watch_item_closed',
+        pursuitId,
+        route: 'close',
+        reason: input.summary || 'approved_live_delta_watch_item_closed',
+        evidence,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at,
+        pursuitId,
+        status: 'closed',
+        changeType: 'watch_item_closed',
+        summary: input.summary || 'watch item closed by approved delta',
+        evidence,
+      });
+      return {
+        kind: 'watch_item_closed',
+        pursuitId,
+      };
+    }
     if (delta.changeType === 'pursuit_note_added') {
       const pursuitId = input.pursuitId || input.targetPursuitId || null;
       if (!pursuitId) {
