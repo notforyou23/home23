@@ -193,7 +193,6 @@ async function init() {
   setupAgencySurface();
   connectEnginePulse();
   loadResidentHomeSurface().catch(() => { /* agency bridge may still be booting */ });
-  loadWorkersSurface().catch(() => { /* workers connector may be offline during early boot */ });
   loadAgencySurface().catch(() => { /* agency bridge may still be booting */ });
   startAutoRefresh();
   updateCosmoIndicator();
