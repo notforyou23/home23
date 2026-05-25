@@ -467,23 +467,21 @@ async function updateProblemsBadge() {
       if (sep) sep.style.display = 'none';
       return;
     }
-    const s = data.snapshot || { counts: { open: 0, chronic: 0, resolved: 0 }, resolvedJustNow: [] };
+    const s = data.snapshot || { counts: { open: 0, chronic: 0, resolved: 0 } };
     const openCount = s.counts.open + s.counts.chronic;
-    const resolvedCount = (s.resolvedJustNow || []).length;
+    if (openCount <= 0) {
+      el.style.display = 'none';
+      if (sep) sep.style.display = 'none';
+      return;
+    }
     el.style.display = '';
     if (sep) sep.style.display = '';
     if (s.counts.chronic > 0) {
       badge.textContent = `🩺 ${openCount} (${s.counts.chronic} chronic)`;
       badge.style.color = '#ff6b6b';
-    } else if (openCount > 0) {
+    } else {
       badge.textContent = `🩺 ${openCount}`;
       badge.style.color = '#ffb347';
-    } else if (resolvedCount > 0) {
-      badge.textContent = `🩺 all clear ✓`;
-      badge.style.color = '#30d158';
-    } else {
-      badge.textContent = `🩺 ok`;
-      badge.style.color = 'rgba(255,255,255,0.45)';
     }
   } catch { /* silent */ }
 }
@@ -916,25 +914,10 @@ async function updateNotificationBadge() {
 // ── Signals (wins, resolutions, positive observations) ──
 
 async function updateSignalsBadge() {
-  try {
-    const r = await fetch(`${dashboardBaseUrl()}/api/signals?limit=50&sinceHours=48`);
-    if (!r.ok) return;
-    const data = await r.json();
-    const signals = data.signals || [];
-    const el = document.getElementById('pulse-signals');
-    const sep = document.getElementById('pulse-signals-sep');
-    const badge = document.getElementById('pulse-signals-badge');
-    if (!el || !badge) return;
-    if (signals.length === 0) {
-      el.style.display = 'none';
-      if (sep) sep.style.display = 'none';
-      return;
-    }
-    el.style.display = '';
-    if (sep) sep.style.display = '';
-    badge.textContent = `✨ ${signals.length}`;
-    badge.style.color = '#30d158';
-  } catch { /* silent */ }
+  const el = document.getElementById('pulse-signals');
+  const sep = document.getElementById('pulse-signals-sep');
+  if (el) el.style.display = 'none';
+  if (sep) sep.style.display = 'none';
 }
 
 async function openSignalsPanel() {

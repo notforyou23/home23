@@ -159,6 +159,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(html, /id="organs-drawer"/);
   assert.match(html, /class="h23-organ-drawer"/);
   assert.match(html, /Runtime/);
+  assert.doesNotMatch(html, /time-cluster/);
+  assert.doesNotMatch(html, /id="engine-status"/);
+  assert.doesNotMatch(html, />ENGINE</);
   assert.match(html, />Advance</);
   assert.doesNotMatch(html, />Run Tick</);
   assert.doesNotMatch(html, /h23-system-metric/);
@@ -175,6 +178,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /button\.textContent = 'Advancing'/);
   assert.match(js, /button\.textContent = 'Advance'/);
   assert.doesNotMatch(js, /button\.textContent = 'Run Tick'/);
+  assert.match(js, /openCount <= 0/);
+  assert.doesNotMatch(js, /all clear/);
+  assert.doesNotMatch(js, /badge\.textContent = `✨ \$\{signals\.length\}`/);
   assert.match(js, /transitionResidentPursuitFromDashboard/);
   assert.match(js, /\/home23\/api\/agency\/tick/);
   assert.match(js, /\/home23\/api\/agency\/pursuits\/\$\{encodeURIComponent\(pursuitId\)\}\/transition/);
@@ -221,6 +227,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(css, /\.h23-organ-panel/);
   assert.match(css, /\.h23-system-rail/);
   assert.match(css, /\.h23-system-runtime/);
+  assert.doesNotMatch(css, /\.h23-system-rail \.time-cluster/);
+  assert.doesNotMatch(css, /\.h23-system-rail \.cosmo-status/);
   assert.doesNotMatch(css, /\.h23-intel/);
   assert.doesNotMatch(css, /\.h23-about/);
 });

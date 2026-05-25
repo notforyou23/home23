@@ -112,34 +112,6 @@ body::before {
   text-align: right;
 }
 
-.time-cluster { display: flex; gap: 16px; align-items: center; }
-.time-loc { display: flex; align-items: center; gap: 5px; }
-.time-flag { font-size: 1rem; }
-.time-tz { font-size: 0.7rem; color: var(--text-dim); opacity: 0.7; text-transform: uppercase; letter-spacing: 0.05em; }
-.time-display {
-  font-size: 1.6rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
-}
-
-.cosmo-status {
-  display: flex; align-items: center; gap: 0.4rem;
-  justify-content: flex-end; margin-top: 0.4rem;
-  font-size: 0.8rem; color: var(--text-muted);
-}
-
-.status-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: rgba(255,255,255,0.3); transition: background 0.3s;
-}
-.status-dot.alive {
-  background: var(--accent-green);
-  box-shadow: 0 0 6px rgba(48,209,88,0.6);
-  animation: pulse-dot 2s ease-in-out infinite;
-}
-.status-dot.dead { background: var(--accent-red); }
 @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
 /* Legacy header elements (kept for compatibility) */
@@ -2122,34 +2094,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
   gap: 10px;
 }
 
-.time-cluster {
-  gap: 18px;
-}
-
-.time-loc {
-  gap: 8px;
-}
-
-.time-display {
-  font-family: var(--font-display);
-  font-size: 2rem;
-  font-weight: 700;
-}
-
-.time-tz {
-  color: rgba(205, 222, 246, 0.55);
-}
-
-.cosmo-status {
-  gap: 8px;
-  margin-top: 0;
-  padding: 8px 12px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.08);
-  background: rgba(35, 102, 73, 0.16);
-  color: rgba(214, 240, 224, 0.82);
-}
-
 .h23-update-bar {
   justify-content: flex-start;
   padding: 10px 16px;
@@ -2161,7 +2105,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 
 .h23-system-rail {
   display: grid;
-  grid-template-columns: minmax(120px, 0.9fr) minmax(150px, 1.1fr) minmax(90px, 0.55fr) minmax(150px, 0.9fr) auto;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(150px, 1.1fr) minmax(90px, 0.55fr);
   align-items: center;
   gap: 10px;
   min-height: 54px;
@@ -2229,31 +2173,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
   justify-content: flex-end;
   gap: 6px;
   overflow: hidden;
-}
-
-.h23-system-rail .time-cluster {
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.h23-system-rail .time-loc {
-  gap: 6px;
-}
-
-.h23-system-rail .time-display {
-  font-family: var(--font-mono);
-  font-size: 0.92rem;
-  letter-spacing: 0;
-}
-
-.h23-system-rail .time-tz {
-  font-size: 0.62rem;
-}
-
-.h23-system-rail .cosmo-status {
-  justify-content: center;
-  padding: 6px 9px;
-  font-size: 0.68rem;
 }
 
 .h23-overview-band {
@@ -4923,15 +4842,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
 }
 
 @media (max-width: 640px) {
-  .time-cluster {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .time-display {
-    font-size: 1.5rem;
-  }
-
   .h23-system-bar {
     grid-template-columns: 1fr 1fr;
   }
