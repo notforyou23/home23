@@ -150,6 +150,7 @@ test('buildCronResultPacket extracts machine-readable agency intake packets from
       '  "watchItems": [{"summary": "Watch repeated autonomy discourse."}],',
       '  "memoryCandidates": [{"summary": "Remember timeline report agency contract.", "content": "Reports must create memory/watch/pursuit/discard receipts."}],',
       '  "operatorQuestions": [{"question": "Prioritize market news or implementation signals?", "reason": "Both appeared in timeline."}],',
+      '  "tasks": [{"summary": "Run agency verifier.", "actionKind": "worker_delegation", "handoff": {"to": "worker:agency-verifier", "objective": "Verify packet fanout."}}],',
       '  "contradictions": [],',
       '  "discardedNoise": [{"ref": "viral meta thread", "reason": "no durable action"}],',
       '  "desiredChangedFuture": "Report digestion updates standing agency implementation pursuit.",',
@@ -169,6 +170,7 @@ test('buildCronResultPacket extracts machine-readable agency intake packets from
   assert.deepEqual((packet as any).watchItems, [{ summary: 'Watch repeated autonomy discourse.' }]);
   assert.deepEqual((packet as any).memoryCandidates, [{ summary: 'Remember timeline report agency contract.', content: 'Reports must create memory/watch/pursuit/discard receipts.' }]);
   assert.deepEqual((packet as any).operatorQuestions, [{ question: 'Prioritize market news or implementation signals?', reason: 'Both appeared in timeline.' }]);
+  assert.deepEqual((packet as any).tasks, [{ summary: 'Run agency verifier.', actionKind: 'worker_delegation', handoff: { to: 'worker:agency-verifier', objective: 'Verify packet fanout.' } }]);
   assert.deepEqual((packet as any).contradictions, []);
   assert.equal(packet.tags.includes('x-timeline'), true);
   assert.match(packet.seen.join('\n'), /Remember timeline report agency contract/);

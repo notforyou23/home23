@@ -27,6 +27,8 @@ export interface AgencyWorldStreamPacket {
   watchItems?: Array<Record<string, unknown>>;
   memoryCandidates?: Array<Record<string, unknown>>;
   operatorQuestions?: Array<Record<string, unknown>>;
+  taskItems?: Array<Record<string, unknown>>;
+  tasks?: Array<Record<string, unknown>>;
   contradictions?: Array<Record<string, unknown>>;
   evidence: Array<{ type: string; ref: string }>;
   tags: string[];
@@ -52,6 +54,8 @@ interface ReportIntakePacket {
   watchItems?: Array<Record<string, unknown>>;
   memoryCandidates?: Array<Record<string, unknown>>;
   operatorQuestions?: Array<Record<string, unknown>>;
+  taskItems?: Array<Record<string, unknown>>;
+  tasks?: Array<Record<string, unknown>>;
   contradictions?: Array<Record<string, unknown>>;
   discardedNoise?: Array<{ ref?: string; reason?: string }>;
   explicitNoChange?: boolean;
@@ -224,6 +228,8 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
         ...packetItemsText('watch', intakePacket.watchItems),
         ...packetItemsText('memory', intakePacket.memoryCandidates),
         ...packetItemsText('question', intakePacket.operatorQuestions),
+        ...packetItemsText('task', intakePacket.taskItems),
+        ...packetItemsText('task', intakePacket.tasks),
         ...packetItemsText('contradiction', intakePacket.contradictions),
       ]
     : [];
@@ -234,6 +240,8 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
       (Array.isArray(intakePacket.watchItems) && intakePacket.watchItems.length > 0) ||
       (Array.isArray(intakePacket.memoryCandidates) && intakePacket.memoryCandidates.length > 0) ||
       (Array.isArray(intakePacket.operatorQuestions) && intakePacket.operatorQuestions.length > 0) ||
+      (Array.isArray(intakePacket.taskItems) && intakePacket.taskItems.length > 0) ||
+      (Array.isArray(intakePacket.tasks) && intakePacket.tasks.length > 0) ||
       (Array.isArray(intakePacket.contradictions) && intakePacket.contradictions.length > 0) ||
       intakePacket.desiredChangedFuture
     ),
@@ -280,6 +288,8 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
     watchItems: intakePacket?.watchItems,
     memoryCandidates: intakePacket?.memoryCandidates,
     operatorQuestions: intakePacket?.operatorQuestions,
+    taskItems: intakePacket?.taskItems,
+    tasks: intakePacket?.tasks,
     contradictions: intakePacket?.contradictions,
     evidence: [{ type: 'cron_result', ref: job.id }],
     tags: ['world-stream', 'cron', ...(intakePacket?.tags || [])],

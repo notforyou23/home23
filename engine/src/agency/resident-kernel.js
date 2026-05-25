@@ -732,6 +732,7 @@ export class AgencyKernel {
       contradictions: [],
       memoryCandidates: [],
       operatorQuestions: [],
+      tasks: [],
       discarded: [],
     };
     for (const item of normalizeStructuredItems(input.actionWorthy)) {
@@ -825,6 +826,43 @@ export class AgencyKernel {
         mode: this.config.mode,
       });
       children.operatorQuestions.push({ questionId: question.id, route: 'question' });
+    }
+    for (const item of [
+      ...normalizeStructuredItems(input.taskItems),
+      ...normalizeStructuredItems(input.tasks),
+    ]) {
+      const evidence = structuredItemEvidence(item, candidate);
+      const handoff = item.handoff && typeof item.handoff === 'object'
+        ? item.handoff
+        : (item.handoffTo || item.handoffObjective
+          ? {
+              to: item.handoffTo || null,
+              objective: item.handoffObjective || item.objective || item.summary || null,
+            }
+          : null);
+      const task = this.recordTask({
+        summary: item.summary || item.title || item.objective,
+        actionKind: item.actionKind || item.kind || (handoff ? 'handoff' : 'bounded_action'),
+        authorityLevel: item.authorityLevel || 'L2',
+        pursuitId: item.pursuitId || item.targetPursuitId || null,
+        handoff,
+        evidence,
+        stopCondition: item.stopCondition || 'structured report task is closed with a receipt or explicitly discarded',
+        reason: 'structured_report_task',
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'world_stream_child_task_created',
+        parentCandidateId: candidate.candidateId,
+        taskId: task.id,
+        source: candidate.source,
+        route: 'task',
+        outcome: 'task_created',
+        reason: 'structured_report_task_created',
+        mode: this.config.mode,
+      });
+      children.tasks.push({ taskId: task.id, route: 'task' });
     }
     for (const item of normalizeStructuredDiscards(candidate.discarded)) {
       this.store.appendReceipt({
@@ -2404,6 +2442,8 @@ function hasStructuredReportFanout(input = {}) {
     || normalizeStructuredItems(input.watchItems).length > 0
     || normalizeStructuredItems(input.memoryCandidates).length > 0
     || normalizeStructuredItems(input.operatorQuestions).length > 0
+    || normalizeStructuredItems(input.taskItems).length > 0
+    || normalizeStructuredItems(input.tasks).length > 0
     || normalizeStructuredItems(input.contradictions).length > 0;
 }
 

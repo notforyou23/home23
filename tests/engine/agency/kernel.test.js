@@ -979,6 +979,17 @@ test('AgencyKernel fans structured report packets into child pursuits, claims, a
       authorityLevel: 'L3',
       evidenceRef: 'x-question-priority',
     }],
+    tasks: [{
+      summary: 'Run bounded verifier for raw JSON agency intake packets.',
+      actionKind: 'worker_delegation',
+      authorityLevel: 'L2',
+      handoff: {
+        to: 'worker:agency-verifier',
+        objective: 'Verify raw JSON agency intake packet assimilation.',
+      },
+      stopCondition: 'Verifier receipt proves raw JSON packet assimilation.',
+      evidenceRef: 'x-task-verifier',
+    }],
     discarded: [{ ref: 'viral meta thread', reason: 'no durable Home23 action' }],
     desiredChangedFuture: 'Report digestion updates standing agency implementation pursuit.',
     nextMove: 'merge with Home23 agency spine pursuit',
@@ -992,6 +1003,7 @@ test('AgencyKernel fans structured report packets into child pursuits, claims, a
   const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
   const truthRows = readJsonl(join(dir, 'agency', 'truth.jsonl'));
   const memoryRows = readJsonl(join(dir, 'agency', 'memory-candidates.jsonl'));
+  const taskRows = readJsonl(join(dir, 'agency', 'tasks.jsonl'));
 
   assert.equal(result.decision.route, 'fanout');
   assert.equal(result.children.actionWorthy.length, 1);
@@ -999,19 +1011,24 @@ test('AgencyKernel fans structured report packets into child pursuits, claims, a
   assert.equal(result.children.contradictions.length, 1);
   assert.equal(result.children.memoryCandidates.length, 1);
   assert.equal(result.children.operatorQuestions.length, 1);
+  assert.equal(result.children.tasks.length, 1);
   assert.equal(result.children.discarded.length, 1);
   assert.equal(active.some(row => row.summary === 'Bind report outputs to resident pursuits.'), true);
   assert.equal(watch.some(row => row.summary === 'Watch repeated autonomy discourse for concrete implementation details.'), true);
   assert.equal(truthRows.some(row => row.claim === 'Delivery to Telegram is sufficient completion for timeline reports.'), true);
   assert.equal(memoryRows.some(row => row.candidate?.domain === 'doctrine' && /Timeline reports are incomplete/.test(row.candidate.content)), true);
+  assert.equal(taskRows.some(row => row.task?.summary === 'Run bounded verifier for raw JSON agency intake packets.' && row.task?.handoff?.to === 'worker:agency-verifier'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_selected' && row.route === 'pursue'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_selected' && row.route === 'watch'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_memory_candidate_created'), true);
   assert.equal(receipts.some(row => row.event === 'jtr_question_raised' && row.reason === 'The report found both signals and needs jtr taste to allocate scarce attention.'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_question_raised'), true);
+  assert.equal(receipts.some(row => row.event === 'task_created' && row.actionKind === 'worker_delegation'), true);
+  assert.equal(receipts.some(row => row.event === 'world_stream_child_task_created'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_discarded' && row.reason === 'no durable Home23 action'), true);
   assert.equal(consequences.some(row => row.changeType === 'memory_candidate_created' && row.status === 'applied'), true);
   assert.equal(consequences.some(row => row.changeType === 'jtr_question_raised' && row.status === 'open'), true);
+  assert.equal(consequences.some(row => row.changeType === 'task_created' && row.status === 'open'), true);
   assert.equal(consequences.some(row => row.changeType === 'structured_report_fanout' && row.status === 'fanout'), true);
 });
 
