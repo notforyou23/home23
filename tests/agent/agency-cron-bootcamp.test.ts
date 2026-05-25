@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   auditExistingRecurringCronJobsForAgency,
   mergeExternalCronJobPreservingAgency,
+  reviewBoundRecurringCronJobsForAgency,
 } from '../../src/agency/cron-bootcamp.js';
 import type { CronJob } from '../../src/scheduler/cron.js';
 
@@ -82,4 +83,75 @@ test('mergeExternalCronJobPreservingAgency keeps runtime pursuit bindings when c
   assert.equal(merged.state.consecutiveErrors, 2);
   assert.equal(merged.agency?.pursuitId, 'ap_runtime');
   assert.equal(merged.agency?.charterRule, 'existing_recurring_cron_requires_pursuit');
+});
+
+test('reviewBoundRecurringCronJobsForAgency proposes retirement in dry-run when pursuit is discarded', async () => {
+  const saved: CronJob[] = [];
+  const consequences: Array<Record<string, unknown>> = [];
+  const jobs = [
+    recurringJob('stale-bound', { pursuitId: 'ap_stale', charterRule: 'existing_recurring_cron_requires_pursuit' }),
+  ];
+
+  const result = await reviewBoundRecurringCronJobsForAgency({
+    scheduler: {
+      getJobs: () => jobs,
+      saveJob: (job) => saved.push(job),
+    },
+    kernel: {
+      config: { mode: 'dry_run' },
+      pursuit: (id: string) => ({ id, status: 'discarded', nextMove: 'editor killed repeated loop' }),
+      recordConsequence: async (packet) => {
+        consequences.push(packet);
+      },
+    },
+    now: '2026-05-25T21:00:00.000Z',
+  });
+
+  assert.equal(result.checked, 1);
+  assert.equal(result.proposed, 1);
+  assert.equal(result.retired, 0);
+  assert.equal(saved.length, 0);
+  assert.equal(jobs[0].enabled, true);
+  assert.equal(consequences[0].changeType, 'cron_retirement_proposed');
+  assert.equal(consequences[0].status, 'proposed');
+  assert.equal(consequences[0].pursuitId, 'ap_stale');
+});
+
+test('reviewBoundRecurringCronJobsForAgency disables only bound stale recurring jobs in live mode', async () => {
+  const saved: CronJob[] = [];
+  const consequences: Array<Record<string, unknown>> = [];
+  const stale = recurringJob('stale-bound', { pursuitId: 'ap_stale', charterRule: 'existing_recurring_cron_requires_pursuit' });
+  const open = recurringJob('open-bound', { pursuitId: 'ap_open', charterRule: 'existing_recurring_cron_requires_pursuit' });
+  const oneShot = {
+    ...recurringJob('one-shot', { pursuitId: 'ap_stale', charterRule: 'existing_recurring_cron_requires_pursuit' }),
+    schedule: { kind: 'at', at: '2026-05-26T09:00:00-04:00' },
+  } as CronJob;
+  const jobs = [stale, open, oneShot];
+
+  const result = await reviewBoundRecurringCronJobsForAgency({
+    scheduler: {
+      getJobs: () => jobs,
+      saveJob: (job) => saved.push(job),
+    },
+    kernel: {
+      config: { mode: 'live' },
+      pursuit: (id: string) => ({ id, status: id === 'ap_stale' ? 'closed' : 'active' }),
+      recordConsequence: async (packet) => {
+        consequences.push(packet);
+      },
+    },
+    now: '2026-05-25T21:05:00.000Z',
+  });
+
+  assert.equal(result.checked, 3);
+  assert.equal(result.retired, 1);
+  assert.equal(result.kept, 1);
+  assert.equal(result.skippedNonRecurring, 1);
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].id, 'stale-bound');
+  assert.equal(saved[0].enabled, false);
+  assert.equal(saved[0].agency?.auditDecision, 'retired_by_agency_editor');
+  assert.equal(saved[0].agency?.retiredAt, '2026-05-25T21:05:00.000Z');
+  assert.equal(consequences[0].changeType, 'cron_retired_by_editor');
+  assert.equal(consequences[0].status, 'applied');
 });

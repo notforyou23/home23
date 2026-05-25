@@ -6,8 +6,10 @@ interface SchedulerLike {
 }
 
 interface AgencyKernelLike {
-  intake(input: Record<string, unknown>): Promise<{ pursuit?: { id?: string } }>;
+  intake?(input: Record<string, unknown>): Promise<{ pursuit?: { id?: string } }>;
   recordConsequence?(input: Record<string, unknown>): Promise<unknown> | unknown;
+  pursuit?(id: string): { id?: string; status?: string; nextMove?: string; summary?: string } | null | undefined;
+  config?: { mode?: string };
 }
 
 export interface CronBootcampAuditResult {
@@ -18,12 +20,33 @@ export interface CronBootcampAuditResult {
   failed: Array<{ jobId: string; reason: string }>;
 }
 
+export interface CronBootcampReviewResult {
+  checked: number;
+  kept: number;
+  proposed: number;
+  retired: number;
+  skippedUnbound: number;
+  skippedNonRecurring: number;
+  failed: Array<{ jobId: string; reason: string }>;
+}
+
 function isEnabledRecurring(job: CronJob): boolean {
   return Boolean(job.enabled && (job.schedule?.kind === 'cron' || job.schedule?.kind === 'every'));
 }
 
 function hasPursuitBinding(job: CronJob): boolean {
   return Boolean(job.agency?.pursuitId);
+}
+
+function retireReason(job: CronJob, pursuit: { status?: string; nextMove?: string; summary?: string } | null | undefined): string | null {
+  const status = String(pursuit?.status || '').toLowerCase();
+  if (status === 'discarded') {
+    return `bound pursuit ${job.agency?.pursuitId} was discarded by agency editor`;
+  }
+  if (status === 'closed') {
+    return `bound pursuit ${job.agency?.pursuitId} reached its stop condition`;
+  }
+  return null;
 }
 
 export function mergeExternalCronJobPreservingAgency(existing: CronJob, incoming: CronJob): CronJob {
@@ -64,6 +87,10 @@ export async function auditExistingRecurringCronJobsForAgency({
     }
 
     try {
+      if (!kernel.intake) {
+        result.failed.push({ jobId: job.id, reason: 'agency kernel intake unavailable' });
+        continue;
+      }
       const intake = await kernel.intake({
         source: 'scheduler.cron.bootcamp',
         kind: 'cron_bootcamp_audit',
@@ -121,6 +148,107 @@ export async function auditExistingRecurringCronJobsForAgency({
           },
         ],
       });
+    } catch (err) {
+      result.failed.push({
+        jobId: job.id,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return result;
+}
+
+export async function reviewBoundRecurringCronJobsForAgency({
+  scheduler,
+  kernel,
+  now = new Date().toISOString(),
+}: {
+  scheduler: SchedulerLike;
+  kernel: AgencyKernelLike;
+  now?: string;
+}): Promise<CronBootcampReviewResult> {
+  const result: CronBootcampReviewResult = {
+    checked: 0,
+    kept: 0,
+    proposed: 0,
+    retired: 0,
+    skippedUnbound: 0,
+    skippedNonRecurring: 0,
+    failed: [],
+  };
+  const liveMode = kernel.config?.mode === 'live';
+
+  for (const job of scheduler.getJobs()) {
+    result.checked += 1;
+    if (!isEnabledRecurring(job)) {
+      result.skippedNonRecurring += 1;
+      continue;
+    }
+    if (!hasPursuitBinding(job)) {
+      result.skippedUnbound += 1;
+      continue;
+    }
+
+    try {
+      const pursuitId = job.agency?.pursuitId || '';
+      const pursuit = kernel.pursuit?.(pursuitId);
+      const reason = retireReason(job, pursuit);
+      if (!reason) {
+        result.kept += 1;
+        continue;
+      }
+
+      const evidence = [
+        {
+          type: 'cron_job',
+          ref: job.id,
+          name: job.name,
+          scheduleKind: job.schedule.kind,
+          payloadKind: job.payload.kind,
+        },
+        {
+          type: 'agency_pursuit',
+          ref: pursuitId,
+          status: pursuit?.status || 'unknown',
+        },
+      ];
+
+      if (liveMode) {
+        const updated: CronJob = {
+          ...job,
+          enabled: false,
+          agency: {
+            ...(job.agency || {}),
+            auditedAt: now,
+            auditDecision: 'retired_by_agency_editor',
+            retiredAt: now,
+            retireReason: reason,
+          },
+        };
+        scheduler.saveJob(updated);
+        result.retired += 1;
+        await kernel.recordConsequence?.({
+          at: now,
+          source: 'scheduler.cron.bootcamp',
+          pursuitId,
+          status: 'applied',
+          changeType: 'cron_retired_by_editor',
+          summary: `Recurring cron "${job.name}" was disabled because ${reason}.`,
+          evidence,
+        });
+      } else {
+        result.proposed += 1;
+        await kernel.recordConsequence?.({
+          at: now,
+          source: 'scheduler.cron.bootcamp',
+          pursuitId,
+          status: 'proposed',
+          changeType: 'cron_retirement_proposed',
+          summary: `Recurring cron "${job.name}" should be disabled because ${reason}.`,
+          evidence,
+        });
+      }
     } catch (err) {
       result.failed.push({
         jobId: job.id,

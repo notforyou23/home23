@@ -61,6 +61,8 @@ export interface CronJob {
     charterRule?: string;
     auditedAt?: string;
     auditDecision?: string;
+    retiredAt?: string;
+    retireReason?: string;
   };
   state: JobState;
 }

@@ -66,6 +66,7 @@ import {
 import {
   auditExistingRecurringCronJobsForAgency,
   mergeExternalCronJobPreservingAgency,
+  reviewBoundRecurringCronJobsForAgency,
 } from './agency/cron-bootcamp.js';
 
 // ─── Constants ──────────────────────────────────────────────
@@ -801,8 +802,12 @@ async function main(): Promise<void> {
       try {
         const kernel = await getAgencyKernel();
         const audit = await auditExistingRecurringCronJobsForAgency({ scheduler, kernel });
+        const review = await reviewBoundRecurringCronJobsForAgency({ scheduler, kernel });
         if (audit.bound > 0 || audit.failed.length > 0) {
           console.log(`[agency] Cron bootcamp audit: checked=${audit.checked} bound=${audit.bound} alreadyBound=${audit.skippedAlreadyBound} failed=${audit.failed.length}`);
+        }
+        if (review.retired > 0 || review.proposed > 0 || review.failed.length > 0) {
+          console.log(`[agency] Cron bootcamp review: checked=${review.checked} retired=${review.retired} proposed=${review.proposed} kept=${review.kept} failed=${review.failed.length}`);
         }
       } catch (err) {
         console.warn(`[agency] Cron bootcamp audit failed: ${err instanceof Error ? err.message : String(err)}`);
