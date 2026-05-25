@@ -1866,11 +1866,36 @@ function renderResidentPursuitCard(p) {
 function renderResidentConsequenceRow(c) {
   return `
     <div class="h23-resident-event consequence">
-      <strong>${escapeHtml(c.changeType || c.status || 'consequence')}</strong>
-      <span>${escapeHtml(c.summary || c.reason || '')}</span>
-      <small>${escapeHtml([c.pursuitId, c.at ? timeSinceSafe(c.at) : null].filter(Boolean).join(' · '))}</small>
+      <strong>${escapeHtml(renderResidentConsequenceTitle(c))}</strong>
+      <span>${escapeHtml(renderResidentConsequenceSummary(c))}</span>
+      <small>${escapeHtml(renderResidentConsequenceMeta(c))}</small>
     </div>
   `;
+}
+
+function renderResidentConsequenceTitle(c) {
+  const type = String(c?.changeType || c?.status || 'consequence');
+  if (type === 'cron_receipt_reattached') return 'Scheduler evidence attached';
+  if (type === 'pursue' && /^Cron agent-[\w-]+ \(exec\) finished with status ok\.$/i.test(String(c?.summary || ''))) {
+    return 'Scheduler run reviewed';
+  }
+  return humanizeResidentMachineText(type, 'Consequence');
+}
+
+function renderResidentConsequenceSummary(c) {
+  const summary = String(c?.summary || c?.reason || '').trim();
+  if (/^Cron receipt pursuit ap_[\w-]+ reattached to ap_[\w-]+\.$/i.test(summary)) {
+    return 'A scheduler receipt was attached to its existing resident pursuit instead of becoming dashboard noise.';
+  }
+  return humanizeResidentMachineText(summary, 'No operator-facing summary yet.');
+}
+
+function renderResidentConsequenceMeta(c) {
+  const parts = [];
+  if (c?.source) parts.push(residentSourceLabel(c.source));
+  if (c?.authorityLevel) parts.push(c.authorityLevel);
+  if (c?.at) parts.push(timeSinceSafe(c.at));
+  return parts.join(' · ');
 }
 
 function extractCronNameFromConsequence(c) {
@@ -1880,9 +1905,18 @@ function extractCronNameFromConsequence(c) {
   return humanizeResidentMachineText(c?.changeType || c?.status || 'cron');
 }
 
+function groupResidentSchedulerEvidence(row) {
+  const type = String(row?.changeType || row?.status || '');
+  const summary = String(row?.summary || row?.reason || '');
+  return type === 'cron_receipt_reattached'
+    || /^Cron receipt pursuit ap_[\w-]+ reattached to ap_[\w-]+\.$/i.test(summary)
+    || (type === 'pursue' && /^Cron agent-[\w-]+ \(exec\) finished with status ok\.$/i.test(summary));
+}
+
 function groupResidentConsequences(rows = []) {
   const grouped = [];
   let cronRows = [];
+  let schedulerRows = [];
 
   const flushCronGroup = () => {
     if (!cronRows.length) return;
@@ -1906,20 +1940,48 @@ function groupResidentConsequences(rows = []) {
     cronRows = [];
   };
 
+  const flushSchedulerGroup = () => {
+    if (!schedulerRows.length) return;
+    if (schedulerRows.length === 1) {
+      grouped.push(schedulerRows[0]);
+    } else {
+      grouped.push({
+        kind: 'scheduler-evidence-group',
+        changeType: 'scheduler_evidence_attached',
+        status: 'reviewed',
+        count: schedulerRows.length,
+        at: schedulerRows[0]?.at,
+        summary: `${schedulerRows.length} scheduler receipts were reviewed and folded into existing resident pursuits.`,
+        items: schedulerRows,
+      });
+    }
+    schedulerRows = [];
+  };
+
   rows.forEach((row) => {
     if (row?.changeType === 'cron_retirement_proposed') {
+      flushSchedulerGroup();
       cronRows.push(row);
       return;
     }
+    if (groupResidentSchedulerEvidence(row)) {
+      flushCronGroup();
+      schedulerRows.push(row);
+      return;
+    }
     flushCronGroup();
+    flushSchedulerGroup();
     grouped.push(row);
   });
   flushCronGroup();
+  flushSchedulerGroup();
   return grouped;
 }
 
 function renderResidentConsequenceItem(c) {
-  return c?.kind === 'group' ? renderResidentConsequenceGroup(c) : renderResidentConsequenceRow(c);
+  if (c?.kind === 'group') return renderResidentConsequenceGroup(c);
+  if (c?.kind === 'scheduler-evidence-group') return renderResidentSchedulerEvidenceGroup(c);
+  return renderResidentConsequenceRow(c);
 }
 
 function renderResidentConsequenceGroup(group) {
@@ -1928,6 +1990,16 @@ function renderResidentConsequenceGroup(group) {
       <strong>Cron cleanup proposed</strong>
       <span>${escapeHtml(group.summary || '')}</span>
       <small>${escapeHtml([group.detail, group.at ? timeSinceSafe(group.at) : null].filter(Boolean).join(' · '))}</small>
+    </div>
+  `;
+}
+
+function renderResidentSchedulerEvidenceGroup(group) {
+  return `
+    <div class="h23-resident-event consequence grouped">
+      <strong>Scheduler evidence folded in</strong>
+      <span>${escapeHtml(group.summary || '')}</span>
+      <small>${escapeHtml(group.at ? timeSinceSafe(group.at) : '')}</small>
     </div>
   `;
 }

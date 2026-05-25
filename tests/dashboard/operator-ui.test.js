@@ -178,7 +178,13 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /renderResidentNextActionTitle/);
   assert.match(js, /groupResidentConsequences/);
   assert.match(js, /renderResidentConsequenceGroup/);
+  assert.match(js, /renderResidentConsequenceTitle/);
+  assert.match(js, /renderResidentConsequenceSummary/);
+  assert.match(js, /renderResidentConsequenceMeta/);
+  assert.match(js, /groupResidentSchedulerEvidence/);
+  assert.match(js, /renderResidentSchedulerEvidenceGroup/);
   assert.doesNotMatch(js, /consequenceRows\.map\(renderResidentConsequenceRow\)/);
+  assert.doesNotMatch(js, /\[c\.pursuitId, c\.at \? timeSinceSafe\(c\.at\) : null\]/);
   assert.doesNotMatch(js, /<h3>\$\{escapeHtml\(p\.title/);
   assert.match(js, /if \(_pulseEls\.state\)/);
   assert.match(js, /if \(_pulseEls\.energy\)/);
