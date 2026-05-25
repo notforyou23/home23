@@ -60,3 +60,30 @@ test('buildAgencyContextSection exposes active resident pursuits without raw inb
   assert.doesNotMatch(section, /Old closed item/);
   assert.doesNotMatch(section, /inbox/);
 });
+
+test('buildAgencyContextSection exposes resident prompt contracts from canonical state', () => {
+  const root = mkdtempSync(path.join(tmpdir(), 'home23-agency-context-'));
+  const agencyDir = path.join(root, 'instances', 'jerry', 'brain', 'agency');
+  mkdirSync(agencyDir, { recursive: true });
+  writeFileSync(path.join(agencyDir, 'state.json'), JSON.stringify({
+    schema: 'home23.agency.state.v1',
+    agent: 'jerry',
+    mode: 'dry_run',
+    attention: { currentPursuitId: null, queueDepth: 0 },
+    governance: {
+      promptContracts: {
+        agency_bootcamp_reports: {
+          promptScope: 'agency_bootcamp_reports',
+          target: 'chat.agency_context',
+          promptText: 'Reports must state discard, no-change, watch, pursuit, task, or claim outcome before delivery.',
+          reason: 'Curriculum digestion changed future report prompting.',
+        },
+      },
+    },
+  }));
+
+  const section = buildAgencyContextSection(root, 'jerry');
+  assert.match(section, /Prompt contracts/);
+  assert.match(section, /agency_bootcamp_reports/);
+  assert.match(section, /Reports must state discard, no-change, watch, pursuit, task, or claim outcome before delivery/);
+});

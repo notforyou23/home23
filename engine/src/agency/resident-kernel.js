@@ -1477,6 +1477,62 @@ export class AgencyKernel {
         posture,
       };
     }
+    if (delta.changeType === 'prompt_updated') {
+      const promptScope = String(input.promptScope || input.scope || input.target || 'resident').trim().replace(/[^a-zA-Z0-9_-]+/g, '_') || 'resident';
+      const promptText = String(input.promptText || input.prompt || input.contractText || '').trim();
+      if (!promptText) {
+        return {
+          kind: 'no_op',
+          reason: 'prompt_update_delta_requires_prompt_text',
+          promptScope,
+        };
+      }
+      const evidence = Array.isArray(input.evidence) ? input.evidence : [];
+      const at = nowIso();
+      const existing = this.store.readState() || {};
+      const promptContracts = {
+        ...(existing.governance?.promptContracts || {}),
+        [promptScope]: {
+          promptScope,
+          target: input.target || null,
+          promptText,
+          reason: input.summary || 'approved_live_delta_prompt_updated',
+          evidence,
+          updatedAt: at,
+        },
+      };
+      this.store.writeState({
+        ...existing,
+        governance: {
+          ...(existing.governance || {}),
+          promptContracts,
+        },
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at,
+        event: 'prompt_updated',
+        route: 'state',
+        promptScope,
+        target: input.target || null,
+        reason: input.summary || 'approved_live_delta_prompt_updated',
+        evidence,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at,
+        pursuitId: input.pursuitId || null,
+        status: 'applied',
+        changeType: 'prompt_updated',
+        summary: input.summary || promptText,
+        evidence,
+      });
+      return {
+        kind: 'prompt_updated',
+        promptScope,
+      };
+    }
     if (delta.changeType === 'dashboard_contract_changed') {
       const surface = String(input.surface || input.target || 'dashboard').trim().replace(/[^a-zA-Z0-9_-]+/g, '_') || 'dashboard';
       const contractText = String(input.contractText || input.contract || input.summary || '').trim();

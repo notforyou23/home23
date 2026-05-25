@@ -1215,6 +1215,37 @@ test('AgencyKernel live low-risk state posture deltas update canonical resident 
   assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'state_posture_updated'), true);
 });
 
+test('AgencyKernel live low-risk prompt deltas update canonical prompt contracts with receipts', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'live' },
+  });
+
+  const result = kernel.proposeDelta({
+    changeType: 'prompt_updated',
+    summary: 'Curriculum digestion requires future reports to name a behavioral delta.',
+    target: 'chat.agency_context',
+    promptScope: 'agency_bootcamp_reports',
+    promptText: 'Reports must state discard, no-change, watch, pursuit, task, or claim outcome before delivery.',
+    authorityLevel: 'L1',
+    reversible: true,
+    evidence: [{ type: 'curriculum_digest', ref: 'curriculum:agency-bootcamp' }],
+  });
+
+  const state = kernel.state();
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(result.decision.route, 'approved_live');
+  assert.equal(result.applied?.kind, 'prompt_updated');
+  assert.equal(state.governance.promptContracts.agency_bootcamp_reports.promptText, 'Reports must state discard, no-change, watch, pursuit, task, or claim outcome before delivery.');
+  assert.equal(state.governance.promptContracts.agency_bootcamp_reports.reason, 'Curriculum digestion requires future reports to name a behavioral delta.');
+  assert.equal(receipts.some(row => row.event === 'prompt_updated' && row.promptScope === 'agency_bootcamp_reports'), true);
+  assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'prompt_updated'), true);
+});
+
 test('AgencyKernel live low-risk dashboard contract deltas update canonical governance state', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

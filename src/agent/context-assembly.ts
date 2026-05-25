@@ -231,6 +231,17 @@ export function buildAgencyContextSection(projectRoot: string, agentName: string
   const organs = state.organs && typeof state.organs === 'object'
     ? Object.entries(state.organs as Record<string, Record<string, unknown>>).slice(0, 6)
     : [];
+  const governance = state.governance && typeof state.governance === 'object'
+    ? state.governance as Record<string, unknown>
+    : {};
+  const promptContracts = governance.promptContracts && typeof governance.promptContracts === 'object'
+    ? Object.entries(governance.promptContracts as Record<string, Record<string, unknown>>).slice(0, 5)
+    : [];
+  const promptContractLines = promptContracts.map(([scope, contract]) => {
+    const target = contract.target ? ` | target=${contract.target}` : '';
+    const reason = contract.reason ? ` | reason=${contract.reason}` : '';
+    return `- ${scope}${target}${reason}: ${contract.promptText || contract.contractText || 'no prompt contract text recorded'}`;
+  });
   const organLines = organs.length > 0
     ? organs.map(([name, organ]) => {
         const senses = Array.isArray(organ.canSense) ? organ.canSense.slice(0, 2).join(', ') : '';
@@ -259,6 +270,7 @@ export function buildAgencyContextSection(projectRoot: string, agentName: string
     `Next autonomous action: ${nextAction ? [nextAction.kind, nextAction.pursuitId, nextAction.reason].filter(Boolean).join(' | ') : 'none'}`,
     `Open contradictions: ${truth.unresolvedContradictions ?? 0}`,
     ...(organLines.length > 0 ? ['', 'Body organs:', ...organLines] : []),
+    ...(promptContractLines.length > 0 ? ['', 'Prompt contracts:', ...promptContractLines] : []),
     '',
     'Active pursuits:',
     ...lines,
