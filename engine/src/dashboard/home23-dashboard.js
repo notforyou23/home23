@@ -1368,7 +1368,6 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   const watchMax = Number(state.attention?.maxWatchItems || state.charter?.attention?.maxWatchItems || 0);
   setText('resident-name', currentAgentLabel('Jerry'));
   setText('resident-mode', residentPostureText(state));
-  setText('resident-summary', residentBriefLine(brief, state));
   setHtml('resident-health-strip', renderResidentAttentionBudget({ active, activeMax, watch, watchMax }));
   syncResidentActionButton(state);
 
@@ -1438,19 +1437,6 @@ function toggleResidentOperatorPanel(items) {
 function toggleResidentConsequencesPanel(items) {
   const panel = document.getElementById('resident-consequence-panel');
   if (panel) panel.hidden = !items.length;
-}
-
-function residentBriefLine(brief, state) {
-  const active = Number(state.attention?.activePursuits || 0);
-  const watch = Number(state.attention?.watchItems || 0);
-  const needed = Array.isArray(state.obligations) ? state.obligations.length : Number(brief?.questions?.whatNeedsJtr?.length || 0);
-  const base = `${residentBriefCountText(active, 'active pursuit')}, ${residentBriefCountText(watch, 'watch item')}`;
-  return needed ? `${base}; ${residentBriefCountText(needed, 'operator decision')}.` : `${base}.`;
-}
-
-function residentBriefCountText(count, label) {
-  const safeCount = Number.isFinite(Number(count)) ? Number(count) : 0;
-  return `${safeCount} ${label}${safeCount === 1 ? '' : 's'}`;
 }
 
 function humanizeResidentMachineText(text, fallback = '') {
@@ -1787,8 +1773,8 @@ function renderResidentInboxRow(c) {
 }
 
 function renderResidentHomeError(err) {
-  setText('resident-posture', 'Resident state unavailable');
-  setText('resident-summary', err?.message || String(err));
+  setText('resident-name', currentAgentLabel('Jerry'));
+  setText('resident-mode', 'state unavailable');
 }
 
 // ── Agency Inspector ──

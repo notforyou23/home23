@@ -351,14 +351,16 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(html, /Resident spine/i);
   assert.match(html, /id="resident-name"/);
   assert.match(html, /id="resident-mode"/);
+  assert.doesNotMatch(html, /id="resident-summary"/);
   assert.doesNotMatch(js, /`\$\{currentAgentLabel\('Jerry'\)\} is \$\{residentPostureText\(state\)\}`/);
   assert.match(js, /setText\('resident-name', currentAgentLabel\('Jerry'\)\)/);
   assert.match(js, /setText\('resident-mode', residentPostureText\(state\)\)/);
+  assert.doesNotMatch(js, /setText\('resident-summary'/);
   assert.doesNotMatch(js, /\[state\.mode \|\| 'unknown', state\.bootcamp\?\.enabled \? 'bootcamp' : null\]\.filter\(Boolean\)\.join\(' \/ '\)/);
   assert.doesNotMatch(js, /setHtml\('resident-receipts'/);
   assert.doesNotMatch(js, /setHtml\('resident-inbox'/);
-  assert.match(js, /residentBriefCountText/);
-  assert.match(js, /return needed \?/);
+  assert.doesNotMatch(js, /residentBriefLine/);
+  assert.doesNotMatch(js, /residentBriefCountText/);
   assert.doesNotMatch(js, /nothing needed from jtr/);
   assert.match(js, /renderResidentAttentionBudget/);
   assert.match(js, /toggleResidentOperatorPanel/);
