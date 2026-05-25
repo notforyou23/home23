@@ -1738,6 +1738,7 @@ test('AgencyKernel creates resident tasks and routed handoffs as bounded action 
   const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
   const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
   const taskRows = readJsonl(join(dir, 'agency', 'tasks.jsonl'));
+  const state = kernel.state();
 
   assert.equal(result.decision.route, 'approved_live');
   assert.equal(result.applied?.kind, 'task_created');
@@ -1750,6 +1751,8 @@ test('AgencyKernel creates resident tasks and routed handoffs as bounded action 
   assert.equal(receipts.some(row => row.event === 'delta_applied' && row.changeType === 'task_created'), true);
   assert.equal(consequences.some(row => row.status === 'open' && row.changeType === 'task_created' && row.pursuitId === intake.pursuit.id), true);
   assert.equal(taskRows.at(-1).task.id, tasks[0].id);
+  assert.equal(state.openTasks.some(row => row.id === tasks[0].id && row.handoff?.to === 'worker:dashboard-repair'), true);
+  assert.equal(state.obligations.some(row => row.kind === 'open_task' && row.taskId === tasks[0].id), true);
 });
 
 test('AgencyKernel closes resident tasks with evidence and removes them from open task view', async () => {

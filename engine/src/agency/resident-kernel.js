@@ -91,6 +91,20 @@ function compactStateConsequence(row = {}) {
   };
 }
 
+function compactStateTask(task = {}) {
+  return {
+    id: task.id,
+    status: task.status || 'open',
+    pursuitId: task.pursuitId || null,
+    summary: task.summary || null,
+    actionKind: task.actionKind || 'bounded_action',
+    authorityLevel: task.authorityLevel || 'L2',
+    handoff: task.handoff || null,
+    stopCondition: task.stopCondition || null,
+    updatedAt: task.updatedAt || task.createdAt || null,
+  };
+}
+
 export class AgencyKernel {
   constructor({ brainDir, agentName = 'jerry', config = {}, charterPath = null, logger = console } = {}) {
     if (!brainDir) throw new Error('AgencyKernel requires brainDir');
@@ -121,6 +135,7 @@ export class AgencyKernel {
     const active = this.store.listPursuits({ status: 'active', limit: 10000 });
     const watch = this.store.listPursuits({ status: 'watch', limit: 10000 });
     const deferred = this.store.listPursuits({ status: 'deferred', limit: 10000 });
+    const openTasks = this.store.listTasks({ status: 'open', limit: 50 });
     const recentMemoryCandidates = this.store.listMemoryCandidates({ limit: 10 });
     const recentConsequences = this.store.listConsequences({ limit: 20 }).map(compactStateConsequence);
     const claims = this.store.listTruth({ limit: 10000 }).reverse();
@@ -147,6 +162,7 @@ export class AgencyKernel {
         activePursuits: active.length,
         watchItems: watch.length,
         deferredItems: deferred.length,
+        openTasks: openTasks.length,
         maxActivePursuits: this.charter.attention.maxActivePursuits,
         maxWatchItems: this.charter.attention.maxWatchItems,
         maxDeferredItems: this.charter.attention.maxDeferredItems,
@@ -160,6 +176,7 @@ export class AgencyKernel {
       activePursuits: active.slice(0, this.charter.attention.maxActivePursuits || 5).map(compactStatePursuit),
       organs: this.charter.organs || {},
       obligations,
+      openTasks: openTasks.slice(0, 20).map(compactStateTask),
       watchlist: watch.slice(0, this.charter.attention.maxWatchItems || 20).map(compactStatePursuit),
       truth: truthSummary,
       recentBeliefChanges: truthSummary.recentBeliefChanges,
@@ -227,6 +244,17 @@ export class AgencyKernel {
         pursuitId: pursuit.id,
         authorityLevel: pursuit.authorityLevel || 'unknown',
         reason: pursuit.nextMove || pursuit.summary || 'blocked pursuit needs operator decision',
+      });
+    }
+    for (const task of this.store.listTasks({ status: 'open', limit: 100 })) {
+      add({
+        kind: 'open_task',
+        at: task.updatedAt || task.createdAt,
+        taskId: task.id,
+        pursuitId: task.pursuitId || null,
+        authorityLevel: task.authorityLevel || 'L2',
+        actionKind: task.actionKind || 'bounded_action',
+        reason: task.summary || 'open resident task needs closure receipt',
       });
     }
     const unresolvedClaims = Array.isArray(truthSummary.unresolvedClaims) ? truthSummary.unresolvedClaims : [];
