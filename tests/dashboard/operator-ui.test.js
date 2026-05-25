@@ -183,6 +183,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /syncOrganDrawerForTab/);
   assert.doesNotMatch(js, /particlesJS/);
   assert.match(js, /humanizeResidentMachineText/);
+  assert.match(js, /if \(value === 'domain\.good-life'\) return 'Good Life'/);
   assert.match(js, /renderGoodLifeResidentPursuitTitle/);
   assert.match(js, /renderResidentPursuitTitle/);
   assert.match(js, /renderResidentPursuitBody/);

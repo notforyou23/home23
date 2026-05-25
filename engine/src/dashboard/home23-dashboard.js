@@ -1798,6 +1798,7 @@ function compactResidentEvidenceId(value) {
 function residentSourceLabel(source) {
   const value = String(source || '').trim();
   if (!value) return '';
+  if (value === 'domain.good-life') return 'Good Life';
   if (value.startsWith('cron.')) return 'cron receipt';
   if (value.startsWith('worker.')) return 'worker receipt';
   if (value.startsWith('chat.')) return 'chat';
