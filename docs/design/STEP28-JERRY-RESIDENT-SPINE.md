@@ -27,6 +27,7 @@ Status: implementation slice in progress.
 - `scratch.jsonl` and `truth.jsonl` are first-class agency ledgers beside inbox, pursuits, receipts, and consequences.
 - Cron results from the harness are assimilated into the world-stream path instead of dying at delivery. X timeline and From The Inside prompts now emit `AGENCY_INTAKE_PACKET` blocks that the harness parses into structured agency candidates.
 - New recurring `cron`/`every` jobs created through `cron_schedule` require a `pursuit_id` and persist that binding on the job, enforcing the bootcamp rule that recurring work must be tied to resident pursuit.
+- Pre-Step28 recurring crons are audited at harness startup. Any enabled recurring job without `agency.pursuitId` is turned into a resident bootcamp pursuit, bound back onto the scheduler job, and recorded as a `cron_bound_to_pursuit` consequence. External config reloads preserve existing runtime pursuit bindings.
 
 ## Resident State
 
@@ -49,4 +50,4 @@ Dry-run remains the default. In dry-run, the resident spine records intent, veto
 
 - Expand live delta appliers beyond watch-item creation only after dry-run receipts prove stable.
 - Extend receipt-driven closure to more first-class Home23 surfaces such as live-problem resolution logs and scheduler outcome receipts.
-- Audit existing pre-Step28 crons and decide which should be bound to pursuits, demoted, or retired under bootcamp.
+- Add a first-class operator review for bound legacy crons so Jerry can demote or retire low-consequence recurring work after bootcamp evidence accumulates.

@@ -63,6 +63,10 @@ import {
   buildIncomingMessagePacket,
   buildOutgoingResponsePacket,
 } from './agency/world-stream.js';
+import {
+  auditExistingRecurringCronJobsForAgency,
+  mergeExternalCronJobPreservingAgency,
+} from './agency/cron-bootcamp.js';
 
 // ─── Constants ──────────────────────────────────────────────
 
@@ -783,17 +787,25 @@ async function main(): Promise<void> {
             scheduler.addJob(job);
             added++;
           } else {
-            scheduler.saveJob({
-              ...existing,
-              ...job,
-              state: existing.state || job.state,
-            });
+            scheduler.saveJob(mergeExternalCronJobPreservingAgency(existing, job));
             updated++;
           }
         }
         console.log(`[home] Loaded ${added} new and updated ${updated} cron job(s) from config/cron-jobs.json (${externalJobs.length} total in file)`);
       } catch (err) {
         console.error('[home] Failed to load external cron jobs:', err);
+      }
+    }
+
+    if (config.agency?.enabled !== false) {
+      try {
+        const kernel = await getAgencyKernel();
+        const audit = await auditExistingRecurringCronJobsForAgency({ scheduler, kernel });
+        if (audit.bound > 0 || audit.failed.length > 0) {
+          console.log(`[agency] Cron bootcamp audit: checked=${audit.checked} bound=${audit.bound} alreadyBound=${audit.skippedAlreadyBound} failed=${audit.failed.length}`);
+        }
+      } catch (err) {
+        console.warn(`[agency] Cron bootcamp audit failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
 

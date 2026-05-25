@@ -483,3 +483,38 @@ test('AgencyKernel bootcamp kill review demotes stale watch loops even while adv
   assert.equal(receipts.some(row => row.event === 'kill_review' && row.pursuitId === watch.pursuit.id), true);
   assert.equal(consequences.some(row => row.pursuitId === watch.pursuit.id && row.changeType === 'stale_thread_killed'), true);
 });
+
+test('AgencyKernel records external consequences with receipts and meaningful-action state', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const intake = await kernel.intake({
+    source: 'scheduler.cron.bootcamp',
+    kind: 'cron_bootcamp_audit',
+    summary: 'Legacy recurring cron needs resident oversight.',
+    evidence: [{ type: 'cron_job', ref: 'legacy-recurring' }],
+    authorityLevel: 'L2',
+    desiredChangedFuture: 'Legacy cron is bound to a resident pursuit.',
+  });
+
+  const result = kernel.recordConsequence({
+    at: '2026-05-25T20:00:00.000Z',
+    pursuitId: intake.pursuit.id,
+    status: 'applied',
+    changeType: 'cron_bound_to_pursuit',
+    summary: 'Legacy recurring cron is now bound to resident pursuit ap_legacy.',
+    evidence: [{ type: 'cron_job', ref: 'legacy-recurring' }],
+  });
+
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+  const state = JSON.parse(readFileSync(join(dir, 'agency', 'state.json'), 'utf8'));
+
+  assert.equal(result.changeType, 'cron_bound_to_pursuit');
+  assert.equal(receipts.some(row => row.event === 'external_consequence' && row.pursuitId === intake.pursuit.id), true);
+  assert.equal(consequences.some(row => row.changeType === 'cron_bound_to_pursuit' && row.status === 'applied'), true);
+  assert.equal(state.lastMeaningfulActions[0].changeType, 'cron_bound_to_pursuit');
+});

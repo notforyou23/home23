@@ -371,6 +371,48 @@ export class AgencyKernel {
     return claim;
   }
 
+  recordConsequence(input = {}) {
+    const at = input.at || nowIso();
+    const consequence = {
+      schema: 'home23.agency.consequence.v1',
+      at,
+      pursuitId: input.pursuitId || null,
+      status: input.status || 'observed',
+      changeType: input.changeType || 'external_consequence',
+      summary: input.summary || null,
+      evidence: Array.isArray(input.evidence) ? input.evidence : [],
+      source: input.source || null,
+    };
+    this.store.appendReceipt({
+      schema: 'home23.agency.receipt.v1',
+      at,
+      event: input.event || 'external_consequence',
+      pursuitId: consequence.pursuitId,
+      route: consequence.status,
+      reason: input.reason || consequence.summary,
+      changeType: consequence.changeType,
+      mode: this.config.mode,
+    });
+    this.store.appendConsequence(consequence);
+    const existing = this.store.readState() || {};
+    const lastMeaningfulActions = [
+      {
+        at,
+        pursuitId: consequence.pursuitId,
+        status: consequence.status,
+        changeType: consequence.changeType,
+        summary: consequence.summary,
+      },
+      ...(Array.isArray(existing.lastMeaningfulActions) ? existing.lastMeaningfulActions : []),
+    ].slice(0, 20);
+    this.store.writeState({
+      ...existing,
+      lastMeaningfulActions,
+    });
+    this.ensureState();
+    return consequence;
+  }
+
   proposeDelta(input = {}) {
     const at = nowIso();
     const authority = this.authority.evaluate({

@@ -59,6 +59,8 @@ export interface CronJob {
   agency?: {
     pursuitId?: string;
     charterRule?: string;
+    auditedAt?: string;
+    auditDecision?: string;
   };
   state: JobState;
 }
