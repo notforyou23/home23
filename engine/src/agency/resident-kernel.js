@@ -296,6 +296,41 @@ export class AgencyKernel {
       const state = this.ensureState();
       return { candidate, decision, pursuit: attachment.pursuit, receipt, state };
     }
+    if (candidate.claim) {
+      const claim = this.recordClaim({
+        ...candidate.claim,
+        sourceRef: candidate.claim.sourceRef || candidate.evidence?.[0]?.ref || candidate.source,
+      });
+      const decision = { route: 'claim', reason: 'world_stream_recorded_durable_claim' };
+      this.store.appendInbox({ ...candidate, decision });
+      const receipt = this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'world_stream_assimilated',
+        candidateId: candidate.candidateId,
+        claimId: claim.id,
+        source: candidate.source,
+        route: decision.route,
+        outcome: 'durable_claim',
+        seen: candidate.seen,
+        discarded: candidate.discarded,
+        connectsTo: candidate.connectsTo,
+        nextMove: candidate.nextMove || null,
+        reason: decision.reason,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at: nowIso(),
+        pursuitId: null,
+        status: 'claim_recorded',
+        changeType: 'belief_updated',
+        summary: claim.claim,
+        evidence: candidate.evidence,
+      });
+      const state = this.ensureState();
+      return { candidate, decision, claim, receipt, state };
+    }
     const decision = candidate.explicitNoChange
       ? { route: 'discard', reason: 'explicit_no_change' }
       : this.selector.select(candidate, { existing: this.store.findSimilar(candidate), budget: this.attentionBudget() });

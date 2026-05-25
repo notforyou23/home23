@@ -40,6 +40,26 @@ test('buildIncomingMessagePacket records ordinary chatter as explicit no-change'
   assert.equal(packet.nextMove, 'record no-change conversation receipt');
 });
 
+test('buildIncomingMessagePacket turns jtr corrections into durable truth claim packets', () => {
+  const packet = buildIncomingMessagePacket({
+    id: 'm-correction',
+    channel: 'telegram',
+    chatId: '123',
+    userId: 'jtr',
+    userName: 'jtr',
+    text: 'Correction: the old newsletter feedback-loop frame is exhausted unless it cites lived system change.',
+    timestamp: 1770000000000,
+    messageId: '99',
+  });
+
+  assert.equal(packet.kind, 'operator_correction');
+  assert.equal(packet.explicitNoChange, false);
+  assert.equal(packet.claim?.sourceType, 'jtr_correction');
+  assert.match(packet.claim?.claim || '', /feedback-loop frame is exhausted/);
+  assert.equal(packet.tags.includes('correction'), true);
+  assert.match(packet.desiredChangedFuture || '', /truth hierarchy/);
+});
+
 test('buildOutgoingResponsePacket makes response delivery non-terminal', () => {
   const packet = buildOutgoingResponsePacket({
     id: 'm3',

@@ -2,6 +2,7 @@ import type { CronJob, JobResult } from '../scheduler/cron.js';
 
 const URL_RE = /\bhttps?:\/\/\S+/i;
 const STRUCTURAL_RE = /\b(agency|evolve|step28|resident|spine|pursuit|fix|build|change|broken|wrong|timeline|research|newsletter|cron)\b/i;
+const CORRECTION_RE = /\b(correction|that's wrong|that is wrong|you are wrong|not true|actually)\b/i;
 const INTAKE_SCHEMA = 'home23.agency.intake-packet.v1';
 
 export interface AgencyWorldStreamPacket {
@@ -15,6 +16,12 @@ export interface AgencyWorldStreamPacket {
   consequenceStatus?: string;
   desiredChangedFuture?: string;
   nextMove?: string;
+  claim?: {
+    claim: string;
+    sourceType: string;
+    sourceRef?: string;
+    contradicts?: string;
+  };
   evidence: Array<{ type: string; ref: string }>;
   tags: string[];
 }
@@ -110,7 +117,28 @@ export function buildIncomingMessagePacket(message: WorldStreamMessage, text = m
   const clean = String(text || '').trim();
   const hasLink = URL_RE.test(clean);
   const structural = STRUCTURAL_RE.test(clean);
+  const correction = CORRECTION_RE.test(clean);
   const messageRef = messageReference(message);
+  if (correction) {
+    const claimText = clean.replace(/^\s*(correction|actually)\s*[:,-]?\s*/i, '').trim() || clean;
+    return {
+      source: `${message.channel}.message`,
+      kind: 'operator_correction',
+      summary: `${message.channel} correction: ${claimText.slice(0, 240)}`,
+      seen: clean ? [clean.slice(0, 2000)] : [],
+      discarded: [],
+      explicitNoChange: false,
+      desiredChangedFuture: 'Resident truth hierarchy records the correction as a durable claim and demotes weaker contradicted claims when linked.',
+      nextMove: 'record jtr correction into source-of-truth hierarchy and surface any unresolved contradiction',
+      claim: {
+        claim: claimText,
+        sourceType: 'jtr_correction',
+        sourceRef: messageRef,
+      },
+      evidence: [{ type: 'message', ref: messageRef }],
+      tags: ['world-stream', 'conversation', 'correction', message.channel],
+    };
+  }
   return {
     source: `${message.channel}.message`,
     kind: hasLink ? 'inbound_link' : 'conversation_message',

@@ -22,6 +22,7 @@ export class InboxRouter {
       evidenceStandard: input.evidenceStandard || null,
       attentionBudget: input.attentionBudget || input.budget || null,
       whatWouldChangeMyMind: input.whatWouldChangeMyMind || null,
+      claim: normalizeClaim(input.claim),
       evidence: Array.isArray(input.evidence) ? input.evidence : [],
       authorityLevel: input.authorityLevel || inferAuthorityLevel(input),
       desiredChangedFuture: input.desiredChangedFuture || input.expectedOutcome || null,
@@ -55,4 +56,17 @@ function inferAuthorityLevel(input) {
   if (/worker|refresh|goal|surface|verifier/.test(text)) return 'L2';
   if (/write|memory|note|receipt/.test(text)) return 'L1';
   return 'L0';
+}
+
+function normalizeClaim(claim) {
+  if (!claim || typeof claim !== 'object') return null;
+  const text = String(claim.claim || claim.text || claim.summary || '').trim();
+  if (!text) return null;
+  return {
+    claim: text,
+    sourceType: claim.sourceType || 'generated_doctrine',
+    sourceRef: claim.sourceRef || null,
+    contradicts: claim.contradicts || null,
+    decay: claim.decay || null,
+  };
 }

@@ -8,6 +8,7 @@ import {
   agencyDiscardCandidateTool,
   agencyIntakeWorldStreamTool,
   agencyProposeDeltaTool,
+  agencyRecordClaimTool,
   agencyRequestAuthorityTool,
   agencyTickTool,
 } from '../../../src/agent/tools/agency.js';
@@ -162,4 +163,30 @@ test('agency_propose_delta calls bounded delta arbitration API', async () => {
   }, ctx(fakeFetch as typeof fetch));
 
   assert.match(result.content, /approved_dry_run/);
+});
+
+test('agency_record_claim writes a resident truth claim through bridge API', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/claims');
+    assert.equal(init?.method, 'POST');
+    assert.match(String(init?.body), /jtr_correction/);
+    assert.match(String(init?.body), /old newsletter frame is exhausted/);
+    return new Response(JSON.stringify({
+      claim: {
+        id: 'claim_1',
+        sourceType: 'jtr_correction',
+        status: 'current',
+      },
+    }), { status: 200 });
+  };
+
+  const result = await agencyRecordClaimTool.execute({
+    claim: 'The old newsletter frame is exhausted.',
+    sourceType: 'jtr_correction',
+    sourceRef: 'telegram:123:99',
+    contradicts: 'claim_old',
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /claim_1/);
+  assert.match(result.content, /jtr_correction/);
 });

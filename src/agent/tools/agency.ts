@@ -215,6 +215,37 @@ export const agencyIntakeWorldStreamTool: ToolDefinition = {
   },
 };
 
+export const agencyRecordClaimTool: ToolDefinition = {
+  name: 'agency_record_claim',
+  description: 'Record a durable resident truth claim or jtr correction into the source-of-truth hierarchy.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      claim: { type: 'string' },
+      sourceType: {
+        type: 'string',
+        enum: ['current_verified_state', 'jtr_correction', 'verifier_receipt', 'worker_receipt', 'source_artifact', 'generated_doctrine', 'narrative'],
+      },
+      sourceRef: { type: 'string' },
+      contradicts: { type: 'string' },
+    },
+    required: ['claim', 'sourceType'],
+    additionalProperties: false,
+  },
+  async execute(input, ctx) {
+    const data = await jsonRequest(ctx, '/api/agency/claims', {
+      method: 'POST',
+      body: JSON.stringify({
+        claim: input.claim,
+        sourceType: input.sourceType,
+        sourceRef: input.sourceRef,
+        contradicts: input.contradicts,
+      }),
+    }) as { claim?: { id?: string; sourceType?: string; status?: string } };
+    return { content: `Agency claim ${data.claim?.id || 'recorded'} (${data.claim?.sourceType || input.sourceType}, ${data.claim?.status || 'unknown'})` };
+  },
+};
+
 export const agencyTickTool: ToolDefinition = {
   name: 'agency_tick',
   description: 'Run one resident agency tick: select one pursuit, apply editor/veto governance, and write scratch/consequence receipts.',

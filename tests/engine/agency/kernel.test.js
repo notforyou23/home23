@@ -320,6 +320,49 @@ test('AgencyKernel world-stream intake creates explicit discard/no-change receip
   assert.equal(consequences.some(row => row.changeType === 'explicit_no_change'), true);
 });
 
+test('AgencyKernel turns world-stream operator corrections into durable truth claims', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const generated = kernel.recordClaim({
+    id: 'claim_old_frame',
+    claim: 'The old newsletter feedback-loop frame is still useful.',
+    sourceType: 'generated_doctrine',
+    sourceRef: 'newsletter-draft',
+  });
+  const result = await kernel.intakeWorldStream({
+    source: 'telegram.message',
+    kind: 'operator_correction',
+    summary: 'Correction: the old newsletter feedback-loop frame is exhausted unless it cites lived system change.',
+    seen: ['Correction: the old newsletter feedback-loop frame is exhausted unless it cites lived system change.'],
+    claim: {
+      claim: 'The old newsletter feedback-loop frame is exhausted unless it cites lived system change.',
+      sourceType: 'jtr_correction',
+      sourceRef: 'telegram:123:99',
+      contradicts: generated.id,
+    },
+    evidence: [{ type: 'message', ref: 'telegram:123:99' }],
+    tags: ['world-stream', 'conversation', 'correction'],
+  });
+
+  const state = kernel.state();
+  const truthRows = readJsonl(join(dir, 'agency', 'truth.jsonl'));
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(result.decision.route, 'claim');
+  assert.equal(result.receipt.outcome, 'durable_claim');
+  assert.equal(result.claim.sourceType, 'jtr_correction');
+  assert.equal(state.truth.supersededClaims, 1);
+  assert.equal(truthRows.some(row => row.id === generated.id && row.status === 'superseded'), true);
+  assert.equal(receipts.some(row => row.event === 'world_stream_assimilated' && row.outcome === 'durable_claim'), true);
+  assert.equal(consequences.some(row => row.changeType === 'belief_updated' && row.status === 'claim_recorded'), true);
+});
+
 test('AgencyKernel source-of-truth hierarchy keeps jtr correction above generated doctrine', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

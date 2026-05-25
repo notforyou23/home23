@@ -26,6 +26,7 @@ import {
   agencyDiscardCandidateTool,
   agencyIntakeWorldStreamTool,
   agencyProposeDeltaTool,
+  agencyRecordClaimTool,
   agencyRequestAuthorityTool,
   agencyTickTool,
 } from './agency.js';
@@ -159,6 +160,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(agencyDiscardCandidateTool);
   registry.register(agencyIntakeWorldStreamTool);
   registry.register(agencyProposeDeltaTool);
+  registry.register(agencyRecordClaimTool);
   registry.register(agencyRequestAuthorityTool);
   registry.register(agencyTickTool);
   registry.register(promoteToMemoryTool);
