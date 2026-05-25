@@ -1270,15 +1270,16 @@ function setupResidentHomeSurface() {
   document.getElementById('resident-run-tick')?.addEventListener('click', () => {
     runResidentTickFromDashboard().catch((err) => renderResidentHomeError(err));
   });
-  document.querySelectorAll('[data-tab-jump]').forEach((link) => {
-    link.addEventListener('click', (event) => {
+  document.addEventListener('click', (event) => {
+    const tabJump = event.target.closest('[data-tab-jump]');
+    if (tabJump) {
       event.preventDefault();
-      const tabKey = event.currentTarget?.dataset?.tabJump;
+      const tabKey = tabJump.dataset?.tabJump;
       const tab = tabKey ? document.querySelector(`.h23-tab[data-tab="${tabKey}"]`) : null;
       if (tab) tab.click();
-    });
-  });
-  document.addEventListener('click', (event) => {
+      return;
+    }
+
     const button = event.target.closest('[data-resident-pursuit-transition]');
     if (!button) return;
     const pursuitId = button.dataset.pursuitId;
@@ -1561,14 +1562,7 @@ function renderResidentPursuitTitle(p) {
   return humanizeResidentMachineText(p.title || p.summary || p.id, 'Resident pursuit');
 }
 
-function renderResidentPursuitBody(p) {
-  return humanizeResidentMachineText(
-    p.whyItMatters || p.desiredChangedFuture || p.nextMove || p.summary,
-    'No operator-facing summary yet.'
-  );
-}
-
-function renderResidentPursuitEvidence(p, updated) {
+function renderResidentPursuitSignal(p, updated) {
   return [residentSourceLabel(p.source), updated ? timeSinceSafe(updated) : null]
     .filter(Boolean)
     .join(' · ');
@@ -1576,6 +1570,14 @@ function renderResidentPursuitEvidence(p, updated) {
 
 function renderResidentPursuitAuthority(p) {
   return p.authorityLevel || p.risk || 'L?';
+}
+
+function renderResidentPursuitInspectLink(p) {
+  return `
+    <a class="h23-resident-inspect-link" href="#agency" data-tab-jump="agency" data-pursuit-id="${escapeAttr(p.id || '')}">
+      Inspect
+    </a>
+  `;
 }
 
 function renderResidentNextActionTitle(pursuit, next) {
@@ -1643,13 +1645,12 @@ function renderResidentPursuitCard(p) {
     <article class="h23-resident-pursuit ${escapeAttr(statusClass)}">
       <div class="h23-resident-pursuit-head">
         <code>${escapeHtml(renderResidentPursuitAuthority(p))}</code>
+        <span class="h23-resident-pursuit-signal">${escapeHtml(renderResidentPursuitSignal(p, updated))}</span>
       </div>
       <h3>${escapeHtml(renderResidentPursuitTitle(p))}</h3>
-      <p>${escapeHtml(renderResidentPursuitBody(p))}</p>
-      <div class="h23-resident-pursuit-meta">${escapeHtml(renderResidentPursuitEvidence(p, updated))}</div>
       <div class="h23-resident-pursuit-actions">
+        ${renderResidentPursuitInspectLink(p)}
         <button type="button" class="h23-resident-action-btn danger" data-requires-confirmation="true" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="discarded" data-transition-summary="Discarded from resident dashboard: no longer worth active operator attention.">Discard</button>
-        <button type="button" class="h23-resident-action-btn secondary" data-requires-confirmation="true" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="closed" data-transition-summary="Closed from resident dashboard with operator acknowledgement.">Close</button>
       </div>
     </article>
   `;

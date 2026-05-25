@@ -4626,8 +4626,25 @@ body.h23-external-focus #cosmo23-refresh-btn {
 .h23-resident-pursuit-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
-  margin-top: 16px;
+  margin-top: 12px;
+}
+
+.h23-resident-inspect-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  color: rgba(255,255,255,0.7);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.h23-resident-inspect-link:hover {
+  color: var(--text-primary);
 }
 
 .h23-resident-action-btn {
@@ -4775,6 +4792,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 .h23-resident-pursuit-head {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 10px;
   color: rgba(255,255,255,0.55);
   font-size: 0.72rem;
@@ -4782,18 +4800,19 @@ body.h23-external-focus #cosmo23-refresh-btn {
   text-transform: uppercase;
 }
 
+.h23-resident-pursuit-signal {
+  overflow: hidden;
+  color: rgba(255,255,255,0.46);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .h23-resident-pursuit h3 {
-  margin: 8px 0 7px;
+  margin: 8px 0 0;
   color: var(--text-primary);
   font-size: 0.98rem;
   line-height: 1.28;
-}
-
-.h23-resident-pursuit p {
-  margin: 0 0 8px;
-  color: rgba(255,255,255,0.68);
-  font-size: 0.84rem;
-  line-height: 1.42;
 }
 
 .h23-resident-event,
