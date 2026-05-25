@@ -1246,6 +1246,47 @@ test('AgencyKernel live low-risk dashboard contract deltas update canonical gove
   assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'dashboard_contract_changed'), true);
 });
 
+test('AgencyKernel live low-risk worker delegation deltas create resident handoff tasks', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'live' },
+  });
+  const intake = await kernel.intake({
+    source: 'work.live-problems',
+    kind: 'live_problem',
+    summary: 'Agency inspector needs a worker verifier pass.',
+    authorityLevel: 'L2',
+    evidence: [{ type: 'live_problem', ref: 'lp-worker-delegate' }],
+    desiredChangedFuture: 'A bounded worker delegation exists with a receipt.',
+  });
+
+  const result = kernel.proposeDelta({
+    changeType: 'worker_delegated',
+    summary: 'Run the agency inspector verifier worker.',
+    pursuitId: intake.pursuit.id,
+    authorityLevel: 'L2',
+    reversible: true,
+    worker: 'worker:agency-inspector-verifier',
+    handoffObjective: 'Verify the agency inspector renders receipt chains before visual status.',
+    evidence: [{ type: 'manual_verification', ref: 'worker:delegate' }],
+  });
+
+  const tasks = kernel.tasks({ status: 'open', limit: 10 }).tasks;
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(result.decision.route, 'approved_live');
+  assert.equal(result.applied?.kind, 'worker_delegated');
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].actionKind, 'worker_delegation');
+  assert.equal(tasks[0].handoff.to, 'worker:agency-inspector-verifier');
+  assert.equal(tasks[0].handoff.objective, 'Verify the agency inspector renders receipt chains before visual status.');
+  assert.equal(receipts.some(row => row.event === 'worker_delegated' && row.worker === 'worker:agency-inspector-verifier'), true);
+  assert.equal(consequences.some(row => row.status === 'open' && row.changeType === 'worker_delegated' && row.pursuitId === intake.pursuit.id), true);
+});
+
 test('AgencyKernel creates resident tasks and routed handoffs as bounded action records', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

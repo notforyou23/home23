@@ -1533,6 +1533,58 @@ export class AgencyKernel {
         surface,
       };
     }
+    if (delta.changeType === 'worker_delegated') {
+      const worker = String(input.worker || input.handoffTo || '').trim();
+      if (!worker) {
+        return {
+          kind: 'no_op',
+          reason: 'worker_delegation_delta_requires_worker',
+        };
+      }
+      const objective = input.handoffObjective || input.objective || input.summary || 'Run bounded worker delegation.';
+      const evidence = Array.isArray(input.evidence) ? input.evidence : [];
+      const task = this.recordTask({
+        summary: input.summary || objective,
+        pursuitId: input.pursuitId || input.targetPursuitId || null,
+        actionKind: 'worker_delegation',
+        authorityLevel: authority.level || input.authorityLevel || 'L2',
+        reversible: input.reversible !== false,
+        handoff: {
+          to: worker,
+          objective,
+        },
+        evidence,
+        stopCondition: input.stopCondition || 'worker returns a receipt that closes, advances, or rejects the delegation',
+        reason: 'approved_live_delta_worker_delegated',
+      });
+      const at = nowIso();
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at,
+        event: 'worker_delegated',
+        taskId: task.id,
+        pursuitId: task.pursuitId,
+        worker,
+        route: 'task',
+        reason: input.summary || objective,
+        evidence,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at,
+        pursuitId: task.pursuitId,
+        status: 'open',
+        changeType: 'worker_delegated',
+        summary: input.summary || objective,
+        evidence,
+      });
+      return {
+        kind: 'worker_delegated',
+        taskId: task.id,
+        pursuitId: task.pursuitId,
+      };
+    }
     if (delta.changeType === 'pursuit_note_added') {
       const pursuitId = input.pursuitId || input.targetPursuitId || null;
       if (!pursuitId) {

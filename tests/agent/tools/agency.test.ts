@@ -291,6 +291,32 @@ test('agency_propose_delta can pass a dashboard contract delta through the bridg
   assert.match(result.content, /approved_live/);
 });
 
+test('agency_propose_delta can pass a worker delegation delta through the bridge API', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/deltas');
+    assert.equal(init?.method, 'POST');
+    const body = JSON.parse(String(init?.body || '{}'));
+    assert.equal(body.changeType, 'worker_delegated');
+    assert.equal(body.pursuitId, 'ap_worker');
+    assert.equal(body.worker, 'worker:agency-inspector-verifier');
+    assert.equal(body.handoffObjective, 'Verify receipt chains.');
+    assert.deepEqual(body.evidence, [{ type: 'reference', ref: 'worker:delegate' }]);
+    return new Response(JSON.stringify({ decision: { route: 'approved_live' }, authority: { reason: 'live_low_risk_allowed' } }), { status: 200 });
+  };
+
+  const result = await agencyProposeDeltaTool.execute({
+    changeType: 'worker_delegated',
+    pursuitId: 'ap_worker',
+    worker: 'worker:agency-inspector-verifier',
+    handoffObjective: 'Verify receipt chains.',
+    summary: 'Delegate agency inspector verification.',
+    evidenceRef: 'worker:delegate',
+    authorityLevel: 'L2',
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /approved_live/);
+});
+
 test('agency_record_claim writes a resident truth claim through bridge API', async () => {
   const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
     assert.equal(String(url), 'http://bridge.test/api/agency/claims');
