@@ -2182,6 +2182,11 @@ function renderAgencySurface({ state, brief, inspector, pursuits, inbox, receipt
   const retirementEl = document.getElementById('agency-retirement-proposals');
   if (retirementEl) {
     const proposals = inspector?.filters?.cronRetirementProposals?.items || [];
+    const retirementDrawer = document.getElementById('agency-retirement-drawer');
+    if (retirementDrawer) {
+      retirementDrawer.hidden = !proposals.length;
+      retirementDrawer.open = proposals.length > 0;
+    }
     retirementEl.innerHTML = proposals.length
       ? proposals.map(renderAgencyRetirementProposalRow).join('')
       : '<p class="h23-muted">No cron retirement proposals.</p>';

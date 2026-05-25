@@ -120,8 +120,19 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
 
   assert.match(html, /agency-retirement-proposals/);
   assert.match(html, /Cron Retirement Proposals/);
+  assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-scratch-drawer">/);
+  assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-truth-drawer">/);
+  assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-organs-drawer">/);
+  assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-retirement-drawer" hidden>/);
+  assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-receipts-drawer">/);
+  assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-inbox-drawer">/);
+  assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-consequences-drawer">/);
+  assert.doesNotMatch(html, /<details class="h23-agency-evidence-drawer" id="agency-brief-drawer">/);
+  assert.doesNotMatch(html, /<details class="h23-agency-evidence-drawer" id="agency-pursuits-drawer">/);
   assert.match(js, /\/home23\/api\/agency\/inspector\?filter=cron_retirement_proposals/);
   assert.match(js, /renderAgencyRetirementProposalRow/);
+  assert.match(js, /agency-retirement-drawer/);
+  assert.match(js, /retirementDrawer\.hidden = !proposals\.length/);
   assert.match(js, /residentAgencyVisiblePursuits\(state, pursuits\)/);
   assert.match(js, /function residentAgencyVisiblePursuits\(state, pursuits = \[\]\)/);
   assert.match(js, /Array\.isArray\(state\.activePursuits\) \? state\.activePursuits : pursuits/);
@@ -141,6 +152,8 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
   assert.doesNotMatch(js, /brief\.text/);
   assert.match(css, /\.h23-agency-brief-block/);
   assert.match(css, /\.h23-agency-brief-row/);
+  assert.match(css, /\.h23-agency-evidence-drawer/);
+  assert.match(css, /\.h23-agency-evidence-drawer > summary/);
   assert.match(js, /cron_run_log_excerpt/);
   assert.match(js, /semanticStatus/);
   assert.match(server, /\/home23\/api\/agency\/inspector/);

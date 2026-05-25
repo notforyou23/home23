@@ -420,28 +420,48 @@
       </div>
 
       <div class="h23-workers-grid h23-workers-grid-wide">
-        <section class="h23-workers-section">
-          <div class="h23-workers-section-title">Resident Scratch / Editor</div>
-          <div id="agency-scratch" class="h23-workers-receipt"></div>
-        </section>
-        <section class="h23-workers-section">
-          <div class="h23-workers-section-title">Truth Hierarchy / Bootcamp</div>
-          <div id="agency-truth" class="h23-workers-receipt"></div>
-        </section>
+        <details class="h23-agency-evidence-drawer" id="agency-scratch-drawer">
+          <summary>
+            <span>Resident Scratch / Editor</span>
+            <small>Private scratch and bootcamp editor receipts</small>
+          </summary>
+          <section class="h23-workers-section">
+            <div id="agency-scratch" class="h23-workers-receipt"></div>
+          </section>
+        </details>
+        <details class="h23-agency-evidence-drawer" id="agency-truth-drawer">
+          <summary>
+            <span>Truth Hierarchy / Bootcamp</span>
+            <small>Source order, contradictions, and doctrine gates</small>
+          </summary>
+          <section class="h23-workers-section">
+            <div id="agency-truth" class="h23-workers-receipt"></div>
+          </section>
+        </details>
       </div>
 
       <div class="h23-workers-grid h23-workers-grid-wide">
-        <section class="h23-workers-section">
-          <div class="h23-workers-section-title">Body Organs</div>
-          <div id="agency-organs" class="h23-workers-receipt"></div>
-        </section>
+        <details class="h23-agency-evidence-drawer" id="agency-organs-drawer">
+          <summary>
+            <span>Body Organs</span>
+            <small>What each organ can sense, change, and must not do alone</small>
+          </summary>
+          <section class="h23-workers-section">
+            <div id="agency-organs" class="h23-workers-receipt"></div>
+          </section>
+        </details>
       </div>
 
       <div class="h23-workers-grid h23-workers-grid-wide">
-        <section class="h23-workers-section">
-          <div class="h23-workers-section-title">Cron Retirement Proposals</div>
-          <div id="agency-retirement-proposals" class="h23-workers-receipt"></div>
-        </section>
+        <details class="h23-agency-evidence-drawer" id="agency-retirement-drawer" hidden>
+          <summary>
+            <span>Cron Retirement Proposals</span>
+            <small>Only appears when the editor finds recurring work with no consequence</small>
+          </summary>
+          <section class="h23-workers-section">
+            <div id="agency-retirement-proposals" class="h23-workers-receipt"></div>
+          </section>
+        </details>
       </div>
 
       <div class="h23-workers-grid h23-workers-grid-wide">
@@ -449,21 +469,36 @@
           <div class="h23-workers-section-title">Active Pursuits</div>
           <div id="agency-pursuits" class="h23-workers-runs"></div>
         </section>
-        <section class="h23-workers-section">
-          <div class="h23-workers-section-title">Latest Route Receipts</div>
-          <div id="agency-receipts" class="h23-workers-receipt"></div>
-        </section>
+        <details class="h23-agency-evidence-drawer" id="agency-receipts-drawer">
+          <summary>
+            <span>Latest Route Receipts</span>
+            <small>Why the resident kernel selected, discarded, or merged inputs</small>
+          </summary>
+          <section class="h23-workers-section">
+            <div id="agency-receipts" class="h23-workers-receipt"></div>
+          </section>
+        </details>
       </div>
 
       <div class="h23-workers-grid h23-workers-grid-wide">
-        <section class="h23-workers-section">
-          <div class="h23-workers-section-title">Inbox Decisions</div>
-          <div id="agency-inbox" class="h23-workers-runs"></div>
-        </section>
-        <section class="h23-workers-section">
-          <div class="h23-workers-section-title">Consequences</div>
-          <div id="agency-consequences" class="h23-workers-receipt"></div>
-        </section>
+        <details class="h23-agency-evidence-drawer" id="agency-inbox-drawer">
+          <summary>
+            <span>Inbox Decisions</span>
+            <small>Recent world-stream triage and discard decisions</small>
+          </summary>
+          <section class="h23-workers-section">
+            <div id="agency-inbox" class="h23-workers-runs"></div>
+          </section>
+        </details>
+        <details class="h23-agency-evidence-drawer" id="agency-consequences-drawer">
+          <summary>
+            <span>Consequences</span>
+            <small>Observed changes and closure evidence</small>
+          </summary>
+          <section class="h23-workers-section">
+            <div id="agency-consequences" class="h23-workers-receipt"></div>
+          </section>
+        </details>
       </div>
     </div>
 
