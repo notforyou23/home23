@@ -669,7 +669,19 @@ export const getBrainSummaryTool: ToolDefinition = {
         }
         sections.push('');
       }
-      return { content: sections.join('\n') };
+      const content = sections.join('\n');
+      let agencyLine = '';
+      try {
+        agencyLine = `\n${await assimilateResearchOutput(ctx, {
+          brainId,
+          summary: content,
+          evidenceType: 'research_query',
+          summaryOverride: `Summarized COSMO research brain "${brainId}".`,
+        })}`;
+      } catch (agencyErr) {
+        agencyLine = `\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
+      }
+      return { content: `${content}${agencyLine}` };
     } catch (err) {
       return errResult(
         `research_get_brain_summary: ${err instanceof Error ? err.message : String(err)}`

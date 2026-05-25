@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkCosmoActiveRun, compileBrainTool, launchTool, queryBrainTool, searchAllBrainsTool } from '../../../src/agent/tools/research.js';
+import { checkCosmoActiveRun, compileBrainTool, getBrainSummaryTool, launchTool, queryBrainTool, searchAllBrainsTool } from '../../../src/agent/tools/research.js';
 import type { ToolContext } from '../../../src/agent/types.js';
 
 function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
@@ -227,6 +227,53 @@ describe('research_search_all_brains agency assimilation', () => {
       assert.match(capturedAgencyBody.summary, /Searched COSMO research brains/);
       assert.equal(capturedAgencyBody.evidence[0].type, 'research_query');
       assert.match(capturedAgencyBody.seen[0], /Brain A found/);
+      assert.match(result.content, /Agency intake: watch/);
+    } finally {
+      (globalThis as any).fetch = previousFetch;
+    }
+  });
+});
+
+describe('research_get_brain_summary agency assimilation', () => {
+  it('emits a resident agency world-stream packet for aggregated brain summaries', async () => {
+    const previousFetch = globalThis.fetch;
+    let capturedAgencyBody: any = null;
+    try {
+      (globalThis as any).fetch = async (url: any, init: any = {}) => {
+        const u = String(url);
+        if (u === 'http://localhost:43210/api/brain/brain-summary/intelligence/executive') {
+          return {
+            ok: true,
+            json: async () => ({ thesis: 'Executive summary says the resident spine needs a tighter veto loop.' }),
+          } as unknown as Response;
+        }
+        if (u === 'http://localhost:43210/api/brain/brain-summary/intelligence/goals') {
+          return {
+            ok: true,
+            json: async () => ({ goals: ['Bind research outputs to pursuits instead of leaving them as orientation content.'] }),
+          } as unknown as Response;
+        }
+        if (u === 'http://bridge.test/api/agency/world-stream') {
+          capturedAgencyBody = JSON.parse(String(init.body || '{}'));
+          return {
+            ok: true,
+            text: async () => JSON.stringify({ decision: { route: 'watch' }, pursuit: { id: 'ap_research_summary' } }),
+          } as unknown as Response;
+        }
+        throw new Error(`unexpected fetch ${u}`);
+      };
+
+      const result = await getBrainSummaryTool.execute({
+        brainId: 'brain-summary',
+        include: ['executive', 'goals'],
+      }, makeCtx({ workerConnectorBaseUrl: 'http://bridge.test' }));
+
+      assert.equal(result.is_error, undefined);
+      assert.equal(capturedAgencyBody.source, 'cosmo.research');
+      assert.equal(capturedAgencyBody.kind, 'research_summary');
+      assert.match(capturedAgencyBody.summary, /Summarized COSMO research brain/);
+      assert.equal(capturedAgencyBody.evidence[0].type, 'research_query');
+      assert.match(capturedAgencyBody.seen[0], /resident spine needs a tighter veto loop/);
       assert.match(result.content, /Agency intake: watch/);
     } finally {
       (globalThis as any).fetch = previousFetch;
