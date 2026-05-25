@@ -726,6 +726,36 @@ test('AgencyKernel world-stream intake creates explicit discard/no-change receip
   assert.equal(consequences.some(row => row.changeType === 'explicit_no_change'), true);
 });
 
+test('AgencyKernel bootcamp editor rejects no-consequence research summaries before they become watch attention', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const result = await kernel.intakeWorldStream({
+    source: 'research.cosmo',
+    kind: 'research_summary',
+    summary: 'Interesting agent agency interface survey with no proposed pursuit or behavioral delta.',
+    seen: ['summary paragraph'],
+    evidence: [{ type: 'research', ref: 'cosmo:no-consequence-summary' }],
+    tags: ['research'],
+  });
+
+  const pursuits = kernel.pursuits({ limit: 20 });
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(result.decision.route, 'discard');
+  assert.equal(result.decision.reason, 'output_has_no_declared_changed_future');
+  assert.equal(result.receipt.outcome, 'editor_rejected_no_consequence');
+  assert.equal(result.receipt.editor.verdict, 'demote');
+  assert.equal(pursuits.length, 0);
+  assert.equal(receipts.some(row => row.outcome === 'editor_rejected_no_consequence'), true);
+  assert.equal(consequences.some(row => row.changeType === 'explicit_no_change' && row.status === 'discarded'), true);
+});
+
 test('AgencyKernel fans structured report packets into child pursuits, claims, and discard receipts', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

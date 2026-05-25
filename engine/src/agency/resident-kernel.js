@@ -534,6 +534,42 @@ export class AgencyKernel {
       const state = this.ensureState();
       return { candidate, decision, claim, receipt, state };
     }
+    const editorBlock = this.editor.evaluate({
+      ...candidate,
+      status: 'candidate',
+      title: candidate.title || candidate.summary,
+    });
+    if (!candidate.explicitNoChange && (editorBlock.action === 'require_consequence' || editorBlock.verdict === 'veto')) {
+      const decision = { route: 'discard', reason: editorBlock.reason };
+      this.store.appendInbox({ ...candidate, decision });
+      const receipt = this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'world_stream_assimilated',
+        candidateId: candidate.candidateId,
+        source: candidate.source,
+        route: decision.route,
+        outcome: 'editor_rejected_no_consequence',
+        seen: candidate.seen,
+        discarded: candidate.discarded,
+        connectsTo: candidate.connectsTo,
+        nextMove: candidate.nextMove || null,
+        reason: decision.reason,
+        editor: editorBlock,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at: nowIso(),
+        pursuitId: null,
+        status: 'discarded',
+        changeType: 'explicit_no_change',
+        summary: editorBlock.reason,
+        evidence: candidate.evidence,
+      });
+      const state = this.ensureState();
+      return { candidate, decision, pursuit: null, receipt, state };
+    }
     const decision = candidate.explicitNoChange
       ? { route: 'discard', reason: 'explicit_no_change' }
       : this.selector.select(candidate, { existing: this.store.findSimilar(candidate), budget: this.attentionBudget() });
