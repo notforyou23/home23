@@ -1222,9 +1222,17 @@ function _renderPulseNow() {
 
   _pulseEls.dot.className = 'h23-pulse-dot ' + (enginePulse.state || '');
   if (_pulseEls.state) _pulseEls.state.textContent = enginePulse.state || '—';
-  if (_pulseEls.phase) _pulseEls.phase.textContent = enginePulse.phase || '—';
+  syncPulsePhaseText(enginePulse.phase);
   if (_pulseEls.energy) _pulseEls.energy.textContent = `⚡ ${Math.round((enginePulse.energy || 0) * 100)}%`;
   if (_pulseEls.cycle) _pulseEls.cycle.textContent = `cycle ${enginePulse.cycle || '—'}`;
+}
+
+function syncPulsePhaseText(phase) {
+  const el = _pulseEls?.phase;
+  if (!el) return;
+  const text = String(phase || '').trim();
+  el.hidden = !text;
+  el.textContent = text;
 }
 
 function updatePulseAgo() {
