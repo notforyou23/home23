@@ -1833,6 +1833,24 @@ function renderResidentNextActionTitle(pursuit, next) {
   return humanizeResidentMachineText(pursuit.title || pursuit.summary || next.kind || next.pursuitId, 'Resident action');
 }
 
+function renderResidentNextActionMeta(pursuit, next) {
+  return [
+    next.authorityLevel || pursuit.authorityLevel,
+    residentActionReasonLabel(next.reason),
+    residentActionModeLabel(next),
+  ].filter(Boolean).join(' · ');
+}
+
+function residentActionReasonLabel(reason) {
+  if (reason === 'pursuit_has_no_editor_block') return 'ready';
+  return humanizeResidentMachineText(reason);
+}
+
+function residentActionModeLabel(next) {
+  if (next?.dryRun) return 'rehearsal';
+  return '';
+}
+
 function renderResidentNextAction(state) {
   const next = state.nextAction || {};
   const pursuit = state.currentPursuit || {};
@@ -1846,7 +1864,7 @@ function renderResidentNextAction(state) {
     <div class="h23-resident-section-title">Next Action</div>
     <div class="h23-resident-next-kind">${escapeHtml(humanizeResidentMachineText(next.kind || 'advance_one_step'))}</div>
     <div class="h23-resident-next-title">${escapeHtml(renderResidentNextActionTitle(pursuit, next))}</div>
-    <div class="h23-resident-next-meta">${escapeHtml([next.authorityLevel || pursuit.authorityLevel, humanizeResidentMachineText(next.reason), next.dryRun ? 'dry-run' : null].filter(Boolean).join(' · '))}</div>
+    <div class="h23-resident-next-meta">${escapeHtml(renderResidentNextActionMeta(pursuit, next))}</div>
     <div class="h23-resident-next-move">${escapeHtml(humanizeResidentMachineText(pursuit.nextMove || next.nextMove || pursuit.stopCondition || ''))}</div>
   `;
 }
