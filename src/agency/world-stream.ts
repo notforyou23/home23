@@ -25,6 +25,8 @@ export interface AgencyWorldStreamPacket {
   };
   actionWorthy?: Array<Record<string, unknown>>;
   watchItems?: Array<Record<string, unknown>>;
+  claims?: Array<Record<string, unknown>>;
+  beliefUpdates?: Array<Record<string, unknown>>;
   memoryCandidates?: Array<Record<string, unknown>>;
   operatorQuestions?: Array<Record<string, unknown>>;
   taskItems?: Array<Record<string, unknown>>;
@@ -52,6 +54,8 @@ interface ReportIntakePacket {
   summary?: string;
   actionWorthy?: Array<Record<string, unknown>>;
   watchItems?: Array<Record<string, unknown>>;
+  claims?: Array<Record<string, unknown>>;
+  beliefUpdates?: Array<Record<string, unknown>>;
   memoryCandidates?: Array<Record<string, unknown>>;
   operatorQuestions?: Array<Record<string, unknown>>;
   taskItems?: Array<Record<string, unknown>>;
@@ -226,6 +230,8 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
     ? [
         ...packetItemsText('action', intakePacket.actionWorthy),
         ...packetItemsText('watch', intakePacket.watchItems),
+        ...packetItemsText('claim', intakePacket.claims),
+        ...packetItemsText('belief', intakePacket.beliefUpdates),
         ...packetItemsText('memory', intakePacket.memoryCandidates),
         ...packetItemsText('question', intakePacket.operatorQuestions),
         ...packetItemsText('task', intakePacket.taskItems),
@@ -238,6 +244,8 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
     (
       (Array.isArray(intakePacket.actionWorthy) && intakePacket.actionWorthy.length > 0) ||
       (Array.isArray(intakePacket.watchItems) && intakePacket.watchItems.length > 0) ||
+      (Array.isArray(intakePacket.claims) && intakePacket.claims.length > 0) ||
+      (Array.isArray(intakePacket.beliefUpdates) && intakePacket.beliefUpdates.length > 0) ||
       (Array.isArray(intakePacket.memoryCandidates) && intakePacket.memoryCandidates.length > 0) ||
       (Array.isArray(intakePacket.operatorQuestions) && intakePacket.operatorQuestions.length > 0) ||
       (Array.isArray(intakePacket.taskItems) && intakePacket.taskItems.length > 0) ||
@@ -286,6 +294,8 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
     nextMove,
     actionWorthy: intakePacket?.actionWorthy,
     watchItems: intakePacket?.watchItems,
+    claims: intakePacket?.claims,
+    beliefUpdates: intakePacket?.beliefUpdates,
     memoryCandidates: intakePacket?.memoryCandidates,
     operatorQuestions: intakePacket?.operatorQuestions,
     taskItems: intakePacket?.taskItems,

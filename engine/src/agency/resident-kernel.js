@@ -729,6 +729,7 @@ export class AgencyKernel {
     const children = {
       actionWorthy: [],
       watchItems: [],
+      claims: [],
       contradictions: [],
       memoryCandidates: [],
       operatorQuestions: [],
@@ -754,6 +755,43 @@ export class AgencyKernel {
         reason: 'structured_report_watch_item',
       });
       children.watchItems.push(child);
+    }
+    for (const item of [
+      ...normalizeStructuredItems(input.claims),
+      ...normalizeStructuredItems(input.beliefUpdates),
+    ]) {
+      const claimText = String(item.claim || item.summary || item.title || '').trim();
+      if (!claimText) continue;
+      const evidence = structuredItemEvidence(item, candidate);
+      const claim = this.recordClaim({
+        claim: claimText,
+        sourceType: item.sourceType || 'source_artifact',
+        sourceRef: item.sourceRef || item.evidenceRef || candidate.source,
+        contradicts: item.contradicts || null,
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'world_stream_child_claim_recorded',
+        parentCandidateId: candidate.candidateId,
+        claimId: claim.id,
+        source: candidate.source,
+        route: 'claim',
+        outcome: 'belief_updated',
+        reason: 'structured_report_claim',
+        evidence,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at: nowIso(),
+        pursuitId: item.pursuitId || item.targetPursuitId || null,
+        status: 'applied',
+        changeType: 'belief_updated',
+        summary: claim.claim,
+        evidence: [{ type: 'truth_claim', ref: claim.id }, ...evidence],
+      });
+      children.claims.push({ claimId: claim.id, route: 'claim' });
     }
     for (const item of normalizeStructuredItems(input.contradictions)) {
       const claimText = String(item.claim || item.summary || item.title || '').trim();
@@ -2440,6 +2478,8 @@ function normalizeStructuredDiscards(value) {
 function hasStructuredReportFanout(input = {}) {
   return normalizeStructuredItems(input.actionWorthy).length > 0
     || normalizeStructuredItems(input.watchItems).length > 0
+    || normalizeStructuredItems(input.claims).length > 0
+    || normalizeStructuredItems(input.beliefUpdates).length > 0
     || normalizeStructuredItems(input.memoryCandidates).length > 0
     || normalizeStructuredItems(input.operatorQuestions).length > 0
     || normalizeStructuredItems(input.taskItems).length > 0

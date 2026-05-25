@@ -148,6 +148,8 @@ test('buildCronResultPacket extracts machine-readable agency intake packets from
       '  "summary": "Timeline surfaced one agent-agency implementation signal.",',
       '  "actionWorthy": [{"summary": "Bind report outputs to resident pursuits."}],',
       '  "watchItems": [{"summary": "Watch repeated autonomy discourse."}],',
+      '  "claims": [{"claim": "Delivery is not completion.", "sourceRef": "x-report-claim"}],',
+      '  "beliefUpdates": [{"summary": "Timeline reports should be judged by consequence.", "sourceRef": "x-belief-update"}],',
       '  "memoryCandidates": [{"summary": "Remember timeline report agency contract.", "content": "Reports must create memory/watch/pursuit/discard receipts."}],',
       '  "operatorQuestions": [{"question": "Prioritize market news or implementation signals?", "reason": "Both appeared in timeline."}],',
       '  "tasks": [{"summary": "Run agency verifier.", "actionKind": "worker_delegation", "handoff": {"to": "worker:agency-verifier", "objective": "Verify packet fanout."}}],',
@@ -168,11 +170,14 @@ test('buildCronResultPacket extracts machine-readable agency intake packets from
   assert.deepEqual(packet.discarded, [{ ref: 'viral meta thread', reason: 'no durable action' }]);
   assert.deepEqual((packet as any).actionWorthy, [{ summary: 'Bind report outputs to resident pursuits.' }]);
   assert.deepEqual((packet as any).watchItems, [{ summary: 'Watch repeated autonomy discourse.' }]);
+  assert.deepEqual((packet as any).claims, [{ claim: 'Delivery is not completion.', sourceRef: 'x-report-claim' }]);
+  assert.deepEqual((packet as any).beliefUpdates, [{ summary: 'Timeline reports should be judged by consequence.', sourceRef: 'x-belief-update' }]);
   assert.deepEqual((packet as any).memoryCandidates, [{ summary: 'Remember timeline report agency contract.', content: 'Reports must create memory/watch/pursuit/discard receipts.' }]);
   assert.deepEqual((packet as any).operatorQuestions, [{ question: 'Prioritize market news or implementation signals?', reason: 'Both appeared in timeline.' }]);
   assert.deepEqual((packet as any).tasks, [{ summary: 'Run agency verifier.', actionKind: 'worker_delegation', handoff: { to: 'worker:agency-verifier', objective: 'Verify packet fanout.' } }]);
   assert.deepEqual((packet as any).contradictions, []);
   assert.equal(packet.tags.includes('x-timeline'), true);
+  assert.match(packet.seen.join('\n'), /Delivery is not completion/);
   assert.match(packet.seen.join('\n'), /Remember timeline report agency contract/);
 });
 

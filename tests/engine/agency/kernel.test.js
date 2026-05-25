@@ -962,6 +962,17 @@ test('AgencyKernel fans structured report packets into child pursuits, claims, a
       nextMove: 'check for mechanisms, not vibe',
       evidenceRef: 'x-autonomy-watch',
     }],
+    claims: [{
+      claim: 'Reports that produce no agency route are delivery artifacts, not completed agent work.',
+      sourceType: 'source_artifact',
+      sourceRef: 'x-report-claim',
+      evidenceRef: 'x-report-claim',
+    }],
+    beliefUpdates: [{
+      summary: 'Timeline reports should be judged by consequence, not delivery.',
+      sourceRef: 'x-belief-update',
+      evidenceRef: 'x-belief-update',
+    }],
     contradictions: [{
       claim: 'Delivery to Telegram is sufficient completion for timeline reports.',
       contradicts: 'claim_delivery_not_completion',
@@ -1008,6 +1019,7 @@ test('AgencyKernel fans structured report packets into child pursuits, claims, a
   assert.equal(result.decision.route, 'fanout');
   assert.equal(result.children.actionWorthy.length, 1);
   assert.equal(result.children.watchItems.length, 1);
+  assert.equal(result.children.claims.length, 2);
   assert.equal(result.children.contradictions.length, 1);
   assert.equal(result.children.memoryCandidates.length, 1);
   assert.equal(result.children.operatorQuestions.length, 1);
@@ -1015,17 +1027,21 @@ test('AgencyKernel fans structured report packets into child pursuits, claims, a
   assert.equal(result.children.discarded.length, 1);
   assert.equal(active.some(row => row.summary === 'Bind report outputs to resident pursuits.'), true);
   assert.equal(watch.some(row => row.summary === 'Watch repeated autonomy discourse for concrete implementation details.'), true);
+  assert.equal(truthRows.some(row => row.claim === 'Reports that produce no agency route are delivery artifacts, not completed agent work.'), true);
+  assert.equal(truthRows.some(row => row.claim === 'Timeline reports should be judged by consequence, not delivery.'), true);
   assert.equal(truthRows.some(row => row.claim === 'Delivery to Telegram is sufficient completion for timeline reports.'), true);
   assert.equal(memoryRows.some(row => row.candidate?.domain === 'doctrine' && /Timeline reports are incomplete/.test(row.candidate.content)), true);
   assert.equal(taskRows.some(row => row.task?.summary === 'Run bounded verifier for raw JSON agency intake packets.' && row.task?.handoff?.to === 'worker:agency-verifier'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_selected' && row.route === 'pursue'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_selected' && row.route === 'watch'), true);
+  assert.equal(receipts.some(row => row.event === 'world_stream_child_claim_recorded' && row.route === 'claim'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_memory_candidate_created'), true);
   assert.equal(receipts.some(row => row.event === 'jtr_question_raised' && row.reason === 'The report found both signals and needs jtr taste to allocate scarce attention.'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_question_raised'), true);
   assert.equal(receipts.some(row => row.event === 'task_created' && row.actionKind === 'worker_delegation'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_task_created'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_discarded' && row.reason === 'no durable Home23 action'), true);
+  assert.equal(consequences.some(row => row.changeType === 'belief_updated' && row.status === 'applied'), true);
   assert.equal(consequences.some(row => row.changeType === 'memory_candidate_created' && row.status === 'applied'), true);
   assert.equal(consequences.some(row => row.changeType === 'jtr_question_raised' && row.status === 'open'), true);
   assert.equal(consequences.some(row => row.changeType === 'task_created' && row.status === 'open'), true);
