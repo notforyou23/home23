@@ -768,7 +768,19 @@ export const getBrainGraphTool: ToolDefinition = {
           lines.push(`- ${e.source} → ${e.target} [${e.type || 'assoc'}] w=${(e.weight ?? 0).toFixed(2)}`);
         }
       }
-      return { content: lines.join('\n') };
+      const content = lines.join('\n');
+      let agencyLine = '';
+      try {
+        agencyLine = `\n${await assimilateResearchOutput(ctx, {
+          brainId,
+          summary: content,
+          evidenceType: 'research_query',
+          summaryOverride: `Mapped COSMO research graph for brain "${brainId}".`,
+        })}`;
+      } catch (agencyErr) {
+        agencyLine = `\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
+      }
+      return { content: `${content}${agencyLine}` };
     } catch (err) {
       return errResult(
         `research_get_brain_graph: ${err instanceof Error ? err.message : String(err)}`

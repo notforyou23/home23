@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { checkCosmoActiveRun, compileBrainTool, getBrainSummaryTool, launchTool, queryBrainTool, searchAllBrainsTool } from '../../../src/agent/tools/research.js';
+import { checkCosmoActiveRun, compileBrainTool, getBrainGraphTool, getBrainSummaryTool, launchTool, queryBrainTool, searchAllBrainsTool } from '../../../src/agent/tools/research.js';
 import type { ToolContext } from '../../../src/agent/types.js';
 
 function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
@@ -274,6 +274,56 @@ describe('research_get_brain_summary agency assimilation', () => {
       assert.match(capturedAgencyBody.summary, /Summarized COSMO research brain/);
       assert.equal(capturedAgencyBody.evidence[0].type, 'research_query');
       assert.match(capturedAgencyBody.seen[0], /resident spine needs a tighter veto loop/);
+      assert.match(result.content, /Agency intake: watch/);
+    } finally {
+      (globalThis as any).fetch = previousFetch;
+    }
+  });
+});
+
+describe('research_get_brain_graph agency assimilation', () => {
+  it('emits a resident agency world-stream packet for structural graph findings', async () => {
+    const previousFetch = globalThis.fetch;
+    let capturedAgencyBody: any = null;
+    try {
+      (globalThis as any).fetch = async (url: any, init: any = {}) => {
+        const u = String(url);
+        if (u === 'http://localhost:43210/api/brain/brain-graph/graph') {
+          return {
+            ok: true,
+            json: async () => ({
+              nodes: [
+                { id: 'n1', concept: 'Resident agency graph shows consequence receipts linked to editor veto decisions.', tag: 'agency', cluster: 'c1', weight: 0.9 },
+              ],
+              edges: [
+                { source: 'n1', target: 'n2', type: 'supports', weight: 0.8 },
+              ],
+              clusters: [
+                { id: 'c1', label: 'agency spine', nodeCount: 2 },
+              ],
+            }),
+          } as unknown as Response;
+        }
+        if (u === 'http://bridge.test/api/agency/world-stream') {
+          capturedAgencyBody = JSON.parse(String(init.body || '{}'));
+          return {
+            ok: true,
+            text: async () => JSON.stringify({ decision: { route: 'watch' }, pursuit: { id: 'ap_research_graph' } }),
+          } as unknown as Response;
+        }
+        throw new Error(`unexpected fetch ${u}`);
+      };
+
+      const result = await getBrainGraphTool.execute({
+        brainId: 'brain-graph',
+      }, makeCtx({ workerConnectorBaseUrl: 'http://bridge.test' }));
+
+      assert.equal(result.is_error, undefined);
+      assert.equal(capturedAgencyBody.source, 'cosmo.research');
+      assert.equal(capturedAgencyBody.kind, 'research_summary');
+      assert.match(capturedAgencyBody.summary, /Mapped COSMO research graph/);
+      assert.equal(capturedAgencyBody.evidence[0].type, 'research_query');
+      assert.match(capturedAgencyBody.seen[0], /consequence receipts linked to editor veto/);
       assert.match(result.content, /Agency intake: watch/);
     } finally {
       (globalThis as any).fetch = previousFetch;
