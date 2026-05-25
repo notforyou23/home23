@@ -265,6 +265,39 @@ export const agencyTickTool: ToolDefinition = {
   },
 };
 
+export const agencyScratchNoteTool: ToolDefinition = {
+  name: 'agency_scratch_note',
+  description: 'Record a private resident scratch note for provisional theories, dead ends, wrong takes, or messy cognition without promoting it to a claim, pursuit, or public artifact.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      kind: { type: 'string' },
+      note: { type: 'string' },
+      provisionalTheory: { type: 'string' },
+      pursuitId: { type: 'string' },
+      evidenceRef: { type: 'string' },
+    },
+    required: ['note'],
+    additionalProperties: false,
+  },
+  async execute(input, ctx) {
+    const evidence = typeof input.evidenceRef === 'string' && input.evidenceRef.trim()
+      ? [{ type: 'reference', ref: input.evidenceRef }]
+      : [];
+    const data = await jsonRequest(ctx, '/api/agency/scratch', {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: input.kind || 'scratch_note',
+        note: input.note,
+        provisionalTheory: input.provisionalTheory,
+        pursuitId: input.pursuitId,
+        evidence,
+      }),
+    }) as { scratch?: { id?: string; visibility?: string; promoted?: boolean } };
+    return { content: `Agency scratch ${data.scratch?.id || 'recorded'} (${data.scratch?.visibility || 'private'}, promoted=${data.scratch?.promoted === true})` };
+  },
+};
+
 export const agencyProposeDeltaTool: ToolDefinition = {
   name: 'agency_propose_delta',
   description: 'Propose a behavioral or structural delta for the resident spine to arbitrate through bounded authority.',

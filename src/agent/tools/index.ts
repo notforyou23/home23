@@ -28,6 +28,7 @@ import {
   agencyProposeDeltaTool,
   agencyRecordClaimTool,
   agencyRequestAuthorityTool,
+  agencyScratchNoteTool,
   agencyTickTool,
 } from './agency.js';
 import { skillsAuditTool, skillsGetTool, skillsListTool, skillsRunTool, skillsSuggestTool } from './skills.js';
@@ -162,6 +163,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(agencyProposeDeltaTool);
   registry.register(agencyRecordClaimTool);
   registry.register(agencyRequestAuthorityTool);
+  registry.register(agencyScratchNoteTool);
   registry.register(agencyTickTool);
   registry.register(promoteToMemoryTool);
 

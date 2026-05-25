@@ -1452,6 +1452,12 @@ class DashboardServer {
     this.app.get(['/api/agency/events', '/home23/api/agency/events'], (req, res) => {
       this.proxyWorkerConnector(req, res, 'GET', '/api/agency/events', 10_000);
     });
+    this.app.get(['/api/agency/scratch', '/home23/api/agency/scratch'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'GET', '/api/agency/scratch', 10_000);
+    });
+    this.app.post(['/api/agency/scratch', '/home23/api/agency/scratch'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'POST', '/api/agency/scratch', 10_000);
+    });
     this.app.get('/home23/api/settings/agency/recent', (req, res) => {
       this.proxyWorkerConnector(req, res, 'GET', '/api/agency/events', 10_000);
     });

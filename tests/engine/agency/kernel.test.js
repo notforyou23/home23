@@ -627,6 +627,40 @@ test('AgencyKernel resident tick advances one pursuit and records scratch, edito
   assert.equal(receipts.some(row => row.event === 'resident_tick' && row.pursuitId === intake.pursuit.id), true);
 });
 
+test('AgencyKernel records private scratch notes without promoting them to claims or pursuits', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const entry = kernel.recordScratch({
+    kind: 'provisional_theory',
+    note: 'This might be noise until a verifier or jtr correction changes it.',
+    provisionalTheory: 'Timeline autonomy discourse is useful only if it changes resident behavior.',
+    evidenceRef: 'scratch:test',
+    tags: ['private', 'dead-end-candidate'],
+  });
+
+  const scratch = readJsonl(join(dir, 'agency', 'scratch.jsonl'));
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const truthRows = readJsonl(join(dir, 'agency', 'truth.jsonl'));
+  const inboxRows = readJsonl(join(dir, 'agency', 'inbox.jsonl'));
+  const pursuits = kernel.pursuits({ limit: 20 });
+
+  assert.equal(entry.visibility, 'private');
+  assert.equal(entry.promoted, false);
+  assert.equal(scratch.length, 1);
+  assert.equal(scratch[0].kind, 'provisional_theory');
+  assert.equal(scratch[0].note, 'This might be noise until a verifier or jtr correction changes it.');
+  assert.deepEqual(scratch[0].evidence, [{ type: 'reference', ref: 'scratch:test' }]);
+  assert.equal(receipts.some(row => row.event === 'scratch_recorded' && row.visibility === 'private'), true);
+  assert.equal(truthRows.length, 0);
+  assert.equal(inboxRows.length, 0);
+  assert.equal(pursuits.length, 0);
+});
+
 test('AgencyKernel world-stream intake creates explicit discard/no-change receipts instead of silent delivery', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

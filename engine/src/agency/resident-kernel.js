@@ -11,6 +11,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function shortId(prefix) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 8)}`;
+}
+
 function renderBriefText(questions = {}) {
   const following = Array.isArray(questions.whatFollowing) && questions.whatFollowing.length
     ? questions.whatFollowing.map(item => `- ${item.id}: ${briefText(item.title || 'untitled', 120)} (${item.status}, ${item.authorityLevel || 'L1'}) -> ${briefText(item.nextMove || item.desiredChangedFuture || 'no next move recorded', 160)}`).join('\n')
@@ -823,6 +827,42 @@ export class AgencyKernel {
       scratch: this.store.listScratch(options),
       truth: this.store.listTruth(options),
     };
+  }
+
+  scratch(options = {}) {
+    return { scratch: this.store.listScratch(options) };
+  }
+
+  recordScratch(input = {}) {
+    const at = input.at || nowIso();
+    const evidence = Array.isArray(input.evidence)
+      ? input.evidence
+      : (input.evidenceRef ? [{ type: 'reference', ref: String(input.evidenceRef) }] : []);
+    const entry = this.store.appendScratch({
+      schema: 'home23.agency.scratch.v1',
+      id: input.id || shortId('scratch'),
+      at,
+      kind: input.kind || 'scratch_note',
+      visibility: 'private',
+      promoted: false,
+      pursuitId: input.pursuitId || null,
+      provisionalTheory: input.provisionalTheory || input.theory || null,
+      note: input.note || input.summary || null,
+      evidence,
+      tags: Array.isArray(input.tags) ? input.tags : [],
+    });
+    this.store.appendReceipt({
+      schema: 'home23.agency.receipt.v1',
+      at,
+      event: 'scratch_recorded',
+      scratchId: entry.id,
+      pursuitId: entry.pursuitId,
+      route: 'private_scratch',
+      visibility: entry.visibility,
+      reason: input.reason || 'private_scratch_not_promoted',
+      mode: this.config.mode,
+    });
+    return entry;
   }
 
   inspector(options = {}) {

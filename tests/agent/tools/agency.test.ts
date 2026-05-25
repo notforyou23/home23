@@ -10,6 +10,7 @@ import {
   agencyProposeDeltaTool,
   agencyRecordClaimTool,
   agencyRequestAuthorityTool,
+  agencyScratchNoteTool,
   agencyTickTool,
 } from '../../../src/agent/tools/agency.js';
 import type { ToolContext } from '../../../src/agent/types.js';
@@ -215,4 +216,33 @@ test('agency_record_claim writes a resident truth claim through bridge API', asy
 
   assert.match(result.content, /claim_1/);
   assert.match(result.content, /jtr_correction/);
+});
+
+test('agency_scratch_note records a private scratch thought without promoting it', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/scratch');
+    assert.equal(init?.method, 'POST');
+    const body = JSON.parse(String(init?.body || '{}'));
+    assert.equal(body.kind, 'provisional_theory');
+    assert.equal(body.note, 'This might be noise until evidence changes it.');
+    assert.equal(body.provisionalTheory, 'The report theme is not yet actionable.');
+    assert.deepEqual(body.evidence, [{ type: 'reference', ref: 'timeline:maybe' }]);
+    return new Response(JSON.stringify({
+      scratch: {
+        id: 'scratch_1',
+        visibility: 'private',
+        promoted: false,
+      },
+    }), { status: 200 });
+  };
+
+  const result = await agencyScratchNoteTool.execute({
+    kind: 'provisional_theory',
+    note: 'This might be noise until evidence changes it.',
+    provisionalTheory: 'The report theme is not yet actionable.',
+    evidenceRef: 'timeline:maybe',
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /scratch_1/);
+  assert.match(result.content, /private/);
 });
