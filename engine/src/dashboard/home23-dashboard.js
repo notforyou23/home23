@@ -2182,7 +2182,7 @@ function renderAgencySurface({ state, brief, inspector, pursuits, inbox, receipt
     const watch = Number(state.attention?.watchItems || 0);
     const watchMax = Number(state.attention?.maxWatchItems || state.charter?.attention?.maxWatchItems || 0);
     stats.innerHTML = `
-      <div class="h23-worker-stat"><span>${escapeHtml(state.mode || 'unknown')}</span><label>Mode</label></div>
+      <div class="h23-worker-stat"><span>${escapeHtml(residentAgencyModeLabel(state.mode))}</span><label>Mode</label></div>
       <div class="h23-worker-stat"><span>${active}/${activeMax || '—'} · ${watch}/${watchMax || '—'}</span><label>Active/Watch</label></div>
       <div class="h23-worker-stat"><span>${agencyOperatorNeedCount(state, brief)}</span><label>Needs jtr</label></div>
       <div class="h23-worker-stat"><span>${escapeHtml(residentActionAuthorityLabel(state.nextAction))}</span><label>Next Authority</label></div>
@@ -2260,6 +2260,12 @@ function agencyOperatorNeedCount(state, brief) {
       ? brief.questions.whatNeedsJtr.length
       : 0;
   return obligations || questions || 0;
+}
+
+function residentAgencyModeLabel(mode) {
+  if (mode === 'dry_run') return 'rehearsal';
+  if (mode === 'live') return 'live';
+  return humanizeResidentMachineText(mode || 'unknown');
 }
 
 function residentActionAuthorityLabel(next) {

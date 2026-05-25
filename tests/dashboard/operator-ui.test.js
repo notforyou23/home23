@@ -139,7 +139,9 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
   assert.match(js, /agency-retirement-drawer/);
   assert.match(js, /retirementDrawer\.hidden = !proposals\.length/);
   assert.match(js, /agencyOperatorNeedCount\(state, brief\)/);
+  assert.match(js, /residentAgencyModeLabel\(state\.mode\)/);
   assert.match(js, /residentActionAuthorityLabel\(state\.nextAction\)/);
+  assert.doesNotMatch(js, /\$\{escapeHtml\(state\.mode \|\| 'unknown'\)\}/);
   assert.doesNotMatch(js, /<label>Inbox<\/label>/);
   assert.doesNotMatch(js, /<label>Recent Receipts<\/label>/);
   assert.doesNotMatch(js, /state\.attention\?\.queueDepth/);
