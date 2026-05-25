@@ -2154,8 +2154,8 @@ function renderAgencySurface({ state, brief, inspector, pursuits, inbox, receipt
     stats.innerHTML = `
       <div class="h23-worker-stat"><span>${escapeHtml(state.mode || 'unknown')}</span><label>Mode</label></div>
       <div class="h23-worker-stat"><span>${active}/${activeMax || '—'} · ${watch}/${watchMax || '—'}</span><label>Active/Watch</label></div>
-      <div class="h23-worker-stat"><span>${Number(state.attention?.queueDepth || 0)}</span><label>Inbox</label></div>
-      <div class="h23-worker-stat"><span>${receipts.length}</span><label>Recent Receipts</label></div>
+      <div class="h23-worker-stat"><span>${agencyOperatorNeedCount(state, brief)}</span><label>Needs jtr</label></div>
+      <div class="h23-worker-stat"><span>${escapeHtml(residentActionAuthorityLabel(state.nextAction))}</span><label>Next Authority</label></div>
     `;
   }
 
@@ -2220,6 +2220,21 @@ function residentAgencyVisiblePursuits(state, pursuits = []) {
     const status = String(pursuit?.status || '').toLowerCase();
     return status !== 'discarded' && status !== 'closed';
   });
+}
+
+function agencyOperatorNeedCount(state, brief) {
+  const obligations = Array.isArray(state.obligations) ? state.obligations.length : 0;
+  const questions = Array.isArray(brief?.questions?.whatNeedFromJtr)
+    ? brief.questions.whatNeedFromJtr.length
+    : Array.isArray(brief?.questions?.whatNeedsJtr)
+      ? brief.questions.whatNeedsJtr.length
+      : 0;
+  return obligations || questions || 0;
+}
+
+function residentActionAuthorityLabel(next) {
+  if (!next?.authorityLevel) return 'none';
+  return next.dryRun ? `${next.authorityLevel} rehearsal` : next.authorityLevel;
 }
 
 function renderAgencyScratchBlock(state, scratch = []) {

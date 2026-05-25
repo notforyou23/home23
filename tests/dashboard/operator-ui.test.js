@@ -120,6 +120,11 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
 
   assert.match(html, /agency-retirement-proposals/);
   assert.match(html, /Cron Retirement Proposals/);
+  const agencyStats = html.match(/<div class="h23-worker-stats" id="agency-stats">[\s\S]*?<\/div>\s*<\/div>/)?.[0] || '';
+  assert.match(agencyStats, /Needs jtr/);
+  assert.match(agencyStats, /Next Authority/);
+  assert.doesNotMatch(agencyStats, />Inbox</);
+  assert.doesNotMatch(agencyStats, />Receipts</);
   assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-scratch-drawer">/);
   assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-truth-drawer">/);
   assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-organs-drawer">/);
@@ -133,6 +138,11 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
   assert.match(js, /renderAgencyRetirementProposalRow/);
   assert.match(js, /agency-retirement-drawer/);
   assert.match(js, /retirementDrawer\.hidden = !proposals\.length/);
+  assert.match(js, /agencyOperatorNeedCount\(state, brief\)/);
+  assert.match(js, /residentActionAuthorityLabel\(state\.nextAction\)/);
+  assert.doesNotMatch(js, /<label>Inbox<\/label>/);
+  assert.doesNotMatch(js, /<label>Recent Receipts<\/label>/);
+  assert.doesNotMatch(js, /state\.attention\?\.queueDepth/);
   assert.match(js, /residentAgencyVisiblePursuits\(state, pursuits\)/);
   assert.match(js, /function residentAgencyVisiblePursuits\(state, pursuits = \[\]\)/);
   assert.match(js, /Array\.isArray\(state\.activePursuits\) \? state\.activePursuits : pursuits/);
