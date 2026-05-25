@@ -1426,8 +1426,8 @@ function residentActionButtonState(state = {}) {
 
 function renderResidentAttentionBudget({ active, activeMax, watch, watchMax }) {
   return `
-    <span><strong>${active}/${activeMax || '—'}</strong> active</span>
-    <span><strong>${watch}/${watchMax || '—'}</strong> watch</span>
+    <span>${active}/${activeMax || '—'} active</span>
+    <span>${watch}/${watchMax || '—'} watch</span>
   `;
 }
 

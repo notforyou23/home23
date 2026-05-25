@@ -391,6 +391,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /residentBriefCountText/);
   assert.doesNotMatch(js, /nothing needed from jtr/);
   assert.match(js, /renderResidentAttentionBudget/);
+  assert.match(js, /<span>\$\{active\}\/\$\{activeMax \|\| '—'\} active<\/span>/);
+  assert.doesNotMatch(js, /<span><strong>\$\{active\}\/\$\{activeMax \|\| '—'\}<\/strong> active<\/span>/);
   assert.doesNotMatch(js, /No active resident pursuits\./);
   assert.match(js, /toggleResidentOperatorPanel/);
   assert.doesNotMatch(js, />Nothing right now\.</);
@@ -497,6 +499,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(css, /\.h23-resident-home/);
   assert.match(css, /\.h23-resident-command/);
   assert.match(css, /\.h23-resident-inline-next/);
+  assert.match(css, /display: inline-flex/);
+  assert.doesNotMatch(css, /\.h23-resident-health\s*\{[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+  assert.doesNotMatch(css, /\.h23-resident-health strong/);
   assert.match(css, /\.h23-resident-action-btn\.danger/);
   assert.match(css, /\.h23-resident-inspect-link::before/);
   assert.match(css, /content: "\\2197"/);

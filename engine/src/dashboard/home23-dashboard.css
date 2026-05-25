@@ -4697,26 +4697,26 @@ body.h23-external-focus #cosmo23-refresh-btn {
 }
 
 .h23-resident-health {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
-  margin-top: 18px;
+  margin-top: 12px;
+  color: rgba(255,255,255,0.56);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0;
 }
 
 .h23-resident-health span {
   min-width: 0;
-  padding: 10px;
-  border: 1px solid rgba(255,255,255,0.08);
-  border-radius: 7px;
-  background: rgba(255,255,255,0.04);
-  color: rgba(255,255,255,0.52);
-  font-size: 0.72rem;
 }
 
-.h23-resident-health strong {
-  display: block;
-  color: var(--text-primary);
-  font-size: 1.05rem;
+.h23-resident-health span + span::before {
+  content: "/";
+  margin-right: 8px;
+  color: rgba(255,255,255,0.3);
 }
 
 .h23-resident-inline-next {
