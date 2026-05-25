@@ -403,6 +403,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /residentHomeConsequenceRows/);
   assert.match(js, /residentHomeConsequenceRows\(state\.recentConsequences \|\| consequences \|\| \[\]\)/);
   assert.match(js, /!groupResidentSchedulerEvidence\(row\)/);
+  assert.ok(js.includes('^Cron agent-[\\w-]+ \\([^)]+\\) finished with status ok\\.$'));
   assert.match(js, /renderResidentConsequenceGroup/);
   assert.match(js, /renderResidentConsequenceTitle/);
   assert.match(js, /renderResidentConsequenceSummary/);

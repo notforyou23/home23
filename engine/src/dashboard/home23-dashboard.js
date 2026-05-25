@@ -1658,7 +1658,7 @@ function renderResidentConsequenceRow(c) {
 function renderResidentConsequenceTitle(c) {
   const type = String(c?.changeType || c?.status || 'consequence');
   if (type === 'cron_receipt_reattached') return 'Scheduler evidence attached';
-  if (type === 'pursue' && /^Cron agent-[\w-]+ \(exec\) finished with status ok\.$/i.test(String(c?.summary || ''))) {
+  if (type === 'pursue' && /^Cron agent-[\w-]+ \([^)]+\) finished with status ok\.$/i.test(String(c?.summary || ''))) {
     return 'Scheduler run reviewed';
   }
   return humanizeResidentMachineText(type, 'Consequence');
@@ -1692,7 +1692,7 @@ function groupResidentSchedulerEvidence(row) {
   const summary = String(row?.summary || row?.reason || '');
   return type === 'cron_receipt_reattached'
     || /^Cron receipt pursuit ap_[\w-]+ reattached to ap_[\w-]+\.$/i.test(summary)
-    || (type === 'pursue' && /^Cron agent-[\w-]+ \(exec\) finished with status ok\.$/i.test(summary));
+    || (type === 'pursue' && /^Cron agent-[\w-]+ \([^)]+\) finished with status ok\.$/i.test(summary));
 }
 
 function residentHomeConsequenceRows(rows = []) {
