@@ -1148,6 +1148,43 @@ test('AgencyKernel live low-risk watch close deltas close watch items with conse
   assert.equal(consequences.some(row => row.status === 'closed' && row.changeType === 'watch_item_closed' && row.pursuitId === intake.pursuit.id), true);
 });
 
+test('AgencyKernel live low-risk kill deltas discard pursuits with consequence receipts', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'live' },
+  });
+  const intake = await kernel.intake({
+    source: 'research',
+    kind: 'research_summary',
+    summary: 'Research thread should be killed if it creates no pursuit consequence.',
+    authorityLevel: 'L1',
+    evidence: [{ type: 'research', ref: 'brief:kill' }],
+    desiredChangedFuture: 'Jerry explicitly kills the thread when it proves to be theater.',
+  });
+
+  const result = kernel.proposeDelta({
+    changeType: 'pursuit_killed',
+    pursuitId: intake.pursuit.id,
+    summary: 'The research thread became report-only theater and should stop consuming attention.',
+    authorityLevel: 'L1',
+    reversible: true,
+    evidence: [{ type: 'manual_verification', ref: 'pursuit:kill' }],
+  });
+
+  const pursuit = kernel.pursuit(intake.pursuit.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(result.decision.route, 'approved_live');
+  assert.equal(result.applied?.kind, 'pursuit_killed');
+  assert.equal(pursuit.status, 'discarded');
+  assert.equal(receipts.some(row => row.event === 'pursuit_killed' && row.pursuitId === intake.pursuit.id), true);
+  assert.equal(receipts.some(row => row.event === 'delta_applied' && row.changeType === 'pursuit_killed' && row.pursuitId === intake.pursuit.id), true);
+  assert.equal(consequences.some(row => row.status === 'discarded' && row.changeType === 'pursuit_killed' && row.pursuitId === intake.pursuit.id), true);
+});
+
 test('AgencyKernel creates resident tasks and routed handoffs as bounded action records', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
