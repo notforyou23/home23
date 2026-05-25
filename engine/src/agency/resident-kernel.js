@@ -139,7 +139,10 @@ export class AgencyKernel {
     const deferred = this.store.listPursuits({ status: 'deferred', limit: 10000 });
     const openTasks = this.store.listTasks({ status: 'open', limit: 50 });
     const recentMemoryCandidates = this.store.listMemoryCandidates({ limit: 10 });
-    const recentConsequences = this.store.listConsequences({ limit: 20 }).map(compactStateConsequence);
+    const recentConsequences = this.store.listConsequences({ limit: 1000 })
+      .filter(isMeaningfulConsequence)
+      .slice(0, 20)
+      .map(compactStateConsequence);
     const claims = this.store.listTruth({ limit: 10000 }).reverse();
     const truthSummary = this.truth.summarize(claims);
     const existing = this.store.readState() || {};
@@ -2566,6 +2569,16 @@ function hasMeaningfulPursuitOutcome(pursuit = {}) {
   const genericStopCondition = stopCondition === 'changed future is verified or the pursuit is explicitly discarded';
   const hasMeaningfulStopCondition = stopCondition && !genericStopCondition && stopCondition !== summary && stopCondition !== changedFuture;
   return Boolean(hasMeaningfulChangedFuture || hasMeaningfulStopCondition);
+}
+
+function isMeaningfulConsequence(row = {}) {
+  const changeType = String(row.changeType || row.event || '').toLowerCase();
+  const status = String(row.status || '').toLowerCase();
+  const summary = String(row.summary || row.reason || '').toLowerCase();
+  if (changeType === 'explicit_no_change') return false;
+  if (status === 'discarded' && (changeType === 'explicit_no_change' || summary.includes('already resolved'))) return false;
+  if (summary.includes('already resolved with verifier evidence')) return false;
+  return true;
 }
 
 function isRawObservationPursuit(pursuit = {}) {

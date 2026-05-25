@@ -759,6 +759,55 @@ test('AgencyKernel canonical state projects active pursuits and recent consequen
   assert.equal(state.watchlist.some(row => row.id && row.latestEvidence?.[0]?.ref === 'cosmo:watch-thread'), true);
 });
 
+test('AgencyKernel state projects meaningful changes instead of no-change receipt noise', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  await kernel.intakeWorldStream({
+    source: 'work.live-problems',
+    kind: 'live_problem_receipt',
+    summary: 'Live problem weather_sensor_fresh is already resolved with verifier evidence.',
+    consequenceStatus: 'resolved',
+    explicitNoChange: true,
+    evidence: [{ type: 'live_problem', ref: 'weather_sensor_fresh', state: 'resolved' }],
+    tags: ['work.live-problems', 'live-problem', 'resolved'],
+  });
+  const intake = await kernel.intake({
+    source: 'x.timeline',
+    kind: 'timeline_report',
+    summary: 'Agent agency signal should alter Jerry resident attention.',
+    desiredChangedFuture: 'Jerry tracks one agent agency pursuit from the timeline signal.',
+    evidence: [{ type: 'timeline_post', ref: 'x:agency-signal' }],
+    authorityLevel: 'L1',
+  });
+  kernel.recordConsequence({
+    pursuitId: intake.pursuit.id,
+    status: 'applied',
+    changeType: 'belief_updated',
+    summary: 'Timeline signal became a resident pursuit instead of delivered content.',
+    evidence: [{ type: 'agency_receipt', ref: 'receipt:timeline-intake' }],
+  });
+  await kernel.intakeWorldStream({
+    source: 'work.live-problems',
+    kind: 'live_problem_receipt',
+    summary: 'Live problem sauna_sensor_fresh is already resolved with verifier evidence.',
+    consequenceStatus: 'resolved',
+    explicitNoChange: true,
+    evidence: [{ type: 'live_problem', ref: 'sauna_sensor_fresh', state: 'resolved' }],
+    tags: ['work.live-problems', 'live-problem', 'resolved'],
+  });
+
+  const state = kernel.state();
+
+  assert.equal(state.recentConsequences[0].changeType, 'belief_updated');
+  assert.equal(state.recentConsequences.some(row => row.changeType === 'explicit_no_change'), false);
+  assert.equal(state.recentConsequences.some(row => /already resolved/.test(row.summary || '')), false);
+});
+
 test('AgencyKernel projects authority requests and blocked pursuits as active obligations in canonical state', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
