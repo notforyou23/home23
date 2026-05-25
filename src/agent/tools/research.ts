@@ -756,6 +756,49 @@ async function writeWorkspaceFile(filename: string, content: string): Promise<st
   return path;
 }
 
+function agencyBridgeBaseUrl(ctx: ToolContext): string {
+  return ctx.workerConnectorBaseUrl || `http://127.0.0.1:${process.env.HOME23_BRIDGE_PORT || '5004'}`;
+}
+
+async function assimilateCompiledResearch(
+  ctx: ToolContext,
+  input: {
+    brainId: string;
+    summary: string;
+    path: string;
+    section?: string;
+    sectionId?: string;
+  }
+): Promise<string> {
+  const fetchImpl = ctx.fetch || fetch;
+  const label = input.section
+    ? `section ${input.section}:${input.sectionId || 'unknown'} from brain "${input.brainId}"`
+    : `brain "${input.brainId}"`;
+  const res = await fetchImpl(`${agencyBridgeBaseUrl(ctx)}/api/agency/world-stream`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      source: 'cosmo.research',
+      kind: 'research_summary',
+      summary: `Compiled COSMO research ${label}.`,
+      seen: [input.summary.slice(0, 2000)],
+      discarded: [],
+      explicitNoChange: false,
+      desiredChangedFuture: 'Compiled COSMO research enters resident agency as evidence for memory, watch, pursuit, task, question, handoff, or explicit discard instead of ending as a markdown artifact.',
+      nextMove: 'triage compiled research against active resident pursuits and decide whether it changes belief, attention, or behavior',
+      evidence: [{ type: 'research_compile', ref: input.path, brainId: input.brainId }],
+      tags: ['world-stream', 'research', 'cosmo'],
+    }),
+  });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) as { receipt?: { outcome?: string }; decision?: { route?: string }; pursuit?: { id?: string } } : {};
+  if (!res.ok) {
+    throw new Error((data && typeof data === 'object' && 'error' in data) ? String((data as any).error) : `HTTP ${res.status}`);
+  }
+  const outcome = data.receipt?.outcome || data.decision?.route || 'assimilated';
+  return `Agency intake: ${outcome}${data.pursuit?.id ? ` (${data.pursuit.id})` : ''}`;
+}
+
 export const compileBrainTool: ToolDefinition = {
   name: 'research_compile_brain',
   description:
@@ -809,8 +852,14 @@ export const compileBrainTool: ToolDefinition = {
       const filename = `cosmo-${brainId}-${date}.md`;
       const body = `# COSMO Research: ${brainId}\n\nCompiled: ${new Date().toISOString()}\nSource: COSMO 2.3 run "${brainId}"\n\n---\n\n${summary}`;
       const path = await writeWorkspaceFile(filename, body);
+      let agencyLine = '';
+      try {
+        agencyLine = `\n${await assimilateCompiledResearch(ctx, { brainId, summary, path })}`;
+      } catch (agencyErr) {
+        agencyLine = `\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
+      }
       return {
-        content: `Compiled brain "${brainId}" to workspace:\n- path: ${path}\n- size: ${body.length} bytes\n\nThe engine feeder will ingest this into your brain shortly.\n\n**Preview:**\n${summary.slice(0, 500)}...`,
+        content: `Compiled brain "${brainId}" to workspace:\n- path: ${path}\n- size: ${body.length} bytes${agencyLine}\n\nThe engine feeder will ingest this into your brain shortly.\n\n**Preview:**\n${summary.slice(0, 500)}...`,
       };
     } catch (err) {
       return errResult(`research_compile_brain: ${err instanceof Error ? err.message : String(err)}`);
@@ -880,8 +929,14 @@ export const compileSectionTool: ToolDefinition = {
       const filename = `cosmo-${brainId}-${section}-${safeSectionId}-${date}.md`;
       const body = `# COSMO Research Section: ${brainId} / ${section}:${sectionId}\n\nCompiled: ${new Date().toISOString()}\nSource: COSMO 2.3 run "${brainId}", ${section} "${sectionId}"\n\n---\n\n${summary}`;
       const path = await writeWorkspaceFile(filename, body);
+      let agencyLine = '';
+      try {
+        agencyLine = `\n${await assimilateCompiledResearch(ctx, { brainId, summary, path, section, sectionId })}`;
+      } catch (agencyErr) {
+        agencyLine = `\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
+      }
       return {
-        content: `Compiled ${section} "${sectionId}" from brain "${brainId}" to workspace:\n- path: ${path}\n- size: ${body.length} bytes\n\nThe engine feeder will ingest this shortly.\n\n**Preview:**\n${summary.slice(0, 500)}...`,
+        content: `Compiled ${section} "${sectionId}" from brain "${brainId}" to workspace:\n- path: ${path}\n- size: ${body.length} bytes${agencyLine}\n\nThe engine feeder will ingest this shortly.\n\n**Preview:**\n${summary.slice(0, 500)}...`,
       };
     } catch (err) {
       return errResult(

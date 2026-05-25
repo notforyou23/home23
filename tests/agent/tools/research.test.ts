@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkCosmoActiveRun, launchTool } from '../../../src/agent/tools/research.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { checkCosmoActiveRun, compileBrainTool, launchTool } from '../../../src/agent/tools/research.js';
 import type { ToolContext } from '../../../src/agent/types.js';
 
 function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
@@ -78,5 +81,59 @@ describe('checkCosmoActiveRun', () => {
 
     assert.equal(active?.runName, 'run-health-contract');
     assert.equal(active?.processCount, 1);
+  });
+});
+
+describe('research_compile_brain agency assimilation', () => {
+  it('emits a resident agency world-stream intake packet for compiled research output', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'home23-research-agency-'));
+    const previousCwd = process.cwd();
+    const previousAgent = process.env.HOME23_AGENT;
+    const previousFetch = globalThis.fetch;
+    let capturedAgencyBody: any = null;
+    try {
+      process.chdir(root);
+      process.env.HOME23_AGENT = 'jerry';
+      (globalThis as any).fetch = async (url: any, init: any = {}) => {
+        const u = String(url);
+        if (u === 'http://localhost:43210/api/brains/brain-agency') {
+          return { ok: true, json: async () => ({ id: 'brain-agency' }) } as unknown as Response;
+        }
+        if (u === 'http://localhost:43210/api/brain/brain-agency/query') {
+          return {
+            ok: true,
+            json: async () => ({
+              response: 'Research finding: compiled COSMO output should become resident agency evidence, not just a markdown artifact. It proposes a watch/pursuit decision with receipts.',
+            }),
+          } as unknown as Response;
+        }
+        if (u === 'http://bridge.test/api/agency/world-stream') {
+          capturedAgencyBody = JSON.parse(String(init.body || '{}'));
+          return {
+            ok: true,
+            text: async () => JSON.stringify({ decision: { route: 'watch' }, pursuit: { id: 'ap_research' } }),
+          } as unknown as Response;
+        }
+        throw new Error(`unexpected fetch ${u}`);
+      };
+
+      const result = await compileBrainTool.execute({ brainId: 'brain-agency' }, makeCtx({
+        workerConnectorBaseUrl: 'http://bridge.test',
+      }));
+
+      assert.equal(result.is_error, undefined);
+      assert.equal(capturedAgencyBody.source, 'cosmo.research');
+      assert.equal(capturedAgencyBody.kind, 'research_summary');
+      assert.match(capturedAgencyBody.summary, /Compiled COSMO research brain/);
+      assert.match(capturedAgencyBody.desiredChangedFuture, /resident agency/);
+      assert.deepEqual(capturedAgencyBody.evidence[0].type, 'research_compile');
+      assert.match(result.content, /Agency intake: watch/);
+    } finally {
+      process.chdir(previousCwd);
+      if (previousAgent === undefined) delete process.env.HOME23_AGENT;
+      else process.env.HOME23_AGENT = previousAgent;
+      (globalThis as any).fetch = previousFetch;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
