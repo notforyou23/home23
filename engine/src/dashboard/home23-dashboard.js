@@ -189,16 +189,6 @@ async function init() {
   // Update pulse "ago" timer every second
   setInterval(updatePulseAgo, 1000);
 
-  // Live problems badge — polls every 20s. The engine verifies on its own
-  // cadence (~90s), so 20s is plenty fresh for the dashboard.
-  updateProblemsBadge();
-  setInterval(updateProblemsBadge, 20000);
-
-  // Brain storage badge — polls every 30s. Shows disk node count and flags
-  // mismatch between disk-side snapshot and in-memory state.
-  updateBrainStorageBadge();
-  setInterval(updateBrainStorageBadge, 30000);
-
   // Workers are connector-backed and cheap to refresh. Keep the user-facing
   // status current without pulling on the full engine loop.
   setInterval(() => {

@@ -271,6 +271,11 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(html, /h23-system-runtime/);
   assert.doesNotMatch(html, /id="pulse-phase"/);
   assert.doesNotMatch(html, /id="pulse-phase">—<\/span>/);
+  assert.doesNotMatch(html, /id="pulse-problems"/);
+  assert.doesNotMatch(html, /id="pulse-problems-badge"/);
+  assert.doesNotMatch(html, /id="pulse-brain"/);
+  assert.doesNotMatch(html, /id="pulse-brain-badge"/);
+  assert.doesNotMatch(html, /h23-system-badges/);
   assert.match(html, /id="organs-drawer"/);
   assert.match(html, /class="h23-organ-drawer"/);
   assert.match(html, /Runtime/);
@@ -359,7 +364,10 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /syncResidentActionButton\(residentHomeLatestState\)/);
   assert.doesNotMatch(js, /button\.textContent = 'Advance'/);
   assert.doesNotMatch(js, /button\.textContent = 'Run Tick'/);
-  assert.match(js, /openCount <= 0/);
+  assert.doesNotMatch(js, /updateProblemsBadge\(\);/);
+  assert.doesNotMatch(js, /setInterval\(updateProblemsBadge/);
+  assert.doesNotMatch(js, /updateBrainStorageBadge\(\);/);
+  assert.doesNotMatch(js, /setInterval\(updateBrainStorageBadge/);
   assert.doesNotMatch(js, /all clear/);
   assert.doesNotMatch(js, /badge\.textContent = `✨ \$\{signals\.length\}`/);
   assert.match(js, /transitionResidentPursuitFromDashboard/);
