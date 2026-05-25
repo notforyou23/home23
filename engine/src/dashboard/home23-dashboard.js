@@ -1774,6 +1774,68 @@ function residentBriefLine(brief, state) {
   return next.pursuitId ? `Next: ${next.kind || 'advance'} ${next.pursuitId}` : 'Resident state is current.';
 }
 
+function humanizeResidentMachineText(text, fallback = '') {
+  const raw = String(text || '').trim();
+  if (!raw) return fallback;
+  if (/^Cron agent-[\w-]+ \(exec\) finished with status ok\.$/i.test(raw)) {
+    return 'Scheduler check finished';
+  }
+  if (/^Cron outcome updates resident pursuit ap_[\w-]+ with latest scheduler evidence\.$/i.test(raw)) {
+    return 'Scheduler evidence updated a resident pursuit';
+  }
+  if (/^attach scheduler outcome to the bound resident pursuit/i.test(raw)) {
+    return 'Attach scheduler evidence and continue based on semantic status';
+  }
+  if (raw === 'pursuit_has_no_editor_block') {
+    return 'No editor block is stopping this step';
+  }
+  if (raw === 'advance_one_step') {
+    return 'Advance one step';
+  }
+  return raw
+    .replace(/\bagent-[0-9a-f-]{10,}\b/gi, 'agent')
+    .replace(/\bap_[0-9a-f]{8,}\b/gi, 'resident pursuit')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function compactResidentEvidenceId(value) {
+  const id = String(value || '').trim();
+  if (!id) return '';
+  if (id.startsWith('ap_') && id.length > 10) return `${id.slice(0, 6)}…${id.slice(-4)}`;
+  return id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
+}
+
+function residentSourceLabel(source) {
+  const value = String(source || '').trim();
+  if (!value) return '';
+  if (value.startsWith('cron.')) return 'cron receipt';
+  if (value.startsWith('worker.')) return 'worker receipt';
+  if (value.startsWith('chat.')) return 'chat';
+  return value;
+}
+
+function renderResidentPursuitTitle(p) {
+  return humanizeResidentMachineText(p.title || p.summary || p.id, 'Resident pursuit');
+}
+
+function renderResidentPursuitBody(p) {
+  return humanizeResidentMachineText(
+    p.whyItMatters || p.desiredChangedFuture || p.nextMove || p.summary,
+    'No operator-facing summary yet.'
+  );
+}
+
+function renderResidentPursuitEvidence(p, updated) {
+  return [compactResidentEvidenceId(p.id), residentSourceLabel(p.source), updated ? timeSinceSafe(updated) : null]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function renderResidentNextActionTitle(pursuit, next) {
+  return humanizeResidentMachineText(pursuit.title || pursuit.summary || next.kind || next.pursuitId, 'Resident action');
+}
+
 function renderResidentNextAction(state) {
   const next = state.nextAction || {};
   const pursuit = state.currentPursuit || {};
@@ -1785,10 +1847,10 @@ function renderResidentNextAction(state) {
   }
   return `
     <div class="h23-resident-section-title">Next Action</div>
-    <div class="h23-resident-next-kind">${escapeHtml(next.kind || 'advance_one_step')}</div>
-    <div class="h23-resident-next-title">${escapeHtml(pursuit.title || pursuit.summary || next.pursuitId || 'resident action')}</div>
-    <div class="h23-resident-next-meta">${escapeHtml([next.authorityLevel || pursuit.authorityLevel, next.reason, next.dryRun ? 'dry-run' : null].filter(Boolean).join(' · '))}</div>
-    <div class="h23-resident-next-move">${escapeHtml(pursuit.nextMove || next.nextMove || pursuit.stopCondition || '')}</div>
+    <div class="h23-resident-next-kind">${escapeHtml(humanizeResidentMachineText(next.kind || 'advance_one_step'))}</div>
+    <div class="h23-resident-next-title">${escapeHtml(renderResidentNextActionTitle(pursuit, next))}</div>
+    <div class="h23-resident-next-meta">${escapeHtml([next.authorityLevel || pursuit.authorityLevel, humanizeResidentMachineText(next.reason), next.dryRun ? 'dry-run' : null].filter(Boolean).join(' · '))}</div>
+    <div class="h23-resident-next-move">${escapeHtml(humanizeResidentMachineText(pursuit.nextMove || next.nextMove || pursuit.stopCondition || ''))}</div>
   `;
 }
 
@@ -1815,9 +1877,9 @@ function renderResidentPursuitCard(p) {
         <span>${escapeHtml(p.status || 'active')}</span>
         <code>${escapeHtml(p.authorityLevel || p.risk || 'L?')}</code>
       </div>
-      <h3>${escapeHtml(p.title || p.summary || p.id)}</h3>
-      <p>${escapeHtml(p.whyItMatters || p.desiredChangedFuture || p.nextMove || '')}</p>
-      <div class="h23-resident-pursuit-meta">${escapeHtml([p.id, p.source, updated ? timeSinceSafe(updated) : null].filter(Boolean).join(' · '))}</div>
+      <h3>${escapeHtml(renderResidentPursuitTitle(p))}</h3>
+      <p>${escapeHtml(renderResidentPursuitBody(p))}</p>
+      <div class="h23-resident-pursuit-meta">${escapeHtml(renderResidentPursuitEvidence(p, updated))}</div>
       <div class="h23-resident-pursuit-actions">
         <button type="button" class="h23-resident-action-btn danger" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="discarded" data-transition-summary="Discarded from resident dashboard: no longer worth active operator attention.">Discard</button>
         <button type="button" class="h23-resident-action-btn secondary" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="closed" data-transition-summary="Closed from resident dashboard with operator acknowledgement.">Close</button>

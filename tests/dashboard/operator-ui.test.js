@@ -162,6 +162,12 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /setupOrganDrawer/);
   assert.match(js, /syncOrganDrawerForTab/);
   assert.doesNotMatch(js, /particlesJS/);
+  assert.match(js, /humanizeResidentMachineText/);
+  assert.match(js, /renderResidentPursuitTitle/);
+  assert.match(js, /renderResidentPursuitBody/);
+  assert.match(js, /renderResidentPursuitEvidence/);
+  assert.match(js, /renderResidentNextActionTitle/);
+  assert.doesNotMatch(js, /<h3>\$\{escapeHtml\(p\.title/);
   assert.match(server, /resident agency state/);
   assert.match(server, /Routine organs stay hidden until they need action/);
   assert.doesNotMatch(server, /Tiles, pulse, chat/);
