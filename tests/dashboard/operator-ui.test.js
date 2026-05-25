@@ -271,6 +271,10 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /if \(currentTab === 'agency'\) \{\s*loadAgencySurface\(\)\.catch\(\(\) => \{\}\);/);
   assert.doesNotMatch(js, /\n\s*updateNotificationBadge\(\);\n\s*setInterval\(updateNotificationBadge, 15000\);/);
   assert.doesNotMatch(js, /\n\s*updateSignalsBadge\(\);\n\s*setInterval\(updateSignalsBadge, 30000\);/);
+  assert.doesNotMatch(js, /\n\s*updateCosmoIndicator\(\);\n\s*setInterval\(updateCosmoIndicator, REFRESH_MS\);/);
+  assert.match(js, /await updateCosmoIndicator\(\);\n\s*showCosmoFrame\(\);/);
+  assert.doesNotMatch(js, /if \(!dot \|\| !text\) return;/);
+  assert.match(js, /if \(dot\) dot\.className = 'h23-cosmo-indicator-dot running';/);
   assert.doesNotMatch(js, /if \(!chip \|\| !primaryAgent\) return/);
   assert.doesNotMatch(js, /PRIMARY AGENT/);
   assert.doesNotMatch(js, /SECONDARY AGENT/);

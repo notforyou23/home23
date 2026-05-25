@@ -194,8 +194,6 @@ async function init() {
   connectEnginePulse();
   loadResidentHomeSurface().catch(() => { /* agency bridge may still be booting */ });
   startAutoRefresh();
-  updateCosmoIndicator();
-  setInterval(updateCosmoIndicator, REFRESH_MS);
 
   // Update pulse "ago" timer every second
   setInterval(updatePulseAgo, 1000);
@@ -1366,7 +1364,7 @@ async function loadAgents() {
   // Wire COSMO tab button
   const cosmoBtn = document.getElementById('cosmo23-btn');
   if (cosmoBtn) {
-    cosmoBtn.addEventListener('click', (e) => {
+    cosmoBtn.addEventListener('click', async (e) => {
       e.preventDefault();
       // Deactivate all data-tab buttons
       document.querySelectorAll('.h23-tab[data-tab]').forEach(t => t.classList.remove('active'));
@@ -1375,6 +1373,7 @@ async function loadAgents() {
       refreshDashboardScopeUI();
       syncOrganDrawerForTab();
       setCosmoHomeDrawerOpen(false);
+      await updateCosmoIndicator();
       showCosmoFrame();
     });
   }
@@ -1519,24 +1518,23 @@ async function updateCosmoIndicator() {
   if (!cosmo23Url) return;
   const dot = document.getElementById('cosmo23-ind-dot');
   const text = document.getElementById('cosmo23-ind-text');
-  if (!dot || !text) return;
   try {
     const res = await fetch(`${cosmo23Url}/api/status`, { signal: AbortSignal.timeout(10000) });
     const status = await res.json();
     cosmoOnline = true;
     if (status.running && status.activeContext) {
-      dot.className = 'h23-cosmo-indicator-dot running';
-      text.textContent = `COSMO: running — ${status.activeContext.runName || 'research'}`;
+      if (dot) dot.className = 'h23-cosmo-indicator-dot running';
+      if (text) text.textContent = `COSMO: running — ${status.activeContext.runName || 'research'}`;
     } else {
-      dot.className = 'h23-cosmo-indicator-dot';
-      text.textContent = 'COSMO: idle';
+      if (dot) dot.className = 'h23-cosmo-indicator-dot';
+      if (text) text.textContent = 'COSMO: idle';
     }
     // If we just came back online and the tab is showing, refresh
     if (currentTab === 'cosmo23') hideCosmoOfflineOverlay();
   } catch {
     cosmoOnline = false;
-    dot.className = 'h23-cosmo-indicator-dot error';
-    text.textContent = 'COSMO: offline';
+    if (dot) dot.className = 'h23-cosmo-indicator-dot error';
+    if (text) text.textContent = 'COSMO: offline';
     // If viewing the COSMO tab right now, show the overlay
     if (currentTab === 'cosmo23') showCosmoOfflineOverlay();
   }
