@@ -74,6 +74,7 @@ export class AgencyKernel {
     const claims = this.store.listTruth({ limit: 10000 }).reverse();
     const truthSummary = this.truth.summarize(claims);
     const existing = this.store.readState() || {};
+    const obligations = this.deriveObligations({ truthSummary });
     const state = {
       schema: 'home23.agency.state.v1',
       agent: this.agentName,
@@ -100,7 +101,7 @@ export class AgencyKernel {
         posture: this.config.mode === 'live' ? 'bounded-live' : 'dry-run-observer',
       },
       organs: this.charter.organs || {},
-      obligations: existing.obligations || [],
+      obligations,
       watchlist: watch.slice(0, 20).map(row => ({ id: row.id, title: row.title, lastTouched: row.lastTouched || row.updatedAt })),
       truth: truthSummary,
       recentBeliefChanges: truthSummary.recentBeliefChanges,
@@ -111,6 +112,54 @@ export class AgencyKernel {
     };
     this.store.writeState(state);
     return state;
+  }
+
+  deriveObligations({ truthSummary = {} } = {}) {
+    const obligations = [];
+    const seen = new Set();
+    const add = (item = {}) => {
+      const key = `${item.kind}:${item.pursuitId || item.candidateId || item.claimId || item.reason || item.at || obligations.length}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      obligations.push({
+        schema: 'home23.agency.obligation.v1',
+        status: 'open',
+        ...item,
+      });
+    };
+    for (const row of this.store.listReceipts({ limit: 200 })) {
+      if (!(row.event === 'authority_requested' || row.route === 'request-authority')) continue;
+      const pursuit = row.pursuitId ? this.store.getPursuit(row.pursuitId) : null;
+      if (pursuit && (pursuit.status === 'closed' || pursuit.status === 'discarded')) continue;
+      add({
+        kind: 'authority_request',
+        at: row.at,
+        candidateId: row.candidateId || null,
+        pursuitId: row.pursuitId || null,
+        authorityLevel: row.authority?.level || row.authorityLevel || 'unknown',
+        reason: row.reason || row.authority?.reason || 'authority requested',
+      });
+    }
+    for (const pursuit of this.store.listPursuits({ status: 'blocked', limit: 100 })) {
+      add({
+        kind: 'blocked_pursuit',
+        at: pursuit.updatedAt,
+        pursuitId: pursuit.id,
+        authorityLevel: pursuit.authorityLevel || 'unknown',
+        reason: pursuit.nextMove || pursuit.summary || 'blocked pursuit needs operator decision',
+      });
+    }
+    const unresolvedClaims = Array.isArray(truthSummary.unresolvedClaims) ? truthSummary.unresolvedClaims : [];
+    for (const claim of unresolvedClaims.slice(0, 20)) {
+      add({
+        kind: 'truth_contradiction',
+        at: claim.at,
+        claimId: claim.id || null,
+        authorityLevel: 'jtr_correction',
+        reason: `Resolve contradiction: ${claim.claim || claim.id}`,
+      });
+    }
+    return obligations.slice(0, 50);
   }
 
   reconcileLowSignalAttention() {
@@ -627,30 +676,14 @@ export class AgencyKernel {
       kind: 'rest',
       reason: 'no_next_action_recorded',
     };
-    const authorityNeeds = this.store.listReceipts({ limit: 100 })
-      .filter(row => row.event === 'authority_requested' || row.route === 'request-authority')
-      .map(row => ({
-        at: row.at,
-        pursuitId: row.pursuitId || null,
-        authorityLevel: row.authority?.level || row.authorityLevel || 'unknown',
-        reason: row.reason || row.authority?.reason || 'authority requested',
-      }));
-    const blockedNeeds = this.store.listPursuits({ status: 'blocked', limit: 20 })
-      .map(pursuit => ({
-        at: pursuit.updatedAt,
-        pursuitId: pursuit.id,
-        authorityLevel: pursuit.authorityLevel || 'unknown',
-        reason: pursuit.nextMove || pursuit.summary || 'blocked pursuit needs operator decision',
-      }));
-    const contradictionNeeds = Array.isArray(state.openContradictions)
-      ? state.openContradictions.slice(0, 5).map(claim => ({
-          at: claim.at,
-          pursuitId: null,
-          authorityLevel: 'jtr_correction',
-          reason: `Resolve contradiction: ${claim.claim || claim.id}`,
+    const needFromJtr = Array.isArray(state.obligations)
+      ? state.obligations.slice(0, 8).map(item => ({
+          at: item.at,
+          pursuitId: item.pursuitId || null,
+          authorityLevel: item.authorityLevel || 'unknown',
+          reason: item.reason || 'operator decision needed',
         }))
       : [];
-    const needFromJtr = [...authorityNeeds, ...blockedNeeds, ...contradictionNeeds].slice(0, 8);
     const questions = {
       whatFollowing: following,
       whatChanged: changed,

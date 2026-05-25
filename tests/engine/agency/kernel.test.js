@@ -460,6 +460,43 @@ test('AgencyKernel exposes the body organ contract in canonical state', async ()
   assert.match(organs.chat.commandSurface, /agency tools/);
 });
 
+test('AgencyKernel projects authority requests and blocked pursuits as active obligations in canonical state', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const authority = await kernel.intake({
+    source: 'chat',
+    kind: 'operator_request',
+    summary: 'Restart PM2 and publish public issue.',
+    evidence: [{ type: 'chat', ref: 'msg-authority' }],
+    authorityLevel: 'L4',
+    desiredChangedFuture: 'Public issue is published after approval.',
+  });
+  const blocked = await kernel.intake({
+    source: 'work.worker-runs',
+    kind: 'worker_receipt',
+    summary: 'Worker needs jtr decision about private calendar access.',
+    evidence: [{ type: 'worker_receipt', ref: 'wr-blocked' }],
+    authorityLevel: 'L3',
+    desiredChangedFuture: 'Calendar access decision is made.',
+  });
+  kernel.transition(blocked.pursuit.id, {
+    transition: 'blocked',
+    reason: 'needs jtr taste/judgment before continuing',
+  });
+
+  const state = kernel.state();
+
+  assert.equal(state.obligations.length, 2);
+  assert.equal(state.obligations.some(item => item.kind === 'authority_request' && item.candidateId === authority.candidate.candidateId), true);
+  assert.equal(state.obligations.some(item => item.kind === 'blocked_pursuit' && item.pursuitId === blocked.pursuit.id), true);
+  assert.equal(state.obligations.every(item => item.status === 'open'), true);
+});
+
 test('AgencyKernel builds the live success-test brief from resident state', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
