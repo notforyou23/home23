@@ -26,6 +26,7 @@ export interface AgencyWorldStreamPacket {
   actionWorthy?: Array<Record<string, unknown>>;
   watchItems?: Array<Record<string, unknown>>;
   memoryCandidates?: Array<Record<string, unknown>>;
+  operatorQuestions?: Array<Record<string, unknown>>;
   contradictions?: Array<Record<string, unknown>>;
   evidence: Array<{ type: string; ref: string }>;
   tags: string[];
@@ -50,6 +51,7 @@ interface ReportIntakePacket {
   actionWorthy?: Array<Record<string, unknown>>;
   watchItems?: Array<Record<string, unknown>>;
   memoryCandidates?: Array<Record<string, unknown>>;
+  operatorQuestions?: Array<Record<string, unknown>>;
   contradictions?: Array<Record<string, unknown>>;
   discardedNoise?: Array<{ ref?: string; reason?: string }>;
   explicitNoChange?: boolean;
@@ -221,6 +223,7 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
         ...packetItemsText('action', intakePacket.actionWorthy),
         ...packetItemsText('watch', intakePacket.watchItems),
         ...packetItemsText('memory', intakePacket.memoryCandidates),
+        ...packetItemsText('question', intakePacket.operatorQuestions),
         ...packetItemsText('contradiction', intakePacket.contradictions),
       ]
     : [];
@@ -230,6 +233,7 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
       (Array.isArray(intakePacket.actionWorthy) && intakePacket.actionWorthy.length > 0) ||
       (Array.isArray(intakePacket.watchItems) && intakePacket.watchItems.length > 0) ||
       (Array.isArray(intakePacket.memoryCandidates) && intakePacket.memoryCandidates.length > 0) ||
+      (Array.isArray(intakePacket.operatorQuestions) && intakePacket.operatorQuestions.length > 0) ||
       (Array.isArray(intakePacket.contradictions) && intakePacket.contradictions.length > 0) ||
       intakePacket.desiredChangedFuture
     ),
@@ -275,6 +279,7 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
     actionWorthy: intakePacket?.actionWorthy,
     watchItems: intakePacket?.watchItems,
     memoryCandidates: intakePacket?.memoryCandidates,
+    operatorQuestions: intakePacket?.operatorQuestions,
     contradictions: intakePacket?.contradictions,
     evidence: [{ type: 'cron_result', ref: job.id }],
     tags: ['world-stream', 'cron', ...(intakePacket?.tags || [])],

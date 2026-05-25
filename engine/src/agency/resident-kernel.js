@@ -731,6 +731,7 @@ export class AgencyKernel {
       watchItems: [],
       contradictions: [],
       memoryCandidates: [],
+      operatorQuestions: [],
       discarded: [],
     };
     for (const item of normalizeStructuredItems(input.actionWorthy)) {
@@ -801,6 +802,29 @@ export class AgencyKernel {
         mode: this.config.mode,
       });
       children.memoryCandidates.push({ memoryCandidateId: memory.id, route: 'memory_candidate' });
+    }
+    for (const item of normalizeStructuredItems(input.operatorQuestions)) {
+      const evidence = structuredItemEvidence(item, candidate);
+      const question = this.raiseQuestion({
+        question: item.question || item.summary || item.title,
+        reason: item.reason || 'structured_report_operator_question',
+        authorityLevel: item.authorityLevel || 'L3',
+        pursuitId: item.pursuitId || item.targetPursuitId || null,
+        evidence,
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'world_stream_child_question_raised',
+        parentCandidateId: candidate.candidateId,
+        questionId: question.id,
+        source: candidate.source,
+        route: 'question',
+        outcome: 'jtr_question_raised',
+        reason: item.reason || 'structured_report_operator_question',
+        mode: this.config.mode,
+      });
+      children.operatorQuestions.push({ questionId: question.id, route: 'question' });
     }
     for (const item of normalizeStructuredDiscards(candidate.discarded)) {
       this.store.appendReceipt({
@@ -2379,6 +2403,7 @@ function hasStructuredReportFanout(input = {}) {
   return normalizeStructuredItems(input.actionWorthy).length > 0
     || normalizeStructuredItems(input.watchItems).length > 0
     || normalizeStructuredItems(input.memoryCandidates).length > 0
+    || normalizeStructuredItems(input.operatorQuestions).length > 0
     || normalizeStructuredItems(input.contradictions).length > 0;
 }
 

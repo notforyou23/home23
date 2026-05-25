@@ -973,6 +973,12 @@ test('AgencyKernel fans structured report packets into child pursuits, claims, a
       memoryDomain: 'doctrine',
       evidenceRef: 'x-memory-outcome',
     }],
+    operatorQuestions: [{
+      question: 'Should the timeline agency lane prioritize product-market news or architecture implementation signals this week?',
+      reason: 'The report found both signals and needs jtr taste to allocate scarce attention.',
+      authorityLevel: 'L3',
+      evidenceRef: 'x-question-priority',
+    }],
     discarded: [{ ref: 'viral meta thread', reason: 'no durable Home23 action' }],
     desiredChangedFuture: 'Report digestion updates standing agency implementation pursuit.',
     nextMove: 'merge with Home23 agency spine pursuit',
@@ -992,6 +998,7 @@ test('AgencyKernel fans structured report packets into child pursuits, claims, a
   assert.equal(result.children.watchItems.length, 1);
   assert.equal(result.children.contradictions.length, 1);
   assert.equal(result.children.memoryCandidates.length, 1);
+  assert.equal(result.children.operatorQuestions.length, 1);
   assert.equal(result.children.discarded.length, 1);
   assert.equal(active.some(row => row.summary === 'Bind report outputs to resident pursuits.'), true);
   assert.equal(watch.some(row => row.summary === 'Watch repeated autonomy discourse for concrete implementation details.'), true);
@@ -1000,8 +1007,11 @@ test('AgencyKernel fans structured report packets into child pursuits, claims, a
   assert.equal(receipts.some(row => row.event === 'world_stream_child_selected' && row.route === 'pursue'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_selected' && row.route === 'watch'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_memory_candidate_created'), true);
+  assert.equal(receipts.some(row => row.event === 'jtr_question_raised' && row.reason === 'The report found both signals and needs jtr taste to allocate scarce attention.'), true);
+  assert.equal(receipts.some(row => row.event === 'world_stream_child_question_raised'), true);
   assert.equal(receipts.some(row => row.event === 'world_stream_child_discarded' && row.reason === 'no durable Home23 action'), true);
   assert.equal(consequences.some(row => row.changeType === 'memory_candidate_created' && row.status === 'applied'), true);
+  assert.equal(consequences.some(row => row.changeType === 'jtr_question_raised' && row.status === 'open'), true);
   assert.equal(consequences.some(row => row.changeType === 'structured_report_fanout' && row.status === 'fanout'), true);
 });
 
