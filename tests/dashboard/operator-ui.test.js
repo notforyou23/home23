@@ -114,6 +114,7 @@ test('Good Life issue detail shows user-facing repair context before raw JSON', 
 
 test('Agency inspector exposes cron retirement proposals as a filtered proof-chain surface', () => {
   const js = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.js'), 'utf8');
+  const css = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.css'), 'utf8');
   const html = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.html'), 'utf8');
   const server = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/server.js'), 'utf8');
 
@@ -126,6 +127,15 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
   assert.match(js, /Array\.isArray\(state\.activePursuits\) \? state\.activePursuits : pursuits/);
   assert.match(js, /status !== 'discarded' && status !== 'closed'/);
   assert.doesNotMatch(js, /pursuits\.length \? pursuits\.map\(renderAgencyPursuitRow\)/);
+  assert.match(js, /renderAgencyBriefQuestionBlock/);
+  assert.match(js, /agencyMeaningfulBriefChanges/);
+  assert.match(js, /summary !== 'pursuit_has_no_editor_block'/);
+  assert.match(js, /kind !== 'explicit_no_change'/);
+  assert.match(js, /Neighbor report from/);
+  assert.doesNotMatch(js, /<pre style="white-space:pre-wrap/);
+  assert.doesNotMatch(js, /brief\.text/);
+  assert.match(css, /\.h23-agency-brief-block/);
+  assert.match(css, /\.h23-agency-brief-row/);
   assert.match(js, /cron_run_log_excerpt/);
   assert.match(js, /semanticStatus/);
   assert.match(server, /\/home23\/api\/agency\/inspector/);

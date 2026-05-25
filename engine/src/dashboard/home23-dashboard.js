@@ -1755,6 +1755,13 @@ function residentBriefCountText(count, label) {
 function humanizeResidentMachineText(text, fallback = '') {
   const raw = String(text || '').trim();
   if (!raw) return fallback;
+  const neighborMatch = raw.match(/^\[neighbor\.([^\]]+)\]\s+\{/i);
+  if (neighborMatch) {
+    return `Neighbor report from ${residentTitleCase(neighborMatch[1])}`;
+  }
+  if (/^[{\[]/.test(raw) && /"agent"\s*:/.test(raw)) {
+    return 'Structured resident evidence';
+  }
   if (/^Cron agent-[\w-]+ \(exec\) finished with status ok\.$/i.test(raw)) {
     return 'Scheduler check finished';
   }
@@ -2252,10 +2259,71 @@ function renderAgencyScratchRow(row) {
 
 function renderAgencyBriefBlock(brief) {
   if (!brief) return '<p class="h23-muted">No resident brief reported.</p>';
-  const text = String(brief.text || '').trim();
-  if (!text) return '<p class="h23-muted">No resident brief reported.</p>';
+  const questions = brief.questions || {};
+  const blocks = [
+    renderAgencyBriefQuestionBlock('Following', questions.whatFollowing, renderAgencyBriefFollowingRow),
+    renderAgencyBriefQuestionBlock('Changed', agencyMeaningfulBriefChanges(questions.whatChanged), renderAgencyBriefChangeRow),
+    renderAgencyBriefQuestionBlock('Next', questions.whatDoingNext ? [questions.whatDoingNext] : [], renderAgencyBriefNextRow),
+    renderAgencyBriefQuestionBlock('Needs jtr', questions.whatNeedFromJtr, renderAgencyBriefNeedRow),
+  ].filter(Boolean);
+  return blocks.join('') || '<p class="h23-muted">No resident brief reported.</p>';
+}
+
+function renderAgencyBriefQuestionBlock(label, items, renderRow) {
+  const rows = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!rows.length) return '';
   return `
-    <pre style="white-space:pre-wrap;margin:0;color:rgba(255,255,255,0.86);font-size:12px;line-height:1.45;">${escapeHtml(text)}</pre>
+    <div class="h23-agency-brief-block">
+      <div class="h23-agency-brief-label">${escapeHtml(label)}</div>
+      ${rows.slice(0, 4).map(renderRow).join('')}
+    </div>
+  `;
+}
+
+function agencyMeaningfulBriefChanges(items = []) {
+  return (items || []).filter((item) => {
+    const summary = String(item?.summary || item?.reason || '').trim();
+    const kind = String(item?.kind || item?.type || '').trim();
+    return summary !== 'pursuit_has_no_editor_block' && kind !== 'explicit_no_change';
+  });
+}
+
+function renderAgencyBriefFollowingRow(item) {
+  return `
+    <div class="h23-agency-brief-row">
+      <strong>${escapeHtml(renderResidentPursuitTitle(item))}</strong>
+      <span>${escapeHtml(humanizeResidentMachineText(item.nextMove || item.desiredChangedFuture || item.whyItMatters || ''))}</span>
+      <small>${escapeHtml([item.status, item.authorityLevel].filter(Boolean).join(' · '))}</small>
+    </div>
+  `;
+}
+
+function renderAgencyBriefChangeRow(item) {
+  return `
+    <div class="h23-agency-brief-row">
+      <strong>${escapeHtml(renderResidentConsequenceTitle(item))}</strong>
+      <span>${escapeHtml(renderResidentConsequenceSummary(item))}</span>
+      <small>${escapeHtml(item.at ? timeSinceSafe(item.at) : '')}</small>
+    </div>
+  `;
+}
+
+function renderAgencyBriefNextRow(item) {
+  return `
+    <div class="h23-agency-brief-row">
+      <strong>${escapeHtml(humanizeResidentMachineText(item.kind || 'advance_one_step'))}</strong>
+      <span>${escapeHtml(residentActionReasonLabel(item.reason) || 'ready')}</span>
+      <small>${escapeHtml([item.authorityLevel, residentActionModeLabel(item)].filter(Boolean).join(' · '))}</small>
+    </div>
+  `;
+}
+
+function renderAgencyBriefNeedRow(item) {
+  return `
+    <div class="h23-agency-brief-row">
+      <strong>${escapeHtml(item.kind || item.type || item.title || 'jtr decision')}</strong>
+      <span>${escapeHtml(item.summary || item.reason || item.text || '')}</span>
+    </div>
   `;
 }
 

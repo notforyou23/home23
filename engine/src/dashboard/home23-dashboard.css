@@ -4679,6 +4679,48 @@ body.h23-external-focus #cosmo23-refresh-btn {
   font-size: 0.84rem;
 }
 
+.h23-agency-brief-block {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.h23-agency-brief-block:last-child {
+  margin-bottom: 0;
+}
+
+.h23-agency-brief-label {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.h23-agency-brief-row {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  border-left: 3px solid rgba(90, 200, 250, 0.85);
+  background: rgba(255,255,255,0.035);
+}
+
+.h23-agency-brief-row strong {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.h23-agency-brief-row span {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
+.h23-agency-brief-row small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
 @media (max-width: 1080px) {
   .h23-overview-band {
     display: grid;
