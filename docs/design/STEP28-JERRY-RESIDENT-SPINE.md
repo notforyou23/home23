@@ -1,6 +1,6 @@
 # Step 28: Jerry Resident Spine
 
-Status: implementation slice in progress.
+Status: implemented and live-verified on 2026-05-25.
 
 ## Directive
 
@@ -84,6 +84,24 @@ Status: implementation slice in progress.
 
 Dry-run remains the default. In dry-run, the resident spine records intent, vetoes, and consequences without executing external action. Live low-risk L0-L2 actions are allowed by policy; L3/L4 remain blocked unless explicitly expanded or approved.
 
-## Remaining Audit
+## Completion Audit
 
-- Run a final requirement-by-requirement audit against the full `evolve.md` directive before marking Step28 complete.
+Step28 now satisfies the final `evolve.md` directive in code and live state:
+
+- Resident loop: `engine/src/index.js` starts `AgencyKernel.tick()` on `agency.residentTickMs`, and live `receipts.jsonl` contains `resident_tick` receipts.
+- Pursuit graph: `pursuits.jsonl` stores living-thread fields, dedupe/supersession, caps, transitions, tasks, handoffs, watch, deferred, discarded, and closed states.
+- Consequence pipeline: world-stream intake, cron results, worker/artifact receipts, truth claims, behavioral deltas, questions, and tasks all write receipts and consequences instead of delivery-only output.
+- Bounded authority: `agency/charter.yaml`, `AuthorityPolicy`, delta arbitration, dry-run default, and L3/L4 approval gates enforce the allowed/approval boundary.
+- Attention scarcity: active/watch/deferred caps are loaded from the charter and reconciled into canonical state.
+- Editor/veto governance: bootcamp editor rules reject no-consequence outputs, stale loops, ornamental dashboard changes, and report-only theater with receipts.
+- World-stream ingestion: conversations, cron outputs, structured reports, report fan-out, COSMO research outputs, artifacts, and worker receipts enter resident intake.
+- Source-of-truth hierarchy: claim ranking, jtr corrections, verifier/worker receipts, contradictions, stale decay, and state projection are implemented in the kernel.
+- Private scratch: `scratch.jsonl`, API routes, dashboard proxying, and chat tool support provisional cognition outside public artifacts.
+- Embodiment contract: the charter projects organ maps for Step24, crons, workers, research, brain, chat, and dashboard into canonical agency state.
+
+Verification used for the completion audit:
+
+- `node --test --test-concurrency=1 tests/engine/agency/kernel.test.js tests/engine/artifacts/artifact-loop.test.js tests/engine/evidence/from-the-inside-publish.test.js tests/dashboard/operator-ui.test.js`
+- `node --import tsx --test --test-concurrency=1 tests/agent/tools/research.test.ts tests/agent/agency-world-stream.test.ts tests/agent/tools/agency.test.ts tests/agent/agency-context.test.ts tests/agent/agency-cron-bootcamp.test.ts tests/agent/tools/cron.test.ts tests/scheduler/cron.test.ts`
+- `npm run build`
+- Live route checks for `/api/agency/state`, `/api/agency/brief`, `/api/agency/pursuits`, and `/api/agency/inspector`.
