@@ -62,17 +62,6 @@ function logSaunaEvent(event, saunaData) {
 
 const CORE_TILES = [
   {
-    id: 'thought-feed',
-    kind: 'core',
-    title: 'Thought Feed',
-    icon: '🌊',
-    mode: 'core-thought-feed',
-    description: 'Latest thought rotation from this dashboard agent.',
-    contextClass: 'project',
-    sizeDefault: 'third',
-    refreshMs: 30_000,
-  },
-  {
     id: 'vibe',
     kind: 'core',
     title: 'Vibe',

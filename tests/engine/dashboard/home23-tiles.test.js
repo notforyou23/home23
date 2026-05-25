@@ -34,6 +34,7 @@ test('dashboard tile normalization appends Good Life to older layouts', () => {
   });
   const item = normalized.homeLayout.find((layoutItem) => layoutItem.tileId === 'good-life');
 
+  assert.ok(!normalized.homeLayout.some((layoutItem) => layoutItem.tileId === 'thought-feed'));
   assert.ok(item, 'good-life must be inserted when an existing layout is missing it');
   assert.equal(item.enabled, true);
   assert.equal(item.size, 'full');
@@ -58,9 +59,7 @@ test('family-evening context suppresses project-facing home tiles but keeps enab
     active: true,
   });
 
-  assert.ok(normalLayout.some((item) => item.tileId === 'thought-feed'));
   assert.ok(normalLayout.some((item) => item.tileId === 'brain-log'));
-  assert.ok(!contextual.layout.some((item) => item.tileId === 'thought-feed'));
   assert.ok(!contextual.layout.some((item) => item.tileId === 'brain-log'));
   assert.ok(contextual.layout.some((item) => item.tileId === 'chat'));
   assert.ok(contextual.layout.some((item) => item.tileId === 'system-summary'));
@@ -69,10 +68,9 @@ test('family-evening context suppresses project-facing home tiles but keeps enab
     'brain-log',
     'dream-log',
     'feeder',
-    'thought-feed',
     'vibe',
   ]);
-  assert.ok(normalized.homeLayout.some((item) => item.tileId === 'thought-feed'));
+  assert.ok(!normalized.homeLayout.some((item) => item.tileId === 'thought-feed'));
 });
 
 test('sauna rhythm produces a confirmed pre-stage recommendation', () => {

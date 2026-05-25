@@ -223,118 +223,6 @@ async function init() {
   }, 15000);
 }
 
-// ── Pulse tile (Jerry's voice + rotating stats) ──
-
-let _pulseLatest = null;
-let _pulseStatsIdx = 0;
-let _pulseRotateTimer = null;
-let _pulseLastRemarkId = null;
-
-async function updatePulseTile() {
-  try {
-    const r = await fetch(`${dashboardBaseUrl()}/api/pulse/latest`);
-    if (!r.ok) return;
-    const data = await r.json();
-    _pulseLatest = data.remark;
-    renderPulseTile();
-  } catch { /* silent */ }
-}
-
-function renderPulseTile() {
-  const textEl = document.getElementById('pulse-remark-text');
-  const ageEl = document.getElementById('pulse-remark-age');
-  if (!textEl) return;
-
-  if (!_pulseLatest || !_pulseLatest.text) {
-    textEl.textContent = `${currentAgentLabel()} has not spoken yet. Waiting for the first pulse cycle.`;
-    textEl.style.color = 'var(--text-muted)';
-    textEl.style.fontStyle = 'italic';
-    if (ageEl) ageEl.textContent = '';
-    return;
-  }
-
-  textEl.textContent = _pulseLatest.text;
-  textEl.style.color = 'var(--text-primary)';
-  textEl.style.fontStyle = 'normal';
-
-  if (ageEl) {
-    const age = timeSince(new Date(_pulseLatest.ts));
-    ageEl.textContent = `cycle ${_pulseLatest.cycle ?? '?'} · ${age}`;
-  }
-
-  // If remark changed, reset the rotating stats to start
-  if (_pulseLatest.id !== _pulseLastRemarkId) {
-    _pulseLastRemarkId = _pulseLatest.id;
-    _pulseStatsIdx = 0;
-    rotatePulseStat();
-  }
-}
-
-function rotatePulseStat() {
-  const el = document.getElementById('pulse-rotating-stat');
-  if (!el || !_pulseLatest) return;
-
-  const stats = _pulseLatest.stats || [];
-  if (stats.length === 0) {
-    el.textContent = '';
-    return;
-  }
-
-  const stat = stats[_pulseStatsIdx % stats.length];
-  el.innerHTML = `<span style="font-size:13px;margin-right:6px;">${stat.icon || '•'}</span><span style="color:var(--text-secondary);">${escapeHtml(String(stat.label))}:</span> <span style="color:var(--text-primary);font-weight:500;">${escapeHtml(String(stat.value))}</span>`;
-  _pulseStatsIdx++;
-}
-
-function startPulseRotation() {
-  if (_pulseRotateTimer) return;
-  rotatePulseStat();
-  _pulseRotateTimer = setInterval(rotatePulseStat, 8000);
-}
-
-async function openPulseHistoryPanel() {
-  const overlay = document.getElementById('pulse-history-overlay');
-  const list = document.getElementById('pulse-history-list');
-  const title = overlay?.querySelector('.h23-brainlog-title');
-  if (!overlay || !list) return;
-  if (title) title.textContent = `${currentAgentLabel('Agent')} Pulse History`;
-  overlay.style.display = 'flex';
-  list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Loading...</div>';
-  try {
-    const r = await fetch(`${dashboardBaseUrl()}/api/pulse/history?limit=40`);
-    const data = await r.json();
-    const remarks = data.remarks || [];
-    if (remarks.length === 0) {
-      list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">No remarks yet.</div>';
-      return;
-    }
-    list.innerHTML = remarks.map(r => {
-      const ts = r.ts ? new Date(r.ts).toLocaleString() : '';
-      const briefCount =
-        (r.brief?.notable?.length || 0) +
-        (r.brief?.signals?.length || 0) +
-        (r.brief?.liveProblems?.open?.length || 0) +
-        (r.brief?.liveProblems?.chronic?.length || 0) +
-        (r.brief?.liveProblems?.resolvedJustNow?.length || 0);
-      const briefSummary = briefCount > 0 ? `${briefCount} signal${briefCount === 1 ? '' : 's'} fed this remark` : 'quiet context';
-      return `
-        <div style="padding:12px 14px;margin-bottom:8px;background:rgba(255,255,255,0.02);border-left:3px solid #5ac8fa;">
-          <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:6px;">
-            cycle ${r.cycle ?? '?'} · ${r.model || 'unknown model'} · ${ts}
-          </div>
-          <div style="color:#fff;font-size:14px;line-height:1.5;margin-bottom:6px;">${escapeHtml(r.text || '')}</div>
-          <div style="font-size:11px;color:rgba(255,255,255,0.4);">${briefSummary}</div>
-        </div>`;
-    }).join('');
-  } catch (err) {
-    list.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
-  }
-}
-
-function closePulseHistoryPanel() {
-  const overlay = document.getElementById('pulse-history-overlay');
-  if (overlay) overlay.style.display = 'none';
-}
-
 // ── Live Problems (verifier-backed ground truth) ──
 let _liveProblems = { problems: [], snapshot: null };
 let _problemEditingId = null;
@@ -3053,7 +2941,6 @@ function layoutHasTile(tileId) {
 
 function fallbackHomeLayout() {
   return [
-    { tileId: 'thought-feed', size: 'third', tile: { id: 'thought-feed', kind: 'core' } },
     { tileId: 'vibe', size: 'third', tile: { id: 'vibe', kind: 'core' } },
     { tileId: 'chat', size: 'third', tile: { id: 'chat', kind: 'core' } },
     { tileId: 'outside-weather', size: 'half', tile: { id: 'outside-weather', kind: 'custom' } },
@@ -3072,21 +2959,6 @@ function getVisibleCustomTiles() {
 
 function getHomeTile(tileId) {
   return homeTileLayout.find((item) => item.tileId === tileId)?.tile || null;
-}
-
-function renderThoughtFeedTile() {
-  return `
-    <div class="h23-tile h23-tile-thoughts h23-tile-pulse" style="cursor:pointer;" onclick="openPulseHistoryPanel()" title="Tap to see pulse history">
-      <div class="h23-tile-header" style="display:flex;align-items:center;gap:8px;">
-        💬 <span id="primary-agent-name">${escapeHtml(primaryAgent?.displayName || primaryAgent?.name || 'Agent')}</span>
-        <span id="pulse-remark-age" style="margin-left:auto;font-size:11px;color:var(--text-muted);font-weight:400;"></span>
-      </div>
-      <div id="pulse-remark-body" style="display:flex;flex-direction:column;gap:10px;">
-        <div id="pulse-remark-text" style="font-size:14px;line-height:1.55;color:var(--text-primary);">Loading…</div>
-        <div id="pulse-rotating-stat" style="font-size:12px;color:var(--text-muted);border-top:1px solid var(--glass-border);padding-top:8px;min-height:20px;"></div>
-      </div>
-    </div>
-  `;
 }
 
 function renderVibeTile() {
@@ -3266,9 +3138,6 @@ function renderHomeLayoutItem(item) {
   let markup = '';
 
   switch (item.tileId) {
-    case 'thought-feed':
-      markup = renderThoughtFeedTile();
-      break;
     case 'vibe':
       markup = renderVibeTile();
       break;
