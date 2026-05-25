@@ -116,8 +116,7 @@ function refreshDashboardScopeUI() {
     const meta = getDashboardScopeMeta(tabKey);
     if (!tab.dataset.tabLabel) tab.dataset.tabLabel = tab.textContent.trim();
     const label = tab.dataset.tabLabel;
-    const showChip = meta.kind === 'external' || meta.kind === 'peer';
-    tab.innerHTML = `<span class="h23-tab-label">${label}</span>${showChip ? `<span class="h23-tab-scope-chip scope-${meta.kind}">${meta.chip}</span>` : ''}`;
+    tab.innerHTML = `<span class="h23-tab-label">${label}</span>`;
     tab.title = renderDashboardScopeText(meta, tabKey);
   });
 
