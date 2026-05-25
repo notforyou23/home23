@@ -170,6 +170,40 @@ test('buildCronResultPacket extracts machine-readable agency intake packets from
   assert.match(packet.seen.join('\n'), /Bind report outputs/);
 });
 
+test('buildCronResultPacket accepts raw JSON agency intake packets without the marker', () => {
+  const packet = buildCronResultPacket({
+    id: 'field-report-cycle',
+    name: 'Field Report Cycle',
+    schedule: { type: 'interval', minutes: 180 },
+    payload: {
+      kind: 'agentTurn',
+      message: 'write field report',
+    },
+    state: { enabled: true },
+  }, {
+    status: 'ok',
+    response: JSON.stringify({
+      schema: 'home23.agency.intake-packet.v1',
+      summary: 'Field report found one doctrine change.',
+      actionWorthy: [{ summary: 'Update report prompt to cite lived consequence.' }],
+      watchItems: [],
+      contradictions: [],
+      discardedNoise: [{ ref: 'generic becoming paragraph', reason: 'repeated skeleton' }],
+      desiredChangedFuture: 'Field report changes future publication posture.',
+      nextMove: 'apply bounded prompt delta',
+      tags: ['field-report', 'newsletter'],
+    }),
+    durationMs: 222,
+  });
+
+  assert.equal(packet.explicitNoChange, false);
+  assert.equal(packet.summary, 'Field report found one doctrine change.');
+  assert.equal(packet.desiredChangedFuture, 'Field report changes future publication posture.');
+  assert.deepEqual((packet as any).actionWorthy, [{ summary: 'Update report prompt to cite lived consequence.' }]);
+  assert.deepEqual(packet.discarded, [{ ref: 'generic becoming paragraph', reason: 'repeated skeleton' }]);
+  assert.equal(packet.tags.includes('field-report'), true);
+});
+
 test('buildCronResultPacket closes bound pursuits when cron satisfies the stop condition', () => {
   const packet = buildCronResultPacket({
     id: 'legacy-cron',

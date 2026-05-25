@@ -92,9 +92,39 @@ function readBalancedJsonAfterMarker(text: string, marker: string): string | nul
   return null;
 }
 
+function readFirstBalancedJson(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = inString;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (ch === '{') depth += 1;
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, i + 1);
+    }
+  }
+  return null;
+}
+
 function extractReportIntakePacket(text: string): ReportIntakePacket | null {
   const fromMarker = readBalancedJsonAfterMarker(text, 'AGENCY_INTAKE_PACKET');
-  const jsonText = fromMarker || (text.includes(INTAKE_SCHEMA) ? readBalancedJsonAfterMarker(text, '{') : null);
+  const jsonText = fromMarker || (text.includes(INTAKE_SCHEMA) ? readFirstBalancedJson(text) : null);
   if (!jsonText) return null;
   try {
     const parsed = JSON.parse(jsonText) as ReportIntakePacket;
