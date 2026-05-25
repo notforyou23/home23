@@ -269,6 +269,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /if \(currentTab === 'workers'\) \{\s*loadWorkersSurface\(\)\.catch\(\(\) => \{\}\);/);
   assert.doesNotMatch(js, /loadAgencySurface\(\)\.catch\(\(\) => \{ \/\* agency bridge may still be booting \*\/ \}\);/);
   assert.match(js, /if \(currentTab === 'agency'\) \{\s*loadAgencySurface\(\)\.catch\(\(\) => \{\}\);/);
+  assert.doesNotMatch(js, /\n\s*updateNotificationBadge\(\);\n\s*setInterval\(updateNotificationBadge, 15000\);/);
+  assert.doesNotMatch(js, /\n\s*updateSignalsBadge\(\);\n\s*setInterval\(updateSignalsBadge, 30000\);/);
   assert.doesNotMatch(js, /if \(!chip \|\| !primaryAgent\) return/);
   assert.doesNotMatch(js, /PRIMARY AGENT/);
   assert.doesNotMatch(js, /SECONDARY AGENT/);

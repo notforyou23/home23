@@ -203,10 +203,6 @@ async function init() {
   // Check for Home23 updates
   checkUpdateNotification();
 
-  // Poll notifications (pending thought-actions from cognitive cycles)
-  updateNotificationBadge();
-  setInterval(updateNotificationBadge, 15000);
-
   // Poll autonomous actions (⚡ executions from ACT: tag)
   updateActionsBadge();
   setInterval(updateActionsBadge, 15000);
@@ -215,10 +211,6 @@ async function init() {
   // cadence (~90s), so 20s is plenty fresh for the dashboard.
   updateProblemsBadge();
   setInterval(updateProblemsBadge, 20000);
-
-  // Signals badge — wins, resolutions, positive observations. Polls 30s.
-  updateSignalsBadge();
-  setInterval(updateSignalsBadge, 30000);
 
   // Brain storage badge — polls every 30s. Shows disk node count and flags
   // mismatch between disk-side snapshot and in-memory state.
