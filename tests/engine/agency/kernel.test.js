@@ -86,6 +86,80 @@ test('AgencyKernel dedupes repeated Good Life usefulness drift into one pursuit'
   assert.equal(second.pursuit.seenCount, 2);
 });
 
+test('AgencyKernel merges repeated unbound world-stream cron receipts instead of filling active attention', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const packet = {
+    source: 'cron.agent-12d2d476-bb6f-435f-9058-62f99c336543',
+    kind: 'cron_report',
+    summary: 'Cron agent-12d2d476-bb6f-435f-9058-62f99c336543 (exec) finished with status ok.',
+    authorityLevel: 'L3',
+    desiredChangedFuture: 'Cron outcome updates a bound resident pursuit with latest scheduler evidence.',
+    nextMove: 'attach scheduler outcome to the bound resident pursuit and continue based on semantic status',
+    evidence: [{ type: 'cron_result', ref: 'agent-12d2d476-bb6f-435f-9058-62f99c336543' }],
+    tags: ['cron', 'world-stream'],
+  };
+
+  const first = await kernel.intakeWorldStream(packet);
+  const second = await kernel.intakeWorldStream({
+    ...packet,
+    evidence: [{ type: 'cron_result', ref: 'agent-12d2d476-bb6f-435f-9058-62f99c336543:second' }],
+  });
+
+  const active = kernel.pursuits({ status: 'active', limit: 10 });
+  const pursuitRows = readJsonl(join(dir, 'agency', 'pursuits.jsonl'))
+    .filter(row => row.pursuit?.dedupeKey === first.pursuit.dedupeKey);
+
+  assert.equal(second.decision.reason, 'merged_with_existing_pursuit');
+  assert.equal(first.pursuit.id, second.pursuit.id);
+  assert.equal(active.length, 1);
+  assert.equal(active[0].seenCount, 2);
+  assert.equal(active[0].latestEvidence.at(-1).ref, 'agent-12d2d476-bb6f-435f-9058-62f99c336543:second');
+  assert.equal(pursuitRows.filter(row => row.type === 'created').length, 1);
+});
+
+test('AgencyKernel reconciles legacy duplicate active pursuits by dedupe key', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const candidate = kernel.router.normalize({
+    source: 'cron.agent-12d2d476-bb6f-435f-9058-62f99c336543',
+    kind: 'cron_report',
+    summary: 'Cron agent-12d2d476-bb6f-435f-9058-62f99c336543 (exec) finished with status ok.',
+    authorityLevel: 'L3',
+    desiredChangedFuture: 'Cron outcome updates a bound resident pursuit with latest scheduler evidence.',
+    evidence: [{ type: 'cron_result', ref: 'cron:first' }],
+    tags: ['cron', 'world-stream'],
+  });
+  const first = kernel.store.createPursuit(candidate, { route: 'pursue', reason: 'test_duplicate_first' });
+  const duplicate = kernel.store.createPursuit({
+    ...candidate,
+    evidence: [{ type: 'cron_result', ref: 'cron:duplicate' }],
+  }, { route: 'pursue', reason: 'test_duplicate_second' });
+
+  const state = kernel.state();
+  const kept = kernel.pursuit(first.id);
+  const discarded = kernel.pursuit(duplicate.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(state.attention.activePursuits, 1);
+  assert.equal(kept.status, 'active');
+  assert.equal(kept.seenCount, 2);
+  assert.equal(kept.latestEvidence.at(-1).ref, 'cron:duplicate');
+  assert.equal(discarded.status, 'discarded');
+  assert.equal(receipts.some(row => row.event === 'deduped' && row.pursuitId === duplicate.id && row.mergedInto === first.id), true);
+  assert.equal(consequences.some(row => row.pursuitId === duplicate.id && row.changeType === 'duplicate_attention_deduped'), true);
+});
+
 test('AgencyKernel records low-signal Step24 machine observations as discard receipts instead of watch spam', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

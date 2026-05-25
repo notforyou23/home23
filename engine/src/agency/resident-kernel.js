@@ -130,6 +130,7 @@ export class AgencyKernel {
     this.reconcileResolvedLiveProblemAttention();
     this.reconcileCronBootcampStopConditions();
     this.reconcileLowSignalAttention();
+    this.reconcileDuplicateAttention();
     this.reconcileStaleTruthClaims();
     this.enforceAttentionCaps();
     const active = this.store.listPursuits({ status: 'active', limit: 10000 });
@@ -316,6 +317,69 @@ export class AgencyKernel {
         reason,
         mode: this.config.mode,
       });
+    }
+  }
+
+  reconcileDuplicateAttention() {
+    const pursuits = this.store.listPursuits({ status: ['active', 'watch'], limit: 10000 });
+    const groups = new Map();
+    for (const pursuit of pursuits) {
+      const key = String(pursuit.dedupeKey || '').trim();
+      if (!key) continue;
+      const list = groups.get(key) || [];
+      list.push(pursuit);
+      groups.set(key, list);
+    }
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      const ordered = [...group].sort((a, b) => String(a.createdAt || a.updatedAt || '').localeCompare(String(b.createdAt || b.updatedAt || '')));
+      const keeper = ordered[0];
+      const duplicates = ordered.slice(1);
+      const mergedEvidence = mergeEvidenceItems(ordered.flatMap(pursuit => pursuit.evidence || []));
+      const mergedLatestEvidence = mergeEvidenceItems(ordered.flatMap(pursuit => pursuit.latestEvidence || []));
+      const status = ordered.some(pursuit => pursuit.status === 'active') ? 'active' : keeper.status;
+      const seenCount = ordered.reduce((sum, pursuit) => sum + Number(pursuit.seenCount || 1), 0);
+      const lastSeenAt = latestIso(ordered.map(pursuit => pursuit.lastSeenAt || pursuit.updatedAt || pursuit.createdAt));
+      this.store.updatePursuit(keeper.id, {
+        status,
+        evidence: mergedEvidence,
+        linkedEvidence: mergedEvidence,
+        latestEvidence: mergedLatestEvidence.slice(-3),
+        seenCount,
+        lastSeenAt: lastSeenAt || keeper.lastSeenAt,
+      }, {
+        type: 'duplicate_attention_merged',
+        reason: 'duplicate_dedupe_key_attention_merged',
+      });
+      for (const duplicate of duplicates) {
+        this.store.updatePursuit(duplicate.id, { status: 'discarded' }, {
+          type: 'duplicate_attention_deduped',
+          reason: 'duplicate_dedupe_key_attention_merged',
+          detail: { mergedInto: keeper.id },
+        });
+        this.store.appendReceipt({
+          schema: 'home23.agency.receipt.v1',
+          at: nowIso(),
+          event: 'deduped',
+          pursuitId: duplicate.id,
+          mergedInto: keeper.id,
+          route: 'discard',
+          reason: 'duplicate_dedupe_key_attention_merged',
+          mode: this.config.mode,
+        });
+        this.store.appendConsequence({
+          schema: 'home23.agency.consequence.v1',
+          at: nowIso(),
+          pursuitId: duplicate.id,
+          status: 'discarded',
+          changeType: 'duplicate_attention_deduped',
+          summary: `Duplicate pursuit ${duplicate.id} merged into ${keeper.id}.`,
+          evidence: [
+            { type: 'agency_pursuit', ref: duplicate.id },
+            { type: 'agency_pursuit', ref: keeper.id },
+          ],
+        });
+      }
     }
   }
 
@@ -694,14 +758,17 @@ export class AgencyKernel {
       const state = this.ensureState();
       return { candidate, decision, pursuit: null, receipt, state };
     }
+    const existing = this.store.findSimilar(candidate);
     const decision = candidate.explicitNoChange
       ? { route: 'discard', reason: 'explicit_no_change' }
-      : this.selector.select(candidate, { existing: this.store.findSimilar(candidate), budget: this.attentionBudget() });
+      : this.selector.select(candidate, { existing, budget: this.attentionBudget() });
     this.store.appendInbox({ ...candidate, decision });
 
     let pursuit = null;
     if (decision.route === 'pursue' || decision.route === 'watch') {
-      pursuit = this.store.createPursuit(candidate, decision);
+      pursuit = existing
+        ? this.store.mergeSeen(existing, candidate, decision)
+        : this.store.createPursuit(candidate, decision);
     }
     const outcome = candidate.explicitNoChange
       ? 'explicit_no_change'
@@ -2520,6 +2587,10 @@ function structuredItemEvidence(item = {}, parent = {}) {
   if (Array.isArray(item.evidence)) evidence.push(...item.evidence);
   if (item.evidenceRef) evidence.push({ type: 'report_item', ref: String(item.evidenceRef) });
   if (Array.isArray(parent.evidence)) evidence.push(...parent.evidence);
+  return mergeEvidenceItems(evidence);
+}
+
+function mergeEvidenceItems(evidence = []) {
   const unique = [];
   const seen = new Set();
   for (const row of evidence) {
@@ -2529,4 +2600,12 @@ function structuredItemEvidence(item = {}, parent = {}) {
     unique.push(row);
   }
   return unique;
+}
+
+function latestIso(values = []) {
+  return values
+    .filter(Boolean)
+    .map(String)
+    .sort()
+    .at(-1) || null;
 }
