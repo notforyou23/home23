@@ -1790,7 +1790,27 @@ function residentSourceLabel(source) {
   return value;
 }
 
+function residentTitleCase(value) {
+  return String(value || '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase())
+    .trim();
+}
+
+function renderGoodLifeResidentPursuitTitle(p) {
+  const raw = String(p?.title || p?.summary || '').trim();
+  const drift = raw.match(/^(help|repair|recover|learn|play|rest|ask|observe)\s+-\s+(\w+)\s+([\w-]+)\s+drift/i);
+  if (drift) return `${residentTitleCase(drift[3])} ${residentTitleCase(drift[1])}`;
+  const policy = raw.match(/^(help|repair|recover|learn|play|rest|ask|observe)\b/i);
+  if (policy) return `Good Life ${residentTitleCase(policy[1])}`;
+  return '';
+}
+
 function renderResidentPursuitTitle(p) {
+  if (p.source === 'domain.good-life') {
+    const title = renderGoodLifeResidentPursuitTitle(p);
+    if (title) return title;
+  }
   return humanizeResidentMachineText(p.title || p.summary || p.id, 'Resident pursuit');
 }
 
@@ -1802,7 +1822,7 @@ function renderResidentPursuitBody(p) {
 }
 
 function renderResidentPursuitEvidence(p, updated) {
-  return [compactResidentEvidenceId(p.id), residentSourceLabel(p.source), updated ? timeSinceSafe(updated) : null]
+  return [residentSourceLabel(p.source), updated ? timeSinceSafe(updated) : null]
     .filter(Boolean)
     .join(' · ');
 }
