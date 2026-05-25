@@ -1217,17 +1217,6 @@ class DashboardServer {
               { method: 'POST', path: '/home23/api/agency/pursuits/:id/transition' },
             ],
           },
-          intelligence: {
-            kind: 'dashboard',
-            chip: 'This Agent',
-            summaryTemplate: "Intelligence is scoped to {{dashboardAgent}}. It reflects this dashboard agent's internal state and live system observations.",
-            routes: [
-              { method: 'GET', path: '/api/state' },
-              { method: 'GET', path: '/api/pulse/latest' },
-              { method: 'GET', path: '/api/live-problems' },
-              { method: 'GET', path: '/home23/api/settings/update-status' },
-            ],
-          },
           workers: {
             kind: 'mixed',
             chip: 'Workers',
@@ -1258,15 +1247,6 @@ class DashboardServer {
             routes: [
               { method: 'GET', path: '/home23/api/brain/current' },
               { method: 'GET', path: '/home23/api/brain/graph' },
-            ],
-          },
-          about: {
-            kind: 'shared',
-            chip: 'Shared',
-            summaryTemplate: 'About is a shared system surface. It describes the Home23 install rather than one specific agent.',
-            routes: [
-              { method: 'GET', path: '/home23/config.json' },
-              { method: 'GET', path: '/home23/api/settings/status' },
             ],
           },
           settings: {

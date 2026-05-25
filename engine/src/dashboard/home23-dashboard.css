@@ -1426,195 +1426,6 @@ body::before {
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
 
-/* ── Intelligence Tab ── */
-
-.h23-intel-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1.2rem;
-}
-
-.h23-intel-header h2 {
-  margin: 0;
-  font-size: 1.3rem;
-}
-
-.h23-intel-actions {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-}
-
-.h23-intel-timestamp {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-}
-
-.h23-intel-synth-btn {
-  padding: 0.4rem 1rem;
-  background: rgba(139, 92, 246, 0.15);
-  color: #a78bfa;
-  border: 1px solid rgba(139, 92, 246, 0.3);
-  border-radius: 6px;
-  font-size: 0.8rem;
-  cursor: pointer;
-}
-
-.h23-intel-synth-btn:hover {
-  background: rgba(139, 92, 246, 0.25);
-  color: #c4b5fd;
-}
-
-.h23-intel-synth-btn.running {
-  opacity: 0.6;
-  cursor: wait;
-}
-
-/* Vitals row */
-.h23-intel-vitals {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
-}
-
-.h23-intel-stat {
-  background: var(--glass-primary);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
-  padding: 0.8rem;
-  text-align: center;
-}
-
-.h23-intel-stat-val {
-  display: block;
-  font-size: 1.6rem;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.h23-intel-stat-label {
-  display: block;
-  font-size: 0.7rem;
-  color: var(--text-muted);
-  margin-top: 0.2rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-/* Sections */
-.h23-intel-section {
-  margin-bottom: 1.5rem;
-}
-
-.h23-intel-section h3 {
-  font-size: 0.9rem;
-  color: var(--text-secondary);
-  margin: 0 0 0.6rem 0;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-/* Cards */
-.h23-intel-card {
-  background: var(--glass-primary);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
-  padding: 1rem;
-  line-height: 1.6;
-  color: var(--text-secondary);
-  font-size: 0.9rem;
-}
-
-.h23-intel-index-card {
-  max-height: 300px;
-  overflow-y: auto;
-  white-space: pre-wrap;
-  font-family: monospace;
-  font-size: 0.8rem;
-  color: var(--text-muted);
-}
-
-/* Insight cards */
-.h23-intel-insight {
-  background: var(--glass-primary);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
-  padding: 0.8rem 1rem;
-  margin-bottom: 0.6rem;
-  border-left: 3px solid rgba(139, 92, 246, 0.4);
-}
-
-.h23-intel-insight-title {
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 0.3rem;
-  font-size: 0.9rem;
-}
-
-.h23-intel-insight-excerpt {
-  color: var(--text-secondary);
-  font-size: 0.85rem;
-  line-height: 1.5;
-}
-
-.h23-intel-insight-meta {
-  margin-top: 0.4rem;
-  font-size: 0.7rem;
-  color: var(--text-muted);
-}
-
-.h23-intel-insight-theme {
-  display: inline-block;
-  background: rgba(139, 92, 246, 0.1);
-  color: #a78bfa;
-  padding: 0.1rem 0.4rem;
-  border-radius: 3px;
-  font-size: 0.65rem;
-  margin-right: 0.3rem;
-}
-
-/* Activity list */
-.h23-intel-activity-list {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.h23-intel-activity-list li {
-  padding: 0.4rem 0;
-  border-bottom: 1px solid rgba(255,255,255,0.04);
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-}
-
-.h23-intel-activity-list li:last-child {
-  border-bottom: none;
-}
-
-/* Self-understanding obsessions */
-.h23-intel-obsessions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-top: 0.6rem;
-}
-
-.h23-intel-obsession {
-  background: rgba(59, 130, 246, 0.1);
-  color: #93c5fd;
-  padding: 0.2rem 0.6rem;
-  border-radius: 4px;
-  font-size: 0.75rem;
-}
-
 /* ── Brain Map tab ── */
 
 .h23-brain-map-header {
@@ -1852,118 +1663,6 @@ body::before {
   font-size: 0.9rem;
 }
 
-/* ── About Page ── */
-
-.h23-about {
-  max-width: 800px;
-  margin: 0 auto;
-  padding: 0 0 40px;
-}
-
-.h23-about h2 {
-  font-size: 2rem;
-  font-weight: 800;
-  background: linear-gradient(135deg, #fff 0%, rgba(255,255,255,0.7) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  margin-bottom: 4px;
-}
-
-.h23-about-tagline {
-  font-size: 1rem;
-  color: var(--text-muted);
-  margin-bottom: 32px;
-  font-style: italic;
-}
-
-.h23-about-section {
-  margin-bottom: 28px;
-}
-
-.h23-about-section h3 {
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--text-secondary);
-  margin-bottom: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-size: 0.85rem;
-}
-
-.h23-about-section p {
-  color: var(--text-secondary);
-  line-height: 1.7;
-  font-size: 0.9rem;
-  margin-bottom: 8px;
-}
-
-.h23-about-section code {
-  background: rgba(255,255,255,0.08);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 0.82rem;
-  color: var(--accent-blue);
-}
-
-.h23-about-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-
-.h23-about-card {
-  background: var(--glass-primary);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-md);
-  padding: 16px;
-}
-
-.h23-about-card-title {
-  font-size: 0.9rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-bottom: 6px;
-}
-
-.h23-about-card p {
-  font-size: 0.82rem;
-  color: var(--text-muted);
-  line-height: 1.5;
-  margin: 0;
-}
-
-.h23-about-guide {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.h23-about-guide-item {
-  padding: 8px 12px;
-  background: var(--glass-secondary);
-  border-radius: var(--radius-sm);
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-  line-height: 1.5;
-}
-
-.h23-about-guide-item strong {
-  color: var(--text-primary);
-}
-
-.h23-about-footer {
-  margin-top: 32px;
-  padding-top: 16px;
-  border-top: 1px solid rgba(255,255,255,0.06);
-  display: flex;
-  gap: 8px;
-  font-size: 0.8rem;
-  color: var(--text-dim);
-}
-
 /* ── Layout Refresh (2026-04-22) ── */
 
 :root {
@@ -2177,10 +1876,8 @@ body {
 }
 
 .h23-tab[data-tab="home"] .h23-tab-label::before { content: '⌂'; }
-.h23-tab[data-tab="intelligence"] .h23-tab-label::before { content: '◌'; }
 .h23-tab[data-tab="query"] .h23-tab-label::before { content: '⌕'; }
 .h23-tab[data-tab="brain-map"] .h23-tab-label::before { content: '◈'; }
-.h23-tab[data-tab="about"] .h23-tab-label::before { content: 'i'; }
 .h23-tab-settings .h23-tab-label::before { content: '⚙'; }
 .h23-tab-cosmo23 .h23-tab-label::before { content: '⌁'; }
 .h23-tab-evobrew .h23-tab-label::before { content: '⚡'; }
@@ -4356,8 +4053,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
   display: none;
 }
 
-.h23-about,
-.h23-panel#panel-intelligence,
 .h23-panel#panel-workers,
 .h23-panel#panel-brain-map,
 .h23-panel#panel-query {
@@ -4368,7 +4063,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
   padding: 22px;
 }
 
-.h23-panel#panel-intelligence,
 .h23-panel#panel-workers,
 .h23-panel#panel-brain-map,
 .h23-panel#panel-query {
@@ -5222,9 +4916,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
     grid-template-columns: 1fr;
   }
 
-  .h23-about-grid {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 640px) {
@@ -5244,8 +4935,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
   .h23-sidebar,
   .h23-header,
   .h23-overview-band,
-  .h23-about,
-  .h23-panel#panel-intelligence,
   .h23-panel#panel-workers,
   .h23-panel#panel-brain-map,
   .h23-panel#panel-query {

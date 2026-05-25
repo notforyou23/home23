@@ -21,7 +21,6 @@ let cosmo23Url = '';
 let evobrewUrl = '';
 let cosmo23Loaded = false;
 let cosmoOnline = false;
-let intelRefreshInterval = null;
 let homeThoughtRotationTimer = null;
 let homeTileLayout = [];
 let homeTileLayoutSignature = '';
@@ -55,11 +54,6 @@ const DASHBOARD_SCOPE_FALLBACK = {
     chip: 'This Agent',
     summaryTemplate: '{{dashboardAgent}} is running from resident agency state. Routine organs stay hidden until they need action.',
   },
-  intelligence: {
-    kind: 'dashboard',
-    chip: 'This Agent',
-    summaryTemplate: "Intelligence is scoped to {{dashboardAgent}}. It reflects this dashboard agent's internal state and live system observations.",
-  },
   workers: {
     kind: 'mixed',
     chip: 'Workers',
@@ -79,11 +73,6 @@ const DASHBOARD_SCOPE_FALLBACK = {
     kind: 'dashboard',
     chip: 'This Agent',
     summaryTemplate: "Brain Map opens {{dashboardAgent}}'s graph by default. It uses the current dashboard brain route when resolving the graph view.",
-  },
-  about: {
-    kind: 'shared',
-    chip: 'Shared',
-    summaryTemplate: 'About is a shared system surface. It describes the Home23 install rather than one specific agent.',
   },
   settings: {
     kind: 'mixed',
@@ -1402,8 +1391,6 @@ async function loadAgents() {
     });
   }
 
-  // Wire Intelligence tab synthesis button
-  setupIntelSynthButton();
 }
 
 // ── COSMO iframe ──
@@ -1621,18 +1608,6 @@ function setupTabHandlers() {
 
       if (currentTab === 'home') loadResidentHomeSurface().catch(() => {});
 
-      // Intelligence tab: load content and start refresh
-      if (currentTab === 'intelligence') {
-        loadIntelligence();
-        if (!intelRefreshInterval) {
-          intelRefreshInterval = setInterval(loadIntelligence, 30_000);
-        }
-      } else {
-        if (intelRefreshInterval) {
-          clearInterval(intelRefreshInterval);
-          intelRefreshInterval = null;
-        }
-      }
     });
   });
 }
@@ -5910,123 +5885,6 @@ function formatDurationMs(ms) {
   if (hours > 0) return `${hours}h ${minutes}m`;
   if (minutes > 0) return `${minutes}m ${seconds}s`;
   return `${seconds}s`;
-}
-
-// ── Intelligence Tab ──
-
-async function loadIntelligence() {
-  const host = window.location.hostname;
-  const dashPort = location.port;
-
-  try {
-    const res = await fetch(`http://${host}:${dashPort}/api/synthesis/state`);
-    const state = await res.json();
-
-    // Timestamp
-    const tsEl = document.getElementById('intel-timestamp');
-    if (tsEl) {
-      tsEl.textContent = state.generatedAt
-        ? `Last synthesis: ${new Date(state.generatedAt).toLocaleString()}`
-        : 'No synthesis yet';
-    }
-
-    // Vitals
-    const stats = state.brainStats || {};
-    const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val ?? '—'; };
-    setVal('iv-nodes', stats.nodes?.toLocaleString());
-    setVal('iv-edges', stats.edges?.toLocaleString());
-    setVal('iv-cycles', stats.cycles);
-    setVal('iv-compiled', stats.documentsCompiled);
-
-    // Self-Understanding
-    const selfEl = document.getElementById('intel-self-content');
-    if (selfEl && state.selfUnderstanding) {
-      const su = state.selfUnderstanding;
-      let html = `<p>${su.summary || 'No self-understanding yet.'}</p>`;
-      if (su.relationship) {
-        html += `<p style="margin-top:0.5rem;color:#93c5fd;font-size:0.85rem;">${su.relationship}</p>`;
-      }
-      if (su.currentObsessions && su.currentObsessions.length > 0) {
-        html += `<div class="h23-intel-obsessions">${su.currentObsessions.map(o => `<span class="h23-intel-obsession">${o}</span>`).join('')}</div>`;
-      }
-      selfEl.innerHTML = html;
-    } else if (selfEl) {
-      selfEl.innerHTML = '<p class="h23-muted">Awaiting first synthesis run...</p>';
-    }
-
-    // Consolidated Insights
-    const insightsEl = document.getElementById('intel-insights-list');
-    if (insightsEl && state.consolidatedInsights && state.consolidatedInsights.length > 0) {
-      insightsEl.innerHTML = state.consolidatedInsights.map(i => `
-        <div class="h23-intel-insight">
-          <div class="h23-intel-insight-title">${i.title || 'Untitled'}</div>
-          <div class="h23-intel-insight-excerpt">${i.excerpt || ''}</div>
-          <div class="h23-intel-insight-meta">
-            ${i.source ? `Source: ${i.source}` : ''}
-            ${i.themes ? i.themes.map(t => `<span class="h23-intel-insight-theme">${t}</span>`).join('') : ''}
-          </div>
-        </div>
-      `).join('');
-    } else if (insightsEl) {
-      insightsEl.innerHTML = '<div class="h23-intel-card"><p class="h23-muted">No insights yet. Run synthesis to generate.</p></div>';
-    }
-
-    // Knowledge Index
-    const indexEl = document.getElementById('intel-index-content');
-    if (indexEl) {
-      indexEl.textContent = state.knowledgeIndex || 'No compiled documents yet.';
-    }
-
-    // Recent Activity
-    const activityEl = document.getElementById('intel-activity-list');
-    if (activityEl && state.recentActivity && state.recentActivity.length > 0) {
-      activityEl.innerHTML = state.recentActivity.map(a => `<li>${a}</li>`).join('');
-    } else if (activityEl) {
-      activityEl.innerHTML = '<li class="h23-muted">No recent activity.</li>';
-    }
-  } catch (err) {
-    console.warn('[intel] Failed to load synthesis state:', err.message);
-  }
-}
-
-function setupIntelSynthButton() {
-  const btn = document.getElementById('intel-synth-btn');
-  if (!btn) return;
-
-  btn.addEventListener('click', async () => {
-    btn.classList.add('running');
-    btn.textContent = 'Running...';
-
-    const host = window.location.hostname;
-    const dashPort = location.port;
-
-    try {
-      await fetch(`http://${host}:${dashPort}/api/synthesis/run`, { method: 'POST' });
-      // Poll for completion
-      let attempts = 0;
-      const poll = setInterval(async () => {
-        attempts++;
-        try {
-          const res = await fetch(`http://${host}:${dashPort}/api/synthesis/state`);
-          const state = await res.json();
-          if (state.generatedAt && new Date(state.generatedAt).getTime() > Date.now() - 60_000) {
-            clearInterval(poll);
-            btn.classList.remove('running');
-            btn.textContent = 'Run Synthesis';
-            await loadIntelligence();
-          }
-        } catch { /* keep polling */ }
-        if (attempts > 60) {
-          clearInterval(poll);
-          btn.classList.remove('running');
-          btn.textContent = 'Run Synthesis';
-        }
-      }, 2000);
-    } catch {
-      btn.classList.remove('running');
-      btn.textContent = 'Run Synthesis';
-    }
-  });
 }
 
 // ── Update Notification ──

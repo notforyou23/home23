@@ -150,6 +150,10 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(html, /h23-overview-band/);
   assert.doesNotMatch(html, /h23-tab-scope-bar/);
   assert.doesNotMatch(html, />This Agent Surface</);
+  assert.doesNotMatch(html, /id="panel-intelligence"/);
+  assert.doesNotMatch(html, /id="panel-about"/);
+  assert.doesNotMatch(html, /Dashboard Guide/);
+  assert.doesNotMatch(html, /Live view of thoughts, vibe images, chat, brain log, dream log, feeder status/);
   assert.match(html, /h23-system-rail/);
   assert.match(html, /h23-system-runtime/);
   assert.match(html, /id="organs-drawer"/);
@@ -175,9 +179,14 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /<h3>\$\{escapeHtml\(p\.title/);
   assert.match(js, /if \(_pulseEls\.state\)/);
   assert.match(js, /if \(_pulseEls\.energy\)/);
+  assert.doesNotMatch(js, /currentTab === 'intelligence'/);
+  assert.doesNotMatch(js, /loadIntelligence/);
+  assert.doesNotMatch(js, /setupIntelSynthButton/);
   assert.match(server, /resident agency state/);
   assert.match(server, /Routine organs stay hidden until they need action/);
   assert.doesNotMatch(server, /Tiles, pulse, chat/);
+  assert.doesNotMatch(server, /intelligence:\s*\{\s*kind: 'dashboard'/);
+  assert.doesNotMatch(server, /about:\s*\{\s*kind: 'shared'/);
 
   assert.match(css, /\.h23-resident-home/);
   assert.match(css, /\.h23-resident-command/);
@@ -187,4 +196,6 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(css, /\.h23-organ-panel/);
   assert.match(css, /\.h23-system-rail/);
   assert.match(css, /\.h23-system-runtime/);
+  assert.doesNotMatch(css, /\.h23-intel/);
+  assert.doesNotMatch(css, /\.h23-about/);
 });
