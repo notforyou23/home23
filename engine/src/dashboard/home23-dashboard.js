@@ -1379,7 +1379,7 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   toggleResidentOperatorPanel(operatorItems);
   setHtml('resident-operator-needed', operatorItems.length ? renderResidentOperatorNeeded(operatorItems) : '');
   const pursuitSource = Array.isArray(state.activePursuits) ? state.activePursuits : pursuits;
-  const activePursuits = (pursuitSource || []).filter((p) => p && p.status !== 'discarded' && p.status !== 'closed').slice(0, 5);
+  const activePursuits = filterResidentBacklogPursuits(pursuitSource, state.currentPursuit?.id);
   toggleResidentAttentionPanel(activePursuits);
   setHtml('resident-active-pursuits', activePursuits.length
     ? activePursuits.map(renderResidentPursuitCard).join('')
@@ -1389,6 +1389,13 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   setHtml('resident-consequences', consequenceRows.length
     ? consequenceRows.map(renderResidentConsequenceItem).join('')
     : '');
+}
+
+function filterResidentBacklogPursuits(pursuits, currentPursuitId) {
+  return (pursuits || [])
+    .filter((p) => p && p.status !== 'discarded' && p.status !== 'closed')
+    .filter((p) => !currentPursuitId || p.id !== currentPursuitId)
+    .slice(0, 5);
 }
 
 function syncResidentActionButton(state) {
