@@ -201,9 +201,11 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
     ref: String(item.ref || 'report_noise'),
     reason: String(item.reason || 'discarded_by_report_intake'),
   })) || [];
+  const payloadDeclaresAgencyChange = typeof payload.agencyChangedFuture === 'string' || typeof payload.agencyNextMove === 'string';
+  const unboundMechanicalNoChange = !pursuitId && !intakePacket && !payloadDeclaresAgencyChange && result.status === 'ok';
   const explicitNoChange = intakePacket
     ? Boolean(intakePacket.explicitNoChange || !packetHasSignal)
-    : (!pursuitId && (!response || result.status !== 'ok'));
+    : (unboundMechanicalNoChange || (!pursuitId && (!response || result.status !== 'ok')));
   const desiredChangedFuture = typeof payload.agencyChangedFuture === 'string'
     ? payload.agencyChangedFuture
     : intakePacket?.desiredChangedFuture
@@ -211,7 +213,9 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
   const nextMove = typeof payload.agencyNextMove === 'string'
     ? payload.agencyNextMove
     : intakePacket?.nextMove
-      || (pursuitId ? 'attach scheduler outcome to the bound resident pursuit and continue/repair based on semantic status' : undefined);
+      || (pursuitId
+        ? 'attach scheduler outcome to the bound resident pursuit and continue/repair based on semantic status'
+        : (unboundMechanicalNoChange ? 'record no-change cron receipt; no resident pursuit or watch item created' : undefined));
   const satisfiedStopCondition = Boolean(pursuitId && result.status === 'ok' && result.semanticStatus === 'satisfied');
   const consequenceStatus = pursuitId
     ? (satisfiedStopCondition ? 'closed' : (result.status === 'ok' && result.semanticStatus !== 'failed' ? 'advanced' : 'failed'))

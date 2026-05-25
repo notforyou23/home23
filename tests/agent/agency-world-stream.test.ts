@@ -105,6 +105,29 @@ test('buildCronResultPacket preserves declared agency delta fields', () => {
   assert.equal(packet.nextMove, 'follow promoted agent agency examples');
 });
 
+test('buildCronResultPacket treats unbound mechanical cron success as explicit no-change', () => {
+  const packet = buildCronResultPacket({
+    id: 'agent-one-shot',
+    name: 'One Shot Check',
+    schedule: { type: 'once', at: 1770000000000 },
+    payload: {
+      kind: 'exec',
+      command: 'true',
+    },
+    state: { enabled: true },
+  }, {
+    status: 'ok',
+    response: 'ok',
+    durationMs: 11,
+    semanticStatus: 'unknown',
+  });
+
+  assert.equal(packet.source, 'cron.agent-one-shot');
+  assert.equal(packet.explicitNoChange, true);
+  assert.equal(packet.desiredChangedFuture, undefined);
+  assert.equal(packet.nextMove, 'record no-change cron receipt; no resident pursuit or watch item created');
+});
+
 test('buildCronResultPacket extracts machine-readable agency intake packets from reports', () => {
   const packet = buildCronResultPacket({
     id: 'x-timeline-evening',

@@ -18,7 +18,10 @@ export class AgencySelector {
       return { route: 'request-authority', reason: 'high_authority_requires_operator' };
     }
     if (isRawTelemetryObservation(candidate)) {
-      return { route: 'watch', reason: 'raw_observation_not_active_attention' };
+      return { route: 'discard', reason: 'raw_observation_not_attention' };
+    }
+    if (isMechanicalCronNoChange(candidate)) {
+      return { route: 'discard', reason: 'mechanical_cron_no_change_not_attention' };
     }
     let route = 'discard';
     let reason = 'no_changed_future_detected';
@@ -54,5 +57,13 @@ function isRawTelemetryObservation(candidate = {}) {
   if (candidate.kind !== 'observation') return false;
   if (candidate.desiredChangedFuture || candidate.stopCondition || candidate.changedFuture) return false;
   const source = String(candidate.source || '');
-  return source.startsWith('machine.') || source === 'work.heartbeat';
+  return source.startsWith('machine.') || source.startsWith('os.') || source === 'work.heartbeat';
+}
+
+function isMechanicalCronNoChange(candidate = {}) {
+  if (candidate.kind !== 'cron_report') return false;
+  if (candidate.pursuitId || candidate.desiredChangedFuture || candidate.stopCondition || candidate.changedFuture) return false;
+  const source = String(candidate.source || '');
+  const summary = String(candidate.summary || '');
+  return source.startsWith('cron.') && /finished with status ok/i.test(summary);
 }

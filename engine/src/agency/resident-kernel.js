@@ -65,7 +65,7 @@ export class AgencyKernel {
   }
 
   ensureState() {
-    this.reconcileRawObservationAttention();
+    this.reconcileLowSignalAttention();
     this.enforceAttentionCaps();
     const active = this.store.listPursuits({ status: 'active', limit: 10000 });
     const watch = this.store.listPursuits({ status: 'watch', limit: 10000 });
@@ -112,21 +112,22 @@ export class AgencyKernel {
     return state;
   }
 
-  reconcileRawObservationAttention() {
-    const active = this.store.listPursuits({ status: 'active', limit: 10000 });
-    for (const pursuit of active) {
-      if (!isRawObservationPursuit(pursuit)) continue;
-      this.store.updatePursuit(pursuit.id, { status: 'watch' }, {
-        type: 'attention_quality_demoted',
-        reason: 'raw_observation_not_active_attention',
+  reconcileLowSignalAttention() {
+    const pursuits = this.store.listPursuits({ status: ['active', 'watch'], limit: 10000 });
+    for (const pursuit of pursuits) {
+      const reason = lowSignalAttentionReason(pursuit);
+      if (!reason) continue;
+      this.store.updatePursuit(pursuit.id, { status: 'discarded' }, {
+        type: 'attention_quality_discarded',
+        reason,
       });
       this.store.appendReceipt({
         schema: 'home23.agency.receipt.v1',
         at: nowIso(),
-        event: 'demoted',
+        event: 'discarded',
         pursuitId: pursuit.id,
-        route: 'watch',
-        reason: 'raw_observation_not_active_attention',
+        route: 'discard',
+        reason,
         mode: this.config.mode,
       });
     }
@@ -1080,16 +1081,35 @@ function summarizeObservation(obs) {
   return `[${obs?.channelId || 'observation'}] ${JSON.stringify(obs?.payload || {}).slice(0, 240)}`;
 }
 
-function isRawObservationPursuit(pursuit = {}) {
-  if (pursuit.kind !== 'observation') return false;
-  if (pursuit.consequence?.changed) return false;
+function lowSignalAttentionReason(pursuit = {}) {
+  if (isRawObservationPursuit(pursuit)) return 'raw_observation_not_attention';
+  if (isMechanicalCronNoChangePursuit(pursuit)) return 'mechanical_cron_no_change_not_attention';
+  return null;
+}
+
+function hasMeaningfulPursuitOutcome(pursuit = {}) {
+  if (pursuit.consequence?.changed) return true;
   const summary = String(pursuit.summary || '');
   const changedFuture = String(pursuit.desiredChangedFuture || '');
   const stopCondition = String(pursuit.stopCondition || '');
   const hasMeaningfulChangedFuture = changedFuture && changedFuture !== summary;
   const genericStopCondition = stopCondition === 'changed future is verified or the pursuit is explicitly discarded';
   const hasMeaningfulStopCondition = stopCondition && !genericStopCondition && stopCondition !== summary && stopCondition !== changedFuture;
-  if (hasMeaningfulChangedFuture || hasMeaningfulStopCondition) return false;
+  return Boolean(hasMeaningfulChangedFuture || hasMeaningfulStopCondition);
+}
+
+function isRawObservationPursuit(pursuit = {}) {
+  if (pursuit.kind !== 'observation') return false;
+  if (hasMeaningfulPursuitOutcome(pursuit)) return false;
   const source = String(pursuit.source || '');
-  return source.startsWith('machine.') || source === 'work.heartbeat';
+  return source.startsWith('machine.') || source.startsWith('os.') || source === 'work.heartbeat';
+}
+
+function isMechanicalCronNoChangePursuit(pursuit = {}) {
+  if (pursuit.kind !== 'cron_report') return false;
+  if (pursuit.pursuitId || pursuit.consequence?.changed) return false;
+  if (hasMeaningfulPursuitOutcome(pursuit)) return false;
+  const source = String(pursuit.source || '');
+  const summary = String(pursuit.summary || '');
+  return source.startsWith('cron.') && /finished with status ok/i.test(summary);
 }

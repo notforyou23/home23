@@ -86,7 +86,7 @@ test('AgencyKernel dedupes repeated Good Life usefulness drift into one pursuit'
   assert.equal(second.pursuit.seenCount, 2);
 });
 
-test('AgencyKernel dedupes repeated Step24 observations by channel instead of metric text', async () => {
+test('AgencyKernel records low-signal Step24 machine observations as discard receipts instead of watch spam', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
     brainDir: dir,
@@ -105,13 +105,17 @@ test('AgencyKernel dedupes repeated Step24 observations by channel instead of me
     payload: { freePct: 1.8, at: '2026-05-25T10:05:00.000Z' },
   });
 
-  assert.equal(first.pursuit.id, second.pursuit.id);
-  assert.equal(first.pursuit.status, 'watch');
-  assert.equal(second.decision.reason, 'merged_with_existing_pursuit');
-  assert.equal(second.pursuit.seenCount, 2);
+  assert.equal(first.decision.route, 'discard');
+  assert.equal(second.decision.route, 'discard');
+  assert.equal(first.pursuit, null);
+  assert.equal(second.pursuit, null);
+  assert.equal(kernel.state().attention.watchItems, 0);
+
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  assert.equal(receipts.filter(row => row.event === 'discarded' && row.reason === 'raw_observation_not_attention').length, 2);
 });
 
-test('AgencyKernel keeps raw heartbeat observations out of active attention', async () => {
+test('AgencyKernel discards low-signal heartbeat observations instead of spending watch attention', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
     brainDir: dir,
@@ -125,13 +129,17 @@ test('AgencyKernel keeps raw heartbeat observations out of active attention', as
     payload: { tick: 1, at: '2026-05-25T17:00:00.000Z' },
   });
 
-  assert.equal(result.decision.route, 'watch');
-  assert.equal(result.pursuit.status, 'watch');
+  assert.equal(result.decision.route, 'discard');
+  assert.equal(result.decision.reason, 'raw_observation_not_attention');
+  assert.equal(result.pursuit, null);
   assert.equal(kernel.state().attention.activePursuits, 0);
-  assert.equal(kernel.state().attention.watchItems, 1);
+  assert.equal(kernel.state().attention.watchItems, 0);
+
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  assert.equal(receipts.some(row => row.event === 'discarded' && row.reason === 'raw_observation_not_attention'), true);
 });
 
-test('AgencyKernel demotes legacy raw observation pursuits during state reconciliation', async () => {
+test('AgencyKernel discards legacy raw observation pursuits during state reconciliation', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
     brainDir: dir,
@@ -155,10 +163,39 @@ test('AgencyKernel demotes legacy raw observation pursuits during state reconcil
   const reconciled = kernel.pursuit(legacy.id);
   const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
 
-  assert.equal(reconciled.status, 'watch');
+  assert.equal(reconciled.status, 'discarded');
   assert.equal(state.attention.activePursuits, 0);
-  assert.equal(state.attention.watchItems, 1);
-  assert.equal(receipts.some(row => row.event === 'demoted' && row.reason === 'raw_observation_not_active_attention'), true);
+  assert.equal(state.attention.watchItems, 0);
+  assert.equal(receipts.some(row => row.event === 'discarded' && row.reason === 'raw_observation_not_attention'), true);
+});
+
+test('AgencyKernel discards legacy unbound mechanical cron watch rows during state reconciliation', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const candidate = kernel.router.normalize({
+    source: 'cron.agent-one-shot',
+    kind: 'cron_report',
+    summary: 'Cron agent-one-shot (exec) finished with status ok.',
+    evidence: [{ type: 'cron_result', ref: 'agent-one-shot' }],
+    authorityLevel: 'L1',
+    tags: ['world-stream', 'cron'],
+  });
+  const legacy = kernel.store.createPursuit(candidate, {
+    route: 'watch',
+    reason: 'legacy_mechanical_cron_selected_watch',
+  });
+
+  const state = kernel.ensureState();
+  const reconciled = kernel.pursuit(legacy.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+
+  assert.equal(reconciled.status, 'discarded');
+  assert.equal(state.attention.watchItems, 0);
+  assert.equal(receipts.some(row => row.event === 'discarded' && row.reason === 'mechanical_cron_no_change_not_attention'), true);
 });
 
 test('AgencyKernel tracks live-problem observations by problem id and closes on resolved verifier state', async () => {
