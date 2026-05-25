@@ -846,3 +846,35 @@ test('AgencyKernel records external consequences with receipts and meaningful-ac
   assert.equal(consequences.some(row => row.changeType === 'cron_bound_to_pursuit' && row.status === 'applied'), true);
   assert.equal(state.lastMeaningfulActions[0].changeType, 'cron_bound_to_pursuit');
 });
+
+test('AgencyKernel caps pursuit history snapshots so startup review cannot inflate the ledger', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const intake = await kernel.intake({
+    source: 'scheduler.cron.bootcamp',
+    kind: 'cron_bootcamp_audit',
+    summary: 'Recurring cron should stay accountable without inflating pursuit history.',
+    evidence: [{ type: 'cron_job', ref: 'job-history' }],
+    authorityLevel: 'L2',
+    desiredChangedFuture: 'Startup agency review remains bounded.',
+  });
+
+  for (let i = 0; i < 40; i += 1) {
+    kernel.transition(intake.pursuit.id, {
+      status: 'active',
+      reason: `bounded history update ${i}`,
+    });
+  }
+
+  const pursuit = kernel.pursuit(intake.pursuit.id);
+  const pursuitRows = readJsonl(join(dir, 'agency', 'pursuits.jsonl'))
+    .filter(row => row.pursuit?.id === intake.pursuit.id);
+  const lastRow = pursuitRows.at(-1);
+
+  assert.equal(pursuit.history.length <= 25, true);
+  assert.equal(lastRow.pursuit.history.length <= 25, true);
+});

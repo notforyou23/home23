@@ -26,6 +26,7 @@ Status: implementation slice in progress.
 - Chat/user corrections are no longer generic conversation noise: incoming correction messages become `operator_correction` world-stream packets, write durable `jtr_correction` claims, and can demote weaker truth when linked to a contradicted claim. Chat also exposes `agency_record_claim` for explicit truth/correction entries.
 - `AgencyKernel.proposeDelta()` arbitrates behavioral deltas. In live mode, approved reversible L0-L2 `watch_item_created` deltas apply by creating resident watch pursuits; high-risk deltas remain approval-gated.
 - Pursuits now include living-thread fields: why it matters, current theory, linked/latest evidence, next move, budget, risk, evidence standard, decay/escalation, and what would change the theory.
+- Pursuit snapshots cap embedded history and the store keeps a current-pursuit index in memory, so resident startup review does not repeatedly parse inflated append-only snapshots before the bridge binds.
 - `scratch.jsonl` and `truth.jsonl` are first-class agency ledgers beside inbox, pursuits, receipts, and consequences.
 - Cron results from the harness are assimilated into the world-stream path instead of dying at delivery. X timeline and From The Inside prompts now emit `AGENCY_INTAKE_PACKET` blocks that the harness parses into structured agency candidates.
 - New recurring `cron`/`every` jobs created through `cron_schedule` require a `pursuit_id` and persist that binding on the job, enforcing the bootcamp rule that recurring work must be tied to resident pursuit.

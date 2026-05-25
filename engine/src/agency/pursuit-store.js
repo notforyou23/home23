@@ -32,6 +32,14 @@ function slugKey(input) {
     .join('-') || 'pursuit';
 }
 
+function compactPursuit(pursuit) {
+  if (!pursuit || typeof pursuit !== 'object') return pursuit;
+  return {
+    ...pursuit,
+    history: Array.isArray(pursuit.history) ? pursuit.history.slice(-25) : [],
+  };
+}
+
 export class PursuitStore {
   constructor({ brainDir, agentName = 'jerry' } = {}) {
     if (!brainDir) throw new Error('PursuitStore requires brainDir');
@@ -45,6 +53,7 @@ export class PursuitStore {
     this.consequencesPath = join(this.dir, 'consequences.jsonl');
     this.scratchPath = join(this.dir, 'scratch.jsonl');
     this.truthPath = join(this.dir, 'truth.jsonl');
+    this.pursuitIndex = null;
     mkdirSync(this.dir, { recursive: true });
     for (const file of [this.inboxPath, this.pursuitsPath, this.receiptsPath, this.consequencesPath, this.scratchPath, this.truthPath]) {
       if (!existsSync(file)) closeSync(openSync(file, 'a'));
@@ -97,11 +106,7 @@ export class PursuitStore {
   }
 
   listPursuits({ status = null, limit = 100 } = {}) {
-    const latest = new Map();
-    for (const row of readJsonl(this.pursuitsPath)) {
-      const pursuit = row.pursuit;
-      if (pursuit?.id) latest.set(pursuit.id, pursuit);
-    }
+    const latest = this.loadPursuitIndex();
     let rows = Array.from(latest.values());
     if (status) {
       const statuses = Array.isArray(status) ? new Set(status) : new Set([status]);
@@ -113,7 +118,7 @@ export class PursuitStore {
   }
 
   getPursuit(id) {
-    return this.listPursuits({ limit: 10000 }).find((row) => row.id === id) || null;
+    return this.loadPursuitIndex().get(id) || null;
   }
 
   findSimilar(candidate) {
@@ -177,7 +182,7 @@ export class PursuitStore {
       history: [
         ...(existing.history || []),
         { at, status: patch.status || existing.status, reason: event.reason || event.type || 'updated' },
-      ],
+      ].slice(-25),
     };
     this.appendPursuitEvent({ type: event.type || 'updated', at, pursuit, detail: event.detail || null });
     return pursuit;
@@ -223,8 +228,23 @@ export class PursuitStore {
   }
 
   appendPursuitEvent(row) {
-    appendFileSync(this.pursuitsPath, `${JSON.stringify(row)}\n`);
-    return row;
+    const compact = row?.pursuit ? { ...row, pursuit: compactPursuit(row.pursuit) } : row;
+    appendFileSync(this.pursuitsPath, `${JSON.stringify(compact)}\n`);
+    if (compact?.pursuit?.id) {
+      this.loadPursuitIndex().set(compact.pursuit.id, compact.pursuit);
+    }
+    return compact;
+  }
+
+  loadPursuitIndex() {
+    if (this.pursuitIndex) return this.pursuitIndex;
+    const latest = new Map();
+    for (const row of readJsonl(this.pursuitsPath)) {
+      const pursuit = compactPursuit(row.pursuit);
+      if (pursuit?.id) latest.set(pursuit.id, pursuit);
+    }
+    this.pursuitIndex = latest;
+    return latest;
   }
 
   readState() {
