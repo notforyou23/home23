@@ -165,6 +165,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(residentCommandRow, /href="\/home23\/settings#agency"/);
   assert.doesNotMatch(residentCommandRow, />Chat</);
   assert.doesNotMatch(residentCommandRow, />Authority</);
+  assert.doesNotMatch(residentCommandRow, /id="resident-refresh"/);
+  assert.doesNotMatch(residentCommandRow, />Refresh</);
   assert.match(html, /h23-system-rail/);
   assert.match(html, /h23-system-runtime/);
   assert.match(html, /id="organs-drawer"/);
