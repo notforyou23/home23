@@ -18,7 +18,7 @@ Status: implementation slice in progress.
 
 - `agency/charter.yaml` defines attention caps, bootcamp rules, authority boundaries, source-truth hierarchy, and editor governance.
 - The agency charter now encodes Jerry's operating contract: autonomous domains, approval domains, acceptable autonomous changes, hard risk boundaries, decision thresholds, the good-pursuit quality bar, and when to interrupt jtr.
-- `AgencyKernel.tick()` is the resident tick primitive. It selects one pursuit, applies editor/veto governance, writes scratch, receipt, and consequence records, and updates `state.nextAction`.
+- `AgencyKernel.tick()` is the resident tick primitive. `engine/src/index.js` starts the resident interval from `agency.residentTickMs`, so Jerry keeps selecting one pursuit, applying editor/veto governance, writing scratch/receipt/consequence records, and updating `state.nextAction` while chat is closed.
 - Attention scarcity is enforced across active, watch, and deferred queues. Active/watch overflow is deferred; deferred overflow is discarded with `deferred_attention_budget_reconciled` receipts so backlog debt cannot grow without bound.
 - Editor kill verdicts have teeth: stale watch loops are demoted to `discarded` with discard receipts and `stale_thread_killed` consequences.
 - Dashboard bootcamp governance has teeth: dashboard panels/expansions without a declared agency-clarifying changed future are demoted to `discarded` with `ornamental_dashboard_panel_demoted` consequences.
