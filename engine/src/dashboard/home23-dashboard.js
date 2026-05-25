@@ -1583,7 +1583,6 @@ function renderResidentNextAction(state) {
   }
   return `
     <div class="h23-resident-section-title">Next Action</div>
-    <div class="h23-resident-next-kind">${escapeHtml(humanizeResidentMachineText(next.kind || 'advance_one_step'))}</div>
     <div class="h23-resident-next-title">${escapeHtml(renderResidentNextActionTitle(pursuit, next))}</div>
     <div class="h23-resident-next-meta">${escapeHtml(renderResidentNextActionMeta(pursuit, next))}</div>
   `;
