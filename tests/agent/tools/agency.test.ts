@@ -291,6 +291,32 @@ test('agency_propose_delta can pass a prompt update delta through the bridge API
   assert.match(result.content, /approved_live/);
 });
 
+test('agency_propose_delta can pass a memory candidate delta through the bridge API', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/deltas');
+    assert.equal(init?.method, 'POST');
+    const body = JSON.parse(String(init?.body || '{}'));
+    assert.equal(body.changeType, 'memory_candidate_created');
+    assert.equal(body.pursuitId, 'ap_memory');
+    assert.equal(body.memoryDomain, 'doctrine');
+    assert.equal(body.memoryContent, 'Timeline reports need agency outcomes before delivery.');
+    assert.deepEqual(body.evidence, [{ type: 'reference', ref: 'x:agency-outcomes' }]);
+    return new Response(JSON.stringify({ decision: { route: 'approved_live' }, authority: { reason: 'live_low_risk_allowed' } }), { status: 200 });
+  };
+
+  const result = await agencyProposeDeltaTool.execute({
+    changeType: 'memory_candidate_created',
+    pursuitId: 'ap_memory',
+    memoryDomain: 'doctrine',
+    memoryContent: 'Timeline reports need agency outcomes before delivery.',
+    summary: 'Remember the agency outcome rule for reports.',
+    evidenceRef: 'x:agency-outcomes',
+    authorityLevel: 'L1',
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /approved_live/);
+});
+
 test('agency_propose_delta can pass a dashboard contract delta through the bridge API', async () => {
   const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
     assert.equal(String(url), 'http://bridge.test/api/agency/deltas');

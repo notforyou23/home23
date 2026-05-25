@@ -54,9 +54,10 @@ export class PursuitStore {
     this.scratchPath = join(this.dir, 'scratch.jsonl');
     this.truthPath = join(this.dir, 'truth.jsonl');
     this.tasksPath = join(this.dir, 'tasks.jsonl');
+    this.memoryCandidatesPath = join(this.dir, 'memory-candidates.jsonl');
     this.pursuitIndex = null;
     mkdirSync(this.dir, { recursive: true });
-    for (const file of [this.inboxPath, this.pursuitsPath, this.receiptsPath, this.consequencesPath, this.scratchPath, this.truthPath, this.tasksPath]) {
+    for (const file of [this.inboxPath, this.pursuitsPath, this.receiptsPath, this.consequencesPath, this.scratchPath, this.truthPath, this.tasksPath, this.memoryCandidatesPath]) {
       if (!existsSync(file)) closeSync(openSync(file, 'a'));
     }
   }
@@ -91,6 +92,11 @@ export class PursuitStore {
     return row;
   }
 
+  appendMemoryCandidate(row) {
+    appendFileSync(this.memoryCandidatesPath, `${JSON.stringify(row)}\n`);
+    return row;
+  }
+
   listInbox({ limit = 100 } = {}) {
     return readJsonl(this.inboxPath).slice(-limit).reverse();
   }
@@ -119,6 +125,17 @@ export class PursuitStore {
       latest.set(task.id, task);
     }
     let rows = Array.from(latest.values());
+    if (status) {
+      const statuses = Array.isArray(status) ? new Set(status) : new Set([status]);
+      rows = rows.filter(row => statuses.has(row.status));
+    }
+    return rows
+      .sort((a, b) => String(b.updatedAt || b.createdAt || b.at || '').localeCompare(String(a.updatedAt || a.createdAt || a.at || '')))
+      .slice(0, limit);
+  }
+
+  listMemoryCandidates({ status = null, limit = 100 } = {}) {
+    let rows = readJsonl(this.memoryCandidatesPath).map(row => row.candidate || row).filter(Boolean);
     if (status) {
       const statuses = Array.isArray(status) ? new Set(status) : new Set([status]);
       rows = rows.filter(row => statuses.has(row.status));

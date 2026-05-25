@@ -1246,6 +1246,40 @@ test('AgencyKernel live low-risk prompt deltas update canonical prompt contracts
   assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'prompt_updated'), true);
 });
 
+test('AgencyKernel live low-risk memory candidate deltas persist durable memory candidates with receipts', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'live' },
+  });
+
+  const result = kernel.proposeDelta({
+    changeType: 'memory_candidate_created',
+    summary: 'Remember that timeline reports require agency outcomes before delivery.',
+    memoryContent: 'Timeline reports are incomplete unless they create discard, no-change, watch, pursuit, task, handoff, or claim receipts.',
+    memoryDomain: 'doctrine',
+    pursuitId: 'ap_memory_source',
+    authorityLevel: 'L1',
+    reversible: true,
+    evidence: [{ type: 'timeline_report', ref: 'x:agency-outcomes' }],
+  });
+
+  const state = kernel.state();
+  const memoryRows = readJsonl(join(dir, 'agency', 'memory-candidates.jsonl'));
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(result.decision.route, 'approved_live');
+  assert.equal(result.applied?.kind, 'memory_candidate_created');
+  assert.equal(memoryRows.length, 1);
+  assert.equal(memoryRows[0].candidate.domain, 'doctrine');
+  assert.equal(memoryRows[0].candidate.content, 'Timeline reports are incomplete unless they create discard, no-change, watch, pursuit, task, handoff, or claim receipts.');
+  assert.equal(state.recentMemoryCandidates[0].id, memoryRows[0].candidate.id);
+  assert.equal(receipts.some(row => row.event === 'memory_candidate_created' && row.memoryCandidateId === memoryRows[0].candidate.id), true);
+  assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'memory_candidate_created' && row.pursuitId === 'ap_memory_source'), true);
+});
+
 test('AgencyKernel live low-risk dashboard contract deltas update canonical governance state', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

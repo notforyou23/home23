@@ -76,6 +76,7 @@ export class AgencyKernel {
     const active = this.store.listPursuits({ status: 'active', limit: 10000 });
     const watch = this.store.listPursuits({ status: 'watch', limit: 10000 });
     const deferred = this.store.listPursuits({ status: 'deferred', limit: 10000 });
+    const recentMemoryCandidates = this.store.listMemoryCandidates({ limit: 10 });
     const claims = this.store.listTruth({ limit: 10000 }).reverse();
     const truthSummary = this.truth.summarize(claims);
     const existing = this.store.readState() || {};
@@ -112,6 +113,14 @@ export class AgencyKernel {
       watchlist: watch.slice(0, 20).map(row => ({ id: row.id, title: row.title, lastTouched: row.lastTouched || row.updatedAt })),
       truth: truthSummary,
       recentBeliefChanges: truthSummary.recentBeliefChanges,
+      recentMemoryCandidates: recentMemoryCandidates.map(candidate => ({
+        id: candidate.id,
+        domain: candidate.domain,
+        summary: candidate.summary,
+        pursuitId: candidate.pursuitId || null,
+        status: candidate.status || 'candidate',
+        createdAt: candidate.createdAt || candidate.at || null,
+      })),
       openContradictions: truthSummary.unresolvedClaims || [],
       governance: existing.governance || null,
       lastMeaningfulActions: existing.lastMeaningfulActions || [],
@@ -899,6 +908,53 @@ export class AgencyKernel {
     return entry;
   }
 
+  recordMemoryCandidate(input = {}) {
+    const at = input.at || nowIso();
+    const content = String(input.memoryContent || input.content || input.summary || '').trim();
+    if (!content) throw new Error('Agency memory candidate requires content');
+    const evidence = Array.isArray(input.evidence)
+      ? input.evidence
+      : (input.evidenceRef ? [{ type: 'reference', ref: String(input.evidenceRef) }] : []);
+    const candidate = {
+      schema: 'home23.agency.memory-candidate.v1',
+      id: input.id || shortId('mem'),
+      createdAt: at,
+      updatedAt: at,
+      status: input.status || 'candidate',
+      pursuitId: input.pursuitId || null,
+      summary: input.summary || content.slice(0, 180),
+      content,
+      domain: input.memoryDomain || input.domain || 'project',
+      source: input.source || 'agency.delta',
+      evidence,
+      promoteHint: input.promoteHint || 'promote_to_memory_when_verified_or_reused',
+    };
+    this.store.appendMemoryCandidate({ type: 'created', at, candidate });
+    this.store.appendReceipt({
+      schema: 'home23.agency.receipt.v1',
+      at,
+      event: 'memory_candidate_created',
+      memoryCandidateId: candidate.id,
+      pursuitId: candidate.pursuitId,
+      route: 'memory_candidate',
+      domain: candidate.domain,
+      reason: input.reason || input.summary || 'resident_memory_candidate_created',
+      evidence,
+      mode: this.config.mode,
+    });
+    this.store.appendConsequence({
+      schema: 'home23.agency.consequence.v1',
+      at,
+      pursuitId: candidate.pursuitId,
+      status: 'applied',
+      changeType: 'memory_candidate_created',
+      summary: candidate.summary,
+      evidence,
+    });
+    this.ensureState();
+    return candidate;
+  }
+
   recordTask(input = {}) {
     const at = input.at || nowIso();
     const summary = String(input.summary || input.title || '').trim();
@@ -1531,6 +1587,30 @@ export class AgencyKernel {
       return {
         kind: 'prompt_updated',
         promptScope,
+      };
+    }
+    if (delta.changeType === 'memory_candidate_created') {
+      const content = String(input.memoryContent || input.content || input.summary || '').trim();
+      if (!content) {
+        return {
+          kind: 'no_op',
+          reason: 'memory_candidate_delta_requires_content',
+        };
+      }
+      const candidate = this.recordMemoryCandidate({
+        summary: input.summary || content.slice(0, 180),
+        memoryContent: content,
+        memoryDomain: input.memoryDomain || input.domain || 'project',
+        pursuitId: input.pursuitId || input.targetPursuitId || null,
+        source: input.source || 'agency.delta',
+        evidence: Array.isArray(input.evidence) ? input.evidence : [],
+        reason: 'approved_live_delta_memory_candidate_created',
+        promoteHint: input.promoteHint || null,
+      });
+      return {
+        kind: 'memory_candidate_created',
+        memoryCandidateId: candidate.id,
+        pursuitId: candidate.pursuitId,
       };
     }
     if (delta.changeType === 'dashboard_contract_changed') {
