@@ -1734,6 +1734,40 @@ test('AgencyKernel live low-risk pursuit note deltas update existing pursuit the
   assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'pursuit_note_added'), true);
 });
 
+test('AgencyKernel direct pursuit updates change living-thread fields with evidence', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const intake = await kernel.intake({
+    source: 'chat',
+    kind: 'chat_pursuit',
+    summary: 'Timeline signal needs resident follow-through.',
+    authorityLevel: 'L1',
+    evidence: [{ type: 'message', ref: 'msg-open' }],
+    desiredChangedFuture: 'Timeline signal changes Jerry resident attention.',
+  });
+
+  const result = kernel.transition(intake.pursuit.id, {
+    status: 'active',
+    summary: 'Timeline signal now points to a concrete resident parser repair.',
+    currentTheory: 'The report died because the intake packet parser was too brittle.',
+    nextMove: 'verify raw JSON packet assimilation and keep the pursuit open until a receipt proves it',
+    evidenceRef: 'receipt:raw-json-parser',
+  });
+
+  const pursuit = kernel.pursuit(intake.pursuit.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+
+  assert.equal(result.pursuit.summary, 'Timeline signal now points to a concrete resident parser repair.');
+  assert.equal(pursuit.currentTheory, 'The report died because the intake packet parser was too brittle.');
+  assert.equal(pursuit.nextMove, 'verify raw JSON packet assimilation and keep the pursuit open until a receipt proves it');
+  assert.equal(pursuit.latestEvidence.at(-1).ref, 'receipt:raw-json-parser');
+  assert.equal(receipts.some(row => row.event === 'transitioned' && row.pursuitId === intake.pursuit.id), true);
+});
+
 test('AgencyKernel closes pursuits when worker receipts prove the stop condition', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

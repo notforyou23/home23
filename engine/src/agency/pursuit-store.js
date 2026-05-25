@@ -275,10 +275,49 @@ export class PursuitStore {
 
   transition(id, transition = {}) {
     const status = String(transition.status || transition.transition || 'updated');
-    const pursuit = this.updatePursuit(id, {
+    const evidence = Array.isArray(transition.evidence) ? transition.evidence : [];
+    const existing = this.getPursuit(id);
+    const mergedEvidence = [...(existing?.evidence || []), ...evidence];
+    const uniqueEvidence = [];
+    const seen = new Set();
+    for (const item of mergedEvidence) {
+      const key = JSON.stringify(item);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniqueEvidence.push(item);
+    }
+    const patch = {
       status,
       consequence: transition.consequence || null,
-    }, { type: 'transition', reason: transition.reason || status, detail: transition });
+    };
+    for (const key of [
+      'title',
+      'summary',
+      'whyItMatters',
+      'desiredChangedFuture',
+      'currentTheory',
+      'nextMove',
+      'attentionBudget',
+      'risk',
+      'authorityLevel',
+      'evidenceStandard',
+      'stopCondition',
+      'whatWouldChangeMyMind',
+      'sourceTruthStatus',
+      'verifier',
+    ]) {
+      if (transition[key] !== undefined) patch[key] = transition[key];
+    }
+    if (evidence.length) {
+      patch.evidence = uniqueEvidence;
+      patch.linkedEvidence = uniqueEvidence;
+      patch.latestEvidence = evidence.slice(-3);
+      patch.lastSeenAt = nowIso();
+    }
+    const pursuit = this.updatePursuit(id, {
+      ...patch,
+      lastTouched: nowIso(),
+    }, { type: 'transition', reason: transition.reason || transition.summary || status, detail: transition });
     if (status === 'closed' || transition.consequence) {
       this.appendConsequence({
         schema: 'home23.agency.consequence.v1',

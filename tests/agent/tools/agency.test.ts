@@ -10,6 +10,7 @@ import {
   agencyDiscardCandidateTool,
   agencyIntakeWorldStreamTool,
   agencyProposeDeltaTool,
+  agencyUpdatePursuitTool,
   agencyRaiseQuestionTool,
   agencyRecordClaimTool,
   agencyRequestAuthorityTool,
@@ -110,6 +111,31 @@ test('agency_close_pursuit transitions a pursuit with consequence evidence', asy
   }, ctx(fakeFetch as typeof fetch));
 
   assert.match(result.content, /closed/);
+});
+
+test('agency_update_pursuit sends living-thread field updates through bridge API', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/pursuits/ap_1/transition');
+    assert.equal(init?.method, 'POST');
+    const body = JSON.parse(String(init?.body || '{}'));
+    assert.equal(body.status, 'active');
+    assert.equal(body.summary, 'Timeline signal now points to a parser repair.');
+    assert.equal(body.currentTheory, 'The report died because raw JSON intake was ignored.');
+    assert.equal(body.nextMove, 'verify raw JSON packet assimilation with a receipt');
+    assert.equal(body.evidenceRef, 'receipt:raw-json-parser');
+    return new Response(JSON.stringify({ pursuit: { id: 'ap_1', status: 'active' } }), { status: 200 });
+  };
+
+  const result = await agencyUpdatePursuitTool.execute({
+    pursuitId: 'ap_1',
+    status: 'active',
+    summary: 'Timeline signal now points to a parser repair.',
+    currentTheory: 'The report died because raw JSON intake was ignored.',
+    nextMove: 'verify raw JSON packet assimilation with a receipt',
+    evidenceRef: 'receipt:raw-json-parser',
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /ap_1/);
 });
 
 test('agency_discard_candidate and agency_request_authority use explicit transitions', async () => {

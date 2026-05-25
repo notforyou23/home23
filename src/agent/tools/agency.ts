@@ -159,6 +159,11 @@ export const agencyUpdatePursuitTool: ToolDefinition = {
       pursuitId: { type: 'string' },
       status: { type: 'string', enum: ['active', 'watch', 'closed', 'discarded', 'blocked'] },
       summary: { type: 'string' },
+      currentTheory: { type: 'string' },
+      nextMove: { type: 'string' },
+      desiredChangedFuture: { type: 'string' },
+      stopCondition: { type: 'string' },
+      whatWouldChangeMyMind: { type: 'string' },
       evidenceRef: { type: 'string' },
     },
     required: ['pursuitId', 'status'],
@@ -168,6 +173,11 @@ export const agencyUpdatePursuitTool: ToolDefinition = {
     const data = await transition(ctx, String(input.pursuitId), {
       status: input.status,
       summary: input.summary,
+      currentTheory: input.currentTheory,
+      nextMove: input.nextMove,
+      desiredChangedFuture: input.desiredChangedFuture,
+      stopCondition: input.stopCondition,
+      whatWouldChangeMyMind: input.whatWouldChangeMyMind,
       evidenceRef: input.evidenceRef,
     });
     return { content: JSON.stringify(data, null, 2) };
