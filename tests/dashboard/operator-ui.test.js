@@ -140,10 +140,8 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
   const agencyStats = html.match(/<div class="h23-worker-stats" id="agency-stats"[^>]*>[\s\S]*?<\/div>\s*<\/div>/)?.[0] || '';
   assert.match(agencyStatsTag, /\bhidden\b/);
   assert.match(agencyBriefSectionTag, /\bhidden\b/);
-  assert.match(agencyStats, /Needs jtr/);
-  assert.match(agencyStats, /Next Authority/);
-  assert.doesNotMatch(agencyStats, />Inbox</);
-  assert.doesNotMatch(agencyStats, />Receipts</);
+  assert.doesNotMatch(agencyStats, /<div class="h23-worker-stat">/);
+  assert.doesNotMatch(agencyStats, />—</);
   assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-scratch-drawer" hidden>/);
   assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-truth-drawer" hidden>/);
   assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-organs-drawer" hidden>/);
@@ -169,8 +167,11 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
   assert.match(js, /agencyOperatorNeedCount\(state, brief\)/);
   assert.match(js, /residentAgencyModeLabel\(state\.mode\)/);
   assert.match(js, /residentActionAuthorityLabel\(state\.nextAction\)/);
-  assert.doesNotMatch(js, /\$\{escapeHtml\(state\.mode \|\| 'unknown'\)\}/);
+  assert.match(js, /<label>Needs jtr<\/label>/);
+  assert.match(js, /<label>Next Authority<\/label>/);
   assert.doesNotMatch(js, /<label>Inbox<\/label>/);
+  assert.doesNotMatch(js, /<label>Receipts<\/label>/);
+  assert.doesNotMatch(js, /\$\{escapeHtml\(state\.mode \|\| 'unknown'\)\}/);
   assert.doesNotMatch(js, /<label>Recent Receipts<\/label>/);
   assert.doesNotMatch(js, /state\.attention\?\.queueDepth/);
   assert.match(js, /residentAgencyVisiblePursuits\(state, pursuits\)/);
