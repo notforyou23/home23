@@ -50,13 +50,6 @@ body::before {
   z-index: 0;
 }
 
-#particles-js {
-  position: fixed;
-  top: 0; left: 0; width: 100%; height: 100%;
-  z-index: 0;
-  pointer-events: none;
-}
-
 .h23-header, .h23-pills, .h23-pulse-bar, .h23-update-bar, .h23-tabs, .h23-main {
   position: relative;
   z-index: 1;
@@ -2029,37 +2022,20 @@ body {
   padding: 4px 4px 12px;
 }
 
-.h23-sidebar-orb {
-  position: relative;
-  width: 54px;
-  height: 54px;
-  border-radius: 50%;
-  flex: 0 0 54px;
-  background: radial-gradient(circle, rgba(87, 237, 255, 0.18), rgba(87, 237, 255, 0.02) 62%, transparent 63%);
-}
-
-.h23-sidebar-orb-ring,
-.h23-sidebar-orb-core {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-}
-
-.h23-sidebar-orb-ring.ring-a {
-  inset: 5px;
-  border: 1px solid rgba(83, 217, 255, 0.55);
-  box-shadow: 0 0 18px rgba(83, 217, 255, 0.14);
-}
-
-.h23-sidebar-orb-ring.ring-b {
-  inset: 14px;
-  border: 1px solid rgba(83, 217, 255, 0.45);
-}
-
-.h23-sidebar-orb-core {
-  inset: 22px;
-  background: radial-gradient(circle, rgba(91, 241, 255, 0.9), rgba(91, 241, 255, 0.22));
-  box-shadow: 0 0 12px rgba(91, 241, 255, 0.45);
+.h23-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border-radius: 8px;
+  border: 1px solid rgba(183, 203, 176, 0.2);
+  background: rgba(183, 203, 176, 0.08);
+  color: rgba(232, 238, 224, 0.92);
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 800;
 }
 
 .h23-sidebar-brand-copy {
@@ -2094,20 +2070,52 @@ body {
   padding-right: 2px;
 }
 
-.h23-sidebar-group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
+.h23-organ-drawer {
   padding-top: 8px;
   border-top: 1px solid rgba(255,255,255,0.08);
 }
 
-.h23-sidebar-group-label {
-  padding: 0 10px;
+.h23-organ-drawer summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 8px;
+  color: rgba(206, 228, 255, 0.58);
+  cursor: pointer;
   font-size: 0.72rem;
+  font-weight: 800;
   letter-spacing: 0.09em;
+  list-style: none;
   text-transform: uppercase;
-  color: rgba(186, 205, 232, 0.52);
+}
+
+.h23-organ-drawer summary::-webkit-details-marker {
+  display: none;
+}
+
+.h23-organ-drawer summary::after {
+  content: '+';
+  color: rgba(183, 203, 176, 0.66);
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+}
+
+.h23-organ-drawer[open] summary {
+  background: rgba(255,255,255,0.035);
+  color: rgba(232, 238, 224, 0.78);
+}
+
+.h23-organ-drawer[open] summary::after {
+  content: '-';
+}
+
+.h23-organ-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 10px;
 }
 
 .h23-tabs,
@@ -2246,7 +2254,6 @@ body.h23-external-focus {
 }
 
 body.h23-external-focus::before,
-body.h23-external-focus #particles-js,
 body.h23-external-focus .h23-sidebar,
 body.h23-external-focus .h23-header,
 body.h23-external-focus .h23-update-bar,

@@ -9,15 +9,10 @@
   <link rel="stylesheet" href="/home23-chat.css">
 </head>
 <body>
-  <div id="particles-js"></div>
   <div class="h23-app-shell">
     <aside class="h23-sidebar">
       <div class="h23-sidebar-brand">
-        <div class="h23-sidebar-orb" aria-hidden="true">
-          <span class="h23-sidebar-orb-ring ring-a"></span>
-          <span class="h23-sidebar-orb-ring ring-b"></span>
-          <span class="h23-sidebar-orb-core"></span>
-        </div>
+        <div class="h23-brand-mark" aria-hidden="true">23</div>
         <div class="h23-sidebar-brand-copy">
           <div class="h23-logo">Home23</div>
           <div class="h23-subtitle" id="header-subtitle">RESIDENT AI OS</div>
@@ -33,16 +28,18 @@
           <button class="h23-tab h23-tab-settings" id="settings-btn" data-scope-tab="settings" data-tab-label="Settings">Settings</button>
         </nav>
 
-        <div class="h23-sidebar-group">
-          <div class="h23-sidebar-group-label">Organs</div>
-          <div class="h23-linked-tabs" id="agent-tabs"></div>
-          <div class="h23-linked-tabs">
-            <button class="h23-tab" data-tab="query" data-tab-label="Query">Query</button>
-            <button class="h23-tab" data-tab="brain-map" data-tab-label="Brain Map">Brain Map</button>
-            <button class="h23-tab h23-tab-external h23-tab-cosmo23" id="cosmo23-btn" data-scope-tab="cosmo23" data-tab-label="cosmo23">cosmo23</button>
-            <a class="h23-tab h23-tab-external h23-tab-evobrew" id="evobrew-btn" href="#" target="_blank" data-scope-tab="evobrew" data-tab-label="evobrew">evobrew</a>
+        <details class="h23-organ-drawer" id="organs-drawer">
+          <summary>Organs</summary>
+          <div class="h23-organ-panel">
+            <div class="h23-linked-tabs" id="agent-tabs"></div>
+            <div class="h23-linked-tabs">
+              <button class="h23-tab" data-tab="query" data-tab-label="Query">Query</button>
+              <button class="h23-tab" data-tab="brain-map" data-tab-label="Brain Map">Brain Map</button>
+              <button class="h23-tab h23-tab-external h23-tab-cosmo23" id="cosmo23-btn" data-scope-tab="cosmo23" data-tab-label="cosmo23">cosmo23</button>
+              <a class="h23-tab h23-tab-external h23-tab-evobrew" id="evobrew-btn" href="#" target="_blank" data-scope-tab="evobrew" data-tab-label="evobrew">evobrew</a>
+            </div>
           </div>
-        </div>
+        </details>
       </div>
 
     </aside>
@@ -718,7 +715,6 @@
     </div>
   </template>
 
-  <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
   <script src="https://unpkg.com/3d-force-graph@1.73.3/dist/3d-force-graph.min.js"></script>
   <script type="module" src="/home23-chat.js"></script>
   <script src="/home23-brain-map.js"></script>

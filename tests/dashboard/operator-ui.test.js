@@ -143,6 +143,12 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(html, /Active Goals/);
   assert.doesNotMatch(html, /sidebar-status-card/);
   assert.doesNotMatch(html, /Check for updates/);
+  assert.doesNotMatch(html, /id="particles-js"/);
+  assert.doesNotMatch(html, /particles\.js/);
+  assert.doesNotMatch(html, /h23-sidebar-orb/);
+  assert.doesNotMatch(html, /class="h23-sidebar-group"/);
+  assert.match(html, /id="organs-drawer"/);
+  assert.match(html, /class="h23-organ-drawer"/);
   assert.match(html, /Runtime/);
   assert.match(html, /Memory/);
 
@@ -153,6 +159,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /\/home23\/api\/agency\/tick/);
   assert.match(js, /\/home23\/api\/agency\/pursuits\/\$\{encodeURIComponent\(pursuitId\)\}\/transition/);
   assert.match(js, /currentTab === 'home'\) loadResidentHomeSurface/);
+  assert.match(js, /setupOrganDrawer/);
+  assert.match(js, /syncOrganDrawerForTab/);
+  assert.doesNotMatch(js, /particlesJS/);
   assert.match(server, /resident agency state/);
   assert.match(server, /Routine organs stay hidden until they need action/);
   assert.doesNotMatch(server, /Tiles, pulse, chat/);
@@ -161,4 +170,6 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(css, /\.h23-resident-command/);
   assert.match(css, /\.h23-resident-action-btn\.danger/);
   assert.match(css, /\.h23-resident-stream/);
+  assert.match(css, /\.h23-organ-drawer/);
+  assert.match(css, /\.h23-organ-panel/);
 });

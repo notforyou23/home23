@@ -199,12 +199,12 @@ const enginePulse = {
 async function init() {
   updateClocks();
   setInterval(updateClocks, 10000);
-  initParticles();
   await loadDashboardScopeRegistry();
   await loadAgents();
   renderAgentTabs();
   refreshDashboardScopeUI();
   setupTabHandlers();
+  setupOrganDrawer();
   setupResidentHomeSurface();
   setupWorkersSurface();
   setupAgencySurface();
@@ -1301,29 +1301,6 @@ function updateClocks() {
   }
 }
 
-// ── Particles ──
-
-function initParticles() {
-  if (typeof particlesJS === 'undefined') return;
-  particlesJS('particles-js', {
-    particles: {
-      number: { value: 40, density: { enable: true, value_area: 1000 } },
-      color: { value: ['#ffffff', '#007AFF', '#00C7BE', '#30D158'] },
-      shape: { type: 'circle' },
-      opacity: { value: 0.3, random: true, anim: { enable: true, speed: 1, opacity_min: 0.1, sync: false } },
-      size: { value: 3, random: true, anim: { enable: true, speed: 2, size_min: 1, sync: false } },
-      line_linked: { enable: true, distance: 200, color: '#ffffff', opacity: 0.15, width: 1 },
-      move: { enable: true, speed: 0.8, direction: 'none', random: true, straight: false, out_mode: 'out', bounce: false }
-    },
-    interactivity: {
-      detect_on: 'canvas',
-      events: { onhover: { enable: true, mode: 'bubble' }, onclick: { enable: false }, resize: true },
-      modes: { bubble: { distance: 200, size: 6, duration: 2, opacity: 0.6, speed: 3 } }
-    },
-    retina_detect: true
-  });
-}
-
 // ── Load Agents ──
 
 async function loadAgents() {
@@ -1398,6 +1375,7 @@ async function loadAgents() {
       cosmoBtn.classList.add('active');
       currentTab = 'cosmo23';
       refreshDashboardScopeUI();
+      syncOrganDrawerForTab();
       setCosmoHomeDrawerOpen(false);
       showCosmoFrame();
     });
@@ -1579,6 +1557,22 @@ function renderAgentTabs() {
   ).join('');
 }
 
+function setupOrganDrawer() {
+  syncOrganDrawerForTab();
+}
+
+function syncOrganDrawerForTab() {
+  const drawer = document.getElementById('organs-drawer');
+  if (!drawer) return;
+  const organTabs = new Set(['query', 'brain-map', 'cosmo23']);
+  const isOrganTab = organTabs.has(currentTab) || currentTab.startsWith('agent-');
+  if (isOrganTab) {
+    drawer.open = true;
+  } else {
+    drawer.open = false;
+  }
+}
+
 function setupTabHandlers() {
   document.querySelectorAll('.h23-tab[data-tab]').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -1596,6 +1590,7 @@ function setupTabHandlers() {
       tab.classList.add('active');
       currentTab = tab.dataset.tab;
       refreshDashboardScopeUI();
+      syncOrganDrawerForTab();
 
       let panel = document.getElementById(`panel-${currentTab}`);
       if (!panel && currentTab.startsWith('agent-')) {
