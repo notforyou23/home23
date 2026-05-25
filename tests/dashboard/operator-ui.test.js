@@ -227,7 +227,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(html, /time-cluster/);
   assert.doesNotMatch(html, /id="engine-status"/);
   assert.doesNotMatch(html, />ENGINE</);
-  assert.match(html, />Advance</);
+  assert.match(html, />Rehearse</);
   assert.doesNotMatch(html, />Run Tick</);
   assert.doesNotMatch(html, /h23-system-metric/);
 
@@ -252,8 +252,11 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, />\$\{Number\(state\.attention\?\.deferredItems/);
   assert.doesNotMatch(js, />\$\{Number\(state\.attention\?\.openTasks/);
   assert.match(js, /runResidentTickFromDashboard/);
-  assert.match(js, /button\.textContent = 'Advancing'/);
-  assert.match(js, /button\.textContent = 'Advance'/);
+  assert.match(js, /syncResidentActionButton\(state\)/);
+  assert.match(js, /residentActionButtonState\(state\)/);
+  assert.match(js, /button\.textContent = isRehearsal \? 'Rehearsing' : 'Advancing'/);
+  assert.match(js, /syncResidentActionButton\(residentHomeLatestState\)/);
+  assert.doesNotMatch(js, /button\.textContent = 'Advance'/);
   assert.doesNotMatch(js, /button\.textContent = 'Run Tick'/);
   assert.match(js, /openCount <= 0/);
   assert.doesNotMatch(js, /all clear/);

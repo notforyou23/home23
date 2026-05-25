@@ -36,6 +36,7 @@ let goodLifeOverlayState = {
   tab: 'issues',
   selectedProblemId: null,
 };
+let residentHomeLatestState = null;
 let workersState = {
   workers: [],
   templates: [],
@@ -1652,9 +1653,10 @@ async function loadResidentHomeSurface() {
 
 async function runResidentTickFromDashboard() {
   const button = document.getElementById('resident-run-tick');
+  const isRehearsal = button?.dataset?.actionMode === 'rehearsal';
   if (button) {
     button.disabled = true;
-    button.textContent = 'Advancing';
+    button.textContent = isRehearsal ? 'Rehearsing' : 'Advancing';
   }
   try {
     const res = await fetch(`${dashboardBaseUrl()}/home23/api/agency/tick`, {
@@ -1667,7 +1669,7 @@ async function runResidentTickFromDashboard() {
   } finally {
     if (button) {
       button.disabled = false;
-      button.textContent = 'Advance';
+      syncResidentActionButton(residentHomeLatestState);
     }
   }
 }
@@ -1689,6 +1691,7 @@ async function transitionResidentPursuitFromDashboard(pursuitId, status, summary
 }
 
 function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, consequences }) {
+  residentHomeLatestState = state;
   const active = Number(state.attention?.activePursuits || 0);
   const activeMax = Number(state.attention?.maxActivePursuits || state.charter?.attention?.maxActivePursuits || 0);
   const watch = Number(state.attention?.watchItems || 0);
@@ -1696,6 +1699,7 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   setText('resident-posture', `${currentAgentLabel('Jerry')} is ${residentPostureText(state)}`);
   setText('resident-summary', residentBriefLine(brief, state));
   setHtml('resident-health-strip', renderResidentAttentionBudget({ active, activeMax, watch, watchMax }));
+  syncResidentActionButton(state);
 
   setHtml('resident-next-action', renderResidentNextAction(state));
   const operatorItems = residentOperatorItems(state, brief);
@@ -1711,6 +1715,32 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   setHtml('resident-consequences', consequenceRows.length
     ? consequenceRows.map(renderResidentConsequenceItem).join('')
     : '');
+}
+
+function syncResidentActionButton(state) {
+  const button = document.getElementById('resident-run-tick');
+  if (!button) return;
+  const action = residentActionButtonState(state);
+  button.textContent = action.label;
+  button.title = action.title;
+  button.dataset.actionMode = action.mode;
+}
+
+function residentActionButtonState(state = {}) {
+  const next = state.nextAction || {};
+  const rehearsal = state.mode === 'dry_run' || next.dryRun;
+  if (rehearsal) {
+    return {
+      label: 'Rehearse',
+      title: 'Dry-run mode: records resident intent and receipts without live action.',
+      mode: 'rehearsal',
+    };
+  }
+  return {
+    label: 'Advance',
+    title: 'Advance the resident loop now.',
+    mode: 'live',
+  };
 }
 
 function renderResidentAttentionBudget({ active, activeMax, watch, watchMax }) {
