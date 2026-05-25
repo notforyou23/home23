@@ -136,6 +136,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(html, /id="resident-next-action"/);
   assert.match(html, /id="resident-active-pursuits"/);
   assert.match(html, /id="resident-consequences"/);
+  assert.match(html, /id="resident-consequence-panel"/);
   assert.match(html, /id="resident-operator-needed"/);
   assert.doesNotMatch(html, /h23-resident-diagnostics/);
   assert.doesNotMatch(html, /id="resident-receipts"/);
@@ -231,6 +232,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /next\.dryRun \? 'dry-run' : null/);
   assert.doesNotMatch(js, /const text = String\(brief\?\.text/);
   assert.match(js, /groupResidentConsequences/);
+  assert.match(js, /toggleResidentConsequencesPanel\(consequenceRows\)/);
+  assert.match(js, /function toggleResidentConsequencesPanel\(items\)/);
+  assert.doesNotMatch(js, /No recent consequences\./);
   assert.match(js, /residentHomeConsequenceRows/);
   assert.match(js, /residentHomeConsequenceRows\(state\.recentConsequences \|\| consequences \|\| \[\]\)/);
   assert.match(js, /!groupResidentSchedulerEvidence\(row\)/);

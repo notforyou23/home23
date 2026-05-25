@@ -1707,9 +1707,10 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
     ? activePursuits.map(renderResidentPursuitCard).join('')
     : '<div class="h23-resident-empty">No active resident pursuits.</div>');
   const consequenceRows = groupResidentConsequences(residentHomeConsequenceRows(state.recentConsequences || consequences || [])).slice(0, 6);
+  toggleResidentConsequencesPanel(consequenceRows);
   setHtml('resident-consequences', consequenceRows.length
     ? consequenceRows.map(renderResidentConsequenceItem).join('')
-    : '<div class="h23-resident-empty">No recent consequences.</div>');
+    : '');
 }
 
 function renderResidentAttentionBudget({ active, activeMax, watch, watchMax }) {
@@ -1730,6 +1731,11 @@ function residentPostureText(state = {}) {
 
 function toggleResidentOperatorPanel(items) {
   const panel = document.getElementById('resident-operator-needed');
+  if (panel) panel.hidden = !items.length;
+}
+
+function toggleResidentConsequencesPanel(items) {
+  const panel = document.getElementById('resident-consequence-panel');
   if (panel) panel.hidden = !items.length;
 }
 
