@@ -1,62 +1,72 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createToolRegistry } from '../../../src/agent/tools/index.ts';
-import { cronRunTool } from '../../../src/agent/tools/cron.ts';
+import { test } from 'node:test';
+import { cronScheduleTool } from '../../../src/agent/tools/cron.js';
+import type { CronJob } from '../../../src/scheduler/cron.js';
+import type { ToolContext } from '../../../src/agent/types.js';
 
-test('tool registry exposes cron_run', () => {
-  const registry = createToolRegistry();
-  assert.ok(registry.get('cron_run'));
-});
-
-test('cron_run executes a job through the scheduler and reports updated state', async () => {
-  let ranJobId: string | null = null;
-  const ctx = {
-    scheduler: {
-      getJob(id: string) {
-        return id === 'job-1'
-          ? {
-              id,
-              name: 'Health check',
-              state: {
-                nextRunAtMs: Date.parse('2026-05-11T10:00:00.000Z'),
-                consecutiveErrors: 0,
-              },
-            }
-          : undefined;
-      },
-      async runJobNow(id: string) {
-        ranJobId = id;
-        return { status: 'ok', response: 'passed', durationMs: 42 };
-      },
+function ctx(scheduler: { addJob(job: CronJob): void }): ToolContext {
+  return {
+    scheduler: scheduler as never,
+    ttsService: null,
+    browser: null,
+    projectRoot: '/tmp/home23',
+    enginePort: 5002,
+    agentName: 'jerry',
+    cosmo23BaseUrl: 'http://localhost:43210',
+    brainRoute: null,
+    workspacePath: '/tmp/home23/instances/jerry/workspace',
+    tempDir: '/tmp/home23/tmp',
+    contextManager: {
+      getSystemPrompt: () => '',
+      getPromptSourceInfo: () => ({ generatedAt: '', totalSections: 0, loadedFiles: [] }),
+      invalidate: () => {},
     },
-  } as any;
+    subAgentTracker: { active: 0, maxConcurrent: 3, queue: [] },
+    chatId: 'chat',
+    telegramAdapter: null,
+    runAgentLoop: null,
+  };
+}
 
-  const result = await cronRunTool.execute({ job_id: 'job-1' }, ctx);
+test('cron_schedule rejects new recurring jobs that are not tied to an agency pursuit', async () => {
+  const scheduled: CronJob[] = [];
+  const result = await cronScheduleTool.execute({
+    name: 'orphan recurring report',
+    schedule_kind: 'cron',
+    cron_expr: '0 9 * * *',
+    message: 'send a report',
+  }, ctx({ addJob: (job) => scheduled.push(job) }));
 
-  assert.equal(ranJobId, 'job-1');
-  assert.equal(result.is_error, false);
-  assert.match(result.content, /Ran job: Health check/);
-  assert.match(result.content, /status: ok/);
-  assert.match(result.content, /consecutiveErrors: 0/);
-});
-
-test('cron_run refuses unknown jobs without invoking scheduler execution', async () => {
-  let ran = false;
-  const ctx = {
-    scheduler: {
-      getJob() {
-        return undefined;
-      },
-      async runJobNow() {
-        ran = true;
-        return { status: 'ok', durationMs: 1 };
-      },
-    },
-  } as any;
-
-  const result = await cronRunTool.execute({ job_id: 'missing' }, ctx);
-
-  assert.equal(ran, false);
   assert.equal(result.is_error, true);
-  assert.match(result.content, /Job not found: missing/);
+  assert.match(result.content, /pursuit_id is required/);
+  assert.equal(scheduled.length, 0);
+});
+
+test('cron_schedule records pursuit binding for approved recurring jobs', async () => {
+  const scheduled: CronJob[] = [];
+  const result = await cronScheduleTool.execute({
+    name: 'bounded pursuit review',
+    schedule_kind: 'every',
+    every_ms: 60000,
+    message: 'review this pursuit',
+    pursuit_id: 'ap_bound123',
+  }, ctx({ addJob: (job) => scheduled.push(job) }));
+
+  assert.equal(result.is_error, undefined);
+  assert.equal(scheduled.length, 1);
+  assert.equal(scheduled[0].agency?.pursuitId, 'ap_bound123');
+  assert.match(result.content, /pursuit: ap_bound123/);
+});
+
+test('cron_schedule allows one-shot jobs without pursuit binding', async () => {
+  const scheduled: CronJob[] = [];
+  const result = await cronScheduleTool.execute({
+    name: 'one shot reminder',
+    schedule_kind: 'at',
+    at: '2026-05-26T09:00:00-04:00',
+    message: 'check once',
+  }, ctx({ addJob: (job) => scheduled.push(job) }));
+
+  assert.equal(result.is_error, undefined);
+  assert.equal(scheduled.length, 1);
 });

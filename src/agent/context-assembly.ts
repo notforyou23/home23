@@ -192,6 +192,68 @@ export function buildWorkerContextSection(projectRoot: string, agentName: string
   ].join('\n');
 }
 
+export function buildAgencyContextSection(projectRoot: string, agentName: string): string {
+  const agencyDir = join(projectRoot, 'instances', agentName, 'brain', 'agency');
+  const statePath = join(agencyDir, 'state.json');
+  const pursuitsPath = join(agencyDir, 'pursuits.jsonl');
+  if (!existsSync(statePath) && !existsSync(pursuitsPath)) return '';
+
+  let state: Record<string, unknown> = {};
+  try {
+    state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown> : {};
+  } catch {
+    state = {};
+  }
+
+  const latest = new Map<string, Record<string, unknown>>();
+  for (const row of readJsonlTail(pursuitsPath, 300)) {
+    const pursuit = row.pursuit && typeof row.pursuit === 'object'
+      ? row.pursuit as Record<string, unknown>
+      : null;
+    if (pursuit?.id && typeof pursuit.id === 'string') latest.set(pursuit.id, pursuit);
+  }
+  const active = Array.from(latest.values())
+    .filter((pursuit) => ['active', 'watch'].includes(String(pursuit.status || '')))
+    .sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')))
+    .slice(0, 5);
+
+  if (active.length === 0 && Object.keys(state).length === 0) return '';
+
+  const attention = state.attention && typeof state.attention === 'object'
+    ? state.attention as Record<string, unknown>
+    : {};
+  const nextAction = state.nextAction && typeof state.nextAction === 'object'
+    ? state.nextAction as Record<string, unknown>
+    : null;
+  const truth = state.truth && typeof state.truth === 'object'
+    ? state.truth as Record<string, unknown>
+    : {};
+  const lines = active.length > 0
+    ? active.map((pursuit) => [
+        `- ${pursuit.id}: ${pursuit.title || pursuit.summary || 'Untitled pursuit'}`,
+        `status=${pursuit.status || 'unknown'}`,
+        `authority=${pursuit.authorityLevel || 'L1'}`,
+        pursuit.nextMove ? `next_move=${pursuit.nextMove}` : null,
+        pursuit.desiredChangedFuture ? `changed_future=${pursuit.desiredChangedFuture}` : null,
+        pursuit.nextCheckAt ? `next=${pursuit.nextCheckAt}` : null,
+      ].filter(Boolean).join(' | '))
+    : ['- none'];
+
+  return [
+    '## Resident Agency',
+    '',
+    `Mode: ${state.mode || 'unknown'}`,
+    `Current pursuit: ${attention.currentPursuitId || 'none'}`,
+    `Queue depth: ${attention.queueDepth ?? 'unknown'}`,
+    `Attention: active ${attention.activePursuits ?? 'unknown'}/${attention.maxActivePursuits ?? 'unknown'}, watch ${attention.watchItems ?? 'unknown'}/${attention.maxWatchItems ?? 'unknown'}`,
+    `Next autonomous action: ${nextAction ? [nextAction.kind, nextAction.pursuitId, nextAction.reason].filter(Boolean).join(' | ') : 'none'}`,
+    `Open contradictions: ${truth.unresolvedContradictions ?? 0}`,
+    '',
+    'Active pursuits:',
+    ...lines,
+  ].join('\n');
+}
+
 function projectRootFromWorkspace(workspacePath: string): string {
   return resolve(workspacePath, '..', '..', '..');
 }
@@ -336,6 +398,19 @@ export async function assembleContext(
       text: `\nRelevant context (WORKERS):\n${workerSection}`,
       score: 0.9,
       source: 'surface:WORKERS',
+    });
+  }
+
+  const agencySection = buildAgencyContextSection(
+    projectRootFromWorkspace(config.workspacePath),
+    agentNameFromWorkspace(config.workspacePath),
+  );
+  if (agencySection) {
+    surfacesLoaded.push('AGENCY');
+    salienceItems.push({
+      text: `\nRelevant context (AGENCY):\n${agencySection}`,
+      score: 0.98,
+      source: 'surface:AGENCY',
     });
   }
 

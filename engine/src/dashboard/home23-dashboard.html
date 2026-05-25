@@ -29,6 +29,7 @@
           <button class="h23-tab active" data-tab="home" data-tab-label="Home">Home</button>
           <button class="h23-tab" data-tab="intelligence" data-tab-label="Intelligence">Intelligence</button>
           <button class="h23-tab" data-tab="workers" data-tab-label="Workers">Workers</button>
+          <button class="h23-tab" data-tab="agency" data-tab-label="Agency">Agency</button>
           <button class="h23-tab" data-tab="query" data-tab-label="Query">Query</button>
           <button class="h23-tab" data-tab="brain-map" data-tab-label="Brain Map">Brain Map</button>
           <button class="h23-tab" data-tab="about" data-tab-label="About">About</button>
@@ -423,6 +424,60 @@
           <div id="workers-receipt" class="h23-workers-receipt">
             <p class="h23-muted">Select a completed check to see what was inspected, what passed, what failed, and what Jerry can learn from it.</p>
           </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- Agency panel — resident pursuit inspector. -->
+    <div class="h23-panel" id="panel-agency">
+      <div class="h23-workers-header">
+        <div>
+          <h2>Agency Inspector</h2>
+          <div class="h23-workers-subtitle">Evidence-chain view of resident attention, pursuits, route receipts, and observed consequences.</div>
+        </div>
+        <div class="h23-workers-actions">
+          <button class="h23-worker-btn secondary" id="agency-refresh-btn" type="button">Refresh</button>
+          <a class="h23-worker-btn" href="/home23/settings#agency">Authority Settings</a>
+        </div>
+      </div>
+
+      <div class="h23-worker-stats" id="agency-stats">
+        <div class="h23-worker-stat"><span>—</span><label>Mode</label></div>
+        <div class="h23-worker-stat"><span>—</span><label>Active/Watch</label></div>
+        <div class="h23-worker-stat"><span>—</span><label>Inbox</label></div>
+        <div class="h23-worker-stat"><span>—</span><label>Receipts</label></div>
+      </div>
+
+      <div class="h23-workers-grid h23-workers-grid-wide">
+        <section class="h23-workers-section">
+          <div class="h23-workers-section-title">Resident Scratch / Editor</div>
+          <div id="agency-scratch" class="h23-workers-receipt"></div>
+        </section>
+        <section class="h23-workers-section">
+          <div class="h23-workers-section-title">Truth Hierarchy / Bootcamp</div>
+          <div id="agency-truth" class="h23-workers-receipt"></div>
+        </section>
+      </div>
+
+      <div class="h23-workers-grid h23-workers-grid-wide">
+        <section class="h23-workers-section">
+          <div class="h23-workers-section-title">Active Pursuits</div>
+          <div id="agency-pursuits" class="h23-workers-runs"></div>
+        </section>
+        <section class="h23-workers-section">
+          <div class="h23-workers-section-title">Latest Route Receipts</div>
+          <div id="agency-receipts" class="h23-workers-receipt"></div>
+        </section>
+      </div>
+
+      <div class="h23-workers-grid h23-workers-grid-wide">
+        <section class="h23-workers-section">
+          <div class="h23-workers-section-title">Inbox Decisions</div>
+          <div id="agency-inbox" class="h23-workers-runs"></div>
+        </section>
+        <section class="h23-workers-section">
+          <div class="h23-workers-section-title">Consequences</div>
+          <div id="agency-consequences" class="h23-workers-receipt"></div>
         </section>
       </div>
     </div>

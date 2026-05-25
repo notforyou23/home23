@@ -49,6 +49,7 @@ Delivery:
       message_path: { type: 'string', description: 'Path to a prompt file (alternative to message). Relative paths resolve from the home23 project root. Preferred for long prompts — makes them editable as files.' },
       session_history: { type: 'string', enum: ['persistent', 'fresh'], description: 'Session lifecycle for agentTurn jobs. "fresh" rotates chat history before each run (cleanest for stateless jobs). Default: "persistent".' },
       delivery_profile: { type: 'string', description: 'Name of a delivery profile from config.yaml deliveryProfiles. If set, overrides delivery_channel/delivery_to.' },
+      pursuit_id: { type: 'string', description: 'Resident agency pursuit ID that justifies recurring work. Required for cron/every jobs during agency bootcamp.' },
     },
     required: ['name', 'schedule_kind'],
   },
@@ -86,6 +87,14 @@ Delivery:
       schedule = { kind: 'at', at };
     } else {
       return { content: `Unknown schedule_kind: "${kind}". Use cron, every, or at.`, is_error: true };
+    }
+
+    const pursuitId = typeof input.pursuit_id === 'string' ? input.pursuit_id.trim() : '';
+    if ((kind === 'cron' || kind === 'every') && !pursuitId) {
+      return {
+        content: 'pursuit_id is required for new recurring cron/every jobs. Agency bootcamp forbids recurring work that is not tied to a resident pursuit.',
+        is_error: true,
+      };
     }
 
     // Build payload
@@ -148,6 +157,7 @@ Delivery:
               to: deliveryTo,
             }),
       },
+      ...(pursuitId ? { agency: { pursuitId, charterRule: 'no_new_cron_without_pursuit' } } : {}),
       state: { nextRunAtMs: 0, consecutiveErrors: 0 },
     };
 
@@ -157,7 +167,7 @@ Delivery:
     if (!deliveryTo && !hasProfile) warnings.push('⚠ No delivery_to set — results won\'t be delivered anywhere.');
     if (deliveryTo.startsWith('dashboard-')) warnings.push('⚠ delivery_to is a dashboard session ID — use a Telegram numeric ID instead.');
 
-    return { content: `Job "${job.name}" scheduled (id: ${id}, ${kind}, payload: ${payloadKind})${warnings.length ? '\n' + warnings.join('\n') : ''}` };
+    return { content: `Job "${job.name}" scheduled (id: ${id}, ${kind}, payload: ${payloadKind})${pursuitId ? `, pursuit: ${pursuitId}` : ''}${warnings.length ? '\n' + warnings.join('\n') : ''}` };
   },
 };
 

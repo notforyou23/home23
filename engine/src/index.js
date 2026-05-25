@@ -698,6 +698,8 @@ async function main() {
   let channelBus = null;
   let closer = null;
   let decayWorker = null;
+  let agencyKernel = null;
+  let agencyTickTimer = null;
   try {
     // Step 24 config lives in config/home.yaml under `osEngine` — the engine
     // ConfigLoader reads its own engine YAML and only touches home.yaml for
@@ -718,9 +720,11 @@ async function main() {
       return out;
     };
     let osEngineCfg = {};
+    let agencyCfg = {};
     try {
       const raw = yaml.load(fs.readFileSync(homeYamlPath, 'utf8')) || {};
       osEngineCfg = raw.osEngine || {};
+      agencyCfg = raw.agency || {};
       // Overlay per-agent instance config.yaml if present.
       const agentName = process.env.HOME23_AGENT || config.agent?.name;
       if (agentName) {
@@ -730,6 +734,9 @@ async function main() {
             const inst = yaml.load(fs.readFileSync(instancePath, 'utf8')) || {};
             if (inst.osEngine) {
               osEngineCfg = deepMerge(osEngineCfg, inst.osEngine);
+            }
+            if (inst.agency) {
+              agencyCfg = deepMerge(agencyCfg, inst.agency);
             }
           } catch (err) {
             logger.warn?.(`[channels] instance osEngine overlay failed: ${err?.message || err}`);
@@ -741,6 +748,7 @@ async function main() {
     }
     // Mirror onto the engine config so downstream code can reach it.
     config.osEngine = osEngineCfg;
+    config.agency = agencyCfg;
 
     const { ChannelBus } = await import('./channels/bus.js');
     const { Closer } = await import('./cognition/closer.mjs');
@@ -748,6 +756,34 @@ async function main() {
     const { NotifyChannel } = await import('./channels/notify/notify-channel.js');
     const channelsDir = path.join(runtimeRoot, 'channels');
     channelBus = new ChannelBus({ persistenceDir: channelsDir, logger });
+    const { AgencyKernel } = await import('./agency/resident-kernel.js');
+    const agentNameForAgency = process.env.HOME23_AGENT || config.agent?.name || 'jerry';
+    const agencyCharterPath = agencyCfg.charterPath
+      ? (path.isAbsolute(agencyCfg.charterPath) ? agencyCfg.charterPath : path.join(home23RepoRoot, agencyCfg.charterPath))
+      : path.join(home23RepoRoot, 'agency', 'charter.yaml');
+    agencyKernel = new AgencyKernel({
+      brainDir: runtimeRoot,
+      agentName: agentNameForAgency,
+      charterPath: agencyCharterPath,
+      config: {
+        ...agencyCfg,
+        enabled: agencyCfg.enabled !== false,
+        mode: agencyCfg.mode || 'dry_run',
+        approvals: agencyCfg.approvals || [],
+      },
+      logger,
+    });
+    if (agencyKernel.config.enabled) {
+      const runAgencyTick = () => {
+        agencyKernel.tick({ reason: 'resident_engine_tick' }).catch((err) => {
+          logger.warn?.('[agency] resident tick failed:', err?.message || err);
+        });
+      };
+      agencyTickTimer = setInterval(runAgencyTick, agencyKernel.config.residentTickMs);
+      if (typeof agencyTickTimer.unref === 'function') agencyTickTimer.unref();
+      setTimeout(runAgencyTick, 5_000).unref?.();
+      logger.info(`[agency] resident spine started (mode=${agencyKernel.config.mode}, cadence=${agencyKernel.config.residentTickMs}ms)`);
+    }
     closer = new Closer({
       memory,
       goals,
@@ -821,6 +857,11 @@ async function main() {
         const de = typeof orchestrator !== 'undefined' ? orchestrator?.discoveryEngine : null;
         if (de && typeof de.injectObservation === 'function') {
           de.injectObservation(obs);
+        }
+        if (agencyKernel?.config?.enabled) {
+          agencyKernel.handleObservation(obs).catch((err) => {
+            logger.warn?.('[agency] observation intake failed:', err?.message || err);
+          });
         }
       } catch (err) {
         logger.warn?.('[discovery] injectObservation failed:', err?.message || err);
@@ -1155,7 +1196,7 @@ async function main() {
     logger.info(`[channels] bus started with ${registered.length} channels: ${registered.join(', ')}`);
     logger.info('[channels] memory-ingest wired to crystallize events');
     // Expose on config so subsystems can access later without threading refs.
-    config._osEngine = { channelBus, closer, decayWorker, memoryIngest };
+    config._osEngine = { channelBus, closer, decayWorker, memoryIngest, agencyKernel, agencyTickTimer };
   } catch (err) {
     logger.warn?.('[channels] bus initialization failed — engine continues without it:', err?.message || err);
   }

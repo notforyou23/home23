@@ -1413,6 +1413,43 @@ class DashboardServer {
       this.proxyWorkerConnector(req, res, 'POST', `/api/workers/${encodeURIComponent(req.params.name)}/runs`, 180_000);
     });
 
+    this.app.get(['/api/agency/state', '/home23/api/agency/state'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'GET', '/api/agency/state', 10_000);
+    });
+    this.app.get(['/api/agency/inbox', '/home23/api/agency/inbox'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'GET', '/api/agency/inbox', 10_000);
+    });
+    this.app.get(['/api/agency/pursuits', '/home23/api/agency/pursuits'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'GET', '/api/agency/pursuits', 10_000);
+    });
+    this.app.get(['/api/agency/pursuits/:id', '/home23/api/agency/pursuits/:id'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'GET', `/api/agency/pursuits/${encodeURIComponent(req.params.id)}`, 10_000);
+    });
+    this.app.post(['/api/agency/intake', '/home23/api/agency/intake'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'POST', '/api/agency/intake', 10_000);
+    });
+    this.app.post(['/api/agency/world-stream', '/home23/api/agency/world-stream'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'POST', '/api/agency/world-stream', 10_000);
+    });
+    this.app.post(['/api/agency/tick', '/home23/api/agency/tick'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'POST', '/api/agency/tick', 10_000);
+    });
+    this.app.post(['/api/agency/claims', '/home23/api/agency/claims'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'POST', '/api/agency/claims', 10_000);
+    });
+    this.app.post(['/api/agency/deltas', '/home23/api/agency/deltas'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'POST', '/api/agency/deltas', 10_000);
+    });
+    this.app.post(['/api/agency/pursuits/:id/transition', '/home23/api/agency/pursuits/:id/transition'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'POST', `/api/agency/pursuits/${encodeURIComponent(req.params.id)}/transition`, 10_000);
+    });
+    this.app.get(['/api/agency/events', '/home23/api/agency/events'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'GET', '/api/agency/events', 10_000);
+    });
+    this.app.get('/home23/api/settings/agency/recent', (req, res) => {
+      this.proxyWorkerConnector(req, res, 'GET', '/api/agency/events', 10_000);
+    });
+
     // Home23 feeder status — reads from engine's DocumentFeeder manifest
     this.app.get('/home23/feeder-status', (req, res) => {
       const fsSync = require('fs');

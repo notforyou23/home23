@@ -58,6 +58,11 @@ import { createChatHistoryHandler, createChatListHandler } from './routes/chat-h
 import { syncSharedSkillsRegistry } from './skills/runtime.js';
 import { PromoterWorker } from './workers/promoter.js';
 import { createWorkerRouter } from './workers/connector.js';
+import {
+  buildCronResultPacket,
+  buildIncomingMessagePacket,
+  buildOutgoingResponsePacket,
+} from './agency/world-stream.js';
 
 // ─── Constants ──────────────────────────────────────────────
 
@@ -197,6 +202,57 @@ async function main(): Promise<void> {
   // ── Temp dir for media ──
   const tempDir = join(RUNTIME_DIR, 'tmp');
   mkdirSync(tempDir, { recursive: true });
+
+  let agencyKernelPromise: Promise<any> | null = null;
+  const getAgencyKernel = async () => {
+    if (!agencyKernelPromise) {
+      agencyKernelPromise = (async () => {
+        const mod = await import(resolve(PROJECT_ROOT, 'engine/src/agency/resident-kernel.js'));
+        const agencyCfg = config.agency || { enabled: true, mode: 'dry_run' };
+        const charterPath = agencyCfg.charterPath
+          ? resolve(PROJECT_ROOT, agencyCfg.charterPath)
+          : resolve(PROJECT_ROOT, 'agency/charter.yaml');
+        return new mod.AgencyKernel({
+          brainDir: BRAIN_DIR,
+          agentName: AGENT_NAME,
+          charterPath,
+          config: agencyCfg,
+          logger: console,
+        });
+      })();
+    }
+    return agencyKernelPromise;
+  };
+
+  async function assimilateCronResult(job: CronJob, jobResult: JobResult): Promise<void> {
+    if (config.agency?.enabled === false) return;
+    try {
+      const kernel = await getAgencyKernel();
+      await kernel.intakeWorldStream(buildCronResultPacket(job, jobResult));
+    } catch (err) {
+      console.warn(`[agency] cron assimilation failed for ${job.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  async function assimilateIncomingMessage(message: IncomingMessage, text: string): Promise<void> {
+    if (config.agency?.enabled === false) return;
+    try {
+      const kernel = await getAgencyKernel();
+      await kernel.intakeWorldStream(buildIncomingMessagePacket(message, text));
+    } catch (err) {
+      console.warn(`[agency] inbound message assimilation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  async function assimilateOutgoingResponse(message: IncomingMessage, response: OutgoingResponse): Promise<void> {
+    if (config.agency?.enabled === false) return;
+    try {
+      const kernel = await getAgencyKernel();
+      await kernel.intakeWorldStream(buildOutgoingResponsePacket(message, response));
+    } catch (err) {
+      console.warn(`[agency] outbound response assimilation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   // ── TTS Service (lazy) ──
   // If TTS is configured for a known provider but the apiKey is empty,
@@ -392,20 +448,26 @@ async function main(): Promise<void> {
   // ── Message handler ──
   const messageHandler = async (message: IncomingMessage): Promise<OutgoingResponse> => {
     const text = message.text.trim();
+    await assimilateIncomingMessage(message, text);
 
     // Slash commands — handled pre-AgentLoop, no LLM.
     // This includes /stop, which fires instantly even while the agent is busy.
     const cmdResult = await commandHandler.handle(text, message.chatId, message.channel);
-    if (cmdResult) return cmdResult;
+    if (cmdResult) {
+      await assimilateOutgoingResponse(message, cmdResult);
+      return cmdResult;
+    }
 
     // Safety net: if somehow a message reaches here while agent is busy
     // (should not happen with queueDuringRun, but defensive)
     if (agent.isRunning(message.chatId)) {
-      return {
+      const busyResponse = {
         text: "I'm still working on something. Send /stop to interrupt me.",
         channel: message.channel,
         chatId: message.chatId,
       };
+      await assimilateOutgoingResponse(message, busyResponse);
+      return busyResponse;
     }
 
     // Track active run so router holds incoming messages during processing
@@ -414,12 +476,14 @@ async function main(): Promise<void> {
 
     try {
       const result = await agent.run(message.chatId, text, message.media);
-      return {
+      const response = {
         text: result.text,
         channel: message.channel,
         chatId: message.chatId,
         media: result.media,
       };
+      await assimilateOutgoingResponse(message, response);
+      return response;
     } finally {
       router.markRunComplete(routerKey);
       // Process any messages that arrived during the run
@@ -635,6 +699,7 @@ async function main(): Promise<void> {
               jobResult.status = 'error';
               jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
             }
+            await assimilateCronResult(job, jobResult);
             return jobResult;
           } catch (err) {
             clearTimeout(timeoutId!);
@@ -661,6 +726,7 @@ async function main(): Promise<void> {
             jobResult.status = 'error';
             jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
           }
+          await assimilateCronResult(job, jobResult);
           return jobResult;
         }
 
@@ -679,13 +745,16 @@ async function main(): Promise<void> {
             jobResult.status = 'error';
             jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
           }
+          await assimilateCronResult(job, jobResult);
           return jobResult;
         }
 
         if (job.payload.kind === 'systemEvent') {
           console.log(`[scheduler] System event: ${job.payload.text}`);
           const durationMs = Date.now() - startMs;
-          return { status: 'ok', response: job.payload.text, durationMs };
+          const jobResult: JobResult = { status: 'ok', response: job.payload.text, durationMs };
+          await assimilateCronResult(job, jobResult);
+          return jobResult;
         }
 
         const durationMs = Date.now() - startMs;
@@ -829,6 +898,101 @@ async function main(): Promise<void> {
     projectRoot: PROJECT_ROOT,
     ctx: toolContext
   }));
+
+  bridgeApp.get('/api/agency/state', async (_req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json(kernel.state());
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+  bridgeApp.get('/api/agency/inbox', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json({ inbox: kernel.inbox({ limit: Number(req.query?.limit || 100) }) });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+  bridgeApp.get('/api/agency/pursuits', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json({ pursuits: kernel.pursuits({ status: req.query?.status || null, limit: Number(req.query?.limit || 100) }) });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+  bridgeApp.get('/api/agency/pursuits/:id', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      const pursuit = kernel.pursuit(req.params.id);
+      if (!pursuit) {
+        res.status(404).json({ error: `Pursuit not found: ${req.params.id}` });
+        return;
+      }
+      res.json({ pursuit });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+  bridgeApp.post('/api/agency/intake', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json(await kernel.intake(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || String(err) });
+    }
+  });
+  bridgeApp.post('/api/agency/world-stream', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json(await kernel.intakeWorldStream(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || String(err) });
+    }
+  });
+  bridgeApp.post('/api/agency/tick', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json(await kernel.tick(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || String(err) });
+    }
+  });
+  bridgeApp.post('/api/agency/claims', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json({ claim: kernel.recordClaim(req.body || {}) });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || String(err) });
+    }
+  });
+  bridgeApp.post('/api/agency/deltas', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json(kernel.proposeDelta(req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || String(err) });
+    }
+  });
+  bridgeApp.post('/api/agency/pursuits/:id/transition', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json(kernel.transition(req.params.id, req.body || {}));
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || String(err) });
+    }
+  });
+  bridgeApp.get('/api/agency/events', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json(kernel.events({ limit: Number(req.query?.limit || 100) }));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+
   bridgeApp.post('/api/chat', createEvobrewChatHandler(bridgeConfig));
   bridgeApp.post('/api/stop', createStopHandler(bridgeConfig));
   bridgeApp.get('/health', createHealthHandler({ agentName: AGENT_NAME, agent }));

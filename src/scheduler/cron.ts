@@ -56,6 +56,10 @@ export interface CronJob {
   wakeMode: 'now' | 'next-heartbeat';
   payload: JobPayload;
   delivery?: DeliveryConfig;
+  agency?: {
+    pursuitId?: string;
+    charterRule?: string;
+  };
   state: JobState;
 }
 

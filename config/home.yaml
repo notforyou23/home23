@@ -352,6 +352,11 @@ osEngine:
     starvationFloor:
       workspace_insights: 6h
       dashboard: 15m
+agency:
+  enabled: true
+  mode: dry_run
+  charterPath: agency/charter.yaml
+  residentTickMs: 60000
 media:
   imageGeneration:
     provider: minimax

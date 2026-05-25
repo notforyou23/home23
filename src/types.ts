@@ -178,6 +178,15 @@ export interface HomeConfig {
   // + neighbor protocol + publish layer. See docs/design/STEP24-OS-ENGINE-REDESIGN.md.
   osEngine?: OsEngineConfig;
 
+  agency?: {
+    enabled?: boolean;
+    mode?: 'dry_run' | 'live';
+    approvals?: string[];
+    charterPath?: string;
+    residentTickMs?: number;
+    charter?: Record<string, unknown>;
+  };
+
   apns?: {
     team_id: string;
     key_id: string;

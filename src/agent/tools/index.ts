@@ -17,6 +17,17 @@ import { selfUpdateTool, selfReadTool } from './identity.js';
 import { spawnAgentTool } from './subagent.js';
 import { promoteToMemoryTool } from './promote.js';
 import { workerListTool, workerRunTool, workerStatusTool, workerReceiptTool, workerPromoteMemoryTool } from './workers.js';
+import {
+  agencyListTool,
+  agencyCreatePursuitTool,
+  agencyUpdatePursuitTool,
+  agencyClosePursuitTool,
+  agencyDiscardCandidateTool,
+  agencyIntakeWorldStreamTool,
+  agencyProposeDeltaTool,
+  agencyRequestAuthorityTool,
+  agencyTickTool,
+} from './agency.js';
 import { skillsAuditTool, skillsGetTool, skillsListTool, skillsRunTool, skillsSuggestTool } from './skills.js';
 import {
   listBrainsTool,
@@ -139,6 +150,15 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(workerStatusTool);
   registry.register(workerReceiptTool);
   registry.register(workerPromoteMemoryTool);
+  registry.register(agencyListTool);
+  registry.register(agencyCreatePursuitTool);
+  registry.register(agencyUpdatePursuitTool);
+  registry.register(agencyClosePursuitTool);
+  registry.register(agencyDiscardCandidateTool);
+  registry.register(agencyIntakeWorldStreamTool);
+  registry.register(agencyProposeDeltaTool);
+  registry.register(agencyRequestAuthorityTool);
+  registry.register(agencyTickTool);
   registry.register(promoteToMemoryTool);
 
   return registry;

@@ -65,6 +65,11 @@ const DASHBOARD_SCOPE_FALLBACK = {
     chip: 'Workers',
     summaryTemplate: 'Workers are reusable house capabilities. They run through {{dashboardAgent}}\'s connector, keep their own workspaces, and feed receipts back into house-agent memory.',
   },
+  agency: {
+    kind: 'dashboard',
+    chip: 'This Agent',
+    summaryTemplate: 'Agency is the resident pursuit surface for {{dashboardAgent}}: inbox decisions, active pursuits, authority receipts, and consequences.',
+  },
   query: {
     kind: 'dashboard',
     chip: 'This Agent',
@@ -204,10 +209,12 @@ async function init() {
   setupTileActionHandlers();
   setupHomeTileBroadcast();
   setupWorkersSurface();
+  setupAgencySurface();
   await loadHomeLayoutConfig({ force: true });
   connectEnginePulse();
   loadHomeTiles().catch(() => { /* initial home load is best-effort */ });
   loadWorkersSurface().catch(() => { /* workers connector may be offline during early boot */ });
+  loadAgencySurface().catch(() => { /* agency bridge may still be booting */ });
   startHomeThoughtRotation();
   startAutoRefresh();
   updateCosmoIndicator();
@@ -252,6 +259,10 @@ async function init() {
   setInterval(() => {
     if (currentTab === 'workers') loadWorkersSurface().catch(() => {});
   }, 30000);
+
+  setInterval(() => {
+    if (currentTab === 'agency') loadAgencySurface().catch(() => {});
+  }, 15000);
 }
 
 // ── Pulse tile (Jerry's voice + rotating stats) ──
@@ -1615,6 +1626,10 @@ function setupTabHandlers() {
         loadWorkersSurface().catch(() => {});
       }
 
+      if (currentTab === 'agency') {
+        loadAgencySurface().catch(() => {});
+      }
+
       // Intelligence tab: load content and start refresh
       if (currentTab === 'intelligence') {
         loadIntelligence();
@@ -1629,6 +1644,207 @@ function setupTabHandlers() {
       }
     });
   });
+}
+
+// ── Agency Inspector ──
+
+function setupAgencySurface() {
+  document.getElementById('agency-refresh-btn')?.addEventListener('click', () => {
+    loadAgencySurface().catch(() => {});
+  });
+}
+
+async function loadAgencySurface() {
+  const [stateRes, pursuitsRes, eventsRes] = await Promise.all([
+    fetch(`${dashboardBaseUrl()}/home23/api/agency/state`),
+    fetch(`${dashboardBaseUrl()}/home23/api/agency/pursuits?limit=24`),
+    fetch(`${dashboardBaseUrl()}/home23/api/agency/events?limit=40`),
+  ]);
+  if (!stateRes.ok || !pursuitsRes.ok || !eventsRes.ok) {
+    throw new Error('agency surface unavailable');
+  }
+  const state = await stateRes.json();
+  const pursuits = await pursuitsRes.json();
+  const events = await eventsRes.json();
+  renderAgencySurface({
+    state,
+    pursuits: pursuits.pursuits || [],
+    inbox: events.inbox || [],
+    receipts: events.receipts || events.actions || [],
+    consequences: events.consequences || [],
+    scratch: events.scratch || [],
+    truth: events.truth || [],
+  });
+}
+
+function renderAgencySurface({ state, pursuits, inbox, receipts, consequences, scratch, truth }) {
+  const stats = document.getElementById('agency-stats');
+  if (stats) {
+    const active = Number(state.attention?.activePursuits || 0);
+    const activeMax = Number(state.attention?.maxActivePursuits || state.charter?.attention?.maxActivePursuits || 0);
+    const watch = Number(state.attention?.watchItems || 0);
+    const watchMax = Number(state.attention?.maxWatchItems || state.charter?.attention?.maxWatchItems || 0);
+    stats.innerHTML = `
+      <div class="h23-worker-stat"><span>${escapeHtml(state.mode || 'unknown')}</span><label>Mode</label></div>
+      <div class="h23-worker-stat"><span>${active}/${activeMax || '—'} · ${watch}/${watchMax || '—'}</span><label>Active/Watch</label></div>
+      <div class="h23-worker-stat"><span>${Number(state.attention?.queueDepth || 0)}</span><label>Inbox</label></div>
+      <div class="h23-worker-stat"><span>${receipts.length}</span><label>Recent Receipts</label></div>
+    `;
+  }
+
+  const scratchEl = document.getElementById('agency-scratch');
+  if (scratchEl) {
+    scratchEl.innerHTML = renderAgencyScratchBlock(state, scratch);
+  }
+
+  const truthEl = document.getElementById('agency-truth');
+  if (truthEl) {
+    truthEl.innerHTML = renderAgencyTruthBlock(state, truth);
+  }
+
+  const pursuitEl = document.getElementById('agency-pursuits');
+  if (pursuitEl) {
+    pursuitEl.innerHTML = pursuits.length ? pursuits.map(renderAgencyPursuitRow).join('') : '<p class="h23-muted">No pursuits yet.</p>';
+  }
+
+  const receiptEl = document.getElementById('agency-receipts');
+  if (receiptEl) {
+    receiptEl.innerHTML = receipts.length ? receipts.slice(0, 16).map(renderAgencyReceiptRow).join('') : '<p class="h23-muted">No route receipts yet.</p>';
+  }
+
+  const inboxEl = document.getElementById('agency-inbox');
+  if (inboxEl) {
+    inboxEl.innerHTML = inbox.length ? inbox.slice(0, 20).map(renderAgencyInboxRow).join('') : '<p class="h23-muted">No inbox decisions yet.</p>';
+  }
+
+  const consequenceEl = document.getElementById('agency-consequences');
+  if (consequenceEl) {
+    consequenceEl.innerHTML = consequences.length ? consequences.slice(0, 16).map(renderAgencyConsequenceRow).join('') : '<p class="h23-muted">No verified consequences yet.</p>';
+  }
+}
+
+function renderAgencyScratchBlock(state, scratch = []) {
+  const nextAction = state.nextAction || {};
+  const bootcamp = state.bootcamp || {};
+  const lastKillReview = state.governance?.lastKillReview || null;
+  const bootcampRules = Array.isArray(bootcamp.rules)
+    ? bootcamp.rules
+    : Object.entries(bootcamp)
+        .filter(([key, value]) => key !== 'enabled' && value === true)
+        .map(([key]) => key);
+  const rows = [];
+  if (nextAction.kind || nextAction.pursuitId) {
+    rows.push(`
+      <div style="padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,0.03);border-left:3px solid #ffcc00;">
+        <div style="font-size:12px;color:rgba(255,255,255,0.55);">Selected next action</div>
+        <div style="color:#fff;font-size:13px;">${escapeHtml(nextAction.kind || 'advance_one_step')} ${nextAction.pursuitId ? `→ ${escapeHtml(nextAction.pursuitId)}` : ''}</div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.6);">${escapeHtml(nextAction.summary || nextAction.nextMove || '')}</div>
+      </div>
+    `);
+  }
+  rows.push(`
+    <div style="padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,0.03);border-left:3px solid ${bootcamp.enabled ? '#ff9f0a' : '#8e8e93'};">
+      <div style="font-size:12px;color:rgba(255,255,255,0.55);">Agency bootcamp</div>
+      <div style="color:#fff;font-size:13px;">${bootcamp.enabled ? 'enabled' : 'disabled'}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.6);">${escapeHtml(bootcampRules.slice(0, 4).join(' · ') || 'No bootcamp rules reported.')}</div>
+    </div>
+  `);
+  if (lastKillReview) {
+    rows.push(`
+      <div style="padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,0.03);border-left:3px solid #ff453a;">
+        <div style="font-size:12px;color:rgba(255,255,255,0.55);">Last kill review</div>
+        <div style="color:#fff;font-size:13px;">${Number(lastKillReview.killed || 0)} killed · ${Number(lastKillReview.checked || 0)} checked</div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.6);">${escapeHtml(lastKillReview.at ? new Date(lastKillReview.at).toLocaleString() : '')}</div>
+      </div>
+    `);
+  }
+  for (const row of scratch.slice(0, 8)) {
+    rows.push(renderAgencyScratchRow(row));
+  }
+  return rows.join('') || '<p class="h23-muted">No resident scratch entries yet.</p>';
+}
+
+function renderAgencyScratchRow(row) {
+  const verdict = row.editorVerdict || row.verdict || {};
+  const outcome = verdict.verdict || row.kind || row.event || 'scratch';
+  const reason = verdict.reason || row.reason || row.summary || '';
+  return `
+    <div style="padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,0.03);border-left:3px solid #bf5af2;">
+      <div style="font-size:12px;color:rgba(255,255,255,0.55);">${escapeHtml(row.at ? new Date(row.at).toLocaleString() : '')}</div>
+      <div style="color:#fff;font-size:13px;">${escapeHtml(outcome)} ${row.pursuitId ? `→ ${escapeHtml(row.pursuitId)}` : ''}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.6);">${escapeHtml(reason)}</div>
+    </div>
+  `;
+}
+
+function renderAgencyTruthBlock(state, truth = []) {
+  const hierarchy = state.truth?.currentSourceHierarchy || state.charter?.sourceTruthHierarchy || [];
+  const rows = [];
+  rows.push(`
+    <div style="padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,0.03);border-left:3px solid #64d2ff;">
+      <div style="font-size:12px;color:rgba(255,255,255,0.55);">Enforced source order</div>
+      <div style="color:#fff;font-size:13px;">${escapeHtml((hierarchy || []).slice(0, 4).join(' > ') || 'No hierarchy reported')}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.6);">Open contradictions: ${escapeHtml(String(state.truth?.unresolvedContradictions || 0))}</div>
+    </div>
+  `);
+  for (const claim of truth.slice(0, 8)) {
+    rows.push(renderAgencyTruthRow(claim));
+  }
+  return rows.join('') || '<p class="h23-muted">No truth claims yet.</p>';
+}
+
+function renderAgencyTruthRow(claim) {
+  const contested = claim.contradicts ? 'contested' : 'claim';
+  return `
+    <div style="padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,0.03);border-left:3px solid ${claim.contradicts ? '#ff453a' : '#30d158'};">
+      <div style="font-size:12px;color:rgba(255,255,255,0.55);">${escapeHtml(claim.at ? new Date(claim.at).toLocaleString() : '')} · ${escapeHtml(claim.authority || claim.sourceType || '')}</div>
+      <div style="color:#fff;font-size:13px;">${escapeHtml(contested)} ${claim.subject ? `→ ${escapeHtml(claim.subject)}` : ''}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.6);">${escapeHtml(claim.claim || claim.summary || claim.value || '')}</div>
+    </div>
+  `;
+}
+
+function renderAgencyPursuitRow(p) {
+  const age = p.updatedAt ? timeSinceSafe(p.updatedAt) : '';
+  return `
+    <button type="button" class="h23-worker-run-row" style="text-align:left;">
+      <div><strong>${escapeHtml(p.status || 'unknown')}</strong> <span>${escapeHtml(p.authorityLevel || '')}</span></div>
+      <div>${escapeHtml(p.title || p.summary || p.id)}</div>
+      <small>${escapeHtml(p.dedupeKey || p.source || '')}${age ? ` · ${escapeHtml(age)}` : ''}</small>
+    </button>
+  `;
+}
+
+function renderAgencyReceiptRow(r) {
+  const authority = r.authority?.reason ? ` · ${r.authority.reason}` : '';
+  return `
+    <div style="padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,0.03);border-left:3px solid #5ac8fa;">
+      <div style="font-size:12px;color:rgba(255,255,255,0.55);">${escapeHtml(r.at ? new Date(r.at).toLocaleString() : '')}</div>
+      <div style="color:#fff;font-size:13px;">${escapeHtml(r.event || r.route || 'receipt')} ${r.pursuitId ? `→ ${escapeHtml(r.pursuitId)}` : ''}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.6);">${escapeHtml([r.reason, r.mode, authority].filter(Boolean).join(' · '))}</div>
+    </div>
+  `;
+}
+
+function renderAgencyInboxRow(c) {
+  const decision = c.decision || {};
+  return `
+    <div class="h23-worker-run-row" style="cursor:default;">
+      <div><strong>${escapeHtml(decision.route || 'unrouted')}</strong> <span>${escapeHtml(c.authorityLevel || '')}</span></div>
+      <div>${escapeHtml(c.title || c.summary || c.candidateId)}</div>
+      <small>${escapeHtml(c.source || '')} · ${escapeHtml(decision.reason || '')}</small>
+    </div>
+  `;
+}
+
+function renderAgencyConsequenceRow(c) {
+  return `
+    <div style="padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,0.03);border-left:3px solid #30d158;">
+      <div style="font-size:12px;color:rgba(255,255,255,0.55);">${escapeHtml(c.at ? new Date(c.at).toLocaleString() : '')}</div>
+      <div style="color:#fff;font-size:13px;">${escapeHtml(c.status || 'consequence')} ${c.pursuitId ? `→ ${escapeHtml(c.pursuitId)}` : ''}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.6);">${escapeHtml(c.summary || '')}</div>
+    </div>
+  `;
 }
 
 // ── Workers ──
