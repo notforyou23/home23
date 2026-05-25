@@ -138,6 +138,10 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(html, /id="resident-consequences"/);
   assert.match(html, /id="resident-consequence-panel"/);
   assert.match(html, /id="resident-operator-needed"/);
+  const residentOperatorTag = html.match(/<section[^>]*id="resident-operator-needed"[^>]*>/)?.[0] || '';
+  const residentConsequenceTag = html.match(/<section[^>]*id="resident-consequence-panel"[^>]*>/)?.[0] || '';
+  assert.match(residentOperatorTag, /\bhidden\b/);
+  assert.match(residentConsequenceTag, /\bhidden\b/);
   assert.doesNotMatch(html, /h23-resident-diagnostics/);
   assert.doesNotMatch(html, /id="resident-receipts"/);
   assert.doesNotMatch(html, /id="resident-inbox"/);
