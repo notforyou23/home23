@@ -158,18 +158,11 @@ async function loadDashboardScopeRegistry() {
 }
 
 function refreshDashboardIdentityUI() {
-  const chip = document.getElementById('dashboard-identity-chip');
   const headerAgent = document.getElementById('header-agent-name');
-  if (!chip || !primaryAgent) return;
+  if (!primaryAgent) return;
 
   const currentName = primaryAgent.displayName || primaryAgent.name || 'Agent';
-  const homePrimaryName = homePrimaryAgent?.displayName || homePrimaryAgent?.name || currentName;
-  const isHomePrimary = !!primaryAgent.isPrimary || primaryAgent.name === homePrimaryAgent?.name;
   if (headerAgent) headerAgent.textContent = currentName;
-  chip.textContent = isHomePrimary ? 'PRIMARY AGENT' : 'SECONDARY AGENT';
-  chip.title = isHomePrimary
-    ? `${currentName} is the current dashboard and the Home23 primary agent.`
-    : `${currentName} owns this dashboard. ${homePrimaryName} is the Home23 primary agent.`;
   document.title = `Home23 — ${currentName}`;
 }
 

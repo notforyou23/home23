@@ -89,21 +89,6 @@ body::before {
   text-transform: uppercase;
 }
 
-.h23-dashboard-identity {
-  display: inline-flex;
-  align-items: center;
-  align-self: flex-start;
-  margin-top: 0.55rem;
-  padding: 4px 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(255,255,255,0.12);
-  background: rgba(255,255,255,0.05);
-  color: var(--text-secondary);
-  font-size: 0.72rem;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
 .h23-header-right {
   display: flex;
   flex-direction: column;
@@ -2081,15 +2066,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
   letter-spacing: -0.04em;
 }
 
-.h23-dashboard-identity {
-  margin-top: 0;
-  padding: 6px 12px;
-  background: rgba(29, 89, 153, 0.26);
-  border-color: rgba(91, 241, 255, 0.24);
-  color: rgba(215, 240, 255, 0.88);
-  font-weight: 700;
-}
-
 .h23-header-right {
   gap: 10px;
 }
@@ -2133,12 +2109,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
   font-size: 0.98rem;
   font-weight: 800;
   letter-spacing: 0;
-}
-
-.h23-system-agent .h23-dashboard-identity {
-  padding: 3px 7px;
-  border-radius: 999px;
-  font-size: 0.58rem;
 }
 
 .h23-system-runtime {

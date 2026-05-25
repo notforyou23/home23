@@ -154,6 +154,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(html, /id="panel-about"/);
   assert.doesNotMatch(html, /Dashboard Guide/);
   assert.doesNotMatch(html, /Live view of thoughts, vibe images, chat, brain log, dream log, feeder status/);
+  assert.doesNotMatch(html, /dashboard-identity-chip/);
+  assert.doesNotMatch(html, /PRIMARY AGENT/);
   assert.match(html, /h23-system-rail/);
   assert.match(html, /h23-system-runtime/);
   assert.match(html, /id="organs-drawer"/);
@@ -167,6 +169,10 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(html, /h23-system-metric/);
 
   assert.match(js, /loadResidentHomeSurface/);
+  assert.match(js, /if \(!primaryAgent\) return/);
+  assert.doesNotMatch(js, /if \(!chip \|\| !primaryAgent\) return/);
+  assert.doesNotMatch(js, /PRIMARY AGENT/);
+  assert.doesNotMatch(js, /SECONDARY AGENT/);
   assert.match(js, /renderResidentHomeSurface/);
   assert.match(js, /residentBriefCountText/);
   assert.match(js, /renderResidentAttentionBudget/);
@@ -227,6 +233,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(css, /\.h23-organ-panel/);
   assert.match(css, /\.h23-system-rail/);
   assert.match(css, /\.h23-system-runtime/);
+  assert.doesNotMatch(css, /\.h23-dashboard-identity/);
   assert.doesNotMatch(css, /\.h23-system-rail \.time-cluster/);
   assert.doesNotMatch(css, /\.h23-system-rail \.cosmo-status/);
   assert.doesNotMatch(css, /\.h23-intel/);
