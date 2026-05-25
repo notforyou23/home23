@@ -1501,13 +1501,6 @@ function humanizeResidentMachineText(text, fallback = '') {
     .trim();
 }
 
-function compactResidentEvidenceId(value) {
-  const id = String(value || '').trim();
-  if (!id) return '';
-  if (id.startsWith('ap_') && id.length > 10) return `${id.slice(0, 6)}…${id.slice(-4)}`;
-  return id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-4)}` : id;
-}
-
 function residentSourceLabel(source) {
   const value = String(source || '').trim();
   if (!value) return '';
@@ -1540,12 +1533,6 @@ function renderResidentPursuitTitle(p) {
     if (title) return title;
   }
   return humanizeResidentMachineText(p.title || p.summary || p.id, 'Resident pursuit');
-}
-
-function renderResidentPursuitSignal(p, updated) {
-  return [residentSourceLabel(p.source), updated ? timeSinceSafe(updated) : null]
-    .filter(Boolean)
-    .join(' · ');
 }
 
 function renderResidentPursuitAuthority(p) {
@@ -1618,13 +1605,11 @@ function renderResidentOperatorNeeded(items) {
 }
 
 function renderResidentPursuitCard(p) {
-  const updated = p.updatedAt || p.lastTouched || p.lastSeenAt;
   const statusClass = p.status === 'active' ? 'active' : (p.status || 'watch');
   return `
     <article class="h23-resident-pursuit ${escapeAttr(statusClass)}">
       <div class="h23-resident-pursuit-head">
         <code>${escapeHtml(renderResidentPursuitAuthority(p))}</code>
-        <span class="h23-resident-pursuit-signal">${escapeHtml(renderResidentPursuitSignal(p, updated))}</span>
       </div>
       <h3>${escapeHtml(renderResidentPursuitTitle(p))}</h3>
       <div class="h23-resident-pursuit-actions">
