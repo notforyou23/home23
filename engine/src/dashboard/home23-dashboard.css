@@ -1775,6 +1775,10 @@ body {
   padding-top: 10px;
 }
 
+.h23-organ-drawer:not([open]) .h23-organ-panel {
+  display: none;
+}
+
 .h23-tabs,
 .h23-linked-tabs {
   display: flex;

@@ -1182,7 +1182,7 @@ function setupOrganDrawer() {
 function syncOrganDrawerForTab() {
   const drawer = document.getElementById('organs-drawer');
   if (!drawer) return;
-  const organTabs = new Set(['query', 'brain-map', 'cosmo23']);
+  const organTabs = new Set(['workers', 'query', 'brain-map', 'cosmo23']);
   const isOrganTab = organTabs.has(currentTab) || currentTab.startsWith('agent-');
   if (isOrganTab) {
     drawer.open = true;

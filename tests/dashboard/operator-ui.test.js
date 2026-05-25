@@ -422,6 +422,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /currentTab === 'home'\) loadResidentHomeSurface/);
   assert.match(js, /setupOrganDrawer/);
   assert.match(js, /syncOrganDrawerForTab/);
+  assert.match(js, /new Set\(\['workers', 'query', 'brain-map', 'cosmo23'\]\)/);
   assert.doesNotMatch(js, /particlesJS/);
   assert.match(js, /humanizeResidentMachineText/);
   assert.match(js, /if \(value === 'domain\.good-life'\) return 'Good Life'/);
@@ -514,6 +515,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(css, /\.h23-resident-diagnostics/);
   assert.match(css, /\.h23-organ-drawer/);
   assert.match(css, /\.h23-organ-panel/);
+  assert.match(css, /\.h23-organ-drawer:not\(\[open\]\) \.h23-organ-panel\s*\{[\s\S]*?display:\s*none/);
   assert.match(css, /\.h23-system-rail/);
   assert.match(css, /\.h23-system-runtime/);
   assert.doesNotMatch(css, /h23-pulse-phase/);
