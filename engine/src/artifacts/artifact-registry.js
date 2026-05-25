@@ -16,6 +16,10 @@ function safeSlug(input) {
     .slice(0, 80) || 'artifact';
 }
 
+function compactObject(input = {}) {
+  return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined && value !== null));
+}
+
 class ArtifactRegistry {
   constructor(options = {}) {
     this.logsDir = options.logsDir || options.runtimeRoot || path.join(process.cwd(), 'runtime');
@@ -167,6 +171,7 @@ class ArtifactRegistry {
     const now = new Date().toISOString();
     const id = input.id || this.buildFileId(facts, input);
     const existing = this.records.get(id) || {};
+    const metadata = this.buildMetadata(existing.metadata, input);
     const record = {
       id,
       type: 'file',
@@ -190,13 +195,14 @@ class ArtifactRegistry {
       derivedFrom: this.unique([...(existing.derivedFrom || []), ...(input.derivedFrom || [])]),
       supports: this.unique([...(existing.supports || []), ...(input.supports || [])]),
       reusedBy: this.unique([...(existing.reusedBy || []), ...(input.reusedBy || [])]),
-      metadata: { ...(existing.metadata || {}), ...(input.metadata || {}) }
+      metadata
     };
     this.records.set(id, record);
     await this.save();
     if (record.metadata?.mirrorToMemory !== false) {
       await this.maybeMirrorToMemory(record);
     }
+    await this.maybeEmitAgencyArtifactReceipt(record, 'artifact_registered', input);
     return record;
   }
 
@@ -206,6 +212,7 @@ class ArtifactRegistry {
     const now = new Date().toISOString();
     const id = input.id || this.buildMemoryId(content, input);
     const existing = this.records.get(id) || {};
+    const metadata = this.buildMetadata(existing.metadata, input);
     const record = {
       id,
       type: 'memory',
@@ -227,11 +234,12 @@ class ArtifactRegistry {
       derivedFrom: this.unique([...(existing.derivedFrom || []), ...(input.derivedFrom || [])]),
       supports: this.unique([...(existing.supports || []), ...(input.supports || [])]),
       reusedBy: this.unique([...(existing.reusedBy || []), ...(input.reusedBy || [])]),
-      metadata: { ...(existing.metadata || {}), ...(input.metadata || {}) }
+      metadata
     };
     this.records.set(id, record);
     await this.save();
     await this.maybeMirrorToMemory(record);
+    await this.maybeEmitAgencyArtifactReceipt(record, 'artifact_registered', input);
     return record;
   }
 
@@ -272,6 +280,7 @@ class ArtifactRegistry {
     const agency = metadata.agency || record.metadata?.agency || {};
     const pursuitId = metadata.pursuitId || agency.pursuitId || record.metadata?.pursuitId;
     if (!pursuitId) return null;
+    if (!this.shouldEmitAgencyArtifactReceipt(record, event, metadata, agency)) return null;
 
     const verifierStatus = String(
       metadata.verifierStatus
@@ -330,6 +339,39 @@ class ArtifactRegistry {
       });
       return null;
     }
+  }
+
+  buildMetadata(existingMetadata = {}, input = {}) {
+    const base = { ...(existingMetadata || {}), ...(input.metadata || {}) };
+    const agency = compactObject({
+      ...(existingMetadata?.agency || {}),
+      ...(input.metadata?.agency || {}),
+      ...(input.agency || {}),
+      pursuitId: input.pursuitId || input.agency?.pursuitId || input.metadata?.agency?.pursuitId || existingMetadata?.agency?.pursuitId,
+      desiredChangedFuture: input.desiredChangedFuture || input.agency?.desiredChangedFuture || input.metadata?.agency?.desiredChangedFuture || existingMetadata?.agency?.desiredChangedFuture,
+      changedFuture: input.changedFuture || input.agency?.changedFuture || input.metadata?.agency?.changedFuture || existingMetadata?.agency?.changedFuture,
+      verifierStatus: input.verifierStatus || input.agency?.verifierStatus || input.metadata?.agency?.verifierStatus || existingMetadata?.agency?.verifierStatus,
+      verifierRef: input.verifierRef || input.agency?.verifierRef || input.metadata?.agency?.verifierRef || existingMetadata?.agency?.verifierRef,
+      verified: input.verified ?? input.agency?.verified ?? input.metadata?.agency?.verified ?? existingMetadata?.agency?.verified,
+    });
+    if (Object.keys(agency).length) {
+      base.agency = agency;
+      if (agency.pursuitId && !base.pursuitId) base.pursuitId = agency.pursuitId;
+      if (agency.verifierStatus && !base.verifierStatus) base.verifierStatus = agency.verifierStatus;
+    }
+    return base;
+  }
+
+  shouldEmitAgencyArtifactReceipt(record, event, metadata = {}, agency = {}) {
+    if (event !== 'artifact_registered') return true;
+    const verifierStatus = metadata.verifierStatus
+      || agency.verifierStatus
+      || metadata.verifier?.status
+      || record.metadata?.verifierStatus;
+    return record.status === 'committed'
+      || metadata.verified === true
+      || agency.verified === true
+      || Boolean(verifierStatus);
   }
 
   find(filter = {}) {

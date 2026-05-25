@@ -755,6 +755,15 @@ class Capabilities {
         goalId: agentContext.missionGoal || agentContext.goalId || null,
         taskId: agentContext.taskId || null,
         cycle: agentContext.cycleCount ?? null,
+        agency: {
+          ...(agentContext.agency || {}),
+          pursuitId: agentContext.artifactPursuitId || agentContext.pursuitId || agentContext.agency?.pursuitId,
+          desiredChangedFuture: agentContext.artifactDesiredChangedFuture || agentContext.agency?.desiredChangedFuture,
+          changedFuture: agentContext.artifactChangedFuture || agentContext.agency?.changedFuture,
+          verifierStatus: agentContext.artifactVerifierStatus || agentContext.agency?.verifierStatus,
+          verifierRef: agentContext.artifactVerifierRef || agentContext.agency?.verifierRef,
+          verified: agentContext.artifactVerified ?? agentContext.agency?.verified,
+        },
         metadata: {
           operation: agentContext.operation || 'write',
           logicalPath: agentContext.logicalPath || null,

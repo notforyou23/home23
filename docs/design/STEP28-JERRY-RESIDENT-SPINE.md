@@ -37,7 +37,7 @@ Status: implementation slice in progress.
 - `AgencyKernel.inspector()` plus `GET /api/agency/inspector?filter=cron_retirement_proposals` expose those retirement proposals as a first-class evidence-chain view. The dashboard Agency Inspector renders job evidence, bound pursuit evidence, and recent run excerpts instead of burying proposals in raw consequences.
 - Bound scheduler outcomes carry their `pursuitId` back through world-stream assimilation. Non-closing receipts attach evidence and `cron_report` consequences to the existing pursuit instead of creating disconnected "cron finished" items.
 - Bound scheduler outcomes that report `semanticStatus: satisfied` become stop-condition closure receipts. They close the resident pursuit with explicit `changedFuture` evidence instead of leaving scheduler work permanently "advanced."
-- Artifact registry promotions can feed the same consequence path. A committed artifact with a passing verifier and resident `pursuitId` emits an `artifact_verifier_receipt`, closing or advancing the pursuit with artifact hash/path evidence.
+- Artifact registry promotions and registration-time verified outputs feed the same consequence path. A committed artifact with a passing verifier and resident `pursuitId` emits an `artifact_verifier_receipt`, closing or advancing the pursuit with artifact hash/path evidence. The Capabilities organ now forwards resident pursuit/verifier metadata into the registry so file-write artifacts can participate without custom glue.
 - `AgencyKernel.brief()` and `GET /api/agency/brief` answer the Step28 success-test question from live resident state: what Jerry is following, what changed, what he is doing next, and what needs jtr. Chat exposes this through `agency_brief`, and the dashboard renders the same resident brief.
 
 ## Resident State
@@ -57,6 +57,6 @@ Status: implementation slice in progress.
 
 Dry-run remains the default. In dry-run, the resident spine records intent, vetoes, and consequences without executing external action. Live low-risk L0-L2 actions are allowed by policy; L3/L4 remain blocked unless explicitly expanded or approved.
 
-## Remaining Hardening
+## Remaining Audit
 
-- Extend artifact verifier binding to more artifact-producing organs as they begin declaring resident `pursuitId` metadata.
+- Run a final requirement-by-requirement audit against the full `evolve.md` directive before marking Step28 complete.
