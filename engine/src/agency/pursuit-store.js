@@ -53,9 +53,10 @@ export class PursuitStore {
     this.consequencesPath = join(this.dir, 'consequences.jsonl');
     this.scratchPath = join(this.dir, 'scratch.jsonl');
     this.truthPath = join(this.dir, 'truth.jsonl');
+    this.tasksPath = join(this.dir, 'tasks.jsonl');
     this.pursuitIndex = null;
     mkdirSync(this.dir, { recursive: true });
-    for (const file of [this.inboxPath, this.pursuitsPath, this.receiptsPath, this.consequencesPath, this.scratchPath, this.truthPath]) {
+    for (const file of [this.inboxPath, this.pursuitsPath, this.receiptsPath, this.consequencesPath, this.scratchPath, this.truthPath, this.tasksPath]) {
       if (!existsSync(file)) closeSync(openSync(file, 'a'));
     }
   }
@@ -85,6 +86,11 @@ export class PursuitStore {
     return entry;
   }
 
+  appendTask(row) {
+    appendFileSync(this.tasksPath, `${JSON.stringify(row)}\n`);
+    return row;
+  }
+
   listInbox({ limit = 100 } = {}) {
     return readJsonl(this.inboxPath).slice(-limit).reverse();
   }
@@ -103,6 +109,19 @@ export class PursuitStore {
 
   listTruth({ limit = 100 } = {}) {
     return readJsonl(this.truthPath).slice(-limit).reverse();
+  }
+
+  listTasks({ status = null, limit = 100 } = {}) {
+    let rows = readJsonl(this.tasksPath)
+      .map(row => row.task || row)
+      .filter(Boolean);
+    if (status) {
+      const statuses = Array.isArray(status) ? new Set(status) : new Set([status]);
+      rows = rows.filter(row => statuses.has(row.status));
+    }
+    return rows
+      .sort((a, b) => String(b.updatedAt || b.createdAt || b.at || '').localeCompare(String(a.updatedAt || a.createdAt || a.at || '')))
+      .slice(0, limit);
   }
 
   listPursuits({ status = null, limit = 100 } = {}) {

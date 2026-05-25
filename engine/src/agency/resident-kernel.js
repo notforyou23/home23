@@ -857,8 +857,12 @@ export class AgencyKernel {
         question: row.question || row.reason || null,
         reason: row.reason || null,
         authorityLevel: row.authorityLevel || 'L3',
-      }));
+    }));
     return { questions };
+  }
+
+  tasks(options = {}) {
+    return { tasks: this.store.listTasks(options) };
   }
 
   recordScratch(input = {}) {
@@ -891,6 +895,54 @@ export class AgencyKernel {
       mode: this.config.mode,
     });
     return entry;
+  }
+
+  recordTask(input = {}) {
+    const at = input.at || nowIso();
+    const summary = String(input.summary || input.title || '').trim();
+    if (!summary) throw new Error('Agency task requires summary');
+    const evidence = Array.isArray(input.evidence)
+      ? input.evidence
+      : (input.evidenceRef ? [{ type: 'reference', ref: String(input.evidenceRef) }] : []);
+    const task = {
+      schema: 'home23.agency.task.v1',
+      id: input.id || shortId('task'),
+      createdAt: at,
+      updatedAt: at,
+      status: input.status || 'open',
+      pursuitId: input.pursuitId || null,
+      summary,
+      actionKind: input.actionKind || input.kind || 'bounded_action',
+      authorityLevel: input.authorityLevel || 'L2',
+      reversible: input.reversible !== false,
+      handoff: input.handoff && typeof input.handoff === 'object' ? input.handoff : null,
+      evidence,
+      stopCondition: input.stopCondition || 'task is closed with receipt or explicitly discarded',
+    };
+    this.store.appendTask({ type: 'created', at, task });
+    this.store.appendReceipt({
+      schema: 'home23.agency.receipt.v1',
+      at,
+      event: 'task_created',
+      taskId: task.id,
+      pursuitId: task.pursuitId,
+      route: 'task',
+      actionKind: task.actionKind,
+      authorityLevel: task.authorityLevel,
+      reason: input.reason || 'resident_task_created',
+      mode: this.config.mode,
+    });
+    this.store.appendConsequence({
+      schema: 'home23.agency.consequence.v1',
+      at,
+      pursuitId: task.pursuitId,
+      status: task.status,
+      changeType: 'task_created',
+      summary: task.summary,
+      evidence,
+    });
+    this.ensureState();
+    return task;
   }
 
   raiseQuestion(input = {}) {
@@ -1263,6 +1315,24 @@ export class AgencyKernel {
       return {
         kind: 'pursuit_note_added',
         pursuitId,
+      };
+    }
+    if (delta.changeType === 'task_created') {
+      const task = this.recordTask({
+        summary: input.summary,
+        pursuitId: input.pursuitId || input.targetPursuitId || null,
+        actionKind: input.actionKind || input.kind || 'bounded_action',
+        authorityLevel: authority.level || input.authorityLevel || 'L2',
+        reversible: input.reversible !== false,
+        handoff: input.handoff || null,
+        evidence: Array.isArray(input.evidence) ? input.evidence : [],
+        stopCondition: input.stopCondition || null,
+        reason: 'approved_live_delta_task_created',
+      });
+      return {
+        kind: 'task_created',
+        taskId: task.id,
+        pursuitId: task.pursuitId,
       };
     }
     return {

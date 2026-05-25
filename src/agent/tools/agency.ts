@@ -78,6 +78,48 @@ export const agencyCreatePursuitTool: ToolDefinition = {
   },
 };
 
+export const agencyCreateTaskTool: ToolDefinition = {
+  name: 'agency_create_task',
+  description: 'Create a resident agency task or routed handoff tied to a pursuit without claiming the task is complete.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      summary: { type: 'string' },
+      pursuitId: { type: 'string' },
+      actionKind: { type: 'string' },
+      authorityLevel: { type: 'string', enum: ['L0', 'L1', 'L2', 'L3', 'L4'] },
+      handoffTo: { type: 'string' },
+      handoffObjective: { type: 'string' },
+      evidenceRef: { type: 'string' },
+    },
+    required: ['summary'],
+    additionalProperties: false,
+  },
+  async execute(input, ctx) {
+    const evidence = typeof input.evidenceRef === 'string' && input.evidenceRef.trim()
+      ? [{ type: 'reference', ref: input.evidenceRef }]
+      : [];
+    const handoff = input.handoffTo || input.handoffObjective
+      ? {
+          to: input.handoffTo,
+          objective: input.handoffObjective,
+        }
+      : undefined;
+    const data = await jsonRequest(ctx, '/api/agency/tasks', {
+      method: 'POST',
+      body: JSON.stringify({
+        summary: input.summary,
+        pursuitId: input.pursuitId,
+        actionKind: input.actionKind || 'bounded_action',
+        authorityLevel: input.authorityLevel || 'L2',
+        handoff,
+        evidence,
+      }),
+    }) as { task?: { id?: string; status?: string; summary?: string } };
+    return { content: `Agency task ${data.task?.id || 'created'} (${data.task?.status || 'open'}): ${data.task?.summary || input.summary}` };
+  },
+};
+
 export const agencyUpdatePursuitTool: ToolDefinition = {
   name: 'agency_update_pursuit',
   description: 'Transition or annotate a resident agency pursuit.',

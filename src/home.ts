@@ -1060,6 +1060,22 @@ async function main(): Promise<void> {
       res.status(400).json({ error: err?.message || String(err) });
     }
   });
+  bridgeApp.get('/api/agency/tasks', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json(kernel.tasks({ status: req.query?.status || null, limit: Number(req.query?.limit || 100) }));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+  bridgeApp.post('/api/agency/tasks', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      res.json({ task: kernel.recordTask(req.body || {}) });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || String(err) });
+    }
+  });
 
   bridgeApp.post('/api/chat', createEvobrewChatHandler(bridgeConfig));
   bridgeApp.post('/api/stop', createStopHandler(bridgeConfig));

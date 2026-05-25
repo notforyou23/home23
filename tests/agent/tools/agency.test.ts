@@ -4,6 +4,7 @@ import {
   agencyBriefTool,
   agencyListTool,
   agencyCreatePursuitTool,
+  agencyCreateTaskTool,
   agencyClosePursuitTool,
   agencyDiscardCandidateTool,
   agencyIntakeWorldStreamTool,
@@ -275,5 +276,38 @@ test('agency_raise_question records a bounded jtr question through the bridge AP
   }, ctx(fakeFetch as typeof fetch));
 
   assert.match(result.content, /q_1/);
+  assert.match(result.content, /open/);
+});
+
+test('agency_create_task records a resident task handoff through the bridge API', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/tasks');
+    assert.equal(init?.method, 'POST');
+    const body = JSON.parse(String(init?.body || '{}'));
+    assert.equal(body.pursuitId, 'ap_task');
+    assert.equal(body.summary, 'Run dashboard verifier repair worker.');
+    assert.equal(body.actionKind, 'worker_delegation');
+    assert.deepEqual(body.handoff, { to: 'worker:dashboard-repair', objective: 'Repair receipt chain.' });
+    assert.deepEqual(body.evidence, [{ type: 'reference', ref: 'handoff:dashboard' }]);
+    return new Response(JSON.stringify({
+      task: {
+        id: 'task_1',
+        status: 'open',
+        summary: body.summary,
+      },
+    }), { status: 200 });
+  };
+
+  const result = await agencyCreateTaskTool.execute({
+    pursuitId: 'ap_task',
+    summary: 'Run dashboard verifier repair worker.',
+    actionKind: 'worker_delegation',
+    handoffTo: 'worker:dashboard-repair',
+    handoffObjective: 'Repair receipt chain.',
+    evidenceRef: 'handoff:dashboard',
+    authorityLevel: 'L2',
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /task_1/);
   assert.match(result.content, /open/);
 });

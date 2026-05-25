@@ -1080,6 +1080,54 @@ test('AgencyKernel live low-risk watch deltas apply bounded resident state chang
   assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'watch_item_created'), true);
 });
 
+test('AgencyKernel creates resident tasks and routed handoffs as bounded action records', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'live' },
+  });
+  const intake = await kernel.intake({
+    source: 'work.worker-runs',
+    kind: 'worker_receipt',
+    summary: 'Dashboard agency inspector needs a verifier-backed repair task.',
+    authorityLevel: 'L2',
+    evidence: [{ type: 'worker_receipt', ref: 'wr-task-source' }],
+    desiredChangedFuture: 'A bounded task exists for the verifier-backed repair.',
+  });
+
+  const result = kernel.proposeDelta({
+    changeType: 'task_created',
+    summary: 'Run a bounded dashboard verifier repair worker.',
+    pursuitId: intake.pursuit.id,
+    authorityLevel: 'L2',
+    reversible: true,
+    actionKind: 'worker_delegation',
+    handoff: {
+      to: 'worker:dashboard-repair',
+      objective: 'Repair and verify the agency inspector receipt chain.',
+    },
+    evidence: [{ type: 'manual_verification', ref: 'task-delta' }],
+  });
+
+  const tasks = kernel.tasks({ status: 'open', limit: 10 }).tasks;
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+  const taskRows = readJsonl(join(dir, 'agency', 'tasks.jsonl'));
+
+  assert.equal(result.decision.route, 'approved_live');
+  assert.equal(result.applied?.kind, 'task_created');
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].summary, 'Run a bounded dashboard verifier repair worker.');
+  assert.equal(tasks[0].actionKind, 'worker_delegation');
+  assert.equal(tasks[0].handoff.to, 'worker:dashboard-repair');
+  assert.equal(tasks[0].pursuitId, intake.pursuit.id);
+  assert.equal(receipts.some(row => row.event === 'task_created' && row.taskId === tasks[0].id), true);
+  assert.equal(receipts.some(row => row.event === 'delta_applied' && row.changeType === 'task_created'), true);
+  assert.equal(consequences.some(row => row.status === 'open' && row.changeType === 'task_created' && row.pursuitId === intake.pursuit.id), true);
+  assert.equal(taskRows.at(-1).task.id, tasks[0].id);
+});
+
 test('AgencyKernel live low-risk pursuit note deltas update existing pursuit theory and next move', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

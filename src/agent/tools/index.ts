@@ -21,6 +21,7 @@ import {
   agencyBriefTool,
   agencyListTool,
   agencyCreatePursuitTool,
+  agencyCreateTaskTool,
   agencyUpdatePursuitTool,
   agencyClosePursuitTool,
   agencyDiscardCandidateTool,
@@ -157,6 +158,7 @@ export function createToolRegistry(opts: { web?: WebToolsConfig } = {}): ToolReg
   registry.register(agencyBriefTool);
   registry.register(agencyListTool);
   registry.register(agencyCreatePursuitTool);
+  registry.register(agencyCreateTaskTool);
   registry.register(agencyUpdatePursuitTool);
   registry.register(agencyClosePursuitTool);
   registry.register(agencyDiscardCandidateTool);
