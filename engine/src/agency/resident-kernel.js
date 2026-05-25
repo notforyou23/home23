@@ -65,6 +65,7 @@ export class AgencyKernel {
   }
 
   ensureState() {
+    this.reconcileResolvedLiveProblemAttention();
     this.reconcileLowSignalAttention();
     this.enforceAttentionCaps();
     const active = this.store.listPursuits({ status: 'active', limit: 10000 });
@@ -128,6 +129,61 @@ export class AgencyKernel {
         pursuitId: pursuit.id,
         route: 'discard',
         reason,
+        mode: this.config.mode,
+      });
+    }
+  }
+
+  reconcileResolvedLiveProblemAttention() {
+    const pursuits = this.store.listPursuits({ status: ['active', 'watch'], limit: 10000 });
+    for (const pursuit of pursuits) {
+      if (isResolvedLiveProblemPursuit(pursuit)) {
+        this.store.updatePursuit(pursuit.id, {
+          status: 'closed',
+          consequence: {
+            changed: true,
+            pursuitId: pursuit.id,
+            summary: pursuit.desiredChangedFuture || pursuit.summary,
+            evidence: pursuit.latestEvidence || pursuit.evidence || [],
+          },
+          lastTouched: nowIso(),
+        }, {
+          type: 'resolved_live_problem_reconciled',
+          reason: 'resolved_live_problem_verified',
+        });
+        this.store.appendReceipt({
+          schema: 'home23.agency.receipt.v1',
+          at: nowIso(),
+          event: 'closed',
+          pursuitId: pursuit.id,
+          route: 'close',
+          outcome: 'pursuit_closed_by_receipt',
+          reason: 'resolved_live_problem_verified',
+          mode: this.config.mode,
+        });
+        this.store.appendConsequence({
+          schema: 'home23.agency.consequence.v1',
+          at: nowIso(),
+          pursuitId: pursuit.id,
+          status: 'closed',
+          changeType: 'pursuit_closed_by_receipt',
+          summary: pursuit.desiredChangedFuture || pursuit.summary,
+          evidence: pursuit.latestEvidence || pursuit.evidence || [],
+        });
+        continue;
+      }
+      if (!isResolvedLiveProblemObservationPursuit(pursuit)) continue;
+      this.store.updatePursuit(pursuit.id, { status: 'discarded' }, {
+        type: 'resolved_live_problem_observation_discarded',
+        reason: 'resolved_live_problem_observation_not_attention',
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'discarded',
+        pursuitId: pursuit.id,
+        route: 'discard',
+        reason: 'resolved_live_problem_observation_not_attention',
         mode: this.config.mode,
       });
     }
@@ -1068,6 +1124,18 @@ export class AgencyKernel {
           tags: ['work.live-problems', 'live-problem', 'resolved'],
         });
       }
+      return this.intakeWorldStream({
+        source: 'work.live-problems',
+        kind: 'live_problem_receipt',
+        summary: `Live problem ${problemId} is already resolved with verifier evidence: ${summary}`,
+        consequenceStatus: 'resolved',
+        explicitNoChange: true,
+        nextMove: 'keep closed unless the live-problem registry reopens it',
+        seen: [summary],
+        discarded: [],
+        evidence,
+        tags: ['work.live-problems', 'live-problem', 'resolved'],
+      });
     }
     return this.intake(candidate);
   }
@@ -1112,4 +1180,27 @@ function isMechanicalCronNoChangePursuit(pursuit = {}) {
   const source = String(pursuit.source || '');
   const summary = String(pursuit.summary || '');
   return source.startsWith('cron.') && /finished with status ok/i.test(summary);
+}
+
+function hasResolvedLiveProblemEvidence(pursuit = {}) {
+  const tags = Array.isArray(pursuit.tags) ? pursuit.tags : [];
+  if (tags.includes('resolved')) return true;
+  const evidence = [
+    ...(Array.isArray(pursuit.evidence) ? pursuit.evidence : []),
+    ...(Array.isArray(pursuit.latestEvidence) ? pursuit.latestEvidence : []),
+  ];
+  if (evidence.some(item => item?.state === 'resolved')) return true;
+  return /"state"\s*:\s*"resolved"/i.test(String(pursuit.summary || ''));
+}
+
+function isResolvedLiveProblemPursuit(pursuit = {}) {
+  return pursuit.kind === 'live_problem'
+    && pursuit.source === 'work.live-problems'
+    && hasResolvedLiveProblemEvidence(pursuit);
+}
+
+function isResolvedLiveProblemObservationPursuit(pursuit = {}) {
+  return pursuit.kind === 'observation'
+    && pursuit.source === 'work.live-problems'
+    && hasResolvedLiveProblemEvidence(pursuit);
 }

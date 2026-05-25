@@ -244,6 +244,102 @@ test('AgencyKernel tracks live-problem observations by problem id and closes on 
   assert.equal(consequences.some(row => row.pursuitId === opened.pursuit.id && row.changeType === 'pursuit_closed_by_receipt'), true);
 });
 
+test('AgencyKernel treats resolved live-problem observations without an open pursuit as no-change evidence', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const result = await kernel.handleObservation({
+    channelId: 'work.live-problems',
+    sourceRef: 'live-problem:already-resolved:2026-05-25T10:10:00.000Z',
+    verifierId: 'live-problems:poll',
+    payload: {
+      id: 'already-resolved',
+      state: 'resolved',
+      claim: 'Already resolved verifier claim.',
+      updatedAt: '2026-05-25T10:10:00.000Z',
+      resolvedAt: '2026-05-25T10:10:00.000Z',
+      lastResult: { ok: true, detail: 'verifier passed' },
+    },
+  });
+
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(result.decision.route, 'discard');
+  assert.equal(result.decision.reason, 'explicit_no_change');
+  assert.equal(result.pursuit, null);
+  assert.equal(kernel.state().attention.activePursuits, 0);
+  assert.equal(receipts.some(row => row.event === 'world_stream_assimilated' && row.outcome === 'explicit_no_change'), true);
+  assert.equal(consequences.some(row => row.changeType === 'explicit_no_change' && /already-resolved/.test(row.summary || '')), true);
+});
+
+test('AgencyKernel closes legacy active resolved live-problem pursuits during state reconciliation', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const candidate = kernel.router.normalize({
+    source: 'work.live-problems',
+    kind: 'live_problem',
+    dedupeKey: 'live-problem:legacy-resolved',
+    summary: 'Legacy resolved live problem.',
+    evidence: [{ type: 'live_problem', ref: 'live-problem:legacy-resolved', state: 'resolved' }],
+    authorityLevel: 'L2',
+    desiredChangedFuture: 'Live problem legacy-resolved is resolved with verifier evidence.',
+    stopCondition: 'live-problem legacy-resolved state becomes resolved or unverifiable with receipt',
+    tags: ['work.live-problems', 'live-problem', 'resolved'],
+  });
+  const legacy = kernel.store.createPursuit(candidate, {
+    route: 'pursue',
+    reason: 'legacy_resolved_live_problem_selected_active',
+  });
+
+  const state = kernel.ensureState();
+  const reconciled = kernel.pursuit(legacy.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(reconciled.status, 'closed');
+  assert.equal(state.attention.activePursuits, 0);
+  assert.equal(receipts.some(row => row.event === 'closed' && row.reason === 'resolved_live_problem_verified'), true);
+  assert.equal(consequences.some(row => row.pursuitId === legacy.id && row.changeType === 'pursuit_closed_by_receipt'), true);
+});
+
+test('AgencyKernel discards legacy resolved live-problem observation rows during state reconciliation', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const candidate = kernel.router.normalize({
+    source: 'work.live-problems',
+    kind: 'observation',
+    summary: '[work.live-problems] {"state":"resolved","id":"legacy-observation"}',
+    evidence: [{ type: 'observation', ref: 'trace:legacy-resolved-live-problem' }],
+    authorityLevel: 'L2',
+    tags: ['work.live-problems'],
+  });
+  const legacy = kernel.store.createPursuit(candidate, {
+    route: 'pursue',
+    reason: 'legacy_resolved_live_problem_observation_selected_active',
+  });
+
+  const state = kernel.ensureState();
+  const reconciled = kernel.pursuit(legacy.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+
+  assert.equal(reconciled.status, 'discarded');
+  assert.equal(state.attention.activePursuits, 0);
+  assert.equal(receipts.some(row => row.event === 'discarded' && row.reason === 'resolved_live_problem_observation_not_attention'), true);
+});
+
 test('AgencyKernel keeps separate live-problem pursuits for separate problem ids', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
