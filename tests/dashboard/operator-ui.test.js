@@ -159,6 +159,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(html, /id="organs-drawer"/);
   assert.match(html, /class="h23-organ-drawer"/);
   assert.match(html, /Runtime/);
+  assert.match(html, />Advance</);
+  assert.doesNotMatch(html, />Run Tick</);
   assert.doesNotMatch(html, /h23-system-metric/);
 
   assert.match(js, /loadResidentHomeSurface/);
@@ -170,6 +172,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, />\$\{Number\(state\.attention\?\.deferredItems/);
   assert.doesNotMatch(js, />\$\{Number\(state\.attention\?\.openTasks/);
   assert.match(js, /runResidentTickFromDashboard/);
+  assert.match(js, /button\.textContent = 'Advancing'/);
+  assert.match(js, /button\.textContent = 'Advance'/);
+  assert.doesNotMatch(js, /button\.textContent = 'Run Tick'/);
   assert.match(js, /transitionResidentPursuitFromDashboard/);
   assert.match(js, /\/home23\/api\/agency\/tick/);
   assert.match(js, /\/home23\/api\/agency\/pursuits\/\$\{encodeURIComponent\(pursuitId\)\}\/transition/);

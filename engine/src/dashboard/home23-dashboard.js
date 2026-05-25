@@ -1678,7 +1678,7 @@ async function runResidentTickFromDashboard() {
   const button = document.getElementById('resident-run-tick');
   if (button) {
     button.disabled = true;
-    button.textContent = 'Running';
+    button.textContent = 'Advancing';
   }
   try {
     const res = await fetch(`${dashboardBaseUrl()}/home23/api/agency/tick`, {
@@ -1691,7 +1691,7 @@ async function runResidentTickFromDashboard() {
   } finally {
     if (button) {
       button.disabled = false;
-      button.textContent = 'Run Tick';
+      button.textContent = 'Advance';
     }
   }
 }
