@@ -324,7 +324,7 @@ async function openPulseHistoryPanel() {
           <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:6px;">
             cycle ${r.cycle ?? '?'} · ${r.model || 'unknown model'} · ${ts}
           </div>
-          <div style="color:#fff;font-size:14px;line-height:1.5;margin-bottom:6px;">${escapeHtmlNotif(r.text || '')}</div>
+          <div style="color:#fff;font-size:14px;line-height:1.5;margin-bottom:6px;">${escapeHtml(r.text || '')}</div>
           <div style="font-size:11px;color:rgba(255,255,255,0.4);">${briefSummary}</div>
         </div>`;
     }).join('');
@@ -823,140 +823,6 @@ async function renderBrainStoragePanel() {
   } catch (err) {
     content.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
   }
-}
-
-// ── Notifications (thought-action queue) ──
-
-async function updateNotificationBadge() {
-  // NOTIFY stream now drains off-engine via the promoter worker into the
-  // live-problems registry — not shown as a primary pulse-bar surface anymore.
-  // Panel still reachable via openNotificationsPanel() for debugging.
-  const el = document.getElementById('pulse-notifs');
-  if (el) el.style.display = 'none';
-}
-
-// ── Signals (wins, resolutions, positive observations) ──
-
-async function updateSignalsBadge() {
-  const el = document.getElementById('pulse-signals');
-  const sep = document.getElementById('pulse-signals-sep');
-  if (el) el.style.display = 'none';
-  if (sep) sep.style.display = 'none';
-}
-
-async function openSignalsPanel() {
-  const overlay = document.getElementById('signals-overlay');
-  const list = document.getElementById('signals-list');
-  if (!overlay || !list) return;
-  overlay.style.display = 'flex';
-  list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Loading...</div>';
-  try {
-    const r = await fetch(`${dashboardBaseUrl()}/api/signals?limit=200&sinceHours=48`);
-    const data = await r.json();
-    const signals = data.signals || [];
-    if (signals.length === 0) {
-      list.innerHTML = '<div style="color:rgba(255,255,255,0.5);padding:20px;">No signals yet. Wins and positive observations show up here as the system resolves problems and observes healthy patterns.</div>';
-      return;
-    }
-    list.innerHTML = signals.map(s => renderSignalCard(s)).join('');
-  } catch (err) {
-    list.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
-  }
-}
-
-function closeSignalsPanel() {
-  const overlay = document.getElementById('signals-overlay');
-  if (overlay) overlay.style.display = 'none';
-}
-
-function renderSignalCard(s) {
-  const typeMeta = {
-    resolved:             { icon: '✓', color: '#30d158', label: 'RESOLVED' },
-    autonomous_fix:       { icon: '🔧', color: '#5ac8fa', label: 'AUTO-FIX' },
-    observation:          { icon: '💡', color: '#ffb347', label: 'OBSERVATION' },
-    action_success:       { icon: '⚡', color: '#bf5af2', label: 'ACTION' },
-    registry_suggestion:  { icon: '📋', color: '#ff9f0a', label: 'REGISTRY SUGGESTION' },
-  }[s.type] || { icon: '•', color: '#888', label: (s.type || 'SIGNAL').toUpperCase() };
-  const ts = s.ts ? new Date(s.ts).toLocaleString() : '—';
-  const evidenceBits = [];
-  if (s.evidence?.problemId) evidenceBits.push(`problem: <code style="font-size:11px;background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:3px;">${escapeHtml(s.evidence.problemId)}</code>`);
-  if (s.evidence?.fixRecipe) evidenceBits.push(`fix: ${escapeHtml(s.evidence.fixRecipe)}`);
-  if (s.evidence?.verifierDetail) evidenceBits.push(`check: ${escapeHtml(s.evidence.verifierDetail)}`);
-  if (s.evidence?.category && s.evidence?.target) evidenceBits.push(`<code style="font-size:11px;background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:3px;">${escapeHtml(s.evidence.category)}:${escapeHtml(s.evidence.target)}</code>`);
-  if (typeof s.evidence?.rejectionCount === 'number') evidenceBits.push(`${s.evidence.rejectionCount} rejections`);
-  return `<div style="background:rgba(255,255,255,0.03);border:1px solid ${typeMeta.color}33;border-left:3px solid ${typeMeta.color};border-radius:8px;padding:10px 14px;margin-bottom:8px;">
-    <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:4px;">
-      <span style="color:${typeMeta.color};font-size:16px;">${typeMeta.icon}</span>
-      <span style="color:${typeMeta.color};font-weight:600;font-size:11px;letter-spacing:0.5px;">${typeMeta.label}</span>
-      <span style="color:rgba(255,255,255,0.45);font-size:12px;">${escapeHtml(s.source || '—')}</span>
-      ${typeof s.cycle === 'number' ? `<span style="color:rgba(255,255,255,0.35);font-size:11px;">cycle ${s.cycle}</span>` : ''}
-      <span style="color:rgba(255,255,255,0.35);font-size:11px;margin-left:auto;">${ts}</span>
-    </div>
-    ${s.title ? `<div style="color:#fff;font-size:13px;margin-bottom:3px;">${escapeHtml(s.title)}</div>` : ''}
-    ${s.message && s.message !== s.title ? `<div style="color:rgba(255,255,255,0.7);font-size:12px;line-height:1.4;">${escapeHtml(s.message)}</div>` : ''}
-    ${evidenceBits.length ? `<div style="color:rgba(255,255,255,0.5);font-size:11px;margin-top:5px;">${evidenceBits.join(' · ')}</div>` : ''}
-  </div>`;
-}
-
-async function openNotificationsPanel() {
-  const overlay = document.getElementById('notifications-overlay');
-  const list = document.getElementById('notifications-list');
-  if (!overlay || !list) return;
-  overlay.style.display = 'flex';
-  list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Loading...</div>';
-  try {
-    const r = await fetch(`${dashboardBaseUrl()}/api/notifications`);
-    const data = await r.json();
-    if (!data.items || data.items.length === 0) {
-      list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">No notifications yet. Cognitive cycles will queue action proposals here.</div>';
-      return;
-    }
-    list.innerHTML = data.items.map(n => {
-      const ts = new Date(n.ts).toLocaleString();
-      const roleIcon = { curiosity: '❓', analyst: '🔬', critic: '⚠️', curator: '📋', proposal: '⚡' }[n.source] || '🧠';
-      const opacity = n.acknowledged ? '0.4' : '1';
-      const bgColor = n.acknowledged ? 'transparent' : 'rgba(0,122,255,0.05)';
-      return `
-        <div style="padding:10px 12px;margin-bottom:8px;background:${bgColor};border-left:3px solid ${n.acknowledged ? 'rgba(255,255,255,0.1)' : '#5ac8fa'};opacity:${opacity};">
-          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">
-            <div style="flex:1;">
-              <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px;">
-                ${roleIcon} ${n.source} · cycle ${n.cycle} · ${ts}
-              </div>
-              <div style="color:#fff;">${escapeHtmlNotif(n.message)}</div>
-            </div>
-            ${n.acknowledged ? '<span style="color:rgba(255,255,255,0.4);font-size:11px;">✓ ack</span>' : `<button onclick="ackNotification('${n.id}')" style="background:rgba(255,255,255,0.1);border:none;color:#fff;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:12px;">Ack</button>`}
-          </div>
-        </div>`;
-    }).join('');
-  } catch (err) {
-    list.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
-  }
-}
-
-function escapeHtmlNotif(s) {
-  return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-}
-
-function closeNotificationsPanel() {
-  const overlay = document.getElementById('notifications-overlay');
-  if (overlay) overlay.style.display = 'none';
-}
-
-async function ackNotification(id) {
-  try {
-    await fetch(`${dashboardBaseUrl()}/api/notifications/${id}/ack`, { method: 'POST' });
-    openNotificationsPanel();
-    updateNotificationBadge();
-  } catch {}
-}
-
-async function acknowledgeAllNotifications() {
-  try {
-    await fetch(`${dashboardBaseUrl()}/api/notifications/ack-all`, { method: 'POST' });
-    openNotificationsPanel();
-    updateNotificationBadge();
-  } catch {}
 }
 
 function dashboardBaseUrl() {

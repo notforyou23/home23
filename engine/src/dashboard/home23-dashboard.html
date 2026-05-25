@@ -64,15 +64,6 @@
         </div>
 
         <div class="h23-system-badges">
-          <!-- 🔔 Pending Actions badge hidden — the NOTIFY stream now drains off-engine
-               via the promoter worker into the live-problems registry. -->
-          <span class="h23-pulse-notifs" id="pulse-notifs" style="cursor:pointer;display:none;" onclick="openNotificationsPanel()">
-            <span id="pulse-notifs-badge">🔔 0</span>
-          </span>
-          <span class="h23-pulse-sep" id="pulse-signals-sep" style="display:none;">·</span>
-          <span class="h23-pulse-notifs" id="pulse-signals" style="cursor:pointer;display:none;" onclick="openSignalsPanel()" title="Signals — wins, resolutions, positive observations">
-            <span id="pulse-signals-badge">✨ 0</span>
-          </span>
           <span class="h23-pulse-sep" id="pulse-problems-sep" style="display:none;">·</span>
           <span class="h23-pulse-notifs" id="pulse-problems" style="cursor:pointer;display:none;" onclick="openProblemsPanel()" title="Live problems — verifier-backed, auto-remediated">
             <span id="pulse-problems-badge">🩺 0</span>
@@ -186,41 +177,6 @@
       </div>
       <div class="h23-log-overlay-body">
         <div id="pulse-history-list" style="padding:12px;"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Notifications panel (thought-action queue) — kept for debugging; no
-       pulse-bar entry. The promoter worker auto-acks each notif as it's
-       classified (unverifiable/unsupported/false_positive) or promoted. -->
-  <div class="h23-log-overlay" id="notifications-overlay" onclick="if(event.target===this)closeNotificationsPanel()">
-    <div class="h23-log-overlay-panel">
-      <div class="h23-log-overlay-header">
-        <span class="h23-brainlog-title">🔔 NOTIFY Stream (debug)</span>
-        <span style="font-size:11px;color:rgba(255,255,255,0.4);margin-left:10px;">drained by the promoter worker into live-problems</span>
-        <button class="h23-log-overlay-close" onclick="closeNotificationsPanel()" style="margin-left:auto;">&#10005;</button>
-      </div>
-      <div class="h23-log-overlay-body">
-        <div id="notifications-list" style="padding:12px;"></div>
-        <div style="padding:12px;border-top:1px solid rgba(255,255,255,0.1);">
-          <button onclick="acknowledgeAllNotifications()" style="background:rgba(0,122,255,0.2);border:1px solid rgba(0,122,255,0.4);color:#fff;padding:8px 16px;border-radius:6px;cursor:pointer;">Acknowledge All</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Signals panel — positive-signal stream: resolved problems (with fix
-       recipe), successful autonomous fixes, positive pattern observations
-       from cognition (OBSERVE tag). -->
-  <div class="h23-log-overlay" id="signals-overlay" onclick="if(event.target===this)closeSignalsPanel()">
-    <div class="h23-log-overlay-panel" style="max-width:960px;">
-      <div class="h23-log-overlay-header">
-        <span class="h23-brainlog-title">✨ Signals</span>
-        <span style="font-size:11px;color:rgba(255,255,255,0.4);margin-left:10px;">Wins, resolutions, positive observations — last 48h</span>
-        <button class="h23-log-overlay-close" onclick="closeSignalsPanel()" style="margin-left:auto;">&#10005;</button>
-      </div>
-      <div class="h23-log-overlay-body">
-        <div id="signals-list" style="padding:12px;"></div>
       </div>
     </div>
   </div>
