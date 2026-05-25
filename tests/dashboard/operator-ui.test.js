@@ -287,8 +287,13 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /all clear/);
   assert.doesNotMatch(js, /badge\.textContent = `✨ \$\{signals\.length\}`/);
   assert.match(js, /transitionResidentPursuitFromDashboard/);
+  assert.match(js, /confirmResidentPursuitTransition/);
+  assert.match(js, /window\.confirm\(message\)/);
+  assert.match(js, /const confirmed = confirmResidentPursuitTransition\(pursuitId, status, summary\)/);
+  assert.match(js, /if \(!confirmed\) return/);
   assert.match(js, /\/home23\/api\/agency\/tick/);
   assert.match(js, /\/home23\/api\/agency\/pursuits\/\$\{encodeURIComponent\(pursuitId\)\}\/transition/);
+  assert.match(js, /data-requires-confirmation="true"/);
   assert.match(js, /currentTab === 'home'\) loadResidentHomeSurface/);
   assert.match(js, /setupOrganDrawer/);
   assert.match(js, /syncOrganDrawerForTab/);

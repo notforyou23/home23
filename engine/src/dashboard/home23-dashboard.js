@@ -1655,6 +1655,8 @@ function setupResidentHomeSurface() {
     const status = button.dataset.residentPursuitTransition;
     const summary = button.dataset.transitionSummary || 'Updated from resident dashboard.';
     if (!pursuitId || !status) return;
+    const confirmed = confirmResidentPursuitTransition(pursuitId, status, summary);
+    if (!confirmed) return;
     button.disabled = true;
     transitionResidentPursuitFromDashboard(pursuitId, status, summary)
       .catch((err) => renderResidentHomeError(err))
@@ -1714,6 +1716,21 @@ async function runResidentTickFromDashboard() {
       syncResidentActionButton(residentHomeLatestState);
     }
   }
+}
+
+function confirmResidentPursuitTransition(pursuitId, status, summary) {
+  const action = status === 'discarded'
+    ? 'discard this resident pursuit'
+    : status === 'closed'
+      ? 'close this resident pursuit'
+      : `move this resident pursuit to ${status}`;
+  const message = [
+    `Confirm: ${action}.`,
+    'This writes an agency receipt and removes it from active attention.',
+    summary ? `Receipt: ${summary}` : null,
+    pursuitId ? `Pursuit: ${pursuitId}` : null,
+  ].filter(Boolean).join('\n\n');
+  return window.confirm(message);
 }
 
 async function transitionResidentPursuitFromDashboard(pursuitId, status, summary) {
@@ -2001,8 +2018,8 @@ function renderResidentPursuitCard(p) {
       <p>${escapeHtml(renderResidentPursuitBody(p))}</p>
       <div class="h23-resident-pursuit-meta">${escapeHtml(renderResidentPursuitEvidence(p, updated))}</div>
       <div class="h23-resident-pursuit-actions">
-        <button type="button" class="h23-resident-action-btn danger" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="discarded" data-transition-summary="Discarded from resident dashboard: no longer worth active operator attention.">Discard</button>
-        <button type="button" class="h23-resident-action-btn secondary" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="closed" data-transition-summary="Closed from resident dashboard with operator acknowledgement.">Close</button>
+        <button type="button" class="h23-resident-action-btn danger" data-requires-confirmation="true" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="discarded" data-transition-summary="Discarded from resident dashboard: no longer worth active operator attention.">Discard</button>
+        <button type="button" class="h23-resident-action-btn secondary" data-requires-confirmation="true" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="closed" data-transition-summary="Closed from resident dashboard with operator acknowledgement.">Close</button>
       </div>
     </article>
   `;
