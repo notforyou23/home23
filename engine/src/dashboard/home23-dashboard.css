@@ -4727,12 +4727,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
   margin-bottom: 10px;
 }
 
-.h23-resident-mini-link {
-  color: #b9fff7;
-  font-size: 0.76rem;
-  text-decoration: none;
-}
-
 .h23-resident-next-title {
   margin-top: 12px;
   color: var(--text-primary);

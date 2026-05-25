@@ -278,6 +278,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(html, /id="pulse-brain"/);
   assert.doesNotMatch(html, /id="pulse-brain-badge"/);
   assert.doesNotMatch(html, /h23-system-badges/);
+  assert.doesNotMatch(html, />Open Inspector</);
+  assert.doesNotMatch(html, /h23-resident-mini-link/);
   assert.match(html, /id="organs-drawer"/);
   assert.match(html, /class="h23-organ-drawer"/);
   assert.match(html, /Runtime/);
@@ -399,6 +401,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /h23-resident-pursuit-signal/);
   assert.doesNotMatch(js, /renderResidentPursuitSignal\(p, updated\)/);
   assert.match(js, /renderResidentPursuitInspectLink/);
+  assert.match(js, /h23-resident-inspect-link/);
   assert.doesNotMatch(js, /function renderResidentPursuitBody/);
   assert.doesNotMatch(js, /function renderResidentPursuitEvidence/);
   assert.doesNotMatch(js, /<p>\$\{escapeHtml\(renderResidentPursuitBody\(p\)\)\}<\/p>/);
