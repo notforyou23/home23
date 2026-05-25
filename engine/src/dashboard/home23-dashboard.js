@@ -1893,6 +1893,14 @@ function renderAgencySurface({ state, brief, inspector, pursuits, inbox, receipt
     consequenceEl.innerHTML = consequences.length ? consequences.slice(0, 16).map(renderAgencyConsequenceRow).join('') : '<p class="h23-muted">No verified consequences yet.</p>';
   }
 
+  revealAgencyInspectorContract();
+}
+
+function revealAgencyInspectorContract() {
+  const stats = document.getElementById('agency-stats');
+  const brief = document.getElementById('agency-brief-section');
+  if (stats) stats.hidden = false;
+  if (brief) brief.hidden = false;
   revealAgencyEvidenceDrawers();
 }
 

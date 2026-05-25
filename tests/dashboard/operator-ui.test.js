@@ -135,7 +135,11 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
 
   assert.match(html, /agency-retirement-proposals/);
   assert.match(html, /Cron Retirement Proposals/);
-  const agencyStats = html.match(/<div class="h23-worker-stats" id="agency-stats">[\s\S]*?<\/div>\s*<\/div>/)?.[0] || '';
+  const agencyStatsTag = html.match(/<div class="h23-worker-stats" id="agency-stats"[^>]*>/)?.[0] || '';
+  const agencyBriefSectionTag = html.match(/<section class="h23-workers-section" id="agency-brief-section"[^>]*>/)?.[0] || '';
+  const agencyStats = html.match(/<div class="h23-worker-stats" id="agency-stats"[^>]*>[\s\S]*?<\/div>\s*<\/div>/)?.[0] || '';
+  assert.match(agencyStatsTag, /\bhidden\b/);
+  assert.match(agencyBriefSectionTag, /\bhidden\b/);
   assert.match(agencyStats, /Needs jtr/);
   assert.match(agencyStats, /Next Authority/);
   assert.doesNotMatch(agencyStats, />Inbox</);
@@ -158,6 +162,7 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
   assert.doesNotMatch(html, /<div class="h23-workers-section-title">Active Pursuits<\/div>/);
   assert.match(js, /\/home23\/api\/agency\/inspector\?filter=cron_retirement_proposals/);
   assert.match(js, /renderAgencyRetirementProposalRow/);
+  assert.match(js, /revealAgencyInspectorContract/);
   assert.match(js, /revealAgencyEvidenceDrawers/);
   assert.match(js, /agency-retirement-drawer/);
   assert.match(js, /retirementDrawer\.hidden = !proposals\.length/);
