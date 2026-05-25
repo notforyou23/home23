@@ -1743,10 +1743,15 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
 }
 
 function residentBriefLine(brief, state) {
-  const text = String(brief?.text || '').trim();
-  if (text) return text.split('\n').find((line) => line.trim())?.replace(/^[-#\s]+/, '').slice(0, 220) || 'Resident state is current.';
-  const next = state.nextAction || {};
-  return next.pursuitId ? `Next: ${next.kind || 'advance'} ${next.pursuitId}` : 'Resident state is current.';
+  const active = Number(state.attention?.activePursuits || 0);
+  const watch = Number(state.attention?.watchItems || 0);
+  const needed = Array.isArray(state.obligations) ? state.obligations.length : Number(brief?.questions?.whatNeedsJtr?.length || 0);
+  return `${residentBriefCountText(active, 'active pursuit')}, ${residentBriefCountText(watch, 'watch item')}; ${needed ? residentBriefCountText(needed, 'operator decision') : 'nothing needed from jtr'}.`;
+}
+
+function residentBriefCountText(count, label) {
+  const safeCount = Number.isFinite(Number(count)) ? Number(count) : 0;
+  return `${safeCount} ${label}${safeCount === 1 ? '' : 's'}`;
 }
 
 function humanizeResidentMachineText(text, fallback = '') {
@@ -1828,6 +1833,8 @@ function renderResidentPursuitEvidence(p, updated) {
 }
 
 function renderResidentNextActionTitle(pursuit, next) {
+  const title = renderGoodLifeResidentPursuitTitle(pursuit) || renderGoodLifeResidentPursuitTitle({ title: next.title || next.reason });
+  if (title) return title;
   return humanizeResidentMachineText(pursuit.title || pursuit.summary || next.kind || next.pursuitId, 'Resident action');
 }
 
