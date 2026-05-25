@@ -241,6 +241,30 @@ test('agency_propose_delta can pass a pursuit kill delta through the bridge API'
   assert.match(result.content, /approved_live/);
 });
 
+test('agency_propose_delta can pass a state posture delta through the bridge API', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/deltas');
+    assert.equal(init?.method, 'POST');
+    const body = JSON.parse(String(init?.body || '{}'));
+    assert.equal(body.changeType, 'state_posture_updated');
+    assert.equal(body.target, 'self.posture');
+    assert.equal(body.posture, 'agency-bootcamp-kill-review');
+    assert.deepEqual(body.evidence, [{ type: 'reference', ref: 'curriculum:bootcamp' }]);
+    return new Response(JSON.stringify({ decision: { route: 'approved_live' }, authority: { reason: 'live_low_risk_allowed' } }), { status: 200 });
+  };
+
+  const result = await agencyProposeDeltaTool.execute({
+    changeType: 'state_posture_updated',
+    target: 'self.posture',
+    posture: 'agency-bootcamp-kill-review',
+    summary: 'Curriculum digestion changed Jerry posture toward kill-review bootcamp.',
+    evidenceRef: 'curriculum:bootcamp',
+    authorityLevel: 'L1',
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /approved_live/);
+});
+
 test('agency_record_claim writes a resident truth claim through bridge API', async () => {
   const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
     assert.equal(String(url), 'http://bridge.test/api/agency/claims');

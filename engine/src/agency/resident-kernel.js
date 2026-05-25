@@ -79,6 +79,7 @@ export class AgencyKernel {
     const claims = this.store.listTruth({ limit: 10000 }).reverse();
     const truthSummary = this.truth.summarize(claims);
     const existing = this.store.readState() || {};
+    const postureOverride = existing.governance?.postureOverride || null;
     const obligations = this.deriveObligations({ truthSummary });
     const state = {
       schema: 'home23.agency.state.v1',
@@ -103,7 +104,8 @@ export class AgencyKernel {
       },
       self: {
         role: 'resident-agency-kernel',
-        posture: this.config.mode === 'live' ? 'bounded-live' : 'dry-run-observer',
+        posture: postureOverride?.posture || (this.config.mode === 'live' ? 'bounded-live' : 'dry-run-observer'),
+        postureReason: postureOverride?.reason || null,
       },
       organs: this.charter.organs || {},
       obligations,
@@ -1418,6 +1420,61 @@ export class AgencyKernel {
       return {
         kind: 'pursuit_killed',
         pursuitId,
+      };
+    }
+    if (delta.changeType === 'state_posture_updated') {
+      const posture = String(input.posture || input.targetPosture || '').trim();
+      if (!posture) {
+        return {
+          kind: 'no_op',
+          reason: 'state_posture_delta_requires_posture',
+        };
+      }
+      const evidence = Array.isArray(input.evidence) ? input.evidence : [];
+      const at = nowIso();
+      const existing = this.store.readState() || {};
+      const postureOverride = {
+        posture,
+        reason: input.summary || 'approved_live_delta_state_posture_updated',
+        target: input.target || 'self.posture',
+        evidence,
+        updatedAt: at,
+      };
+      this.store.writeState({
+        ...existing,
+        governance: {
+          ...(existing.governance || {}),
+          postureOverride,
+        },
+        self: {
+          ...(existing.self || {}),
+          posture,
+          postureReason: postureOverride.reason,
+        },
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at,
+        event: 'state_posture_updated',
+        route: 'state',
+        reason: postureOverride.reason,
+        target: postureOverride.target,
+        posture,
+        evidence,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at,
+        pursuitId: input.pursuitId || null,
+        status: 'applied',
+        changeType: 'state_posture_updated',
+        summary: postureOverride.reason,
+        evidence,
+      });
+      return {
+        kind: 'state_posture_updated',
+        posture,
       };
     }
     if (delta.changeType === 'pursuit_note_added') {

@@ -417,6 +417,7 @@ export const agencyProposeDeltaTool: ToolDefinition = {
       pursuitId: { type: 'string' },
       currentTheory: { type: 'string' },
       nextMove: { type: 'string' },
+      posture: { type: 'string' },
       evidenceRef: { type: 'string' },
     },
     required: ['changeType', 'summary'],
@@ -437,6 +438,7 @@ export const agencyProposeDeltaTool: ToolDefinition = {
         pursuitId: input.pursuitId,
         currentTheory: input.currentTheory,
         nextMove: input.nextMove,
+        posture: input.posture,
         evidence,
       }),
     }) as { decision?: { route?: string }; authority?: { reason?: string } };

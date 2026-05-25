@@ -1185,6 +1185,36 @@ test('AgencyKernel live low-risk kill deltas discard pursuits with consequence r
   assert.equal(consequences.some(row => row.status === 'discarded' && row.changeType === 'pursuit_killed' && row.pursuitId === intake.pursuit.id), true);
 });
 
+test('AgencyKernel live low-risk state posture deltas update canonical resident state with receipts', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'live' },
+  });
+
+  const result = kernel.proposeDelta({
+    changeType: 'state_posture_updated',
+    summary: 'Curriculum digestion changed Jerry posture toward kill-review bootcamp.',
+    target: 'self.posture',
+    posture: 'agency-bootcamp-kill-review',
+    authorityLevel: 'L1',
+    reversible: true,
+    evidence: [{ type: 'curriculum_digest', ref: 'curriculum:agency-bootcamp' }],
+  });
+
+  const state = kernel.state();
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(result.decision.route, 'approved_live');
+  assert.equal(result.applied?.kind, 'state_posture_updated');
+  assert.equal(state.self.posture, 'agency-bootcamp-kill-review');
+  assert.equal(state.governance.postureOverride.reason, 'Curriculum digestion changed Jerry posture toward kill-review bootcamp.');
+  assert.equal(receipts.some(row => row.event === 'state_posture_updated' && row.route === 'state'), true);
+  assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'state_posture_updated'), true);
+});
+
 test('AgencyKernel creates resident tasks and routed handoffs as bounded action records', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
