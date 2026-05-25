@@ -164,6 +164,11 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /loadResidentHomeSurface/);
   assert.match(js, /renderResidentHomeSurface/);
   assert.match(js, /residentBriefCountText/);
+  assert.match(js, /renderResidentAttentionBudget/);
+  assert.match(js, /toggleResidentOperatorPanel/);
+  assert.doesNotMatch(js, />Nothing right now\.</);
+  assert.doesNotMatch(js, />\$\{Number\(state\.attention\?\.deferredItems/);
+  assert.doesNotMatch(js, />\$\{Number\(state\.attention\?\.openTasks/);
   assert.match(js, /runResidentTickFromDashboard/);
   assert.match(js, /transitionResidentPursuitFromDashboard/);
   assert.match(js, /\/home23\/api\/agency\/tick/);

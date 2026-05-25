@@ -1720,15 +1720,12 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   const posture = [state.mode || 'unknown', state.bootcamp?.enabled ? 'bootcamp' : null].filter(Boolean).join(' / ');
   setText('resident-posture', `${currentAgentLabel('Jerry')} is ${posture}`);
   setText('resident-summary', residentBriefLine(brief, state));
-  setHtml('resident-health-strip', `
-    <span><strong>${active}/${activeMax || '—'}</strong> active</span>
-    <span><strong>${watch}/${watchMax || '—'}</strong> watch</span>
-    <span><strong>${Number(state.attention?.deferredItems || 0)}</strong> deferred</span>
-    <span><strong>${Number(state.attention?.openTasks || 0)}</strong> open tasks</span>
-  `);
+  setHtml('resident-health-strip', renderResidentAttentionBudget({ active, activeMax, watch, watchMax }));
 
   setHtml('resident-next-action', renderResidentNextAction(state));
-  setHtml('resident-operator-needed', renderResidentOperatorNeeded(state, brief));
+  const operatorItems = residentOperatorItems(state, brief);
+  toggleResidentOperatorPanel(operatorItems);
+  setHtml('resident-operator-needed', operatorItems.length ? renderResidentOperatorNeeded(operatorItems) : '');
   const pursuitSource = Array.isArray(state.activePursuits) ? state.activePursuits : pursuits;
   const activePursuits = (pursuitSource || []).filter((p) => p && p.status !== 'discarded' && p.status !== 'closed').slice(0, 5);
   setHtml('resident-active-pursuits', activePursuits.length
@@ -1740,6 +1737,18 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
     : '<div class="h23-resident-empty">No recent consequences.</div>');
   setHtml('resident-receipts', (receipts || []).slice(0, 8).map(renderResidentReceiptRow).join('') || '<div class="h23-resident-empty">No recent receipts.</div>');
   setHtml('resident-inbox', (inbox || []).slice(0, 8).map(renderResidentInboxRow).join('') || '<div class="h23-resident-empty">No recent inbox decisions.</div>');
+}
+
+function renderResidentAttentionBudget({ active, activeMax, watch, watchMax }) {
+  return `
+    <span><strong>${active}/${activeMax || '—'}</strong> active</span>
+    <span><strong>${watch}/${watchMax || '—'}</strong> watch</span>
+  `;
+}
+
+function toggleResidentOperatorPanel(items) {
+  const panel = document.getElementById('resident-operator-needed');
+  if (panel) panel.hidden = !items.length;
 }
 
 function residentBriefLine(brief, state) {
@@ -1856,12 +1865,14 @@ function renderResidentNextAction(state) {
   `;
 }
 
-function renderResidentOperatorNeeded(state, brief) {
+function residentOperatorItems(state, brief) {
   const obligations = Array.isArray(state.obligations) ? state.obligations : [];
   const questions = brief?.questions?.whatNeedsJtr || [];
-  const items = obligations.length ? obligations : questions;
+  return obligations.length ? obligations : questions;
+}
+
+function renderResidentOperatorNeeded(items) {
   const title = '<div class="h23-resident-section-title">Needed From You</div>';
-  if (!items.length) return `${title}<div class="h23-resident-clear">Nothing right now.</div>`;
   return `${title}${items.slice(0, 4).map((item) => `
     <div class="h23-resident-alert">
       <strong>${escapeHtml(item.kind || item.type || item.title || 'operator input')}</strong>
