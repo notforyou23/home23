@@ -19,6 +19,7 @@ Status: implementation slice in progress.
 - `agency/charter.yaml` defines attention caps, bootcamp rules, authority boundaries, source-truth hierarchy, and editor governance.
 - `AgencyKernel.tick()` is the resident tick primitive. It selects one pursuit, applies editor/veto governance, writes scratch, receipt, and consequence records, and updates `state.nextAction`.
 - Editor kill verdicts have teeth: stale watch loops are demoted to `discarded` with discard receipts and `stale_thread_killed` consequences.
+- Raw telemetry/heartbeat observations cannot occupy active pursuit slots unless they declare a meaningful changed future. New raw observations route to watch, and legacy raw active pursuits are demoted with `raw_observation_not_active_attention` receipts during state reconciliation.
 - `AgencyKernel.intakeWorldStream()` assimilates reports/links/research/cron outputs into machine-readable route and consequence receipts.
 - World-stream worker/verifier receipts can close existing pursuits when they name a `pursuitId` and provide closure status/evidence; closure writes `closed` receipts plus `pursuit_closed_by_receipt` consequences.
 - Live-problem observations are keyed by problem id instead of collapsing into one channel pursuit. A resolved live-problem transition closes the matching resident pursuit with verifier evidence and `pursuit_closed_by_receipt` consequence.

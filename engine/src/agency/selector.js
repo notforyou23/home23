@@ -17,6 +17,9 @@ export class AgencySelector {
     if (candidate.authorityLevel === 'L4') {
       return { route: 'request-authority', reason: 'high_authority_requires_operator' };
     }
+    if (isRawTelemetryObservation(candidate)) {
+      return { route: 'watch', reason: 'raw_observation_not_active_attention' };
+    }
     let route = 'discard';
     let reason = 'no_changed_future_detected';
     if (
@@ -45,4 +48,11 @@ export class AgencySelector {
     }
     return { route, reason };
   }
+}
+
+function isRawTelemetryObservation(candidate = {}) {
+  if (candidate.kind !== 'observation') return false;
+  if (candidate.desiredChangedFuture || candidate.stopCondition || candidate.changedFuture) return false;
+  const source = String(candidate.source || '');
+  return source.startsWith('machine.') || source === 'work.heartbeat';
 }

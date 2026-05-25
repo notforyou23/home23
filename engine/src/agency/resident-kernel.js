@@ -65,6 +65,7 @@ export class AgencyKernel {
   }
 
   ensureState() {
+    this.reconcileRawObservationAttention();
     this.enforceAttentionCaps();
     const active = this.store.listPursuits({ status: 'active', limit: 10000 });
     const watch = this.store.listPursuits({ status: 'watch', limit: 10000 });
@@ -109,6 +110,26 @@ export class AgencyKernel {
     };
     this.store.writeState(state);
     return state;
+  }
+
+  reconcileRawObservationAttention() {
+    const active = this.store.listPursuits({ status: 'active', limit: 10000 });
+    for (const pursuit of active) {
+      if (!isRawObservationPursuit(pursuit)) continue;
+      this.store.updatePursuit(pursuit.id, { status: 'watch' }, {
+        type: 'attention_quality_demoted',
+        reason: 'raw_observation_not_active_attention',
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'demoted',
+        pursuitId: pursuit.id,
+        route: 'watch',
+        reason: 'raw_observation_not_active_attention',
+        mode: this.config.mode,
+      });
+    }
   }
 
   enforceAttentionCaps() {
@@ -1057,4 +1078,18 @@ function summarizeObservation(obs) {
   if (obs?.payload?.summary !== undefined) return String(obs.payload.summary);
   if (typeof obs?.payload === 'string') return obs.payload;
   return `[${obs?.channelId || 'observation'}] ${JSON.stringify(obs?.payload || {}).slice(0, 240)}`;
+}
+
+function isRawObservationPursuit(pursuit = {}) {
+  if (pursuit.kind !== 'observation') return false;
+  if (pursuit.consequence?.changed) return false;
+  const summary = String(pursuit.summary || '');
+  const changedFuture = String(pursuit.desiredChangedFuture || '');
+  const stopCondition = String(pursuit.stopCondition || '');
+  const hasMeaningfulChangedFuture = changedFuture && changedFuture !== summary;
+  const genericStopCondition = stopCondition === 'changed future is verified or the pursuit is explicitly discarded';
+  const hasMeaningfulStopCondition = stopCondition && !genericStopCondition && stopCondition !== summary && stopCondition !== changedFuture;
+  if (hasMeaningfulChangedFuture || hasMeaningfulStopCondition) return false;
+  const source = String(pursuit.source || '');
+  return source.startsWith('machine.') || source === 'work.heartbeat';
 }

@@ -111,6 +111,56 @@ test('AgencyKernel dedupes repeated Step24 observations by channel instead of me
   assert.equal(second.pursuit.seenCount, 2);
 });
 
+test('AgencyKernel keeps raw heartbeat observations out of active attention', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const result = await kernel.handleObservation({
+    channelId: 'work.heartbeat',
+    traceId: 'trace:heartbeat',
+    payload: { tick: 1, at: '2026-05-25T17:00:00.000Z' },
+  });
+
+  assert.equal(result.decision.route, 'watch');
+  assert.equal(result.pursuit.status, 'watch');
+  assert.equal(kernel.state().attention.activePursuits, 0);
+  assert.equal(kernel.state().attention.watchItems, 1);
+});
+
+test('AgencyKernel demotes legacy raw observation pursuits during state reconciliation', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const candidate = kernel.router.normalize({
+    source: 'work.heartbeat',
+    kind: 'observation',
+    summary: '[work.heartbeat] {"tick":1,"at":"2026-05-25T17:00:00.000Z"}',
+    evidence: [{ type: 'observation', ref: 'trace:heartbeat' }],
+    authorityLevel: 'L2',
+    tags: ['work.heartbeat'],
+  });
+  const legacy = kernel.store.createPursuit(candidate, {
+    route: 'pursue',
+    reason: 'legacy_raw_observation_selected_active',
+  });
+
+  const state = kernel.ensureState();
+  const reconciled = kernel.pursuit(legacy.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+
+  assert.equal(reconciled.status, 'watch');
+  assert.equal(state.attention.activePursuits, 0);
+  assert.equal(state.attention.watchItems, 1);
+  assert.equal(receipts.some(row => row.event === 'demoted' && row.reason === 'raw_observation_not_active_attention'), true);
+});
+
 test('AgencyKernel tracks live-problem observations by problem id and closes on resolved verifier state', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
