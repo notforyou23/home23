@@ -139,6 +139,60 @@ test('AgencyKernel discards low-signal heartbeat observations instead of spendin
   assert.equal(receipts.some(row => row.event === 'discarded' && row.reason === 'raw_observation_not_attention'), true);
 });
 
+test('AgencyKernel discards raw agenda status observations unless they declare a changed future', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const result = await kernel.handleObservation({
+    channelId: 'work.agenda',
+    traceId: 'trace:agenda-status',
+    payload: { id: 'ag-gl-mplew46q-25033c', type: 'status', topicTags: [], status: 'stale' },
+  });
+
+  assert.equal(result.decision.route, 'discard');
+  assert.equal(result.decision.reason, 'raw_observation_not_attention');
+  assert.equal(result.pursuit, null);
+  assert.equal(kernel.state().attention.activePursuits, 0);
+  assert.equal(kernel.state().attention.watchItems, 0);
+
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  assert.equal(receipts.some(row => row.event === 'discarded' && row.reason === 'raw_observation_not_attention'), true);
+});
+
+test('AgencyKernel reconciles legacy raw agenda status rows out of resident attention', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const candidate = kernel.router.normalize({
+    source: 'work.agenda',
+    kind: 'observation',
+    summary: '[work.agenda] {"id":"ag-gl-mplew46q-25033c","type":"status","topicTags":[],"status":"stale"}',
+    evidence: [{ type: 'observation', ref: 'trace:agenda-status' }],
+    authorityLevel: 'L2',
+    tags: ['work.agenda'],
+  });
+  const legacy = kernel.store.createPursuit(candidate, {
+    route: 'pursue',
+    reason: 'legacy_agenda_status_selected_active',
+  });
+
+  const state = kernel.ensureState();
+  const reconciled = kernel.pursuit(legacy.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+
+  assert.equal(reconciled.status, 'discarded');
+  assert.equal(state.attention.activePursuits, 0);
+  assert.equal(state.attention.watchItems, 0);
+  assert.equal(receipts.some(row => row.event === 'discarded' && row.reason === 'raw_observation_not_attention'), true);
+});
+
 test('AgencyKernel discards raw body telemetry observations unless they declare a changed future', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

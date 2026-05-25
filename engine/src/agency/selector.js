@@ -60,6 +60,7 @@ function isRawTelemetryObservation(candidate = {}) {
   return source.startsWith('machine.')
     || source.startsWith('os.')
     || (source.startsWith('domain.') && source !== 'domain.good-life')
+    || source === 'work.agenda'
     || source === 'work.heartbeat';
 }
 
