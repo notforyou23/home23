@@ -482,6 +482,43 @@ export class AgencyKernel {
     };
   }
 
+  inspector(options = {}) {
+    const filter = options.filter || 'all';
+    const limit = Math.max(1, Math.min(Number(options.limit || 50), 200));
+    const consequences = this.store.listConsequences({ limit: Math.max(limit * 5, 100) });
+    const cronRetirementRows = consequences.filter(row => (
+      row.changeType === 'cron_retirement_proposed'
+      || row.changeType === 'cron_retired_by_editor'
+    ));
+    const cronRetirementProposals = cronRetirementRows.slice(0, limit).map(row => {
+      const evidence = Array.isArray(row.evidence) ? row.evidence : [];
+      return {
+        at: row.at,
+        pursuitId: row.pursuitId || null,
+        status: row.status || null,
+        changeType: row.changeType,
+        summary: row.summary || row.reason || null,
+        job: evidence.find(item => item?.type === 'cron_job') || null,
+        pursuit: evidence.find(item => item?.type === 'agency_pursuit') || null,
+        runEvidence: evidence.filter(item => item?.type === 'cron_run_log_excerpt'),
+        evidenceChain: evidence,
+      };
+    });
+    return {
+      schema: 'home23.agency.inspector.v1',
+      agent: this.agentName,
+      at: nowIso(),
+      mode: this.config.mode,
+      filter,
+      filters: {
+        cronRetirementProposals: {
+          count: cronRetirementRows.length,
+          items: cronRetirementProposals,
+        },
+      },
+    };
+  }
+
   brief() {
     const state = this.ensureState();
     const following = [

@@ -331,6 +331,49 @@ test('AgencyKernel builds the live success-test brief from resident state', asyn
   assert.match(brief.text, /What I need from jtr/);
 });
 
+test('AgencyKernel exposes cron retirement proposals as an operator evidence-chain inspector view', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const intake = await kernel.intake({
+    source: 'cron.bootcamp',
+    kind: 'legacy_recurring_cron',
+    summary: 'Recurring cron "Daily Field Report" must prove consequence or retire.',
+    evidence: [{ type: 'cron_job', ref: 'field-report-daily', name: 'Daily Field Report' }],
+    authorityLevel: 'L2',
+    desiredChangedFuture: 'Daily Field Report either creates pursuit/watch/discard receipts or is retired.',
+    tags: ['cron', 'agency-bootcamp'],
+  });
+
+  kernel.recordConsequence({
+    pursuitId: intake.pursuit.id,
+    status: 'proposed',
+    changeType: 'cron_retirement_proposed',
+    summary: 'Recurring cron "Daily Field Report" is proposed for retirement because it produced no consequence.',
+    evidence: [
+      { type: 'cron_job', ref: 'field-report-daily', name: 'Daily Field Report', schedule: '0 8 * * *' },
+      { type: 'agency_pursuit', ref: intake.pursuit.id, status: 'closed', summary: intake.pursuit.summary },
+      { type: 'cron_run_log_excerpt', ref: 'field-report-daily', status: 'ok', semanticStatus: 'unknown', responsePreview: 'Delivered Telegram report without agency packet.' },
+    ],
+  });
+
+  const inspector = kernel.inspector({ filter: 'cron_retirement_proposals', limit: 10 });
+  const proposal = inspector.filters.cronRetirementProposals.items[0];
+
+  assert.equal(inspector.schema, 'home23.agency.inspector.v1');
+  assert.equal(inspector.filter, 'cron_retirement_proposals');
+  assert.equal(inspector.filters.cronRetirementProposals.count, 1);
+  assert.equal(proposal.pursuitId, intake.pursuit.id);
+  assert.equal(proposal.job.ref, 'field-report-daily');
+  assert.equal(proposal.pursuit.ref, intake.pursuit.id);
+  assert.equal(proposal.runEvidence[0].semanticStatus, 'unknown');
+  assert.match(proposal.summary, /proposed for retirement/);
+  assert.equal(proposal.evidenceChain.some(item => item.type === 'cron_run_log_excerpt'), true);
+});
+
 test('AgencyKernel resident tick advances one pursuit and records scratch, editor, and consequence receipts', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

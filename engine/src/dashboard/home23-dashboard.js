@@ -1655,22 +1655,25 @@ function setupAgencySurface() {
 }
 
 async function loadAgencySurface() {
-  const [stateRes, briefRes, pursuitsRes, eventsRes] = await Promise.all([
+  const [stateRes, briefRes, inspectorRes, pursuitsRes, eventsRes] = await Promise.all([
     fetch(`${dashboardBaseUrl()}/home23/api/agency/state`),
     fetch(`${dashboardBaseUrl()}/home23/api/agency/brief`),
+    fetch(`${dashboardBaseUrl()}/home23/api/agency/inspector?filter=cron_retirement_proposals&limit=20`),
     fetch(`${dashboardBaseUrl()}/home23/api/agency/pursuits?limit=24`),
     fetch(`${dashboardBaseUrl()}/home23/api/agency/events?limit=40`),
   ]);
-  if (!stateRes.ok || !briefRes.ok || !pursuitsRes.ok || !eventsRes.ok) {
+  if (!stateRes.ok || !briefRes.ok || !inspectorRes.ok || !pursuitsRes.ok || !eventsRes.ok) {
     throw new Error('agency surface unavailable');
   }
   const state = await stateRes.json();
   const brief = await briefRes.json();
+  const inspector = await inspectorRes.json();
   const pursuits = await pursuitsRes.json();
   const events = await eventsRes.json();
   renderAgencySurface({
     state,
     brief,
+    inspector,
     pursuits: pursuits.pursuits || [],
     inbox: events.inbox || [],
     receipts: events.receipts || events.actions || [],
@@ -1680,7 +1683,7 @@ async function loadAgencySurface() {
   });
 }
 
-function renderAgencySurface({ state, brief, pursuits, inbox, receipts, consequences, scratch, truth }) {
+function renderAgencySurface({ state, brief, inspector, pursuits, inbox, receipts, consequences, scratch, truth }) {
   const stats = document.getElementById('agency-stats');
   if (stats) {
     const active = Number(state.attention?.activePursuits || 0);
@@ -1713,6 +1716,14 @@ function renderAgencySurface({ state, brief, pursuits, inbox, receipts, conseque
   const organsEl = document.getElementById('agency-organs');
   if (organsEl) {
     organsEl.innerHTML = renderAgencyOrgansBlock(state);
+  }
+
+  const retirementEl = document.getElementById('agency-retirement-proposals');
+  if (retirementEl) {
+    const proposals = inspector?.filters?.cronRetirementProposals?.items || [];
+    retirementEl.innerHTML = proposals.length
+      ? proposals.map(renderAgencyRetirementProposalRow).join('')
+      : '<p class="h23-muted">No cron retirement proposals.</p>';
   }
 
   const pursuitEl = document.getElementById('agency-pursuits');
@@ -1854,6 +1865,35 @@ function renderAgencyPursuitRow(p) {
       <div>${escapeHtml(p.title || p.summary || p.id)}</div>
       <small>${escapeHtml(p.dedupeKey || p.source || '')}${age ? ` · ${escapeHtml(age)}` : ''}</small>
     </button>
+  `;
+}
+
+function renderAgencyRetirementProposalRow(proposal) {
+  const evidenceChain = Array.isArray(proposal.evidenceChain) ? proposal.evidenceChain : [];
+  const runEvidence = Array.isArray(proposal.runEvidence)
+    ? proposal.runEvidence
+    : evidenceChain.filter(item => item.type === 'cron_run_log_excerpt');
+  const job = proposal.job || evidenceChain.find(item => item.type === 'cron_job') || {};
+  const pursuit = proposal.pursuit || evidenceChain.find(item => item.type === 'agency_pursuit') || {};
+  const runRows = runEvidence.length
+    ? runEvidence.slice(0, 4).map(run => {
+        const semanticStatus = run.semanticStatus || 'unknown';
+        return `
+          <div style="margin-top:8px;padding:8px 10px;background:rgba(0,0,0,0.16);border:1px solid rgba(255,255,255,0.08);border-radius:6px;">
+            <div style="font-size:12px;color:rgba(255,255,255,0.72);">${escapeHtml(run.type || 'cron_run_log_excerpt')} · ${escapeHtml(run.status || 'unknown')} · ${escapeHtml(semanticStatus)}</div>
+            <div style="font-size:12px;color:rgba(255,255,255,0.56);">${escapeHtml(run.responsePreview || run.summary || run.ref || '')}</div>
+          </div>
+        `;
+      }).join('')
+    : '<div style="margin-top:8px;font-size:12px;color:rgba(255,255,255,0.5);">No recent run evidence attached.</div>';
+  return `
+    <div style="padding:12px 14px;margin-bottom:10px;background:rgba(255,255,255,0.035);border-left:3px solid #ff9f0a;">
+      <div style="font-size:12px;color:rgba(255,255,255,0.55);">${escapeHtml(proposal.at ? new Date(proposal.at).toLocaleString() : '')} · ${escapeHtml(proposal.changeType || 'cron_retirement_proposed')}</div>
+      <div style="color:#fff;font-size:13px;">${escapeHtml(job.name || job.ref || 'unknown cron')} ${proposal.pursuitId ? `→ ${escapeHtml(proposal.pursuitId)}` : ''}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.62);">${escapeHtml(proposal.summary || '')}</div>
+      <div style="font-size:12px;color:rgba(255,255,255,0.52);margin-top:6px;">pursuit: ${escapeHtml(pursuit.summary || pursuit.ref || 'not linked')} · status: ${escapeHtml(proposal.status || 'unknown')}</div>
+      ${runRows}
+    </div>
   `;
 }
 

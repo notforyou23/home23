@@ -111,3 +111,17 @@ test('Good Life issue detail shows user-facing repair context before raw JSON', 
   assert.match(js, /Stop condition/);
   assert.match(css, /\.h23-goodlife-issue-brief/);
 });
+
+test('Agency inspector exposes cron retirement proposals as a filtered proof-chain surface', () => {
+  const js = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.js'), 'utf8');
+  const html = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-dashboard.html'), 'utf8');
+  const server = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/server.js'), 'utf8');
+
+  assert.match(html, /agency-retirement-proposals/);
+  assert.match(html, /Cron Retirement Proposals/);
+  assert.match(js, /\/home23\/api\/agency\/inspector\?filter=cron_retirement_proposals/);
+  assert.match(js, /renderAgencyRetirementProposalRow/);
+  assert.match(js, /cron_run_log_excerpt/);
+  assert.match(js, /semanticStatus/);
+  assert.match(server, /\/home23\/api\/agency\/inspector/);
+});

@@ -34,6 +34,7 @@ Status: implementation slice in progress.
 - Bound recurring crons are reviewed at harness startup. In dry-run, a cron whose resident pursuit is closed or editor-discarded receives a `cron_retirement_proposed` consequence. In live mode, only that specific bound recurring job is disabled and recorded as `cron_retired_by_editor`.
 - The scheduler tracks `consecutiveNoConsequence` when a run completes mechanically but its semantic outcome remains unknown. After three no-consequence runs, agency bootcamp proposes retirement for the bound recurring job instead of letting output continue as theater.
 - Cron retirement proposals include compact recent run-log excerpts: status, semantic status, response preview, and outcome-layer statuses. The operator can inspect why a cron was challenged without opening raw scheduler logs first.
+- `AgencyKernel.inspector()` plus `GET /api/agency/inspector?filter=cron_retirement_proposals` expose those retirement proposals as a first-class evidence-chain view. The dashboard Agency Inspector renders job evidence, bound pursuit evidence, and recent run excerpts instead of burying proposals in raw consequences.
 - Bound scheduler outcomes carry their `pursuitId` back through world-stream assimilation. Non-closing receipts attach evidence and `cron_report` consequences to the existing pursuit instead of creating disconnected "cron finished" items.
 - Bound scheduler outcomes that report `semanticStatus: satisfied` become stop-condition closure receipts. They close the resident pursuit with explicit `changedFuture` evidence instead of leaving scheduler work permanently "advanced."
 - Artifact registry promotions can feed the same consequence path. A committed artifact with a passing verifier and resident `pursuitId` emits an `artifact_verifier_receipt`, closing or advancing the pursuit with artifact hash/path evidence.
@@ -60,4 +61,3 @@ Dry-run remains the default. In dry-run, the resident spine records intent, veto
 
 - Expand live delta appliers beyond watch-item creation only after dry-run receipts prove stable.
 - Extend artifact verifier binding to more artifact-producing organs as they begin declaring resident `pursuitId` metadata.
-- Feed retirement proposals into the dashboard inspector as a first-class filtered view.

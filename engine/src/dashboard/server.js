@@ -1419,6 +1419,9 @@ class DashboardServer {
     this.app.get(['/api/agency/brief', '/home23/api/agency/brief'], (req, res) => {
       this.proxyWorkerConnector(req, res, 'GET', '/api/agency/brief', 10_000);
     });
+    this.app.get(['/api/agency/inspector', '/home23/api/agency/inspector'], (req, res) => {
+      this.proxyWorkerConnector(req, res, 'GET', '/api/agency/inspector', 10_000);
+    });
     this.app.get(['/api/agency/inbox', '/home23/api/agency/inbox'], (req, res) => {
       this.proxyWorkerConnector(req, res, 'GET', '/api/agency/inbox', 10_000);
     });
