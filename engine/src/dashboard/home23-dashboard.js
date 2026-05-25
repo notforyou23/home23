@@ -649,7 +649,6 @@ function renderProblemCard(p) {
       <span style="color:#fff;font-size:14px;flex:1;">${escapeHtml(p.claim)}${originTag}</span>
       ${needsUser ? '<span class="h23-goodlife-needs-user">needs you</span>' : ''}
       <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;font-size:11px;color:rgba(255,255,255,0.5);">${escapeHtml(p.id)}</code>
-      <button onclick="openProblemEditor('${escapeAttr(p.id)}')" style="background:transparent;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.7);padding:3px 10px;border-radius:4px;cursor:pointer;font-size:11px;">edit</button>
     </div>
     ${dispatchBanner}
     ${renderProblemUserAction(p)}

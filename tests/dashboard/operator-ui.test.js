@@ -13,6 +13,7 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(html, /h23-problems-overlay-panel/);
   assert.doesNotMatch(html, /Seeded problems/);
   assert.doesNotMatch(html, /seedOrigin: system/);
+  assert.doesNotMatch(html, />\+ Add problem</);
   assert.match(js, /renderProblemsOperatorSummary/);
   assert.match(js, /Operator Status/);
   assert.match(js, /Needed From You/);
@@ -24,6 +25,7 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(css, /\.h23-problems-history/);
   assert.match(js, /renderProblemEvidenceDrawer\(p, \{ last, lastChecked, stepsLabel, recentRem \}\)/);
   assert.match(js, /<summary>Verifier evidence<\/summary>/);
+  assert.doesNotMatch(js, />edit<\/button>/);
   assert.doesNotMatch(js, /<div style="font-size:12px;color:rgba\(255,255,255,0\.6\);margin-bottom:6px;">\s*<span>verifier:/);
   assert.doesNotMatch(js, /recent attempts: \$\{recentRem\.map/);
   assert.match(css, /\.h23-problem-evidence/);
