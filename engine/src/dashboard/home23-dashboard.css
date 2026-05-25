@@ -2097,6 +2097,10 @@ body.h23-external-focus #cosmo23-refresh-btn {
   box-shadow: none;
 }
 
+.h23-system-rail[hidden] {
+  display: none !important;
+}
+
 .h23-system-agent,
 .h23-system-runtime {
   min-width: 0;

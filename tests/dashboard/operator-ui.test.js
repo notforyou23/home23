@@ -525,6 +525,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(css, /\.h23-organ-panel/);
   assert.match(css, /\.h23-organ-drawer:not\(\[open\]\) \.h23-organ-panel\s*\{[\s\S]*?display:\s*none/);
   assert.match(css, /\.h23-system-rail/);
+  assert.match(css, /\.h23-system-rail\[hidden\]\s*\{[\s\S]*?display:\s*none\s*!important/);
   assert.match(css, /\.h23-system-runtime/);
   assert.doesNotMatch(css, /h23-pulse-phase/);
   assert.doesNotMatch(css, /\.h23-dashboard-identity/);
