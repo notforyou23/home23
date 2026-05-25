@@ -1707,7 +1707,7 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   setHtml('resident-active-pursuits', activePursuits.length
     ? activePursuits.map(renderResidentPursuitCard).join('')
     : '<div class="h23-resident-empty">No active resident pursuits.</div>');
-  const consequenceRows = groupResidentConsequences(state.recentConsequences || consequences || []).slice(0, 6);
+  const consequenceRows = groupResidentConsequences(residentHomeConsequenceRows(state.recentConsequences || consequences || [])).slice(0, 6);
   setHtml('resident-consequences', consequenceRows.length
     ? consequenceRows.map(renderResidentConsequenceItem).join('')
     : '<div class="h23-resident-empty">No recent consequences.</div>');
@@ -1924,6 +1924,10 @@ function groupResidentSchedulerEvidence(row) {
   return type === 'cron_receipt_reattached'
     || /^Cron receipt pursuit ap_[\w-]+ reattached to ap_[\w-]+\.$/i.test(summary)
     || (type === 'pursue' && /^Cron agent-[\w-]+ \(exec\) finished with status ok\.$/i.test(summary));
+}
+
+function residentHomeConsequenceRows(rows = []) {
+  return (rows || []).filter((row) => !groupResidentSchedulerEvidence(row));
 }
 
 function groupResidentConsequences(rows = []) {

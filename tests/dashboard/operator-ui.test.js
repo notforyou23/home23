@@ -222,6 +222,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /function renderResidentNextActionTitle\(pursuit, next\)[\s\S]*renderGoodLifeResidentPursuitTitle/);
   assert.doesNotMatch(js, /const text = String\(brief\?\.text/);
   assert.match(js, /groupResidentConsequences/);
+  assert.match(js, /residentHomeConsequenceRows/);
+  assert.match(js, /residentHomeConsequenceRows\(state\.recentConsequences \|\| consequences \|\| \[\]\)/);
+  assert.match(js, /!groupResidentSchedulerEvidence\(row\)/);
   assert.match(js, /renderResidentConsequenceGroup/);
   assert.match(js, /renderResidentConsequenceTitle/);
   assert.match(js, /renderResidentConsequenceSummary/);
