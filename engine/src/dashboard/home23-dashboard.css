@@ -4750,17 +4750,11 @@ body.h23-external-focus #cosmo23-refresh-btn {
 }
 
 .h23-resident-next-meta,
-.h23-resident-next-move,
 .h23-resident-pursuit-meta,
 .h23-resident-event small {
   color: rgba(255,255,255,0.48);
   font-size: 0.76rem;
   line-height: 1.35;
-}
-
-.h23-resident-next-move {
-  margin-top: 8px;
-  color: rgba(255,255,255,0.68);
 }
 
 .h23-resident-stream {

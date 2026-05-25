@@ -1618,7 +1618,6 @@ function renderResidentNextAction(state) {
     <div class="h23-resident-next-kind">${escapeHtml(humanizeResidentMachineText(next.kind || 'advance_one_step'))}</div>
     <div class="h23-resident-next-title">${escapeHtml(renderResidentNextActionTitle(pursuit, next))}</div>
     <div class="h23-resident-next-meta">${escapeHtml(renderResidentNextActionMeta(pursuit, next))}</div>
-    <div class="h23-resident-next-move">${escapeHtml(humanizeResidentMachineText(pursuit.nextMove || next.nextMove || pursuit.stopCondition || ''))}</div>
   `;
 }
 

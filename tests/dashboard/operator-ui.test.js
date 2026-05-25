@@ -390,6 +390,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /function renderResidentNextActionTitle\(pursuit, next\)[\s\S]*renderGoodLifeResidentPursuitTitle/);
   assert.match(js, /renderResidentNextActionMeta\(pursuit, next\)/);
   assert.match(js, /function renderResidentNextActionMeta\(pursuit, next\)/);
+  assert.doesNotMatch(js, /resident-next-move/);
+  assert.doesNotMatch(js, /pursuit\.nextMove \|\| next\.nextMove \|\| pursuit\.stopCondition/);
   assert.match(js, /residentActionModeLabel\(next\)/);
   assert.match(js, /return 'rehearsal'/);
   assert.doesNotMatch(js, /next\.dryRun \? 'dry-run' : null/);
@@ -431,6 +433,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(css, /\.h23-resident-command/);
   assert.match(css, /\.h23-resident-action-btn\.danger/);
   assert.match(css, /\.h23-resident-stream/);
+  assert.doesNotMatch(css, /\.h23-resident-next-move/);
   assert.doesNotMatch(css, /\.h23-resident-diagnostics/);
   assert.match(css, /\.h23-organ-drawer/);
   assert.match(css, /\.h23-organ-panel/);
