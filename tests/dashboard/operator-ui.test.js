@@ -121,6 +121,11 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
   assert.match(html, /Cron Retirement Proposals/);
   assert.match(js, /\/home23\/api\/agency\/inspector\?filter=cron_retirement_proposals/);
   assert.match(js, /renderAgencyRetirementProposalRow/);
+  assert.match(js, /residentAgencyVisiblePursuits\(state, pursuits\)/);
+  assert.match(js, /function residentAgencyVisiblePursuits\(state, pursuits = \[\]\)/);
+  assert.match(js, /Array\.isArray\(state\.activePursuits\) \? state\.activePursuits : pursuits/);
+  assert.match(js, /status !== 'discarded' && status !== 'closed'/);
+  assert.doesNotMatch(js, /pursuits\.length \? pursuits\.map\(renderAgencyPursuitRow\)/);
   assert.match(js, /cron_run_log_excerpt/);
   assert.match(js, /semanticStatus/);
   assert.match(server, /\/home23\/api\/agency\/inspector/);

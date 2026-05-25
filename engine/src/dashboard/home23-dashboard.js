@@ -2168,7 +2168,8 @@ function renderAgencySurface({ state, brief, inspector, pursuits, inbox, receipt
 
   const pursuitEl = document.getElementById('agency-pursuits');
   if (pursuitEl) {
-    pursuitEl.innerHTML = pursuits.length ? pursuits.map(renderAgencyPursuitRow).join('') : '<p class="h23-muted">No pursuits yet.</p>';
+    const visiblePursuits = residentAgencyVisiblePursuits(state, pursuits);
+    pursuitEl.innerHTML = visiblePursuits.length ? visiblePursuits.map(renderAgencyPursuitRow).join('') : '<p class="h23-muted">No active or watch pursuits.</p>';
   }
 
   const receiptEl = document.getElementById('agency-receipts');
@@ -2185,6 +2186,14 @@ function renderAgencySurface({ state, brief, inspector, pursuits, inbox, receipt
   if (consequenceEl) {
     consequenceEl.innerHTML = consequences.length ? consequences.slice(0, 16).map(renderAgencyConsequenceRow).join('') : '<p class="h23-muted">No verified consequences yet.</p>';
   }
+}
+
+function residentAgencyVisiblePursuits(state, pursuits = []) {
+  const pursuitSource = Array.isArray(state.activePursuits) ? state.activePursuits : pursuits;
+  return (pursuitSource || []).filter((pursuit) => {
+    const status = String(pursuit?.status || '').toLowerCase();
+    return status !== 'discarded' && status !== 'closed';
+  });
 }
 
 function renderAgencyScratchBlock(state, scratch = []) {
