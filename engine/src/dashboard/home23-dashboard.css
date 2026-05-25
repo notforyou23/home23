@@ -4761,6 +4761,10 @@ body.h23-external-focus #cosmo23-refresh-btn {
   border-left-color: rgba(52, 211, 153, 0.78);
 }
 
+.h23-resident-event.grouped {
+  background: rgba(52, 211, 153, 0.075);
+}
+
 .h23-resident-event strong,
 .h23-resident-alert strong {
   display: block;

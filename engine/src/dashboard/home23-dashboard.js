@@ -1734,9 +1734,9 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   setHtml('resident-active-pursuits', activePursuits.length
     ? activePursuits.map(renderResidentPursuitCard).join('')
     : '<div class="h23-resident-empty">No active resident pursuits.</div>');
-  const consequenceRows = (state.recentConsequences || consequences || []).slice(0, 6);
+  const consequenceRows = groupResidentConsequences(state.recentConsequences || consequences || []).slice(0, 6);
   setHtml('resident-consequences', consequenceRows.length
-    ? consequenceRows.map(renderResidentConsequenceRow).join('')
+    ? consequenceRows.map(renderResidentConsequenceItem).join('')
     : '<div class="h23-resident-empty">No recent consequences.</div>');
   setHtml('resident-receipts', (receipts || []).slice(0, 8).map(renderResidentReceiptRow).join('') || '<div class="h23-resident-empty">No recent receipts.</div>');
   setHtml('resident-inbox', (inbox || []).slice(0, 8).map(renderResidentInboxRow).join('') || '<div class="h23-resident-empty">No recent inbox decisions.</div>');
@@ -1869,6 +1869,65 @@ function renderResidentConsequenceRow(c) {
       <strong>${escapeHtml(c.changeType || c.status || 'consequence')}</strong>
       <span>${escapeHtml(c.summary || c.reason || '')}</span>
       <small>${escapeHtml([c.pursuitId, c.at ? timeSinceSafe(c.at) : null].filter(Boolean).join(' · '))}</small>
+    </div>
+  `;
+}
+
+function extractCronNameFromConsequence(c) {
+  const text = String(c?.summary || c?.reason || '').trim();
+  const quoted = text.match(/Recurring cron "([^"]+)"/i);
+  if (quoted?.[1]) return quoted[1];
+  return humanizeResidentMachineText(c?.changeType || c?.status || 'cron');
+}
+
+function groupResidentConsequences(rows = []) {
+  const grouped = [];
+  let cronRows = [];
+
+  const flushCronGroup = () => {
+    if (!cronRows.length) return;
+    if (cronRows.length === 1) {
+      grouped.push(cronRows[0]);
+    } else {
+      const names = cronRows.map(extractCronNameFromConsequence).filter(Boolean);
+      const firstNames = names.slice(0, 3).join(', ');
+      const more = names.length > 3 ? ` +${names.length - 3} more` : '';
+      grouped.push({
+        kind: 'group',
+        changeType: 'cron_retirement_proposed',
+        status: 'proposed',
+        count: cronRows.length,
+        at: cronRows[0]?.at,
+        summary: `${cronRows.length} recurring crons reached stop conditions and are proposed for retirement.`,
+        detail: [firstNames, more].filter(Boolean).join(''),
+        items: cronRows,
+      });
+    }
+    cronRows = [];
+  };
+
+  rows.forEach((row) => {
+    if (row?.changeType === 'cron_retirement_proposed') {
+      cronRows.push(row);
+      return;
+    }
+    flushCronGroup();
+    grouped.push(row);
+  });
+  flushCronGroup();
+  return grouped;
+}
+
+function renderResidentConsequenceItem(c) {
+  return c?.kind === 'group' ? renderResidentConsequenceGroup(c) : renderResidentConsequenceRow(c);
+}
+
+function renderResidentConsequenceGroup(group) {
+  return `
+    <div class="h23-resident-event consequence grouped">
+      <strong>Cron cleanup proposed</strong>
+      <span>${escapeHtml(group.summary || '')}</span>
+      <small>${escapeHtml([group.detail, group.at ? timeSinceSafe(group.at) : null].filter(Boolean).join(' · '))}</small>
     </div>
   `;
 }
