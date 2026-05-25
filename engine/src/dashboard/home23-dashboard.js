@@ -1892,6 +1892,14 @@ function renderAgencySurface({ state, brief, inspector, pursuits, inbox, receipt
   if (consequenceEl) {
     consequenceEl.innerHTML = consequences.length ? consequences.slice(0, 16).map(renderAgencyConsequenceRow).join('') : '<p class="h23-muted">No verified consequences yet.</p>';
   }
+
+  revealAgencyEvidenceDrawers();
+}
+
+function revealAgencyEvidenceDrawers() {
+  document.querySelectorAll('#panel-agency .h23-agency-evidence-drawer:not(#agency-retirement-drawer)').forEach((drawer) => {
+    drawer.hidden = false;
+  });
 }
 
 function residentAgencyVisiblePursuits(state, pursuits = []) {
