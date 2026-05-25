@@ -33,6 +33,7 @@ Status: implementation slice in progress.
 - Bound recurring crons are reviewed at harness startup. In dry-run, a cron whose resident pursuit is closed or editor-discarded receives a `cron_retirement_proposed` consequence. In live mode, only that specific bound recurring job is disabled and recorded as `cron_retired_by_editor`.
 - Bound scheduler outcomes carry their `pursuitId` back through world-stream assimilation. Non-closing receipts attach evidence and `cron_report` consequences to the existing pursuit instead of creating disconnected "cron finished" items.
 - Bound scheduler outcomes that report `semanticStatus: satisfied` become stop-condition closure receipts. They close the resident pursuit with explicit `changedFuture` evidence instead of leaving scheduler work permanently "advanced."
+- Artifact registry promotions can feed the same consequence path. A committed artifact with a passing verifier and resident `pursuitId` emits an `artifact_verifier_receipt`, closing or advancing the pursuit with artifact hash/path evidence.
 - `AgencyKernel.brief()` and `GET /api/agency/brief` answer the Step28 success-test question from live resident state: what Jerry is following, what changed, what he is doing next, and what needs jtr. Chat exposes this through `agency_brief`, and the dashboard renders the same resident brief.
 
 ## Resident State
@@ -55,5 +56,5 @@ Dry-run remains the default. In dry-run, the resident spine records intent, veto
 ## Remaining Hardening
 
 - Expand live delta appliers beyond watch-item creation only after dry-run receipts prove stable.
-- Extend receipt-driven closure to additional first-class Home23 surfaces such as artifact verifiers.
+- Extend artifact verifier binding to more artifact-producing organs as they begin declaring resident `pursuitId` metadata.
 - Broaden cron-retirement evidence beyond closed/discarded pursuits once run-level consequence quality is stable enough to distinguish useful unknowns from theater.

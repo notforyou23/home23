@@ -773,6 +773,10 @@ async function main() {
       },
       logger,
     });
+    if (orchestrator?.artifactRegistry && typeof orchestrator.artifactRegistry.setAgencyKernel === 'function') {
+      orchestrator.artifactRegistry.setAgencyKernel(agencyKernel);
+      logger.info('[agency] artifact registry receipts wired to resident spine');
+    }
     if (agencyKernel.config.enabled) {
       const runAgencyTick = () => {
         agencyKernel.tick({ reason: 'resident_engine_tick' }).catch((err) => {

@@ -22,9 +22,15 @@ class ArtifactRegistry {
     this.registryDir = options.registryDir || path.join(this.logsDir, 'artifacts');
     this.registryPath = options.registryPath || path.join(this.registryDir, 'artifact-registry.json');
     this.memory = options.memory || null;
+    this.agencyKernel = options.agencyKernel || null;
     this.logger = options.logger || null;
     this.records = new Map();
     this.initialized = false;
+  }
+
+  setAgencyKernel(agencyKernel) {
+    this.agencyKernel = agencyKernel || null;
+    return this;
   }
 
   async initialize() {
@@ -257,7 +263,73 @@ class ArtifactRegistry {
     this.records.set(record.id, record);
     await this.save();
     await this.maybeMirrorToMemory(record);
+    await this.maybeEmitAgencyArtifactReceipt(record, 'artifact_promoted', metadata);
     return record;
+  }
+
+  async maybeEmitAgencyArtifactReceipt(record, event, metadata = {}) {
+    if (!this.agencyKernel || typeof this.agencyKernel.intakeWorldStream !== 'function') return null;
+    const agency = metadata.agency || record.metadata?.agency || {};
+    const pursuitId = metadata.pursuitId || agency.pursuitId || record.metadata?.pursuitId;
+    if (!pursuitId) return null;
+
+    const verifierStatus = String(
+      metadata.verifierStatus
+      || agency.verifierStatus
+      || metadata.verifier?.status
+      || record.metadata?.verifierStatus
+      || ''
+    ).toLowerCase();
+    const verified = metadata.verified === true
+      || agency.verified === true
+      || ['pass', 'passed', 'success', 'satisfied'].includes(verifierStatus);
+    const consequenceStatus = record.status === 'committed' && verified ? 'closed' : 'advanced';
+    const changedFuture = consequenceStatus === 'closed'
+      ? (metadata.changedFuture
+        || agency.changedFuture
+        || `Artifact ${record.id} passed verifier and committed reusable output for resident pursuit ${pursuitId}.`)
+      : undefined;
+    const packet = {
+      source: 'artifacts.registry',
+      kind: 'artifact_verifier_receipt',
+      summary: `${event}: ${record.id} ${record.status}${verifierStatus ? ` verifier=${verifierStatus}` : ''}`,
+      pursuitId,
+      consequenceStatus,
+      changedFuture,
+      desiredChangedFuture: metadata.desiredChangedFuture || agency.desiredChangedFuture || record.metadata?.desiredChangedFuture || null,
+      nextMove: consequenceStatus === 'closed'
+        ? 'close resident pursuit unless newer evidence reopens it'
+        : 'attach artifact evidence and keep pursuit open until verifier passes',
+      seen: [
+        record.relativePath || record.absolutePath || record.id,
+        record.preview ? record.preview.slice(0, 500) : null,
+      ].filter(Boolean),
+      evidence: [
+        {
+          type: 'artifact',
+          ref: record.id,
+          status: record.status,
+          path: record.relativePath || record.absolutePath || null,
+          hash: record.hash || record.contentHash || null,
+        },
+        verifierStatus ? {
+          type: 'verifier_receipt',
+          ref: metadata.verifierRef || agency.verifierRef || record.id,
+          status: verifierStatus,
+        } : null,
+      ].filter(Boolean),
+      artifacts: [record.id],
+      tags: ['artifact', 'verifier', record.kind || record.type].filter(Boolean),
+    };
+    try {
+      return await this.agencyKernel.intakeWorldStream(packet);
+    } catch (error) {
+      this.logger?.warn?.('[artifact-registry] agency receipt emission failed', {
+        artifactId: record.id,
+        error: error.message,
+      });
+      return null;
+    }
   }
 
   find(filter = {}) {
