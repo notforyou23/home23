@@ -147,6 +147,12 @@ test('Agency inspector exposes cron retirement proposals as a filtered proof-cha
   assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-receipts-drawer">/);
   assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-inbox-drawer">/);
   assert.match(html, /<details class="h23-agency-evidence-drawer" id="agency-consequences-drawer">/);
+  assert.doesNotMatch(html, /Private scratch and bootcamp editor receipts/);
+  assert.doesNotMatch(html, /Source order, contradictions, and doctrine gates/);
+  assert.doesNotMatch(html, /What each organ can sense, change, and must not do alone/);
+  assert.doesNotMatch(html, /Why the resident kernel selected, discarded, or merged inputs/);
+  assert.doesNotMatch(html, /Recent world-stream triage and discard decisions/);
+  assert.doesNotMatch(html, /Observed changes and closure evidence/);
   assert.doesNotMatch(html, /<details class="h23-agency-evidence-drawer" id="agency-brief-drawer">/);
   assert.doesNotMatch(html, /<details class="h23-agency-evidence-drawer" id="agency-pursuits-drawer">/);
   assert.match(js, /\/home23\/api\/agency\/inspector\?filter=cron_retirement_proposals/);
