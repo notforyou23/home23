@@ -246,6 +246,23 @@ test('run logs separate mechanical completion from failed semantic outcome layer
   assert.equal(savedJobs[0].state.lastSemanticStatus, 'failed');
 });
 
+test('scheduler exposes recent run-log excerpts for operator agency review', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-run-excerpts-'));
+  const job = makeDueJob();
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  const scheduler = new CronScheduler({ timezone: 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' }, async (): Promise<JobResult> => {
+    return { status: 'ok', response: 'mechanical digest without consequence', durationMs: 1 };
+  }, dir);
+
+  await (scheduler as any).tick();
+
+  const excerpts = scheduler.getRecentRuns('job-1', 1);
+  assert.equal(excerpts.length, 1);
+  assert.equal(excerpts[0].jobId, 'job-1');
+  assert.equal(excerpts[0].outcome.semanticStatus, 'unknown');
+  assert.match(String(excerpts[0].response), /without consequence/);
+});
+
 test('only one scheduler instance owns a runtime cron lease at a time', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-cron-owner-'));
   const job = makeDueJob();

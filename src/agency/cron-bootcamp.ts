@@ -1,8 +1,9 @@
-import type { CronJob } from '../scheduler/cron.js';
+import type { CronJob, JobRunLogEntry } from '../scheduler/cron.js';
 
 interface SchedulerLike {
   getJobs(): CronJob[];
   saveJob(job: CronJob): void;
+  getRecentRuns?(jobId: string, limit?: number): JobRunLogEntry[];
 }
 
 interface AgencyKernelLike {
@@ -51,6 +52,31 @@ function retireReason(job: CronJob, pursuit: { status?: string; nextMove?: strin
     return `bound cron produced ${noConsequenceRuns} consecutive runs without satisfied consequence`;
   }
   return null;
+}
+
+function runLogEvidence(job: CronJob, scheduler: SchedulerLike): Array<Record<string, unknown>> {
+  const runs = typeof scheduler.getRecentRuns === 'function' ? scheduler.getRecentRuns(job.id, 3) : [];
+  return runs.slice(0, 3).map((run) => {
+    const outcome = run.outcome && typeof run.outcome === 'object' ? run.outcome as unknown as Record<string, unknown> : {};
+    const layers = outcome.layers && typeof outcome.layers === 'object' ? outcome.layers as Record<string, unknown> : {};
+    const layerSummary = Object.entries(layers)
+      .map(([name, value]) => {
+        const status = value && typeof value === 'object' ? (value as Record<string, unknown>).status : null;
+        return status ? `${name}:${status}` : null;
+      })
+      .filter(Boolean)
+      .join(', ');
+    return {
+      type: 'cron_run_log_excerpt',
+      ref: job.id,
+      runId: run.runId || null,
+      timestamp: run.timestamp || null,
+      status: run.status || null,
+      semanticStatus: outcome.semanticStatus || null,
+      responsePreview: String(run.response || run.error || '').slice(0, 280),
+      layers: layerSummary,
+    };
+  });
 }
 
 export function mergeExternalCronJobPreservingAgency(existing: CronJob, incoming: CronJob): CronJob {
@@ -218,6 +244,7 @@ export async function reviewBoundRecurringCronJobsForAgency({
           ref: pursuitId,
           status: pursuit?.status || 'unknown',
         },
+        ...runLogEvidence(job, scheduler),
       ];
 
       if (liveMode) {

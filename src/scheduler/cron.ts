@@ -104,6 +104,19 @@ export interface JobOutcomeReceipt {
   layers: Record<JobOutcomeLayer, JobOutcomeLayerReceipt>;
 }
 
+export interface JobRunLogEntry {
+  runId?: string;
+  jobId?: string;
+  timestamp?: string;
+  status?: JobResult['status'];
+  response?: string;
+  error?: string;
+  durationMs?: number;
+  decision?: JobDecision;
+  outcome?: JobOutcomeReceipt;
+  withheld?: boolean;
+}
+
 export interface JobResourceContract {
   schema: 'home23.scheduler.resource-contract.v1';
   sourceIssue: 98;
@@ -384,6 +397,22 @@ export class CronScheduler {
 
   getJob(id: string): CronJob | undefined {
     return this.jobs.get(id);
+  }
+
+  getRecentRuns(jobId: string, limit = 5): JobRunLogEntry[] {
+    const logPath = join(this.runsDirPath, `${jobId}.jsonl`);
+    if (!existsSync(logPath)) return [];
+    try {
+      return readFileSync(logPath, 'utf-8')
+        .split('\n')
+        .filter(Boolean)
+        .slice(-Math.max(0, limit))
+        .map((line) => JSON.parse(line) as JobRunLogEntry)
+        .reverse();
+    } catch (err) {
+      console.error(`[scheduler] Failed to read run log for ${jobId}:`, err);
+      return [];
+    }
   }
 
   async runJobNow(id: string): Promise<JobResult> {

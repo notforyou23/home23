@@ -149,6 +149,50 @@ test('reviewBoundRecurringCronJobsForAgency proposes retirement for repeated no-
   assert.match(String(consequences[0].summary), /3 consecutive runs without satisfied consequence/);
 });
 
+test('reviewBoundRecurringCronJobsForAgency includes recent run-log excerpts in retirement evidence', async () => {
+  const consequences: Array<Record<string, unknown>> = [];
+  const job = recurringJob('opaque-bound', { pursuitId: 'ap_opaque', charterRule: 'existing_recurring_cron_requires_pursuit' });
+  job.state.lastStatus = 'ok';
+  job.state.lastSemanticStatus = 'unknown';
+  job.state.consecutiveNoConsequence = 3;
+
+  await reviewBoundRecurringCronJobsForAgency({
+    scheduler: {
+      getJobs: () => [job],
+      saveJob: () => undefined,
+      getRecentRuns: () => [
+        {
+          timestamp: '2026-05-25T20:00:00.000Z',
+          status: 'ok',
+          response: 'Delivered digest but no AGENCY_INTAKE_PACKET.',
+          outcome: { semanticStatus: 'unknown', layers: { intent: { status: 'unknown', reason: 'no intent satisfaction contract was reported' } } },
+        },
+        {
+          timestamp: '2026-05-25T19:00:00.000Z',
+          status: 'ok',
+          response: 'Delivered another digest.',
+          outcome: { semanticStatus: 'unknown', layers: { artifact: { status: 'unknown', reason: 'no artifact contract or artifact output was reported' } } },
+        },
+      ],
+    } as any,
+    kernel: {
+      config: { mode: 'dry_run' },
+      pursuit: (id: string) => ({ id, status: 'active', nextMove: 'operator should inspect run quality' }),
+      recordConsequence: async (packet) => {
+        consequences.push(packet);
+      },
+    },
+    now: '2026-05-25T21:07:00.000Z',
+  });
+
+  const runEvidence = (consequences[0].evidence as Array<Record<string, unknown>>).filter(item => item.type === 'cron_run_log_excerpt');
+  assert.equal(runEvidence.length, 2);
+  assert.equal(runEvidence[0].ref, 'opaque-bound');
+  assert.equal(runEvidence[0].semanticStatus, 'unknown');
+  assert.match(String(runEvidence[0].responsePreview), /no AGENCY_INTAKE_PACKET/);
+  assert.match(String(runEvidence[0].layers), /intent:unknown/);
+});
+
 test('reviewBoundRecurringCronJobsForAgency disables only bound stale recurring jobs in live mode', async () => {
   const saved: CronJob[] = [];
   const consequences: Array<Record<string, unknown>> = [];
