@@ -483,6 +483,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /<span>\$\{escapeHtml\(p\.status \|\| 'active'\)\}<\/span>/);
   assert.match(js, /renderResidentPursuitAuthority\(p\)/);
   assert.match(js, /if \(_pulseEls\.state\)/);
+  assert.match(js, /const showRuntime = runtimeState && !\['awake', 'sleeping'\]\.includes\(runtimeState\)/);
+  assert.match(js, /_pulseEls\.runtime\.hidden = !showRuntime/);
   assert.doesNotMatch(js, /syncPulsePhaseText/);
   assert.doesNotMatch(js, /getElementById\('pulse-phase'\)/);
   assert.doesNotMatch(js, /_pulseEls\.phase/);

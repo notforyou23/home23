@@ -848,7 +848,8 @@ function _renderPulseNow() {
   if (!_pulseEls.dot) return;
 
   const runtimeState = enginePulse.state && enginePulse.state !== 'unknown' ? enginePulse.state : '';
-  if (_pulseEls.runtime) _pulseEls.runtime.hidden = !runtimeState;
+  const showRuntime = runtimeState && !['awake', 'sleeping'].includes(runtimeState);
+  if (_pulseEls.runtime) _pulseEls.runtime.hidden = !showRuntime;
   _pulseEls.dot.className = 'h23-pulse-dot ' + runtimeState;
   if (_pulseEls.state) _pulseEls.state.textContent = runtimeState;
   if (_pulseEls.energy) _pulseEls.energy.textContent = `⚡ ${Math.round((enginePulse.energy || 0) * 100)}%`;
