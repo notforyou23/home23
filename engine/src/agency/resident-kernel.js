@@ -232,6 +232,37 @@ export class AgencyKernel {
       const state = this.ensureState();
       return { candidate, decision, pursuit: closure.pursuit, receipt, state };
     }
+    const attachment = this.applyReceiptAttachment(candidate);
+    if (attachment) {
+      const decision = { route: 'attach', reason: 'receipt_attached_to_existing_pursuit' };
+      this.store.appendInbox({ ...candidate, decision });
+      const receipt = this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'pursuit_evidence_assimilated',
+        candidateId: candidate.candidateId,
+        pursuitId: attachment.pursuit.id,
+        source: candidate.source,
+        route: decision.route,
+        outcome: candidate.consequenceStatus || candidate.kind || 'attached',
+        seen: candidate.seen,
+        connectsTo: candidate.connectsTo,
+        nextMove: candidate.nextMove || null,
+        reason: decision.reason,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at: nowIso(),
+        pursuitId: attachment.pursuit.id,
+        status: candidate.consequenceStatus || 'observed',
+        changeType: candidate.kind || 'world_stream_attached',
+        summary: candidate.summary,
+        evidence: candidate.evidence,
+      });
+      const state = this.ensureState();
+      return { candidate, decision, pursuit: attachment.pursuit, receipt, state };
+    }
     const decision = candidate.explicitNoChange
       ? { route: 'discard', reason: 'explicit_no_change' }
       : this.selector.select(candidate, { existing: this.store.findSimilar(candidate), budget: this.attentionBudget() });
@@ -295,6 +326,35 @@ export class AgencyKernel {
       type: 'receipt_closure',
       reason: 'receipt_proved_stop_condition',
       detail: { candidateId: candidate.candidateId, source: candidate.source },
+    });
+    return { pursuit };
+  }
+
+  applyReceiptAttachment(candidate = {}) {
+    const pursuitId = candidate.pursuitId;
+    if (!pursuitId) return null;
+    const existing = this.store.getPursuit(pursuitId);
+    if (!existing || existing.status === 'closed' || existing.status === 'discarded') return null;
+    const evidence = [...(existing.evidence || []), ...(Array.isArray(candidate.evidence) ? candidate.evidence : [])];
+    const uniqueEvidence = [];
+    const seen = new Set();
+    for (const item of evidence) {
+      const key = JSON.stringify(item);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniqueEvidence.push(item);
+    }
+    const pursuit = this.store.updatePursuit(pursuitId, {
+      evidence: uniqueEvidence,
+      linkedEvidence: uniqueEvidence,
+      latestEvidence: Array.isArray(candidate.evidence) ? candidate.evidence.slice(-3) : existing.latestEvidence,
+      lastSeenAt: nowIso(),
+      lastTouched: nowIso(),
+      seenCount: Number(existing.seenCount || 1) + 1,
+    }, {
+      type: 'world_stream_attached',
+      reason: candidate.summary || 'receipt_attached_to_existing_pursuit',
+      detail: { candidateId: candidate.candidateId, source: candidate.source, consequenceStatus: candidate.consequenceStatus },
     });
     return { pursuit };
   }

@@ -123,3 +123,27 @@ test('buildCronResultPacket extracts machine-readable agency intake packets from
   assert.equal(packet.tags.includes('x-timeline'), true);
   assert.match(packet.seen.join('\n'), /Bind report outputs/);
 });
+
+test('buildCronResultPacket routes bound cron outcomes back to their resident pursuit', () => {
+  const packet = buildCronResultPacket({
+    id: 'legacy-cron',
+    name: 'Legacy Cron',
+    schedule: { kind: 'every', everyMs: 60000 },
+    payload: { kind: 'exec', command: 'true' },
+    agency: {
+      pursuitId: 'ap_cron',
+      charterRule: 'existing_recurring_cron_requires_pursuit',
+    },
+    state: { nextRunAtMs: 0, consecutiveErrors: 0 },
+  }, {
+    status: 'ok',
+    response: 'updated artifact',
+    durationMs: 12,
+    semanticStatus: 'satisfied',
+  });
+
+  assert.equal(packet.pursuitId, 'ap_cron');
+  assert.equal(packet.consequenceStatus, 'advanced');
+  assert.equal(packet.explicitNoChange, false);
+  assert.match(packet.desiredChangedFuture || '', /resident pursuit ap_cron/);
+});

@@ -441,6 +441,46 @@ test('AgencyKernel closes pursuits when worker receipts prove the stop condition
   assert.equal(consequences.some(row => row.pursuitId === intake.pursuit.id && row.changeType === 'pursuit_closed_by_receipt'), true);
 });
 
+test('AgencyKernel attaches non-closing world-stream receipts to named pursuits', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const intake = await kernel.intake({
+    source: 'scheduler.cron.bootcamp',
+    kind: 'cron_bootcamp_audit',
+    summary: 'Recurring cron needs resident oversight.',
+    evidence: [{ type: 'cron_job', ref: 'job-1' }],
+    authorityLevel: 'L2',
+    desiredChangedFuture: 'Recurring cron is accountable to resident pursuit.',
+  });
+
+  const result = await kernel.intakeWorldStream({
+    source: 'cron.job-1',
+    kind: 'cron_report',
+    pursuitId: intake.pursuit.id,
+    consequenceStatus: 'advanced',
+    summary: 'Cron job-1 finished with status ok.',
+    evidence: [{ type: 'cron_result', ref: 'job-1' }],
+    tags: ['cron'],
+  });
+
+  const pursuit = kernel.pursuit(intake.pursuit.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+  const pursuitRows = readJsonl(join(dir, 'agency', 'pursuits.jsonl')).filter(row => row.pursuit?.id === intake.pursuit.id);
+
+  assert.equal(result.decision.route, 'attach');
+  assert.equal(result.pursuit.id, intake.pursuit.id);
+  assert.equal(pursuit.status, 'active');
+  assert.deepEqual(pursuit.latestEvidence, [{ type: 'cron_result', ref: 'job-1' }]);
+  assert.equal(receipts.some(row => row.event === 'pursuit_evidence_assimilated' && row.pursuitId === intake.pursuit.id), true);
+  assert.equal(consequences.some(row => row.changeType === 'cron_report' && row.status === 'advanced'), true);
+  assert.equal(pursuitRows.at(-1).type, 'world_stream_attached');
+});
+
 test('AgencyKernel bootcamp kill review demotes stale watch loops even while advancing an active pursuit', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

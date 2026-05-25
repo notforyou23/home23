@@ -11,6 +11,8 @@ export interface AgencyWorldStreamPacket {
   seen: string[];
   discarded: Array<{ ref: string; reason: string }>;
   explicitNoChange?: boolean;
+  pursuitId?: string;
+  consequenceStatus?: string;
   desiredChangedFuture?: string;
   nextMove?: string;
   evidence: Array<{ type: string; ref: string }>;
@@ -148,6 +150,7 @@ export function buildOutgoingResponsePacket(message: WorldStreamMessage, respons
 export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWorldStreamPacket {
   const payload = job.payload as Record<string, unknown>;
   const response = String(result.response || result.error || '').trim();
+  const pursuitId = typeof job.agency?.pursuitId === 'string' ? job.agency.pursuitId : undefined;
   const intakePacket = extractReportIntakePacket(response);
   const packetSeen = intakePacket
     ? [
@@ -171,13 +174,18 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
   })) || [];
   const explicitNoChange = intakePacket
     ? Boolean(intakePacket.explicitNoChange || !packetHasSignal)
-    : (!response || result.status !== 'ok');
+    : (!pursuitId && (!response || result.status !== 'ok'));
   const desiredChangedFuture = typeof payload.agencyChangedFuture === 'string'
     ? payload.agencyChangedFuture
-    : intakePacket?.desiredChangedFuture;
+    : intakePacket?.desiredChangedFuture
+      || (pursuitId ? `Cron outcome updates resident pursuit ${pursuitId} with latest scheduler evidence.` : undefined);
   const nextMove = typeof payload.agencyNextMove === 'string'
     ? payload.agencyNextMove
-    : intakePacket?.nextMove;
+    : intakePacket?.nextMove
+      || (pursuitId ? 'attach scheduler outcome to the bound resident pursuit and continue/repair based on semantic status' : undefined);
+  const consequenceStatus = pursuitId
+    ? (result.status === 'ok' && result.semanticStatus !== 'failed' ? 'advanced' : 'failed')
+    : undefined;
   return {
     source: `cron.${job.id}`,
     kind: 'cron_report',
@@ -185,6 +193,8 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
     seen: packetSeen.length ? packetSeen : (response ? [response.slice(0, 2000)] : []),
     discarded,
     explicitNoChange,
+    pursuitId,
+    consequenceStatus,
     desiredChangedFuture,
     nextMove,
     evidence: [{ type: 'cron_result', ref: job.id }],
