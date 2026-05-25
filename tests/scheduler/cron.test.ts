@@ -55,6 +55,8 @@ test('due cron jobs write a preflight decision receipt before the handler runs',
   assert.equal(runLog[0].outcome.semanticStatus, 'unknown');
   assert.equal(runLog[0].outcome.layers.process.status, 'success');
   assert.equal(runLog[0].outcome.layers.intent.status, 'unknown');
+  const savedJobs = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'));
+  assert.equal(savedJobs[0].state.consecutiveNoConsequence, 1);
 });
 
 test('cron preflight decisions carry a resource stewardship contract', async () => {

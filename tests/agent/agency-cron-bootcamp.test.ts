@@ -117,6 +117,38 @@ test('reviewBoundRecurringCronJobsForAgency proposes retirement in dry-run when 
   assert.equal(consequences[0].pursuitId, 'ap_stale');
 });
 
+test('reviewBoundRecurringCronJobsForAgency proposes retirement for repeated no-consequence runs', async () => {
+  const saved: CronJob[] = [];
+  const consequences: Array<Record<string, unknown>> = [];
+  const job = recurringJob('theater-bound', { pursuitId: 'ap_theater', charterRule: 'existing_recurring_cron_requires_pursuit' });
+  job.state.lastStatus = 'ok';
+  job.state.lastSemanticStatus = 'unknown';
+  job.state.consecutiveNoConsequence = 3;
+
+  const result = await reviewBoundRecurringCronJobsForAgency({
+    scheduler: {
+      getJobs: () => [job],
+      saveJob: (next) => saved.push(next),
+    },
+    kernel: {
+      config: { mode: 'dry_run' },
+      pursuit: (id: string) => ({ id, status: 'active', nextMove: 'keep producing the report' }),
+      recordConsequence: async (packet) => {
+        consequences.push(packet);
+      },
+    },
+    now: '2026-05-25T21:03:00.000Z',
+  });
+
+  assert.equal(result.checked, 1);
+  assert.equal(result.proposed, 1);
+  assert.equal(result.kept, 0);
+  assert.equal(saved.length, 0);
+  assert.equal(consequences[0].changeType, 'cron_retirement_proposed');
+  assert.equal(consequences[0].status, 'proposed');
+  assert.match(String(consequences[0].summary), /3 consecutive runs without satisfied consequence/);
+});
+
 test('reviewBoundRecurringCronJobsForAgency disables only bound stale recurring jobs in live mode', async () => {
   const saved: CronJob[] = [];
   const consequences: Array<Record<string, unknown>> = [];

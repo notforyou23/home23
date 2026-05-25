@@ -46,6 +46,10 @@ function retireReason(job: CronJob, pursuit: { status?: string; nextMove?: strin
   if (status === 'closed') {
     return `bound pursuit ${job.agency?.pursuitId} reached its stop condition`;
   }
+  const noConsequenceRuns = Number(job.state?.consecutiveNoConsequence || 0);
+  if (noConsequenceRuns >= 3) {
+    return `bound cron produced ${noConsequenceRuns} consecutive runs without satisfied consequence`;
+  }
   return null;
 }
 
@@ -206,6 +210,8 @@ export async function reviewBoundRecurringCronJobsForAgency({
           name: job.name,
           scheduleKind: job.schedule.kind,
           payloadKind: job.payload.kind,
+          lastSemanticStatus: job.state?.lastSemanticStatus || null,
+          consecutiveNoConsequence: job.state?.consecutiveNoConsequence || 0,
         },
         {
           type: 'agency_pursuit',

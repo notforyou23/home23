@@ -39,6 +39,7 @@ export interface JobState {
   lastRunAtMs?: number;
   lastStatus?: 'ok' | 'error';
   lastSemanticStatus?: JobSemanticStatus;
+  consecutiveNoConsequence?: number;
   lastDurationMs?: number;
   consecutiveErrors: number;
   lastDecisionAtMs?: number;
@@ -502,6 +503,7 @@ export class CronScheduler {
       statePersisted: true,
     });
     job.state.lastSemanticStatus = outcome.semanticStatus;
+    this.updateNoConsequenceState(job, outcome.semanticStatus);
     const statePersisted = this.saveJobs();
     if (!statePersisted) {
       outcome = this.buildOutcomeReceipt(job, result, {
@@ -512,6 +514,7 @@ export class CronScheduler {
         statePersisted: false,
       });
       job.state.lastSemanticStatus = outcome.semanticStatus;
+      this.updateNoConsequenceState(job, outcome.semanticStatus);
     }
 
     // Append run log
@@ -730,6 +733,7 @@ export class CronScheduler {
       statePersisted: true,
     });
     job.state.lastSemanticStatus = outcome.semanticStatus;
+    this.updateNoConsequenceState(job, outcome.semanticStatus);
     const statePersisted = this.saveJobs();
     if (!statePersisted) {
       outcome = this.buildOutcomeReceipt(job, result, {
@@ -740,6 +744,7 @@ export class CronScheduler {
         statePersisted: false,
       });
       job.state.lastSemanticStatus = outcome.semanticStatus;
+      this.updateNoConsequenceState(job, outcome.semanticStatus);
     }
     this.appendRunLog(job.id, {
       runId,
@@ -848,6 +853,14 @@ export class CronScheduler {
     if (result.semanticStatus === 'satisfied') return 'satisfied';
     if (layers.intent.status === 'success') return 'satisfied';
     return 'unknown';
+  }
+
+  private updateNoConsequenceState(job: CronJob, semanticStatus: JobSemanticStatus): void {
+    if (semanticStatus === 'unknown') {
+      job.state.consecutiveNoConsequence = Number(job.state.consecutiveNoConsequence || 0) + 1;
+      return;
+    }
+    job.state.consecutiveNoConsequence = 0;
   }
 
   // ─── Next Run Computation ─────────────────────────────
