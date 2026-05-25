@@ -1287,6 +1287,48 @@ test('AgencyKernel live low-risk worker delegation deltas create resident handof
   assert.equal(consequences.some(row => row.status === 'open' && row.changeType === 'worker_delegated' && row.pursuitId === intake.pursuit.id), true);
 });
 
+test('AgencyKernel live low-risk cron adjustment deltas create resident scheduler handoff tasks', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'live' },
+  });
+  const intake = await kernel.intake({
+    source: 'scheduler.cron.bootcamp',
+    kind: 'cron_bootcamp_audit',
+    summary: 'Daily field report repeats without consequence and needs a reduced cadence.',
+    authorityLevel: 'L2',
+    evidence: [{ type: 'cron_job', ref: 'field-report-daily' }],
+    desiredChangedFuture: 'The recurring report cadence is adjusted with a resident receipt.',
+  });
+
+  const result = kernel.proposeDelta({
+    changeType: 'cron_adjusted',
+    summary: 'Reduce Daily Field Report to weekdays while bootcamp evaluates consequence.',
+    pursuitId: intake.pursuit.id,
+    authorityLevel: 'L2',
+    reversible: true,
+    jobId: 'field-report-daily',
+    cronExpr: '0 8 * * 1-5',
+    evidence: [{ type: 'cron_review', ref: 'cron:field-report-daily' }],
+  });
+
+  const tasks = kernel.tasks({ status: 'open', limit: 10 }).tasks;
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(result.decision.route, 'approved_live');
+  assert.equal(result.applied?.kind, 'cron_adjusted');
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].actionKind, 'cron_adjustment');
+  assert.equal(tasks[0].handoff.to, 'cron_update');
+  assert.equal(tasks[0].handoff.jobId, 'field-report-daily');
+  assert.deepEqual(tasks[0].handoff.changes, { cron_expr: '0 8 * * 1-5' });
+  assert.equal(receipts.some(row => row.event === 'cron_adjusted' && row.jobId === 'field-report-daily'), true);
+  assert.equal(consequences.some(row => row.status === 'open' && row.changeType === 'cron_adjusted' && row.pursuitId === intake.pursuit.id), true);
+});
+
 test('AgencyKernel creates resident tasks and routed handoffs as bounded action records', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

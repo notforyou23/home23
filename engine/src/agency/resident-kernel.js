@@ -1585,6 +1585,79 @@ export class AgencyKernel {
         pursuitId: task.pursuitId,
       };
     }
+    if (delta.changeType === 'cron_adjusted') {
+      const jobId = String(input.jobId || input.job_id || input.target || '').trim();
+      if (!jobId) {
+        return {
+          kind: 'no_op',
+          reason: 'cron_adjustment_delta_requires_job_id',
+        };
+      }
+      const changes = {};
+      if (typeof input.cronExpr === 'string' && input.cronExpr.trim()) changes.cron_expr = input.cronExpr.trim();
+      if (typeof input.cron_expr === 'string' && input.cron_expr.trim()) changes.cron_expr = input.cron_expr.trim();
+      if (typeof input.everyMs === 'number' && Number.isFinite(input.everyMs)) changes.every_ms = input.everyMs;
+      if (typeof input.every_ms === 'number' && Number.isFinite(input.every_ms)) changes.every_ms = input.every_ms;
+      if (typeof input.announceMode === 'string' && input.announceMode.trim()) changes.announce_mode = input.announceMode.trim();
+      if (typeof input.deliveryProfile === 'string') changes.delivery_profile = input.deliveryProfile;
+      if (typeof input.deliveryTo === 'string') changes.delivery_to = input.deliveryTo;
+      if (typeof input.deliveryChannel === 'string') changes.delivery_channel = input.deliveryChannel;
+      if (typeof input.messagePath === 'string') changes.message_path = input.messagePath;
+      if (typeof input.timeoutSeconds === 'number' && Number.isFinite(input.timeoutSeconds)) changes.timeout_seconds = input.timeoutSeconds;
+      if (typeof input.model === 'string' && input.model.trim()) changes.model = input.model.trim();
+      if (!Object.keys(changes).length) {
+        return {
+          kind: 'no_op',
+          reason: 'cron_adjustment_delta_requires_changes',
+          jobId,
+        };
+      }
+      const evidence = Array.isArray(input.evidence) ? input.evidence : [];
+      const task = this.recordTask({
+        summary: input.summary || `Apply bounded cron adjustment to ${jobId}.`,
+        pursuitId: input.pursuitId || input.targetPursuitId || null,
+        actionKind: 'cron_adjustment',
+        authorityLevel: authority.level || input.authorityLevel || 'L2',
+        reversible: input.reversible !== false,
+        handoff: {
+          to: 'cron_update',
+          jobId,
+          changes,
+        },
+        evidence,
+        stopCondition: input.stopCondition || 'cron_update persists the scheduler change and the next run produces an agency receipt',
+        reason: 'approved_live_delta_cron_adjusted',
+      });
+      const at = nowIso();
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at,
+        event: 'cron_adjusted',
+        taskId: task.id,
+        pursuitId: task.pursuitId,
+        jobId,
+        route: 'task',
+        reason: input.summary || `Apply bounded cron adjustment to ${jobId}.`,
+        changes,
+        evidence,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at,
+        pursuitId: task.pursuitId,
+        status: 'open',
+        changeType: 'cron_adjusted',
+        summary: input.summary || `Apply bounded cron adjustment to ${jobId}.`,
+        evidence,
+      });
+      return {
+        kind: 'cron_adjusted',
+        taskId: task.id,
+        pursuitId: task.pursuitId,
+        jobId,
+      };
+    }
     if (delta.changeType === 'pursuit_note_added') {
       const pursuitId = input.pursuitId || input.targetPursuitId || null;
       if (!pursuitId) {
