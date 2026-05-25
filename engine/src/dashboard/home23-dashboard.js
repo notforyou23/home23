@@ -53,7 +53,7 @@ const DASHBOARD_SCOPE_FALLBACK = {
   home: {
     kind: 'dashboard',
     chip: 'This Agent',
-    summaryTemplate: 'Home is the live surface for {{dashboardAgent}}. Tiles, pulse, chat, and feed data belong to this dashboard agent.',
+    summaryTemplate: '{{dashboardAgent}} is running from resident agency state. Routine organs stay hidden until they need action.',
   },
   intelligence: {
     kind: 'dashboard',
@@ -205,17 +205,13 @@ async function init() {
   renderAgentTabs();
   refreshDashboardScopeUI();
   setupTabHandlers();
-  setupHomeLayoutHandlers();
-  setupTileActionHandlers();
-  setupHomeTileBroadcast();
+  setupResidentHomeSurface();
   setupWorkersSurface();
   setupAgencySurface();
-  await loadHomeLayoutConfig({ force: true });
   connectEnginePulse();
-  loadHomeTiles().catch(() => { /* initial home load is best-effort */ });
+  loadResidentHomeSurface().catch(() => { /* agency bridge may still be booting */ });
   loadWorkersSurface().catch(() => { /* workers connector may be offline during early boot */ });
   loadAgencySurface().catch(() => { /* agency bridge may still be booting */ });
-  startHomeThoughtRotation();
   startAutoRefresh();
   updateCosmoIndicator();
   setInterval(updateCosmoIndicator, REFRESH_MS);
@@ -248,12 +244,6 @@ async function init() {
   updateBrainStorageBadge();
   setInterval(updateBrainStorageBadge, 30000);
 
-  // Pulse tile (Jerry's voice). Tile text updates when a new remark lands;
-  // rotating stat under it cycles every 8s.
-  updatePulseTile();
-  setInterval(updatePulseTile, 20000);
-  startPulseRotation();
-
   // Workers are connector-backed and cheap to refresh. Keep the user-facing
   // status current without pulling on the full engine loop.
   setInterval(() => {
@@ -262,6 +252,10 @@ async function init() {
 
   setInterval(() => {
     if (currentTab === 'agency') loadAgencySurface().catch(() => {});
+  }, 15000);
+
+  setInterval(() => {
+    if (currentTab === 'home') loadResidentHomeSurface().catch(() => {});
   }, 15000);
 }
 
@@ -1630,6 +1624,8 @@ function setupTabHandlers() {
         loadAgencySurface().catch(() => {});
       }
 
+      if (currentTab === 'home') loadResidentHomeSurface().catch(() => {});
+
       // Intelligence tab: load content and start refresh
       if (currentTab === 'intelligence') {
         loadIntelligence();
@@ -1644,6 +1640,231 @@ function setupTabHandlers() {
       }
     });
   });
+}
+
+// ── Resident Home ──
+
+function setupResidentHomeSurface() {
+  document.getElementById('resident-refresh')?.addEventListener('click', () => {
+    loadResidentHomeSurface().catch((err) => renderResidentHomeError(err));
+  });
+  document.getElementById('resident-run-tick')?.addEventListener('click', () => {
+    runResidentTickFromDashboard().catch((err) => renderResidentHomeError(err));
+  });
+  document.querySelectorAll('[data-tab-jump]').forEach((link) => {
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      const tabKey = event.currentTarget?.dataset?.tabJump;
+      const tab = tabKey ? document.querySelector(`.h23-tab[data-tab="${tabKey}"]`) : null;
+      if (tab) tab.click();
+    });
+  });
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-resident-pursuit-transition]');
+    if (!button) return;
+    const pursuitId = button.dataset.pursuitId;
+    const status = button.dataset.residentPursuitTransition;
+    const summary = button.dataset.transitionSummary || 'Updated from resident dashboard.';
+    if (!pursuitId || !status) return;
+    button.disabled = true;
+    transitionResidentPursuitFromDashboard(pursuitId, status, summary)
+      .catch((err) => renderResidentHomeError(err))
+      .finally(() => {
+        button.disabled = false;
+      });
+  });
+}
+
+async function fetchAgencySnapshot() {
+  const [stateRes, briefRes, pursuitsRes, eventsRes] = await Promise.all([
+    fetch(`${dashboardBaseUrl()}/home23/api/agency/state`),
+    fetch(`${dashboardBaseUrl()}/home23/api/agency/brief`),
+    fetch(`${dashboardBaseUrl()}/home23/api/agency/pursuits?limit=24`),
+    fetch(`${dashboardBaseUrl()}/home23/api/agency/events?limit=40`),
+  ]);
+  if (!stateRes.ok || !briefRes.ok || !pursuitsRes.ok || !eventsRes.ok) {
+    throw new Error('resident agency state unavailable');
+  }
+  const statePayload = await stateRes.json();
+  const briefPayload = await briefRes.json();
+  const pursuitsPayload = await pursuitsRes.json();
+  const eventsPayload = await eventsRes.json();
+  return {
+    state: statePayload.state || statePayload,
+    brief: briefPayload.brief || briefPayload,
+    pursuits: pursuitsPayload.pursuits || [],
+    inbox: eventsPayload.inbox || [],
+    receipts: eventsPayload.receipts || eventsPayload.actions || [],
+    consequences: eventsPayload.consequences || [],
+  };
+}
+
+async function loadResidentHomeSurface() {
+  const snapshot = await fetchAgencySnapshot();
+  renderResidentHomeSurface(snapshot);
+}
+
+async function runResidentTickFromDashboard() {
+  const button = document.getElementById('resident-run-tick');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Running';
+  }
+  try {
+    const res = await fetch(`${dashboardBaseUrl()}/home23/api/agency/tick`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'dashboard_operator_tick' }),
+    });
+    if (!res.ok) throw new Error(`tick failed (${res.status})`);
+    await loadResidentHomeSurface();
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = 'Run Tick';
+    }
+  }
+}
+
+async function transitionResidentPursuitFromDashboard(pursuitId, status, summary) {
+  const res = await fetch(`${dashboardBaseUrl()}/home23/api/agency/pursuits/${encodeURIComponent(pursuitId)}/transition`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      status,
+      summary,
+      reason: summary,
+      evidenceRef: 'dashboard:resident-home',
+    }),
+  });
+  if (!res.ok) throw new Error(`pursuit transition failed (${res.status})`);
+  await loadResidentHomeSurface();
+  if (currentTab === 'agency') loadAgencySurface().catch(() => {});
+}
+
+function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, consequences }) {
+  const active = Number(state.attention?.activePursuits || 0);
+  const activeMax = Number(state.attention?.maxActivePursuits || state.charter?.attention?.maxActivePursuits || 0);
+  const watch = Number(state.attention?.watchItems || 0);
+  const watchMax = Number(state.attention?.maxWatchItems || state.charter?.attention?.maxWatchItems || 0);
+  const posture = [state.mode || 'unknown', state.bootcamp?.enabled ? 'bootcamp' : null].filter(Boolean).join(' / ');
+  setText('resident-posture', `${currentAgentLabel('Jerry')} is ${posture}`);
+  setText('resident-summary', residentBriefLine(brief, state));
+  setHtml('resident-health-strip', `
+    <span><strong>${active}/${activeMax || '—'}</strong> active</span>
+    <span><strong>${watch}/${watchMax || '—'}</strong> watch</span>
+    <span><strong>${Number(state.attention?.deferredItems || 0)}</strong> deferred</span>
+    <span><strong>${Number(state.attention?.openTasks || 0)}</strong> open tasks</span>
+  `);
+
+  setHtml('resident-next-action', renderResidentNextAction(state));
+  setHtml('resident-operator-needed', renderResidentOperatorNeeded(state, brief));
+  const pursuitSource = Array.isArray(state.activePursuits) ? state.activePursuits : pursuits;
+  const activePursuits = (pursuitSource || []).filter((p) => p && p.status !== 'discarded' && p.status !== 'closed').slice(0, 5);
+  setHtml('resident-active-pursuits', activePursuits.length
+    ? activePursuits.map(renderResidentPursuitCard).join('')
+    : '<div class="h23-resident-empty">No active resident pursuits.</div>');
+  const consequenceRows = (state.recentConsequences || consequences || []).slice(0, 6);
+  setHtml('resident-consequences', consequenceRows.length
+    ? consequenceRows.map(renderResidentConsequenceRow).join('')
+    : '<div class="h23-resident-empty">No recent consequences.</div>');
+  setHtml('resident-receipts', (receipts || []).slice(0, 8).map(renderResidentReceiptRow).join('') || '<div class="h23-resident-empty">No recent receipts.</div>');
+  setHtml('resident-inbox', (inbox || []).slice(0, 8).map(renderResidentInboxRow).join('') || '<div class="h23-resident-empty">No recent inbox decisions.</div>');
+}
+
+function residentBriefLine(brief, state) {
+  const text = String(brief?.text || '').trim();
+  if (text) return text.split('\n').find((line) => line.trim())?.replace(/^[-#\s]+/, '').slice(0, 220) || 'Resident state is current.';
+  const next = state.nextAction || {};
+  return next.pursuitId ? `Next: ${next.kind || 'advance'} ${next.pursuitId}` : 'Resident state is current.';
+}
+
+function renderResidentNextAction(state) {
+  const next = state.nextAction || {};
+  const pursuit = state.currentPursuit || {};
+  if (!next.kind && !pursuit.id) {
+    return `
+      <div class="h23-resident-section-title">Next Action</div>
+      <div class="h23-resident-empty">No selected action yet.</div>
+    `;
+  }
+  return `
+    <div class="h23-resident-section-title">Next Action</div>
+    <div class="h23-resident-next-kind">${escapeHtml(next.kind || 'advance_one_step')}</div>
+    <div class="h23-resident-next-title">${escapeHtml(pursuit.title || pursuit.summary || next.pursuitId || 'resident action')}</div>
+    <div class="h23-resident-next-meta">${escapeHtml([next.authorityLevel || pursuit.authorityLevel, next.reason, next.dryRun ? 'dry-run' : null].filter(Boolean).join(' · '))}</div>
+    <div class="h23-resident-next-move">${escapeHtml(pursuit.nextMove || next.nextMove || pursuit.stopCondition || '')}</div>
+  `;
+}
+
+function renderResidentOperatorNeeded(state, brief) {
+  const obligations = Array.isArray(state.obligations) ? state.obligations : [];
+  const questions = brief?.questions?.whatNeedsJtr || [];
+  const items = obligations.length ? obligations : questions;
+  const title = '<div class="h23-resident-section-title">Needed From You</div>';
+  if (!items.length) return `${title}<div class="h23-resident-clear">Nothing right now.</div>`;
+  return `${title}${items.slice(0, 4).map((item) => `
+    <div class="h23-resident-alert">
+      <strong>${escapeHtml(item.kind || item.type || item.title || 'operator input')}</strong>
+      <span>${escapeHtml(item.summary || item.reason || item.text || item.pursuitId || '')}</span>
+    </div>
+  `).join('')}`;
+}
+
+function renderResidentPursuitCard(p) {
+  const updated = p.updatedAt || p.lastTouched || p.lastSeenAt;
+  const statusClass = p.status === 'active' ? 'active' : (p.status || 'watch');
+  return `
+    <article class="h23-resident-pursuit ${escapeAttr(statusClass)}">
+      <div class="h23-resident-pursuit-head">
+        <span>${escapeHtml(p.status || 'active')}</span>
+        <code>${escapeHtml(p.authorityLevel || p.risk || 'L?')}</code>
+      </div>
+      <h3>${escapeHtml(p.title || p.summary || p.id)}</h3>
+      <p>${escapeHtml(p.whyItMatters || p.desiredChangedFuture || p.nextMove || '')}</p>
+      <div class="h23-resident-pursuit-meta">${escapeHtml([p.id, p.source, updated ? timeSinceSafe(updated) : null].filter(Boolean).join(' · '))}</div>
+      <div class="h23-resident-pursuit-actions">
+        <button type="button" class="h23-resident-action-btn danger" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="discarded" data-transition-summary="Discarded from resident dashboard: no longer worth active operator attention.">Discard</button>
+        <button type="button" class="h23-resident-action-btn secondary" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="closed" data-transition-summary="Closed from resident dashboard with operator acknowledgement.">Close</button>
+      </div>
+    </article>
+  `;
+}
+
+function renderResidentConsequenceRow(c) {
+  return `
+    <div class="h23-resident-event consequence">
+      <strong>${escapeHtml(c.changeType || c.status || 'consequence')}</strong>
+      <span>${escapeHtml(c.summary || c.reason || '')}</span>
+      <small>${escapeHtml([c.pursuitId, c.at ? timeSinceSafe(c.at) : null].filter(Boolean).join(' · '))}</small>
+    </div>
+  `;
+}
+
+function renderResidentReceiptRow(r) {
+  return `
+    <div class="h23-resident-event">
+      <strong>${escapeHtml(r.event || r.route || 'receipt')}</strong>
+      <span>${escapeHtml(r.reason || r.status || '')}</span>
+      <small>${escapeHtml([r.pursuitId, r.at ? timeSinceSafe(r.at) : null].filter(Boolean).join(' · '))}</small>
+    </div>
+  `;
+}
+
+function renderResidentInboxRow(c) {
+  const decision = c.decision || {};
+  return `
+    <div class="h23-resident-event">
+      <strong>${escapeHtml(decision.route || c.route || 'unrouted')}</strong>
+      <span>${escapeHtml(c.summary || c.title || c.candidateId || '')}</span>
+      <small>${escapeHtml([c.source, decision.reason].filter(Boolean).join(' · '))}</small>
+    </div>
+  `;
+}
+
+function renderResidentHomeError(err) {
+  setText('resident-posture', 'Resident state unavailable');
+  setText('resident-summary', err?.message || String(err));
 }
 
 // ── Agency Inspector ──

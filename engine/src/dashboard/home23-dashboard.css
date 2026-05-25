@@ -1,24 +1,23 @@
 /* Home23 Dashboard — ReginaCosmo glass-morphism design */
 
 :root {
-  --glass-primary: rgba(255, 255, 255, 0.10);
-  --glass-secondary: rgba(255, 255, 255, 0.06);
-  --glass-border: rgba(255, 255, 255, 0.18);
+  --glass-primary: rgba(255, 255, 255, 0.075);
+  --glass-secondary: rgba(255, 255, 255, 0.045);
+  --glass-border: rgba(255, 255, 255, 0.12);
   --bg-gradient: linear-gradient(135deg,
-    hsl(220, 100%, 6%) 0%,
-    hsl(210, 90%, 10%) 25%,
-    hsl(200, 80%, 14%) 50%,
-    hsl(190, 85%, 12%) 75%,
-    hsl(180, 90%, 8%) 100%);
+    #11110f 0%,
+    #171a16 32%,
+    #10201c 64%,
+    #1a1915 100%);
   --text-primary: rgba(255, 255, 255, 0.98);
   --text-secondary: rgba(255, 255, 255, 0.82);
   --text-muted: rgba(255, 255, 255, 0.45);
   --text-dim: rgba(255, 255, 255, 0.25);
-  --accent-blue: #0A84FF;
-  --accent-green: #30D158;
-  --accent-orange: #FF9F0A;
-  --accent-red: #FF453A;
-  --accent-purple: rgba(120, 100, 255, 0.25);
+  --accent-blue: #5AC8FA;
+  --accent-green: #34D399;
+  --accent-orange: #F59E0B;
+  --accent-red: #F87171;
+  --accent-purple: rgba(167, 139, 250, 0.18);
   --shadow-glass: 0 12px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.12);
   --radius-sm: 8px;
   --radius-md: 12px;
@@ -29,7 +28,7 @@
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   background: var(--bg-gradient);
   background-attachment: fixed;
   color: var(--text-primary);
@@ -44,8 +43,9 @@ body::before {
   position: fixed;
   top: -50%; left: -50%;
   width: 200%; height: 200%;
-  background: radial-gradient(ellipse at 30% 20%, rgba(0,122,255,0.08) 0%, transparent 60%),
-              radial-gradient(ellipse at 70% 80%, rgba(0,199,190,0.06) 0%, transparent 60%);
+  background: linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px),
+              linear-gradient(180deg, rgba(255,255,255,0.018) 1px, transparent 1px);
+  background-size: 88px 88px;
   pointer-events: none;
   z-index: 0;
 }
@@ -194,7 +194,7 @@ body::before {
   gap: 8px;
   padding: 6px 24px 10px;
   font-size: 0.78rem;
-  font-family: 'Inter', monospace;
+  font-family: 'IBM Plex Mono', monospace;
   color: var(--text-secondary);
   position: relative;
   z-index: 1;
@@ -2460,13 +2460,11 @@ body.h23-external-focus #cosmo23-refresh-btn {
   flex-wrap: nowrap;
   gap: 0;
   align-items: stretch;
-  padding: 10px 12px;
-  border-radius: 24px;
-  background:
-    linear-gradient(135deg, rgba(11, 33, 64, 0.96), rgba(4, 31, 44, 0.92)),
-    radial-gradient(circle at right center, rgba(43, 210, 219, 0.14), transparent 32%);
-  border: 1px solid rgba(90, 216, 255, 0.16);
-  box-shadow: var(--shadow-shell);
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: rgba(18, 21, 18, 0.86);
+  border: 1px solid rgba(183, 203, 176, 0.12);
+  box-shadow: none;
 }
 
 .h23-overview-state-block,
@@ -2487,23 +2485,23 @@ body.h23-external-focus #cosmo23-refresh-btn {
   right: 0;
   bottom: 16px;
   width: 1px;
-  background: rgba(255,255,255,0.1);
+  background: rgba(183, 203, 176, 0.1);
 }
 
 .h23-overview-state-block {
   display: flex;
   flex: 2.2 1 0;
   align-items: center;
-  gap: 14px;
-  padding: 10px 18px 10px 14px;
+  gap: 10px;
+  padding: 6px 14px 6px 8px;
 }
 
 .h23-overview-kicker,
 .h23-overview-metric label {
   font-size: 0.7rem;
   text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: rgba(176, 201, 230, 0.5);
+  letter-spacing: 0.06em;
+  color: rgba(183, 203, 176, 0.55);
 }
 
 .h23-overview-state-copy {
@@ -2512,17 +2510,17 @@ body.h23-external-focus #cosmo23-refresh-btn {
 
 .h23-pulse-state {
   margin-top: 3px;
-  font-family: var(--font-display);
-  font-size: 1.14rem;
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .h23-pulse-phase {
   margin-top: 2px;
-  font-size: 0.92rem;
-  color: rgba(213, 227, 248, 0.76);
+  font-size: 0.78rem;
+  color: rgba(219, 225, 210, 0.68);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2533,47 +2531,56 @@ body.h23-external-focus #cosmo23-refresh-btn {
   flex: 1 1 0;
   flex-direction: column;
   justify-content: center;
-  padding: 10px 16px;
+  padding: 6px 14px;
 }
 
 .h23-overview-value {
   margin-top: 4px;
-  font-family: var(--font-display);
-  font-size: 1.2rem;
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
   font-weight: 700;
-  letter-spacing: -0.05em;
+  letter-spacing: 0;
 }
 
 .h23-overview-sub {
   margin-top: 2px;
-  color: rgba(176, 201, 230, 0.58);
+  color: rgba(183, 203, 176, 0.58);
   font-size: 0.76rem;
 }
 
 .h23-overview-badges {
   display: flex;
-  flex: 1.15 1 0;
+  flex: 0 1 172px;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: flex-end;
   gap: 8px;
-  padding: 10px 10px 10px 16px;
+  padding: 6px 8px 6px 14px;
   flex-wrap: nowrap;
   overflow: hidden;
+  min-width: 0;
 }
 
 .h23-pulse-notifs {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
   min-height: 32px;
+  min-width: 0;
+  max-width: 62px;
   padding: 0 10px;
   border-radius: 999px;
   border: 1px solid rgba(255,255,255,0.12);
   background: rgba(255,255,255,0.04);
   white-space: nowrap;
+  overflow: hidden;
 }
 
 .h23-pulse-sep {
+  display: none !important;
+}
+
+#pulse-brain {
   display: none !important;
 }
 
@@ -4698,6 +4705,303 @@ body.h23-external-focus #cosmo23-refresh-btn {
 .h23-worker-receipt-block code {
   color: #b9fff7;
   word-break: break-all;
+}
+
+/* ── Resident Home: agency-first command surface ── */
+
+.h23-resident-home {
+  display: grid;
+  grid-template-columns: minmax(360px, 0.95fr) minmax(0, 1.15fr);
+  grid-template-areas:
+    "left right"
+    "diagnostics diagnostics";
+  gap: 14px;
+  align-items: start;
+  min-height: 70vh;
+}
+
+.h23-resident-column {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.h23-resident-left {
+  grid-area: left;
+}
+
+.h23-resident-right {
+  grid-area: right;
+}
+
+.h23-resident-command,
+.h23-resident-panel {
+  border: 1px solid rgba(255,255,255,0.1);
+  background: rgba(8, 12, 18, 0.72);
+  box-shadow: 0 18px 48px rgba(0,0,0,0.28);
+  border-radius: 8px;
+}
+
+.h23-resident-command {
+  grid-area: command;
+  align-self: start;
+  padding: 22px;
+}
+
+.h23-resident-kicker,
+.h23-resident-section-title {
+  color: rgba(255,255,255,0.54);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.h23-resident-command h1 {
+  margin: 8px 0 8px;
+  color: var(--text-primary);
+  font-size: 1.75rem;
+  line-height: 1.12;
+  letter-spacing: 0;
+}
+
+.h23-resident-command p {
+  margin: 0;
+  color: rgba(255,255,255,0.7);
+  font-size: 0.94rem;
+  line-height: 1.45;
+}
+
+.h23-resident-command-row,
+.h23-resident-pursuit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.h23-resident-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 7px;
+  border: 1px solid rgba(255,255,255,0.16);
+  background: rgba(255,255,255,0.07);
+  color: rgba(255,255,255,0.86);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.h23-resident-action-btn.primary {
+  border-color: rgba(94, 234, 212, 0.44);
+  background: rgba(20, 184, 166, 0.18);
+  color: #b9fff7;
+}
+
+.h23-resident-action-btn.secondary {
+  border-color: rgba(148, 163, 184, 0.28);
+  background: rgba(148, 163, 184, 0.1);
+}
+
+.h23-resident-action-btn.danger {
+  border-color: rgba(248, 113, 113, 0.42);
+  background: rgba(127, 29, 29, 0.28);
+  color: #fecaca;
+}
+
+.h23-resident-action-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.h23-resident-health {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.h23-resident-health span {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 7px;
+  background: rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.52);
+  font-size: 0.72rem;
+}
+
+.h23-resident-health strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 1.05rem;
+}
+
+.h23-resident-panel {
+  padding: 16px;
+  align-self: start;
+  min-width: 0;
+}
+
+.h23-resident-next { grid-area: next; }
+.h23-resident-operator { grid-area: operator; }
+.h23-resident-attention { grid-area: attention; }
+.h23-resident-consequence { grid-area: consequence; }
+.h23-resident-diagnostics { grid-area: diagnostics; }
+
+.h23-resident-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.h23-resident-mini-link {
+  color: #b9fff7;
+  font-size: 0.76rem;
+  text-decoration: none;
+}
+
+.h23-resident-next-kind {
+  margin-top: 12px;
+  color: #b9fff7;
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.h23-resident-next-title {
+  margin-top: 6px;
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+.h23-resident-next-meta,
+.h23-resident-next-move,
+.h23-resident-pursuit-meta,
+.h23-resident-event small {
+  color: rgba(255,255,255,0.48);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.h23-resident-next-move {
+  margin-top: 8px;
+  color: rgba(255,255,255,0.68);
+}
+
+.h23-resident-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.h23-resident-pursuit,
+.h23-resident-event,
+.h23-resident-alert,
+.h23-resident-clear,
+.h23-resident-empty {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 7px;
+  background: rgba(255,255,255,0.035);
+}
+
+.h23-resident-pursuit {
+  padding: 14px;
+}
+
+.h23-resident-pursuit.active {
+  border-color: rgba(94, 234, 212, 0.24);
+  background: rgba(20, 184, 166, 0.08);
+}
+
+.h23-resident-pursuit-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: rgba(255,255,255,0.55);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.h23-resident-pursuit h3 {
+  margin: 8px 0 7px;
+  color: var(--text-primary);
+  font-size: 0.98rem;
+  line-height: 1.28;
+}
+
+.h23-resident-pursuit p {
+  margin: 0 0 8px;
+  color: rgba(255,255,255,0.68);
+  font-size: 0.84rem;
+  line-height: 1.42;
+}
+
+.h23-resident-event,
+.h23-resident-alert,
+.h23-resident-clear,
+.h23-resident-empty {
+  padding: 11px 12px;
+}
+
+.h23-resident-event {
+  border-left: 3px solid rgba(90, 200, 250, 0.72);
+}
+
+.h23-resident-event.consequence {
+  border-left-color: rgba(52, 211, 153, 0.78);
+}
+
+.h23-resident-event strong,
+.h23-resident-alert strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 0.84rem;
+}
+
+.h23-resident-event span,
+.h23-resident-alert span {
+  display: block;
+  margin-top: 3px;
+  color: rgba(255,255,255,0.66);
+  font-size: 0.8rem;
+  line-height: 1.38;
+}
+
+.h23-resident-alert {
+  margin-top: 10px;
+  border-left: 3px solid rgba(251, 191, 36, 0.85);
+}
+
+.h23-resident-clear,
+.h23-resident-empty {
+  margin-top: 10px;
+  color: rgba(255,255,255,0.55);
+  font-size: 0.84rem;
+}
+
+.h23-resident-diagnostics summary {
+  cursor: pointer;
+  color: rgba(255,255,255,0.72);
+  font-weight: 800;
+}
+
+.h23-resident-diagnostics-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 14px;
 }
 
 @media (max-width: 1080px) {

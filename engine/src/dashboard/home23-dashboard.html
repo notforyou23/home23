@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home23</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/home23-dashboard.css">
   <link rel="stylesheet" href="/home23-chat.css">
 </head>
@@ -20,38 +20,31 @@
         </div>
         <div class="h23-sidebar-brand-copy">
           <div class="h23-logo">Home23</div>
-          <div class="h23-subtitle" id="header-subtitle">AUTONOMOUS INTELLIGENCE</div>
+          <div class="h23-subtitle" id="header-subtitle">RESIDENT AI OS</div>
         </div>
       </div>
 
       <div class="h23-sidebar-scroll">
         <nav class="h23-tabs h23-tabs-primary">
           <button class="h23-tab active" data-tab="home" data-tab-label="Home">Home</button>
-          <button class="h23-tab" data-tab="intelligence" data-tab-label="Intelligence">Intelligence</button>
           <button class="h23-tab" data-tab="workers" data-tab-label="Workers">Workers</button>
           <button class="h23-tab" data-tab="agency" data-tab-label="Agency">Agency</button>
-          <button class="h23-tab" data-tab="query" data-tab-label="Query">Query</button>
-          <button class="h23-tab" data-tab="brain-map" data-tab-label="Brain Map">Brain Map</button>
-          <button class="h23-tab" data-tab="about" data-tab-label="About">About</button>
+          <a class="h23-tab h23-tab-external" href="/home23/chat" data-scope-tab="chat" data-tab-label="Chat">Chat</a>
           <button class="h23-tab h23-tab-settings" id="settings-btn" data-scope-tab="settings" data-tab-label="Settings">Settings</button>
         </nav>
 
         <div class="h23-sidebar-group">
-          <div class="h23-sidebar-group-label">Linked Spaces</div>
+          <div class="h23-sidebar-group-label">Organs</div>
           <div class="h23-linked-tabs" id="agent-tabs"></div>
           <div class="h23-linked-tabs">
+            <button class="h23-tab" data-tab="query" data-tab-label="Query">Query</button>
+            <button class="h23-tab" data-tab="brain-map" data-tab-label="Brain Map">Brain Map</button>
             <button class="h23-tab h23-tab-external h23-tab-cosmo23" id="cosmo23-btn" data-scope-tab="cosmo23" data-tab-label="cosmo23">cosmo23</button>
             <a class="h23-tab h23-tab-external h23-tab-evobrew" id="evobrew-btn" href="#" target="_blank" data-scope-tab="evobrew" data-tab-label="evobrew">evobrew</a>
           </div>
         </div>
       </div>
 
-      <div class="h23-sidebar-card" id="sidebar-status-card">
-        <div class="h23-sidebar-card-title" id="sidebar-version-label">Home23</div>
-        <div class="h23-sidebar-card-line" id="sidebar-status-line">Dashboard connected.</div>
-        <div class="h23-sidebar-card-line" id="sidebar-update-line">Watching for updates.</div>
-        <button class="h23-sidebar-card-button" id="sidebar-update-action" type="button">Check for updates</button>
-      </div>
     </aside>
 
     <div class="h23-shell-main">
@@ -93,36 +86,31 @@
         <button id="update-dismiss" style="background:none; border:none; color:rgba(255,255,255,0.6); cursor:pointer; font-size:16px; margin-left:12px;">&times;</button>
       </div>
 
-      <!-- Engine overview band -->
+      <!-- Runtime strip -->
       <div class="h23-pulse-bar h23-overview-band" id="engine-pulse">
         <div class="h23-overview-state-block">
           <span class="h23-pulse-dot" id="pulse-dot"></span>
           <div class="h23-overview-state-copy">
-            <div class="h23-overview-kicker">Engine State</div>
+            <div class="h23-overview-kicker">Runtime</div>
             <div class="h23-pulse-state" id="pulse-state">—</div>
             <div class="h23-pulse-phase" id="pulse-phase">—</div>
           </div>
         </div>
 
         <div class="h23-overview-metric">
-          <label>Energy</label>
+          <label>Load</label>
           <div class="h23-overview-value" id="pulse-energy">⚡ —</div>
         </div>
 
         <div class="h23-overview-metric">
-          <label>Cycle</label>
+          <label>Last Cycle</label>
           <div class="h23-overview-value" id="pulse-cycle">cycle —</div>
           <div class="h23-overview-sub" id="pulse-ago">—</div>
         </div>
 
         <div class="h23-overview-metric">
-          <label>Nodes</label>
+          <label>Memory</label>
           <div class="h23-overview-value" id="pulse-node-count">—</div>
-        </div>
-
-        <div class="h23-overview-metric">
-          <label>Active Goals</label>
-          <div class="h23-overview-value" id="pulse-active-goals">—</div>
         </div>
 
         <div class="h23-overview-badges">
@@ -301,17 +289,64 @@
     </div>
   </div>
 
-  <!-- Home panel — current dashboard agent tiles (ReginaCosmo layout) -->
+      <!-- Home panel — resident agency command surface. The agent handles routine organs; this surface shows only attention, consequence, and controls with teeth. -->
   <main class="h23-main">
     <div class="h23-panel active" id="panel-home">
+      <section class="h23-resident-home" id="resident-home">
+        <div class="h23-resident-column h23-resident-left">
+          <div class="h23-resident-command">
+            <div class="h23-resident-kicker">Resident spine</div>
+            <h1 id="resident-posture">Loading Jerry</h1>
+            <p id="resident-summary">Reading agency state.</p>
+            <div class="h23-resident-command-row">
+              <button class="h23-resident-action-btn primary" id="resident-run-tick" type="button">Run Tick</button>
+              <button class="h23-resident-action-btn secondary" id="resident-refresh" type="button">Refresh</button>
+              <a class="h23-resident-action-btn secondary" href="/home23/chat">Chat</a>
+              <a class="h23-resident-action-btn secondary" href="/home23/settings#agency">Authority</a>
+            </div>
+            <div class="h23-resident-health" id="resident-health-strip"></div>
+          </div>
 
-      <!-- COSMO status indicator -->
-      <div class="h23-cosmo-indicator" id="cosmo23-indicator" style="cursor:pointer;">
-        <span class="h23-cosmo-indicator-dot" id="cosmo23-ind-dot"></span>
-        <span id="cosmo23-ind-text">COSMO: checking...</span>
-      </div>
+          <section class="h23-resident-panel h23-resident-next" id="resident-next-action">
+            <div class="h23-resident-section-title">Next Action</div>
+            <div class="h23-resident-empty">Waiting for agency state.</div>
+          </section>
 
-      <div class="h23-home-layout" id="home-layout-grid"></div>
+          <section class="h23-resident-panel h23-resident-operator" id="resident-operator-needed">
+            <div class="h23-resident-section-title">Needed From You</div>
+            <div class="h23-resident-empty">Only interruptions and hard authority requests appear here.</div>
+          </section>
+        </div>
+
+        <div class="h23-resident-column h23-resident-right">
+          <section class="h23-resident-panel h23-resident-attention">
+            <div class="h23-resident-section-head">
+              <div class="h23-resident-section-title">Active Attention</div>
+              <a href="#agency" class="h23-resident-mini-link" data-tab-jump="agency">Open Inspector</a>
+            </div>
+            <div class="h23-resident-stream" id="resident-active-pursuits"></div>
+          </section>
+
+          <section class="h23-resident-panel h23-resident-consequence">
+            <div class="h23-resident-section-title">What Changed</div>
+            <div class="h23-resident-stream" id="resident-consequences"></div>
+          </section>
+        </div>
+
+        <details class="h23-resident-panel h23-resident-diagnostics">
+          <summary>Receipts and Inbox</summary>
+          <div class="h23-resident-diagnostics-grid">
+            <div>
+              <div class="h23-resident-section-title">Route Receipts</div>
+              <div class="h23-resident-stream" id="resident-receipts"></div>
+            </div>
+            <div>
+              <div class="h23-resident-section-title">Inbox Decisions</div>
+              <div class="h23-resident-stream" id="resident-inbox"></div>
+            </div>
+          </div>
+        </details>
+      </section>
 
       <!-- Log overlay (full details) -->
       <div class="h23-log-overlay" id="log-overlay" onclick="if(event.target===this)closeLogOverlay()">
