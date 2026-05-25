@@ -201,10 +201,6 @@ async function init() {
   // Check for Home23 updates
   checkUpdateNotification();
 
-  // Poll autonomous actions (⚡ executions from ACT: tag)
-  updateActionsBadge();
-  setInterval(updateActionsBadge, 15000);
-
   // Live problems badge — polls every 20s. The engine verifies on its own
   // cadence (~90s), so 20s is plenty fresh for the dashboard.
   updateProblemsBadge();
@@ -299,12 +295,11 @@ function startPulseRotation() {
 }
 
 async function openPulseHistoryPanel() {
-  // Reuse the actions overlay DOM — hijack it for pulse history
-  const overlay = document.getElementById('actions-overlay');
-  const list = document.getElementById('actions-list');
+  const overlay = document.getElementById('pulse-history-overlay');
+  const list = document.getElementById('pulse-history-list');
   const title = overlay?.querySelector('.h23-brainlog-title');
   if (!overlay || !list) return;
-  if (title) title.textContent = `💬 Pulse History — ${currentAgentLabel('Agent')}'s Remarks`;
+  if (title) title.textContent = `${currentAgentLabel('Agent')} Pulse History`;
   overlay.style.display = 'flex';
   list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Loading...</div>';
   try {
@@ -338,95 +333,8 @@ async function openPulseHistoryPanel() {
   }
 }
 
-async function updateActionsBadge() {
-  try {
-    const r = await fetch(`${dashboardBaseUrl()}/home23/api/settings/agency/recent?limit=100`);
-    if (!r.ok) return;
-    const data = await r.json();
-    const actions = data.actions || [];
-    // Count outcome events in the last hour
-    const oneHourAgo = Date.now() - 3600 * 1000;
-    const recent = actions.filter(a => a.phase === 'outcome' && a.ts && new Date(a.ts).getTime() >= oneHourAgo);
-    const el = document.getElementById('pulse-actions');
-    const sep = document.getElementById('pulse-actions-sep');
-    const badge = document.getElementById('pulse-actions-badge');
-    if (!el || !badge) return;
-    if (recent.length > 0) {
-      el.style.display = '';
-      if (sep) sep.style.display = '';
-      badge.textContent = `⚡ ${recent.length}`;
-      const rejected = recent.filter(a => a.status === 'rejected').length;
-      badge.style.color = rejected > 0 ? '#ffb347' : '#30d158';
-    } else {
-      el.style.display = 'none';
-      if (sep) sep.style.display = 'none';
-    }
-  } catch { /* silent */ }
-}
-
-async function openActionsPanel() {
-  const overlay = document.getElementById('actions-overlay');
-  const list = document.getElementById('actions-list');
-  if (!overlay || !list) return;
-  overlay.style.display = 'flex';
-  list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Loading...</div>';
-  try {
-    const r = await fetch(`${dashboardBaseUrl()}/home23/api/settings/agency/recent?limit=200`);
-    const data = await r.json();
-    const actions = data.actions || [];
-    if (actions.length === 0) {
-      list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">No actions yet. Cognitive cycles emit <code>ACT:</code> tags which the dispatcher executes — when they do, they\'ll show up here.</div>';
-      return;
-    }
-    // Pair intent + outcome by matching action+role+cycle+target
-    const chronological = [...actions].reverse();
-    const pairs = [];
-    const open = new Map();
-    for (const ev of chronological) {
-      const k = `${ev.action}|${ev.role}|${ev.cycle}|${ev.target || ''}`;
-      if (ev.phase === 'intent') open.set(k, ev);
-      else if (ev.phase === 'outcome') {
-        pairs.push({ intent: open.get(k), outcome: ev });
-        open.delete(k);
-      }
-    }
-    for (const [, intent] of open) pairs.push({ intent, outcome: null });
-    pairs.reverse();
-
-    list.innerHTML = pairs.slice(0, 80).map(({ intent, outcome }) => {
-      const status = outcome?.status || 'in_flight';
-      const col = status === 'success' ? '#30d158'
-        : status === 'dry_run' ? '#5ac8fa'
-        : status === 'rejected' ? '#ff6b6b'
-        : 'rgba(255,255,255,0.5)';
-      const ts = outcome?.ts || intent?.ts;
-      const time = ts ? new Date(ts).toLocaleString() : '';
-      const reason = intent?.reason ? `<div style="font-size:12px;color:rgba(255,255,255,0.6);margin-top:4px;">${escapeHtmlNotif(intent.reason)}</div>` : '';
-      const detail = outcome?.detail ? `<div style="font-size:12px;color:${col};margin-top:4px;">${escapeHtmlNotif(outcome.detail)}</div>` : '';
-      return `
-        <div style="padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,0.02);border-left:3px solid ${col};">
-          <div style="display:flex;justify-content:space-between;gap:12px;">
-            <div style="flex:1;">
-              <div style="font-size:12px;color:rgba(255,255,255,0.5);margin-bottom:4px;">
-                <span style="color:${col};font-weight:600;text-transform:uppercase;">${status}</span>
-                · <code style="color:#5ac8fa;">${escapeHtmlNotif(intent?.action || '?')}</code>${intent?.target ? ' → ' + escapeHtmlNotif(intent.target) : ''}
-                · cycle ${intent?.cycle || '?'}
-                · ${intent?.role || '?'}
-                · ${time}
-              </div>
-              ${reason}
-              ${detail}
-            </div>
-          </div>
-        </div>`;
-    }).join('');
-  } catch (err) {
-    list.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
-  }
-}
-
-function closeActionsPanel() {
-  const overlay = document.getElementById('actions-overlay');
+function closePulseHistoryPanel() {
+  const overlay = document.getElementById('pulse-history-overlay');
   if (overlay) overlay.style.display = 'none';
 }
 

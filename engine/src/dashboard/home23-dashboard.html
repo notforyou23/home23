@@ -73,10 +73,6 @@
           <span class="h23-pulse-notifs" id="pulse-signals" style="cursor:pointer;display:none;" onclick="openSignalsPanel()" title="Signals — wins, resolutions, positive observations">
             <span id="pulse-signals-badge">✨ 0</span>
           </span>
-          <span class="h23-pulse-sep" id="pulse-actions-sep" style="display:none;">·</span>
-          <span class="h23-pulse-notifs" id="pulse-actions" style="cursor:pointer;display:none;" onclick="openActionsPanel()">
-            <span id="pulse-actions-badge">⚡ 0</span>
-          </span>
           <span class="h23-pulse-sep" id="pulse-problems-sep" style="display:none;">·</span>
           <span class="h23-pulse-notifs" id="pulse-problems" style="cursor:pointer;display:none;" onclick="openProblemsPanel()" title="Live problems — verifier-backed, auto-remediated">
             <span id="pulse-problems-badge">🩺 0</span>
@@ -181,19 +177,15 @@
     </div>
   </div>
 
-  <!-- Autonomous actions panel (ACT: executions) -->
-  <div class="h23-log-overlay" id="actions-overlay" onclick="if(event.target===this)closeActionsPanel()">
+  <!-- Pulse history panel -->
+  <div class="h23-log-overlay" id="pulse-history-overlay" onclick="if(event.target===this)closePulseHistoryPanel()">
     <div class="h23-log-overlay-panel">
       <div class="h23-log-overlay-header">
-        <span class="h23-brainlog-title">⚡ Autonomous Actions</span>
-        <button class="h23-log-overlay-close" onclick="closeActionsPanel()">&#10005;</button>
+        <span class="h23-brainlog-title">Pulse History</span>
+        <button class="h23-log-overlay-close" onclick="closePulseHistoryPanel()">&#10005;</button>
       </div>
       <div class="h23-log-overlay-body">
-        <div id="actions-list" style="padding:12px;"></div>
-        <div style="padding:12px;border-top:1px solid rgba(255,255,255,0.1);display:flex;gap:10px;align-items:center;">
-          <a href="/home23/settings#agency" style="color:#5ac8fa;text-decoration:none;font-size:13px;">Settings → Agency &rarr;</a>
-          <span style="color:rgba(255,255,255,0.4);font-size:12px;">curate the allow-list, toggle dry-run, view rejected requests</span>
-        </div>
+        <div id="pulse-history-list" style="padding:12px;"></div>
       </div>
     </div>
   </div>

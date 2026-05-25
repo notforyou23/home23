@@ -222,6 +222,11 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(html, /particles\.js/);
   assert.doesNotMatch(html, /h23-sidebar-orb/);
   assert.doesNotMatch(html, /class="h23-sidebar-group"/);
+  assert.doesNotMatch(html, /id="pulse-actions"/);
+  assert.doesNotMatch(html, /id="actions-overlay"/);
+  assert.doesNotMatch(html, /Autonomous Actions/);
+  assert.match(html, /id="pulse-history-overlay"/);
+  assert.match(html, /id="pulse-history-list"/);
   assert.doesNotMatch(html, /h23-overview-band/);
   assert.doesNotMatch(html, /h23-tab-scope-bar/);
   assert.doesNotMatch(html, />This Agent Surface</);
@@ -271,6 +276,13 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /if \(currentTab === 'agency'\) \{\s*loadAgencySurface\(\)\.catch\(\(\) => \{\}\);/);
   assert.doesNotMatch(js, /\n\s*updateNotificationBadge\(\);\n\s*setInterval\(updateNotificationBadge, 15000\);/);
   assert.doesNotMatch(js, /\n\s*updateSignalsBadge\(\);\n\s*setInterval\(updateSignalsBadge, 30000\);/);
+  assert.doesNotMatch(js, /\n\s*updateActionsBadge\(\);\n\s*setInterval\(updateActionsBadge, 15000\);/);
+  assert.doesNotMatch(js, /function updateActionsBadge/);
+  assert.doesNotMatch(js, /function openActionsPanel/);
+  assert.doesNotMatch(js, /\/home23\/api\/settings\/agency\/recent/);
+  assert.doesNotMatch(js, /Reuse the actions overlay DOM/);
+  assert.match(js, /getElementById\('pulse-history-overlay'\)/);
+  assert.match(js, /function closePulseHistoryPanel/);
   assert.doesNotMatch(js, /\n\s*updateCosmoIndicator\(\);\n\s*setInterval\(updateCosmoIndicator, REFRESH_MS\);/);
   assert.match(js, /await updateCosmoIndicator\(\);\n\s*showCosmoFrame\(\);/);
   assert.doesNotMatch(js, /if \(!dot \|\| !text\) return;/);
