@@ -198,9 +198,6 @@ async function init() {
   // Update pulse "ago" timer every second
   setInterval(updatePulseAgo, 1000);
 
-  // Check for Home23 updates
-  checkUpdateNotification();
-
   // Live problems badge — polls every 20s. The engine verifies on its own
   // cadence (~90s), so 20s is plenty fresh for the dashboard.
   updateProblemsBadge();
@@ -1125,14 +1122,6 @@ async function loadAgents() {
     settingsBtn.addEventListener('click', () => {
       window.location.href = '/home23/settings';
     });
-  }
-
-  const sidebarUpdateButton = document.getElementById('sidebar-update-action');
-  if (sidebarUpdateButton && sidebarUpdateButton.dataset.bound !== 'true') {
-    sidebarUpdateButton.addEventListener('click', () => {
-      checkUpdateNotification({ showEvenIfCurrent: true }).catch(() => {});
-    });
-    sidebarUpdateButton.dataset.bound = 'true';
   }
 
   // Wire COSMO tab button
@@ -6047,46 +6036,6 @@ function formatDurationMs(ms) {
   if (hours > 0) return `${hours}h ${minutes}m`;
   if (minutes > 0) return `${minutes}m ${seconds}s`;
   return `${seconds}s`;
-}
-
-// ── Update Notification ──
-
-async function checkUpdateNotification({ showEvenIfCurrent = false } = {}) {
-  try {
-    const res = await fetch('/home23/api/settings/update-status');
-    if (!res.ok) return;
-    const data = await res.json();
-    const bar = document.getElementById('update-notification');
-    const text = document.getElementById('update-notification-text');
-    const versionLabel = document.getElementById('sidebar-version-label');
-    const updateLine = document.getElementById('sidebar-update-line');
-    const sidebarButton = document.getElementById('sidebar-update-action');
-
-    if (versionLabel && data.currentVersion) {
-      versionLabel.textContent = `Home23 v${data.currentVersion}`;
-    }
-
-    if (data.updateAvailable) {
-      if (bar && text) {
-        text.textContent = `Home23 v${data.latestVersion} available \u2014 run home23 update in your terminal`;
-        bar.style.display = 'flex';
-      }
-      if (updateLine) updateLine.textContent = `Update ready: v${data.latestVersion}.`;
-      if (sidebarButton) sidebarButton.textContent = 'Review update';
-    } else {
-      if (bar && text && showEvenIfCurrent) {
-        text.textContent = `Home23 is current at v${data.currentVersion || data.latestVersion || 'current'}.`;
-        bar.style.display = 'flex';
-      }
-      if (updateLine) updateLine.textContent = `Current version: v${data.currentVersion || data.latestVersion || 'current'}.`;
-      if (sidebarButton) sidebarButton.textContent = 'Check for updates';
-    }
-
-    const dismissBtn = document.getElementById('update-dismiss');
-    if (dismissBtn) {
-      dismissBtn.onclick = () => { bar.style.display = 'none'; };
-    }
-  } catch { /* silent */ }
 }
 
 // ── Start ──

@@ -217,6 +217,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(html, /Engine State/);
   assert.doesNotMatch(html, /Active Goals/);
   assert.doesNotMatch(html, /sidebar-status-card/);
+  assert.doesNotMatch(html, /id="update-notification"/);
+  assert.doesNotMatch(html, /id="update-notification-text"/);
+  assert.doesNotMatch(html, /id="update-dismiss"/);
   assert.doesNotMatch(html, /Check for updates/);
   assert.doesNotMatch(html, /id="particles-js"/);
   assert.doesNotMatch(html, /particles\.js/);
@@ -280,6 +283,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /if \(currentTab === 'workers'\) \{\s*loadWorkersSurface\(\)\.catch\(\(\) => \{\}\);/);
   assert.doesNotMatch(js, /loadAgencySurface\(\)\.catch\(\(\) => \{ \/\* agency bridge may still be booting \*\/ \}\);/);
   assert.match(js, /if \(currentTab === 'agency'\) \{\s*loadAgencySurface\(\)\.catch\(\(\) => \{\}\);/);
+  assert.doesNotMatch(js, /checkUpdateNotification/);
+  assert.doesNotMatch(js, /\/home23\/api\/settings\/update-status/);
+  assert.doesNotMatch(js, /sidebar-update-action/);
   assert.doesNotMatch(js, /\n\s*updateNotificationBadge\(\);\n\s*setInterval\(updateNotificationBadge, 15000\);/);
   assert.doesNotMatch(js, /\n\s*updateSignalsBadge\(\);\n\s*setInterval\(updateSignalsBadge, 30000\);/);
   assert.doesNotMatch(js, /function updateNotificationBadge/);
