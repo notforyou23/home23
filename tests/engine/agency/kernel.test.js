@@ -497,6 +497,45 @@ test('AgencyKernel projects authority requests and blocked pursuits as active ob
   assert.equal(state.obligations.every(item => item.status === 'open'), true);
 });
 
+test('AgencyKernel raises first-class jtr questions as obligations with consequence receipts', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const intake = await kernel.intake({
+    source: 'newsletter',
+    kind: 'newsletter_draft',
+    summary: 'Newsletter draft may need jtr taste judgment before publication.',
+    authorityLevel: 'L2',
+    desiredChangedFuture: 'Newsletter either cites lived system change or is explicitly killed.',
+    evidence: [{ type: 'draft', ref: 'newsletter:next' }],
+  });
+  const question = kernel.raiseQuestion({
+    pursuitId: intake.pursuit.id,
+    question: 'Should this newsletter be killed unless it cites a concrete system change?',
+    reason: 'value_depends_on_jtr_editorial_judgment',
+    authorityLevel: 'L3',
+    evidenceRef: 'newsletter:next',
+  });
+
+  const state = kernel.state();
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+  const inboxRows = readJsonl(join(dir, 'agency', 'inbox.jsonl'));
+
+  assert.match(question.id, /^q_/);
+  assert.equal(question.status, 'open');
+  assert.equal(question.pursuitId, intake.pursuit.id);
+  assert.equal(state.obligations.some(item => item.kind === 'operator_question' && item.questionId === question.id), true);
+  assert.equal(state.obligations.some(item => item.reason === 'Should this newsletter be killed unless it cites a concrete system change?'), true);
+  assert.equal(receipts.some(row => row.event === 'jtr_question_raised' && row.questionId === question.id), true);
+  assert.equal(consequences.some(row => row.changeType === 'jtr_question_raised' && row.pursuitId === intake.pursuit.id), true);
+  assert.equal(inboxRows.length, 1);
+});
+
 test('AgencyKernel builds the live success-test brief from resident state', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

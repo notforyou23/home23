@@ -8,6 +8,7 @@ import {
   agencyDiscardCandidateTool,
   agencyIntakeWorldStreamTool,
   agencyProposeDeltaTool,
+  agencyRaiseQuestionTool,
   agencyRecordClaimTool,
   agencyRequestAuthorityTool,
   agencyScratchNoteTool,
@@ -245,4 +246,34 @@ test('agency_scratch_note records a private scratch thought without promoting it
 
   assert.match(result.content, /scratch_1/);
   assert.match(result.content, /private/);
+});
+
+test('agency_raise_question records a bounded jtr question through the bridge API', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/questions');
+    assert.equal(init?.method, 'POST');
+    const body = JSON.parse(String(init?.body || '{}'));
+    assert.equal(body.pursuitId, 'ap_newsletter');
+    assert.equal(body.question, 'Should Jerry kill this newsletter unless it cites lived system change?');
+    assert.equal(body.authorityLevel, 'L3');
+    assert.deepEqual(body.evidence, [{ type: 'reference', ref: 'newsletter:next' }]);
+    return new Response(JSON.stringify({
+      question: {
+        id: 'q_1',
+        status: 'open',
+        question: body.question,
+      },
+    }), { status: 200 });
+  };
+
+  const result = await agencyRaiseQuestionTool.execute({
+    pursuitId: 'ap_newsletter',
+    question: 'Should Jerry kill this newsletter unless it cites lived system change?',
+    reason: 'value_depends_on_jtr_editorial_judgment',
+    authorityLevel: 'L3',
+    evidenceRef: 'newsletter:next',
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /q_1/);
+  assert.match(result.content, /open/);
 });

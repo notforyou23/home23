@@ -145,6 +145,19 @@ export class AgencyKernel {
         reason: row.reason || row.authority?.reason || 'authority requested',
       });
     }
+    for (const row of this.store.listReceipts({ limit: 200 })) {
+      if (row.event !== 'jtr_question_raised') continue;
+      const pursuit = row.pursuitId ? this.store.getPursuit(row.pursuitId) : null;
+      if (pursuit && (pursuit.status === 'closed' || pursuit.status === 'discarded')) continue;
+      add({
+        kind: 'operator_question',
+        at: row.at,
+        questionId: row.questionId || null,
+        pursuitId: row.pursuitId || null,
+        authorityLevel: row.authorityLevel || 'L3',
+        reason: row.question || row.reason || 'operator question raised',
+      });
+    }
     for (const pursuit of this.store.listPursuits({ status: 'blocked', limit: 100 })) {
       add({
         kind: 'blocked_pursuit',
@@ -833,6 +846,21 @@ export class AgencyKernel {
     return { scratch: this.store.listScratch(options) };
   }
 
+  questions(options = {}) {
+    const questions = this.store.listReceipts(options)
+      .filter(row => row.event === 'jtr_question_raised')
+      .map(row => ({
+        id: row.questionId,
+        at: row.at,
+        status: row.status || 'open',
+        pursuitId: row.pursuitId || null,
+        question: row.question || row.reason || null,
+        reason: row.reason || null,
+        authorityLevel: row.authorityLevel || 'L3',
+      }));
+    return { questions };
+  }
+
   recordScratch(input = {}) {
     const at = input.at || nowIso();
     const evidence = Array.isArray(input.evidence)
@@ -862,6 +890,50 @@ export class AgencyKernel {
       reason: input.reason || 'private_scratch_not_promoted',
       mode: this.config.mode,
     });
+    return entry;
+  }
+
+  raiseQuestion(input = {}) {
+    const at = input.at || nowIso();
+    const question = String(input.question || input.summary || '').trim();
+    if (!question) throw new Error('Agency question requires question');
+    const evidence = Array.isArray(input.evidence)
+      ? input.evidence
+      : (input.evidenceRef ? [{ type: 'reference', ref: String(input.evidenceRef) }] : []);
+    const entry = {
+      schema: 'home23.agency.question.v1',
+      id: input.id || shortId('q'),
+      at,
+      status: 'open',
+      pursuitId: input.pursuitId || null,
+      question,
+      reason: input.reason || 'operator_judgment_required',
+      authorityLevel: input.authorityLevel || 'L3',
+      evidence,
+    };
+    this.store.appendReceipt({
+      schema: 'home23.agency.receipt.v1',
+      at,
+      event: 'jtr_question_raised',
+      questionId: entry.id,
+      pursuitId: entry.pursuitId,
+      status: entry.status,
+      question: entry.question,
+      reason: entry.reason,
+      authorityLevel: entry.authorityLevel,
+      evidence,
+      mode: this.config.mode,
+    });
+    this.store.appendConsequence({
+      schema: 'home23.agency.consequence.v1',
+      at,
+      pursuitId: entry.pursuitId,
+      status: 'open',
+      changeType: 'jtr_question_raised',
+      summary: entry.question,
+      evidence,
+    });
+    this.ensureState();
     return entry;
   }
 

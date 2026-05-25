@@ -298,6 +298,39 @@ export const agencyScratchNoteTool: ToolDefinition = {
   },
 };
 
+export const agencyRaiseQuestionTool: ToolDefinition = {
+  name: 'agency_raise_question',
+  description: 'Raise a bounded question for jtr when resident agency needs operator judgment, taste, authority, or clarification before changing behavior.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      question: { type: 'string' },
+      reason: { type: 'string' },
+      pursuitId: { type: 'string' },
+      authorityLevel: { type: 'string', enum: ['L1', 'L2', 'L3', 'L4'] },
+      evidenceRef: { type: 'string' },
+    },
+    required: ['question', 'reason'],
+    additionalProperties: false,
+  },
+  async execute(input, ctx) {
+    const evidence = typeof input.evidenceRef === 'string' && input.evidenceRef.trim()
+      ? [{ type: 'reference', ref: input.evidenceRef }]
+      : [];
+    const data = await jsonRequest(ctx, '/api/agency/questions', {
+      method: 'POST',
+      body: JSON.stringify({
+        question: input.question,
+        reason: input.reason,
+        pursuitId: input.pursuitId,
+        authorityLevel: input.authorityLevel || 'L3',
+        evidence,
+      }),
+    }) as { question?: { id?: string; status?: string; question?: string } };
+    return { content: `Agency question ${data.question?.id || 'raised'} (${data.question?.status || 'open'}): ${data.question?.question || input.question}` };
+  },
+};
+
 export const agencyProposeDeltaTool: ToolDefinition = {
   name: 'agency_propose_delta',
   description: 'Propose a behavioral or structural delta for the resident spine to arbitrate through bounded authority.',
