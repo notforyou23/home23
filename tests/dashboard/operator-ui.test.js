@@ -158,8 +158,13 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(html, /PRIMARY AGENT/);
   const primaryNav = html.match(/<nav class="h23-tabs h23-tabs-primary">[\s\S]*?<\/nav>/)?.[0] || '';
   const organDrawer = html.match(/<details class="h23-organ-drawer" id="organs-drawer">[\s\S]*?<\/details>/)?.[0] || '';
+  const residentCommandRow = html.match(/<div class="h23-resident-command-row">[\s\S]*?<\/div>/)?.[0] || '';
   assert.doesNotMatch(primaryNav, /data-tab="workers"/);
   assert.match(organDrawer, /data-tab="workers"/);
+  assert.doesNotMatch(residentCommandRow, /href="\/home23\/chat"/);
+  assert.doesNotMatch(residentCommandRow, /href="\/home23\/settings#agency"/);
+  assert.doesNotMatch(residentCommandRow, />Chat</);
+  assert.doesNotMatch(residentCommandRow, />Authority</);
   assert.match(html, /h23-system-rail/);
   assert.match(html, /h23-system-runtime/);
   assert.match(html, /id="organs-drawer"/);
