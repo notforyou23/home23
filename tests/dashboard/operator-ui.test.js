@@ -228,6 +228,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /renderResidentConsequenceGroup/);
   assert.match(js, /renderResidentConsequenceTitle/);
   assert.match(js, /renderResidentConsequenceSummary/);
+  assert.match(js, /raw === 'pursuit_closed_by_receipt'/);
+  assert.match(js, /return 'Pursuit closed'/);
   assert.match(js, /renderResidentConsequenceMeta/);
   assert.match(js, /groupResidentSchedulerEvidence/);
   assert.match(js, /renderResidentSchedulerEvidenceGroup/);

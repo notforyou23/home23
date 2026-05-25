@@ -1755,6 +1755,9 @@ function humanizeResidentMachineText(text, fallback = '') {
   if (raw === 'advance_one_step') {
     return 'Advance one step';
   }
+  if (raw === 'pursuit_closed_by_receipt') {
+    return 'Pursuit closed';
+  }
   return raw
     .replace(/\bagent-[0-9a-f-]{10,}\b/gi, 'agent')
     .replace(/\bap_[0-9a-f]{8,}\b/gi, 'resident pursuit')
