@@ -1702,6 +1702,11 @@ function renderAgencySurface({ state, pursuits, inbox, receipts, consequences, s
     truthEl.innerHTML = renderAgencyTruthBlock(state, truth);
   }
 
+  const organsEl = document.getElementById('agency-organs');
+  if (organsEl) {
+    organsEl.innerHTML = renderAgencyOrgansBlock(state);
+  }
+
   const pursuitEl = document.getElementById('agency-pursuits');
   if (pursuitEl) {
     pursuitEl.innerHTML = pursuits.length ? pursuits.map(renderAgencyPursuitRow).join('') : '<p class="h23-muted">No pursuits yet.</p>';
@@ -1802,6 +1807,26 @@ function renderAgencyTruthRow(claim) {
       <div style="font-size:12px;color:rgba(255,255,255,0.6);">${escapeHtml(claim.claim || claim.summary || claim.value || '')}</div>
     </div>
   `;
+}
+
+function renderAgencyOrgansBlock(state) {
+  const organs = state.organs && typeof state.organs === 'object' ? Object.entries(state.organs) : [];
+  if (!organs.length) return '<p class="h23-muted">No body organ contract reported.</p>';
+  return organs.slice(0, 8).map(([name, organ]) => {
+    const senses = Array.isArray(organ.canSense) ? organ.canSense.slice(0, 3).join(' · ') : '';
+    const changes = Array.isArray(organ.canChange) ? organ.canChange.slice(0, 3).join(' · ') : '';
+    const never = Array.isArray(organ.mustNeverDoAlone) ? organ.mustNeverDoAlone.slice(0, 2).join(' · ') : '';
+    return `
+      <div style="padding:10px 12px;margin-bottom:8px;background:rgba(255,255,255,0.03);border-left:3px solid #ffd60a;">
+        <div style="font-size:12px;color:rgba(255,255,255,0.55);">${escapeHtml(organ.kind || 'organ')} · ${escapeHtml(organ.commandSurface || '')}</div>
+        <div style="color:#fff;font-size:13px;">${escapeHtml(name)}</div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.6);">senses: ${escapeHtml(senses || 'unknown')}</div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.6);">changes: ${escapeHtml(changes || 'unknown')}</div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.6);">never alone: ${escapeHtml(never || 'not specified')}</div>
+        <div style="font-size:12px;color:rgba(255,255,255,0.6);">failure: ${escapeHtml(organ.failureSurface || 'unknown')}</div>
+      </div>
+    `;
+  }).join('');
 }
 
 function renderAgencyPursuitRow(p) {

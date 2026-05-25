@@ -65,6 +65,7 @@ export class AgencyKernel {
         role: 'resident-agency-kernel',
         posture: this.config.mode === 'live' ? 'bounded-live' : 'dry-run-observer',
       },
+      organs: this.charter.organs || {},
       obligations: existing.obligations || [],
       watchlist: watch.slice(0, 20).map(row => ({ id: row.id, title: row.title, lastTouched: row.lastTouched || row.updatedAt })),
       truth: truthSummary,

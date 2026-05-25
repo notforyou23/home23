@@ -14,6 +14,17 @@ test('buildAgencyContextSection exposes active resident pursuits without raw inb
     agent: 'jerry',
     mode: 'dry_run',
     attention: { currentPursuitId: 'ap_1', queueDepth: 4 },
+    organs: {
+      crons: {
+        kind: 'scheduler',
+        canSense: ['cron reports'],
+        canChange: ['bounded schedules'],
+        reports: ['scheduler receipts'],
+        mustNeverDoAlone: ['create recurring work without pursuit binding'],
+        failureSurface: 'cron run receipts',
+        commandSurface: 'cron tools',
+      },
+    },
   }));
   writeFileSync(path.join(agencyDir, 'pursuits.jsonl'), [
     JSON.stringify({
@@ -42,6 +53,9 @@ test('buildAgencyContextSection exposes active resident pursuits without raw inb
   assert.match(section, /Resident Agency/);
   assert.match(section, /dry_run/);
   assert.match(section, /Verify dashboard publish loop/);
+  assert.match(section, /Body organs/);
+  assert.match(section, /crons/);
+  assert.match(section, /cron reports/);
   assert.match(section, /L2/);
   assert.doesNotMatch(section, /Old closed item/);
   assert.doesNotMatch(section, /inbox/);

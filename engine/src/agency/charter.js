@@ -48,6 +48,71 @@ const DEFAULT_CHARTER = Object.freeze({
     'generated_doctrine',
     'narrative',
   ],
+  organs: {
+    step24: {
+      kind: 'observation_bus',
+      canSense: ['system telemetry', 'domain observations', 'live channel events'],
+      canChange: ['agency inbox candidates', 'observation receipts'],
+      reports: ['observations', 'source references', 'confidence'],
+      mustNeverDoAlone: ['treat telemetry as personal diagnosis', 'execute actions'],
+      failureSurface: 'agency inbox receipts and engine logs',
+      commandSurface: 'engine channel configuration',
+    },
+    crons: {
+      kind: 'scheduler',
+      canSense: ['cron reports', 'scheduler outcomes', 'recurring job failures'],
+      canChange: ['bounded schedules', 'scheduler receipts', 'job enablement state'],
+      reports: ['cron decisions', 'run logs', 'agency world-stream packets'],
+      mustNeverDoAlone: ['create recurring work without pursuit binding', 'publish externally', 'perform destructive action'],
+      failureSurface: 'cron run receipts and agency consequences',
+      commandSurface: 'cron tools and scheduler APIs',
+    },
+    workers: {
+      kind: 'delegated_hands',
+      canSense: ['worker receipts', 'artifacts', 'verifier output'],
+      canChange: ['bounded local artifacts', 'memory candidates', 'pursuit evidence'],
+      reports: ['worker receipts', 'artifact references', 'verifier status'],
+      mustNeverDoAlone: ['perform L4 actions', 'claim completion without receipt', 'bypass authority policy'],
+      failureSurface: 'worker receipts and agency consequences',
+      commandSurface: 'worker connector and agency tools',
+    },
+    research: {
+      kind: 'extended_cognition',
+      canSense: ['COSMO research outputs', 'queries', 'compiled briefs'],
+      canChange: ['watch items', 'claims', 'research pursuits'],
+      reports: ['research packets', 'artifacts', 'contradictions'],
+      mustNeverDoAlone: ['become the agency center', 'replace current verified state'],
+      failureSurface: 'research receipts and truth contradictions',
+      commandSurface: 'research tools through chat authority bridge',
+    },
+    brain: {
+      kind: 'memory',
+      canSense: ['current state snapshots', 'claims', 'pursuit evidence'],
+      canChange: ['durable claims', 'state snapshots', 'memory candidates'],
+      reports: ['retrieval results', 'truth hierarchy status'],
+      mustNeverDoAlone: ['override newer verified state', 'hide unresolved contradictions'],
+      failureSurface: 'truth receipts and retrieval diagnostics',
+      commandSurface: 'memory and claim APIs',
+    },
+    chat: {
+      kind: 'mouth_and_authority_bridge',
+      canSense: ['jtr messages', 'links', 'corrections', 'commands'],
+      canChange: ['pursuits through tools', 'claims through corrections', 'authority requests'],
+      reports: ['operator replies', 'tool receipts'],
+      mustNeverDoAlone: ['be the source of truth over engine state', 'punt low-risk reversible decisions by default'],
+      failureSurface: 'conversation receipts and agency inbox',
+      commandSurface: 'agency tools and operator conversation',
+    },
+    dashboard: {
+      kind: 'operator_surface',
+      canSense: ['agency state', 'receipts', 'consequences', 'pursuits'],
+      canChange: ['operator inspection focus'],
+      reports: ['evidence chains', 'attention caps', 'authority posture'],
+      mustNeverDoAlone: ['be ornamental', 'mask missing receipts'],
+      failureSurface: 'dashboard route checks and agency events',
+      commandSurface: 'local dashboard APIs',
+    },
+  },
   editor: {
     repeatedNewsletterSkeleton: ['feedback loop', 'becoming', 'control loop'],
     requireConsequenceFor: [
@@ -94,6 +159,9 @@ export function loadAgencyCharter({ charterPath = null, config = {}, agentName =
     sourceTruthHierarchy: Array.isArray(merged.sourceTruthHierarchy)
       ? merged.sourceTruthHierarchy
       : DEFAULT_CHARTER.sourceTruthHierarchy,
+    organs: merged.organs && typeof merged.organs === 'object'
+      ? merged.organs
+      : DEFAULT_CHARTER.organs,
   };
 }
 

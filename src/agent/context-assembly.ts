@@ -228,6 +228,16 @@ export function buildAgencyContextSection(projectRoot: string, agentName: string
   const truth = state.truth && typeof state.truth === 'object'
     ? state.truth as Record<string, unknown>
     : {};
+  const organs = state.organs && typeof state.organs === 'object'
+    ? Object.entries(state.organs as Record<string, Record<string, unknown>>).slice(0, 6)
+    : [];
+  const organLines = organs.length > 0
+    ? organs.map(([name, organ]) => {
+        const senses = Array.isArray(organ.canSense) ? organ.canSense.slice(0, 2).join(', ') : '';
+        const changes = Array.isArray(organ.canChange) ? organ.canChange.slice(0, 2).join(', ') : '';
+        return `- ${name}: kind=${organ.kind || 'organ'} | senses=${senses || 'unknown'} | changes=${changes || 'unknown'} | command=${organ.commandSurface || 'unknown'}`;
+      })
+    : [];
   const lines = active.length > 0
     ? active.map((pursuit) => [
         `- ${pursuit.id}: ${pursuit.title || pursuit.summary || 'Untitled pursuit'}`,
@@ -248,6 +258,7 @@ export function buildAgencyContextSection(projectRoot: string, agentName: string
     `Attention: active ${attention.activePursuits ?? 'unknown'}/${attention.maxActivePursuits ?? 'unknown'}, watch ${attention.watchItems ?? 'unknown'}/${attention.maxWatchItems ?? 'unknown'}`,
     `Next autonomous action: ${nextAction ? [nextAction.kind, nextAction.pursuitId, nextAction.reason].filter(Boolean).join(' | ') : 'none'}`,
     `Open contradictions: ${truth.unresolvedContradictions ?? 0}`,
+    ...(organLines.length > 0 ? ['', 'Body organs:', ...organLines] : []),
     '',
     'Active pursuits:',
     ...lines,

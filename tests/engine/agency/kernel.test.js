@@ -188,6 +188,25 @@ test('AgencyKernel loads a charter and enforces active/watch attention caps', as
   assert.equal(state.attention.deferredItems >= 1, true);
 });
 
+test('AgencyKernel exposes the body organ contract in canonical state', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const state = kernel.state();
+  const organs = state.organs || {};
+
+  assert.equal(organs.crons.kind, 'scheduler');
+  assert.equal(organs.crons.canSense.includes('cron reports'), true);
+  assert.equal(organs.crons.canChange.includes('bounded schedules'), true);
+  assert.equal(organs.crons.mustNeverDoAlone.includes('create recurring work without pursuit binding'), true);
+  assert.equal(organs.workers.failureSurface, 'worker receipts and agency consequences');
+  assert.match(organs.chat.commandSurface, /agency tools/);
+});
+
 test('AgencyKernel resident tick advances one pursuit and records scratch, editor, and consequence receipts', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
