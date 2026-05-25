@@ -204,10 +204,16 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(html, /id="resident-consequences"/);
   assert.match(html, /id="resident-consequence-panel"/);
   assert.match(html, /id="resident-operator-needed"/);
+  assert.match(html, /id="resident-attention-panel"/);
+  const residentNextActionTag = html.match(/<section[^>]*id="resident-next-action"[^>]*>/)?.[0] || '';
+  const residentAttentionTag = html.match(/<section[^>]*id="resident-attention-panel"[^>]*>/)?.[0] || '';
   const residentOperatorTag = html.match(/<section[^>]*id="resident-operator-needed"[^>]*>/)?.[0] || '';
   const residentConsequenceTag = html.match(/<section[^>]*id="resident-consequence-panel"[^>]*>/)?.[0] || '';
+  assert.match(residentNextActionTag, /\bhidden\b/);
+  assert.match(residentAttentionTag, /\bhidden\b/);
   assert.match(residentOperatorTag, /\bhidden\b/);
   assert.match(residentConsequenceTag, /\bhidden\b/);
+  assert.doesNotMatch(html, /Waiting for agency state/);
   assert.doesNotMatch(html, /h23-resident-diagnostics/);
   assert.doesNotMatch(html, /id="resident-receipts"/);
   assert.doesNotMatch(html, /id="resident-inbox"/);
@@ -347,6 +353,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /PRIMARY AGENT/);
   assert.doesNotMatch(js, /SECONDARY AGENT/);
   assert.match(js, /renderResidentHomeSurface/);
+  assert.match(js, /toggleResidentNextActionPanel/);
+  assert.match(js, /toggleResidentAttentionPanel/);
   assert.match(js, /residentPostureText\(state\)/);
   assert.match(js, /function residentPostureText\(state/);
   assert.match(js, /return 'in agency bootcamp'/);
@@ -365,6 +373,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /residentBriefCountText/);
   assert.doesNotMatch(js, /nothing needed from jtr/);
   assert.match(js, /renderResidentAttentionBudget/);
+  assert.doesNotMatch(js, /No active resident pursuits\./);
   assert.match(js, /toggleResidentOperatorPanel/);
   assert.doesNotMatch(js, />Nothing right now\.</);
   assert.doesNotMatch(js, />\$\{Number\(state\.attention\?\.deferredItems/);

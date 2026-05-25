@@ -1371,15 +1371,18 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   setHtml('resident-health-strip', renderResidentAttentionBudget({ active, activeMax, watch, watchMax }));
   syncResidentActionButton(state);
 
-  setHtml('resident-next-action', renderResidentNextAction(state));
+  const nextActionHtml = renderResidentNextAction(state);
+  toggleResidentNextActionPanel(nextActionHtml);
+  setHtml('resident-next-action', nextActionHtml);
   const operatorItems = residentOperatorItems(state, brief);
   toggleResidentOperatorPanel(operatorItems);
   setHtml('resident-operator-needed', operatorItems.length ? renderResidentOperatorNeeded(operatorItems) : '');
   const pursuitSource = Array.isArray(state.activePursuits) ? state.activePursuits : pursuits;
   const activePursuits = (pursuitSource || []).filter((p) => p && p.status !== 'discarded' && p.status !== 'closed').slice(0, 5);
+  toggleResidentAttentionPanel(activePursuits);
   setHtml('resident-active-pursuits', activePursuits.length
     ? activePursuits.map(renderResidentPursuitCard).join('')
-    : '<div class="h23-resident-empty">No active resident pursuits.</div>');
+    : '');
   const consequenceRows = groupResidentConsequences(residentHomeConsequenceRows(state.recentConsequences || consequences || [])).slice(0, 6);
   toggleResidentConsequencesPanel(consequenceRows);
   setHtml('resident-consequences', consequenceRows.length
@@ -1431,6 +1434,16 @@ function residentPostureText(state = {}) {
 
 function toggleResidentOperatorPanel(items) {
   const panel = document.getElementById('resident-operator-needed');
+  if (panel) panel.hidden = !items.length;
+}
+
+function toggleResidentNextActionPanel(html) {
+  const panel = document.getElementById('resident-next-action');
+  if (panel) panel.hidden = !String(html || '').trim();
+}
+
+function toggleResidentAttentionPanel(items) {
+  const panel = document.getElementById('resident-attention-panel');
   if (panel) panel.hidden = !items.length;
 }
 
@@ -1562,10 +1575,7 @@ function renderResidentNextAction(state) {
   const next = state.nextAction || {};
   const pursuit = state.currentPursuit || {};
   if (!next.kind && !pursuit.id) {
-    return `
-      <div class="h23-resident-section-title">Next Action</div>
-      <div class="h23-resident-empty">No selected action yet.</div>
-    `;
+    return '';
   }
   return `
     <div class="h23-resident-section-title">Next Action</div>
