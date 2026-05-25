@@ -1711,8 +1711,6 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   setHtml('resident-consequences', consequenceRows.length
     ? consequenceRows.map(renderResidentConsequenceItem).join('')
     : '<div class="h23-resident-empty">No recent consequences.</div>');
-  setHtml('resident-receipts', (receipts || []).slice(0, 8).map(renderResidentReceiptRow).join('') || '<div class="h23-resident-empty">No recent receipts.</div>');
-  setHtml('resident-inbox', (inbox || []).slice(0, 8).map(renderResidentInboxRow).join('') || '<div class="h23-resident-empty">No recent inbox decisions.</div>');
 }
 
 function renderResidentAttentionBudget({ active, activeMax, watch, watchMax }) {

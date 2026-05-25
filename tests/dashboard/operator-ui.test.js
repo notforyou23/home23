@@ -137,6 +137,10 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(html, /id="resident-active-pursuits"/);
   assert.match(html, /id="resident-consequences"/);
   assert.match(html, /id="resident-operator-needed"/);
+  assert.doesNotMatch(html, /h23-resident-diagnostics/);
+  assert.doesNotMatch(html, /id="resident-receipts"/);
+  assert.doesNotMatch(html, /id="resident-inbox"/);
+  assert.doesNotMatch(html, /Receipts and Inbox/);
   assert.doesNotMatch(html, /id="home-layout-grid"/);
   assert.doesNotMatch(html, /COSMO status indicator/);
   assert.doesNotMatch(html, /Engine State/);
@@ -185,6 +189,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /PRIMARY AGENT/);
   assert.doesNotMatch(js, /SECONDARY AGENT/);
   assert.match(js, /renderResidentHomeSurface/);
+  assert.doesNotMatch(js, /setHtml\('resident-receipts'/);
+  assert.doesNotMatch(js, /setHtml\('resident-inbox'/);
   assert.match(js, /residentBriefCountText/);
   assert.match(js, /renderResidentAttentionBudget/);
   assert.match(js, /toggleResidentOperatorPanel/);
@@ -240,6 +246,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(css, /\.h23-resident-command/);
   assert.match(css, /\.h23-resident-action-btn\.danger/);
   assert.match(css, /\.h23-resident-stream/);
+  assert.doesNotMatch(css, /\.h23-resident-diagnostics/);
   assert.match(css, /\.h23-organ-drawer/);
   assert.match(css, /\.h23-organ-panel/);
   assert.match(css, /\.h23-system-rail/);

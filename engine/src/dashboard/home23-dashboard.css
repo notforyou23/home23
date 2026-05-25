@@ -4399,9 +4399,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
 .h23-resident-home {
   display: grid;
   grid-template-columns: minmax(360px, 0.95fr) minmax(0, 1.15fr);
-  grid-template-areas:
-    "left right"
-    "diagnostics diagnostics";
+  grid-template-areas: "left right";
   gap: 14px;
   align-items: start;
   min-height: 70vh;
@@ -4539,7 +4537,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
 .h23-resident-operator { grid-area: operator; }
 .h23-resident-attention { grid-area: attention; }
 .h23-resident-consequence { grid-area: consequence; }
-.h23-resident-diagnostics { grid-area: diagnostics; }
 
 .h23-resident-section-head {
   display: flex;
@@ -4680,19 +4677,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
   margin-top: 10px;
   color: rgba(255,255,255,0.55);
   font-size: 0.84rem;
-}
-
-.h23-resident-diagnostics summary {
-  cursor: pointer;
-  color: rgba(255,255,255,0.72);
-  font-weight: 800;
-}
-
-.h23-resident-diagnostics-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px;
-  margin-top: 14px;
 }
 
 @media (max-width: 1080px) {
