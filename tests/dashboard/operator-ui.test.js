@@ -426,6 +426,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /renderResidentPursuitSignal\(p, updated\)/);
   assert.match(js, /renderResidentPursuitInspectLink/);
   assert.match(js, /h23-resident-inspect-link/);
+  assert.match(js, /aria-label="Inspect resident pursuit evidence"/);
+  assert.match(js, /title="Inspect resident pursuit evidence"/);
+  assert.doesNotMatch(js, />\s*Inspect\s*<\/a>/);
   assert.match(js, /h23-resident-veto-btn/);
   assert.match(js, /aria-label="Discard resident pursuit"/);
   assert.match(js, /title="Discard resident pursuit"/);
@@ -491,6 +494,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(css, /\.h23-resident-home/);
   assert.match(css, /\.h23-resident-command/);
   assert.match(css, /\.h23-resident-action-btn\.danger/);
+  assert.match(css, /\.h23-resident-inspect-link::before/);
+  assert.match(css, /content: "\\2197"/);
   assert.match(css, /\.h23-resident-veto-btn/);
   assert.match(css, /\.h23-resident-veto-btn::before/);
   assert.match(css, /content: "\\00d7"/);

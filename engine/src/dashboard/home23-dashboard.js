@@ -1549,9 +1549,7 @@ function renderResidentPursuitAuthority(p) {
 
 function renderResidentPursuitInspectLink(p) {
   return `
-    <a class="h23-resident-inspect-link" href="#agency" data-tab-jump="agency" data-pursuit-id="${escapeAttr(p.id || '')}">
-      Inspect
-    </a>
+    <a class="h23-resident-inspect-link" href="#agency" aria-label="Inspect resident pursuit evidence" title="Inspect resident pursuit evidence" data-tab-jump="agency" data-pursuit-id="${escapeAttr(p.id || '')}"></a>
   `;
 }
 

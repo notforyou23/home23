@@ -4626,6 +4626,9 @@ body.h23-external-focus #cosmo23-refresh-btn {
 .h23-resident-inspect-link {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  width: 34px;
+  min-width: 34px;
   min-height: 34px;
   color: rgba(255,255,255,0.7);
   font-size: 0.78rem;
@@ -4633,6 +4636,10 @@ body.h23-external-focus #cosmo23-refresh-btn {
   letter-spacing: 0.02em;
   text-decoration: none;
   text-transform: uppercase;
+}
+
+.h23-resident-inspect-link::before {
+  content: "\2197";
 }
 
 .h23-resident-inspect-link:hover {
