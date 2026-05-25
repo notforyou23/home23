@@ -4680,6 +4680,14 @@ body.h23-external-focus #cosmo23-refresh-btn {
   color: #fecaca;
 }
 
+.h23-resident-veto-btn {
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
 .h23-resident-action-btn:disabled {
   opacity: 0.55;
   cursor: wait;
