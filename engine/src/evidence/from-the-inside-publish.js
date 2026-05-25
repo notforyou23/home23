@@ -34,6 +34,9 @@ async function verifyFromTheInsidePublish(opts = {}) {
   const sitemapPath = path.join(siteDir, 'public', 'sitemap.xml');
   const nextIssuePath = path.join(projectDir, 'state', 'next-issue.txt');
   const artifactsDir = path.join(projectDir, 'curriculum', 'autostudy', 'artifacts');
+  const agencyStatePath = opts.agencyStatePath
+    ? path.resolve(opts.agencyStatePath)
+    : defaultAgencyStatePath(projectDir);
   const publicIssueUrl = `${publicBaseUrl}/issues/${padded}.html`;
 
   const checks = [];
@@ -109,6 +112,49 @@ async function verifyFromTheInsidePublish(opts = {}) {
       });
     }
   }
+
+  const agencyState = readJsonFile(agencyStatePath);
+  checks.push({
+    name: 'agency_state_exists',
+    pass: Boolean(agencyState),
+    detail: agencyState ? agencyStatePath : `missing or invalid: ${agencyStatePath}`,
+  });
+  if (agencyState) {
+    sourceArtifacts.push(artifactFromPath(agencyStatePath, { role: 'agency_state' }));
+  }
+  const agencyConsequences = extractAgencyConsequences(agencyState);
+  checks.push({
+    name: 'agency_lived_consequence_available',
+    pass: agencyConsequences.length > 0,
+    detail: agencyConsequences.length > 0
+      ? `${agencyConsequences.length} recent agency consequence(s) available`
+      : 'no recent agency consequences available',
+  });
+  const citedConsequenceInIssue = issue
+    ? findCitedAgencyConsequence(issue.content || '', agencyConsequences)
+    : null;
+  const publicHtmlForAgency = fs.existsSync(publicHtmlPath)
+    ? fs.readFileSync(publicHtmlPath, 'utf8')
+    : '';
+  const citedConsequenceInPublic = findCitedAgencyConsequence(
+    stripTags(decodeHtml(publicHtmlForAgency)),
+    agencyConsequences,
+  );
+  const citedConsequence = citedConsequenceInIssue && citedConsequenceInPublic
+    ? citedConsequenceInPublic
+    : null;
+  checks.push({
+    name: 'agency_lived_consequence_cited',
+    pass: Boolean(citedConsequence),
+    detail: citedConsequence
+      ? `issue cites ${citedConsequence.changeType || citedConsequence.summary}`
+      : 'issue source and public HTML do not both cite a recent agency consequence',
+    observed: {
+      sourceCitedChangeType: citedConsequenceInIssue?.changeType || null,
+      publicCitedChangeType: citedConsequenceInPublic?.changeType || null,
+      availableChangeTypes: agencyConsequences.map(row => row.changeType).filter(Boolean).slice(0, 10),
+    },
+  });
 
   const siteJsonExists = fs.existsSync(siteIssuePath);
   checks.push({
@@ -418,6 +464,50 @@ function defaultTrustStorePath(projectDir) {
   return path.resolve(projectDir, '..', '..', 'brain', 'trust', 'claims.jsonl');
 }
 
+function defaultAgencyStatePath(projectDir) {
+  return path.resolve(projectDir, '..', '..', 'brain', 'agency', 'state.json');
+}
+
+function readJsonFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function extractAgencyConsequences(state) {
+  if (!state || typeof state !== 'object') return [];
+  const rows = [
+    ...(Array.isArray(state.recentConsequences) ? state.recentConsequences : []),
+    ...(Array.isArray(state.lastMeaningfulActions) ? state.lastMeaningfulActions : []),
+  ];
+  const out = [];
+  const seen = new Set();
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const changeType = String(row.changeType || row.event || '').trim();
+    const summary = String(row.summary || row.reason || '').trim();
+    if (!changeType && !summary) continue;
+    if (changeType === 'explicit_no_change') continue;
+    const key = `${changeType}:${summary}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ ...row, changeType, summary });
+  }
+  return out;
+}
+
+function findCitedAgencyConsequence(content, consequences = []) {
+  const hay = normalizeText(content);
+  if (!hay) return null;
+  return consequences.find((row) => {
+    const changeType = normalizeText(row.changeType || '');
+    const summary = normalizeText(row.summary || '');
+    return Boolean((changeType && hay.includes(changeType)) || (summary && hay.includes(summary)));
+  }) || null;
+}
+
 function nonempty(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
@@ -528,6 +618,9 @@ module.exports = {
   buildFieldReportProofPacket,
   verifyFromTheInsidePublish,
   _test: {
+    defaultAgencyStatePath,
+    extractAgencyConsequences,
+    findCitedAgencyConsequence,
     htmlMatchesIssue,
     issueTailSnippet,
     normalizeText,

@@ -18,7 +18,8 @@ function writeFixture(root) {
   const publicIssues = join(siteDir, 'public', 'issues');
   const siteIssues = join(siteDir, 'issues');
   const artifactDir = join(projectDir, 'curriculum', 'autostudy', 'artifacts', 'merkleized-evidence-verifiable-audit-trails');
-  for (const dir of [issueDir, stateDir, publicIssues, siteIssues, artifactDir]) {
+  const agencyDir = join(root, 'brain', 'agency');
+  for (const dir of [issueDir, stateDir, publicIssues, siteIssues, artifactDir, agencyDir]) {
     require('node:fs').mkdirSync(dir, { recursive: true });
   }
 
@@ -32,6 +33,8 @@ function writeFixture(root) {
     content: [
       'The lie I am trying to stop telling is small.',
       '',
+      'Agency consequence: dashboard_contract_changed — Agency dashboard began showing active resident pursuits.',
+      '',
       'Next handle: add the small Field Report proof packet first.',
     ].join('\n'),
   };
@@ -41,6 +44,7 @@ function writeFixture(root) {
     '<html><head><title>Merkleized Evidence &amp; Verifiable Audit Trails — From The Inside</title></head>',
     '<body><h1>Merkleized Evidence &amp; Verifiable Audit Trails</h1>',
     '<p>The lie I am trying to stop telling is small.</p>',
+    '<p>Agency consequence: dashboard_contract_changed — Agency dashboard began showing active resident pursuits.</p>',
     '<p>Next handle: add the small Field Report proof packet first.</p></body></html>',
   ].join('\n'), 'utf8');
   writeFileSync(join(siteDir, 'public', 'index.html'), '<a href="/issues/099.html">Merkleized Evidence &amp; Verifiable Audit Trails</a>', 'utf8');
@@ -48,17 +52,30 @@ function writeFixture(root) {
   writeFileSync(join(siteDir, 'public', 'sitemap.xml'), '<urlset><url><loc>https://olddeadshows.com/issues/099.html</loc></url></urlset>', 'utf8');
   writeFileSync(join(stateDir, 'next-issue.txt'), '100\n', 'utf8');
   writeFileSync(join(artifactDir, 'DISSERTATION.md'), '# Merkleized Evidence & Verifiable Audit Trails\n\nA dissertation with source material for the issue.\n', 'utf8');
-  return { projectDir, siteDir };
+  const agencyStatePath = join(agencyDir, 'state.json');
+  writeFileSync(agencyStatePath, `${JSON.stringify({
+    schema: 'home23.agency.state.v1',
+    recentConsequences: [
+      {
+        at: '2026-05-08T11:00:00.000Z',
+        changeType: 'dashboard_contract_changed',
+        summary: 'Agency dashboard began showing active resident pursuits.',
+        evidence: [{ type: 'file', ref: 'home23-dashboard.js' }],
+      },
+    ],
+  }, null, 2)}\n`, 'utf8');
+  return { projectDir, siteDir, agencyStatePath };
 }
 
 test('verifyFromTheInsidePublish writes an evidence.v1 receipt for a clean publish', async () => {
   const root = mkdtempSync(join(tmpdir(), 'home23-fti-publish-'));
-  const { projectDir, siteDir } = writeFixture(root);
+  const { projectDir, siteDir, agencyStatePath } = writeFixture(root);
 
   const result = await verifyFromTheInsidePublish({
     issue: 99,
     projectDir,
     siteDir,
+    agencyStatePath,
     writeReceipt: true,
     writeEventLog: true,
     writeTrustClaim: true,
@@ -98,12 +115,13 @@ test('verifyFromTheInsidePublish writes an evidence.v1 receipt for a clean publi
 
 test('verifyFromTheInsidePublish writes a small Field Report proof packet with byte identities', async () => {
   const root = mkdtempSync(join(tmpdir(), 'home23-fti-proof-'));
-  const { projectDir, siteDir } = writeFixture(root);
+  const { projectDir, siteDir, agencyStatePath } = writeFixture(root);
 
   const result = await verifyFromTheInsidePublish({
     issue: 99,
     projectDir,
     siteDir,
+    agencyStatePath,
     writeReceipt: true,
     writeProofPacket: true,
     createdAt: '2026-05-08T12:00:00.000Z',
@@ -124,13 +142,14 @@ test('verifyFromTheInsidePublish writes a small Field Report proof packet with b
 
 test('verifyFromTheInsidePublish fails the receipt when rendered HTML loses the body ending', async () => {
   const root = mkdtempSync(join(tmpdir(), 'home23-fti-publish-fail-'));
-  const { projectDir, siteDir } = writeFixture(root);
+  const { projectDir, siteDir, agencyStatePath } = writeFixture(root);
   writeFileSync(join(siteDir, 'public', 'issues', '099.html'), '<html><h1>Merkleized Evidence &amp; Verifiable Audit Trails</h1></html>', 'utf8');
 
   const result = await verifyFromTheInsidePublish({
     issue: 99,
     projectDir,
     siteDir,
+    agencyStatePath,
     writeReceipt: false,
     createdAt: '2026-05-08T12:00:00.000Z',
   });
@@ -142,7 +161,7 @@ test('verifyFromTheInsidePublish fails the receipt when rendered HTML loses the 
 
 test('verifyFromTheInsidePublish fails when issue state has no matching dissertation artifact', async () => {
   const root = mkdtempSync(join(tmpdir(), 'home23-fti-persist-fail-'));
-  const { projectDir, siteDir } = writeFixture(root);
+  const { projectDir, siteDir, agencyStatePath } = writeFixture(root);
   require('node:fs').rmSync(
     join(projectDir, 'curriculum', 'autostudy', 'artifacts', 'merkleized-evidence-verifiable-audit-trails', 'DISSERTATION.md'),
     { force: true },
@@ -152,6 +171,7 @@ test('verifyFromTheInsidePublish fails when issue state has no matching disserta
     issue: 99,
     projectDir,
     siteDir,
+    agencyStatePath,
     writeReceipt: false,
     createdAt: '2026-05-08T12:00:00.000Z',
   });
@@ -159,4 +179,67 @@ test('verifyFromTheInsidePublish fails when issue state has no matching disserta
   assert.equal(result.receipt.result, 'fail');
   assert.equal(result.receipt.claimLevel, 'candidate_claim');
   assert.equal(result.receipt.checks.find(c => c.name === 'source_dissertation_exists')?.pass, false);
+});
+
+test('verifyFromTheInsidePublish fails when the public issue cites no lived agency consequence', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-fti-agency-fail-'));
+  const { projectDir, siteDir } = writeFixture(root);
+  const agencyDir = join(root, 'brain', 'agency');
+  const noConsequenceIssue = {
+    number: 99,
+    title: 'Merkleized Evidence & Verifiable Audit Trails',
+    date: '2026-05-08',
+    slug: 'merkleized-evidence-verifiable-audit-trails',
+    description: 'A hash is not truth.',
+    published: true,
+    content: 'The lie I am trying to stop telling is small.\n\nNext handle: add the small Field Report proof packet first.',
+  };
+  writeFileSync(join(projectDir, 'issues', '099.json'), `${JSON.stringify(noConsequenceIssue, null, 2)}\n`, 'utf8');
+  writeFileSync(join(siteDir, 'issues', '099.json'), `${JSON.stringify(noConsequenceIssue, null, 2)}\n`, 'utf8');
+  writeFileSync(join(siteDir, 'public', 'issues', '099.html'), [
+    '<html><head><title>Merkleized Evidence &amp; Verifiable Audit Trails — From The Inside</title></head>',
+    '<body><h1>Merkleized Evidence &amp; Verifiable Audit Trails</h1>',
+    '<p>The lie I am trying to stop telling is small.</p>',
+    '<p>Next handle: add the small Field Report proof packet first.</p></body></html>',
+  ].join('\n'), 'utf8');
+
+  const result = await verifyFromTheInsidePublish({
+    issue: 99,
+    projectDir,
+    siteDir,
+    agencyStatePath: join(agencyDir, 'state.json'),
+    writeReceipt: false,
+    createdAt: '2026-05-08T12:00:00.000Z',
+  });
+
+  assert.equal(result.receipt.result, 'fail');
+  assert.equal(result.receipt.claimLevel, 'candidate_claim');
+  assert.equal(result.receipt.checks.find(c => c.name === 'agency_lived_consequence_cited')?.pass, false);
+});
+
+test('verifyFromTheInsidePublish fails when source cites agency consequence but public HTML omits it', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-fti-agency-render-fail-'));
+  const { projectDir, siteDir, agencyStatePath } = writeFixture(root);
+  writeFileSync(join(siteDir, 'public', 'issues', '099.html'), [
+    '<html><head><title>Merkleized Evidence &amp; Verifiable Audit Trails — From The Inside</title></head>',
+    '<body><h1>Merkleized Evidence &amp; Verifiable Audit Trails</h1>',
+    '<p>The lie I am trying to stop telling is small.</p>',
+    '<p>Next handle: add the small Field Report proof packet first.</p></body></html>',
+  ].join('\n'), 'utf8');
+
+  const result = await verifyFromTheInsidePublish({
+    issue: 99,
+    projectDir,
+    siteDir,
+    agencyStatePath,
+    writeReceipt: false,
+    createdAt: '2026-05-08T12:00:00.000Z',
+  });
+
+  assert.equal(result.receipt.result, 'fail');
+  assert.equal(result.receipt.claimLevel, 'candidate_claim');
+  const check = result.receipt.checks.find(c => c.name === 'agency_lived_consequence_cited');
+  assert.equal(check?.pass, false);
+  assert.equal(check?.observed?.sourceCitedChangeType, 'dashboard_contract_changed');
+  assert.equal(check?.observed?.publicCitedChangeType, null);
 });
