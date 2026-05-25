@@ -163,6 +163,9 @@ test('buildCronResultPacket extracts machine-readable agency intake packets from
   assert.equal(packet.desiredChangedFuture, 'Report digestion updates standing agency implementation pursuit.');
   assert.equal(packet.nextMove, 'merge with Home23 agency spine pursuit');
   assert.deepEqual(packet.discarded, [{ ref: 'viral meta thread', reason: 'no durable action' }]);
+  assert.deepEqual((packet as any).actionWorthy, [{ summary: 'Bind report outputs to resident pursuits.' }]);
+  assert.deepEqual((packet as any).watchItems, [{ summary: 'Watch repeated autonomy discourse.' }]);
+  assert.deepEqual((packet as any).contradictions, []);
   assert.equal(packet.tags.includes('x-timeline'), true);
   assert.match(packet.seen.join('\n'), /Bind report outputs/);
 });

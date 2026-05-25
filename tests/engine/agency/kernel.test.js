@@ -653,6 +653,62 @@ test('AgencyKernel world-stream intake creates explicit discard/no-change receip
   assert.equal(consequences.some(row => row.changeType === 'explicit_no_change'), true);
 });
 
+test('AgencyKernel fans structured report packets into child pursuits, claims, and discard receipts', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const result = await kernel.intakeWorldStream({
+    source: 'cron.x-timeline-evening',
+    kind: 'timeline_report',
+    summary: 'Timeline surfaced one concrete agency implementation signal.',
+    seen: ['action 1: Bind report outputs to resident pursuits.'],
+    actionWorthy: [{
+      summary: 'Bind report outputs to resident pursuits.',
+      desiredChangedFuture: 'Timeline report output becomes resident pursuit evidence instead of delivery-only content.',
+      nextMove: 'implement structured report fan-out',
+      evidenceRef: 'x-post-agent-agency',
+    }],
+    watchItems: [{
+      summary: 'Watch repeated autonomy discourse for concrete implementation details.',
+      nextMove: 'check for mechanisms, not vibe',
+      evidenceRef: 'x-autonomy-watch',
+    }],
+    contradictions: [{
+      claim: 'Delivery to Telegram is sufficient completion for timeline reports.',
+      contradicts: 'claim_delivery_not_completion',
+      sourceRef: 'legacy-report-contract',
+    }],
+    discarded: [{ ref: 'viral meta thread', reason: 'no durable Home23 action' }],
+    desiredChangedFuture: 'Report digestion updates standing agency implementation pursuit.',
+    nextMove: 'merge with Home23 agency spine pursuit',
+    tags: ['world-stream', 'x-timeline', 'agency'],
+  });
+
+  const pursuits = kernel.pursuits({ limit: 20 });
+  const active = pursuits.filter(row => row.status === 'active');
+  const watch = pursuits.filter(row => row.status === 'watch');
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+  const truthRows = readJsonl(join(dir, 'agency', 'truth.jsonl'));
+
+  assert.equal(result.decision.route, 'fanout');
+  assert.equal(result.children.actionWorthy.length, 1);
+  assert.equal(result.children.watchItems.length, 1);
+  assert.equal(result.children.contradictions.length, 1);
+  assert.equal(result.children.discarded.length, 1);
+  assert.equal(active.some(row => row.summary === 'Bind report outputs to resident pursuits.'), true);
+  assert.equal(watch.some(row => row.summary === 'Watch repeated autonomy discourse for concrete implementation details.'), true);
+  assert.equal(truthRows.some(row => row.claim === 'Delivery to Telegram is sufficient completion for timeline reports.'), true);
+  assert.equal(receipts.some(row => row.event === 'world_stream_child_selected' && row.route === 'pursue'), true);
+  assert.equal(receipts.some(row => row.event === 'world_stream_child_selected' && row.route === 'watch'), true);
+  assert.equal(receipts.some(row => row.event === 'world_stream_child_discarded' && row.reason === 'no durable Home23 action'), true);
+  assert.equal(consequences.some(row => row.changeType === 'structured_report_fanout' && row.status === 'fanout'), true);
+});
+
 test('AgencyKernel turns world-stream operator corrections into durable truth claims', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

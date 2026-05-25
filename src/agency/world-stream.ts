@@ -23,6 +23,9 @@ export interface AgencyWorldStreamPacket {
     sourceRef?: string;
     contradicts?: string;
   };
+  actionWorthy?: Array<Record<string, unknown>>;
+  watchItems?: Array<Record<string, unknown>>;
+  contradictions?: Array<Record<string, unknown>>;
   evidence: Array<{ type: string; ref: string }>;
   tags: string[];
 }
@@ -235,6 +238,9 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
     changedFuture,
     desiredChangedFuture,
     nextMove,
+    actionWorthy: intakePacket?.actionWorthy,
+    watchItems: intakePacket?.watchItems,
+    contradictions: intakePacket?.contradictions,
     evidence: [{ type: 'cron_result', ref: job.id }],
     tags: ['world-stream', 'cron', ...(intakePacket?.tags || [])],
   };

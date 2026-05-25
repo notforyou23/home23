@@ -405,6 +405,9 @@ export class AgencyKernel {
       candidateInput.summary = input.summary || 'World-stream item produced explicit no-change receipt.';
     }
     const candidate = this.router.normalize(candidateInput);
+    if (hasStructuredReportFanout(input)) {
+      return this.assimilateStructuredReport(input, candidate);
+    }
     const closure = this.applyReceiptClosure(candidate);
     if (closure) {
       const decision = { route: 'close', reason: 'receipt_proved_stop_condition' };
@@ -542,6 +545,174 @@ export class AgencyKernel {
     });
     const state = this.ensureState();
     return { candidate, decision, pursuit, receipt, state };
+  }
+
+  assimilateStructuredReport(input = {}, candidate = this.router.normalize(input)) {
+    const decision = { route: 'fanout', reason: 'structured_report_items_assimilated' };
+    this.store.appendInbox({ ...candidate, decision });
+    const at = nowIso();
+    const receipt = this.store.appendReceipt({
+      schema: 'home23.agency.receipt.v1',
+      at,
+      event: 'world_stream_assimilated',
+      candidateId: candidate.candidateId,
+      source: candidate.source,
+      route: decision.route,
+      outcome: 'structured_report_fanout',
+      seen: candidate.seen,
+      discarded: candidate.discarded,
+      connectsTo: candidate.connectsTo,
+      nextMove: candidate.nextMove || null,
+      reason: decision.reason,
+      mode: this.config.mode,
+    });
+    const children = {
+      actionWorthy: [],
+      watchItems: [],
+      contradictions: [],
+      discarded: [],
+    };
+    for (const item of normalizeStructuredItems(input.actionWorthy)) {
+      const child = this.createStructuredReportPursuitChild({
+        item,
+        parent: candidate,
+        route: 'pursue',
+        childKind: 'report_action',
+        reason: 'structured_report_action_worthy',
+      });
+      children.actionWorthy.push(child);
+    }
+    for (const item of normalizeStructuredItems(input.watchItems)) {
+      const child = this.createStructuredReportPursuitChild({
+        item,
+        parent: candidate,
+        route: 'watch',
+        childKind: 'report_watch',
+        reason: 'structured_report_watch_item',
+      });
+      children.watchItems.push(child);
+    }
+    for (const item of normalizeStructuredItems(input.contradictions)) {
+      const claimText = String(item.claim || item.summary || item.title || '').trim();
+      if (!claimText) continue;
+      const claim = this.recordClaim({
+        claim: claimText,
+        sourceType: item.sourceType || 'source_artifact',
+        sourceRef: item.sourceRef || item.evidenceRef || candidate.source,
+        contradicts: item.contradicts || null,
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'world_stream_child_claimed',
+        parentCandidateId: candidate.candidateId,
+        claimId: claim.id,
+        source: candidate.source,
+        route: 'claim',
+        outcome: 'durable_claim',
+        reason: 'structured_report_contradiction_claim',
+        mode: this.config.mode,
+      });
+      children.contradictions.push({ claimId: claim.id, route: 'claim' });
+    }
+    for (const item of normalizeStructuredDiscards(candidate.discarded)) {
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'world_stream_child_discarded',
+        parentCandidateId: candidate.candidateId,
+        source: candidate.source,
+        route: 'discard',
+        outcome: 'discard',
+        ref: item.ref,
+        reason: item.reason,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at: nowIso(),
+        pursuitId: null,
+        status: 'discarded',
+        changeType: 'report_noise_discarded',
+        summary: item.reason,
+        evidence: [{ type: 'discarded_report_item', ref: item.ref }],
+      });
+      children.discarded.push({ ref: item.ref, route: 'discard' });
+    }
+    this.store.appendConsequence({
+      schema: 'home23.agency.consequence.v1',
+      at,
+      pursuitId: null,
+      status: 'fanout',
+      changeType: 'structured_report_fanout',
+      summary: candidate.summary,
+      evidence: candidate.evidence,
+      children,
+    });
+    const state = this.ensureState();
+    return { candidate, decision, receipt, children, state };
+  }
+
+  createStructuredReportPursuitChild({ item = {}, parent, route, childKind, reason }) {
+    const evidence = structuredItemEvidence(item, parent);
+    const childCandidate = this.router.normalize({
+      source: parent.source,
+      kind: item.kind || childKind,
+      summary: item.summary || item.title,
+      title: item.title,
+      authorityLevel: item.authorityLevel || parent.authorityLevel,
+      desiredChangedFuture: item.desiredChangedFuture || item.changedFuture || parent.desiredChangedFuture,
+      nextMove: item.nextMove || item.next || parent.nextMove,
+      whyItMatters: item.whyItMatters || parent.whyItMatters || parent.summary,
+      currentTheory: item.currentTheory || item.theory || null,
+      evidence,
+      tags: [...new Set([...(parent.tags || []), childKind])],
+      stopCondition: item.stopCondition || null,
+      verifier: item.verifier || null,
+      artifacts: Array.isArray(item.artifacts) ? item.artifacts : [],
+    });
+    let finalRoute = route;
+    let finalReason = reason;
+    const existing = this.store.findSimilar(childCandidate);
+    if (!existing) {
+      const budget = this.attentionBudget();
+      if (route === 'pursue' && Number(budget.activeCount || 0) >= Number(budget.maxActivePursuits || 0)) {
+        finalRoute = 'defer';
+        finalReason = 'active_attention_budget_exhausted';
+      } else if (route === 'watch' && Number(budget.watchCount || 0) >= Number(budget.maxWatchItems || 0)) {
+        finalRoute = 'defer';
+        finalReason = 'watch_attention_budget_exhausted';
+      }
+    }
+    const pursuit = existing
+      ? this.store.mergeSeen(existing, childCandidate, { route, reason: 'structured_report_child_merged' })
+      : this.store.createPursuit(childCandidate, { route: finalRoute === 'defer' ? 'watch' : finalRoute, reason: finalReason });
+    const finalPursuit = finalRoute === 'defer'
+      ? this.store.updatePursuit(pursuit.id, { status: 'deferred' }, { type: 'structured_report_child_deferred', reason: finalReason })
+      : pursuit;
+    this.store.appendReceipt({
+      schema: 'home23.agency.receipt.v1',
+      at: nowIso(),
+      event: 'world_stream_child_selected',
+      parentCandidateId: parent.candidateId,
+      candidateId: childCandidate.candidateId,
+      pursuitId: finalPursuit.id,
+      source: parent.source,
+      route: finalRoute,
+      reason: existing ? 'structured_report_child_merged' : finalReason,
+      mode: this.config.mode,
+      authority: this.authority.evaluate({ authorityLevel: finalPursuit.authorityLevel }),
+    });
+    this.store.appendConsequence({
+      schema: 'home23.agency.consequence.v1',
+      at: nowIso(),
+      pursuitId: finalPursuit.id,
+      status: finalPursuit.status,
+      changeType: route === 'watch' ? 'watch_item_created' : 'pursuit_created',
+      summary: finalPursuit.summary,
+      evidence,
+    });
+    return { pursuitId: finalPursuit.id, route: finalRoute };
   }
 
   applyReceiptClosure(candidate = {}) {
@@ -1286,4 +1457,43 @@ function isResolvedLiveProblemObservationPursuit(pursuit = {}) {
 function isCronBootcampAuditPursuit(pursuit = {}) {
   return pursuit.kind === 'cron_bootcamp_audit'
     && pursuit.source === 'scheduler.cron.bootcamp';
+}
+
+function normalizeStructuredItems(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(item => item && typeof item === 'object')
+    .map(item => ({ ...item }));
+}
+
+function normalizeStructuredDiscards(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(item => item && typeof item === 'object')
+    .map(item => ({
+      ref: String(item.ref || item.id || item.summary || 'report_noise'),
+      reason: String(item.reason || 'discarded_by_structured_report'),
+    }));
+}
+
+function hasStructuredReportFanout(input = {}) {
+  return normalizeStructuredItems(input.actionWorthy).length > 0
+    || normalizeStructuredItems(input.watchItems).length > 0
+    || normalizeStructuredItems(input.contradictions).length > 0;
+}
+
+function structuredItemEvidence(item = {}, parent = {}) {
+  const evidence = [];
+  if (Array.isArray(item.evidence)) evidence.push(...item.evidence);
+  if (item.evidenceRef) evidence.push({ type: 'report_item', ref: String(item.evidenceRef) });
+  if (Array.isArray(parent.evidence)) evidence.push(...parent.evidence);
+  const unique = [];
+  const seen = new Set();
+  for (const row of evidence) {
+    const key = JSON.stringify(row);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(row);
+  }
+  return unique;
 }
