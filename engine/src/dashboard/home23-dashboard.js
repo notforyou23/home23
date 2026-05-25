@@ -1693,8 +1693,7 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   const activeMax = Number(state.attention?.maxActivePursuits || state.charter?.attention?.maxActivePursuits || 0);
   const watch = Number(state.attention?.watchItems || 0);
   const watchMax = Number(state.attention?.maxWatchItems || state.charter?.attention?.maxWatchItems || 0);
-  const posture = [state.mode || 'unknown', state.bootcamp?.enabled ? 'bootcamp' : null].filter(Boolean).join(' / ');
-  setText('resident-posture', `${currentAgentLabel('Jerry')} is ${posture}`);
+  setText('resident-posture', `${currentAgentLabel('Jerry')} is ${residentPostureText(state)}`);
   setText('resident-summary', residentBriefLine(brief, state));
   setHtml('resident-health-strip', renderResidentAttentionBudget({ active, activeMax, watch, watchMax }));
 
@@ -1718,6 +1717,15 @@ function renderResidentAttentionBudget({ active, activeMax, watch, watchMax }) {
     <span><strong>${active}/${activeMax || '—'}</strong> active</span>
     <span><strong>${watch}/${watchMax || '—'}</strong> watch</span>
   `;
+}
+
+function residentPostureText(state = {}) {
+  if (state.bootcamp?.enabled) return 'in agency bootcamp';
+  const mode = String(state.mode || '').trim();
+  if (mode === 'dry_run') return 'rehearsing agency';
+  if (mode === 'live') return 'acting live';
+  if (mode) return humanizeResidentMachineText(mode).toLowerCase();
+  return 'waiting for resident state';
 }
 
 function toggleResidentOperatorPanel(items) {

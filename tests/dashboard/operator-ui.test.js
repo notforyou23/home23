@@ -189,6 +189,10 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /PRIMARY AGENT/);
   assert.doesNotMatch(js, /SECONDARY AGENT/);
   assert.match(js, /renderResidentHomeSurface/);
+  assert.match(js, /residentPostureText\(state\)/);
+  assert.match(js, /function residentPostureText\(state/);
+  assert.match(js, /return 'in agency bootcamp'/);
+  assert.doesNotMatch(js, /\[state\.mode \|\| 'unknown', state\.bootcamp\?\.enabled \? 'bootcamp' : null\]\.filter\(Boolean\)\.join\(' \/ '\)/);
   assert.doesNotMatch(js, /setHtml\('resident-receipts'/);
   assert.doesNotMatch(js, /setHtml\('resident-inbox'/);
   assert.match(js, /residentBriefCountText/);
