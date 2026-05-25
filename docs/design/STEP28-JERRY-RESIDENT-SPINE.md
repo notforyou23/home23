@@ -21,6 +21,7 @@ Status: implementation slice in progress.
 - Editor kill verdicts have teeth: stale watch loops are demoted to `discarded` with discard receipts and `stale_thread_killed` consequences.
 - `AgencyKernel.intakeWorldStream()` assimilates reports/links/research/cron outputs into machine-readable route and consequence receipts.
 - World-stream worker/verifier receipts can close existing pursuits when they name a `pursuitId` and provide closure status/evidence; closure writes `closed` receipts plus `pursuit_closed_by_receipt` consequences.
+- Live-problem observations are keyed by problem id instead of collapsing into one channel pursuit. A resolved live-problem transition closes the matching resident pursuit with verifier evidence and `pursuit_closed_by_receipt` consequence.
 - `AgencyKernel.recordClaim()` writes source-ranked truth claims, demotes lower-authority contradicted claims through append-only `truth_claim_superseded` receipts, keeps lower-authority contradictions visible, and decays stale claims out of the current-state projection.
 - Chat/user corrections are no longer generic conversation noise: incoming correction messages become `operator_correction` world-stream packets, write durable `jtr_correction` claims, and can demote weaker truth when linked to a contradicted claim. Chat also exposes `agency_record_claim` for explicit truth/correction entries.
 - `AgencyKernel.proposeDelta()` arbitrates behavioral deltas. In live mode, approved reversible L0-L2 `watch_item_created` deltas apply by creating resident watch pursuits; high-risk deltas remain approval-gated.
@@ -53,5 +54,5 @@ Dry-run remains the default. In dry-run, the resident spine records intent, veto
 ## Remaining Hardening
 
 - Expand live delta appliers beyond watch-item creation only after dry-run receipts prove stable.
-- Extend receipt-driven closure to more first-class Home23 surfaces such as live-problem resolution logs and scheduler stop-condition receipts.
+- Extend receipt-driven closure to additional first-class Home23 surfaces such as scheduler stop-condition receipts and artifact verifiers.
 - Broaden cron-retirement evidence beyond closed/discarded pursuits once run-level consequence quality is stable enough to distinguish useful unknowns from theater.

@@ -895,6 +895,9 @@ export class AgencyKernel {
 
   async handleObservation(obs) {
     if (!obs || !this.config.enabled) return null;
+    if (obs.channelId === 'work.live-problems') {
+      return this.handleLiveProblemObservation(obs);
+    }
     return this.intake({
       source: obs.channelId,
       kind: obs.channelId === 'domain.good-life' ? 'good_life_policy' : 'observation',
@@ -907,6 +910,55 @@ export class AgencyKernel {
       policyMode: obs.payload?.policy?.mode || null,
       payload: obs.payload || null,
     });
+  }
+
+  async handleLiveProblemObservation(obs) {
+    const problem = obs.payload || {};
+    const problemId = problem.id || obs.sourceRef || 'unknown';
+    const summary = problem.claim || problem.issue || problem.summary || `Live problem ${problemId} changed state to ${problem.state || 'unknown'}.`;
+    const evidence = [{
+      type: 'live_problem',
+      ref: obs.sourceRef || `live-problem:${problemId}:${problem.updatedAt || problem.resolvedAt || problem.openedAt || nowIso()}`,
+      state: problem.state || null,
+      verifier: obs.verifierId || null,
+    }];
+    const candidate = this.router.normalize({
+      source: 'work.live-problems',
+      kind: 'live_problem',
+      dedupeKey: `live-problem:${problemId}`,
+      summary,
+      evidence,
+      authorityLevel: 'L2',
+      desiredChangedFuture: problem.state === 'resolved'
+        ? `Live problem ${problemId} is resolved with verifier evidence.`
+        : `Live problem ${problemId} is verified, repaired, or explicitly demoted.`,
+      nextMove: problem.state === 'resolved'
+        ? 'close the resident pursuit with live-problem verifier evidence'
+        : 'advance the smallest remediation or verifier-backed handoff',
+      stopCondition: `live-problem ${problemId} state becomes resolved or unverifiable with receipt`,
+      verifier: obs.verifierId ? { type: 'verifier', ref: obs.verifierId } : (problem.verifier || null),
+      tags: ['work.live-problems', 'live-problem', problem.state || 'unknown'],
+      payload: problem,
+    });
+    if (problem.state === 'resolved') {
+      const existing = this.store.findSimilar(candidate);
+      if (existing) {
+        return this.intakeWorldStream({
+          source: 'work.live-problems',
+          kind: 'live_problem_receipt',
+          summary: `Live problem ${problemId} resolved: ${summary}`,
+          pursuitId: existing.id,
+          consequenceStatus: 'closed',
+          changedFuture: `Live problem ${problemId} resolved with verifier evidence.`,
+          desiredChangedFuture: `Live problem ${problemId} resolved with verifier evidence.`,
+          nextMove: 'keep closed unless the live-problem registry reopens it',
+          seen: [summary],
+          evidence,
+          tags: ['work.live-problems', 'live-problem', 'resolved'],
+        });
+      }
+    }
+    return this.intake(candidate);
   }
 }
 

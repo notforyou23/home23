@@ -111,6 +111,76 @@ test('AgencyKernel dedupes repeated Step24 observations by channel instead of me
   assert.equal(second.pursuit.seenCount, 2);
 });
 
+test('AgencyKernel tracks live-problem observations by problem id and closes on resolved verifier state', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const opened = await kernel.handleObservation({
+    channelId: 'work.live-problems',
+    sourceRef: 'live-problem:lp-agency:2026-05-25T10:00:00.000Z',
+    verifierId: 'live-problems:poll',
+    payload: {
+      id: 'lp-agency',
+      state: 'open',
+      claim: 'Agency dashboard receipt chain is missing verifier closure.',
+      updatedAt: '2026-05-25T10:00:00.000Z',
+      verifier: { type: 'http', args: { path: '/api/agency/state' } },
+    },
+  });
+  const resolved = await kernel.handleObservation({
+    channelId: 'work.live-problems',
+    sourceRef: 'live-problem:lp-agency:2026-05-25T10:10:00.000Z',
+    verifierId: 'live-problems:poll',
+    payload: {
+      id: 'lp-agency',
+      state: 'resolved',
+      claim: 'Agency dashboard receipt chain is missing verifier closure.',
+      updatedAt: '2026-05-25T10:10:00.000Z',
+      resolvedAt: '2026-05-25T10:10:00.000Z',
+      lastResult: { ok: true, detail: 'agency state route returned truth projection' },
+    },
+  });
+
+  const closed = kernel.pursuit(opened.pursuit.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(opened.pursuit.dedupeKey, 'live-problem:lp-agency');
+  assert.equal(resolved.decision.route, 'close');
+  assert.equal(resolved.pursuit.id, opened.pursuit.id);
+  assert.equal(closed.status, 'closed');
+  assert.equal(receipts.some(row => row.event === 'closed' && row.source === 'work.live-problems'), true);
+  assert.equal(consequences.some(row => row.pursuitId === opened.pursuit.id && row.changeType === 'pursuit_closed_by_receipt'), true);
+});
+
+test('AgencyKernel keeps separate live-problem pursuits for separate problem ids', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const first = await kernel.handleObservation({
+    channelId: 'work.live-problems',
+    sourceRef: 'live-problem:lp-one:2026-05-25T10:00:00.000Z',
+    payload: { id: 'lp-one', state: 'open', claim: 'First live problem.', updatedAt: '2026-05-25T10:00:00.000Z' },
+  });
+  const second = await kernel.handleObservation({
+    channelId: 'work.live-problems',
+    sourceRef: 'live-problem:lp-two:2026-05-25T10:01:00.000Z',
+    payload: { id: 'lp-two', state: 'open', claim: 'Second live problem.', updatedAt: '2026-05-25T10:01:00.000Z' },
+  });
+
+  assert.notEqual(first.pursuit.id, second.pursuit.id);
+  assert.equal(first.pursuit.dedupeKey, 'live-problem:lp-one');
+  assert.equal(second.pursuit.dedupeKey, 'live-problem:lp-two');
+});
+
 test('AuthorityPolicy blocks L4 actions without explicit approval even in live mode', () => {
   const policy = new AuthorityPolicy({ mode: 'live' });
 
