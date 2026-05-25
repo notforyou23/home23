@@ -139,6 +139,38 @@ test('AgencyKernel discards low-signal heartbeat observations instead of spendin
   assert.equal(receipts.some(row => row.event === 'discarded' && row.reason === 'raw_observation_not_attention'), true);
 });
 
+test('AgencyKernel discards raw body telemetry observations unless they declare a changed future', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const pressure = await kernel.handleObservation({
+    channelId: 'domain.pressure',
+    traceId: 'trace:pressure',
+    payload: { pressure_inhg: 29.91, temp_f: 67.8, at: '2026-05-25T13:15:29-04:00' },
+  });
+  const health = await kernel.handleObservation({
+    channelId: 'domain.health',
+    traceId: 'trace:health',
+    payload: { hrv: 18.7, rhr: 58, sleepMin: 70, at: '2026-05-25T15:36:58Z' },
+  });
+
+  assert.equal(pressure.decision.route, 'discard');
+  assert.equal(pressure.decision.reason, 'raw_observation_not_attention');
+  assert.equal(health.decision.route, 'discard');
+  assert.equal(health.decision.reason, 'raw_observation_not_attention');
+  assert.equal(pressure.pursuit, null);
+  assert.equal(health.pursuit, null);
+  assert.equal(kernel.state().attention.activePursuits, 0);
+  assert.equal(kernel.state().attention.watchItems, 0);
+
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  assert.equal(receipts.filter(row => row.event === 'discarded' && row.reason === 'raw_observation_not_attention').length, 2);
+});
+
 test('AgencyKernel discards legacy raw observation pursuits during state reconciliation', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
@@ -157,6 +189,36 @@ test('AgencyKernel discards legacy raw observation pursuits during state reconci
   const legacy = kernel.store.createPursuit(candidate, {
     route: 'pursue',
     reason: 'legacy_raw_observation_selected_active',
+  });
+
+  const state = kernel.ensureState();
+  const reconciled = kernel.pursuit(legacy.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+
+  assert.equal(reconciled.status, 'discarded');
+  assert.equal(state.attention.activePursuits, 0);
+  assert.equal(state.attention.watchItems, 0);
+  assert.equal(receipts.some(row => row.event === 'discarded' && row.reason === 'raw_observation_not_attention'), true);
+});
+
+test('AgencyKernel reconciles legacy raw body telemetry watch rows out of attention', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const candidate = kernel.router.normalize({
+    source: 'domain.health',
+    kind: 'observation',
+    summary: '[domain.health] {"hrv":18.7,"rhr":58,"sleepMin":70,"at":"2026-05-25T15:36:58Z"}',
+    evidence: [{ type: 'observation', ref: 'trace:health' }],
+    authorityLevel: 'L1',
+    tags: ['domain.health'],
+  });
+  const legacy = kernel.store.createPursuit(candidate, {
+    route: 'watch',
+    reason: 'legacy_domain_health_selected_watch',
   });
 
   const state = kernel.ensureState();

@@ -57,7 +57,10 @@ function isRawTelemetryObservation(candidate = {}) {
   if (candidate.kind !== 'observation') return false;
   if (candidate.desiredChangedFuture || candidate.stopCondition || candidate.changedFuture) return false;
   const source = String(candidate.source || '');
-  return source.startsWith('machine.') || source.startsWith('os.') || source === 'work.heartbeat';
+  return source.startsWith('machine.')
+    || source.startsWith('os.')
+    || (source.startsWith('domain.') && source !== 'domain.good-life')
+    || source === 'work.heartbeat';
 }
 
 function isMechanicalCronNoChange(candidate = {}) {

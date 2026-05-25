@@ -2269,7 +2269,10 @@ function isRawObservationPursuit(pursuit = {}) {
   if (pursuit.kind !== 'observation') return false;
   if (hasMeaningfulPursuitOutcome(pursuit)) return false;
   const source = String(pursuit.source || '');
-  return source.startsWith('machine.') || source.startsWith('os.') || source === 'work.heartbeat';
+  return source.startsWith('machine.')
+    || source.startsWith('os.')
+    || (source.startsWith('domain.') && source !== 'domain.good-life')
+    || source === 'work.heartbeat';
 }
 
 function isMechanicalCronNoChangePursuit(pursuit = {}) {
