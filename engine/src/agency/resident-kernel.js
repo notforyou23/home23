@@ -102,7 +102,7 @@ export class AgencyKernel {
       watchlist: watch.slice(0, 20).map(row => ({ id: row.id, title: row.title, lastTouched: row.lastTouched || row.updatedAt })),
       truth: truthSummary,
       recentBeliefChanges: truthSummary.recentBeliefChanges,
-      openContradictions: claims.filter(claim => claim.contradicts && claim.status !== 'resolved').slice(-20),
+      openContradictions: truthSummary.unresolvedClaims || [],
       governance: existing.governance || null,
       lastMeaningfulActions: existing.lastMeaningfulActions || [],
       nextAction: existing.nextAction || null,
@@ -518,8 +518,33 @@ export class AgencyKernel {
   }
 
   recordClaim(input = {}) {
-    const claim = this.truth.claim(input);
+    const existingClaims = this.store.listTruth({ limit: 10000 }).reverse();
+    const { claim, superseded } = this.truth.settleClaim(input, existingClaims);
     this.store.appendTruth(claim);
+    for (const stale of superseded) {
+      this.store.appendTruth(stale);
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: stale.supersededAt || nowIso(),
+        event: 'truth_claim_superseded',
+        claimId: stale.id,
+        supersededBy: stale.supersededBy,
+        reason: stale.supersessionReason || 'higher_authority_claim',
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at: stale.supersededAt || nowIso(),
+        pursuitId: null,
+        status: 'superseded',
+        changeType: 'truth_claim_demoted',
+        summary: `Claim ${stale.id} superseded by ${stale.supersededBy}.`,
+        evidence: [
+          { type: 'truth_claim', ref: stale.id },
+          { type: 'truth_claim', ref: stale.supersededBy },
+        ],
+      });
+    }
     this.store.appendReceipt({
       schema: 'home23.agency.receipt.v1',
       at: nowIso(),
@@ -527,7 +552,11 @@ export class AgencyKernel {
       claimId: claim.id,
       sourceType: claim.sourceType,
       authorityRank: claim.authorityRank,
-      reason: claim.contradicts ? 'claim_contests_existing_truth' : 'claim_added_to_source_hierarchy',
+      reason: claim.resolvesContradiction
+        ? 'claim_supersedes_lower_authority_truth'
+        : claim.contradicts
+          ? 'claim_contests_existing_truth'
+          : 'claim_added_to_source_hierarchy',
       mode: this.config.mode,
     });
     this.ensureState();

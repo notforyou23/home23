@@ -21,7 +21,7 @@ Status: implementation slice in progress.
 - Editor kill verdicts have teeth: stale watch loops are demoted to `discarded` with discard receipts and `stale_thread_killed` consequences.
 - `AgencyKernel.intakeWorldStream()` assimilates reports/links/research/cron outputs into machine-readable route and consequence receipts.
 - World-stream worker/verifier receipts can close existing pursuits when they name a `pursuitId` and provide closure status/evidence; closure writes `closed` receipts plus `pursuit_closed_by_receipt` consequences.
-- `AgencyKernel.recordClaim()` writes source-ranked truth claims and keeps jtr corrections above generated doctrine.
+- `AgencyKernel.recordClaim()` writes source-ranked truth claims, demotes lower-authority contradicted claims through append-only `truth_claim_superseded` receipts, keeps lower-authority contradictions visible, and decays stale claims out of the current-state projection.
 - `AgencyKernel.proposeDelta()` arbitrates behavioral deltas. In live mode, approved reversible L0-L2 `watch_item_created` deltas apply by creating resident watch pursuits; high-risk deltas remain approval-gated.
 - Pursuits now include living-thread fields: why it matters, current theory, linked/latest evidence, next move, budget, risk, evidence standard, decay/escalation, and what would change the theory.
 - `scratch.jsonl` and `truth.jsonl` are first-class agency ledgers beside inbox, pursuits, receipts, and consequences.

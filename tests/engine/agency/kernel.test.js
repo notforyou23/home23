@@ -342,8 +342,110 @@ test('AgencyKernel source-of-truth hierarchy keeps jtr correction above generate
   const state = kernel.state();
 
   assert.equal(correction.authorityRank < generated.authorityRank, true);
-  assert.equal(state.truth.unresolvedContradictions, 1);
+  assert.equal(state.truth.unresolvedContradictions, 0);
+  assert.equal(state.truth.supersededClaims, 1);
   assert.equal(state.truth.currentSourceHierarchy[0], 'current_verified_state');
+});
+
+test('AgencyKernel demotes lower-authority claims when higher-authority corrections arrive', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const generated = kernel.recordClaim({
+    id: 'claim_newsletter_ok',
+    claim: 'Repeating the feedback-loop newsletter frame is still useful.',
+    sourceType: 'generated_doctrine',
+    sourceRef: 'newsletter-draft',
+    at: '2026-05-24T10:00:00.000Z',
+  });
+  const correction = kernel.recordClaim({
+    id: 'claim_newsletter_exhausted',
+    claim: 'Repeating the feedback-loop newsletter frame is exhausted and should be rejected unless it cites lived change.',
+    sourceType: 'jtr_correction',
+    sourceRef: 'evolve.md',
+    contradicts: generated.id,
+    at: '2026-05-25T10:00:00.000Z',
+  });
+  const state = kernel.state();
+  const truthRows = readJsonl(join(dir, 'agency', 'truth.jsonl'));
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+
+  assert.equal(correction.status, 'current');
+  assert.equal(state.truth.unresolvedContradictions, 0);
+  assert.equal(state.truth.supersededClaims, 1);
+  assert.equal(state.truth.currentClaims.some(row => row.id === correction.id), true);
+  assert.equal(state.truth.currentClaims.some(row => row.id === generated.id), false);
+  assert.equal(truthRows.some(row => row.id === generated.id && row.status === 'superseded' && row.supersededBy === correction.id), true);
+  assert.equal(receipts.some(row => row.event === 'truth_claim_superseded' && row.claimId === generated.id && row.supersededBy === correction.id), true);
+});
+
+test('AgencyKernel keeps lower-authority contradictions unresolved against verified state', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const verified = kernel.recordClaim({
+    id: 'claim_current_route',
+    claim: 'The agency brief API is live at /api/agency/brief.',
+    sourceType: 'current_verified_state',
+    sourceRef: 'curl:/api/agency/brief',
+    at: '2026-05-25T11:00:00.000Z',
+  });
+  const rumor = kernel.recordClaim({
+    id: 'claim_route_missing',
+    claim: 'The agency brief API does not exist.',
+    sourceType: 'narrative',
+    sourceRef: 'old-summary',
+    contradicts: verified.id,
+    at: '2026-05-25T11:05:00.000Z',
+  });
+  const state = kernel.state();
+  const truthRows = readJsonl(join(dir, 'agency', 'truth.jsonl'));
+
+  assert.equal(rumor.status, 'contested');
+  assert.equal(state.truth.unresolvedContradictions, 1);
+  assert.equal(state.openContradictions.some(row => row.id === rumor.id), true);
+  assert.equal(state.truth.currentClaims.some(row => row.id === verified.id), true);
+  assert.equal(truthRows.some(row => row.id === verified.id && row.status === 'superseded'), false);
+});
+
+test('AgencyKernel decays stale truth claims out of current state projection', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const stale = kernel.recordClaim({
+    id: 'claim_old_newsletter_contract',
+    claim: 'The newsletter can use the old feedback-loop frame.',
+    sourceType: 'generated_doctrine',
+    sourceRef: 'old-newsletter-policy',
+    at: '2026-05-01T10:00:00.000Z',
+    decay: { staleAt: '2026-05-02T10:00:00.000Z', reason: 'old generated doctrine expired' },
+  });
+  const current = kernel.recordClaim({
+    id: 'claim_current_brief_contract',
+    claim: 'The resident brief must answer what is followed, changed, next, and needed.',
+    sourceType: 'current_verified_state',
+    sourceRef: 'curl:/api/agency/brief',
+    at: '2026-05-25T10:00:00.000Z',
+  });
+  const state = kernel.state();
+
+  assert.equal(stale.status, 'current');
+  assert.equal(state.truth.staleClaims, 1);
+  assert.equal(state.truth.currentClaims.some(row => row.id === stale.id), false);
+  assert.equal(state.truth.currentClaims.some(row => row.id === current.id), true);
+  assert.equal(state.truth.staleClaimRefs.some(row => row.id === stale.id && row.decayReason === 'old generated doctrine expired'), true);
 });
 
 test('AgencyKernel reconciles preexisting pursuit overflow down to charter caps', async () => {
