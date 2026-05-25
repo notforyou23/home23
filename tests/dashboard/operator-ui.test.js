@@ -257,7 +257,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(primaryNav, /data-tab="workers"/);
   assert.doesNotMatch(primaryNav, /data-scope-tab="chat"/);
   assert.doesNotMatch(primaryNav, /data-scope-tab="settings"/);
-  assert.match(organDrawer, /Organs \/ Controls/);
+  assert.doesNotMatch(organDrawer, /Organs \/ Controls/);
+  assert.doesNotMatch(organDrawer, />Organs</);
+  assert.match(organDrawer, /<summary[^>]*>Controls<\/summary>/);
   assert.match(organDrawer, /data-tab="workers"/);
   assert.match(organDrawer, /data-scope-tab="chat"/);
   assert.match(organDrawer, /data-scope-tab="settings"/);
