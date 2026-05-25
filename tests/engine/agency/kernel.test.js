@@ -460,6 +460,50 @@ test('AgencyKernel exposes the body organ contract in canonical state', async ()
   assert.match(organs.chat.commandSurface, /agency tools/);
 });
 
+test('AgencyKernel canonical state projects active pursuits and recent consequences, not only counts', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const active = await kernel.intake({
+    source: 'x.timeline',
+    kind: 'timeline_report',
+    summary: 'Agent agency signal should alter Jerry resident attention.',
+    desiredChangedFuture: 'Jerry tracks one agent agency pursuit from the timeline signal.',
+    evidence: [{ type: 'timeline_post', ref: 'x:agency-signal' }],
+    authorityLevel: 'L1',
+  });
+  await kernel.intake({
+    source: 'research.cosmo',
+    kind: 'research_summary',
+    summary: 'Interesting research thread with no immediate changed future yet.',
+    evidence: [{ type: 'research', ref: 'cosmo:watch-thread' }],
+    tags: ['research'],
+  });
+  kernel.recordConsequence({
+    at: '2026-05-25T22:00:00.000Z',
+    pursuitId: active.pursuit.id,
+    status: 'applied',
+    changeType: 'belief_updated',
+    summary: 'Timeline signal became a resident pursuit instead of delivered content.',
+    evidence: [{ type: 'agency_receipt', ref: 'receipt:timeline-intake' }],
+  });
+
+  const state = kernel.state();
+
+  assert.equal(Array.isArray(state.activePursuits), true);
+  assert.equal(state.activePursuits.some(row => row.id === active.pursuit.id), true);
+  assert.equal(state.activePursuits[0].whyItMatters.includes('Jerry tracks'), true);
+  assert.equal(state.activePursuits[0].latestEvidence[0].ref, 'x:agency-signal');
+  assert.equal(Array.isArray(state.recentConsequences), true);
+  assert.equal(state.recentConsequences[0].changeType, 'belief_updated');
+  assert.equal(state.recentConsequences[0].evidence[0].ref, 'receipt:timeline-intake');
+  assert.equal(state.watchlist.some(row => row.id && row.latestEvidence?.[0]?.ref === 'cosmo:watch-thread'), true);
+});
+
 test('AgencyKernel projects authority requests and blocked pursuits as active obligations in canonical state', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

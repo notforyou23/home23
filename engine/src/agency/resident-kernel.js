@@ -47,6 +47,50 @@ function briefText(value, max = 160) {
   return `${text.slice(0, Math.max(0, max - 1))}…`;
 }
 
+function compactStatePursuit(pursuit = {}) {
+  return {
+    id: pursuit.id,
+    status: pursuit.status,
+    title: pursuit.title || pursuit.summary || null,
+    summary: pursuit.summary || null,
+    owner: pursuit.owner || null,
+    authorityLevel: pursuit.authorityLevel || 'L1',
+    risk: pursuit.risk || pursuit.authorityLevel || 'L1',
+    source: pursuit.source || null,
+    kind: pursuit.kind || null,
+    tags: Array.isArray(pursuit.tags) ? pursuit.tags : [],
+    whyItMatters: pursuit.whyItMatters || null,
+    currentTheory: pursuit.currentTheory || null,
+    desiredChangedFuture: pursuit.desiredChangedFuture || null,
+    nextMove: pursuit.nextMove || null,
+    attentionBudget: pursuit.attentionBudget || null,
+    evidenceStandard: pursuit.evidenceStandard || null,
+    stopCondition: pursuit.stopCondition || null,
+    decay: pursuit.decay || null,
+    escalation: pursuit.escalation || null,
+    whatWouldChangeMyMind: pursuit.whatWouldChangeMyMind || null,
+    linkedEvidence: Array.isArray(pursuit.linkedEvidence) ? pursuit.linkedEvidence.slice(-10) : [],
+    latestEvidence: Array.isArray(pursuit.latestEvidence) ? pursuit.latestEvidence.slice(-5) : [],
+    createdAt: pursuit.createdAt || null,
+    updatedAt: pursuit.updatedAt || null,
+    lastTouched: pursuit.lastTouched || pursuit.updatedAt || null,
+    lastSeenAt: pursuit.lastSeenAt || null,
+    seenCount: Number(pursuit.seenCount || 0),
+  };
+}
+
+function compactStateConsequence(row = {}) {
+  return {
+    at: row.at || null,
+    pursuitId: row.pursuitId || null,
+    status: row.status || null,
+    changeType: row.changeType || row.event || 'change',
+    summary: row.summary || row.reason || null,
+    source: row.source || null,
+    evidence: Array.isArray(row.evidence) ? row.evidence.slice(-10) : [],
+  };
+}
+
 export class AgencyKernel {
   constructor({ brainDir, agentName = 'jerry', config = {}, charterPath = null, logger = console } = {}) {
     if (!brainDir) throw new Error('AgencyKernel requires brainDir');
@@ -77,6 +121,7 @@ export class AgencyKernel {
     const watch = this.store.listPursuits({ status: 'watch', limit: 10000 });
     const deferred = this.store.listPursuits({ status: 'deferred', limit: 10000 });
     const recentMemoryCandidates = this.store.listMemoryCandidates({ limit: 10 });
+    const recentConsequences = this.store.listConsequences({ limit: 20 }).map(compactStateConsequence);
     const claims = this.store.listTruth({ limit: 10000 }).reverse();
     const truthSummary = this.truth.summarize(claims);
     const existing = this.store.readState() || {};
@@ -108,11 +153,14 @@ export class AgencyKernel {
         posture: postureOverride?.posture || (this.config.mode === 'live' ? 'bounded-live' : 'dry-run-observer'),
         postureReason: postureOverride?.reason || null,
       },
+      currentPursuit: active[0] ? compactStatePursuit(active[0]) : null,
+      activePursuits: active.slice(0, this.charter.attention.maxActivePursuits || 5).map(compactStatePursuit),
       organs: this.charter.organs || {},
       obligations,
-      watchlist: watch.slice(0, 20).map(row => ({ id: row.id, title: row.title, lastTouched: row.lastTouched || row.updatedAt })),
+      watchlist: watch.slice(0, this.charter.attention.maxWatchItems || 20).map(compactStatePursuit),
       truth: truthSummary,
       recentBeliefChanges: truthSummary.recentBeliefChanges,
+      recentConsequences,
       recentMemoryCandidates: recentMemoryCandidates.map(candidate => ({
         id: candidate.id,
         domain: candidate.domain,
