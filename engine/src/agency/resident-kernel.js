@@ -138,6 +138,7 @@ export class AgencyKernel {
         schema: this.charter.schema,
         attention: this.charter.attention,
         authority: this.charter.authority,
+        operatingContract: this.charter.operatingContract,
       },
       bootcamp: this.charter.bootcamp,
       attention: {

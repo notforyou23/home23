@@ -460,6 +460,28 @@ test('AgencyKernel exposes the body organ contract in canonical state', async ()
   assert.match(organs.chat.commandSurface, /agency tools/);
 });
 
+test('AgencyKernel exposes the agency charter operating contract in canonical state', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const state = kernel.state();
+  const contract = state.charter.operatingContract;
+
+  assert.equal(contract.autonomousDomains.includes('memory_truth_and_claim_decay'), true);
+  assert.equal(contract.autonomousDomains.includes('pursuit_triage_and_attention_governance'), true);
+  assert.equal(contract.approvalDomains.includes('public_publication_or_external_posting'), true);
+  assert.equal(contract.hardRiskBoundaries.includes('no_l4_action_without_explicit_human_approval'), true);
+  assert.equal(contract.acceptableAutonomousChanges.includes('discard_or_demote_noisy_inputs_with_receipts'), true);
+  assert.equal(contract.decisionThresholds.actAutonomously, 'reversible_low_risk_l0_l2_with_receipts');
+  assert.equal(contract.decisionThresholds.discard, 'noisy_stale_or_no_declared_consequence');
+  assert.equal(contract.goodPursuit.requiredFields.includes('what_would_change_my_mind'), true);
+  assert.equal(contract.interruptJtrWhen.includes('authority_level_l3_or_l4_is_needed'), true);
+});
+
 test('AgencyKernel canonical state projects active pursuits and recent consequences, not only counts', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
