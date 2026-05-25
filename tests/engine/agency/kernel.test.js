@@ -1152,6 +1152,84 @@ test('AgencyKernel records external consequences with receipts and meaningful-ac
   assert.equal(state.lastMeaningfulActions[0].changeType, 'cron_bound_to_pursuit');
 });
 
+test('AgencyKernel closes cron bootcamp pursuits when binding consequence satisfies the stop condition', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const intake = await kernel.intake({
+    source: 'scheduler.cron.bootcamp',
+    kind: 'cron_bootcamp_audit',
+    summary: 'Recurring cron "Daily Field Report" is running without resident agency pursuit binding.',
+    evidence: [{ type: 'cron_job', ref: 'field-report-daily', name: 'Daily Field Report' }],
+    authorityLevel: 'L2',
+    desiredChangedFuture: 'Recurring cron "Daily Field Report" is bound to a resident pursuit, demoted, or retired under agency bootcamp.',
+    stopCondition: 'The cron is bound to a pursuit, demoted, or retired with a receipt.',
+    tags: ['cron', 'agency-bootcamp', 'legacy-recurring-work'],
+  });
+
+  kernel.recordConsequence({
+    at: '2026-05-25T21:20:00.000Z',
+    source: 'scheduler.cron.bootcamp',
+    pursuitId: intake.pursuit.id,
+    status: 'applied',
+    changeType: 'cron_bound_to_pursuit',
+    summary: `Recurring cron "Daily Field Report" is now bound to resident pursuit ${intake.pursuit.id}.`,
+    evidence: [{ type: 'cron_job', ref: 'field-report-daily', name: 'Daily Field Report' }],
+  });
+
+  const pursuit = kernel.pursuit(intake.pursuit.id);
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+
+  assert.equal(pursuit.status, 'closed');
+  assert.equal(kernel.state().attention.activePursuits, 0);
+  assert.equal(receipts.some(row => row.event === 'closed' && row.reason === 'cron_bootcamp_stop_condition_satisfied'), true);
+  assert.equal(consequences.some(row => row.pursuitId === intake.pursuit.id && row.changeType === 'pursuit_closed_by_receipt'), true);
+});
+
+test('AgencyKernel reconciles legacy cron bootcamp pursuits already bound by consequence receipts', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+  const candidate = kernel.router.normalize({
+    source: 'scheduler.cron.bootcamp',
+    kind: 'cron_bootcamp_audit',
+    summary: 'Recurring cron "Ticker" is running without resident agency pursuit binding.',
+    evidence: [{ type: 'cron_job', ref: 'ticker', name: 'Ticker' }],
+    authorityLevel: 'L2',
+    desiredChangedFuture: 'Recurring cron "Ticker" is bound to a resident pursuit, demoted, or retired under agency bootcamp.',
+    stopCondition: 'The cron is bound to a pursuit, demoted, or retired with a receipt.',
+    tags: ['cron', 'agency-bootcamp', 'legacy-recurring-work'],
+  });
+  const legacy = kernel.store.createPursuit(candidate, {
+    route: 'pursue',
+    reason: 'legacy_bootcamp_audit_selected_active',
+  });
+  kernel.store.appendConsequence({
+    schema: 'home23.agency.consequence.v1',
+    at: '2026-05-25T21:21:00.000Z',
+    pursuitId: legacy.id,
+    status: 'applied',
+    changeType: 'cron_bound_to_pursuit',
+    summary: `Recurring cron "Ticker" is now bound to resident pursuit ${legacy.id}.`,
+    evidence: [{ type: 'cron_job', ref: 'ticker', name: 'Ticker' }],
+  });
+
+  const state = kernel.ensureState();
+  const pursuit = kernel.pursuit(legacy.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+
+  assert.equal(pursuit.status, 'closed');
+  assert.equal(state.attention.activePursuits, 0);
+  assert.equal(receipts.some(row => row.event === 'closed' && row.reason === 'cron_bootcamp_stop_condition_satisfied'), true);
+});
+
 test('AgencyKernel caps pursuit history snapshots so startup review cannot inflate the ledger', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

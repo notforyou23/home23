@@ -66,6 +66,7 @@ export class AgencyKernel {
 
   ensureState() {
     this.reconcileResolvedLiveProblemAttention();
+    this.reconcileCronBootcampStopConditions();
     this.reconcileLowSignalAttention();
     this.enforceAttentionCaps();
     const active = this.store.listPursuits({ status: 'active', limit: 10000 });
@@ -234,6 +235,50 @@ export class AgencyKernel {
         route: 'discard',
         reason: 'resolved_live_problem_observation_not_attention',
         mode: this.config.mode,
+      });
+    }
+  }
+
+  reconcileCronBootcampStopConditions() {
+    const pursuits = this.store.listPursuits({ status: ['active', 'watch'], limit: 10000 });
+    const boundConsequences = this.store.listConsequences({ limit: 10000 })
+      .filter(row => row.changeType === 'cron_bound_to_pursuit' && row.status === 'applied' && row.pursuitId);
+    const boundByPursuitId = new Map(boundConsequences.map(row => [row.pursuitId, row]));
+    for (const pursuit of pursuits) {
+      if (!isCronBootcampAuditPursuit(pursuit)) continue;
+      const consequence = boundByPursuitId.get(pursuit.id);
+      if (!consequence) continue;
+      this.store.updatePursuit(pursuit.id, {
+        status: 'closed',
+        consequence: {
+          changed: true,
+          pursuitId: pursuit.id,
+          summary: consequence.summary || pursuit.desiredChangedFuture || pursuit.summary,
+          evidence: consequence.evidence || pursuit.latestEvidence || pursuit.evidence || [],
+        },
+        lastTouched: nowIso(),
+      }, {
+        type: 'cron_bootcamp_stop_condition_reconciled',
+        reason: 'cron_bootcamp_stop_condition_satisfied',
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'closed',
+        pursuitId: pursuit.id,
+        route: 'close',
+        outcome: 'pursuit_closed_by_receipt',
+        reason: 'cron_bootcamp_stop_condition_satisfied',
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at: nowIso(),
+        pursuitId: pursuit.id,
+        status: 'closed',
+        changeType: 'pursuit_closed_by_receipt',
+        summary: consequence.summary || pursuit.desiredChangedFuture || pursuit.summary,
+        evidence: consequence.evidence || pursuit.latestEvidence || pursuit.evidence || [],
       });
     }
   }
@@ -1236,4 +1281,9 @@ function isResolvedLiveProblemObservationPursuit(pursuit = {}) {
   return pursuit.kind === 'observation'
     && pursuit.source === 'work.live-problems'
     && hasResolvedLiveProblemEvidence(pursuit);
+}
+
+function isCronBootcampAuditPursuit(pursuit = {}) {
+  return pursuit.kind === 'cron_bootcamp_audit'
+    && pursuit.source === 'scheduler.cron.bootcamp';
 }
