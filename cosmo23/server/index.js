@@ -100,17 +100,17 @@ const DASHBOARD_PORT = Number.parseInt(
   10
 );
 
-process.env.COSMO23_PORT = process.env.COSMO23_PORT || String(PORT);
-process.env.COSMO23_WS_PORT = process.env.COSMO23_WS_PORT || String(WS_PORT);
-process.env.COSMO23_MCP_HTTP_PORT = process.env.COSMO23_MCP_HTTP_PORT || String(MCP_HTTP_PORT);
-process.env.COSMO23_DASHBOARD_PORT = process.env.COSMO23_DASHBOARD_PORT || String(DASHBOARD_PORT);
-process.env.PORT = process.env.PORT || String(PORT);
-process.env.WS_PORT = process.env.WS_PORT || String(WS_PORT);
-process.env.REALTIME_PORT = process.env.REALTIME_PORT || String(WS_PORT);
-process.env.MCP_HTTP_PORT = process.env.MCP_HTTP_PORT || String(MCP_HTTP_PORT);
-process.env.MCP_PORT = process.env.MCP_PORT || String(MCP_HTTP_PORT);
-process.env.DASHBOARD_PORT = process.env.DASHBOARD_PORT || String(DASHBOARD_PORT);
-process.env.COSMO_DASHBOARD_PORT = process.env.COSMO_DASHBOARD_PORT || String(DASHBOARD_PORT);
+process.env.COSMO23_PORT = String(PORT);
+process.env.COSMO23_WS_PORT = String(WS_PORT);
+process.env.COSMO23_MCP_HTTP_PORT = String(MCP_HTTP_PORT);
+process.env.COSMO23_DASHBOARD_PORT = String(DASHBOARD_PORT);
+process.env.PORT = String(PORT);
+process.env.WS_PORT = String(WS_PORT);
+process.env.REALTIME_PORT = String(WS_PORT);
+process.env.MCP_HTTP_PORT = String(MCP_HTTP_PORT);
+process.env.MCP_PORT = String(MCP_HTTP_PORT);
+process.env.DASHBOARD_PORT = String(DASHBOARD_PORT);
+process.env.COSMO_DASHBOARD_PORT = String(DASHBOARD_PORT);
 
 const app = express();
 const runManager = new RunManager(LOCAL_RUNS_PATH, console, ROOT);

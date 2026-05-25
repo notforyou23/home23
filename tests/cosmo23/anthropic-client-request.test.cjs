@@ -232,3 +232,43 @@ for (const [name, Client] of clients) {
     assert.equal(fetchHeaders.authorization, 'Bearer sk-ant-oauth-test');
   });
 }
+
+test('cosmo23/lib Anthropic stream does not call finalMessage after message_stop', async () => {
+  const warnings = [];
+  let finalMessageCalled = false;
+  const client = new CosmoAnthropicClient({ useExtendedThinking: true }, {
+    debug() {},
+    info() {},
+    warn(...args) { warnings.push(args.join(' ')); },
+    error() {}
+  });
+
+  async function* streamEvents() {
+    yield {
+      type: 'message_start',
+      message: {
+        id: 'msg_stream',
+        model: 'claude-sonnet-4-6',
+        usage: { input_tokens: 12 }
+      }
+    };
+    yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'planner ok' } };
+    yield { type: 'message_delta', usage: { output_tokens: 3 } };
+    yield { type: 'message_stop' };
+  }
+
+  const stream = streamEvents();
+  stream.finalMessage = async () => {
+    finalMessageCalled = true;
+    throw new Error('Request was aborted.');
+  };
+
+  const response = await client._streamResponseWithWebSearch(stream, {});
+
+  assert.equal(response.content, 'planner ok');
+  assert.equal(response.hadError, false);
+  assert.equal(response.usage.input_tokens, 12);
+  assert.equal(response.usage.output_tokens, 3);
+  assert.equal(finalMessageCalled, false);
+  assert.deepEqual(warnings, []);
+});

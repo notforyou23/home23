@@ -667,7 +667,6 @@ class AnthropicClient {
     let model = null;
 
     try {
-      streamLoop:
       for await (const event of stream) {
         // Message start - capture metadata
         if (event.type === 'message_start') {
@@ -764,7 +763,6 @@ class AnthropicClient {
         // Message stop - completion
         else if (event.type === 'message_stop') {
           this.logger?.debug?.('[AnthropicClient] Stream complete');
-          break streamLoop;
         }
 
         // Error handling
@@ -772,27 +770,6 @@ class AnthropicClient {
           this.logger?.error?.('[AnthropicClient] Stream error:', event.error);
           throw new Error(event.error?.message || 'Streaming error');
         }
-      }
-
-      const finalMessage = typeof stream.finalMessage === 'function'
-        ? await Promise.race([
-            stream.finalMessage().catch(error => {
-              this.logger?.warn?.('[AnthropicClient] finalMessage unavailable:', error.message);
-              return null;
-            }),
-            new Promise(resolve => setTimeout(() => resolve(null), 5000))
-          ])
-        : null;
-
-      if (finalMessage) {
-        const finalText = this.extractTextFromResponse(finalMessage);
-        if (finalText && finalText.length >= textContent.length) {
-          textContent = finalText;
-        }
-        responseId = finalMessage.id || responseId;
-        model = finalMessage.model || model;
-        inputTokens = finalMessage.usage?.input_tokens || inputTokens;
-        outputTokens = finalMessage.usage?.output_tokens || outputTokens;
       }
 
       // Build GPT5Client-compatible response with web search data

@@ -69,11 +69,11 @@ class ConfigGenerator {
    */
   async generateConfig(settings) {
     const dashboardPort = Number.parseInt(
-      process.env.DASHBOARD_PORT || process.env.COSMO_DASHBOARD_PORT || '43144',
+      process.env.COSMO23_DASHBOARD_PORT || process.env.COSMO_DASHBOARD_PORT || process.env.DASHBOARD_PORT || '43144',
       10
     );
     const mcpHttpPort = Number.parseInt(
-      process.env.MCP_HTTP_PORT || process.env.MCP_PORT || '43147',
+      process.env.COSMO23_MCP_HTTP_PORT || process.env.MCP_HTTP_PORT || process.env.MCP_PORT || '43147',
       10
     );
 

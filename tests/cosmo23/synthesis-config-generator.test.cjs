@@ -4,6 +4,23 @@ const yaml = require('js-yaml');
 
 const { ConfigGenerator } = require('../../cosmo23/launcher/config-generator');
 
+function withEnv(overrides, fn) {
+  const previous = {};
+  for (const key of Object.keys(overrides)) {
+    previous[key] = process.env[key];
+    if (overrides[key] === undefined) delete process.env[key];
+    else process.env[key] = overrides[key];
+  }
+  return Promise.resolve()
+    .then(fn)
+    .finally(() => {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+}
+
 test('launcher config emits synthesis commit-step defaults', async () => {
   const generator = new ConfigGenerator(process.cwd(), console);
   const configYaml = await generator.generateConfig({
@@ -61,4 +78,31 @@ test('launcher config honors commit-step launch overrides', async () => {
   const parsed = yaml.load(configYaml);
   assert.equal(parsed.synthesis.commitStep, false);
   assert.equal(parsed.synthesis.spineCap, 8);
+});
+
+test('launcher config prefers COSMO23 ports over inherited Home23 agent ports', async () => {
+  await withEnv({
+    COSMO23_DASHBOARD_PORT: '43244',
+    COSMO23_MCP_HTTP_PORT: '43247',
+    DASHBOARD_PORT: '5002',
+    COSMO_DASHBOARD_PORT: '5002',
+    MCP_HTTP_PORT: '5003',
+    MCP_PORT: '5003'
+  }, async () => {
+    const generator = new ConfigGenerator(process.cwd(), console);
+    const configYaml = await generator.generateConfig({
+      domain: 'test run',
+      primary_provider: 'anthropic',
+      primary_model: 'claude-sonnet-4-7',
+      fast_provider: 'anthropic',
+      fast_model: 'claude-sonnet-4-7',
+      strategic_provider: 'anthropic',
+      strategic_model: 'claude-opus-4-7'
+    });
+
+    const parsed = yaml.load(configYaml);
+    assert.equal(parsed.dashboard.port, 43244);
+    assert.equal(parsed.mcp.server.port, 43247);
+    assert.equal(parsed.mcp.client.servers[0].url, 'http://localhost:43247/mcp');
+  });
 });
