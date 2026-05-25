@@ -4587,16 +4587,8 @@ body.h23-external-focus #cosmo23-refresh-btn {
 .h23-resident-command-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
-}
-
-.h23-resident-command h1 {
-  margin: 0 0 8px;
-  color: var(--text-primary);
-  font-size: 1.75rem;
-  line-height: 1.12;
-  letter-spacing: 0;
 }
 
 .h23-resident-mode {

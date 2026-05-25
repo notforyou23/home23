@@ -1368,7 +1368,6 @@ function renderResidentHomeSurface({ state, brief, pursuits, inbox, receipts, co
   const activeMax = Number(state.attention?.maxActivePursuits || state.charter?.attention?.maxActivePursuits || 0);
   const watch = Number(state.attention?.watchItems || 0);
   const watchMax = Number(state.attention?.maxWatchItems || state.charter?.attention?.maxWatchItems || 0);
-  setText('resident-name', currentAgentLabel('Jerry'));
   setText('resident-mode', residentPostureText(state));
   setHtml('resident-health-strip', renderResidentAttentionBudget({ active, activeMax, watch, watchMax }));
   syncResidentActionButton(state);
@@ -1785,7 +1784,6 @@ function renderResidentInboxRow(c) {
 }
 
 function renderResidentHomeError(err) {
-  setText('resident-name', currentAgentLabel('Jerry'));
   setText('resident-mode', 'state unavailable');
 }
 

@@ -373,11 +373,12 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /function residentPostureText\(state/);
   assert.match(js, /return 'in agency bootcamp'/);
   assert.doesNotMatch(html, /Resident spine/i);
-  assert.match(html, /id="resident-name"/);
   assert.match(html, /id="resident-mode"/);
+  assert.doesNotMatch(html, /id="resident-name"/);
+  assert.doesNotMatch(html, /<h1[^>]*>Jerry<\/h1>/);
   assert.doesNotMatch(html, /id="resident-summary"/);
   assert.doesNotMatch(js, /`\$\{currentAgentLabel\('Jerry'\)\} is \$\{residentPostureText\(state\)\}`/);
-  assert.match(js, /setText\('resident-name', currentAgentLabel\('Jerry'\)\)/);
+  assert.doesNotMatch(js, /setText\('resident-name'/);
   assert.match(js, /setText\('resident-mode', residentPostureText\(state\)\)/);
   assert.doesNotMatch(js, /setText\('resident-summary'/);
   assert.doesNotMatch(js, /\[state\.mode \|\| 'unknown', state\.bootcamp\?\.enabled \? 'bootcamp' : null\]\.filter\(Boolean\)\.join\(' \/ '\)/);
