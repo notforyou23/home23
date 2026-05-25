@@ -452,6 +452,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /humanizeResidentMachineText\(next\.kind \|\| 'advance_one_step'\)/);
   assert.match(js, /renderResidentNextActionMeta\(pursuit, next\)/);
   assert.match(js, /function renderResidentNextActionMeta\(pursuit, next\)/);
+  assert.match(js, /residentAuthorityLabel\(next\.authorityLevel \|\| pursuit\.authorityLevel\)/);
+  assert.match(js, /function residentAuthorityLabel\(level/);
+  assert.match(js, /return 'bounded action'/);
   assert.doesNotMatch(js, /resident-next-move/);
   assert.doesNotMatch(js, /pursuit\.nextMove \|\| next\.nextMove \|\| pursuit\.stopCondition/);
   assert.match(js, /function filterResidentBacklogPursuits\(pursuits, currentPursuitId\)/);
@@ -482,6 +485,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(js, /<h3>\$\{escapeHtml\(p\.title/);
   assert.doesNotMatch(js, /<span>\$\{escapeHtml\(p\.status \|\| 'active'\)\}<\/span>/);
   assert.match(js, /renderResidentPursuitAuthority\(p\)/);
+  assert.doesNotMatch(js, /return p\.authorityLevel \|\| p\.risk \|\| 'L\?'/);
   assert.match(js, /if \(_pulseEls\.state\)/);
   assert.match(js, /const showRuntime = runtimeState && !\['awake', 'sleeping'\]\.includes\(runtimeState\)/);
   assert.match(js, /_pulseEls\.runtime\.hidden = !showRuntime/);

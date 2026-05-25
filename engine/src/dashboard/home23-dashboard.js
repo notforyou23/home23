@@ -1545,7 +1545,17 @@ function renderResidentPursuitTitle(p) {
 }
 
 function renderResidentPursuitAuthority(p) {
-  return p.authorityLevel || p.risk || 'L?';
+  return residentAuthorityLabel(p.authorityLevel || p.risk);
+}
+
+function residentAuthorityLabel(level) {
+  const value = String(level || '').trim().toUpperCase();
+  if (value === 'L0') return 'observe';
+  if (value === 'L1') return 'notes';
+  if (value === 'L2') return 'bounded action';
+  if (value === 'L3') return 'approval path';
+  if (value === 'L4') return 'requires approval';
+  return humanizeResidentMachineText(level, 'authority unknown').toLowerCase();
 }
 
 function renderResidentPursuitInspectLink(p) {
@@ -1562,7 +1572,7 @@ function renderResidentNextActionTitle(pursuit, next) {
 
 function renderResidentNextActionMeta(pursuit, next) {
   return [
-    next.authorityLevel || pursuit.authorityLevel,
+    residentAuthorityLabel(next.authorityLevel || pursuit.authorityLevel),
     residentActionReasonLabel(next.reason),
     residentActionModeLabel(next),
   ].filter(Boolean).join(' · ');
