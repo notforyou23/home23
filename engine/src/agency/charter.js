@@ -115,6 +115,11 @@ const DEFAULT_CHARTER = Object.freeze({
   },
   editor: {
     repeatedNewsletterSkeleton: ['feedback loop', 'becoming', 'control loop'],
+    dashboardAgencyClarityKinds: [
+      'dashboard_panel',
+      'dashboard_expansion',
+      'dashboard_contract',
+    ],
     requireConsequenceFor: [
       'newsletter_draft',
       'timeline_report',

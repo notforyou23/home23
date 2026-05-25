@@ -193,6 +193,7 @@ export class PursuitStore {
       evidence: Array.isArray(candidate.evidence) ? candidate.evidence : [],
       linkedEvidence: Array.isArray(candidate.evidence) ? candidate.evidence : [],
       latestEvidence: Array.isArray(candidate.evidence) ? candidate.evidence.slice(-3) : [],
+      declaredChangedFuture: Boolean(candidate.desiredChangedFuture || candidate.changedFuture),
       desiredChangedFuture: candidate.desiredChangedFuture || candidate.summary,
       whyItMatters: candidate.whyItMatters || candidate.relevance || candidate.desiredChangedFuture || candidate.summary,
       currentTheory: candidate.currentTheory || candidate.theory || 'Unproven until consequence receipts change state.',

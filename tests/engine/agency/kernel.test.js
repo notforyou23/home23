@@ -1047,6 +1047,34 @@ test('AgencyKernel editor kill verdict demotes stale watch threads with receipts
   assert.equal(consequences.some(row => row.pursuitId === intake.pursuit.id && row.changeType === 'stale_thread_killed'), true);
 });
 
+test('AgencyKernel editor demotes ornamental dashboard panels without agency clarity', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const intake = await kernel.intake({
+    source: 'dashboard',
+    kind: 'dashboard_panel',
+    summary: 'Add a decorative agency dashboard card that does not clarify active agency.',
+    evidence: [{ type: 'dashboard_mock', ref: 'panel:ornamental' }],
+    tags: ['dashboard'],
+  });
+
+  const tick = await kernel.tick({ reason: 'test-dashboard-editor', now: '2026-05-25T16:30:00.000Z' });
+  const pursuit = kernel.pursuit(intake.pursuit.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(tick.editor.verdict, 'demote');
+  assert.equal(tick.nextAction.kind, 'demote_ornamental_dashboard_panel');
+  assert.equal(pursuit.status, 'discarded');
+  assert.equal(receipts.some(row => row.event === 'discarded' && row.reason === 'dashboard_panel_lacks_agency_clarity'), true);
+  assert.equal(consequences.some(row => row.pursuitId === intake.pursuit.id && row.changeType === 'ornamental_dashboard_panel_demoted'), true);
+});
+
 test('AgencyKernel live low-risk watch deltas apply bounded resident state changes', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

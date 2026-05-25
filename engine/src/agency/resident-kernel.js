@@ -1451,6 +1451,31 @@ export class AgencyKernel {
         evidence: selected.latestEvidence || selected.evidence || [],
       });
     }
+    if (editor.action === 'demote_ornamental_dashboard_panel') {
+      this.store.updatePursuit(selected.id, { status: 'discarded' }, {
+        type: 'editor_dashboard_demote',
+        reason: editor.reason,
+      });
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: now,
+        event: 'discarded',
+        pursuitId: selected.id,
+        route: 'discard',
+        reason: editor.reason,
+        editor,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at: now,
+        pursuitId: selected.id,
+        status: 'discarded',
+        changeType: 'ornamental_dashboard_panel_demoted',
+        summary: editor.reason,
+        evidence: selected.latestEvidence || selected.evidence || [],
+      });
+    }
     if (editor.verdict === 'veto' || editor.action === 'require_consequence') {
       this.store.appendConsequence({
         schema: 'home23.agency.consequence.v1',
