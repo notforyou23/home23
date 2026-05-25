@@ -277,11 +277,17 @@ export const agencyProposeDeltaTool: ToolDefinition = {
       reversible: { type: 'boolean' },
       target: { type: 'string' },
       pursuitId: { type: 'string' },
+      currentTheory: { type: 'string' },
+      nextMove: { type: 'string' },
+      evidenceRef: { type: 'string' },
     },
     required: ['changeType', 'summary'],
     additionalProperties: false,
   },
   async execute(input, ctx) {
+    const evidence = typeof input.evidenceRef === 'string' && input.evidenceRef.trim()
+      ? [{ type: 'reference', ref: input.evidenceRef }]
+      : [];
     const data = await jsonRequest(ctx, '/api/agency/deltas', {
       method: 'POST',
       body: JSON.stringify({
@@ -291,6 +297,9 @@ export const agencyProposeDeltaTool: ToolDefinition = {
         reversible: input.reversible !== false,
         target: input.target,
         pursuitId: input.pursuitId,
+        currentTheory: input.currentTheory,
+        nextMove: input.nextMove,
+        evidence,
       }),
     }) as { decision?: { route?: string }; authority?: { reason?: string } };
     return { content: `Agency delta ${data.decision?.route || 'unknown'}: ${data.authority?.reason || ''}`.trim() };

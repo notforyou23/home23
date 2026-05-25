@@ -24,7 +24,7 @@ Status: implementation slice in progress.
 - Live-problem observations are keyed by problem id instead of collapsing into one channel pursuit. A resolved live-problem transition closes the matching resident pursuit with verifier evidence and `pursuit_closed_by_receipt` consequence.
 - `AgencyKernel.recordClaim()` writes source-ranked truth claims, demotes lower-authority contradicted claims through append-only `truth_claim_superseded` receipts, keeps lower-authority contradictions visible, and decays stale claims out of the current-state projection.
 - Chat/user corrections are no longer generic conversation noise: incoming correction messages become `operator_correction` world-stream packets, write durable `jtr_correction` claims, and can demote weaker truth when linked to a contradicted claim. Chat also exposes `agency_record_claim` for explicit truth/correction entries.
-- `AgencyKernel.proposeDelta()` arbitrates behavioral deltas. In live mode, approved reversible L0-L2 `watch_item_created` deltas apply by creating resident watch pursuits; high-risk deltas remain approval-gated.
+- `AgencyKernel.proposeDelta()` arbitrates behavioral deltas. In live mode, approved reversible L0-L2 `watch_item_created` deltas create resident watch pursuits, and `pursuit_note_added` deltas update an existing pursuit's theory, next move, evidence, and note ledger. High-risk deltas remain approval-gated.
 - Pursuits now include living-thread fields: why it matters, current theory, linked/latest evidence, next move, budget, risk, evidence standard, decay/escalation, and what would change the theory.
 - Pursuit snapshots cap embedded history and the store keeps a current-pursuit index in memory, so resident startup review does not repeatedly parse inflated append-only snapshots before the bridge binds.
 - `scratch.jsonl` and `truth.jsonl` are first-class agency ledgers beside inbox, pursuits, receipts, and consequences.
@@ -59,5 +59,4 @@ Dry-run remains the default. In dry-run, the resident spine records intent, veto
 
 ## Remaining Hardening
 
-- Expand live delta appliers beyond watch-item creation only after dry-run receipts prove stable.
 - Extend artifact verifier binding to more artifact-producing organs as they begin declaring resident `pursuitId` metadata.

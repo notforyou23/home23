@@ -165,6 +165,32 @@ test('agency_propose_delta calls bounded delta arbitration API', async () => {
   assert.match(result.content, /approved_dry_run/);
 });
 
+test('agency_propose_delta can pass a pursuit note delta through the bridge API', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/deltas');
+    assert.equal(init?.method, 'POST');
+    const body = JSON.parse(String(init?.body || '{}'));
+    assert.equal(body.changeType, 'pursuit_note_added');
+    assert.equal(body.pursuitId, 'ap_note');
+    assert.equal(body.currentTheory, 'The signal matters only if it changes resident behavior.');
+    assert.equal(body.nextMove, 'apply the smallest bounded change');
+    assert.deepEqual(body.evidence, [{ type: 'reference', ref: 'brief-2' }]);
+    return new Response(JSON.stringify({ decision: { route: 'approved_live' }, authority: { reason: 'live_low_risk_allowed' } }), { status: 200 });
+  };
+
+  const result = await agencyProposeDeltaTool.execute({
+    changeType: 'pursuit_note_added',
+    pursuitId: 'ap_note',
+    summary: 'Attach the research implication to the living pursuit.',
+    currentTheory: 'The signal matters only if it changes resident behavior.',
+    nextMove: 'apply the smallest bounded change',
+    evidenceRef: 'brief-2',
+    authorityLevel: 'L1',
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /approved_live/);
+});
+
 test('agency_record_claim writes a resident truth claim through bridge API', async () => {
   const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
     assert.equal(String(url), 'http://bridge.test/api/agency/claims');

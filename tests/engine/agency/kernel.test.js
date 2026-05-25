@@ -731,6 +731,48 @@ test('AgencyKernel live low-risk watch deltas apply bounded resident state chang
   assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'watch_item_created'), true);
 });
 
+test('AgencyKernel live low-risk pursuit note deltas update existing pursuit theory and next move', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'live' },
+  });
+  const intake = await kernel.intake({
+    source: 'research',
+    kind: 'research_summary',
+    summary: 'Agent agency interfaces need resident consequence tracking.',
+    authorityLevel: 'L2',
+    evidence: [{ type: 'research', ref: 'brief-1' }],
+    desiredChangedFuture: 'Agency interface research changes Jerry resident behavior.',
+  });
+
+  const result = kernel.proposeDelta({
+    changeType: 'pursuit_note_added',
+    pursuitId: intake.pursuit.id,
+    summary: 'X timeline evidence suggests the next move is implementation, not another digest.',
+    currentTheory: 'Agent agency research is useful only when it changes Home23 resident behavior.',
+    nextMove: 'apply the smallest bounded engine change and verify a receipt',
+    authorityLevel: 'L1',
+    reversible: true,
+    evidence: [{ type: 'research_note', ref: 'brief-2' }],
+  });
+
+  const pursuit = kernel.pursuit(intake.pursuit.id);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(result.decision.route, 'approved_live');
+  assert.equal(result.applied?.kind, 'pursuit_note_added');
+  assert.equal(result.applied?.pursuitId, intake.pursuit.id);
+  assert.equal(pursuit.currentTheory, 'Agent agency research is useful only when it changes Home23 resident behavior.');
+  assert.equal(pursuit.nextMove, 'apply the smallest bounded engine change and verify a receipt');
+  assert.equal(pursuit.agencyNotes[0].summary, 'X timeline evidence suggests the next move is implementation, not another digest.');
+  assert.equal(pursuit.latestEvidence[0].ref, 'brief-2');
+  assert.equal(receipts.some(row => row.event === 'delta_applied' && row.changeType === 'pursuit_note_added'), true);
+  assert.equal(consequences.some(row => row.status === 'applied' && row.changeType === 'pursuit_note_added'), true);
+});
+
 test('AgencyKernel closes pursuits when worker receipts prove the stop condition', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

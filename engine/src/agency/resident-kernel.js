@@ -774,6 +774,58 @@ export class AgencyKernel {
         pursuitId: pursuit.id,
       };
     }
+    if (delta.changeType === 'pursuit_note_added') {
+      const pursuitId = input.pursuitId || input.targetPursuitId || null;
+      if (!pursuitId) {
+        return {
+          kind: 'no_op',
+          reason: 'pursuit_note_delta_requires_pursuit_id',
+        };
+      }
+      const existing = this.store.getPursuit(pursuitId);
+      if (!existing || existing.status === 'closed' || existing.status === 'discarded') {
+        return {
+          kind: 'no_op',
+          reason: 'pursuit_note_delta_target_unavailable',
+          pursuitId,
+        };
+      }
+      const evidence = Array.isArray(input.evidence) ? input.evidence : [];
+      const agencyNotes = [
+        {
+          at: nowIso(),
+          summary: input.summary || null,
+          currentTheory: input.currentTheory || null,
+          nextMove: input.nextMove || null,
+          evidence,
+        },
+        ...(Array.isArray(existing.agencyNotes) ? existing.agencyNotes : []),
+      ].slice(0, 25);
+      const mergedEvidence = [];
+      const seen = new Set();
+      for (const item of [...(existing.evidence || []), ...evidence]) {
+        const key = JSON.stringify(item);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        mergedEvidence.push(item);
+      }
+      this.store.updatePursuit(pursuitId, {
+        currentTheory: input.currentTheory || existing.currentTheory,
+        nextMove: input.nextMove || existing.nextMove,
+        agencyNotes,
+        evidence: mergedEvidence,
+        linkedEvidence: mergedEvidence,
+        latestEvidence: evidence.length ? evidence.slice(-3) : existing.latestEvidence,
+        lastTouched: nowIso(),
+      }, {
+        type: 'pursuit_note_added',
+        reason: input.summary || 'approved_live_delta_pursuit_note_added',
+      });
+      return {
+        kind: 'pursuit_note_added',
+        pursuitId,
+      };
+    }
     return {
       kind: 'no_op',
       reason: 'delta_type_has_no_live_applier',
