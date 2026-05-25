@@ -4576,7 +4576,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
   padding: 22px;
 }
 
-.h23-resident-kicker,
 .h23-resident-section-title {
   color: rgba(255,255,255,0.54);
   font-size: 0.72rem;
@@ -4585,12 +4584,35 @@ body.h23-external-focus #cosmo23-refresh-btn {
   text-transform: uppercase;
 }
 
+.h23-resident-command-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .h23-resident-command h1 {
-  margin: 8px 0 8px;
+  margin: 0 0 8px;
   color: var(--text-primary);
   font-size: 1.75rem;
   line-height: 1.12;
   letter-spacing: 0;
+}
+
+.h23-resident-mode {
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+  padding: 5px 8px;
+  border: 1px solid rgba(94, 234, 212, 0.28);
+  border-radius: 7px;
+  background: rgba(20, 184, 166, 0.1);
+  color: #b9fff7;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .h23-resident-command p {
