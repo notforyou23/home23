@@ -658,13 +658,23 @@ function renderProblemCard(p) {
       <div><label>${escapeHtml(repairLabel)}</label><span>${escapeHtml(problemRepairText(p))}</span></div>
       <div><label>Needed from you</label><span>${escapeHtml(problemUserText(p))}</span></div>
     </div>
-    <div style="font-size:12px;color:rgba(255,255,255,0.6);margin-bottom:6px;">
-      <span>verifier: <code style="background:rgba(255,255,255,0.04);padding:1px 4px;border-radius:3px;">${escapeHtml(p.verifier?.type || '—')}</code></span>
-      <span style="margin-left:12px;">last: ${last}${lastChecked}</span>
-      <span style="margin-left:12px;">remediation: ${stepsLabel}${p.escalated ? ' · <span style="color:#ff6b6b;">escalated</span>' : ''}</span>
-    </div>
-    ${recentRem.length > 0 ? `<div style="font-size:11px;color:rgba(255,255,255,0.45);margin-top:4px;">recent attempts: ${recentRem.map(r => `<span style="margin-right:10px;">${escapeHtml(r.type)}=${escapeHtml(r.outcome)}</span>`).join('')}</div>` : ''}
+    ${renderProblemEvidenceDrawer(p, { last, lastChecked, stepsLabel, recentRem })}
   </div>`;
+}
+
+function renderProblemEvidenceDrawer(p, { last, lastChecked, stepsLabel, recentRem } = {}) {
+  const attempts = Array.isArray(recentRem) ? recentRem : [];
+  return `
+    <details class="h23-problem-evidence">
+      <summary>Verifier evidence</summary>
+      <div class="h23-problem-evidence-grid">
+        <div><label>Verifier</label><span>${escapeHtml(p.verifier?.type || '—')}</span></div>
+        <div><label>Last</label><span>${escapeHtml(`${last || 'not yet checked'}${lastChecked || ''}`)}</span></div>
+        <div><label>Remediation</label><span>${escapeHtml(`${stepsLabel || 'step 0/0'}${p.escalated ? ' · escalated' : ''}`)}</span></div>
+      </div>
+      ${attempts.length > 0 ? `<div class="h23-problem-evidence-attempts">${attempts.map(r => `<span>${escapeHtml(r.type)}=${escapeHtml(r.outcome)}</span>`).join('')}</div>` : ''}
+    </details>
+  `;
 }
 
 function renderProblemUserAction(problem = {}) {

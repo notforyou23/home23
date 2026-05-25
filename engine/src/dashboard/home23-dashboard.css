@@ -2751,6 +2751,54 @@ body.h23-external-focus #cosmo23-refresh-btn {
   background: rgba(0,0,0,0.12);
 }
 
+.h23-problem-evidence {
+  margin-top: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px;
+  background: rgba(0,0,0,0.1);
+}
+
+.h23-problem-evidence > summary {
+  cursor: pointer;
+  padding: 7px 9px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.h23-problem-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  padding: 0 9px 9px;
+}
+
+.h23-problem-evidence-grid label {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.h23-problem-evidence-grid span,
+.h23-problem-evidence-attempts {
+  color: rgba(255,255,255,0.68);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.h23-problem-evidence-attempts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  padding: 8px 9px 9px;
+}
+
 .h23-problem-user-action {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

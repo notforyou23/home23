@@ -22,6 +22,11 @@ test('live-problems panel exposes an operator readout, not only raw verifier row
   assert.match(js, /activeProblems\.map\(p => renderProblemCard\(p\)\)/);
   assert.doesNotMatch(js, /problems\.map\(p => renderProblemCard\(p\)\)/);
   assert.match(css, /\.h23-problems-history/);
+  assert.match(js, /renderProblemEvidenceDrawer\(p, \{ last, lastChecked, stepsLabel, recentRem \}\)/);
+  assert.match(js, /<summary>Verifier evidence<\/summary>/);
+  assert.doesNotMatch(js, /<div style="font-size:12px;color:rgba\(255,255,255,0\.6\);margin-bottom:6px;">\s*<span>verifier:/);
+  assert.doesNotMatch(js, /recent attempts: \$\{recentRem\.map/);
+  assert.match(css, /\.h23-problem-evidence/);
   assert.match(js, /problemRepairText/);
   assert.match(js, /renderProblemUserAction/);
   assert.match(js, /Action Needed/);
