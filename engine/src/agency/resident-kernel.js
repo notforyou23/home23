@@ -945,6 +945,49 @@ export class AgencyKernel {
     return task;
   }
 
+  closeTask(taskId, input = {}) {
+    const existing = this.store.getTask(taskId);
+    if (!existing) throw new Error(`Agency task not found: ${taskId}`);
+    const at = input.at || nowIso();
+    const evidence = Array.isArray(input.evidence)
+      ? input.evidence
+      : (input.evidenceRef ? [{ type: 'reference', ref: String(input.evidenceRef) }] : []);
+    const closureEvidence = evidence.length ? evidence : (Array.isArray(existing.evidence) ? existing.evidence : []);
+    const task = this.store.updateTask(taskId, {
+      status: 'closed',
+      closedAt: at,
+      closureSummary: input.summary || input.reason || null,
+      closureEvidence,
+    }, {
+      type: 'closed',
+      reason: input.reason || input.summary || 'resident_task_closed',
+    });
+    this.store.appendReceipt({
+      schema: 'home23.agency.receipt.v1',
+      at,
+      event: 'task_closed',
+      taskId: task.id,
+      pursuitId: task.pursuitId,
+      route: 'task',
+      actionKind: task.actionKind,
+      authorityLevel: task.authorityLevel,
+      reason: input.reason || input.summary || 'resident_task_closed',
+      evidence: closureEvidence,
+      mode: this.config.mode,
+    });
+    this.store.appendConsequence({
+      schema: 'home23.agency.consequence.v1',
+      at,
+      pursuitId: task.pursuitId,
+      status: 'closed',
+      changeType: 'task_closed',
+      summary: input.summary || task.summary,
+      evidence: closureEvidence,
+    });
+    this.ensureState();
+    return task;
+  }
+
   raiseQuestion(input = {}) {
     const at = input.at || nowIso();
     const question = String(input.question || input.summary || '').trim();

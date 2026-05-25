@@ -1128,6 +1128,38 @@ test('AgencyKernel creates resident tasks and routed handoffs as bounded action 
   assert.equal(taskRows.at(-1).task.id, tasks[0].id);
 });
 
+test('AgencyKernel closes resident tasks with evidence and removes them from open task view', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'live' },
+  });
+  const task = kernel.recordTask({
+    summary: 'Verify dashboard agency task closure path.',
+    pursuitId: 'ap_task_close',
+    actionKind: 'worker_delegation',
+    authorityLevel: 'L2',
+    evidence: [{ type: 'reference', ref: 'task:open' }],
+  });
+
+  const closed = kernel.closeTask(task.id, {
+    summary: 'Verifier passed and task closure route is live.',
+    evidenceRef: 'task:closed',
+  });
+
+  const openTasks = kernel.tasks({ status: 'open', limit: 10 }).tasks;
+  const closedTasks = kernel.tasks({ status: 'closed', limit: 10 }).tasks;
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+  const consequences = readJsonl(join(dir, 'agency', 'consequences.jsonl'));
+
+  assert.equal(closed.status, 'closed');
+  assert.equal(openTasks.some(row => row.id === task.id), false);
+  assert.equal(closedTasks.some(row => row.id === task.id), true);
+  assert.equal(receipts.some(row => row.event === 'task_closed' && row.taskId === task.id), true);
+  assert.equal(consequences.some(row => row.changeType === 'task_closed' && row.status === 'closed' && row.pursuitId === 'ap_task_close'), true);
+});
+
 test('AgencyKernel live low-risk pursuit note deltas update existing pursuit theory and next move', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({

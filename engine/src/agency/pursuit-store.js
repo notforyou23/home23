@@ -112,9 +112,13 @@ export class PursuitStore {
   }
 
   listTasks({ status = null, limit = 100 } = {}) {
-    let rows = readJsonl(this.tasksPath)
-      .map(row => row.task || row)
-      .filter(Boolean);
+    const latest = new Map();
+    for (const row of readJsonl(this.tasksPath)) {
+      const task = row.task || row;
+      if (!task?.id) continue;
+      latest.set(task.id, task);
+    }
+    let rows = Array.from(latest.values());
     if (status) {
       const statuses = Array.isArray(status) ? new Set(status) : new Set([status]);
       rows = rows.filter(row => statuses.has(row.status));
@@ -122,6 +126,31 @@ export class PursuitStore {
     return rows
       .sort((a, b) => String(b.updatedAt || b.createdAt || b.at || '').localeCompare(String(a.updatedAt || a.createdAt || a.at || '')))
       .slice(0, limit);
+  }
+
+  getTask(id) {
+    if (!id) return null;
+    const rows = readJsonl(this.tasksPath);
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const task = rows[i]?.task || rows[i];
+      if (task?.id === id) return task;
+    }
+    return null;
+  }
+
+  updateTask(id, patch = {}, event = {}) {
+    const existing = this.getTask(id);
+    if (!existing) throw new Error(`Agency task not found: ${id}`);
+    const at = nowIso();
+    const task = {
+      ...existing,
+      ...patch,
+      id: existing.id,
+      createdAt: existing.createdAt,
+      updatedAt: at,
+    };
+    this.appendTask({ type: event.type || 'updated', at, task, detail: event.detail || null });
+    return task;
   }
 
   listPursuits({ status = null, limit = 100 } = {}) {

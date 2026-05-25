@@ -5,6 +5,7 @@ import {
   agencyListTool,
   agencyCreatePursuitTool,
   agencyCreateTaskTool,
+  agencyCloseTaskTool,
   agencyClosePursuitTool,
   agencyDiscardCandidateTool,
   agencyIntakeWorldStreamTool,
@@ -310,4 +311,30 @@ test('agency_create_task records a resident task handoff through the bridge API'
 
   assert.match(result.content, /task_1/);
   assert.match(result.content, /open/);
+});
+
+test('agency_close_task closes a resident task through the bridge API', async () => {
+  const fakeFetch = async (url: string | URL | Request, init?: RequestInit) => {
+    assert.equal(String(url), 'http://bridge.test/api/agency/tasks/task_1/transition');
+    assert.equal(init?.method, 'POST');
+    const body = JSON.parse(String(init?.body || '{}'));
+    assert.equal(body.status, 'closed');
+    assert.equal(body.summary, 'Verifier passed.');
+    assert.deepEqual(body.evidence, [{ type: 'reference', ref: 'receipt:task' }]);
+    return new Response(JSON.stringify({
+      task: {
+        id: 'task_1',
+        status: 'closed',
+      },
+    }), { status: 200 });
+  };
+
+  const result = await agencyCloseTaskTool.execute({
+    taskId: 'task_1',
+    summary: 'Verifier passed.',
+    evidenceRef: 'receipt:task',
+  }, ctx(fakeFetch as typeof fetch));
+
+  assert.match(result.content, /task_1/);
+  assert.match(result.content, /closed/);
 });

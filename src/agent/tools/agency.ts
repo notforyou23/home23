@@ -120,6 +120,36 @@ export const agencyCreateTaskTool: ToolDefinition = {
   },
 };
 
+export const agencyCloseTaskTool: ToolDefinition = {
+  name: 'agency_close_task',
+  description: 'Close a resident agency task with evidence so handoffs do not become stale resident queues.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      taskId: { type: 'string' },
+      summary: { type: 'string' },
+      evidenceRef: { type: 'string' },
+    },
+    required: ['taskId', 'summary'],
+    additionalProperties: false,
+  },
+  async execute(input, ctx) {
+    const taskId = String(input.taskId || '').trim();
+    const evidence = typeof input.evidenceRef === 'string' && input.evidenceRef.trim()
+      ? [{ type: 'reference', ref: input.evidenceRef }]
+      : [];
+    const data = await jsonRequest(ctx, `/api/agency/tasks/${encodeURIComponent(taskId)}/transition`, {
+      method: 'POST',
+      body: JSON.stringify({
+        status: 'closed',
+        summary: input.summary,
+        evidence,
+      }),
+    }) as { task?: { id?: string; status?: string; closureSummary?: string } };
+    return { content: `Agency task ${data.task?.id || taskId} (${data.task?.status || 'closed'}): ${data.task?.closureSummary || input.summary}` };
+  },
+};
+
 export const agencyUpdatePursuitTool: ToolDefinition = {
   name: 'agency_update_pursuit',
   description: 'Transition or annotate a resident agency pursuit.',

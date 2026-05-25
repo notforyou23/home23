@@ -1076,6 +1076,19 @@ async function main(): Promise<void> {
       res.status(400).json({ error: err?.message || String(err) });
     }
   });
+  bridgeApp.post('/api/agency/tasks/:id/transition', async (req: any, res: any) => {
+    try {
+      const kernel = await getAgencyKernel();
+      const status = req.body?.status || req.body?.transition;
+      if (status !== 'closed') {
+        res.status(400).json({ error: 'Only closed task transition is supported' });
+        return;
+      }
+      res.json({ task: kernel.closeTask(req.params.id, req.body || {}) });
+    } catch (err: any) {
+      res.status(400).json({ error: err?.message || String(err) });
+    }
+  });
 
   bridgeApp.post('/api/chat', createEvobrewChatHandler(bridgeConfig));
   bridgeApp.post('/api/stop', createStopHandler(bridgeConfig));
