@@ -203,7 +203,8 @@ body::before {
   color: rgba(255,255,255,0.15);
 }
 
-.h23-pulse-phase, .h23-pulse-energy, .h23-pulse-cycle {
+.h23-pulse-energy,
+.h23-pulse-cycle {
   color: var(--text-secondary);
 }
 
@@ -2124,12 +2125,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
   white-space: nowrap;
 }
 
-.h23-system-runtime .h23-pulse-phase {
-  color: rgba(183, 203, 176, 0.48);
-  font-size: 0.72rem;
-  font-weight: 700;
-}
-
 .h23-system-label {
   color: rgba(183, 203, 176, 0.5);
   font-size: 0.64rem;
@@ -2205,15 +2200,6 @@ body.h23-external-focus #cosmo23-refresh-btn {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0;
-}
-
-.h23-pulse-phase {
-  margin-top: 2px;
-  font-size: 0.78rem;
-  color: rgba(219, 225, 210, 0.68);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .h23-overview-metric {
