@@ -193,7 +193,6 @@ async function init() {
   setupAgencySurface();
   connectEnginePulse();
   loadResidentHomeSurface().catch(() => { /* agency bridge may still be booting */ });
-  loadAgencySurface().catch(() => { /* agency bridge may still be booting */ });
   startAutoRefresh();
   updateCosmoIndicator();
   setInterval(updateCosmoIndicator, REFRESH_MS);
