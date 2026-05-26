@@ -488,7 +488,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /renderResidentPursuitAuthority\(p\)/);
   assert.doesNotMatch(js, /return p\.authorityLevel \|\| p\.risk \|\| 'L\?'/);
   assert.match(js, /if \(_pulseEls\.state\)/);
-  assert.match(js, /const showRuntime = runtimeState && !\['awake', 'sleeping'\]\.includes\(runtimeState\)/);
+  assert.match(js, /const showRuntime = isOperatorRuntimeAlert\(runtimeState\)/);
   assert.match(js, /_pulseEls\.rail\.hidden = !showRuntime/);
   assert.match(js, /_pulseEls\.runtime\.hidden = !showRuntime/);
   assert.doesNotMatch(js, /syncPulsePhaseText/);
@@ -530,6 +530,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(css, /\.h23-system-rail/);
   assert.match(css, /\.h23-system-rail\[hidden\]\s*\{[\s\S]*?display:\s*none\s*!important/);
   assert.match(css, /\.h23-system-runtime/);
+  assert.match(js, /function isOperatorRuntimeAlert\(runtimeState\)/);
+  assert.match(js, /const showRuntime = isOperatorRuntimeAlert\(runtimeState\)/);
+  assert.doesNotMatch(js, /const showRuntime = runtimeState && !\['awake', 'sleeping'\]\.includes\(runtimeState\)/);
   assert.doesNotMatch(css, /h23-pulse-phase/);
   assert.doesNotMatch(css, /\.h23-dashboard-identity/);
   assert.doesNotMatch(css, /\.h23-system-rail \.time-cluster/);

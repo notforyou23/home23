@@ -731,6 +731,8 @@ function connectEnginePulse() {
     ws.onclose = () => {
       const dot = document.getElementById('pulse-dot');
       if (dot) dot.className = 'h23-pulse-dot';
+      enginePulse.state = 'offline';
+      renderPulse();
       setEngineOfflineStatus();
       // Reconnect after 5 seconds
       if (!reconnectTimer) {
@@ -827,6 +829,10 @@ function handleEngineEvent(data) {
 let _pulseEls = null;
 let _pulseRafPending = false;
 
+function isOperatorRuntimeAlert(runtimeState) {
+  return ['blocked', 'error', 'failed', 'offline'].includes(String(runtimeState || '').toLowerCase());
+}
+
 function renderPulse() {
   // Throttle to one render per animation frame
   if (_pulseRafPending) return;
@@ -849,7 +855,7 @@ function _renderPulseNow() {
   if (!_pulseEls.dot) return;
 
   const runtimeState = enginePulse.state && enginePulse.state !== 'unknown' ? enginePulse.state : '';
-  const showRuntime = runtimeState && !['awake', 'sleeping'].includes(runtimeState);
+  const showRuntime = isOperatorRuntimeAlert(runtimeState);
   if (_pulseEls.rail) _pulseEls.rail.hidden = !showRuntime;
   if (_pulseEls.runtime) _pulseEls.runtime.hidden = !showRuntime;
   _pulseEls.dot.className = 'h23-pulse-dot ' + runtimeState;
