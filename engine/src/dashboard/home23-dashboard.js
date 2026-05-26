@@ -180,7 +180,6 @@ async function init() {
   setupOrganDrawer();
   setupResidentHomeSurface();
   setupWorkersSurface();
-  setupAgencySurface();
   connectEnginePulse();
   loadResidentHomeSurface().catch(() => { /* agency bridge may still be booting */ });
   startAutoRefresh();
@@ -1812,12 +1811,6 @@ function renderResidentHomeError(err) {
 }
 
 // ── Agency Inspector ──
-
-function setupAgencySurface() {
-  document.getElementById('agency-refresh-btn')?.addEventListener('click', () => {
-    loadAgencySurface().catch(() => {});
-  });
-}
 
 async function loadAgencySurface() {
   const [stateRes, briefRes, inspectorRes, pursuitsRes, eventsRes] = await Promise.all([

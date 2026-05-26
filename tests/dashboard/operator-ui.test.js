@@ -269,6 +269,7 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   const primaryNav = html.match(/<nav class="h23-tabs h23-tabs-primary">[\s\S]*?<\/nav>/)?.[0] || '';
   const organDrawer = html.match(/<details class="h23-organ-drawer" id="organs-drawer">[\s\S]*?<\/details>/)?.[0] || '';
   const residentCommandRow = html.match(/<div class="h23-resident-command-row">[\s\S]*?<\/div>/)?.[0] || '';
+  const agencyPanel = html.match(/<div class="h23-panel" id="panel-agency">[\s\S]*?<\/div>\s*<\/div>/)?.[0] || '';
   assert.match(primaryNav, /data-tab="home"/);
   assert.match(primaryNav, /data-tab="agency"/);
   assert.doesNotMatch(primaryNav, /data-tab="workers"/);
@@ -280,6 +281,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(organDrawer, /data-tab="workers"/);
   assert.match(organDrawer, /data-scope-tab="chat"/);
   assert.match(organDrawer, /data-scope-tab="settings"/);
+  assert.doesNotMatch(agencyPanel, /id="agency-refresh-btn"/);
+  assert.doesNotMatch(agencyPanel, />Refresh</);
+  assert.doesNotMatch(js, /document\.getElementById\('agency-refresh-btn'\)/);
   assert.match(js, /tab\.title = renderDashboardScopeText\(meta, tabKey\)/);
   assert.doesNotMatch(js, /const showChip/);
   assert.doesNotMatch(js, /h23-tab-scope-chip/);
