@@ -454,8 +454,9 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /title="Inspect resident pursuit evidence"/);
   assert.doesNotMatch(js, />\s*Inspect\s*<\/a>/);
   assert.match(js, /h23-resident-veto-btn/);
-  assert.match(js, /aria-label="Discard resident pursuit"/);
-  assert.match(js, /title="Discard resident pursuit"/);
+  assert.match(js, /aria-label="Veto resident pursuit as noise"/);
+  assert.match(js, /title="Veto resident pursuit as noise"/);
+  assert.match(js, /Vetoed from resident dashboard: this is noise or no longer worth active operator attention\./);
   assert.doesNotMatch(js, />X<\/button>/);
   assert.doesNotMatch(js, />Discard<\/button>/);
   assert.doesNotMatch(js, /function renderResidentPursuitBody/);
