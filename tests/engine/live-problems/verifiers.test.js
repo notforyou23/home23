@@ -41,6 +41,79 @@ test('http_ping verifies a local HTTP status without fetch', async () => {
   }
 });
 
+test('create_file_tool_probe verifies createFile writes readable bytes', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-create-file-probe-test-'));
+  const modulePath = path.join(dir, 'tools.cjs');
+  fs.writeFileSync(modulePath, `
+    const fs = require('fs').promises;
+    const path = require('path');
+    class ToolExecutor {
+      constructor(_indexer, workingDirectory) {
+        this.cwd = workingDirectory;
+      }
+      resolvePath(inputPath) {
+        return path.isAbsolute(inputPath) ? inputPath : path.join(this.cwd, inputPath);
+      }
+      async createFile(filePath, content) {
+        const resolved = this.resolvePath(filePath);
+        await fs.mkdir(path.dirname(resolved), { recursive: true });
+        await fs.writeFile(resolved, content, 'utf8');
+        return { success: true, path: resolved };
+      }
+    }
+    module.exports = { ToolExecutor };
+  `);
+
+  try {
+    const result = await runVerifier({
+      type: 'create_file_tool_probe',
+      args: {
+        modulePath,
+        filePath: 'nested/probe.txt',
+        content: 'probe-body\n',
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.observed.bytes, 'probe-body\n'.length);
+    assert.equal(result.observed.contentMatches, true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('create_file_tool_probe fails when createFile returns without writing', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-create-file-stub-test-'));
+  const modulePath = path.join(dir, 'tools.cjs');
+  fs.writeFileSync(modulePath, `
+    class ToolExecutor {
+      constructor(_indexer, workingDirectory) {
+        this.cwd = workingDirectory;
+      }
+      async createFile(filePath, _content) {
+        return { success: true, path: this.cwd + '/' + filePath };
+      }
+    }
+    module.exports = { ToolExecutor };
+  `);
+
+  try {
+    const result = await runVerifier({
+      type: 'create_file_tool_probe',
+      args: {
+        modulePath,
+        filePath: 'nested/probe.txt',
+        content: 'probe-body\n',
+      },
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.detail, /no file was written/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('pm2_port_owner passes when the online PM2 process owns the listening port', async () => {
   const result = await runVerifier({
     type: 'pm2_port_owner',

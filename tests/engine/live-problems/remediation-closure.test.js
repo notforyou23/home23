@@ -79,6 +79,16 @@ test('default seeds include agent-local operational log pressure invariants', ()
   const seeds = defaultSeeds({ agentName: 'forrest', dashboardPort: '5012', bridgePort: '5014' });
   const byId = new Map(seeds.map((seed) => [seed.id, seed]));
 
+  const writeProbe = byId.get('forrest_create_file_tool_writes_to_disk');
+  assert.equal(writeProbe?.verifier?.type, 'create_file_tool_probe');
+  assert.match(writeProbe.verifier.args.modulePath, /\/engine\/src\/ide\/tools\.js$/);
+  assert.match(writeProbe.verifier.args.workingDirectory, /\/instances\/forrest\/brain\/evidence\/live-problems\/create-file-probe$/);
+  assert.equal(writeProbe.verifier.args.filePath, 'probe/create_file_probe.txt');
+  assert.equal(writeProbe.verifier.args.keepProbe, true);
+  assert.equal(writeProbe.remediation[0].type, 'dispatch_to_worker');
+  assert.equal(writeProbe.remediation[0].args.worker, 'systems');
+  assert.match(writeProbe.remediation[2].args.text, /not another escalation document/);
+
   const provider = byId.get('forrest_provider_scoring_failures_clear');
   assert.equal(provider?.verifier?.type, 'log_recent_count');
   assert.match(provider.verifier.args.path, /\/instances\/forrest\/logs\/engine-err\.log$/);

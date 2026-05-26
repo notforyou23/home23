@@ -16,7 +16,8 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
   const harnessPort = bridgePort || process.env.BRIDGE_PORT || '5004';
   const harnessProc = `home23-${agent}-harness`;
   const dashProc = `home23-${agent}-dash`;
-  const instanceRoot = process.cwd().replace(/\/engine$/, '') + `/instances/${agent}`;
+  const homeRoot = process.cwd().replace(/\/engine$/, '');
+  const instanceRoot = `${homeRoot}/instances/${agent}`;
   const brainStatePath = `${instanceRoot}/brain/brain-state.json`;
   const thoughtsPath = `${instanceRoot}/brain/thoughts.jsonl`;
   const notifyCognitionPath = `${instanceRoot}/brain/channels/work.notify.cognition.jsonl`;
@@ -79,6 +80,32 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
             text: "Disk under 10 GiB. Agent cleaned logs and looked for space but couldn't get it back above threshold. Needs a real cleanup pass.",
           },
           cooldownMin: 720,
+        },
+      ],
+      seedOrigin: 'system',
+    },
+    {
+      id: `${agent}_create_file_tool_writes_to_disk`,
+      claim: `${agent} create_file tool writes bytes to disk, not just success metadata`,
+      verifier: {
+        type: 'create_file_tool_probe',
+        args: {
+          modulePath: `${homeRoot}/engine/src/ide/tools.js`,
+          workingDirectory: `${instanceRoot}/brain/evidence/live-problems/create-file-probe`,
+          filePath: 'probe/create_file_probe.txt',
+          keepProbe: true,
+        },
+      },
+      remediation: [
+        { type: 'dispatch_to_worker', args: { worker: 'systems', budgetHours: 2 }, cooldownMin: 15 },
+        { type: 'dispatch_to_agent', args: { budgetHours: 2 }, cooldownMin: 30 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'alert',
+            text: `${agent} create_file returned without durable filesystem readback. The write path needs a real patch, not another escalation document.`,
+          },
+          cooldownMin: 60,
         },
       ],
       seedOrigin: 'system',

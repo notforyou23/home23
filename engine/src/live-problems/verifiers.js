@@ -105,6 +105,103 @@ const verifiers = {
   },
 
   /**
+   * Instantiate the local create_file tool and verify bytes actually hit disk.
+   * This turns "write path is intercepted" claims into a binary filesystem
+   * check instead of another narrative artifact.
+   *
+   * args: {
+   *   modulePath: "engine/src/ide/tools.js",
+   *   filePath?: "probe/create_file_probe.txt",
+   *   workingDirectory?: "/tmp/probe-root",
+   *   content?: "probe text",
+   *   keepProbe?: false
+   * }
+   */
+  async create_file_tool_probe(args = {}) {
+    const modulePath = expandPath(args.modulePath);
+    if (!modulePath) return { ok: false, detail: 'modulePath required' };
+    if (!fs.existsSync(modulePath)) {
+      return { ok: false, detail: `tool module missing: ${modulePath}`, observed: { modulePath } };
+    }
+
+    const filePath = args.filePath || 'probe/create_file_probe.txt';
+    const content = args.content || `home23-create-file-probe ${new Date().toISOString()}\n`;
+    const createdTempRoot = !args.workingDirectory;
+    const root = args.workingDirectory
+      ? path.resolve(expandPath(args.workingDirectory))
+      : fs.mkdtempSync(path.join(os.tmpdir(), 'home23-create-file-probe-'));
+
+    try {
+      fs.mkdirSync(root, { recursive: true });
+
+      const resolvedModulePath = path.resolve(modulePath);
+      delete require.cache[resolvedModulePath];
+      const mod = require(resolvedModulePath);
+      const ToolExecutor = mod.ToolExecutor || mod.default || mod;
+      if (typeof ToolExecutor !== 'function') {
+        return {
+          ok: false,
+          detail: 'tool module does not export ToolExecutor',
+          observed: { modulePath: resolvedModulePath },
+        };
+      }
+
+      const executor = new ToolExecutor(null, root);
+      if (typeof executor.createFile !== 'function') {
+        return {
+          ok: false,
+          detail: 'ToolExecutor has no createFile function',
+          observed: { modulePath: resolvedModulePath },
+        };
+      }
+
+      const result = await executor.createFile(filePath, content);
+      const candidatePaths = [
+        result?.path,
+        path.isAbsolute(filePath) ? filePath : path.join(root, filePath),
+      ].filter(Boolean);
+      const diskPath = candidatePaths.find((candidate) => fs.existsSync(candidate));
+
+      if (!diskPath) {
+        return {
+          ok: false,
+          detail: 'createFile returned but no file was written',
+          observed: { modulePath: resolvedModulePath, root, filePath, result },
+        };
+      }
+
+      const disk = fs.readFileSync(diskPath, 'utf8');
+      const ok = disk === content;
+      const stat = fs.statSync(diskPath);
+      return {
+        ok,
+        detail: ok
+          ? `wrote and read back ${stat.size} bytes`
+          : `readback mismatch (${stat.size} bytes at ${diskPath})`,
+        observed: {
+          modulePath: resolvedModulePath,
+          root,
+          filePath,
+          diskPath,
+          bytes: stat.size,
+          contentMatches: ok,
+          result,
+        },
+      };
+    } catch (err) {
+      return {
+        ok: false,
+        detail: `createFile probe failed: ${err.message}`,
+        observed: { modulePath, root, filePath },
+      };
+    } finally {
+      if (createdTempRoot && args.keepProbe !== true) {
+        try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* best effort */ }
+      }
+    }
+  },
+
+  /**
    * PM2 process is online (or any matching the name glob is online).
    * args: { name }
    */
