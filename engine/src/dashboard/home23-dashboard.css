@@ -1625,7 +1625,7 @@ body::before {
 
 :root {
   --font-display: 'Space Grotesk', 'Inter', sans-serif;
-  --sidebar-width: 252px;
+  --sidebar-width: 132px;
   --home-mid-tile-height: 228px;
   --home-utility-tile-height: 360px;
   --home-summary-tile-min-height: 188px;
@@ -1647,7 +1647,7 @@ body {
   min-height: calc(100vh - 36px);
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
-  gap: 20px;
+  gap: 14px;
   align-items: start;
 }
 
@@ -1657,12 +1657,12 @@ body {
   align-self: start;
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  padding: 18px 16px;
+  gap: 12px;
+  padding: 12px;
   height: calc(100vh - 36px);
   max-height: calc(100vh - 36px);
   overflow: hidden;
-  border-radius: 26px;
+  border-radius: 14px;
   background:
     linear-gradient(180deg, rgba(7, 18, 39, 0.96), rgba(5, 16, 31, 0.92)),
     radial-gradient(circle at top left, rgba(46, 203, 255, 0.12), transparent 45%);
@@ -1675,17 +1675,18 @@ body {
 .h23-sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 4px 4px 12px;
+  justify-content: center;
+  gap: 0;
+  padding: 0 0 8px;
 }
 
 .h23-brand-mark {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 42px;
-  height: 42px;
-  flex: 0 0 42px;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
   border-radius: 8px;
   border: 1px solid rgba(183, 203, 176, 0.2);
   background: rgba(183, 203, 176, 0.08);
@@ -1696,6 +1697,7 @@ body {
 }
 
 .h23-sidebar-brand-copy {
+  display: none;
   min-width: 0;
 }
 
@@ -1720,7 +1722,7 @@ body {
 .h23-sidebar-scroll {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 14px;
   min-height: 0;
   flex: 1;
   overflow-y: auto;
@@ -1736,14 +1738,14 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 38px;
-  padding: 0 12px;
+  min-height: 36px;
+  padding: 0 8px;
   border-radius: 8px;
   color: rgba(206, 228, 255, 0.58);
   cursor: pointer;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 800;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.06em;
   list-style: none;
   text-transform: uppercase;
 }
@@ -1783,25 +1785,26 @@ body {
 .h23-linked-tabs {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   padding: 0;
 }
 
 #agent-tabs {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .h23-tab {
   width: 100%;
   justify-content: flex-start;
-  padding: 13px 14px;
-  border-radius: 16px;
-  gap: 10px;
+  padding: 11px 10px;
+  border-radius: 10px;
+  gap: 8px;
   background: rgba(255,255,255,0.03);
   border: 1px solid rgba(255,255,255,0.08);
   color: rgba(226, 236, 252, 0.82);
+  font-size: 0.78rem;
 }
 
 .h23-tab-settings,
@@ -1825,14 +1828,14 @@ body {
   position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 11px;
+  gap: 8px;
   white-space: nowrap;
 }
 
 .h23-tab-label::before {
-  width: 16px;
+  width: 14px;
   color: rgba(136, 215, 255, 0.92);
-  font-size: 0.95rem;
+  font-size: 0.86rem;
   line-height: 1;
   text-align: center;
 }
