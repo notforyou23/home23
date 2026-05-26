@@ -331,10 +331,6 @@ body::before {
   color: #6ee7de;
 }
 
-#agent-tabs {
-  display: contents;
-}
-
 .h23-tab-settings {
   background: rgba(255, 255, 255, 0.06);
   color: var(--text-secondary);
@@ -1789,12 +1785,6 @@ body {
   padding: 0;
 }
 
-#agent-tabs {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
 .h23-tab {
   width: 100%;
   justify-content: flex-start;
@@ -1988,8 +1978,7 @@ body.h23-external-focus.h23-external-drawer-open .h23-sidebar-scroll {
 }
 
 body.h23-external-focus.h23-external-drawer-open .h23-tabs,
-body.h23-external-focus.h23-external-drawer-open .h23-linked-tabs,
-body.h23-external-focus.h23-external-drawer-open #agent-tabs {
+body.h23-external-focus.h23-external-drawer-open .h23-linked-tabs {
   flex-direction: column;
   flex-wrap: nowrap;
 }
@@ -4976,8 +4965,7 @@ body.h23-external-focus #cosmo23-refresh-btn {
   }
 
   .h23-tabs,
-  .h23-linked-tabs,
-  #agent-tabs {
+  .h23-linked-tabs {
     flex-direction: row;
     flex-wrap: wrap;
   }

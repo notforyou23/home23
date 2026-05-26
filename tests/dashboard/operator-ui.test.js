@@ -278,6 +278,14 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(organDrawer, /Organs \/ Controls/);
   assert.doesNotMatch(organDrawer, />Organs</);
   assert.match(organDrawer, /<summary[^>]*>Controls<\/summary>/);
+  assert.doesNotMatch(organDrawer, /id="agent-tabs"/);
+  assert.doesNotMatch(js, /renderAgentTabs/);
+  assert.doesNotMatch(js, /function createAgentPanel/);
+  assert.doesNotMatch(js, /function loadAgentPanel/);
+  assert.doesNotMatch(js, /panel-agent-/);
+  assert.doesNotMatch(js, /Peer Agent Surface/);
+  assert.doesNotMatch(js, /Other Agent/);
+  assert.doesNotMatch(css, /#agent-tabs/);
   assert.match(organDrawer, /data-tab="workers"/);
   assert.match(organDrawer, /data-scope-tab="chat"/);
   assert.match(organDrawer, /data-scope-tab="settings"/);

@@ -81,27 +81,18 @@ const DASHBOARD_SCOPE_FALLBACK = {
     chip: 'External',
     summaryTemplate: 'evobrew is an external shared surface. The dashboard deep-links it with the current agent, but the service itself is house-managed.',
   },
-  agent: {
-    kind: 'peer',
-    chip: 'Other Agent',
-    summaryTemplate: 'This panel shows {{peerAgent}} from inside {{dashboardAgent}}\'s dashboard. It is a peer-agent view, not the owner of the current dashboard shell.',
-  },
 };
 
 function getDashboardScopeMeta(tabKey) {
-  const key = tabKey && tabKey.startsWith('agent-') ? 'agent' : (tabKey || currentTab);
+  const key = tabKey || currentTab;
   const registry = dashboardScopeRegistry?.tabs || {};
   return registry[key] || DASHBOARD_SCOPE_FALLBACK[key] || DASHBOARD_SCOPE_FALLBACK.home;
 }
 
 function renderDashboardScopeText(meta, tabKey = currentTab) {
-  const peerName = tabKey && tabKey.startsWith('agent-')
-    ? agents.find(a => a.name === tabKey.replace('agent-', ''))?.displayName || tabKey.replace('agent-', '')
-    : '';
   const replacements = {
     dashboardAgent: currentAgentLabel('this dashboard agent'),
     primaryAgent: homePrimaryAgent?.displayName || homePrimaryAgent?.name || currentAgentLabel('the Home23 primary agent'),
-    peerAgent: peerName || 'the other agent',
   };
   return String(meta?.summaryTemplate || '').replace(/\{\{(\w+)\}\}/g, (_, key) => replacements[key] || '');
 }
@@ -126,9 +117,7 @@ function refreshDashboardScopeUI() {
   if (kicker) {
     const scopeLabel = scopeMeta.kind === 'dashboard'
       ? 'This Dashboard Agent'
-      : scopeMeta.kind === 'peer'
-        ? 'Peer Agent Surface'
-        : scopeMeta.kind === 'mixed'
+      : scopeMeta.kind === 'mixed'
           ? 'Mixed Surface'
           : scopeMeta.kind === 'external'
             ? 'External Surface'
@@ -174,7 +163,6 @@ async function init() {
   setInterval(updateClocks, 10000);
   await loadDashboardScopeRegistry();
   await loadAgents();
-  renderAgentTabs();
   refreshDashboardScopeUI();
   setupTabHandlers();
   setupOrganDrawer();
@@ -1174,15 +1162,6 @@ async function updateCosmoIndicator() {
 
 // ── Tabs ──
 
-function renderAgentTabs() {
-  const container = document.getElementById('agent-tabs');
-  // Only show tabs for other agents; Home belongs to the current dashboard agent.
-  const others = agents.filter(a => a.name !== primaryAgent.name);
-  container.innerHTML = others.map(a =>
-    `<button class="h23-tab" data-tab="agent-${a.name}" data-tab-label="${a.displayName || a.name}">${a.displayName || a.name}</button>`
-  ).join('');
-}
-
 function setupOrganDrawer() {
   syncOrganDrawerForTab();
 }
@@ -1191,7 +1170,7 @@ function syncOrganDrawerForTab() {
   const drawer = document.getElementById('organs-drawer');
   if (!drawer) return;
   const organTabs = new Set(['workers', 'query', 'brain-map', 'cosmo23']);
-  const isOrganTab = organTabs.has(currentTab) || currentTab.startsWith('agent-');
+  const isOrganTab = organTabs.has(currentTab);
   if (isOrganTab) {
     drawer.open = true;
   } else {
@@ -1219,12 +1198,6 @@ function setupTabHandlers() {
       syncOrganDrawerForTab();
 
       let panel = document.getElementById(`panel-${currentTab}`);
-      if (!panel && currentTab.startsWith('agent-')) {
-        const name = currentTab.replace('agent-', '');
-        panel = createAgentPanel(name);
-        document.querySelector('.h23-main').appendChild(panel);
-        loadAgentPanel(name);
-      }
       if (panel) panel.classList.add('active');
 
       // Brain Map tab: initialize on first visit
@@ -4641,110 +4614,10 @@ function updatePulseFromState(state) {
   renderPulse();
 }
 
-// ── Secondary Agent Panels ──
-
-function createAgentPanel(agentName) {
-  const agent = agents.find(a => a.name === agentName);
-  const displayName = agent?.displayName || agentName;
-
-  const panel = document.createElement('div');
-  panel.className = 'h23-panel';
-	  panel.id = `panel-agent-${agentName}`;
-	  panel.innerHTML = `
-	    ${renderGoodLifeTile(`agent-${agentName}`, `Good Life - ${displayName}`)}
-	    <div class="h23-grid-top">
-	      <div class="h23-tile h23-tile-thoughts">
-	        <div class="h23-tile-header"><span class="icon">🧠</span> ${displayName}</div>
-        <div class="h23-thought-text" id="thought-${agentName}">Loading...</div>
-        <div class="h23-thought-meta" id="thought-meta-${agentName}"></div>
-      </div>
-      <div class="h23-tile h23-tile-vibe">
-        <div class="h23-tile-header"><span class="icon">🎨</span> Vibe</div>
-        <div class="h23-vibe-image" id="vibe-image-${agentName}"><span class="h23-vibe-placeholder">Generating...</span></div>
-        <div class="h23-vibe-caption" id="vibe-caption-${agentName}"></div>
-      </div>
-      <div class="h23-tile h23-tile-system">
-        <div class="h23-tile-header"><span class="icon">⚡</span> System</div>
-        <div class="h23-system-grid">
-          <div class="h23-system-item"><label>UPTIME</label><div class="value" id="sys2-uptime-${agentName}">—</div></div>
-          <div class="h23-system-item"><label>THOUGHTS</label><div class="value" id="sys2-thoughts-${agentName}">—</div></div>
-          <div class="h23-system-item"><label>NODES</label><div class="value" id="sys2-nodes-${agentName}">—</div></div>
-          <div class="h23-system-item"><label>LAST THOUGHT</label><div class="value" id="sys2-last-${agentName}">—</div></div>
-        </div>
-	      </div>
-	    </div>
-	    <div class="h23-tile h23-tile-brainlog">
-	      <div class="h23-tile-header"><span class="icon">🧠</span> BRAIN LOG</div>
-	      <div class="h23-brain-log" id="brainlog-${agentName}"><p class="h23-muted">Loading...</p></div>
-    </div>
-  `;
-  return panel;
-}
-
-async function loadAgentPanel(agentName) {
-  const agent = agents.find(a => a.name === agentName);
-  if (!agent) return;
-  const base = apiBase(agent);
-
-  const [summary, engineHealth, goodLifeData] = await Promise.all([
-    apiFetch(`${base}/api/home/summary`, { timeoutMs: 4000 }).catch(() => null),
-    fetchEngineHealth(agent).catch(() => null),
-    apiFetch(`${base}/api/good-life`, { timeoutMs: GOOD_LIFE_API_TIMEOUT_MS }).catch(() => null)
-  ]);
-  updateGoodLifeTile(goodLifeData, `agent-${agentName}`);
-
-  if (summary) {
-    setText(`sys2-thoughts-${agentName}`, summary.thoughtCount != null ? String(summary.thoughtCount) : '—');
-    setText(`sys2-nodes-${agentName}`, summary.memoryNodes != null ? String(summary.memoryNodes) : '—');
-    setText(`sys2-last-${agentName}`, summary.lastThoughtAt ? timeSince(new Date(summary.lastThoughtAt)) : '—');
-  }
-
-  if (engineHealth) {
-    setText(`sys2-uptime-${agentName}`, formatDurationMs(engineHealth.uptime));
-  }
-
-  try {
-    const data = await apiFetch(`${base}/api/thoughts?limit=20`);
-    if (data) {
-      const thoughts = data.thoughts || data.journal || data || [];
-      if (thoughts.length > 0) {
-        const latest = thoughts[thoughts.length - 1];
-        setText(`thought-${agentName}`, latest.thought || latest.content || '');
-        setText(`thought-meta-${agentName}`, `${(latest.role || 'thought').toUpperCase()} · CYCLE ${latest.cycle || ''}`);
-      }
-      // Brain log
-      const container = document.getElementById(`brainlog-${agentName}`);
-      if (container && thoughts.length > 0) {
-        const reversed = [...thoughts].reverse();
-        container.innerHTML = reversed.map(t => {
-          const text = t.thought || t.content || '';
-          const role = t.role || '';
-          const time = t.timestamp
-            ? new Date(t.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-            : '';
-          return `<div class="h23-log-entry">
-            <span class="h23-log-time">${time}</span>
-            <span class="h23-log-role">${role}</span>
-            <span class="h23-log-text">${text.slice(0, 200)}</span>
-          </div>`;
-        }).join('');
-      }
-    }
-  } catch { /* offline */ }
-
-  await loadVibeTile(agent, {
-    imageId: `vibe-image-${agentName}`,
-    captionId: `vibe-caption-${agentName}`,
-  });
-}
-
 // ── Auto-Refresh ──
 
 function startAutoRefresh() {
   setInterval(async () => {
-    if (currentTab.startsWith('agent-')) {
-      await loadAgentPanel(currentTab.replace('agent-', ''));
-    }
     // cosmo23 tab: iframe handles its own refresh
   }, REFRESH_MS);
 }
