@@ -1410,6 +1410,7 @@ function syncResidentActionButton(state) {
   const button = document.getElementById('resident-run-tick');
   if (!button) return;
   const action = residentActionButtonState(state);
+  button.disabled = false;
   button.textContent = action.label;
   button.title = action.title;
   button.dataset.actionMode = action.mode;
@@ -1808,6 +1809,12 @@ function renderResidentInboxRow(c) {
 
 function renderResidentHomeError(err) {
   setText('resident-mode', 'state unavailable');
+  const button = document.getElementById('resident-run-tick');
+  if (button) {
+    button.disabled = true;
+    button.textContent = 'Unavailable';
+    button.title = err?.message || 'Resident agency state is unavailable.';
+  }
 }
 
 // ── Agency Inspector ──

@@ -314,7 +314,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.doesNotMatch(html, /time-cluster/);
   assert.doesNotMatch(html, /id="engine-status"/);
   assert.doesNotMatch(html, />ENGINE</);
-  assert.match(html, />Rehearse</);
+  assert.match(html, /<button class="h23-resident-action-btn primary" id="resident-run-tick" type="button" disabled>Loading<\/button>/);
+  assert.doesNotMatch(html, /id="resident-run-tick"[^>]*>Rehearse<\/button>/);
   assert.doesNotMatch(html, />Run Tick</);
   assert.doesNotMatch(html, /h23-system-metric/);
 
@@ -406,6 +407,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(js, /runResidentTickFromDashboard/);
   assert.match(js, /syncResidentActionButton\(state\)/);
   assert.match(js, /residentActionButtonState\(state\)/);
+  assert.match(js, /button\.disabled = false/);
+  assert.match(js, /button\.disabled = true/);
   assert.match(js, /button\.textContent = isRehearsal \? 'Rehearsing' : 'Advancing'/);
   assert.match(js, /syncResidentActionButton\(residentHomeLatestState\)/);
   assert.doesNotMatch(js, /button\.textContent = 'Advance'/);
