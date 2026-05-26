@@ -291,6 +291,8 @@ test('Home dashboard is resident agency command surface, not legacy tile theater
   assert.match(organDrawer, /data-scope-tab="settings"/);
   assert.doesNotMatch(agencyPanel, /id="agency-refresh-btn"/);
   assert.doesNotMatch(agencyPanel, />Refresh</);
+  assert.doesNotMatch(html, /href="\/home23\/settings#agency"/);
+  assert.doesNotMatch(html, />Authority Settings</);
   assert.doesNotMatch(js, /document\.getElementById\('agency-refresh-btn'\)/);
   assert.match(js, /tab\.title = renderDashboardScopeText\(meta, tabKey\)/);
   assert.doesNotMatch(js, /const showChip/);
