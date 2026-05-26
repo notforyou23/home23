@@ -1,9 +1,8 @@
 /**
  * Home23 Dashboard — Vanilla JS
  *
- * Current dashboard agent view on Home tab (ReginaCosmo layout).
+ * Current dashboard agent view on the resident Home/Agency surfaces.
  * COSMO 2.3 embedded via iframe on COSMO tab.
- * Secondary agent tabs created on demand.
  */
 
 // ── Config ──

@@ -1275,16 +1275,6 @@ class DashboardServer {
               { method: 'GET', path: '/home23/config.json' },
             ],
           },
-          agent: {
-            kind: 'peer',
-            chip: 'Other Agent',
-            summaryTemplate: "This panel shows {{peerAgent}} from inside {{dashboardAgent}}'s dashboard. It is a peer-agent view, not the owner of the current dashboard shell.",
-            routes: [
-              { method: 'GET', path: '/home23/api/chat/config/:agent' },
-              { method: 'GET', path: '/home23/api/chat/history/:agent' },
-              { method: 'GET', path: '/home23/api/chat/conversations/:agent' },
-            ],
-          },
         };
 
         res.json({
