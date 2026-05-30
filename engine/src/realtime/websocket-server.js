@@ -16,7 +16,10 @@ const fs = require('fs');
 const path = require('path');
 const { cosmoEvents } = require('./event-emitter');
 const { collectBrainCleanupCandidates } = require('../memory/brain-cleanup');
-const { planConsolidationBacklogCompost } = require('../memory/consolidation-backlog');
+const {
+  applyConsolidationBacklogCompost,
+  planConsolidationBacklogCompost,
+} = require('../memory/consolidation-backlog');
 const { applyMemoryRecluster, planMemoryRecluster } = require('../memory/recluster');
 
 class RealtimeServer {
@@ -575,16 +578,42 @@ class RealtimeServer {
       if (req.method !== 'POST') {
         return json(405, { ok: false, error: 'method not allowed' });
       }
-      return json(409, {
-        ok: false,
-        mode,
-        error: 'compost backlog apply is intentionally disabled; inspect the dry-run removable groups first',
-        dryRun: {
+      if (mode !== 'apply') {
+        return json(400, { ok: false, error: 'mode must be dry-run or apply' });
+      }
+
+      const expectedRemovableSourceNodes = body.expectedRemovableSourceNodes ?? requestUrl.searchParams.get('expectedRemovableSourceNodes');
+      if (
+        expectedRemovableSourceNodes != null &&
+        Number(expectedRemovableSourceNodes) !== plan.removableSourceNodes
+      ) {
+        return json(409, {
+          ok: false,
+          mode,
+          error: 'expectedRemovableSourceNodes does not match current dry-run plan',
+          expectedRemovableSourceNodes: Number(expectedRemovableSourceNodes),
+          actualRemovableSourceNodes: plan.removableSourceNodes,
+        });
+      }
+
+      const backup = this._backupBrainSidecars('brain-cleanup-compost-backlog');
+      const applied = applyConsolidationBacklogCompost(memory, plan);
+      if (typeof this.orchestrator.saveState === 'function') {
+        await this.orchestrator.saveState();
+      }
+      return json(200, {
+        ok: true,
+        mode: 'apply',
+        backup,
+        planned: {
           removableGroups: plan.removableGroups,
           removableSourceNodes: plan.removableSourceNodes,
           ambiguousGroups: plan.ambiguousGroups,
+          ambiguousSourceNodes: plan.ambiguousSourceNodes,
           orphanSourceGroups: plan.orphanSourceGroups,
+          orphanSourceNodes: plan.orphanSourceNodes,
         },
+        ...applied,
       });
     }
 
@@ -695,7 +724,7 @@ class RealtimeServer {
     const backupDir = path.join(brainDir, 'backups', `${stamp}-${reason}`);
     fs.mkdirSync(backupDir, { recursive: true });
     const copied = [];
-    for (const name of ['memory-nodes.jsonl.gz', 'memory-edges.jsonl.gz', 'brain-snapshot.json', 'state.json.gz']) {
+    for (const name of ['memory-nodes.jsonl.gz', 'memory-edges.jsonl.gz', 'brain-snapshot.json', 'state.json.gz', 'memory-delta.jsonl']) {
       const source = path.join(brainDir, name);
       if (!fs.existsSync(source)) continue;
       const target = path.join(backupDir, name);

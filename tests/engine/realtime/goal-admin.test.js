@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { Readable } from 'node:stream';
 import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const { RealtimeServer } = require('../../../engine/src/realtime/websocket-server.js');
@@ -143,4 +146,51 @@ test('live-problems admin processes one problem by id', async () => {
   assert.equal(payload.ok, true);
   assert.equal(payload.problem.id, 'p1');
   assert.deepEqual(payload.snapshot, { counts: { open: 0, chronic: 0, resolved: 1, unverifiable: 0 } });
+});
+
+test('memory cleanup compost-backlog apply removes exact sources with delta backup and save', async () => {
+  const server = new RealtimeServer(0, { info: () => {}, warn: () => {}, error: () => {} });
+  const brainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-compost-apply-'));
+  for (const name of ['memory-nodes.jsonl.gz', 'memory-edges.jsonl.gz', 'brain-snapshot.json', 'state.json.gz', 'memory-delta.jsonl']) {
+    fs.writeFileSync(path.join(brainDir, name), `${name}\n`);
+  }
+
+  const nodes = new Map([
+    ['s1', { id: 's1', tag: 'consolidated', consolidatedAt: 't1' }],
+    ['a', { id: 'a', tag: 'workspace', consolidatedAt: 't1' }],
+    ['b', { id: 'b', tag: 'reasoning', consolidatedAt: 't1' }],
+    ['m1', { id: 'm1', tag: 'consolidated', consolidatedAt: 't2' }],
+    ['m2', { id: 'm2', tag: 'consolidated', consolidatedAt: 't2' }],
+    ['c', { id: 'c', tag: 'workspace', consolidatedAt: 't2' }],
+  ]);
+  let saved = false;
+  server.setOrchestrator({
+    logsDir: brainDir,
+    memory: {
+      nodes,
+      removeNode(id) {
+        return nodes.delete(String(id));
+      },
+    },
+    async saveState() {
+      saved = true;
+    },
+  });
+
+  const res = makeResponse();
+  await server._handleMemoryCleanupAdmin(makeRequest({
+    url: '/admin/memory/cleanup/compost-backlog',
+    body: { mode: 'apply', expectedRemovableSourceNodes: 2 },
+  }), res);
+
+  const payload = res.json();
+  assert.equal(res.statusCode, 200);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.removed, 2);
+  assert.deepEqual(payload.removedIds, ['a', 'b']);
+  assert.equal(nodes.has('s1'), true);
+  assert.equal(nodes.has('c'), true);
+  assert.equal(saved, true);
+  assert.equal(payload.backup.ok, true);
+  assert.equal(payload.backup.files.includes('memory-delta.jsonl'), true);
 });

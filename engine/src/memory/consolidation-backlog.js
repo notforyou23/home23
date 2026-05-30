@@ -130,6 +130,57 @@ function planConsolidationBacklogCompost(memory, options = {}) {
   };
 }
 
+function removeNodeById(memory, rawId) {
+  const candidates = [rawId];
+  if (/^\d+$/.test(String(rawId))) candidates.push(Number(rawId));
+  for (const id of candidates) {
+    if (memory.removeNode(id)) return true;
+  }
+  return false;
+}
+
+function applyConsolidationBacklogCompost(memory, plan) {
+  if (!memory?.nodes || typeof memory.removeNode !== 'function') {
+    return { removed: 0, failed: [{ reason: 'memory graph not available' }] };
+  }
+
+  const failed = [];
+  const removedIds = [];
+  for (const group of plan?.groups || []) {
+    if (!Array.isArray(group.summaryIds) || group.summaryIds.length !== 1) {
+      failed.push({
+        consolidatedAt: group.consolidatedAt || null,
+        reason: 'group is not exact single-summary removable',
+      });
+      continue;
+    }
+    for (const id of group.sourceIds || []) {
+      try {
+        if (removeNodeById(memory, id)) {
+          removedIds.push(String(id));
+        } else {
+          failed.push({ id: String(id), reason: 'removeNode returned false' });
+        }
+      } catch (error) {
+        failed.push({ id: String(id), reason: error.message });
+      }
+    }
+  }
+
+  return {
+    removed: removedIds.length,
+    removedIds,
+    failed,
+    blocked: {
+      ambiguousGroups: plan?.ambiguousGroups || 0,
+      ambiguousSourceNodes: plan?.ambiguousSourceNodes || 0,
+      orphanSourceGroups: plan?.orphanSourceGroups || 0,
+      orphanSourceNodes: plan?.orphanSourceNodes || 0,
+    },
+  };
+}
+
 module.exports = {
+  applyConsolidationBacklogCompost,
   planConsolidationBacklogCompost,
 };

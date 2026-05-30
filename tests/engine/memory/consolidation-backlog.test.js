@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { planConsolidationBacklogCompost } = require('../../../engine/src/memory/consolidation-backlog.js');
+const {
+  applyConsolidationBacklogCompost,
+  planConsolidationBacklogCompost,
+} = require('../../../engine/src/memory/consolidation-backlog.js');
 
 test('consolidation backlog compost dry-run reports exact single-summary source groups', () => {
   const memory = {
@@ -53,4 +56,41 @@ test('consolidation backlog compost dry-run can limit group output without chang
   assert.equal(plan.removableSourceNodes, 2);
   assert.equal(plan.groups.length, 1);
   assert.equal(plan.outputLimited, true);
+});
+
+test('consolidation backlog compost apply removes only exact single-summary sources', () => {
+  const removed = [];
+  const nodes = new Map([
+    ['s1', { id: 's1', tag: 'consolidated', consolidatedAt: 't1' }],
+    ['a', { id: 'a', tag: 'workspace', consolidatedAt: 't1' }],
+    ['b', { id: 'b', tag: 'reasoning', consolidatedAt: 't1' }],
+    ['m1', { id: 'm1', tag: 'consolidated', consolidatedAt: 't2' }],
+    ['m2', { id: 'm2', tag: 'consolidated', consolidatedAt: 't2' }],
+    ['c', { id: 'c', tag: 'workspace', consolidatedAt: 't2' }],
+    ['o', { id: 'o', tag: 'workspace', consolidatedAt: 't3' }],
+  ]);
+  const memory = {
+    nodes,
+    removeNode(id) {
+      removed.push(String(id));
+      return nodes.delete(String(id));
+    },
+  };
+
+  const plan = planConsolidationBacklogCompost(memory);
+  const result = applyConsolidationBacklogCompost(memory, plan);
+
+  assert.equal(result.removed, 2);
+  assert.deepEqual(removed, ['a', 'b']);
+  assert.equal(nodes.has('s1'), true);
+  assert.equal(nodes.has('m1'), true);
+  assert.equal(nodes.has('m2'), true);
+  assert.equal(nodes.has('c'), true);
+  assert.equal(nodes.has('o'), true);
+  assert.deepEqual(result.blocked, {
+    ambiguousGroups: 1,
+    ambiguousSourceNodes: 1,
+    orphanSourceGroups: 1,
+    orphanSourceNodes: 1,
+  });
 });
