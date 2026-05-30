@@ -18,6 +18,10 @@ const { MissionTracer } = require('../../scripts/TRACE_RESEARCH_MISSIONS');
 const { Home23VibeService } = require('./home23-vibe/service');
 const { Home23TileService } = require('./home23-tiles');
 const {
+  classifyMemoryProvenance,
+  scoreMemorySalience,
+} = require('../memory/provenance-salience');
+const {
   buildGoodLifeOperatorModel,
   buildLiveProblemSnapshot,
   buildGoodLifeObligationSnapshot,
@@ -6543,6 +6547,32 @@ Be specific, actionable, and maintain research continuity.`;
       }
     });
 
+    // Lazy-loaded persistent HNSW ANN index (built by engine/src/merge/build-ann-index.js).
+    // Turns brain_search from a ~69s linear scan over the 1.67GB sidecar into a ~1ms searchKnn.
+    // Cached and auto-reloaded when the .meta.json mtime changes (rebuild). Falls back to the
+    // full sidecar scan if the index is missing/stale/unloadable — search never breaks.
+    const loadAnnIndex = () => {
+      try {
+        const fsSync = require('fs');
+        const metaPath = path.join(this.logsDir, 'memory-ann.meta.json');
+        const indexPath = path.join(this.logsDir, 'memory-ann.index');
+        if (!fsSync.existsSync(metaPath) || !fsSync.existsSync(indexPath)) return null;
+        const mtime = fsSync.statSync(metaPath).mtimeMs;
+        if (this._annCache && this._annCache.mtime === mtime) return this._annCache;
+        const hnswlib = require('hnswlib-node');
+        const meta = JSON.parse(fsSync.readFileSync(metaPath, 'utf8'));
+        const index = new hnswlib.HierarchicalNSW('cosine', meta.dim);
+        index.readIndexSync(indexPath);
+        index.setEf(Math.max(100, meta.efConstruction || 100));
+        this._annCache = { mtime, index, labels: meta.labels, dim: meta.dim, count: meta.count };
+        console.log(`[/api/memory/search] ANN index loaded: ${meta.count} nodes (built ${meta.builtAt})`);
+        return this._annCache;
+      } catch (err) {
+        console.error('[/api/memory/search] ANN load failed, falling back to scan:', err.message);
+        return null;
+      }
+    };
+
     // Semantic search over memory nodes via embedding cosine similarity
     const handleMemorySearch = async (req, res) => {
       try {
@@ -6579,6 +6609,60 @@ Be specific, actionable, and maintain research continuity.`;
         const resultLimit = Math.max(1, Math.min(100, parseInt(topK, 10) || 10));
         const similarityThreshold = Number.isFinite(Number(minSimilarity)) ? Number(minSimilarity) : 0.4;
 
+        // ── ANN fast path ──────────────────────────────────────────────
+        // If the persistent HNSW index is available, query it in ms instead of
+        // scanning the full sidecar. Pull a wide candidate pool so salience can
+        // rescue low-volume conversation/identity nodes from high-volume chatter.
+        const ann = loadAnnIndex();
+        if (ann && ann.index) {
+          try {
+            const k = Math.min(ann.count, Math.max(resultLimit * 100, 1000));
+            const knn = ann.index.searchKnn(queryEmbedding, k);
+            const annResults = [];
+            for (let i = 0; i < knn.neighbors.length; i++) {
+              const label = ann.labels[knn.neighbors[i]];
+              if (!label) continue;
+              if (tag && label.tag !== tag) continue;
+              const similarity = 1 - knn.distances[i]; // cosine space distance -> similarity
+              if (similarity < similarityThreshold) continue;
+              const provenance = classifyMemoryProvenance(label);
+              const retrievalScore = scoreMemorySalience(label, similarity);
+              annResults.push({
+                id: label.id,
+                concept: label.concept,
+                tag: label.tag,
+                similarity: Math.round(similarity * 10000) / 10000,
+                retrievalScore: Math.round(retrievalScore * 10000) / 10000,
+                sourceClass: provenance.sourceClass,
+                salienceWeight: provenance.salienceWeight,
+                weight: label.weight,
+                activation: label.activation,
+                cluster: label.cluster,
+                created: label.created,
+              });
+            }
+            annResults.sort((a, b) => (b.retrievalScore ?? b.similarity) - (a.retrievalScore ?? a.similarity));
+            const results = annResults.slice(0, resultLimit);
+            return res.json({
+              query,
+              results,
+              stats: {
+                totalSearched: ann.count,
+                totalMatched: annResults.length,
+                topSimilarity: results.length ? Math.max(...results.map((r) => r.similarity || 0)) : 0,
+                topRetrievalScore: results.length ? results[0].retrievalScore : 0,
+                source: 'ann-hnsw',
+                salienceWeighted: true,
+                noiseFiltered: false,
+              },
+            });
+          } catch (annErr) {
+            console.error('[/api/memory/search] ANN query failed, falling back to scan:', annErr.message);
+            // fall through to the full scan below
+          }
+        }
+        // ───────────────────────────────────────────────────────────────
+
         // Cosine similarity (inlined from NetworkMemory)
         function cosineSimilarity(a, b) {
           if (!a || !b || a.length !== b.length) return 0;
@@ -6614,13 +6698,19 @@ Be specific, actionable, and maintain research continuity.`;
 
           if (similarity >= similarityThreshold) {
             totalMatched += 1;
+            const provenance = classifyMemoryProvenance(node);
+            const retrievalScore = scoreMemorySalience(node, similarity);
             topCandidates.push({
               rawSimilarity: similarity,
+              retrievalScore,
               result: {
                 id: node.id,
                 concept: node.concept,
                 tag: node.tag,
                 similarity: Math.round(similarity * 10000) / 10000,
+                retrievalScore: Math.round(retrievalScore * 10000) / 10000,
+                sourceClass: provenance.sourceClass,
+                salienceWeight: provenance.salienceWeight,
                 weight: node.weight,
                 activation: node.activation,
                 cluster: node.cluster,
@@ -6629,7 +6719,7 @@ Be specific, actionable, and maintain research continuity.`;
                 accessCount: node.accessCount,
               },
             });
-            topCandidates.sort((a, b) => b.rawSimilarity - a.rawSimilarity);
+            topCandidates.sort((a, b) => b.retrievalScore - a.retrievalScore);
             if (topCandidates.length > resultLimit) topCandidates.length = resultLimit;
           }
         };
@@ -6686,11 +6776,13 @@ Be specific, actionable, and maintain research continuity.`;
             totalSearched,
             totalMatched: hasSignal ? totalMatched : 0,
             topSimilarity: Math.round(topScore * 10000) / 10000,
+            topRetrievalScore: candidateResults.length ? candidateResults[0].retrievalScore : 0,
             populationMean: Math.round(popMean * 10000) / 10000,
             populationStdDev: Math.round(popStdDev * 10000) / 10000,
             zScore: Math.round(zScore * 100) / 100,
             noiseFiltered: !hasSignal,
             source,
+            salienceWeighted: true,
           }
         });
       } catch (error) {

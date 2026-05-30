@@ -1,6 +1,10 @@
 const { getOpenAIClient, getEmbeddingClient } = require('../core/openai-client');
 const { ExtractiveSummarizer } = require('../utils/extractive-summarizer');
 const { cosmoEvents } = require('../realtime/event-emitter');
+const {
+  classifyMemoryProvenance,
+  scoreMemorySalience,
+} = require('./provenance-salience');
 
 function yieldToEventLoop() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -363,6 +367,20 @@ class NetworkMemory {
       nodeId = this.nextNodeId++;
     }
     
+    const provenance = classifyMemoryProvenance({
+      ...inputNode,
+      concept: conceptText,
+      tag: nodeTag,
+    });
+    const metadata = inputNode?.metadata && typeof inputNode.metadata === 'object' ? { ...inputNode.metadata } : {};
+    const storedProvenance = inputNode?.provenance && typeof inputNode.provenance === 'object'
+      ? { ...inputNode.provenance }
+      : {
+          sourceClass: provenance.sourceClass,
+          reason: provenance.reason,
+          retention: provenance.retention,
+        };
+
     const node = {
       id: nodeId,
       concept: conceptText,
@@ -378,7 +396,10 @@ class NetworkMemory {
       accessCount: inputNode?.accessCount ?? 0,
       type: inputNode?.type || null,
       tags: Array.isArray(inputNode?.tags) ? inputNode.tags : [],
-      metadata: inputNode?.metadata && typeof inputNode.metadata === 'object' ? { ...inputNode.metadata } : {},
+      metadata,
+      source_class: inputNode?.source_class || inputNode?.sourceClass || metadata.source_class || provenance.sourceClass,
+      salienceWeight: inputNode?.salienceWeight ?? metadata.salienceWeight ?? provenance.salienceWeight,
+      provenance: storedProvenance,
       asserted_at: inputNode?.asserted_at || inputNode?.metadata?.asserted_at || null,
       asserted_cycle: inputNode?.asserted_cycle ?? inputNode?.metadata?.asserted_cycle ?? null,
       superseded_by: inputNode?.superseded_by || inputNode?.metadata?.superseded_by || null,
@@ -548,6 +569,9 @@ class NetworkMemory {
       type: node.type,
       tags: node.tags,
       metadata: node.metadata,
+      source_class: node.source_class,
+      salienceWeight: node.salienceWeight,
+      provenance: node.provenance,
       asserted_at: node.asserted_at,
       asserted_cycle: node.asserted_cycle,
       superseded_by: node.superseded_by,
@@ -905,14 +929,15 @@ class NetworkMemory {
   }
 
   scoreTemporalRetrieval(node, baseScore, opts = {}) {
-    const freshness = this.temporalFreshness(node);
+    const freshness = this.temporalFreshness(node, opts.nowMs);
     const status = this.statusMultiplier(node);
     const snapshotBoost = this.isStateSnapshotNode(node) ? 0.75 : 0;
     const bestMatchBoost = opts.isBestMatch ? 0.05 : 0;
     const decay = typeof node?.confidence_decay === 'number'
       ? Math.max(0.1, Math.min(1, node.confidence_decay))
       : 1;
-    return (baseScore * (0.65 + 0.35 * freshness) * status * decay) + snapshotBoost + bestMatchBoost;
+    const temporalScore = (baseScore * (0.65 + 0.35 * freshness) * status * decay) + bestMatchBoost;
+    return scoreMemorySalience(node, temporalScore, opts) + snapshotBoost;
   }
 
   findRelevantStateSnapshots(queryEmbedding, queryWords, bestSimilarity) {
@@ -1374,6 +1399,9 @@ class NetworkMemory {
         type: n.type,
         tags: n.tags,
         metadata: n.metadata,
+        source_class: n.source_class,
+        salienceWeight: n.salienceWeight,
+        provenance: n.provenance,
         asserted_at: n.asserted_at,
         asserted_cycle: n.asserted_cycle,
         superseded_by: n.superseded_by,

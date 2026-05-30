@@ -23,6 +23,12 @@ Representative brain nodes from semantic search:
 
 Brain stats: {STATS}
 
+Important:
+- Infer current obsessions from salience-weighted representative nodes first, not from raw index volume.
+- Treat the knowledge index as a map of compiled material, not proof that a topic is currently salient.
+- Do not list finance, trading, portfolio, cron output, or telemetry as a current obsession unless recent high-salience conversation, identity, or state nodes support it.
+- If a topic is supported only by old index volume or low-salience machine chatter, call it historical context instead of a current obsession.
+
 Produce a JSON object (and ONLY the JSON, no markdown fences):
 {
   "selfUnderstanding": {
@@ -43,6 +49,47 @@ Produce a JSON object (and ONLY the JSON, no markdown fences):
 
 Produce exactly 5 consolidated insights (or fewer if the brain is sparse).
 Be grounded in actual content. Do not invent. If the brain is sparse, say so honestly.`;
+
+function extractJsonObject(raw) {
+  const text = String(raw || '').trim();
+  if (!text) throw new Error('empty synthesis response');
+
+  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(text);
+  const candidates = [];
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+  candidates.push(text);
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch { /* try extracting balanced object below */ }
+
+    const start = candidate.indexOf('{');
+    if (start === -1) continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < candidate.length; i += 1) {
+      const ch = candidate[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') inString = true;
+      else if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          return JSON.parse(candidate.slice(start, i + 1));
+        }
+      }
+    }
+  }
+
+  throw new Error('no complete JSON object found in synthesis response');
+}
 
 class SynthesisAgent {
   /**
@@ -118,6 +165,7 @@ class SynthesisAgent {
 
       // 2. Read BRAIN_INDEX.md
       const index = this._readFile(path.join(this.workspacePath, 'BRAIN_INDEX.md'));
+      const indexDigest = this._buildIndexDigest(index);
 
       // 3. Get brain stats from API
       const stats = await this._fetchBrainStats();
@@ -128,7 +176,7 @@ class SynthesisAgent {
       // 5. Build prompt and call LLM
       const prompt = SYNTHESIS_PROMPT
         .replace('{IDENTITY}', identity || '(no identity files found)')
-        .replace('{INDEX}', index || '(no compiled documents yet)')
+        .replace('{INDEX}', indexDigest || '(no compiled documents yet)')
         .replace('{NODES}', nodes || '(no search results)')
         .replace('{STATS}', stats ? `${stats.nodes || 0} nodes, ${stats.edges || 0} edges, ${stats.cycles || 0} cycles` : 'unknown');
 
@@ -144,11 +192,12 @@ class SynthesisAgent {
       // 6. Parse JSON from response
       let synthesis;
       try {
-        // Strip markdown fences if the model wrapped the JSON
-        const cleaned = raw.replace(/^```json?\s*/m, '').replace(/```\s*$/m, '').trim();
-        synthesis = JSON.parse(cleaned);
+        synthesis = extractJsonObject(raw);
       } catch (parseErr) {
-        this.logger?.error?.('[synthesis] Failed to parse LLM response as JSON', { raw: raw.slice(0, 200) });
+        this.logger?.error?.('[synthesis] Failed to parse LLM response as JSON', {
+          error: parseErr.message,
+          raw: raw.slice(0, 200),
+        });
         return null;
       }
 
@@ -244,17 +293,7 @@ class SynthesisAgent {
   }
 
   async _searchBrainThemes(index) {
-    // Extract category names from the index to use as search themes
-    const themes = [];
-    if (index) {
-      const headings = index.match(/^## .+/gm) || [];
-      for (const h of headings) {
-        const theme = h.replace(/^## /, '').replace(/Compiled from:.*/, '').trim();
-        if (theme && theme.length > 2 && !theme.startsWith('Compiled')) {
-          themes.push(theme);
-        }
-      }
-    }
+    const themes = this._collectSearchThemes(index);
 
     // Fallback themes if index is empty
     if (themes.length === 0) {
@@ -263,7 +302,7 @@ class SynthesisAgent {
 
     // Search for top 3 nodes per theme (limit total to keep prompt manageable)
     const results = [];
-    const maxThemes = 5;
+    const maxThemes = 8;
     for (const theme of themes.slice(0, maxThemes)) {
       try {
         const res = await fetch(`http://localhost:${this.dashboardPort}/api/memory/search`, {
@@ -275,13 +314,76 @@ class SynthesisAgent {
         if (res.ok) {
           const data = await res.json();
           if (data.results && data.results.length > 0) {
-            results.push(`### ${theme}\n${data.results.map(r => `- [${r.id}] (sim ${r.similarity}) ${(r.concept || '').slice(0, 300)}`).join('\n')}`);
+            results.push(`### ${theme}\n${data.results.map(r => {
+              const sourceClass = r.sourceClass || 'unknown';
+              const retrievalScore = r.retrievalScore ?? r.similarity;
+              return `- [${r.id}] (${sourceClass}, score ${retrievalScore}, sim ${r.similarity}) ${(r.concept || '').slice(0, 300)}`;
+            }).join('\n')}`);
           }
         }
       } catch { /* skip failed searches */ }
     }
 
     return results.join('\n\n') || '';
+  }
+
+  _collectSearchThemes(index) {
+    const themes = [
+      'direct user conversation jtr current request',
+      'Home23 Good Life agency current direction',
+      'brain cleanup memory retrieval consolidation salience',
+      'recent state snapshot current correction',
+    ];
+    const seen = new Set(themes.map(t => t.toLowerCase()));
+
+    if (index) {
+      const headings = index.match(/^## .+/gm) || [];
+      for (const h of headings) {
+        const theme = h
+          .replace(/^##\s+/, '')
+          .replace(/[`*_]/g, '')
+          .replace(/Compiled from:.*/, '')
+          .trim();
+        const key = theme.toLowerCase();
+        if (theme && theme.length > 2 && !theme.startsWith('Compiled') && !seen.has(key)) {
+          themes.push(theme);
+          seen.add(key);
+        }
+      }
+    }
+
+    return themes;
+  }
+
+  _buildIndexDigest(index) {
+    if (!index) return '';
+    const lines = index.split(/\r?\n/);
+    const header = lines.filter(line =>
+      /documents compiled:/i.test(line) ||
+      /last updated:/i.test(line) ||
+      /^#\s+/.test(line)
+    ).slice(0, 12);
+    const headingCounts = new Map();
+    for (const line of lines) {
+      if (!line.startsWith('## ')) continue;
+      const heading = line
+        .replace(/^##\s+/, '')
+        .replace(/[`*_]/g, '')
+        .replace(/Compiled from:.*/, '')
+        .trim();
+      if (!heading || heading.startsWith('Compiled')) continue;
+      headingCounts.set(heading, (headingCounts.get(heading) || 0) + 1);
+    }
+    const headings = Array.from(headingCounts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 40)
+      .map(([heading, count]) => `- ${heading} (${count} index sections)`);
+    return [
+      ...header,
+      '',
+      'Index section counts only. Counts are not salience and are not current obsession evidence:',
+      ...headings,
+    ].join('\n').trim();
   }
 
   _countCompiledDocs(index) {
@@ -291,4 +393,4 @@ class SynthesisAgent {
   }
 }
 
-module.exports = { SynthesisAgent };
+module.exports = { SynthesisAgent, extractJsonObject };

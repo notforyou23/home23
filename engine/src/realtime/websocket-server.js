@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const { cosmoEvents } = require('./event-emitter');
 const { collectBrainCleanupCandidates } = require('../memory/brain-cleanup');
+const { applyMemoryRecluster, planMemoryRecluster } = require('../memory/recluster');
 
 class RealtimeServer {
   constructor(port = 3400, logger = null) {
@@ -536,7 +537,7 @@ class RealtimeServer {
       res.end(JSON.stringify(body));
     };
 
-    if (url !== '/admin/memory/cleanup/preamble') {
+    if (url !== '/admin/memory/cleanup/preamble' && url !== '/admin/memory/cleanup/recluster') {
       return json(404, { ok: false, error: `Unknown memory cleanup route: ${req.method} ${url}` });
     }
 
@@ -547,6 +548,49 @@ class RealtimeServer {
 
     const body = req.method === 'POST' ? await this._readJsonBody(req) : {};
     const mode = String(body.mode || requestUrl.searchParams.get('mode') || 'dry-run').toLowerCase();
+
+    if (url === '/admin/memory/cleanup/recluster') {
+      const plan = planMemoryRecluster(memory, {
+        minComponentSize: body.minComponentSize ?? requestUrl.searchParams.get('minComponentSize'),
+        minComponentEdgeWeight: body.minComponentEdgeWeight ?? requestUrl.searchParams.get('minComponentEdgeWeight'),
+      });
+
+      if (req.method === 'GET' || mode === 'dry-run') {
+        return json(200, {
+          ok: true,
+          mode: 'dry-run',
+          unclusteredBefore: plan.unclusteredBefore,
+          wouldAssignToExistingClusters: plan.wouldAssignToExistingClusters,
+          wouldCreateClusters: plan.wouldCreateClusters,
+          wouldAssignToNewClusters: plan.wouldAssignToNewClusters,
+          unclusteredAfter: plan.unclusteredAfter,
+          sampleExisting: plan.sampleExisting,
+          sampleNewClusters: plan.sampleNewClusters,
+        });
+      }
+
+      if (req.method !== 'POST') {
+        return json(405, { ok: false, error: 'method not allowed' });
+      }
+      if (mode !== 'apply') {
+        return json(400, { ok: false, error: 'mode must be dry-run or apply' });
+      }
+
+      const backup = this._backupBrainSidecars('brain-cleanup-recluster');
+      const applied = applyMemoryRecluster(memory, plan);
+      if (typeof this.orchestrator.saveState === 'function') {
+        await this.orchestrator.saveState();
+      }
+      return json(200, {
+        ok: true,
+        mode: 'apply',
+        backup,
+        ...applied,
+        unclusteredBefore: plan.unclusteredBefore,
+        unclusteredAfter: Math.max(0, plan.unclusteredBefore - applied.assignedToExisting - applied.assignedToNewClusters),
+      });
+    }
+
     const limitValue = body.limit ?? requestUrl.searchParams.get('limit');
     const limit = limitValue == null ? Infinity : Number(limitValue);
     const report = collectBrainCleanupCandidates(memory, {

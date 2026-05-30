@@ -75,6 +75,30 @@ test('query boosts current state_snapshot above older cue-matched nodes', async 
   assert.equal(results[0].asserted_cycle, 6299);
 });
 
+test('retrieval salience demotes cron conversation logs below direct user conversation', async () => {
+  const memory = makeMemory();
+  const now = Date.parse('2026-05-30T12:00:00.000Z');
+
+  const direct = await memory.addNode({
+    concept: 'Channel: dashboard-jerry\n**User:** Fix the brain cleanup scope.',
+    tag: 'conversation_sessions',
+    created: '2026-05-20T00:00:00.000Z',
+  }, 'conversation_sessions', [1, 0]);
+
+  const cron = await memory.addNode({
+    concept: 'Channel: cron-agent-1775704909558\n**User:** Run the EVENING-RESEARCH session for Ticker Home23.',
+    tag: 'conversation_sessions',
+    created: '2026-05-30T00:00:00.000Z',
+  }, 'conversation_sessions', [1, 0]);
+
+  const directScore = memory.scoreTemporalRetrieval(direct, 0.5, { nowMs: now });
+  const cronScore = memory.scoreTemporalRetrieval(cron, 0.5, { nowMs: now });
+
+  assert.equal(direct.source_class, 'conversation');
+  assert.equal(cron.source_class, 'telemetry');
+  assert.ok(directScore > cronScore);
+});
+
 test('addNode preserves temporal metadata through exportGraph', async () => {
   const memory = makeMemory();
   await memory.addNode({
@@ -99,6 +123,9 @@ test('addNode preserves temporal metadata through exportGraph', async () => {
   assert.equal(node.confidence_decay, 0.8);
   assert.equal(node.status, 'completed');
   assert.equal(node.metadata.goalId, 'g1');
+  assert.equal(node.source_class, 'durable');
+  assert.equal(node.salienceWeight, 1);
+  assert.equal(node.provenance.sourceClass, 'durable');
 });
 
 test('runtime embeddings use typed arrays while exports stay JSON arrays', async () => {
