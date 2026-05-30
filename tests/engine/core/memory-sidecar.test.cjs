@@ -69,6 +69,45 @@ test('memory deltas append and replay node and edge mutations', async () => {
   assert.deepEqual(seen.removedEdges, ['n3->n4']);
 });
 
+test('memory deltas stream append without one giant joined string', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'memory-sidecar-stream-delta-'));
+  const originalAppendFile = fs.promises.appendFile;
+  fs.promises.appendFile = async (_file, data) => {
+    if (String(data).length > 1024) {
+      throw new Error('simulated Invalid string length');
+    }
+    return originalAppendFile.apply(fs.promises, arguments);
+  };
+
+  try {
+    const bigEmbedding = Array.from({ length: 512 }, (_, i) => i / 512);
+    const nodes = Array.from({ length: 80 }, (_, i) => ({
+      id: `n${i}`,
+      concept: `cluster reassignment ${i}`,
+      cluster: i % 4,
+      embedding: bigEmbedding,
+    }));
+
+    const result = await appendMemoryDelta(dir, { nodes });
+
+    assert.equal(result.count, 80);
+  } finally {
+    fs.promises.appendFile = originalAppendFile;
+  }
+
+  let replayed = 0;
+  const readResult = await readMemoryDeltas(dir, {
+    onNode: (node) => {
+      replayed++;
+      assert.equal(Array.isArray(node.embedding), true);
+    },
+  });
+
+  assert.equal(readResult.count, 80);
+  assert.equal(readResult.parseErrors, 0);
+  assert.equal(replayed, 80);
+});
+
 test('full sidecar rewrite clears pending memory delta journal', async () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'memory-sidecar-compact-'));
   await appendMemoryDelta(dir, { nodes: [{ id: 'n1', concept: 'delta' }] });

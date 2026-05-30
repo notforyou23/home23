@@ -16,6 +16,7 @@ const fs = require('fs');
 const path = require('path');
 const { cosmoEvents } = require('./event-emitter');
 const { collectBrainCleanupCandidates } = require('../memory/brain-cleanup');
+const { planConsolidationBacklogCompost } = require('../memory/consolidation-backlog');
 const { applyMemoryRecluster, planMemoryRecluster } = require('../memory/recluster');
 
 class RealtimeServer {
@@ -537,7 +538,12 @@ class RealtimeServer {
       res.end(JSON.stringify(body));
     };
 
-    if (url !== '/admin/memory/cleanup/preamble' && url !== '/admin/memory/cleanup/recluster') {
+    const knownRoutes = new Set([
+      '/admin/memory/cleanup/compost-backlog',
+      '/admin/memory/cleanup/preamble',
+      '/admin/memory/cleanup/recluster',
+    ]);
+    if (!knownRoutes.has(url)) {
       return json(404, { ok: false, error: `Unknown memory cleanup route: ${req.method} ${url}` });
     }
 
@@ -548,6 +554,39 @@ class RealtimeServer {
 
     const body = req.method === 'POST' ? await this._readJsonBody(req) : {};
     const mode = String(body.mode || requestUrl.searchParams.get('mode') || 'dry-run').toLowerCase();
+
+    if (url === '/admin/memory/cleanup/compost-backlog') {
+      const groupLimitValue = body.groupLimit ?? requestUrl.searchParams.get('groupLimit');
+      const sourcePreviewLimitValue = body.sourcePreviewLimit ?? requestUrl.searchParams.get('sourcePreviewLimit');
+      const includeBlockedSourceIds = String(body.includeBlockedSourceIds ?? requestUrl.searchParams.get('includeBlockedSourceIds') ?? 'false') === 'true';
+      const groupLimit = groupLimitValue == null || String(groupLimitValue).toLowerCase() === 'all'
+        ? Infinity
+        : Number(groupLimitValue);
+      const sourcePreviewLimit = sourcePreviewLimitValue == null ? 5 : Number(sourcePreviewLimitValue);
+      const plan = planConsolidationBacklogCompost(memory, {
+        includeBlockedSourceIds,
+        groupLimit: Number.isFinite(groupLimit) ? groupLimit : Infinity,
+        sourcePreviewLimit: Number.isFinite(sourcePreviewLimit) ? sourcePreviewLimit : 5,
+      });
+
+      if (req.method === 'GET' || mode === 'dry-run') {
+        return json(200, plan);
+      }
+      if (req.method !== 'POST') {
+        return json(405, { ok: false, error: 'method not allowed' });
+      }
+      return json(409, {
+        ok: false,
+        mode,
+        error: 'compost backlog apply is intentionally disabled; inspect the dry-run removable groups first',
+        dryRun: {
+          removableGroups: plan.removableGroups,
+          removableSourceNodes: plan.removableSourceNodes,
+          ambiguousGroups: plan.ambiguousGroups,
+          orphanSourceGroups: plan.orphanSourceGroups,
+        },
+      });
+    }
 
     if (url === '/admin/memory/cleanup/recluster') {
       const plan = planMemoryRecluster(memory, {

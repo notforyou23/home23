@@ -158,27 +158,52 @@ async function writeMemorySidecars(brainDir, memory, options = {}) {
 
 async function appendMemoryDelta(brainDir, changes = {}) {
   const p = memoryDeltaPath(brainDir);
-  const lines = [];
-  for (const node of changes.nodes || []) {
-    lines.push(JSON.stringify({ op: 'upsert_node', record: node }));
-  }
-  for (const edge of changes.edges || []) {
-    lines.push(JSON.stringify({ op: 'upsert_edge', record: edge }));
-  }
-  for (const id of changes.removedNodeIds || []) {
-    lines.push(JSON.stringify({ op: 'remove_node', id }));
-  }
-  for (const key of changes.removedEdgeKeys || []) {
-    lines.push(JSON.stringify({ op: 'remove_edge', key }));
-  }
-
-  if (lines.length === 0) {
+  const hasChanges = Boolean(
+    (changes.nodes || []).length ||
+    (changes.edges || []).length ||
+    (changes.removedNodeIds || []).length ||
+    (changes.removedEdgeKeys || []).length
+  );
+  if (!hasChanges) {
     return { count: 0, bytes: fs.existsSync(p) ? fs.statSync(p).size : 0 };
   }
 
+  const entries = function* deltaEntries() {
+    for (const node of changes.nodes || []) {
+      yield { op: 'upsert_node', record: serializeNodeRecord(node) };
+    }
+    for (const edge of changes.edges || []) {
+      yield { op: 'upsert_edge', record: edge };
+    }
+    for (const id of changes.removedNodeIds || []) {
+      yield { op: 'remove_node', id };
+    }
+    for (const key of changes.removedEdgeKeys || []) {
+      yield { op: 'remove_edge', key };
+    }
+  };
+
   await fs.promises.mkdir(brainDir, { recursive: true });
-  await fs.promises.appendFile(p, lines.join('\n') + '\n', 'utf8');
-  return { count: lines.length, bytes: fs.statSync(p).size };
+  const stream = fs.createWriteStream(p, { flags: 'a', encoding: 'utf8' });
+  const drain = () => new Promise((resolve) => stream.once('drain', resolve));
+  let count = 0;
+
+  try {
+    for (const entry of entries()) {
+      const line = JSON.stringify(entry) + '\n';
+      if (!stream.write(line)) await drain();
+      count++;
+    }
+  } catch (error) {
+    stream.destroy();
+    throw error;
+  }
+
+  await new Promise((resolve, reject) => {
+    stream.once('error', reject);
+    stream.end(resolve);
+  });
+  return { count, bytes: fs.statSync(p).size };
 }
 
 async function readMemoryDeltas(brainDir, handlers = {}) {
