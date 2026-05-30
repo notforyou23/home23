@@ -3971,17 +3971,25 @@ class Orchestrator {
 
     // 2. Consolidate with GPT-5.5 deep reasoning
     this.logger.info('🔗 Consolidating with GPT-5.5 deep reasoning...');
-    const consolidations = await this.summarizer.consolidateMemories(this.memory);
+    const compostOptions = this.getMemoryCompostOptions();
+    const consolidations = await this.summarizer.consolidateMemories(this.memory, 0.75, {
+      compostSources: compostOptions.mode
+    });
     
     if (consolidations.length > 0) {
       for (const cons of consolidations) {
         // Robust validation for consolidation
         const consolidationValidation = validateAndClean(`[CONSOLIDATED] ${cons.consolidated}`);
         if (consolidationValidation.valid) {
-          await this.memory.addNode(
+          const summaryNode = await this.memory.addNode(
             consolidationValidation.content,
             'consolidated'
           );
+          this.summarizer.finalizeConsolidationCompost(this.memory, cons, {
+            mode: compostOptions.mode,
+            summaryNodeId: summaryNode?.id,
+            confirmedDryRunAt: compostOptions.confirmedDryRunAt
+          });
           
           this.logger.info('✓ Consolidated (GPT-5.5)', {
             sourceNodes: cons.sourceNodes.length,
@@ -4302,20 +4310,50 @@ class Orchestrator {
     }
   }
 
+  getMemoryCompostOptions() {
+    const configuredMode = process.env.HOME23_MEMORY_COMPOST_MODE
+      || this.config?.memory?.consolidation?.compostSources
+      || 'off';
+    let mode = String(configuredMode || 'off').toLowerCase();
+    if (!['off', 'dry-run', 'apply'].includes(mode)) mode = 'off';
+
+    const confirmedDryRunAt = process.env.HOME23_MEMORY_COMPOST_CONFIRMED_DRY_RUN_AT
+      || this.config?.memory?.consolidation?.compostConfirmedDryRunAt
+      || null;
+
+    if (mode === 'apply' && process.env.HOME23_MEMORY_COMPOST_APPLY !== '1') {
+      this.logger?.warn?.('Memory compost apply requested without HOME23_MEMORY_COMPOST_APPLY=1; forcing dry-run', {
+        configuredMode,
+        confirmedDryRunAt: Boolean(confirmedDryRunAt)
+      });
+      mode = 'dry-run';
+    }
+
+    return { mode, confirmedDryRunAt };
+  }
+
   async performMemoryConsolidation() {
     this.logger.info('🔗 Consolidating (GPT-5.5 deep reasoning)...');
 
-    const consolidations = await this.summarizer.consolidateMemories(this.memory, 0.75);
+    const compostOptions = this.getMemoryCompostOptions();
+    const consolidations = await this.summarizer.consolidateMemories(this.memory, 0.75, {
+      compostSources: compostOptions.mode
+    });
 
     let validCount = 0;
     for (const cons of consolidations) {
       // Robust validation for consolidation
       const consolidationValidation = validateAndClean(`[CONSOLIDATED] ${cons.consolidated}`);
       if (consolidationValidation.valid) {
-        await this.memory.addNode(
+        const summaryNode = await this.memory.addNode(
           consolidationValidation.content,
           'consolidated'
         );
+        this.summarizer.finalizeConsolidationCompost(this.memory, cons, {
+          mode: compostOptions.mode,
+          summaryNodeId: summaryNode?.id,
+          confirmedDryRunAt: compostOptions.confirmedDryRunAt
+        });
         validCount++;
       } else {
         this.logger.warn('⚠️  Skipped invalid consolidation', {

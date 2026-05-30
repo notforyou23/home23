@@ -104,3 +104,82 @@ test('consolidateMemories limits cluster work per run and records deferral', asy
     )
   );
 });
+
+test('consolidateMemories dry-runs source compost without deleting sources', async () => {
+  process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'test-key';
+  const logger = makeLogger();
+  const summarizer = new MemorySummarizer({}, logger, {});
+  const clusters = [
+    Array.from({ length: 5 }, (_, nodeIndex) => ({
+      id: `source-a-${nodeIndex}`,
+      concept: `alpha source ${nodeIndex}`,
+      weight: nodeIndex,
+    })),
+    Array.from({ length: 5 }, (_, nodeIndex) => ({
+      id: `source-b-${nodeIndex}`,
+      concept: `beta source ${nodeIndex}`,
+      weight: nodeIndex,
+    })),
+  ];
+  const nodes = clusters.flat();
+  const memoryNetwork = { nodes: new Map(nodes.map((node) => [node.id, node])) };
+
+  summarizer.clusterSimilarMemories = async () => clusters;
+  summarizer.createConsolidatedMemoryGPT5 = async (cluster) => ({
+    content: `summary for ${cluster[0].id}`,
+    reasoning: null,
+    model: 'test-model',
+  });
+
+  const result = await summarizer.consolidateMemories(memoryNetwork, 0.75, {
+    compostSources: 'dry-run',
+  });
+
+  assert.equal(result.length, 2);
+  assert.equal(result[0].compost.mode, 'dry-run');
+  assert.equal(result[0].compost.wouldRemoveSourceNodes, 5);
+  assert.equal(result[1].compost.wouldRemoveSourceNodes, 5);
+  assert.equal(memoryNetwork.nodes.size, 10);
+  assert.equal(summarizer.consolidationHistory.at(-1).compostDryRun.wouldRemoveSourceNodes, 10);
+  assert.equal(summarizer.consolidationHistory.at(-1).compostDryRun.clusters, 2);
+});
+
+test('finalizeConsolidationCompost applies removal only after summary provenance is recorded', async () => {
+  process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'test-key';
+  const logger = makeLogger();
+  const summarizer = new MemorySummarizer({}, logger, {});
+  const removed = [];
+  const sourceNodes = ['source-1', 'source-2', 'source-3'];
+  const summaryNode = { id: 'summary-1', concept: '[CONSOLIDATED] source summary', tag: 'consolidated', metadata: {} };
+  const memoryNetwork = {
+    nodes: new Map([
+      ...sourceNodes.map((id) => [id, { id, concept: id, tag: 'reasoning' }]),
+      [summaryNode.id, summaryNode],
+    ]),
+    removeNode(id) {
+      removed.push(id);
+      return this.nodes.delete(id);
+    },
+    markNodeDirty(id) {
+      this.dirtyNodeId = id;
+    },
+  };
+  const consolidation = {
+    sourceNodes,
+    compost: { mode: 'ready', sourceNodes },
+  };
+
+  const result = summarizer.finalizeConsolidationCompost(memoryNetwork, consolidation, {
+    mode: 'apply',
+    summaryNodeId: summaryNode.id,
+    confirmedDryRunAt: '2026-05-30T00:00:00.000Z',
+  });
+
+  assert.equal(result.removedSourceNodes, 3);
+  assert.deepEqual(removed, sourceNodes);
+  assert.equal(memoryNetwork.nodes.has('source-1'), false);
+  assert.equal(memoryNetwork.nodes.has(summaryNode.id), true);
+  assert.deepEqual(summaryNode.metadata.consolidationProvenance.sourceNodes, sourceNodes);
+  assert.equal(summaryNode.metadata.consolidationProvenance.compostedSourceCount, 3);
+  assert.equal(memoryNetwork.dirtyNodeId, summaryNode.id);
+});

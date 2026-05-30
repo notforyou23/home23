@@ -8,6 +8,7 @@ const {
   hasHallucinatedToolCall,
   isBareActionOnlyThought,
   isBareToolCommandText,
+  isPromptHandlingPreamble,
   isRestlessStimulationLoop,
   isToolPlanWithoutResult,
 } = require('../../../engine/src/cognition/hallucinated-tool-call-detector.js');
@@ -38,6 +39,18 @@ test('classifyInertThought keeps grounded tool-result summaries', () => {
 
 test('classifyInertThought keeps real action payloads', () => {
   assert.equal(classifyInertThought('INVESTIGATE The transport sampler has failed five times; inspect the collector logs and compare the last successful timestamp.'), null);
+});
+
+test('classifyInertThought rejects pure prompt-handling preamble', () => {
+  const text = 'The user is asking me to produce output following the system instructions. Let me ground myself first by checking the current state.';
+  assert.equal(isPromptHandlingPreamble(text), true);
+  assert.equal(classifyInertThought(text), 'prompt_handling_preamble');
+});
+
+test('classifyInertThought keeps preamble when it contains a substantive claim', () => {
+  const text = 'The user is asking me to produce output following the system instructions. The dispatch ledger has had zero writes for 1000 minutes and two chronic live problems are still open.';
+  assert.equal(isPromptHandlingPreamble(text), false);
+  assert.equal(classifyInertThought(text), null);
 });
 
 test('classifyInertThought rejects restless stimulation loops', () => {

@@ -4,6 +4,7 @@ const DEFAULT_CONSOLIDATION_MAX_NODES = 80;
 const DEFAULT_CONSOLIDATION_MAX_CHARS = 50000;
 const DEFAULT_CONSOLIDATION_MAX_CONCEPT_CHARS = 600;
 const DEFAULT_CONSOLIDATION_MAX_CLUSTERS_PER_RUN = 4;
+const COMPOST_MODES = new Set(['off', 'dry-run', 'apply']);
 
 /**
  * Memory Summarizer - GPT-5.5 Version
@@ -129,6 +130,8 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
         ? options.maxClustersPerRun
         : this.consolidationMaxClustersPerRun
     );
+    const compostMode = this.resolveCompostMode(options);
+    const compostDryRun = { wouldRemoveSourceNodes: 0, clusters: 0 };
     let attemptedClusters = 0;
 
     for (const cluster of clusters) {
@@ -139,11 +142,18 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
         const consolidated = await this.createConsolidatedMemoryGPT5(cluster);
         
         if (consolidated) {
+          const compost = this.buildCompostPlan(cluster, compostMode);
+          if (compost.mode === 'dry-run') {
+            compostDryRun.wouldRemoveSourceNodes += compost.wouldRemoveSourceNodes;
+            compostDryRun.clusters += 1;
+          }
+
           consolidations.push({
             consolidated: consolidated.content,
             reasoning: consolidated.reasoning,
             sourceNodes: cluster.map(n => n.id),
-            model: consolidated.model
+            model: consolidated.model,
+            compost
           });
 
           // Mark source nodes as consolidated to prevent re-processing
@@ -155,7 +165,9 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
           this.logger?.info('Memories consolidated (GPT-5.5)', {
             sourceCount: cluster.length,
             hasReasoning: Boolean(consolidated.reasoning),
-            topics: cluster.map(n => n.tag)
+            topics: cluster.map(n => n.tag),
+            compostMode: compost.mode,
+            compostWouldRemoveSourceNodes: compost.wouldRemoveSourceNodes
           });
         }
       }
@@ -167,8 +179,13 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
       totalMemories: nodes.length,
       attemptedClusters,
       eligibleClusters: clusters.length,
-      deferredClusters: Math.max(0, clusters.length - attemptedClusters)
+      deferredClusters: Math.max(0, clusters.length - attemptedClusters),
+      ...(compostDryRun.clusters > 0 ? { compostDryRun } : {})
     });
+
+    if (compostDryRun.clusters > 0) {
+      this.logger?.info?.('Consolidation compost dry-run complete', compostDryRun);
+    }
 
     if (clusters.length > attemptedClusters) {
       this.logger?.info?.('Consolidation run deferred remaining clusters', {
@@ -180,6 +197,128 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
     }
 
     return consolidations;
+  }
+
+  resolveCompostMode(options = {}) {
+    const requested = options.compostSources
+      || options.compostMode
+      || this.fullConfig?.memory?.consolidation?.compostSources
+      || this.config?.consolidation?.compostSources
+      || process.env.HOME23_MEMORY_COMPOST_MODE
+      || 'off';
+    const normalized = String(requested === true ? 'dry-run' : requested || 'off').toLowerCase();
+    return COMPOST_MODES.has(normalized) ? normalized : 'off';
+  }
+
+  buildCompostPlan(cluster, mode) {
+    const sourceNodes = cluster
+      .map(node => node?.id)
+      .filter(id => id !== undefined && id !== null)
+      .map(String);
+    const activeMode = mode === 'apply' ? 'ready' : mode;
+    return {
+      mode: activeMode,
+      sourceNodes,
+      wouldRemoveSourceNodes: sourceNodes.length
+    };
+  }
+
+  finalizeConsolidationCompost(memoryNetwork, consolidation, options = {}) {
+    const mode = String(options.mode || consolidation?.compost?.mode || 'off').toLowerCase();
+    const sourceNodes = Array.isArray(consolidation?.sourceNodes)
+      ? consolidation.sourceNodes.map(String)
+      : (Array.isArray(consolidation?.compost?.sourceNodes) ? consolidation.compost.sourceNodes.map(String) : []);
+    const summaryNodeId = options.summaryNodeId != null ? String(options.summaryNodeId) : null;
+
+    if (!sourceNodes.length || mode === 'off') {
+      return { mode: 'off', removedSourceNodes: 0, skippedSourceNodes: sourceNodes.length };
+    }
+
+    if (mode === 'dry-run' || consolidation?.compost?.mode === 'dry-run') {
+      this.logger?.info?.('Consolidation compost dry-run', {
+        summaryNodeId,
+        wouldRemoveSourceNodes: sourceNodes.length
+      });
+      return {
+        mode: 'dry-run',
+        wouldRemoveSourceNodes: sourceNodes.length,
+        removedSourceNodes: 0,
+        skippedSourceNodes: sourceNodes.length
+      };
+    }
+
+    if (mode !== 'apply') {
+      return { mode, removedSourceNodes: 0, skippedSourceNodes: sourceNodes.length };
+    }
+
+    if (!summaryNodeId || !options.confirmedDryRunAt) {
+      this.logger?.warn?.('Consolidation compost apply blocked; dry-run confirmation and summary node are required', {
+        summaryNodeId,
+        hasConfirmedDryRunAt: Boolean(options.confirmedDryRunAt),
+        sourceNodes: sourceNodes.length
+      });
+      return {
+        mode: 'blocked',
+        reason: 'dry_run_confirmation_required',
+        removedSourceNodes: 0,
+        skippedSourceNodes: sourceNodes.length
+      };
+    }
+
+    const summaryNode = memoryNetwork?.nodes?.get?.(summaryNodeId);
+    if (!summaryNode) {
+      this.logger?.warn?.('Consolidation compost apply blocked; summary node not found', {
+        summaryNodeId,
+        sourceNodes: sourceNodes.length
+      });
+      return {
+        mode: 'blocked',
+        reason: 'summary_node_not_found',
+        removedSourceNodes: 0,
+        skippedSourceNodes: sourceNodes.length
+      };
+    }
+
+    summaryNode.metadata = {
+      ...(summaryNode.metadata || {}),
+      consolidationProvenance: {
+        sourceNodes,
+        compostedSourceCount: sourceNodes.length,
+        compostedAt: new Date().toISOString(),
+        confirmedDryRunAt: options.confirmedDryRunAt,
+        model: consolidation?.model || null
+      }
+    };
+    if (typeof memoryNetwork.markNodeDirty === 'function') {
+      memoryNetwork.markNodeDirty(summaryNodeId);
+    }
+
+    let removed = 0;
+    let skipped = 0;
+    for (const sourceNodeId of sourceNodes) {
+      if (sourceNodeId === summaryNodeId) {
+        skipped++;
+        continue;
+      }
+      if (typeof memoryNetwork.removeNode === 'function' && memoryNetwork.removeNode(sourceNodeId)) {
+        removed++;
+      } else {
+        skipped++;
+      }
+    }
+
+    this.logger?.info?.('Consolidation compost applied', {
+      summaryNodeId,
+      removedSourceNodes: removed,
+      skippedSourceNodes: skipped
+    });
+
+    return {
+      mode: 'apply',
+      removedSourceNodes: removed,
+      skippedSourceNodes: skipped,
+      summaryNodeId
+    };
   }
 
   /**

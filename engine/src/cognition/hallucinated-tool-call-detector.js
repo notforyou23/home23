@@ -25,6 +25,8 @@ const TOOL_RESULT_PATTERN = /\b(returned|returns|reports|reported|shows|showed|r
 const TOOL_PLAN_PATTERN = /\b(i will|i'll|i am going to|i'm going to|i need to|let me|tool calls?|calling|call fresh|use fresh|using fresh|after receiving tool results|without fresh tool access)\b/i;
 const RESTLESS_STIMULATION_PATTERN = /\b(bored|boredom|restless|idle cycle|idle cycles|nothing (?:is )?landing|thin results|no interesting results|same query again|running (?:the )?same query|routine quer(?:y|ies)|tool calls? to feel productive|feels like action|scroll(?:ing)? equivalent|more stimulation)\b/i;
 const TARGET_ACQUISITION_PATTERN = /\b(rest|wait|drift|better target|target acquisition|fresh context|put it down|come back|re-engage|genuine engagement|genuine rest|discard the thread)\b/i;
+const PROMPT_HANDLING_PREAMBLE_PATTERN = /^\s*(?:the user (?:is asking|wants|asked) me to|i need to (?:produce output|answer|respond|follow)|let me (?:first )?(?:ground|check|read|understand)|i should (?:first )?(?:ground|check|read)|to answer (?:this|that),? i (?:need|should))/i;
+const SUBSTANTIVE_CLAIM_PATTERN = /\b(?:zero|failed|failing|failure|resolved|open|chronic|critical|healthy|strained|stale|fresh|blocked|writes?|nodes?|edges?|cycles?|minutes?|hours?|days?|errors?|api|pm2|cron|ledger|dispatch|good life|goal_\d+|[a-z0-9_-]+_[a-z0-9_-]+)\b/i;
 
 // Count occurrences — useful for "how hallucinogenic is this output?"
 function countHallucinatedToolCalls(text) {
@@ -44,6 +46,7 @@ function classifyInertThought(text) {
   if (isBareActionOnlyThought(text)) return 'bare_action_tag';
   if (isBareToolCommandText(text)) return 'bare_tool_command';
   if (isToolPlanWithoutResult(text)) return 'tool_plan_without_result';
+  if (isPromptHandlingPreamble(text)) return 'prompt_handling_preamble';
   if (isRestlessStimulationLoop(text)) return 'restless_stimulation_loop';
   return null;
 }
@@ -79,6 +82,23 @@ function isRestlessStimulationLoop(text) {
   return mentionsToolOrQuery;
 }
 
+function isPromptHandlingPreamble(text) {
+  if (process.env.HOME23_PROMPT_PREAMBLE_GATE_DISABLE === '1') return false;
+  const s = String(text || '').trim();
+  if (!s || !PROMPT_HANDLING_PREAMBLE_PATTERN.test(s)) return false;
+
+  const sentences = s
+    .split(/(?:\n+|(?<=[.!?])\s+)/)
+    .map(part => part.trim())
+    .filter(Boolean);
+  const tail = sentences.slice(1).join(' ');
+
+  if (tail && SUBSTANTIVE_CLAIM_PATTERN.test(tail)) return false;
+  if (sentences.length > 2 && SUBSTANTIVE_CLAIM_PATTERN.test(s)) return false;
+
+  return true;
+}
+
 function normalizeToolText(text) {
   return String(text || '')
     .toLowerCase()
@@ -98,5 +118,6 @@ module.exports = {
   isBareToolCommandText,
   isToolPlanWithoutResult,
   isRestlessStimulationLoop,
+  isPromptHandlingPreamble,
   TOOL_CALL_PATTERN,
 };

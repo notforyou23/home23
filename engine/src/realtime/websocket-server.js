@@ -12,7 +12,10 @@
 
 const WebSocket = require('ws');
 const http = require('http');
+const fs = require('fs');
+const path = require('path');
 const { cosmoEvents } = require('./event-emitter');
+const { collectBrainCleanupCandidates } = require('../memory/brain-cleanup');
 
 class RealtimeServer {
   constructor(port = 3400, logger = null) {
@@ -146,6 +149,17 @@ class RealtimeServer {
           if (req.url && req.url.startsWith('/admin/live-problems')) {
             try {
               await this._handleLiveProblemsAdmin(req, res);
+            } catch (err) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ ok: false, error: err.message }));
+            }
+            return;
+          }
+
+          // ── Memory cleanup maintenance controls ──
+          if (req.url && req.url.startsWith('/admin/memory/cleanup')) {
+            try {
+              await this._handleMemoryCleanupAdmin(req, res);
             } catch (err) {
               res.writeHead(500, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ ok: false, error: err.message }));
@@ -507,6 +521,105 @@ class RealtimeServer {
     }
 
     return json(404, { ok: false, error: `Unknown live-problems route: ${req.method} ${url}` });
+  }
+
+  /**
+   * Handle /admin/memory/cleanup/* routes.
+   * Narrow maintenance surface for removing confirmed autonomous-loop junk from
+   * the live in-memory graph. Never edits sidecars directly.
+   */
+  async _handleMemoryCleanupAdmin(req, res) {
+    const requestUrl = new URL(req.url, `http://localhost:${this.port}`);
+    const url = requestUrl.pathname;
+    const json = (code, body) => {
+      res.writeHead(code, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    };
+
+    if (url !== '/admin/memory/cleanup/preamble') {
+      return json(404, { ok: false, error: `Unknown memory cleanup route: ${req.method} ${url}` });
+    }
+
+    const memory = this.orchestrator?.memory;
+    if (!memory?.nodes || typeof memory.removeNode !== 'function') {
+      return json(503, { ok: false, error: 'memory graph not available' });
+    }
+
+    const body = req.method === 'POST' ? await this._readJsonBody(req) : {};
+    const mode = String(body.mode || requestUrl.searchParams.get('mode') || 'dry-run').toLowerCase();
+    const limitValue = body.limit ?? requestUrl.searchParams.get('limit');
+    const limit = limitValue == null ? Infinity : Number(limitValue);
+    const report = collectBrainCleanupCandidates(memory, {
+      limit: Number.isFinite(limit) ? limit : Infinity,
+    });
+    const sample = report.candidates.slice(0, 20);
+
+    if (req.method === 'GET' || mode === 'dry-run') {
+      return json(200, {
+        ok: true,
+        mode: 'dry-run',
+        totalCandidates: report.totalCandidates,
+        byReason: report.byReason,
+        sample
+      });
+    }
+
+    if (req.method !== 'POST') {
+      return json(405, { ok: false, error: 'method not allowed' });
+    }
+
+    if (mode !== 'apply') {
+      return json(400, { ok: false, error: 'mode must be dry-run or apply' });
+    }
+
+    const backup = this._backupBrainSidecars('brain-cleanup-preamble');
+    let removed = 0;
+    const failed = [];
+    for (const candidate of report.candidates) {
+      try {
+        const removalIds = [candidate.id];
+        if (/^\d+$/.test(String(candidate.id))) removalIds.push(Number(candidate.id));
+        const didRemove = removalIds.some(id => memory.removeNode(id));
+        if (didRemove) {
+          removed++;
+        } else {
+          failed.push({ id: candidate.id, reason: 'removeNode returned false' });
+        }
+      } catch (err) {
+        failed.push({ id: candidate.id, reason: err.message });
+      }
+    }
+
+    if (typeof this.orchestrator.saveState === 'function') {
+      await this.orchestrator.saveState();
+    }
+
+    return json(200, {
+      ok: true,
+      mode: 'apply',
+      removed,
+      failed,
+      backup,
+      byReason: report.byReason,
+      sample
+    });
+  }
+
+  _backupBrainSidecars(reason) {
+    const brainDir = this.orchestrator?.logsDir;
+    if (!brainDir) return { ok: false, error: 'brain dir unavailable' };
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const backupDir = path.join(brainDir, 'backups', `${stamp}-${reason}`);
+    fs.mkdirSync(backupDir, { recursive: true });
+    const copied = [];
+    for (const name of ['memory-nodes.jsonl.gz', 'memory-edges.jsonl.gz', 'brain-snapshot.json', 'state.json.gz']) {
+      const source = path.join(brainDir, name);
+      if (!fs.existsSync(source)) continue;
+      const target = path.join(backupDir, name);
+      fs.copyFileSync(source, target);
+      copied.push(name);
+    }
+    return { ok: true, path: backupDir, files: copied };
   }
 
   /**
