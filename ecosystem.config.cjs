@@ -84,7 +84,7 @@ module.exports = {
       autorestart: true, watch: false, merge_logs: true,
       out_file: path.join(HOME23, 'instances', 'jerry', 'logs') + '/harness-out.log',
       error_file: path.join(HOME23, 'instances', 'jerry', 'logs') + '/harness-err.log',
-      env: { HOME23_AGENT: 'jerry', OLLAMA_CLOUD_API_KEY: commonEnv.OLLAMA_CLOUD_API_KEY, MINIMAX_API_KEY: commonEnv.MINIMAX_API_KEY, ANTHROPIC_AUTH_TOKEN: commonEnv.ANTHROPIC_AUTH_TOKEN, OPENAI_CODEX_AUTH_TOKEN: commonEnv.OPENAI_CODEX_AUTH_TOKEN, OPENAI_API_KEY: commonEnv.OPENAI_API_KEY, XAI_API_KEY: commonEnv.XAI_API_KEY },
+      env: { ...commonEnv, HOME23_AGENT: 'jerry', COSMO_RUNTIME_DIR: path.join(HOME23, 'instances', 'jerry', 'brain'), COSMO_WORKSPACE_PATH: path.join(HOME23, 'instances', 'jerry', 'workspace'), DASHBOARD_PORT: '5002', COSMO_DASHBOARD_PORT: '5002', REALTIME_PORT: '5001', MCP_HTTP_PORT: '5003', INSTANCE_ID: 'home23-jerry' },
     },
 
     // ── forrest ──
@@ -123,7 +123,7 @@ module.exports = {
       autorestart: true, watch: false, merge_logs: true,
       out_file: path.join(HOME23, 'instances', 'forrest', 'logs') + '/harness-out.log',
       error_file: path.join(HOME23, 'instances', 'forrest', 'logs') + '/harness-err.log',
-      env: { HOME23_AGENT: 'forrest', OLLAMA_CLOUD_API_KEY: commonEnv.OLLAMA_CLOUD_API_KEY, MINIMAX_API_KEY: commonEnv.MINIMAX_API_KEY, ANTHROPIC_AUTH_TOKEN: commonEnv.ANTHROPIC_AUTH_TOKEN, OPENAI_CODEX_AUTH_TOKEN: commonEnv.OPENAI_CODEX_AUTH_TOKEN, OPENAI_API_KEY: commonEnv.OPENAI_API_KEY, XAI_API_KEY: commonEnv.XAI_API_KEY },
+      env: { ...commonEnv, HOME23_AGENT: 'forrest', COSMO_RUNTIME_DIR: path.join(HOME23, 'instances', 'forrest', 'brain'), COSMO_WORKSPACE_PATH: path.join(HOME23, 'instances', 'forrest', 'workspace'), DASHBOARD_PORT: '5012', COSMO_DASHBOARD_PORT: '5012', REALTIME_PORT: '5011', MCP_HTTP_PORT: '5013', INSTANCE_ID: 'home23-forrest' },
     },
 
     // ── pm2 watchdog (shared) ──

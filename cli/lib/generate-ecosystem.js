@@ -177,7 +177,7 @@ export function generateEcosystem(home23Root) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/harness-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/harness-err.log',`);
-    lines.push(`      env: { HOME23_AGENT: '${agent.name}', OLLAMA_CLOUD_API_KEY: commonEnv.OLLAMA_CLOUD_API_KEY, MINIMAX_API_KEY: commonEnv.MINIMAX_API_KEY, ANTHROPIC_AUTH_TOKEN: commonEnv.ANTHROPIC_AUTH_TOKEN, OPENAI_CODEX_AUTH_TOKEN: commonEnv.OPENAI_CODEX_AUTH_TOKEN, OPENAI_API_KEY: commonEnv.OPENAI_API_KEY, XAI_API_KEY: commonEnv.XAI_API_KEY },`);
+    lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
   }
 

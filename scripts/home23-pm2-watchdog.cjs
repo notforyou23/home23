@@ -75,7 +75,7 @@ function loadExpectedContract(agent, root = ROOT) {
     roles: {
       engine: { name: roleNames.engine, app: engine, requiredEnv: pickEnv(engineEnv, ['HOME23_AGENT', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT']) },
       dashboard: { name: roleNames.dashboard, app: dashboard, requiredEnv: pickEnv(dashEnv, ['HOME23_AGENT', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT']) },
-      harness: { name: roleNames.harness, app: harness, requiredEnv: pickEnv(harness.env || {}, ['HOME23_AGENT']) },
+      harness: { name: roleNames.harness, app: harness, requiredEnv: pickEnv(harness.env || {}, ['HOME23_AGENT', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT']) },
     },
     dashboardPort,
     realtimePort,

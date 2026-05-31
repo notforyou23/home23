@@ -37,7 +37,12 @@ function expected() {
       },
       harness: {
         name: 'home23-jerry-harness',
-        requiredEnv: { HOME23_AGENT: 'jerry' },
+        requiredEnv: {
+          HOME23_AGENT: 'jerry',
+          DASHBOARD_PORT: '5002',
+          COSMO_DASHBOARD_PORT: '5002',
+          REALTIME_PORT: '5001',
+        },
       },
     },
   };
@@ -74,6 +79,9 @@ function healthyObserved() {
         pm2_env: {
           status: 'online',
           HOME23_AGENT: 'jerry',
+          DASHBOARD_PORT: '5002',
+          COSMO_DASHBOARD_PORT: '5002',
+          REALTIME_PORT: '5001',
         },
       },
     ],
