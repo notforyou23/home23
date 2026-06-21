@@ -1,4 +1,16 @@
 const { expect } = require('chai');
+const fs = require('fs').promises;
+const os = require('os');
+const path = require('path');
+
+const { PlanExecutor } = require('../../src/core/plan-executor');
+
+const logger = {
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+  debug: () => {}
+};
 
 describe('PlanExecutor Execution Agent Dispatch', function() {
   let pe;
@@ -84,5 +96,94 @@ describe('PlanExecutor Execution Agent Dispatch', function() {
   it('should fall back to research for research keywords', function() {
     const task = { title: 'Research AI trends', description: 'Find sources on AI', metadata: {} };
     expect(pe.determineAgentType(task)).to.equal('research');
+  });
+});
+
+describe('PlanExecutor output-contract validation', function() {
+  let tempRoot;
+
+  beforeEach(async function() {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo-plan-executor-'));
+  });
+
+  afterEach(async function() {
+    if (tempRoot) {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  function makeExecutor(outputDir) {
+    const stateStore = {
+      completeTask: async () => true,
+      failTask: async () => true
+    };
+    const pathResolver = {
+      resolve: (token) => {
+        if (token === '@outputs') return outputDir;
+        if (token.startsWith('@outputs/')) return path.join(outputDir, token.slice('@outputs/'.length));
+        return token;
+      }
+    };
+    return new PlanExecutor(stateStore, { registry: {} }, logger, { pathResolver });
+  }
+
+  it('does not pass a task when unrelated output files exist but the expected output is missing', async function() {
+    const outputDir = path.join(tempRoot, 'outputs');
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(path.join(outputDir, 'summary.json'), '{"ok":true}\n');
+
+    const pe = makeExecutor(outputDir);
+    pe.activeTask = {
+      id: 'task:synthesis_final',
+      title: 'Assemble Final Deliverable',
+      acceptanceCriteria: [
+        {
+          type: 'qa',
+          rubric: 'Final deliverable exists at @outputs/jerry-garcia-side-projects-shows.md'
+        }
+      ],
+      metadata: {
+        expectedOutput: '@outputs/jerry-garcia-side-projects-shows.md',
+        deliverableSpec: {
+          filename: 'jerry-garcia-side-projects-shows.md',
+          location: '@outputs/'
+        }
+      }
+    };
+
+    const missing = await pe.validateTaskOutput([]);
+    expect(missing.passed).to.equal(false);
+    expect(missing.reason).to.include('Missing expected output');
+
+    await fs.writeFile(
+      path.join(outputDir, 'jerry-garcia-side-projects-shows.md'),
+      '# Jerry Garcia Side Project Shows\n\nVerified deliverable.\n'
+    );
+
+    const present = await pe.validateTaskOutput([]);
+    expect(present.passed).to.equal(true);
+    expect(present.artifacts.some((artifact) => artifact.path === 'jerry-garcia-side-projects-shows.md')).to.equal(true);
+  });
+
+  it('forwards validated artifacts through queued task completion', async function() {
+    const queued = [];
+    const taskStateQueue = {
+      enqueue: async (event) => {
+        queued.push(event);
+      }
+    };
+    const pe = new PlanExecutor(
+      { completeTask: async () => true },
+      { registry: {} },
+      logger,
+      { taskStateQueue }
+    );
+
+    const artifacts = [{ path: 'required.md', artifactId: 'artifact_1' }];
+    await pe.completeTask({ id: 'task:phase1', title: 'Phase 1' }, artifacts);
+
+    expect(queued).to.have.length(1);
+    expect(queued[0].artifacts).to.deep.equal(artifacts);
+    expect(queued[0].producedArtifacts).to.deep.equal(artifacts);
   });
 });

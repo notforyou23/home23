@@ -452,6 +452,8 @@ class PlanExecutor {
         cycle: this.cycleCount,
         phaseName: task.title,
         artifactCount: artifacts.length,
+        artifacts,
+        producedArtifacts: artifacts,
         source: 'plan_executor'
       });
     } else {
@@ -1004,8 +1006,7 @@ class PlanExecutor {
     // Check for files on disk if we have a path resolver
     // FIX (Jan 21, 2026): Add logging and improve disk scan robustness
     if (this.pathResolver) {
-      const outputDir = this.pathResolver.getPhaseOutputDir?.(this.activePhase?.id) ||
-                       this.pathResolver.resolve?.('@outputs');
+      const outputDir = this.resolveOutputRoot();
 
       this.logger.debug('[PlanExecutor] Disk scan for artifacts', {
         hasPathResolver: true,
@@ -1056,6 +1057,32 @@ class PlanExecutor {
     } else {
       this.logger.debug('[PlanExecutor] No pathResolver available for disk scan');
     }
+
+    const expectedOutputs = this.getExpectedOutputSpecs(this.activeTask);
+    if (expectedOutputs.length > 0) {
+      const expectedValidation = await this.validateExpectedOutputs(expectedOutputs, artifacts);
+
+      if (!expectedValidation.passed) {
+        return {
+          passed: false,
+          artifacts,
+          reason: `Missing expected output: ${expectedValidation.missing.map(item => item.label).join(', ')}`
+        };
+      }
+
+      for (const artifact of expectedValidation.artifacts) {
+        const artifactKey = artifact.absolutePath || artifact.path;
+        const alreadyTracked = artifacts.some(existing =>
+          existing.absolutePath === artifact.absolutePath ||
+          existing.path === artifact.path ||
+          existing.path === artifactKey
+        );
+
+        if (!alreadyTracked) {
+          artifacts.push(artifact);
+        }
+      }
+    }
     
     // No criteria = auto-pass if there are any artifacts
     if (criteria.length === 0) {
@@ -1081,6 +1108,166 @@ class PlanExecutor {
       passed: true,
       artifacts,
       reason: null
+    };
+  }
+
+  getExpectedOutputSpecs(task) {
+    if (!task) return [];
+
+    const specs = [];
+    const addSpec = (raw, source = 'metadata') => {
+      if (!raw) return;
+
+      if (Array.isArray(raw)) {
+        for (const item of raw) addSpec(item, source);
+        return;
+      }
+
+      if (typeof raw === 'object') {
+        if (raw.path) addSpec(raw.path, source);
+        if (raw.file) addSpec(raw.file, source);
+        if (raw.filename && raw.location) addSpec(`${raw.location}${raw.filename}`, source);
+        return;
+      }
+
+      if (typeof raw !== 'string') return;
+
+      const parts = raw
+        .split(',')
+        .map(part => part.trim())
+        .filter(Boolean);
+
+      for (const part of parts) {
+        const cleaned = part.replace(/^["'`]+|["'`.,;:]+$/g, '');
+        if (cleaned) specs.push({ label: cleaned, source });
+      }
+    };
+
+    addSpec(task.metadata?.expectedOutput, 'metadata.expectedOutput');
+    addSpec(task.expectedOutput, 'task.expectedOutput');
+    addSpec(task.deliverable, 'task.deliverable');
+
+    const deliverableSpec = task.metadata?.deliverableSpec;
+    if (deliverableSpec?.filename && deliverableSpec?.location) {
+      addSpec(`${deliverableSpec.location}${deliverableSpec.filename}`, 'metadata.deliverableSpec');
+    }
+
+    for (const criterion of task.acceptanceCriteria || []) {
+      const rubric = typeof criterion?.rubric === 'string' ? criterion.rubric : '';
+      const matches = rubric.match(/@outputs\/[^\s`'",)]+/g) || [];
+      for (const match of matches) addSpec(match, 'acceptanceCriteria');
+    }
+
+    const deduped = [];
+    const seen = new Set();
+    for (const spec of specs) {
+      const key = spec.label;
+      if (!seen.has(key)) {
+        seen.add(key);
+        deduped.push(spec);
+      }
+    }
+
+    return deduped;
+  }
+
+  resolveOutputRoot() {
+    if (!this.pathResolver) return null;
+
+    const phaseOutputDir = this.pathResolver.getPhaseOutputDir?.(this.activePhase?.id);
+    if (phaseOutputDir) return phaseOutputDir;
+
+    if (this.pathResolver.resolve) {
+      try {
+        return this.pathResolver.resolve('@outputs');
+      } catch (error) {
+        this.logger.warn('[PlanExecutor] Output root resolver failed', {
+          alias: '@outputs',
+          error: error.message
+        });
+      }
+    }
+
+    return null;
+  }
+
+  resolveExpectedOutputPath(label) {
+    if (!label || typeof label !== 'string') return null;
+
+    if (this.pathResolver?.resolve) {
+      try {
+        return this.pathResolver.resolve(label);
+      } catch (error) {
+        this.logger.warn('[PlanExecutor] Expected output path resolver failed', {
+          label,
+          error: error.message
+        });
+      }
+    }
+
+    if (path.isAbsolute(label)) {
+      return label;
+    }
+
+    const outputDir = this.resolveOutputRoot();
+
+    if (!outputDir) return null;
+
+    if (label.startsWith('@outputs/')) {
+      return path.join(outputDir, label.slice('@outputs/'.length));
+    }
+
+    return path.join(outputDir, label);
+  }
+
+  async validateExpectedOutputs(expectedOutputs, artifacts) {
+    const presentArtifacts = [];
+    const missing = [];
+
+    for (const expected of expectedOutputs) {
+      const absolutePath = this.resolveExpectedOutputPath(expected.label);
+      if (!absolutePath) {
+        missing.push(expected);
+        continue;
+      }
+
+      try {
+        const stat = await fs.stat(absolutePath);
+        if (!stat.isFile() || stat.size <= 0) {
+          missing.push(expected);
+          continue;
+        }
+
+        const outputRoot = this.resolveOutputRoot();
+        const relativePath = outputRoot && absolutePath.startsWith(outputRoot)
+          ? path.relative(outputRoot, absolutePath)
+          : path.basename(absolutePath);
+
+        presentArtifacts.push({
+          type: 'file',
+          path: relativePath,
+          absolutePath,
+          size: stat.size,
+          source: 'expected_output_contract',
+          expectedOutput: expected.label
+        });
+      } catch {
+        const alreadyTracked = artifacts.some(artifact =>
+          artifact.absolutePath === absolutePath ||
+          artifact.path === expected.label ||
+          artifact.path === path.basename(absolutePath)
+        );
+
+        if (!alreadyTracked) {
+          missing.push(expected);
+        }
+      }
+    }
+
+    return {
+      passed: missing.length === 0,
+      missing,
+      artifacts: presentArtifacts
     };
   }
 

@@ -295,6 +295,7 @@ Your output is structured findings with source URLs — not summaries or plans.
 
     // Step 2: Execute web searches
     let searchResults = [];
+    const searchFailures = [];
     for (let i = 0; i < queries.length; i++) {
       const query = queries[i];
       
@@ -322,6 +323,11 @@ Your output is structured findings with source URLs — not summaries or plans.
           `Completed search ${i + 1}/${queries.length}`
         );
       } catch (error) {
+        searchFailures.push({
+          query,
+          error: error.message,
+          code: error.code || null
+        });
         this.logger.warn('Search failed, continuing', {
           query,
           error: error.message
@@ -330,6 +336,33 @@ Your output is structured findings with source URLs — not summaries or plans.
     }
 
     if (searchResults.length === 0) {
+      if (this.requiresVerifiedSources()) {
+        this.logger.warn('All web searches failed for source-required mission - failing closed', {
+          agentId: this.agentId,
+          queriesAttempted: queries.length,
+          failures: searchFailures.length
+        });
+
+        this.results.push({
+          type: 'diagnostic',
+          status: 'blocked_search_failed',
+          reason: 'all_searches_failed',
+          queriesAttempted: queries.length,
+          searchFailures,
+          timestamp: new Date()
+        });
+
+        return {
+          success: false,
+          status: 'blocked_search_failed',
+          reason: 'all_searches_failed',
+          queriesAttempted: queries.length,
+          searchFailures,
+          sourcesFound: this.sourcesFound.length,
+          results: this.results
+        };
+      }
+
       // Fallback: Generate research using LLM's training knowledge
       this.logger.warn('All web searches failed - falling back to LLM knowledge', {
         agentId: this.agentId,
@@ -345,6 +378,33 @@ Your output is structured findings with source URLs — not summaries or plans.
       } else {
         throw new Error('All web searches failed and knowledge fallback unavailable');
       }
+    }
+
+    if (this.requiresVerifiedSources() && this.sourcesFound.length === 0) {
+      this.logger.warn('Source-required mission produced no source URLs - failing closed', {
+        agentId: this.agentId,
+        queriesAttempted: queries.length,
+        searchResults: searchResults.length
+      });
+
+      this.results.push({
+        type: 'diagnostic',
+        status: 'blocked_no_sources',
+        reason: 'no_source_urls_found',
+        queriesAttempted: queries.length,
+        searchFailures,
+        timestamp: new Date()
+      });
+
+      return {
+        success: false,
+        status: 'blocked_no_sources',
+        reason: 'no_source_urls_found',
+        queriesAttempted: queries.length,
+        searchFailures,
+        sourcesFound: 0,
+        results: this.results
+      };
     }
 
     // Step 3: Synthesize findings
@@ -556,7 +616,9 @@ Respond with JSON array of query strings:
 
       if (!searchResults.success || searchResults.results.length === 0) {
         this.logger.warn('Local search returned no results', { query });
-        return `No web results found for "${query}". Proceeding with existing knowledge.`;
+        const error = new Error(`No web results found for "${query}"`);
+        error.code = 'NO_SEARCH_RESULTS';
+        throw error;
       }
 
       // Extract sources
@@ -593,9 +655,23 @@ Respond with JSON array of query strings:
         error: error.message
       });
 
-      // Graceful fallback - return empty but don't crash
-      return `Search failed for "${query}". Proceeding with existing knowledge.`;
+      throw error;
     }
+  }
+
+  requiresVerifiedSources() {
+    const text = [
+      this.mission?.description,
+      this.mission?.mission,
+      ...(this.mission?.successCriteria || []),
+      this.mission?.expectedOutput,
+      this.mission?.metadata?.expectedOutput
+    ]
+      .filter(Boolean)
+      .join('\n')
+      .toLowerCase();
+
+    return /\b(source_url|source urls?|urls searched|source_type|citations?|cite|verbatim|forum|fan anecdotes?|archive\.org|secondary sources?|web_search|interview quotes?|review threads?)\b/.test(text);
   }
 
   /**

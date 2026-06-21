@@ -560,10 +560,10 @@ while current Home23 COSMO runs use the MiniMax + Ollama Cloud stack.
   managed provider panel
 - updates query copy and uses selected brain detail counts when available
 - changes built-in launch defaults to:
-  - primary: `MiniMax-M2.7`
+  - primary: `MiniMax-M3`
   - fast: `nemotron-3-nano:30b`
   - strategic: `kimi-k2.6`
-  - query/PGS: `MiniMax-M2.7`
+  - query/PGS: `MiniMax-M3`
 
 **Effect under Home23:** the COSMO23 app opens to the local run workspace
 instead of a 293-run archive dump, Launch defaults match known-good Home23
@@ -576,7 +576,7 @@ flow; only the static masthead copy is more neutral.
 **Verification:** browser audit on `http://localhost:43210` after restarting
 `home23-cosmo23`: Brains defaulted to `Cosmo Home23 (5)`, selected `trail-running`
 with `229 nodes / 718 edges`, Query selected `trail-running`, and Launch
-selected `MiniMax-M2.7`, `Nemotron 3 Nano 30B`, `Kimi K2.6`.
+selected `MiniMax-M3`, `Nemotron 3 Nano 30B`, `Kimi K2.6`.
 
 ---
 
@@ -717,9 +717,9 @@ written assuming the caller is always Anthropic, so any model name that is
 not `claude-*` and not in `modelMapping` (which only has `gpt-5.x` keys)
 silently falls through to a hardcoded `'claude-sonnet-4-5'`.
 
-When a Home23 agent picked MiniMax as Primary (e.g. `MiniMax-M2.7` in
+When a Home23 agent picked MiniMax as Primary (e.g. `MiniMax-M3` in
 `runs/trail-running/config.yaml`), `generateMiniMax` would pass
-`{ model: 'MiniMax-M2.7' }` into the adapter, the model got rewritten to
+`{ model: 'MiniMax-M3' }` into the adapter, the model got rewritten to
 `'claude-sonnet-4-5'`, and the request hit MiniMax's endpoint with the
 wrong body — visible in logs as:
 
@@ -746,7 +746,7 @@ if (this.providerId && this.providerId !== 'anthropic') {
 ```
 
 **Effect under Home23:** MiniMax runs send the actual selected model
-(e.g. `MiniMax-M2.7`) to MiniMax's endpoint instead of `claude-sonnet-4-5`.
+(e.g. `MiniMax-M3`) to MiniMax's endpoint instead of `claude-sonnet-4-5`.
 Logs reflect the truth — no spurious Anthropic line items when no
 Anthropic provider is configured.
 
@@ -954,27 +954,27 @@ bounded on very large brains. Full/expert/dive behavior is unchanged.
 
 **Verification:** `tests/cosmo23/query-engine-context.test.cjs` proves quick
 mode stays at 50 nodes for a 56,210-node brain while full mode still reaches
-the `claude-opus-4-7` model cap of 900 nodes.
+the `claude-opus-4-8` model cap of 900 nodes.
 
 ---
 
-## Patch 18 — Claude Opus 4.7 request shape for Anthropic clients
+## Patch 18 — Claude Opus 4.8 request shape for Anthropic clients
 
 **Files touched:**
 - `cosmo23/lib/anthropic-client.js`
 - `cosmo23/engine/src/core/anthropic-client.js`
 
-**Problem:** agent chat `brain_query` defaulted back to `claude-opus-4-7` after
+**Problem:** agent chat `brain_query` defaulted back to `claude-opus-4-8` after
 Quick mode was bounded, but COSMO23's Anthropic adapters still sent the legacy
-`temperature` field on every Messages API call. Opus 4.7 rejects that sampling
+`temperature` field on every Messages API call. Opus 4.8 rejects that sampling
 parameter, so the live query path failed before answering even with a small
 context.
 
 The native web-search path had the same inline `temperature` field, and
 reasoning requests still used the older `thinking: { type: 'enabled',
-budget_tokens: ... }` shape rather than Opus 4.7's adaptive thinking shape.
+budget_tokens: ... }` shape rather than Opus 4.8's adaptive thinking shape.
 
-**Fix:** add a greppable model guard for `claude-opus-4-7`, omit legacy sampling
+**Fix:** add a greppable model guard for `claude-opus-4-8`, omit legacy sampling
 params for that model in both normal generation and native web-search requests,
 and map reasoning requests to:
 
@@ -993,14 +993,14 @@ Other Claude models keep the previous temperature behavior and older thinking
 shape.
 
 **Effect under Home23:** `brain_query` can use the configured strong Claude
-query model without tripping Anthropic's Opus 4.7 request validation. The xAI
+query model without tripping Anthropic's Opus 4.8 request validation. The xAI
 fallback is no longer needed for ordinary agent-chat queries.
 
-**Effect under standalone COSMO:** Opus 4.7 requests become valid there too;
+**Effect under standalone COSMO:** Opus 4.8 requests become valid there too;
 non-Opus behavior is unchanged.
 
 **Verification:** `tests/cosmo23/anthropic-client-request.test.cjs` captures the
-request bodies for both COSMO23 client copies and proves Opus 4.7 omits
+request bodies for both COSMO23 client copies and proves Opus 4.8 omits
 `temperature`, uses adaptive thinking, and omits sampling params for native
 web search while Sonnet still keeps `temperature`.
 
@@ -1051,7 +1051,7 @@ model while preserving normal Sonnet request shape, including SDK shapes where
 - `cosmo23/lib/query-engine.js`
 - `cosmo23/lib/anthropic-client.js`
 
-**Problem:** the Home23/COSMO catalog default query model is `MiniMax-M2.7`, but
+**Problem:** the Home23/COSMO catalog default query model is `MiniMax-M3`, but
 the historical `QueryEngine.resolveQueryRuntime()` only had explicit branches
 for Anthropic, xAI, Ollama Cloud, local models, Codex, and OpenAI. A MiniMax
 model correctly inferred `providerId=minimax`, then fell through to the OpenAI
@@ -1065,7 +1065,7 @@ Home23-managed COSMO config secret, using the Anthropic-compatible endpoint
 and teach `cosmo23/lib/anthropic-client.js` to pass models through unchanged for
 non-Anthropic compatible providers instead of mapping them to Claude.
 
-**Effect under Home23:** dashboard/default query model `MiniMax-M2.7` now reaches
+**Effect under Home23:** dashboard/default query model `MiniMax-M3` now reaches
 MiniMax instead of OpenAI. Agent `brain_query` can stay aligned with catalog
 defaults and only force the chat-safe `quick` mode.
 
@@ -1074,7 +1074,7 @@ is configured; missing credentials now fail clearly instead of silently routing
 to OpenAI.
 
 **Verification:** `tests/cosmo23/query-engine-runtime.test.cjs` proves
-`MiniMax-M2.7` resolves to the MiniMax query client and fails clearly when that
+`MiniMax-M3` resolves to the MiniMax query client and fails clearly when that
 client is absent.
 
 ---
@@ -1397,7 +1397,7 @@ tests/cosmo23/synthesis-config-generator.test.cjs`.
 but the effective answer contract drifted away from the original deep-query
 behavior. The `full` UI mode was labeled comprehensive while using the lighter
 standard prompt, medium reasoning, and a smaller output budget. New visible
-Anthropic model IDs also received hard low node caps (`claude-opus-4-7` at 900
+Anthropic model IDs also received hard low node caps (`claude-opus-4-8` at 900
 nodes, `claude-sonnet-4-7` at 800 nodes), far below the older Opus/Sonnet
 query profiles. Current OpenAI and xAI model IDs not listed exactly could fall
 through to generic defaults instead of inheriting their family profile.
@@ -1407,7 +1407,7 @@ query contract: it uses the complete deep-access prompt, high reasoning, high
 verbosity, and the 25k-token output budget. Query context sizing now resolves
 model capacity through exact IDs plus family fallback rules for GPT-5, Claude
 4 Opus/Sonnet/Haiku, and Grok 4 families, so catalog refreshes do not silently
-downgrade depth. Claude 4.7 caps now match the established family profiles
+downgrade depth. Claude 4 family caps now match the established family profiles
 instead of the temporary safety caps.
 
 PGS behavior is unchanged: small-run direct fallback, provider/model selection,
@@ -1415,7 +1415,7 @@ and PGS sweep/synthesis options remain intact.
 
 **Follow-up completion guardrail:** live logs showed that the restored large
 node profiles could still build direct-query contexts far beyond the provider
-window, for example `claude-opus-4-7` at ~524k estimated input tokens against a
+window, for example `claude-opus-4-8` at ~524k estimated input tokens against a
 200k window and `gpt-5.5` at ~404k estimated input tokens against a 128k window.
 That shape could stream partial text but never reach the final Query `complete`
 event, so the dashboard never saved the query or enabled follow-up. Direct Query
@@ -1460,6 +1460,63 @@ tests/engine/agents/code-creation-agent-metadata.test.js`
 
 ---
 
+## Patch 27 — Guided task output contracts and source-required research fail-closed
+
+**Files touched:**
+- `cosmo23/engine/src/core/plan-executor.js`
+- `cosmo23/engine/src/agents/research-agent.js`
+- `cosmo23/engine/tests/unit/plan-executor-execution-types.test.js`
+- `cosmo23/engine/tests/unit/research-agent-handoff.test.js`
+
+**Problem:** the `jerrysideshows` run proved COSMO23 could diagnose the exact
+next action and still not do it. `task:synthesis_final` was marked `DONE` even
+though the required `@outputs/jerry-garcia-side-projects-shows.md` deliverable
+did not exist, and its current task record carried `producedArtifacts: []`.
+An older archived completion had the same shape in a subtler form: unrelated
+agent logs and summaries satisfied the task while the named markdown file was
+absent. The same run also showed source-required research missions converting
+failed/empty web-search activity into successful-looking knowledge fallback,
+leaving the graph rich in meta-diagnosis but empty of the requested anecdotes.
+
+**Fix:** `PlanExecutor.validateTaskOutput()` now treats explicit output
+contracts as binding. It reads `metadata.expectedOutput`,
+`metadata.deliverableSpec`, task-level deliverables, and `@outputs/...` paths
+named in acceptance criteria, resolves them through the run path resolver, and
+fails validation when any required file is missing or empty. Generic files in
+`outputs/` no longer satisfy a task that names a specific deliverable. When a
+validated task completes through `TaskStateQueue`, `completeTask()` now forwards
+the validated `artifacts` and `producedArtifacts` arrays instead of reducing
+completion to an artifact count.
+
+`ResearchAgent` now fails closed for missions whose text or success criteria
+require source-backed retrieval (`source_url`, citations, forum/anecdote
+collection, Archive.org/review-thread work, `web_search`, etc.). If every
+search fails, or if searches complete without any source URLs, the agent returns
+`success: false` with `status: blocked_search_failed` or
+`blocked_no_sources` and the attempted query/error evidence. General
+exploratory missions can still use the older LLM-knowledge fallback, but
+source-required missions can no longer treat fallback prose as evidence.
+
+**Effect under Home23:** guided COSMO23 runs stop crediting required artifact
+tasks until the named files actually exist. Source-driven research lanes now
+surface the true blocker for Home23 agency/live-problem routing instead of
+producing more self-referential absence analysis.
+
+**Effect under standalone COSMO:** the stricter task validation and
+source-required fail-closed behavior apply to standalone guided runs as well.
+Runs without explicit output contracts retain the existing generic artifact
+validation behavior.
+
+**Verification:** `npx mocha
+cosmo23/engine/tests/unit/plan-executor-execution-types.test.js
+cosmo23/engine/tests/unit/research-agent-handoff.test.js` passed with 18 tests.
+`node --test --test-concurrency=1 tests/cosmo23/artifact-loop.test.cjs
+tests/cosmo23/query-engine-context.test.cjs
+tests/cosmo23/query-engine-runtime.test.cjs` passed with 33 tests. Syntax
+checks passed for the two patched source files.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -1497,7 +1554,7 @@ tests/engine/agents/code-creation-agent-metadata.test.js`
 - **2026-04-27** — Patch 11 added after browser-auditing the bundled COSMO23
   app. Home23-managed mode now defaults to local runs, selects the latest local
   COSMO run, hides standalone setup controls, and uses the Home23 run model
-  defaults (`MiniMax-M2.7`, `nemotron-3-nano:30b`, `kimi-k2.6`).
+  defaults (`MiniMax-M3`, `nemotron-3-nano:30b`, `kimi-k2.6`).
 - **2026-04-27** — Patch 12 added to redesign the Home23-managed COSMO23 UI
   around the Home23 shell, launch-first workflow, research-at-a-glance panel,
   and visible recent local runs.
@@ -1538,10 +1595,10 @@ tests/engine/agents/code-creation-agent-metadata.test.js`
   large-context query on Jerry's 56k-node graph. Quick/fast are now fixed-cap;
   deeper modes keep adaptive coverage.
 - **2026-05-03** — Patch 18 added after bounded Quick mode exposed the next live
-  failure: `claude-opus-4-7` rejects `temperature`. COSMO23's Anthropic clients
-  now omit deprecated sampling params for Opus 4.7 and use adaptive thinking.
+  failure: `claude-opus-4-8` rejects `temperature`. COSMO23's Anthropic clients
+  now omit deprecated sampling params for Opus 4.8 and use adaptive thinking.
 - **2026-05-03** — Patch 19 added after agent `brain_query` revealed that the
-  current catalog query default, `MiniMax-M2.7`, was inferred as provider
+  current catalog query default, `MiniMax-M3`, was inferred as provider
   `minimax` but routed through the OpenAI client. QueryEngine now has a real
   MiniMax Anthropic-compatible query client.
 - **2026-05-07** — Patch 20 added after a 24-node COSMO23 research run routed
@@ -1573,3 +1630,7 @@ tests/engine/agents/code-creation-agent-metadata.test.js`
 - **2026-05-24** — Patch 26 removed `FILE_WRITTEN` log-marker trust from the
   vendored CodeCreationAgent so artifact completion requires real file metadata
   or a discoverable container file.
+- **2026-06-21** — Patch 27 added after `jerrysideshows` showed the
+  plan/action closure failure: final synthesis marked done with no named
+  markdown deliverable, source-required research returning absence prose after
+  failed searches, and validated artifacts being dropped on queued completion.
