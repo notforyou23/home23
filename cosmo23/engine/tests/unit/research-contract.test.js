@@ -97,6 +97,17 @@ describe('ResearchContract', () => {
     expect(contract.sourceProviderHints).to.deep.equal(['wikidata.sparql', 'openalex.works']);
   });
 
+  it('maps X/Twitter discourse research to the Home23 x-research skill provider', () => {
+    const contract = deriveResearchContract({
+      description: 'Find what people are saying on X/Twitter about Home23 research skills.',
+      successCriteria: ['Return tweet URLs and source evidence']
+    });
+
+    expect(contract.required).to.equal(true);
+    expect(contract.reasonCodes).to.include('social_research');
+    expect(contract.sourceProviderHints).to.include('home23.skill.x_research.search');
+  });
+
   it('preserves explicit web_search queries with nested quote types', () => {
     const queries = extractWebSearchQueries(
       `(1) web_search for 'Jerry Merl Saunders Boarding House July 1975 "I'll Take a Melody" anecdote OR review'; ` +

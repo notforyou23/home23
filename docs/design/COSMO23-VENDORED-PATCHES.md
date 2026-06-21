@@ -1795,6 +1795,59 @@ returned accepted attempts from Archive, Wikidata, Wayback, and OpenAlex.
 
 ---
 
+## Patch 32 — Home23 skill providers in the source backbone
+
+**Files touched:**
+- `cosmo23/engine/src/core/source-provider-registry.js`
+- `cosmo23/engine/src/core/research-contract.js`
+- `cosmo23/engine/tests/unit/source-provider-registry.test.js`
+- `cosmo23/engine/tests/unit/research-contract.test.js`
+- `docs/design/COSMO23-VENDORED-PATCHES.md`
+- `docs/receipts/2026-06-21-cosmo23-research-governance-spine-receipt.md`
+
+**Problem:** Patch 31 added typed external providers, but COSMO23 still did not
+use Home23's own first-class skill substrate. That left existing read-only
+research skills such as `x-research` outside the source backbone even though
+Home23 already knows how to run them, cache them, apply host defaults, and keep
+skill credentials out of COSMO-specific code.
+
+**Fix:** `SourceProviderRegistry` can now execute Home23 shared skills through
+`workspace/skills/index.js` as typed source providers. The first enabled skill
+family is read-only X/Twitter research:
+
+- `home23.skill.x_research.search`
+- `home23.skill.x_research.thread`
+- `home23.skill.x_research.profile`
+- `home23.skill.x_research.tweet`
+
+The registry dynamically imports the Home23 shared skills runtime from the
+project root, passes a bounded execution context, and normalizes returned
+tweets into source candidates with route, source type, tweet URL, text,
+created-at, metrics, expanded URLs, and optional saved artifact path. It does
+not duplicate X API credential handling inside COSMO23.
+
+Research contracts now map X/Twitter discourse language to
+`home23.skill.x_research.search`, so prompts like "what are people saying on
+X/Twitter" become executable provider hints instead of generic social-search
+prose.
+
+**Effect under Home23:** COSMO23 now uses Home23's built-in research machinery
+as part of the same source-acquisition backbone as Archive, Wayback, scholarly
+APIs, and search. This keeps source acquisition extensible: additional
+operational skills can be added as provider adapters without rewriting COSMO's
+research agent or copying credentials into vendored code.
+
+**Verification:** TDD covered provider selection, injected skill-runtime
+execution, execution context propagation, tweet normalization, and contract
+hint derivation. Focused source/backbone tests passed with 34 tests, the full
+focused governance/source suite passed with 214 tests, the COSMO23
+artifact/query/PGS/provider regression suite passed with 53 tests, syntax
+checks passed for the touched runtime files, and a live-safe `x-research`
+provider probe returned an accepted X source through the real shared skills
+runtime.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -1928,3 +1981,7 @@ returned accepted attempts from Archive, Wikidata, Wayback, and OpenAlex.
   Wayback/CDX, Common Crawl, Wikidata, scholarly APIs, PubMed, feeds, and
   sitemaps, plus contract-level provider hints and metadata-only archive file
   validation.
+- **2026-06-21** — Patch 32 connected COSMO23's source provider registry to
+  Home23's shared skills runtime, starting with read-only `x-research` search,
+  thread, profile, and tweet providers plus contract-level X/Twitter discourse
+  hints.

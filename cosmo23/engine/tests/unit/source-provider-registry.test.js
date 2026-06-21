@@ -321,4 +321,79 @@ describe('SourceProviderRegistry', () => {
     ]);
     expect(result.candidates[3].url).to.equal('https://pubmed.ncbi.nlm.nih.gov/12345/');
   });
+
+  it('runs Home23 x-research skill as a typed social source provider', async () => {
+    const skillCalls = [];
+    const skillRuntime = {
+      executeSkill: async (skillId, action, params, context) => {
+        skillCalls.push({ skillId, action, params, context });
+        return {
+          success: true,
+          query: params.query,
+          resultCount: 1,
+          tweets: [{
+            id: '2052408306116010040',
+            username: 'researcher',
+            name: 'Researcher',
+            text: 'Home23 source routing is getting interesting.',
+            created_at: '2026-06-21T12:00:00.000Z',
+            metrics: { likes: 23, retweets: 2, replies: 1, quotes: 0, impressions: 1000 },
+            urls: ['https://example.com/source'],
+            tweet_url: 'https://x.com/researcher/status/2052408306116010040'
+          }],
+          savedMarkdownTo: '/tmp/x-research.md'
+        };
+      }
+    };
+
+    const registry = new SourceProviderRegistry(logger, {
+      home23ProjectRoot: '/Users/jtr/_JTR23_/release/home23'
+    }, {
+      skillRuntime,
+      now: () => '2026-06-21T00:00:00.000Z'
+    });
+
+    expect(registry.selectProviders('What are people saying on X about Home23 skills?'))
+      .to.include('home23.skill.x_research.search');
+
+    const result = await registry.acquire('What are people saying on X about Home23 skills?', {
+      providers: ['home23.skill.x_research.search'],
+      maxResults: 3,
+      workspacePath: '/tmp/cosmo-run'
+    });
+
+    expect(result.success).to.equal(true);
+    expect(result.attempts[0]).to.include({
+      route: 'home23.skill.x_research.search',
+      status: 'accepted',
+      result_count: 1,
+      url_count: 1
+    });
+    expect(skillCalls[0]).to.deep.include({
+      skillId: 'x-research',
+      action: 'search'
+    });
+    expect(skillCalls[0].params).to.include({
+      query: 'What are people saying on X about Home23 skills?',
+      quick: true,
+      includeData: true,
+      saveMarkdown: false
+    });
+    expect(skillCalls[0].params.limit).to.equal(3);
+    expect(skillCalls[0].context.projectRoot).to.equal('/Users/jtr/_JTR23_/release/home23');
+    expect(skillCalls[0].context.workspacePath).to.equal('/tmp/cosmo-run');
+    expect(result.candidates[0]).to.include({
+      provider: 'home23.skill.x_research.search',
+      sourceType: 'social_post',
+      title: '@researcher on X',
+      url: 'https://x.com/researcher/status/2052408306116010040'
+    });
+    expect(result.candidates[0].metadata).to.include({
+      skillId: 'x-research',
+      action: 'search',
+      tweetId: '2052408306116010040',
+      savedMarkdownTo: '/tmp/x-research.md'
+    });
+    expect(result.candidates[0].metadata.expandedUrls).to.deep.equal(['https://example.com/source']);
+  });
 });

@@ -1,4 +1,6 @@
 const { FreeWebSearch } = require('../tools/web-search-free');
+const path = require('path');
+const { pathToFileURL } = require('url');
 
 class SourceProviderRegistry {
   constructor(logger = null, config = {}, options = {}) {
@@ -6,6 +8,11 @@ class SourceProviderRegistry {
     this.config = config || {};
     this.fetchImpl = options.fetchImpl || global.fetch;
     this.webSearch = options.webSearch || null;
+    this.skillRuntime = options.skillRuntime || null;
+    this.home23ProjectRoot = options.home23ProjectRoot ||
+      this.config.home23ProjectRoot ||
+      process.env.HOME23_ROOT ||
+      path.resolve(__dirname, '../../../..');
     this.now = options.now || (() => new Date().toISOString());
     this.defaultMaxResults = this.config.maxResults || 5;
   }
@@ -29,7 +36,11 @@ class SourceProviderRegistry {
       'pubmed.esearch_summary',
       'rss.feed',
       'feed.sitemap',
-      'sitemap.xml'
+      'sitemap.xml',
+      'home23.skill.x_research.search',
+      'home23.skill.x_research.thread',
+      'home23.skill.x_research.profile',
+      'home23.skill.x_research.tweet'
     ];
   }
 
@@ -96,6 +107,15 @@ class SourceProviderRegistry {
     }
     if (/\b(sitemap|site map)\b/.test(text)) {
       providers.add('feed.sitemap');
+    }
+    if (/\b(x\/twitter|twitter|x\.com|tweets?|x research|search x|search twitter|what(?:'s| is| are) (?:people|twitter|x).*saying|check x discourse|recent reactions?)\b/.test(text)) {
+      providers.add('home23.skill.x_research.search');
+    }
+    if (/\b(follow this x thread|x thread|twitter thread|conversation_id)\b/.test(text) || /https?:\/\/(?:x|twitter)\.com\/[^/\s]+\/status\/\d+/i.test(text)) {
+      providers.add('home23.skill.x_research.thread');
+    }
+    if (/\b(x profile|twitter profile|recent posts from|check @[\w_]+)\b/.test(text)) {
+      providers.add('home23.skill.x_research.profile');
     }
 
     return [...providers];
@@ -185,6 +205,14 @@ class SourceProviderRegistry {
       case 'feed.sitemap':
       case 'sitemap.xml':
         return await this.fetchSitemap(query, options);
+      case 'home23.skill.x_research.search':
+        return await this.searchHome23XResearch(query, options);
+      case 'home23.skill.x_research.thread':
+        return await this.fetchHome23XResearchThread(query, options);
+      case 'home23.skill.x_research.profile':
+        return await this.fetchHome23XResearchProfile(query, options);
+      case 'home23.skill.x_research.tweet':
+        return await this.fetchHome23XResearchTweet(query, options);
       default:
         throw new Error(`Unknown source provider: ${providerId}`);
     }
@@ -222,7 +250,11 @@ class SourceProviderRegistry {
       'pubmed.esearch_summary': 'biomedical_article',
       'rss.feed': 'feed_item',
       'feed.sitemap': 'sitemap_url',
-      'sitemap.xml': 'sitemap_url'
+      'sitemap.xml': 'sitemap_url',
+      'home23.skill.x_research.search': 'social_post',
+      'home23.skill.x_research.thread': 'social_thread_post',
+      'home23.skill.x_research.profile': 'social_profile_post',
+      'home23.skill.x_research.tweet': 'social_post'
     }[providerId] || 'source_candidate';
   }
 
@@ -679,6 +711,107 @@ class SourceProviderRegistry {
     return candidates.slice(0, options.maxResults || this.defaultMaxResults);
   }
 
+  async searchHome23XResearch(query, options = {}) {
+    const result = await this.executeHome23Skill('x-research', 'search', {
+      query,
+      quick: options.quick !== false,
+      limit: options.maxResults || this.defaultMaxResults,
+      includeData: true,
+      saveMarkdown: options.saveSkillMarkdown === true,
+      sort: options.sort || 'likes',
+      ...(options.since ? { since: options.since } : {})
+    }, options);
+    return this.normalizeXResearchTweets(result, {
+      action: 'search',
+      sourceType: 'social_post'
+    });
+  }
+
+  async fetchHome23XResearchThread(query, options = {}) {
+    const result = await this.executeHome23Skill('x-research', 'thread', {
+      url: this.extractUrls(query).find(url => /(?:x|twitter)\.com\/[^/]+\/status\/\d+/i.test(url)),
+      tweetId: this.extractTweetId(query),
+      pages: options.pages || 2,
+      includeData: true,
+      saveMarkdown: options.saveSkillMarkdown === true
+    }, options);
+    return this.normalizeXResearchTweets(result, {
+      action: 'thread',
+      sourceType: 'social_thread_post'
+    });
+  }
+
+  async fetchHome23XResearchProfile(query, options = {}) {
+    const result = await this.executeHome23Skill('x-research', 'profile', {
+      username: options.username || this.extractXUsername(query),
+      count: options.maxResults || this.defaultMaxResults,
+      includeData: true,
+      saveMarkdown: options.saveSkillMarkdown === true
+    }, options);
+    return this.normalizeXResearchTweets(result, {
+      action: 'profile',
+      sourceType: 'social_profile_post'
+    });
+  }
+
+  async fetchHome23XResearchTweet(query, options = {}) {
+    const result = await this.executeHome23Skill('x-research', 'tweet', {
+      url: this.extractUrls(query).find(url => /(?:x|twitter)\.com\/[^/]+\/status\/\d+/i.test(url)),
+      tweetId: options.tweetId || this.extractTweetId(query),
+      includeData: true,
+      saveMarkdown: options.saveSkillMarkdown === true
+    }, options);
+    const tweets = result?.tweet ? [result.tweet] : [];
+    return this.normalizeXResearchTweets({ ...result, tweets }, {
+      action: 'tweet',
+      sourceType: 'social_post'
+    });
+  }
+
+  async executeHome23Skill(skillId, action, params = {}, options = {}) {
+    const runtime = this.skillRuntime || await this.loadHome23SkillRuntime();
+    if (!runtime?.executeSkill) {
+      throw new Error('Home23 skills runtime is unavailable');
+    }
+    return await runtime.executeSkill(skillId, action, params, {
+      projectRoot: this.home23ProjectRoot,
+      workspacePath: options.workspacePath || options.outputDir || null,
+      tempDir: options.tempDir || null,
+      enginePort: options.enginePort || null,
+      chatId: options.chatId || null
+    });
+  }
+
+  async loadHome23SkillRuntime() {
+    if (!this.skillRuntimePromise) {
+      const entryPath = path.join(this.home23ProjectRoot, 'workspace', 'skills', 'index.js');
+      this.skillRuntimePromise = import(pathToFileURL(entryPath).href);
+    }
+    return await this.skillRuntimePromise;
+  }
+
+  normalizeXResearchTweets(result = {}, options = {}) {
+    const tweets = Array.isArray(result.tweets) ? result.tweets : [];
+    return tweets.map(tweet => ({
+      title: tweet.username ? `@${tweet.username} on X` : `X post ${tweet.id || ''}`.trim(),
+      url: tweet.tweet_url || tweet.url || (tweet.id ? `https://x.com/i/status/${tweet.id}` : ''),
+      snippet: tweet.text || '',
+      sourceType: options.sourceType || 'social_post',
+      metadata: {
+        skillId: 'x-research',
+        action: options.action || 'search',
+        tweetId: tweet.id || null,
+        username: tweet.username || null,
+        createdAt: tweet.created_at || null,
+        metrics: tweet.metrics || {},
+        expandedUrls: Array.isArray(tweet.urls) ? tweet.urls : [],
+        resultQuery: result.query || null,
+        savedMarkdownTo: result.savedMarkdownTo || null
+      },
+      raw: tweet
+    }));
+  }
+
   parseFeedItems(text, maxResults) {
     const itemBlocks = [...text.matchAll(/<item\b[\s\S]*?<\/item>/gi)].map(match => match[0]);
     const entryBlocks = itemBlocks.length > 0
@@ -726,6 +859,18 @@ class SourceProviderRegistry {
   extractUrls(text = '') {
     return [...new Set((text.match(/https?:\/\/[^\s<>"'`)]+/g) || [])
       .map(url => url.trim().replace(/[.,;:!?]+$/g, '')))];
+  }
+
+  extractTweetId(text = '') {
+    const match = String(text).match(/status\/(\d+)/i) || String(text).match(/\btweet(?:Id)?[:\s]+(\d+)\b/i);
+    return match ? match[1] : null;
+  }
+
+  extractXUsername(text = '') {
+    const urlMatch = String(text).match(/(?:x|twitter)\.com\/([^/\s?#]+)/i);
+    if (urlMatch) return urlMatch[1].replace(/^@/, '');
+    const atMatch = String(text).match(/@([A-Za-z0-9_]{1,15})/);
+    return atMatch ? atMatch[1] : '';
   }
 
   async fetchJson(url, options = {}) {

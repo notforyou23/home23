@@ -300,3 +300,59 @@ Live-safe provider probe:
 - `wayback.availability` accepted `https://example.com/` and returned a
   Wayback snapshot URL
 - `openalex.works` accepted `knowledge graph research` and returned a DOI URL
+
+## Patch 32 Follow-Up: Home23 Skill Providers
+
+The next integration gap was internal leverage. Home23 already has operational
+research skills under `workspace/skills`, including read-only `x-research`, but
+COSMO23's source backbone was not using them. That meant COSMO could add more
+external providers while still ignoring its own built-in research machinery.
+
+Implemented:
+
+- `SourceProviderRegistry` can execute Home23 shared skills via
+  `workspace/skills/index.js`;
+- first-class provider IDs for `x-research`:
+  `home23.skill.x_research.search`,
+  `home23.skill.x_research.thread`,
+  `home23.skill.x_research.profile`, and
+  `home23.skill.x_research.tweet`;
+- normalized X/Twitter candidates as `social_post`, `social_thread_post`, or
+  `social_profile_post`, preserving tweet URL, text, username, created-at,
+  engagement metrics, expanded URLs, and saved markdown path when present;
+- bounded skill execution context with project root and workspace path, without
+  copying X credentials into COSMO-specific code; and
+- research contracts now map X/Twitter discourse prompts to the
+  `home23.skill.x_research.search` provider hint.
+
+Focused verification:
+
+```bash
+npx mocha cosmo23/engine/tests/unit/source-provider-registry.test.js --grep "Home23 x-research" --timeout 30000
+npx mocha cosmo23/engine/tests/unit/research-contract.test.js --grep "X/Twitter discourse" --timeout 30000
+npx mocha cosmo23/engine/tests/unit/source-provider-registry.test.js cosmo23/engine/tests/unit/research-contract.test.js cosmo23/engine/tests/unit/research-agent-handoff.test.js --timeout 30000
+node -c cosmo23/engine/src/core/source-provider-registry.js
+node -c cosmo23/engine/src/core/research-contract.js
+node -c cosmo23/engine/src/agents/research-agent.js
+```
+
+Result before live probe:
+
+- focused `x-research` provider test: `1 passing`
+- focused X/Twitter contract test: `1 passing`
+- widened source/backbone suite: `34 passing`
+- full focused governance/source suite: `214 passing`
+- COSMO23 query/artifact/PGS/provider regression suite: `53 passing`
+- syntax checks passed for touched runtime files
+
+Live-safe skill probe:
+
+- `home23.skill.x_research.search` executed through the real Home23 shared
+  skills runtime with `maxResults: 1` and `saveSkillMarkdown: false`
+- route status: `accepted`
+- result count / URL count: `1 / 1`
+- normalized source type: `social_post`
+- first source URL:
+  `https://x.com/jargon_sol/status/2068668105165848863`
+- generated probe cache file was removed after verification; pre-existing
+  untracked `x-research` cache files were left untouched

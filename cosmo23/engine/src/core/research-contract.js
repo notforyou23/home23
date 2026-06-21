@@ -17,7 +17,7 @@ const SOURCE_REQUIRED_PATTERNS = [
   { code: 'biomedical_research', pattern: /\bpubmed\b|\bpmid\b|\bbiomedical\b|\bncbi\b/i, mode: 'source_acquisition', providers: ['pubmed.esearch_summary'] },
   { code: 'feed_research', pattern: /\brss\b|\batom feed\b|\bpodcast feed\b|\bsitemap\b|\bsite map\b/i, mode: 'source_acquisition', providers: ['rss.feed', 'feed.sitemap'] },
   { code: 'media_research', pattern: /\byoutube\b|\bvideo\b|\baudio\b|\bpodcast\b|\btranscript\b/i, mode: 'web_research' },
-  { code: 'social_research', pattern: /\bsocial\b|\btwitter\b|\bx\.com\b|\btweets?\b|\bthreads?\b/i, mode: 'web_research' },
+  { code: 'social_research', pattern: /\bsocial\b|\btwitter\b|\bx\/twitter\b|\bx\.com\b|\btweets?\b|\bthreads?\b|\bwhat(?:'s| is| are) (?:people|twitter|x).*saying\b|\bcheck x discourse\b/i, mode: 'web_research', providers: ['home23.skill.x_research.search'] },
   { code: 'interview_quote_research', pattern: /\binterview\s+quotes?\b|\bverbatim\b/i, mode: 'web_research' },
   { code: 'source_acquisition', pattern: /\bscrape\b|\bcrawl\b|\bfetch\b|\bdownload\b|\bhttp(?:s)?:\/\//i, mode: 'source_acquisition' },
   { code: 'secondary_source_scope', pattern: /\bsecondary\s+sources?\b|\bsource_type\b|\bsource\s+scope\b/i, mode: 'web_research' }
