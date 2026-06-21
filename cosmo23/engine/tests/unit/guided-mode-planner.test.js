@@ -119,6 +119,36 @@ describe('GuidedModePlanner', () => {
     expect(normalized.agentMissions[0].artifactInputs).to.be.an('array');
   });
 
+  it('adds research contracts to source-required normalized missions', () => {
+    const planner = createPlanner();
+
+    const normalized = planner.normalizePlan(
+      {
+        strategy: 'Recover anecdotes',
+        agentMissions: [
+          {
+            type: 'research',
+            mission: 'Run web_search for "Legion of Mary Keystone fan recollections" and save source_url fields.',
+            tools: ['web_search'],
+            expectedOutput: '@outputs/raw-anecdotes/web-search-results.json'
+          }
+        ],
+        deliverable: {
+          type: 'markdown',
+          filename: 'out.md',
+          location: '@outputs/'
+        }
+      },
+      { domain: 'Jerry side project anecdotes' },
+      { researchDigest: planner.buildResearchDigest({}) }
+    );
+
+    const contract = normalized.agentMissions[0].metadata.researchContract;
+    expect(contract.required).to.equal(true);
+    expect(contract.mode).to.equal('web_research');
+    expect(contract.requiredQueries).to.deep.equal(['Legion of Mary Keystone fan recollections']);
+  });
+
   it('falls through to domain-based defaults when planner output is not valid JSON', async () => {
     const planner = createPlanner({
       subsystems: {

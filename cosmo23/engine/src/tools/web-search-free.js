@@ -29,11 +29,15 @@ class FreeWebSearch {
     this.timeout = 10000; // 10 seconds
 
     // Brave Search API (most reliable, free tier: 2000 queries/month)
-    this.braveApiKey = config.braveApiKey || process.env.BRAVE_API_KEY || '';
+    this.braveApiKey = config.braveApiKey || process.env.BRAVE_API_KEY || process.env.BRAVE_SEARCH_API_KEY || '';
 
     // SearXNG configuration (self-hosted meta-search)
-    const rawSearxngUrl = config.searxngUrl || process.env.SEARXNG_URL || null;
+    // HOME23 PATCH — Patch 29: match the Home23 agent web tool. The local
+    // SearXNG service is the authoritative no-key search backend; DuckDuckGo
+    // HTML is only a fallback, never the first searched backend.
+    const rawSearxngUrl = config.searxngUrl || process.env.SEARXNG_URL || 'http://localhost:8888';
     this.searxngUrl = rawSearxngUrl ? rawSearxngUrl.replace(/\/+$/, '') : null;
+    this.allowDuckDuckGoFallback = config.allowDuckDuckGoFallback !== false;
 
     // Rate limiting and failure tracking (only for DuckDuckGo fallback)
     this.lastSearchTime = 0;
@@ -96,53 +100,86 @@ class FreeWebSearch {
   }
 
   /**
-   * Perform a web search
-   * Priority: Brave API → SearXNG → DuckDuckGo
-   * @param {string} query - Search query
-   * @param {object} options - Search options
-   * @returns {Promise<object>} Search results
+   * Perform a web search.
+   *
+   * Source backbone policy:
+   * - Brave and SearXNG are authoritative structured backends. Query both when
+   *   available and merge/dedupe their results.
+   * - DuckDuckGo HTML is exploratory fallback only, used after authoritative
+   *   backends produce nothing and fallback is explicitly allowed.
    */
   async search(query, options = {}) {
     const { maxResults = this.maxResults } = options;
+    const authoritativeResults = [];
+    const backendCounts = {};
+    const backendFailures = [];
 
-    // 1. Try Brave Search API first (most reliable, no CAPTCHA/rate issues)
+    const addResults = (backend, results = []) => {
+      backendCounts[backend] = results.length;
+      for (const result of results) {
+        authoritativeResults.push({
+          ...result,
+          sourceBackend: backend,
+          engine: result.engine || backend
+        });
+      }
+    };
+
     if (this.braveApiKey) {
       try {
         this.logger?.info?.('Web search (Brave)', { query, maxResults });
-        const results = await this.searchBrave(query, maxResults);
-
-        if (results.length > 0) {
-          this._getEvents().emitEvent('web_search', {
-            query, resultCount: results.length, source: 'brave',
-            sources: results.slice(0, 3).map(r => r.title || r.url).filter(Boolean)
-          });
-          return { success: true, query, results, source: 'brave', resultCount: results.length };
-        }
-        this.logger?.warn?.('Brave returned no results, trying SearXNG');
+        addResults('brave', await this.searchBrave(query, maxResults));
       } catch (error) {
-        this.logger?.warn?.('Brave search failed, trying SearXNG', { error: error.message });
+        backendFailures.push({ backend: 'brave', error: error.message });
+        this.logger?.warn?.('Brave search failed', { error: error.message });
       }
     }
 
-    // 2. Try SearXNG if configured
     if (this.searxngUrl) {
       try {
         this.logger?.info?.('Web search (SearXNG)', { query, maxResults });
-        const results = await this.searchSearXNG(query, maxResults);
-
-        if (results.length > 0) {
-          this._getEvents().emitEvent('web_search', {
-            query, resultCount: results.length, source: 'searxng',
-            sources: results.slice(0, 3).map(r => r.title || r.url).filter(Boolean)
-          });
-          return { success: true, query, results, source: 'searxng', resultCount: results.length };
-        }
-        this.logger?.warn?.('SearXNG returned no results, trying DuckDuckGo');
+        addResults('searxng', await this.searchSearXNG(query, maxResults));
       } catch (error) {
-        this.logger?.warn?.('SearXNG search failed, falling back to DuckDuckGo', {
-          error: error.message
-        });
+        backendFailures.push({ backend: 'searxng', error: error.message });
+        this.logger?.warn?.('SearXNG search failed', { error: error.message });
       }
+    }
+
+    const mergedAuthoritative = this.mergeSearchResults(authoritativeResults, maxResults);
+    if (mergedAuthoritative.length > 0) {
+      const source = Object.entries(backendCounts)
+        .filter(([, count]) => count > 0)
+        .map(([backend]) => backend)
+        .join('+') || 'authoritative-search';
+      this._getEvents().emitEvent('web_search', {
+        query,
+        resultCount: mergedAuthoritative.length,
+        source,
+        sources: mergedAuthoritative.slice(0, 3).map(r => r.title || r.url).filter(Boolean)
+      });
+      return {
+        success: true,
+        query,
+        results: mergedAuthoritative,
+        source,
+        resultCount: mergedAuthoritative.length,
+        backendCounts,
+        backendFailures
+      };
+    }
+
+    if (!this.allowDuckDuckGoFallback) {
+      return {
+        success: false,
+        query,
+        results: [],
+        source: 'authoritative-search',
+        resultCount: 0,
+        backendCounts,
+        backendFailures,
+        error: 'Authoritative search backend unavailable',
+        message: 'SearXNG/Brave did not return usable results and DuckDuckGo fallback is disabled for this mission.'
+      };
     }
 
     // Check if we should skip DuckDuckGo due to consecutive failures
@@ -183,7 +220,9 @@ class FreeWebSearch {
           query,
           results,
           source: 'duckduckgo',
-          resultCount: results.length
+          resultCount: results.length,
+          backendCounts,
+          backendFailures
         };
       }
 
@@ -194,6 +233,8 @@ class FreeWebSearch {
         results: [],
         source: 'duckduckgo',
         resultCount: 0,
+        backendCounts,
+        backendFailures,
         message: 'No results found. Try a different query.'
       };
 
@@ -213,9 +254,30 @@ class FreeWebSearch {
         query,
         results: [],
         error: error.message,
+        backendCounts,
+        backendFailures,
         message: 'Search temporarily unavailable. The AI will use its training knowledge instead.'
       };
     }
+  }
+
+  mergeSearchResults(results = [], maxResults = this.maxResults) {
+    const seen = new Set();
+    const merged = [];
+    for (const result of results) {
+      const url = typeof result.url === 'string'
+        ? result.url.trim().replace(/[?#].*$/, '').replace(/\/+$/, '')
+        : '';
+      const key = url || `${result.title || ''}|${result.snippet || ''}`.toLowerCase();
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      merged.push({
+        ...result,
+        position: merged.length + 1
+      });
+      if (merged.length >= maxResults) break;
+    }
+    return merged;
   }
 
   /**

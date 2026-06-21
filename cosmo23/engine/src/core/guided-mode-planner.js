@@ -31,6 +31,7 @@ const { CampaignMemory } = require('../execution/campaign-memory');
 const { CapabilityManifest } = require('../execution/capability-manifest');
 const { PGSEngine } = require('../../../lib/pgs-engine');
 const { QueryEngine } = require('../../../lib/query-engine');
+const { deriveResearchContract } = require('./research-contract');
 
 class GuidedModePlanner {
   constructor(config, subsystems, logger) {
@@ -429,6 +430,24 @@ class GuidedModePlanner {
         const agentType = (missionType && VALID_AGENT_TYPES.includes(missionType))
           ? missionType
           : this.determineAgentTypeForPhase(phase);
+        const sourceScope = correspondingMission?.sourceScope || correspondingMission?.metadata?.sourceScope || null;
+        const artifactInputs = correspondingMission?.artifactInputs || correspondingMission?.metadata?.artifactInputs || [];
+        const expectedOutput = correspondingMission?.expectedOutput || correspondingMission?.metadata?.expectedOutput || null;
+        // HOME23 PATCH — Patch 28: source obligations become task metadata.
+        const researchContract = deriveResearchContract({
+          ...phase,
+          type: correspondingMission?.type,
+          agentType,
+          tools: correspondingMission?.tools,
+          sourceScope,
+          expectedOutput,
+          successCriteria: correspondingMission?.successCriteria,
+          metadata: {
+            ...(correspondingMission?.metadata || {}),
+            sourceScope,
+            expectedOutput
+          }
+        });
         
         return {
           id: `task:phase${idx + 1}`,
@@ -449,9 +468,10 @@ class GuidedModePlanner {
             baseTimestamp: baseTimestamp,
             phaseNumber: idx + 1,  // Store phase number for logging
             guidedMission: true,
-            sourceScope: correspondingMission?.sourceScope || correspondingMission?.metadata?.sourceScope || null,
-            artifactInputs: correspondingMission?.artifactInputs || correspondingMission?.metadata?.artifactInputs || [],
-            expectedOutput: correspondingMission?.expectedOutput || correspondingMission?.metadata?.expectedOutput || null,
+            sourceScope,
+            artifactInputs,
+            expectedOutput,
+            researchContract,
             researchDigest: plan.researchDigest || null
           },
           createdAt: Date.now(),
@@ -2872,6 +2892,18 @@ ONLY use agent types from the available list above.`;
           ? mission.metadata.artifactInputs
           : (mission.type === 'research' ? [] : (researchDigest.artifactRefs || []).slice(0, 12));
       const expectedOutput = mission.expectedOutput || mission.metadata?.expectedOutput || `${mission.type} output`;
+      // HOME23 PATCH — Patch 28: generated missions carry source contracts too.
+      const researchContract = deriveResearchContract({
+        ...mission,
+        agentType: mission.type,
+        sourceScope,
+        expectedOutput,
+        metadata: {
+          ...(mission.metadata || {}),
+          sourceScope,
+          expectedOutput
+        }
+      });
 
       return {
         ...mission,
@@ -2883,6 +2915,7 @@ ONLY use agent types from the available list above.`;
           sourceScope,
           artifactInputs,
           expectedOutput,
+          researchContract,
           researchDigest,
           planningDecision,
           guidedMission: true,
@@ -3093,7 +3126,13 @@ ONLY use agent types from the available list above.`;
               ? mission.metadata.artifactInputs
               : [],
           expectedOutput: mission.expectedOutput || mission.metadata?.expectedOutput || null,
-          researchDigest: researchDigest || mission.metadata?.researchDigest || null
+          researchDigest: researchDigest || mission.metadata?.researchDigest || null,
+          researchContract: mission.metadata?.researchContract || deriveResearchContract({
+            ...mission,
+            agentType: mission.type,
+            sourceScope: mission.sourceScope || mission.metadata?.sourceScope || `${mission.type} tier ${tierNumber}`,
+            expectedOutput: mission.expectedOutput || mission.metadata?.expectedOutput || null
+          })
         }
       };
 

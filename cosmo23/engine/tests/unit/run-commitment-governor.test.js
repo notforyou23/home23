@@ -100,12 +100,60 @@ describe('RunCommitmentGovernor', () => {
     expect(decision.reasonCodes).to.include('run_has_committed_answer');
   });
 
+  it('allows completion when PlanExecutor uses COMPLETED status', () => {
+    const governor = new RunCommitmentGovernor({}, logger);
+
+    const decision = governor.evaluate({
+      cycleCount: 41,
+      guidedRun: true,
+      activeAgents: 0,
+      goals: [],
+      providerErrors: [],
+      plan: { status: 'COMPLETED' },
+      artifactAudit: { committedArtifacts: 2, neverReusedArtifacts: 0, unregisteredFiles: 0 },
+      synthesisCommit: { applied: true, spine_count: 3, artifact_count: 1 }
+    });
+
+    expect(decision.shouldStopForCompletion).to.equal(true);
+    expect(decision.reasonCodes).to.include('run_has_committed_answer');
+  });
+
+  it('stops guided spawning and requests repair when the plan is blocked', () => {
+    const governor = new RunCommitmentGovernor({}, logger);
+
+    const decision = governor.evaluate({
+      cycleCount: 50,
+      guidedRun: true,
+      activeAgents: 0,
+      goals: [],
+      providerErrors: [],
+      plan: {
+        status: 'BLOCKED',
+        blockedReason: 'Research contract failed: missing_source_evidence'
+      },
+      artifactAudit: { committedArtifacts: 0, neverReusedArtifacts: 0, unregisteredFiles: 0 },
+      synthesisCommit: null
+    });
+
+    expect(decision.spawnAllowed).to.equal(false);
+    expect(decision.shouldStopForBlockedRun).to.equal(true);
+    expect(decision.reasonCodes).to.include('guided_plan_blocked');
+    expect(decision.nextActions).to.deep.include({
+      type: 'repair_blocked_research',
+      reason: 'Research contract failed: missing_source_evidence'
+    });
+    expect(decision.nextActions).to.deep.include({
+      type: 'stop_unproductive_run',
+      reason: 'guided_plan_blocked'
+    });
+  });
+
   it('normalizes provider error objects into governor-compatible events', () => {
     const governor = new RunCommitmentGovernor({}, logger);
     const event = governor.normalizeProviderError({
       cycle: 12,
       provider: 'anthropic',
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-4-8',
       error: new Error('429 {"type":"error","error":{"type":"rate_limit_error"}}')
     });
 

@@ -703,8 +703,12 @@ class ExecutionBaseAgent extends BaseAgent {
 
         const result = await this._dispatchToolCallSafe(toolCall);
 
-        // Track progress — write operations count as progress
-        if (this._isProgressOperation(toolCall.function?.name)) {
+        // HOME23 PATCH — Patch 28: failed/no-op actions must not reset stuck detection.
+        // Track progress only when an action-shaped tool actually succeeds.
+        if (
+          this._isProgressOperation(toolCall.function?.name) &&
+          this._isSuccessfulProgressResult(toolCall.function?.name, result)
+        ) {
           madeProgress = true;
         }
 
@@ -922,6 +926,34 @@ class ExecutionBaseAgent extends BaseAgent {
       'install_package'
     ]);
     return progressOps.has(toolName);
+  }
+
+  /**
+   * A progress-shaped tool call only counts as progress if the result did not
+   * fail. This keeps 404s, command failures, timeouts, and tool errors from
+   * resetting stuck detection.
+   */
+  _isSuccessfulProgressResult(toolName, result = {}) {
+    if (!this._isProgressOperation(toolName)) return false;
+    if (result == null) return false;
+    if (typeof result === 'string') return result.trim().length > 0;
+
+    if (result.error) return false;
+    if (result.blocked === true || result.timed_out === true || result.timedOut === true) return false;
+    if (result.success === false) return false;
+
+    const exitCode = result.exit_code ?? result.exitCode;
+    if (exitCode !== undefined && Number(exitCode) !== 0) return false;
+
+    const status = result.status ?? result.statusCode;
+    if (status !== undefined) {
+      const numericStatus = Number(status);
+      if (!Number.isFinite(numericStatus) || numericStatus < 200 || numericStatus >= 400) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   // ═══════════════════════════════════════════════════════════════════════

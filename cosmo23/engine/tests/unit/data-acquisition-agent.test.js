@@ -90,6 +90,77 @@ describe('DataAcquisitionAgent', function () {
     });
   });
 
+  describe('research contract accomplishment', function () {
+    it('does not count command activity as accomplishment when required source acquisition found zero sources', function () {
+      const agent = new DataAcquisitionAgent(
+        makeMission({
+          description: 'Scrape Archive.org review threads and save source_url evidence.',
+          metadata: {
+            researchContract: {
+              required: true,
+              mode: 'source_acquisition',
+              minSuccessfulSources: 1,
+              requiredEvidence: ['successful_source_contact'],
+              reasonCodes: ['archive_research']
+            }
+          }
+        }),
+        makeConfig(),
+        makeLogger()
+      );
+
+      const assessment = agent.assessAccomplishment({
+        metadata: {
+          commandsRun: 3,
+          filesCreated: 2,
+          artifactsCreated: 2,
+          bytesWritten: 100
+        }
+      }, []);
+
+      expect(assessment.accomplished).to.equal(false);
+      expect(assessment.reason).to.include('Research contract failed');
+      expect(assessment.metrics.researchContractRequired).to.equal(true);
+      expect(assessment.metrics.commandsRun).to.equal(3);
+      expect(assessment.metrics.sourcesContacted).to.equal(0);
+    });
+
+    it('counts successful source contact as accomplishment for required acquisition even with zero extracted entries', function () {
+      const agent = new DataAcquisitionAgent(
+        makeMission({
+          description: 'Scrape Archive.org review threads and record null results if no comments exist.',
+          metadata: {
+            researchContract: {
+              required: true,
+              mode: 'source_acquisition',
+              minSuccessfulSources: 1,
+              requiredEvidence: ['successful_source_contact'],
+              reasonCodes: ['archive_research']
+            }
+          }
+        }),
+        makeConfig(),
+        makeLogger()
+      );
+
+      agent.acquisitionManifest.sources.push({
+        url: 'https://archive.org/details/example',
+        status: 200,
+        bytes: 512
+      });
+
+      const assessment = agent.assessAccomplishment({
+        metadata: {
+          commandsRun: 1,
+          filesCreated: 1
+        }
+      }, []);
+
+      expect(assessment.accomplished).to.equal(true);
+      expect(assessment.metrics.successfulSources).to.equal(1);
+    });
+  });
+
   // ── Extended timeout ────────────────────────────────────────────────────────
 
   describe('extended timeout', function () {
@@ -332,14 +403,15 @@ describe('DataAcquisitionAgent', function () {
       expect(result.accomplished).to.be.false;
     });
 
-    it('should return true if base metrics show accomplishment even without manifest data', function () {
+    it('should return false if only base metrics show activity for source acquisition', function () {
       const agent = new DataAcquisitionAgent(makeMission(), makeConfig(), makeLogger());
 
       const result = agent.assessAccomplishment(
         { metadata: { commandsRun: 5, filesCreated: 2, bytesWritten: 1024 } },
         []
       );
-      expect(result.accomplished).to.be.true;
+      expect(result.accomplished).to.be.false;
+      expect(result.reason).to.include('Research contract failed');
     });
 
     it('should include schema discovery in metrics', function () {

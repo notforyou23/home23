@@ -186,4 +186,113 @@ describe('PlanExecutor output-contract validation', function() {
     expect(queued[0].artifacts).to.deep.equal(artifacts);
     expect(queued[0].producedArtifacts).to.deep.equal(artifacts);
   });
+
+  it('does not pass a source-required task with only generic files and no source evidence', async function() {
+    const outputDir = path.join(tempRoot, 'outputs');
+    await fs.mkdir(path.join(outputDir, 'raw-anecdotes'), { recursive: true });
+    await fs.writeFile(path.join(outputDir, 'raw-anecdotes', 'web-search-results.json'), '{"entries":[]}\n');
+
+    const pe = makeExecutor(outputDir);
+    pe.activeTask = {
+      id: 'task:phase1',
+      title: 'Execute web searches',
+      description: 'Execute web_search queries and record source_url for every result.',
+      acceptanceCriteria: [],
+      metadata: {
+        expectedOutput: '@outputs/raw-anecdotes/web-search-results.json',
+        researchContract: {
+          required: true,
+          mode: 'web_research',
+          minSuccessfulSources: 1,
+          requiredEvidence: ['successful_source_contact'],
+          reasonCodes: ['explicit_web_search']
+        }
+      }
+    };
+
+    const validation = await pe.validateTaskOutput([]);
+    expect(validation.passed).to.equal(false);
+    expect(validation.reason).to.include('Research contract failed');
+  });
+
+  it('passes a source-required task when source evidence exists and expected file is present', async function() {
+    const outputDir = path.join(tempRoot, 'outputs');
+    await fs.mkdir(path.join(outputDir, 'raw-anecdotes'), { recursive: true });
+    await fs.writeFile(path.join(outputDir, 'raw-anecdotes', 'archive-org-comments.json'), '{"entries":[],"status":"no_comments_found"}\n');
+
+    const pe = makeExecutor(outputDir);
+    pe.activeTask = {
+      id: 'task:phase2',
+      title: 'Scrape Archive comments',
+      description: 'Scrape Archive.org comments and save null results if none exist.',
+      acceptanceCriteria: [],
+      metadata: {
+        expectedOutput: '@outputs/raw-anecdotes/archive-org-comments.json',
+        researchContract: {
+          required: true,
+          mode: 'source_acquisition',
+          minSuccessfulSources: 1,
+          requiredEvidence: ['successful_source_contact'],
+          reasonCodes: ['archive_research']
+        }
+      }
+    };
+
+    const validation = await pe.validateTaskOutput([
+      {
+        agent: {
+          agentId: 'agent_data',
+          acquisitionManifest: {
+            sources: [{ url: 'https://archive.org/details/show', status: 200, bytes: 512 }],
+            pagesAcquired: 0,
+            filesDownloaded: 0,
+            bytesAcquired: 512,
+            errors: []
+          },
+          accomplishment: { metrics: { commandsRun: 2 } },
+          results: []
+        }
+      }
+    ]);
+
+    expect(validation.passed).to.equal(true);
+  });
+
+  it('marks the active phase and plan blocked when failed tasks exhaust retries', async function() {
+    const updates = { plans: [], milestones: [] };
+    const pe = new PlanExecutor(
+      {
+        updatePlan: async (planId, patch) => {
+          updates.plans.push({ planId, patch });
+          return true;
+        },
+        upsertMilestone: async (milestone) => {
+          updates.milestones.push(milestone);
+          return true;
+        }
+      },
+      { registry: {} },
+      logger,
+      { maxRetries: 1 }
+    );
+
+    pe.plan = { id: 'plan:main', title: 'Source research', status: 'ACTIVE' };
+    pe.activePhase = { id: 'ms:phase1', title: 'Source phase', order: 1, status: 'ACTIVE' };
+    pe.tasks = [
+      {
+        id: 'task:phase1',
+        title: 'Search sources',
+        state: 'FAILED',
+        metadata: { retryCount: 1 },
+        failureReason: 'Research contract failed: missing_source_evidence'
+      }
+    ];
+
+    const result = await pe.handlePhaseBlocked(pe.tasks);
+
+    expect(result.action).to.equal('PHASE_BLOCKED');
+    expect(updates.milestones[0].status).to.equal('BLOCKED');
+    expect(updates.plans[0].patch.status).to.equal('BLOCKED');
+    expect(updates.plans[0].patch.blockedReason).to.include('All tasks failed');
+  });
 });

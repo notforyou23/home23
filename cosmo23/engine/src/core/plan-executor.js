@@ -25,6 +25,11 @@
 
 const fs = require('fs').promises;
 const path = require('path');
+const {
+  deriveResearchContract,
+  evaluateResearchEvidence,
+  collectResearchEvidence
+} = require('./research-contract');
 
 class PlanExecutor {
   constructor(stateStore, agentExecutor, logger, options = {}) {
@@ -192,6 +197,10 @@ class PlanExecutor {
     if (this.plan.status === 'COMPLETED') {
       return await this.handlePlanComplete();
     }
+
+    if (this.plan.status === 'BLOCKED') {
+      return await this.handlePlanBlocked();
+    }
     
     // === PHASE MANAGEMENT ===
     const phaseAction = await this.checkPhase();
@@ -341,22 +350,46 @@ class PlanExecutor {
     }
     
     // All retries exhausted
+    const blockedReason = `All tasks failed after max retries: ${failedTasks.map(t => t.title || t.id).join(', ')}`;
     this.logger.error('🚨 PlanExecutor: PHASE BLOCKED - All tasks failed', {
       phase: this.activePhase?.title,
       failedTasks: failedTasks.map(t => t.title)
     });
+
+    if (this.activePhase && this.stateStore?.upsertMilestone) {
+      await this.stateStore.upsertMilestone({
+        ...this.activePhase,
+        status: 'BLOCKED',
+        blockedAt: Date.now(),
+        blockedReason
+      });
+    }
+
+    if (this.plan && this.stateStore?.updatePlan) {
+      await this.stateStore.updatePlan(this.plan.id, {
+        status: 'BLOCKED',
+        blockedAt: Date.now(),
+        blockedReason,
+        blockers: failedTasks.map(task => ({
+          taskId: task.id,
+          title: task.title,
+          reason: task.failureReason || task.metadata?.lastFailureReason || 'failed'
+        }))
+      });
+    }
     
     this.recordPlanEvent('phase_blocked', {
       phaseNumber: this.activePhase?.order,
       phaseName: this.activePhase?.title,
-      description: `Phase ${this.activePhase?.order} blocked: All tasks failed after max retries`,
+      description: `Phase ${this.activePhase?.order} blocked: ${blockedReason}`,
       failedTasks: failedTasks.map(t => t.title)
     });
     
     return this.record({
       action: 'PHASE_BLOCKED',
       phase: this.activePhase?.title,
-      failedTasks: failedTasks.map(t => t.id)
+      failedTasks: failedTasks.map(t => t.id),
+      reason: blockedReason
     });
   }
 
@@ -650,11 +683,19 @@ class PlanExecutor {
 
   async assignAgent() {
     const agentType = this.determineAgentType(this.activeTask);
+    // HOME23 PATCH — Patch 28: derive contract for old/resumed tasks too.
+    const researchContract = this.activeTask.metadata?.researchContract || deriveResearchContract({
+      ...this.activeTask,
+      agentType,
+      sourceScope: this.activeTask.metadata?.sourceScope || null,
+      expectedOutput: this.activeTask.metadata?.expectedOutput || null
+    });
     
     this.logger.info(`🤖 PlanExecutor: ASSIGNING ${agentType.toUpperCase()} AGENT`, {
       task: this.activeTask.title,
       taskId: this.activeTask.id,
-      phase: this.activePhase?.title
+      phase: this.activePhase?.title,
+      researchContractRequired: researchContract.required
     });
     
     // Build comprehensive mission spec
@@ -694,6 +735,7 @@ class PlanExecutor {
         sourceScope: this.activeTask.metadata?.sourceScope || null,
         artifactInputs: this.activeTask.metadata?.artifactInputs || [],
         expectedOutput: this.activeTask.metadata?.expectedOutput || null,
+        researchContract,
         researchDigest: this.activeTask.metadata?.researchDigest || null,
         // Minimal coordination context
         coordinationContext: {
@@ -711,6 +753,7 @@ class PlanExecutor {
     missionSpec.sourceScope = this.activeTask.metadata?.sourceScope || null;
     missionSpec.expectedOutput = this.activeTask.metadata?.expectedOutput || null;
     missionSpec.artifactInputs = this.activeTask.metadata?.artifactInputs || [];
+    missionSpec.researchContract = researchContract;
 
     const agentId = await this.agentExecutor.spawnAgent(missionSpec);
     
@@ -719,7 +762,11 @@ class PlanExecutor {
       const updatedTask = {
         ...this.activeTask,
         assignedAgentId: agentId,
-        agentAssignedAt: Date.now()
+        agentAssignedAt: Date.now(),
+        metadata: {
+          ...(this.activeTask.metadata || {}),
+          researchContract
+        }
       };
       
       await this.stateStore.upsertTask(updatedTask);
@@ -1079,9 +1126,29 @@ class PlanExecutor {
         );
 
         if (!alreadyTracked) {
-          artifacts.push(artifact);
-        }
+        artifacts.push(artifact);
       }
+    }
+
+    // HOME23 PATCH — Patch 28: files are not enough for source-required work.
+    const researchContract = this.activeTask.metadata?.researchContract || deriveResearchContract(this.activeTask);
+    if (researchContract.required) {
+      const evidence = collectResearchEvidence(accomplishedAgents, {
+        filesCreated: artifacts.length,
+        artifactsCreated: artifacts.length
+      });
+      const contractValidation = evaluateResearchEvidence(researchContract, evidence);
+
+      if (!contractValidation.passed) {
+        return {
+          passed: false,
+          artifacts,
+          reason: `Research contract failed: ${contractValidation.reasonCode}`,
+          researchContract,
+          researchEvidence: contractValidation.evidence
+        };
+      }
+    }
     }
     
     // No criteria = auto-pass if there are any artifacts
@@ -1316,6 +1383,16 @@ class PlanExecutor {
     return this.record({
       action: 'IDLE',
       reason: 'Plan complete, no queued plans'
+    });
+  }
+
+  async handlePlanBlocked() {
+    return this.record({
+      action: 'PLAN_BLOCKED',
+      planId: this.plan?.id,
+      title: this.plan?.title,
+      reason: this.plan?.blockedReason || 'Plan blocked',
+      blockers: this.plan?.blockers || []
     });
   }
 

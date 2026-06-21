@@ -1517,6 +1517,222 @@ checks passed for the two patched source files.
 
 ---
 
+## Patch 28 — Contract-first research governance spine
+
+**Files touched:**
+- `cosmo23/engine/src/core/research-contract.js`
+- `cosmo23/engine/src/core/guided-mode-planner.js`
+- `cosmo23/engine/src/core/plan-executor.js`
+- `cosmo23/engine/src/core/run-commitment-governor.js`
+- `cosmo23/engine/src/agents/research-agent.js`
+- `cosmo23/engine/src/agents/data-acquisition-agent.js`
+- `cosmo23/engine/src/agents/execution-base-agent.js`
+- `cosmo23/engine/tests/unit/research-contract.test.js`
+- `cosmo23/engine/tests/unit/execution-base-agent.test.js`
+- `cosmo23/engine/tests/unit/data-acquisition-agent.test.js`
+- `cosmo23/engine/tests/unit/research-agent-handoff.test.js`
+- `cosmo23/engine/tests/unit/plan-executor-execution-types.test.js`
+- `cosmo23/engine/tests/unit/run-commitment-governor.test.js`
+- `cosmo23/engine/tests/unit/guided-mode-planner.test.js`
+
+**Problem:** Patch 27 made final task output contracts and ResearchAgent
+source-required search fail closed, but `jerrysideshows` exposed a wider
+pipeline failure. Source/search requirements were still mostly prose:
+`sourceScope`, `webPolicy`, expected-output text, and agent prompts. Execution
+agents could run commands, write manifests/logs, contact zero sources, and still
+look productive because progress and accomplishment were activity-based. After
+retries, blocked phases were reported as events but the plan itself did not
+become a blocked run. The commitment governor could log stop/repair intent, but
+it did not recognize PlanExecutor's `COMPLETED` status or blocked guided plans
+as first-class stop states.
+
+**Fix:** added a pure research-contract module that derives a
+machine-readable source contract from task/mission text, tools, source scope,
+acceptance criteria, and existing metadata. Guided planning stores this contract
+on generated missions and persisted tasks, and PlanExecutor derives it for
+older/resumed tasks before agent spawn. Completion validation now checks source
+evidence for source-required tasks in addition to expected files: generic files,
+manifests, command counts, and logs cannot satisfy source research by
+themselves. Null-result receipts are still allowed when there is real source
+contact, so "searched and found no anecdotes" remains distinct from "never
+searched."
+
+ResearchAgent now treats explicit `researchContract.required` metadata as
+source-required even when the mission wording is underspecified. DataAcquisition
+no longer ORs command/file activity into accomplishment for source-required
+work; it must show successful source contact, acquired pages/files, or acquired
+bytes. ExecutionBaseAgent's stuck detector now counts only successful progress
+results, so failed shell commands, 404/0 HTTP results, timeouts, blocked
+commands, and `{error}` tool results do not reset no-progress detection.
+
+PlanExecutor now marks exhausted failed phases and the plan itself as
+`BLOCKED`, with blocker receipts. RunCommitmentGovernor recognizes blocked
+guided plans with `shouldStopForBlockedRun`, emits `repair_blocked_research`
+and `stop_unproductive_run` next actions, and accepts both `DONE` and
+`COMPLETED` plan statuses for committed-answer stopping.
+
+**Effect under Home23:** source-driven COSMO23 runs now have a beginning,
+middle, and end stop line. The beginning produces a contract; the middle refuses
+command-only/searchless accomplishment; the end blocks the plan and reports a
+repair/stop state instead of looping through more synthesis or continuation
+plans.
+
+**Verification:** focused Mocha coverage passed with 185 tests:
+`npx mocha cosmo23/engine/tests/unit/research-contract.test.js
+cosmo23/engine/tests/unit/execution-base-agent.test.js
+cosmo23/engine/tests/unit/data-acquisition-agent.test.js
+cosmo23/engine/tests/unit/research-agent-handoff.test.js
+cosmo23/engine/tests/unit/plan-executor-execution-types.test.js
+cosmo23/engine/tests/unit/run-commitment-governor.test.js
+cosmo23/engine/tests/unit/guided-mode-planner.test.js --timeout 20000`.
+
+---
+
+## Patch 29 — Search and write substrate repair
+
+**Files touched:**
+- `cosmo23/engine/src/core/research-contract.js`
+- `cosmo23/engine/src/agents/research-agent.js`
+- `cosmo23/engine/src/agents/base-agent.js`
+- `cosmo23/engine/src/tools/web-search-free.js`
+- `cosmo23/engine/tests/unit/research-contract.test.js`
+- `cosmo23/engine/tests/unit/research-agent-handoff.test.js`
+- `cosmo23/engine/tests/unit/web-search-free.test.js`
+
+**Problem:** Patch 28 made source obligations enforceable, but it still
+assumed the underlying source machinery was healthy. It was not. The
+`jerrysideshows` mission handed ResearchAgent five exact `web_search for ...`
+queries, but `generateResearchQueries()` discarded that execution input and
+asked a model for only 2-3 broad queries. The explicit query parser also
+truncated searches containing nested quote types such as `"I'll Take a
+Melody"`. COSMO23's free search tool did not default to Home23's running local
+SearXNG service, so Ollama/local research could silently fall through to
+DuckDuckGo HTML. DuckDuckGo/SearXNG result quality was accepted too loosely,
+polluting `sourcesFound` with generic archive pages. Separately,
+`BaseAgent.writeFileAtomic()` shadowed the promise-based `fs` import with
+callback-style `fs`, so non-capabilities agent writes could fail at the
+primitive write layer.
+
+**Fix:** ResearchAgent now preserves exact quoted `web_search` directives
+before any LLM query generation, including nested quote/contraction cases. The
+local search path records raw search evidence, scores result relevance, repairs
+low-quality query forms, validates discovered source URLs with real fetches,
+rejects verification/captcha interstitials, and for source-required missions
+counts only relevant, fetchable URLs as source evidence while retaining the
+full backend response in the raw ledger. Mission-requested `@outputs/...`
+research files are written directly from the captured search evidence instead
+of relying only on generic `research_summary.md` and `research_findings.json`.
+
+`FreeWebSearch` now follows the Home23 agent pattern: default to
+`http://localhost:8888` SearXNG, accept both `BRAVE_API_KEY` and
+`BRAVE_SEARCH_API_KEY`, and support strict mode where DuckDuckGo fallback is
+disabled for source-required research. `BaseAgent.writeFileAtomic()` now uses
+the module's promise-based `fs` again and reserves sync `fs` only for the
+debug append.
+
+**Effect under Home23:** a source-required Ollama/local COSMO23 research run
+now executes the operator/planner's exact searches, reaches the running local
+SearXNG backend without requiring `SEARXNG_URL` in PM2, records raw backend
+evidence, filters irrelevant search hits out of source proof, validates source
+URLs before counting them, writes requested raw evidence deliverables, and
+fails closed if authoritative search backends cannot produce usable, fetchable
+results.
+
+**Verification:** focused Mocha coverage passed with 193 tests:
+`npx mocha cosmo23/engine/tests/unit/web-search-free.test.js
+cosmo23/engine/tests/unit/research-contract.test.js
+cosmo23/engine/tests/unit/execution-base-agent.test.js
+cosmo23/engine/tests/unit/data-acquisition-agent.test.js
+cosmo23/engine/tests/unit/research-agent-handoff.test.js
+cosmo23/engine/tests/unit/plan-executor-execution-types.test.js
+cosmo23/engine/tests/unit/run-commitment-governor.test.js
+cosmo23/engine/tests/unit/guided-mode-planner.test.js --timeout 30000`.
+`node --test --test-concurrency=1 tests/cosmo23/artifact-loop.test.cjs
+tests/cosmo23/query-engine-context.test.cjs
+tests/cosmo23/query-engine-runtime.test.cjs tests/cosmo23/pgs-engine.test.cjs
+tests/cosmo23/anthropic-client-request.test.cjs` passed with 53 tests. Syntax
+checks passed for the patched source files. Live checks proved local SearXNG
+is reachable, ResearchAgent now extracts all five original `jerrysideshows`
+web-search queries intact, rejects Reddit verification interstitials, repairs
+the query, and counts the fetchable Lost Live Dead source URL.
+
+---
+
+## Patch 30 — Source backbone fan-out and proof receipts
+
+**Files touched:**
+- `cosmo23/engine/src/agents/research-agent.js`
+- `cosmo23/engine/src/tools/web-search-free.js`
+- `cosmo23/engine/mcp/http-server.js`
+- `cosmo23/engine/tests/unit/research-agent-handoff.test.js`
+- `cosmo23/engine/tests/unit/web-search-free.test.js`
+
+**Problem:** Patch 29 repaired the local search substrate, but COSMO23 still
+had fragmented acquisition paths. Provider-native model search could terminate
+the route before SearXNG/Brave ran. Provider-native citations were accepted
+without fetch validation for source-required work. Explicit source URLs in a
+mission were treated as text to search rather than sources to contact. The
+source gate was run-global, so a later failed query could pass if an earlier
+query had already populated `sourcesFound`. MCP `web_search` could not receive
+strict/source-required policy, letting weak fallback bypass the direct
+ResearchAgent path. `FreeWebSearch` also stopped at the first authoritative
+backend with results, so Brave and SearXNG did not supplement each other.
+
+The `jerrysideshows` exports exposed the confirmation problem too: planned
+queries were not all executed, URL bags were written without crossing proof,
+and a zero-node/zero-partition assessment still produced prose. A fixed system
+needs receipts that prove route attempts, result crossings, validation, and
+stop/continue state.
+
+**Fix:** ResearchAgent now treats acquisition as a fan-out backbone:
+
+- explicit URLs in a query are fetched and validated directly before search;
+- provider-native web search still runs, but its sources/citations/text URLs are
+  normalized into search evidence and fetch-validated when sources are required;
+- SearXNG/Brave/local search supplements provider-native search by default;
+- source-required success is evaluated per query from the evidence created by
+  that query, not from older `sourcesFound` state;
+- failed provider-native validation can be rescued by local/metasearch results,
+  but invalid native URLs do not count;
+- MCP `web_search` receives `sourceRequired` and
+  `allowDuckDuckGoFallback:false` for source-required missions;
+- the MCP server schema/handler honors strict source-required search policy;
+  and
+- `FreeWebSearch` aggregates Brave plus SearXNG authoritative results with URL
+  dedupe before considering DuckDuckGo fallback.
+
+Research export now always writes source-backbone proof receipts under
+`outputs/research/<agentId>/`:
+
+- `source_attempts.jsonl`
+- `source_crossing.jsonl`
+- `extraction_receipts.jsonl`
+- `planned_vs_executed.json`
+- `source_backbone_status.json`
+
+These receipts include route/backend, strict-mode status, result counts,
+validation status, content bytes/hash when fetched, missing planned queries,
+missing required outputs, failed routes, productive source URLs, and the next
+allowed action (`continue` or `stop_and_repair_source_acquisition`).
+
+**Effect under Home23:** modern models keep their built-in web search, but it
+is no longer the sole authority. COSMO23 now supplements provider-native search
+with Home23's local search infrastructure and direct URL fetches, preserves the
+evidence chain, validates what crossed into fetched content, and gives the
+confirmation layer concrete files to stop unproductive runs before they turn
+route failure into confident absence prose.
+
+**Verification:** focused source-backbone tests passed with 17 tests:
+`npx mocha cosmo23/engine/tests/unit/research-agent-handoff.test.js
+cosmo23/engine/tests/unit/web-search-free.test.js --timeout 30000`.
+The broader research/governance regression set passed with 200 tests, and the
+COSMO23 query/artifact/PGS/provider node tests passed with 53 tests. Syntax
+checks passed for the touched runtime files. A live SearXNG/ResearchAgent probe
+found and fetch-validated the Lost Live Dead source URL, recording HTTP 200,
+134,948 bytes, and a content hash.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -1634,3 +1850,15 @@ checks passed for the two patched source files.
   plan/action closure failure: final synthesis marked done with no named
   markdown deliverable, source-required research returning absence prose after
   failed searches, and validated artifacts being dropped on queued completion.
+- **2026-06-21** — Patch 28 added the contract-first research governance spine
+  after the same run showed the broader beginning/middle/end failure: source
+  obligations were prose, execution progress counted failed/no-op activity, and
+  exhausted source work did not become a blocked guided run.
+- **2026-06-21** — Patch 29 repaired the underlying search/write substrate:
+  exact searches were being regenerated/truncated, local SearXNG was not wired
+  as the default authoritative backend, DuckDuckGo fallback could masquerade as
+  source research, and direct agent file writes could fail at the atomic write
+  primitive.
+- **2026-06-21** — Patch 30 modernized the source backbone so provider-native
+  search, direct URL fetches, SearXNG/Brave, and MCP strict search supplement
+  each other while writing route/crossing/status receipts for confirmation.

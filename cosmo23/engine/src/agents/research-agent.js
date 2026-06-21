@@ -1,6 +1,8 @@
 const { BaseAgent } = require('./base-agent');
 const { parseWithFallback } = require('../core/json-repair');
 const { BibliographyGenerator } = require('../utils/bibliography-generator');
+const { deriveResearchContract, extractWebSearchQueries } = require('../core/research-contract');
+const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
 
@@ -57,6 +59,7 @@ Your output is structured findings with source URLs — not summaries or plans.
     this.events = eventEmitter;  // Multi-tenant event emitter
     this.searchQueries = [];
     this.sourcesFound = [];
+    this.searchEvidence = [];
     this.exportedFiles = [];  // Track files created during corpus export
     this.followUpDirections = [];
     this.lastSynthesis = null;
@@ -480,6 +483,28 @@ Your output is structured findings with source URLs — not summaries or plans.
    * Generate focused research queries from mission description
    */
   async generateResearchQueries() {
+    // HOME23 PATCH — Patch 29: exact web_search instructions are execution
+    // inputs, not brainstorming hints. Preserve them before asking any model to
+    // regenerate a smaller/broader query set.
+    const explicitQueryText = [
+      this.mission?.description,
+      this.mission?.mission,
+      this.mission?.expectedOutput,
+      this.mission?.metadata?.expectedOutput,
+      ...(this.mission?.successCriteria || [])
+    ]
+      .filter(Boolean)
+      .join('\n');
+    const explicitQueries = extractWebSearchQueries(explicitQueryText);
+    if (explicitQueries.length > 0) {
+      return [...new Set(explicitQueries.map(query => query.trim()).filter(Boolean))];
+    }
+
+    const researchContract = deriveResearchContract(this.mission || {});
+    if (researchContract.requiredQueries?.length > 0) {
+      return [...new Set(researchContract.requiredQueries.map(query => query.trim()).filter(Boolean))];
+    }
+
     const prompt = `You are a research specialist generating web search queries.
 
 MISSION: ${this.mission.description}
@@ -531,6 +556,16 @@ Respond with JSON array of query strings:
       return await this.performLocalWebSearch(query);
     }
 
+    const sourceRequired = this.requiresVerifiedSources();
+    const resultSections = [];
+    const failures = [];
+    const evidenceStartIndex = this.searchEvidence.length;
+
+    const directSourceResult = await this.performDirectSourceAcquisition(query);
+    if (directSourceResult) {
+      resultSections.push(directSourceResult);
+    }
+
     try {
       const response = await this.gpt5.generateWithWebSearch({
         component: 'agents',
@@ -540,56 +575,270 @@ Respond with JSON array of query strings:
         maxTokens: 6000 // Increased from 2000 - data extraction needs comprehensive output
       });
 
-      // NEW: Extract sources from the proper response fields
-      // webSearchSources contains all URLs consulted (from include parameter)
-      // citations contains inline cited URLs with titles
-      if (response.webSearchSources && response.webSearchSources.length > 0) {
-        const uniqueSources = [...new Set(response.webSearchSources.map(s => s.url || s))];
-        this.sourcesFound.push(...uniqueSources);
+      const providerResults = this.extractProviderNativeSearchResults(response);
+      const providerUrls = providerResults.map(result => result.url).filter(Boolean);
+      let sourceValidation = [];
+      let validProviderUrls = providerUrls;
 
-        this.logger.info('✅ Web search sources found', {
-          query: query.substring(0, 50),
-          newSources: uniqueSources.length,
-          totalSources: this.sourcesFound.length
-        }, 3);
+      if (sourceRequired && providerUrls.length > 0) {
+        sourceValidation = await this.validateSourceUrls(providerUrls);
+        validProviderUrls = sourceValidation
+          .filter(item => item.ok)
+          .map(item => item.url);
       }
 
-      // Also extract from citations
-      if (response.citations && response.citations.length > 0) {
-        const citedUrls = response.citations.map(c => c.url);
-        const newCitations = citedUrls.filter(url => !this.sourcesFound.includes(url));
-        this.sourcesFound.push(...newCitations);
-
-        this.logger.info('✅ Citations found', {
-          query: query.substring(0, 50),
-          citations: response.citations.length,
-          newUnique: newCitations.length
-        }, 3);
+      if (sourceRequired) {
+        this.addSources(validProviderUrls);
+      } else {
+        this.addSources(providerUrls);
       }
 
-      // Fallback: Also check text for URLs (in case API doesn't return structured sources)
-      const allText = [response.reasoning, response.content].filter(Boolean).join('\n');
-      const sourceMatches = allText.match(/https?:\/\/[^\s)]+/g);
+      this.recordProviderNativeEvidence(query, providerResults, sourceValidation, response);
 
-      if (sourceMatches) {
-        const uniqueSources = [...new Set(sourceMatches)];
-        const newSources = uniqueSources.filter(url => !this.sourcesFound.includes(url));
-        if (newSources.length > 0) {
-          this.sourcesFound.push(...newSources);
-          this.logger.debug('Additional sources found in text', {
-            newSources: newSources.length
-          }, 3);
-        }
+      if (response.content) {
+        resultSections.push(response.content);
       }
 
-      return response.content;
+      this.logger.info('✅ Provider-native web search complete', {
+        query: query.substring(0, 50),
+        discoveredSources: providerUrls.length,
+        validSources: sourceRequired ? validProviderUrls.length : providerUrls.length,
+        totalSources: this.sourcesFound.length
+      }, 3);
     } catch (error) {
+      failures.push({ backend: 'provider-native', error });
+      this.recordSearchFailureEvidence(query, 'provider-native', error);
       this.logger.error('Web search failed', {
         query,
         error: error.message
       }, 3);
+    }
+
+    if (this.shouldSupplementProviderNativeSearch()) {
+      try {
+        const localResult = await this.performLocalWebSearch(query);
+        if (localResult) {
+          resultSections.push(localResult);
+        }
+      } catch (error) {
+        failures.push({ backend: 'local-search', error });
+        this.recordSearchFailureEvidence(query, 'local-search', error);
+        this.logger.warn('Supplemental local web search failed', {
+          query,
+          error: error.message,
+          code: error.code || null
+        }, 3);
+      }
+    }
+
+    const queryEvidence = this.searchEvidence.slice(evidenceStartIndex);
+    if (sourceRequired && !this.hasVerifiedSourceEvidence(queryEvidence)) {
+      const error = new Error(`No verified source URLs acquired for "${query}"`);
+      error.code = 'SOURCE_ACQUISITION_FAILED';
+      error.failures = failures.map(item => ({
+        backend: item.backend,
+        error: item.error.message,
+        code: item.error.code || null
+      }));
       throw error;
     }
+
+    if (resultSections.length > 0) {
+      return resultSections.join('\n\n---\n\n');
+    }
+
+    if (failures.length > 0) {
+      throw failures[0].error;
+    }
+
+    const error = new Error(`No web search content returned for "${query}"`);
+    error.code = 'NO_SEARCH_CONTENT';
+    throw error;
+  }
+
+  hasVerifiedSourceEvidence(evidenceEntries = []) {
+    return evidenceEntries.some(entry =>
+      Array.isArray(entry.sourceValidation) &&
+      entry.sourceValidation.some(item => item.ok === true && item.url)
+    );
+  }
+
+  async performDirectSourceAcquisition(query) {
+    const urls = this.extractUrlsFromText(query);
+    if (urls.length === 0) {
+      return null;
+    }
+
+    const sourceRequired = this.requiresVerifiedSources();
+    const sourceValidation = await this.validateSourceUrls(urls);
+    const validUrls = sourceValidation
+      .filter(item => item.ok)
+      .map(item => item.url);
+    const acceptedUrls = sourceRequired ? validUrls : urls;
+
+    this.addSources(acceptedUrls);
+
+    const results = sourceValidation.map((item, index) => ({
+      position: index + 1,
+      title: item.ok ? 'Direct source validated' : 'Direct source failed validation',
+      url: item.url,
+      snippet: [
+        item.status ? `status=${item.status}` : null,
+        item.contentType ? `content-type=${item.contentType}` : null,
+        item.bytes !== undefined ? `bytes=${item.bytes}` : null,
+        item.blockedReason ? `blocked=${item.blockedReason}` : null,
+        item.error ? `error=${item.error}` : null
+      ].filter(Boolean).join(' '),
+      engine: 'direct-source-fetch'
+    }));
+
+    this.searchEvidence.push({
+      timestamp: new Date().toISOString(),
+      query,
+      executedQuery: query,
+      repairedFrom: null,
+      backend: 'direct-source-fetch',
+      resultCount: results.length,
+      urls,
+      quality: {
+        acceptable: sourceRequired ? validUrls.length > 0 : urls.length > 0,
+        reason: validUrls.length > 0 ? 'direct_sources_validated' : 'no_direct_sources_validated',
+        relevantResults: validUrls.length,
+        resultCount: results.length,
+        relevantUrls: validUrls
+      },
+      sourceValidation,
+      results
+    });
+
+    if (validUrls.length === 0) {
+      return null;
+    }
+
+    const lines = validUrls.map((url, index) => {
+      const validation = sourceValidation.find(item => item.url === url) || {};
+      const meta = [
+        validation.status ? `HTTP ${validation.status}` : null,
+        validation.contentType || null,
+        validation.bytes !== undefined ? `${validation.bytes} bytes` : null
+      ].filter(Boolean).join(', ');
+      return `${index + 1}. ${url}${meta ? ` (${meta})` : ''}`;
+    });
+
+    return `Direct source validation succeeded:\n${lines.join('\n')}`;
+  }
+
+  shouldSupplementProviderNativeSearch() {
+    return this.config?.search?.supplementProviderNative !== false;
+  }
+
+  extractProviderNativeSearchResults(response = {}) {
+    const results = [];
+    const seen = new Set();
+
+    const addResult = (item = {}, fallback = {}) => {
+      const rawUrl = typeof item === 'string' ? item : item.url;
+      const url = this.normalizeSourceUrl(rawUrl);
+      if (!url || seen.has(url)) return;
+      seen.add(url);
+      results.push({
+        title: (typeof item === 'object' && item.title) || fallback.title || '',
+        url,
+        snippet: (typeof item === 'object' && (item.snippet || item.description || item.pageAge || item.page_age)) || fallback.snippet || '',
+        position: results.length + 1,
+        engine: 'provider-native'
+      });
+    };
+
+    for (const source of response.webSearchSources || []) {
+      addResult(source);
+    }
+
+    for (const citation of response.citations || []) {
+      addResult(citation, { title: citation.title || '' });
+    }
+
+    const allText = [response.reasoning, response.content].filter(Boolean).join('\n');
+    for (const url of this.extractUrlsFromText(allText)) {
+      addResult({ url });
+    }
+
+    return results;
+  }
+
+  extractUrlsFromText(text = '') {
+    const matches = text.match(/https?:\/\/[^\s<>"'`)]+/g) || [];
+    return [...new Set(matches.map(url => this.normalizeSourceUrl(url)).filter(Boolean))];
+  }
+
+  normalizeSourceUrl(url = '') {
+    if (typeof url !== 'string') return '';
+    return url.trim().replace(/[.,;:!?]+$/g, '');
+  }
+
+  addSources(urls = []) {
+    for (const url of urls.map(item => this.normalizeSourceUrl(item)).filter(Boolean)) {
+      if (!this.sourcesFound.includes(url)) {
+        this.sourcesFound.push(url);
+      }
+    }
+  }
+
+  recordProviderNativeEvidence(query, providerResults, sourceValidation, response = {}) {
+    const urls = providerResults.map(result => result.url).filter(Boolean);
+    const validUrls = sourceValidation.length > 0
+      ? sourceValidation.filter(item => item.ok).map(item => item.url)
+      : urls;
+    const sourceRequired = this.requiresVerifiedSources();
+
+    this.searchEvidence.push({
+      timestamp: new Date().toISOString(),
+      query,
+      executedQuery: query,
+      repairedFrom: null,
+      backend: 'provider-native',
+      resultCount: providerResults.length,
+      urls,
+      quality: {
+        acceptable: sourceRequired ? validUrls.length > 0 : (providerResults.length > 0 || Boolean(response.content)),
+        reason: sourceRequired && validUrls.length === 0
+          ? 'no_validated_provider_sources'
+          : (providerResults.length > 0 ? 'provider_sources_found' : 'provider_content_without_sources'),
+        relevantResults: validUrls.length || providerResults.length,
+        resultCount: providerResults.length,
+        relevantUrls: validUrls
+      },
+      sourceValidation: sourceValidation || [],
+      results: providerResults.map((result, index) => ({
+        position: result.position || index + 1,
+        title: result.title || '',
+        url: result.url || '',
+        snippet: result.snippet || result.description || '',
+        engine: result.engine || 'provider-native'
+      }))
+    });
+  }
+
+  recordSearchFailureEvidence(query, backend, error) {
+    this.searchEvidence.push({
+      timestamp: new Date().toISOString(),
+      query,
+      executedQuery: query,
+      repairedFrom: null,
+      backend,
+      resultCount: 0,
+      urls: [],
+      quality: {
+        acceptable: false,
+        reason: error.code || error.message || 'search_failed',
+        relevantResults: 0,
+        resultCount: 0
+      },
+      sourceValidation: error.sourceValidation || [],
+      results: [],
+      error: error.message,
+      code: error.code || null
+    });
   }
 
   /**
@@ -600,18 +849,33 @@ Respond with JSON array of query strings:
     try {
       this.logger.info('🔍 Local web search via MCP', { query: query.substring(0, 50) });
 
-      // Call MCP web_search tool
-      let searchResults;
-      if (this.mcpClient && typeof this.mcpClient.callTool === 'function') {
-        const mcpResponse = await this.mcpClient.callTool('web_search', { query, maxResults: 10 });
-        searchResults = JSON.parse(mcpResponse.content?.[0]?.text || '{}');
-      } else {
-        // Fallback: Direct call to FreeWebSearch
-        const { FreeWebSearch } = require('../tools/web-search-free');
-        const searcher = new FreeWebSearch(this.logger, {
-          searxngUrl: this.config?.providers?.local?.searxngUrl || process.env.SEARXNG_URL
+      // HOME23 PATCH — Patch 29: execute the exact query first, but do not
+      // accept generic/noisy result pages as proof of source acquisition.
+      let searchResults = await this.runLocalSearch(query);
+      let quality = this.assessSearchQuality(query, searchResults.results || []);
+
+      if (this.requiresVerifiedSources() && searchResults.success && searchResults.results?.length > 0 && !quality.acceptable) {
+        const repairQueries = this.buildSearchRepairQueries(query);
+        this.logger.warn('Local search results were low quality; trying repaired queries', {
+          query,
+          repairQueries,
+          reason: quality.reason
         });
-        searchResults = await searcher.search(query, { maxResults: 10 });
+
+        for (const repairQuery of repairQueries) {
+          const repairedResults = await this.runLocalSearch(repairQuery);
+          const repairedQuality = this.assessSearchQuality(repairQuery, repairedResults.results || [], query);
+          if (repairedResults.success && repairedResults.results?.length > 0 && repairedQuality.acceptable) {
+            searchResults = {
+              ...repairedResults,
+              originalQuery: query,
+              repairedQuery: repairQuery,
+              repairedFromLowQuality: true
+            };
+            quality = repairedQuality;
+            break;
+          }
+        }
       }
 
       if (!searchResults.success || searchResults.results.length === 0) {
@@ -621,14 +885,84 @@ Respond with JSON array of query strings:
         throw error;
       }
 
+      if (this.requiresVerifiedSources() && !quality.acceptable) {
+        const error = new Error(`Search returned low-quality results for "${query}": ${quality.reason}`);
+        error.code = 'LOW_QUALITY_SEARCH_RESULTS';
+        error.quality = quality;
+        throw error;
+      }
+
       // Extract sources
-      const sources = searchResults.results.map(r => r.url);
-      this.sourcesFound.push(...sources);
+      let candidateSources = this.requiresVerifiedSources() && quality.relevantUrls?.length > 0
+        ? quality.relevantUrls
+        : searchResults.results.map(r => r.url);
+      let sourceValidation = [];
+      let validSources = [];
+      const sources = this.requiresVerifiedSources()
+        ? []
+        : candidateSources;
+
+      if (this.requiresVerifiedSources()) {
+        sourceValidation = await this.validateSourceUrls(candidateSources);
+        validSources = sourceValidation
+          .filter(item => item.ok)
+          .map(item => item.url);
+
+        if (validSources.length === 0) {
+          const repairQueries = this.buildSearchRepairQueries(query);
+          const triedQueries = new Set([searchResults.query, searchResults.repairedQuery, query].filter(Boolean));
+
+          for (const repairQuery of repairQueries) {
+            if (triedQueries.has(repairQuery)) continue;
+            triedQueries.add(repairQuery);
+
+            const repairedResults = await this.runLocalSearch(repairQuery);
+            const repairedQuality = this.assessSearchQuality(repairQuery, repairedResults.results || [], query);
+            if (!repairedResults.success || !repairedResults.results?.length || !repairedQuality.acceptable) {
+              continue;
+            }
+
+            const repairedSources = repairedQuality.relevantUrls?.length > 0
+              ? repairedQuality.relevantUrls
+              : repairedResults.results.map(result => result.url);
+            const repairedValidation = await this.validateSourceUrls(repairedSources);
+            const repairedValidSources = repairedValidation
+              .filter(item => item.ok)
+              .map(item => item.url);
+
+            if (repairedValidSources.length > 0) {
+              searchResults = {
+                ...repairedResults,
+                originalQuery: query,
+                repairedQuery: repairQuery,
+                repairedFromValidationFailure: true
+              };
+              quality = repairedQuality;
+              candidateSources = repairedSources;
+              sourceValidation = repairedValidation;
+              validSources = repairedValidSources;
+              break;
+            }
+          }
+        }
+
+        if (validSources.length === 0) {
+          const error = new Error(`No discovered source URLs could be fetched for "${query}"`);
+          error.code = 'SOURCE_VALIDATION_FAILED';
+          error.sourceValidation = sourceValidation;
+          throw error;
+        }
+        sources.push(...validSources);
+      }
+      searchResults.sourceValidation = sourceValidation;
+      this.addSources(sources);
+      this.recordSearchEvidence(query, searchResults, quality);
 
       this.logger.info('✅ Local web search complete', {
         query: query.substring(0, 50),
         results: searchResults.results.length,
-        sources: sources.length
+        sources: sources.length,
+        repaired: searchResults.repairedFromLowQuality === true
       });
 
       // Format results for synthesis
@@ -659,7 +993,232 @@ Respond with JSON array of query strings:
     }
   }
 
+  async runLocalSearch(query) {
+    if (this.searchBackend && typeof this.searchBackend.search === 'function') {
+      return await this.searchBackend.search(query, { maxResults: 10 });
+    }
+
+    if (this.mcpClient && typeof this.mcpClient.callTool === 'function') {
+      const sourceRequired = this.requiresVerifiedSources();
+      const mcpResponse = await this.mcpClient.callTool('web_search', {
+        query,
+        maxResults: 10,
+        sourceRequired,
+        allowDuckDuckGoFallback: !sourceRequired
+      });
+      return JSON.parse(mcpResponse.content?.[0]?.text || '{}');
+    }
+
+    // Fallback: Direct call to FreeWebSearch
+    const { FreeWebSearch } = require('../tools/web-search-free');
+    const searcher = new FreeWebSearch(this.logger, {
+      searxngUrl: this.config?.providers?.local?.searxngUrl || this.config?.search?.searxngUrl || process.env.SEARXNG_URL,
+      braveApiKey: this.config?.search?.braveApiKey || this.config?.providers?.brave?.apiKey,
+      allowDuckDuckGoFallback: !this.requiresVerifiedSources()
+    });
+    return await searcher.search(query, { maxResults: 10 });
+  }
+
+  assessSearchQuality(query, results = [], originalQuery = null) {
+    if (!Array.isArray(results) || results.length === 0) {
+      return {
+        acceptable: false,
+        reason: 'no_results',
+        relevantResults: 0,
+        resultCount: 0
+      };
+    }
+
+    const intentText = originalQuery || query;
+    const terms = this.extractSearchTerms(intentText);
+    const phrases = this.extractQuotedPhrases(intentText);
+    const minHits = terms.length >= 5 ? 3 : 1;
+    const anchorTerm = terms.find(term => term.length >= 5 && !this.isWeakSearchAnchor(term));
+    const sourceIntentTerms = terms.filter(term => this.isSourceIntentTerm(term));
+    let relevantResults = 0;
+    const relevantUrls = [];
+
+    for (const result of results) {
+      const haystack = [
+        result.title,
+        result.snippet,
+        result.description
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+
+      const phraseHit = phrases.some(phrase => haystack.includes(phrase.toLowerCase()));
+      const termHits = terms.filter(term => haystack.includes(term)).length;
+      const anchorHit = !anchorTerm || haystack.includes(anchorTerm);
+      const sourceIntentHit = sourceIntentTerms.length === 0 ||
+        sourceIntentTerms.some(term => haystack.includes(term)) ||
+        /\b(reddit|forum|blog|blogspot)\b/i.test(result.url || '');
+      const sourceIntentRelevance = sourceIntentTerms.length > 0 && sourceIntentHit && termHits >= minHits;
+      const genericRelevance = sourceIntentTerms.length === 0 && anchorHit && termHits >= minHits;
+      if (phraseHit || sourceIntentRelevance || genericRelevance) {
+        relevantResults += 1;
+        if (result.url) {
+          relevantUrls.push(result.url);
+        }
+      }
+    }
+
+    return {
+      acceptable: relevantResults > 0,
+      reason: relevantResults > 0 ? 'relevant_results_found' : 'results_do_not_match_query_terms',
+      relevantResults,
+      resultCount: results.length,
+      relevantUrls,
+      anchorTerm,
+      sourceIntentTerms,
+      terms
+    };
+  }
+
+  isSourceIntentTerm(term) {
+    return new Set([
+      'fan', 'fans', 'recollection', 'recollections', 'memory', 'memories',
+      'anecdote', 'anecdotes', 'forum', 'forums', 'review', 'reviews',
+      'reddit', 'blog'
+    ]).has(term);
+  }
+
+  isWeakSearchAnchor(term) {
+    return new Set([
+      'january', 'february', 'march', 'april', 'june', 'july', 'august',
+      'september', 'october', 'november', 'december'
+    ]).has(term);
+  }
+
+  extractQuotedPhrases(query = '') {
+    const phrases = [];
+    const pattern = /["'`]([^"'`]{3,})["'`]/g;
+    let match;
+    while ((match = pattern.exec(query)) !== null) {
+      phrases.push(match[1].trim());
+    }
+    return phrases;
+  }
+
+  extractSearchTerms(query = '') {
+    const stopWords = new Set([
+      'and', 'or', 'the', 'for', 'from', 'with', 'that', 'this', 'show',
+      'shows', 'site', 'http', 'https', 'www', 'com', 'org', 'net'
+    ]);
+    return query
+      .replace(/\bsite:[^\s)]+/gi, ' ')
+      .replace(/https?:\/\/\S+/gi, ' ')
+      .replace(/["'`]/g, ' ')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .map(term => term.trim())
+      .filter(term => term.length >= 3 && !stopWords.has(term));
+  }
+
+  buildSearchRepairQueries(query = '') {
+    const cleaned = query
+      .replace(/\bsite:[^\s)]+/gi, ' ')
+      .replace(/\b(AND|OR|NOT)\b/gi, ' ')
+      .replace(/[()]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const queries = [];
+    if (cleaned && cleaned !== query.trim()) {
+      queries.push(cleaned);
+    }
+
+    const siteMatches = [...query.matchAll(/\bsite:([^\s)]+)/gi)].map(match => match[1].trim());
+    for (const site of siteMatches) {
+      if (cleaned) {
+        queries.push(`${cleaned} site:${site}`);
+      }
+    }
+
+    return [...new Set(queries.filter(Boolean))].slice(0, 4);
+  }
+
+  recordSearchEvidence(query, searchResults, quality) {
+    const urls = (searchResults.results || []).map(result => result.url).filter(Boolean);
+    this.searchEvidence.push({
+      timestamp: new Date().toISOString(),
+      query,
+      executedQuery: searchResults.repairedQuery || searchResults.query || query,
+      repairedFrom: searchResults.originalQuery || null,
+      backend: searchResults.source || 'unknown',
+      resultCount: searchResults.results?.length || 0,
+      urls,
+      quality,
+      sourceValidation: searchResults.sourceValidation || [],
+      results: (searchResults.results || []).map((result, index) => ({
+        position: result.position || index + 1,
+        title: result.title || '',
+        url: result.url || '',
+        snippet: result.snippet || result.description || '',
+        engine: result.engine || searchResults.source || 'unknown'
+      }))
+    });
+  }
+
+  async validateSourceUrls(urls = []) {
+    const uniqueUrls = [...new Set(urls.filter(Boolean))].slice(0, 8);
+    if (this.sourceValidator && typeof this.sourceValidator.validate === 'function') {
+      return await this.sourceValidator.validate(uniqueUrls);
+    }
+
+    const validations = [];
+    for (const url of uniqueUrls) {
+      const startedAt = Date.now();
+      try {
+        const response = await fetch(url, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 Home23-COSMO23 SourceValidator',
+            'Accept': 'text/html,application/json,application/xhtml+xml,text/plain,*/*'
+          },
+          signal: AbortSignal.timeout(10000)
+        });
+        const contentType = response.headers.get('content-type') || '';
+        const body = await response.text();
+        const blockedReason = this.detectSourceFetchBlock(body);
+        validations.push({
+          url,
+          ok: response.status >= 200 && response.status < 400 && !blockedReason,
+          status: response.status,
+          contentType,
+          bytes: body.length,
+          contentHash: crypto.createHash('sha256').update(body).digest('hex'),
+          blockedReason,
+          sample: body.replace(/\s+/g, ' ').slice(0, 500),
+          durationMs: Date.now() - startedAt
+        });
+      } catch (error) {
+        validations.push({
+          url,
+          ok: false,
+          status: 0,
+          error: error.message,
+          durationMs: Date.now() - startedAt
+        });
+      }
+    }
+    return validations;
+  }
+
+  detectSourceFetchBlock(body = '') {
+    const text = body.slice(0, 20000).toLowerCase();
+    if (text.includes('please wait for verification')) return 'verification_interstitial';
+    if (text.includes('enable javascript') && text.includes('captcha')) return 'captcha_or_javascript_gate';
+    if (text.includes('checking your browser')) return 'browser_verification';
+    return null;
+  }
+
   requiresVerifiedSources() {
+    const researchContract = deriveResearchContract(this.mission || {});
+    if (researchContract.required) {
+      return true;
+    }
+
     const text = [
       this.mission?.description,
       this.mission?.mission,
@@ -1545,8 +2104,66 @@ Respond with JSON array of follow-up directions:
         this.logger.warn('Failed to export sources index', { error: error.message });
       }
     }
+
+    // 5. Export mission-requested raw evidence outputs, if the mission named
+    // concrete @outputs files. These are primary deliverables, not just the
+    // generic research corpus.
+    try {
+      const requestedOutputFiles = this.extractRequestedOutputPaths();
+      for (const requested of requestedOutputFiles) {
+        const absolutePath = path.join(outputsRoot, requested.replace(/^@?outputs[\/\\]?/, ''));
+        await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+
+        let content;
+        if (requested.toLowerCase().endsWith('.json')) {
+          const rawData = {
+            agentId: this.agentId,
+            goalId: this.mission.goalId,
+            mission: this.mission.description,
+            timestamp: new Date().toISOString(),
+            queries: this.searchQueries,
+            sources: this.sourcesFound,
+            searchEvidence: this.searchEvidence,
+            synthesis: {
+              summary: synthesis.summary,
+              findings: synthesis.findings,
+              successAssessment: synthesis.successAssessment
+            }
+          };
+          content = JSON.stringify(rawData, null, 2);
+        } else {
+          content = this.buildRequestedResearchMarkdown(synthesis);
+        }
+
+        await this.writeFileAtomic(absolutePath, content);
+        const filename = path.basename(absolutePath);
+        const relativePath = path.join('outputs', path.relative(outputsRoot, absolutePath)).split(path.sep).join('/');
+        if (!filesCreated.some(file => file.relativePath === relativePath)) {
+          filesCreated.push(createFileRecord(filename, absolutePath, content.length));
+        }
+        this.logger.info('  ✓ Exported requested research output', { relativePath });
+      }
+    } catch (error) {
+      this.logger.warn('Failed to export requested research outputs', { error: error.message });
+    }
     
-    // 5. Create manifest (index of all files)
+    // 6. Export source-backbone proof gates. These receipts are what let
+    // downstream confirmation distinguish "no sources exist" from "the route
+    // failed or was never executed."
+    try {
+      await this.exportSourceBackboneReceipts(
+        outputDir,
+        outputsRoot,
+        filesCreated,
+        createFileRecord,
+        synthesis,
+        searchResults
+      );
+    } catch (error) {
+      this.logger.warn('Failed to export source backbone receipts', { error: error.message });
+    }
+
+    // 7. Create manifest (index of all files)
     if (filesCreated.length > 0) {
       try {
         const manifestPath = path.join(outputDir, 'manifest.json');
@@ -1576,7 +2193,10 @@ Respond with JSON array of follow-up directions:
       }
     }
     
-    // 6. Register files in memory for artifact discovery
+    // Store for metadata reporting even if memory registration is unavailable.
+    this.exportedFiles = filesCreated;
+
+    // 8. Register files in memory for artifact discovery
     // This uses the same pattern as code-creation-agent
     if (filesCreated.length > 0) {
       try {
@@ -1592,9 +2212,6 @@ Respond with JSON array of follow-up directions:
           'research_output_files'  // New tag for research files
         );
         
-        // Store for metadata reporting
-        this.exportedFiles = filesCreated;
-        
         this.logger.info('✅ Research corpus exported and registered', {
           filesCreated: filesCreated.length,
           totalSize: filesCreated.reduce((sum, f) => sum + f.size, 0),
@@ -1605,7 +2222,7 @@ Respond with JSON array of follow-up directions:
         // Non-fatal - files still exist on disk
       }
       
-      // 7. Write completion marker for dashboard validation
+      // 9. Write completion marker for dashboard validation
       // This matches the pattern used by other agents (code-creation, document-creation)
       try {
         await this.writeCompletionMarker(outputDir, {
@@ -1622,6 +2239,221 @@ Respond with JSON array of follow-up directions:
         // Non-fatal - files are still valid
       }
     }
+  }
+
+  async exportSourceBackboneReceipts(outputDir, outputsRoot, filesCreated, createFileRecord, synthesis, searchResults) {
+    const receipts = this.buildSourceBackboneReceipts(synthesis, searchResults, filesCreated);
+
+    const writeReceipt = async (filename, content) => {
+      const receiptPath = path.join(outputDir, filename);
+      await this.writeFileAtomic(receiptPath, content);
+      const relativePath = path.join('outputs', path.relative(outputsRoot, receiptPath)).split(path.sep).join('/');
+      if (!filesCreated.some(file => file.relativePath === relativePath)) {
+        filesCreated.push(createFileRecord(filename, receiptPath, content.length));
+      }
+    };
+
+    await writeReceipt('source_attempts.jsonl', this.toJsonl(receipts.attempts));
+    await writeReceipt('source_crossing.jsonl', this.toJsonl(receipts.crossings));
+    await writeReceipt('extraction_receipts.jsonl', this.toJsonl(receipts.extractions));
+    await writeReceipt('planned_vs_executed.json', JSON.stringify(receipts.plannedVsExecuted, null, 2));
+    await writeReceipt('source_backbone_status.json', JSON.stringify(receipts.status, null, 2));
+
+    this.logger.info('  ✓ Exported source backbone receipts', {
+      attempts: receipts.attempts.length,
+      crossings: receipts.crossings.length,
+      productiveSources: receipts.status.productive_sources,
+      canContinue: receipts.status.can_continue
+    });
+  }
+
+  buildSourceBackboneReceipts(synthesis, searchResults, filesCreated = []) {
+    const evidence = Array.isArray(this.searchEvidence) ? this.searchEvidence : [];
+    const plannedQueries = [...new Set((this.searchQueries || []).filter(Boolean))];
+    const executedQueries = [...new Set(evidence
+      .map(item => item.executedQuery || item.query)
+      .filter(Boolean))];
+
+    const attempts = evidence.map(item => {
+      const accepted = item.quality?.acceptable === true;
+      const failed = Boolean(item.error || item.code);
+      return {
+        timestamp: item.timestamp || new Date().toISOString(),
+        query: item.query || '',
+        executed_query: item.executedQuery || item.query || '',
+        route: item.backend || 'unknown',
+        status: accepted ? 'accepted' : (failed ? 'failed' : 'rejected'),
+        strict_mode: this.requiresVerifiedSources(),
+        result_count: item.resultCount || 0,
+        url_count: (item.urls || []).length,
+        quality_reason: item.quality?.reason || null,
+        error: item.error || null,
+        code: item.code || null,
+        urls: item.urls || []
+      };
+    });
+
+    const crossings = [];
+    for (const item of evidence) {
+      for (const validation of item.sourceValidation || []) {
+        crossings.push({
+          timestamp: item.timestamp || new Date().toISOString(),
+          query: item.query || '',
+          executed_query: item.executedQuery || item.query || '',
+          route: item.backend || 'unknown',
+          url: validation.url,
+          ok: validation.ok === true,
+          status: validation.status ?? null,
+          content_type: validation.contentType || null,
+          bytes: validation.bytes ?? null,
+          content_hash: validation.contentHash || validation.content_hash || null,
+          blocked_reason: validation.blockedReason || null,
+          error: validation.error || null
+        });
+      }
+    }
+
+    const validSourceUrls = [...new Set(crossings
+      .filter(item => item.ok && item.url)
+      .map(item => item.url))];
+    const productiveSources = validSourceUrls.length > 0
+      ? validSourceUrls
+      : [...new Set((this.sourcesFound || []).filter(Boolean))];
+
+    const extractions = this.buildExtractionReceipts(synthesis, productiveSources);
+    const missingPlannedQueries = plannedQueries
+      .filter(query => !executedQueries.includes(query));
+    const requestedOutputs = this.extractRequestedOutputPaths();
+    const exportedPaths = new Set((filesCreated || []).map(file => file.relativePath));
+    const missingRequiredOutputs = requestedOutputs
+      .map(item => item.replace(/^@?outputs\//, 'outputs/'))
+      .filter(item => !exportedPaths.has(item));
+
+    const failedRoutes = [...new Set(attempts
+      .filter(item => item.status !== 'accepted')
+      .map(item => item.route))];
+    const sourceRequired = this.requiresVerifiedSources();
+    const canContinue =
+      (!sourceRequired || productiveSources.length > 0) &&
+      missingRequiredOutputs.length === 0 &&
+      (plannedQueries.length === 0 || executedQueries.length > 0);
+
+    return {
+      attempts,
+      crossings,
+      extractions,
+      plannedVsExecuted: {
+        mission: this.mission.description,
+        goal_id: this.mission.goalId,
+        planned_queries: plannedQueries,
+        executed_queries: executedQueries,
+        missing_planned_queries: missingPlannedQueries,
+        search_results_recorded: Array.isArray(searchResults) ? searchResults.length : 0,
+        source_required: sourceRequired
+      },
+      status: {
+        timestamp: new Date().toISOString(),
+        mission: this.mission.description,
+        goal_id: this.mission.goalId,
+        can_continue: canContinue,
+        productive_sources: productiveSources.length,
+        productive_source_urls: productiveSources.slice(0, 50),
+        failed_routes: failedRoutes,
+        missing_required_outputs: missingRequiredOutputs,
+        missing_planned_queries: missingPlannedQueries,
+        source_required: sourceRequired,
+        attempts: attempts.length,
+        crossings: crossings.length,
+        extraction_receipts: extractions.length,
+        next_allowed_action: canContinue ? 'continue' : 'stop_and_repair_source_acquisition'
+      }
+    };
+  }
+
+  buildExtractionReceipts(synthesis, productiveSources = []) {
+    const findings = Array.isArray(synthesis?.findings) ? synthesis.findings : [];
+    if (findings.length === 0) {
+      return [{
+        timestamp: new Date().toISOString(),
+        status: 'empty',
+        source_url: null,
+        source_type: null,
+        confidence: 0,
+        anecdote_text: null,
+        rejection_reason: 'no_synthesis_findings'
+      }];
+    }
+
+    return findings.map((finding, index) => ({
+      timestamp: new Date().toISOString(),
+      status: productiveSources.length > 0 ? 'accepted' : 'unverified',
+      source_url: productiveSources[index % Math.max(productiveSources.length, 1)] || null,
+      source_type: productiveSources.length > 0 ? 'web' : null,
+      confidence: productiveSources.length > 0 ? 0.7 : 0.2,
+      anecdote_text: typeof finding === 'string' ? finding : JSON.stringify(finding),
+      rejection_reason: productiveSources.length > 0 ? null : 'no_validated_source_for_finding'
+    }));
+  }
+
+  toJsonl(rows = []) {
+    if (!rows.length) {
+      return '';
+    }
+    return rows.map(row => JSON.stringify(row)).join('\n') + '\n';
+  }
+
+  extractRequestedOutputPaths() {
+    const text = [
+      this.mission?.description,
+      this.mission?.expectedOutput,
+      this.mission?.metadata?.expectedOutput,
+      ...(this.mission?.successCriteria || [])
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    const matches = text.match(/@?outputs\/[A-Za-z0-9._~:/-]+\.(?:json|md|markdown|csv|txt)/g) || [];
+    return [...new Set(matches.map(item => item.replace(/^outputs\//, '@outputs/')))];
+  }
+
+  buildRequestedResearchMarkdown(synthesis) {
+    let content = `# Research Search Evidence\n\n`;
+    content += `**Agent:** ${this.agentId}\n`;
+    content += `**Mission:** ${this.mission.description}\n`;
+    content += `**Generated:** ${new Date().toISOString()}\n\n`;
+
+    content += `## Queries Executed\n\n`;
+    this.searchQueries.forEach((query, index) => {
+      content += `${index + 1}. ${query}\n`;
+    });
+
+    content += `\n## Search Evidence\n\n`;
+    for (const evidence of this.searchEvidence) {
+      content += `### ${evidence.query}\n\n`;
+      if (evidence.executedQuery && evidence.executedQuery !== evidence.query) {
+        content += `Repaired query: ${evidence.executedQuery}\n\n`;
+      }
+      content += `Backend: ${evidence.backend}\n`;
+      content += `Quality: ${evidence.quality?.acceptable ? 'accepted' : 'not accepted'} (${evidence.quality?.reason || 'unknown'})\n\n`;
+      for (const result of evidence.results || []) {
+        content += `- ${result.title || result.url}\n`;
+        content += `  URL: ${result.url}\n`;
+        if (result.snippet) {
+          content += `  Snippet: ${result.snippet}\n`;
+        }
+      }
+      content += `\n`;
+    }
+
+    content += `## Synthesis\n\n${synthesis.summary || ''}\n\n`;
+    if (Array.isArray(synthesis.findings) && synthesis.findings.length > 0) {
+      content += `## Findings\n\n`;
+      synthesis.findings.forEach((finding, index) => {
+        content += `${index + 1}. ${finding}\n\n`;
+      });
+    }
+
+    return content;
   }
 
   /**

@@ -778,6 +778,32 @@ describe('ExecutionBaseAgent', function () {
     });
   });
 
+  describe('_isSuccessfulProgressResult', function () {
+    it('rejects progress results with explicit errors or failed command status', function () {
+      const agent = new TestExecutionAgent(makeMission(), makeConfig(), makeLogger());
+
+      expect(agent._isSuccessfulProgressResult('execute_bash', { error: 'boom' })).to.equal(false);
+      expect(agent._isSuccessfulProgressResult('execute_bash', { exit_code: 1 })).to.equal(false);
+      expect(agent._isSuccessfulProgressResult('execute_bash', { exitCode: 2 })).to.equal(false);
+      expect(agent._isSuccessfulProgressResult('execute_bash', { timed_out: true })).to.equal(false);
+      expect(agent._isSuccessfulProgressResult('execute_bash', { blocked: true })).to.equal(false);
+    });
+
+    it('rejects failed HTTP status as progress but accepts successful source contact', function () {
+      const agent = new TestExecutionAgent(makeMission(), makeConfig(), makeLogger());
+
+      expect(agent._isSuccessfulProgressResult('http_fetch', { status: 404, body: 'missing' })).to.equal(false);
+      expect(agent._isSuccessfulProgressResult('http_fetch', { status: 0, body: '' })).to.equal(false);
+      expect(agent._isSuccessfulProgressResult('http_fetch', { status: 200, body: 'ok' })).to.equal(true);
+    });
+
+    it('keeps file writes as progress when tool returns success', function () {
+      const agent = new TestExecutionAgent(makeMission(), makeConfig(), makeLogger());
+
+      expect(agent._isSuccessfulProgressResult('write_file', { success: true, path: '/tmp/a' })).to.equal(true);
+    });
+  });
+
   // ── _trimMessages ─────────────────────────────────────────────────────────
 
   describe('_trimMessages', function () {

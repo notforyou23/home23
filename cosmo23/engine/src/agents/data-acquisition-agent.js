@@ -26,6 +26,10 @@
  */
 
 const { ExecutionBaseAgent } = require('./execution-base-agent');
+const {
+  deriveResearchContract,
+  evaluateResearchEvidence
+} = require('../core/research-contract');
 const path = require('path');
 const fs = require('fs').promises;
 
@@ -74,11 +78,19 @@ Your FIRST tool call should be an action, not a plan.
 7. WRITE manifest via save_manifest when complete
 
 ## Escalation Ladder
-curl → wget → cheerio/node → playwright → scrapy
+Start simple: curl → wget → cheerio/node → beautiful-soup/python → playwright → scrapy
 80% of tasks need only curl. Do not over-engineer.
+
+## Pagination, Authentication, and Downloads
+- Pagination: detect cursor, offset/limit, page/per_page, Link headers, and next links before assuming a single page is complete
+- Rate limit handling: respect 429 responses, Retry-After headers, and documented per-domain limits
+- Authentication: use Bearer headers, API keys, or documented cookies only when provided in mission metadata
+- Bulk downloads: use wget for recursive downloads, aria2c for parallel file lists, and yt-dlp for video/audio sources when appropriate
+- Deduplication: dedup URLs and records by stable identifiers or content hash before writing final extracted outputs
 
 ## Ethics
 - Always check robots.txt before crawling
+- Parse Disallow and Crawl-delay rules before deep crawling
 - 1-2 second delay between requests to same domain
 - Respect Crawl-delay directives
 - Never bypass CAPTCHAs or access controls
@@ -719,6 +731,7 @@ curl → wget → cheerio/node → playwright → scrapy
 
     return {
       success: true,
+      status: args.status,
       totalSources: this.acquisitionManifest.sources.length,
       totalBytes: this.acquisitionManifest.bytesAcquired,
       totalErrors: this.acquisitionManifest.errors.length
@@ -807,11 +820,17 @@ curl → wget → cheerio/node → playwright → scrapy
 
   assessAccomplishment(executeResult, results) {
     const manifest = this.acquisitionManifest;
+    // HOME23 PATCH — Patch 28: source acquisition must prove source contact,
+    // not just command/file activity.
+    const researchContract = deriveResearchContract(this.mission || {});
 
     // Data acquisition succeeds if ANY data was acquired
     const pagesAcquired = manifest.pagesAcquired || 0;
     const filesDownloaded = manifest.filesDownloaded || 0;
     const sourcesContacted = manifest.sources.length;
+    const successfulSources = manifest.sources.filter(source =>
+      Number(source.status) >= 200 && Number(source.status) < 400
+    ).length;
     const schemaDiscovered = manifest.discoveredSchema !== null;
     const bytesAcquired = manifest.bytesAcquired || 0;
 
@@ -819,18 +838,37 @@ curl → wget → cheerio/node → playwright → scrapy
     const baseAssessment = super.assessAccomplishment(executeResult, results);
 
     const hasAcquiredData = pagesAcquired > 0 || filesDownloaded > 0 || bytesAcquired > 0;
-    const accomplished = hasAcquiredData || baseAssessment.accomplished;
+    const contractValidation = evaluateResearchEvidence(researchContract, {
+      sourcesContacted,
+      successfulSources,
+      pagesAcquired,
+      filesDownloaded,
+      bytesAcquired,
+      errors: manifest.errors,
+      commandsRun: baseAssessment.metrics.commandsRun,
+      filesCreated: baseAssessment.metrics.filesCreated
+    });
+    const accomplished = researchContract.required
+      ? contractValidation.passed
+      : hasAcquiredData || baseAssessment.accomplished;
 
     return {
       accomplished,
-      reason: accomplished ? null : 'No data acquired (0 pages, 0 files, 0 bytes)',
+      reason: accomplished
+        ? null
+        : (researchContract.required
+          ? `Research contract failed: ${contractValidation.reasonCode}`
+          : 'No data acquired (0 pages, 0 files, 0 bytes)'),
       metrics: {
         pagesAcquired,
         filesDownloaded,
         bytesAcquired,
         sourcesContacted,
+        successfulSources,
         schemaDiscovered,
         errorsEncountered: manifest.errors.length,
+        researchContractRequired: researchContract.required,
+        researchContractReason: contractValidation.reasonCode,
         ...baseAssessment.metrics
       }
     };

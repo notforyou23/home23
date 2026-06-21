@@ -56,6 +56,17 @@ class RunCommitmentGovernor {
     const artifactAudit = snapshot.artifactAudit || {};
     const synthesisCommit = snapshot.synthesisCommit || null;
     const providerErrors = normalizeArray(snapshot.providerErrors).map(event => this.normalizeProviderError(event));
+    const planStatus = String(snapshot.plan?.status || '').toUpperCase();
+
+    const guidedPlanBlocked = Boolean(snapshot.guidedRun) && planStatus === 'BLOCKED';
+    if (guidedPlanBlocked) {
+      reasonCodes.push('guided_plan_blocked');
+      nextActions.push({
+        type: 'repair_blocked_research',
+        reason: snapshot.plan?.blockedReason || 'guided_plan_blocked'
+      });
+      nextActions.push({ type: 'stop_unproductive_run', reason: 'guided_plan_blocked' });
+    }
 
     const recentRateLimits = providerErrors.filter(error => {
       const isRateLimit = error.status === 429 ||
@@ -100,9 +111,10 @@ class RunCommitmentGovernor {
     const hasSynthesisCommit = Boolean(synthesisCommit?.applied) &&
       toNumber(synthesisCommit?.spine_count ?? synthesisCommit?.spineCount, 0) > 0;
     const noOpenGaps = unregisteredFiles === 0 && neverReusedArtifacts === 0;
+    const planComplete = planStatus === 'DONE' || planStatus === 'COMPLETED';
     const shouldStopForCompletion = activeAgents === 0 &&
       goals.length === 0 &&
-      snapshot.plan?.status === 'DONE' &&
+      planComplete &&
       hasSynthesisCommit &&
       committedArtifacts > 0 &&
       noOpenGaps &&
@@ -112,7 +124,7 @@ class RunCommitmentGovernor {
       reasonCodes.push('run_has_committed_answer');
     }
 
-    const spawnAllowed = !rateLimited && !requiresArtifactCommitment && !shouldStopForCompletion;
+    const spawnAllowed = !rateLimited && !requiresArtifactCommitment && !shouldStopForCompletion && !guidedPlanBlocked;
 
     return this.buildDecision({
       spawnAllowed,
@@ -120,6 +132,7 @@ class RunCommitmentGovernor {
       cooldownUntilCycle: rateLimited ? cycleCount + this.config.rateLimitCooldownCycles : null,
       requiresArtifactCommitment,
       shouldStopForCompletion,
+      shouldStopForBlockedRun: guidedPlanBlocked,
       allowStrategicBypass: !guidedNonRepair && !rateLimited,
       strategicSpawnBudget: rateLimited ? 0 : Math.min(this.config.maxStrategicSpawnsPerCycle, strategicGoals.length),
       urgentSpawnBudget: rateLimited ? 0 : this.config.maxUrgentSpawnsPerCycle,
@@ -145,6 +158,7 @@ class RunCommitmentGovernor {
       cooldownUntilCycle: null,
       requiresArtifactCommitment: false,
       shouldStopForCompletion: false,
+      shouldStopForBlockedRun: false,
       allowStrategicBypass: false,
       strategicSpawnBudget: 0,
       urgentSpawnBudget: 0,

@@ -542,7 +542,7 @@ function createMCPServer() {
         },
         {
           name: 'web_search',
-          description: 'Search the web for information (uses DuckDuckGo, no API key needed). Use this when you need current information, facts, or research data from the internet.',
+          description: 'Search the web for information via COSMO23 source backbone search (Brave/SearXNG, with DuckDuckGo only when fallback is allowed). Use this when you need current information, facts, or research data from the internet.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -554,6 +554,15 @@ function createMCPServer() {
                 type: 'number',
                 description: 'Maximum number of results to return (default: 8, max: 15)',
                 default: 8,
+              },
+              sourceRequired: {
+                type: 'boolean',
+                description: 'When true, use strict source-required search policy and avoid weak fallbacks.',
+                default: false,
+              },
+              allowDuckDuckGoFallback: {
+                type: 'boolean',
+                description: 'Allow DuckDuckGo HTML fallback if Brave/SearXNG are unavailable. Defaults false when sourceRequired is true.',
               },
             },
             required: ['query'],
@@ -1200,23 +1209,34 @@ function createMCPServer() {
           }
 
           const maxResults = Math.min(args.maxResults || 8, 15);
-          console.log(`[MCP] Web search: "${query}" (max ${maxResults} results)`);
+          const sourceRequired = args.sourceRequired === true || args.strictMode === true;
+          const allowDuckDuckGoFallback = args.allowDuckDuckGoFallback !== undefined
+            ? args.allowDuckDuckGoFallback !== false
+            : !sourceRequired;
+          console.log(`[MCP] Web search: "${query}" (max ${maxResults} results, sourceRequired=${sourceRequired})`);
 
-          const searchResult = await webSearch.search(query, { maxResults });
+          const searchBackend = allowDuckDuckGoFallback
+            ? webSearch
+            : new FreeWebSearch(console, { allowDuckDuckGoFallback: false });
+          const searchResult = await searchBackend.search(query, { maxResults });
 
           if (searchResult.success && searchResult.results.length > 0) {
             result = {
               query: searchResult.query,
               resultCount: searchResult.results.length,
               source: searchResult.source,
+              sourceRequired,
+              allowDuckDuckGoFallback,
               results: searchResult.results,
-              formatted: webSearch.formatForLLM(searchResult)
+              formatted: searchBackend.formatForLLM(searchResult)
             };
           } else {
             result = {
               query: searchResult.query,
               resultCount: 0,
               source: searchResult.source,
+              sourceRequired,
+              allowDuckDuckGoFallback,
               results: [],
               message: searchResult.message || 'No results found',
               formatted: `No web search results found for "${query}". Please try a different query or rely on training knowledge.`
@@ -1358,4 +1378,3 @@ main().catch(error => {
   console.error('Fatal error:', error);
   process.exit(1);
 });
-

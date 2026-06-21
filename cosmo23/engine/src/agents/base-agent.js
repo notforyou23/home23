@@ -2273,7 +2273,7 @@ Domain: ${domain} | Workspace: ${workspace}`;
    */
   async writeFileAtomic(filePath, content, options = {}) {
     // DEBUG: Log all file writes to trace recursive path creation
-    const fs = require('fs');
+    const fsSync = require('fs');
     const debugInfo = {
       agentId: this.agentId,
       timestamp: new Date().toISOString(),
@@ -2282,7 +2282,7 @@ Domain: ${domain} | Workspace: ${workspace}`;
       'capabilities enabled': !!this.capabilities
     };
     try {
-      fs.appendFileSync('/tmp/base-agent-writes.log', JSON.stringify(debugInfo, null, 2) + '\n---\n');
+      fsSync.appendFileSync('/tmp/base-agent-writes.log', JSON.stringify(debugInfo, null, 2) + '\n---\n');
     } catch (e) {}
     
     // CAPABILITIES INTEGRATION: Use capabilities if available (includes atomic write + Executive judgment)
