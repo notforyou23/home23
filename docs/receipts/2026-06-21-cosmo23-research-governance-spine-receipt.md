@@ -233,3 +233,70 @@ Live source probe:
 - URL validation fetched the page successfully with HTTP 200, 134,948 bytes,
   and a content hash; and
 - `sourcesFound` contained only that fetchable source URL.
+
+## Patch 31 Follow-Up: Typed Source Provider Registry
+
+The next failure class was source breadth. Search is not enough for serious
+research: the engine needs typed acquisition routes to canonical databases,
+archive metadata, historical captures, scholarly registries, feeds, and
+sitemaps.
+
+Implemented:
+
+- `SourceProviderRegistry` with first-class providers for:
+  `web.search`, `archive.advancedsearch`, `archive.metadata`,
+  `archive.reviews`, `archive.files`, `wayback.availability`, `wayback.cdx`,
+  `commoncrawl.cdx`, `wikidata.entity_search`, `wikidata.sparql`,
+  `openalex.works`, `crossref.works`,
+  `semantic_scholar.paper_search`, `arxiv.query`,
+  `pubmed.esearch_summary`, `rss.feed`, and `feed.sitemap`;
+- normalized provider candidates with route, source type, URL, snippet, and
+  metadata;
+- provider attempt receipts in ResearchAgent search evidence, including route,
+  status, counts, duration, and provider errors;
+- metadata-only archive file validation using file size/hash from Archive
+  metadata instead of downloading large files;
+- contract-level `sourceProviderHints` for archive, historical web, knowledge
+  graph, scholarly, preprint, biomedical, feed, media, forum, and social source
+  obligations; and
+- ResearchAgent honoring explicit contract provider hints even when the query
+  text itself has no provider cue.
+
+Subagent source review also identified the next source families to add to the
+same registry: YouTube/video/transcript, podcast transcript enrichment, Reddit
+and forum adapters, social/X adapters, rendered-browser capture, OCR, and audio
+metadata. Those are intentionally not auto-executed in this patch because they
+need separate credential, rate-limit, rendering, and transcript receipt rules.
+
+Focused verification:
+
+```bash
+npx mocha cosmo23/engine/tests/unit/source-provider-registry.test.js --timeout 30000
+npx mocha cosmo23/engine/tests/unit/research-contract.test.js --timeout 30000
+npx mocha cosmo23/engine/tests/unit/research-agent-handoff.test.js --grep "researchContract source provider hints" --timeout 30000
+npx mocha cosmo23/engine/tests/unit/research-agent-handoff.test.js --grep "metadata-only|typed source providers" --timeout 30000
+```
+
+Final verification:
+
+- source-provider registry: `6 passing`
+- research contract: `8 passing`
+- ResearchAgent contract-hint path: `1 passing`
+- ResearchAgent typed-provider focused path: `3 passing`
+- focused governance/source regression suite:
+  `212 passing`
+- COSMO23 query/artifact/PGS/provider regression suite:
+  `53 passing`
+- syntax checks passed for `source-provider-registry.js`,
+  `research-contract.js`, `research-agent.js`, `web-search-free.js`, and
+  `http-server.js`
+
+Live-safe provider probe:
+
+- `archive.advancedsearch` accepted a Jerry Garcia / Keystone query and returned
+  `https://archive.org/details/jg75-05-21.087526.DTS.menke-falanga-tobin.MOTB-0054.flac24`
+- `wikidata.entity_search` accepted `Jerry Garcia` and returned
+  `http://www.wikidata.org/entity/Q312870`
+- `wayback.availability` accepted `https://example.com/` and returned a
+  Wayback snapshot URL
+- `openalex.works` accepted `knowledge graph research` and returned a DOI URL

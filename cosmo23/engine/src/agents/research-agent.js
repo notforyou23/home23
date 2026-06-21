@@ -2,6 +2,7 @@ const { BaseAgent } = require('./base-agent');
 const { parseWithFallback } = require('../core/json-repair');
 const { BibliographyGenerator } = require('../utils/bibliography-generator');
 const { deriveResearchContract, extractWebSearchQueries } = require('../core/research-contract');
+const { SourceProviderRegistry } = require('../core/source-provider-registry');
 const crypto = require('crypto');
 const fs = require('fs').promises;
 const path = require('path');
@@ -551,11 +552,6 @@ Respond with JSON array of query strings:
    * or MCP web_search tool in local LLM mode
    */
   async performWebSearch(query) {
-    // Use MCP web_search in local LLM mode
-    if (this.useLocalSearch) {
-      return await this.performLocalWebSearch(query);
-    }
-
     const sourceRequired = this.requiresVerifiedSources();
     const resultSections = [];
     const failures = [];
@@ -566,55 +562,72 @@ Respond with JSON array of query strings:
       resultSections.push(directSourceResult);
     }
 
+    if (!this.useLocalSearch) {
+      try {
+        const response = await this.gpt5.generateWithWebSearch({
+          component: 'agents',
+          purpose: 'research',
+          query: query,
+          instructions: this.getAgentBehavioralPrompt() + '\n\n' + `You are a research assistant. Use web search to find current, factual information. Focus on key facts, recent developments, and practical insights. Provide a concise summary (2-3 paragraphs).`,
+          maxTokens: 6000 // Increased from 2000 - data extraction needs comprehensive output
+        });
+
+        const providerResults = this.extractProviderNativeSearchResults(response);
+        const providerUrls = providerResults.map(result => result.url).filter(Boolean);
+        let sourceValidation = [];
+        let validProviderUrls = providerUrls;
+
+        if (sourceRequired && providerUrls.length > 0) {
+          sourceValidation = await this.validateSourceUrls(providerUrls);
+          validProviderUrls = sourceValidation
+            .filter(item => item.ok)
+            .map(item => item.url);
+        }
+
+        if (sourceRequired) {
+          this.addSources(validProviderUrls);
+        } else {
+          this.addSources(providerUrls);
+        }
+
+        this.recordProviderNativeEvidence(query, providerResults, sourceValidation, response);
+
+        if (response.content) {
+          resultSections.push(response.content);
+        }
+
+        this.logger.info('✅ Provider-native web search complete', {
+          query: query.substring(0, 50),
+          discoveredSources: providerUrls.length,
+          validSources: sourceRequired ? validProviderUrls.length : providerUrls.length,
+          totalSources: this.sourcesFound.length
+        }, 3);
+      } catch (error) {
+        failures.push({ backend: 'provider-native', error });
+        this.recordSearchFailureEvidence(query, 'provider-native', error);
+        this.logger.error('Web search failed', {
+          query,
+          error: error.message
+        }, 3);
+      }
+    }
+
     try {
-      const response = await this.gpt5.generateWithWebSearch({
-        component: 'agents',
-        purpose: 'research',
-        query: query,
-        instructions: this.getAgentBehavioralPrompt() + '\n\n' + `You are a research assistant. Use web search to find current, factual information. Focus on key facts, recent developments, and practical insights. Provide a concise summary (2-3 paragraphs).`,
-        maxTokens: 6000 // Increased from 2000 - data extraction needs comprehensive output
-      });
-
-      const providerResults = this.extractProviderNativeSearchResults(response);
-      const providerUrls = providerResults.map(result => result.url).filter(Boolean);
-      let sourceValidation = [];
-      let validProviderUrls = providerUrls;
-
-      if (sourceRequired && providerUrls.length > 0) {
-        sourceValidation = await this.validateSourceUrls(providerUrls);
-        validProviderUrls = sourceValidation
-          .filter(item => item.ok)
-          .map(item => item.url);
+      const sourceProviderResult = await this.performTypedSourceProviderAcquisition(query);
+      if (sourceProviderResult) {
+        resultSections.push(sourceProviderResult);
       }
-
-      if (sourceRequired) {
-        this.addSources(validProviderUrls);
-      } else {
-        this.addSources(providerUrls);
-      }
-
-      this.recordProviderNativeEvidence(query, providerResults, sourceValidation, response);
-
-      if (response.content) {
-        resultSections.push(response.content);
-      }
-
-      this.logger.info('✅ Provider-native web search complete', {
-        query: query.substring(0, 50),
-        discoveredSources: providerUrls.length,
-        validSources: sourceRequired ? validProviderUrls.length : providerUrls.length,
-        totalSources: this.sourcesFound.length
-      }, 3);
     } catch (error) {
-      failures.push({ backend: 'provider-native', error });
-      this.recordSearchFailureEvidence(query, 'provider-native', error);
-      this.logger.error('Web search failed', {
+      failures.push({ backend: 'source-provider-registry', error });
+      this.recordSearchFailureEvidence(query, 'source-provider-registry', error);
+      this.logger.warn('Typed source provider acquisition failed', {
         query,
-        error: error.message
+        error: error.message,
+        code: error.code || null
       }, 3);
     }
 
-    if (this.shouldSupplementProviderNativeSearch()) {
+    if (this.useLocalSearch || this.shouldSupplementProviderNativeSearch()) {
       try {
         const localResult = await this.performLocalWebSearch(query);
         if (localResult) {
@@ -654,6 +667,156 @@ Respond with JSON array of query strings:
     const error = new Error(`No web search content returned for "${query}"`);
     error.code = 'NO_SEARCH_CONTENT';
     throw error;
+  }
+
+  async performTypedSourceProviderAcquisition(query) {
+    const registry = this.getSourceProviderRegistry();
+    if (!registry) return null;
+
+    const providerIds = this.getTypedSourceProviderIds(query, registry);
+    if (providerIds.length === 0) {
+      return null;
+    }
+
+    const sourceRequired = this.requiresVerifiedSources();
+    const acquisition = await registry.acquire(query, {
+      providers: providerIds,
+      maxResults: this.config?.sourceProviders?.maxResults || 5,
+      sourceRequired,
+      mission: this.mission,
+      allowDuckDuckGoFallback: !sourceRequired
+    });
+    const candidates = acquisition.candidates || [];
+    const metadataValidation = candidates
+      .filter(candidate => candidate.metadata?.validationStrategy === 'metadata_only')
+      .map(candidate => this.buildMetadataOnlyValidation(candidate));
+    const fetchValidationUrls = candidates
+      .filter(candidate => candidate.metadata?.validationStrategy !== 'metadata_only')
+      .map(candidate => candidate.url)
+      .filter(Boolean);
+    const candidateUrls = candidates.map(candidate => candidate.url).filter(Boolean);
+    let sourceValidation = [];
+    let acceptedUrls = candidateUrls;
+
+    if (sourceRequired && (fetchValidationUrls.length > 0 || metadataValidation.length > 0)) {
+      const fetchValidation = fetchValidationUrls.length > 0
+        ? await this.validateSourceUrls(fetchValidationUrls)
+        : [];
+      sourceValidation = [...metadataValidation, ...fetchValidation];
+      acceptedUrls = sourceValidation
+        .filter(item => item.ok)
+        .map(item => item.url);
+    }
+
+    this.addSources(sourceRequired ? acceptedUrls : candidateUrls);
+    this.recordTypedSourceProviderEvidence(query, acquisition, sourceValidation);
+
+    if (acceptedUrls.length === 0) {
+      return null;
+    }
+
+    const lines = (acquisition.candidates || [])
+      .filter(candidate => acceptedUrls.includes(candidate.url))
+      .slice(0, 8)
+      .map((candidate, index) => `${index + 1}. [${candidate.provider}] ${candidate.title || candidate.url}\n   URL: ${candidate.url}\n   ${candidate.snippet || ''}`);
+    return `Typed source providers found:\n${lines.join('\n\n')}`;
+  }
+
+  buildMetadataOnlyValidation(candidate) {
+    const metadata = candidate.metadata || {};
+    return {
+      url: candidate.url,
+      ok: true,
+      status: 'metadata_only',
+      contentType: metadata.fileFormat || metadata.contentType || null,
+      bytes: metadata.fileSize ?? null,
+      contentHash: metadata.md5 || metadata.sha1 || metadata.digest || null,
+      hashSource: metadata.hashSource || (metadata.md5 ? 'md5' : (metadata.sha1 ? 'sha1' : (metadata.digest ? 'digest' : null))),
+      sample: candidate.snippet || candidate.title || '',
+      provider: candidate.provider,
+      sourceType: candidate.sourceType
+    };
+  }
+
+  getSourceProviderRegistry() {
+    if (this.sourceProviderRegistry) {
+      return this.sourceProviderRegistry;
+    }
+    if (this.config?.sourceProviders?.enabled === false) {
+      return null;
+    }
+    this.sourceProviderRegistry = new SourceProviderRegistry(
+      this.logger,
+      this.config?.sourceProviders || {},
+      {}
+    );
+    return this.sourceProviderRegistry;
+  }
+
+  getTypedSourceProviderIds(query, registry) {
+    const configured = this.config?.sourceProviders?.providers;
+    if (Array.isArray(configured) && configured.length > 0) {
+      return configured;
+    }
+    const researchContract = deriveResearchContract(this.mission || {});
+    const selectedProviders = registry.selectProviders(query, {
+      mission: this.mission,
+      sourceRequired: this.requiresVerifiedSources()
+    });
+    const providerIds = new Set([
+      ...selectedProviders,
+      ...(researchContract.sourceProviderHints || [])
+    ]);
+    const knownProviders = typeof registry.listProviders === 'function'
+      ? new Set(registry.listProviders())
+      : null;
+    return [...providerIds].filter(id => !knownProviders || knownProviders.has(id));
+  }
+
+  recordTypedSourceProviderEvidence(query, acquisition, sourceValidation = []) {
+    const candidates = acquisition.candidates || [];
+    const validationByUrl = new Map(sourceValidation.map(item => [item.url, item]));
+    for (const attempt of acquisition.attempts || []) {
+      const providerCandidates = candidates.filter(candidate => candidate.provider === attempt.route);
+      const providerValidation = providerCandidates
+        .map(candidate => validationByUrl.get(candidate.url))
+        .filter(Boolean);
+      const providerValidUrls = providerValidation
+        .filter(item => item.ok)
+        .map(item => item.url);
+      const sourceRequired = this.requiresVerifiedSources();
+      this.searchEvidence.push({
+        timestamp: attempt.timestamp || new Date().toISOString(),
+        query,
+        executedQuery: query,
+        repairedFrom: null,
+        backend: attempt.route || 'source-provider',
+        resultCount: providerCandidates.length,
+        urls: providerCandidates.map(candidate => candidate.url).filter(Boolean),
+        quality: {
+          acceptable: sourceRequired ? providerValidUrls.length > 0 : providerCandidates.length > 0,
+          reason: attempt.status === 'failed'
+            ? (attempt.error || 'provider_failed')
+            : (providerValidUrls.length > 0 || (!sourceRequired && providerCandidates.length > 0)
+              ? 'typed_source_candidates_found'
+              : 'no_validated_typed_source_candidates'),
+          relevantResults: sourceRequired ? providerValidUrls.length : providerCandidates.length,
+          resultCount: providerCandidates.length,
+          relevantUrls: sourceRequired ? providerValidUrls : providerCandidates.map(candidate => candidate.url).filter(Boolean)
+        },
+        sourceValidation: providerValidation,
+        results: providerCandidates.map((candidate, index) => ({
+          position: candidate.position || index + 1,
+          title: candidate.title || '',
+          url: candidate.url || '',
+          snippet: candidate.snippet || '',
+          engine: candidate.provider || attempt.route || 'source-provider',
+          sourceType: candidate.sourceType || null,
+          metadata: candidate.metadata || {}
+        })),
+        providerAttempt: attempt
+      });
+    }
   }
 
   hasVerifiedSourceEvidence(evidenceEntries = []) {

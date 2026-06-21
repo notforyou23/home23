@@ -1733,6 +1733,68 @@ found and fetch-validated the Lost Live Dead source URL, recording HTTP 200,
 
 ---
 
+## Patch 31 — Typed source provider registry
+
+**Files touched:**
+- `cosmo23/engine/src/core/source-provider-registry.js`
+- `cosmo23/engine/src/core/research-contract.js`
+- `cosmo23/engine/src/agents/research-agent.js`
+- `cosmo23/engine/tests/unit/source-provider-registry.test.js`
+- `cosmo23/engine/tests/unit/research-contract.test.js`
+- `cosmo23/engine/tests/unit/research-agent-handoff.test.js`
+
+**Problem:** Patch 30 gave COSMO23 a stronger source-acquisition backbone, but
+the backbone still treated "search" as the main primitive. The subagent review
+showed that serious research needs typed routes, not only query strings:
+Internet Archive item/review/file APIs, Wayback availability and CDX, Common
+Crawl CDX, Wikidata, OpenAlex, Crossref, Semantic Scholar, arXiv, PubMed,
+RSS/Atom feeds, and sitemaps. Without these routes, the system could ask a
+modern model to search well while still missing canonical databases, historical
+captures, metadata APIs, feed entries, and archive file manifests.
+
+**Fix:** Added `SourceProviderRegistry`, a typed provider fan-out layer used by
+`ResearchAgent` after direct URL acquisition and provider-native search, and
+before local search fallback:
+
+- provider IDs are first-class route names such as `archive.advancedsearch`,
+  `archive.reviews`, `archive.files`, `wayback.cdx`, `commoncrawl.cdx`,
+  `wikidata.entity_search`, `wikidata.sparql`, `openalex.works`,
+  `crossref.works`, `semantic_scholar.paper_search`, `arxiv.query`,
+  `pubmed.esearch_summary`, `rss.feed`, and `feed.sitemap`;
+- candidates are normalized with `provider`, `sourceType`, URL, snippet, and
+  provider metadata;
+- provider attempts are preserved as research evidence with route, status,
+  result count, URL count, duration, and error state;
+- archive file candidates use metadata-only validation when archive metadata
+  supplies file size/hash, avoiding accidental large binary downloads;
+- source-required missions validate provider candidates just like native/local
+  search candidates; and
+- research contracts now emit `sourceProviderHints`, so a planner/governor can
+  name executable provider obligations instead of leaving them as prose.
+
+The first registry layer intentionally keeps browser-rendered/video/social
+providers out of runtime execution. Those families are now named in the design
+review, but they need separate credential, rate-limit, transcript, and rendered
+receipt semantics before they should be allowed to run automatically.
+
+**Effect under Home23:** COSMO23 can now acquire source candidates from typed
+source systems even when generic search is weak or unavailable. The route that
+produced a candidate is explicit, metadata-only evidence is represented without
+fake downloads, and the contract layer can force providers when query text is
+too generic to infer the route.
+
+**Verification:** focused registry tests cover Archive, Wayback, Common Crawl,
+Wikidata, OpenAlex, Crossref, Semantic Scholar, arXiv, PubMed, feed, sitemap,
+failure preservation, and metadata-only archive files. ResearchAgent tests
+prove typed providers run for source-required work, local-search mode does not
+return before the registry, metadata-only candidates avoid fetch validation, and
+contract `sourceProviderHints` are honored when query text has no provider cues.
+The focused governance/source regression suite passed with 212 tests, syntax
+checks passed for the touched runtime files, and a live-safe provider probe
+returned accepted attempts from Archive, Wikidata, Wayback, and OpenAlex.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -1862,3 +1924,7 @@ found and fetch-validated the Lost Live Dead source URL, recording HTTP 200,
 - **2026-06-21** — Patch 30 modernized the source backbone so provider-native
   search, direct URL fetches, SearXNG/Brave, and MCP strict search supplement
   each other while writing route/crossing/status receipts for confirmation.
+- **2026-06-21** — Patch 31 added a typed source provider registry for Archive,
+  Wayback/CDX, Common Crawl, Wikidata, scholarly APIs, PubMed, feeds, and
+  sitemaps, plus contract-level provider hints and metadata-only archive file
+  validation.

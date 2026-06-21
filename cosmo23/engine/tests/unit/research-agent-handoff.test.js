@@ -645,6 +645,283 @@ describe('ResearchAgent handoff generation', () => {
     expect(agent.searchEvidence.map(entry => entry.backend)).to.include('local-search');
   });
 
+  it('uses typed source providers as acquisition avenues for source-required missions', async () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-source-provider-registry',
+        description: 'Recover fan anecdotes from Archive and web corpora with source_url fields.',
+        successCriteria: ['Every finding must include a source_url']
+      },
+      {
+        models: { enableWebSearch: true },
+        search: { supplementProviderNative: false },
+        sourceProviders: {
+          enabled: true,
+          providers: ['archive.advancedsearch']
+        }
+      },
+      logger
+    );
+
+    agent.gpt5 = {
+      generateWithWebSearch: async () => ({
+        content: 'Native model did not find source URLs.',
+        webSearchSources: [],
+        citations: []
+      })
+    };
+    agent.sourceProviderRegistry = {
+      acquire: async (query, options) => ({
+        success: true,
+        query,
+        providerIds: options.providers,
+        attempts: [{
+          timestamp: '2026-06-21T00:00:00.000Z',
+          route: 'archive.advancedsearch',
+          status: 'accepted',
+          result_count: 1,
+          url_count: 1
+        }],
+        candidates: [{
+          provider: 'archive.advancedsearch',
+          sourceType: 'archive_item',
+          title: 'Legion of Mary at Keystone',
+          url: 'https://archive.org/details/legion-of-mary-keystone',
+          snippet: 'Archive item for Legion of Mary Keystone',
+          metadata: { identifier: 'legion-of-mary-keystone' }
+        }]
+      })
+    };
+    agent.sourceValidator = {
+      validate: async (urls) => urls.map(url => ({
+        url,
+        ok: true,
+        status: 200,
+        contentType: 'text/html',
+        bytes: 4096,
+        contentHash: 'hash123'
+      }))
+    };
+
+    const result = await agent.performWebSearch('Legion of Mary Keystone archive.org source_url');
+
+    expect(result).to.include('Typed source providers found');
+    expect(agent.sourcesFound).to.deep.equal(['https://archive.org/details/legion-of-mary-keystone']);
+    expect(agent.searchEvidence.map(entry => entry.backend)).to.include('archive.advancedsearch');
+    const providerEvidence = agent.searchEvidence.find(entry => entry.backend === 'archive.advancedsearch');
+    expect(providerEvidence.quality.acceptable).to.equal(true);
+    expect(providerEvidence.sourceValidation[0].contentHash).to.equal('hash123');
+  });
+
+  it('uses typed source providers in local-search mode instead of returning before the registry', async () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-local-source-provider-registry',
+        description: 'Recover fan anecdotes from Archive with source_url fields.',
+        successCriteria: ['Every finding must include a source_url']
+      },
+      {
+        models: { enableWebSearch: true },
+        providers: { 'ollama-cloud': { enabled: true } },
+        sourceProviders: {
+          enabled: true,
+          providers: ['archive.advancedsearch']
+        }
+      },
+      logger
+    );
+
+    agent.useLocalSearch = true;
+    agent.sourceProviderRegistry = {
+      acquire: async () => ({
+        success: true,
+        attempts: [{
+          timestamp: '2026-06-21T00:00:00.000Z',
+          route: 'archive.advancedsearch',
+          status: 'accepted',
+          result_count: 1,
+          url_count: 1
+        }],
+        candidates: [{
+          provider: 'archive.advancedsearch',
+          sourceType: 'archive_item',
+          title: 'Legion of Mary at Keystone',
+          url: 'https://archive.org/details/legion-of-mary-keystone',
+          snippet: 'Archive item for Legion of Mary Keystone'
+        }]
+      })
+    };
+    agent.sourceValidator = {
+      validate: async (urls) => urls.map(url => ({
+        url,
+        ok: true,
+        status: 200,
+        contentType: 'text/html',
+        bytes: 4096,
+        contentHash: 'hash123'
+      }))
+    };
+    agent.performLocalWebSearch = async () => {
+      const error = new Error('local search unavailable');
+      error.code = 'NO_SEARCH_RESULTS';
+      throw error;
+    };
+
+    const result = await agent.performWebSearch('Legion of Mary Keystone archive.org source_url');
+
+    expect(result).to.include('Typed source providers found');
+    expect(agent.sourcesFound).to.deep.equal(['https://archive.org/details/legion-of-mary-keystone']);
+    expect(agent.searchEvidence.map(entry => entry.backend)).to.include('archive.advancedsearch');
+    expect(agent.searchEvidence.map(entry => entry.backend)).to.include('local-search');
+  });
+
+  it('accepts metadata-only provider candidates without downloading large files', async () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-metadata-only-provider',
+        description: 'Collect Archive file candidates with source_url fields.',
+        successCriteria: ['Every finding must include a source_url']
+      },
+      {
+        models: { enableWebSearch: true },
+        search: { supplementProviderNative: false },
+        sourceProviders: {
+          enabled: true,
+          providers: ['archive.files']
+        }
+      },
+      logger
+    );
+
+    agent.gpt5 = {
+      generateWithWebSearch: async () => ({
+        content: 'Native model did not find source URLs.',
+        webSearchSources: [],
+        citations: []
+      })
+    };
+    agent.sourceProviderRegistry = {
+      acquire: async () => ({
+        success: true,
+        attempts: [{
+          timestamp: '2026-06-21T00:00:00.000Z',
+          route: 'archive.files',
+          status: 'accepted',
+          result_count: 1,
+          url_count: 1
+        }],
+        candidates: [{
+          provider: 'archive.files',
+          sourceType: 'archive_file',
+          title: 'show.flac',
+          url: 'https://archive.org/download/show/show.flac',
+          snippet: 'FLAC file candidate',
+          metadata: {
+            identifier: 'show',
+            fileName: 'show.flac',
+            fileSize: 123456789,
+            md5: 'md5hash',
+            validationStrategy: 'metadata_only',
+            hashSource: 'md5'
+          }
+        }]
+      })
+    };
+    agent.sourceValidator = {
+      validate: async () => {
+        throw new Error('Metadata-only file candidate should not be fetched');
+      }
+    };
+
+    const result = await agent.performWebSearch('archive.org/details/show archive files source_url');
+
+    expect(result).to.include('Typed source providers found');
+    expect(agent.sourcesFound).to.deep.equal(['https://archive.org/download/show/show.flac']);
+    const evidence = agent.searchEvidence.find(entry => entry.backend === 'archive.files');
+    expect(evidence.sourceValidation[0]).to.include({
+      url: 'https://archive.org/download/show/show.flac',
+      ok: true,
+      status: 'metadata_only',
+      bytes: 123456789,
+      contentHash: 'md5hash'
+    });
+    expect(evidence.sourceValidation[0].hashSource).to.equal('md5');
+  });
+
+  it('honors researchContract source provider hints when query text has no provider cues', async () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-contract-provider-hints',
+        description: 'Use the supplied research contract to acquire sources.',
+        successCriteria: ['Every finding must include source evidence'],
+        metadata: {
+          researchContract: {
+            required: true,
+            mode: 'source_acquisition',
+            sourceProviderHints: ['crossref.works']
+          }
+        }
+      },
+      {
+        models: { enableWebSearch: true },
+        sourceProviders: { enabled: true }
+      },
+      logger
+    );
+
+    agent.useLocalSearch = true;
+    let providersSeen = [];
+    agent.sourceProviderRegistry = {
+      listProviders: () => ['crossref.works'],
+      selectProviders: () => [],
+      acquire: async (query, options) => {
+        providersSeen = options.providers;
+        return {
+          success: true,
+          query,
+          providerIds: options.providers,
+          attempts: [{
+            timestamp: '2026-06-21T00:00:00.000Z',
+            route: 'crossref.works',
+            status: 'accepted',
+            result_count: 1,
+            url_count: 1
+          }],
+          candidates: [{
+            provider: 'crossref.works',
+            sourceType: 'scholarly_metadata',
+            title: 'Crossref work',
+            url: 'https://doi.org/10.1234/example',
+            snippet: 'DOI metadata candidate',
+            metadata: { doi: '10.1234/example' }
+          }]
+        };
+      }
+    };
+    agent.sourceValidator = {
+      validate: async (urls) => urls.map(url => ({
+        url,
+        ok: true,
+        status: 200,
+        contentType: 'text/html',
+        bytes: 2048,
+        contentHash: 'doi-hash'
+      }))
+    };
+    agent.performLocalWebSearch = async () => {
+      const error = new Error('local search unavailable');
+      error.code = 'NO_SEARCH_RESULTS';
+      throw error;
+    };
+
+    const result = await agent.performWebSearch('generic target source_url');
+
+    expect(providersSeen).to.deep.equal(['crossref.works']);
+    expect(result).to.include('Typed source providers found');
+    expect(agent.sourcesFound).to.deep.equal(['https://doi.org/10.1234/example']);
+    expect(agent.searchEvidence.map(entry => entry.backend)).to.include('crossref.works');
+  });
+
   it('fails a source-required query even if an earlier query already found sources', async () => {
     const agent = new ResearchAgent(
       {

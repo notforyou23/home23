@@ -42,6 +42,61 @@ describe('ResearchContract', () => {
     expect(localOnly.mode).to.equal('none');
   });
 
+  it('derives executable source provider hints for typed research obligations', () => {
+    const contract = deriveResearchContract({
+      description: [
+        'Collect Internet Archive review threads and archive file lists.',
+        'Check Wayback CDX and Common Crawl captures for the original URL.',
+        'Resolve Wikidata knowledge graph entities, DOI/Crossref/OpenAlex literature, arXiv preprints, PubMed PMIDs, RSS feeds, and sitemaps.'
+      ].join(' ')
+    });
+
+    expect(contract.required).to.equal(true);
+    expect(contract.mode).to.equal('source_acquisition');
+    expect(contract.reasonCodes).to.include.members([
+      'archive_research',
+      'archive_file_research',
+      'historical_web_research',
+      'knowledge_graph_research',
+      'scholarly_research',
+      'preprint_research',
+      'biomedical_research',
+      'feed_research'
+    ]);
+    expect(contract.sourceProviderHints).to.include.members([
+      'archive.advancedsearch',
+      'archive.metadata',
+      'archive.reviews',
+      'archive.files',
+      'wayback.availability',
+      'wayback.cdx',
+      'commoncrawl.cdx',
+      'wikidata.entity_search',
+      'wikidata.sparql',
+      'openalex.works',
+      'crossref.works',
+      'semantic_scholar.paper_search',
+      'arxiv.query',
+      'pubmed.esearch_summary',
+      'rss.feed',
+      'feed.sitemap'
+    ]);
+  });
+
+  it('preserves explicit source provider hints from supplied research contracts', () => {
+    const contract = deriveResearchContract({
+      metadata: {
+        researchContract: {
+          required: true,
+          mode: 'source_acquisition',
+          sourceProviderHints: ['wikidata.sparql', 'wikidata.sparql', 'openalex.works']
+        }
+      }
+    });
+
+    expect(contract.sourceProviderHints).to.deep.equal(['wikidata.sparql', 'openalex.works']);
+  });
+
   it('preserves explicit web_search queries with nested quote types', () => {
     const queries = extractWebSearchQueries(
       `(1) web_search for 'Jerry Merl Saunders Boarding House July 1975 "I'll Take a Melody" anecdote OR review'; ` +

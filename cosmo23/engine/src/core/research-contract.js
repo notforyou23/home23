@@ -8,7 +8,16 @@ const SOURCE_REQUIRED_PATTERNS = [
   { code: 'source_url_required', pattern: /\bsource_urls?\b|\burls?\s+searched\b/i, mode: 'web_research' },
   { code: 'citation_required', pattern: /\bcitations?\b|\bcite\b|\bbibliograph/i, mode: 'web_research' },
   { code: 'forum_research', pattern: /\bforums?\b|\breddit\b|\buser\s+notes?\b|\bfan\s+(?:anecdotes?|recollections?|memories?)\b/i, mode: 'web_research' },
-  { code: 'archive_research', pattern: /\barchive\.org\b|\breview\s+threads?\b|\btaper\s+notes?\b/i, mode: 'source_acquisition' },
+  { code: 'archive_research', pattern: /\barchive\.org\b|\binternet archive\b|\barchive items?\b|\breview\s+threads?\b|\btaper\s+notes?\b/i, mode: 'source_acquisition', providers: ['archive.advancedsearch', 'archive.metadata', 'archive.reviews'] },
+  { code: 'archive_file_research', pattern: /\barchive\s+files?\b|\bdownload\s+files?\b|\bfile\s+list\b|\baudio\s+files?\b|\bocr\s+files?\b/i, mode: 'source_acquisition', providers: ['archive.files'] },
+  { code: 'historical_web_research', pattern: /\bwayback\b|\bweb archive\b|\bhistorical captures?\b|\bmementos?\b|\bcdx\b|\bcommon crawl\b|\bwarc\b|\bwet file\b|\bhistorical web crawl\b/i, mode: 'source_acquisition', providers: ['wayback.availability', 'wayback.cdx', 'commoncrawl.cdx'] },
+  { code: 'knowledge_graph_research', pattern: /\bwikidata\b|\bknowledge graph\b|\bentity id\b|\bcanonical entity\b|\bsparql\b/i, mode: 'source_acquisition', providers: ['wikidata.entity_search', 'wikidata.sparql'] },
+  { code: 'scholarly_research', pattern: /\bopenalex\b|\bscholarly\b|\bacademic\b|\bliterature review\b|\bcitation graph\b|\bcrossref\b|\bdoi\b|\bjournal article\b|\bpublication metadata\b|\bsemantic scholar\b|\bs2ag\b|\bcorpus id\b/i, mode: 'source_acquisition', providers: ['openalex.works', 'crossref.works', 'semantic_scholar.paper_search'] },
+  { code: 'preprint_research', pattern: /\barxiv\b|\bpreprint\b/i, mode: 'source_acquisition', providers: ['arxiv.query', 'semantic_scholar.paper_search'] },
+  { code: 'biomedical_research', pattern: /\bpubmed\b|\bpmid\b|\bbiomedical\b|\bncbi\b/i, mode: 'source_acquisition', providers: ['pubmed.esearch_summary'] },
+  { code: 'feed_research', pattern: /\brss\b|\batom feed\b|\bpodcast feed\b|\bsitemap\b|\bsite map\b/i, mode: 'source_acquisition', providers: ['rss.feed', 'feed.sitemap'] },
+  { code: 'media_research', pattern: /\byoutube\b|\bvideo\b|\baudio\b|\bpodcast\b|\btranscript\b/i, mode: 'web_research' },
+  { code: 'social_research', pattern: /\bsocial\b|\btwitter\b|\bx\.com\b|\btweets?\b|\bthreads?\b/i, mode: 'web_research' },
   { code: 'interview_quote_research', pattern: /\binterview\s+quotes?\b|\bverbatim\b/i, mode: 'web_research' },
   { code: 'source_acquisition', pattern: /\bscrape\b|\bcrawl\b|\bfetch\b|\bdownload\b|\bhttp(?:s)?:\/\//i, mode: 'source_acquisition' },
   { code: 'secondary_source_scope', pattern: /\bsecondary\s+sources?\b|\bsource_type\b|\bsource\s+scope\b/i, mode: 'web_research' }
@@ -148,7 +157,10 @@ function normalizeContract(contract = {}) {
       ? Number(contract.minSuccessfulSources)
       : (contract.required ? 1 : 0),
     allowNullFindingsWithSourceEvidence: contract.allowNullFindingsWithSourceEvidence !== false,
-    reasonCodes: Array.isArray(contract.reasonCodes) ? contract.reasonCodes : []
+    reasonCodes: Array.isArray(contract.reasonCodes) ? contract.reasonCodes : [],
+    sourceProviderHints: Array.isArray(contract.sourceProviderHints)
+      ? [...new Set(contract.sourceProviderHints.map(String).filter(Boolean))]
+      : []
   };
 }
 
@@ -166,11 +178,13 @@ function deriveResearchContract(input = {}) {
   const localOnly = LOCAL_ONLY_PATTERNS.some(pattern => pattern.test(text));
   const reasonCodes = [];
   const modes = [];
+  const sourceProviderHints = [];
 
   for (const rule of SOURCE_REQUIRED_PATTERNS) {
     if (rule.pattern.test(text)) {
       reasonCodes.push(rule.code);
       modes.push(rule.mode);
+      sourceProviderHints.push(...normalizeArray(rule.providers));
     }
   }
 
@@ -197,7 +211,8 @@ function deriveResearchContract(input = {}) {
     requiredQueries: extractWebSearchQueries(text),
     minSuccessfulSources: required ? 1 : 0,
     allowNullFindingsWithSourceEvidence: true,
-    reasonCodes: [...new Set(reasonCodes)]
+    reasonCodes: [...new Set(reasonCodes)],
+    sourceProviderHints: [...new Set(sourceProviderHints.map(String).filter(Boolean))]
   };
 }
 
