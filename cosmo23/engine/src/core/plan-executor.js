@@ -30,6 +30,10 @@ const {
   evaluateResearchEvidence,
   collectResearchEvidence
 } = require('./research-contract');
+const {
+  getExpectedOutputSpecs: getTaskExpectedOutputSpecs,
+  validateExpectedOutputs: validateTaskExpectedOutputs
+} = require('./task-completion-validator');
 
 class PlanExecutor {
   constructor(stateStore, agentExecutor, logger, options = {}) {
@@ -63,6 +67,21 @@ class PlanExecutor {
     // Configuration
     this.maxRetries = options.maxRetries || 3;
     this.agentTimeout = options.agentTimeout || 720000; // 12 minutes
+  }
+
+  getTaskAgentScope(task = this.activeTask) {
+    if (!task) return {};
+
+    return {
+      taskId: task.id,
+      planId: this.plan?.id || task.planId || task.metadata?.planId || null,
+      planCreatedAt: this.plan?.createdAt || this.plan?.metadata?.createdAt || null,
+      taskCreatedAt: task.createdAt || task.metadata?.createdAt || task.metadata?.baseTimestamp || null,
+      baseTimestamp: task.metadata?.baseTimestamp || null,
+      assignedAgentId: task.assignedAgentId && task.assignedAgentId !== 'PENDING_SPAWN'
+        ? task.assignedAgentId
+        : null
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -116,7 +135,10 @@ class PlanExecutor {
         
         // Fallback: Check by taskId (finds any agent working on this task)
         if (!this.taskAgent) {
-          const taskStatus = registry.getTaskAgentStatus(this.activeTask.id);
+          const taskStatus = registry.getTaskAgentStatus(
+            this.activeTask.id,
+            this.getTaskAgentScope(this.activeTask)
+          );
           if (taskStatus.hasActiveAgent) {
             this.taskAgent = taskStatus.activeAgent;
           } else if (taskStatus.hasCompletedWork) {
@@ -616,7 +638,10 @@ class PlanExecutor {
     const registry = this.agentExecutor?.registry;
     if (!registry) return null;
     
-    const taskStatus = registry.getTaskAgentStatus(this.activeTask.id);
+    const taskStatus = registry.getTaskAgentStatus(
+      this.activeTask.id,
+      this.getTaskAgentScope(this.activeTask)
+    );
 
     // CRITICAL LOGGING (Jan 21, 2026): Track task agent status for plan execution debugging
     this.logger.info('[PlanExecutor] checkAgent - task status', {
@@ -697,6 +722,10 @@ class PlanExecutor {
       phase: this.activePhase?.title,
       researchContractRequired: researchContract.required
     });
+
+    const taskTools = Array.isArray(this.activeTask.metadata?.tools)
+      ? this.activeTask.metadata.tools
+      : (Array.isArray(this.activeTask.tools) ? this.activeTask.tools : []);
     
     // Build comprehensive mission spec
     const missionSpec = {
@@ -707,6 +736,7 @@ class PlanExecutor {
       planId: this.plan.id,
       milestoneId: this.activePhase?.id,
       description: this.activeTask.description || this.activeTask.title,
+      tools: taskTools,
       // FIX (Jan 21, 2026): Don't pass strict acceptance criteria as success criteria
       // The rubrics like "Minimum 1500 words" and ">=50 sources" made agents too conservative
       // Keep acceptance criteria for VALIDATION only, not as agent instructions
@@ -730,6 +760,9 @@ class PlanExecutor {
         phaseTitle: this.activePhase?.title,
         phaseNumber: this.activePhase?.order,
         taskTitle: this.activeTask.title,
+        taskId: this.activeTask.id,
+        planId: this.plan.id,
+        tools: taskTools,
         isPlanTask: true,
         guidedMission: true,
         sourceScope: this.activeTask.metadata?.sourceScope || null,
@@ -1110,10 +1143,15 @@ class PlanExecutor {
       const expectedValidation = await this.validateExpectedOutputs(expectedOutputs, artifacts);
 
       if (!expectedValidation.passed) {
+        const invalid = (expectedValidation.invalid || []).map(item => `${item.label} (${item.reason})`);
+        const missing = (expectedValidation.missing || []).map(item => item.label);
         return {
           passed: false,
           artifacts,
-          reason: `Missing expected output: ${expectedValidation.missing.map(item => item.label).join(', ')}`
+          reason: [
+            missing.length > 0 ? `Missing expected output: ${missing.join(', ')}` : null,
+            invalid.length > 0 ? `Invalid expected output: ${invalid.join(', ')}` : null
+          ].filter(Boolean).join('; ')
         };
       }
 
@@ -1126,7 +1164,8 @@ class PlanExecutor {
         );
 
         if (!alreadyTracked) {
-        artifacts.push(artifact);
+          artifacts.push(artifact);
+        }
       }
     }
 
@@ -1149,8 +1188,7 @@ class PlanExecutor {
         };
       }
     }
-    }
-    
+
     // No criteria = auto-pass if there are any artifacts
     if (criteria.length === 0) {
       return {
@@ -1179,63 +1217,7 @@ class PlanExecutor {
   }
 
   getExpectedOutputSpecs(task) {
-    if (!task) return [];
-
-    const specs = [];
-    const addSpec = (raw, source = 'metadata') => {
-      if (!raw) return;
-
-      if (Array.isArray(raw)) {
-        for (const item of raw) addSpec(item, source);
-        return;
-      }
-
-      if (typeof raw === 'object') {
-        if (raw.path) addSpec(raw.path, source);
-        if (raw.file) addSpec(raw.file, source);
-        if (raw.filename && raw.location) addSpec(`${raw.location}${raw.filename}`, source);
-        return;
-      }
-
-      if (typeof raw !== 'string') return;
-
-      const parts = raw
-        .split(',')
-        .map(part => part.trim())
-        .filter(Boolean);
-
-      for (const part of parts) {
-        const cleaned = part.replace(/^["'`]+|["'`.,;:]+$/g, '');
-        if (cleaned) specs.push({ label: cleaned, source });
-      }
-    };
-
-    addSpec(task.metadata?.expectedOutput, 'metadata.expectedOutput');
-    addSpec(task.expectedOutput, 'task.expectedOutput');
-    addSpec(task.deliverable, 'task.deliverable');
-
-    const deliverableSpec = task.metadata?.deliverableSpec;
-    if (deliverableSpec?.filename && deliverableSpec?.location) {
-      addSpec(`${deliverableSpec.location}${deliverableSpec.filename}`, 'metadata.deliverableSpec');
-    }
-
-    for (const criterion of task.acceptanceCriteria || []) {
-      const rubric = typeof criterion?.rubric === 'string' ? criterion.rubric : '';
-      const matches = rubric.match(/@outputs\/[^\s`'",)]+/g) || [];
-      for (const match of matches) addSpec(match, 'acceptanceCriteria');
-    }
-
-    const deduped = [];
-    const seen = new Set();
-    for (const spec of specs) {
-      const key = spec.label;
-      if (!seen.has(key)) {
-        seen.add(key);
-        deduped.push(spec);
-      }
-    }
-
-    return deduped;
+    return getTaskExpectedOutputSpecs(task);
   }
 
   resolveOutputRoot() {
@@ -1288,54 +1270,11 @@ class PlanExecutor {
   }
 
   async validateExpectedOutputs(expectedOutputs, artifacts) {
-    const presentArtifacts = [];
-    const missing = [];
-
-    for (const expected of expectedOutputs) {
-      const absolutePath = this.resolveExpectedOutputPath(expected.label);
-      if (!absolutePath) {
-        missing.push(expected);
-        continue;
-      }
-
-      try {
-        const stat = await fs.stat(absolutePath);
-        if (!stat.isFile() || stat.size <= 0) {
-          missing.push(expected);
-          continue;
-        }
-
-        const outputRoot = this.resolveOutputRoot();
-        const relativePath = outputRoot && absolutePath.startsWith(outputRoot)
-          ? path.relative(outputRoot, absolutePath)
-          : path.basename(absolutePath);
-
-        presentArtifacts.push({
-          type: 'file',
-          path: relativePath,
-          absolutePath,
-          size: stat.size,
-          source: 'expected_output_contract',
-          expectedOutput: expected.label
-        });
-      } catch {
-        const alreadyTracked = artifacts.some(artifact =>
-          artifact.absolutePath === absolutePath ||
-          artifact.path === expected.label ||
-          artifact.path === path.basename(absolutePath)
-        );
-
-        if (!alreadyTracked) {
-          missing.push(expected);
-        }
-      }
-    }
-
-    return {
-      passed: missing.length === 0,
-      missing,
-      artifacts: presentArtifacts
-    };
+    return await validateTaskExpectedOutputs(expectedOutputs, artifacts, {
+      pathResolver: this.pathResolver,
+      outputRoot: this.resolveOutputRoot(),
+      logger: this.logger
+    });
   }
 
   // ═══════════════════════════════════════════════════════════════

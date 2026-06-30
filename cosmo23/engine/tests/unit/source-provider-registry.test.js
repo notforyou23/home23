@@ -179,6 +179,43 @@ describe('SourceProviderRegistry', () => {
     expect(result.candidates).to.have.length(1);
   });
 
+  it('selects a broad source mesh for source-required fan anecdote research', () => {
+    const registry = new SourceProviderRegistry(logger, {}, {});
+    const providers = registry.selectProviders('Find fan anecdotes and listener reviews for Jerry Garcia side project shows', {
+      sourceRequired: true,
+      mission: {
+        description: 'Extract fan recollections, source_url fields, and forum memories.',
+        metadata: {
+          researchContract: {
+            required: true,
+            sourceProviderHints: ['archive.reviews']
+          }
+        }
+      }
+    });
+
+    expect(providers).to.include('web.search');
+    expect(providers).to.include('archive.advancedsearch');
+    expect(providers).to.include('archive.reviews');
+  });
+
+  it('does not leave generic source-required research with only one route', () => {
+    const registry = new SourceProviderRegistry(logger, {}, {});
+    const providers = registry.selectProviders('Research the history of a local music venue', {
+      sourceRequired: true,
+      mission: {
+        metadata: {
+          researchContract: { required: true }
+        }
+      }
+    });
+
+    expect(providers).to.include('web.search');
+    expect(providers).to.include('archive.advancedsearch');
+    expect(providers).to.include('wikidata.entity_search');
+    expect(providers.length).to.be.greaterThan(1);
+  });
+
   it('extracts Internet Archive reviews and file candidates from metadata', async () => {
     const fetchImpl = async (url) => {
       const value = String(url);
@@ -395,5 +432,28 @@ describe('SourceProviderRegistry', () => {
       savedMarkdownTo: '/tmp/x-research.md'
     });
     expect(result.candidates[0].metadata.expandedUrls).to.deep.equal(['https://example.com/source']);
+  });
+
+  it('passes browser context through to Home23 skill providers', async () => {
+    const skillCalls = [];
+    const browser = { kind: 'browser-session' };
+    const registry = new SourceProviderRegistry(logger, {
+      home23ProjectRoot: '/Users/jtr/_JTR23_/release/home23'
+    }, {
+      skillRuntime: {
+        executeSkill: async (skillId, action, params, context) => {
+          skillCalls.push({ skillId, action, params, context });
+          return { success: true, tweets: [] };
+        }
+      }
+    });
+
+    await registry.acquire('Search X for browser-backed research', {
+      providers: ['home23.skill.x_research.search'],
+      browser,
+      workspacePath: '/tmp/cosmo-run'
+    });
+
+    expect(skillCalls[0].context.browser).to.equal(browser);
   });
 });

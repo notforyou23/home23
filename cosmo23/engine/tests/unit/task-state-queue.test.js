@@ -90,4 +90,141 @@ describe('TaskStateQueue replay safety', () => {
     expect(upsertCalled).to.equal(false);
     expect(queue.getPending()).to.have.length(0);
   });
+
+  it('rejects COMPLETE_TASK when the named expected output is missing', async () => {
+    const queue = new TaskStateQueue(tmpDir, logger());
+    await queue.initialize();
+    await queue.enqueue({
+      type: 'COMPLETE_TASK',
+      taskId: 'task:phase1',
+      phaseName: 'Write final deliverable',
+      source: 'validation_passed'
+    });
+
+    let completeCalled = false;
+    let failureReason = null;
+    const stateStore = {
+      getPlan: async () => ({ id: 'plan:main', createdAt: 1000 }),
+      getTask: async () => ({
+        id: 'task:phase1',
+        planId: 'plan:main',
+        title: 'Write final deliverable',
+        metadata: {
+          expectedOutput: '@outputs/final-report.md'
+        }
+      }),
+      completeTask: async () => {
+        completeCalled = true;
+      },
+      failTask: async (_taskId, reason) => {
+        failureReason = reason;
+      }
+    };
+
+    await queue.processAll(stateStore, null);
+
+    expect(completeCalled).to.equal(false);
+    expect(failureReason).to.include('Missing expected output');
+  });
+
+  it('rejects COMPLETE_TASK when the expected JSON artifact is invalid', async () => {
+    const outputDir = path.join(tmpDir, 'outputs');
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(path.join(outputDir, 'bad.json'), '{"entries": [}\n');
+
+    const queue = new TaskStateQueue(tmpDir, logger());
+    await queue.initialize();
+    await queue.enqueue({
+      type: 'COMPLETE_TASK',
+      taskId: 'task:phase1',
+      phaseName: 'Write JSON',
+      artifacts: [{ path: 'outputs/bad.json' }],
+      source: 'validation_passed'
+    });
+
+    let completeCalled = false;
+    let failureReason = null;
+    const stateStore = {
+      getPlan: async () => ({ id: 'plan:main', createdAt: 1000 }),
+      getTask: async () => ({
+        id: 'task:phase1',
+        planId: 'plan:main',
+        title: 'Write JSON',
+        metadata: {
+          expectedOutput: '@outputs/bad.json'
+        }
+      }),
+      completeTask: async () => {
+        completeCalled = true;
+      },
+      failTask: async (_taskId, reason) => {
+        failureReason = reason;
+      }
+    };
+
+    await queue.processAll(stateStore, null);
+
+    expect(completeCalled).to.equal(false);
+    expect(failureReason).to.include('Invalid expected output');
+    expect(failureReason).to.include('invalid_json');
+  });
+
+  it('allows COMPLETE_TASK only when expected output and source evidence are both valid', async () => {
+    const outputDir = path.join(tmpDir, 'outputs', 'raw-anecdotes');
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(
+      path.join(outputDir, 'web-search-results.json'),
+      JSON.stringify({
+        entries: [
+          {
+            source_url: 'https://example.com/thread',
+            anecdote_text: 'A sourced anecdote record.'
+          }
+        ]
+      })
+    );
+
+    const queue = new TaskStateQueue(tmpDir, logger());
+    await queue.initialize();
+    await queue.enqueue({
+      type: 'COMPLETE_TASK',
+      taskId: 'task:phase1',
+      phaseName: 'Acquire sources',
+      artifacts: [{ path: 'outputs/raw-anecdotes/web-search-results.json' }],
+      researchEvidence: {
+        queriesAttempted: 1,
+        queriesExecuted: 1,
+        sourcesFound: 1,
+        successfulSources: 1
+      },
+      source: 'plan_executor'
+    });
+
+    let completeClosure = null;
+    let failCalled = false;
+    const stateStore = {
+      getPlan: async () => ({ id: 'plan:main', createdAt: 1000 }),
+      getTask: async () => ({
+        id: 'task:phase1',
+        planId: 'plan:main',
+        title: 'Acquire sources',
+        description: 'Execute web_search queries and record source_url evidence.',
+        metadata: {
+          expectedOutput: '@outputs/raw-anecdotes/web-search-results.json'
+        }
+      }),
+      completeTask: async (_taskId, closure) => {
+        completeClosure = closure;
+      },
+      failTask: async () => {
+        failCalled = true;
+      }
+    };
+
+    await queue.processAll(stateStore, null);
+
+    expect(failCalled).to.equal(false);
+    expect(completeClosure).to.not.equal(null);
+    expect(completeClosure.artifacts).to.have.length(1);
+  });
 });

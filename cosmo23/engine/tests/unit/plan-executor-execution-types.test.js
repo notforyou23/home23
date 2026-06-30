@@ -157,7 +157,12 @@ describe('PlanExecutor output-contract validation', function() {
 
     await fs.writeFile(
       path.join(outputDir, 'jerry-garcia-side-projects-shows.md'),
-      '# Jerry Garcia Side Project Shows\n\nVerified deliverable.\n'
+      [
+        '# Jerry Garcia Side Project Shows',
+        '',
+        'Verified deliverable with enough body text to prove this is not an empty placeholder.',
+        'It records the intended final markdown artifact for the acceptance gate.'
+      ].join('\n')
     );
 
     const present = await pe.validateTaskOutput([]);
@@ -190,7 +195,10 @@ describe('PlanExecutor output-contract validation', function() {
   it('does not pass a source-required task with only generic files and no source evidence', async function() {
     const outputDir = path.join(tempRoot, 'outputs');
     await fs.mkdir(path.join(outputDir, 'raw-anecdotes'), { recursive: true });
-    await fs.writeFile(path.join(outputDir, 'raw-anecdotes', 'web-search-results.json'), '{"entries":[]}\n');
+    await fs.writeFile(
+      path.join(outputDir, 'raw-anecdotes', 'web-search-results.json'),
+      '{"entries":[{"note":"generic artifact without source proof"}]}\n'
+    );
 
     const pe = makeExecutor(outputDir);
     pe.activeTask = {
@@ -215,10 +223,52 @@ describe('PlanExecutor output-contract validation', function() {
     expect(validation.reason).to.include('Research contract failed');
   });
 
+  it('does not pass an expected JSON output that exists but cannot be parsed', async function() {
+    const outputDir = path.join(tempRoot, 'outputs');
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(path.join(outputDir, 'broken.json'), '{"records": [}\n');
+
+    const pe = makeExecutor(outputDir);
+    pe.activeTask = {
+      id: 'task:broken-json',
+      title: 'Write structured records',
+      acceptanceCriteria: [],
+      metadata: {
+        expectedOutput: '@outputs/broken.json'
+      }
+    };
+
+    const validation = await pe.validateTaskOutput([]);
+    expect(validation.passed).to.equal(false);
+    expect(validation.reason).to.include('Invalid expected output');
+    expect(validation.reason).to.include('invalid_json');
+  });
+
+  it('does not skip source-contract validation when no explicit expected output exists', async function() {
+    const outputDir = path.join(tempRoot, 'outputs');
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(path.join(outputDir, 'generic-note.md'), '# Generic Note\n\nA generic artifact exists but contains no source route proof.\n');
+
+    const pe = makeExecutor(outputDir);
+    pe.activeTask = {
+      id: 'task:source-no-expected',
+      title: 'Acquire source evidence',
+      description: 'Use web_search to find source_url evidence for the claim.',
+      acceptanceCriteria: []
+    };
+
+    const validation = await pe.validateTaskOutput([]);
+    expect(validation.passed).to.equal(false);
+    expect(validation.reason).to.include('Research contract failed');
+  });
+
   it('passes a source-required task when source evidence exists and expected file is present', async function() {
     const outputDir = path.join(tempRoot, 'outputs');
     await fs.mkdir(path.join(outputDir, 'raw-anecdotes'), { recursive: true });
-    await fs.writeFile(path.join(outputDir, 'raw-anecdotes', 'archive-org-comments.json'), '{"entries":[],"status":"no_comments_found"}\n');
+    await fs.writeFile(
+      path.join(outputDir, 'raw-anecdotes', 'archive-org-comments.json'),
+      '{"entries":[],"status":"no_comments_found","urls_searched":["https://archive.org/details/show"]}\n'
+    );
 
     const pe = makeExecutor(outputDir);
     pe.activeTask = {
@@ -294,5 +344,129 @@ describe('PlanExecutor output-contract validation', function() {
     expect(updates.milestones[0].status).to.equal('BLOCKED');
     expect(updates.plans[0].patch.status).to.equal('BLOCKED');
     expect(updates.plans[0].patch.blockedReason).to.include('All tasks failed');
+  });
+
+  it('assigns a fresh task instead of judging it from stale completed agents with the same id', async function() {
+    let observedScope = null;
+    const spawned = [];
+    const stateStore = {
+      upsertTask: async () => true,
+      releaseTask: async () => true
+    };
+    const agentExecutor = {
+      registry: {
+        getTaskAgentStatus: (taskId, scope) => {
+          observedScope = scope;
+          if (!scope) {
+            return {
+              hasActiveAgent: false,
+              activeAgent: null,
+              completedCount: 1,
+              failedCount: 0,
+              accomplishedCount: 0,
+              allCompleted: [
+                {
+                  agent: {
+                    agentId: 'agent_old',
+                    accomplishment: { accomplished: false }
+                  },
+                  mission: { taskId, planId: 'plan:main' },
+                  registeredAt: new Date('2026-06-30T14:00:00.000Z')
+                }
+              ],
+              allFailed: [],
+              allAccomplished: [],
+              isBeingWorked: false,
+              hasCompletedWork: true,
+              hasAccomplishedWork: false,
+              allFailed: false
+            };
+          }
+
+          return {
+            hasActiveAgent: false,
+            activeAgent: null,
+            completedCount: 0,
+            failedCount: 0,
+            accomplishedCount: 0,
+            allCompleted: [],
+            allFailed: [],
+            allAccomplished: [],
+            isBeingWorked: false,
+            hasCompletedWork: false,
+            hasAccomplishedWork: false,
+            allFailed: false
+          };
+        }
+      },
+      spawnAgent: async (spec) => {
+        spawned.push(spec);
+        return 'agent_current';
+      }
+    };
+
+    const pe = new PlanExecutor(stateStore, agentExecutor, logger, { maxRetries: 1 });
+    pe.plan = {
+      id: 'plan:main',
+      title: 'Fresh plan',
+      createdAt: new Date('2026-06-30T15:00:00.000Z')
+    };
+    pe.activePhase = { id: 'ms:phase1', title: 'Phase 1', order: 1 };
+    pe.activeTask = {
+      id: 'task:phase1',
+      title: 'Fresh memory compile',
+      description: 'Read current memory and write fresh outputs.',
+      state: 'IN_PROGRESS',
+      createdAt: new Date('2026-06-30T15:00:00.000Z'),
+      assignedAgentId: null,
+      metadata: { agentType: 'ide' }
+    };
+
+    const result = await pe.checkAgent();
+
+    expect(observedScope).to.include({
+      planId: 'plan:main',
+      taskId: 'task:phase1'
+    });
+    expect(result.action).to.equal('AGENT_ASSIGNED');
+    expect(spawned).to.have.length(1);
+    expect(spawned[0].taskId).to.equal('task:phase1');
+  });
+
+  it('forwards persisted task tools into spawned mission specs', async function() {
+    const spawned = [];
+    const pe = new PlanExecutor(
+      {
+        upsertTask: async () => true,
+        releaseTask: async () => true
+      },
+      {
+        registry: {},
+        spawnAgent: async (spec) => {
+          spawned.push(spec);
+          return 'agent-tools';
+        }
+      },
+      logger,
+      {}
+    );
+
+    pe.plan = { id: 'plan:main', title: 'Tool plan' };
+    pe.activePhase = { id: 'ms:phase1', title: 'Phase 1', order: 1 };
+    pe.activeTask = {
+      id: 'task:phase1',
+      title: 'Compile current memory',
+      description: 'Query memory, read files, then write outputs.',
+      metadata: {
+        agentType: 'ide',
+        tools: ['query_memory', 'read_file', 'write_file']
+      }
+    };
+
+    const result = await pe.assignAgent();
+
+    expect(result.action).to.equal('AGENT_ASSIGNED');
+    expect(spawned[0].tools).to.deep.equal(['query_memory', 'read_file', 'write_file']);
+    expect(spawned[0].metadata.tools).to.deep.equal(['query_memory', 'read_file', 'write_file']);
   });
 });

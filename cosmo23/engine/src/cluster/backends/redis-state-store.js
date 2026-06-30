@@ -14,6 +14,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const { CRDTMerger } = require('./crdt-merger');
 const { IdempotencyTracker } = require('../idempotency-tracker');
+const { validateTaskCompletionClosure } = require('../../core/task-completion-validator');
 
 const gzip = promisify(zlib.gzip);
 const gunzip = promisify(zlib.gunzip);
@@ -1670,6 +1671,34 @@ class RedisStateStore {
     try {
       const task = await this.getTask(taskId);
       if (!task) throw new Error('Task not found');
+
+      const validation = await validateTaskCompletionClosure(task, closure, {
+        logsDir: this.config.logsDir || this.config.runtimePath || this.config.fsRoot || null,
+        logger: this.logger
+      });
+
+      if (!validation.passed) {
+        const reason = `Task completion rejected: ${validation.reason}`;
+        task.state = 'FAILED';
+        task.failureReason = reason;
+        task.failedAt = Date.now();
+        task.updatedAt = Date.now();
+        task.artifactClosure = {
+          status: 'completion_rejected',
+          reasonCode: validation.reasonCode,
+          reason,
+          source: closure.source || 'redis_state_store',
+          updatedAt: Date.now()
+        };
+
+        await this.upsertTask(task);
+        this.logger.warn('[RedisStateStore] completeTask rejected by completion gate', {
+          taskId,
+          reasonCode: validation.reasonCode,
+          reason
+        });
+        return false;
+      }
       
       task.state = 'DONE';
       task.completedAt = Date.now();

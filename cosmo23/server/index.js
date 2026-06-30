@@ -61,6 +61,10 @@ const {
   repairAllRunMetadata
 } = require('./lib/run-metadata-repair');
 const {
+  summarizeRunArtifacts,
+  buildArtifactFirstContext
+} = require('./lib/run-artifact-inventory');
+const {
   getModelCatalogPath,
   loadModelCatalogSync,
   saveModelCatalogSync,
@@ -1698,8 +1702,44 @@ app.post('/api/stop', async (_req, res) => {
   }
 });
 
+async function readJsonFileIfPresent(filePath) {
+  try {
+    return JSON.parse(await fsp.readFile(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+async function readLatestJsonlObjectIfPresent(filePath) {
+  try {
+    const text = await fsp.readFile(filePath, 'utf8');
+    const lines = text.trim().split('\n').filter(Boolean);
+    if (lines.length === 0) return null;
+    return JSON.parse(lines[lines.length - 1]);
+  } catch {
+    return null;
+  }
+}
+
+async function loadActiveRunTruth(context) {
+  const runPath = context?.runPath;
+  if (!runPath) return {};
+
+  const [plan, commitmentDecision] = await Promise.all([
+    readJsonFileIfPresent(path.join(runPath, 'plans', 'plan:main.json')),
+    readLatestJsonlObjectIfPresent(path.join(runPath, 'commitment-governor-receipts.jsonl'))
+  ]);
+
+  return {
+    plan,
+    commitmentDecision,
+    artifactInventory: summarizeRunArtifacts(runPath)
+  };
+}
+
 app.get('/api/status', async (req, res) => {
   const processStatus = processManager.getStatus();
+  const runTruth = await loadActiveRunTruth(activeContext);
   // HOME23 PATCH — explicit health contract. Preserve legacy `running` while
   // exposing the individual truths so Home23 does not confuse API reachability,
   // launcher context, and child process state.
@@ -1707,6 +1747,7 @@ app.get('/api/status', async (req, res) => {
     activeContext,
     processStatus,
     isLaunching,
+    runTruth,
     ports: { app: PORT, websocket: WS_PORT, dashboard: DASHBOARD_PORT, mcpHttp: MCP_HTTP_PORT },
   });
   const running = health.activeRun;
@@ -1774,6 +1815,8 @@ app.post('/api/brain/:name/query', async (req, res) => {
       return res.status(404).json({ error: 'Brain not found' });
     }
 
+    const artifactInventory = summarizeRunArtifacts(brain.path);
+    const artifactContext = buildArtifactFirstContext(artifactInventory);
     const queryEngine = await getQueryEngine(brain.path);
     const queryDefaults = getCatalogDefaults();
     const result = await queryEngine.executeEnhancedQuery(req.body.query, {
@@ -1794,10 +1837,12 @@ app.post('/api/brain/:name/query', async (req, res) => {
       pgsConfig: req.body.pgsConfig || null,
       pgsSweepModel: req.body.pgsSweepModel || null,
       synthesis: req.body.synthesis || null,
-      explicitProvider: req.body.provider || null
+      explicitProvider: req.body.provider || null,
+      artifactContext
     });
 
     result.query = req.body.query;
+    result.artifactInventory = artifactInventory;
     res.json(result);
   } catch (error) {
     res.status(500).json({
@@ -1825,6 +1870,8 @@ app.post('/api/brain/:name/query/stream', async (req, res) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
+    const artifactInventory = summarizeRunArtifacts(brain.path);
+    const artifactContext = buildArtifactFirstContext(artifactInventory);
     const queryEngine = await getQueryEngine(brain.path);
     const queryDefaults = getCatalogDefaults();
     await queryEngine.executeEnhancedQuery(req.body.query, {
@@ -1846,10 +1893,12 @@ app.post('/api/brain/:name/query/stream', async (req, res) => {
       pgsSweepModel: req.body.pgsSweepModel || null,
       synthesis: req.body.synthesis || null,
       explicitProvider: req.body.provider || null,
+      artifactContext,
       onChunk: (event) => {
         res.write(`data: ${JSON.stringify(event)}\n\n`);
       }
     }).then(result => {
+      result.artifactInventory = artifactInventory;
       res.write(`data: ${JSON.stringify({ type: 'complete', result })}\n\n`);
       res.end();
     }).catch(error => {

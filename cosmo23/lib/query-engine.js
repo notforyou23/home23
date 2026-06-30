@@ -8,6 +8,7 @@ const fs = require('fs').promises;
 const fsSync = require('fs');
 const zlib = require('zlib');
 const yaml = require('js-yaml');
+const crypto = require('crypto');
 const { promisify } = require('util');
 const gunzip = promisify(zlib.gunzip);
 const OpenAI = require('openai');
@@ -1467,7 +1468,7 @@ STYLE:
     'gpt-5.1': 128000,
     'gpt-5-mini': 128000,
     'gpt-5.1-codex-max': 128000,
-    'claude-opus-4-7': 200000,
+    'claude-opus-4-8': 200000,
     'claude-opus-4-6': 200000,
     'claude-opus-4-5': 200000,  // Conservative estimate for Opus 4.5
     'claude-opus': 200000,
@@ -1492,7 +1493,7 @@ STYLE:
     'gpt-5.1': 3000,       // 128K context
     'gpt-5-mini': 2500,    // 128K but smaller model, more conservative
     'gpt-5.1-codex-max': 3000,
-    'claude-opus-4-7': 4200,
+    'claude-opus-4-8': 4200,
     'claude-opus-4-6': 4200,
     'claude-opus-4-5': 4000,  // ~200K context, excellent for large brains
     'claude-opus': 4000,
@@ -1674,6 +1675,7 @@ STYLE:
       priorContext = null, // NEW: For follow-up queries - includes prior query and answer
       onChunk = null, // NEW (2026-01-21): Optional streaming callback
       explicitProvider = null, // NEW: Explicit provider override (e.g. 'openai-codex')
+      artifactContext = null, // HOME23 PATCH — authoritative artifact inventory
       synthesis = null
     } = options;
 
@@ -1708,7 +1710,10 @@ STYLE:
     // Load data
     const state = await this.loadBrainState();
     const stateHash = getStateHashForCache(state);
-    const cacheKey = `${stateHash}:${query}:${model}:${mode}:${synthesisCommitConfig ? JSON.stringify(synthesisCommitConfig) : ''}`;
+    const artifactContextHash = artifactContext
+      ? crypto.createHash('sha256').update(String(artifactContext)).digest('hex').slice(0, 16)
+      : '';
+    const cacheKey = `${stateHash}:${query}:${model}:${mode}:${synthesisCommitConfig ? JSON.stringify(synthesisCommitConfig) : ''}:${artifactContextHash}`;
 
     if (this.queryCache.has(cacheKey)) {
       this.performanceMetrics.cacheHits++;
@@ -1764,6 +1769,10 @@ STYLE:
     
     // Build context - mode only affects display, not what data we gather
     let context = this.buildContext(state, relevantMemory, relevantThoughts, metrics, report, mode, outputFiles, model);
+
+    if (artifactContext) {
+      context = `${artifactContext}\n\n---\n\n${context}`;
+    }
     
     // Emit progress: generating response
     if (onChunk) {
@@ -4308,7 +4317,8 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
       baseMetadata = null,
       priorContext = null, // For follow-up queries
       onChunk = null, // NEW (2026-01-21): Optional streaming callback
-      explicitProvider = null // NEW: Explicit provider override (e.g. 'openai-codex')
+      explicitProvider = null, // NEW: Explicit provider override (e.g. 'openai-codex')
+      artifactContext = null // HOME23 PATCH — authoritative artifact inventory
     } = options;
 
     // PGS: Partitioned Graph Synthesis for full-coverage queries
@@ -4336,7 +4346,8 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
         pgsSweepModel,
         synthesis,
         onChunk,
-        explicitProvider
+        explicitProvider,
+        artifactContext
       });
     }
     
@@ -4410,6 +4421,7 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
       priorContext, // Pass through for follow-up queries
       onChunk, // NEW (2026-01-21): Pass through streaming callback
       explicitProvider, // NEW: Pass through explicit provider override
+      artifactContext,
       synthesis
     });
 

@@ -2086,3 +2086,20 @@ tests, and syntax checks passed for the touched runtime files.
   pending because no real OpenAI API key was available in the shell; `test:mcp`
   exits cleanly with an explicit idle-runtime skip when no `runtime/state.json.gz`
   exists.
+- **2026-06-30** — Patch 36 added the research acceptance layer that Patch 35
+  deliberately did not prove. Task completion is now hard-gated through a shared
+  validator: expected files must exist, parse, and have substance; source-
+  required tasks must carry source evidence; and both queue and filesystem/Redis
+  backends reject unverified `DONE` transitions. The source provider registry now
+  broadens source-required research into a route mesh instead of leaving generic
+  tasks on a single route, with explicit fan-anecdote routing through web search
+  plus Archive.org item/review routes. Interactive/query status now carries an
+  artifact-first filesystem inventory so the UI and LLM distinguish source URLs,
+  route receipts, query exports, raw-anecdote records, extracted records, invalid
+  JSON, and missing named deliverables before graph synthesis. Verification
+  passed: focused Mocha source/completion/contract suite (52), server artifact
+  and status node tests (9), syntax checks for patched COSMO files, and a live
+  Archive.org probe against two `jerrysideshows` identifiers that wrote
+  `outputs/acceptance-probe/archive-org-comments-live-probe.json`; the completion
+  validator accepted that source-backed probe while rejecting the missing
+  `@outputs/raw-anecdotes/archive-org-comments.json` deliverable.

@@ -3,6 +3,7 @@ const path = require('path');
 const zlib = require('zlib');
 
 const { buildStatusContract } = require('./status-contract');
+const { summarizeRunArtifacts } = require('./run-artifact-inventory');
 
 function sameResolvedPath(a, b) {
   if (!a || !b) return false;
@@ -126,6 +127,7 @@ function buildInteractiveLiveStatus({
   const state = readStateSummary(runPath);
   const metadata = readMetadataSummary(runPath);
   const metricsCycle = readLatestCycleFromMetrics(runPath);
+  const artifactInventory = summarizeRunArtifacts(runPath);
   const cycle = Number.isFinite(metricsCycle)
     ? metricsCycle
     : (Number.isFinite(state.cycle) ? state.cycle : 0);
@@ -148,7 +150,9 @@ function buildInteractiveLiveStatus({
     activeAgents: null,
     energy: roundMaybe(state.energy),
     coherence: null,
-    sleeping: Boolean(state.sleeping)
+    sleeping: Boolean(state.sleeping),
+    artifactInventory,
+    artifactStatus: artifactInventory.answerSubstrate
   };
 }
 

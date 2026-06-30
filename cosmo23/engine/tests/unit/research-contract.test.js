@@ -108,6 +108,29 @@ describe('ResearchContract', () => {
     expect(contract.sourceProviderHints).to.include('home23.skill.x_research.search');
   });
 
+  it('does not leak archive or X providers into a Reddit-only source scope', () => {
+    const contract = deriveResearchContract({
+      agentType: 'dataacquisition',
+      description: 'Scrape Reddit fan recollection threads and save raw thread JSON.',
+      sourceScope: 'Reddit r/gratefuldead only',
+      metadata: {
+        sourceScope: 'Reddit r/gratefuldead only',
+        researchDigest: {
+          priorityGaps: [
+            'Archive.org review scraping is a separate phase',
+            'X/Twitter discourse is a separate phase'
+          ]
+        }
+      }
+    });
+
+    expect(contract.required).to.equal(true);
+    expect(contract.sourceProviderHints).to.not.include('archive.advancedsearch');
+    expect(contract.sourceProviderHints).to.not.include('archive.metadata');
+    expect(contract.sourceProviderHints).to.not.include('archive.reviews');
+    expect(contract.sourceProviderHints).to.not.include('home23.skill.x_research.search');
+  });
+
   it('does not turn local-memory missions into external source obligations', () => {
     const contract = deriveResearchContract({
       agentType: 'ide',
@@ -222,6 +245,26 @@ describe('ResearchContract', () => {
 
     expect(result.passed).to.equal(true);
     expect(result.reasonCode).to.equal('source_evidence_present');
+  });
+
+  it('does not treat bytes alone as successful source evidence', () => {
+    const contract = deriveResearchContract({
+      agentType: 'dataacquisition',
+      description: 'Scrape Reddit fan recollection threads and save source_url evidence.',
+      sourceScope: 'Reddit r/gratefuldead only'
+    });
+
+    const result = evaluateResearchEvidence(contract, {
+      bytesAcquired: 80000,
+      sourcesFound: 0,
+      sourcesContacted: 0,
+      successfulSources: 0,
+      pagesAcquired: 0,
+      filesDownloaded: 0
+    });
+
+    expect(result.passed).to.equal(false);
+    expect(result.reasonCode).to.equal('missing_source_evidence');
   });
 
   it('collects evidence from agent state, final result metadata, and acquisition manifests', () => {

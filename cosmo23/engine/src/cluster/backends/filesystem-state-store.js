@@ -13,6 +13,7 @@ const { FilesystemHelpers } = require('../fs/helpers');
 const { LeaderElection } = require('../fs/leader-election');
 const { Reconciler } = require('../fs/reconciler');
 const crypto = require('crypto');
+const { validateTaskCompletionClosure } = require('../../core/task-completion-validator');
 
 class FilesystemStateStore {
   constructor(config, logger) {
@@ -2000,6 +2001,43 @@ class FilesystemStateStore {
       }
       
       const oldState = task.state;
+      const validation = await validateTaskCompletionClosure(task, closure, {
+        logsDir: this.fsRoot,
+        logger: this.logger
+      });
+
+      if (!validation.passed) {
+        const reason = `Task completion rejected: ${validation.reason}`;
+        task.state = 'FAILED';
+        task.failureReason = reason;
+        task.failedAt = Date.now();
+        task.updatedAt = Date.now();
+        task.artifactClosure = {
+          status: 'completion_rejected',
+          reasonCode: validation.reasonCode,
+          reason,
+          source: closure.source || 'filesystem_state_store',
+          updatedAt: Date.now()
+        };
+
+        await this.helpers.atomicWriteJSON(taskPath, task);
+        await this.appendToEventLog({
+          type: 'TASK_COMPLETION_REJECTED',
+          taskId,
+          oldState,
+          newState: 'FAILED',
+          reason,
+          reasonCode: validation.reasonCode,
+          timestamp: Date.now()
+        });
+
+        this.logger.warn('[FilesystemStateStore] completeTask rejected by completion gate', {
+          taskId,
+          reasonCode: validation.reasonCode,
+          reason
+        });
+        return false;
+      }
       
       // Update state field (in-place)
       task.state = 'DONE';

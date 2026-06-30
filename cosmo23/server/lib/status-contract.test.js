@@ -27,6 +27,12 @@ test('buildStatusContract reports active run only when context and cosmo-main pr
   const status = buildStatusContract({
     activeContext: { runName: 'run-1', brainId: 'brain-1', topic: 'topic', startedAt: '2026-04-24T14:00:00Z', runPath: '/tmp/run-1' },
     processStatus: { running: [{ name: 'cosmo-main', pid: 1234, killed: false }], count: 1 },
+    runTruth: {
+      artifactInventory: {
+        answerSubstrate: 'records_present',
+        categories: { rawAnecdotes: { records: 2 } }
+      }
+    },
     ports,
     now,
   });
@@ -38,6 +44,7 @@ test('buildStatusContract reports active run only when context and cosmo-main pr
   assert.equal(status.process.count, 1);
   assert.deepEqual(status.process.runningNames, ['cosmo-main']);
   assert.equal(status.run.runName, 'run-1');
+  assert.equal(status.run.artifactInventory.answerSubstrate, 'records_present');
 });
 
 test('buildStatusContract distinguishes stale activeContext from live child process', () => {
@@ -79,4 +86,29 @@ test('buildStatusContract reports launching as its own lifecycle', () => {
 
   assert.equal(status.lifecycle, 'launching');
   assert.equal(status.isLaunching, true);
+});
+
+test('buildStatusContract reports blocked guided plans ahead of process-running truth', () => {
+  const status = buildStatusContract({
+    activeContext: { runName: 'blocked-run', runPath: '/tmp/blocked-run' },
+    processStatus: { running: [{ name: 'cosmo-main', pid: 1234, killed: false }], count: 1 },
+    runTruth: {
+      plan: {
+        status: 'BLOCKED',
+        blockedReason: 'Research contract failed: missing_source_evidence'
+      },
+      commitmentDecision: {
+        shouldStopForBlockedRun: true,
+        reasonCodes: ['guided_plan_blocked']
+      }
+    },
+    ports,
+    now,
+  });
+
+  assert.equal(status.lifecycle, 'blocked');
+  assert.equal(status.activeRun, false);
+  assert.equal(status.run.status, 'blocked');
+  assert.equal(status.run.blockedReason, 'Research contract failed: missing_source_evidence');
+  assert.equal(status.supervision.shouldStopForBlockedRun, true);
 });

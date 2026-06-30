@@ -45,11 +45,18 @@ class SourceProviderRegistry {
   }
 
   selectProviders(query = '', context = {}) {
+    const mission = context.mission || {};
+    const researchContract = context.researchContract || mission.researchContract || mission.metadata?.researchContract || {};
+    const sourceRequired = context.sourceRequired === true || researchContract.required === true;
+    const hasExplicitUrl = this.extractUrls([query, mission.description, mission.expectedOutput].filter(Boolean).join('\n')).length > 0;
     const text = [
       query,
-      context.mission?.description,
-      context.mission?.expectedOutput,
-      ...(context.mission?.successCriteria || [])
+      mission.description,
+      mission.expectedOutput,
+      mission.sourceScope,
+      mission.metadata?.sourceScope,
+      ...(mission.successCriteria || []),
+      ...(mission.acceptanceCriteria || [])
     ]
       .filter(Boolean)
       .join('\n')
@@ -60,10 +67,10 @@ class SourceProviderRegistry {
       return explicitProviders.filter(id => this.listProviders().includes(id));
     }
 
-    if (context.includeWebSearch === true) {
+    if (context.includeWebSearch === true || sourceRequired) {
       providers.add('web.search');
     }
-    if (/\b(archive\.org|internet archive|archive item|review thread|taper notes?)\b/.test(text)) {
+    if (/\b(archive\.org|internet archive|archive item|review thread|taper notes?|listener reviews?|fan\s+(?:anecdotes?|recollections?|memories?))\b/.test(text)) {
       providers.add('archive.advancedsearch');
     }
     if (/archive\.org\/details\//.test(text)) {
@@ -72,16 +79,21 @@ class SourceProviderRegistry {
     if (/\b(archive reviews?|review thread|listener reviews?)\b/.test(text)) {
       providers.add('archive.reviews');
     }
+    if (/\b(fan\s+(?:anecdotes?|recollections?|memories?)|forums?|user\s+notes?|taper notes?)\b/.test(text)) {
+      providers.add('web.search');
+      providers.add('archive.advancedsearch');
+      providers.add('archive.reviews');
+    }
     if (/\b(archive files?|download files?|file list|audio files?|ocr files?)\b/.test(text)) {
       providers.add('archive.files');
     }
-    if (/\b(wayback|web archive|historical captures?|mementos?)\b/.test(text)) {
+    if (hasExplicitUrl || /\b(wayback|web archive|historical captures?|mementos?)\b/.test(text)) {
       providers.add('wayback.availability');
     }
-    if (/\b(wayback cdx|cdx captures?|capture search)\b/.test(text)) {
+    if (hasExplicitUrl || /\b(wayback cdx|cdx captures?|capture search)\b/.test(text)) {
       providers.add('wayback.cdx');
     }
-    if (/\b(common crawl|warc|wet file|historical web crawl)\b/.test(text)) {
+    if (hasExplicitUrl || /\b(common crawl|warc|wet file|historical web crawl)\b/.test(text)) {
       providers.add('commoncrawl.cdx');
     }
     if (/\b(wikidata|knowledge graph|entity id|canonical entity|sparql)\b/.test(text)) {
@@ -116,6 +128,18 @@ class SourceProviderRegistry {
     }
     if (/\b(x profile|twitter profile|recent posts from|check @[\w_]+)\b/.test(text)) {
       providers.add('home23.skill.x_research.profile');
+    }
+
+    for (const hint of researchContract.sourceProviderHints || []) {
+      if (this.listProviders().includes(hint)) providers.add(hint);
+    }
+
+    if (sourceRequired && providers.size <= 1) {
+      // HOME23 PATCH — Patch 36: research cannot stall at a single route.
+      // Generic hard-research tasks get a broad first-pass mesh that proves
+      // which families were attempted before synthesis starts.
+      providers.add('archive.advancedsearch');
+      providers.add('wikidata.entity_search');
     }
 
     return [...providers];
@@ -778,7 +802,8 @@ class SourceProviderRegistry {
       workspacePath: options.workspacePath || options.outputDir || null,
       tempDir: options.tempDir || null,
       enginePort: options.enginePort || null,
-      chatId: options.chatId || null
+      chatId: options.chatId || null,
+      browser: options.browser || null
     });
   }
 

@@ -1,5 +1,6 @@
 const fs = require('fs').promises;
 const path = require('path');
+const { validateTaskCompletionClosure } = require('../core/task-completion-validator');
 
 /**
  * TaskStateQueue - Serializes all task state changes
@@ -159,35 +160,7 @@ class TaskStateQueue {
         return await stateStore.startTask(event.taskId, event.instanceId);
       
       case 'COMPLETE_TASK':
-        await stateStore.completeTask(event.taskId, {
-          artifacts: event.artifacts || event.producedArtifacts || [],
-          consumedArtifacts: event.consumedArtifacts || [],
-          producedArtifacts: event.producedArtifacts || event.artifacts || [],
-          updatedArtifacts: event.updatedArtifacts || [],
-          supersededArtifacts: event.supersededArtifacts || [],
-          promotedArtifacts: event.promotedArtifacts || [],
-          deprecatedArtifacts: event.deprecatedArtifacts || [],
-          failedArtifacts: event.failedArtifacts || [],
-          openDependencies: event.openDependencies || [],
-          newClaims: event.newClaims || [],
-          supportedClaims: event.supportedClaims || [],
-          supersededClaims: event.supersededClaims || [],
-          nextReuseInstructions: event.nextReuseInstructions || [],
-          closureStatus: event.closureStatus || null,
-          source: event.source || null
-        });
-        
-        // Update progress spine if orchestrator available
-        if (orchestrator?.recordPlanEvent) {
-          const phaseNum = event.taskId.match(/phase(\d+)/)?.[1] || '?';
-          orchestrator.recordPlanEvent('phase_completed', {
-            phaseNumber: phaseNum,
-            phaseName: event.phaseName,
-            description: `Phase ${phaseNum} complete`,
-            artifacts: event.artifactCount || 0
-          });
-        }
-        break;
+        return await this.processCompleteTaskEvent(event, stateStore, orchestrator);
       
       case 'FAIL_TASK':
         await stateStore.failTask(event.taskId, event.reason);
@@ -213,6 +186,81 @@ class TaskStateQueue {
       default:
         this.logger.warn('Unknown task event type', { type: event.type });
     }
+  }
+
+  buildCompletionClosure(event = {}) {
+    return {
+      artifacts: event.artifacts || event.producedArtifacts || [],
+      consumedArtifacts: event.consumedArtifacts || [],
+      producedArtifacts: event.producedArtifacts || event.artifacts || [],
+      updatedArtifacts: event.updatedArtifacts || [],
+      supersededArtifacts: event.supersededArtifacts || [],
+      promotedArtifacts: event.promotedArtifacts || [],
+      deprecatedArtifacts: event.deprecatedArtifacts || [],
+      failedArtifacts: event.failedArtifacts || [],
+      openDependencies: event.openDependencies || [],
+      newClaims: event.newClaims || [],
+      supportedClaims: event.supportedClaims || [],
+      supersededClaims: event.supersededClaims || [],
+      nextReuseInstructions: event.nextReuseInstructions || [],
+      closureStatus: event.closureStatus || null,
+      source: event.source || null,
+      researchEvidence: event.researchEvidence || null,
+      metadata: event.metadata || null
+    };
+  }
+
+  async processCompleteTaskEvent(event, stateStore, orchestrator) {
+    const task = await stateStore.getTask?.(event.taskId);
+    const closure = this.buildCompletionClosure(event);
+
+    const validation = await validateTaskCompletionClosure(task || { id: event.taskId }, closure, {
+      logsDir: this.logsDir,
+      logger: this.logger
+    });
+
+    if (!validation.passed) {
+      const reason = `Task completion rejected: ${validation.reason}`;
+      this.logger.warn('Refusing to mark task complete without verified closure', {
+        taskId: event.taskId,
+        source: event.source || null,
+        reasonCode: validation.reasonCode,
+        reason
+      });
+
+      if (stateStore.failTask) {
+        await stateStore.failTask(event.taskId, reason);
+      }
+
+      if (orchestrator?.recordPlanEvent) {
+        const phaseNum = event.taskId.match(/phase(\d+)/)?.[1] || '?';
+        orchestrator.recordPlanEvent('phase_failed', {
+          phaseNumber: phaseNum,
+          phaseName: event.phaseName,
+          description: `Phase ${phaseNum} blocked by completion gate: ${validation.reason}`,
+          reason
+        });
+      }
+
+      event.rejected = true;
+      event.rejectionReason = reason;
+      event.rejectionCode = validation.reasonCode;
+      return false;
+    }
+
+    await stateStore.completeTask(event.taskId, closure);
+        
+    // Update progress spine if orchestrator available
+    if (orchestrator?.recordPlanEvent) {
+      const phaseNum = event.taskId.match(/phase(\d+)/)?.[1] || '?';
+      orchestrator.recordPlanEvent('phase_completed', {
+        phaseNumber: phaseNum,
+        phaseName: event.phaseName,
+        description: `Phase ${phaseNum} complete`,
+        artifacts: event.artifactCount || 0
+      });
+    }
+    return true;
   }
 
   /**

@@ -285,6 +285,28 @@ class InteractiveSession {
       : 'snapshot only';
     const statusSource = liveStatus?.source || 'hydrated_snapshot';
     const generatedAt = liveStatus?.generatedAt ? ` (${liveStatus.generatedAt})` : '';
+    const artifactInventory = liveStatus?.artifactInventory || null;
+    const artifactLines = artifactInventory ? [
+      '',
+      'ARTIFACT INVENTORY (authoritative filesystem scan):',
+      `- Answer substrate: ${artifactInventory.answerSubstrate || 'unknown'}`,
+      `- Files scanned: ${artifactInventory.totals?.filesScanned || 0} (${artifactInventory.totals?.outputFiles || 0} outputs, ${artifactInventory.totals?.exportFiles || 0} exports)`,
+      `- Source index URLs: ${artifactInventory.sourceEvidence?.sourceIndexUrls || 0}`,
+      `- Source receipt files: ${artifactInventory.sourceEvidence?.routeReceiptFiles?.length || 0}`,
+      `- Raw anecdote files/records: ${artifactInventory.categories?.rawAnecdotes?.files || 0}/${artifactInventory.categories?.rawAnecdotes?.records || 0}`,
+      `- Extracted record files/records: ${artifactInventory.categories?.extractedRecords?.files || 0}/${artifactInventory.categories?.extractedRecords?.records || 0}`,
+      `- Query exports: ${artifactInventory.categories?.queryExports?.files || 0}`,
+      `- Invalid JSON files: ${artifactInventory.totals?.invalidJsonFiles || 0}`,
+      artifactInventory.warnings?.length ? `- Warnings: ${artifactInventory.warnings.join(', ')}` : null,
+      ...(Array.isArray(artifactInventory.importantFiles) && artifactInventory.importantFiles.length > 0
+        ? [
+            '- Important files:',
+            ...artifactInventory.importantFiles.slice(0, 8).map(file =>
+              `  - ${file.path}${file.records ? ` (${file.records} records)` : ''}${file.urls ? ` (${file.urls} urls)` : ''}`
+            )
+          ]
+        : [])
+    ].filter(Boolean).join('\n') : '';
 
     return `You are COSMO's interactive research assistant. You are embedded within an active COSMO research run.
 
@@ -298,11 +320,14 @@ CURRENT RUN CONTEXT:
 - Energy: ${energyStr}
 - Active agents: ${activeAgentsStr}
 - Status source: ${statusSource}${generatedAt}
+${artifactLines}
 
 You have access to tools for querying the brain's knowledge graph, reading/writing files in the run directory, running terminal commands, and spawning COSMO research agents.
 
 GUIDELINES:
-- When the user asks about the research, query the brain first using brain_query.
+- When the user asks what exists, what was extracted, or whether a deliverable is done, treat the artifact inventory as the first source of truth before graph memory.
+- When the user asks about the research meaning, query the brain using brain_query, then reconcile the answer with artifact files and receipts.
+- Do not claim anecdotes, source extraction, final markdown, or route completion exists unless it is visible in artifacts, route receipts, or a tool-read file.
 - When they ask to take action, use the appropriate tool.
 - When they ask to investigate something new, spawn an appropriate agent type.
 - Be concise and direct. Show your work — when you use tools, explain what you found.
