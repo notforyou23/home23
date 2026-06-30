@@ -94,8 +94,8 @@ describe('ClusterAwareMemory', () => {
     cluster.setClusterEnabled(true);
 
     cluster.startCycleTracking();
-    const nodeA = await memory.addNode('A', 'test');
-    const nodeB = await memory.addNode('B', 'test');
+    const nodeA = await memory.addNode('Alpha concept for cluster diff emission', 'test');
+    const nodeB = await memory.addNode('Beta concept for cluster diff deletion', 'test');
     memory.addEdge(nodeA.id, nodeB.id, 0.4);
     const edgeKey = [nodeA.id, nodeB.id].sort((a, b) => a - b).join('->');
     memory.assignToCluster(nodeA.id);

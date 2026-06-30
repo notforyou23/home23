@@ -16,6 +16,16 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 
+const hasRealOpenAIKey = () => Boolean(
+  process.env.OPENAI_API_KEY &&
+  process.env.OPENAI_API_KEY.startsWith('sk-') &&
+  !process.env.OPENAI_API_KEY.startsWith('sk-test')
+);
+
+if (!process.env.OPENAI_API_KEY) {
+  process.env.OPENAI_API_KEY = 'sk-test-creation-validation-setup-only';
+}
+
 const { expect } = require('chai');
 const { CodeCreationAgent } = require('../../src/agents/code-creation-agent');
 const { NetworkMemory } = require('../../src/memory/network-memory');
@@ -87,7 +97,7 @@ describe('CodeCreationAgent - Creation Validation', function() {
   describe('Code Generation', function() {
     it('should generate code files in container', async function() {
       // Skip if OpenAI API key not available
-      if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.startsWith('sk-')) {
+      if (!hasRealOpenAIKey()) {
         this.skip();
       }
       
@@ -131,7 +141,7 @@ describe('CodeCreationAgent - Creation Validation', function() {
     
     it('should store generated code info in memory', async function() {
       // Skip if OpenAI API key not available
-      if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.startsWith('sk-')) {
+      if (!hasRealOpenAIKey()) {
         this.skip();
       }
       
@@ -170,7 +180,7 @@ describe('CodeCreationAgent - Creation Validation', function() {
   describe('Container Management', function() {
     it('should create container on initialization', async function() {
       // Skip if OpenAI API key not available
-      if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.startsWith('sk-')) {
+      if (!hasRealOpenAIKey()) {
         this.skip();
       }
       
@@ -211,10 +221,10 @@ describe('CodeCreationAgent - Creation Validation', function() {
       agent.memory = memory;
       agent.goals = goals;
       
-      // Mock container creation to fail
-      const originalCreateContainer = agent.gpt5.createContainer;
-      agent.gpt5.createContainer = async () => {
-        throw new Error('Container creation failed (test)');
+      // Mock execution backend initialization to fail
+      const originalInitialize = agent.executionBackend.initialize;
+      agent.executionBackend.initialize = async () => {
+        throw new Error('Execution backend initialization failed (test)');
       };
       
       // Should throw on start (expected behavior)
@@ -222,18 +232,18 @@ describe('CodeCreationAgent - Creation Validation', function() {
         await agent.onStart();
         expect.fail('Should have thrown error');
       } catch (error) {
-        expect(error.message).to.include('Container creation failed');
+        expect(error.message).to.include('Execution backend initialization failed');
       }
       
       // Restore original method
-      agent.gpt5.createContainer = originalCreateContainer;
+      agent.executionBackend.initialize = originalInitialize;
     });
   });
   
   describe('Results Structure', function() {
     it('should return structured results with required fields', async function() {
       // Skip if OpenAI API key not available
-      if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.startsWith('sk-')) {
+      if (!hasRealOpenAIKey()) {
         this.skip();
       }
       
@@ -270,4 +280,3 @@ describe('CodeCreationAgent - Creation Validation', function() {
     });
   });
 });
-

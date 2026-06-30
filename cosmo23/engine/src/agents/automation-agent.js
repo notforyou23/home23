@@ -74,7 +74,9 @@ Your FIRST tool call should be an action, not a plan.
 5. LOG operations to operations.jsonl for audit trail
 
 ## Safety: Non-destructive ops are free. Destructive ops require confirmation.
-## Tools: find, rsync, tar, cron, launchd, osascript (macOS)
+## Tools: find, rsync, tar, zip/unzip, cron, launchd, tmux, screen, osascript (macOS)
+## File Work: exiftool, imagemagick/convert, ffmpeg, mkdir, cp, mv, dry-run rsync
+## Safety Pattern: dry-run first, backup before mutation, make operations Idempotent
 ## Output: artifacts/, operations.jsonl, manifest.json`;
   }
 

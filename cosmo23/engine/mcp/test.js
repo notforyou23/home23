@@ -20,6 +20,13 @@ const THOUGHTS_FILE = path.join(LOGS_DIR, 'thoughts.jsonl');
 
 async function test() {
   console.log('🧪 Testing Cosmo MCP Server Data Access\n');
+
+  if (!fs.existsSync(STATE_FILE)) {
+    console.log('1. Reading system state...');
+    console.log(`   ⚠️  Skipped: ${STATE_FILE} does not exist`);
+    console.log('   ℹ️  COSMO has no runtime state to inspect yet. Start or complete a run, then rerun this MCP data-access smoke test.\n');
+    return;
+  }
   
   try {
     // Test 1: Read system state
@@ -111,4 +118,3 @@ async function test() {
 }
 
 test();
-

@@ -44,6 +44,23 @@ class RedisStateStore {
     // Config
     this.compressionThreshold = config.stateStore?.compressionThreshold || 102400; // 100KB
     this.configHash = null;
+    this.namespace = this.normalizeNamespace(
+      config.stateStore?.namespace || config.stateStore?.keyPrefix || 'cosmo'
+    );
+  }
+
+  normalizeNamespace(namespace) {
+    return String(namespace || 'cosmo')
+      .trim()
+      .replace(/^:+|:+$/g, '') || 'cosmo';
+  }
+
+  key(suffix) {
+    return `${this.namespace}:${suffix}`;
+  }
+
+  stripKeyPrefix(key, suffixPrefix) {
+    return String(key || '').replace(`${this.key(suffixPrefix)}:`, '');
   }
 
   /**
@@ -170,7 +187,7 @@ class RedisStateStore {
    * Store memory node with LWW CRDT
    */
   async setMemory(nodeId, value, versionVector, ttl) {
-    const key = `cosmo:memory:${nodeId}`;
+    const key = this.key(`memory:${nodeId}`);
     
     try {
       // Get existing value (if any)
@@ -220,7 +237,7 @@ class RedisStateStore {
    * Retrieve memory node
    */
   async getMemory(nodeId) {
-    const key = `cosmo:memory:${nodeId}`;
+    const key = this.key(`memory:${nodeId}`);
     
     try {
       const data = await this.client.getBuffer(key);
@@ -252,7 +269,7 @@ class RedisStateStore {
    * Submit diff for cycle
    */
   async submitDiff(cycle, instanceId, diff) {
-    const key = `cosmo:diff:${cycle}:${instanceId}`;
+    const key = this.key(`diff:${cycle}:${instanceId}`);
 
     try {
       // Ensure diff has diff_id
@@ -308,7 +325,7 @@ class RedisStateStore {
   }
 
   async fetchDiffs(cycle) {
-    const pattern = `cosmo:diff:${cycle}:*`;
+    const pattern = this.key(`diff:${cycle}:*`);
     const diffKeys = await this.scanKeys(pattern);
     const diffs = [];
 
@@ -360,7 +377,7 @@ class RedisStateStore {
   }
 
   async setMergedState(cycle, mergedState) {
-    const key = `cosmo:merged:${cycle}`;
+    const key = this.key(`merged:${cycle}`);
 
     try {
       let serialized = pack(mergedState);
@@ -409,7 +426,7 @@ class RedisStateStore {
    * Get merged state after leader applies diffs
    */
   async getMergedState(cycle) {
-    const key = `cosmo:merged:${cycle}`;
+    const key = this.key(`merged:${cycle}`);
     
     try {
       const data = await this.client.getBuffer(key);
@@ -448,7 +465,7 @@ class RedisStateStore {
    * Claim goal atomically using Lua script
    */
   async claimGoal(goalId, instanceId, ttlMs) {
-    const key = `cosmo:goal:${goalId}`;
+    const key = this.key(`goal:${goalId}`);
     
     try {
       const result = await this.client.evalsha(
@@ -475,7 +492,7 @@ class RedisStateStore {
    * Mark goal completed
    */
   async completeGoal(goalId) {
-    const key = `cosmo:goal:${goalId}`;
+    const key = this.key(`goal:${goalId}`);
     
     try {
       await this.client.hmset(key, {
@@ -496,7 +513,7 @@ class RedisStateStore {
   }
 
   async releaseGoal(goalId, instanceId) {
-    const key = `cosmo:goal:${goalId}`;
+    const key = this.key(`goal:${goalId}`);
 
     try {
       const claimedBy = await this.client.hget(key, 'claimed_by');
@@ -526,7 +543,7 @@ class RedisStateStore {
   async appendJournal(entry) {
     try {
       // Add to Redis Stream (partitioned by day)
-      const streamKey = `cosmo:journal:${this.getDateKey()}`;
+      const streamKey = this.key(`journal:${this.getDateKey()}`);
       
       const entryWithMetadata = {
         ...entry,
@@ -558,7 +575,7 @@ class RedisStateStore {
       const entries = [];
       
       // For now, query current day's stream
-      const streamKey = `cosmo:journal:${this.getDateKey()}`;
+      const streamKey = this.key(`journal:${this.getDateKey()}`);
       
       const results = await this.client.xrange(streamKey, '-', '+');
       
@@ -585,7 +602,7 @@ class RedisStateStore {
    */
   async validateConfigHash(configHash) {
     try {
-      const stored = await this.client.get('cosmo:config:hash');
+      const stored = await this.client.get(this.key('config:hash'));
       
       if (!stored) {
         // First instance: store hash
@@ -616,7 +633,7 @@ class RedisStateStore {
    */
   async setConfigHash(configHash) {
     try {
-      await this.client.set('cosmo:config:hash', configHash);
+      await this.client.set(this.key('config:hash'), configHash);
       this.configHash = configHash;
       this.logger.info('[RedisStateStore] Config hash stored', { hash: configHash.substring(0, 16) });
       return true;
@@ -632,7 +649,7 @@ class RedisStateStore {
    * Set instance health beacon
    */
   async setHealthBeacon(instanceId, health) {
-    const key = `cosmo:health:${instanceId}`;
+    const key = this.key(`health:${instanceId}`);
     
     try {
       await this.client.hmset(key, {
@@ -661,7 +678,7 @@ class RedisStateStore {
    * Get instance health beacon
    */
   async getHealthBeacon(instanceId) {
-    const key = `cosmo:health:${instanceId}`;
+    const key = this.key(`health:${instanceId}`);
     
     try {
       const health = await this.client.hgetall(key);
@@ -690,11 +707,11 @@ class RedisStateStore {
    */
   async getAllHealthBeacons() {
     try {
-      const keys = await this.client.keys('cosmo:health:*');
+      const keys = await this.client.keys(this.key('health:*'));
       const beacons = {};
       
       for (const key of keys) {
-        const instanceId = key.replace('cosmo:health:', '');
+        const instanceId = this.stripKeyPrefix(key, 'health');
         beacons[instanceId] = await this.getHealthBeacon(instanceId);
       }
       
@@ -715,11 +732,11 @@ class RedisStateStore {
       const leaseMs = this.config.orchestrator?.leaderLeaseMs || 15000;
       
       // Increment epoch (monotonic counter = fencing token)
-      const token = await this.client.incr('cosmo:leader:epoch');
+      const token = await this.client.incr(this.key('leader:epoch'));
       
       // Try to acquire leader lock
       const acquired = await this.client.set(
-        'cosmo:leader:holder',
+        this.key('leader:holder'),
         this.instanceId,
         'PX',
         leaseMs,
@@ -728,7 +745,7 @@ class RedisStateStore {
       
       if (acquired) {
         // Store token
-        await this.client.set('cosmo:leader:token', token.toString(), 'PX', leaseMs);
+        await this.client.set(this.key('leader:token'), token.toString(), 'PX', leaseMs);
         
         this.logger.info('[RedisStateStore] Leadership acquired', {
           instanceId: this.instanceId,
@@ -784,7 +801,7 @@ class RedisStateStore {
    */
   async releaseLeadership() {
     try {
-      await this.client.del('cosmo:leader:holder', 'cosmo:leader:token');
+      await this.client.del(this.key('leader:holder'), this.key('leader:token'));
       this.logger.info('[RedisStateStore] Leadership released');
       return true;
     } catch (error) {
@@ -799,7 +816,7 @@ class RedisStateStore {
    * Mark instance as ready for cycle barrier
    */
   async markReady(cycle, instanceId) {
-    const key = `cosmo:ready:${cycle}`;
+    const key = this.key(`ready:${cycle}`);
     
     try {
       await this.client.sadd(key, instanceId);
@@ -823,7 +840,7 @@ class RedisStateStore {
    * Get ready count for cycle barrier
    */
   async getReadyCount(cycle) {
-    const key = `cosmo:ready:${cycle}`;
+    const key = this.key(`ready:${cycle}`);
     
     try {
       return await this.client.scard(key);
@@ -841,7 +858,7 @@ class RedisStateStore {
    */
   async publishSyncSignal(cycle) {
     try {
-      await this.client.publish('cosmo:cluster:sync', JSON.stringify({
+      await this.client.publish(this.key('cluster:sync'), JSON.stringify({
         cycle,
         timestamp: Date.now(),
         leader: this.instanceId
@@ -863,10 +880,11 @@ class RedisStateStore {
    */
   async subscribeSyncSignal(callback) {
     try {
-      await this.subscriber.subscribe('cosmo:cluster:sync');
+      const channelName = this.key('cluster:sync');
+      await this.subscriber.subscribe(channelName);
       
       this.subscriber.on('message', (channel, message) => {
-        if (channel === 'cosmo:cluster:sync') {
+        if (channel === channelName) {
           try {
             const signal = JSON.parse(message);
             callback(signal);
@@ -894,7 +912,7 @@ class RedisStateStore {
   async publishHeartbeat(beacon) {
     try {
       const serialized = pack(beacon);
-      await this.client.publish('cosmo:cluster:heartbeats', serialized);
+      await this.client.publish(this.key('cluster:heartbeats'), serialized);
       return true;
     } catch (error) {
       // Don't log every heartbeat error (too noisy)
@@ -907,12 +925,13 @@ class RedisStateStore {
    */
   async subscribeHeartbeats(callback) {
     try {
-      await this.subscriber.subscribe('cosmo:cluster:heartbeats');
+      const channelName = this.key('cluster:heartbeats');
+      await this.subscriber.subscribe(channelName);
       
-      this.subscriber.on('message', (channel, message) => {
-        if (channel === 'cosmo:cluster:heartbeats') {
+      this.subscriber.on('messageBuffer', (channel, message) => {
+        if (channel.toString() === channelName) {
           try {
-            const beacon = unpack(Buffer.from(message, 'binary'));
+            const beacon = unpack(message);
             callback(beacon);
           } catch (error) {
             this.logger.error('[RedisStateStore] Heartbeat parse error', {
@@ -985,7 +1004,7 @@ class RedisStateStore {
    * Record review readiness for this instance.
    */
   async recordReviewReadiness(cycle, instanceId, payload) {
-    const readyKey = `cosmo:reviews:cycle:${cycle}:ready`;
+    const readyKey = this.key(`reviews:cycle:${cycle}:ready`);
     try {
       const record = {
         instanceId,
@@ -1013,7 +1032,7 @@ class RedisStateStore {
    * Await readiness quorum or timeout.
    */
   async awaitReviewBarrier(cycle, quorum, timeoutMs) {
-    const readyKey = `cosmo:reviews:cycle:${cycle}:ready`;
+    const readyKey = this.key(`reviews:cycle:${cycle}:ready`);
     const pollInterval = 500;
     const start = Date.now();
     let readyInstances = [];
@@ -1083,7 +1102,7 @@ class RedisStateStore {
    * Persist review plan (idempotent).
    */
   async createReviewPlan(cycle, plan) {
-    const planKey = `cosmo:reviews:cycle:${cycle}:plan`;
+    const planKey = this.key(`reviews:cycle:${cycle}:plan`);
     const ttlMs = Math.max(
       (this.config.coordinator?.barrierTtlMs) || 600000,
       (this.config.coordinator?.timeoutMs) || 60000
@@ -1128,7 +1147,7 @@ class RedisStateStore {
    * Retrieve review plan for cycle.
    */
   async getReviewPlan(cycle) {
-    const planKey = `cosmo:reviews:cycle:${cycle}:plan`;
+    const planKey = this.key(`reviews:cycle:${cycle}:plan`);
     try {
       const data = await this.client.get(planKey);
       return data ? JSON.parse(data) : null;
@@ -1145,7 +1164,7 @@ class RedisStateStore {
    * Append review event to stream/list.
    */
   async appendReviewEvent(cycle, event) {
-    const eventKey = `cosmo:reviews:cycle:${cycle}:events`;
+    const eventKey = this.key(`reviews:cycle:${cycle}:events`);
     const ttlMs = Math.max(
       (this.config.coordinator?.barrierTtlMs) || 600000,
       (this.config.coordinator?.timeoutMs) || 60000
@@ -1168,7 +1187,7 @@ class RedisStateStore {
   }
 
   async recordGovernanceSnapshot(snapshot) {
-    const key = 'cosmo:governance:snapshot';
+    const key = this.key('governance:snapshot');
     try {
       const payload = {
         timestamp: new Date().toISOString(),
@@ -1185,7 +1204,7 @@ class RedisStateStore {
   }
 
   async getGovernanceSnapshot() {
-    const key = 'cosmo:governance:snapshot';
+    const key = this.key('governance:snapshot');
     try {
       const data = await this.client.get(key);
       return data ? JSON.parse(data) : null;
@@ -1198,7 +1217,7 @@ class RedisStateStore {
   }
 
   async setGovernanceOverride(override) {
-    const key = 'cosmo:governance:override';
+    const key = this.key('governance:override');
     try {
       if (!override) {
         await this.client.del(key);
@@ -1232,7 +1251,7 @@ class RedisStateStore {
   }
 
   async getGovernanceOverride() {
-    const key = 'cosmo:governance:override';
+    const key = this.key('governance:override');
     try {
       const data = await this.client.get(key);
       return data ? JSON.parse(data) : null;
@@ -1245,7 +1264,7 @@ class RedisStateStore {
   }
 
   async clearGovernanceOverride() {
-    const key = 'cosmo:governance:override';
+    const key = this.key('governance:override');
     try {
       await this.client.del(key);
       return true;
@@ -1258,7 +1277,7 @@ class RedisStateStore {
   }
 
   async appendGovernanceEvent(event) {
-    const key = 'cosmo:governance:events';
+    const key = this.key('governance:events');
     try {
       const payload = {
         timestamp: new Date().toISOString(),
@@ -1280,7 +1299,7 @@ class RedisStateStore {
   }
 
   async getGovernanceEvents(limit = 50) {
-    const key = 'cosmo:governance:events';
+    const key = this.key('governance:events');
     const safeLimit = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 50;
     try {
       const entries = await this.client.lrange(key, -safeLimit, -1);
@@ -1306,7 +1325,7 @@ class RedisStateStore {
    * Record review artifact (draft/critique/synthesis).
    */
   async recordReviewArtifact(cycle, artifact) {
-    const artifactKey = `cosmo:reviews:cycle:${cycle}:artifacts`;
+    const artifactKey = this.key(`reviews:cycle:${cycle}:artifacts`);
     const ttlMs = Math.max(
       (this.config.coordinator?.barrierTtlMs) || 600000,
       (this.config.coordinator?.timeoutMs) || 60000
@@ -1353,7 +1372,7 @@ class RedisStateStore {
    * Retrieve stored review artifacts.
    */
   async getReviewArtifacts(cycle) {
-    const artifactKey = `cosmo:reviews:cycle:${cycle}:artifacts`;
+    const artifactKey = this.key(`reviews:cycle:${cycle}:artifacts`);
     try {
       const entries = await this.client.hgetall(artifactKey);
       if (!entries) return [];
@@ -1382,7 +1401,7 @@ class RedisStateStore {
    * Clear review readiness state.
    */
   async clearReviewBarrier(cycle) {
-    const readyKey = `cosmo:reviews:cycle:${cycle}:ready`;
+    const readyKey = this.key(`reviews:cycle:${cycle}:ready`);
     try {
       await this.client.del(readyKey);
       return true;
@@ -1405,9 +1424,9 @@ class RedisStateStore {
    */
   async createPlan(plan) {
     try {
-      const key = `cosmo:plan:${plan.id}`;
+      const key = this.key(`plan:${plan.id}`);
       await this.client.hset(key, 'data', JSON.stringify(plan));
-      await this.client.sadd('cosmo:plans:all', plan.id);
+      await this.client.sadd(this.key('plans:all'), plan.id);
       return plan;
     } catch (error) {
       this.logger.error('[RedisStateStore] createPlan error', { planId: plan.id, error: error.message });
@@ -1420,7 +1439,7 @@ class RedisStateStore {
    */
   async getPlan(planId) {
     try {
-      const key = `cosmo:plan:${planId}`;
+      const key = this.key(`plan:${planId}`);
       const data = await this.client.hget(key, 'data');
       return data ? JSON.parse(data) : null;
     } catch (error) {
@@ -1451,7 +1470,7 @@ class RedisStateStore {
    */
   async listPlans() {
     try {
-      const planIds = await this.client.smembers('cosmo:plans:all');
+      const planIds = await this.client.smembers(this.key('plans:all'));
       const plans = await Promise.all(planIds.map(id => this.getPlan(id)));
       return plans.filter(p => p !== null);
     } catch (error) {
@@ -1465,9 +1484,9 @@ class RedisStateStore {
    */
   async upsertMilestone(milestone) {
     try {
-      const key = `cosmo:milestone:${milestone.id}`;
+      const key = this.key(`milestone:${milestone.id}`);
       await this.client.hset(key, 'data', JSON.stringify(milestone));
-      await this.client.sadd(`cosmo:plan:${milestone.planId}:milestones`, milestone.id);
+      await this.client.sadd(this.key(`plan:${milestone.planId}:milestones`), milestone.id);
       return milestone;
     } catch (error) {
       this.logger.error('[RedisStateStore] upsertMilestone error', { milestoneId: milestone.id, error: error.message });
@@ -1480,7 +1499,7 @@ class RedisStateStore {
    */
   async getMilestone(milestoneId) {
     try {
-      const key = `cosmo:milestone:${milestoneId}`;
+      const key = this.key(`milestone:${milestoneId}`);
       const data = await this.client.hget(key, 'data');
       return data ? JSON.parse(data) : null;
     } catch (error) {
@@ -1494,7 +1513,7 @@ class RedisStateStore {
    */
   async listMilestones(planId) {
     try {
-      const milestoneIds = await this.client.smembers(`cosmo:plan:${planId}:milestones`);
+      const milestoneIds = await this.client.smembers(this.key(`plan:${planId}:milestones`));
       const milestones = await Promise.all(milestoneIds.map(id => this.getMilestone(id)));
       return milestones.filter(m => m !== null).sort((a, b) => a.order - b.order);
     } catch (error) {
@@ -1533,10 +1552,10 @@ class RedisStateStore {
    */
   async upsertTask(task) {
     try {
-      const key = `cosmo:task:${task.id}`;
+      const key = this.key(`task:${task.id}`);
       await this.client.hset(key, 'data', JSON.stringify(task));
-      await this.client.zadd(`cosmo:tasks:${task.state}`, task.priority || 5, task.id);
-      await this.client.sadd(`cosmo:plan:${task.planId}:tasks`, task.id);
+      await this.client.zadd(this.key(`tasks:${task.state}`), task.priority || 5, task.id);
+      await this.client.sadd(this.key(`plan:${task.planId}:tasks`), task.id);
       return task;
     } catch (error) {
       this.logger.error('[RedisStateStore] upsertTask error', { taskId: task.id, error: error.message });
@@ -1549,7 +1568,7 @@ class RedisStateStore {
    */
   async getTask(taskId) {
     try {
-      const key = `cosmo:task:${taskId}`;
+      const key = this.key(`task:${taskId}`);
       const data = await this.client.hget(key, 'data');
       return data ? JSON.parse(data) : null;
     } catch (error) {
@@ -1563,7 +1582,7 @@ class RedisStateStore {
    */
   async listTasks(planId, filters = {}) {
     try {
-      const taskIds = await this.client.smembers(`cosmo:plan:${planId}:tasks`);
+      const taskIds = await this.client.smembers(this.key(`plan:${planId}:tasks`));
       let tasks = await Promise.all(taskIds.map(id => this.getTask(id)));
       tasks = tasks.filter(t => t !== null);
       
@@ -1789,7 +1808,7 @@ class RedisStateStore {
             await this.upsertTask({ ...task, ...op.updates, updatedAt: Date.now() });
           }
         } else if (op.type === 'removeTask') {
-          const key = `cosmo:task:${op.taskId}`;
+          const key = this.key(`task:${op.taskId}`);
           await this.client.del(key);
         } else if (op.type === 'addMilestone') {
           await this.upsertMilestone(op.milestone);

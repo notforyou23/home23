@@ -3,12 +3,11 @@
  *
  * DESIGN PRINCIPLE: Never just block. Either allow, or differentiate.
  *
- * When SpawnGate detects overlap with prior work, it does NOT block the spawn.
- * Instead, it enriches the mission with context about what was already done,
- * so the new agent can approach the task differently.
+ * When SpawnGate detects partial overlap with prior work, it enriches the
+ * mission with context so the new agent can approach the task differently.
  *
- * Blocking only happens for true redundancy: the exact same mission was
- * attempted AND succeeded productively multiple times.
+ * Blocking happens for true redundancy: high-confidence memory overlap plus
+ * a productive prior result, or repeated high-overlap productive completions.
  */
 
 function tokenize(text) {
@@ -128,7 +127,7 @@ class SpawnGate {
 
     return productive
       .map(result => {
-        const comparisonText = [
+        const comparisonParts = [
           result.mission?.description,
           result.handoffSpec?.reason,
           ...(Array.isArray(result.results)
@@ -138,10 +137,11 @@ class SpawnGate {
                 .map(item => item.content)
             : [])
         ]
-          .filter(Boolean)
-          .join(' | ');
+          .filter(Boolean);
 
-        const score = similarityScore(missionKey, comparisonText);
+        const score = comparisonParts.length > 0
+          ? Math.max(...comparisonParts.map(part => similarityScore(missionKey, part)))
+          : 0;
         return {
           agentId: result.agentId,
           agentType: result.agentType,
@@ -194,14 +194,25 @@ class SpawnGate {
       return { allowed: true, action: 'proceed', reason: null, evidence: { memoryMatches, resultMatches } };
     }
 
-    // Check for true redundancy: very high overlap AND multiple productive results
+    // Check for true redundancy: memory and productive history both agree this
+    // exact research wave already ran, or multiple productive completions match.
     const highOverlapResults = resultMatches.filter(m => m.score >= this.hardBlockThreshold);
     const isPlanTask = missionSpec.metadata?.isPlanTask || missionSpec.metadata?.guidedMission;
 
+    if (!isPlanTask && highOverlapResults.length >= 1 && hasMemoryOverlap) {
+      const reason = `duplicate_work_detected: memory overlap plus productive completion at ≥${this.hardBlockThreshold} similarity`;
+      this.logger?.info?.('SpawnGate: duplicate work detected, blocking', {
+        missionKey: summarize(missionKey, 80),
+        memoryMatches: memoryMatches.length,
+        productiveMatches: highOverlapResults.length,
+        topScore: highOverlapResults[0].score.toFixed(2)
+      });
+      return { allowed: false, action: 'block', reason, evidence: { memoryMatches, resultMatches } };
+    }
+
     if (highOverlapResults.length >= 2 && !isPlanTask) {
-      // True redundancy — this exact thing has been done productively twice already
-      const reason = `true_redundancy: ${highOverlapResults.length} productive completions at ≥${this.hardBlockThreshold} similarity`;
-      this.logger?.info?.('SpawnGate: true redundancy detected, blocking', {
+      const reason = `duplicate_work_detected: ${highOverlapResults.length} productive completions at ≥${this.hardBlockThreshold} similarity`;
+      this.logger?.info?.('SpawnGate: repeated productive overlap detected, blocking', {
         missionKey: summarize(missionKey, 80),
         productiveMatches: highOverlapResults.length,
         topScore: highOverlapResults[0].score.toFixed(2)

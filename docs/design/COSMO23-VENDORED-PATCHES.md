@@ -2052,3 +2052,37 @@ tests, and syntax checks passed for the touched runtime files.
   by run path/session id, local-only contracts cannot carry external provider
   hints, and "avoid primary sources" no longer disables secondary/forum web
   acquisition.
+- **2026-06-30** — Patch 34 repaired COSMO23's autonomous execution chain after
+  `jerrynotes` reproduced the same systemic failure as `jerrysideshows`:
+  reused `task:phaseN` ids let stale agents from old plan generations satisfy
+  fresh tasks, guided tier spawning launched dependency-blocked phase agents,
+  action agents could finish after text-only "I will..." responses, bytes-only
+  acquisition counted as source proof, zero-node PGS prose was treated as local
+  knowledge, and the commitment governor wrote `stop_unproductive_run` receipts
+  without halting the run. Fixes span `AgentRegistry`, `PlanExecutor`,
+  `GuidedModePlanner`, `MetaCoordinator`, `ExecutionBaseAgent`,
+  `research-contract`, `SourceProviderRegistry`, `Orchestrator`, and the COSMO
+  status contract. Focused verification: 211 Mocha tests plus 6 status-contract
+  node tests passed; COSMO-specific node regressions passed with 53 tests.
+- **2026-06-30** — Patch 35 completed the broad COSMO23 stabilization sweep
+  after the full engine suite exposed remaining autonomy-support failures.
+  Specialist execution agents had been stripped down to generic domain prompts,
+  so Automation/DataPipeline/Infrastructure now carry concrete tool vocabulary,
+  safety discipline, and action patterns in their base `getDomainKnowledge()`
+  prompts. SpawnGate now scores prior mission/reason/finding fields separately
+  and blocks a non-guided duplicate when high-confidence memory and productive
+  result history both match. Telemetry writes lifecycle events to the compatible
+  `events.log` path and creates its log directory before flushing. Document
+  Feeder startup now awaits chokidar readiness before returning, eliminating
+  immediate-drop races. RedisStateStore gained configurable key/channel
+  namespaces so tests and clustered runs do not collide with live `cosmo:*`
+  state; heartbeat pub/sub now reads MessagePack payloads via `messageBuffer`.
+  Regression tests were repaired for the current memory quality gate, Redis
+  isolation, structural agent setup, API-backed skip behavior, and idle MCP
+  smoke checks. Verification passed: `npm test` (1005 unit + 75 integration),
+  COSMO root/server node regressions (59), `test:single-instance`,
+  `test:multi-instance` (8), `test:acceptance` (56), `test:agents` (15), and
+  `test:agents:execution` with 1 local test passing / 10 provider-backed tests
+  pending because no real OpenAI API key was available in the shell; `test:mcp`
+  exits cleanly with an explicit idle-runtime skip when no `runtime/state.json.gz`
+  exists.

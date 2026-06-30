@@ -14,6 +14,7 @@ describe('Integration: RedisStateStore', function() {
   let store;
   let mockConfig;
   let mockLogger;
+  let namespace;
 
   before(function() {
     // Check if Redis is available (skip tests if not)
@@ -28,10 +29,13 @@ describe('Integration: RedisStateStore', function() {
       debug: () => {}
     };
     
+    namespace = `cosmo:test:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+
     mockConfig = {
       instanceId: 'test-instance-1',
       stateStore: {
         url: process.env.REDIS_URL || 'redis://localhost:6379',
+        namespace,
         compressionThreshold: 1024 // 1KB for testing
       },
       orchestrator: {
@@ -54,7 +58,7 @@ describe('Integration: RedisStateStore', function() {
     if (store && store.client) {
       // Cleanup test keys
       try {
-        const keys = await store.client.keys('cosmo:test:*');
+        const keys = await store.scanKeys(`${namespace}:*`);
         if (keys.length > 0) {
           await store.client.del(...keys);
         }
@@ -326,4 +330,3 @@ describe('Integration: RedisStateStore', function() {
     });
   });
 });
-

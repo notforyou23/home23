@@ -35,11 +35,9 @@ class TelemetryCollector {
     this.eventsEnabled = config.telemetry?.events !== false; // Default true
     
     // Paths
-    // FIX P2.1: Renamed events.log → lifecycle-events.log for clarity
-    // Prevents confusion with task/plan events in logs/events.log.{date}
     this.structuredLogPath = path.join(this.logsDir, 'telemetry.log');
     this.metricsPath = path.join(this.logsDir, 'metrics.json');
-    this.eventsPath = path.join(this.logsDir, 'lifecycle-events.log');
+    this.eventsPath = path.join(this.logsDir, 'events.log');
     
     // In-memory buffers
     this.logBuffer = [];
@@ -189,6 +187,13 @@ class TelemetryCollector {
    */
   async flush() {
     const errors = [];
+
+    try {
+      await fs.mkdir(this.logsDir, { recursive: true });
+    } catch (error) {
+      this.telemetryErrors++;
+      errors.push({ type: 'directory', error: error.message });
+    }
 
     // Flush logs
     if (this.logBuffer.length > 0) {
@@ -378,4 +383,3 @@ class TelemetryCollector {
 }
 
 module.exports = { TelemetryCollector };
-

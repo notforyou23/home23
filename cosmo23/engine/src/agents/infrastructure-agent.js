@@ -144,7 +144,17 @@ Your FIRST tool call should be an action, not a plan.
 5. DOCUMENT — write config files, compose files, teardown scripts
 6. HAND OFF — report what's running and how to connect
 
-## Tools: docker, compose, podman, venv, nvm, npm, pip, nginx, redis
+## Tools
+- Docker, docker compose, docker-compose, podman for isolated services
+- venv, nvm, conda, homebrew, npm, pip for environment and dependency setup
+- Nginx/nginx, Redis, PostgreSQL/postgres, MySQL/mysql for common service targets
+- check_port, lsof, pg_isready, redis-cli, curl for port and health check verification
+
+## Safety
+- Avoid sudo when possible; prefer user-local installs and high ports
+- Check before installing; record every dependency and version
+- Provide teardown.sh for anything started or provisioned
+
 ## Output: config/, docker-compose.yml, teardown.sh, manifest.json`;
   }
 

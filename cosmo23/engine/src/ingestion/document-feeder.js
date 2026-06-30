@@ -84,14 +84,14 @@ class DocumentFeeder {
     }
 
     // Start default watcher on ingestion/documents/
-    this._startWatcher(ingestDir, null);
+    await this._startWatcher(ingestDir, null);
 
     // Start additional configured watch paths
     const additionalPaths = this.config.additionalWatchPaths || [];
     for (const wp of additionalPaths) {
       const watchPath = wp.path || wp;
       const label = wp.label || path.basename(watchPath);
-      this._startWatcher(watchPath, label);
+      await this._startWatcher(watchPath, label);
     }
 
     // Start flush interval
@@ -128,7 +128,7 @@ class DocumentFeeder {
   async addWatchPath(watchPath, label = null, glob = null) {
     if (!this._started) throw new Error('Feeder not started');
     label = label || path.basename(watchPath);
-    this._startWatcher(watchPath, label);
+    await this._startWatcher(watchPath, label);
     await this._scanDirectory(watchPath, label);
     this.logger?.info?.('Added watch path', { watchPath, label });
   }
@@ -208,7 +208,7 @@ class DocumentFeeder {
 
   // ─── Internal ────────────────────────────────────────────────
 
-  _startWatcher(watchPath, fixedLabel) {
+  async _startWatcher(watchPath, fixedLabel) {
     if (!fs.existsSync(watchPath)) {
       this.logger?.warn?.('Watch path does not exist, skipping', { watchPath });
       return;
@@ -229,6 +229,30 @@ class DocumentFeeder {
     });
 
     this._watchers.push({ path: watchPath, label: fixedLabel, watcher });
+
+    const readyTimeoutMs = this.config.watcher?.readyTimeoutMs || 5000;
+    await new Promise((resolve) => {
+      let settled = false;
+      let timeout = null;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        if (timeout) clearTimeout(timeout);
+        resolve();
+      };
+
+      timeout = setTimeout(() => {
+        this.logger?.warn?.('Watcher readiness timed out; continuing with active watcher', {
+          watchPath,
+          readyTimeoutMs
+        });
+        settle();
+      }, readyTimeoutMs);
+      timeout.unref?.();
+
+      watcher.once('ready', settle);
+      watcher.once('error', settle);
+    });
   }
 
   async _onFileEvent(filePath, fixedLabel, watchRoot) {

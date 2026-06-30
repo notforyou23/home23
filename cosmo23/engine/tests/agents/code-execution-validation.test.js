@@ -16,6 +16,16 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
 
+const hasRealOpenAIKey = () => Boolean(
+  process.env.OPENAI_API_KEY &&
+  process.env.OPENAI_API_KEY.startsWith('sk-') &&
+  !process.env.OPENAI_API_KEY.startsWith('sk-test')
+);
+
+if (!process.env.OPENAI_API_KEY) {
+  process.env.OPENAI_API_KEY = 'sk-test-execution-validation-setup-only';
+}
+
 const { expect } = require('chai');
 const { CodeExecutionAgent } = require('../../src/agents/code-execution-agent');
 const { NetworkMemory } = require('../../src/memory/network-memory');
@@ -86,7 +96,7 @@ describe('CodeExecutionAgent - Execution Validation', function() {
   describe('Container Lifecycle', function() {
     it('should create container on start', async function() {
       // Skip if OpenAI API key not available
-      if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.startsWith('sk-')) {
+      if (!hasRealOpenAIKey()) {
         this.skip();
       }
       
@@ -115,7 +125,7 @@ describe('CodeExecutionAgent - Execution Validation', function() {
     
     it('should cleanup container on completion', async function() {
       // Skip if OpenAI API key not available
-      if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.startsWith('sk-')) {
+      if (!hasRealOpenAIKey()) {
         this.skip();
       }
       
@@ -147,7 +157,7 @@ describe('CodeExecutionAgent - Execution Validation', function() {
   describe('Code Execution Results', function() {
     it('should execute simple Python code and return results', async function() {
       // Skip if OpenAI API key not available
-      if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.startsWith('sk-')) {
+      if (!hasRealOpenAIKey()) {
         this.skip();
       }
       
@@ -187,7 +197,7 @@ describe('CodeExecutionAgent - Execution Validation', function() {
     
     it('should handle execution errors gracefully', async function() {
       // Skip if OpenAI API key not available
-      if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.startsWith('sk-')) {
+      if (!hasRealOpenAIKey()) {
         this.skip();
       }
       
@@ -215,7 +225,7 @@ describe('CodeExecutionAgent - Execution Validation', function() {
   describe('Memory Integration', function() {
     it('should store execution results in memory with proper tags', async function() {
       // Skip if OpenAI API key not available
-      if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.startsWith('sk-')) {
+      if (!hasRealOpenAIKey()) {
         this.skip();
       }
       
@@ -258,7 +268,7 @@ describe('CodeExecutionAgent - Execution Validation', function() {
   describe('Progress Reporting', function() {
     it('should report progress during execution', async function() {
       // Skip if OpenAI API key not available
-      if (!process.env.OPENAI_API_KEY || !process.env.OPENAI_API_KEY.startsWith('sk-')) {
+      if (!hasRealOpenAIKey()) {
         this.skip();
       }
       
@@ -295,4 +305,3 @@ describe('CodeExecutionAgent - Execution Validation', function() {
     });
   });
 });
-

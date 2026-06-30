@@ -17,6 +17,12 @@
  * - code-creation-validation.test.js (requires OPENAI_API_KEY)
  */
 
+// BaseAgent initializes UnifiedClient during construction. These structural
+// tests never call the provider, but the constructor requires a key-shaped env.
+if (!process.env.OPENAI_API_KEY) {
+  process.env.OPENAI_API_KEY = 'sk-test-structural-only-no-api-calls';
+}
+
 const { expect } = require('chai');
 const { CodeExecutionAgent } = require('../../src/agents/code-execution-agent');
 const { CodeCreationAgent } = require('../../src/agents/code-creation-agent');
@@ -196,4 +202,3 @@ describe('Agent Structure Validation (No API Calls)', function() {
     });
   });
 });
-

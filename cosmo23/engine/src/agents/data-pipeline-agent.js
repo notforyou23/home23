@@ -77,7 +77,20 @@ Your FIRST tool call should be an action, not a plan.
 6. EXPORT if requested — CSV, JSON, or other formats
 7. WRITE manifest with schema, record counts, validation results
 
-## Tools: jq, sqlite3, duckdb, csvkit, python/pandas, miller
+## Required Discipline
+- profile data BEFORE transforming; inspect null rates, distribution, row count, and type drift
+- Preserve raw data — NEVER modify inputs; write clean outputs and transforms separately
+- infer schema before load; validate constraints, row counts, uniqueness, and referential integrity
+
+## Tools
+- sqlite3: CREATE TABLE, .import, CREATE INDEX, integrity_check
+- duckdb: analytics and large CSV/Parquet work
+- jq: JSON reshaping and extraction
+- python/pandas: DataFrame transforms, merge, groupby, pivot, dedup
+- csvkit: csvstat, csvsql, csvjoin for CSV profiling and joins
+- miller/mlr: structured data transforms and format conversion
+- awk/sed: lightweight text cleanup before structured import
+
 ## Output: database files, schema.sql, validation-report.json, exports/`;
   }
 
