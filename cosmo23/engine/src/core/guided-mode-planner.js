@@ -1710,19 +1710,32 @@ ${JSON.stringify(deterministic.scores || {})}`
 
     const externalNeed = [
       /\b(missing|gap|uncertain|unverified|needs?|requires?|corroborat|validate|verify|find|discover|collect|update)\b.{0,90}\b(source|sources|citation|citations|url|urls|external|web|internet|primary|current|latest|recent)\b/i,
-      /\b(source|sources|citation|citations|url|urls|external|web|internet|primary|current|latest|recent)\b.{0,90}\b(missing|gap|uncertain|unverified|needed|required|verify|validate|corroborat)\b/i
+      /\b(source|sources|citation|citations|url|urls|external|web|internet|primary|current|latest|recent)\b.{0,90}\b(missing|gap|uncertain|unverified|needed|required|verify|validate|corroborat)\b/i,
+      /\b(search|find|collect|discover|mine|scrape)\b.{0,90}\b(secondary|forums?|reddit|fan|fans|interview|quotes?|archive\.org|reviews?)\b/i
     ];
-    const negated = /\b(do not|don't|no|avoid|without|skip)\b.{0,50}\b(web|internet|search|external|source collection|broad research)\b/i;
 
     return [...new Set(candidateLines.filter(line =>
-      !negated.test(line) && externalNeed.some(pattern => pattern.test(line))
+      !this.lineNegatesWebExpansion(line) && externalNeed.some(pattern => pattern.test(line))
     ))].slice(0, 6);
+  }
+
+  lineNegatesWebExpansion(text = '') {
+    const line = String(text || '');
+    return /\b(do not|don't|no|without|skip)\b.{0,70}\b(web|internet|web_search|search|source collection|external source collection|broad source collection|broad web research)\b/i.test(line) ||
+      /\bavoid\s+(?:all\s+)?(?:web[_ -]?|internet\s+)?search\b/i.test(line) ||
+      /\bavoid\b.{0,70}\b(web|internet|web_search|external source collection|broad web research)\b/i.test(line) ||
+      /\b(local artifacts? only|existing local artifacts?|use the existing local)\b/i.test(line);
   }
 
   explicitNoWebRequested(guidedFocus = {}) {
     const context = `${guidedFocus.domain || ''}\n${guidedFocus.context || ''}`;
-    return /\b(do not|don't|no|avoid|without|skip)\b.{0,70}\b(web|internet|web_search|search|external source collection|broad web research)\b/i.test(context) ||
-      /\b(local artifacts? only|existing local artifacts?|use the existing local)\b/i.test(context);
+    return this.lineNegatesWebExpansion(context);
+  }
+
+  prefersSecondarySourceAcquisition(guidedFocus = {}) {
+    const context = `${guidedFocus.domain || ''}\n${guidedFocus.context || ''}`;
+    return /\bavoid\b.{0,80}\bprimary\s+sources?\b/i.test(context) ||
+      /\b(search|find|collect|discover|mine|scrape)\b.{0,120}\b(secondary|forums?|reddit|fan|fans|interview|quotes?|archive\.org|reviews?)\b/i.test(context);
   }
 
   buildPlanningDecision(guidedFocus = {}, resources = {}, planningContext = {}) {
@@ -2824,25 +2837,47 @@ ONLY use agent types from the available list above.`;
 
       this.logger?.warn(`⚠️ Planner produced zero agent missions — generating domain-based defaults for "${domain}"`);
 
-      missions.push({
-        type: 'research',
-        mission: `Conduct comprehensive web research on ${domain}. ${context ? `Focus areas: ${context.substring(0, 200)}` : 'Gather primary sources, key facts, timeline, and notable findings.'}`,
-        tools: ['web_search'],
-        priority: 'high',
-        sourceScope: 'primary external sources and authoritative references',
-        artifactInputs: [],
-        expectedOutput: 'Comprehensive research findings with source citations'
-      });
+      if (this.prefersSecondarySourceAcquisition(guidedFocus)) {
+        missions.push({
+          type: 'research',
+          mission: `Search secondary sources, fan forums, show review archives, and interview-quote compilations for ${domain}. Avoid primary-source-only framing; prioritize anecdotes, forum recollections, review comments, and source URLs tied to specific shows. ${context ? `Focus areas: ${context.substring(0, 220)}` : ''}`,
+          tools: ['web_search'],
+          priority: 'high',
+          sourceScope: 'secondary sources, fan forums, show review archives, interview quote compilations',
+          artifactInputs: [],
+          expectedOutput: '@outputs/secondary_forum_source_findings.json'
+        });
 
-      missions.push({
-        type: 'research',
-        mission: `Find deeper and secondary sources on ${domain}. Look for perspectives, analysis, and details not covered by mainstream sources. ${context ? context.substring(0, 150) : ''}`,
-        tools: ['web_search'],
-        priority: 'medium',
-        sourceScope: 'secondary sources, forums, expert analysis, lesser-known accounts',
-        artifactInputs: [],
-        expectedOutput: 'Secondary research findings filling gaps from primary research'
-      });
+        missions.push({
+          type: 'research',
+          mission: `Use targeted search routes for ${domain}: Archive.org reviews/comments, Reddit/forum threads, old mailing-list or Usenet traces, review blogs, and secondary books/interview excerpts. Extract concrete anecdotes with URL, source type, date/show reference when available, and verbatim excerpt. ${context ? context.substring(0, 180) : ''}`,
+          tools: ['web_search'],
+          priority: 'medium',
+          sourceScope: 'forum threads, archive comments, secondary commentary, and interview quote references',
+          artifactInputs: [],
+          expectedOutput: '@outputs/secondary_anecdote_candidates.json'
+        });
+      } else {
+        missions.push({
+          type: 'research',
+          mission: `Conduct comprehensive web research on ${domain}. ${context ? `Focus areas: ${context.substring(0, 200)}` : 'Gather primary sources, key facts, timeline, and notable findings.'}`,
+          tools: ['web_search'],
+          priority: 'high',
+          sourceScope: 'primary external sources and authoritative references',
+          artifactInputs: [],
+          expectedOutput: 'Comprehensive research findings with source citations'
+        });
+
+        missions.push({
+          type: 'research',
+          mission: `Find deeper and secondary sources on ${domain}. Look for perspectives, analysis, and details not covered by mainstream sources. ${context ? context.substring(0, 150) : ''}`,
+          tools: ['web_search'],
+          priority: 'medium',
+          sourceScope: 'secondary sources, forums, expert analysis, lesser-known accounts',
+          artifactInputs: [],
+          expectedOutput: 'Secondary research findings filling gaps from primary research'
+        });
+      }
 
       missions.push({
         type: deliverableType,

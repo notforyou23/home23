@@ -25,10 +25,18 @@ const SOURCE_REQUIRED_PATTERNS = [
 
 const LOCAL_ONLY_PATTERNS = [
   /\blocal\s+only\b/i,
+  /\blocal\s+memory\s+system\b/i,
+  /\binternal\s+cognitive\s+stores?\b/i,
+  /\btransformed\s+memory\s+query\s+results?\b/i,
   /\bexisting\s+(?:local\s+)?artifacts?\b/i,
   /\bdo not conduct web search\b/i,
   /\bno web[_ -]?search\b/i,
-  /\bweb access is prohibited\b/i
+  /\bweb[_ -]?search\s+is\s+prohibited\b/i,
+  /\bweb access is prohibited\b/i,
+  /\bno\s+source\s+data\s+acquisition\b/i,
+  /\bsource\s+data\s+acquisition\s+prohibited\b/i,
+  /\bpurely\s+analytical\s+framework\b/i,
+  /\bwhen\s+web[_ -]?search\s+becomes\s+available\b/i
 ];
 
 function normalizeArray(value) {
@@ -164,18 +172,56 @@ function normalizeContract(contract = {}) {
   };
 }
 
+function emptyResearchContract() {
+  return {
+    version: 1,
+    required: false,
+    mode: 'none',
+    requiredEvidence: [],
+    requiredQueries: [],
+    minSuccessfulSources: 0,
+    allowNullFindingsWithSourceEvidence: true,
+    reasonCodes: [],
+    sourceProviderHints: []
+  };
+}
+
+function isLocalOnlyInput(input = {}, text = '') {
+  const metadata = input.metadata || {};
+  const webPolicy = String(
+    input.webPolicy
+    || metadata.webPolicy
+    || input.planningDecision?.webPolicy
+    || metadata.planningDecision?.webPolicy
+    || ''
+  ).toLowerCase();
+
+  if (webPolicy === 'none') {
+    return true;
+  }
+
+  return LOCAL_ONLY_PATTERNS.some(pattern => pattern.test(text));
+}
+
 function deriveResearchContract(input = {}) {
+  const text = textFromInput(input);
+  const localOnly = isLocalOnlyInput(input, text);
+
   if (input.metadata?.researchContract) {
+    if (localOnly) return emptyResearchContract();
     return normalizeContract(input.metadata.researchContract);
   }
   if (input.researchContract) {
+    if (localOnly) return emptyResearchContract();
     return normalizeContract(input.researchContract);
   }
 
-  const text = textFromInput(input);
   const tools = normalizeArray(input.tools || input.metadata?.tools).map(tool => String(tool).toLowerCase());
   const agentType = String(input.agentType || input.metadata?.agentType || input.type || '').toLowerCase();
-  const localOnly = LOCAL_ONLY_PATTERNS.some(pattern => pattern.test(text));
+  if (localOnly) {
+    return emptyResearchContract();
+  }
+
   const reasonCodes = [];
   const modes = [];
   const sourceProviderHints = [];

@@ -108,6 +108,69 @@ describe('ResearchContract', () => {
     expect(contract.sourceProviderHints).to.include('home23.skill.x_research.search');
   });
 
+  it('does not turn local-memory missions into external source obligations', () => {
+    const contract = deriveResearchContract({
+      agentType: 'ide',
+      description: `Query all local memory and cognitive systems for existing Jerry Garcia side project anecdotes.
+        Execute query_memory with query strings including 'side project fan stories' and 'jerry garcia interview quotes'.
+        Record query_string, result_count, key_excerpts, and source_type in @outputs/garcia-memory-query-results.json.`,
+      sourceScope: 'Local memory system — all internal cognitive stores (memory, journal, thoughts, dreams, graph)',
+      metadata: {
+        sourceScope: 'Local memory system — all internal cognitive stores (memory, journal, thoughts, dreams, graph)'
+      }
+    });
+
+    expect(contract.required).to.equal(false);
+    expect(contract.mode).to.equal('none');
+    expect(contract.requiredEvidence).to.deep.equal([]);
+    expect(contract.sourceProviderHints).to.deep.equal([]);
+    expect(contract.reasonCodes).to.deep.equal([]);
+  });
+
+  it('does not schedule source acquisition for explicit no-acquisition gap inventories', () => {
+    const contract = deriveResearchContract({
+      agentType: 'ide',
+      description: `Create a local gap inventory from @outputs/garcia-anecdotes-extracted.json.
+        Include an external source map with fan forums, Archive.org reviews, Reddit threads,
+        interview compilations, podcast transcripts, and specific web_search queries to use later
+        when web access becomes available.`,
+      sourceScope: 'Synthesis and gap analysis — no source data acquisition, purely analytical framework based on local findings',
+      metadata: {
+        sourceScope: 'Synthesis and gap analysis — no source data acquisition, purely analytical framework based on local findings'
+      }
+    });
+
+    expect(contract.required).to.equal(false);
+    expect(contract.mode).to.equal('none');
+    expect(contract.requiredEvidence).to.deep.equal([]);
+    expect(contract.sourceProviderHints).to.deep.equal([]);
+    expect(contract.reasonCodes).to.deep.equal([]);
+  });
+
+  it('local-only scope overrides malformed supplied research contracts on resumed tasks', () => {
+    const contract = deriveResearchContract({
+      agentType: 'ide',
+      description: 'Query local memory for fan stories and interview quotes.',
+      sourceScope: 'Local memory system — all internal cognitive stores (memory, journal, thoughts, dreams, graph)',
+      metadata: {
+        sourceScope: 'Local memory system — all internal cognitive stores (memory, journal, thoughts, dreams, graph)',
+        researchContract: {
+          required: true,
+          mode: 'web_research',
+          requiredEvidence: ['successful_source_contact'],
+          reasonCodes: ['social_research'],
+          sourceProviderHints: ['home23.skill.x_research.search']
+        }
+      }
+    });
+
+    expect(contract.required).to.equal(false);
+    expect(contract.mode).to.equal('none');
+    expect(contract.requiredEvidence).to.deep.equal([]);
+    expect(contract.sourceProviderHints).to.deep.equal([]);
+    expect(contract.reasonCodes).to.deep.equal([]);
+  });
+
   it('preserves explicit web_search queries with nested quote types', () => {
     const queries = extractWebSearchQueries(
       `(1) web_search for 'Jerry Merl Saunders Boarding House July 1975 "I'll Take a Melody" anecdote OR review'; ` +

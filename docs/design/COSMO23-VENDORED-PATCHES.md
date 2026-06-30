@@ -1848,6 +1848,67 @@ runtime.
 
 ---
 
+## Patch 33 — Interactive live-status truth and source-scope planning repair
+
+**Files touched:**
+- `cosmo23/server/lib/interactive-live-status.js`
+- `cosmo23/server/index.js`
+- `cosmo23/engine/src/interactive/interactive-session.js`
+- `cosmo23/engine/src/interactive/interactive-tools.js`
+- `cosmo23/engine/src/core/research-contract.js`
+- `cosmo23/engine/src/core/guided-mode-planner.js`
+- `cosmo23/engine/tests/unit/interactive-session.test.js`
+- `cosmo23/engine/tests/unit/interactive-live-status.test.js`
+- `cosmo23/engine/tests/unit/research-contract.test.js`
+- `cosmo23/engine/tests/unit/guided-mode-planner.test.js`
+
+**Problem:** The `jerrynotes` run exposed two beginning-of-run truth failures
+and one interactive confirmation failure. The Interactive tab reused a
+server-global `interactiveSession` without checking the active run path, then
+built its prompt and `get_run_status` answer from a one-time `state.json.gz`
+hydrated orchestrator stub. Because that stub had no `running` field, the tool
+reported `running:false` and stale cycle/memory counts while `/api/status`
+correctly showed the run live. Separately, the planner misread "Avoid all
+primary sources - search secondary and forums" as "web search is prohibited,"
+so a fresh source-acquisition run became a local-memory plan. The research
+contract layer then compounded the contradiction by attaching source-required
+provider hints to tasks whose `sourceScope` explicitly said local memory or no
+source acquisition.
+
+**Fix:** Interactive mode now has a live-status helper that combines the
+status-contract truth (`activeContext` + `cosmo-main`) with the freshest run
+counters from `metrics.json` / `state.json.gz`. `/api/interactive/start`
+refreshes that provider when resuming the same run and invalidates the old
+session when the active run path changes. `/api/interactive/message` validates
+the posted `sessionId`, and `/api/interactive/status` exposes the current
+live context. The interactive prompt, `get_run_status`, and `brain_stats` now
+prefer the live provider and label the status source/timestamp instead of
+silently presenting a stale snapshot as current.
+
+`deriveResearchContract()` now treats local/no-acquisition scope as a hard
+override, including malformed supplied contracts on resumed tasks, so local
+memory queries and gap inventories cannot schedule Archive/X providers or fail
+source-contact validation. Guided planning now distinguishes "avoid primary
+sources" from "avoid web search," recognizes secondary/forum search requests as
+external evidence work, and its fallback missions honor secondary/forum source
+preferences instead of defaulting to primary-source research.
+
+**Effect under Home23:** Interactive chat can no longer confidently tell the
+user a live run is stopped because of a stale prompt block or hydrated snapshot
+tool result. Fresh runs that ask for secondary/forum acquisition remain web/source
+research runs, while genuinely local continuations stay local and cannot carry
+external provider hints by accident.
+
+**Verification:** TDD covered stale interactive prompt/tool status,
+session-run mismatch, stale session IDs, live run counter construction,
+local-only contract override, malformed persisted contract override, and the
+primary-source/source-preference planner regression. The focused COSMO
+governance/source suite passed with 239 tests, the COSMO query/PGS/provider
+regression suite passed with 38 tests, server helper tests passed with 13
+tests, and syntax checks passed for the touched runtime files.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -1985,3 +2046,9 @@ runtime.
   Home23's shared skills runtime, starting with read-only `x-research` search,
   thread, profile, and tweet providers plus contract-level X/Twitter discourse
   hints.
+- **2026-06-30** — Patch 33 fixed Interactive tab live-run truth and
+  beginning-of-run source-scope planning. Interactive status now prefers the
+  live status contract over hydrated snapshots, stale sessions are invalidated
+  by run path/session id, local-only contracts cannot carry external provider
+  hints, and "avoid primary sources" no longer disables secondary/forum web
+  acquisition.

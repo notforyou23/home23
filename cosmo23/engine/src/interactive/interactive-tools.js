@@ -321,6 +321,23 @@ const executors = {
 
   async brain_stats(args, context) {
     const { orchestrator } = context;
+    const liveStatus = readLiveStatus(context);
+    if (liveStatus) {
+      return JSON.stringify({
+        nodes: Number.isFinite(Number(liveStatus.memoryNodes)) ? Number(liveStatus.memoryNodes) : 0,
+        edges: Number.isFinite(Number(liveStatus.memoryEdges)) ? Number(liveStatus.memoryEdges) : 0,
+        clusters: Number.isFinite(Number(liveStatus.clusters)) ? Number(liveStatus.clusters) : 0,
+        cycle: Number.isFinite(Number(liveStatus.cycle)) ? Number(liveStatus.cycle) : 0,
+        coherence: typeof liveStatus.coherence === 'number'
+          ? Number(liveStatus.coherence.toFixed(3))
+          : (liveStatus.coherence ?? 'N/A'),
+        running: Boolean(liveStatus.running),
+        lifecycle: liveStatus.lifecycle,
+        source: liveStatus.source,
+        generatedAt: liveStatus.generatedAt
+      }, null, 2);
+    }
+
     const memory = orchestrator.memory;
     const nodeCount = memory?.nodes?.size || 0;
     const edgeCount = memory?.edges?.size || 0;
@@ -761,6 +778,11 @@ const executors = {
 
   async get_run_status(args, context) {
     const { orchestrator } = context;
+    const liveStatus = readLiveStatus(context);
+    if (liveStatus) {
+      return JSON.stringify(liveStatus, null, 2);
+    }
+
     const o = orchestrator;
 
     const status = {
@@ -870,6 +892,13 @@ const executors = {
     }
   }
 };
+
+function readLiveStatus(context = {}) {
+  const provider = context.liveStatusProvider || context.orchestrator?.liveStatusProvider;
+  if (typeof provider !== 'function') return null;
+  const status = provider();
+  return status && typeof status === 'object' ? status : null;
+}
 
 // ═══════════════════════════════════════════════════════════════════════
 // EXPORTS

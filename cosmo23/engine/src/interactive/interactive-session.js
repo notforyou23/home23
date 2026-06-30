@@ -26,6 +26,9 @@ class InteractiveSession {
       || orchestrator?.config?.logsDir
       || process.env.COSMO_RUNTIME_PATH
       || '';
+    this.liveStatusProvider = options.liveStatusProvider
+      || orchestrator?.liveStatusProvider
+      || null;
 
     // Accept an explicit client, or resolve from orchestrator
     this.client = options.client
@@ -35,6 +38,26 @@ class InteractiveSession {
 
     if (!this.client) {
       this.logger?.warn?.('InteractiveSession: No LLM client found — will attempt lazy resolution');
+    }
+  }
+
+  setLiveStatusProvider(provider) {
+    this.liveStatusProvider = typeof provider === 'function' ? provider : null;
+    if (this.orchestrator && typeof this.orchestrator === 'object') {
+      this.orchestrator.liveStatusProvider = this.liveStatusProvider;
+    }
+  }
+
+  getLiveStatus() {
+    if (typeof this.liveStatusProvider !== 'function') {
+      return null;
+    }
+    try {
+      const status = this.liveStatusProvider();
+      return status && typeof status === 'object' ? status : null;
+    } catch (err) {
+      this.logger?.warn?.('InteractiveSession: live status provider failed', { error: err.message });
+      return null;
     }
   }
 
@@ -115,7 +138,8 @@ class InteractiveSession {
             const result = await executeTool(toolName, parsedArgs, {
               orchestrator: this.orchestrator,
               runtimePath: this.runtimePath,
-              logger: this.logger
+              logger: this.logger,
+              liveStatusProvider: this.liveStatusProvider
             });
 
             // Emit truncated result for streaming UI
@@ -228,27 +252,52 @@ class InteractiveSession {
    */
   buildSystemPrompt() {
     const o = this.orchestrator;
-    const memSize = o.memory?.nodes?.size || 0;
-    const edgeSize = o.memory?.edges?.size || 0;
-    const cycle = o.cycleCount || 0;
+    const liveStatus = this.getLiveStatus();
+    const memSize = Number.isFinite(Number(liveStatus?.memoryNodes))
+      ? Number(liveStatus.memoryNodes)
+      : (o.memory?.nodes?.size || 0);
+    const edgeSize = Number.isFinite(Number(liveStatus?.memoryEdges))
+      ? Number(liveStatus.memoryEdges)
+      : (o.memory?.edges?.size || 0);
+    const cycle = Number.isFinite(Number(liveStatus?.cycle))
+      ? Number(liveStatus.cycle)
+      : (o.cycleCount || 0);
     const coherence = o.executiveRing?.getCoherenceScore?.();
-    const coherenceStr = typeof coherence === 'number' ? coherence.toFixed(2) : 'N/A';
-    const activeAgents = o.agentExecutor?.registry?.getActiveCount?.() || 0;
-    const energy = o.stateModulator?.cognitiveState?.energy;
+    const liveCoherence = liveStatus?.coherence;
+    const coherenceValue = typeof liveCoherence === 'number' ? liveCoherence : coherence;
+    const coherenceStr = typeof coherenceValue === 'number' ? coherenceValue.toFixed(2) : 'N/A';
+    const activeAgents = Number.isFinite(Number(liveStatus?.activeAgents))
+      ? Number(liveStatus.activeAgents)
+      : o.agentExecutor?.registry?.getActiveCount?.();
+    const activeAgentsStr = Number.isFinite(Number(activeAgents)) ? String(Number(activeAgents)) : 'unknown';
+    const energy = typeof liveStatus?.energy === 'number'
+      ? liveStatus.energy
+      : o.stateModulator?.cognitiveState?.energy;
     const energyStr = typeof energy === 'number' ? energy.toFixed(2) : 'N/A';
-    const domain = o.config?.architecture?.roleSystem?.guidedFocus?.domain || 'general';
-    const topic = (o.config?.architecture?.roleSystem?.guidedFocus?.context || '').substring(0, 200);
+    const domain = liveStatus?.domain
+      || o.config?.architecture?.roleSystem?.guidedFocus?.domain
+      || 'general';
+    const topic = String(liveStatus?.topic
+      || o.config?.architecture?.roleSystem?.guidedFocus?.context
+      || '').substring(0, 200);
+    const statusStr = liveStatus
+      ? (liveStatus.running ? 'running' : (liveStatus.lifecycle || 'not running'))
+      : 'snapshot only';
+    const statusSource = liveStatus?.source || 'hydrated_snapshot';
+    const generatedAt = liveStatus?.generatedAt ? ` (${liveStatus.generatedAt})` : '';
 
     return `You are COSMO's interactive research assistant. You are embedded within an active COSMO research run.
 
 CURRENT RUN CONTEXT:
+- Status: ${statusStr}
 - Domain: ${domain}
 - Topic: ${topic}
 - Cycle: ${cycle}
 - Memory: ${memSize} nodes, ${edgeSize} edges
 - Coherence: ${coherenceStr}
 - Energy: ${energyStr}
-- Active agents: ${activeAgents}
+- Active agents: ${activeAgentsStr}
+- Status source: ${statusSource}${generatedAt}
 
 You have access to tools for querying the brain's knowledge graph, reading/writing files in the run directory, running terminal commands, and spawning COSMO research agents.
 

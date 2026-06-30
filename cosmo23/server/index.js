@@ -53,6 +53,11 @@ const {
 } = require('./lib/brains-router');
 const { buildStatusContract } = require('./lib/status-contract');
 const {
+  buildInteractiveLiveStatus,
+  isInteractiveSessionRequestValid,
+  shouldReuseInteractiveSession
+} = require('./lib/interactive-live-status');
+const {
   repairAllRunMetadata
 } = require('./lib/run-metadata-repair');
 const {
@@ -1183,6 +1188,16 @@ async function loadInteractiveState(runPath) {
   return {};
 }
 
+function createInteractiveLiveStatusProvider(runPath) {
+  return () => buildInteractiveLiveStatus({
+    runPath,
+    activeContext,
+    processStatus: processManager.getStatus(),
+    isLaunching,
+    ports: { app: PORT, websocket: WS_PORT, dashboard: DASHBOARD_PORT, mcpHttp: MCP_HTTP_PORT }
+  });
+}
+
 app.post('/api/interactive/start', async (req, res) => {
   try {
     let sessionRunPath = activeContext?.runPath || null;
@@ -1226,13 +1241,34 @@ app.post('/api/interactive/start', async (req, res) => {
       return res.status(500).json({ success: false, error: 'Interactive session module not available: ' + e.message });
     }
 
+    const liveStatusProvider = createInteractiveLiveStatusProvider(sessionRunPath);
+
     if (interactiveSession?.active) {
-      return res.json({ success: true, sessionId: interactiveSession.sessionId, resumed: true });
+      if (shouldReuseInteractiveSession(interactiveSession, sessionRunPath)) {
+        if (typeof interactiveSession.setLiveStatusProvider === 'function') {
+          interactiveSession.setLiveStatusProvider(liveStatusProvider);
+        } else {
+          interactiveSession.liveStatusProvider = liveStatusProvider;
+          if (interactiveSession.orchestrator) {
+            interactiveSession.orchestrator.liveStatusProvider = liveStatusProvider;
+          }
+        }
+        return res.json({
+          success: true,
+          sessionId: interactiveSession.sessionId,
+          resumed: true,
+          context: liveStatusProvider()
+        });
+      }
+
+      interactiveSession.active = false;
+      interactiveSession = null;
     }
 
     // Build a lightweight orchestrator-like context object hydrated from the active run.
     // The engine orchestrator runs in a subprocess — we can't access it directly.
     const hydratedState = await loadInteractiveState(sessionRunPath);
+    const initialLiveStatus = liveStatusProvider();
 
     // Convert arrays to Maps so interactive-session.js can use .size (matches live orchestrator shape)
     const rawNodes = hydratedState.memory?.nodes || [];
@@ -1255,6 +1291,10 @@ app.post('/api/interactive/start', async (req, res) => {
       runtimePath: sessionRunPath,
       config: { logsDir: sessionRunPath, ...runConfig },
       cycleCount: hydratedState.cycleCount || 0,
+      running: initialLiveStatus.running,
+      activeRun: initialLiveStatus.activeRun,
+      runName: initialLiveStatus.runName,
+      liveStatusProvider,
       memory: { nodes: nodeMap, edges: edgeMap },
       goals: hydratedState.goals || { active: [], completed: [] },
       agentExecutor: hydratedState.agentExecutor || null,
@@ -1349,9 +1389,9 @@ app.post('/api/interactive/start', async (req, res) => {
     interactiveSession = new InteractiveSession({
       models: { primary: model },
       interactive: {}
-    }, sessionContext, console, { client: llmClient });
+    }, sessionContext, console, { client: llmClient, liveStatusProvider });
 
-    res.json({ success: true, sessionId: interactiveSession.sessionId });
+    res.json({ success: true, sessionId: interactiveSession.sessionId, context: liveStatusProvider() });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -1363,7 +1403,11 @@ app.post('/api/interactive/message', async (req, res) => {
       return res.status(400).json({ success: false, error: 'No active interactive session. Start one first.' });
     }
 
-    const { message, model, provider } = req.body;
+    const { message, model, provider, sessionId } = req.body;
+    if (!isInteractiveSessionRequestValid(interactiveSession, sessionId)) {
+      return res.status(409).json({ success: false, error: 'Interactive session has changed. Start a new session.' });
+    }
+
     if (!message?.trim()) {
       return res.status(400).json({ success: false, error: 'Message is required.' });
     }
@@ -1390,12 +1434,17 @@ app.post('/api/interactive/message', async (req, res) => {
 });
 
 app.get('/api/interactive/status', (_req, res) => {
+  const liveStatus = interactiveSession?.active && typeof interactiveSession.liveStatusProvider === 'function'
+    ? interactiveSession.liveStatusProvider()
+    : null;
   res.json({
     success: true,
     active: !!interactiveSession?.active,
     sessionId: interactiveSession?.sessionId || null,
     messageCount: interactiveSession?.messages?.length || 0,
-    hasRun: !!activeContext
+    hasRun: !!activeContext,
+    runPath: interactiveSession?.runtimePath || null,
+    context: liveStatus
   });
 });
 

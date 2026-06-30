@@ -312,6 +312,49 @@ describe('GuidedModePlanner', () => {
     expect(plan.agentMissions[1].type).to.equal('ide');
   });
 
+  it('does not treat avoiding primary sources as a no-web request', () => {
+    const planner = createPlanner();
+    const decision = planner.buildPlanningDecision(
+      {
+        domain: 'very garcia side project anecdotes',
+        context: 'find anecdotes specifically from fans or quotes from interviews. Avoid all primary sources - search secondary and forums, etc. for anecdotes on specific Jerry Garcia side project shows'
+      },
+      { webSearch: true },
+      {}
+    );
+
+    expect(decision.noWebRequested).to.equal(false);
+    expect(decision.webPolicy).to.not.equal('none');
+    expect(decision.externalGaps.join('\n')).to.include('search secondary and forums');
+  });
+
+  it('fallback planning honors secondary/forum source preference instead of primary-source defaults', async () => {
+    const planner = createPlanner({
+      subsystems: {
+        client: {
+          generate: async () => ({ content: 'not valid json' })
+        }
+      }
+    });
+
+    const plan = await planner.generateMissionPlan(
+      {
+        domain: 'very garcia side project anecdotes',
+        context: 'find anecdotes specifically from fans or quotes from interviews. Avoid all primary sources - search secondary and forums, etc. for anecdotes on specific Jerry Garcia side project shows'
+      },
+      { mcp: { tools: [] }, webSearch: true, codeExecution: false, agentTypes: ['research', 'ide'] },
+      [],
+      [],
+      { hasContext: false, researchDigest: planner.buildResearchDigest({}) }
+    );
+
+    expect(plan.agentMissions[0].type).to.equal('research');
+    expect(plan.agentMissions[0].tools).to.include('web_search');
+    expect(plan.agentMissions.map(m => m.mission).join('\n')).to.include('secondary');
+    expect(plan.agentMissions.map(m => m.mission).join('\n')).to.include('forums');
+    expect(plan.agentMissions.map(m => m.sourceScope || '').join('\n')).to.not.include('primary external sources');
+  });
+
   it('selects no-web planning decision for continuation with local artifacts', () => {
     const planner = createPlanner();
     const decision = planner.buildPlanningDecision(
