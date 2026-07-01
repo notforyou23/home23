@@ -32,7 +32,8 @@ const {
 } = require('./research-contract');
 const {
   getExpectedOutputSpecs: getTaskExpectedOutputSpecs,
-  validateExpectedOutputs: validateTaskExpectedOutputs
+  validateExpectedOutputs: validateTaskExpectedOutputs,
+  collectResearchEvidenceFromArtifacts
 } = require('./task-completion-validator');
 
 class PlanExecutor {
@@ -367,7 +368,7 @@ class PlanExecutor {
     for (const task of failedTasks) {
       const retryCount = task.metadata?.retryCount || 0;
       if (retryCount < this.maxRetries) {
-        return await this.retryTask(task);
+        return await this.retryTask(task, task.failureReason || task.metadata?.lastFailureReason || 'phase blocked retry');
       }
     }
     
@@ -428,7 +429,12 @@ class PlanExecutor {
         if (assignedTaskAction) {
           return assignedTaskAction;
         }
-        return await this.startTask(nextTask);
+        await this.startTask(nextTask);
+        this.activeTask = {
+          ...nextTask,
+          state: 'IN_PROGRESS'
+        };
+        return await this.assignAgent();
       }
       return null; // No tasks ready (deps not met)
     }
@@ -492,7 +498,7 @@ class PlanExecutor {
 
       const assignedAt = Number(task.agentAssignedAt || task.updatedAt || task.createdAt || 0);
       if (assignedAt && Date.now() - assignedAt > this.agentTimeout) {
-        return await this.retryTask(task);
+        return await this.retryTask(task, 'assigned agent timed out before verified completion');
       }
 
       return this.record({
@@ -658,7 +664,7 @@ class PlanExecutor {
     });
   }
 
-  async retryTask(task) {
+  async retryTask(task, reason = null) {
     const newRetryCount = (task.metadata?.retryCount || 0) + 1;
     
     this.logger.info(`🔄 PlanExecutor: RETRYING TASK: ${task.title}`, {
@@ -676,7 +682,7 @@ class PlanExecutor {
         ...task.metadata,
         retryCount: newRetryCount,
         lastRetryAt: Date.now(),
-        lastFailureReason: task.failureReason
+        lastFailureReason: reason || task.failureReason || task.metadata?.lastFailureReason || null
       }
     };
     
@@ -685,15 +691,16 @@ class PlanExecutor {
     this.recordPlanEvent('task_retrying', {
       taskId: task.id,
       phaseName: task.title,
-      description: `Retrying task (attempt ${newRetryCount}/${this.maxRetries}): ${task.title}`,
-      attempt: newRetryCount
-    });
+        description: `Retrying task (attempt ${newRetryCount}/${this.maxRetries}): ${task.title}${reason ? `; previous failure: ${reason}` : ''}`,
+        attempt: newRetryCount
+      });
     
     return this.record({
       action: 'TASK_RETRIED',
       taskId: task.id,
       title: task.title,
-      attempt: newRetryCount
+      attempt: newRetryCount,
+      reason: reason || null
     });
   }
 
@@ -797,6 +804,11 @@ class PlanExecutor {
       ? this.activeTask.metadata.tools
       : (Array.isArray(this.activeTask.tools) ? this.activeTask.tools : []);
     
+    const retryFailureReason = this.activeTask.metadata?.lastFailureReason || null;
+    const retryCorrection = retryFailureReason
+      ? `\n\nPrevious attempt failed validation: ${retryFailureReason}. Correct this exact failure before finishing.`
+      : '';
+
     // Build comprehensive mission spec
     const missionSpec = {
       missionId: `plan_${this.activeTask.id}_${Date.now()}`,
@@ -805,7 +817,7 @@ class PlanExecutor {
       taskId: this.activeTask.id, // THE key correlation field
       planId: this.plan.id,
       milestoneId: this.activePhase?.id,
-      description: this.activeTask.description || this.activeTask.title,
+      description: `${this.activeTask.description || this.activeTask.title}${retryCorrection}`,
       tools: taskTools,
       // FIX (Jan 21, 2026): Don't pass strict acceptance criteria as success criteria
       // The rubrics like "Minimum 1500 words" and ">=50 sources" made agents too conservative
@@ -813,9 +825,10 @@ class PlanExecutor {
       // Instead, give agents encouraging, goal-oriented criteria
       successCriteria: [
         `Complete the task: ${this.activeTask.title}`,
+        retryFailureReason ? `Fix previous validation failure: ${retryFailureReason}` : null,
         'Produce comprehensive, substantive outputs',
         'Create all relevant artifacts and documentation'
-      ],
+      ].filter(Boolean),
       // Store acceptance criteria separately for post-completion validation
       acceptanceCriteria: this.activeTask.acceptanceCriteria || [],
       deliverable: this.activeTask.deliverable || null,
@@ -839,6 +852,7 @@ class PlanExecutor {
         artifactInputs: this.activeTask.metadata?.artifactInputs || [],
         expectedOutput: this.activeTask.metadata?.expectedOutput || null,
         researchContract,
+        previousValidationFailure: retryFailureReason,
         researchDigest: this.activeTask.metadata?.researchDigest || null,
         // Minimal coordination context
         coordinationContext: {
@@ -1020,7 +1034,7 @@ class PlanExecutor {
         task: this.activeTask.title,
         reason: validation.reason
       });
-      return await this.retryTask(this.activeTask);
+      return await this.retryTask(this.activeTask, validation.reason);
     }
   }
 
@@ -1057,7 +1071,7 @@ class PlanExecutor {
 
     const retryCount = this.activeTask.metadata?.retryCount || 0;
     if (retryCount < this.maxRetries) {
-      return await this.retryTask(this.activeTask);
+      return await this.retryTask(this.activeTask, validation.reason || reason);
     } else {
       return await this.failTask(this.activeTask, reason);
     }
@@ -1093,7 +1107,7 @@ class PlanExecutor {
     }
 
     // Retry if possible
-    return await this.retryTask(this.activeTask);
+    return await this.retryTask(this.activeTask, error?.message || 'agent failed');
   }
 
   async handleAgentTimeout(activeAgentState) {
@@ -1111,7 +1125,7 @@ class PlanExecutor {
     }
     
     // Retry the task
-    return await this.retryTask(this.activeTask);
+    return await this.retryTask(this.activeTask, 'agent timeout');
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -1239,13 +1253,39 @@ class PlanExecutor {
       }
     }
 
-    // HOME23 PATCH — Patch 28: files are not enough for source-required work.
+    let researchEvidence = null;
+
+    // HOME23 PATCH — Patch 43: source receipts in artifacts are contract evidence.
     const researchContract = this.activeTask.metadata?.researchContract || deriveResearchContract(this.activeTask);
     if (researchContract.required) {
+      const artifactEvidence = await collectResearchEvidenceFromArtifacts(
+        {
+          ...this.activeTask,
+          artifacts: [
+            ...(Array.isArray(this.activeTask.artifacts) ? this.activeTask.artifacts : []),
+            ...artifacts
+          ],
+          producedArtifacts: [
+            ...(Array.isArray(this.activeTask.producedArtifacts) ? this.activeTask.producedArtifacts : []),
+            ...artifacts
+          ]
+        },
+        {
+          artifacts,
+          producedArtifacts: artifacts
+        },
+        {
+          pathResolver: this.pathResolver,
+          outputRoot: this.resolveOutputRoot(),
+          logger: this.logger
+        }
+      );
       const evidence = collectResearchEvidence(accomplishedAgents, {
+        ...artifactEvidence,
         filesCreated: artifacts.length,
         artifactsCreated: artifacts.length
       });
+      researchEvidence = evidence;
       const contractValidation = evaluateResearchEvidence(researchContract, evidence);
 
       if (!contractValidation.passed) {
@@ -1264,7 +1304,8 @@ class PlanExecutor {
       return {
         passed: artifacts.length > 0,
         artifacts,
-        reason: artifacts.length > 0 ? null : 'No artifacts produced'
+        reason: artifacts.length > 0 ? null : 'No artifacts produced',
+        researchEvidence
       };
     }
     
@@ -1282,7 +1323,8 @@ class PlanExecutor {
     return {
       passed: true,
       artifacts,
-      reason: null
+      reason: null,
+      researchEvidence
     };
   }
 
@@ -1343,6 +1385,7 @@ class PlanExecutor {
     return await validateTaskExpectedOutputs(expectedOutputs, artifacts, {
       pathResolver: this.pathResolver,
       outputRoot: this.resolveOutputRoot(),
+      task: this.activeTask,
       logger: this.logger
     });
   }

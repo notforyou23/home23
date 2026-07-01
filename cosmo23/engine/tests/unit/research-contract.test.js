@@ -42,6 +42,23 @@ describe('ResearchContract', () => {
     expect(localOnly.mode).to.equal('none');
   });
 
+  it('keeps artifact-read evidence report synthesis local even when source terms appear in the inputs', () => {
+    const contract = deriveResearchContract({
+      agentType: 'ide',
+      description: [
+        'Read @outputs/raw-anecdotes/archive-org-comments.json and @outputs/raw-anecdotes/forum-social-candidates.json.',
+        'Write a concise evidence-backed markdown report with confirmed extracted anecdotes, negative receipts, useful source routes, failed/empty routes, and next source families to pursue.',
+        'Do not invent anecdotes. Required expectedOutput: @outputs/jerry-side-project-anecdotes.md.'
+      ].join(' '),
+      sourceScope: 'Local synthesis only from @outputs/raw-anecdotes/archive-org-comments.json and @outputs/raw-anecdotes/forum-social-candidates.json; no additional external acquisition',
+      expectedOutput: '@outputs/jerry-side-project-anecdotes.md'
+    });
+
+    expect(contract.required).to.equal(false);
+    expect(contract.mode).to.equal('none');
+    expect(contract.sourceProviderHints).to.deep.equal([]);
+  });
+
   it('derives executable source provider hints for typed research obligations', () => {
     const contract = deriveResearchContract({
       description: [
@@ -204,6 +221,27 @@ describe('ResearchContract', () => {
       `Jerry Merl Saunders Boarding House July 1975 "I'll Take a Melody" anecdote OR review`,
       'Old In the Way Boarding House September 1973 banjo Garcia fan memory site:reddit.com OR site:archive.org'
     ]);
+  });
+
+  it('does not make x-research a required route when the mission says where available', () => {
+    const contract = deriveResearchContract({
+      description: 'Use web_search for fan forums and search X/Twitter via Home23 x-research where available. Extract candidates with source_url fields.'
+    });
+
+    expect(contract.required).to.equal(true);
+    expect(contract.reasonCodes).to.include('social_research');
+    expect(contract.sourceProviderHints).to.not.include('home23.skill.x_research.search');
+  });
+
+  it('does not require archive routes for secondary forum/social outputs that exclude Archive.org', () => {
+    const contract = deriveResearchContract({
+      description: 'Use web_search for secondary sources, fan forums, Reddit, review blogs, and social sources. Do not use primary-source-only framing. Required expectedOutput: @outputs/raw-anecdotes/forum-social-candidates.json.',
+      sourceScope: 'Secondary fan/forum/social routes for Jerry Garcia side-project anecdotes, excluding Archive.org item reviews handled by Phase 1',
+      expectedOutput: '@outputs/raw-anecdotes/forum-social-candidates.json'
+    });
+
+    expect(contract.required).to.equal(true);
+    expect(contract.sourceProviderHints.some(route => route.startsWith('archive.'))).to.equal(false);
   });
 
   it('fails required research when all searches fail or no source evidence exists', () => {

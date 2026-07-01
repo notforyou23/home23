@@ -16,6 +16,12 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function isValidArchiveIdentifier(value) {
+  const cleaned = String(value || '').trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,}$/.test(cleaned)) return false;
+  return !/^(?:use|fetch|inspect|these|exact|identifier|identifiers|archive|archive\.org|metadata|reviews?|required|source|routes?|outputs?|raw|extracted|validation|final)$/i.test(cleaned);
+}
+
 function addExpectedSpec(specs, raw, source = 'metadata') {
   if (!raw) return;
 
@@ -132,6 +138,79 @@ function hasSubstantiveText(text = '') {
   return true;
 }
 
+function taskTextForValidation(expected = {}, context = {}) {
+  const task = context.task || {};
+  return [
+    expected.label,
+    task.title,
+    task.description,
+    task.expectedOutput,
+    task.metadata?.expectedOutput,
+    task.metadata?.sourceScope,
+    ...normalizeArray(task.acceptanceCriteria).map(item => textFromValidationCriterion(item))
+  ].filter(Boolean).join('\n');
+}
+
+function textFromValidationCriterion(criterion = {}) {
+  if (typeof criterion === 'string') return criterion;
+  return [criterion.rubric, criterion.description, criterion.text, criterion.value]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function getRequiredMarkdownSectionChecks(expected = {}, context = {}) {
+  const text = taskTextForValidation(expected, context).toLowerCase();
+  const checks = [];
+  const add = (key, label, patterns) => {
+    if (!checks.some(check => check.key === key)) checks.push({ key, label, patterns });
+  };
+
+  if (/\bconfirmed\s+extracted\s+anecdotes?\b|\bconfirmed\s+.*listener-review\s+evidence\b/.test(text)) {
+    add('confirmed_extracted_anecdotes', 'confirmed extracted anecdotes', [
+      /\bconfirmed\s+extracted\s+anecdotes?\b/i,
+      /\bconfirmed\s+.*listener[- ]review\s+evidence\b/i,
+      /\bconfirmed\s+.*review\s+evidence\b/i
+    ]);
+  }
+  if (/\bnegative\s+receipts?\b/.test(text)) {
+    add('negative_receipts', 'negative receipts', [/\bnegative\s+receipts?\b/i]);
+  }
+  if (/\buseful\s+source\s+routes?\b|\bproductive\s+source\s+routes?\b/.test(text)) {
+    add('useful_source_routes', 'useful source routes', [
+      /\buseful\s+source\s+routes?\b/i,
+      /\bproductive\s+source\s+routes?\b/i,
+      /\buseful\s+routes?\b/i
+    ]);
+  }
+  if (/\bfailed\/empty\s+routes?\b|\bfailed\s+or\s+empty\s+routes?\b|\bfailed\s+routes?\b/.test(text)) {
+    add('failed_empty_routes', 'failed/empty routes', [
+      /\bfailed\/empty\s+routes?\b/i,
+      /\bfailed\s+or\s+empty\s+routes?\b/i,
+      /\bfailed\s+\/\s+empty\s+routes?\b/i,
+      /\bfailed\s+routes?\b/i,
+      /\bempty\s+routes?\b/i
+    ]);
+  }
+  if (/\bnext\s+source\s+famil(?:y|ies)\b|\bsource\s+famil(?:y|ies)\s+to\s+pursue\b/.test(text)) {
+    add('next_source_families', 'next source families', [
+      /\bnext\s+source\s+famil(?:y|ies)\b/i,
+      /\bsource\s+famil(?:y|ies)\s+to\s+pursue\b/i,
+      /\bnext\s+sources?\s+to\s+pursue\b/i
+    ]);
+  }
+
+  return checks;
+}
+
+function validateMarkdownRequiredSections(content = '', expected = {}, context = {}) {
+  const checks = getRequiredMarkdownSectionChecks(expected, context);
+  if (checks.length === 0) return { passed: true, missing: [] };
+  const missing = checks
+    .filter(check => !check.patterns.some(pattern => pattern.test(content)))
+    .map(check => check.label);
+  return { passed: missing.length === 0, missing };
+}
+
 function isNegativeReceiptObject(value = {}) {
   const statusText = [
     value.status,
@@ -240,7 +319,15 @@ function validateArchiveOrgCommentsJson(value = {}) {
   const requiredIdentifiers = normalizeArray(value.required_identifiers || value.requiredIdentifiers)
     .map(String)
     .filter(Boolean);
+  const invalidIdentifier = requiredIdentifiers.find(identifier => !isValidArchiveIdentifier(identifier));
+  if (invalidIdentifier) {
+    return { passed: false, reason: `archive_invalid_required_identifier:${invalidIdentifier}` };
+  }
   const identifierStatuses = normalizeArray(value.identifier_statuses || value.identifierStatuses);
+  const invalidStatus = identifierStatuses.find(status => status?.identifier && !isValidArchiveIdentifier(status.identifier));
+  if (invalidStatus) {
+    return { passed: false, reason: `archive_invalid_status_identifier:${invalidStatus.identifier}` };
+  }
   const attempts = normalizeRouteReceiptAttempts(value);
   const attemptedRoutes = new Set(attempts.map(item => item.route).filter(Boolean));
 
@@ -291,6 +378,58 @@ function validateArchiveOrgCommentsJson(value = {}) {
   return { passed: true };
 }
 
+function validateForumSocialCandidatesJson(value = {}) {
+  if (!isPlainObject(value)) {
+    return { passed: false, reason: 'forum_social_not_object' };
+  }
+
+  if (!Array.isArray(value.candidates)) {
+    return { passed: false, reason: 'forum_social_missing_candidates_array' };
+  }
+
+  const queries = normalizeArray(value.queries).map(String).filter(Boolean);
+  if (queries.length === 0) {
+    return { passed: false, reason: 'forum_social_missing_queries' };
+  }
+
+  const instructionQuery = queries.find(query =>
+    query.length > 512 ||
+    /\bqueries must target\b|\bexpected output\b|@outputs\/|\bsource_url\b|\bsource_type\b/i.test(query)
+  );
+  if (instructionQuery) {
+    return { passed: false, reason: 'forum_social_instruction_text_used_as_query' };
+  }
+
+  for (const [index, candidate] of value.candidates.entries()) {
+    if (!candidate || typeof candidate !== 'object') {
+      return { passed: false, reason: `forum_social_invalid_candidate:${index}` };
+    }
+    if (!/^https?:\/\//i.test(String(candidate.source_url || ''))) {
+      return { passed: false, reason: `forum_social_candidate_missing_source_url:${index}` };
+    }
+    if (!String(candidate.source_type || '').trim()) {
+      return { passed: false, reason: `forum_social_candidate_missing_source_type:${index}` };
+    }
+    const excerpt = String(candidate.excerpt || candidate.anecdote_text || candidate.quote || '').replace(/\s+/g, ' ').trim();
+    if (excerpt.length < 20) {
+      return { passed: false, reason: `forum_social_candidate_missing_excerpt:${index}` };
+    }
+  }
+
+  if (value.candidates.length > 0) {
+    return { passed: true };
+  }
+
+  const negativeReceipts = normalizeArray(value.negative_receipts || value.negativeReceipts);
+  const routeAttempts = normalizeArray(value.route_receipts?.attempts || value.routeReceipts?.attempts);
+  const searchedUrls = normalizeArray(value.urls_searched || value.urlsSearched);
+  if (negativeReceipts.length === 0 || routeAttempts.length === 0 || searchedUrls.length === 0) {
+    return { passed: false, reason: 'forum_social_empty_without_negative_receipts' };
+  }
+
+  return { passed: true };
+}
+
 async function validateExpectedOutputFile(absolutePath, expected = {}, context = {}) {
   const stat = await fs.stat(absolutePath);
   if (!stat.isFile()) {
@@ -319,6 +458,12 @@ async function validateExpectedOutputFile(absolutePath, expected = {}, context =
         return { passed: false, reason: archiveValidation.reason };
       }
     }
+    if (/forum-social-candidates\.json$/i.test(path.basename(absolutePath))) {
+      const forumSocialValidation = validateForumSocialCandidatesJson(parsed);
+      if (!forumSocialValidation.passed) {
+        return { passed: false, reason: forumSocialValidation.reason };
+      }
+    }
     if (!hasJsonSubstance(parsed)) {
       return { passed: false, reason: 'json_has_no_substantive_records' };
     }
@@ -337,6 +482,13 @@ async function validateExpectedOutputFile(absolutePath, expected = {}, context =
   } else if (ext === '.md' || ext === '.markdown') {
     if (!hasSubstantiveText(content) || !/^#\s+/m.test(content)) {
       return { passed: false, reason: 'markdown_has_no_substantive_body' };
+    }
+    const sectionValidation = validateMarkdownRequiredSections(content, expected, context);
+    if (!sectionValidation.passed) {
+      return {
+        passed: false,
+        reason: `markdown_missing_required_sections:${sectionValidation.missing.join(',')}`
+      };
     }
   } else if (ext === '.txt' || ext === '.csv') {
     if (!hasSubstantiveText(content)) {

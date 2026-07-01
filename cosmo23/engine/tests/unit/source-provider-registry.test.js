@@ -296,6 +296,20 @@ describe('SourceProviderRegistry', () => {
     expect(result.attempts.map(item => item.route)).to.deep.equal(['archive.metadata', 'archive.reviews']);
   });
 
+  it('extracts multiline bullet Archive identifiers without treating bullet markers as IDs', () => {
+    const registry = new SourceProviderRegistry(logger, {}, {});
+    const text = `Use typed source providers and web_search for Archive.org exact identifiers. Required source routes: archive.metadata and archive.reviews. Fetch and inspect these exact identifiers:
+- lom-1974-11-28.sbd (Legion Of Mary, Great American Music Hall, San Francisco, 1974-11-28)
+- nrps1970-05-14.sbd.unk.warner.evans.028716.flac1644 (New Riders of the Purple Sage, MCC Gym, 1970-05-14)
+- oaitw1998-06-18.sbd.16441.untouched (Old And In The Way, Telluride, 1998-06-18)`;
+
+    expect(registry.extractArchiveIdentifiers(text)).to.deep.equal([
+      'lom-1974-11-28.sbd',
+      'nrps1970-05-14.sbd.unk.warner.evans.028716.flac1644',
+      'oaitw1998-06-18.sbd.16441.untouched'
+    ]);
+  });
+
   it('emits per-identifier empty review status receipts', async () => {
     const identifiers = [
       'legion-of-mary-the-bottom-line-nyc-1975',

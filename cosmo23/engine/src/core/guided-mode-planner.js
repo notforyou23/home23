@@ -2859,7 +2859,7 @@ ONLY use agent types from the available list above.`;
     const expected = String(this.getPhaseExpectedOutput(phase) || '').toLowerCase();
     const readsArtifacts = /\bread\s+@outputs\//i.test(text) || this.getPhaseArtifactInputs(phase).length > 0;
     const validatesOrSynthesizes =
-      /\bvalidate\b|\bjson\s+parses\b|\bproblems\s*:\s*\[\]|\bsynthesize\b|\bwrite\s+markdown\b|\bgrounded only in the artifacts\b/i.test(text);
+      /\bvalidate\b|\bjson\s+parses\b|\bproblems\s*:\s*\[\]|\bsynthesize\b|\bsynthesis\b|\bwrite\s+(?:a\s+)?(?:concise\s+)?(?:evidence-backed\s+)?(?:markdown\s+)?report\b|\bwrite\s+markdown\b|\bgrounded only in the artifacts\b/i.test(text);
     const explicitAcquisition =
       /\buse\s+(?:typed\s+)?source\s+provider\b/i.test(text)
       || /\bexecute\s+web[_ -]?search\b/i.test(text)
@@ -3591,8 +3591,12 @@ ONLY use agent types from the available list above.`;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
 
-      // Match: "PHASE 1 - Name:" or "PHASE 1: Name"
-      const phaseMatch = line.match(/(?:═+\s*)?PHASE\s+(\d+)\s*[-:]\s*([^:]+):\s*$/i);
+      // Match:
+      // - "PHASE 1 - Name"
+      // - "PHASE 1 - Name:"
+      // - "PHASE 1: Name"
+      // - "═══ PHASE 1 - Name ═══"
+      const phaseMatch = line.match(/^(?:═+\s*)?PHASE\s+(\d+)\s*(?:[-:])\s*(.+?)(?:\s*:)?(?:\s*═+)?\s*$/i);
 
       if (phaseMatch) {
         // Save previous phase if exists

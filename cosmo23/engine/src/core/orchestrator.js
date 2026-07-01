@@ -1313,8 +1313,9 @@ class Orchestrator {
       // The old orchestrator plan code is now GUARDED (skipped when plan active)
       // ═══════════════════════════════════════════════════════════════
       let planExecutorHandled = false;
+      let planAction = { action: 'NO_PLAN' };
       if (this.planExecutor) {
-        const planAction = await this.planExecutor.tick(this.cycleCount);
+        planAction = await this.planExecutor.tick(this.cycleCount);
         
         // If there's an active plan, PlanExecutor is THE authority
         planExecutorHandled = planAction.action !== 'NO_PLAN';
@@ -1381,6 +1382,20 @@ class Orchestrator {
       // commitment governor or a skipped meta review.
       await this.spawnGuidedPendingTierIfReady('post_task_queue');
       await this.handlePersistedCompletedPlanIfReady('post_task_queue');
+
+      if (this.isGuidedExclusiveRun()) {
+        const guidedPlan = this.clusterStateStore?.getPlan
+          ? await this.clusterStateStore.getPlan('plan:main').catch(() => null)
+          : null;
+        if (guidedPlan?.status === 'ACTIVE') {
+          this.logger.info('📌 GUIDED-EXCLUSIVE MODE: yielding after plan executor service', {
+            cycle: this.cycleCount,
+            planAction: planAction.action,
+            planId: guidedPlan.id
+          });
+          return;
+        }
+      }
       
       // Introspection pass (system-level self-awareness)
       // Run every 3 cycles to integrate agent outputs into memory
@@ -7827,7 +7842,8 @@ OUTPUT FORMAT (JSON ONLY):
       interval = this.config.execution.baseInterval * 1000;
     }
 
-    return Math.max(30000, Math.min(600000, interval)); // 30s - 10min range
+    const minInterval = this.config.execution?.adaptiveTimingEnabled === false ? 1000 : 30000;
+    return Math.max(minInterval, Math.min(600000, interval)); // 1s/30s - 10min range
   }
 
   sleep(ms) {

@@ -168,6 +168,26 @@ Write to outputs/validation/archive-org-comments-validation.json.
     expect(phases[1].expectedOutput).to.equal('@outputs/validation/archive-org-comments-validation.json');
   });
 
+  it('parses explicit phase headers without trailing colons', () => {
+    const planner = createPlanner();
+
+    const phases = planner.parseExplicitPhases(`
+PHASE 1 - Archive.org review acquisition
+Use archive.metadata and archive.reviews.
+Expected output: @outputs/raw-anecdotes/archive-org-comments.json
+
+PHASE 2 - Final evidence-backed synthesis
+Read the raw JSON.
+Expected output: @outputs/jerry-side-project-anecdotes.md
+`);
+
+    expect(phases).to.have.length(2);
+    expect(phases[0].name).to.equal('Archive.org review acquisition');
+    expect(phases[0].expectedOutput).to.equal('@outputs/raw-anecdotes/archive-org-comments.json');
+    expect(phases[1].name).to.equal('Final evidence-backed synthesis');
+    expect(phases[1].expectedOutput).to.equal('@outputs/jerry-side-project-anecdotes.md');
+  });
+
   it('preserves all explicit phases even when later phases read prior outputs', () => {
     const planner = createPlanner();
 
@@ -701,8 +721,46 @@ Read @outputs/raw-anecdotes/archive-org-comments.json and @outputs/validation/ar
     expect(normalized.agentMissions[1].artifactInputs.map(input => input.path)).to.deep.equal([
       '@outputs/raw-anecdotes/archive-org-comments.json'
     ]);
+    expect(normalized.agentMissions[2].type).to.equal('ide');
     expect(normalized.agentMissions[2].expectedOutput).to.equal('@outputs/final/archive-org-comments-report.md');
     expect(normalized.agentMissions.map(m => m.expectedOutput)).to.not.include('Complete markdown report document');
+  });
+
+  it('routes final artifact-only evidence reports to ide even when the planner proposes document_creation', () => {
+    const planner = createPlanner();
+    const taskPhases = planner.parseTaskPhases(`
+PHASE 1 - Archive.org review acquisition
+Use typed source provider acquisition, specifically archive.metadata and archive.reviews. Required expectedOutput: @outputs/raw-anecdotes/archive-org-comments.json.
+
+PHASE 2 - Secondary fan/forum/social source acquisition
+Use web_search for secondary sources. Required expectedOutput: @outputs/raw-anecdotes/forum-social-candidates.json.
+
+PHASE 3 - Final evidence-backed synthesis
+Read @outputs/raw-anecdotes/archive-org-comments.json and @outputs/raw-anecdotes/forum-social-candidates.json. Write a concise evidence-backed markdown report with confirmed extracted anecdotes, negative receipts, useful source routes, failed/empty routes, and next source families to pursue. Do not invent anecdotes. Required expectedOutput: @outputs/jerry-side-project-anecdotes.md.
+`);
+
+    const normalized = planner.normalizePlan(
+      {
+        strategy: 'Jerry side-project anecdotes',
+        agentMissions: [
+          { type: 'research', mission: 'archive', expectedOutput: '@outputs/raw-anecdotes/archive-org-comments.json' },
+          { type: 'research', mission: 'secondary', expectedOutput: '@outputs/raw-anecdotes/forum-social-candidates.json' },
+          { type: 'document_creation', mission: 'write final report', expectedOutput: '@outputs/wrong.md' }
+        ],
+        deliverable: { type: 'markdown', filename: 'guided_output.md', location: '@outputs/' }
+      },
+      { domain: 'Jerry Garcia side-project fan anecdotes' },
+      { researchDigest: planner.buildResearchDigest({}), taskPhases }
+    );
+
+    expect(normalized.agentMissions).to.have.length(3);
+    expect(normalized.agentMissions[2].type).to.equal('ide');
+    expect(normalized.agentMissions[2].expectedOutput).to.equal('@outputs/jerry-side-project-anecdotes.md');
+    expect(normalized.agentMissions[2].metadata.researchContract.required).to.equal(false);
+    expect(normalized.agentMissions[2].artifactInputs.map(input => input.path)).to.deep.equal([
+      '@outputs/raw-anecdotes/archive-org-comments.json',
+      '@outputs/raw-anecdotes/forum-social-candidates.json'
+    ]);
   });
 
   it('fallback planning honors secondary/forum source preference instead of primary-source defaults', async () => {

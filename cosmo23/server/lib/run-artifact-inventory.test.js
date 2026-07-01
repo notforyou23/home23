@@ -96,3 +96,99 @@ test('summarizeRunArtifacts fingerprint changes when artifact content changes', 
   assert.equal(second.categories.rawAnecdotes.records, 1);
   assert.notEqual(first.fingerprint, second.fingerprint);
 }));
+
+test('buildArtifactFirstContext includes exact structured anecdote artifacts', () => withTempRun((runPath) => {
+  fs.mkdirSync(path.join(runPath, 'outputs', 'raw-anecdotes'), { recursive: true });
+  fs.writeFileSync(
+    path.join(runPath, 'outputs', 'raw-anecdotes', 'archive-org-comments.json'),
+    JSON.stringify({
+      status: 'records_extracted',
+      entries: [
+        {
+          identifier: 'oaitw1998-06-18.sbd.16441.untouched',
+          reviewer: 'Jbart02s',
+          created_at: '2021-12-22 17:55:31',
+          review_body: 'High Lonesome Sound and Midnight Moonlight setlist note.',
+          route: 'archive.reviews',
+          source_url: 'https://archive.org/details/oaitw1998-06-18.sbd.16441.untouched#reviews'
+        },
+        {
+          identifier: 'oaitw1998-06-18.sbd.16441.untouched',
+          reviewer: 'Fennario Spring',
+          created_at: '2025-04-13 08:51:13',
+          review_body: 'such a stellar reunion',
+          route: 'archive.reviews',
+          source_url: 'https://archive.org/details/oaitw1998-06-18.sbd.16441.untouched#reviews'
+        }
+      ],
+      identifier_statuses: [
+        {
+          identifier: 'lom-1974-11-28.sbd',
+          status: 'no_reviews_found',
+          review_count_reported: 0,
+          metadata_route: 'accepted',
+          review_route: 'accepted',
+          source_url: 'https://archive.org/details/lom-1974-11-28.sbd'
+        },
+        {
+          identifier: 'oaitw1998-06-18.sbd.16441.untouched',
+          status: 'reviews_extracted',
+          review_count_reported: 2,
+          metadata_route: 'accepted',
+          review_route: 'accepted',
+          source_url: 'https://archive.org/details/oaitw1998-06-18.sbd.16441.untouched'
+        }
+      ],
+      route_receipts: {
+        attempts: [
+          { route: 'archive.metadata', status: 'accepted' },
+          { route: 'archive.reviews', status: 'accepted' },
+          { route: 'local-search', status: 'failed', code: 'LOW_QUALITY_SEARCH_RESULTS' }
+        ],
+        failed_routes: ['local-search']
+      }
+    })
+  );
+  fs.writeFileSync(
+    path.join(runPath, 'outputs', 'raw-anecdotes', 'forum-social-candidates.json'),
+    JSON.stringify({
+      status: 'candidates_found',
+      candidates: [
+        {
+          project: 'Legion of Mary',
+          date_show_reference: 'May 13, 1975',
+          source_type: 'blog_review',
+          route: 'direct-source-fetch',
+          confidence: 0.95,
+          source_url: 'https://lostlivedead.blogspot.com/2009/12/may-13-1975-keystone-berkeley-lucky.html',
+          excerpt: 'Lost Live Dead discusses Lucky Strike billing and leans toward a May 13 date.'
+        }
+      ],
+      route_receipts: {
+        attempts: [
+          { route: 'direct-source-fetch', status: 'accepted' },
+          { route: 'web.search', status: 'rejected' },
+          { route: 'commoncrawl.cdx', status: 'failed', error: 'HTTP 404' }
+        ],
+        failed_routes: ['web.search', 'commoncrawl.cdx']
+      }
+    })
+  );
+  fs.writeFileSync(
+    path.join(runPath, 'outputs', 'jerry-side-project-anecdotes.md'),
+    '# Jerry Garcia Side-Project Anecdotes: Evidence Report\n\n## Confirmed extracted anecdotes\n\n## Failed or empty routes\n'
+  );
+
+  const inventory = summarizeRunArtifacts(runPath);
+  const context = buildArtifactFirstContext(inventory);
+
+  assert.equal(inventory.artifactDetails.rawAnecdotes.length, 2);
+  assert.match(context, /Structured raw artifact truth/);
+  assert.match(context, /archive-org-comments\.json: status=records_extracted, entries=2, candidates=0/);
+  assert.match(context, /forum-social-candidates\.json: status=candidates_found, entries=0, candidates=1/);
+  assert.match(context, /project=Legion of Mary/);
+  assert.match(context, /failedRoutes=web\.search, commoncrawl\.cdx/);
+  assert.match(context, /reviews=0/);
+  assert.match(context, /Markdown report truth/);
+  assert.match(context, /## Confirmed extracted anecdotes/);
+}));

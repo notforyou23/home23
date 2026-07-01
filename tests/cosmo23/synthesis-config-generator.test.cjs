@@ -30,7 +30,7 @@ test('launcher config emits synthesis commit-step defaults', async () => {
     fast_provider: 'openai',
     fast_model: 'gpt-5-mini',
     strategic_provider: 'anthropic',
-    strategic_model: 'claude-opus-4-7'
+    strategic_model: 'claude-opus-4-8'
   });
 
   const parsed = yaml.load(configYaml);
@@ -72,12 +72,31 @@ test('launcher config honors commit-step launch overrides', async () => {
     fast_provider: 'openai',
     fast_model: 'gpt-5-mini',
     strategic_provider: 'anthropic',
-    strategic_model: 'claude-opus-4-7'
+    strategic_model: 'claude-opus-4-8'
   });
 
   const parsed = yaml.load(configYaml);
   assert.equal(parsed.synthesis.commitStep, false);
   assert.equal(parsed.synthesis.spineCap, 8);
+});
+
+test('launcher config makes sleep-disabled runs poll quickly without adaptive timing', async () => {
+  const generator = new ConfigGenerator(process.cwd(), console);
+  const configYaml = await generator.generateConfig({
+    domain: 'active acquisition run',
+    enable_sleep: false,
+    primary_provider: 'openai',
+    primary_model: 'gpt-5.5',
+    fast_provider: 'openai',
+    fast_model: 'gpt-5-mini',
+    strategic_provider: 'openai',
+    strategic_model: 'gpt-5.5-pro'
+  });
+
+  const parsed = yaml.load(configYaml);
+  assert.equal(parsed.architecture.temporal.sleepEnabled, false);
+  assert.equal(parsed.execution.baseInterval, 2);
+  assert.equal(parsed.execution.adaptiveTimingEnabled, false);
 });
 
 test('launcher config prefers COSMO23 ports over inherited Home23 agent ports', async () => {
@@ -97,7 +116,7 @@ test('launcher config prefers COSMO23 ports over inherited Home23 agent ports', 
       fast_provider: 'anthropic',
       fast_model: 'claude-sonnet-4-7',
       strategic_provider: 'anthropic',
-      strategic_model: 'claude-opus-4-7'
+      strategic_model: 'claude-opus-4-8'
     });
 
     const parsed = yaml.load(configYaml);

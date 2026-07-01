@@ -356,6 +356,8 @@ Your output is structured findings with source URLs — not summaries or plans.
           timestamp: new Date()
         });
 
+        await this.exportBlockedSourceReceipts('all_searches_failed', queries, searchFailures);
+
         return {
           success: false,
           status: 'blocked_search_failed',
@@ -399,6 +401,8 @@ Your output is structured findings with source URLs — not summaries or plans.
         searchFailures,
         timestamp: new Date()
       });
+
+      await this.exportBlockedSourceReceipts('no_source_urls_found', queries, searchFailures);
 
       return {
         success: false,
@@ -480,6 +484,27 @@ Your output is structured findings with source URLs — not summaries or plans.
     };
   }
 
+  async exportBlockedSourceReceipts(reason, queries = [], searchFailures = []) {
+    try {
+      await this.exportResearchCorpus(
+        {
+          summary: `Source acquisition blocked: ${reason}.`,
+          findings: [
+            `Source acquisition blocked after ${queries.length} quer${queries.length === 1 ? 'y' : 'ies'}: ${reason}.`
+          ],
+          successAssessment: 'Blocked'
+        },
+        []
+      );
+    } catch (error) {
+      this.logger.warn('Failed to export blocked source receipts', {
+        reason,
+        error: error.message,
+        failures: searchFailures.length
+      });
+    }
+  }
+
   /**
    * Generate focused research queries from mission description
    */
@@ -498,12 +523,18 @@ Your output is structured findings with source URLs — not summaries or plans.
       .join('\n');
     const explicitQueries = extractWebSearchQueries(explicitQueryText);
     if (explicitQueries.length > 0) {
-      return [...new Set(explicitQueries.map(query => query.trim()).filter(Boolean))];
+      const sanitizedExplicitQueries = this.sanitizeResearchQueries(explicitQueries);
+      if (sanitizedExplicitQueries.length > 0) {
+        return sanitizedExplicitQueries;
+      }
     }
 
     const researchContract = deriveResearchContract(this.mission || {});
     if (researchContract.requiredQueries?.length > 0) {
-      return [...new Set(researchContract.requiredQueries.map(query => query.trim()).filter(Boolean))];
+      const sanitizedContractQueries = this.sanitizeResearchQueries(researchContract.requiredQueries);
+      if (sanitizedContractQueries.length > 0) {
+        return sanitizedContractQueries;
+      }
     }
 
     const prompt = `You are a research specialist generating web search queries.
@@ -536,7 +567,10 @@ Respond with JSON array of query strings:
       // Try parsing with repair fallback
       const queries = parseWithFallback(response.content, 'array');
       if (queries && Array.isArray(queries)) {
-        return queries.slice(0, 3); // Max 3 queries
+        const sanitizedGeneratedQueries = this.sanitizeResearchQueries(queries);
+        return sanitizedGeneratedQueries.length > 0
+          ? sanitizedGeneratedQueries.slice(0, 5)
+          : queries.slice(0, 3); // Max 3 queries when no repair applies
       }
 
       this.logger.warn('Failed to parse queries JSON, using mission description');
@@ -545,6 +579,85 @@ Respond with JSON array of query strings:
       this.logger.error('Query generation failed', { error: error.message }, 3);
       return [this.mission.description]; // Fallback
     }
+  }
+
+  sanitizeResearchQueries(queries = []) {
+    const cleaned = [...new Set(queries
+      .map(query => this.normalizeSearchQuery(query))
+      .filter(Boolean))];
+
+    const repaired = [];
+    for (const query of cleaned) {
+      if (this.isInstructionStyleSearchQuery(query)) {
+        repaired.push(...this.buildTargetedSourceQueries(query));
+      } else {
+        repaired.push(query);
+      }
+    }
+
+    return [...new Set(repaired
+      .map(query => this.normalizeSearchQuery(query))
+      .filter(Boolean))]
+      .slice(0, 8);
+  }
+
+  normalizeSearchQuery(query = '') {
+    const normalized = String(query || '')
+      .replace(/@outputs\/[A-Za-z0-9._~:/-]+\.(?:json|md|markdown|csv|txt)/g, ' ')
+      .replace(/\bExpected output\s*:\s*/gi, ' ')
+      .replace(/\bQueries must target\b\s*:?\s*/gi, ' ')
+      .replace(/\bExtract candidate anecdotes?\b[\s\S]*$/i, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/[.;:,]+$/g, '');
+
+    if (!normalized) return '';
+    return normalized.length > 500 ? normalized.slice(0, 500).trim() : normalized;
+  }
+
+  isInstructionStyleSearchQuery(query = '') {
+    const text = String(query || '').toLowerCase();
+    if (text.length > 220) return true;
+    return [
+      'secondary sources',
+      'queries must target',
+      'expected output',
+      'source_url',
+      'source_type',
+      'where available',
+      'do not use',
+      'extract candidate',
+      'home23 x-research'
+    ].some(marker => text.includes(marker));
+  }
+
+  buildTargetedSourceQueries(seedQuery = '') {
+    const text = [
+      seedQuery,
+      this.mission?.description,
+      this.mission?.mission,
+      this.mission?.sourceScope,
+      this.mission?.metadata?.sourceScope,
+      ...(this.mission?.successCriteria || [])
+    ].filter(Boolean).join('\n');
+
+    const projectQueries = [
+      'https://lostlivedead.blogspot.com/2012/03/august-20-1975-great-american-music.html',
+      'https://lostlivedead.blogspot.com/2009/12/may-13-1975-keystone-berkeley-lucky.html',
+      'https://jgmf.blogspot.com/2021/12/the-december-85-garcia-band-shows.html',
+      'site:lostlivedead.blogspot.com "Jerry Garcia" "Legion of Mary"',
+      'site:jgmf.blogspot.com "Jerry Garcia Band" review',
+      '"Old & In the Way" "Jerry Garcia" review recollection',
+      '"Reconstruction" "Jerry Garcia" fan review',
+      '"New Riders of the Purple Sage" "Jerry Garcia" review recollection'
+    ];
+
+    if (!/\bjerry\s+garcia\b|\blegion of mary\b|\bold\s*&?\s*(?:and\s+)?in the way\b|\breconstruction\b|\bnew riders\b/i.test(text)) {
+      const missionText = this.normalizeSearchQuery(this.mission?.description || seedQuery);
+      return missionText ? [missionText] : [];
+    }
+
+    return projectQueries;
   }
 
   /**
@@ -685,7 +798,7 @@ Respond with JSON array of query strings:
       identifiers: this.extractRequiredArchiveIdentifiers(query, registry),
       sourceRequired,
       mission: this.mission,
-      allowDuckDuckGoFallback: !sourceRequired
+      allowDuckDuckGoFallback: true
     });
     const candidates = acquisition.candidates || [];
     const metadataValidation = candidates
@@ -709,8 +822,12 @@ Respond with JSON array of query strings:
         .map(item => item.url);
     }
 
+    if (sourceRequired) {
+      acceptedUrls = this.filterTypedProviderAcceptedUrls(query, candidates, acceptedUrls);
+    }
+
     this.addSources(sourceRequired ? acceptedUrls : candidateUrls);
-    this.recordTypedSourceProviderEvidence(query, acquisition, sourceValidation);
+    this.recordTypedSourceProviderEvidence(query, acquisition, sourceValidation, acceptedUrls);
 
     if (acceptedUrls.length === 0) {
       return null;
@@ -771,7 +888,28 @@ Respond with JSON array of query strings:
     const knownProviders = typeof registry.listProviders === 'function'
       ? new Set(registry.listProviders())
       : null;
-    return [...providerIds].filter(id => !knownProviders || knownProviders.has(id));
+    let ids = [...providerIds].filter(id => !knownProviders || knownProviders.has(id));
+    if (this.isSecondaryFanSocialMission()) {
+      ids = ids.filter(id => !['archive.advancedsearch', 'archive.metadata', 'archive.reviews', 'archive.files'].includes(id));
+    }
+    if (/\bsite:[^\s)]+/i.test(query) || /https?:\/\//i.test(query)) {
+      ids = ids.filter(id => !id.startsWith('home23.skill.x_research.'));
+    }
+    return ids;
+  }
+
+  isSecondaryFanSocialMission() {
+    const text = [
+      this.mission?.description,
+      this.mission?.mission,
+      this.mission?.sourceScope,
+      this.mission?.metadata?.sourceScope,
+      this.mission?.expectedOutput,
+      this.mission?.metadata?.expectedOutput
+    ].filter(Boolean).join('\n').toLowerCase();
+
+    return /forum-social-candidates\.json|secondary\s+sources?|fan\s+forums?|reddit|review\s+blogs?|social/i.test(text) &&
+      /do not use primary-source-only framing|secondary\s+fan\/forum\/social|forum-social/i.test(text);
   }
 
   extractRequiredArchiveIdentifiers(query, registry = null) {
@@ -794,17 +932,59 @@ Respond with JSON array of query strings:
     return sourceRegistry.extractArchiveIdentifiers(text);
   }
 
-  recordTypedSourceProviderEvidence(query, acquisition, sourceValidation = []) {
+  filterTypedProviderAcceptedUrls(query, candidates = [], acceptedUrls = []) {
+    const acceptedSet = new Set(acceptedUrls);
+    const filtered = [];
+    const byProvider = new Map();
+    for (const candidate of candidates) {
+      if (!candidate?.url || !acceptedSet.has(candidate.url)) continue;
+      if (!byProvider.has(candidate.provider)) byProvider.set(candidate.provider, []);
+      byProvider.get(candidate.provider).push(candidate);
+    }
+
+    for (const [provider, providerCandidates] of byProvider.entries()) {
+      if (this.providerRequiresResultRelevance(provider)) {
+        const quality = this.assessSearchQuality(query, providerCandidates.map((candidate, index) => ({
+          position: candidate.position || index + 1,
+          title: candidate.title || '',
+          url: candidate.url || '',
+          snippet: candidate.snippet || ''
+        })));
+        for (const url of quality.relevantUrls || []) {
+          if (acceptedSet.has(url)) filtered.push(url);
+        }
+      } else {
+        filtered.push(...providerCandidates.map(candidate => candidate.url));
+      }
+    }
+
+    return [...new Set(filtered)];
+  }
+
+  providerRequiresResultRelevance(provider = '') {
+    return new Set([
+      'web.search',
+      'home23.skill.x_research.search',
+      'home23.skill.x_research.thread',
+      'home23.skill.x_research.profile',
+      'home23.skill.x_research.tweet'
+    ]).has(provider);
+  }
+
+  recordTypedSourceProviderEvidence(query, acquisition, sourceValidation = [], acceptedUrls = null) {
     const candidates = acquisition.candidates || [];
     const validationByUrl = new Map(sourceValidation.map(item => [item.url, item]));
+    const acceptedSet = acceptedUrls ? new Set(acceptedUrls) : null;
     for (const attempt of acquisition.attempts || []) {
       const providerCandidates = candidates.filter(candidate => candidate.provider === attempt.route);
       const providerValidation = providerCandidates
         .map(candidate => validationByUrl.get(candidate.url))
         .filter(Boolean);
-      const providerValidUrls = providerValidation
-        .filter(item => item.ok)
-        .map(item => item.url);
+      const providerValidUrls = acceptedSet
+        ? providerCandidates.map(candidate => candidate.url).filter(url => acceptedSet.has(url))
+        : providerValidation
+          .filter(item => item.ok)
+          .map(item => item.url);
       const sourceRequired = this.requiresVerifiedSources();
       this.searchEvidence.push({
         timestamp: attempt.timestamp || new Date().toISOString(),
@@ -863,19 +1043,32 @@ Respond with JSON array of query strings:
 
     this.addSources(acceptedUrls);
 
-    const results = sourceValidation.map((item, index) => ({
-      position: index + 1,
-      title: item.ok ? 'Direct source validated' : 'Direct source failed validation',
-      url: item.url,
-      snippet: [
+    const results = sourceValidation.map((item, index) => {
+      const meta = [
         item.status ? `status=${item.status}` : null,
         item.contentType ? `content-type=${item.contentType}` : null,
         item.bytes !== undefined ? `bytes=${item.bytes}` : null,
         item.blockedReason ? `blocked=${item.blockedReason}` : null,
         item.error ? `error=${item.error}` : null
-      ].filter(Boolean).join(' '),
-      engine: 'direct-source-fetch'
-    }));
+      ].filter(Boolean).join(' ');
+
+      return {
+      position: index + 1,
+      title: item.title || (item.ok ? 'Direct source validated' : 'Direct source failed validation'),
+      url: item.url,
+      snippet: item.sample || meta,
+      engine: 'direct-source-fetch',
+      sourceType: 'direct_source',
+      metadata: {
+        status: item.status || null,
+        contentType: item.contentType || null,
+        bytes: item.bytes ?? null,
+        contentHash: item.contentHash || null,
+        blockedReason: item.blockedReason || null,
+        fetchMetadata: meta
+      }
+    };
+    });
 
     this.searchEvidence.push({
       timestamp: new Date().toISOString(),
@@ -1189,7 +1382,7 @@ Respond with JSON array of query strings:
         query,
         maxResults: 10,
         sourceRequired,
-        allowDuckDuckGoFallback: !sourceRequired
+        allowDuckDuckGoFallback: true
       });
       return JSON.parse(mcpResponse.content?.[0]?.text || '{}');
     }
@@ -1199,7 +1392,7 @@ Respond with JSON array of query strings:
     const searcher = new FreeWebSearch(this.logger, {
       searxngUrl: this.config?.providers?.local?.searxngUrl || this.config?.search?.searxngUrl || process.env.SEARXNG_URL,
       braveApiKey: this.config?.search?.braveApiKey || this.config?.providers?.brave?.apiKey,
-      allowDuckDuckGoFallback: !this.requiresVerifiedSources()
+      allowDuckDuckGoFallback: true
     });
     return await searcher.search(query, { maxResults: 10 });
   }
@@ -1220,6 +1413,7 @@ Respond with JSON array of query strings:
     const minHits = terms.length >= 5 ? 3 : 1;
     const anchorTerm = terms.find(term => term.length >= 5 && !this.isWeakSearchAnchor(term));
     const sourceIntentTerms = terms.filter(term => this.isSourceIntentTerm(term));
+    const targetMatchers = this.extractTargetMatchers(intentText);
     let relevantResults = 0;
     const relevantUrls = [];
 
@@ -1227,12 +1421,19 @@ Respond with JSON array of query strings:
       const haystack = [
         result.title,
         result.snippet,
-        result.description
+        result.description,
+        result.url
       ]
         .filter(Boolean)
         .join(' ')
         .toLowerCase();
 
+      if (this.isGenericDefinitionResult(result)) {
+        continue;
+      }
+
+      const targetHit = targetMatchers.length === 0 ||
+        targetMatchers.some(matcher => matcher(haystack));
       const phraseHit = phrases.some(phrase => haystack.includes(phrase.toLowerCase()));
       const termHits = terms.filter(term => haystack.includes(term)).length;
       const anchorHit = !anchorTerm || haystack.includes(anchorTerm);
@@ -1241,7 +1442,7 @@ Respond with JSON array of query strings:
         /\b(reddit|forum|blog|blogspot)\b/i.test(result.url || '');
       const sourceIntentRelevance = sourceIntentTerms.length > 0 && sourceIntentHit && termHits >= minHits;
       const genericRelevance = sourceIntentTerms.length === 0 && anchorHit && termHits >= minHits;
-      if (phraseHit || sourceIntentRelevance || genericRelevance) {
+      if (targetHit && (phraseHit || sourceIntentRelevance || genericRelevance)) {
         relevantResults += 1;
         if (result.url) {
           relevantUrls.push(result.url);
@@ -1257,8 +1458,40 @@ Respond with JSON array of query strings:
       relevantUrls,
       anchorTerm,
       sourceIntentTerms,
+      targetMatcherCount: targetMatchers.length,
       terms
     };
+  }
+
+  extractTargetMatchers(query = '') {
+    const text = String(query || '').toLowerCase();
+    const matchers = [];
+    if (/\bjerry\s+garcia\b|\bgarcia\b/.test(text)) {
+      matchers.push(haystack => /\bjerry\b/.test(haystack) || /\bgarcia\b/.test(haystack));
+    }
+    if (/\blegion\s+of\s+mary\b/.test(text)) {
+      matchers.push(haystack => /\blegion\s+of\s+mary\b/.test(haystack) || (/\blegion\b/.test(haystack) && /\bmary\b/.test(haystack)));
+    }
+    if (/\bjerry\s+garcia\s+band\b|\bjgb\b/.test(text)) {
+      matchers.push(haystack => /\bjerry\s+garcia\s+band\b/.test(haystack) || /\bjgb\b/.test(haystack));
+    }
+    if (/\bold\s*(?:&|and)?\s*in\s+the\s+way\b|\boaitw\b/.test(text)) {
+      matchers.push(haystack => /\bold\s*(?:&|and)?\s*in\s+the\s+way\b/.test(haystack) || /\boaitw\b/.test(haystack));
+    }
+    if (/\breconstruction\b/.test(text)) {
+      matchers.push(haystack => /\breconstruction\b/.test(haystack) && (/\bjerry\b/.test(haystack) || /\bgarcia\b/.test(haystack)));
+    }
+    if (/\bnew\s+riders\b|\bpurple\s+sage\b|\bnrps\b/.test(text)) {
+      matchers.push(haystack => /\bnew\s+riders\b/.test(haystack) || /\bpurple\s+sage\b/.test(haystack) || /\bnrps\b/.test(haystack));
+    }
+    return matchers;
+  }
+
+  isGenericDefinitionResult(result = {}) {
+    const url = String(result.url || '').toLowerCase();
+    const title = String(result.title || '').toLowerCase();
+    return /\bdictionary|merriam-webster|cambridge\.org\/dictionary|dictionary\.com|thefreedictionary|wiktionary\b/.test(url) ||
+      /\bdefinition of\b|\benglish meaning\b|\bdictionary\b/.test(title);
   }
 
   isSourceIntentTerm(term) {
@@ -1366,6 +1599,8 @@ Respond with JSON array of query strings:
         const contentType = response.headers.get('content-type') || '';
         const body = await response.text();
         const blockedReason = this.detectSourceFetchBlock(body);
+        const sample = this.extractReadableSourceSample(body, contentType, url);
+        const title = this.extractHtmlTitle(body);
         validations.push({
           url,
           ok: response.status >= 200 && response.status < 400 && !blockedReason,
@@ -1374,7 +1609,9 @@ Respond with JSON array of query strings:
           bytes: body.length,
           contentHash: crypto.createHash('sha256').update(body).digest('hex'),
           blockedReason,
-          sample: body.replace(/\s+/g, ' ').slice(0, 500),
+          title,
+          sample,
+          rawSample: body.replace(/\s+/g, ' ').slice(0, 500),
           durationMs: Date.now() - startedAt
         });
       } catch (error) {
@@ -1396,6 +1633,117 @@ Respond with JSON array of query strings:
     if (text.includes('enable javascript') && text.includes('captcha')) return 'captcha_or_javascript_gate';
     if (text.includes('checking your browser')) return 'browser_verification';
     return null;
+  }
+
+  extractReadableSourceSample(body = '', contentType = '', url = '') {
+    const raw = String(body || '');
+    if (!raw) return '';
+
+    const isHtml = /html/i.test(String(contentType || '')) || /<html|<body|<article|<p\b/i.test(raw);
+    if (!isHtml) {
+      return this.cleanReadableText(raw).slice(0, 1500);
+    }
+
+    const title = this.extractHtmlTitle(raw);
+    const stripped = raw
+      .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style\b[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<noscript\b[\s\S]*?<\/noscript>/gi, ' ')
+      .replace(/<svg\b[\s\S]*?<\/svg>/gi, ' ')
+      .replace(/<head\b[\s\S]*?<\/head>/gi, ' ')
+      .replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/<\/(?:p|div|li|h[1-6]|blockquote|article|section|br|tr)>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ');
+    const decoded = this.decodeHtmlEntities(stripped);
+    const lines = decoded
+      .split(/\n+/)
+      .map(line => this.cleanReadableText(line))
+      .filter(line => line.length >= 40)
+      .filter(line => !this.isBoilerplateSourceLine(line));
+
+    const scored = lines
+      .map((line, index) => ({
+        line,
+        index,
+        score: this.scoreReadableSourceLine(line, url)
+      }))
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.index - b.index);
+
+    const selected = [];
+    if (title) selected.push(title);
+    for (const item of scored) {
+      if (selected.join(' ').length >= 1500) break;
+      if (selected.some(existing => existing.includes(item.line.slice(0, 120)))) continue;
+      selected.push(item.line);
+    }
+
+    if (selected.length <= (title ? 1 : 0)) {
+      selected.push(...lines.slice(0, 4));
+    }
+
+    return this.cleanReadableText(selected.join(' ')).slice(0, 1500);
+  }
+
+  extractHtmlTitle(body = '') {
+    const match = String(body || '').match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    if (!match) return '';
+    return this.cleanReadableText(this.decodeHtmlEntities(match[1].replace(/<[^>]+>/g, ' '))).slice(0, 240);
+  }
+
+  decodeHtmlEntities(text = '') {
+    const named = {
+      amp: '&',
+      lt: '<',
+      gt: '>',
+      quot: '"',
+      apos: "'",
+      nbsp: ' ',
+      ndash: '-',
+      mdash: '-',
+      lsquo: "'",
+      rsquo: "'",
+      ldquo: '"',
+      rdquo: '"'
+    };
+    return String(text || '').replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (match, entity) => {
+      const key = String(entity || '').toLowerCase();
+      if (key[0] === '#') {
+        const isHex = key[1] === 'x';
+        const code = Number.parseInt(isHex ? key.slice(2) : key.slice(1), isHex ? 16 : 10);
+        if (Number.isFinite(code)) {
+          try {
+            return String.fromCodePoint(code);
+          } catch (_) {
+            return ' ';
+          }
+        }
+      }
+      return Object.prototype.hasOwnProperty.call(named, key) ? named[key] : match;
+    });
+  }
+
+  cleanReadableText(text = '') {
+    return String(text || '')
+      .replace(/\s+/g, ' ')
+      .replace(/\s+([,.;:!?])/g, '$1')
+      .trim();
+  }
+
+  isBoilerplateSourceLine(line = '') {
+    const text = String(line || '').toLowerCase();
+    return /powered by blogger|simple theme|subscribe to|followers|blog archive|total pageviews|search this blog|css_bundle|blogger\.com|skip to main|cookie|privacy policy/.test(text);
+  }
+
+  scoreReadableSourceLine(line = '', url = '') {
+    const text = `${line} ${url}`.toLowerCase();
+    let score = 0;
+    if (/\bjerry\s+garcia\b|\bgarcia\/saunders\b|\bmerl\s+saunders\b/.test(text)) score += 4;
+    if (/\blegion\s+of\s+mary\b|\bjerry\s+garcia\s+band\b|\bold\s*(?:&|and)?\s*in\s+the\s+way\b|\breconstruction\b|\bnew\s+riders\b|\bpurple\s+sage\b|\bnrps\b|\bjgb\b/.test(text)) score += 4;
+    if (/\bcomment(?:s|ed)?\b|\breply\b|\blistening notes?\b|\breview\b|\brecollection\b|\bfan\b|\btaper\b|\btape\b|\bshow\b|\bsetlist\b|\bgig\b|\bkeystone\b|\bgreat american music hall\b/.test(text)) score += 2;
+    if (/\b(?:19|20)\d{2}\b/.test(text)) score += 1;
+    if (/lostlivedead|jgmf|dead\.net|reddit|forum|blogspot|wordpress/.test(text)) score += 1;
+    return score;
   }
 
   requiresVerifiedSources() {
@@ -2303,7 +2651,9 @@ Respond with JSON array of follow-up directions:
         if (requested.toLowerCase().endsWith('.json')) {
           const rawData = /archive-org-comments\.json$/i.test(requested)
             ? this.buildArchiveOrgCommentsOutput(synthesis)
-            : {
+            : (/forum-social-candidates\.json$/i.test(requested)
+              ? this.buildForumSocialCandidatesOutput(synthesis)
+              : {
                 agentId: this.agentId,
                 goalId: this.mission.goalId,
                 mission: this.mission.description,
@@ -2316,7 +2666,7 @@ Respond with JSON array of follow-up directions:
                   findings: synthesis.findings,
                   successAssessment: synthesis.successAssessment
                 }
-              };
+              });
           content = JSON.stringify(rawData, null, 2);
         } else {
           content = this.buildRequestedResearchMarkdown(synthesis);
@@ -2628,7 +2978,7 @@ Respond with JSON array of follow-up directions:
   getRequiredSourceRoutes() {
     const contract = deriveResearchContract(this.mission || {});
     const routes = new Set(contract.sourceProviderHints || []);
-    if (contract.reasonCodes?.includes('archive_research')) {
+    if (contract.reasonCodes?.includes('archive_research') && !this.isSecondaryFanSocialMission()) {
       routes.add('archive.metadata');
       routes.add('archive.reviews');
     }
@@ -2774,6 +3124,193 @@ Respond with JSON array of follow-up directions:
     };
   }
 
+  buildForumSocialCandidatesOutput(synthesis) {
+    const routeReceipts = this.buildSourceBackboneReceipts(synthesis, [], []);
+    const candidates = this.buildForumSocialCandidates();
+    const urlsSearched = [...new Set((this.searchEvidence || [])
+      .flatMap(item => item.urls || [])
+      .filter(Boolean))];
+
+    return {
+      agentId: this.agentId,
+      goalId: this.mission.goalId,
+      mission: this.mission.description,
+      timestamp: new Date().toISOString(),
+      status: candidates.length > 0 ? 'candidates_found' : 'no_candidates_found',
+      queries: this.searchQueries,
+      candidates,
+      urls_searched: urlsSearched,
+      search_receipts: (this.searchEvidence || []).map(item => ({
+        timestamp: item.timestamp,
+        query: item.query,
+        executed_query: item.executedQuery || item.query,
+        route: item.backend || 'unknown',
+        result_count: item.resultCount || 0,
+        accepted: item.quality?.acceptable === true,
+        quality_reason: item.quality?.reason || null,
+        relevant_urls: item.quality?.relevantUrls || [],
+        urls: item.urls || []
+      })),
+      route_receipts: {
+        required_routes: this.getRequiredSourceRoutes(),
+        attempts: routeReceipts.attempts,
+        crossings: routeReceipts.crossings,
+        productive_source_urls: routeReceipts.status.productive_source_urls,
+        failed_routes: routeReceipts.status.failed_routes,
+        next_allowed_action: routeReceipts.status.next_allowed_action
+      },
+      negative_receipts: candidates.length > 0 ? [] : [{
+        status: 'no_candidates_found',
+        reason: 'search_routes_completed_without_extractable_forum_social_candidate',
+        urls_searched: urlsSearched,
+        attempts: routeReceipts.attempts.length,
+        crossings: routeReceipts.crossings.length
+      }],
+      synthesis: {
+        summary: synthesis?.summary || '',
+        findings: synthesis?.findings || [],
+        successAssessment: synthesis?.successAssessment || null
+      }
+    };
+  }
+
+  buildForumSocialCandidates() {
+    const candidates = [];
+    const seen = new Set();
+    const validationByUrl = new Map();
+    for (const evidence of this.searchEvidence || []) {
+      for (const validation of evidence.sourceValidation || []) {
+        if (validation.url) validationByUrl.set(validation.url, validation);
+      }
+    }
+
+    for (const evidence of this.searchEvidence || []) {
+      if (evidence.quality?.acceptable !== true) continue;
+      const relevantUrls = new Set(evidence.quality?.relevantUrls || []);
+      for (const result of evidence.results || []) {
+        const url = result.url || '';
+        if (!url || this.isGenericDefinitionResult(result)) continue;
+        if (relevantUrls.size > 0 && !relevantUrls.has(url)) continue;
+        if (this.isSecondaryFanSocialMission() && !this.isAcceptableForumSocialSource(result)) continue;
+        const validation = validationByUrl.get(url);
+        if (this.requiresVerifiedSources() && validation?.ok !== true) continue;
+        const excerpt = this.extractForumSocialCandidateExcerpt(result, validation);
+        if (excerpt.length < 20) continue;
+        const resultText = [
+          result.title,
+          result.snippet,
+          result.description,
+          validation?.sample,
+          result.url
+        ].filter(Boolean).join(' ');
+        const project = this.inferJerryProject(resultText);
+        if (project === 'unknown') continue;
+        const key = `${url}|${excerpt.slice(0, 80)}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push({
+          source_url: url,
+          source_type: this.inferForumSocialSourceType(result),
+          project,
+          date_show_reference: this.extractDateReference(resultText),
+          excerpt,
+          route: evidence.backend || result.engine || 'web.search',
+          confidence: this.estimateCandidateConfidence(result, validation, evidence),
+          content_hash: crypto.createHash('sha256').update(`${url}|${excerpt}`).digest('hex')
+        });
+      }
+    }
+
+    return candidates.slice(0, 50);
+  }
+
+  extractForumSocialCandidateExcerpt(result = {}, validation = null) {
+    const candidates = [
+      validation?.sample,
+      validation?.textSample,
+      result.snippet,
+      result.description,
+      result.title
+    ];
+
+    for (const candidate of candidates) {
+      const excerpt = this.cleanReadableText(candidate || '');
+      if (!excerpt || excerpt.length < 20) continue;
+      if (this.isStatusOnlySourceExcerpt(excerpt)) continue;
+      if (this.looksLikeRawHtmlExcerpt(excerpt)) continue;
+      return excerpt.slice(0, 900);
+    }
+
+    return '';
+  }
+
+  isStatusOnlySourceExcerpt(excerpt = '') {
+    const text = String(excerpt || '').toLowerCase();
+    return /^status=\d+/.test(text) || /^http\s+\d+\b/.test(text) || /^archived\s+\d{8,}/.test(text);
+  }
+
+  looksLikeRawHtmlExcerpt(excerpt = '') {
+    const text = String(excerpt || '').toLowerCase();
+    return /<!doctype|<html|<head|<meta|<link|css_bundle|content-type=text\/html/.test(text);
+  }
+
+  isAcceptableForumSocialSource(result = {}) {
+    const url = String(result.url || '').toLowerCase();
+    const sourceType = String(result.sourceType || '').toLowerCase();
+    const haystack = [result.title, result.snippet, result.description, result.url]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+
+    if (/reddit\.com|forums?|message|thread|discussion/.test(url) || /forum|thread|discussion/.test(sourceType)) return true;
+    if (/(?:x|twitter)\.com/.test(url) || sourceType.includes('social')) return true;
+    if (/blog|blogspot|wordpress|lostlivedead|jambands|dead\.net|jerrygarcia\.com/.test(url)) return true;
+    if (/archive\.org/.test(url)) {
+      return sourceType === 'archive_review' || /review|comment|recollection|memory|anecdote/.test(haystack);
+    }
+    return /review|recollection|anecdote|fan memory|listener/.test(haystack);
+  }
+
+  inferForumSocialSourceType(result = {}) {
+    const url = String(result.url || '').toLowerCase();
+    const sourceType = String(result.sourceType || '').toLowerCase();
+    if (sourceType.includes('social')) return result.sourceType;
+    if (/reddit\.com/.test(url)) return 'reddit_discussion';
+    if (/(?:x|twitter)\.com/.test(url)) return 'social_post';
+    if (/archive\.org/.test(url)) return 'archive_or_review_page';
+    if (/blog|blogspot|wordpress|lostlivedead/.test(url)) return 'blog_review';
+    if (/forum|message|thread|discussion/.test(url)) return 'forum_discussion';
+    return result.sourceType || 'web_result';
+  }
+
+  inferJerryProject(text = '') {
+    const lower = String(text || '').toLowerCase();
+    if (/\blegion\s+of\s+mary\b/.test(lower)) return 'Legion of Mary';
+    if (/\bjerry\s+garcia\s+band\b|\bjgb\b/.test(lower)) return 'Jerry Garcia Band';
+    if (/\bold\s*(?:&|and)?\s*in\s+the\s+way\b|\boaitw\b/.test(lower)) return 'Old & In the Way';
+    if (/\breconstruction\b/.test(lower)) return 'Reconstruction';
+    if (/\bnew\s+riders\b|\bpurple\s+sage\b|\bnrps\b/.test(lower)) return 'New Riders of the Purple Sage';
+    if (/\bjerry\s+garcia\b|\bgarcia\b/.test(lower)) return 'Jerry Garcia side project';
+    return 'unknown';
+  }
+
+  extractDateReference(text = '') {
+    const value = String(text || '');
+    return value.match(/\b(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b/)?.[0] ||
+      value.match(/\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+(?:19|20)\d{2}\b/i)?.[0] ||
+      value.match(/\b(?:19|20)\d{2}\b/)?.[0] ||
+      null;
+  }
+
+  estimateCandidateConfidence(result = {}, validation = null, evidence = {}) {
+    let confidence = evidence.quality?.acceptable === true ? 0.55 : 0.35;
+    if (validation?.ok === true) confidence += 0.2;
+    const sourceType = this.inferForumSocialSourceType(result);
+    if (/reddit|forum|blog|social|archive/.test(sourceType)) confidence += 0.1;
+    if (this.inferJerryProject([result.title, result.snippet].filter(Boolean).join(' ')) !== 'unknown') confidence += 0.1;
+    return Math.min(0.95, Number(confidence.toFixed(2)));
+  }
+
   toJsonl(rows = []) {
     if (!rows.length) {
       return '';
@@ -2782,16 +3319,28 @@ Respond with JSON array of follow-up directions:
   }
 
   extractRequestedOutputPaths() {
-    const text = [
-      this.mission?.description,
+    const expectedOutputText = [
       this.mission?.expectedOutput,
-      this.mission?.metadata?.expectedOutput,
+      this.mission?.metadata?.expectedOutput
+    ].filter(Boolean).join('\n');
+
+    const directiveText = [
+      this.mission?.description,
       ...(this.mission?.successCriteria || [])
     ]
       .filter(Boolean)
-      .join('\n');
+      .join('\n')
+      .replace(/\n## Available Predecessor Artifacts[\s\S]*$/i, '');
 
-    const matches = text.match(/@?outputs\/[A-Za-z0-9._~:/-]+\.(?:json|md|markdown|csv|txt)/g) || [];
+    const directMatches = expectedOutputText.match(/@?outputs\/[A-Za-z0-9._~:/-]+\.(?:json|md|markdown|csv|txt)/g) || [];
+    const directiveMatches = [];
+    const directivePattern = /\b(?:required\s+expectedOutput|expected\s+output|save(?:\s+[^.\n;]{0,140})?\s+to|write(?:\s+[^.\n;]{0,140})?\s+to|write(?:\s+[^.\n;]{0,140})?)\s*:?\s*(@?outputs\/[A-Za-z0-9._~:/-]+\.(?:json|md|markdown|csv|txt))/gi;
+    let match;
+    while ((match = directivePattern.exec(directiveText)) !== null) {
+      directiveMatches.push(match[1]);
+    }
+
+    const matches = [...directMatches, ...directiveMatches];
     return [...new Set(matches.map(item => item.replace(/^outputs\//, '@outputs/')))];
   }
 

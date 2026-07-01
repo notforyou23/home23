@@ -121,7 +121,7 @@ class ConfigGenerator {
       // Anthropic Claude settings (OAuth primary, API key fallback)
       enable_anthropic = false,
       anthropic_default_model = 'claude-sonnet-4-7',
-      anthropic_strategic_model = 'claude-opus-4-7',
+      anthropic_strategic_model = 'claude-opus-4-8',
       enable_minimax = false,
       minimax_api_key = '',
       enable_openai = true,
@@ -597,7 +597,7 @@ directAction:
 
 execution:
   # Execution timing and cycle configuration
-  baseInterval: ${enable_local_llm ? 90 : 60}  # Increased for local LLM (slower inference)
+  baseInterval: ${enable_sleep ? (enable_local_llm ? 90 : 60) : 2}  # Short polling when sleep is disabled for active runs
   # Code execution backend configuration (container vs local)
   backend: local  # 'local' (default) or 'container' (legacy, has download corruption issues)
   
@@ -617,7 +617,7 @@ execution:
     maxFiles: 50
   maxCycles: ${dream_mode ? dream_cycles : (enable_consolidation_mode ? (settings.consolidation_cycles || 50) : maxCyclesValue)}
   maxRuntimeMinutes: ${settings.max_runtime_minutes || 0}
-  adaptiveTimingEnabled: ${!enable_consolidation_mode}
+  adaptiveTimingEnabled: ${!enable_consolidation_mode && enable_sleep}
   consolidationMode: ${enable_consolidation_mode}${enable_consolidation_mode ? `
   dreamModeSettings:
     continuousConsolidation: true
@@ -934,7 +934,7 @@ experimental:
       strategic_provider = null,
       strategic_model = null,
       anthropic_default_model = 'claude-sonnet-4-7',
-      anthropic_strategic_model = 'claude-opus-4-7',
+      anthropic_strategic_model = 'claude-opus-4-8',
       xai_default_model = 'grok-4.3',
       xai_strategic_model = 'grok-4.20-0309-reasoning',
       synthesis_commit_step = true,
@@ -1165,7 +1165,7 @@ experimental:
       strategic_provider: inferProviderFromModel(defaults.launch.strategic, modelCatalog) || 'openai',
       strategic_model: defaults.launch.strategic,
       anthropic_default_model: 'claude-sonnet-4-7',
-      anthropic_strategic_model: 'claude-opus-4-7',
+      anthropic_strategic_model: 'claude-opus-4-8',
       xai_default_model: 'grok-4.3',
       xai_strategic_model: 'grok-4.20-0309-reasoning'
     };

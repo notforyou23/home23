@@ -2300,3 +2300,52 @@ completed run artifacts.
   research/completion/audit/governor/orchestrator Mocha suite (89) plus syntax
   checks for the patched agent, audit, governor, validator, and orchestrator
   files.
+- **2026-06-30** — Patch 42 repaired the first-cycle guided execution failure
+  reproduced by `jerry-side-project-anecdotes-live-202606302304`. Explicit
+  `PHASE N - Title` headers without trailing colons are now parsed as
+  structured phases, PlanExecutor starts and assigns the first ready task in the
+  same tick, guided-exclusive runs yield after plan-executor service instead of
+  spending cycles on background introspection/quantum/forking while artifacts
+  are missing, and launcher `enable_sleep=false` now emits short non-adaptive
+  polling. Verification passed: focused guided-planner and PlanExecutor Mocha
+  suite (47), launcher config node tests (4), and syntax checks for the patched
+  planner, executor, orchestrator, and launcher config generators.
+- **2026-07-01** — Patch 43 repaired evidence acquisition quality in the Jerry
+  Garcia side-project anecdote run. Research query sanitization now rewrites
+  instruction-style source missions into targeted Jerry side-project searches,
+  direct URL fetches extract readable page text instead of raw HTML head bytes,
+  candidate extraction rejects status-only/raw-HTML excerpts, and source-required
+  local-search fallbacks can use DuckDuckGo when local search is otherwise blind.
+  The source contract also keeps Archive-only routes out of secondary/forum/social
+  phases while still preserving optional Home23 `x-research` attempts.
+- **2026-07-01** — Patch 44 hardened the middle/end of guided research
+  execution. Artifact-only evidence reports are routed to the IDE/file-writing
+  agent instead of a non-writing document phase, local artifact synthesis phases
+  carry `required:false` research contracts, completion retry prompts include the
+  validator failure reason, and markdown report validation now checks requested
+  section headings such as confirmed anecdotes, negative receipts, useful routes,
+  failed/empty routes, and next source families before a task can become `DONE`.
+- **2026-07-01** — Patch 45 proved the repaired loop with a real Jerry
+  side-project anecdotes run:
+  `jerry-side-project-anecdotes-live-202607010014` / brain
+  `970a2f4b2653d663`. The run produced
+  `outputs/raw-anecdotes/archive-org-comments.json` with two extracted
+  Archive.org review records plus accepted no-review receipts for the LOM and
+  NRPS identifiers, `outputs/raw-anecdotes/forum-social-candidates.json` with
+  nine direct/Wayback blog candidates from Lost Live Dead and JGMF, and
+  `outputs/jerry-side-project-anecdotes.md` with the required evidence report
+  sections. All phase tasks reached verified `DONE`, the run completed, and the
+  artifact inventory reported zero invalid JSON files.
+- **2026-07-01** — Patch 46 fixed completed-run Query readback for structured
+  research artifacts. `run-artifact-inventory` now adds an authoritative
+  structured truth section to `artifactContext`: exact raw-artifact counts,
+  Archive identifier status receipts, extracted entries, forum/blog candidates,
+  route outcomes, and markdown report headings/previews. This prevents Query
+  from confusing source URL counts with candidate counts or missing named
+  candidates such as the Legion of Mary / Lucky Strike Lost Live Dead source.
+  Verification passed: `node --test --test-concurrency=1
+  cosmo23/server/lib/run-artifact-inventory.test.js`, live artifact-context
+  probe for `jerry-side-project-anecdotes-live-202607010014`, targeted restart
+  of `home23-cosmo23`, and the completed-run query now reports two extracted
+  Archive records, nine forum/blog candidates, Legion of Mary present, and zero
+  invalid JSON files.

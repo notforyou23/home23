@@ -55,12 +55,14 @@ function textFromCriterion(criterion) {
 
 function textFromInput(input = {}) {
   const metadata = input.metadata || {};
+  const cleanText = (value = '') => String(value || '')
+    .replace(/\n## Available Predecessor Artifacts[\s\S]*$/i, '');
   const parts = [
     input.title,
     input.name,
-    input.description,
-    input.mission,
-    input.context,
+    cleanText(input.description),
+    cleanText(input.mission),
+    cleanText(input.context),
     input.sourceScope,
     input.expectedOutput,
     input.deliverable,
@@ -85,6 +87,7 @@ function textFromInput(input = {}) {
 
 function extractWebSearchQueries(text = '') {
   const queries = [];
+  WEB_SEARCH_QUERY_PATTERN.lastIndex = 0;
   let match;
   while ((match = WEB_SEARCH_QUERY_PATTERN.exec(text)) !== null) {
     let cursor = match.index + match[0].length;
@@ -214,7 +217,7 @@ function isLocalArtifactOnlyText(text = '') {
   if (!readsOutputArtifact) return false;
 
   const localAction =
-    /\bvalidate\b|\bjson\s+parses\b|\bproblems\s*:\s*\[\]|\bsynthesize\b|\bwrite\s+markdown\b|\bgrounded only in the artifacts\b/i.test(text);
+    /\bvalidate\b|\bjson\s+parses\b|\bproblems\s*:\s*\[\]|\bsynthesize\b|\bsynthesis\b|\bwrite\s+(?:a\s+)?(?:concise\s+)?(?:evidence-backed\s+)?(?:markdown\s+)?report\b|\bwrite\s+markdown\b|\bgrounded only in the artifacts\b/i.test(text);
   if (!localAction) return false;
 
   const explicitAcquisition =
@@ -269,6 +272,42 @@ function filterProviderHintsBySourceScope(providerHints = [], input = {}) {
   return providerHints.filter(hint => allow.some(pattern => pattern.test(hint)));
 }
 
+function filterOptionalProviderHints(providerHints = [], text = '') {
+  const optionalXResearch =
+    /\b(?:x\/twitter|twitter|x\.com|x-research|x research)\b/i.test(text) &&
+    /\b(?:where|if|when)\s+available\b|\bif\s+configured\b|\bwhen\s+configured\b/i.test(text);
+
+  return providerHints.filter(hint => {
+    if (optionalXResearch && /^home23\.skill\.x_research\./i.test(hint)) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function filterExcludedProviderHints(providerHints = [], input = {}, text = '') {
+  const scopeText = getSourceScopeText(input);
+  const combined = [text, scopeText].filter(Boolean).join('\n');
+  const excludeArchive =
+    /\b(?:excluding|exclude|without)\s+archive\.org\b/i.test(combined) ||
+    /\barchive\.org[^.\n]{0,120}\bhandled\s+by\s+phase\s+1\b/i.test(combined) ||
+    (/\bforum-social-candidates\.json\b/i.test(combined) && /\bsecondary\b|\bforum\b|\bsocial\b|\breddit\b/i.test(combined));
+
+  if (!excludeArchive) return providerHints;
+  return providerHints.filter(hint => !/^archive\./i.test(hint));
+}
+
+function finalizeProviderHints(providerHints = [], input = {}, text = '') {
+  return filterProviderHintsBySourceScope(
+    filterExcludedProviderHints(
+      filterOptionalProviderHints([...new Set(providerHints.map(String).filter(Boolean))], text),
+      input,
+      text
+    ),
+    input
+  );
+}
+
 function deriveResearchContract(input = {}) {
   const text = textFromInput(input);
   const localOnly = isLocalOnlyInput(input, text);
@@ -276,13 +315,13 @@ function deriveResearchContract(input = {}) {
   if (input.metadata?.researchContract) {
     if (localOnly) return emptyResearchContract();
     const contract = normalizeContract(input.metadata.researchContract);
-    contract.sourceProviderHints = filterProviderHintsBySourceScope(contract.sourceProviderHints, input);
+    contract.sourceProviderHints = finalizeProviderHints(contract.sourceProviderHints, input, text);
     return contract;
   }
   if (input.researchContract) {
     if (localOnly) return emptyResearchContract();
     const contract = normalizeContract(input.researchContract);
-    contract.sourceProviderHints = filterProviderHintsBySourceScope(contract.sourceProviderHints, input);
+    contract.sourceProviderHints = finalizeProviderHints(contract.sourceProviderHints, input, text);
     return contract;
   }
 
@@ -328,10 +367,7 @@ function deriveResearchContract(input = {}) {
     minSuccessfulSources: required ? 1 : 0,
     allowNullFindingsWithSourceEvidence: true,
     reasonCodes: [...new Set(reasonCodes)],
-    sourceProviderHints: filterProviderHintsBySourceScope(
-      [...new Set(sourceProviderHints.map(String).filter(Boolean))],
-      input
-    )
+    sourceProviderHints: finalizeProviderHints(sourceProviderHints, input, text)
   };
 }
 

@@ -63,7 +63,7 @@ class ConfigGenerator {
       // Anthropic Claude settings (OAuth primary, API key fallback)
       enable_anthropic = false,
       anthropic_default_model = 'claude-sonnet-4-7',
-      anthropic_strategic_model = 'claude-opus-4-7'
+      anthropic_strategic_model = 'claude-opus-4-8'
     } = settings || {};
     const executionModeInfo = normalizeExecutionMode(exploration_mode, execution_mode);
     const normalizedExecutionMode = executionModeInfo.persistedMode;
@@ -310,11 +310,11 @@ ${enable_anthropic ? `
         costPerMToken: [3, 15]
         maxTokens: 200000
         supportsThinking: true
-      - name: "claude-opus-4-7"
+      - name: "claude-opus-4-8"
         costPerMToken: [15, 75]
         maxTokens: 200000
         supportsThinking: true
-      - name: "claude-opus-4-7"
+      - name: "claude-opus-4-8"
         costPerMToken: [15, 75]
         maxTokens: 200000
         supportsThinking: true
@@ -482,7 +482,7 @@ directAction:
 
 execution:
   # Execution timing and cycle configuration
-  baseInterval: ${enable_local_llm ? 90 : 60}  # Increased for local LLM (slower inference)
+  baseInterval: ${enable_sleep ? (enable_local_llm ? 90 : 60) : 2}  # Short polling when sleep is disabled for active runs
   # Code execution backend configuration (container vs local)
   backend: local  # 'local' (default) or 'container' (legacy, has download corruption issues)
   
@@ -502,7 +502,7 @@ execution:
     maxFiles: 50
   maxCycles: ${dream_mode ? dream_cycles : (enable_consolidation_mode ? (settings.consolidation_cycles || 50) : maxCyclesValue)}
   maxRuntimeMinutes: ${settings.max_runtime_minutes || 0}
-  adaptiveTimingEnabled: ${!enable_consolidation_mode}
+  adaptiveTimingEnabled: ${!enable_consolidation_mode && enable_sleep}
   consolidationMode: ${enable_consolidation_mode}${enable_consolidation_mode ? `
   dreamModeSettings:
     continuousConsolidation: true
@@ -985,7 +985,7 @@ experimental:
       // Anthropic Claude settings (OAuth primary, API key fallback)
       enable_anthropic: false,
       anthropic_default_model: 'claude-sonnet-4-7',
-      anthropic_strategic_model: 'claude-opus-4-7'
+      anthropic_strategic_model: 'claude-opus-4-8'
     };
   }
 }

@@ -505,6 +505,87 @@ describe('PlanExecutor output-contract validation', function() {
     expect(validation.passed).to.equal(true);
   });
 
+  it('passes a source-required task from artifact receipts when agent evidence is unavailable', async function() {
+    const outputDir = path.join(tempRoot, 'outputs');
+    const proofDir = path.join(outputDir, 'research', 'agent_archive');
+    await fs.mkdir(path.join(outputDir, 'raw-anecdotes'), { recursive: true });
+    await fs.mkdir(proofDir, { recursive: true });
+    await fs.writeFile(
+      path.join(outputDir, 'raw-anecdotes', 'archive-org-comments.json'),
+      JSON.stringify({
+        entries: [],
+        status: 'no_reviews_found',
+        required_identifiers: ['show-without-reviews'],
+        identifier_statuses: [{
+          identifier: 'show-without-reviews',
+          status: 'no_reviews_found',
+          metadata_route: 'accepted',
+          review_route: 'accepted',
+          source_url: 'https://archive.org/details/show-without-reviews'
+        }],
+        urls_searched: ['https://archive.org/details/show-without-reviews'],
+        route_receipts: {
+          attempts: [
+            { route: 'archive.metadata', status: 'accepted', result_count: 1, url_count: 1 },
+            { route: 'archive.reviews', status: 'empty', result_count: 0, url_count: 0 }
+          ],
+          productive_source_urls: ['https://archive.org/details/show-without-reviews']
+        }
+      }, null, 2)
+    );
+    await fs.writeFile(path.join(proofDir, 'source_backbone_status.json'), JSON.stringify({
+      can_continue: true,
+      required_routes: ['archive.metadata', 'archive.reviews'],
+      attempted_routes: ['archive.metadata', 'archive.reviews'],
+      accepted_routes: ['archive.metadata'],
+      accepted_empty_routes: ['archive.reviews'],
+      productive_sources: 1,
+      productive_source_urls: ['https://archive.org/details/show-without-reviews'],
+      attempts: 2,
+      crossings: 1,
+      failed_routes: [],
+      missing_required_routes: [],
+      failed_required_routes: []
+    }, null, 2));
+    await fs.writeFile(path.join(proofDir, 'source_attempts.jsonl'), [
+      JSON.stringify({ route: 'archive.metadata', status: 'accepted', result_count: 1, url_count: 1 }),
+      JSON.stringify({ route: 'archive.reviews', status: 'empty', result_count: 0, url_count: 0 })
+    ].join('\n'));
+    await fs.writeFile(path.join(proofDir, 'source_crossing.jsonl'), [
+      JSON.stringify({ route: 'archive.metadata', url: 'https://archive.org/details/show-without-reviews', ok: true, status: 200 })
+    ].join('\n'));
+
+    const pe = makeExecutor(outputDir);
+    pe.activeTask = {
+      id: 'task:archive-artifact-evidence',
+      title: 'Archive.org review acquisition',
+      description: 'Use archive.metadata and archive.reviews to acquire source_url evidence.',
+      acceptanceCriteria: [],
+      artifacts: [
+        { path: 'raw-anecdotes/archive-org-comments.json', workspacePath: 'outputs/raw-anecdotes/archive-org-comments.json' },
+        { path: 'research/agent_archive/source_backbone_status.json', workspacePath: 'outputs/research/agent_archive/source_backbone_status.json' },
+        { path: 'research/agent_archive/source_attempts.jsonl', workspacePath: 'outputs/research/agent_archive/source_attempts.jsonl' },
+        { path: 'research/agent_archive/source_crossing.jsonl', workspacePath: 'outputs/research/agent_archive/source_crossing.jsonl' }
+      ],
+      metadata: {
+        expectedOutput: '@outputs/raw-anecdotes/archive-org-comments.json',
+        researchContract: {
+          required: true,
+          mode: 'source_acquisition',
+          minSuccessfulSources: 1,
+          requiredEvidence: ['successful_source_contact'],
+          sourceProviderHints: ['archive.metadata', 'archive.reviews']
+        }
+      }
+    };
+
+    const validation = await pe.validateTaskOutput([]);
+
+    expect(validation.passed).to.equal(true);
+    expect(validation.researchEvidence.successfulRoutes).to.include('archive.metadata');
+    expect(validation.researchEvidence.acceptedEmptyRoutes).to.include('archive.reviews');
+  });
+
   it('marks the active phase and plan blocked when failed tasks exhaust retries', async function() {
     const updates = { plans: [], milestones: [] };
     const pe = new PlanExecutor(
@@ -628,6 +709,59 @@ describe('PlanExecutor output-contract validation', function() {
     expect(result.action).to.equal('AGENT_ASSIGNED');
     expect(spawned).to.have.length(1);
     expect(spawned[0].taskId).to.equal('task:phase1');
+  });
+
+  it('starts and assigns the next ready task in the same tick', async function() {
+    const started = [];
+    const updated = [];
+    const spawned = [];
+    const stateStore = {
+      startTask: async (taskId, owner) => {
+        started.push({ taskId, owner });
+      },
+      upsertTask: async (task) => {
+        updated.push(task);
+      }
+    };
+    const agentExecutor = {
+      registry: {},
+      spawnAgent: async (spec) => {
+        spawned.push(spec);
+        return 'agent_phase1';
+      }
+    };
+
+    const pe = new PlanExecutor(stateStore, agentExecutor, logger, {});
+    pe.plan = { id: 'plan:main', title: 'Acceptance run', status: 'ACTIVE' };
+    pe.activePhase = { id: 'ms:phase1', title: 'Archive acquisition', order: 1, status: 'ACTIVE' };
+    pe.activeTask = null;
+    pe.tasks = [{
+      id: 'task:phase1',
+      title: 'Acquire Archive.org reviews',
+      description: 'Use archive.metadata and archive.reviews, then write @outputs/raw-anecdotes/archive-org-comments.json.',
+      milestoneId: 'ms:phase1',
+      state: 'PENDING',
+      deps: [],
+      priority: 10,
+      metadata: {
+        agentType: 'dataacquisition',
+        expectedOutput: '@outputs/raw-anecdotes/archive-org-comments.json'
+      }
+    }];
+
+    const result = await pe.checkTask();
+
+    expect(result.action).to.equal('AGENT_ASSIGNED');
+    expect(started).to.deep.equal([{ taskId: 'task:phase1', owner: 'plan_executor' }]);
+    expect(spawned).to.have.length(1);
+    expect(spawned[0]).to.include({
+      agentType: 'dataacquisition',
+      taskId: 'task:phase1',
+      expectedOutput: '@outputs/raw-anecdotes/archive-org-comments.json'
+    });
+    expect(updated).to.have.length(1);
+    expect(updated[0].assignedAgentId).to.equal('agent_phase1');
+    expect(updated[0].state).to.equal('IN_PROGRESS');
   });
 
   it('forwards persisted task tools into spawned mission specs', async function() {

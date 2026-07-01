@@ -6,6 +6,7 @@ const path = require('path');
 process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'test-openai-key';
 
 const { ResearchAgent } = require('../../src/agents/research-agent');
+const { validateExpectedOutputFile } = require('../../src/core/task-completion-validator');
 
 describe('ResearchAgent handoff generation', () => {
   const logger = {
@@ -61,13 +62,16 @@ describe('ResearchAgent handoff generation', () => {
   });
 
   it('fails closed when a source-required mission has no successful web searches', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo-research-agent-blocked-'));
     const agent = new ResearchAgent(
       {
         goalId: 'goal-source-required',
-        description: 'Recover fan anecdotes from forums. For each result, record source_url, source_type, author, and anecdote_text.',
+        description: 'Recover fan anecdotes from forums. For each result, record source_url, source_type, author, and anecdote_text. Required expectedOutput: @outputs/raw-anecdotes/forum-social-candidates.json.',
+        expectedOutput: '@outputs/raw-anecdotes/forum-social-candidates.json',
         successCriteria: ['Every finding must include a source_url']
       },
       {
+        logsDir: tempDir,
         models: { enableWebSearch: true },
         providers: { 'ollama-cloud': { enabled: true } }
       },
@@ -90,6 +94,7 @@ describe('ResearchAgent handoff generation', () => {
       throw new Error('knowledge fallback should not be used for source-required missions');
     };
     agent.reportProgress = async () => {};
+    agent.addFinding = async () => ({ id: 'node-blocked' });
 
     const result = await agent.execute();
 
@@ -97,6 +102,10 @@ describe('ResearchAgent handoff generation', () => {
     expect(result.status).to.equal('blocked_search_failed');
     expect(result.queriesAttempted).to.equal(2);
     expect(result.searchFailures).to.have.length(2);
+    const receiptPath = path.join(tempDir, 'outputs', 'raw-anecdotes', 'forum-social-candidates.json');
+    const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+    expect(receipt.status).to.equal('no_candidates_found');
+    expect(receipt.negative_receipts[0].reason).to.equal('search_routes_completed_without_extractable_forum_social_candidate');
   });
 
   it('treats explicit researchContract metadata as source-required', () => {
@@ -152,6 +161,389 @@ describe('ResearchAgent handoff generation', () => {
     expect(queries).to.have.length(5);
     expect(queries[0]).to.equal('Legion of Mary December 1974 Keystone Berkeley fan recollections site:reddit.com OR site:archive.org');
     expect(queries[4]).to.equal('Reconstruction 1979 Jerry Garcia jazz fusion show review fan forum');
+  });
+
+  it('rewrites instruction-style web_search source scopes into targeted Jerry side-project queries', async () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-forum-social',
+        description: 'Use web_search for secondary sources, fan forums, Reddit, review blogs, Dead/Jerry discussion archives, and search X/Twitter via Home23 x-research where available. Queries must target Jerry Garcia side projects: Legion of Mary, Jerry Garcia Band, Old & In the Way, Reconstruction, New Riders of the Purple Sage, fan anecdotes, listener reviews, tapes, taper notes, and recollections. Do not use primary-source-only framing. Extract candidate anecdotes with source_url, source_type, project, date/show reference, excerpt, and confidence. Expected output: @outputs/raw-anecdotes/forum-social-candidates.json',
+        expectedOutput: '@outputs/raw-anecdotes/forum-social-candidates.json',
+        successCriteria: ['Every candidate must include a source_url']
+      },
+      {
+        models: { enableWebSearch: true }
+      },
+      logger
+    );
+
+    agent.gpt5.generateFast = async () => {
+      throw new Error('LLM query generation should not run for instruction-style explicit web_search missions');
+    };
+
+    const queries = await agent.generateResearchQueries();
+
+    expect(queries).to.have.length.greaterThan(3);
+    expect(queries.some(query => query.includes('Legion of Mary'))).to.equal(true);
+    expect(queries.some(query => query.includes('Old & In the Way'))).to.equal(true);
+    expect(queries.every(query => query.length < 512)).to.equal(true);
+    expect(queries.some(query => /expected output|source_url|queries must target/i.test(query))).to.equal(false);
+  });
+
+  it('rejects generic dictionary results for Jerry-targeted source searches', () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-quality',
+        description: 'Find Jerry Garcia side project fan anecdotes with source_url fields',
+        successCriteria: ['Every finding must include a source_url']
+      },
+      {
+        models: { enableWebSearch: true }
+      },
+      logger
+    );
+
+    const quality = agent.assessSearchQuality(
+      '"Legion of Mary" "Jerry Garcia" fan recollection review',
+      [{
+        title: 'Definition of SECONDARY - Merriam-Webster',
+        url: 'https://www.merriam-webster.com/dictionary/secondary',
+        snippet: 'of second rank, importance, or value'
+      }]
+    );
+
+    expect(quality.acceptable).to.equal(false);
+    expect(quality.reason).to.equal('results_do_not_match_query_terms');
+  });
+
+  it('exports forum/social candidates with a schema the completion gate can validate', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo-research-agent-forum-social-'));
+    const outputsRoot = path.join(tempDir, 'outputs');
+    const sourceUrl = 'https://lostlivedead.blogspot.com/2012/03/legion-of-mary-1974-1975.html';
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-forum-social-export',
+        description: 'Use web_search for fan forums and review blogs about Jerry Garcia side projects. Expected output: @outputs/raw-anecdotes/forum-social-candidates.json',
+        expectedOutput: '@outputs/raw-anecdotes/forum-social-candidates.json',
+        successCriteria: ['Every candidate must include source_url, source_type, project, excerpt, and confidence']
+      },
+      {
+        logsDir: tempDir,
+        models: { enableWebSearch: true }
+      },
+      logger
+    );
+
+    agent.searchQueries = ['"Legion of Mary" "Jerry Garcia" fan recollection review'];
+    agent.sourcesFound = [sourceUrl];
+    agent.searchEvidence = [{
+      timestamp: '2026-06-30T00:00:00.000Z',
+      query: agent.searchQueries[0],
+      executedQuery: agent.searchQueries[0],
+      backend: 'web.search',
+      resultCount: 1,
+      urls: [sourceUrl],
+      quality: {
+        acceptable: true,
+        reason: 'relevant_results_found',
+        relevantResults: 1,
+        resultCount: 1,
+        relevantUrls: [sourceUrl]
+      },
+      sourceValidation: [{
+        url: sourceUrl,
+        ok: true,
+        status: 200,
+        contentType: 'text/html',
+        bytes: 4096,
+        contentHash: 'hash-forum-social'
+      }],
+      results: [{
+        title: 'Legion of Mary 1974-1975',
+        url: sourceUrl,
+        snippet: 'Legion of Mary shows with Jerry Garcia generated listener discussion, review-blog context, and recollections about the band during 1974 and 1975.',
+        sourceType: 'web_result'
+      }]
+    }];
+
+    await agent.exportResearchCorpus(
+      {
+        summary: 'Forum/social source acquisition complete.',
+        findings: ['A review-blog source has candidate listener-recollection context for Legion of Mary.'],
+        successAssessment: 'Complete'
+      },
+      []
+    );
+
+    const rawPath = path.join(outputsRoot, 'raw-anecdotes', 'forum-social-candidates.json');
+    const data = JSON.parse(await fs.readFile(rawPath, 'utf8'));
+    expect(data.candidates).to.have.length(1);
+    expect(data.candidates[0]).to.include({
+      source_url: sourceUrl,
+      source_type: 'blog_review',
+      project: 'Legion of Mary'
+    });
+
+    const validation = await validateExpectedOutputFile(rawPath, {
+      label: '@outputs/raw-anecdotes/forum-social-candidates.json'
+    }, { outputRoot: outputsRoot });
+    expect(validation.passed).to.equal(true);
+  });
+
+  it('does not use Archive typed providers for secondary forum/social acquisition missions', () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-secondary-social-providers',
+        description: 'Use web_search for secondary sources, fan forums, Reddit, review blogs, and search X/Twitter via Home23 x-research where available. Do not use primary-source-only framing. Required expectedOutput: @outputs/raw-anecdotes/forum-social-candidates.json',
+        expectedOutput: '@outputs/raw-anecdotes/forum-social-candidates.json',
+        successCriteria: ['Every candidate must include a source_url']
+      },
+      {
+        models: { enableWebSearch: true }
+      },
+      logger
+    );
+
+    const registry = {
+      listProviders: () => ['web.search', 'archive.advancedsearch', 'archive.metadata', 'archive.reviews', 'home23.skill.x_research.search'],
+      selectProviders: () => ['web.search', 'archive.advancedsearch', 'archive.metadata', 'archive.reviews', 'home23.skill.x_research.search']
+    };
+
+    const providerIds = agent.getTypedSourceProviderIds('"Jerry Garcia Band" fan review', registry);
+
+    expect(providerIds).to.include('web.search');
+    expect(providerIds).to.not.include('archive.advancedsearch');
+    expect(providerIds).to.not.include('archive.metadata');
+    expect(providerIds).to.not.include('archive.reviews');
+  });
+
+  it('does not infer a forum/social candidate project from the query when the result is unrelated', () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-no-query-leak-candidate',
+        description: 'Use web_search for secondary sources, fan forums, Reddit, review blogs, and search X/Twitter via Home23 x-research where available. Do not use primary-source-only framing. Required expectedOutput: @outputs/raw-anecdotes/forum-social-candidates.json',
+        expectedOutput: '@outputs/raw-anecdotes/forum-social-candidates.json',
+        successCriteria: ['Every candidate must include a source_url']
+      },
+      {
+        models: { enableWebSearch: true }
+      },
+      logger
+    );
+
+    agent.searchEvidence = [{
+      query: '"Jerry Garcia Band" fan review taper notes',
+      backend: 'archive.advancedsearch',
+      quality: {
+        acceptable: true,
+        relevantUrls: ['https://archive.org/details/gd77-06-09.akg-bertrando.winters.26450.sbeok.shnf']
+      },
+      sourceValidation: [{
+        url: 'https://archive.org/details/gd77-06-09.akg-bertrando.winters.26450.sbeok.shnf',
+        ok: true
+      }],
+      results: [{
+        title: 'Grateful Dead Live at Winterland on 1977-06-09',
+        url: 'https://archive.org/details/gd77-06-09.akg-bertrando.winters.26450.sbeok.shnf',
+        snippet: 'Mississippi Half Step, Jack Straw, They Love Each Other, Cassidy, Sunrise, Deal',
+        sourceType: 'archive_item'
+      }]
+    }];
+
+    expect(agent.buildForumSocialCandidates()).to.deep.equal([]);
+  });
+
+  it('can extract a forum/social candidate from a validated direct secondary-source fetch sample', () => {
+    const sourceUrl = 'https://lostlivedead.blogspot.com/2012/03/august-20-1975-great-american-music.html';
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-direct-source-candidate',
+        description: 'Use web_search for secondary sources, fan forums, Reddit, review blogs, and social sources. Do not use primary-source-only framing. Required expectedOutput: @outputs/raw-anecdotes/forum-social-candidates.json',
+        expectedOutput: '@outputs/raw-anecdotes/forum-social-candidates.json',
+        successCriteria: ['Every candidate must include source_url']
+      },
+      {
+        models: { enableWebSearch: true }
+      },
+      logger
+    );
+
+    agent.searchEvidence = [{
+      query: sourceUrl,
+      backend: 'direct-source-fetch',
+      quality: {
+        acceptable: true,
+        relevantUrls: [sourceUrl]
+      },
+      sourceValidation: [{
+        url: sourceUrl,
+        ok: true
+      }],
+      results: [{
+        title: 'Direct source validated',
+        url: sourceUrl,
+        snippet: 'Lost Live Dead: August 20, 1975 Great American Music Hall. The Legion Of Mary and The Jerry Garcia Band, Summer 1975, with review-blog context and listener discussion.',
+        sourceType: 'direct_source'
+      }]
+    }];
+
+    const candidates = agent.buildForumSocialCandidates();
+
+    expect(candidates).to.have.length(1);
+    expect(candidates[0]).to.include({
+      source_url: sourceUrl,
+      source_type: 'blog_review',
+      project: 'Legion of Mary'
+    });
+  });
+
+  it('extracts readable candidate text from direct-fetched Blogspot HTML instead of raw markup', () => {
+    const sourceUrl = 'https://lostlivedead.blogspot.com/2009/12/may-13-1975-keystone-berkeley-lucky.html';
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-readable-direct-source-candidate',
+        description: 'Use web_search for secondary sources, fan forums, Reddit, review blogs, and social sources. Required expectedOutput: @outputs/raw-anecdotes/forum-social-candidates.json',
+        expectedOutput: '@outputs/raw-anecdotes/forum-social-candidates.json',
+        successCriteria: ['Every candidate must include source_url']
+      },
+      {
+        models: { enableWebSearch: true }
+      },
+      logger
+    );
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Lost Live Dead: May 13, 1975 Keystone Berkeley Lucky Strike (Legion Of Mary)</title>
+          <meta content="blogger">
+          <style>.hidden { color: red; }</style>
+        </head>
+        <body>
+          <article>
+            <h1>May 13, 1975 Keystone Berkeley Lucky Strike (Legion Of Mary)</h1>
+            <p>The significant clue here is that according to the Jerry Site, Deadbase lists a Legion Of Mary show at Keystone Berkeley on May 12, 1975, complete with setlist.</p>
+            <p>6 comments: Fate Music December 14, 2009 at 8:23 PM Absolutely fascinating posts. I plan on digging further into this.</p>
+          </article>
+        </body>
+      </html>`;
+    const sample = agent.extractReadableSourceSample(html, 'text/html; charset=UTF-8', sourceUrl);
+
+    agent.searchEvidence = [{
+      query: sourceUrl,
+      backend: 'direct-source-fetch',
+      quality: {
+        acceptable: true,
+        relevantUrls: [sourceUrl]
+      },
+      sourceValidation: [{
+        url: sourceUrl,
+        ok: true,
+        status: 200,
+        sample
+      }],
+      results: [{
+        title: 'Direct source validated',
+        url: sourceUrl,
+        snippet: 'status=200 content-type=text/html; charset=UTF-8 bytes=129743 sample=<!DOCTYPE html> <html><head>',
+        sourceType: 'direct_source'
+      }]
+    }];
+
+    const candidates = agent.buildForumSocialCandidates();
+
+    expect(sample).to.include('Legion Of Mary');
+    expect(sample).to.not.include('<!DOCTYPE html>');
+    expect(candidates).to.have.length(1);
+    expect(candidates[0].project).to.equal('Legion of Mary');
+    expect(candidates[0].excerpt).to.include('Absolutely fascinating posts');
+    expect(candidates[0].excerpt).to.not.match(/^status=200/);
+  });
+
+  it('does not treat predecessor artifact input paths as requested output deliverables', () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-output-paths',
+        description: [
+          'Use web_search for fan forums. Required expectedOutput: @outputs/raw-anecdotes/forum-social-candidates.json.',
+          '',
+          '## Available Predecessor Artifacts',
+          '- `outputs/research/agent_123/archive-org-comments.json` (36KB)',
+          '- `outputs/research/agent_123/source_attempts.jsonl` (8KB)',
+          'Use the exact relative paths shown above when reading these files.'
+        ].join('\n'),
+        expectedOutput: '@outputs/raw-anecdotes/forum-social-candidates.json',
+        successCriteria: []
+      },
+      {
+        models: { enableWebSearch: true }
+      },
+      logger
+    );
+
+    expect(agent.extractRequestedOutputPaths()).to.deep.equal([
+      '@outputs/raw-anecdotes/forum-social-candidates.json'
+    ]);
+  });
+
+  it('allows fallback metasearch routes in source-required mode while keeping source validation', async () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-source-required-fallback-search',
+        description: 'Find fan anecdotes with source_url fields from review blogs.',
+        successCriteria: ['Every finding must include a source_url']
+      },
+      {
+        models: { enableWebSearch: true },
+        sourceProviders: { enabled: false }
+      },
+      logger
+    );
+
+    const calls = [];
+    agent.mcpClient = {
+      callTool: async (tool, args) => {
+        calls.push({ tool, args });
+        return {
+          content: [{
+            text: JSON.stringify({
+              success: true,
+              source: 'duckduckgo',
+              query: args.query,
+              results: [{
+                title: 'Lost Live Dead: Legion of Mary and Jerry Garcia',
+                url: 'https://lostlivedead.blogspot.com/2012/03/august-20-1975-great-american-music.html',
+                snippet: 'The Legion Of Mary and The Jerry Garcia Band, Summer 1975, with review-blog context.'
+              }]
+            })
+          }]
+        };
+      }
+    };
+    agent.sourceValidator = {
+      validate: async (urls) => urls.map(url => ({
+        url,
+        ok: true,
+        status: 200,
+        contentType: 'text/html',
+        bytes: 1000
+      }))
+    };
+    agent.gpt5 = {
+      generate: async () => ({ content: 'Validated fallback metasearch source.' })
+    };
+
+    const result = await agent.performLocalWebSearch('site:lostlivedead.blogspot.com "Legion of Mary" "Jerry Garcia"');
+
+    expect(result).to.equal('Validated fallback metasearch source.');
+    expect(calls[0].args).to.include({
+      sourceRequired: true,
+      allowDuckDuckGoFallback: true
+    });
+    expect(agent.sourcesFound).to.deep.equal([
+      'https://lostlivedead.blogspot.com/2012/03/august-20-1975-great-american-music.html'
+    ]);
   });
 
   it('repairs low-quality local search results before counting a source-required search as successful', async () => {
@@ -1316,7 +1708,7 @@ describe('ResearchAgent handoff generation', () => {
       query: 'Legion of Mary fan recollection source_url',
       maxResults: 10,
       sourceRequired: true,
-      allowDuckDuckGoFallback: false
+      allowDuckDuckGoFallback: true
     });
   });
 });

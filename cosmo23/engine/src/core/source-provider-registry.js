@@ -774,8 +774,9 @@ class SourceProviderRegistry {
   }
 
   async searchHome23XResearch(query, options = {}) {
+    const safeQuery = this.normalizeXResearchSearchQuery(query);
     const result = await this.executeHome23Skill('x-research', 'search', {
-      query,
+      query: safeQuery,
       quick: options.quick !== false,
       limit: options.maxResults || this.defaultMaxResults,
       includeData: true,
@@ -787,6 +788,16 @@ class SourceProviderRegistry {
       action: 'search',
       sourceType: 'social_post'
     });
+  }
+
+  normalizeXResearchSearchQuery(query = '') {
+    const cleaned = String(query || '')
+      .replace(/\bExpected output\s*:\s*@?outputs\/[^\s]+/gi, ' ')
+      .replace(/@?outputs\/[A-Za-z0-9._~:/-]+\.(?:json|md|markdown|csv|txt)/g, ' ')
+      .replace(/\b(Extract candidate anecdotes?|Queries must target|Do not use primary-source-only framing)\b[\s\S]*/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return cleaned.length > 480 ? cleaned.slice(0, 480).trim() : cleaned;
   }
 
   async fetchHome23XResearchThread(query, options = {}) {
@@ -911,21 +922,43 @@ class SourceProviderRegistry {
     return `${parsed.protocol}//${parsed.host}/sitemap.xml`;
   }
 
+  normalizeArchiveIdentifierCandidate(value = '') {
+    const cleaned = String(value || '')
+      .trim()
+      .replace(/^[-*•]\s*/, '')
+      .replace(/^["'`]+|["'`.,;:!?]+$/g, '')
+      .replace(/[)\]}]+$/g, '');
+
+    if (!cleaned) return null;
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,}$/.test(cleaned)) return null;
+    if (/^(?:use|fetch|inspect|these|exact|identifier|identifiers|archive|archive\.org|metadata|reviews?|required|source|routes?|outputs?|raw|extracted|validation|final)$/i.test(cleaned)) {
+      return null;
+    }
+
+    return cleaned;
+  }
+
   extractArchiveIdentifiers(text = '') {
     const ids = [];
     const addIdentifier = (value) => {
-      const cleaned = String(value || '').trim().replace(/[.,;:!?]+$/g, '');
+      const cleaned = this.normalizeArchiveIdentifierCandidate(value);
       if (cleaned) ids.push(cleaned);
     };
     for (const match of text.matchAll(/archive\.org\/details\/([^/?#\s]+)/gi)) {
       addIdentifier(decodeURIComponent(match[1]));
     }
-    for (const match of text.matchAll(/\b(?:identifier|identifiers|archive(?:\.org)?\s+id|archive(?:\.org)?\s+ids)\s*[:=]\s*([A-Za-z0-9._-]+(?:\s*,\s*[A-Za-z0-9._-]+)*)/gi)) {
+    for (const line of String(text || '').split(/\r?\n/)) {
+      const bulletMatch = line.match(/^\s*[-*•]\s*([A-Za-z0-9][A-Za-z0-9._-]{2,})(?=\s*(?:\(|-|—|:|$))/);
+      if (bulletMatch && /(?:19|20)\d{2}/.test(bulletMatch[1])) {
+        addIdentifier(bulletMatch[1]);
+      }
+    }
+    for (const match of text.matchAll(/\b(?:identifier|identifiers|archive(?:\.org)?\s+id|archive(?:\.org)?\s+ids)\s*[:=][ \t]*([A-Za-z0-9][A-Za-z0-9._-]*(?:[ \t]*,[ \t]*[A-Za-z0-9][A-Za-z0-9._-]*)*)/gi)) {
       for (const id of match[1].split(',')) {
         addIdentifier(id);
       }
     }
-    for (const match of text.matchAll(/\b([a-z0-9][a-z0-9._-]{5,}(?:19|20)\d{2}[a-z0-9._-]*)\b/gi)) {
+    for (const match of text.matchAll(/\b([a-z0-9][a-z0-9._-]{1,}(?:19|20)\d{2}[a-z0-9._-]*)\b/gi)) {
       const candidate = match[1];
       if (candidate.includes('.') && !candidate.includes('-')) continue;
       if (/^(?:https?|outputs?|raw|extracted|validation|final|archive\.org)$/i.test(candidate)) continue;

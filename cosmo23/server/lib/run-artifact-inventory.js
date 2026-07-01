@@ -174,6 +174,149 @@ function compactFile(file, extra = {}) {
   };
 }
 
+function compactText(value, maxLength = 320) {
+  if (value === undefined || value === null) return null;
+  const text = String(value)
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trim()}…`;
+}
+
+function firstValue(object, keys) {
+  if (!object || typeof object !== 'object') return null;
+  for (const key of keys) {
+    if (object[key] !== undefined && object[key] !== null && object[key] !== '') {
+      return object[key];
+    }
+  }
+  return null;
+}
+
+function arrayValue(object, keys) {
+  if (!object || typeof object !== 'object') return [];
+  for (const key of keys) {
+    if (Array.isArray(object[key])) return object[key];
+  }
+  return [];
+}
+
+function uniqueStrings(values) {
+  return Array.from(new Set(
+    values
+      .map(value => compactText(value, 160))
+      .filter(Boolean)
+  ));
+}
+
+function summarizeRouteReceipts(value) {
+  const receipts = value?.route_receipts || value?.routeReceipts || {};
+  const attempts = [
+    ...arrayValue(receipts, ['attempts']),
+    ...arrayValue(value, ['source_attempts', 'sourceAttempts'])
+  ];
+  const searchReceipts = arrayValue(value, ['search_receipts', 'searchReceipts']);
+  const fallbackAttempts = attempts.length > 0 ? [] : searchReceipts;
+  const allAttempts = attempts.length > 0 ? attempts : fallbackAttempts;
+
+  const routeNames = allAttempts.map(attempt => attempt?.route).filter(Boolean);
+  const acceptedRoutes = allAttempts
+    .filter(attempt => attempt?.status === 'accepted')
+    .map(attempt => attempt.route);
+  const emptyRoutes = allAttempts
+    .filter(attempt => attempt?.status === 'empty')
+    .map(attempt => attempt.route);
+  const rejectedRoutes = allAttempts
+    .filter(attempt => attempt?.status === 'rejected')
+    .map(attempt => attempt.route);
+  const failedRoutes = [
+    ...arrayValue(receipts, ['failed_routes', 'failedRoutes']),
+    ...arrayValue(value, ['failed_routes', 'failedRoutes']),
+    ...allAttempts
+      .filter(attempt => attempt?.status === 'failed' || attempt?.error || attempt?.code)
+      .map(attempt => attempt.route)
+  ];
+
+  return {
+    requiredRoutes: uniqueStrings(arrayValue(receipts, ['required_routes', 'requiredRoutes'])),
+    attemptCount: allAttempts.length,
+    searchReceiptCount: searchReceipts.length,
+    attemptedRoutes: uniqueStrings(routeNames),
+    acceptedRoutes: uniqueStrings(acceptedRoutes),
+    emptyRoutes: uniqueStrings(emptyRoutes),
+    rejectedRoutes: uniqueStrings(rejectedRoutes),
+    failedRoutes: uniqueStrings(failedRoutes)
+  };
+}
+
+function summarizeRawArtifact(file, value) {
+  const entries = arrayValue(value, ['entries', 'records', 'anecdotes', 'quotes']);
+  const candidates = arrayValue(value, ['candidates', 'results', 'items']);
+  const identifierStatuses = arrayValue(value, ['identifier_statuses', 'identifierStatuses']);
+  const negativeReceipts = arrayValue(value, ['negative_receipts', 'negativeReceipts']);
+  const routeSummary = summarizeRouteReceipts(value);
+
+  return {
+    path: file.relativePath,
+    status: firstValue(value, ['status', 'outcome', 'result']),
+    entryCount: entries.length,
+    candidateCount: candidates.length,
+    identifierStatusCount: identifierStatuses.length,
+    negativeReceiptCount: negativeReceipts.length,
+    routeSummary,
+    entries: entries.slice(0, 10).map(entry => ({
+      identifier: firstValue(entry, ['identifier', 'item_identifier', 'itemIdentifier']),
+      reviewer: firstValue(entry, ['reviewer', 'author', 'user', 'username']),
+      date: firstValue(entry, ['created_at', 'createdAt', 'date', 'review_date', 'reviewDate']),
+      route: firstValue(entry, ['route', 'source_route', 'sourceRoute']),
+      sourceUrl: firstValue(entry, ['source_url', 'sourceUrl', 'url']),
+      title: compactText(firstValue(entry, ['review_title', 'reviewTitle', 'title']), 160),
+      excerpt: compactText(firstValue(entry, ['review_body', 'reviewBody', 'body', 'text', 'quote', 'excerpt']), 360)
+    })),
+    candidates: candidates.slice(0, 12).map(candidate => ({
+      project: firstValue(candidate, ['project', 'band', 'subject']),
+      dateShowReference: firstValue(candidate, ['date_show_reference', 'dateShowReference', 'show_date', 'showDate', 'date']),
+      sourceType: firstValue(candidate, ['source_type', 'sourceType', 'type']),
+      route: firstValue(candidate, ['route', 'source_route', 'sourceRoute']),
+      sourceUrl: firstValue(candidate, ['source_url', 'sourceUrl', 'url']),
+      confidence: firstValue(candidate, ['confidence', 'score']),
+      excerpt: compactText(firstValue(candidate, ['excerpt', 'text', 'description', 'quote', 'body']), 360)
+    })),
+    identifierStatuses: identifierStatuses.slice(0, 10).map(status => ({
+      identifier: firstValue(status, ['identifier', 'item_identifier', 'itemIdentifier']),
+      status: firstValue(status, ['status', 'outcome', 'result']),
+      reviewCount: firstValue(status, ['review_count_reported', 'reviewCountReported', 'review_count', 'reviewCount']),
+      metadataRoute: firstValue(status, ['metadata_route', 'metadataRoute']),
+      reviewRoute: firstValue(status, ['review_route', 'reviewRoute']),
+      sourceUrl: firstValue(status, ['source_url', 'sourceUrl', 'url'])
+    })),
+    negativeReceipts: negativeReceipts.slice(0, 10).map(receipt => ({
+      identifier: firstValue(receipt, ['identifier', 'item_identifier', 'itemIdentifier']),
+      status: firstValue(receipt, ['status', 'outcome', 'result']),
+      route: firstValue(receipt, ['route', 'source_route', 'sourceRoute']),
+      sourceUrl: firstValue(receipt, ['source_url', 'sourceUrl', 'url'])
+    }))
+  };
+}
+
+function summarizeMarkdownArtifact(file) {
+  const text = readTextIfSmall(file.path, 256 * 1024);
+  if (text === null) return null;
+  const headings = text
+    .split('\n')
+    .map(line => line.match(/^(#{1,3})\s+(.+?)\s*$/))
+    .filter(Boolean)
+    .map(match => `${match[1]} ${match[2]}`)
+    .slice(0, 16);
+
+  return {
+    path: file.relativePath,
+    headings,
+    preview: compactText(text.replace(/^#+\s+/gm, ''), 1400)
+  };
+}
+
 function hashFileForFingerprint(file, maxReadBytes) {
   try {
     if (file.size > maxReadBytes) return null;
@@ -234,6 +377,10 @@ function summarizeRunArtifacts(runPath, options = {}) {
       sourceReceiptUrls: 0,
       sourceReceiptRecords: 0,
       routeReceiptFiles: []
+    },
+    artifactDetails: {
+      rawAnecdotes: [],
+      markdownReports: []
     },
     importantFiles: [],
     invalidFiles: [],
@@ -300,6 +447,10 @@ function summarizeRunArtifacts(runPath, options = {}) {
     if (kind === 'raw_anecdote') {
       inventory.categories.rawAnecdotes.files += 1;
       inventory.categories.rawAnecdotes.records += summary?.recordCount || 0;
+      if (summary?.valid) {
+        const parsed = readJsonIfSmall(file.path, maxReadBytes);
+        if (parsed.ok) inventory.artifactDetails.rawAnecdotes.push(summarizeRawArtifact(file, parsed.value));
+      }
     } else if (kind === 'extracted_record') {
       inventory.categories.extractedRecords.files += 1;
       inventory.categories.extractedRecords.records += summary?.recordCount || 0;
@@ -315,6 +466,8 @@ function summarizeRunArtifacts(runPath, options = {}) {
       inventory.categories.queryExports.files += 1;
     } else if (kind === 'deliverable_markdown') {
       inventory.categories.deliverables.files += 1;
+      const markdownSummary = summarizeMarkdownArtifact(file);
+      if (markdownSummary) inventory.artifactDetails.markdownReports.push(markdownSummary);
     }
 
     if (['raw_anecdote', 'extracted_record', 'source_receipt', 'query_export', 'deliverable_markdown'].includes(kind)) {
@@ -397,10 +550,94 @@ function buildArtifactFirstContext(inventory) {
     lines.push('');
   }
 
+  if (inventory.artifactDetails?.rawAnecdotes?.length > 0) {
+    lines.push('Structured raw artifact truth (authoritative counts; do not replace candidate counts with URL or route counts):');
+    for (const artifact of inventory.artifactDetails.rawAnecdotes.slice(0, 8)) {
+      const route = artifact.routeSummary || {};
+      const routeBits = [
+        route.attemptCount ? `routeAttempts=${route.attemptCount}` : null,
+        route.acceptedRoutes?.length ? `acceptedRoutes=${route.acceptedRoutes.join(', ')}` : null,
+        route.failedRoutes?.length ? `failedRoutes=${route.failedRoutes.join(', ')}` : null,
+        route.rejectedRoutes?.length ? `rejectedRoutes=${route.rejectedRoutes.join(', ')}` : null,
+        route.emptyRoutes?.length ? `emptyRoutes=${route.emptyRoutes.join(', ')}` : null
+      ].filter(Boolean).join('; ');
+      lines.push(`- ${artifact.path}: status=${artifact.status || 'unknown'}, entries=${artifact.entryCount}, candidates=${artifact.candidateCount}, identifierStatuses=${artifact.identifierStatusCount}${routeBits ? `; ${routeBits}` : ''}`);
+
+      if (artifact.identifierStatuses.length > 0) {
+        lines.push('  Identifier status receipts:');
+        for (const status of artifact.identifierStatuses) {
+          const statusBits = [
+            status.identifier,
+            status.status ? `status=${status.status}` : null,
+            status.reviewCount !== null && status.reviewCount !== undefined ? `reviews=${status.reviewCount}` : null,
+            status.metadataRoute ? `metadata=${status.metadataRoute}` : null,
+            status.reviewRoute ? `reviewsRoute=${status.reviewRoute}` : null,
+            status.sourceUrl
+          ].filter(Boolean);
+          lines.push(`  - ${statusBits.join(' | ')}`);
+        }
+      }
+
+      if (artifact.entries.length > 0) {
+        lines.push('  Extracted entries:');
+        for (const entry of artifact.entries) {
+          const entryBits = [
+            entry.identifier,
+            entry.reviewer ? `reviewer=${entry.reviewer}` : null,
+            entry.date ? `date=${entry.date}` : null,
+            entry.route ? `route=${entry.route}` : null,
+            entry.sourceUrl
+          ].filter(Boolean);
+          lines.push(`  - ${entryBits.join(' | ')}${entry.excerpt ? ` | excerpt="${entry.excerpt}"` : ''}`);
+        }
+      }
+
+      if (artifact.candidates.length > 0) {
+        lines.push('  Candidate anecdotes/sources:');
+        for (const candidate of artifact.candidates) {
+          const candidateBits = [
+            candidate.project ? `project=${candidate.project}` : null,
+            candidate.dateShowReference ? `date/show=${candidate.dateShowReference}` : null,
+            candidate.sourceType ? `sourceType=${candidate.sourceType}` : null,
+            candidate.route ? `route=${candidate.route}` : null,
+            candidate.confidence !== null && candidate.confidence !== undefined ? `confidence=${candidate.confidence}` : null,
+            candidate.sourceUrl
+          ].filter(Boolean);
+          lines.push(`  - ${candidateBits.join(' | ')}${candidate.excerpt ? ` | excerpt="${candidate.excerpt}"` : ''}`);
+        }
+      }
+
+      if (artifact.negativeReceipts.length > 0) {
+        lines.push('  Negative receipts:');
+        for (const receipt of artifact.negativeReceipts) {
+          const receiptBits = [
+            receipt.identifier,
+            receipt.status ? `status=${receipt.status}` : null,
+            receipt.route ? `route=${receipt.route}` : null,
+            receipt.sourceUrl
+          ].filter(Boolean);
+          lines.push(`  - ${receiptBits.join(' | ')}`);
+        }
+      }
+    }
+    lines.push('');
+  }
+
+  if (inventory.artifactDetails?.markdownReports?.length > 0) {
+    lines.push('Markdown report truth:');
+    for (const report of inventory.artifactDetails.markdownReports.slice(0, 4)) {
+      lines.push(`- ${report.path}`);
+      if (report.headings.length > 0) lines.push(`  Headings: ${report.headings.join(' | ')}`);
+      if (report.preview) lines.push(`  Preview: ${report.preview}`);
+    }
+    lines.push('');
+  }
+
   lines.push(
     'Use this inventory as current artifact truth before graph memory or coordinator commentary.',
     'Do not claim research deliverables exist unless the named file is present here or in the loaded output files.',
-    'For source questions, distinguish source URLs/receipts from extracted records and say when the substrate is meta-only or sources-only.'
+    'For source questions, distinguish source URLs/receipts from extracted records and say when the substrate is meta-only or sources-only.',
+    'When structured artifact truth is present, use its exact entry/candidate counts and named records before any memory-node or output-preview counts.'
   );
 
   return lines.join('\n');
