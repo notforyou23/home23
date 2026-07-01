@@ -1987,6 +1987,40 @@ artifact validator returned `problems: []`, and `/api/status` returned
 
 ---
 
+## Patch 38 — Dashboard query run-root alignment
+
+**Files touched:**
+- `cosmo23/engine/src/dashboard/server.js`
+- `cosmo23/engine/tests/unit/dashboard-run-root.test.js`
+- `docs/design/COSMO23-VENDORED-PATCHES.md`
+
+**Problem:** After Patch 37 proved completed-run closeout, the dashboard query
+route still looked for named runs under `cosmo23/engine/runs/<runName>`. Home23
+managed launches write runs to `cosmo23/runs/<runName>` and also export
+`COSMO_RUNS_PATH`, so a completed run could be visible in the always-on brain
+list but dashboard `/api/query` failed with `ENOENT ... cosmo23/engine/runs/.../state.json.gz`.
+
+**Fix:** `DashboardServer` now honors `COSMO_RUNS_PATH` and otherwise falls
+back to the Home23-managed `cosmo23/runs` directory when it exists, preserving
+the standalone `cosmo23/engine/runs` fallback for non-Home23 use.
+
+**Effect under Home23:** Query surfaces resolve the same run root as launch,
+brain listing, and the status contract. Completed or active Home23-managed runs
+are no longer sent to a stale standalone path before artifact/query grounding
+can even begin.
+
+**Verification:** Syntax checks passed for the dashboard server and new unit
+test. Focused Mocha coverage passed with 65 tests across dashboard run-root,
+orchestrator guided continuation, task-state queue, plan executor execution
+types, source-provider registry, and research contracts. The always-on
+`/api/brain/:name/query` endpoint then queried
+`cosmo23-acceptance-archive-reviews-closeout-20260630215506` and answered from
+the completed run artifacts, naming `outputs/raw-anecdotes/archive-org-comments.json`,
+the source receipt files, `archive.metadata`, `archive.reviews`, and the
+extracted anecdote text.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -2188,3 +2222,7 @@ artifact validator returned `problems: []`, and `/api/status` returned
   completion, and stops/clears the active run after proof. Live proof:
   `cosmo23-acceptance-archive-reviews-closeout-20260630215506` passed with
   `problems: []` and `/api/status` idle.
+- **2026-06-30** — Patch 38 aligned dashboard query run-root resolution with
+  Home23-managed launches by honoring `COSMO_RUNS_PATH` and defaulting to
+  `cosmo23/runs` when present. The completed acceptance run was queryable from
+  the always-on brain route and answered from artifact files/routes.

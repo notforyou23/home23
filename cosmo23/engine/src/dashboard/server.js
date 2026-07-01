@@ -25,7 +25,7 @@ class DashboardServer {
   constructor(port = 3344, logsDir) {
     this.port = port;
     this.mcpPort = parseInt(process.env.MCP_HTTP_PORT || process.env.MCP_PORT || 3347);
-    this.runsDir = path.join(__dirname, '..', '..', 'runs');
+    this.runsDir = process.env.COSMO_RUNS_PATH || this.detectRunsDirectory();
     
     // PRODUCTION: Use COSMO_RUNTIME_PATH from environment (user-specific)
     // FALLBACK: Use engine/runtime symlink for local development
@@ -76,6 +76,25 @@ class DashboardServer {
     this.logger = console;
     
     this.setupRoutes();
+  }
+
+  detectRunsDirectory() {
+    const fsSync = require('fs');
+    const homeManagedRuns = path.resolve(__dirname, '..', '..', '..', 'runs');
+    const standaloneRuns = path.join(__dirname, '..', '..', 'runs');
+    return fsSync.existsSync(homeManagedRuns) ? homeManagedRuns : standaloneRuns;
+  }
+
+  validateAutoNextPlanStatus(currentPlan) {
+    const status = String(currentPlan?.status || '').toUpperCase();
+    if (!['COMPLETED', 'DONE'].includes(status)) {
+      return {
+        ok: false,
+        status,
+        error: `Auto-next requires a completed plan; current plan status is ${status || 'UNKNOWN'}`
+      };
+    }
+    return { ok: true, status };
   }
 
   normalizeExecutionMode(explorationMode, requestedMode) {
@@ -3364,6 +3383,16 @@ class DashboardServer {
         } catch (error) {
           return res.status(404).json({ error: 'No plan found to build upon' });
         }
+
+        const autoNextStatus = this.validateAutoNextPlanStatus(currentPlan);
+        if (!autoNextStatus.ok) {
+          return res.status(409).json({
+            success: false,
+            error: autoNextStatus.error,
+            status: autoNextStatus.status,
+            blockedReason: currentPlan?.blockedReason || null
+          });
+        }
         
         this.logger.info('🎯 Auto-next plan generation requested', { 
           currentPlan: currentPlan?.title || 'Unknown',
@@ -4612,10 +4641,10 @@ Remember:
               const userMessages = messages.filter(m => m.role !== 'system');
 
               // Use exact model names from COSMO (tested and working)
-              const claudeModel = model === 'claude-opus-4-7'
-                ? 'claude-opus-4-7'  // Opus 4.6 - latest
-                : model === 'claude-opus-4-7'
-                ? 'claude-opus-4-7'  // Opus 4.5
+              const claudeModel = model === 'claude-opus-4-8'
+                ? 'claude-opus-4-8'  // Opus 4.8 - latest
+                : model === 'claude-opus-4-8'
+                ? 'claude-opus-4-8'  // Opus 4.8
                 : 'claude-sonnet-4-7';  // Sonnet 4.5 - default
               
               const stream = await anthropic.messages.create({
@@ -4692,10 +4721,10 @@ Remember:
             const userMessages = messages.filter(m => m.role !== 'system');
 
             // Use exact model names from COSMO (tested and working)
-            const claudeModel = model === 'claude-opus-4-7'
-              ? 'claude-opus-4-7'  // Opus 4.6 - latest
-              : model === 'claude-opus-4-7'
-              ? 'claude-opus-4-7'  // Opus 4.5
+            const claudeModel = model === 'claude-opus-4-8'
+              ? 'claude-opus-4-8'  // Opus 4.8 - latest
+              : model === 'claude-opus-4-8'
+              ? 'claude-opus-4-8'  // Opus 4.8
               : 'claude-sonnet-4-7';  // Sonnet 4.5 - default
             
             const response = await anthropic.messages.create({
@@ -5783,7 +5812,7 @@ Remember:
         proc.unref();  // Allow parent to exit independently
         
         const timeEstimate = queryTimestamps.length * 
-          (model === 'claude-opus-4-7' ? 30 : model === 'claude-opus-4-7' ? 25 : model === 'claude-sonnet-4-7' ? 15 : 20);
+          (model === 'claude-opus-4-8' ? 30 : model === 'claude-opus-4-8' ? 25 : model === 'claude-sonnet-4-7' ? 15 : 20);
         
         res.json({
           success: true,
