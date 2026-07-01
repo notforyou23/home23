@@ -2284,6 +2284,9 @@ completed run artifacts.
   receipt. Query cache keys now include artifact fingerprints and prior-context
   hashes, and follow-up answers treat prior replies as historical context below
   the current artifact inventory. Both public and legacy dashboard query routes
-  pass artifact inventory/fingerprint into the query engine. Verification passed:
-  focused route/completion Mocha suite (80), artifact/query cache node tests (5),
-  and syntax checks for patched COSMO query/server/validator files.
+  pass artifact inventory/fingerprint into the query engine, while interactive
+  `brain_query` now prefixes graph-memory results with the current artifact
+  substrate and receipt counts. Verification passed: focused route/completion
+  Mocha suite (80), artifact/query cache node tests (5), interactive artifact
+  grounding test, and syntax checks for patched COSMO query/server/validator
+  files.

@@ -275,6 +275,8 @@ const executors = {
     const { orchestrator, logger } = context;
     const memory = orchestrator.memory;
     if (!memory) return 'Brain memory not available.';
+    const artifactTruth = formatArtifactTruth(context);
+    const withArtifactTruth = (body) => artifactTruth ? `${artifactTruth}\n\n${body}` : body;
 
     const limit = args.limit || 10;
     try {
@@ -282,14 +284,14 @@ const executors = {
       if (typeof memory.query === 'function') {
         const results = await memory.query(args.query, limit);
         if (!results || results.length === 0) {
-          return `No results found for query: "${args.query}"`;
+          return withArtifactTruth(`No results found for query: "${args.query}"`);
         }
-        return results.map((node, i) => {
+        return withArtifactTruth(results.map((node, i) => {
           const concept = node.concept || node.id || 'unknown';
           const summary = (node.summary || node.content || '').substring(0, 300);
           const score = node.score !== undefined ? ` (score: ${node.score.toFixed(3)})` : '';
           return `${i + 1}. [${concept}]${score}\n   ${summary}`;
-        }).join('\n\n');
+        }).join('\n\n'));
       }
 
       // Hydrated mode: keyword search across nodes (no embeddings available for cosine search)
@@ -304,18 +306,18 @@ const executors = {
         .slice(0, limit);
 
       if (scored.length === 0) {
-        return `No results found for query: "${args.query}" (keyword search across ${nodes.length} nodes)`;
+        return withArtifactTruth(`No results found for query: "${args.query}" (keyword search across ${nodes.length} nodes)`);
       }
 
-      return scored.map((s, i) => {
+      return withArtifactTruth(scored.map((s, i) => {
         const concept = (s.node.concept || s.node.id || 'unknown').substring(0, 200);
         const summary = (s.node.summary || '').substring(0, 300);
         const tag = s.node.tag ? ` [${s.node.tag}]` : '';
         return `${i + 1}.${tag} (relevance: ${(s.score * 100).toFixed(0)}%)\n   ${concept}${summary ? '\n   Summary: ' + summary : ''}`;
-      }).join('\n\n');
+      }).join('\n\n'));
     } catch (err) {
       logger?.error('brain_query failed', { error: err.message });
-      return `Error querying brain: ${err.message}`;
+      return withArtifactTruth(`Error querying brain: ${err.message}`);
     }
   },
 
@@ -898,6 +900,29 @@ function readLiveStatus(context = {}) {
   if (typeof provider !== 'function') return null;
   const status = provider();
   return status && typeof status === 'object' ? status : null;
+}
+
+function formatArtifactTruth(context = {}) {
+  const inventory = readLiveStatus(context)?.artifactInventory;
+  if (!inventory) return '';
+
+  const sourceEvidence = inventory.sourceEvidence || {};
+  const categories = inventory.categories || {};
+  const raw = categories.rawAnecdotes || {};
+  const extracted = categories.extractedRecords || {};
+  const totals = inventory.totals || {};
+  const lines = [
+    'Artifact truth (checked before brain memory):',
+    `- Answer substrate: ${inventory.answerSubstrate || 'unknown'}`,
+    `- Source receipt files: ${Array.isArray(sourceEvidence.routeReceiptFiles) ? sourceEvidence.routeReceiptFiles.length : 0}`,
+    `- Raw anecdote files/records: ${raw.files || 0}/${raw.records || 0}`,
+    `- Extracted record files/records: ${extracted.files || 0}/${extracted.records || 0}`,
+    `- Invalid JSON files: ${totals.invalidJsonFiles || 0}`
+  ];
+  if (Array.isArray(inventory.warnings) && inventory.warnings.length > 0) {
+    lines.push(`- Warnings: ${inventory.warnings.join(', ')}`);
+  }
+  return lines.join('\n');
 }
 
 // ═══════════════════════════════════════════════════════════════════════
