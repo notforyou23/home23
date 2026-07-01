@@ -323,6 +323,49 @@ describe('PlanExecutor output-contract validation', function() {
     expect(validation.reason).to.include('invalid_json');
   });
 
+  it('does not pass Archive negative receipts without per-identifier review-route proof', async function() {
+    const outputDir = path.join(tempRoot, 'outputs');
+    await fs.mkdir(path.join(outputDir, 'raw-anecdotes'), { recursive: true });
+    await fs.writeFile(
+      path.join(outputDir, 'raw-anecdotes', 'archive-org-comments.json'),
+      JSON.stringify({
+        entries: [],
+        status: 'no_reviews_found',
+        required_identifiers: ['show-without-reviews'],
+        identifier_statuses: [{
+          identifier: 'show-without-reviews',
+          status: 'no_reviews_found',
+          metadata_route: 'accepted',
+          review_route: 'missing',
+          source_url: 'https://archive.org/details/show-without-reviews'
+        }],
+        urls_searched: ['https://archive.org/details/show-without-reviews'],
+        route_receipts: {
+          attempts: [
+            { route: 'archive.metadata', status: 'accepted', result_count: 1, url_count: 1 },
+            { route: 'archive.reviews', status: 'empty', result_count: 0, url_count: 0 }
+          ],
+          productive_source_urls: ['https://archive.org/details/show-without-reviews']
+        }
+      }, null, 2)
+    );
+
+    const pe = makeExecutor(outputDir);
+    pe.activeTask = {
+      id: 'task:archive-negative',
+      title: 'Fetch Archive comments',
+      description: 'Fetch Archive.org comments and write negative receipts when none exist.',
+      acceptanceCriteria: [],
+      metadata: {
+        expectedOutput: '@outputs/raw-anecdotes/archive-org-comments.json'
+      }
+    };
+
+    const validation = await pe.validateTaskOutput([]);
+    expect(validation.passed).to.equal(false);
+    expect(validation.reason).to.include('archive_identifier_not_resolved:show-without-reviews');
+  });
+
   it('does not skip source-contract validation when no explicit expected output exists', async function() {
     const outputDir = path.join(tempRoot, 'outputs');
     await fs.mkdir(outputDir, { recursive: true });

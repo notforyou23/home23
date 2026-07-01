@@ -775,28 +775,52 @@ describe('ResearchAgent handoff generation', () => {
         executedQuery: agent.searchQueries[0],
         backend: 'archive.reviews',
         resultCount: 1,
-        urls: [`https://archive.org/details/${identifiers[0]}#reviews`],
+        urls: [
+          `https://archive.org/details/${identifiers[0]}#reviews`,
+          `https://archive.org/details/${identifiers[1]}#reviews`
+        ],
         quality: { acceptable: true, reason: 'typed_source_candidates_found' },
-        sourceValidation: [{ url: `https://archive.org/details/${identifiers[0]}#reviews`, ok: true, status: 'metadata_only' }],
-        results: [{
-          title: 'Great night',
-          url: `https://archive.org/details/${identifiers[0]}#reviews`,
-          snippet: 'A first-person listener memory from the Archive review.',
-          sourceType: 'archive_review',
-          metadata: {
-            identifier: identifiers[0],
-            reviewId: 'review-1',
-            reviewer: 'listener',
-            createdAt: '2026-01-02'
-          },
-          raw: {
-            review_id: 'review-1',
-            reviewer: 'listener',
+        sourceValidation: [
+          { url: `https://archive.org/details/${identifiers[0]}#reviews`, ok: true, status: 'metadata_only' },
+          { url: `https://archive.org/details/${identifiers[1]}#reviews`, ok: true, status: 'metadata_only' }
+        ],
+        results: [
+          {
             title: 'Great night',
-            body: 'A first-person listener memory from the Archive review.',
-            createdate: '2026-01-02'
+            url: `https://archive.org/details/${identifiers[0]}#reviews`,
+            snippet: 'A first-person listener memory from the Archive review.',
+            sourceType: 'archive_review',
+            metadata: {
+              identifier: identifiers[0],
+              reviewId: 'review-1',
+              reviewer: 'listener',
+              createdAt: '2026-01-02'
+            },
+            raw: {
+              review_id: 'review-1',
+              reviewer: 'listener',
+              title: 'Great night',
+              body: 'A first-person listener memory from the Archive review.',
+              createdate: '2026-01-02'
+            }
+          },
+          {
+            title: `No Archive reviews for ${identifiers[1]}`,
+            url: `https://archive.org/details/${identifiers[1]}#reviews`,
+            snippet: 'Archive metadata reviews array was checked and contained no review records.',
+            sourceType: 'archive_review_status',
+            metadata: {
+              identifier: identifiers[1],
+              reviews: 0,
+              status: 'no_reviews_found',
+              validationStrategy: 'metadata_only'
+            },
+            raw: {
+              metadata: { identifier: identifiers[1] },
+              reviews: []
+            }
           }
-        }]
+        ]
       },
       {
         timestamp: '2026-06-30T00:00:02.000Z',
@@ -855,6 +879,7 @@ describe('ResearchAgent handoff generation', () => {
     expect(data.identifier_statuses.find(item => item.identifier === identifiers[0]).review_route).to.equal('accepted');
     expect(data.identifier_statuses.find(item => item.identifier === identifiers[0]).status).to.equal('reviews_extracted');
     expect(data.identifier_statuses.find(item => item.identifier === identifiers[1]).metadata_route).to.equal('accepted');
+    expect(data.identifier_statuses.find(item => item.identifier === identifiers[1]).review_route).to.equal('accepted');
     expect(data.identifier_statuses.find(item => item.identifier === identifiers[1]).status).to.equal('no_reviews_found');
     expect(data.route_receipts.attempts.map(item => item.route)).to.include.members(['archive.metadata', 'archive.reviews']);
   });

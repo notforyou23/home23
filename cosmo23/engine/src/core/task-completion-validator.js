@@ -224,7 +224,8 @@ function validateArchiveOrgCommentsJson(value = {}) {
       const status = identifierStatuses.find(item => item.identifier === identifier);
       const hasAcceptedNegative = status &&
         status.metadata_route === 'accepted' &&
-        ['no_reviews_found', 'reviews_extracted'].includes(status.status);
+        status.review_route === 'accepted' &&
+        status.status === 'no_reviews_found';
       if (!hasEntry && !hasAcceptedNegative) {
         return { passed: false, reason: `archive_identifier_not_resolved:${identifier}` };
       }
@@ -233,7 +234,11 @@ function validateArchiveOrgCommentsJson(value = {}) {
 
   if (entries.length === 0) {
     const hasNegativeReceipts = identifierStatuses.length > 0 &&
-      identifierStatuses.every(item => item.status === 'no_reviews_found' && item.metadata_route === 'accepted');
+      identifierStatuses.every(item =>
+        item.status === 'no_reviews_found' &&
+        item.metadata_route === 'accepted' &&
+        item.review_route === 'accepted'
+      );
     const urlsSearched = normalizeArray(value.urls_searched || value.urlsSearched);
     if (!hasNegativeReceipts || urlsSearched.length === 0) {
       return { passed: false, reason: 'archive_comments_no_entries_without_negative_receipts' };

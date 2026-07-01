@@ -2021,6 +2021,51 @@ extracted anecdote text.
 
 ---
 
+## Patch 39 — Per-identifier Archive negative receipt proof
+
+**Files touched:**
+- `cosmo23/engine/src/core/source-provider-registry.js`
+- `cosmo23/engine/src/agents/research-agent.js`
+- `cosmo23/engine/src/core/task-completion-validator.js`
+- `cosmo23/engine/tests/unit/source-provider-registry.test.js`
+- `cosmo23/engine/tests/unit/research-agent-handoff.test.js`
+- `cosmo23/engine/tests/unit/plan-executor-execution-types.test.js`
+- `docs/design/COSMO23-VENDORED-PATCHES.md`
+
+**Problem:** Patch 37 proved the positive flow, but the no-review identifier in
+the live proof still had `review_route:"missing"`. Archive metadata reported
+zero reviews, which was true, but the receipt did not distinguish
+"review route checked and empty" from "review route never checked." The
+completion validator also accepted a no-entry required identifier when only
+`metadata_route:"accepted"` was present.
+
+**Fix:** `archive.reviews` now emits a typed `archive_review_status` candidate
+for each identifier whose metadata reviews array is empty. The research agent
+records that candidate as `review_route:"accepted"` and `status:"no_reviews_found"`
+without turning it into an extracted anecdote entry. The archive comments
+validator now rejects any required identifier without either a real entry or a
+per-identifier negative receipt with both `metadata_route:"accepted"` and
+`review_route:"accepted"`.
+
+**Effect under Home23:** Empty source results are now first-class receipts, not
+implicit absence. COSMO23 can complete a no-review branch only after proving the
+typed review route was checked for that identifier; otherwise the expected
+artifact is invalid and the task cannot close as `DONE`.
+
+**Verification:** Syntax checks passed for the patched files. Focused Mocha
+coverage passed with 76 tests across source-provider registry, research-agent
+handoff, plan-executor completion validation, research contracts, and task-state
+queue. Live proof run
+`cosmo23-acceptance-archive-reviews-negative-receipts-20260630221609` produced
+`outputs/raw-anecdotes/archive-org-comments.json` with both required identifiers
+showing `review_route:"accepted"`; the stricter artifact validator returned
+`problems: []`, all tasks and milestones ended complete, `/api/status` returned
+idle with no active context, and the always-on brain query summarized the
+negative receipt plus `archive.metadata` / `archive.reviews` routes from the
+completed run artifacts.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -2226,3 +2271,8 @@ extracted anecdote text.
   Home23-managed launches by honoring `COSMO_RUNS_PATH` and defaulting to
   `cosmo23/runs` when present. The completed acceptance run was queryable from
   the always-on brain route and answered from artifact files/routes.
+- **2026-06-30** — Patch 39 tightened Archive.org negative receipts. Empty
+  review arrays now emit per-identifier `archive_review_status` candidates, and
+  no-review completion requires both metadata-route and review-route proof.
+  Live proof `cosmo23-acceptance-archive-reviews-negative-receipts-20260630221609`
+  passed with `problems: []` and queryable artifact-backed negative status.

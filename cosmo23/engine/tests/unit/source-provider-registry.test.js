@@ -296,6 +296,59 @@ describe('SourceProviderRegistry', () => {
     expect(result.attempts.map(item => item.route)).to.deep.equal(['archive.metadata', 'archive.reviews']);
   });
 
+  it('emits per-identifier empty review status receipts', async () => {
+    const identifiers = [
+      'legion-of-mary-the-bottom-line-nyc-1975',
+      'legion-of-mary-oriental-theatre-wi-1975-wzmf'
+    ];
+    const fetchImpl = async (url) => {
+      const value = String(url);
+      const identifier = identifiers.find(id => value.includes(`archive.org/metadata/${id}`));
+      if (identifier === identifiers[0]) {
+        return jsonResponse({
+          metadata: { identifier, title: identifier, mediatype: 'audio' },
+          reviews: []
+        });
+      }
+      if (identifier === identifiers[1]) {
+        return jsonResponse({
+          metadata: { identifier, title: identifier, mediatype: 'audio' },
+          reviews: [{
+            review_id: `${identifier}-review`,
+            reviewer: 'listener',
+            title: `Review for ${identifier}`,
+            body: `A listener memory for ${identifier}.`
+          }]
+        });
+      }
+      throw new Error(`Unexpected URL: ${value}`);
+    };
+
+    const registry = new SourceProviderRegistry(logger, {}, { fetchImpl });
+    const result = await registry.acquire(`Fetch archive reviews for identifiers: ${identifiers.join(', ')}`, {
+      providers: ['archive.reviews'],
+      maxResults: 1
+    });
+
+    const emptyReceipt = result.candidates.find(item => item.metadata.identifier === identifiers[0]);
+    const reviewEntry = result.candidates.find(item => item.metadata.identifier === identifiers[1]);
+
+    expect(emptyReceipt).to.include({
+      provider: 'archive.reviews',
+      sourceType: 'archive_review_status'
+    });
+    expect(emptyReceipt.metadata).to.include({
+      status: 'no_reviews_found',
+      validationStrategy: 'metadata_only'
+    });
+    expect(reviewEntry.sourceType).to.equal('archive_review');
+    expect(result.attempts[0]).to.include({
+      route: 'archive.reviews',
+      status: 'accepted',
+      result_count: 2
+    });
+  });
+
   it('queries Wayback CDX captures and feed sitemaps', async () => {
     const fetchImpl = async (url) => {
       const value = String(url);

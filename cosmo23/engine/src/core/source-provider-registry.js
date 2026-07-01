@@ -376,6 +376,25 @@ class SourceProviderRegistry {
     for (const identifier of identifiers.slice(0, identifierLimit)) {
       const data = await this.fetchJson(`https://archive.org/metadata/${encodeURIComponent(identifier)}`);
       const reviews = Array.isArray(data?.reviews) ? data.reviews : [];
+      if (reviews.length === 0) {
+        candidates.push({
+          title: `No Archive reviews for ${identifier}`,
+          url: `https://archive.org/details/${encodeURIComponent(identifier)}#reviews`,
+          snippet: 'Archive metadata reviews array was checked and contained no review records.',
+          sourceType: 'archive_review_status',
+          metadata: {
+            identifier,
+            reviews: 0,
+            status: 'no_reviews_found',
+            validationStrategy: 'metadata_only'
+          },
+          raw: {
+            metadata: data?.metadata || { identifier },
+            reviews: []
+          }
+        });
+        continue;
+      }
       for (const review of reviews.slice(0, perIdentifierLimit)) {
         const reviewId = review.review_id || review.id || review.createdate || '';
         candidates.push({

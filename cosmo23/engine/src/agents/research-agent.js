@@ -2602,7 +2602,7 @@ Respond with JSON array of follow-up directions:
     const requiredSet = new Set((requiredIdentifiers || []).filter(Boolean));
     for (const evidence of this.searchEvidence || []) {
       for (const result of evidence.results || []) {
-        if (result.sourceType !== 'archive_review' && result.engine !== 'archive.reviews') continue;
+        if (result.sourceType !== 'archive_review') continue;
         const metadata = result.metadata || {};
         const raw = result.raw || {};
         const body = raw.body || raw.reviewbody || result.snippet || '';
@@ -2678,7 +2678,19 @@ Respond with JSON array of follow-up directions:
           if (current.review_route !== 'accepted') {
             current.review_route = routeAccepted ? 'accepted' : 'rejected';
           }
-          current.status = 'reviews_extracted';
+          const noReviews = result.sourceType === 'archive_review_status' ||
+            result.metadata?.status === 'no_reviews_found' ||
+            result.raw?.reviews?.length === 0;
+          if (noReviews) {
+            if (current.status !== 'reviews_extracted') {
+              current.status = 'no_reviews_found';
+            }
+            if (current.review_count_reported == null) {
+              current.review_count_reported = 0;
+            }
+          } else {
+            current.status = 'reviews_extracted';
+          }
         }
         statuses.set(identifier, current);
       }
