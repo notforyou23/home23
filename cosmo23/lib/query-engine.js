@@ -148,7 +148,32 @@ function getStateHashForCache(state) {
   return `solo:${state.cycleCount || 0}:${state.memory?.nodes?.length || 0}`;
 }
 
+function hashCachePart(value) {
+  if (!value) return '';
+  return crypto
+    .createHash('sha256')
+    .update(typeof value === 'string' ? value : JSON.stringify(value))
+    .digest('hex')
+    .slice(0, 16);
+}
+
 class QueryEngine {
+  static buildQueryCacheKey({
+    stateHash,
+    query,
+    model,
+    mode,
+    synthesisCommitConfig = null,
+    artifactContext = null,
+    artifactFingerprint = null,
+    priorContext = null
+  }) {
+    const artifactContextHash = artifactContext ? hashCachePart(artifactContext) : '';
+    const artifactCacheKey = artifactFingerprint || artifactContextHash;
+    const priorContextHash = hashCachePart(priorContext);
+    return `${stateHash}:${query}:${model}:${mode}:${synthesisCommitConfig ? JSON.stringify(synthesisCommitConfig) : ''}:artifact=${artifactCacheKey}:prior=${priorContextHash}`;
+  }
+
   static buildCodexInputItems(text) {
     return [{
       type: 'message',
@@ -1676,6 +1701,7 @@ STYLE:
       onChunk = null, // NEW (2026-01-21): Optional streaming callback
       explicitProvider = null, // NEW: Explicit provider override (e.g. 'openai-codex')
       artifactContext = null, // HOME23 PATCH — authoritative artifact inventory
+      artifactFingerprint = null,
       synthesis = null
     } = options;
 
@@ -1710,10 +1736,16 @@ STYLE:
     // Load data
     const state = await this.loadBrainState();
     const stateHash = getStateHashForCache(state);
-    const artifactContextHash = artifactContext
-      ? crypto.createHash('sha256').update(String(artifactContext)).digest('hex').slice(0, 16)
-      : '';
-    const cacheKey = `${stateHash}:${query}:${model}:${mode}:${synthesisCommitConfig ? JSON.stringify(synthesisCommitConfig) : ''}:${artifactContextHash}`;
+    const cacheKey = QueryEngine.buildQueryCacheKey({
+      stateHash,
+      query,
+      model,
+      mode,
+      synthesisCommitConfig,
+      artifactContext,
+      artifactFingerprint,
+      priorContext
+    });
 
     if (this.queryCache.has(cacheKey)) {
       this.performanceMetrics.cacheHits++;
@@ -1835,7 +1867,8 @@ STYLE:
         sanitizedAnswer = sanitizedAnswer.substring(0, maxPriorAnswerLength) + '\n\n[...answer truncated for context size...]';
       }
       
-      const priorContextSection = `# Prior Conversation\n\n` +
+      const priorContextSection = `# Historical Prior Conversation (secondary context)\n\n` +
+        `Current artifact inventory and loaded output files above are authoritative. Treat this prior answer as historical context only; do not let it override current artifacts, route receipts, invalid-file warnings, or missing-deliverable status.\n\n` +
         `The user previously asked:\n` +
         `"${sanitizedQuery}"\n\n` +
         `And received this answer:\n` +
@@ -1843,7 +1876,7 @@ STYLE:
         `---\n\n` +
         `The following question is a follow-up to the above conversation.\n\n`;
       
-      context = priorContextSection + context;
+      context = `${context}\n\n---\n\n${priorContextSection}`;
       
       // Log context size for debugging
       const contextLength = context.length;
@@ -1958,11 +1991,12 @@ STYLE:
     if (priorContext && priorContext.query && priorContext.answer) {
       const followUpPrefix = `IMPORTANT: This is a FOLLOW-UP QUERY.\n\n` +
         `The user has previously asked a question and received an answer. ` +
-        `That prior conversation is included at the start of the context below.\n\n` +
+        `That prior conversation is included below the current artifact and brain context as historical context.\n\n` +
         `Your response should:\n` +
-        `- Be aware of and build upon the prior exchange\n` +
+        `- Treat current run artifacts, loaded output files, route receipts, and invalid-file warnings as authoritative\n` +
+        `- Be aware of the prior exchange only where it does not conflict with current artifacts\n` +
         `- Reference the previous answer naturally when relevant\n` +
-        `- Maintain continuity with the previous response\n` +
+        `- Correct stale prior claims explicitly when the current artifact inventory disagrees\n` +
         `- Answer the new question in light of what was already discussed\n\n` +
         `---\n\n`;
       
@@ -4318,7 +4352,8 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
       priorContext = null, // For follow-up queries
       onChunk = null, // NEW (2026-01-21): Optional streaming callback
       explicitProvider = null, // NEW: Explicit provider override (e.g. 'openai-codex')
-      artifactContext = null // HOME23 PATCH — authoritative artifact inventory
+      artifactContext = null, // HOME23 PATCH — authoritative artifact inventory
+      artifactFingerprint = null
     } = options;
 
     // PGS: Partitioned Graph Synthesis for full-coverage queries
@@ -4347,7 +4382,8 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
         synthesis,
         onChunk,
         explicitProvider,
-        artifactContext
+        artifactContext,
+        artifactFingerprint
       });
     }
     
@@ -4422,6 +4458,7 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
       onChunk, // NEW (2026-01-21): Pass through streaming callback
       explicitProvider, // NEW: Pass through explicit provider override
       artifactContext,
+      artifactFingerprint,
       synthesis
     });
 

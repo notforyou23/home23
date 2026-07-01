@@ -2276,3 +2276,14 @@ completed run artifacts.
   no-review completion requires both metadata-route and review-route proof.
   Live proof `cosmo23-acceptance-archive-reviews-negative-receipts-20260630221609`
   passed with `problems: []` and queryable artifact-backed negative status.
+- **2026-06-30** — Patch 40 generalized route-level research acceptance beyond
+  Archive.org and hardened artifact-first query answers. Research evidence now
+  carries required, attempted, successful, accepted-empty, and failed source
+  routes; completion fails when required `sourceProviderHints` or receipt-declared
+  `required_routes` were never attempted, or when they failed without an accepted
+  receipt. Query cache keys now include artifact fingerprints and prior-context
+  hashes, and follow-up answers treat prior replies as historical context below
+  the current artifact inventory. Both public and legacy dashboard query routes
+  pass artifact inventory/fingerprint into the query engine. Verification passed:
+  focused route/completion Mocha suite (80), artifact/query cache node tests (5),
+  and syntax checks for patched COSMO query/server/validator files.

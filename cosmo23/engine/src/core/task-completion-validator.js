@@ -188,6 +188,49 @@ function normalizeRouteReceiptAttempts(value = {}) {
   return normalizeArray(value.route_receipts?.attempts || value.routeReceipts?.attempts || value.attempts);
 }
 
+function addEvidenceRoute(evidence, field, value) {
+  if (!value) return;
+  if (!Array.isArray(evidence[field])) evidence[field] = [];
+  const route = String(value).trim();
+  if (route && !evidence[field].includes(route)) evidence[field].push(route);
+}
+
+function recordArtifactRouteAttempt(evidence, attempt = {}) {
+  if (!attempt || typeof attempt !== 'object') return;
+  const route = attempt.route || attempt.backend || attempt.provider || attempt.providerId;
+  if (!route) return;
+
+  addEvidenceRoute(evidence, 'attemptedRoutes', route);
+  const status = String(attempt.status || attempt.outcome || attempt.result || (attempt.ok === true ? 'accepted' : '')).toLowerCase();
+  if (!Array.isArray(evidence.routeStatuses)) evidence.routeStatuses = [];
+  evidence.routeStatuses.push({
+    route: String(route),
+    status: status || null,
+    error: attempt.error || null
+  });
+
+  if (
+    attempt.ok === true ||
+    ['accepted', 'success', 'succeeded', 'successful', 'ok', 'completed', 'metadata_only'].includes(status)
+  ) {
+    addEvidenceRoute(evidence, 'successfulRoutes', route);
+    return;
+  }
+
+  if (['empty', 'no_results', 'no_results_found', 'no_reviews_found', 'not_found', 'negative', 'accepted_empty'].includes(status)) {
+    addEvidenceRoute(evidence, 'acceptedEmptyRoutes', route);
+    return;
+  }
+
+  if (
+    attempt.ok === false ||
+    attempt.error ||
+    ['failed', 'error', 'blocked', 'timeout', 'rejected'].includes(status)
+  ) {
+    addEvidenceRoute(evidence, 'failedRoutes', route);
+  }
+}
+
 function validateArchiveOrgCommentsJson(value = {}) {
   if (!isPlainObject(value)) {
     return { passed: false, reason: 'archive_comments_not_an_object' };
@@ -439,6 +482,11 @@ async function collectResearchEvidenceFromArtifacts(task = {}, closure = {}, con
         evidence.sourcesFound += Number(data.productive_sources || 0);
         evidence.successfulSources += normalizeArray(data.productive_source_urls).length;
         evidence.pagesAcquired += Number(data.crossings || 0);
+        for (const route of normalizeArray(data.required_routes)) addEvidenceRoute(evidence, 'requiredRoutes', route);
+        for (const route of normalizeArray(data.failed_routes)) {
+          addEvidenceRoute(evidence, 'attemptedRoutes', route);
+          addEvidenceRoute(evidence, 'failedRoutes', route);
+        }
         if (data.can_continue === false) evidence.statuses.push('blocked_no_sources');
         if (data.next_allowed_action) evidence.reasons.push(data.next_allowed_action);
       }
@@ -450,6 +498,7 @@ async function collectResearchEvidenceFromArtifacts(task = {}, closure = {}, con
       evidence.queriesExecuted += rows.filter(row => row.status).length;
       evidence.searchFailures += rows.filter(row => row.status === 'failed').length;
       evidence.sourcesFound += rows.reduce((sum, row) => sum + Number(row.url_count || 0), 0);
+      for (const row of rows) recordArtifactRouteAttempt(evidence, row);
     }
 
     if (filename === 'source_crossing.jsonl') {
@@ -457,6 +506,13 @@ async function collectResearchEvidenceFromArtifacts(task = {}, closure = {}, con
       evidence.sourcesContacted += rows.length;
       evidence.successfulSources += rows.filter(row => row.ok === true).length;
       evidence.pagesAcquired += rows.filter(row => row.ok === true).length;
+      for (const row of rows) {
+        recordArtifactRouteAttempt(evidence, {
+          route: row.route,
+          status: row.ok === true ? 'accepted' : 'failed',
+          error: row.error || row.blocked_reason || null
+        });
+      }
     }
 
     if (filename === 'archive-org-comments.json') {
@@ -464,6 +520,20 @@ async function collectResearchEvidenceFromArtifacts(task = {}, closure = {}, con
       if (data) {
         const entries = normalizeArray(data.entries);
         const attempts = normalizeRouteReceiptAttempts(data);
+        for (const attempt of attempts) recordArtifactRouteAttempt(evidence, attempt);
+        for (const route of normalizeArray(data.route_receipts?.required_routes || data.routeReceipts?.requiredRoutes)) {
+          addEvidenceRoute(evidence, 'requiredRoutes', route);
+        }
+        for (const route of normalizeArray(data.route_receipts?.failed_routes || data.routeReceipts?.failedRoutes)) {
+          addEvidenceRoute(evidence, 'failedRoutes', route);
+        }
+        for (const status of normalizeArray(data.identifier_statuses || data.identifierStatuses)) {
+          if (status.metadata_route === 'accepted') addEvidenceRoute(evidence, 'successfulRoutes', 'archive.metadata');
+          if (status.review_route === 'accepted') {
+            const bucket = status.status === 'no_reviews_found' ? 'acceptedEmptyRoutes' : 'successfulRoutes';
+            addEvidenceRoute(evidence, bucket, 'archive.reviews');
+          }
+        }
         evidence.queriesAttempted += attempts.length;
         evidence.queriesExecuted += attempts.filter(row => row.status).length;
         evidence.searchFailures += attempts.filter(row => row.status === 'failed').length;
@@ -472,6 +542,7 @@ async function collectResearchEvidenceFromArtifacts(task = {}, closure = {}, con
         evidence.entriesFound += entries.length;
         if (entries.length > 0) {
           evidence.successfulSources += entries.filter(entry => entry.source_url).length;
+          addEvidenceRoute(evidence, 'successfulRoutes', 'archive.reviews');
         }
       }
     }

@@ -343,6 +343,73 @@ function positiveNumber(...values) {
   return 0;
 }
 
+function addUnique(list, value) {
+  if (!value) return;
+  const route = String(value).trim();
+  if (route && !list.includes(route)) list.push(route);
+}
+
+function routeStatus(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isRouteAttempt(value) {
+  return Boolean(value) &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    Boolean(value.route || value.backend || value.provider || value.providerId);
+}
+
+function collectRouteAttempts(source = {}) {
+  const attempts = [];
+  for (const key of ['routeAttempts', 'sourceAttempts', 'providerAttempts']) {
+    for (const attempt of normalizeArray(source[key])) {
+      if (isRouteAttempt(attempt)) attempts.push(attempt);
+    }
+  }
+  for (const attempt of normalizeArray(source.attempts)) {
+    if (isRouteAttempt(attempt)) attempts.push(attempt);
+  }
+  for (const attempt of normalizeArray(source.route_receipts?.attempts || source.routeReceipts?.attempts)) {
+    if (isRouteAttempt(attempt)) attempts.push(attempt);
+  }
+  return attempts;
+}
+
+function recordRouteAttempt(evidence, attempt = {}) {
+  const route = attempt.route || attempt.backend || attempt.provider || attempt.providerId;
+  if (!route) return;
+
+  addUnique(evidence.attemptedRoutes, route);
+  const status = routeStatus(attempt.status || attempt.outcome || attempt.result || (attempt.ok === true ? 'accepted' : ''));
+  evidence.routeStatuses.push({
+    route: String(route),
+    status: status || null,
+    error: attempt.error || null
+  });
+
+  if (
+    attempt.ok === true ||
+    ['accepted', 'success', 'succeeded', 'successful', 'ok', 'completed', 'metadata_only'].includes(status)
+  ) {
+    addUnique(evidence.successfulRoutes, route);
+    return;
+  }
+
+  if (['empty', 'no_results', 'no_results_found', 'no_reviews_found', 'not_found', 'negative', 'accepted_empty'].includes(status)) {
+    addUnique(evidence.acceptedEmptyRoutes, route);
+    return;
+  }
+
+  if (
+    attempt.ok === false ||
+    attempt.error ||
+    ['failed', 'error', 'blocked', 'timeout', 'rejected'].includes(status)
+  ) {
+    addUnique(evidence.failedRoutes, route);
+  }
+}
+
 function mergeEvidence(target, source = {}) {
   target.queriesAttempted += positiveNumber(source.queriesAttempted, source.queryCount);
   target.queriesExecuted += positiveNumber(source.queriesExecuted);
@@ -364,6 +431,13 @@ function mergeEvidence(target, source = {}) {
   if (source.status) target.statuses.push(source.status);
   if (source.reason) target.reasons.push(source.reason);
   if (source.error) target.errors.push(source.error);
+
+  for (const route of normalizeArray(source.requiredRoutes)) addUnique(target.requiredRoutes, route);
+  for (const route of normalizeArray(source.attemptedRoutes || source.routesAttempted)) addUnique(target.attemptedRoutes, route);
+  for (const route of normalizeArray(source.successfulRoutes || source.acceptedRoutes)) addUnique(target.successfulRoutes, route);
+  for (const route of normalizeArray(source.acceptedEmptyRoutes || source.emptyRoutes)) addUnique(target.acceptedEmptyRoutes, route);
+  for (const route of normalizeArray(source.failedRoutes)) addUnique(target.failedRoutes, route);
+  for (const attempt of collectRouteAttempts(source)) recordRouteAttempt(target, attempt);
 }
 
 function evidenceFromManifest(manifest = {}) {
@@ -374,7 +448,14 @@ function evidenceFromManifest(manifest = {}) {
     pagesAcquired: manifest.pagesAcquired || 0,
     filesDownloaded: manifest.filesDownloaded || 0,
     bytesAcquired: manifest.bytesAcquired || 0,
-    errors: manifest.errors || []
+    errors: manifest.errors || [],
+    routeAttempts: sources
+      .filter(source => source.route || source.provider || source.providerId)
+      .map(source => ({
+        route: source.route || source.provider || source.providerId,
+        status: Number(source.status) >= 200 && Number(source.status) < 400 ? 'accepted' : 'failed',
+        error: source.error || null
+      }))
   };
 }
 
@@ -394,7 +475,13 @@ function collectResearchEvidence(agentStates = [], extraEvidence = {}) {
     commandsRun: 0,
     statuses: [],
     reasons: [],
-    errors: []
+    errors: [],
+    requiredRoutes: [],
+    attemptedRoutes: [],
+    successfulRoutes: [],
+    acceptedEmptyRoutes: [],
+    failedRoutes: [],
+    routeStatuses: []
   };
 
   for (const state of normalizeArray(agentStates)) {
@@ -459,6 +546,40 @@ function evaluateResearchEvidence(contractInput, evidenceInput = {}) {
     evidence.successfulSources +
     evidence.pagesAcquired +
     evidence.filesDownloaded;
+
+  const requiredRoutes = [...new Set([
+    ...(contract.sourceProviderHints || []),
+    ...(evidence.requiredRoutes || [])
+  ])];
+  if (requiredRoutes.length > 0) {
+    const attemptedRoutes = new Set(evidence.attemptedRoutes);
+    const acceptedRoutes = new Set([
+      ...evidence.successfulRoutes,
+      ...evidence.acceptedEmptyRoutes
+    ]);
+    const missingRequiredRoutes = requiredRoutes.filter(route => !attemptedRoutes.has(route));
+    if (missingRequiredRoutes.length > 0) {
+      evidence.missingRequiredRoutes = missingRequiredRoutes;
+      return {
+        passed: false,
+        reasonCode: 'missing_required_source_routes',
+        contract,
+        evidence
+      };
+    }
+
+    const failedRequiredRoutes = requiredRoutes
+      .filter(route => evidence.failedRoutes.includes(route) && !acceptedRoutes.has(route));
+    if (failedRequiredRoutes.length > 0) {
+      evidence.failedRequiredRoutes = failedRequiredRoutes;
+      return {
+        passed: false,
+        reasonCode: 'required_source_route_failed',
+        contract,
+        evidence
+      };
+    }
+  }
 
   if (sourceEvidence < contract.minSuccessfulSources) {
     return { passed: false, reasonCode: 'missing_source_evidence', contract, evidence };

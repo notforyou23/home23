@@ -1838,7 +1838,8 @@ app.post('/api/brain/:name/query', async (req, res) => {
       pgsSweepModel: req.body.pgsSweepModel || null,
       synthesis: req.body.synthesis || null,
       explicitProvider: req.body.provider || null,
-      artifactContext
+      artifactContext,
+      artifactFingerprint: artifactInventory.fingerprint || null
     });
 
     result.query = req.body.query;
@@ -1894,6 +1895,7 @@ app.post('/api/brain/:name/query/stream', async (req, res) => {
       synthesis: req.body.synthesis || null,
       explicitProvider: req.body.provider || null,
       artifactContext,
+      artifactFingerprint: artifactInventory.fingerprint || null,
       onChunk: (event) => {
         res.write(`data: ${JSON.stringify(event)}\n\n`);
       }

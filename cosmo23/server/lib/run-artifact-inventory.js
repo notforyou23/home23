@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 const DEFAULT_MAX_FILES = 1200;
 const DEFAULT_MAX_READ_BYTES = 1024 * 1024;
@@ -173,11 +174,45 @@ function compactFile(file, extra = {}) {
   };
 }
 
+function hashFileForFingerprint(file, maxReadBytes) {
+  try {
+    if (file.size > maxReadBytes) return null;
+    return crypto
+      .createHash('sha256')
+      .update(fs.readFileSync(file.path))
+      .digest('hex')
+      .slice(0, 24);
+  } catch {
+    return null;
+  }
+}
+
+function buildArtifactFingerprint(files, summariesByPath, maxReadBytes) {
+  const entries = files
+    .map(file => {
+      const summary = summariesByPath.get(file.relativePath);
+      return {
+        path: normalizeSlash(file.relativePath),
+        size: file.size,
+        mtimeMs: Math.round(file.mtimeMs || 0),
+        contentHash: hashFileForFingerprint(file, maxReadBytes),
+        summary
+      };
+    })
+    .sort((a, b) => a.path.localeCompare(b.path));
+
+  return crypto
+    .createHash('sha256')
+    .update(JSON.stringify(entries))
+    .digest('hex');
+}
+
 function summarizeRunArtifacts(runPath, options = {}) {
   const inventory = {
     runPath: runPath || null,
     exists: false,
     generatedAt: new Date().toISOString(),
+    fingerprint: null,
     totals: {
       filesScanned: 0,
       outputFiles: 0,
@@ -223,6 +258,7 @@ function summarizeRunArtifacts(runPath, options = {}) {
 
   const files = roots.flatMap(root => listFilesRecursive(root, { base: runPath, maxFiles }));
   inventory.totals.filesScanned = files.length;
+  const summariesByPath = new Map();
 
   for (const file of files) {
     const rel = normalizeSlash(file.relativePath);
@@ -247,6 +283,7 @@ function summarizeRunArtifacts(runPath, options = {}) {
         inventory.invalidFiles.push(compactFile(file, { reason: summary.reason }));
       }
     }
+    summariesByPath.set(rel, summary);
 
     if (rel === 'kv/research_source_index.json' && summary?.valid) {
       inventory.sourceEvidence.sourceIndexUrls = Math.max(
@@ -316,6 +353,7 @@ function summarizeRunArtifacts(runPath, options = {}) {
     inventory.answerSubstrate = 'meta_only';
   }
 
+  inventory.fingerprint = buildArtifactFingerprint(files, summariesByPath, maxReadBytes);
   return inventory;
 }
 
@@ -328,6 +366,7 @@ function buildArtifactFirstContext(inventory) {
     '# Artifact Inventory (authoritative filesystem scan)',
     '',
     `Run path: ${inventory.runPath}`,
+    `Artifact fingerprint: ${inventory.fingerprint || 'missing'}`,
     `Answer substrate: ${inventory.answerSubstrate}`,
     `Files scanned: ${inventory.totals.filesScanned} (${inventory.totals.outputFiles} outputs, ${inventory.totals.exportFiles} exports)`,
     `Source index URLs: ${inventory.sourceEvidence.sourceIndexUrls}`,

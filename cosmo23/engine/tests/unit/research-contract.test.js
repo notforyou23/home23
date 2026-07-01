@@ -247,6 +247,91 @@ describe('ResearchContract', () => {
     expect(result.reasonCode).to.equal('source_evidence_present');
   });
 
+  it('fails when a required source-provider route was never attempted', () => {
+    const contract = deriveResearchContract({
+      metadata: {
+        researchContract: {
+          required: true,
+          mode: 'source_acquisition',
+          minSuccessfulSources: 1,
+          requiredEvidence: ['successful_source_contact'],
+          sourceProviderHints: ['crossref.works']
+        }
+      }
+    });
+
+    const result = evaluateResearchEvidence(contract, {
+      queriesAttempted: 1,
+      queriesExecuted: 1,
+      sourcesFound: 3,
+      successfulSources: 2,
+      routeAttempts: [
+        { route: 'web.search', status: 'accepted', result_count: 3, url_count: 3 }
+      ]
+    });
+
+    expect(result.passed).to.equal(false);
+    expect(result.reasonCode).to.equal('missing_required_source_routes');
+    expect(result.evidence.missingRequiredRoutes).to.deep.equal(['crossref.works']);
+  });
+
+  it('fails when a required source-provider route failed without an accepted receipt', () => {
+    const contract = deriveResearchContract({
+      metadata: {
+        researchContract: {
+          required: true,
+          mode: 'source_acquisition',
+          minSuccessfulSources: 1,
+          requiredEvidence: ['successful_source_contact'],
+          sourceProviderHints: ['crossref.works']
+        }
+      }
+    });
+
+    const result = evaluateResearchEvidence(contract, {
+      queriesAttempted: 2,
+      queriesExecuted: 2,
+      sourcesFound: 2,
+      successfulSources: 2,
+      routeAttempts: [
+        { route: 'web.search', status: 'accepted', result_count: 2, url_count: 2 },
+        { route: 'crossref.works', status: 'failed', error: 'HTTP 500' }
+      ]
+    });
+
+    expect(result.passed).to.equal(false);
+    expect(result.reasonCode).to.equal('required_source_route_failed');
+    expect(result.evidence.failedRequiredRoutes).to.deep.equal(['crossref.works']);
+  });
+
+  it('passes an accepted-empty receipt for a required source-provider route', () => {
+    const contract = deriveResearchContract({
+      metadata: {
+        researchContract: {
+          required: true,
+          mode: 'source_acquisition',
+          minSuccessfulSources: 1,
+          requiredEvidence: ['successful_source_contact'],
+          sourceProviderHints: ['crossref.works']
+        }
+      }
+    });
+
+    const result = evaluateResearchEvidence(contract, {
+      queriesAttempted: 2,
+      queriesExecuted: 2,
+      sourcesFound: 1,
+      successfulSources: 1,
+      routeAttempts: [
+        { route: 'web.search', status: 'accepted', result_count: 1, url_count: 1 },
+        { route: 'crossref.works', status: 'empty', result_count: 0, url_count: 0 }
+      ]
+    });
+
+    expect(result.passed).to.equal(true);
+    expect(result.reasonCode).to.equal('source_evidence_present');
+  });
+
   it('does not treat bytes alone as successful source evidence', () => {
     const contract = deriveResearchContract({
       agentType: 'dataacquisition',

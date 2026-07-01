@@ -75,3 +75,24 @@ test('summarizeRunArtifacts surfaces invalid JSON and meta-only runs', () => wit
   assert.equal(inventory.warnings.includes('raw_anecdotes_missing'), true);
   assert.equal(inventory.warnings.includes('source_route_receipts_missing'), true);
 }));
+
+test('summarizeRunArtifacts fingerprint changes when artifact content changes', () => withTempRun((runPath) => {
+  fs.mkdirSync(path.join(runPath, 'outputs', 'raw-anecdotes'), { recursive: true });
+  const artifactPath = path.join(runPath, 'outputs', 'raw-anecdotes', 'archive-org-comments.json');
+
+  fs.writeFileSync(
+    artifactPath,
+    JSON.stringify({ entries: [{ source_url: 'https://archive.org/details/show', text: 'first account' }] })
+  );
+  const first = summarizeRunArtifacts(runPath);
+
+  fs.writeFileSync(
+    artifactPath,
+    JSON.stringify({ entries: [{ source_url: 'https://archive.org/details/show', text: 'second account' }] })
+  );
+  const second = summarizeRunArtifacts(runPath);
+
+  assert.equal(first.categories.rawAnecdotes.records, 1);
+  assert.equal(second.categories.rawAnecdotes.records, 1);
+  assert.notEqual(first.fingerprint, second.fingerprint);
+}));

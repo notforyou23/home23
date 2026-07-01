@@ -16,6 +16,10 @@ const { MissionTracer } = require('../../scripts/TRACE_RESEARCH_MISSIONS');
 const { getDomainAnchorAsync } = require('../utils/domain-anchor');
 const { getAnthropicApiKey } = require('../services/anthropic-oauth-engine');
 const { normalizeExecutionMode } = require('../../../lib/execution-mode');
+const {
+  summarizeRunArtifacts,
+  buildArtifactFirstContext
+} = require('../../../server/lib/run-artifact-inventory');
 
 /**
  * Phase 2B Dashboard Server
@@ -4902,6 +4906,9 @@ Remember:
           console.log(`[QUERY API] Prior Context: "${priorContext.query?.substring(0, 50)}..."`);
         }
         console.log(`[QUERY API] ========================================\n`);
+
+        const artifactInventory = summarizeRunArtifacts(targetRunDir);
+        const artifactContext = buildArtifactFirstContext(artifactInventory);
         
         // Execute enhanced query
         const result = await runQueryEngine.executeEnhancedQuery(query, {
@@ -4917,13 +4924,16 @@ Remember:
           baseAnswer: baseAnswer || null, // For executive mode compression
           baseMetadata: baseMetadata || null,
           priorContext: priorContext || null, // For follow-up queries
-          enablePGS: enablePGS || false // Partitioned Graph Synthesis
+          enablePGS: enablePGS || false, // Partitioned Graph Synthesis
+          artifactContext,
+          artifactFingerprint: artifactInventory.fingerprint || null
         });
         
         // VERIFICATION: Add run name to result metadata
         result.metadata = result.metadata || {};
         result.metadata.queriedRun = targetRunName;
         result.metadata.queriedDir = targetRunDir;
+        result.artifactInventory = artifactInventory;
         
         // If export requested, do it now
         if (exportFormat && exportFormat !== 'none') {

@@ -384,6 +384,58 @@ describe('PlanExecutor output-contract validation', function() {
     expect(validation.reason).to.include('Research contract failed');
   });
 
+  it('does not pass typed source research when a required route was never attempted', async function() {
+    const outputDir = path.join(tempRoot, 'outputs');
+    const proofDir = path.join(outputDir, 'research', 'agent_crossref');
+    await fs.mkdir(proofDir, { recursive: true });
+    await fs.writeFile(path.join(outputDir, 'sources.json'), JSON.stringify({
+      sources: [{ url: 'https://example.com/article', title: 'Generic web result' }]
+    }, null, 2));
+    await fs.writeFile(path.join(proofDir, 'source_backbone_status.json'), JSON.stringify({
+      can_continue: true,
+      required_routes: ['crossref.works'],
+      productive_sources: 1,
+      productive_source_urls: ['https://example.com/article'],
+      attempts: 1,
+      crossings: 1,
+      failed_routes: []
+    }, null, 2));
+    await fs.writeFile(path.join(proofDir, 'source_attempts.jsonl'), [
+      JSON.stringify({ route: 'web.search', status: 'accepted', result_count: 1, url_count: 1 })
+    ].join('\n'));
+    await fs.writeFile(path.join(proofDir, 'source_crossing.jsonl'), [
+      JSON.stringify({ route: 'web.search', url: 'https://example.com/article', ok: true, status: 200 })
+    ].join('\n'));
+
+    const pe = makeExecutor(outputDir);
+    pe.activeTask = {
+      id: 'task:crossref-route',
+      title: 'Acquire Crossref publication metadata',
+      description: 'Use Crossref DOI metadata and save cited source_url evidence.',
+      acceptanceCriteria: [],
+      producedArtifacts: [
+        { path: 'sources.json', workspacePath: 'outputs/sources.json' },
+        { path: 'research/agent_crossref/source_backbone_status.json', workspacePath: 'outputs/research/agent_crossref/source_backbone_status.json' },
+        { path: 'research/agent_crossref/source_attempts.jsonl', workspacePath: 'outputs/research/agent_crossref/source_attempts.jsonl' },
+        { path: 'research/agent_crossref/source_crossing.jsonl', workspacePath: 'outputs/research/agent_crossref/source_crossing.jsonl' }
+      ],
+      metadata: {
+        researchContract: {
+          required: true,
+          mode: 'source_acquisition',
+          minSuccessfulSources: 1,
+          requiredEvidence: ['successful_source_contact'],
+          sourceProviderHints: ['crossref.works']
+        }
+      }
+    };
+
+    const validation = await pe.validateTaskOutput([]);
+    expect(validation.passed).to.equal(false);
+    expect(validation.reason).to.include('missing_required_source_routes');
+    expect(validation.researchEvidence.missingRequiredRoutes).to.deep.equal(['crossref.works']);
+  });
+
   it('passes a source-required task when source evidence exists and expected file is present', async function() {
     const outputDir = path.join(tempRoot, 'outputs');
     await fs.mkdir(path.join(outputDir, 'raw-anecdotes'), { recursive: true });
