@@ -479,7 +479,8 @@ describe('ResearchAgent handoff generation', () => {
       },
       {
         models: { enableWebSearch: true },
-        search: { supplementProviderNative: true }
+        search: { supplementProviderNative: true },
+        sourceProviders: { enabled: false }
       },
       logger
     );
@@ -542,7 +543,8 @@ describe('ResearchAgent handoff generation', () => {
       },
       {
         models: { enableWebSearch: true },
-        search: { supplementProviderNative: true }
+        search: { supplementProviderNative: true },
+        sourceProviders: { enabled: false }
       },
       logger
     );
@@ -601,7 +603,8 @@ describe('ResearchAgent handoff generation', () => {
       },
       {
         models: { enableWebSearch: true },
-        search: { supplementProviderNative: true }
+        search: { supplementProviderNative: true },
+        sourceProviders: { enabled: false }
       },
       logger
     );
@@ -711,6 +714,149 @@ describe('ResearchAgent handoff generation', () => {
     const providerEvidence = agent.searchEvidence.find(entry => entry.backend === 'archive.advancedsearch');
     expect(providerEvidence.quality.acceptable).to.equal(true);
     expect(providerEvidence.sourceValidation[0].contentHash).to.equal('hash123');
+  });
+
+  it('exports Archive.org review outputs as extracted records with route receipts', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cosmo-research-agent-archive-'));
+    const outputsRoot = path.join(tempDir, 'outputs');
+    const identifiers = [
+      'legion-of-mary-the-bottom-line-nyc-1975',
+      'legion-of-mary-oriental-theatre-wi-1975-wzmf'
+    ];
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-archive-comments',
+        description: `Fetch Archive.org reviews for identifiers: ${identifiers.join(', ')}. Required expectedOutput @outputs/raw-anecdotes/archive-org-comments.json.`,
+        expectedOutput: '@outputs/raw-anecdotes/archive-org-comments.json',
+        successCriteria: ['Route receipts must include archive.metadata and archive.reviews']
+      },
+      {
+        logsDir: tempDir,
+        models: { enableWebSearch: true }
+      },
+      logger
+    );
+
+    agent.searchQueries = [`Fetch Archive.org reviews for identifiers: ${identifiers.join(', ')}`];
+    agent.sourcesFound = [
+      `https://archive.org/details/${identifiers[0]}#reviews`,
+      `https://archive.org/details/${identifiers[1]}`
+    ];
+    agent.searchEvidence = [
+      {
+        timestamp: '2026-06-30T00:00:00.000Z',
+        query: agent.searchQueries[0],
+        executedQuery: agent.searchQueries[0],
+        backend: 'archive.metadata',
+        resultCount: 2,
+        urls: identifiers.map(id => `https://archive.org/details/${id}`),
+        quality: { acceptable: true, reason: 'typed_source_candidates_found' },
+        sourceValidation: identifiers.map(id => ({ url: `https://archive.org/details/${id}`, ok: true, status: 'metadata_only' })),
+        results: [
+          {
+            title: identifiers[0],
+            url: `https://archive.org/details/${identifiers[0]}`,
+            sourceType: 'archive_metadata',
+            metadata: { identifier: identifiers[0], reviews: 1 },
+            raw: { metadata: { identifier: identifiers[0] }, reviews: [{}] }
+          },
+          {
+            title: identifiers[1],
+            url: `https://archive.org/details/${identifiers[1]}`,
+            sourceType: 'archive_metadata',
+            metadata: { identifier: identifiers[1], reviews: 0 },
+            raw: { metadata: { identifier: identifiers[1] }, reviews: [] }
+          }
+        ]
+      },
+      {
+        timestamp: '2026-06-30T00:00:01.000Z',
+        query: agent.searchQueries[0],
+        executedQuery: agent.searchQueries[0],
+        backend: 'archive.reviews',
+        resultCount: 1,
+        urls: [`https://archive.org/details/${identifiers[0]}#reviews`],
+        quality: { acceptable: true, reason: 'typed_source_candidates_found' },
+        sourceValidation: [{ url: `https://archive.org/details/${identifiers[0]}#reviews`, ok: true, status: 'metadata_only' }],
+        results: [{
+          title: 'Great night',
+          url: `https://archive.org/details/${identifiers[0]}#reviews`,
+          snippet: 'A first-person listener memory from the Archive review.',
+          sourceType: 'archive_review',
+          metadata: {
+            identifier: identifiers[0],
+            reviewId: 'review-1',
+            reviewer: 'listener',
+            createdAt: '2026-01-02'
+          },
+          raw: {
+            review_id: 'review-1',
+            reviewer: 'listener',
+            title: 'Great night',
+            body: 'A first-person listener memory from the Archive review.',
+            createdate: '2026-01-02'
+          }
+        }]
+      },
+      {
+        timestamp: '2026-06-30T00:00:02.000Z',
+        query: 'generic archive metadata reviews API endpoint identifier',
+        executedQuery: 'generic archive metadata reviews API endpoint identifier',
+        backend: 'archive.metadata',
+        resultCount: 2,
+        urls: [
+          `https://archive.org/details/${identifiers[0]}`,
+          'https://archive.org/details/unrelated-archive-identifier-2026'
+        ],
+        quality: { acceptable: false, reason: 'results_do_not_match_query_terms' },
+        sourceValidation: [],
+        results: [
+          {
+            title: identifiers[0],
+            url: `https://archive.org/details/${identifiers[0]}`,
+            sourceType: 'archive_metadata',
+            metadata: { identifier: identifiers[0], reviews: 0 },
+            raw: { metadata: { identifier: identifiers[0] }, reviews: [] }
+          },
+          {
+            title: 'unrelated-archive-identifier-2026',
+            url: 'https://archive.org/details/unrelated-archive-identifier-2026',
+            sourceType: 'archive_metadata',
+            metadata: { identifier: 'unrelated-archive-identifier-2026', reviews: 0 },
+            raw: { metadata: { identifier: 'unrelated-archive-identifier-2026' }, reviews: [] }
+          }
+        ]
+      }
+    ];
+
+    await agent.exportResearchCorpus(
+      {
+        summary: 'Archive review extraction complete.',
+        findings: ['One Archive review record was extracted.'],
+        successAssessment: 'Complete'
+      },
+      []
+    );
+
+    const rawPath = path.join(outputsRoot, 'raw-anecdotes', 'archive-org-comments.json');
+    const data = JSON.parse(await fs.readFile(rawPath, 'utf8'));
+
+    expect(data.entries).to.have.length(1);
+    expect(data.entries[0]).to.include({
+      identifier: identifiers[0],
+      source_type: 'archive_review',
+      review_id: 'review-1',
+      route: 'archive.reviews'
+    });
+    expect(data.entries[0].review_body).to.include('first-person listener memory');
+    expect(data.required_identifiers).to.deep.equal(identifiers);
+    expect(data.identifier_statuses.map(item => item.identifier)).to.deep.equal(identifiers);
+    expect(data.identifier_statuses.find(item => item.identifier === identifiers[0]).metadata_route).to.equal('accepted');
+    expect(data.identifier_statuses.find(item => item.identifier === identifiers[0]).review_route).to.equal('accepted');
+    expect(data.identifier_statuses.find(item => item.identifier === identifiers[0]).status).to.equal('reviews_extracted');
+    expect(data.identifier_statuses.find(item => item.identifier === identifiers[1]).metadata_route).to.equal('accepted');
+    expect(data.identifier_statuses.find(item => item.identifier === identifiers[1]).status).to.equal('no_reviews_found');
+    expect(data.route_receipts.attempts.map(item => item.route)).to.include.members(['archive.metadata', 'archive.reviews']);
   });
 
   it('uses typed source providers in local-search mode instead of returning before the registry', async () => {

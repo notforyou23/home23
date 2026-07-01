@@ -424,6 +424,10 @@ class PlanExecutor {
     if (!this.activeTask) {
       const nextTask = await this.findNextTask();
       if (nextTask) {
+        const assignedTaskAction = await this.handlePendingAssignedTask(nextTask);
+        if (assignedTaskAction) {
+          return assignedTaskAction;
+        }
         return await this.startTask(nextTask);
       }
       return null; // No tasks ready (deps not met)
@@ -435,6 +439,72 @@ class PlanExecutor {
     }
     
     return null; // Task is being worked on
+  }
+
+  isTaskAssigned(task) {
+    return !!task?.assignedAgentId && task.assignedAgentId !== 'PENDING_SPAWN';
+  }
+
+  async handlePendingAssignedTask(task) {
+    if (!this.isTaskAssigned(task)) return null;
+
+    const previousActiveTask = this.activeTask;
+    this.activeTask = task;
+
+    try {
+      const validation = await this.validateTaskOutput([]);
+      if (validation.passed && validation.artifacts.length > 0) {
+        this.logger.info('[PlanExecutor] Completing pending assigned task from verified artifacts', {
+          taskId: task.id,
+          assignedAgentId: task.assignedAgentId,
+          artifacts: validation.artifacts.length
+        });
+        return await this.completeTask(task, validation.artifacts);
+      }
+
+      const registry = this.agentExecutor?.registry;
+      if (registry?.getTaskAgentStatus) {
+        const taskStatus = registry.getTaskAgentStatus(task.id, this.getTaskAgentScope(task));
+
+        if (taskStatus.hasAccomplishedWork && !taskStatus.hasActiveAgent) {
+          this.logger.info('[PlanExecutor] Completing pending assigned task from completed agent', {
+            taskId: task.id,
+            assignedAgentId: task.assignedAgentId,
+            accomplishedAgents: taskStatus.allAccomplished.map(a => (a.agent || a).agentId)
+          });
+          return await this.handleAgentComplete(taskStatus.allAccomplished);
+        }
+
+        if (taskStatus.hasCompletedWork && !taskStatus.hasAccomplishedWork && !taskStatus.hasActiveAgent) {
+          const unaccomplished = taskStatus.allCompleted.filter(a => {
+            const agent = a.agent || a;
+            return agent.accomplishment?.accomplished !== true;
+          });
+          if (unaccomplished.length > 0) {
+            return await this.handleAgentUnaccomplished(unaccomplished);
+          }
+        }
+
+        if (taskStatus.allFailed && taskStatus.allFailed.length > 0) {
+          return await this.handleAgentFailed(taskStatus.allFailed[taskStatus.allFailed.length - 1]);
+        }
+      }
+
+      const assignedAt = Number(task.agentAssignedAt || task.updatedAt || task.createdAt || 0);
+      if (assignedAt && Date.now() - assignedAt > this.agentTimeout) {
+        return await this.retryTask(task);
+      }
+
+      return this.record({
+        action: 'WAITING_ASSIGNED_TASK_RESULT',
+        taskId: task.id,
+        taskTitle: task.title,
+        assignedAgentId: task.assignedAgentId,
+        reason: validation.reason || 'assigned agent result not yet verified'
+      });
+    } finally {
+      this.activeTask = previousActiveTask;
+    }
   }
 
   async findNextTask() {

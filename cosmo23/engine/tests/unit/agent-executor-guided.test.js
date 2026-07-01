@@ -58,6 +58,62 @@ describe('AgentExecutor guided follow-up and source indexing', () => {
     expect(addedGoals[0].source).to.equal('guided_follow_up_from_agent-1');
   });
 
+  it('suppresses handoff spawning and follow-up goals for guided-exclusive missions', async () => {
+    let queuedMessages = 0;
+    let followUpCalled = 0;
+    const executor = new AgentExecutor(
+      {
+        memory: null,
+        goals: {
+          updateGoalProgress: () => {},
+          getGoals: () => [],
+          archiveGoal: () => true
+        }
+      },
+      { logsDir: '.' },
+      logger
+    );
+
+    executor.messageQueue.push = async () => {
+      queuedMessages++;
+    };
+    executor.registerTaskArtifactsFromAgentRun = async () => {};
+    executor.createSemanticRelationships = async () => {};
+    executor.indexProcessedSourceUrls = async () => {};
+    executor.createFollowUpGoals = async () => {
+      followUpCalled++;
+    };
+    executor.updateReviewPipelineArtifacts = async () => {};
+
+    await executor.integrateResults({
+      agentId: 'agent-guided',
+      agentType: 'ResearchAgent',
+      status: 'completed',
+      mission: {
+        goalId: 'goal-guided',
+        taskId: 'task:phase1',
+        metadata: {
+          effectiveExecutionMode: 'guided-exclusive'
+        }
+      },
+      results: [
+        {
+          type: 'finding',
+          content: 'Source records extracted.',
+          followUp: ['Synthesize the findings in a separate agent.']
+        }
+      ],
+      handoffSpec: {
+        type: 'HANDOFF',
+        toAgentType: 'synthesis',
+        reason: 'Synthesize the records.'
+      }
+    });
+
+    expect(queuedMessages).to.equal(0);
+    expect(followUpCalled).to.equal(0);
+  });
+
   it('indexes processed source urls from results, metadata, and handoffs', async () => {
     let storedValue = null;
     const store = {

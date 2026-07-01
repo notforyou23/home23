@@ -682,6 +682,7 @@ Respond with JSON array of query strings:
     const acquisition = await registry.acquire(query, {
       providers: providerIds,
       maxResults: this.config?.sourceProviders?.maxResults || 5,
+      identifiers: this.extractRequiredArchiveIdentifiers(query, registry),
       sourceRequired,
       mission: this.mission,
       allowDuckDuckGoFallback: !sourceRequired
@@ -773,6 +774,26 @@ Respond with JSON array of query strings:
     return [...providerIds].filter(id => !knownProviders || knownProviders.has(id));
   }
 
+  extractRequiredArchiveIdentifiers(query, registry = null) {
+    const sourceRegistry = registry || this.getSourceProviderRegistry();
+    if (!sourceRegistry || typeof sourceRegistry.extractArchiveIdentifiers !== 'function') {
+      return [];
+    }
+
+    const text = [
+      query,
+      this.mission?.description,
+      this.mission?.mission,
+      this.mission?.expectedOutput,
+      this.mission?.metadata?.expectedOutput,
+      this.mission?.sourceScope,
+      this.mission?.metadata?.sourceScope,
+      ...(this.mission?.successCriteria || [])
+    ].filter(Boolean).join('\n');
+
+    return sourceRegistry.extractArchiveIdentifiers(text);
+  }
+
   recordTypedSourceProviderEvidence(query, acquisition, sourceValidation = []) {
     const candidates = acquisition.candidates || [];
     const validationByUrl = new Map(sourceValidation.map(item => [item.url, item]));
@@ -812,7 +833,8 @@ Respond with JSON array of query strings:
           snippet: candidate.snippet || '',
           engine: candidate.provider || attempt.route || 'source-provider',
           sourceType: candidate.sourceType || null,
-          metadata: candidate.metadata || {}
+          metadata: candidate.metadata || {},
+          raw: candidate.raw || null
         })),
         providerAttempt: attempt
       });
@@ -2279,20 +2301,22 @@ Respond with JSON array of follow-up directions:
 
         let content;
         if (requested.toLowerCase().endsWith('.json')) {
-          const rawData = {
-            agentId: this.agentId,
-            goalId: this.mission.goalId,
-            mission: this.mission.description,
-            timestamp: new Date().toISOString(),
-            queries: this.searchQueries,
-            sources: this.sourcesFound,
-            searchEvidence: this.searchEvidence,
-            synthesis: {
-              summary: synthesis.summary,
-              findings: synthesis.findings,
-              successAssessment: synthesis.successAssessment
-            }
-          };
+          const rawData = /archive-org-comments\.json$/i.test(requested)
+            ? this.buildArchiveOrgCommentsOutput(synthesis)
+            : {
+                agentId: this.agentId,
+                goalId: this.mission.goalId,
+                mission: this.mission.description,
+                timestamp: new Date().toISOString(),
+                queries: this.searchQueries,
+                sources: this.sourcesFound,
+                searchEvidence: this.searchEvidence,
+                synthesis: {
+                  summary: synthesis.summary,
+                  findings: synthesis.findings,
+                  successAssessment: synthesis.successAssessment
+                }
+              };
           content = JSON.stringify(rawData, null, 2);
         } else {
           content = this.buildRequestedResearchMarkdown(synthesis);
@@ -2432,6 +2456,7 @@ Respond with JSON array of follow-up directions:
 
   buildSourceBackboneReceipts(synthesis, searchResults, filesCreated = []) {
     const evidence = Array.isArray(this.searchEvidence) ? this.searchEvidence : [];
+    const archiveIdentifiers = this.extractRequiredArchiveIdentifiers('');
     const plannedQueries = [...new Set((this.searchQueries || []).filter(Boolean))];
     const executedQueries = [...new Set(evidence
       .map(item => item.executedQuery || item.query)
@@ -2519,6 +2544,9 @@ Respond with JSON array of follow-up directions:
         mission: this.mission.description,
         goal_id: this.mission.goalId,
         can_continue: canContinue,
+        required_routes: this.getRequiredSourceRoutes(),
+        required_identifiers: archiveIdentifiers,
+        extracted_record_count: this.buildArchiveReviewEntries().length,
         productive_sources: productiveSources.length,
         productive_source_urls: productiveSources.slice(0, 50),
         failed_routes: failedRoutes,
@@ -2556,6 +2584,143 @@ Respond with JSON array of follow-up directions:
       anecdote_text: typeof finding === 'string' ? finding : JSON.stringify(finding),
       rejection_reason: productiveSources.length > 0 ? null : 'no_validated_source_for_finding'
     }));
+  }
+
+  getRequiredSourceRoutes() {
+    const contract = deriveResearchContract(this.mission || {});
+    const routes = new Set(contract.sourceProviderHints || []);
+    if (contract.reasonCodes?.includes('archive_research')) {
+      routes.add('archive.metadata');
+      routes.add('archive.reviews');
+    }
+    return [...routes];
+  }
+
+  buildArchiveReviewEntries(requiredIdentifiers = []) {
+    const entries = [];
+    const seen = new Set();
+    const requiredSet = new Set((requiredIdentifiers || []).filter(Boolean));
+    for (const evidence of this.searchEvidence || []) {
+      for (const result of evidence.results || []) {
+        if (result.sourceType !== 'archive_review' && result.engine !== 'archive.reviews') continue;
+        const metadata = result.metadata || {};
+        const raw = result.raw || {};
+        const body = raw.body || raw.reviewbody || result.snippet || '';
+        const identifier = metadata.identifier || raw.identifier || null;
+        if (requiredSet.size > 0 && !requiredSet.has(identifier)) continue;
+        const reviewId = metadata.reviewId || raw.review_id || raw.id || raw.createdate || null;
+        const key = [identifier, reviewId, result.url, body.slice(0, 80)].join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        entries.push({
+          identifier,
+          source_type: 'archive_review',
+          source_url: result.url,
+          review_id: reviewId,
+          reviewer: metadata.reviewer || raw.reviewer || raw.reviewer_itemname || null,
+          created_at: metadata.createdAt || raw.createdate || null,
+          review_title: raw.title || result.title || null,
+          review_body: body,
+          route: evidence.backend || result.engine || 'archive.reviews',
+          content_hash: crypto.createHash('sha256').update(body || JSON.stringify(raw)).digest('hex')
+        });
+      }
+    }
+    return entries;
+  }
+
+  buildArchiveIdentifierStatuses(requiredIdentifiers = []) {
+    const requiredSet = new Set((requiredIdentifiers || []).filter(Boolean));
+    const statuses = new Map(requiredIdentifiers.map(identifier => [identifier, {
+      identifier,
+      status: 'not_attempted',
+      metadata_route: 'missing',
+      review_route: 'missing',
+      source_url: `https://archive.org/details/${encodeURIComponent(identifier)}`
+    }]));
+
+    for (const evidence of this.searchEvidence || []) {
+      const route = evidence.backend || 'unknown';
+      for (const result of evidence.results || []) {
+        const identifier = result.metadata?.identifier;
+        if (!identifier) continue;
+        if (requiredSet.size > 0 && !requiredSet.has(identifier)) continue;
+        const current = statuses.get(identifier) || {
+          identifier,
+          status: 'observed',
+          metadata_route: 'missing',
+          review_route: 'missing',
+          source_url: `https://archive.org/details/${encodeURIComponent(identifier)}`
+        };
+        const routeAccepted = evidence.quality?.acceptable === true || (
+          !evidence.error &&
+          (route === 'archive.metadata' ||
+            route === 'archive.reviews' ||
+            result.sourceType === 'archive_metadata' ||
+            result.sourceType === 'archive_review')
+        );
+
+        if (route === 'archive.metadata' || result.sourceType === 'archive_metadata') {
+          if (current.metadata_route !== 'accepted') {
+            current.metadata_route = routeAccepted ? 'accepted' : 'rejected';
+          }
+          const reportedReviews = result.metadata?.reviews;
+          if (reportedReviews != null && (current.review_count_reported == null || Number(reportedReviews) > 0)) {
+            current.review_count_reported = reportedReviews;
+          } else if (current.review_count_reported == null) {
+            current.review_count_reported = null;
+          }
+          if (current.status !== 'reviews_extracted') {
+            current.status = Number(current.review_count_reported || 0) > 0 ? 'reviews_reported' : 'no_reviews_found';
+          }
+        }
+        if (route === 'archive.reviews' || result.sourceType === 'archive_review') {
+          if (current.review_route !== 'accepted') {
+            current.review_route = routeAccepted ? 'accepted' : 'rejected';
+          }
+          current.status = 'reviews_extracted';
+        }
+        statuses.set(identifier, current);
+      }
+    }
+
+    return [...statuses.values()];
+  }
+
+  buildArchiveOrgCommentsOutput(synthesis) {
+    const requiredIdentifiers = this.extractRequiredArchiveIdentifiers('');
+    const entries = this.buildArchiveReviewEntries(requiredIdentifiers);
+    const routeReceipts = this.buildSourceBackboneReceipts(synthesis, [], []);
+    const identifierStatuses = this.buildArchiveIdentifierStatuses(requiredIdentifiers);
+    const urlsSearched = [...new Set([
+      ...identifierStatuses.map(item => item.source_url).filter(Boolean),
+      ...(this.sourcesFound || [])
+    ])];
+
+    return {
+      agentId: this.agentId,
+      goalId: this.mission.goalId,
+      mission: this.mission.description,
+      timestamp: new Date().toISOString(),
+      status: entries.length > 0 ? 'records_extracted' : 'no_reviews_found',
+      required_identifiers: requiredIdentifiers,
+      identifier_statuses: identifierStatuses,
+      entries,
+      urls_searched: urlsSearched,
+      route_receipts: {
+        required_routes: this.getRequiredSourceRoutes(),
+        attempts: routeReceipts.attempts,
+        crossings: routeReceipts.crossings,
+        productive_source_urls: routeReceipts.status.productive_source_urls,
+        failed_routes: routeReceipts.status.failed_routes,
+        next_allowed_action: routeReceipts.status.next_allowed_action
+      },
+      synthesis: {
+        summary: synthesis?.summary || '',
+        findings: synthesis?.findings || [],
+        successAssessment: synthesis?.successAssessment || null
+      }
+    };
   }
 
   toJsonl(rows = []) {

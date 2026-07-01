@@ -88,7 +88,13 @@ if (process.env.COSMO_TUI !== 'false' && process.env.COSMO_TUI_SPLIT === 'true')
  * Wait for specific planning agents to complete before starting cognitive loop
  */
 async function waitForPlanningAgents(agentExecutor, agentIds, options = {}) {
-  const { timeoutMs = 300000, logger } = options;
+  const {
+    timeoutMs = 300000,
+    logger,
+    taskStateQueue = null,
+    clusterStateStore = null,
+    orchestrator = null
+  } = options;
   const startTime = Date.now();
 
   logger.info(`⏳ Waiting for ${agentIds.length} planning agents to complete...`, {
@@ -109,11 +115,15 @@ async function waitForPlanningAgents(agentExecutor, agentIds, options = {}) {
     // Process any completed results to update the queue
     await agentExecutor.processCompletedResults();
 
-    // Check if our agents have completed
-    const pendingResults = agentExecutor.resultsQueue.getPending();
-    const completedIds = pendingResults
-      .filter(result => agentIds.includes(result.agentId))
-      .map(result => result.agentId);
+    // Agent result integration can enqueue task-state events. Flush them here
+    // because the main orchestrator cycle has not started yet during startup wait.
+    if (taskStateQueue && clusterStateStore) {
+      await taskStateQueue.processAll(clusterStateStore, orchestrator);
+    }
+
+    // Check terminal state after processing. Results leave the pending queue
+    // once integrated, so completion must be read from registry/history.
+    const completedIds = agentIds.filter((agentId) => isPlanningAgentTerminal(agentExecutor, agentId));
 
     // Remove completed agents from wait list
     const remainingBefore = agentIds.length;
@@ -160,6 +170,32 @@ async function waitForPlanningAgents(agentExecutor, agentIds, options = {}) {
       });
     }
   }
+}
+
+function isPlanningAgentTerminal(agentExecutor, agentId) {
+  if (!agentExecutor || !agentId) return false;
+
+  const registryState = agentExecutor.registry?.getAgentIncludingCompleted
+    ? agentExecutor.registry.getAgentIncludingCompleted(agentId)
+    : agentExecutor.registry?.getAgent?.(agentId);
+  if (registryState && ['completed', 'failed', 'timeout'].includes(registryState.status)) {
+    return true;
+  }
+
+  const history = Array.isArray(agentExecutor.resultsQueue?.history)
+    ? agentExecutor.resultsQueue.history
+    : [];
+  if (history.some(result => result.agentId === agentId && (result.integrated || result.processed))) {
+    return true;
+  }
+
+  const activeQueue = Array.isArray(agentExecutor.resultsQueue?.queue)
+    ? agentExecutor.resultsQueue.queue
+    : [];
+  return activeQueue.some(result =>
+    result.agentId === agentId &&
+    (result.integrated || result.processed || ['completed', 'failed', 'timeout'].includes(result.status))
+  );
 }
 
 async function main() {
@@ -766,7 +802,10 @@ async function main() {
       if (planningAgentIds && planningAgentIds.length > 0) {
         await waitForPlanningAgents(agentExecutor, planningAgentIds, {
           timeoutMs: 300000, // 5 minutes
-          logger
+          logger,
+          taskStateQueue: orchestrator.taskStateQueue,
+          clusterStateStore: orchestrator.clusterStateStore,
+          orchestrator
         });
       }
 
@@ -1145,6 +1184,8 @@ async function stopOrchestratorContext(context) {
 module.exports = {
   createOrchestratorContext,
   stopOrchestratorContext,
+  waitForPlanningAgents,
+  isPlanningAgentTerminal,
   // Export classes for custom usage
   Orchestrator,
   ConfigLoader,

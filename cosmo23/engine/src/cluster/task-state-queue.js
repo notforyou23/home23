@@ -249,6 +249,7 @@ class TaskStateQueue {
     }
 
     await stateStore.completeTask(event.taskId, closure);
+    await this.advancePlanAfterTaskCompletion(task, stateStore, orchestrator);
         
     // Update progress spine if orchestrator available
     if (orchestrator?.recordPlanEvent) {
@@ -261,6 +262,98 @@ class TaskStateQueue {
       });
     }
     return true;
+  }
+
+  async advancePlanAfterTaskCompletion(task, stateStore, orchestrator) {
+    if (!task?.planId || !task?.milestoneId) return false;
+    if (
+      typeof stateStore?.listTasks !== 'function' ||
+      typeof stateStore?.listMilestones !== 'function' ||
+      typeof stateStore?.upsertMilestone !== 'function'
+    ) {
+      return false;
+    }
+
+    try {
+      const [tasks, milestones] = await Promise.all([
+        stateStore.listTasks(task.planId),
+        stateStore.listMilestones(task.planId)
+      ]);
+
+      const milestone = milestones.find(item => item.id === task.milestoneId);
+      if (!milestone || milestone.status === 'COMPLETED') return false;
+
+      const phaseTasks = tasks.filter(item => item.milestoneId === task.milestoneId);
+      const phaseComplete = phaseTasks.length > 0 && phaseTasks.every(item =>
+        item.state === 'DONE' || item.id === task.id
+      );
+
+      if (!phaseComplete) return false;
+
+      const completedAt = Date.now();
+      await stateStore.upsertMilestone({
+        ...milestone,
+        status: 'COMPLETED',
+        completedAt
+      });
+
+      const nextMilestone = milestones
+        .filter(item => item.order > milestone.order && item.status === 'LOCKED')
+        .sort((a, b) => a.order - b.order)[0];
+
+      if (nextMilestone) {
+        await stateStore.upsertMilestone({
+          ...nextMilestone,
+          status: 'ACTIVE',
+          activatedAt: completedAt
+        });
+
+        if (typeof stateStore.updatePlan === 'function') {
+          await stateStore.updatePlan(task.planId, {
+            activeMilestone: nextMilestone.id
+          });
+        }
+
+        if (orchestrator?.recordPlanEvent) {
+          orchestrator.recordPlanEvent('phase_advanced', {
+            phaseNumber: milestone.order,
+            phaseName: milestone.title,
+            description: `Phase ${milestone.order} complete; activated phase ${nextMilestone.order}`,
+            nextPhaseName: nextMilestone.title
+          });
+        }
+        return true;
+      }
+
+      const updatedMilestones = milestones.map(item =>
+        item.id === milestone.id ? { ...item, status: 'COMPLETED' } : item
+      );
+      const allMilestonesDone = updatedMilestones.length > 0 &&
+        updatedMilestones.every(item => item.status === 'COMPLETED');
+
+      if (allMilestonesDone && typeof stateStore.updatePlan === 'function') {
+        await stateStore.updatePlan(task.planId, {
+          status: 'COMPLETED',
+          completedAt
+        });
+
+        if (orchestrator?.recordPlanEvent) {
+          orchestrator.recordPlanEvent('plan_completed', {
+            planId: task.planId,
+            description: `Plan complete after ${milestone.title}`
+          });
+        }
+      }
+
+      return true;
+    } catch (error) {
+      this.logger.warn('Task completion succeeded but phase advancement failed', {
+        taskId: task.id,
+        milestoneId: task.milestoneId,
+        error: error.message
+      });
+      return false;
+    }
   }
 
   /**

@@ -33,6 +33,11 @@ const { PGSEngine } = require('../../../lib/pgs-engine');
 const { QueryEngine } = require('../../../lib/query-engine');
 const { deriveResearchContract } = require('./research-contract');
 
+function normalizeList(value) {
+  if (!value) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
 class GuidedModePlanner {
   constructor(config, subsystems, logger) {
     this.config = config;
@@ -245,6 +250,7 @@ class GuidedModePlanner {
     
     // NEW: Parse structured task phases from context
     const taskPhases = this.parseTaskPhases(guidedFocus.context);
+    const hasExplicitTaskPhases = taskPhases.some(phase => phase.source === 'explicit_phase');
     
     if (taskPhases.length > 0) {
       this.logger?.info(`📋 Detected ${taskPhases.length} structured task phases`);
@@ -261,6 +267,13 @@ class GuidedModePlanner {
     }
     
     const planningContext = await this.buildPlanningContext(guidedFocus, { contextRedirect });
+    planningContext.taskPhases = taskPhases;
+    if (hasExplicitTaskPhases) {
+      planningContext.explicitTaskPlan = true;
+      planningContext.hasContext = false;
+      planningContext.threadAnchor = null;
+      planningContext.researchDigest = this.buildResearchDigest(planningContext);
+    }
     // If context changed, override hasContext so the planner treats this as fresh
     if (contextRedirect) {
       planningContext.contextRedirect = true;
@@ -427,12 +440,18 @@ class GuidedModePlanner {
           'specialized_binary'
         ];
         const missionType = correspondingMission?.type || correspondingMission?.agentType;
-        const agentType = (missionType && VALID_AGENT_TYPES.includes(missionType))
-          ? missionType
-          : this.determineAgentTypeForPhase(phase);
+        const localArtifactPhase = this.isLocalArtifactValidationPhase(phase);
+        let agentType = this.determineAgentTypeForPhase(phase);
+        if (!localArtifactPhase && missionType && VALID_AGENT_TYPES.includes(missionType)) {
+          agentType = missionType;
+        }
         const sourceScope = correspondingMission?.sourceScope || correspondingMission?.metadata?.sourceScope || null;
-        const artifactInputs = correspondingMission?.artifactInputs || correspondingMission?.metadata?.artifactInputs || [];
-        const expectedOutput = correspondingMission?.expectedOutput || correspondingMission?.metadata?.expectedOutput || null;
+        const phaseArtifactInputs = this.getPhaseArtifactInputs(phase);
+        const artifactInputs = phaseArtifactInputs.length > 0
+          ? phaseArtifactInputs
+          : (correspondingMission?.artifactInputs || correspondingMission?.metadata?.artifactInputs || []);
+        const phaseExpectedOutput = this.getPhaseExpectedOutput(phase);
+        const expectedOutput = phaseExpectedOutput || correspondingMission?.expectedOutput || correspondingMission?.metadata?.expectedOutput || null;
         // HOME23 PATCH — Patch 28: source obligations become task metadata.
         const researchContract = deriveResearchContract({
           ...phase,
@@ -454,7 +473,7 @@ class GuidedModePlanner {
           planId: guidedPlan.id,
           milestoneId: milestones[idx].id,
           title: phase.name,
-          description: phase.description || guidedFocus.context,
+          description: phase.rawText || phase.description || guidedFocus.context,
           tags: [guidedFocus.domain, 'guided', 'sequential'],
           deps: idx > 0 ? [`task:phase${idx}`] : [], // Sequential dependency
           priority: 10, // High priority for guided tasks
@@ -479,8 +498,14 @@ class GuidedModePlanner {
         };
       });
       
-      // NEW: Add synthesis task if deliverable requires assembly
-      const needsSynthesis = this.deliverableRequiresSynthesis(plan.deliverable, phasesToUse);
+      // NEW: Add synthesis task if deliverable requires assembly.
+      // If the user supplied an explicit final deliverable phase, that phase is
+      // the synthesis contract; adding task:synthesis_final creates duplicate
+      // work and lets the run drift away from the requested execution plan.
+      const explicitFinalDeliverablePhase = this.hasExplicitFinalDeliverablePhase(phasesToUse);
+      const needsSynthesis =
+        !explicitFinalDeliverablePhase &&
+        this.deliverableRequiresSynthesis(plan.deliverable, phasesToUse);
       
       // ✅ FIX P1.3: Check if synthesis task already exists before creating
       // Prevents synthesis loop when plans are re-injected
@@ -772,7 +797,20 @@ class GuidedModePlanner {
    * @returns {string} - 'research' or 'ide'
    */
   determineAgentTypeForPhase(phase) {
-    const text = `${phase.name} ${phase.description || ''}`.toLowerCase();
+    const text = `${phase.name} ${phase.rawText || phase.description || ''} ${(phase.deliverables || []).join(' ')}`.toLowerCase();
+
+    if (this.isLocalArtifactValidationPhase(phase)) {
+      return 'ide';
+    }
+
+    if (
+      text.includes('typed source provider') ||
+      text.includes('archive.metadata') ||
+      text.includes('archive.reviews') ||
+      text.includes('source provider acquisition')
+    ) {
+      return 'research';
+    }
 
     // Execution agent type detection (before research/ide fallback)
     const needsDataAcquisition = text.includes('scrape') || text.includes('crawl') || text.includes('download data');
@@ -1702,7 +1740,8 @@ ${JSON.stringify(deterministic.scores || {})}`
       ...(planningContext.reviewGaps || []),
       ...(planningContext.activeGoals || []),
       planningContext.knowledgeAssessment?.answer || '',
-      guidedFocus.context || ''
+      guidedFocus.context || '',
+      ...(planningContext.taskPhases || []).map(phase => phase.rawText || phase.description || '')
     ]
       .flatMap(text => String(text || '').split('\n'))
       .map(line => this.summarizeText(line, 260))
@@ -1714,9 +1753,23 @@ ${JSON.stringify(deterministic.scores || {})}`
       /\b(search|find|collect|discover|mine|scrape)\b.{0,90}\b(secondary|forums?|reddit|fan|fans|interview|quotes?|archive\.org|reviews?)\b/i
     ];
 
-    return [...new Set(candidateLines.filter(line =>
+    const gaps = [...new Set(candidateLines.filter(line =>
       !this.lineNegatesWebExpansion(line) && externalNeed.some(pattern => pattern.test(line))
-    ))].slice(0, 6);
+    ))];
+
+    for (const phase of planningContext.taskPhases || []) {
+      const contract = deriveResearchContract({
+        ...phase,
+        description: phase.rawText || phase.description,
+        mission: phase.rawText || phase.description,
+        expectedOutput: this.getPhaseExpectedOutput(phase)
+      });
+      if (contract.required) {
+        gaps.push(this.summarizeText(`${phase.name}: ${phase.rawText || phase.description}`, 260));
+      }
+    }
+
+    return [...new Set(gaps)].slice(0, 6);
   }
 
   lineNegatesWebExpansion(text = '') {
@@ -1738,20 +1791,41 @@ ${JSON.stringify(deterministic.scores || {})}`
       /\b(search|find|collect|discover|mine|scrape)\b.{0,120}\b(secondary|forums?|reddit|fan|fans|interview|quotes?|archive\.org|reviews?)\b/i.test(context);
   }
 
+  hasUsableKnowledgeAssessment(assessment = null) {
+    if (!assessment?.answer) return false;
+
+    const nodeCountRaw = assessment.data?.nodeCount ?? assessment.nodeCount ?? assessment.metadata?.totalNodes;
+    const partitionsRaw = assessment.data?.partitionsSwept ?? assessment.partitionsSwept ?? assessment.metadata?.partitionsSwept;
+    const nodeCount = Number(nodeCountRaw);
+    const partitionsSwept = Number(partitionsRaw);
+    const hasNodeMetric = Number.isFinite(nodeCount);
+    const hasPartitionMetric = Number.isFinite(partitionsSwept);
+
+    if (hasNodeMetric || hasPartitionMetric) {
+      return (hasNodeMetric ? nodeCount > 0 : false) ||
+        (hasPartitionMetric ? partitionsSwept > 0 : false);
+    }
+
+    return true;
+  }
+
   buildPlanningDecision(guidedFocus = {}, resources = {}, planningContext = {}) {
     const researchDigest = planningContext.researchDigest || this.buildResearchDigest(planningContext);
+    const hasUsableKnowledgeAssessment = this.hasUsableKnowledgeAssessment(planningContext.knowledgeAssessment);
     const localArtifactCount = [
       ...(researchDigest.topFindings || []),
       ...(researchDigest.completedMissions || []),
       ...(researchDigest.artifactRefs || []),
-      ...(planningContext.knowledgeAssessment?.answer ? [planningContext.knowledgeAssessment.answer] : [])
+      ...(hasUsableKnowledgeAssessment ? [planningContext.knowledgeAssessment.answer] : [])
     ].filter(Boolean).length;
+    const explicitTaskPlan = Array.isArray(planningContext.taskPhases) && planningContext.taskPhases.length > 0;
     const hasUsableLocalContext = Boolean(
+      !explicitTaskPlan &&
       !planningContext.contextRedirect &&
       (
         planningContext.hasContext ||
         planningContext.threadAnchor ||
-        planningContext.knowledgeAssessment ||
+        hasUsableKnowledgeAssessment ||
         localArtifactCount > 0
       )
     );
@@ -1790,7 +1864,7 @@ ${JSON.stringify(deterministic.scores || {})}`
     }
 
     return {
-      threadRelation: planningContext.contextRedirect ? 'pivot' : (planningContext.threadAnchor ? 'refinement' : (hasUsableLocalContext ? 'refinement' : 'fresh')),
+      threadRelation: explicitTaskPlan ? 'fresh' : (planningContext.contextRedirect ? 'pivot' : (planningContext.threadAnchor ? 'refinement' : (hasUsableLocalContext ? 'refinement' : 'fresh'))),
       evidenceMode,
       webPolicy,
       noWebRequested,
@@ -2388,8 +2462,8 @@ Return ONLY this JSON (no other text):
     // NEW: If task phases detected, include them in prompt
     const phasesInfo = taskPhases.length > 0
       ? `\n\nSTRUCTURED TASK PHASES DETECTED (${taskPhases.length} phases):\n` +
-        taskPhases.map(p => `Phase ${p.number} - ${p.name}:\n${p.description}`).join('\n\n') +
-        `\n\nNOTE: Goals have been generated for each phase. Your agent missions should align with these phases.`
+        taskPhases.map(p => `Phase ${p.number} - ${p.name}:\n${p.rawText || p.description}`).join('\n\n') +
+        `\n\nNOTE: These user-authored phases are executable contracts. Your agent missions must preserve each phase's action, source route, and expectedOutput path exactly. Do not replace them with continuation/local-inventory templates.`
       : '';
     // Skip continuation context when direction has changed — plan fresh from new context
     const useContinuation = planningContext.hasContext && !planningContext.contextRedirect;
@@ -2700,6 +2774,117 @@ ONLY use agent types from the available list above.`;
   }
 
   /**
+   * Pull explicit output-file contracts out of user-authored phase text.
+   * The planner LLM may restate these paths, but runtime gates need them before
+   * any model interpretation so a requested artifact cannot disappear.
+   */
+  extractExpectedOutputPathsFromText(text = '') {
+    if (!text || typeof text !== 'string') return [];
+
+    const outputHint = /\b(?:expected\s*output|expectedOutput|required\s+(?:expected\s*)?output|save(?:d)?\s+(?:to|as)|write(?:n)?\s+to|produce(?:d)?\s+(?:at|to)|output(?:s)?\s*[:=]|deliverable(?:s)?\s*[:=])\b/i;
+    const pathPattern = /(?:@?outputs|raw|extracted|data|validation|final|reports)\/[A-Za-z0-9._~:/@-]+/g;
+    const paths = [];
+    const seen = new Set();
+
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      const hintMatch = line.match(outputHint);
+      if (!hintMatch) continue;
+      const outputSegment = line.slice(hintMatch.index);
+
+      for (const match of outputSegment.match(pathPattern) || []) {
+        let cleaned = match.replace(/^["'`]+|["'`.,;:)]+$/g, '');
+        if (cleaned.startsWith('outputs/')) {
+          cleaned = `@${cleaned}`;
+        }
+        if (!cleaned || seen.has(cleaned)) continue;
+        seen.add(cleaned);
+        paths.push(cleaned);
+      }
+    }
+
+    return paths;
+  }
+
+  getPhaseExpectedOutput(phase = null) {
+    if (!phase) return null;
+    const explicit = phase.expectedOutput || phase.deliverables;
+    if (Array.isArray(explicit)) {
+      const outputs = explicit.filter(Boolean);
+      if (outputs.length === 0) return null;
+      return outputs.length === 1 ? outputs[0] : outputs;
+    }
+    return explicit || null;
+  }
+
+  extractReferencedOutputPathsFromText(text = '', excludePaths = []) {
+    const excluded = new Set(normalizeList(excludePaths).map(value => String(value)));
+    const paths = [];
+    const seen = new Set();
+    const matches = String(text || '').match(/@outputs\/[^\s,;)"']+/g) || [];
+
+    for (const raw of matches) {
+      const cleaned = raw.replace(/[.)\]}]+$/g, '');
+      if (!cleaned || excluded.has(cleaned) || seen.has(cleaned)) continue;
+      seen.add(cleaned);
+      paths.push(cleaned);
+    }
+
+    return paths;
+  }
+
+  getPhaseArtifactInputs(phase = null) {
+    if (!phase) return [];
+    const explicitInputs = Array.isArray(phase.artifactInputs) ? phase.artifactInputs : [];
+    const referenced = this.extractReferencedOutputPathsFromText(
+      phase.rawText || phase.description || '',
+      this.getPhaseExpectedOutput(phase)
+    ).map((pathValue) => ({
+      path: pathValue,
+      label: pathValue.replace(/^@outputs\//, '')
+    }));
+
+    const seen = new Set();
+    return [...explicitInputs, ...referenced].filter((ref) => {
+      const pathValue = typeof ref === 'string' ? ref : ref?.path;
+      if (!pathValue || seen.has(pathValue)) return false;
+      seen.add(pathValue);
+      return true;
+    });
+  }
+
+  isLocalArtifactValidationPhase(phase = null) {
+    if (!phase) return false;
+    const text = `${phase.name || ''}\n${phase.rawText || phase.description || ''}`;
+    const expected = String(this.getPhaseExpectedOutput(phase) || '').toLowerCase();
+    const readsArtifacts = /\bread\s+@outputs\//i.test(text) || this.getPhaseArtifactInputs(phase).length > 0;
+    const validatesOrSynthesizes =
+      /\bvalidate\b|\bjson\s+parses\b|\bproblems\s*:\s*\[\]|\bsynthesize\b|\bwrite\s+markdown\b|\bgrounded only in the artifacts\b/i.test(text);
+    const explicitAcquisition =
+      /\buse\s+(?:typed\s+)?source\s+provider\b/i.test(text)
+      || /\bexecute\s+web[_ -]?search\b/i.test(text)
+      || /\buse\s+web[_ -]?search\b/i.test(text)
+      || /\bfetch\s+https?:\/\//i.test(text)
+      || /\b(?:scrape|crawl|download)\b/i.test(text)
+      || /\buse\s+archive\.(?:metadata|reviews?|advancedsearch|files)\b/i.test(text);
+
+    return readsArtifacts
+      && validatesOrSynthesizes
+      && !explicitAcquisition
+      && (expected.includes('/validation/') || expected.endsWith('.json') || expected.endsWith('.md') || /grounded only in the artifacts/i.test(text));
+  }
+
+  hasExplicitFinalDeliverablePhase(taskPhases = []) {
+    return normalizeList(taskPhases).some((phase) => {
+      const expected = String(this.getPhaseExpectedOutput(phase) || '').toLowerCase();
+      const text = `${phase?.name || ''}\n${phase?.rawText || phase?.description || ''}`.toLowerCase();
+      return expected.includes('@outputs/')
+        && expected.endsWith('.md')
+        && /\b(final|synthesize|synthesis|report|deliverable)\b/.test(text);
+    });
+  }
+
+  /**
    * Normalize plan object with defaults
    * Ensures required agent types are present for complete execution
    */
@@ -2708,6 +2893,7 @@ ONLY use agent types from the available list above.`;
     const ideFirstEnabled = this.config?.ideFirst?.enabled;
     const researchDigest = planningContext.researchDigest || this.buildResearchDigest(planningContext);
     const planningDecision = planningContext.planningDecision || this.buildPlanningDecision(guidedFocus, {}, planningContext);
+    const taskPhases = Array.isArray(planningContext.taskPhases) ? planningContext.taskPhases : [];
 
     // FRESH RUN FALLBACK: If LLM returned zero missions, generate domain-based defaults
     // This handles cases where the planner model fails to produce valid missions
@@ -2898,9 +3084,9 @@ ONLY use agent types from the available list above.`;
     // Ensure a deliverable-producing agent is present
     // IDE-First: Use 'ide' agent; Legacy: Use 'document_creation'
     const deliverableAgentType = ideFirstEnabled ? 'ide' : 'document_creation';
-    const hasDeliverableAgent = missions.some(m => 
-      m.type === 'document_creation' || m.type === 'ide'
-    );
+    const hasDeliverableAgent =
+      this.hasExplicitFinalDeliverablePhase(taskPhases) ||
+      missions.some(m => m.type === 'document_creation' || m.type === 'ide');
     
     if (!hasDeliverableAgent && missions.length > 0) {
       const domain = guidedFocus?.domain || plan.strategy || 'the research topic';
@@ -2920,17 +3106,39 @@ ONLY use agent types from the available list above.`;
     }
 
     const normalizedMissions = missions.map((mission, index) => {
-      const sourceScope = mission.sourceScope || mission.metadata?.sourceScope || `${mission.type} evidence slice ${index + 1}`;
-      const artifactInputs = Array.isArray(mission.artifactInputs)
-        ? mission.artifactInputs
-        : Array.isArray(mission.metadata?.artifactInputs)
-          ? mission.metadata.artifactInputs
-          : (mission.type === 'research' ? [] : (researchDigest.artifactRefs || []).slice(0, 12));
-      const expectedOutput = mission.expectedOutput || mission.metadata?.expectedOutput || `${mission.type} output`;
+      const phase = taskPhases[index] || null;
+      const phaseExpectedOutput = this.getPhaseExpectedOutput(phase);
+      const phaseArtifactInputs = this.getPhaseArtifactInputs(phase);
+      const phaseText = phase ? (phase.rawText || phase.description || phase.name || '') : '';
+      const phaseContract = phaseText
+        ? deriveResearchContract({
+            ...phase,
+            description: phaseText,
+            mission: phaseText,
+            expectedOutput: phaseExpectedOutput,
+            agentType: this.determineAgentTypeForPhase(phase)
+          })
+        : null;
+      let phaseAgentType = null;
+      if (this.isLocalArtifactValidationPhase(phase) || phaseContract?.required) {
+        phaseAgentType = this.determineAgentTypeForPhase(phase);
+      }
+      const normalizedType = phaseAgentType || mission.type;
+      const sourceScope = mission.sourceScope || mission.metadata?.sourceScope || (phaseContract?.required ? (phaseText || `${normalizedType} evidence slice ${index + 1}`) : `${normalizedType} evidence slice ${index + 1}`);
+      const artifactInputs = phaseArtifactInputs.length > 0
+        ? phaseArtifactInputs
+        : (Array.isArray(mission.artifactInputs)
+          ? mission.artifactInputs
+          : Array.isArray(mission.metadata?.artifactInputs)
+            ? mission.metadata.artifactInputs
+            : (mission.type === 'research' ? [] : (researchDigest.artifactRefs || []).slice(0, 12)));
+      const expectedOutput = phaseExpectedOutput || mission.expectedOutput || mission.metadata?.expectedOutput || `${mission.type} output`;
       // HOME23 PATCH — Patch 28: generated missions carry source contracts too.
       const researchContract = deriveResearchContract({
         ...mission,
-        agentType: mission.type,
+        agentType: normalizedType,
+        mission: phaseText || mission.mission,
+        description: phaseText || mission.description,
         sourceScope,
         expectedOutput,
         metadata: {
@@ -2942,6 +3150,8 @@ ONLY use agent types from the available list above.`;
 
       return {
         ...mission,
+        type: normalizedType,
+        mission: phaseText || mission.mission,
         sourceScope,
         artifactInputs,
         expectedOutput,
@@ -3021,8 +3231,14 @@ ONLY use agent types from the available list above.`;
     this.logger?.info('');
     this.logger?.info(`🚀 Spawning Tier 0: ${classified.tier0.length} agent(s) with no dependencies`);
     const tier0AgentIds = await this.spawnMissions(classified.tier0, deliverableSpec, missionGoalIds, 0, researchDigest);
+    const deferredFromTier0 = Array.isArray(tier0AgentIds.deferredMissions)
+      ? tier0AgentIds.deferredMissions
+      : [];
 
     this.logger?.info(`   ✅ Spawned ${tier0AgentIds.length} Tier 0 agent(s)`);
+    if (deferredFromTier0.length > 0) {
+      this.logger?.info(`   ⏳ Preserving ${deferredFromTier0.length} dependency-blocked Tier 0 mission(s) for later spawning`);
+    }
 
     // Emit planning agents spawned event
     if (this.subsystems.eventEmitter) {
@@ -3035,7 +3251,8 @@ ONLY use agent types from the available list above.`;
     
     // Store remaining tiers for sequential spawning via coordinator
     const pendingTiers = [];
-    if (classified.tier1.length > 0) pendingTiers.push({ tier: 1, missions: classified.tier1 });
+    const tier1Missions = [...deferredFromTier0, ...classified.tier1];
+    if (tier1Missions.length > 0) pendingTiers.push({ tier: 1, missions: tier1Missions });
     if (classified.tier2.length > 0) pendingTiers.push({ tier: 2, missions: classified.tier2 });
     if (classified.tier3.length > 0) pendingTiers.push({ tier: 3, missions: classified.tier3 });
     
@@ -3115,6 +3332,7 @@ ONLY use agent types from the available list above.`;
   async spawnMissions(missions, deliverableSpec, missionGoalIds, tierNumber, researchDigest = null) {
     const agentWeights = this.config.coordinator?.agentTypeWeights || {};
     const spawnedAgentIds = []; // Track agent IDs for waiting
+    const deferredMissions = [];
 
     for (const mission of missions) {
       // Check if type is explicitly disabled in configuration (weight === 0)
@@ -3133,6 +3351,45 @@ ONLY use agent types from the available list above.`;
       const associatedTaskId = Number.isInteger(mission.originalIndex) 
         ? `task:phase${mission.originalIndex + 1}`
         : null;
+      const stateStore = this.subsystems.clusterStateStore;
+      let task = null;
+
+      if (stateStore && associatedTaskId && typeof stateStore.getTask === 'function') {
+        try {
+          task = await stateStore.getTask(associatedTaskId);
+          if (task?.state && ['DONE', 'COMPLETED', 'FAILED', 'BLOCKED'].includes(task.state)) {
+            this.logger?.warn('   ⏭️  Skipping mission for terminal task state', {
+              taskId: associatedTaskId,
+              state: task.state
+            });
+            continue;
+          }
+
+          const deps = Array.isArray(task?.deps) ? task.deps : [];
+          let depsMet = true;
+          for (const depId of deps) {
+            const depTask = await stateStore.getTask(depId);
+            if (!depTask || depTask.state !== 'DONE') {
+              depsMet = false;
+              break;
+            }
+          }
+
+          if (!depsMet) {
+            this.logger?.info('   ⏳ Deferring mission until persisted task dependencies are done', {
+              taskId: associatedTaskId,
+              deps
+            });
+            deferredMissions.push(mission);
+            continue;
+          }
+        } catch (error) {
+          this.logger?.warn('Could not inspect task dependencies before guided spawn', {
+            taskId: associatedTaskId,
+            error: error.message
+          });
+        }
+      }
 
       const missionSpec = {
         missionId: `mission_tier${tierNumber}_${mission.type}_${Date.now()}`,
@@ -3175,13 +3432,10 @@ ONLY use agent types from the available list above.`;
         // ✅ FIX P1.2: PRE-ASSIGN pattern to eliminate race condition
         // Mark task as "spawn in progress" BEFORE spawning agent
         // This prevents PlanScheduler from spawning duplicate during the spawn window
-        const stateStore = this.subsystems.clusterStateStore;
-        let task = null;
-        
         if (stateStore && Number.isInteger(mission.originalIndex)) {
           const taskId = `task:phase${mission.originalIndex + 1}`;
           try {
-            task = await stateStore.getTask(taskId);
+            task = task || await stateStore.getTask(taskId);
             if (task && !task.assignedAgentId) {
               // Mark as "being assigned" to prevent race condition
               task.assignedAgentId = 'PENDING_SPAWN';
@@ -3274,6 +3528,7 @@ ONLY use agent types from the available list above.`;
       }
     }
 
+    spawnedAgentIds.deferredMissions = deferredMissions;
     return spawnedAgentIds; // Return agent IDs instead of count
   }
 
@@ -3296,6 +3551,15 @@ ONLY use agent types from the available list above.`;
 
     // First try explicit PHASE markers
     const explicitPhases = this.parseExplicitPhases(context);
+    if (explicitPhases.length > 0) {
+      const phasesWithDeps = this.buildDependencyChains(explicitPhases, context);
+      this.logger?.info(`Parsed ${phasesWithDeps.length} explicit task phases with dependencies`, {
+        explicitPhases: explicitPhases.length,
+        sequentialPhases: 0,
+        phases: phasesWithDeps.map(p => `Phase ${p.number}: ${p.name} (deps: ${p.dependencies?.length || 0})`)
+      });
+      return phasesWithDeps.sort((a, b) => a.number - b.number);
+    }
 
     // Then try natural language sequential patterns
     const sequentialPhases = this.parseSequentialPatterns(context);
@@ -3362,6 +3626,11 @@ ONLY use agent types from the available list above.`;
         .join(' ')
         .substring(0, 300);
       phase.rawText = phase.lines.join('\n').substring(0, 1000);
+      const expectedOutputPaths = this.extractExpectedOutputPathsFromText(phase.lines.join('\n'));
+      if (expectedOutputPaths.length > 0) {
+        phase.expectedOutput = expectedOutputPaths.length === 1 ? expectedOutputPaths[0] : expectedOutputPaths;
+        phase.deliverables = expectedOutputPaths;
+      }
     });
 
     return phases;
@@ -3422,8 +3691,9 @@ ONLY use agent types from the available list above.`;
   createPhaseFromText(text, number, pattern) {
     // Extract agent type hints from text
     const agentType = this.inferAgentType(text);
+    const expectedOutputPaths = this.extractExpectedOutputPathsFromText(text);
 
-    return {
+    const phase = {
       number,
       name: this.extractPhaseName(text),
       description: text.substring(0, 300),
@@ -3432,6 +3702,13 @@ ONLY use agent types from the available list above.`;
       agentTypeHint: agentType,
       inferredDependencies: this.inferDependencies(text, pattern)
     };
+
+    if (expectedOutputPaths.length > 0) {
+      phase.expectedOutput = expectedOutputPaths.length === 1 ? expectedOutputPaths[0] : expectedOutputPaths;
+      phase.deliverables = expectedOutputPaths;
+    }
+
+    return phase;
   }
 
   /**

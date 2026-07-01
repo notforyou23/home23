@@ -8,7 +8,7 @@ const SOURCE_REQUIRED_PATTERNS = [
   { code: 'source_url_required', pattern: /\bsource_urls?\b|\burls?\s+searched\b/i, mode: 'web_research' },
   { code: 'citation_required', pattern: /\bcitations?\b|\bcite\b|\bbibliograph/i, mode: 'web_research' },
   { code: 'forum_research', pattern: /\bforums?\b|\breddit\b|\buser\s+notes?\b|\bfan\s+(?:anecdotes?|recollections?|memories?)\b/i, mode: 'web_research' },
-  { code: 'archive_research', pattern: /\barchive\.org\b|\binternet archive\b|\barchive items?\b|\breview\s+threads?\b|\btaper\s+notes?\b/i, mode: 'source_acquisition', providers: ['archive.advancedsearch', 'archive.metadata', 'archive.reviews'] },
+  { code: 'archive_research', pattern: /\barchive\.org\b|\binternet archive\b|\barchive items?\b|\barchive\.(?:metadata|reviews?)\b|\breview\s+threads?\b|\btaper\s+notes?\b/i, mode: 'source_acquisition', providers: ['archive.advancedsearch', 'archive.metadata', 'archive.reviews'] },
   { code: 'archive_file_research', pattern: /\barchive\s+files?\b|\bdownload\s+files?\b|\bfile\s+list\b|\baudio\s+files?\b|\bocr\s+files?\b/i, mode: 'source_acquisition', providers: ['archive.files'] },
   { code: 'historical_web_research', pattern: /\bwayback\b|\bweb archive\b|\bhistorical captures?\b|\bmementos?\b|\bcdx\b|\bcommon crawl\b|\bwarc\b|\bwet file\b|\bhistorical web crawl\b/i, mode: 'source_acquisition', providers: ['wayback.availability', 'wayback.cdx', 'commoncrawl.cdx'] },
   { code: 'knowledge_graph_research', pattern: /\bwikidata\b|\bknowledge graph\b|\bentity id\b|\bcanonical entity\b|\bsparql\b/i, mode: 'source_acquisition', providers: ['wikidata.entity_search', 'wikidata.sparql'] },
@@ -200,7 +200,73 @@ function isLocalOnlyInput(input = {}, text = '') {
     return true;
   }
 
+  if (isLocalArtifactOnlyText(text)) {
+    return true;
+  }
+
   return LOCAL_ONLY_PATTERNS.some(pattern => pattern.test(text));
+}
+
+function isLocalArtifactOnlyText(text = '') {
+  const lower = String(text || '').toLowerCase();
+  const readsOutputArtifact = /(?:^|\n|\b)read\s+@outputs\//i.test(text)
+    || /\bfrom\s+@outputs\//i.test(text);
+  if (!readsOutputArtifact) return false;
+
+  const localAction =
+    /\bvalidate\b|\bjson\s+parses\b|\bproblems\s*:\s*\[\]|\bsynthesize\b|\bwrite\s+markdown\b|\bgrounded only in the artifacts\b/i.test(text);
+  if (!localAction) return false;
+
+  const explicitAcquisition =
+    /\buse\s+(?:typed\s+)?source\s+provider\b/i.test(text)
+    || /\bexecute\s+web[_ -]?search\b/i.test(text)
+    || /\buse\s+web[_ -]?search\b/i.test(text)
+    || /\bfetch\s+https?:\/\//i.test(text)
+    || /\b(?:scrape|crawl|download)\b/i.test(text)
+    || /\buse\s+archive\.(?:metadata|reviews?|advancedsearch|files)\b/i.test(text);
+
+  return !explicitAcquisition && lower.includes('@outputs/');
+}
+
+function getSourceScopeText(input = {}) {
+  return [
+    input.sourceScope,
+    input.metadata?.sourceScope
+  ].filter(Boolean).join('\n').toLowerCase();
+}
+
+function isExclusiveSourceScope(scopeText = '') {
+  return /\b(?:only|exclusively|solely|restricted to)\b/i.test(scopeText);
+}
+
+function filterProviderHintsBySourceScope(providerHints = [], input = {}) {
+  const scopeText = getSourceScopeText(input);
+  if (!scopeText || !isExclusiveSourceScope(scopeText)) {
+    return providerHints;
+  }
+
+  const allow = [];
+  if (/\breddit\b|\br\/[a-z0-9_]+\b/i.test(scopeText)) {
+    allow.push(/^reddit\./i, /^forum\./i);
+  }
+  if (/\barchive\.org\b|\binternet archive\b/i.test(scopeText)) {
+    allow.push(/^archive\./i);
+  }
+  if (/\btwitter\b|\bx\/twitter\b|\bx\.com\b/i.test(scopeText)) {
+    allow.push(/^home23\.skill\.x_research\./i);
+  }
+  if (/\bwayback\b|\bcommon crawl\b|\bweb archive\b/i.test(scopeText)) {
+    allow.push(/^wayback\./i, /^commoncrawl\./i);
+  }
+  if (/\byoutube\b|\bvideo\b|\btranscript\b/i.test(scopeText)) {
+    allow.push(/^youtube\./i, /^transcript\./i);
+  }
+
+  if (allow.length === 0) {
+    return providerHints;
+  }
+
+  return providerHints.filter(hint => allow.some(pattern => pattern.test(hint)));
 }
 
 function deriveResearchContract(input = {}) {
@@ -209,11 +275,15 @@ function deriveResearchContract(input = {}) {
 
   if (input.metadata?.researchContract) {
     if (localOnly) return emptyResearchContract();
-    return normalizeContract(input.metadata.researchContract);
+    const contract = normalizeContract(input.metadata.researchContract);
+    contract.sourceProviderHints = filterProviderHintsBySourceScope(contract.sourceProviderHints, input);
+    return contract;
   }
   if (input.researchContract) {
     if (localOnly) return emptyResearchContract();
-    return normalizeContract(input.researchContract);
+    const contract = normalizeContract(input.researchContract);
+    contract.sourceProviderHints = filterProviderHintsBySourceScope(contract.sourceProviderHints, input);
+    return contract;
   }
 
   const tools = normalizeArray(input.tools || input.metadata?.tools).map(tool => String(tool).toLowerCase());
@@ -258,7 +328,10 @@ function deriveResearchContract(input = {}) {
     minSuccessfulSources: required ? 1 : 0,
     allowNullFindingsWithSourceEvidence: true,
     reasonCodes: [...new Set(reasonCodes)],
-    sourceProviderHints: [...new Set(sourceProviderHints.map(String).filter(Boolean))]
+    sourceProviderHints: filterProviderHintsBySourceScope(
+      [...new Set(sourceProviderHints.map(String).filter(Boolean))],
+      input
+    )
   };
 }
 
@@ -385,8 +458,7 @@ function evaluateResearchEvidence(contractInput, evidenceInput = {}) {
     evidence.sourcesFound +
     evidence.successfulSources +
     evidence.pagesAcquired +
-    evidence.filesDownloaded +
-    (evidence.bytesAcquired > 0 ? 1 : 0);
+    evidence.filesDownloaded;
 
   if (sourceEvidence < contract.minSuccessfulSources) {
     return { passed: false, reasonCode: 'missing_source_evidence', contract, evidence };

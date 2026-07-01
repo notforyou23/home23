@@ -256,6 +256,46 @@ describe('SourceProviderRegistry', () => {
     expect(result.candidates[1].metadata.validationStrategy).to.equal('metadata_only');
   });
 
+  it('extracts bare Internet Archive identifiers and keeps review results per identifier', async () => {
+    const identifiers = [
+      'legion-of-mary-the-bottom-line-nyc-1975',
+      'legion-of-mary-oriental-theatre-wi-1975-wzmf'
+    ];
+    const fetchImpl = async (url) => {
+      const value = String(url);
+      const identifier = identifiers.find(id => value.includes(`archive.org/metadata/${id}`));
+      if (identifier) {
+        return jsonResponse({
+          metadata: { identifier, title: identifier, mediatype: 'audio' },
+          reviews: [{
+            review_id: `${identifier}-review`,
+            reviewer: 'listener',
+            title: `Review for ${identifier}`,
+            body: `A listener memory for ${identifier}.`
+          }]
+        });
+      }
+      throw new Error(`Unexpected URL: ${value}`);
+    };
+
+    const registry = new SourceProviderRegistry(logger, {}, { fetchImpl });
+    const providers = registry.selectProviders(
+      `Fetch archive reviews for identifiers: ${identifiers.join(', ')}`,
+      { sourceRequired: true, mission: { description: 'Archive review extraction' } }
+    );
+    const result = await registry.acquire(`Fetch archive reviews for identifiers: ${identifiers.join(', ')}`, {
+      providers: ['archive.metadata', 'archive.reviews'],
+      maxResults: 1
+    });
+
+    expect(providers).to.include('archive.metadata');
+    expect(providers).to.include('archive.reviews');
+    expect(registry.extractArchiveIdentifiers(`identifiers: ${identifiers.join(', ')}`)).to.deep.equal(identifiers);
+    expect(result.success).to.equal(true);
+    expect(result.candidates.filter(item => item.sourceType === 'archive_review').map(item => item.metadata.identifier)).to.deep.equal(identifiers);
+    expect(result.attempts.map(item => item.route)).to.deep.equal(['archive.metadata', 'archive.reviews']);
+  });
+
   it('queries Wayback CDX captures and feed sitemaps', async () => {
     const fetchImpl = async (url) => {
       const value = String(url);

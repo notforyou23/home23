@@ -320,7 +320,12 @@ class AgentResultsQueue {
   getRecent(cycleCount = 1) {
     // Return all integrated results - the orchestrator will filter if needed
     // or we can track integration cycle if we want to be more precise
-    return this.queue.filter(r => r.integrated);
+    return this.history.filter(r => r.integrated || r.processed);
+  }
+
+  getResultsForTask(taskId) {
+    if (!taskId) return [];
+    return this.history.filter(result => result?.mission?.taskId === taskId);
   }
 
   /**
@@ -348,4 +353,3 @@ class AgentResultsQueue {
 }
 
 module.exports = { AgentResultsQueue };
-

@@ -48,7 +48,9 @@ class SourceProviderRegistry {
     const mission = context.mission || {};
     const researchContract = context.researchContract || mission.researchContract || mission.metadata?.researchContract || {};
     const sourceRequired = context.sourceRequired === true || researchContract.required === true;
-    const hasExplicitUrl = this.extractUrls([query, mission.description, mission.expectedOutput].filter(Boolean).join('\n')).length > 0;
+    const sourceText = [query, mission.description, mission.expectedOutput].filter(Boolean).join('\n');
+    const hasExplicitUrl = this.extractUrls(sourceText).length > 0;
+    const hasArchiveIdentifiers = this.extractArchiveIdentifiers(sourceText).length > 0;
     const text = [
       query,
       mission.description,
@@ -73,7 +75,7 @@ class SourceProviderRegistry {
     if (/\b(archive\.org|internet archive|archive item|review thread|taper notes?|listener reviews?|fan\s+(?:anecdotes?|recollections?|memories?))\b/.test(text)) {
       providers.add('archive.advancedsearch');
     }
-    if (/archive\.org\/details\//.test(text)) {
+    if (/archive\.org\/details\//.test(text) || hasArchiveIdentifiers) {
       providers.add('archive.metadata');
     }
     if (/\b(archive reviews?|review thread|listener reviews?)\b/.test(text)) {
@@ -149,6 +151,9 @@ class SourceProviderRegistry {
     const providers = (options.providers || this.selectProviders(query, options))
       .filter(id => this.listProviders().includes(id));
     const maxResults = options.maxResults || this.defaultMaxResults;
+    const archiveIdentifiers = options.identifiers?.length
+      ? options.identifiers
+      : this.extractArchiveIdentifiers(query);
     const attempts = [];
     const candidates = [];
 
@@ -156,9 +161,14 @@ class SourceProviderRegistry {
       const startedAt = Date.now();
       try {
         const providerCandidates = await this.runProvider(providerId, query, { ...options, maxResults });
+        const providerResultLimit = providerId === 'archive.reviews' && archiveIdentifiers.length > 1
+          ? Math.max(maxResults, archiveIdentifiers.length * (options.maxReviewsPerIdentifier || options.perIdentifierMaxResults || maxResults))
+          : providerId === 'archive.metadata' && archiveIdentifiers.length > 1
+            ? Math.max(maxResults, archiveIdentifiers.length)
+          : maxResults;
         const normalized = providerCandidates
           .filter(candidate => candidate && candidate.url)
-          .slice(0, maxResults)
+          .slice(0, providerResultLimit)
           .map((candidate, index) => this.normalizeCandidate(providerId, candidate, index));
         candidates.push(...normalized);
         attempts.push({
@@ -329,7 +339,11 @@ class SourceProviderRegistry {
       ? options.identifiers
       : this.extractArchiveIdentifiers(query);
     const candidates = [];
-    for (const identifier of identifiers.slice(0, options.maxResults || this.defaultMaxResults)) {
+    const identifierLimit = Math.max(
+      options.maxIdentifiers || identifiers.length || 1,
+      options.maxResults || this.defaultMaxResults
+    );
+    for (const identifier of identifiers.slice(0, identifierLimit)) {
       const data = await this.fetchJson(`https://archive.org/metadata/${encodeURIComponent(identifier)}`);
       const metadata = data?.metadata || {};
       candidates.push({
@@ -354,10 +368,15 @@ class SourceProviderRegistry {
       ? options.identifiers
       : this.extractArchiveIdentifiers(query);
     const candidates = [];
-    for (const identifier of identifiers.slice(0, options.maxResults || this.defaultMaxResults)) {
+    const identifierLimit = Math.max(
+      options.maxIdentifiers || identifiers.length || 1,
+      options.maxResults || this.defaultMaxResults
+    );
+    const perIdentifierLimit = options.maxReviewsPerIdentifier || options.perIdentifierMaxResults || options.maxResults || this.defaultMaxResults;
+    for (const identifier of identifiers.slice(0, identifierLimit)) {
       const data = await this.fetchJson(`https://archive.org/metadata/${encodeURIComponent(identifier)}`);
       const reviews = Array.isArray(data?.reviews) ? data.reviews : [];
-      for (const review of reviews.slice(0, options.maxResults || this.defaultMaxResults)) {
+      for (const review of reviews.slice(0, perIdentifierLimit)) {
         const reviewId = review.review_id || review.id || review.createdate || '';
         candidates.push({
           title: review.title || `Archive review for ${identifier}`,
@@ -374,7 +393,7 @@ class SourceProviderRegistry {
         });
       }
     }
-    return candidates.slice(0, options.maxResults || this.defaultMaxResults);
+    return candidates;
   }
 
   async fetchArchiveFiles(query, options = {}) {
@@ -875,8 +894,23 @@ class SourceProviderRegistry {
 
   extractArchiveIdentifiers(text = '') {
     const ids = [];
+    const addIdentifier = (value) => {
+      const cleaned = String(value || '').trim().replace(/[.,;:!?]+$/g, '');
+      if (cleaned) ids.push(cleaned);
+    };
     for (const match of text.matchAll(/archive\.org\/details\/([^/?#\s]+)/gi)) {
-      ids.push(decodeURIComponent(match[1]));
+      addIdentifier(decodeURIComponent(match[1]));
+    }
+    for (const match of text.matchAll(/\b(?:identifier|identifiers|archive(?:\.org)?\s+id|archive(?:\.org)?\s+ids)\s*[:=]\s*([A-Za-z0-9._-]+(?:\s*,\s*[A-Za-z0-9._-]+)*)/gi)) {
+      for (const id of match[1].split(',')) {
+        addIdentifier(id);
+      }
+    }
+    for (const match of text.matchAll(/\b([a-z0-9][a-z0-9._-]{5,}(?:19|20)\d{2}[a-z0-9._-]*)\b/gi)) {
+      const candidate = match[1];
+      if (candidate.includes('.') && !candidate.includes('-')) continue;
+      if (/^(?:https?|outputs?|raw|extracted|validation|final|archive\.org)$/i.test(candidate)) continue;
+      addIdentifier(candidate);
     }
     return [...new Set(ids)];
   }

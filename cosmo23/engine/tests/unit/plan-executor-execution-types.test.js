@@ -192,6 +192,85 @@ describe('PlanExecutor output-contract validation', function() {
     expect(queued[0].producedArtifacts).to.deep.equal(artifacts);
   });
 
+  it('completes a pending assigned task when its expected output is already registered and valid', async function() {
+    const outputDir = path.join(tempRoot, 'outputs');
+    await fs.mkdir(path.join(outputDir, 'final'), { recursive: true });
+    const reportPath = path.join(outputDir, 'final', 'archive-org-comments-report.md');
+    await fs.writeFile(
+      reportPath,
+      [
+        '# Archive.org Comments Report',
+        '',
+        'This report is grounded in upstream raw and validation artifacts.',
+        'It contains enough concrete body text for the expected-output gate.',
+        'The task must close from the registered artifact instead of waiting for a redundant start transition.'
+      ].join('\n')
+    );
+
+    let startCalled = false;
+    const queued = [];
+    const stateStore = {
+      startTask: async () => {
+        startCalled = true;
+      },
+      completeTask: async () => true
+    };
+    const taskStateQueue = {
+      enqueue: async (event) => queued.push(event)
+    };
+    const pathResolver = {
+      resolve: (token) => {
+        if (token === '@outputs') return outputDir;
+        if (token.startsWith('@outputs/')) return path.join(outputDir, token.slice('@outputs/'.length));
+        return token;
+      }
+    };
+
+    const pe = new PlanExecutor(
+      stateStore,
+      { registry: {} },
+      logger,
+      { pathResolver, taskStateQueue }
+    );
+
+    pe.plan = { id: 'plan:main', title: 'Acceptance run', status: 'ACTIVE' };
+    pe.activePhase = { id: 'ms:phase3', title: 'Synthesize Final Report', order: 3, status: 'ACTIVE' };
+    pe.activeTask = null;
+    pe.tasks = [
+      { id: 'task:phase1', milestoneId: 'ms:phase1', state: 'DONE' },
+      { id: 'task:phase2', milestoneId: 'ms:phase2', state: 'DONE' },
+      {
+        id: 'task:phase3',
+        title: 'Synthesize Final Report',
+        milestoneId: 'ms:phase3',
+        state: 'PENDING',
+        deps: ['task:phase2'],
+        assignedAgentId: 'agent_report',
+        agentAssignedAt: Date.now(),
+        acceptanceCriteria: [{ type: 'qa', rubric: 'Final report exists' }],
+        artifacts: [{
+          path: 'final/archive-org-comments-report.md',
+          workspacePath: 'outputs/final/archive-org-comments-report.md',
+          absolutePath: reportPath,
+          agentId: 'agent_report'
+        }],
+        metadata: {
+          expectedOutput: '@outputs/final/archive-org-comments-report.md',
+          researchContract: { required: false }
+        }
+      }
+    ];
+
+    const result = await pe.checkTask();
+
+    expect(result.action).to.equal('TASK_COMPLETED');
+    expect(startCalled).to.equal(false);
+    expect(queued).to.have.length(1);
+    expect(queued[0].type).to.equal('COMPLETE_TASK');
+    expect(queued[0].taskId).to.equal('task:phase3');
+    expect(queued[0].artifacts.some((artifact) => artifact.path === 'final/archive-org-comments-report.md')).to.equal(true);
+  });
+
   it('does not pass a source-required task with only generic files and no source evidence', async function() {
     const outputDir = path.join(tempRoot, 'outputs');
     await fs.mkdir(path.join(outputDir, 'raw-anecdotes'), { recursive: true });
@@ -267,7 +346,26 @@ describe('PlanExecutor output-contract validation', function() {
     await fs.mkdir(path.join(outputDir, 'raw-anecdotes'), { recursive: true });
     await fs.writeFile(
       path.join(outputDir, 'raw-anecdotes', 'archive-org-comments.json'),
-      '{"entries":[],"status":"no_comments_found","urls_searched":["https://archive.org/details/show"]}\n'
+      JSON.stringify({
+        entries: [],
+        status: 'no_reviews_found',
+        required_identifiers: ['show'],
+        identifier_statuses: [{
+          identifier: 'show',
+          status: 'no_reviews_found',
+          metadata_route: 'accepted',
+          review_route: 'accepted',
+          source_url: 'https://archive.org/details/show'
+        }],
+        urls_searched: ['https://archive.org/details/show'],
+        route_receipts: {
+          attempts: [
+            { route: 'archive.metadata', status: 'accepted', result_count: 1, url_count: 1 },
+            { route: 'archive.reviews', status: 'empty', result_count: 0, url_count: 0 }
+          ],
+          productive_source_urls: ['https://archive.org/details/show']
+        }
+      }, null, 2)
     );
 
     const pe = makeExecutor(outputDir);

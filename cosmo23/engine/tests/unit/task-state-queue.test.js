@@ -227,4 +227,70 @@ describe('TaskStateQueue replay safety', () => {
     expect(completeClosure).to.not.equal(null);
     expect(completeClosure.artifacts).to.have.length(1);
   });
+
+  it('advances the active milestone immediately after a verified task completion', async () => {
+    const outputDir = path.join(tmpDir, 'outputs');
+    await fs.mkdir(outputDir, { recursive: true });
+    await fs.writeFile(path.join(outputDir, 'receipt.md'), '# Receipt\n\nVerified output.\n');
+
+    const queue = new TaskStateQueue(tmpDir, logger());
+    await queue.initialize();
+    await queue.enqueue({
+      type: 'COMPLETE_TASK',
+      taskId: 'task:phase1',
+      phaseName: 'Acquire sources',
+      artifacts: [{ path: 'outputs/receipt.md' }],
+      source: 'plan_executor'
+    });
+
+    const tasks = [
+      {
+        id: 'task:phase1',
+        planId: 'plan:main',
+        milestoneId: 'ms:phase1',
+        title: 'Acquire sources',
+        state: 'PENDING'
+      },
+      {
+        id: 'task:phase2',
+        planId: 'plan:main',
+        milestoneId: 'ms:phase2',
+        title: 'Validate outputs',
+        state: 'PENDING'
+      }
+    ];
+    const milestones = [
+      { id: 'ms:phase1', planId: 'plan:main', title: 'Acquire', order: 1, status: 'ACTIVE' },
+      { id: 'ms:phase2', planId: 'plan:main', title: 'Validate', order: 2, status: 'LOCKED' }
+    ];
+    const planUpdates = [];
+
+    const stateStore = {
+      getPlan: async () => ({ id: 'plan:main', createdAt: 1000 }),
+      getTask: async taskId => tasks.find(task => task.id === taskId),
+      listTasks: async () => tasks,
+      listMilestones: async () => milestones,
+      completeTask: async taskId => {
+        const task = tasks.find(item => item.id === taskId);
+        task.state = 'DONE';
+      },
+      failTask: async () => {
+        throw new Error('failTask should not be called');
+      },
+      upsertMilestone: async milestone => {
+        const index = milestones.findIndex(item => item.id === milestone.id);
+        milestones[index] = milestone;
+      },
+      updatePlan: async (_planId, patch) => {
+        planUpdates.push(patch);
+      }
+    };
+
+    await queue.processAll(stateStore, null);
+
+    expect(tasks[0].state).to.equal('DONE');
+    expect(milestones[0].status).to.equal('COMPLETED');
+    expect(milestones[1].status).to.equal('ACTIVE');
+    expect(planUpdates[0]).to.deep.equal({ activeMilestone: 'ms:phase2' });
+  });
 });

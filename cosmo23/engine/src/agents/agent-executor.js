@@ -885,8 +885,10 @@ class AgentExecutor {
       }
     }
 
+    const guidedExclusiveMission = this.isGuidedExclusiveMission(mission);
+
     // 3. Handle handoff requests
-    if (handoffSpec && handoffSpec.type === 'HANDOFF') {
+    if (handoffSpec && handoffSpec.type === 'HANDOFF' && !guidedExclusiveMission) {
       await this.messageQueue.push({
         from: agentId,
         to: 'meta_coordinator',
@@ -901,6 +903,12 @@ class AgentExecutor {
       }, 3);
       
       this.logger.info('📨 Handoff request queued', {
+        from: agentId,
+        toAgentType: handoffSpec.toAgentType,
+        reason: handoffSpec.reason
+      }, 3);
+    } else if (handoffSpec && handoffSpec.type === 'HANDOFF' && guidedExclusiveMission) {
+      this.logger.info('📨 Handoff suppressed for guided-exclusive mission', {
         from: agentId,
         toAgentType: handoffSpec.toAgentType,
         reason: handoffSpec.reason
@@ -951,14 +959,21 @@ class AgentExecutor {
 
     // 6. Generate follow-up goals from follow-up directions
     await this.indexProcessedSourceUrls(agentResults);
-    await this.createFollowUpGoals(results, agentId, mission);
+    if (!guidedExclusiveMission) {
+      await this.createFollowUpGoals(results, agentId, mission);
+    } else {
+      this.logger.debug('Guided-exclusive mission: follow-up goal creation suppressed', {
+        agentId,
+        taskId: mission?.taskId || null
+      }, 3);
+    }
 
     this.logger.info('✅ Agent results integrated', {
       agentId,
       goal: mission.goalId,
       findingsAdded,
       goalProgressUpdated: status === 'completed',
-      handoffGenerated: !!handoffSpec
+      handoffGenerated: !!handoffSpec && !guidedExclusiveMission
     }, 3);
 
     await this.updateReviewPipelineArtifacts(agentResults, qaMetadata).catch((error) => {
@@ -967,6 +982,11 @@ class AgentExecutor {
         error: error.message
       });
     });
+  }
+
+  isGuidedExclusiveMission(mission = {}) {
+    return mission?.metadata?.effectiveExecutionMode === 'guided-exclusive'
+      || mission?.effectiveExecutionMode === 'guided-exclusive';
   }
 
   async handleDeliverableResults(deliverables, mission, agentId, agentType) {

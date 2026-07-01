@@ -1909,6 +1909,84 @@ tests, and syntax checks passed for the touched runtime files.
 
 ---
 
+## Patch 37 — Verified research execution closeout and Archive.org acceptance proof
+
+**Files touched:**
+- `cosmo23/engine/src/core/guided-mode-planner.js`
+- `cosmo23/engine/src/core/research-contract.js`
+- `cosmo23/engine/src/core/source-provider-registry.js`
+- `cosmo23/engine/src/agents/research-agent.js`
+- `cosmo23/engine/src/core/task-completion-validator.js`
+- `cosmo23/engine/src/core/plan-executor.js`
+- `cosmo23/engine/src/cluster/task-state-queue.js`
+- `cosmo23/engine/src/core/orchestrator.js`
+- `cosmo23/engine/src/index.js`
+- `cosmo23/engine/src/agents/results-queue.js`
+- `cosmo23/engine/src/agents/agent-executor.js`
+- focused unit tests under `cosmo23/engine/tests/unit/`
+
+**Problem:** Patch 36 installed acceptance validation, but the live
+Archive.org proof still exposed execution-chain failures. Strict guided plans
+could create a good-looking task map yet add a redundant generic synthesis
+task, Archive route receipts could be polluted by unrelated identifiers or
+later weaker attempts, pending assigned tasks could sit in `PENDING` even after
+their required artifact existed, verified task completion could leave the next
+milestone locked until a later executor sweep, and a completed guided plan
+could leave `cosmo-main` running with `activeContext` still set until the cycle
+limit. The commitment governor also recorded `commit_artifacts` as if it had
+done work even though no executor existed.
+
+**Fix:** Guided planning now treats an explicit final deliverable phase as the
+synthesis contract and suppresses the old extra `task:synthesis_final`.
+Archive.org acquisition detects bare Archive identifiers, runs per-identifier
+metadata/review routes, scopes `archive-org-comments.json` statuses to required
+identifiers, and keeps a typed route accepted if an earlier acceptable attempt
+succeeded. Local validation/synthesis tasks no longer inherit source-acquisition
+contracts from upstream raw-data phases.
+
+The executor path now closes the loop instead of waiting for incidental later
+cycles: assigned `PENDING` tasks with valid expected outputs complete without a
+redundant respawn, the task-state queue atomically completes the current
+milestone and activates the next one after a verified `COMPLETE_TASK`, and
+guided pending tiers are serviced every cycle after task-state processing
+instead of behind meta-review or commitment gates. Startup drains planning-agent
+results before declaring the plan ready, results-queue history survives
+integration, and guided-exclusive handoffs are suppressed unless they are
+explicitly part of the guided plan.
+
+Strict guided completion is now terminal by default. A persisted
+`plan:main.status === COMPLETED` with all tasks `DONE`, all milestones
+`COMPLETED`, no active agents, and no pending injected plan runs through the
+same completion lifecycle as a direct `PLAN_COMPLETED` executor action. COSMO23
+then emits completion status, stops the run lifecycle, and clears the active
+context. Automatic continuation remains available only when explicitly
+configured with guided auto-continue. `commit_artifacts` receipts now record
+`applied:false` until a real artifact-commit executor exists.
+
+**Effect under Home23:** COSMO23 can now prove the full beginning/middle/end
+contract for a small hard research objective: create the intended phase plan,
+fetch source data through typed routes, validate named artifacts, synthesize the
+final markdown from those artifacts, mark the plan complete, and stop the run
+instead of spinning with stale active-run state. Interactive/query surfaces see
+an answerable artifact substrate after completion rather than a still-running
+graph-only session.
+
+**Verification:** Focused unit coverage passed with 110 Mocha tests across
+orchestrator guided continuation, task-state queue, plan executor execution
+types, research-agent handoff, guided planner, source-provider registry,
+research contracts, agent-executor guided behavior, startup planning wait, and
+results-queue history. Live proof run
+`cosmo23-acceptance-archive-reviews-closeout-20260630215506` launched through
+`POST /api/launch` with the three-phase Archive.org contract. It produced
+`outputs/raw-anecdotes/archive-org-comments.json`,
+`outputs/validation/archive-org-comments-validation.json`, and
+`outputs/final/archive-org-comments-report.md`; all three tasks ended `DONE`,
+all three milestones ended `COMPLETED`, `plan:main` ended `COMPLETED`, the
+artifact validator returned `problems: []`, and `/api/status` returned
+`running:false`, `lifecycle:"idle"`, and `activeContext:null` after completion.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -2103,3 +2181,10 @@ tests, and syntax checks passed for the touched runtime files.
   `outputs/acceptance-probe/archive-org-comments-live-probe.json`; the completion
   validator accepted that source-backed probe while rejecting the missing
   `@outputs/raw-anecdotes/archive-org-comments.json` deliverable.
+- **2026-06-30** — Patch 37 closed the verified execution loop. Strict guided
+  Archive.org acceptance now plans exact phases, acquires typed route receipts,
+  validates/synthesizes named artifacts, advances milestones immediately after
+  verified task completion, treats persisted completed plans as lifecycle
+  completion, and stops/clears the active run after proof. Live proof:
+  `cosmo23-acceptance-archive-reviews-closeout-20260630215506` passed with
+  `problems: []` and `/api/status` idle.

@@ -164,6 +164,8 @@ class Orchestrator {
     // State
     this.cycleCount = 0;
     this.running = false;
+    this.runCompletionRequested = null;
+    this.completedPlanLifecycleKeys = new Set();
     this.journal = [];
     this.lastCycleTime = new Date();
     this.lastSummarization = 0;
@@ -252,6 +254,155 @@ class Orchestrator {
 
   isGuidedExclusiveRun() {
     return isGuidedExplorationMode(this.config.architecture?.roleSystem?.explorationMode);
+  }
+
+  isGuidedAutoContinueEnabled() {
+    const guidedFocus = this.config.architecture?.roleSystem?.guidedFocus || {};
+    const execution = this.config.execution || {};
+    const value = guidedFocus.autoContinue ?? execution.guidedAutoContinue ?? false;
+    return value === true || String(value).trim().toLowerCase() === 'true';
+  }
+
+  getPlanCompletionLifecycleKey(plan) {
+    if (!plan?.id) return null;
+    return `${plan.id}:${plan.completedAt || plan.updatedAt || plan.status || 'completed'}`;
+  }
+
+  async hasPendingPlanInjectionAction() {
+    const actionsQueuePath = path.join(this.logsDir, 'actions-queue.json');
+    try {
+      const content = await fs.readFile(actionsQueuePath, 'utf-8');
+      const data = JSON.parse(content);
+      const activeStatuses = new Set(['pending', 'processing']);
+      return Array.isArray(data.actions) && data.actions.some(action =>
+        action?.type === 'inject_plan' && activeStatuses.has(String(action.status || 'pending').toLowerCase())
+      );
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async getCompletedGuidedPlanCloseoutCandidate() {
+    if (!this.isGuidedExclusiveRun()) return null;
+
+    const plan = await this.clusterStateStore?.getPlan?.('plan:main') || this.planExecutor?.plan || null;
+    if (!plan || plan.status !== 'COMPLETED') return null;
+
+    const lifecycleKey = this.getPlanCompletionLifecycleKey(plan);
+    if (lifecycleKey && this.completedPlanLifecycleKeys.has(lifecycleKey)) return null;
+
+    const activeAgents = this.agentExecutor?.registry?.getActiveCount?.() || 0;
+    if (activeAgents > 0) return null;
+
+    if (await this.hasPendingPlanInjectionAction()) return null;
+
+    let tasks = [];
+    let milestones = [];
+    if (this.clusterStateStore) {
+      tasks = await this.clusterStateStore.listTasks(plan.id);
+      milestones = await this.clusterStateStore.listMilestones(plan.id);
+    } else if (this.planExecutor) {
+      tasks = this.planExecutor.tasks || [];
+      milestones = this.planExecutor.phases || [];
+    }
+
+    const tasksComplete = tasks.length === 0 || tasks.every(task => task.state === 'DONE');
+    const milestonesComplete = milestones.length === 0 || milestones.every(milestone => milestone.status === 'COMPLETED');
+    if (!tasksComplete || !milestonesComplete) {
+      return null;
+    }
+
+    return { plan, tasks, milestones };
+  }
+
+  async handlePersistedCompletedPlanIfReady(trigger = 'cycle') {
+    const candidate = await this.getCompletedGuidedPlanCloseoutCandidate();
+    if (!candidate) return false;
+
+    this.logger.info('🎯 Persisted guided plan completion detected', {
+      trigger,
+      planId: candidate.plan.id,
+      tasks: candidate.tasks.length,
+      milestones: candidate.milestones.length
+    });
+
+    await this.handlePlanCompletion(candidate.plan, { trigger, persistedCompletion: true });
+    return true;
+  }
+
+  requestRunCompletion(reason, plan, trigger = 'plan_completion') {
+    if (this.runCompletionRequested) return false;
+
+    const runtime = this.runStartTime ? (Date.now() - this.runStartTime) / 1000 : 0;
+    this.runCompletionRequested = {
+      reason,
+      trigger,
+      planId: plan?.id || null,
+      planTitle: plan?.title || null,
+      cycle: this.cycleCount,
+      runtime,
+      requestedAt: new Date().toISOString()
+    };
+
+    if (this.recursiveState) {
+      this.recursiveState.halted = true;
+      this.recursiveState.haltReason = reason;
+    }
+
+    this._getEvents().emitRunStatus({
+      status: 'completed',
+      message: `Guided run completed: ${plan?.title || plan?.id || 'plan'}`,
+      cycle: this.cycleCount,
+      details: this.runCompletionRequested
+    });
+
+    this._getEvents().emitResearchComplete({
+      reason,
+      totalCycles: this.cycleCount,
+      runtime,
+      planId: plan?.id || null,
+      trigger
+    });
+
+    this.running = false;
+    return true;
+  }
+
+  async finishRequestedRunCompletion() {
+    const request = this.runCompletionRequested;
+    if (!request) return;
+
+    this.logger.info('');
+    this.logger.info('🏁 Guided run complete - stopping lifecycle', request);
+    this.logger.info('');
+
+    await this.stop();
+    this.logger.info('✅ Guided run stopped successfully');
+
+    if (this.config.execution?.disableProcessExitOnCompletion) {
+      return;
+    }
+
+    process.exit(0);
+  }
+
+  async spawnGuidedPendingTierIfReady(trigger = 'cycle') {
+    if (!this.isGuidedExclusiveRun()) return false;
+    if (typeof this.coordinator?.spawnPendingTierIfReady !== 'function') return false;
+
+    try {
+      const spawned = await this.coordinator.spawnPendingTierIfReady();
+      if (spawned) {
+        this.logger.info('✅ Guided pending tier spawned', { trigger });
+      }
+      return spawned;
+    } catch (error) {
+      this.logger.warn('Guided pending tier spawn check failed', {
+        trigger,
+        error: error.message
+      });
+      return false;
+    }
   }
 
   getGuidedPlanner() {
@@ -804,6 +955,10 @@ class Orchestrator {
       }
       
       await this.executeCycle();
+      if (this.runCompletionRequested) {
+        await this.finishRequestedRunCompletion();
+        return;
+      }
       const cycleForSync = this.cycleCount;
       await this.handleClusterCycleSync(cycleForSync);
       
@@ -935,6 +1090,10 @@ class Orchestrator {
       const interval = this.calculateNextInterval();
       this.logger.info(`💤 Sleeping for ${(interval/1000).toFixed(1)}s before next cycle...`);
       await this.sleep(interval);
+    }
+
+    if (!this.running) {
+      await this.stop();
     }
     
     // Arc closure: Generate deterministic manifest and arc report
@@ -1185,8 +1344,8 @@ class Orchestrator {
           }
 
           if (completedPlan) {
-            this.logger.info('🎯 Plan completed - triggering auto-next plan generation');
-            await this.handlePlanCompletion(completedPlan);
+            this.logger.info('🎯 Plan completed - triggering completion lifecycle');
+            await this.handlePlanCompletion(completedPlan, { trigger: 'plan_executor' });
           } else {
             // Log detailed diagnostics instead of silent failure
             this.logger.warn('⚠️  PLAN_COMPLETED detected but could not retrieve plan', {
@@ -1215,6 +1374,13 @@ class Orchestrator {
           this.logger.debug('✅ Task state queue processed', { events: taskQueueResult.processed });
         }
       }
+
+      // Guided-exclusive tier progression is part of plan execution, not
+      // autonomous review spawning. Service it every cycle after task state is
+      // current so Phase 2/3 artifact work cannot be stranded behind the
+      // commitment governor or a skipped meta review.
+      await this.spawnGuidedPendingTierIfReady('post_task_queue');
+      await this.handlePersistedCompletedPlanIfReady('post_task_queue');
       
       // Introspection pass (system-level self-awareness)
       // Run every 3 cycles to integrate agent outputs into memory
@@ -3754,8 +3920,10 @@ class Orchestrator {
   async evaluateCommitmentGovernor() {
     const snapshot = await this.collectCommitmentSnapshot();
     const decision = this.commitmentGovernor.evaluate(snapshot);
+    const appliedActions = await this.applyCommitmentDecisionActions(decision, snapshot);
     this.lastCommitmentDecision = {
       ...decision,
+      appliedActions,
       cycle: this.cycleCount,
       evaluatedAt: new Date().toISOString()
     };
@@ -3763,6 +3931,74 @@ class Orchestrator {
       this.logger.debug('[CommitmentGovernor] receipt write skipped', { error: error.message });
     });
     return decision;
+  }
+
+  async applyCommitmentDecisionActions(decision = {}, snapshot = {}) {
+    const appliedActions = [];
+    const nextActions = Array.isArray(decision.nextActions) ? decision.nextActions : [];
+    const stopAction = nextActions.find(action => action.type === 'stop_unproductive_run');
+
+    if (decision.shouldStopForBlockedRun && stopAction) {
+      const activeAgents = Number(snapshot.activeAgents || 0);
+      if (activeAgents === 0) {
+        this.recursiveState = {
+          ...(this.recursiveState || {}),
+          halted: true,
+          haltReason: 'guided_plan_blocked',
+          haltedAt: new Date().toISOString(),
+          haltEvidence: {
+            planStatus: snapshot.plan?.status || null,
+            blockedReason: snapshot.plan?.blockedReason || null,
+            reasonCodes: decision.reasonCodes || []
+          }
+        };
+        this.running = false;
+        appliedActions.push({
+          type: 'stop_unproductive_run',
+          applied: true,
+          reason: stopAction.reason || 'guided_plan_blocked'
+        });
+
+        this.logger.warn('[CommitmentGovernor] Halting blocked guided run', {
+          reason: stopAction.reason || 'guided_plan_blocked',
+          blockedReason: snapshot.plan?.blockedReason || null,
+          cycle: this.cycleCount
+        });
+      } else {
+        appliedActions.push({
+          type: 'stop_unproductive_run',
+          applied: false,
+          reason: 'active_agents_running',
+          activeAgents
+        });
+      }
+    }
+
+    const repairAction = nextActions.find(action => action.type === 'repair_blocked_research');
+    if (repairAction) {
+      this.blockedRunRepairRequest = {
+        requestedAt: new Date().toISOString(),
+        reason: repairAction.reason || null,
+        planStatus: snapshot.plan?.status || null
+      };
+      appliedActions.push({
+        type: 'repair_blocked_research',
+        applied: true,
+        reason: repairAction.reason || null
+      });
+    }
+
+    const commitAction = nextActions.find(action => action.type === 'commit_artifacts');
+    if (commitAction) {
+      appliedActions.push({
+        type: 'commit_artifacts',
+        applied: false,
+        reason: 'commit_artifacts_executor_not_implemented',
+        artifactAudit: snapshot.artifactAudit || {}
+      });
+    }
+
+    return appliedActions;
   }
 
   async getCommitmentDecisionForCycle() {
@@ -4612,7 +4848,20 @@ class Orchestrator {
    * Handle plan completion - determine next actions
    * ENHANCED: For guided modes, automatically generates next plan instead of going autonomous
    */
-  async handlePlanCompletion(plan) {
+  async handlePlanCompletion(plan, options = {}) {
+    const lifecycleKey = this.getPlanCompletionLifecycleKey(plan);
+    if (lifecycleKey && this.completedPlanLifecycleKeys.has(lifecycleKey)) {
+      this.logger.debug('Plan completion lifecycle already handled', {
+        planId: plan?.id,
+        lifecycleKey,
+        trigger: options.trigger
+      });
+      return;
+    }
+    if (lifecycleKey) {
+      this.completedPlanLifecycleKeys.add(lifecycleKey);
+    }
+
     this.logger.info('');
     this.logger.info('╔═══════════════════════════════════════════════════╗');
     this.logger.info('║          PLAN COMPLETED SUCCESSFULLY              ║');
@@ -4633,7 +4882,7 @@ class Orchestrator {
     }
 
     const executionModeInfo = this.getExecutionModeInfo();
-    const shouldAutoGenerateNextPlan = this.isGuidedExclusiveRun();
+    const shouldAutoGenerateNextPlan = this.isGuidedExclusiveRun() && this.isGuidedAutoContinueEnabled();
 
     if (shouldAutoGenerateNextPlan) {
       this.logger.info('');
@@ -4658,7 +4907,17 @@ class Orchestrator {
           domain: plan.domain || this.config?.architecture?.roleSystem?.guidedFocus?.domain,
           effectiveExecutionMode: GUIDED_EFFECTIVE_MODE
         });
+
+        this.requestRunCompletion('guided_continuation_planner_failed', plan, options.trigger || 'guided_planner_failed');
       }
+    } else if (this.isGuidedExclusiveRun()) {
+      this.logger.info('');
+      this.logger.info(`🎯 Execution Mode: ${executionModeInfo.effectiveMode.toUpperCase()}`);
+      this.logger.info('   Guided plan complete - stopping run lifecycle');
+      this.logger.info('   No automatic continuation is configured');
+      this.logger.info('');
+
+      this.requestRunCompletion('guided_plan_completed', plan, options.trigger || 'plan_completion');
     } else if (executionModeInfo.persistedMode === 'strict') {
       this.logger.info('');
       this.logger.info(`🎯 Execution Mode: ${executionModeInfo.effectiveMode.toUpperCase()}`);

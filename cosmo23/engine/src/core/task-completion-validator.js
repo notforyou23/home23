@@ -184,6 +184,65 @@ function hasJsonSubstance(value) {
   });
 }
 
+function normalizeRouteReceiptAttempts(value = {}) {
+  return normalizeArray(value.route_receipts?.attempts || value.routeReceipts?.attempts || value.attempts);
+}
+
+function validateArchiveOrgCommentsJson(value = {}) {
+  if (!isPlainObject(value)) {
+    return { passed: false, reason: 'archive_comments_not_an_object' };
+  }
+
+  const entries = normalizeArray(value.entries);
+  const requiredIdentifiers = normalizeArray(value.required_identifiers || value.requiredIdentifiers)
+    .map(String)
+    .filter(Boolean);
+  const identifierStatuses = normalizeArray(value.identifier_statuses || value.identifierStatuses);
+  const attempts = normalizeRouteReceiptAttempts(value);
+  const attemptedRoutes = new Set(attempts.map(item => item.route).filter(Boolean));
+
+  if (!attemptedRoutes.has('archive.reviews')) {
+    return { passed: false, reason: 'archive_reviews_route_not_attempted' };
+  }
+
+  if (requiredIdentifiers.length > 0 && !attemptedRoutes.has('archive.metadata')) {
+    return { passed: false, reason: 'archive_metadata_route_not_attempted' };
+  }
+
+  for (const entry of entries) {
+    if (!entry.identifier) return { passed: false, reason: 'archive_review_entry_missing_identifier' };
+    if (!entry.source_url) return { passed: false, reason: 'archive_review_entry_missing_source_url' };
+    const body = entry.review_body || entry.body || entry.anecdote_text || '';
+    if (typeof body !== 'string' || body.trim().length === 0) {
+      return { passed: false, reason: 'archive_review_entry_missing_body' };
+    }
+  }
+
+  if (requiredIdentifiers.length > 0) {
+    for (const identifier of requiredIdentifiers) {
+      const hasEntry = entries.some(entry => entry.identifier === identifier);
+      const status = identifierStatuses.find(item => item.identifier === identifier);
+      const hasAcceptedNegative = status &&
+        status.metadata_route === 'accepted' &&
+        ['no_reviews_found', 'reviews_extracted'].includes(status.status);
+      if (!hasEntry && !hasAcceptedNegative) {
+        return { passed: false, reason: `archive_identifier_not_resolved:${identifier}` };
+      }
+    }
+  }
+
+  if (entries.length === 0) {
+    const hasNegativeReceipts = identifierStatuses.length > 0 &&
+      identifierStatuses.every(item => item.status === 'no_reviews_found' && item.metadata_route === 'accepted');
+    const urlsSearched = normalizeArray(value.urls_searched || value.urlsSearched);
+    if (!hasNegativeReceipts || urlsSearched.length === 0) {
+      return { passed: false, reason: 'archive_comments_no_entries_without_negative_receipts' };
+    }
+  }
+
+  return { passed: true };
+}
+
 async function validateExpectedOutputFile(absolutePath, expected = {}, context = {}) {
   const stat = await fs.stat(absolutePath);
   if (!stat.isFile()) {
@@ -205,6 +264,12 @@ async function validateExpectedOutputFile(absolutePath, expected = {}, context =
       parsed = JSON.parse(content);
     } catch (error) {
       return { passed: false, reason: `invalid_json: ${error.message}` };
+    }
+    if (/archive-org-comments\.json$/i.test(path.basename(absolutePath))) {
+      const archiveValidation = validateArchiveOrgCommentsJson(parsed);
+      if (!archiveValidation.passed) {
+        return { passed: false, reason: archiveValidation.reason };
+      }
     }
     if (!hasJsonSubstance(parsed)) {
       return { passed: false, reason: 'json_has_no_substantive_records' };
@@ -388,6 +453,23 @@ async function collectResearchEvidenceFromArtifacts(task = {}, closure = {}, con
       evidence.successfulSources += rows.filter(row => row.ok === true).length;
       evidence.pagesAcquired += rows.filter(row => row.ok === true).length;
     }
+
+    if (filename === 'archive-org-comments.json') {
+      const data = absolutePath ? await readJsonIfPresent(absolutePath) : null;
+      if (data) {
+        const entries = normalizeArray(data.entries);
+        const attempts = normalizeRouteReceiptAttempts(data);
+        evidence.queriesAttempted += attempts.length;
+        evidence.queriesExecuted += attempts.filter(row => row.status).length;
+        evidence.searchFailures += attempts.filter(row => row.status === 'failed').length;
+        evidence.sourcesFound += normalizeArray(data.urls_searched || data.urlsSearched).length;
+        evidence.successfulSources += normalizeArray(data.route_receipts?.productive_source_urls || data.routeReceipts?.productiveSourceUrls).length;
+        evidence.entriesFound += entries.length;
+        if (entries.length > 0) {
+          evidence.successfulSources += entries.filter(entry => entry.source_url).length;
+        }
+      }
+    }
   }
 
   return evidence;
@@ -396,6 +478,7 @@ async function collectResearchEvidenceFromArtifacts(task = {}, closure = {}, con
 async function validateTaskCompletionClosure(task = {}, closure = {}, context = {}) {
   const expectedOutputs = getExpectedOutputSpecs(task);
   const artifacts = normalizeArtifactRefs(task, closure);
+  const expectedArtifacts = [];
 
   if (expectedOutputs.length > 0) {
     const expectedValidation = await validateExpectedOutputs(expectedOutputs, artifacts, context);
@@ -412,11 +495,18 @@ async function validateTaskCompletionClosure(task = {}, closure = {}, context = 
         expectedValidation
       };
     }
+    expectedArtifacts.push(...expectedValidation.artifacts);
   }
 
   const researchContract = task.metadata?.researchContract || task.researchContract || deriveResearchContract(task);
   if (researchContract.required) {
-    const evidence = await collectResearchEvidenceFromArtifacts(task, closure, context);
+    const evidence = await collectResearchEvidenceFromArtifacts({
+      ...task,
+      producedArtifacts: [
+        ...normalizeArray(task.producedArtifacts),
+        ...expectedArtifacts
+      ]
+    }, closure, context);
     const contractValidation = evaluateResearchEvidence(researchContract, evidence);
     if (!contractValidation.passed) {
       return {
