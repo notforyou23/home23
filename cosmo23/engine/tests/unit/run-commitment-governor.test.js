@@ -148,6 +148,43 @@ describe('RunCommitmentGovernor', () => {
     });
   });
 
+  it('closes spawning and requests source-route repair when source backbone receipts are blocked', () => {
+    const governor = new RunCommitmentGovernor({}, logger);
+
+    const decision = governor.evaluate({
+      cycleCount: 57,
+      guidedRun: true,
+      activeAgents: 0,
+      goals: [{ id: 'goal_1', source: 'meta_coordinator_strategic', metadata: { strategicPriority: true } }],
+      providerErrors: [],
+      plan: { status: 'ACTIVE' },
+      artifactAudit: {
+        committedArtifacts: 0,
+        neverReusedArtifacts: 0,
+        unregisteredFiles: 0,
+        sourceBackboneBlockCount: 1,
+        sourceBackboneBlocks: [{
+          nextAllowedAction: 'attempt_missing_required_source_routes',
+          missingRequiredRoutes: ['crossref.works'],
+          failedRequiredRoutes: []
+        }]
+      },
+      synthesisCommit: null
+    });
+
+    expect(decision.spawnAllowed).to.equal(false);
+    expect(decision.strategicSpawnBudget).to.equal(0);
+    expect(decision.urgentSpawnBudget).to.equal(0);
+    expect(decision.reasonCodes).to.include('source_backbone_route_blocked');
+    expect(decision.nextActions).to.deep.include({
+      type: 'repair_source_routes',
+      reason: 'attempt_missing_required_source_routes',
+      missingRequiredRoutes: ['crossref.works'],
+      failedRequiredRoutes: [],
+      sourceBackboneBlockCount: 1
+    });
+  });
+
   it('normalizes provider error objects into governor-compatible events', () => {
     const governor = new RunCommitmentGovernor({}, logger);
     const event = governor.normalizeProviderError({

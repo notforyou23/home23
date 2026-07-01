@@ -3988,6 +3988,24 @@ class Orchestrator {
       });
     }
 
+    const routeRepairAction = nextActions.find(action => action.type === 'repair_source_routes');
+    if (routeRepairAction) {
+      this.blockedRunRepairRequest = {
+        requestedAt: new Date().toISOString(),
+        reason: routeRepairAction.reason || null,
+        planStatus: snapshot.plan?.status || null,
+        missingRequiredRoutes: routeRepairAction.missingRequiredRoutes || [],
+        failedRequiredRoutes: routeRepairAction.failedRequiredRoutes || []
+      };
+      appliedActions.push({
+        type: 'repair_source_routes',
+        applied: true,
+        reason: routeRepairAction.reason || null,
+        missingRequiredRoutes: routeRepairAction.missingRequiredRoutes || [],
+        failedRequiredRoutes: routeRepairAction.failedRequiredRoutes || []
+      });
+    }
+
     const commitAction = nextActions.find(action => action.type === 'commit_artifacts');
     if (commitAction) {
       appliedActions.push({
@@ -4012,7 +4030,12 @@ class Orchestrator {
     if (!this.config?.logsDir) return {};
     const { auditArtifactLoop } = require('../artifacts/artifact-audit');
     const audit = await auditArtifactLoop(this.config.logsDir);
-    return audit.totals || {};
+    return {
+      ...(audit.totals || {}),
+      sourceBackboneBlocks: Array.isArray(audit.sourceBackboneBlocks)
+        ? audit.sourceBackboneBlocks.slice(0, 10)
+        : []
+    };
   }
 
   async getLatestSynthesisCommitReceipt() {

@@ -392,13 +392,17 @@ describe('PlanExecutor output-contract validation', function() {
       sources: [{ url: 'https://example.com/article', title: 'Generic web result' }]
     }, null, 2));
     await fs.writeFile(path.join(proofDir, 'source_backbone_status.json'), JSON.stringify({
-      can_continue: true,
+      can_continue: false,
       required_routes: ['crossref.works'],
+      attempted_routes: ['web.search'],
+      accepted_routes: ['web.search'],
       productive_sources: 1,
       productive_source_urls: ['https://example.com/article'],
       attempts: 1,
       crossings: 1,
-      failed_routes: []
+      failed_routes: [],
+      missing_required_routes: ['crossref.works'],
+      next_allowed_action: 'attempt_missing_required_source_routes'
     }, null, 2));
     await fs.writeFile(path.join(proofDir, 'source_attempts.jsonl'), [
       JSON.stringify({ route: 'web.search', status: 'accepted', result_count: 1, url_count: 1 })

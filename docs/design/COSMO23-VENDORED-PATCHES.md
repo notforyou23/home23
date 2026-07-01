@@ -2290,3 +2290,13 @@ completed run artifacts.
   Mocha suite (80), artifact/query cache node tests (5), interactive artifact
   grounding test, and syntax checks for patched COSMO query/server/validator
   files.
+- **2026-06-30** — Patch 41 moved source-route failure detection earlier in
+  the autonomous loop. `source_backbone_status.json` now records attempted,
+  accepted, accepted-empty, missing-required, and failed-required routes, and
+  sets route-specific repair actions instead of generic continue/stop signals.
+  Artifact audit reads blocked source-backbone receipts, and the commitment
+  governor closes spawn budgets with a `repair_source_routes` action before the
+  run spends more cycles on synthesis or unrelated agents. Verification passed:
+  research/completion/audit/governor/orchestrator Mocha suite (89) plus syntax
+  checks for the patched agent, audit, governor, validator, and orchestrator
+  files.

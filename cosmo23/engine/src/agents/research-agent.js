@@ -2464,18 +2464,27 @@ Respond with JSON array of follow-up directions:
 
     const attempts = evidence.map(item => {
       const accepted = item.quality?.acceptable === true;
-      const failed = Boolean(item.error || item.code);
+      const providerStatus = String(item.providerAttempt?.status || '').toLowerCase();
+      const failed = Boolean(item.error || item.code || item.providerAttempt?.error || providerStatus === 'failed');
+      const empty = !accepted && !failed && [
+        'empty',
+        'no_results',
+        'no_results_found',
+        'no_reviews_found',
+        'not_found',
+        'accepted_empty'
+      ].includes(providerStatus);
       return {
         timestamp: item.timestamp || new Date().toISOString(),
         query: item.query || '',
         executed_query: item.executedQuery || item.query || '',
         route: item.backend || 'unknown',
-        status: accepted ? 'accepted' : (failed ? 'failed' : 'rejected'),
+        status: accepted ? 'accepted' : (empty ? 'empty' : (failed ? 'failed' : 'rejected')),
         strict_mode: this.requiresVerifiedSources(),
         result_count: item.resultCount || 0,
         url_count: (item.urls || []).length,
         quality_reason: item.quality?.reason || null,
-        error: item.error || null,
+        error: item.error || item.providerAttempt?.error || null,
         code: item.code || null,
         urls: item.urls || []
       };
@@ -2517,14 +2526,39 @@ Respond with JSON array of follow-up directions:
       .map(item => item.replace(/^@?outputs\//, 'outputs/'))
       .filter(item => !exportedPaths.has(item));
 
-    const failedRoutes = [...new Set(attempts
-      .filter(item => item.status !== 'accepted')
+    const requiredRoutes = this.getRequiredSourceRoutes();
+    const attemptedRoutes = [...new Set(attempts.map(item => item.route).filter(Boolean))];
+    const acceptedRoutes = [...new Set(attempts
+      .filter(item => item.status === 'accepted')
       .map(item => item.route))];
+    const acceptedEmptyRoutes = [...new Set(attempts
+      .filter(item => item.status === 'empty')
+      .map(item => item.route))];
+    const failedRoutes = [...new Set(attempts
+      .filter(item => item.status === 'failed' || item.status === 'rejected')
+      .map(item => item.route))];
+    const missingRequiredRoutes = requiredRoutes
+      .filter(route => !attemptedRoutes.includes(route));
+    const failedRequiredRoutes = requiredRoutes
+      .filter(route =>
+        failedRoutes.includes(route) &&
+        !acceptedRoutes.includes(route) &&
+        !acceptedEmptyRoutes.includes(route)
+      );
     const sourceRequired = this.requiresVerifiedSources();
     const canContinue =
       (!sourceRequired || productiveSources.length > 0) &&
       missingRequiredOutputs.length === 0 &&
-      (plannedQueries.length === 0 || executedQueries.length > 0);
+      (plannedQueries.length === 0 || executedQueries.length > 0) &&
+      missingRequiredRoutes.length === 0 &&
+      failedRequiredRoutes.length === 0;
+    const nextAllowedAction = canContinue
+      ? 'continue'
+      : (missingRequiredRoutes.length > 0
+        ? 'attempt_missing_required_source_routes'
+        : (failedRequiredRoutes.length > 0
+          ? 'repair_failed_required_source_routes'
+          : 'stop_and_repair_source_acquisition'));
 
     return {
       attempts,
@@ -2544,19 +2578,24 @@ Respond with JSON array of follow-up directions:
         mission: this.mission.description,
         goal_id: this.mission.goalId,
         can_continue: canContinue,
-        required_routes: this.getRequiredSourceRoutes(),
+        required_routes: requiredRoutes,
+        attempted_routes: attemptedRoutes,
+        accepted_routes: acceptedRoutes,
+        accepted_empty_routes: acceptedEmptyRoutes,
         required_identifiers: archiveIdentifiers,
         extracted_record_count: this.buildArchiveReviewEntries().length,
         productive_sources: productiveSources.length,
         productive_source_urls: productiveSources.slice(0, 50),
         failed_routes: failedRoutes,
+        missing_required_routes: missingRequiredRoutes,
+        failed_required_routes: failedRequiredRoutes,
         missing_required_outputs: missingRequiredOutputs,
         missing_planned_queries: missingPlannedQueries,
         source_required: sourceRequired,
         attempts: attempts.length,
         crossings: crossings.length,
         extraction_receipts: extractions.length,
-        next_allowed_action: canContinue ? 'continue' : 'stop_and_repair_source_acquisition'
+        next_allowed_action: nextAllowedAction
       }
     };
   }

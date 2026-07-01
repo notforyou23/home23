@@ -87,6 +87,23 @@ class RunCommitmentGovernor {
     const committedArtifacts = toNumber(artifactAudit.committedArtifacts, 0);
     const neverReusedArtifacts = toNumber(artifactAudit.neverReusedArtifacts, 0);
     const unregisteredFiles = toNumber(artifactAudit.unregisteredFiles, 0);
+    const sourceBackboneBlocks = normalizeArray(artifactAudit.sourceBackboneBlocks);
+    const sourceBackboneBlockCount = toNumber(
+      artifactAudit.sourceBackboneBlockCount,
+      sourceBackboneBlocks.length
+    );
+    const sourceBackboneBlocked = sourceBackboneBlockCount > 0;
+    if (sourceBackboneBlocked) {
+      const firstBlock = sourceBackboneBlocks[0] || {};
+      reasonCodes.push('source_backbone_route_blocked');
+      nextActions.push({
+        type: 'repair_source_routes',
+        reason: firstBlock.nextAllowedAction || 'source_backbone_route_blocked',
+        missingRequiredRoutes: firstBlock.missingRequiredRoutes || [],
+        failedRequiredRoutes: firstBlock.failedRequiredRoutes || [],
+        sourceBackboneBlockCount
+      });
+    }
     const hasArtifactWork = outputFiles > 0 ||
       registeredArtifacts > 0 ||
       neverReusedArtifacts > 0 ||
@@ -124,7 +141,11 @@ class RunCommitmentGovernor {
       reasonCodes.push('run_has_committed_answer');
     }
 
-    const spawnAllowed = !rateLimited && !requiresArtifactCommitment && !shouldStopForCompletion && !guidedPlanBlocked;
+    const spawnAllowed = !rateLimited &&
+      !requiresArtifactCommitment &&
+      !shouldStopForCompletion &&
+      !guidedPlanBlocked &&
+      !sourceBackboneBlocked;
 
     return this.buildDecision({
       spawnAllowed,
@@ -133,9 +154,9 @@ class RunCommitmentGovernor {
       requiresArtifactCommitment,
       shouldStopForCompletion,
       shouldStopForBlockedRun: guidedPlanBlocked,
-      allowStrategicBypass: !guidedNonRepair && !rateLimited,
-      strategicSpawnBudget: rateLimited ? 0 : Math.min(this.config.maxStrategicSpawnsPerCycle, strategicGoals.length),
-      urgentSpawnBudget: rateLimited ? 0 : this.config.maxUrgentSpawnsPerCycle,
+      allowStrategicBypass: !guidedNonRepair && !rateLimited && !sourceBackboneBlocked,
+      strategicSpawnBudget: (rateLimited || sourceBackboneBlocked) ? 0 : Math.min(this.config.maxStrategicSpawnsPerCycle, strategicGoals.length),
+      urgentSpawnBudget: (rateLimited || sourceBackboneBlocked) ? 0 : this.config.maxUrgentSpawnsPerCycle,
       reasonCodes,
       nextActions,
       summary: {
@@ -146,7 +167,8 @@ class RunCommitmentGovernor {
         recentRateLimits: recentRateLimits.length,
         committedArtifacts,
         unregisteredFiles,
-        neverReusedArtifacts
+        neverReusedArtifacts,
+        sourceBackboneBlockCount
       }
     });
   }

@@ -470,6 +470,154 @@ describe('ResearchAgent handoff generation', () => {
     expect(agent.exportedFiles.map(file => file.relativePath)).to.include(`outputs/research/${agent.agentId}/source_backbone_status.json`);
   });
 
+  it('blocks source backbone continuation when a required source route was never attempted', () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-missing-required-route',
+        description: 'Use the supplied research contract to acquire typed sources.',
+        metadata: {
+          researchContract: {
+            required: true,
+            mode: 'source_acquisition',
+            sourceProviderHints: ['crossref.works']
+          }
+        }
+      },
+      { models: { enableWebSearch: true } },
+      logger
+    );
+
+    agent.searchQueries = ['generic publication source_url'];
+    agent.sourcesFound = ['https://example.com/generic'];
+    agent.searchEvidence = [{
+      timestamp: '2026-06-30T00:00:00.000Z',
+      query: 'generic publication source_url',
+      executedQuery: 'generic publication source_url',
+      backend: 'web.search',
+      resultCount: 1,
+      urls: ['https://example.com/generic'],
+      quality: { acceptable: true, reason: 'typed_source_candidates_found', relevantResults: 1 },
+      sourceValidation: [{ url: 'https://example.com/generic', ok: true, status: 200 }],
+      results: []
+    }];
+
+    const receipts = agent.buildSourceBackboneReceipts({ findings: [] }, [], []);
+
+    expect(receipts.status.productive_sources).to.equal(1);
+    expect(receipts.status.can_continue).to.equal(false);
+    expect(receipts.status.required_routes).to.deep.equal(['crossref.works']);
+    expect(receipts.status.attempted_routes).to.deep.equal(['web.search']);
+    expect(receipts.status.missing_required_routes).to.deep.equal(['crossref.works']);
+    expect(receipts.status.next_allowed_action).to.equal('attempt_missing_required_source_routes');
+  });
+
+  it('blocks source backbone continuation when a required source route failed', () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-failed-required-route',
+        description: 'Use the supplied research contract to acquire typed sources.',
+        metadata: {
+          researchContract: {
+            required: true,
+            mode: 'source_acquisition',
+            sourceProviderHints: ['crossref.works']
+          }
+        }
+      },
+      { models: { enableWebSearch: true } },
+      logger
+    );
+
+    agent.searchQueries = ['generic publication source_url'];
+    agent.sourcesFound = ['https://example.com/generic'];
+    agent.searchEvidence = [
+      {
+        timestamp: '2026-06-30T00:00:00.000Z',
+        query: 'generic publication source_url',
+        executedQuery: 'generic publication source_url',
+        backend: 'web.search',
+        resultCount: 1,
+        urls: ['https://example.com/generic'],
+        quality: { acceptable: true, reason: 'typed_source_candidates_found', relevantResults: 1 },
+        sourceValidation: [{ url: 'https://example.com/generic', ok: true, status: 200 }],
+        results: []
+      },
+      {
+        timestamp: '2026-06-30T00:00:01.000Z',
+        query: 'generic publication source_url',
+        executedQuery: 'generic publication source_url',
+        backend: 'crossref.works',
+        resultCount: 0,
+        urls: [],
+        quality: { acceptable: false, reason: 'provider_failed', relevantResults: 0 },
+        providerAttempt: { route: 'crossref.works', status: 'failed', error: 'HTTP 500' },
+        sourceValidation: [],
+        results: []
+      }
+    ];
+
+    const receipts = agent.buildSourceBackboneReceipts({ findings: [] }, [], []);
+
+    expect(receipts.status.productive_sources).to.equal(1);
+    expect(receipts.status.can_continue).to.equal(false);
+    expect(receipts.status.attempted_routes).to.include.members(['web.search', 'crossref.works']);
+    expect(receipts.status.failed_required_routes).to.deep.equal(['crossref.works']);
+    expect(receipts.status.next_allowed_action).to.equal('repair_failed_required_source_routes');
+  });
+
+  it('allows continuation when a required source route has an accepted empty receipt and another route has source evidence', () => {
+    const agent = new ResearchAgent(
+      {
+        goalId: 'goal-empty-required-route',
+        description: 'Use the supplied research contract to acquire typed sources.',
+        metadata: {
+          researchContract: {
+            required: true,
+            mode: 'source_acquisition',
+            sourceProviderHints: ['crossref.works']
+          }
+        }
+      },
+      { models: { enableWebSearch: true } },
+      logger
+    );
+
+    agent.searchQueries = ['generic publication source_url'];
+    agent.sourcesFound = ['https://example.com/generic'];
+    agent.searchEvidence = [
+      {
+        timestamp: '2026-06-30T00:00:00.000Z',
+        query: 'generic publication source_url',
+        executedQuery: 'generic publication source_url',
+        backend: 'web.search',
+        resultCount: 1,
+        urls: ['https://example.com/generic'],
+        quality: { acceptable: true, reason: 'typed_source_candidates_found', relevantResults: 1 },
+        sourceValidation: [{ url: 'https://example.com/generic', ok: true, status: 200 }],
+        results: []
+      },
+      {
+        timestamp: '2026-06-30T00:00:01.000Z',
+        query: 'generic publication source_url',
+        executedQuery: 'generic publication source_url',
+        backend: 'crossref.works',
+        resultCount: 0,
+        urls: [],
+        quality: { acceptable: false, reason: 'no_validated_typed_source_candidates', relevantResults: 0 },
+        providerAttempt: { route: 'crossref.works', status: 'empty' },
+        sourceValidation: [],
+        results: []
+      }
+    ];
+
+    const receipts = agent.buildSourceBackboneReceipts({ findings: [] }, [], []);
+
+    expect(receipts.status.can_continue).to.equal(true);
+    expect(receipts.status.accepted_empty_routes).to.deep.equal(['crossref.works']);
+    expect(receipts.status.failed_routes).to.deep.equal([]);
+    expect(receipts.status.next_allowed_action).to.equal('continue');
+  });
+
   it('supplements provider-native web search with local search for source-required missions', async () => {
     const agent = new ResearchAgent(
       {

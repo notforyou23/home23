@@ -483,11 +483,28 @@ async function collectResearchEvidenceFromArtifacts(task = {}, closure = {}, con
         evidence.successfulSources += normalizeArray(data.productive_source_urls).length;
         evidence.pagesAcquired += Number(data.crossings || 0);
         for (const route of normalizeArray(data.required_routes)) addEvidenceRoute(evidence, 'requiredRoutes', route);
+        for (const route of normalizeArray(data.attempted_routes)) addEvidenceRoute(evidence, 'attemptedRoutes', route);
+        for (const route of normalizeArray(data.accepted_routes)) addEvidenceRoute(evidence, 'successfulRoutes', route);
+        for (const route of normalizeArray(data.accepted_empty_routes)) addEvidenceRoute(evidence, 'acceptedEmptyRoutes', route);
         for (const route of normalizeArray(data.failed_routes)) {
           addEvidenceRoute(evidence, 'attemptedRoutes', route);
           addEvidenceRoute(evidence, 'failedRoutes', route);
         }
-        if (data.can_continue === false) evidence.statuses.push('blocked_no_sources');
+        if (normalizeArray(data.missing_required_routes).length > 0) {
+          evidence.missingRequiredRoutes = normalizeArray(data.missing_required_routes);
+        }
+        if (normalizeArray(data.failed_required_routes).length > 0) {
+          evidence.failedRequiredRoutes = normalizeArray(data.failed_required_routes);
+        }
+        if (data.can_continue === false) {
+          if (normalizeArray(data.missing_required_routes).length > 0) {
+            evidence.statuses.push('blocked_missing_required_routes');
+          } else if (normalizeArray(data.failed_required_routes).length > 0) {
+            evidence.statuses.push('blocked_failed_required_routes');
+          } else {
+            evidence.statuses.push('blocked_no_sources');
+          }
+        }
         if (data.next_allowed_action) evidence.reasons.push(data.next_allowed_action);
       }
     }

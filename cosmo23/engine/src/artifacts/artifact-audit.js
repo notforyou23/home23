@@ -51,6 +51,8 @@ async function auditArtifactLoop(runDir, options = {}) {
     completedAt: task.completedAt || null,
     artifactClosure: task.artifactClosure || null
   }));
+  const sourceBackboneStatuses = await readSourceBackboneStatuses(outputFiles, runDir);
+  const sourceBackboneBlocks = sourceBackboneStatuses.filter(item => item.canContinue === false);
 
   return {
     schema: 'cosmo23.artifact_audit.v1',
@@ -68,7 +70,9 @@ async function auditArtifactLoop(runDir, options = {}) {
       parsedArtifacts: parsedArtifacts.length,
       supersededArtifacts: supersededArtifacts.length,
       neverReusedArtifacts: neverReusedArtifacts.length,
-      completedTasksWithoutProducedArtifacts: completedTasksWithoutProducedArtifacts.length
+      completedTasksWithoutProducedArtifacts: completedTasksWithoutProducedArtifacts.length,
+      sourceBackboneStatusFiles: sourceBackboneStatuses.length,
+      sourceBackboneBlockCount: sourceBackboneBlocks.length
     },
     unregisteredFiles,
     orphanArtifacts,
@@ -79,8 +83,33 @@ async function auditArtifactLoop(runDir, options = {}) {
     supersededArtifacts,
     currentArtifacts,
     neverReusedArtifacts,
-    completedTasksWithoutProducedArtifacts
+    completedTasksWithoutProducedArtifacts,
+    sourceBackboneStatuses,
+    sourceBackboneBlocks
   };
+}
+
+async function readSourceBackboneStatuses(outputFiles = [], runDir) {
+  const statuses = [];
+  for (const filePath of outputFiles) {
+    if (path.basename(filePath) !== 'source_backbone_status.json') continue;
+    try {
+      const data = JSON.parse(await fs.readFile(filePath, 'utf8'));
+      statuses.push({
+        path: normalize(path.relative(runDir, filePath)),
+        canContinue: data.can_continue !== false,
+        nextAllowedAction: data.next_allowed_action || null,
+        requiredRoutes: normalizeArray(data.required_routes),
+        attemptedRoutes: normalizeArray(data.attempted_routes),
+        missingRequiredRoutes: normalizeArray(data.missing_required_routes),
+        failedRequiredRoutes: normalizeArray(data.failed_required_routes),
+        failedRoutes: normalizeArray(data.failed_routes),
+        productiveSources: Number(data.productive_sources || 0),
+        sourceRequired: data.source_required === true
+      });
+    } catch (_) {}
+  }
+  return statuses;
 }
 
 async function readRegistry(registryPath) {
@@ -123,6 +152,11 @@ async function readTasks(root) {
 
 function normalize(value) {
   return String(value || '').replace(/\\/g, '/');
+}
+
+function normalizeArray(value) {
+  if (!value) return [];
+  return Array.isArray(value) ? value : [value];
 }
 
 module.exports = { auditArtifactLoop };
