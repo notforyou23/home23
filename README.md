@@ -39,13 +39,22 @@ For the shortest path, follow [docs/ONBOARDING.md](docs/ONBOARDING.md). The core
 ```bash
 git clone https://github.com/notforyou23/home23.git
 cd home23
+node cli/home23.js setup
+```
+
+`setup` runs install initialization, creates the first personal agent, asks what the agent should help with, and lets you paste project folders to ingest immediately. Those folders can be normal work folders, Claude/Codex project exports, or other local project directories you want the agent to learn from.
+
+Manual operator flow:
+
+```bash
 node cli/home23.js init
 node cli/home23.js agent create <name>
+node cli/home23.js start <name>
 ```
 
 Init checks prerequisites, installs all dependencies (including MarkItDown for document ingestion), sets up encryption keys and the OAuth database, builds the TypeScript harness, and seeds all configuration. No API keys needed — provider setup happens in the web dashboard.
 
-`agent create` creates the first local runtime under `instances/<name>/` and regenerates the PM2 ecosystem. Local runtime/config files are intentionally ignored by Git; public defaults live in `config/*.example`.
+`agent create` creates the first local runtime under `instances/<name>/`, records its purpose, configures starter feeder watch paths, and regenerates the PM2 ecosystem. Local runtime/config files are intentionally ignored by Git; public defaults live in `config/*.example`.
 
 Before handing a fresh install to someone else, run:
 
@@ -62,20 +71,19 @@ Those checks verify TypeScript, unit coverage, schema/fixture contracts, read-on
 
 ## Setup — Web Dashboard
 
-Everything after init happens in the browser. Start the system:
+After `setup`, start the system:
 
 ```bash
-node cli/home23.js start
+node cli/home23.js start <name>
 ```
 
 Then open **`http://localhost:5002/home23`** in your browser.
 
-**First-run flow** — a guided onboarding wizard walks you through setup:
-1. **Welcome screen** — click "Get Started"
-2. **Providers** — sign in with OAuth (recommended for Anthropic and OpenAI Codex) or enter API keys. At least one provider required to continue.
-3. **Create Agent** — name, owner, model selection (shows only models from your configured providers), optional Telegram token
-4. **Launch** — starts the agent and takes you to the dashboard home screen
-5. **You're live** — real-time thoughts, chat, intelligence synthesis, and full system access
+Use Settings to finish or adjust:
+1. **Providers** — sign in with OAuth where available or enter API keys.
+2. **Agents** — review the personal agent name, purpose, owner, channels, and model.
+3. **Feeder** — add or remove project folders, uploads, Claude exports, reports, and other local files to ingest.
+4. **Chat** — start using the agent once the provider and model are configured.
 
 The web dashboard is the primary interface for everything — provider configuration, agent creation, model selection, feeder settings, and day-to-day use. The CLI handles init, start/stop, and updates.
 

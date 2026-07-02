@@ -852,6 +852,7 @@ function renderAgents(agents) {
   list.innerHTML = agents.map(a => {
     const provLabel = PROVIDER_DISPLAY[a.provider] || a.provider || '?';
     const dashUrl = `http://${window.location.hostname}:${a.ports.dashboard || '?'}`;
+    const purposeLabel = a.purpose || 'not set';
     return `
     <div class="h23s-agent-card ${a.isPrimary ? 'is-primary' : ''}" data-agent="${a.name}">
       <div class="h23s-agent-summary">
@@ -873,6 +874,7 @@ function renderAgents(agents) {
         <span><b>Model</b><strong>${a.model || '?'}</strong></span>
         <span><b>Provider</b><strong>${provLabel}</strong></span>
         <span><b>Owner</b><strong>${a.owner || 'not set'}</strong></span>
+        <span><b>Purpose</b><strong title="${escapeHtml(purposeLabel)}">${escapeHtml(purposeLabel)}</strong></span>
         <span><b>Ports</b><strong>${a.ports.engine || '?'} / ${a.ports.dashboard || '?'}</strong></span>
         <span><b>Channels</b><strong>${[a.channels?.telegram?.enabled && 'Telegram', a.channels?.discord?.enabled && 'Discord'].filter(Boolean).join(', ') || 'Direct only'}</strong></span>
       </div>
@@ -913,6 +915,10 @@ function renderAgents(agents) {
             <label>Owner Telegram ID</label>
             <input type="text" id="edit-${a.name}-telegramId" value="${a.telegramId || ''}" placeholder="Numeric user ID (optional)">
           </div>
+        </div>
+        <div class="h23s-field">
+          <label>Purpose</label>
+          <textarea id="edit-${a.name}-purpose" rows="3">${escapeHtml(a.purpose || '')}</textarea>
         </div>
         <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--glass-border);">
           <h4 style="font-size:12px;color:var(--accent-blue);text-transform:uppercase;letter-spacing:1px;margin:0 0 14px 0;font-weight:600;">Channels</h4>
@@ -1036,6 +1042,7 @@ async function saveAgent(name) {
   const body = {
     displayName: document.getElementById(`edit-${name}-displayName`)?.value,
     ownerName: document.getElementById(`edit-${name}-owner`)?.value,
+    purpose: document.getElementById(`edit-${name}-purpose`)?.value,
     model: document.getElementById(`edit-${name}-model`)?.value,
     provider: document.getElementById(`edit-${name}-provider`)?.value,
     timezone: document.getElementById(`edit-${name}-timezone`)?.value,
@@ -1127,6 +1134,18 @@ let wizardStep = 1;
 
 let isCreatingPrimary = false;
 
+function defaultWizardPurpose() {
+  const owner = document.getElementById('wiz-owner')?.value?.trim();
+  return owner && owner !== 'owner'
+    ? `Help ${owner} organize work, remember important context, and keep projects moving.`
+    : 'Help me organize work, remember important context, and keep projects moving.';
+}
+
+function parseWizardIngestPaths() {
+  const text = document.getElementById('wiz-ingest-paths')?.value || '';
+  return text.split(/[\n,;]/).map(item => item.trim()).filter(Boolean);
+}
+
 async function showWizard() {
   const wizard = document.getElementById('agent-wizard');
   const createButton = document.getElementById('btn-create-agent');
@@ -1137,6 +1156,8 @@ async function showWizard() {
   wizardStep = 1;
   updateWizardStep();
   document.getElementById('wiz-timezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York';
+  const purposeEl = document.getElementById('wiz-purpose');
+  if (purposeEl && !purposeEl.value.trim()) purposeEl.value = defaultWizardPurpose();
 
   // Check if this will be the primary agent
   try {
@@ -1157,11 +1178,12 @@ function hideWizard() {
   wizard.classList.remove('open');
   createButton.disabled = false;
   createButton.textContent = '+ Create Agent';
-  for (const id of ['wiz-name', 'wiz-display-name', 'wiz-owner', 'wiz-timezone', 'wiz-bot-token', 'wiz-telegram-id']) {
+  for (const id of ['wiz-name', 'wiz-display-name', 'wiz-owner', 'wiz-purpose', 'wiz-ingest-paths', 'wiz-timezone', 'wiz-bot-token', 'wiz-telegram-id']) {
     const el = document.getElementById(id);
     if (el) el.value = '';
   }
   document.getElementById('wiz-display-name').removeAttribute('data-manual');
+  document.getElementById('wiz-purpose')?.removeAttribute('data-manual');
 }
 
 function updateWizardStep() {
@@ -1207,6 +1229,11 @@ function setupWizard() {
     }
   });
   document.getElementById('wiz-display-name').addEventListener('input', function() { this.dataset.manual = 'true'; });
+  document.getElementById('wiz-owner').addEventListener('blur', () => {
+    const purposeEl = document.getElementById('wiz-purpose');
+    if (purposeEl && !purposeEl.dataset.manual) purposeEl.value = defaultWizardPurpose();
+  });
+  document.getElementById('wiz-purpose').addEventListener('input', function() { this.dataset.manual = 'true'; });
 
   document.getElementById('wiz-provider').addEventListener('change', populateWizardModels);
 }
@@ -1246,6 +1273,8 @@ async function createAgent() {
     name: document.getElementById('wiz-name').value.trim(),
     displayName: document.getElementById('wiz-display-name').value.trim(),
     ownerName: document.getElementById('wiz-owner').value.trim(),
+    purpose: document.getElementById('wiz-purpose').value.trim(),
+    ingestPaths: parseWizardIngestPaths(),
     timezone: document.getElementById('wiz-timezone').value.trim(),
     botToken: document.getElementById('wiz-bot-token').value.trim(),
     ownerTelegramId: document.getElementById('wiz-telegram-id').value.trim(),
@@ -3677,6 +3706,8 @@ function setupOnboardingWizard() {
 
     // Pre-fill timezone
     document.getElementById('wiz-timezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York';
+    const purposeEl = document.getElementById('wiz-purpose');
+    if (purposeEl && !purposeEl.value.trim()) purposeEl.value = defaultWizardPurpose();
 
     // Override the cancel button to go back to onboarding step 1
     const cancelBtn = document.getElementById('wiz-cancel');
@@ -3703,6 +3734,8 @@ async function obCreateAgent() {
     name: document.getElementById('wiz-name').value.trim(),
     displayName: document.getElementById('wiz-display-name').value.trim(),
     ownerName: document.getElementById('wiz-owner').value.trim(),
+    purpose: document.getElementById('wiz-purpose').value.trim(),
+    ingestPaths: parseWizardIngestPaths(),
     timezone: document.getElementById('wiz-timezone').value.trim(),
     botToken: document.getElementById('wiz-bot-token').value.trim(),
     ownerTelegramId: document.getElementById('wiz-telegram-id').value.trim(),
@@ -3730,6 +3763,8 @@ async function obCreateAgent() {
       onboardingCreatedAgent = {
         name: body.name,
         displayName: body.displayName || body.name,
+        purpose: data.agent?.purpose || body.purpose,
+        ingestPaths: data.agent?.ingestPaths || body.ingestPaths || [],
         provider: body.provider,
         model: body.model,
       };
@@ -3751,6 +3786,7 @@ function populateOnboardingLaunchSummary() {
 
   const a = onboardingCreatedAgent;
   const provLabel = PROVIDER_DISPLAY[a.provider] || a.provider || '?';
+  const ingestCount = Array.isArray(a.ingestPaths) ? a.ingestPaths.length : 0;
 
   summary.innerHTML = `
     <div class="h23s-onboarding-summary-row">
@@ -3764,6 +3800,14 @@ function populateOnboardingLaunchSummary() {
     <div class="h23s-onboarding-summary-row">
       <span class="h23s-onboarding-summary-label">Model</span>
       <span class="h23s-onboarding-summary-value">${a.model || 'default'}</span>
+    </div>
+    <div class="h23s-onboarding-summary-row">
+      <span class="h23s-onboarding-summary-label">Purpose</span>
+      <span class="h23s-onboarding-summary-value">${escapeHtml(a.purpose || 'not set')}</span>
+    </div>
+    <div class="h23s-onboarding-summary-row">
+      <span class="h23s-onboarding-summary-label">Folders</span>
+      <span class="h23s-onboarding-summary-value">${ingestCount ? `${ingestCount} watched` : 'Add later in Feeder'}</span>
     </div>
   `;
 }

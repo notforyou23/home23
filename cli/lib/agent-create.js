@@ -6,7 +6,8 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, isAbsolute, join, resolve } from 'node:path';
+import { homedir } from 'node:os';
 import yaml from 'js-yaml';
 import { askWithDefault, askSecret, closeRL } from './prompts.js';
 import { generateEcosystem } from './generate-ecosystem.js';
@@ -53,6 +54,71 @@ function getHome23Version(home23Root) {
   }
 }
 
+function defaultPurpose(ownerName) {
+  const owner = ownerName && ownerName !== 'owner' ? ownerName : 'me';
+  return `Help ${owner} organize work, remember important context, and keep projects moving.`;
+}
+
+function expandPath(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  if (raw === '~') return homedir();
+  if (raw.startsWith('~/')) return join(homedir(), raw.slice(2));
+  return raw;
+}
+
+function pathLabel(filePath, seenLabels) {
+  const base = basename(filePath).replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'project';
+  let label = base;
+  let suffix = 2;
+  while (seenLabels.has(label)) {
+    label = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  seenLabels.add(label);
+  return label;
+}
+
+function parseIngestPaths(input) {
+  const rawItems = Array.isArray(input)
+    ? input
+    : String(input || '').split(/[\n,;]/);
+  const seenPaths = new Set();
+  const seenLabels = new Set();
+  const out = [];
+  for (const item of rawItems) {
+    const value = typeof item === 'string' ? item : item?.path;
+    const expanded = expandPath(value);
+    if (!expanded) continue;
+    const resolved = isAbsolute(expanded) ? resolve(expanded) : resolve(process.cwd(), expanded);
+    if (seenPaths.has(resolved)) continue;
+    seenPaths.add(resolved);
+    const explicitLabel = typeof item === 'object' && item?.label ? String(item.label).trim() : '';
+    const label = explicitLabel || pathLabel(resolved, seenLabels);
+    out.push({ path: resolved, label });
+  }
+  return out;
+}
+
+function buildFeederWatchPaths(instanceDir, ingestPaths = []) {
+  return [
+    { path: `${instanceDir}/workspace/sessions`, label: 'conversation_sessions' },
+    { path: `${instanceDir}/workspace/memory`, label: 'memory_snapshots' },
+    { path: `${instanceDir}/workspace/projects`, label: 'projects' },
+    { path: `${instanceDir}/workspace/reports`, label: 'reports' },
+    { path: `${instanceDir}/workspace/research-runs`, label: 'research_runs' },
+    ...ingestPaths,
+  ];
+}
+
+function projectSurface(today, ingestPaths = []) {
+  if (!ingestPaths.length) {
+    return `# Active Projects\n\n_No projects tracked yet. Add project folders through Settings -> Feeder or rerun setup when you are ready._\n\n_Curator-maintained. Last updated: ${today}._\n`;
+  }
+  const rows = ingestPaths.map(item => `- ${item.label}: ${item.path}`).join('\n');
+  return `# Active Projects\n\n## Starter Project Folders\n${rows}\n\nThese folders are watched by the Document Feeder and will be ingested into the agent's brain as files change.\n\n_Curator-maintained. Last updated: ${today}._\n`;
+}
+
 function addBotTokenToSecrets(home23Root, agentName, botToken) {
   const secretsPath = join(home23Root, 'config', 'secrets.yaml');
   let content = '';
@@ -82,7 +148,7 @@ function addBotTokenToSecrets(home23Root, agentName, botToken) {
   writeFileSync(secretsPath, content, 'utf8');
 }
 
-export async function runAgentCreate(home23Root, name) {
+export async function runAgentCreate(home23Root, name, options = {}) {
   const instanceDir = join(home23Root, 'instances', name);
   const home23Version = getHome23Version(home23Root);
 
@@ -119,6 +185,8 @@ export async function runAgentCreate(home23Root, name) {
 
   const displayName = await askWithDefault('Agent display name', displayDefault);
   const ownerName = await askWithDefault('Owner name', defaultOwner);
+  const purpose = await askWithDefault('What should this agent help with?', defaultPurpose(ownerName));
+  const ingestInput = await askWithDefault('Project folders to ingest now (comma-separated paths, optional)', '');
   const ownerTelegramId = await askWithDefault('Owner Telegram ID', defaultTelegramId);
   const timezone = await askWithDefault('Timezone', defaultTimezone);
   console.log('');
@@ -130,6 +198,7 @@ export async function runAgentCreate(home23Root, name) {
   closeRL();
 
   const ports = findNextPorts(home23Root);
+  const ingestPaths = parseIngestPaths(options.ingestPaths ?? ingestInput);
 
   console.log('');
   console.log(`Creating instances/${name}/...`);
@@ -145,6 +214,7 @@ export async function runAgentCreate(home23Root, name) {
     agent: {
       name,
       displayName,
+      purpose,
       owner: { name: ownerName, telegramId: ownerTelegramId || undefined },
       timezone,
       maxSubAgents: 3,
@@ -168,11 +238,7 @@ export async function runAgentCreate(home23Root, name) {
     // user-defined paths can be added via the Settings → Feeder tab.
     feeder: {
       additionalWatchPaths: [
-        { path: `${instanceDir}/workspace/sessions`, label: 'conversation_sessions' },
-        { path: `${instanceDir}/workspace/memory`, label: 'memory_snapshots' },
-        { path: `${instanceDir}/workspace/projects`, label: 'projects' },
-        { path: `${instanceDir}/workspace/reports`, label: 'reports' },
-        { path: `${instanceDir}/workspace/research-runs`, label: 'research_runs' },
+        ...buildFeederWatchPaths(instanceDir, ingestPaths),
       ],
       excludePatterns: [
         '**/node_modules/**',
@@ -241,7 +307,7 @@ export async function runAgentCreate(home23Root, name) {
   console.log(`  feeder.yaml    \u2713`);
 
   // Write identity files from templates
-  const templateVars = { displayName, name, ownerName };
+  const templateVars = { displayName, name, ownerName, purpose };
   for (const file of ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'MEMORY.md', 'LEARNINGS.md', 'GOOD_LIFE.md', 'COSMO_RESEARCH.md', 'NOW.md', 'PLAYBOOK.md']) {
     const template = loadTemplate(home23Root, file);
     const content = renderTemplate(template, templateVars);
@@ -250,12 +316,13 @@ export async function runAgentCreate(home23Root, name) {
   }
 
   // Write domain surfaces for Situational Awareness Engine (Step 20)
+  const today = new Date().toISOString().split('T')[0];
   const surfaces = {
     'TOPOLOGY.md': `# House Topology\n\n_No services registered yet. The curator cycle will populate this as the agent learns about the house._\n\n_Last verified: ${new Date().toISOString().split('T')[0]}. Source: initial setup._\n`,
-    'PROJECTS.md': `# Active Projects\n\n_No projects tracked yet. Use promote_to_memory or conversation extraction to add projects._\n\n_Curator-maintained. Last updated: ${new Date().toISOString().split('T')[0]}._\n`,
+    'PROJECTS.md': projectSurface(today, ingestPaths),
     'PERSONAL.md': `# Personal Context — ${ownerName}\n\n## Profile\n- Owner: ${ownerName}\n\n_Personal memory. Surface only on direct relevance. Curator-maintained._\n`,
     'DOCTRINE.md': `# Doctrine — How We Work\n\n## Conventions\n- Engine is JS. Harness is TS. Two languages, one system.\n- NEVER pm2 delete/stop all — scope commands to specific process names.\n\n_Curator-maintained. Includes boundaries and operating constraints._\n`,
-    'RECENT.md': `# Recent Activity (Last 48 Hours)\n\n## ${new Date().toISOString().split('T')[0]}\n\n### Agent created\n- ${displayName} initialized with Home23\n- Situational awareness engine active\n\n_Auto-generated. Entries older than 48h drop from assembly loading._\n`,
+    'RECENT.md': `# Recent Activity (Last 48 Hours)\n\n## ${today}\n\n### Agent created\n- ${displayName} initialized with Home23\n- Purpose: ${purpose}\n- Starter ingestion paths: ${ingestPaths.length || 0}\n- Situational awareness engine active\n\n_Auto-generated. Entries older than 48h drop from assembly loading._\n`,
   };
 
   for (const [file, content] of Object.entries(surfaces)) {
@@ -284,9 +351,8 @@ export async function runAgentCreate(home23Root, name) {
   console.log(`Agent "${name}" is ready.`);
   console.log('');
   console.log('Next steps:');
-  console.log(`  • Tailor workspace/NOW.md + PLAYBOOK.md to ${displayName}'s domain`);
-  console.log(`  • Write workspace/scripts/update_now.py + add a 5-min cron job in`);
-  console.log(`    conversations/cron-jobs.json to keep NOW.md live (see jerry/forrest for examples)`);
   console.log(`  • Start: node cli/home23.js start ${name}`);
+  console.log(`  • Open:  http://localhost:${ports.dashboard}/home23`);
+  console.log(`  • Add more files later: Settings -> Feeder`);
   console.log('');
 }

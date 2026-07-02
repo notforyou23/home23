@@ -252,12 +252,12 @@
           This will be your <strong>home primary agent</strong> &mdash; the house-level default Home23 falls back to when a surface needs a primary. Its chat model becomes the initial system default.
         </div>
         <div class="h23s-wizard-steps">
-          <span class="h23s-wizard-step active" data-step="1">1. Identity</span>
+          <span class="h23s-wizard-step active" data-step="1">1. Purpose</span>
           <span class="h23s-wizard-step" data-step="2">2. Channels</span>
           <span class="h23s-wizard-step" data-step="3">3. Model</span>
         </div>
 
-        <!-- Step 1: Identity -->
+        <!-- Step 1: Identity and purpose -->
         <div class="h23s-wizard-page active" id="wizard-step-1">
           <div class="h23s-field">
             <label>Agent Name <span class="h23s-required">*</span></label>
@@ -271,6 +271,15 @@
           <div class="h23s-field">
             <label>Owner Name</label>
             <input type="text" id="wiz-owner" placeholder="owner">
+          </div>
+          <div class="h23s-field">
+            <label>Purpose</label>
+            <textarea id="wiz-purpose" rows="3" placeholder="Help me organize work, remember important context, and keep projects moving."></textarea>
+          </div>
+          <div class="h23s-field">
+            <label>Project Folders to Ingest</label>
+            <textarea id="wiz-ingest-paths" rows="3" placeholder="~/Projects/my-app&#10;~/Documents/Claude Exports/project-notes"></textarea>
+            <span class="h23s-hint">Optional. One folder per line; Home23 watches these folders for supported files.</span>
           </div>
           <div class="h23s-field">
             <label>Timezone</label>

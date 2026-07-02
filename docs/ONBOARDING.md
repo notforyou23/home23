@@ -24,6 +24,16 @@ Home23 can start without Ollama if you configure cloud embeddings later, but loc
 ```bash
 git clone https://github.com/notforyou23/home23.git
 cd home23
+node cli/home23.js setup
+```
+
+`setup` is the easiest first-run path. It installs Home23, creates the first personal agent, asks for the agent's purpose, and asks for project folders to ingest right away.
+
+Starter folders can be normal work folders, Claude/Codex project exports, imported notes, reports, or fresh project directories. Home23 adds them to the agent's Document Feeder watch paths so supported files flow into the agent's brain as they change.
+
+Manual operator flow:
+
+```bash
 node cli/home23.js init
 node cli/home23.js agent create <name>
 ```
@@ -32,12 +42,12 @@ node cli/home23.js agent create <name>
 
 Provider credentials are configured in the dashboard, not during `init`.
 
-`agent create` writes the first local `instances/<name>/` runtime directory and regenerates the PM2 ecosystem. `instances/` is intentionally local state and is not committed.
+`agent create` writes the first local `instances/<name>/` runtime directory, records its purpose, configures starter ingestion folders, and regenerates the PM2 ecosystem. `instances/` is intentionally local state and is not committed.
 
 ## 3. Start
 
 ```bash
-node cli/home23.js start
+node cli/home23.js start <name>
 ```
 
 Open:
@@ -48,7 +58,7 @@ Open:
 - Evobrew: `http://localhost:3415`
 - COSMO23: `http://localhost:43210`
 
-Use the dashboard onboarding flow to configure providers and create the first agent.
+Use Settings to configure providers, confirm the agent's model and purpose, and add more ingestion folders through the Feeder tab.
 
 ## 4. Validate
 

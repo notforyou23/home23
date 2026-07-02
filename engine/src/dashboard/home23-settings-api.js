@@ -1,5 +1,6 @@
 const express = require('express');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
 const yaml = require('js-yaml');
@@ -600,6 +601,7 @@ function createSettingsRouter(home23Root) {
         name,
         displayName: config.agent?.displayName || name,
         owner: config.agent?.owner?.name || '',
+        purpose: config.agent?.purpose || '',
         timezone: config.agent?.timezone || '',
         model: config.chat?.model || config.chat?.defaultModel || '',
         provider: config.chat?.provider || config.chat?.defaultProvider || '',
@@ -650,6 +652,81 @@ function createSettingsRouter(home23Root) {
     return result;
   }
 
+  function defaultPurpose(ownerName) {
+    const owner = ownerName && ownerName !== 'owner' ? ownerName : 'me';
+    return `Help ${owner} organize work, remember important context, and keep projects moving.`;
+  }
+
+  function expandUserPath(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (raw === '~') return os.homedir();
+    if (raw.startsWith('~/')) return path.join(os.homedir(), raw.slice(2));
+    return raw;
+  }
+
+  function pathLabel(filePath, seenLabels) {
+    const base = path.basename(filePath)
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .toLowerCase() || 'project';
+    let label = base;
+    let suffix = 2;
+    while (seenLabels.has(label)) {
+      label = `${base}-${suffix}`;
+      suffix += 1;
+    }
+    seenLabels.add(label);
+    return label;
+  }
+
+  function parseIngestPaths(input) {
+    const rawItems = Array.isArray(input)
+      ? input
+      : String(input || '').split(/[\n,;]/);
+    const seenPaths = new Set();
+    const seenLabels = new Set();
+    const out = [];
+    for (const item of rawItems) {
+      const value = typeof item === 'string' ? item : item?.path;
+      const expanded = expandUserPath(value);
+      if (!expanded) continue;
+      const resolved = path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(home23Root, expanded);
+      if (seenPaths.has(resolved)) continue;
+      seenPaths.add(resolved);
+      const explicitLabel = typeof item === 'object' && item?.label ? String(item.label).trim() : '';
+      const label = explicitLabel || pathLabel(resolved, seenLabels);
+      out.push({ path: resolved, label });
+    }
+    return out;
+  }
+
+  function buildFeederWatchPaths(instanceDir, ingestPaths = []) {
+    return [
+      { path: `${instanceDir}/workspace/sessions`, label: 'conversation_sessions' },
+      { path: `${instanceDir}/workspace/memory`, label: 'memory_snapshots' },
+      { path: `${instanceDir}/workspace/projects`, label: 'projects' },
+      { path: `${instanceDir}/workspace/reports`, label: 'reports' },
+      { path: `${instanceDir}/workspace/research-runs`, label: 'research_runs' },
+      ...ingestPaths,
+    ];
+  }
+
+  function projectSurface(today, ingestPaths = []) {
+    if (!ingestPaths.length) {
+      return `# Active Projects\n\n_No projects tracked yet. Add project folders through Settings -> Feeder or rerun setup when you are ready._\n\n_Curator-maintained. Last updated: ${today}._\n`;
+    }
+    const rows = ingestPaths.map(item => `- ${item.label}: ${item.path}`).join('\n');
+    return `# Active Projects\n\n## Starter Project Folders\n${rows}\n\nThese folders are watched by the Document Feeder and will be ingested into the agent's brain as files change.\n\n_Curator-maintained. Last updated: ${today}._\n`;
+  }
+
+  function writeMissionFile(instanceDir, vars) {
+    const template = loadTemplate('MISSION.md');
+    const content = renderTemplate(template, vars);
+    fs.mkdirSync(path.join(instanceDir, 'workspace'), { recursive: true });
+    fs.writeFileSync(path.join(instanceDir, 'workspace', 'MISSION.md'), content, 'utf8');
+  }
+
   function regenerateEcosystem() {
     try {
       const { execSync } = require('child_process');
@@ -675,7 +752,18 @@ function createSettingsRouter(home23Root) {
   }
 
   router.post('/agents', (req, res) => {
-    const { name, displayName, ownerName, ownerTelegramId, timezone, botToken, model, provider } = req.body;
+    const {
+      name,
+      displayName,
+      ownerName,
+      ownerTelegramId,
+      timezone,
+      botToken,
+      model,
+      provider,
+      purpose,
+      ingestPaths,
+    } = req.body;
 
     if (!name || !/^[a-z0-9][a-z0-9-]*$/.test(name)) {
       return res.status(400).json({ error: 'Name must be lowercase alphanumeric with hyphens' });
@@ -690,6 +778,10 @@ function createSettingsRouter(home23Root) {
     const isFirst = discoverAgents().length === 0;
 
     const ports = findNextPorts();
+    const resolvedOwnerName = String(ownerName || '').trim() || 'owner';
+    const resolvedDisplayName = String(displayName || '').trim() || name.charAt(0).toUpperCase() + name.slice(1);
+    const resolvedPurpose = String(purpose || '').trim() || defaultPurpose(resolvedOwnerName);
+    const starterIngestPaths = parseIngestPaths(ingestPaths);
 
     for (const dir of ['workspace', 'workspace/scripts', 'brain', 'conversations', 'conversations/sessions', 'logs', 'cron-runs']) {
       fs.mkdirSync(path.join(instanceDir, dir), { recursive: true });
@@ -698,21 +790,16 @@ function createSettingsRouter(home23Root) {
     const agentConfig = {
       agent: {
         name,
-        displayName: displayName || name.charAt(0).toUpperCase() + name.slice(1),
-        owner: { name: ownerName || 'owner', telegramId: ownerTelegramId || undefined },
+        displayName: resolvedDisplayName,
+        purpose: resolvedPurpose,
+        owner: { name: resolvedOwnerName, telegramId: ownerTelegramId || undefined },
         timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
         maxSubAgents: 3,
       },
       ports,
       engine: { thought: model || 'MiniMax-M3', consolidation: model || 'MiniMax-M3', dreaming: model || 'MiniMax-M3', query: model || 'MiniMax-M3' },
       feeder: {
-        additionalWatchPaths: [
-          { path: `${instanceDir}/workspace/sessions`, label: 'conversation_sessions' },
-          { path: `${instanceDir}/workspace/memory`, label: 'memory_snapshots' },
-          { path: `${instanceDir}/workspace/projects`, label: 'projects' },
-          { path: `${instanceDir}/workspace/reports`, label: 'reports' },
-          { path: `${instanceDir}/workspace/research-runs`, label: 'research_runs' },
-        ],
+        additionalWatchPaths: buildFeederWatchPaths(instanceDir, starterIngestPaths),
         excludePatterns: [
           '**/node_modules/**',
           '**/dist/**',
@@ -760,8 +847,12 @@ function createSettingsRouter(home23Root) {
     };
     saveYaml(path.join(instanceDir, 'feeder.yaml'), feederConfig);
 
-    const dName = displayName || name.charAt(0).toUpperCase() + name.slice(1);
-    const templateVars = { displayName: dName, name, ownerName: ownerName || 'owner' };
+    const templateVars = {
+      displayName: resolvedDisplayName,
+      name,
+      ownerName: resolvedOwnerName,
+      purpose: resolvedPurpose,
+    };
     for (const file of ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'MEMORY.md', 'LEARNINGS.md', 'GOOD_LIFE.md', 'COSMO_RESEARCH.md', 'NOW.md', 'PLAYBOOK.md']) {
       const template = loadTemplate(file);
       const content = renderTemplate(template, templateVars);
@@ -772,10 +863,10 @@ function createSettingsRouter(home23Root) {
     const today = new Date().toISOString().split('T')[0];
     const surfaces = {
       'TOPOLOGY.md': `# House Topology\n\n_No services registered yet. The curator cycle will populate this as the agent learns about the house._\n\n_Last verified: ${today}. Source: initial setup._\n`,
-      'PROJECTS.md': `# Active Projects\n\n_No projects tracked yet. Use promote_to_memory or conversation extraction to add projects._\n\n_Curator-maintained. Last updated: ${today}._\n`,
-      'PERSONAL.md': `# Personal Context — ${ownerName || 'owner'}\n\n## Profile\n- Owner: ${ownerName || 'owner'}\n\n_Personal memory. Surface only on direct relevance. Curator-maintained._\n`,
+      'PROJECTS.md': projectSurface(today, starterIngestPaths),
+      'PERSONAL.md': `# Personal Context — ${resolvedOwnerName}\n\n## Profile\n- Owner: ${resolvedOwnerName}\n\n_Personal memory. Surface only on direct relevance. Curator-maintained._\n`,
       'DOCTRINE.md': `# Doctrine — How We Work\n\n## Conventions\n- Engine is JS. Harness is TS. Two languages, one system.\n- NEVER pm2 delete/stop all — scope commands to specific process names.\n\n_Curator-maintained. Includes boundaries and operating constraints._\n`,
-      'RECENT.md': `# Recent Activity (Last 48 Hours)\n\n## ${today}\n\n### Agent created\n- ${dName} initialized with Home23\n- Situational awareness engine active\n\n_Auto-generated. Entries older than 48h drop from assembly loading._\n`,
+      'RECENT.md': `# Recent Activity (Last 48 Hours)\n\n## ${today}\n\n### Agent created\n- ${resolvedDisplayName} initialized with Home23\n- Purpose: ${resolvedPurpose}\n- Starter ingestion paths: ${starterIngestPaths.length || 0}\n- Situational awareness engine active\n\n_Auto-generated. Entries older than 48h drop from assembly loading._\n`,
     };
 
     for (const [file, content] of Object.entries(surfaces)) {
@@ -803,7 +894,17 @@ function createSettingsRouter(home23Root) {
 
     regenerateEcosystem();
 
-    res.json({ ok: true, agent: { name, displayName: dName, ports, isPrimary: isFirst } });
+    res.json({
+      ok: true,
+      agent: {
+        name,
+        displayName: resolvedDisplayName,
+        purpose: resolvedPurpose,
+        ingestPaths: starterIngestPaths,
+        ports,
+        isPrimary: isFirst,
+      },
+    });
   });
 
   router.put('/agents/:name', (req, res) => {
@@ -814,11 +915,18 @@ function createSettingsRouter(home23Root) {
     }
 
     const config = loadYaml(configPath);
-    const { displayName, ownerName, ownerTelegramId, timezone, model, provider } = req.body;
+    if (!config.agent) config.agent = {};
+    if (!config.agent.owner) config.agent.owner = {};
+    const { displayName, ownerName, ownerTelegramId, timezone, model, provider, purpose } = req.body;
+    const identityChanged = displayName !== undefined || ownerName !== undefined || purpose !== undefined;
 
     if (displayName !== undefined) config.agent.displayName = displayName;
     if (ownerName !== undefined) config.agent.owner.name = ownerName;
     if (ownerTelegramId !== undefined) config.agent.owner.telegramId = ownerTelegramId;
+    if (purpose !== undefined) {
+      const nextPurpose = String(purpose || '').trim();
+      config.agent.purpose = nextPurpose || defaultPurpose(config.agent.owner?.name || 'owner');
+    }
     if (timezone !== undefined) {
       config.agent.timezone = timezone;
       if (config.scheduler) config.scheduler.timezone = timezone;
@@ -881,6 +989,14 @@ function createSettingsRouter(home23Root) {
     }
 
     saveYaml(configPath, config);
+    if (identityChanged) {
+      writeMissionFile(path.dirname(configPath), {
+        displayName: config.agent.displayName || agentName,
+        name: agentName,
+        ownerName: config.agent.owner?.name || 'owner',
+        purpose: config.agent.purpose || defaultPurpose(config.agent.owner?.name || 'owner'),
+      });
+    }
     regenerateEcosystem();
 
     // Sync model change to harness's persisted file + restart harness

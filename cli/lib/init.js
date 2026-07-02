@@ -80,7 +80,7 @@ function checkPrerequisites() {
   return { issues, warnings };
 }
 
-export async function runInit(home23Root) {
+export async function runInit(home23Root, options = {}) {
   console.log('');
   console.log('Home23 — Setup');
   console.log('──────────────');
@@ -247,20 +247,22 @@ export async function runInit(home23Root) {
     console.error('    engine/.venv-markitdown/bin/pip install "markitdown[pdf]" openai');
   }
 
-  console.log('');
-  console.log('═══════════════════════════════════════════════════');
-  console.log('  Home23 is ready!');
-  console.log('═══════════════════════════════════════════════════');
-  console.log('');
-  console.log('  Next step — start the system:');
-  console.log('');
-  console.log('    node cli/home23.js start');
-  console.log('');
-  console.log('  Then open your browser:');
-  console.log('');
-  console.log('    http://localhost:5002/home23');
-  console.log('');
-  console.log('  The web dashboard will walk you through creating');
-  console.log('  your first agent and setting up API providers.');
-  console.log('');
+  if (options.finalMessage !== false) {
+    console.log('');
+    console.log('═══════════════════════════════════════════════════');
+    console.log('  Home23 is ready!');
+    console.log('═══════════════════════════════════════════════════');
+    console.log('');
+    console.log('  Next step — create your personal agent:');
+    console.log('');
+    console.log('    node cli/home23.js agent create <name>');
+    console.log('');
+    console.log('  Then start and open your browser:');
+    console.log('');
+    console.log('    node cli/home23.js start <name>');
+    console.log('    http://localhost:5002/home23');
+    console.log('');
+    console.log('  Easier all-in-one first run: node cli/home23.js setup');
+    console.log('');
+  }
 }
