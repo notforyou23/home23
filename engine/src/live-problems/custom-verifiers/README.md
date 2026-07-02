@@ -46,7 +46,7 @@ module.exports = async function cron_last_success(args = {}, ctx = {}) {
   // args: { service, maxAgeMin }
   // Must return: { ok: boolean, detail: string, observed?: object }
   const { service, maxAgeMin = 360 } = args;
-  const statePath = `/Users/jtr/cron-state/${service}/last-success.ts`;
+  const statePath = `/var/lib/home23/cron-state/${service}/last-success.ts`;
   // ... read file, check mtime, return result
 };
 ```
@@ -61,7 +61,7 @@ The matching `proposals/<name>.meta.json`:
     "service": { "type": "string", "required": true, "enum": ["..."] },
     "maxAgeMin": { "type": "number", "default": 360 }
   },
-  "readsPaths": ["/Users/jtr/cron-state/*"],
+  "readsPaths": ["/var/lib/home23/cron-state/*"],
   "readsUrls": [],
   "proposedBy": "agent-dispatch:<turnId>",
   "proposedAt": "2026-04-16T...",

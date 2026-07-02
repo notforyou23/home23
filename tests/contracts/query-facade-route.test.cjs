@@ -99,7 +99,7 @@ test('query catalog facade normalizes COSMO status, models, brains, and selected
             routeKey: 'brain-jerry',
             name: 'brain',
             displayName: 'Jerry Brain',
-            path: '/Users/jtr/_JTR23_/release/home23/instances/jerry/brain',
+            path: '/home/user/home23/instances/jerry/brain',
             sourceLabel: 'Jerry',
             sourceType: 'reference',
           },

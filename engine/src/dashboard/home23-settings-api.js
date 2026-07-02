@@ -691,7 +691,7 @@ function createSettingsRouter(home23Root) {
 
     const ports = findNextPorts();
 
-    for (const dir of ['workspace', 'brain', 'conversations', 'conversations/sessions', 'logs', 'cron-runs']) {
+    for (const dir of ['workspace', 'workspace/scripts', 'brain', 'conversations', 'conversations/sessions', 'logs', 'cron-runs']) {
       fs.mkdirSync(path.join(instanceDir, dir), { recursive: true });
     }
 
@@ -705,6 +705,23 @@ function createSettingsRouter(home23Root) {
       },
       ports,
       engine: { thought: model || 'MiniMax-M3', consolidation: model || 'MiniMax-M3', dreaming: model || 'MiniMax-M3', query: model || 'MiniMax-M3' },
+      feeder: {
+        additionalWatchPaths: [
+          { path: `${instanceDir}/workspace/sessions`, label: 'conversation_sessions' },
+          { path: `${instanceDir}/workspace/memory`, label: 'memory_snapshots' },
+          { path: `${instanceDir}/workspace/projects`, label: 'projects' },
+          { path: `${instanceDir}/workspace/reports`, label: 'reports' },
+          { path: `${instanceDir}/workspace/research-runs`, label: 'research_runs' },
+        ],
+        excludePatterns: [
+          '**/node_modules/**',
+          '**/dist/**',
+          '**/.git/**',
+          '**/.DS_Store',
+          '**/research-runs/*/brain/**',
+          '**/research-runs/*/*.jsonl',
+        ],
+      },
       channels: {
         telegram: botToken
           ? { enabled: true, streaming: 'partial', dmPolicy: 'open', groupPolicy: 'restricted', groups: {}, ackReaction: true }
@@ -745,7 +762,7 @@ function createSettingsRouter(home23Root) {
 
     const dName = displayName || name.charAt(0).toUpperCase() + name.slice(1);
     const templateVars = { displayName: dName, name, ownerName: ownerName || 'owner' };
-    for (const file of ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'LEARNINGS.md', 'GOOD_LIFE.md', 'COSMO_RESEARCH.md']) {
+    for (const file of ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'MEMORY.md', 'LEARNINGS.md', 'GOOD_LIFE.md', 'COSMO_RESEARCH.md', 'NOW.md', 'PLAYBOOK.md']) {
       const template = loadTemplate(file);
       const content = renderTemplate(template, templateVars);
       fs.writeFileSync(path.join(instanceDir, 'workspace', file), content, 'utf8');
@@ -1308,7 +1325,7 @@ function createSettingsRouter(home23Root) {
 
   // ── Pulse Voice (Jerry's remark layer) ──
 
-  function buildDefaultPulsePrompt({ agentLabel = 'the agent', ownerName = 'jtr' } = {}) {
+  function buildDefaultPulsePrompt({ agentLabel = 'the agent', ownerName = 'the owner' } = {}) {
     return `You are ${agentLabel}. You've just scanned what your own brain has been up to — cycles, thoughts, actions you executed, goals, sensors, the whole deal.
 
 You're talking to ${ownerName}. ${ownerName} runs you. Talk directly, one to one.
@@ -1331,7 +1348,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     const targetAgent = resolveRequestedAgent(req.query.agent);
     let instancePulse = {};
     let agentLabel = targetAgent || 'the agent';
-    let ownerName = 'jtr';
+    let ownerName = 'the owner';
     let systemPrompt = '';
     if (targetAgent) {
       try {

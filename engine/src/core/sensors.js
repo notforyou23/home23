@@ -4,13 +4,14 @@
 'use strict';
 
 const fs   = require('fs');
+const os   = require('os');
 const path = require('path');
 const { fetchWeatherData } = require('./integrations/weather');
 const { fetchSaunaStatus, toggleSauna } = require('./integrations/sauna');
 const { fetchPiSensor } = require('./integrations/pi-sensor');
 
 const CACHE_PATH    = path.join(__dirname, '..', '..', 'data', 'sensor-cache.json');
-const USAGE_LOG_PATH = path.join(process.env.HOME || '/Users/jtr', '.sauna_usage_log.jsonl');
+const USAGE_LOG_PATH = path.join(process.env.HOME || os.homedir() || process.cwd(), '.sauna_usage_log.jsonl');
 const WEATHER_INTERVAL_MS = 5 * 60 * 1000;  // 5 min
 const SAUNA_INTERVAL_MS   = 2 * 60 * 1000;  // 2 min
 const PI_INTERVAL_MS      = 5 * 60 * 1000;  // 5 min — matches pressure log cron
@@ -111,6 +112,7 @@ async function pollSauna() {
 }
 
 async function pollPressure() {
+  if (!process.env.PI_SENSOR_URL) return;
   try {
     const data = await fetchPiSensor();
     cache.pressure = data;

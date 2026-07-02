@@ -1,6 +1,0 @@
-{
-  "query": "multi agent handoffs receipts agent systems -is:retweet -is:reply",
-  "params": "sort=likes&pages=1&since=7d",
-  "timestamp": 1778350886510,
-  "tweets": []
-}

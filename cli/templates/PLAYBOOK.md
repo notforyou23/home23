@@ -16,10 +16,10 @@ Lookup chains. One or two reads per question, not fifty.
 - Durable research + concepts → `brain_search` / `brain_query` tools
 
 ## Home23 ecosystem
-- Top-level primer → `/Users/jtr/_JTR23_/release/home23/CLAUDE.md`
+- Top-level primer → `../../CLAUDE.md`
 - My config → `../config.yaml`
-- Other agents → `/Users/jtr/_JTR23_/release/home23/instances/<name>/`
-- Design docs → `/Users/jtr/_JTR23_/release/home23/docs/design/`
+- Other agents → `../<name>/`
+- Design docs → `../../docs/design/`
 
 ## Scheduled work
 - My cron jobs → `../conversations/cron-jobs.json`

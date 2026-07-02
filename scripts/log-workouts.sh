@@ -1,10 +1,18 @@
 #!/bin/bash
-# Logs workouts data from jtrpi to ~/.workouts_log.jsonl
+# Logs workouts data from a configured bridge to ~/.workouts_log.jsonl
 # Runs via cron every 15 minutes
 
 LOG_PATH="$HOME/.workouts_log.jsonl"
-PI_HOST="jtrpi.local"
-API_URL="http://${PI_HOST}:8765/api/workouts/dashboard"
+PI_HOST="${WORKOUTS_PI_HOST:-}"
+API_URL="${WORKOUTS_API_URL:-}"
+if [ -z "$API_URL" ] && [ -n "$PI_HOST" ]; then
+  API_URL="http://${PI_HOST}:8765/api/workouts/dashboard"
+fi
+
+if [ -z "$API_URL" ]; then
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] workouts API not configured; set WORKOUTS_API_URL or WORKOUTS_PI_HOST" >> /tmp/workouts_err.log
+  exit 1
+fi
 
 DATA=$(curl -s --max-time 15 "$API_URL" 2>/dev/null)
 

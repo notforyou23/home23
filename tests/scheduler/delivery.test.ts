@@ -13,7 +13,7 @@ function makeJob(overrides: Partial<CronJob> = {}): CronJob {
     sessionTarget: 'isolated',
     wakeMode: 'now',
     payload: { kind: 'agentTurn', messagePath: 'instances/jerry/workspace/cron-prompts/field-report-cycle.md' },
-    delivery: { mode: 'summary', channel: 'telegram', to: '8317115546' },
+    delivery: { mode: 'summary', channel: 'telegram', to: '123456789' },
     state: { nextRunAtMs: Date.now() + 60_000, consecutiveErrors: 0 },
     ...overrides,
   };

@@ -6,7 +6,7 @@ const fs = require('fs');
 const DEFAULT_BASE_URL = 'http://127.0.0.1:5002';
 const DEFAULT_TIMEOUT_MS = 180000;
 const DEFAULT_POLL_MS = 3000;
-const DEFAULT_TOUCH_PATH = '/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/brain-state.json';
+const DEFAULT_TOUCH_PATH = '';
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));

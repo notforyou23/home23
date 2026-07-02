@@ -4,7 +4,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_ISSUES_DIR = '/Users/jtr/websites/olddeadshows.com/issues';
+const DEFAULT_ISSUES_DIR = process.env.OLDDEADSHOWS_ISSUES_DIR || path.join(process.cwd(), 'issues');
 const DEFAULT_MARKDOWN_OUT = path.join(process.cwd(), 'docs/design/STEP26-FROM-THE-INSIDE-ISSUE-ARC-MAP.md');
 const DEFAULT_JSON_OUT = path.join(process.cwd(), 'docs/design/step26-from-the-inside-issue-arc-map.json');
 

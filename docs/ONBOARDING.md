@@ -25,11 +25,14 @@ Home23 can start without Ollama if you configure cloud embeddings later, but loc
 git clone https://github.com/notforyou23/home23.git
 cd home23
 node cli/home23.js init
+node cli/home23.js agent create <name>
 ```
 
 `init` installs root, engine, Evobrew, COSMO23, and COSMO23 engine dependencies; generates Home23/COSMO config plumbing; creates the COSMO OAuth database; builds TypeScript; and prepares the MarkItDown Python environment.
 
 Provider credentials are configured in the dashboard, not during `init`.
+
+`agent create` writes the first local `instances/<name>/` runtime directory and regenerates the PM2 ecosystem. `instances/` is intentionally local state and is not committed.
 
 ## 3. Start
 
@@ -79,6 +82,7 @@ HOME23_LIVE_CONTRACTS_ACTIONS=1 npm run test:contracts:live
 - Stop Home23 through `node cli/home23.js stop` or by specific process name.
 - The `instances/` tree is runtime data. Brains, conversations, uploads, and local schedules live there.
 - `config/secrets.yaml`, COSMO OAuth storage, and generated runtime config are local secrets/state and should not be committed.
+- `config/home.yaml`, `config/targets.yaml`, `config/cron-jobs.json`, `config/agents.json`, and `ecosystem.config.cjs` are local generated files. Public defaults live in `config/*.example`.
 - If you are working in jtr's live checkout, inspect local changes before editing and preserve uncommitted work.
 
 ## 6. Common First-Run Fixes

@@ -1,6 +1,0 @@
-{
-  "query": "AI agents memory receipts verification handoffs -is:retweet -is:reply",
-  "params": "sort=likes&pages=1&since=7d",
-  "timestamp": 1778350887003,
-  "tweets": []
-}

@@ -1,15 +1,17 @@
 #!/bin/bash
-# Logs barometric pressure from jtrpi sensor to ~/.pressure_log.jsonl
+# Logs barometric pressure from a configured sensor to ~/.pressure_log.jsonl
 # Runs via cron every 5 minutes
 
 LOG_PATH="$HOME/.pressure_log.jsonl"
-PI="jtr@jtrpi"
-SENSOR_FILE="/home/jtr/.openclaw/workspace/state/sensor-latest.json"
-API_URL="${PI_PRESSURE_API_URL:-http://jtrpi.local:8765/api/latest}"
+PI="${PI_SSH_TARGET:-}"
+SENSOR_FILE="${PI_SENSOR_FILE:-/home/pi/.openclaw/workspace/state/sensor-latest.json}"
+API_URL="${PI_PRESSURE_API_URL:-}"
 PI_SSH_KEY_PATH="${PI_SSH_KEY_PATH:-$HOME/.ssh/id_ed25519_pi}"
 TRANSPORT=""
 
-DATA=$(curl -s --max-time 10 "$API_URL" 2>/dev/null | python3 -c "
+DATA=""
+if [ -n "$API_URL" ]; then
+  DATA=$(curl -s --max-time 10 "$API_URL" 2>/dev/null | python3 -c "
 import sys,json
 try:
     d=json.load(sys.stdin)
@@ -20,12 +22,13 @@ try:
 except Exception:
     pass
 " 2>/dev/null)
+fi
 
 if [ -n "$DATA" ]; then
   TRANSPORT="http"
 fi
 
-if [ -z "$DATA" ]; then
+if [ -z "$DATA" ] && [ -n "$PI" ]; then
   SSH_OPTS=(-o ConnectTimeout=5 -o BatchMode=yes)
   if [ -f "$PI_SSH_KEY_PATH" ]; then
     SSH_OPTS+=(-i "$PI_SSH_KEY_PATH" -o IdentitiesOnly=yes)
@@ -37,7 +40,7 @@ if [ -z "$DATA" ]; then
 fi
 
 if [ -z "$DATA" ]; then
-  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] pressure HTTP+SSH read failed" >> /tmp/pressure_err.log
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] pressure read failed; set PI_PRESSURE_API_URL or PI_SSH_TARGET" >> /tmp/pressure_err.log
   exit 1
 fi
 

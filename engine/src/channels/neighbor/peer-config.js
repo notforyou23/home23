@@ -3,10 +3,10 @@
  *
  * Supports the original local-instance names plus remote sibling nodes:
  *   peers: auto
- *   peers: [forrest, "http://jtrpi.local:5014"]
+ *   peers: [forrest, "http://remote-host.local:5014"]
  *   remotePeers:
  *     - name: axiom
- *       url: http://jtrpi.local:5014
+ *       url: http://remote-host.local:5014
  */
 
 'use strict';

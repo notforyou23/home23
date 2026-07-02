@@ -25,10 +25,10 @@ Payload kinds:
 
 Delivery:
   delivery_to MUST be a valid, durable chat ID for the target channel:
-    Telegram: a numeric user/group ID like "8317115546" or "-5204338402"
+    Telegram: a numeric user/group ID like "123456789" or "-5204338402"
     Discord:  a numeric channel ID
   Do NOT use dashboard session IDs (dashboard-jerry-...) — those are ephemeral and stop working.
-  If unsure, use "8317115546" (jtr's Telegram DM).`,
+  If unsure, leave delivery_to unset and use announce_mode="none" until the owner provides a durable chat ID.`,
   input_schema: {
     type: 'object',
     properties: {

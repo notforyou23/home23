@@ -2,6 +2,7 @@
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 import time
 import urllib.parse
@@ -17,7 +18,8 @@ except Exception:
 API_URL = 'https://api.ecowitt.net/api/v3/device/history'
 DEFAULT_OUTPUT = Path.home() / '.pressure_log.ecowitt.jsonl'
 DEFAULT_MAIN_LOG = Path.home() / '.pressure_log.jsonl'
-SECRETS_PATH = Path('/Users/jtr/_JTR23_/release/home23/config/secrets.yaml')
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SECRETS_PATH = Path(os.environ.get('HOME23_SECRETS_PATH', REPO_ROOT / 'config' / 'secrets.yaml'))
 LOCAL_TZ = dt.datetime.now().astimezone().tzinfo
 TODAY_LOCAL = dt.datetime.now(LOCAL_TZ).date()
 

@@ -1,4 +1,5 @@
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const yaml = require('js-yaml');
 const { writeYamlSafely } = require('./yaml-write-safety');
@@ -65,7 +66,7 @@ function buildOfflineTilePayload(tileId, { status = 'Offline', value = '—', su
 
 const TILE_SIZES = ['third', 'half', 'full'];
 const GENERIC_AUTH_TYPES = ['none', 'basic', 'bearer', 'header'];
-const SAUNA_LOG_PATH = path.join(process.env.HOME || '/Users/jtr', '.sauna_usage_log.jsonl');
+const SAUNA_LOG_PATH = path.join(process.env.HOME || os.homedir() || process.cwd(), '.sauna_usage_log.jsonl');
 let _prevSaunaState = null; // for usage transition detection
 
 function logSaunaEvent(event, saunaData) {

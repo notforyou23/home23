@@ -14,16 +14,27 @@ const {
 const { EventLedger } = require('../core/event-ledger');
 const { TrustKernel } = require('../trust/trust-kernel');
 
-const DEFAULT_PROJECT_DIR = path.resolve(__dirname, '..', '..', '..', 'instances', 'jerry', 'projects', 'from-the-inside');
-const DEFAULT_SITE_DIR = '/Users/jtr/websites/olddeadshows.com';
-const DEFAULT_PUBLIC_BASE_URL = 'https://olddeadshows.com';
+const DEFAULT_PROJECT_DIR = path.resolve(
+  process.env.FROM_THE_INSIDE_PROJECT_DIR
+    || path.resolve(__dirname, '..', '..', '..', 'instances', 'agent', 'projects', 'from-the-inside'),
+);
+const DEFAULT_SITE_DIR = process.env.OLDDEADSHOWS_SITE_DIR || '';
+const DEFAULT_PUBLIC_BASE_URL = process.env.OLDDEADSHOWS_PUBLIC_BASE_URL || '';
 
 async function verifyFromTheInsidePublish(opts = {}) {
   const issueNumber = normalizeIssueNumber(opts.issue);
   const padded = issueNumber.toString().padStart(3, '0');
   const projectDir = path.resolve(opts.projectDir || DEFAULT_PROJECT_DIR);
-  const siteDir = path.resolve(opts.siteDir || DEFAULT_SITE_DIR);
-  const publicBaseUrl = String(opts.publicBaseUrl || DEFAULT_PUBLIC_BASE_URL).replace(/\/+$/, '');
+  const rawSiteDir = opts.siteDir || DEFAULT_SITE_DIR;
+  if (!rawSiteDir) {
+    throw new Error('siteDir is required. Set OLDDEADSHOWS_SITE_DIR or pass opts.siteDir.');
+  }
+  const siteDir = path.resolve(rawSiteDir);
+  const rawPublicBaseUrl = opts.publicBaseUrl || DEFAULT_PUBLIC_BASE_URL;
+  if (!rawPublicBaseUrl) {
+    throw new Error('publicBaseUrl is required. Set OLDDEADSHOWS_PUBLIC_BASE_URL or pass opts.publicBaseUrl.');
+  }
+  const publicBaseUrl = String(rawPublicBaseUrl).replace(/\/+$/, '');
   const createdAt = opts.createdAt || new Date().toISOString();
 
   const localIssuePath = path.join(projectDir, 'issues', `${padded}.json`);

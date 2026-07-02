@@ -64,7 +64,7 @@ exit 2
 `
     );
 
-    runLogPressure(home);
+    runLogPressure(home, { PI_PRESSURE_API_URL: 'http://sensor.test/api/latest' });
 
     const entry = readLoggedEntry(home);
     assert.equal(entry.ts, '2026-05-11T10:00:00Z');
@@ -102,7 +102,7 @@ JSON
 `
     );
 
-    runLogPressure(home, { SSH_ARGS_CAPTURE: argsPath });
+    runLogPressure(home, { PI_SSH_TARGET: 'sensor-host', SSH_ARGS_CAPTURE: argsPath });
 
     const entry = readLoggedEntry(home);
     const sshArgs = readFileSync(argsPath, 'utf8');
@@ -135,7 +135,7 @@ JSON
 `
     );
 
-    runLogPressure(home, { SSH_ARGS_CAPTURE: argsPath });
+    runLogPressure(home, { PI_SSH_TARGET: 'sensor-host', SSH_ARGS_CAPTURE: argsPath });
 
     const entry = readLoggedEntry(home);
     const sshArgs = readFileSync(argsPath, 'utf8');

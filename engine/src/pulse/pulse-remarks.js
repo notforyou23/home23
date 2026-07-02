@@ -49,7 +49,7 @@ function resolveAgentIdentity({ agentName, workspaceDir }) {
     : null;
 
   let displayName = resolvedName;
-  let ownerName = 'jtr';
+  let ownerName = 'the owner';
   if (configPath && fs.existsSync(configPath)) {
     try {
       const yaml = require('js-yaml');
@@ -62,7 +62,7 @@ function resolveAgentIdentity({ agentName, workspaceDir }) {
   return { name: resolvedName, displayName, ownerName };
 }
 
-function buildDefaultSystemPrompt({ agentLabel = 'the agent', ownerName = 'jtr' } = {}) {
+function buildDefaultSystemPrompt({ agentLabel = 'the agent', ownerName = 'the owner' } = {}) {
   return `You are ${agentLabel}. You've just scanned what your own brain has been up to — cycles, thoughts, actions you executed, goals, sensors, the whole deal.
 
 You're talking to ${ownerName}. ${ownerName} runs you. Talk directly, one to one.

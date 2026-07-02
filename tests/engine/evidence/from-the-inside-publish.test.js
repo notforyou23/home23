@@ -48,8 +48,8 @@ function writeFixture(root) {
     '<p>Next handle: add the small Field Report proof packet first.</p></body></html>',
   ].join('\n'), 'utf8');
   writeFileSync(join(siteDir, 'public', 'index.html'), '<a href="/issues/099.html">Merkleized Evidence &amp; Verifiable Audit Trails</a>', 'utf8');
-  writeFileSync(join(siteDir, 'public', 'feed.xml'), '<rss><channel><item><link>https://olddeadshows.com/issues/099.html</link></item></channel></rss>', 'utf8');
-  writeFileSync(join(siteDir, 'public', 'sitemap.xml'), '<urlset><url><loc>https://olddeadshows.com/issues/099.html</loc></url></urlset>', 'utf8');
+  writeFileSync(join(siteDir, 'public', 'feed.xml'), '<rss><channel><item><link>https://olddeadshows.test/issues/099.html</link></item></channel></rss>', 'utf8');
+  writeFileSync(join(siteDir, 'public', 'sitemap.xml'), '<urlset><url><loc>https://olddeadshows.test/issues/099.html</loc></url></urlset>', 'utf8');
   writeFileSync(join(stateDir, 'next-issue.txt'), '100\n', 'utf8');
   writeFileSync(join(artifactDir, 'DISSERTATION.md'), '# Merkleized Evidence & Verifiable Audit Trails\n\nA dissertation with source material for the issue.\n', 'utf8');
   const agencyStatePath = join(agencyDir, 'state.json');
@@ -75,6 +75,7 @@ test('verifyFromTheInsidePublish writes an evidence.v1 receipt for a clean publi
     issue: 99,
     projectDir,
     siteDir,
+    publicBaseUrl: 'https://olddeadshows.test',
     agencyStatePath,
     writeReceipt: true,
     writeEventLog: true,
@@ -121,6 +122,7 @@ test('verifyFromTheInsidePublish writes a small Field Report proof packet with b
     issue: 99,
     projectDir,
     siteDir,
+    publicBaseUrl: 'https://olddeadshows.test',
     agencyStatePath,
     writeReceipt: true,
     writeProofPacket: true,
@@ -149,6 +151,7 @@ test('verifyFromTheInsidePublish fails the receipt when rendered HTML loses the 
     issue: 99,
     projectDir,
     siteDir,
+    publicBaseUrl: 'https://olddeadshows.test',
     agencyStatePath,
     writeReceipt: false,
     createdAt: '2026-05-08T12:00:00.000Z',
@@ -171,6 +174,7 @@ test('verifyFromTheInsidePublish fails when issue state has no matching disserta
     issue: 99,
     projectDir,
     siteDir,
+    publicBaseUrl: 'https://olddeadshows.test',
     agencyStatePath,
     writeReceipt: false,
     createdAt: '2026-05-08T12:00:00.000Z',
@@ -207,6 +211,7 @@ test('verifyFromTheInsidePublish fails when the public issue cites no lived agen
     issue: 99,
     projectDir,
     siteDir,
+    publicBaseUrl: 'https://olddeadshows.test',
     agencyStatePath: join(agencyDir, 'state.json'),
     writeReceipt: false,
     createdAt: '2026-05-08T12:00:00.000Z',
@@ -231,6 +236,7 @@ test('verifyFromTheInsidePublish fails when source cites agency consequence but 
     issue: 99,
     projectDir,
     siteDir,
+    publicBaseUrl: 'https://olddeadshows.test',
     agencyStatePath,
     writeReceipt: false,
     createdAt: '2026-05-08T12:00:00.000Z',

@@ -19,6 +19,11 @@ logs/
 *.log
 .home23-state.json
 
+# Runtime — generated local config
+config/home.yaml
+config/cron-jobs.json
+config/targets.yaml
+
 # PM2 (auto-generated)
 ecosystem.config.cjs
 
@@ -30,7 +35,9 @@ ecosystem.config.cjs
 **/*.pem
 
 # Engine data (generated images, etc.)
-engine/data/images/
+engine/data/images/*
+!engine/data/images/.gitkeep
+engine/data/sensor-cache.json
 
 # Engine artifacts
 engine/runtime/
@@ -85,8 +92,17 @@ cosmo23/.worktrees/
 .superpowers/
 .worktrees/
 .claude/
+AGENTS.local.md
+CLAUDE.local.md
 workspace/skills/.telemetry/
 workspace/skills/*/data/cache/
+workspace/skills/*/outputs/
+workspace/skills/*/reports/
+workspace/skills/x-research/data/*.json
+workspace/reports/
+cosmo23/engine/brain-studio-new/ssl/
+reports/pm2-recovery/
+tmp/
 
 # IDE
 .vscode/
@@ -100,6 +116,8 @@ todocosmo23.md
 step20review.md
 query-*.md
 x-trae-harness-snapshot.md
+brainandjerrylogs.md
+evolve.md
 server.pid
 probe/
 __pycache__/

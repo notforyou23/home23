@@ -5,7 +5,7 @@
  * Runs on every start and after every update. Idempotent.
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { copyFileSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -17,9 +17,28 @@ function loadYaml(filePath) {
   catch { return {}; }
 }
 
+function seedLocalConfig(home23Root) {
+  const seeds = [
+    ['config/home.yaml.example', 'config/home.yaml'],
+    ['config/targets.yaml.example', 'config/targets.yaml'],
+    ['config/cron-jobs.json.example', 'config/cron-jobs.json'],
+  ];
+
+  for (const [sourceRel, targetRel] of seeds) {
+    const source = join(home23Root, sourceRel);
+    const target = join(home23Root, targetRel);
+    if (!existsSync(target) && existsSync(source)) {
+      copyFileSync(source, target);
+      console.log(`  Seeded ${targetRel}`);
+    }
+  }
+}
+
 export async function ensureSystemHealth(home23Root) {
   console.log('Checking system health...');
   let changed = false;
+
+  seedLocalConfig(home23Root);
 
   // 1. Ensure cosmo23 encryption key exists in secrets.yaml
   const secretsPath = join(home23Root, 'config', 'secrets.yaml');

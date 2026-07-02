@@ -1,12 +1,15 @@
 #!/bin/bash
-# Logs Apple Health data from jtrpi to ~/.health_log.jsonl
+# Logs Apple Health data from a configured bridge to ~/.health_log.jsonl
 # Fetches the health dashboard export and appends latest daily values per metric
 # Runs via cron every 15 minutes
 
 LOG_PATH="$HOME/.health_log.jsonl"
 STATUS_PATH="$HOME/.health_log.status.json"
-PI_HOST="jtrpi.local"
-API_URL="http://${PI_HOST}:8765/api/health/dashboard"
+PI_HOST="${HEALTH_PI_HOST:-}"
+API_URL="${HEALTH_API_URL:-}"
+if [ -z "$API_URL" ] && [ -n "$PI_HOST" ]; then
+  API_URL="http://${PI_HOST}:8765/api/health/dashboard"
+fi
 MAX_DATA_AGE_DAYS="${HEALTH_MAX_DATA_AGE_DAYS:-3}"
 
 write_status() {
@@ -26,6 +29,12 @@ status = {
 print(json.dumps(status))
 " > "$STATUS_PATH"
 }
+
+if [ -z "$API_URL" ]; then
+  write_status false "set HEALTH_API_URL or HEALTH_PI_HOST"
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] health API not configured" >> /tmp/health_err.log
+  exit 1
+fi
 
 DATA=$(curl -s --max-time 15 "$API_URL" 2>/dev/null)
 

@@ -42,7 +42,7 @@ test('Briefs service turns Jerry and Forrest artifacts into readable dashboard d
         name: 'field-report-cycle',
         enabled: true,
         payload: { kind: 'agentTurn' },
-        delivery: { mode: 'summary', channel: 'telegram', to: '8317115546' },
+        delivery: { mode: 'summary', channel: 'telegram', to: '123456789' },
         state: { lastRunAtMs: Date.parse('2026-05-27T18:07:00Z'), lastStatus: 'ok' },
       },
       {

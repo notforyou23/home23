@@ -1,23 +1,25 @@
 home:
-  name: home23-dev
-  version: 0.1.0
-  primaryAgent: jerry
+  name: home23
+  version: 1.0.0
+  primaryAgent: ""
+
 evobrew:
   port: 3415
+
 cosmo23:
   ports:
     app: 43210
     websocket: 43240
     dashboard: 43244
     mcp: 43247
+
 dashboard:
   vibe:
-    autoGenerate: true
+    autoGenerate: false
     generationIntervalHours: 1
     rotationIntervalSeconds: 120
-    galleryLimit: 2600
-    sourcePaths:
-      - /Volumes/Casey Jones/_cosmoImages/images
+    galleryLimit: 100
+    sourcePaths: []
     dreams:
       enabled: false
       lookback: 3
@@ -25,22 +27,7 @@ dashboard:
   tiles:
     version: 1
     homeLayout:
-      - tileId: outside-weather
-        enabled: true
-        size: third
-      - tileId: vibe
-        enabled: true
-        size: third
       - tileId: chat
-        enabled: true
-        size: third
-      - tileId: sauna-control
-        enabled: true
-        size: third
-      - tileId: pool-screenlogic
-        enabled: true
-        size: third
-      - tileId: brain-log
         enabled: true
         size: third
       - tileId: system-summary
@@ -49,146 +36,23 @@ dashboard:
       - tileId: good-life
         enabled: true
         size: third
-      - tileId: dream-log
+      - tileId: brain-log
         enabled: true
-        size: half
+        size: third
       - tileId: feeder
         enabled: true
         size: half
-    customTiles:
-      - id: outside-weather
-        kind: custom
-        title: Outside
-        icon: 🌤
-        mode: ecowitt-weather
-        connectionId: jtr-ecowitt
-        refreshMs: 600000
-        sizeDefault: third
-        config: {}
-      - id: sauna-control
-        kind: custom
-        title: Sauna
-        icon: ♨️
-        mode: huum-sauna
-        connectionId: jtr-huum
-        refreshMs: 15000
-        sizeDefault: third
-        config:
-          startDefaults:
-            targetTemperature: 190
-            duration: 180
-      - id: pool-screenlogic
-        kind: custom
-        title: Pool
-        icon: 🏊
-        mode: generic-http-json
-        connectionId: jtr-screenlogic
-        refreshMs: 30000
-        sizeDefault: half
-        config:
-          request:
-            path: /status
-            method: GET
-          display:
-            valuePath: pool.temperatureText
-            statusPath: pool.operatingState
-            subtitlePath: lights.summary
-            metrics:
-              - label: RPM
-                path: pump.rpm
-              - label: Flow
-                path: pump.gpm
-              - label: Lights
-                path: lights.stateText
-              - label: Color
-                path: lights.colorName
-              - label: Salt
-                path: chlorinator.saltText
-              - label: Chlor %
-                path: chlorinator.poolSetPointText
-              - label: Cell
-                path: chlorinator.stateText
-          actions:
-            - id: lights-on
-              label: 'On'
-              method: POST
-              path: /circuits/501
-              confirmationText: Turn pool lights on?
-              fields: []
-              bodyTemplate:
-                state: 1
-            - id: lights-off
-              label: 'Off'
-              method: POST
-              path: /circuits/501
-              confirmationText: Turn pool lights off?
-              fields: []
-              bodyTemplate:
-                state: 0
-            - id: lights-next
-              label: Next
-              method: POST
-              path: /lights/color
-              confirmationText: Cycle pool lights to the next mode?
-              fields: []
-              bodyTemplate:
-                command: 19
-            - id: lights-sync
-              label: Sync
-              method: POST
-              path: /lights/color
-              confirmationText: Sync pool lights?
-              fields: []
-              bodyTemplate:
-                command: 3
-            - id: lights-blue
-              label: Blue
-              method: POST
-              path: /lights/color
-              confirmationText: Set pool lights to blue?
-              fields: []
-              bodyTemplate:
-                command: 13
-            - id: lights-green
-              label: Green
-              method: POST
-              path: /lights/color
-              confirmationText: Set pool lights to green?
-              fields: []
-              bodyTemplate:
-                command: 14
-            - id: lights-red
-              label: Red
-              method: POST
-              path: /lights/color
-              confirmationText: Set pool lights to red?
-              fields: []
-              bodyTemplate:
-                command: 15
-            - id: lights-white
-              label: White
-              method: POST
-              path: /lights/color
-              confirmationText: Set pool lights to white?
-              fields: []
-              bodyTemplate:
-                command: 16
-            - id: lights-magenta
-              label: Magenta
-              method: POST
-              path: /lights/color
-              confirmationText: Set pool lights to magenta?
-              fields: []
-              bodyTemplate:
-                command: 17
+    customTiles: []
+
 screenlogic:
-  enabled: true
-  host: ''
+  enabled: false
+  host: ""
   adapterPort: 80
-  discovery: true
+  discovery: false
   bridgeHost: 127.0.0.1
   bridgePort: 5023
   pollSeconds: 60
+
 providers:
   ollama-cloud:
     baseUrl: https://ollama.com/v1
@@ -242,6 +106,7 @@ providers:
       - grok-4.20-0309-reasoning
       - grok-4.20-0309-non-reasoning
       - grok-4.20-multi-agent-0309
+
 embeddings:
   providers:
     - provider: ollama-local
@@ -254,18 +119,21 @@ embeddings:
     - provider: ollama-cloud
       model: nomic-embed-text
       dimensions: 768
+
 chat:
-  defaultProvider: openai-codex
-  defaultModel: gpt-5.5
+  defaultProvider: ollama-cloud
+  defaultModel: kimi-k2.6
   maxTokens: 4096
   temperature: 0.7
   historyBudget: 400000
   sessionGapMs: 1800000
+
 situationalAwareness:
   bootstrap:
     reads:
       - NOW.md
       - PLAYBOOK.md
+
 osEngine:
   channels:
     machine:
@@ -278,15 +146,15 @@ osEngine:
         pressure:
           path: ~/.pressure_log.jsonl
           tail: true
-          enabled: true
+          enabled: false
         health:
           path: ~/.health_log.jsonl
           tail: true
-          enabled: true
+          enabled: false
         sauna:
           path: ~/.sauna_usage_log.jsonl
           tail: true
-          enabled: true
+          enabled: false
         weather:
           enabled: false
         goodLife:
@@ -297,9 +165,9 @@ osEngine:
     work:
       enabled: true
     neighbor:
-      enabled: true
+      enabled: false
       poll: 3m
-      peers: auto
+      peers: []
   verification:
     flagRequired: true
     zeroContextAsLegal: true
@@ -345,15 +213,18 @@ osEngine:
     starvationFloor:
       workspace_insights: 6h
       dashboard: 15m
+
 agency:
   enabled: true
   mode: live
   charterPath: agency/charter.yaml
   residentTickMs: 60000
+
 media:
   imageGeneration:
     provider: openai
     model: gpt-image-2
+
 models:
   aliases:
     sonnet:
@@ -437,11 +308,13 @@ models:
     codex:
       provider: openai-codex
       model: gpt-5.5
+
 skills:
   x-research:
     defaults:
       quick: true
       saveMarkdown: true
+
 query:
   defaultModel: claude-opus-4-8
   defaultMode: full

@@ -40,9 +40,12 @@ For the shortest path, follow [docs/ONBOARDING.md](docs/ONBOARDING.md). The core
 git clone https://github.com/notforyou23/home23.git
 cd home23
 node cli/home23.js init
+node cli/home23.js agent create <name>
 ```
 
 Init checks prerequisites, installs all dependencies (including MarkItDown for document ingestion), sets up encryption keys and the OAuth database, builds the TypeScript harness, and seeds all configuration. No API keys needed — provider setup happens in the web dashboard.
+
+`agent create` creates the first local runtime under `instances/<name>/` and regenerates the PM2 ecosystem. Local runtime/config files are intentionally ignored by Git; public defaults live in `config/*.example`.
 
 Before handing a fresh install to someone else, run:
 
@@ -133,7 +136,7 @@ Your agent's brain uses vector embeddings for semantic memory. Pick one provider
 ollama pull nomic-embed-text
 ```
 
-This runs entirely on your machine with no API key needed. The default config (`config/home.yaml`) is pre-configured for local Ollama embeddings.
+This runs entirely on your machine with no API key needed. `node cli/home23.js init` seeds local `config/home.yaml` from `config/home.yaml.example`, which is pre-configured for local Ollama embeddings.
 
 **Alternatives:**
 - **Ollama Cloud** — same model, hosted (requires Ollama Cloud API key)
@@ -205,7 +208,7 @@ Home23/
     routes/            Evobrew bridge, chat turn, device registration, chat history
   dist/                Compiled JS output (gitignored)
   cli/                 CLI installer, update system, and management commands
-  config/              Provider URLs, model aliases, secrets (gitignored)
+  config/              Example defaults plus generated local config/secrets
   configs/             Shared engine config templates (base-engine.yaml, action-allowlist.yaml)
   instances/           Per-agent directories (workspace, brain, conversations)
   workspace/skills/    Shared skill definitions (auto-research, x-research, etc.)

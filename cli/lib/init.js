@@ -5,7 +5,7 @@
  * Provider setup happens in the web dashboard, not here.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { copyFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -19,6 +19,23 @@ function loadYaml(filePath) {
     return yaml.load(readFileSync(filePath, 'utf8')) || {};
   } catch {
     return {};
+  }
+}
+
+function seedLocalConfig(home23Root) {
+  const seeds = [
+    ['config/home.yaml.example', 'config/home.yaml'],
+    ['config/targets.yaml.example', 'config/targets.yaml'],
+    ['config/cron-jobs.json.example', 'config/cron-jobs.json'],
+  ];
+
+  for (const [sourceRel, targetRel] of seeds) {
+    const source = join(home23Root, sourceRel);
+    const target = join(home23Root, targetRel);
+    if (!existsSync(target) && existsSync(source)) {
+      copyFileSync(source, target);
+      console.log(`  Seeded ${targetRel}`);
+    }
   }
 }
 
@@ -83,6 +100,9 @@ export async function runInit(home23Root) {
     for (const warn of prereqs.warnings) console.log(`   • ${warn}`);
     console.log('');
   }
+
+  console.log('Preparing local config files...');
+  seedLocalConfig(home23Root);
 
   // Merge secrets.yaml — never clobber existing provider keys or agent bot tokens
   const secretsPath = join(home23Root, 'config', 'secrets.yaml');

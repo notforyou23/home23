@@ -14,7 +14,7 @@ from pathlib import Path
 HOME = Path.home()
 LOG_PATH = Path(os.environ.get('HEALTH_LOG_PATH', str(HOME / '.health_log.jsonl')))
 STATUS_PATH = Path(os.environ.get('HEALTH_STATUS_PATH', str(HOME / '.health_log.status.json')))
-BASE = Path('/Users/jtr/_JTR23_/release/home23/instances/forrest/workspace/health_jtr')
+BASE = Path(os.environ.get('HEALTH_LEDGER_DIR', str(Path.cwd() / 'instances' / 'forrest' / 'workspace' / 'health_jtr')))
 DAILY = BASE / 'ledgers' / 'daily_metrics.jsonl'
 IPHONE_LATEST = BASE / 'ledgers' / 'apple_health_latest.jsonl'
 SLEEP = BASE / 'ledgers' / 'sleep.jsonl'
