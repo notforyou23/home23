@@ -14,7 +14,7 @@ import { generateEcosystem } from './generate-ecosystem.js';
 
 function findNextPorts(home23Root) {
   const instancesDir = join(home23Root, 'instances');
-  if (!existsSync(instancesDir)) return { engine: 5001, dashboard: 5002, mcp: 5003 };
+  if (!existsSync(instancesDir)) return { engine: 5001, dashboard: 5002, mcp: 5003, bridge: 5004 };
 
   let maxBase = 4991; // so first agent gets 5001
   for (const name of readdirSync(instancesDir)) {
@@ -52,6 +52,51 @@ function getHome23Version(home23Root) {
   } catch {
     return '0.6.0';
   }
+}
+
+function loadYaml(filePath) {
+  if (!existsSync(filePath)) return {};
+  try {
+    return yaml.load(readFileSync(filePath, 'utf8')) || {};
+  } catch {
+    return {};
+  }
+}
+
+function discoverAgentNames(home23Root) {
+  const instancesDir = join(home23Root, 'instances');
+  if (!existsSync(instancesDir)) return [];
+  return readdirSync(instancesDir)
+    .filter((name) => {
+      const dir = join(instancesDir, name);
+      return statSync(dir).isDirectory() && existsSync(join(dir, 'config.yaml'));
+    })
+    .map((name) => {
+      const config = loadYaml(join(instancesDir, name, 'config.yaml'));
+      return {
+        name,
+        dashboardPort: Number(config?.ports?.dashboard) || Number.MAX_SAFE_INTEGER,
+        enginePort: Number(config?.ports?.engine) || Number.MAX_SAFE_INTEGER,
+      };
+    })
+    .sort((a, b) => a.dashboardPort - b.dashboardPort || a.enginePort - b.enginePort || a.name.localeCompare(b.name))
+    .map((agent) => agent.name);
+}
+
+function ensurePrimaryAgent(home23Root, newAgentName, existingAgentNames = []) {
+  const configDir = join(home23Root, 'config');
+  const configPath = join(configDir, 'home.yaml');
+  mkdirSync(configDir, { recursive: true });
+  const homeConfig = loadYaml(configPath);
+  if (!homeConfig.home) homeConfig.home = {};
+
+  const configured = String(homeConfig.home.primaryAgent || '').trim();
+  if (configured) return null;
+
+  const primaryAgent = existingAgentNames[0] || newAgentName;
+  homeConfig.home.primaryAgent = primaryAgent;
+  writeFileSync(configPath, yaml.dump(homeConfig, { lineWidth: 120 }), 'utf8');
+  return primaryAgent;
 }
 
 function defaultPurpose(ownerName) {
@@ -151,6 +196,10 @@ function addBotTokenToSecrets(home23Root, agentName, botToken) {
 export async function runAgentCreate(home23Root, name, options = {}) {
   const instanceDir = join(home23Root, 'instances', name);
   const home23Version = getHome23Version(home23Root);
+  const prompt = options.prompt || {};
+  const promptWithDefault = prompt.askWithDefault || askWithDefault;
+  const promptSecret = prompt.askSecret || askSecret;
+  const closePrompts = prompt.close || closeRL;
 
   if (existsSync(instanceDir)) {
     console.error(`Error: Instance "${name}" already exists at ${instanceDir}`);
@@ -161,9 +210,10 @@ export async function runAgentCreate(home23Root, name, options = {}) {
   let defaultOwner = 'owner';
   let defaultTelegramId = '';
   let defaultTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York';
+  const existingAgentNames = discoverAgentNames(home23Root);
   const instancesDir = join(home23Root, 'instances');
   if (existsSync(instancesDir)) {
-    for (const existing of readdirSync(instancesDir)) {
+    for (const existing of existingAgentNames) {
       const configPath = join(instancesDir, existing, 'config.yaml');
       if (!existsSync(configPath)) continue;
       try {
@@ -183,19 +233,19 @@ export async function runAgentCreate(home23Root, name, options = {}) {
   console.log('────────────────────────────');
   console.log('');
 
-  const displayName = await askWithDefault('Agent display name', displayDefault);
-  const ownerName = await askWithDefault('Owner name', defaultOwner);
-  const purpose = await askWithDefault('What should this agent help with?', defaultPurpose(ownerName));
-  const ingestInput = await askWithDefault('Project folders to ingest now (comma-separated paths, optional)', '');
-  const ownerTelegramId = await askWithDefault('Owner Telegram ID', defaultTelegramId);
-  const timezone = await askWithDefault('Timezone', defaultTimezone);
+  const displayName = await promptWithDefault('Agent display name', displayDefault);
+  const ownerName = await promptWithDefault('Owner name', defaultOwner);
+  const purpose = await promptWithDefault('What should this agent help with?', defaultPurpose(ownerName));
+  const ingestInput = await promptWithDefault('Project folders to ingest now (comma-separated paths, optional)', '');
+  const ownerTelegramId = await promptWithDefault('Owner Telegram ID', defaultTelegramId);
+  const timezone = await promptWithDefault('Timezone', defaultTimezone);
   console.log('');
-  const botToken = await askSecret('Telegram bot token (from BotFather)');
+  const botToken = await promptSecret('Telegram bot token (from BotFather)');
   console.log('');
-  const defaultModel = await askWithDefault('Default chat model', 'kimi-k2.6');
-  const defaultProvider = await askWithDefault('Default provider', 'ollama-cloud');
+  const defaultModel = await promptWithDefault('Default chat model', 'kimi-k2.6');
+  const defaultProvider = await promptWithDefault('Default provider', 'ollama-cloud');
 
-  closeRL();
+  closePrompts();
 
   const ports = findNextPorts(home23Root);
   const ingestPaths = parseIngestPaths(options.ingestPaths ?? ingestInput);
@@ -341,6 +391,11 @@ export async function runAgentCreate(home23Root, name, options = {}) {
   if (botToken) {
     addBotTokenToSecrets(home23Root, name, botToken);
     console.log(`  secrets.yaml   \u2713 (bot token added)`);
+  }
+
+  const primaryAgent = ensurePrimaryAgent(home23Root, name, existingAgentNames);
+  if (primaryAgent) {
+    console.log(`  home.yaml      \u2713 (primary agent: ${primaryAgent})`);
   }
 
   // Regenerate ecosystem.config.cjs

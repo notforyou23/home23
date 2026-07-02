@@ -7,12 +7,19 @@ Home23 is an installable AI operating system for persistent local agents. Keep t
 ```bash
 git clone https://github.com/notforyou23/home23.git
 cd home23
+node cli/home23.js setup
+node cli/home23.js start <name>
+```
+
+`setup` creates the local config, first personal agent, purpose, starter ingestion folders, and PM2 config. Open the dashboard URL printed by the start command.
+
+For automation or repeat agent creation, use the lower-level commands:
+
+```bash
 node cli/home23.js init
 node cli/home23.js agent create <name>
 node cli/home23.js start <name>
 ```
-
-Open the dashboard URL printed by the start command.
 
 ## Repository Shape
 

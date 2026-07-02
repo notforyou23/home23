@@ -4,7 +4,7 @@
 
 ### Release posture
 - Promoted Home23 to the 1.0.0 release line with package metadata and lockfile aligned.
-- Added a fresh-install onboarding path and release handoff receipt so a new operator can install, start, validate, and orient without reading the whole historical design archive.
+- Added a guided fresh-install onboarding path and release handoff receipt so a new operator can set purpose, add starter project/import folders, start, validate, and orient without reading the whole historical design archive.
 - Added contract validation scripts and Apple/client route schemas/fixtures for the dashboard, chat, settings, query, home-surface, tile, worker, and device-facing API surfaces.
 
 ### Runtime hardening
@@ -19,7 +19,7 @@
 
 ### Verification
 - Passed `npm run build`.
-- Passed `npm test` with 582 tests.
+- Passed `npm test` with 585 tests.
 - Passed `npm run test:contracts`.
 - Passed focused COSMO23 query/PGS/provider/artifact regressions.
 - Passed read-only live route validation with `npm run test:contracts:live`.

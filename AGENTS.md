@@ -47,12 +47,21 @@ When separating local files from Git, use cached removal such as `git rm --cache
 A new user should be able to run:
 
 ```bash
+node cli/home23.js setup
+node cli/home23.js start <name>
+```
+
+`setup` seeds local config from `config/*.example`, creates the first personal agent, records its purpose, accepts starter project/import folders for ingestion, marks it as `home.primaryAgent`, and regenerates `ecosystem.config.cjs`.
+
+For scripted/manual setup, the equivalent lower-level flow is:
+
+```bash
 node cli/home23.js init
 node cli/home23.js agent create <name>
 node cli/home23.js start <name>
 ```
 
-`init` seeds local config from `config/*.example`. `agent create` writes `instances/<name>/` and regenerates `ecosystem.config.cjs`.
+The generated `instances/`, local `config/*.yaml`/`*.json`, and `ecosystem.config.cjs` files are installation state. They must remain ignored by Git.
 
 ## Hard Rules
 

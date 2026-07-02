@@ -1,7 +1,7 @@
 # Home23 v1.0 Onboarding Hardening Receipt
 
 Date: 2026-07-02
-Implementation commit: `1b01f9188cf7d0b05f61a027ed11893d8a5da40b`
+Implementation reference: `v1.0.0` tag target
 Release tag: `v1.0.0`
 
 ## Objective
@@ -20,6 +20,14 @@ Make the Home23 1.0 fresh-install path simple for a nontechnical user: create a 
 - Updated README and `docs/ONBOARDING.md` to make the true first-run order explicit.
 - Added settings-router coverage proving dashboard-created agents persist purpose, starter feeder watch paths, and mission updates.
 
+## Second-Pass Hardening
+
+- Updated `AGENTS.md`, `CLAUDE.md`, and `docs/MANIFEST.md` so assistant/operator docs point to `setup` first and no longer imply generated local files ship in the public repo.
+- Fixed CLI-created first agents to persist `home.primaryAgent` in local `config/home.yaml`, matching the dashboard-created-agent path.
+- Fixed first-agent port generation so `ports.bridge` is set to `5004` instead of `undefined`.
+- Hardened `node cli/home23.js start <agent>` so missing/invalid agents and PM2 start failures exit nonzero instead of printing a misleading success message.
+- Added CLI onboarding regression coverage for fresh purpose capture, starter project/Claude-style import folders, primary-agent config, generated PM2 metadata, complete first-agent ports, and existing-install primary-agent auto-heal.
+
 ## Verification
 
 Passed:
@@ -28,9 +36,12 @@ Passed:
 node --check cli/home23.js
 node --check cli/lib/setup.js
 node --check cli/lib/agent-create.js
+node --check cli/lib/pm2-commands.js
 node --check cli/lib/init.js
 node --check engine/src/dashboard/home23-settings-api.js
 node --check engine/src/dashboard/home23-settings.js
+node --check tests/engine/cli-onboarding.test.js
+node --test --test-concurrency=1 tests/engine/cli-onboarding.test.js
 node --test --test-concurrency=1 tests/engine/dashboard/vibe-image-settings.test.js
 node --import tsx --test --test-concurrency=1 tests/agent/good-life-identity.test.ts
 npm run build
@@ -43,7 +54,7 @@ node cli/home23.js status
 
 Key receipts:
 
-- `npm test`: 583 tests passed.
+- `npm test`: 585 tests passed.
 - `npm run test:contracts`: 12 passed, 1 skipped live placeholder.
 - `npm run test:contracts:live`: read-only live routes checked; action-writing probes stayed skipped because `HOME23_LIVE_CONTRACTS_ACTIONS` was not enabled.
 - Live dashboard `/home23/api/settings/agents` returned `agentCount=2` and confirmed the primary agent roster now includes the `purpose` field.

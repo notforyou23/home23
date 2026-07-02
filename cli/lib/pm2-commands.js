@@ -27,6 +27,11 @@ function agentProcessNames(agentName) {
 }
 
 export async function runStart(home23Root, agentName) {
+  if (agentName && !/^[a-z0-9][a-z0-9-]*$/.test(agentName)) {
+    console.error('Agent name must be lowercase alphanumeric with hyphens.');
+    process.exit(1);
+  }
+
   // Build TypeScript first
   console.log('Building TypeScript...');
   try {
@@ -47,21 +52,29 @@ export async function runStart(home23Root, agentName) {
   }
 
   if (agentName) {
+    const agentConfigPath = join(home23Root, 'instances', agentName, 'config.yaml');
+    if (!existsSync(agentConfigPath)) {
+      console.error(`Agent "${agentName}" does not exist. Run "node cli/home23.js agent create ${agentName}" first.`);
+      process.exit(1);
+    }
+
     // Start specific agent's processes
     const names = agentProcessNames(agentName);
     console.log(`Starting ${agentName}...`);
     try {
       execSync(`pm2 start ${ecosystemPath} --only ${names.join(',')}`, { cwd: home23Root, stdio: 'inherit' });
-    } catch {
-      // PM2 prints its own output
+    } catch (err) {
+      console.error(`Failed to start ${agentName}: ${err.message}`);
+      process.exit(1);
     }
   } else {
     // Start all
     console.log('Starting all agents...');
     try {
       execSync(`pm2 start ${ecosystemPath}`, { cwd: home23Root, stdio: 'inherit' });
-    } catch {
-      // PM2 prints its own output
+    } catch (err) {
+      console.error(`Failed to start Home23: ${err.message}`);
+      process.exit(1);
     }
   }
 
@@ -111,7 +124,13 @@ export async function runStart(home23Root, agentName) {
     const { readdirSync, readFileSync: readFs } = await import('node:fs');
     const yaml = (await import('js-yaml')).default;
     const instancesDir = join(home23Root, 'instances');
-    if (existsSync(instancesDir)) {
+    if (agentName) {
+      const cfgPath = join(instancesDir, agentName, 'config.yaml');
+      if (existsSync(cfgPath)) {
+        const cfg = yaml.load(readFs(cfgPath, 'utf8'));
+        if (cfg?.ports?.dashboard) dashPort = cfg.ports.dashboard;
+      }
+    } else if (existsSync(instancesDir)) {
       const agents = readdirSync(instancesDir);
       for (const a of agents) {
         const cfgPath = join(instancesDir, a, 'config.yaml');
