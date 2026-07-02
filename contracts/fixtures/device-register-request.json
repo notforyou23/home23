@@ -1,0 +1,12 @@
+{
+  "device_token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "agent_id": "jerry",
+  "chat_ids": ["ios_contract_smoke"],
+  "bundle_id": "com.regina6.home23",
+  "env": "sandbox",
+  "platform": "ios",
+  "app_build": "1",
+  "contract_version": "2026.06.26",
+  "capabilities_hash": "sha256:contract-smoke",
+  "registered_at": "2026-06-26T14:28:00Z"
+}

@@ -319,20 +319,50 @@ async function setSelectedSettingsAgent(name, options = {}) {
 
 // ── Sub-tab switching ──
 
+function getSettingsTab(tabKey) {
+  return Array.from(document.querySelectorAll('.h23s-tab'))
+    .find(tab => tab.dataset.stab === tabKey) || null;
+}
+
+function getSettingsTabFromHash() {
+  const tabKey = decodeURIComponent((window.location.hash || '').replace(/^#/, '')).trim();
+  if (!tabKey) return null;
+  return getSettingsTab(tabKey) ? tabKey : null;
+}
+
+function activateSettingsTab(tabKey, options = {}) {
+  const { updateHash = false } = options;
+  const tab = getSettingsTab(tabKey);
+  const panel = document.getElementById(`panel-${tabKey}`);
+  if (!tab || !panel) return false;
+
+  document.querySelectorAll('.h23s-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.h23s-panel').forEach(p => p.classList.remove('active'));
+  tab.classList.add('active');
+  panel.classList.add('active');
+  activeSettingsTab = tabKey;
+
+  if (updateHash && window.location.hash !== `#${tabKey}`) {
+    history.replaceState(null, '', `#${tabKey}`);
+  }
+
+  refreshAgentScopeUI();
+  if (activeSettingsTab === 'workers') {
+    loadWorkersSettings().catch(() => {});
+  }
+  return true;
+}
+
 function setupSubTabs() {
   document.querySelectorAll('.h23s-tab').forEach(tab => {
     tab.addEventListener('click', () => {
-      document.querySelectorAll('.h23s-tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.h23s-panel').forEach(p => p.classList.remove('active'));
-      tab.classList.add('active');
-      activeSettingsTab = tab.dataset.stab || 'providers';
-      const panel = document.getElementById(`panel-${tab.dataset.stab}`);
-      if (panel) panel.classList.add('active');
-      refreshAgentScopeUI();
-      if (activeSettingsTab === 'workers') {
-        loadWorkersSettings().catch(() => {});
-      }
+      activateSettingsTab(tab.dataset.stab || 'providers', { updateHash: true });
     });
+  });
+
+  window.addEventListener('hashchange', () => {
+    const tabKey = getSettingsTabFromHash();
+    if (tabKey) activateSettingsTab(tabKey);
   });
 }
 
@@ -1195,9 +1225,9 @@ function populateWizardModels() {
     }
   } else {
     const fallback = {
-      'ollama-cloud': ['gpt-oss:120b', 'kimi-k2.6', 'qwen3.5:397b', 'deepseek-v4-pro', 'glm-5.1', 'minimax-m2.7'],
-      'minimax': ['MiniMax-M2.7'],
-      'anthropic': ['claude-sonnet-4-7', 'claude-opus-4-7'],
+      'ollama-cloud': ['gpt-oss:120b', 'kimi-k2.6', 'qwen3.5:397b', 'deepseek-v4-pro', 'glm-5.2:cloud', 'glm-5.1', 'MiniMax-M3'],
+      'minimax': ['MiniMax-M3'],
+      'anthropic': ['claude-sonnet-4-7', 'claude-opus-4-8'],
       'openai': ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4-mini'],
       'openai-codex': ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'],
       'xai': ['grok-4.3', 'grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning', 'grok-4.20-multi-agent-0309'],
@@ -2025,7 +2055,7 @@ function renderFeeder(data) {
   // Compiler
   document.getElementById('fd-compiler-enabled').checked = f.compiler?.enabled !== false;
   const compilerSel = document.getElementById('fd-compiler-model');
-  const currentCompilerModel = f.compiler?.model || 'minimax-m2.7';
+  const currentCompilerModel = f.compiler?.model || 'MiniMax-M3';
   compilerSel.innerHTML = '';
   if (modelsData?.providers) {
     for (const [provName, prov] of Object.entries(modelsData.providers)) {
@@ -2118,7 +2148,7 @@ function collectFeederConfig() {
     },
     compiler: {
       enabled: document.getElementById('fd-compiler-enabled').checked,
-      model: document.getElementById('fd-compiler-model').value.trim() || 'minimax-m2.7',
+      model: document.getElementById('fd-compiler-model').value.trim() || 'MiniMax-M3',
     },
     converter: {
       enabled: document.getElementById('fd-converter-enabled').checked,
@@ -2213,6 +2243,9 @@ async function loadFeederLiveStatus() {
         if (Number.isFinite(live.status.manifest?.pendingCount)) {
           livePending = live.status.manifest.pendingCount;
         }
+      } else {
+        started = live.error || 'live feeder unavailable';
+        watchers = '0';
       }
     } else {
       started = 'engine unreachable';
@@ -2549,6 +2582,10 @@ function renderTilesLayoutList() {
     return `
       <div class="h23s-layout-row" draggable="true" data-layout-tile-id="${tile.id}">
         <div class="h23s-layout-handle">☰</div>
+        <div class="h23s-layout-quick-actions" aria-label="Move ${escapeHtml(tile.title)}">
+          <button type="button" data-layout-move="-1" title="Move earlier">↑</button>
+          <button type="button" data-layout-move="1" title="Move later">↓</button>
+        </div>
         <div class="h23s-layout-info">
           <div class="h23s-layout-title">
             <span>${escapeHtml(tile.icon || '🧩')}</span>
@@ -3233,6 +3270,15 @@ function setupTilesHandlers() {
   });
 
   const layoutHost = document.getElementById('tiles-layout-list');
+  layoutHost?.addEventListener('click', (event) => {
+    const moveBtn = event.target.closest('[data-layout-move]');
+    if (!moveBtn) return;
+    const row = moveBtn.closest('[data-layout-tile-id]');
+    if (!row) return;
+    event.preventDefault();
+    moveLayoutTileByDelta(row.dataset.layoutTileId, Number(moveBtn.dataset.layoutMove || 0));
+  });
+
   layoutHost?.addEventListener('change', (event) => {
     const row = event.target.closest('[data-layout-tile-id]');
     if (!row) return;
@@ -3272,6 +3318,17 @@ function setupTilesHandlers() {
     event.preventDefault();
     moveLayoutTile(layoutDragTileId, row.dataset.layoutTileId);
   });
+}
+
+function moveLayoutTileByDelta(tileId, delta) {
+  const layout = tilesState?.homeLayout || [];
+  const fromIndex = layout.findIndex((entry) => entry.tileId === tileId);
+  if (fromIndex < 0 || !Number.isFinite(delta) || delta === 0) return;
+  const toIndex = Math.max(0, Math.min(layout.length - 1, fromIndex + delta));
+  if (toIndex === fromIndex) return;
+  const [entry] = layout.splice(fromIndex, 1);
+  layout.splice(toIndex, 0, entry);
+  renderTilesLayoutList();
 }
 
 function setupFeederHandlers() {
@@ -3785,7 +3842,7 @@ const SLOT_META = {
   'quantumReasoner.singleReasoning': {
     label: 'Dreams + single-shot fallback',
     desc: 'Deep-reasoning path used for dreams and when all parallel branches fail. Lower volume, longer outputs.',
-    pick: 'Favor QUALITY over speed. A strong reasoning model (Opus, GPT-5.5, MiniMax-M2.7) makes dreams worth reading.',
+    pick: 'Favor QUALITY over speed. A strong reasoning model (Opus, GPT-5.5, MiniMax-M3) makes dreams worth reading.',
   },
   'agents.research': {
     label: 'Research agent — primary',
@@ -3805,12 +3862,12 @@ const SLOT_META = {
   'agents.analytical': {
     label: 'Analytical agent',
     desc: 'Compares, contrasts, and evaluates evidence across brain nodes.',
-    pick: 'Balanced reasoning model. MiniMax-M2.7, nemotron-super, claude-sonnet.',
+    pick: 'Balanced reasoning model. MiniMax-M3, nemotron-super, claude-sonnet.',
   },
   'agents.discovery': {
     label: 'Discovery agent',
     desc: 'Finds unexpected connections or latent patterns across memory nodes.',
-    pick: 'Creative reasoning. Grok, claude-opus, MiniMax-M2.7.',
+    pick: 'Creative reasoning. Grok, claude-opus, MiniMax-M3.',
   },
   'agents.clustering': {
     label: 'Clustering agent',
@@ -3820,7 +3877,7 @@ const SLOT_META = {
   'agents.synthesis': {
     label: 'Synthesis agent',
     desc: 'Intelligence-tab curated insights + memory consolidation. Writes the long-form summaries you actually read.',
-    pick: 'Favor QUALITY. This is the output you see. Claude-opus / GPT-5.4 / MiniMax-M2.7.',
+    pick: 'Favor QUALITY. This is the output you see. Claude-opus / GPT-5.4 / MiniMax-M3.',
   },
   'agents.quality_assurance': {
     label: 'QA agent',
@@ -4399,9 +4456,7 @@ async function init() {
   setupSubTabs();
   setupWorkersSettings();
   await loadAgents();
-  if (window.location.hash === '#workers') {
-    document.querySelector('.h23s-tab[data-stab="workers"]')?.click();
-  }
+  activateSettingsTab(getSettingsTabFromHash() || activeSettingsTab || 'models');
   await refreshAgentScopedPanels();
   loadProviders();
   loadSystem();

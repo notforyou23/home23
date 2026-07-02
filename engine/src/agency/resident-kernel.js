@@ -105,6 +105,50 @@ function compactStateTask(task = {}) {
   };
 }
 
+function normalizeNextActionForMode(nextAction, mode) {
+  if (!nextAction) return null;
+  return {
+    ...nextAction,
+    dryRun: mode !== 'live',
+  };
+}
+
+/**
+ * Witness-independence check for pursuit closure.
+ *
+ * A close is self-attested when the only evidence sources are the same agent
+ * that owns the pursuit (self+subject). Such closes are marked 'provisional'
+ * rather than 'closed', so 'verified' carries real evidentiary weight.
+ *
+ * Evidence from a different agent (e.g., forrest, a worker run, jtr correction)
+ * or from an independent system artifact (e.g., file on disk, API response)
+ * counts as an independent witness.
+ */
+function isSelfAttestedClose(pursuit, evidence = []) {
+  const owner = pursuit.owner || 'jerry';
+  const allEvidence = [
+    ...(Array.isArray(pursuit.evidence) ? pursuit.evidence : []),
+    ...(Array.isArray(evidence) ? evidence : []),
+  ];
+  if (!allEvidence.length) return true; // no evidence = self-attested
+  // Check if any evidence item has an independent witness
+  const hasIndependent = allEvidence.some(item => {
+    const ref = String(item.ref || item.type || '');
+    const source = String(item.source || '');
+    const type = String(item.type || '').toLowerCase();
+    // Independent witnesses: other agents, worker runs, file artifacts, API responses, jtr
+    if (ref.startsWith('trace:') && source && source !== owner && source !== 'work.worker-runs') return true;
+    if (type === 'jtr_correction' || type === 'verifier_receipt') return true;
+    if (type === 'live_problem' || ref.startsWith('live-problem:')) return true;
+    if (type === 'cron_job' || source === 'scheduler.cron.bootcamp') return true;
+    if (type === 'reference' && (ref.includes('.md') || ref.includes('.json') || ref.includes('/'))) return true;
+    if (type === 'worker_receipt' || type === 'file_artifact') return true;
+    if (source.startsWith('jtr') || source === 'chat' || source === 'human') return true;
+    return false;
+  });
+  return !hasIndependent;
+}
+
 export class AgencyKernel {
   constructor({ brainDir, agentName = 'jerry', config = {}, charterPath = null, logger = console } = {}) {
     if (!brainDir) throw new Error('AgencyKernel requires brainDir');
@@ -112,7 +156,7 @@ export class AgencyKernel {
     this.charter = loadAgencyCharter({ charterPath, config, agentName });
     this.config = {
       enabled: config.enabled !== false,
-      mode: config.mode || 'dry_run',
+      mode: config.mode || 'live',
       residentTickMs: config.residentTickMs || this.charter.attention?.residentTickMs || 60_000,
     };
     this.logger = logger;
@@ -137,6 +181,7 @@ export class AgencyKernel {
     const active = this.store.listPursuits({ status: 'active', limit: 10000 });
     const watch = this.store.listPursuits({ status: 'watch', limit: 10000 });
     const deferred = this.store.listPursuits({ status: 'deferred', limit: 10000 });
+    const provisional = this.store.listPursuits({ status: 'provisional', limit: 10000 });
     const openTasks = this.store.listTasks({ status: 'open', limit: 50 });
     const recentMemoryCandidates = this.store.listMemoryCandidates({ limit: 10 });
     const recentConsequences = this.store.listConsequences({ limit: 1000 })
@@ -146,6 +191,27 @@ export class AgencyKernel {
     const claims = this.store.listTruth({ limit: 10000 }).reverse();
     const truthSummary = this.truth.summarize(claims);
     const existing = this.store.readState() || {};
+    if (existing.mode && existing.mode !== this.config.mode) {
+      this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'agency_mode_changed',
+        route: 'authority_posture_changed',
+        fromMode: existing.mode,
+        toMode: this.config.mode,
+        reason: 'current_config_overrides_persisted_agency_mode',
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at: nowIso(),
+        pursuitId: null,
+        status: 'applied',
+        changeType: 'agency_mode_changed',
+        summary: `Resident agency mode changed from ${existing.mode} to ${this.config.mode}.`,
+        evidence: [{ type: 'config', ref: 'agency.mode' }],
+      });
+    }
     const postureOverride = existing.governance?.postureOverride || null;
     const obligations = this.deriveObligations({ truthSummary });
     const state = {
@@ -163,10 +229,11 @@ export class AgencyKernel {
       bootcamp: this.charter.bootcamp,
       attention: {
         currentPursuitId: active[0]?.id || watch[0]?.id || existing.attention?.currentPursuitId || null,
-        queueDepth: this.store.listInbox({ limit: 10000 }).length,
+        queueDepth: this.store.countInboxLines(),
         activePursuits: active.length,
         watchItems: watch.length,
         deferredItems: deferred.length,
+        provisionalCloses: provisional.length,
         openTasks: openTasks.length,
         maxActivePursuits: this.charter.attention.maxActivePursuits,
         maxWatchItems: this.charter.attention.maxWatchItems,
@@ -197,7 +264,7 @@ export class AgencyKernel {
       openContradictions: truthSummary.unresolvedClaims || [],
       governance: existing.governance || null,
       lastMeaningfulActions: existing.lastMeaningfulActions || [],
-      nextAction: existing.nextAction || null,
+      nextAction: normalizeNextActionForMode(existing.nextAction, this.config.mode),
     };
     this.store.writeState(state);
     return state;
@@ -229,8 +296,20 @@ export class AgencyKernel {
         reason: row.reason || row.authority?.reason || 'authority requested',
       });
     }
+    // Build a set of questionIds that have been explicitly resolved/rejected by a
+    // later `jtr_question_resolved` receipt. Without this, an operator_question
+    // with no bound pursuit (pursuitId:null) can NEVER clear — it stays an open
+    // obligation forever even after the answer is known. This is how the phantom
+    // write_path authorization (q_mpzgh6ed_b0e455) kept re-surfacing to jtr.
+    const resolvedQuestionIds = new Set();
+    for (const row of this.store.listReceipts({ limit: 500 })) {
+      if (row.event === 'jtr_question_resolved' && row.questionId) {
+        resolvedQuestionIds.add(row.questionId);
+      }
+    }
     for (const row of this.store.listReceipts({ limit: 200 })) {
       if (row.event !== 'jtr_question_raised') continue;
+      if (row.questionId && resolvedQuestionIds.has(row.questionId)) continue;
       const pursuit = row.pursuitId ? this.store.getPursuit(row.pursuitId) : null;
       if (pursuit && (pursuit.status === 'closed' || pursuit.status === 'discarded')) continue;
       add({
@@ -447,18 +526,21 @@ export class AgencyKernel {
     const pursuits = this.store.listPursuits({ status: ['active', 'watch'], limit: 10000 });
     for (const pursuit of pursuits) {
       if (isResolvedLiveProblemPursuit(pursuit)) {
+        const evidence = pursuit.latestEvidence || pursuit.evidence || [];
+        const selfAttested = isSelfAttestedClose(pursuit, evidence);
         this.store.updatePursuit(pursuit.id, {
-          status: 'closed',
+          status: selfAttested ? 'provisional' : 'closed',
           consequence: {
             changed: true,
             pursuitId: pursuit.id,
             summary: pursuit.desiredChangedFuture || pursuit.summary,
-            evidence: pursuit.latestEvidence || pursuit.evidence || [],
+            evidence,
           },
           lastTouched: nowIso(),
         }, {
           type: 'resolved_live_problem_reconciled',
-          reason: 'resolved_live_problem_verified',
+          reason: selfAttested ? 'resolved_live_problem_verified_self_attested' : 'resolved_live_problem_verified',
+          detail: { witnessIndependent: !selfAttested },
         });
         this.store.appendReceipt({
           schema: 'home23.agency.receipt.v1',
@@ -507,18 +589,21 @@ export class AgencyKernel {
       if (!isCronBootcampAuditPursuit(pursuit)) continue;
       const consequence = boundByPursuitId.get(pursuit.id);
       if (!consequence) continue;
+      const cronEvidence = consequence.evidence || pursuit.latestEvidence || pursuit.evidence || [];
+      const cronSelfAttested = isSelfAttestedClose(pursuit, cronEvidence);
       this.store.updatePursuit(pursuit.id, {
-        status: 'closed',
+        status: cronSelfAttested ? 'provisional' : 'closed',
         consequence: {
           changed: true,
           pursuitId: pursuit.id,
           summary: consequence.summary || pursuit.desiredChangedFuture || pursuit.summary,
-          evidence: consequence.evidence || pursuit.latestEvidence || pursuit.evidence || [],
+          evidence: cronEvidence,
         },
         lastTouched: nowIso(),
       }, {
         type: 'cron_bootcamp_stop_condition_reconciled',
-        reason: 'cron_bootcamp_stop_condition_satisfied',
+        reason: cronSelfAttested ? 'cron_bootcamp_stop_condition_satisfied_self_attested' : 'cron_bootcamp_stop_condition_satisfied',
+        detail: { witnessIndependent: !cronSelfAttested },
       });
       this.store.appendReceipt({
         schema: 'home23.agency.receipt.v1',
@@ -599,12 +684,29 @@ export class AgencyKernel {
   async intake(input = {}) {
     const candidate = this.router.normalize(input);
     const existing = this.store.findSimilar(candidate);
+    if (isRedundantGoodLifePolicyPulse(candidate, existing)) {
+      const decision = {
+        route: 'discard',
+        reason: 'active_good_life_policy_already_tracked',
+        score: 0,
+      };
+      return {
+        candidate: { ...candidate, decision },
+        decision,
+        pursuit: existing,
+        state: this.ensureState(),
+      };
+    }
     const decision = this.selector.select(candidate, { existing, budget: this.attentionBudget() });
     const inboxEntry = {
       ...candidate,
       decision,
     };
-    this.store.appendInbox(inboxEntry);
+    // Only append to inbox log if the item has signal (not discarded).
+    // Discarded items are already captured in receipts — no need to bloat the inbox.
+    if (decision.route !== 'discard') {
+      this.store.appendInbox(inboxEntry);
+    }
 
     let pursuit = null;
     if (decision.route === 'pursue' || decision.route === 'watch') {
@@ -795,7 +897,7 @@ export class AgencyKernel {
     });
     if (!candidate.explicitNoChange && (editorBlock.action === 'require_consequence' || editorBlock.verdict === 'veto')) {
       const decision = { route: 'discard', reason: editorBlock.reason };
-      this.store.appendInbox({ ...candidate, decision });
+      // Discarded — don't bloat the inbox log; receipt captures it.
       const receipt = this.store.appendReceipt({
         schema: 'home23.agency.receipt.v1',
         at: nowIso(),
@@ -828,7 +930,10 @@ export class AgencyKernel {
     const decision = candidate.explicitNoChange
       ? { route: 'discard', reason: 'explicit_no_change' }
       : this.selector.select(candidate, { existing, budget: this.attentionBudget() });
-    this.store.appendInbox({ ...candidate, decision });
+    // Only append to inbox log if the item has signal (not discarded).
+    if (decision.route !== 'discard') {
+      this.store.appendInbox({ ...candidate, decision });
+    }
 
     let pursuit = null;
     if (decision.route === 'pursue' || decision.route === 'watch') {
@@ -1171,20 +1276,23 @@ export class AgencyKernel {
     if (!provesClosure) return null;
     const existing = this.store.getPursuit(pursuitId);
     if (!existing || existing.status === 'closed') return null;
+    const evidence = Array.isArray(candidate.evidence) ? candidate.evidence : [];
+    const selfAttested = isSelfAttestedClose(existing, evidence);
+    const closeStatus = selfAttested ? 'provisional' : 'closed';
     const pursuit = this.store.updatePursuit(pursuitId, {
-      status: 'closed',
+      status: closeStatus,
       consequence: {
         changed: true,
         pursuitId,
         summary: candidate.changedFuture || candidate.summary,
-        evidence: candidate.evidence,
+        evidence,
       },
-      latestEvidence: Array.isArray(candidate.evidence) ? candidate.evidence.slice(-3) : existing.latestEvidence,
+      latestEvidence: evidence.length ? evidence.slice(-3) : existing.latestEvidence,
       lastTouched: nowIso(),
     }, {
       type: 'receipt_closure',
-      reason: 'receipt_proved_stop_condition',
-      detail: { candidateId: candidate.candidateId, source: candidate.source },
+      reason: selfAttested ? 'receipt_proved_stop_condition_self_attested' : 'receipt_proved_stop_condition',
+      detail: { candidateId: candidate.candidateId, source: candidate.source, witnessIndependent: !selfAttested },
     });
     return { pursuit };
   }
@@ -1508,6 +1616,38 @@ export class AgencyKernel {
     });
     this.ensureState();
     return entry;
+  }
+
+  // Explicitly resolve/reject an operator question so it stops being a standing
+  // obligation. Works even when the original question had no bound pursuit.
+  resolveQuestion(input = {}) {
+    const at = input.at || nowIso();
+    const questionId = String(input.questionId || '').trim();
+    if (!questionId) throw new Error('resolveQuestion requires questionId');
+    const resolution = String(input.resolution || input.answer || 'rejected').trim();
+    const evidence = Array.isArray(input.evidence)
+      ? input.evidence
+      : (input.evidenceRef ? [{ type: 'reference', ref: String(input.evidenceRef) }] : []);
+    this.store.appendReceipt({
+      schema: 'home23.agency.receipt.v1',
+      at,
+      event: 'jtr_question_resolved',
+      questionId,
+      resolution,
+      reason: input.reason || 'resolved_by_operator_or_evidence',
+      evidence,
+      mode: this.config.mode,
+    });
+    this.store.appendConsequence({
+      schema: 'home23.agency.consequence.v1',
+      at,
+      status: 'closed',
+      changeType: 'jtr_question_resolved',
+      summary: `${resolution}: ${input.reason || questionId}`,
+      evidence,
+    });
+    this.ensureState();
+    return { questionId, resolution, at };
   }
 
   inspector(options = {}) {
@@ -2579,6 +2719,17 @@ function isMeaningfulConsequence(row = {}) {
   if (status === 'discarded' && (changeType === 'explicit_no_change' || summary.includes('already resolved'))) return false;
   if (summary.includes('already resolved with verifier evidence')) return false;
   return true;
+}
+
+function isRedundantGoodLifePolicyPulse(candidate = {}, existing = null) {
+  if (!existing || candidate.source !== 'domain.good-life') return false;
+  if (!['active', 'watch'].includes(String(existing.status || '').toLowerCase())) return false;
+  if (existing.dedupeKey && candidate.dedupeKey && existing.dedupeKey !== candidate.dedupeKey) return false;
+  const evidence = Array.isArray(candidate.evidence) ? candidate.evidence : [];
+  return evidence.every((item) => {
+    const type = String(item?.type || '').toLowerCase();
+    return !type || type === 'observation' || type === 'good-life';
+  });
 }
 
 function isRawObservationPursuit(pursuit = {}) {

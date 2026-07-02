@@ -35,8 +35,8 @@ const BACKUP_FILES = [
 const OPTIONAL_BACKUP_FILES = [
   'memory-delta.jsonl',
 ];
-const DEFAULT_RETENTION = 5;
-const DEFAULT_INTERVAL_HOURS = 1;
+const DEFAULT_RETENTION = 2;
+const DEFAULT_INTERVAL_HOURS = 6;
 
 function backupsRoot(brainDir) {
   return path.join(brainDir, BACKUPS_DIR);

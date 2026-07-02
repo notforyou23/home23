@@ -60,9 +60,36 @@ function auditFileFreshness(problem, verifier, registry, findings) {
   }
 }
 
+// A verifier is "self-referential" when it can only pass by observing proof of
+// its OWN remediation (e.g. a log event named "*_patch_applied" / "*_fix_*"),
+// rather than checking an independent, real on-disk or sensor target. Such a
+// problem can never resolve from reality — only from someone faking the event —
+// so it festers indefinitely and drags viability/goal cascades with it. This is
+// exactly how `brain_search_degradation_patch_registration` survived for weeks.
+const REMEDIATION_EVENT_RE = /(patch|fix|applied|stub|interceptor|remediat|registered|unblock)/i;
+function looksSelfReferential(verifier) {
+  const mv = verifier.args?.matchValue;
+  if (typeof mv !== 'string' || !mv.trim()) return false;
+  return REMEDIATION_EVENT_RE.test(mv);
+}
+
 function auditJsonl(problem, verifier, registry, findings) {
   const target = findFileTarget(registry, verifier.args?.path);
-  if (!target) return;
+  if (!target) {
+    // Hole that let the phantom through: previously this returned silently when
+    // the path wasn't a known target. If the verifier also matches on a
+    // remediation-shaped event value, it is unfalsifiable — flag it.
+    if (looksSelfReferential(verifier)) {
+      pushFinding(
+        findings,
+        'error',
+        'self_referential_or_unregistered_target',
+        `${problem.id}: jsonl_recent_match asserts a remediation-shaped event ("${verifier.args.matchValue}") on an unregistered path "${verifier.args?.path}". This can only pass by observing proof of its own fix, never by checking real state — refusing as unfalsifiable.`,
+        { problemId: problem.id, verifierType: verifier.type, path: verifier.args?.path, matchValue: verifier.args?.matchValue }
+      );
+    }
+    return;
+  }
 
   const actualWindow = Number.isFinite(verifier.args?.windowMinutes) ? verifier.args.windowMinutes : 60;
   const minimumWindow = Number.isFinite(target.minimumWindowMin)

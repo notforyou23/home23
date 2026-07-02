@@ -17,6 +17,7 @@
   let initialized = false;
   let activeResizeObserver = null;
   let clusterCentroids = {};
+  let graphLibraryWait = null;
 
   // ── Color palette ─────────────────────────────────────────────────────────
 
@@ -117,6 +118,17 @@
     return 0.3 + edge.weight * 1.5;
   }
 
+  function assignFallbackClusters(nodes) {
+    const byTag = new Map();
+    let next = 0;
+    nodes.forEach(node => {
+      if (node.cluster != null) return;
+      const key = node.tag || 'general';
+      if (!byTag.has(key)) byTag.set(key, next++);
+      node.cluster = byTag.get(key);
+    });
+  }
+
   function truncate(text, maxLen) {
     if (!text) return '';
     if (text.length <= maxLen) return text;
@@ -133,6 +145,79 @@
     return (str || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;');
   }
 
+  function renderFallbackBrainMap(container, nodes, edges, reason = 'WebGL unavailable') {
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const width = Math.max(720, Math.round(rect.width || 1000));
+    const height = Math.max(480, Math.round(rect.height || 700));
+    const clusterIds = Array.from(new Set(nodes.map(n => n.cluster ?? 0)));
+    const clusterIndex = new Map(clusterIds.map((id, index) => [id, index]));
+    const clusterCounts = new Map();
+    const positions = new Map();
+    const radius = Math.min(width, height) * 0.34;
+    const centerX = width / 2;
+    const centerY = height / 2;
+
+    nodes.forEach((node) => {
+      const cluster = node.cluster ?? 0;
+      const cIndex = clusterIndex.get(cluster) || 0;
+      const count = clusterCounts.get(cluster) || 0;
+      clusterCounts.set(cluster, count + 1);
+      const clusterAngle = (Math.PI * 2 * cIndex) / Math.max(clusterIds.length, 1);
+      const clusterX = centerX + Math.cos(clusterAngle) * radius * 0.68;
+      const clusterY = centerY + Math.sin(clusterAngle) * radius * 0.48;
+      const localAngle = count * 2.399963229728653;
+      const localRadius = Math.sqrt(count) * 4.2;
+      positions.set(String(node.id), {
+        x: clusterX + Math.cos(localAngle) * localRadius,
+        y: clusterY + Math.sin(localAngle) * localRadius,
+      });
+    });
+
+    const visibleEdges = edges.slice(0, 2200).map((edge) => {
+      const source = positions.get(String(edge.source));
+      const target = positions.get(String(edge.target));
+      if (!source || !target) return '';
+      return `<line x1="${source.x.toFixed(1)}" y1="${source.y.toFixed(1)}" x2="${target.x.toFixed(1)}" y2="${target.y.toFixed(1)}" stroke="${escapeAttr(edgeColor(edge))}" stroke-width="${Math.max(0.3, edgeWidth(edge)).toFixed(2)}" opacity="0.38" />`;
+    }).join('');
+    const visibleNodes = nodes.map((node) => {
+      const pos = positions.get(String(node.id));
+      if (!pos) return '';
+      const size = Math.max(2.2, Math.min(7, nodeSize(node)));
+      return `<circle class="h23-brain-map-fallback-node" data-node-id="${escapeAttr(String(node.id))}" cx="${pos.x.toFixed(1)}" cy="${pos.y.toFixed(1)}" r="${size.toFixed(1)}" fill="${escapeAttr(nodeColor(node))}" opacity="0.9"><title>${escapeHtml(truncate(node.concept, 120))}</title></circle>`;
+    }).join('');
+
+    container.innerHTML = `
+      <div class="h23-brain-map-fallback">
+        <div class="h23-brain-map-fallback-badge">2D fallback · ${escapeHtml(reason)}</div>
+        <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Brain graph fallback map">
+          <rect width="${width}" height="${height}" fill="#07111f"></rect>
+          <g>${visibleEdges}</g>
+          <g>${visibleNodes}</g>
+        </svg>
+      </div>
+    `;
+    container.querySelectorAll('.h23-brain-map-fallback-node').forEach((nodeEl) => {
+      nodeEl.addEventListener('click', () => {
+        const node = nodes.find(item => String(item.id) === nodeEl.dataset.nodeId);
+        if (node) renderNodeDetail(node);
+      });
+    });
+  }
+
+  function canCreateWebGLContext() {
+    try {
+      const canvas = document.createElement('canvas');
+      return !!(window.WebGLRenderingContext && (
+        canvas.getContext('webgl2') ||
+        canvas.getContext('webgl') ||
+        canvas.getContext('experimental-webgl')
+      ));
+    } catch {
+      return false;
+    }
+  }
+
   // ── Graph rendering ───────────────────────────────────────────────────────
 
   function createGraph(containerId) {
@@ -143,7 +228,7 @@
     container.innerHTML = '';
 
     const g = window.ForceGraph3D()(container)
-      .backgroundColor('rgba(0,0,0,0)')
+      .backgroundColor('#07111f')
       .showNavInfo(true)
       .enableNavigationControls(true)
       .nodeLabel(n => {
@@ -350,7 +435,7 @@
     }
 
     try {
-      const res = await fetch('/home23/api/brain/graph');
+      const res = await fetch('/home23/api/brain/graph?limit=2500&edgeLimit=10000');
       if (!res.ok) throw new Error('Failed to load graph: ' + res.status);
       const data = await res.json();
 
@@ -366,22 +451,36 @@
         nodeIds.has(String(e.source)) && nodeIds.has(String(e.target))
       );
 
+      assignFallbackClusters(data.nodes);
       graphData = { nodes: data.nodes, edges: validEdges, clusters: data.clusters, meta: data.meta };
 
       clusterCentroids = computeClusterCentroids(data.nodes);
       seedPositions(data.nodes, clusterCentroids);
 
+      updateBrainMapStats(data.meta);
+
+      if (!canCreateWebGLContext()) {
+        renderFallbackBrainMap(container, data.nodes, validEdges, 'WebGL unavailable');
+        return;
+      }
+
       if (!graph) {
-        graph = createGraph('brain-map-container');
+        try {
+          graph = createGraph('brain-map-container');
+        } catch (err) {
+          graph = null;
+          renderFallbackBrainMap(container, data.nodes, validEdges, err.message || 'WebGL unavailable');
+          return;
+        }
       }
 
       if (graph) {
-        graph.graphData({ nodes: data.nodes, links: validEdges });
-
-        // Update stats
-        const statsEl = document.getElementById('brain-map-stats');
-        if (statsEl) {
-          statsEl.textContent = data.meta.nodeCount + ' nodes \u00b7 ' + data.meta.edgeCount + ' edges \u00b7 ' + data.meta.clusterCount + ' clusters';
+        try {
+          graph.graphData({ nodes: data.nodes, links: validEdges });
+        } catch (err) {
+          graph = null;
+          renderFallbackBrainMap(container, data.nodes, validEdges, err.message || 'WebGL unavailable');
+          return;
         }
 
         // Start zoomed out, then fit to view — delay fit so the sphere layout
@@ -390,6 +489,31 @@
         setTimeout(() => {
           if (graph) graph.zoomToFit(1000, 120);
         }, 2200);
+      } else {
+        waitForGraphLibrary()
+          .then(() => {
+            if (graphData && initialized) {
+              try {
+                graph = createGraph('brain-map-container');
+              } catch (err) {
+                graph = null;
+                renderFallbackBrainMap(container, graphData.nodes, graphData.edges, err.message || 'WebGL unavailable');
+                return;
+              }
+              if (graph) {
+                graph.graphData({ nodes: graphData.nodes, links: graphData.edges });
+                graph.cameraPosition({ x: 0, y: 0, z: 1400 });
+                setTimeout(() => {
+                  if (graph) graph.zoomToFit(1000, 120);
+                }, 2200);
+              }
+            }
+          })
+          .catch((err) => {
+            if (container) {
+              container.innerHTML = '<div class="h23-brain-map-empty">Brain map renderer unavailable: ' + escapeHtml(err.message) + '</div>';
+            }
+          });
       }
     } catch (err) {
       console.error('[BrainMap] Load failed:', err);
@@ -399,6 +523,41 @@
     } finally {
       isLoading = false;
     }
+  }
+
+  function updateBrainMapStats(meta = {}) {
+    const statsEl = document.getElementById('brain-map-stats');
+    if (!statsEl) return;
+    const nodeLabel = meta.limited
+      ? `${meta.displayedNodeCount} / ${meta.nodeCount} nodes`
+      : `${meta.nodeCount || 0} nodes`;
+    const edgeLabel = meta.limited
+      ? `${meta.displayedEdgeCount} / ${meta.edgeCount} edges`
+      : `${meta.edgeCount || 0} edges`;
+    statsEl.textContent = nodeLabel + ' \u00b7 ' + edgeLabel + ' \u00b7 ' + (meta.clusterCount || 0) + ' clusters';
+  }
+
+  function waitForGraphLibrary(timeoutMs = 12000) {
+    if (window.ForceGraph3D) return Promise.resolve();
+    if (graphLibraryWait) return graphLibraryWait;
+    graphLibraryWait = new Promise((resolve, reject) => {
+      const started = Date.now();
+      const tick = () => {
+        if (window.ForceGraph3D) {
+          graphLibraryWait = null;
+          resolve();
+          return;
+        }
+        if (Date.now() - started >= timeoutMs) {
+          graphLibraryWait = null;
+          reject(new Error('3D graph library did not load'));
+          return;
+        }
+        setTimeout(tick, 250);
+      };
+      tick();
+    });
+    return graphLibraryWait;
   }
 
   // ── Search ────────────────────────────────────────────────────────────────
@@ -460,6 +619,14 @@
     setupSearch();
     setupReset();
     loadGraph();
+  };
+
+  window.setBrainMapActive = function (active) {
+    if (!graph) return;
+    try {
+      if (active && typeof graph.resumeAnimation === 'function') graph.resumeAnimation();
+      if (!active && typeof graph.pauseAnimation === 'function') graph.pauseAnimation();
+    } catch { /* renderer may be mid-dispose/context restore */ }
   };
 
 })();

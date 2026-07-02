@@ -16,7 +16,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const { getAnthropicApiKey, prepareSystemPrompt, isOAuthToken } = require('../services/anthropic-oauth-engine');
 
 function isAnthropicSamplingDeprecatedModel(model) {
-  return /^claude-opus-4-7(?:$|[-@])/.test(String(model || '').trim());
+  return /^(?:[^/]+\/)?claude-opus-4-8(?:$|[-@])/.test(String(model || '').trim());
 }
 
 class AnthropicClient {
@@ -36,7 +36,7 @@ class AnthropicClient {
     // Model mapping (GPT names → Claude models)
     this.modelMapping = config.modelMapping || {
       'gpt-5.5': 'claude-sonnet-4-7',
-      'gpt-5.5-pro': 'claude-opus-4-7',
+      'gpt-5.5-pro': 'claude-opus-4-8',
       'gpt-5.4': 'claude-sonnet-4-7',
       'gpt-5.4-mini': 'claude-sonnet-4-7',
       'gpt-5.4-nano': 'claude-haiku-4-5',
@@ -185,7 +185,7 @@ class AnthropicClient {
       const model = this._getModelFromOptions(options);
       const usesAdaptiveThinking = this._usesAdaptiveThinking(model);
 
-      // Pre-4.7 thinking required temperature=1. Opus 4.7 removes sampling parameters entirely.
+      // Pre-4.7 thinking required temperature=1. Opus 4.8 removes sampling parameters entirely.
       let temperature = options.temperature !== undefined ? options.temperature : this.temperature;
       if (useExtendedThinking && !usesAdaptiveThinking) {
         this.logger?.info?.('[AnthropicClient] Extended thinking enabled, forcing temperature=1', {
@@ -218,7 +218,7 @@ class AnthropicClient {
         }
       }
 
-      // Claude Opus 4.7 replaced extended thinking with adaptive thinking.
+      // Claude Opus 4.8 replaced extended thinking with adaptive thinking.
       if (useExtendedThinking) {
         if (usesAdaptiveThinking) {
           requestParams.thinking = {

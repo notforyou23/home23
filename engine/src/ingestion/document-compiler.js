@@ -54,7 +54,7 @@ class DocumentCompiler {
     this.logger = logger;
     this.indexPath = path.join(workspacePath, 'BRAIN_INDEX.md');
 
-    this.model = config.model || 'minimax-m2.7';
+    this.model = config.model || 'MiniMax-M3';
     this.clientType = null; // 'anthropic' or 'openai'
     this.client = null;
     this._buildClient(this.model);

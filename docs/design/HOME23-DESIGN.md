@@ -120,7 +120,7 @@ providers:
     apiKey: "${OLLAMA_CLOUD_API_KEY}"
     baseUrl: "https://ollama.com/v1"
     models:
-      - minimax-m2.7
+      - MiniMax-M3
       - qwen3.5:397b
       - deepseek-v3.2
 
@@ -156,9 +156,9 @@ harness:
     qwen: qwen3.5:397b
 
 engine:
-  thought: minimax-m2.7
-  consolidation: minimax-m2.7
-  dreaming: minimax-m2.7
+  thought: MiniMax-M3
+  consolidation: MiniMax-M3
+  dreaming: MiniMax-M3
   query: gpt-5.4
 ```
 

@@ -573,7 +573,7 @@
                                 onchange="updateAIReviewEstimate()"
                             >
                                 <option value="claude-sonnet-4-7">Claude Sonnet 4.5 (Default - Fast)</option>
-                                <option value="claude-opus-4-7">Claude Opus 4.5 (Most Capable)</option>
+                                <option value="claude-opus-4-8">Claude Opus 4.8 (Most Capable)</option>
                                 <option value="gpt-5.5">GPT-5.2</option>
                             </select>
                         </div>
@@ -8118,7 +8118,7 @@
             // Estimate based on model (approximate)
             const estimates = {
                 'claude-sonnet-4-7': '~15s/query',
-                'claude-opus-4-7': '~25s/query',
+                'claude-opus-4-8': '~25s/query',
                 'gpt-5.5': '~20s/query'
             };
             
@@ -8157,13 +8157,13 @@
             }
             
             // Calculate estimate
-            const timePerQuery = model === 'claude-opus-4-7' ? 25 : model === 'claude-sonnet-4-7' ? 15 : 20;
+            const timePerQuery = model === 'claude-opus-4-8' ? 25 : model === 'claude-sonnet-4-7' ? 15 : 20;
             const totalTime = Math.ceil(queryTimestamps.length * timePerQuery / 60);
             
             // Model names for display
             const modelNames = {
                 'claude-sonnet-4-7': 'Claude Sonnet 4.5',
-                'claude-opus-4-7': 'Claude Opus 4.5',
+                'claude-opus-4-8': 'Claude Opus 4.8',
                 'gpt-5.5': 'GPT-5.2'
             };
             

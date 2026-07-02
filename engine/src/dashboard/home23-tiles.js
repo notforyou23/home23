@@ -47,6 +47,22 @@ function publishTileLatency(tile, mode, latencyMs) {
   } catch { /* non-fatal */ }
 }
 
+function buildOfflineTilePayload(tileId, { status = 'Offline', value = '—', subtitle = 'Unavailable', error = null } = {}) {
+  return {
+    tileId,
+    fetchedAt: new Date().toISOString(),
+    content: {
+      status,
+      value,
+      subtitle,
+      metrics: [],
+    },
+    actions: [],
+    offline: true,
+    error: error ? String(error.message || error) : undefined,
+  };
+}
+
 const TILE_SIZES = ['third', 'half', 'full'];
 const GENERIC_AUTH_TYPES = ['none', 'basic', 'bearer', 'header'];
 const SAUNA_LOG_PATH = path.join(process.env.HOME || '/Users/jtr', '.sauna_usage_log.jsonl');
@@ -68,7 +84,7 @@ const CORE_TILES = [
     icon: '🎨',
     mode: 'core-vibe',
     description: 'Current dashboard vibe image and gallery link.',
-    contextClass: 'project',
+    contextClass: 'home',
     sizeDefault: 'third',
     refreshMs: 30_000,
   },
@@ -289,13 +305,20 @@ function normalizeMetrics(metrics) {
 function normalizeActionField(field) {
   const id = slugify(field?.id || field?.name || field?.label || 'field');
   const type = ['text', 'number', 'boolean'].includes(field?.type) ? field.type : 'text';
-  return {
+  const normalized = {
     id,
     label: String(field?.label || field?.name || id).trim(),
     type,
     defaultValue: field?.defaultValue ?? field?.default ?? (type === 'boolean' ? false : ''),
     required: field?.required === true,
   };
+  if (type === 'number') {
+    if (Number.isFinite(Number(field?.min))) normalized.min = Number(field.min);
+    if (Number.isFinite(Number(field?.max))) normalized.max = Number(field.max);
+    if (Number.isFinite(Number(field?.step))) normalized.step = Number(field.step);
+    if (field?.unit != null) normalized.unit = String(field.unit);
+  }
+  return normalized;
 }
 
 function normalizeGenericAction(action) {
@@ -539,6 +562,40 @@ function buildSaunaPrestageRecommendation(tile, temporalContext = null) {
   };
 }
 
+function buildHuumSaunaActions(tile, prestage = null) {
+  const startDefaults = tile.config?.startDefaults || {};
+  return [
+    ...(prestage ? [{
+      id: 'prestage',
+      label: 'Pre-stage',
+      method: 'POST',
+      confirmationText: `Pre-stage the sauna to ${prestage.targetTemperature}°F for ${prestage.duration} minutes?`,
+      fields: [
+        { id: 'targetTemperature', label: 'Target Temperature', type: 'number', defaultValue: prestage.targetTemperature, min: 100, max: 240, step: 1, unit: '°F', required: true },
+        { id: 'duration', label: 'Duration', type: 'number', defaultValue: prestage.duration, min: 15, max: 720, step: 15, unit: 'minutes', required: true },
+      ],
+      recommendation: prestage,
+    }] : []),
+    {
+      id: 'start',
+      label: 'Start',
+      method: 'POST',
+      confirmationText: 'Start the sauna with these settings?',
+      fields: [
+        { id: 'targetTemperature', label: 'Target Temperature', type: 'number', defaultValue: startDefaults.targetTemperature ?? 190, min: 100, max: 240, step: 1, unit: '°F', required: true },
+        { id: 'duration', label: 'Duration', type: 'number', defaultValue: startDefaults.duration ?? 180, min: 15, max: 720, step: 15, unit: 'minutes', required: true },
+      ],
+    },
+    {
+      id: 'stop',
+      label: 'Stop',
+      method: 'POST',
+      confirmationText: 'Stop the sauna now?',
+      fields: [],
+    },
+  ];
+}
+
 function materializeHomeLayoutForContext(tilesState, context = null) {
   const materialized = materializeHomeLayout(tilesState);
   if (!isFamilyEveningContext(context)) {
@@ -723,9 +780,18 @@ async function fetchEcowittData(connection) {
 
       payload = await response.json();
       if (payload.code === 0) break;
-      throw new Error(`Weather API returned error code: ${payload.code}${payload.msg ? ` (${payload.msg})` : ''}`);
+      const apiErr = new Error(`Weather API returned error code: ${payload.code}${payload.msg ? ` (${payload.msg})` : ''}`);
+      apiErr.ecowittCode = payload.code;
+      // Ecowitt code -1 = access-rate limit reached. Retrying immediately just
+      // burns more of the quota and keeps us locked out; surface it instead of
+      // hammering the API.
+      if (payload.code === -1) throw apiErr;
+      throw apiErr;
     } catch (err) {
       lastError = err;
+      // Do not retry on Ecowitt rate-limit — back off and let the caller fall
+      // back to last-good cached weather.
+      if (err && err.ecowittCode === -1) throw err;
       if (attempt === 3) throw lastError;
       await sleep(750 * attempt);
     }
@@ -897,6 +963,11 @@ class Home23TileService {
     this.cache = new Map();
     this.backgroundRefreshTimers = new Map();
     this.backgroundRefreshInFlight = new Set();
+    // Last successfully-fetched payload per tile, used to keep tile-backed
+    // sensors fresh through transient upstream failures (e.g. Ecowitt rate
+    // limiting). Republishing recent-but-valid data is better than letting the
+    // sensor go stale and tripping freshness verifiers.
+    this.lastGood = new Map();
     if (autoStartBackgroundRefresh) this.startBackgroundRefresh();
   }
 
@@ -1112,7 +1183,24 @@ class Home23TileService {
 
     let payload;
     if (tile.mode === 'ecowitt-weather') {
-      const weather = await fetchEcowittData(connection);
+      let weather;
+      try {
+        weather = await fetchEcowittData(connection);
+        // Stash last-good weather so transient upstream failures don't make the
+        // sensor go stale. We keep it for up to LAST_GOOD_MAX_MS.
+        this.lastGood.set(tile.id, { data: weather, at: Date.now() });
+      } catch (err) {
+        const fallback = this.lastGood.get(tile.id);
+        const LAST_GOOD_MAX_MS = 20 * 60 * 1000; // 20 min — well inside a 30min freshness window
+        if (fallback && (Date.now() - fallback.at) <= LAST_GOOD_MAX_MS) {
+          // Republish recent-but-valid weather to keep the sensor fresh while
+          // upstream (Ecowitt) is rate-limited or briefly unreachable.
+          weather = fallback.data;
+          this.logger?.warn?.(`[home23-tiles] ${tile.id} fetch failed (${err.message}); republishing last-good weather aged ${Math.round((Date.now() - fallback.at) / 1000)}s`);
+        } else {
+          throw err;
+        }
+      }
       const summary = weather?.outdoor?.temperature != null
         ? `${weather.outdoor.temperature}°F${weather.outdoor.humidity != null ? ' · ' + weather.outdoor.humidity + '%RH' : ''}`
         : 'no readings';
@@ -1146,7 +1234,6 @@ class Home23TileService {
         ? `${sauna.status || '?'} · ${sauna.temperature}°F${sauna.targetTemperature ? ' → ' + sauna.targetTemperature + '°F' : ''}`
         : (sauna?.status || 'unknown');
       publishTileSensor(tile, 'huum-sauna', sauna, summary);
-      const startDefaults = tile.config?.startDefaults || {};
       payload = {
         tileId,
         fetchedAt: new Date().toISOString(),
@@ -1166,49 +1253,38 @@ class Home23TileService {
           ],
           recommendation: prestage,
         },
-        actions: [
-          ...(prestage ? [{
-            id: 'prestage',
-            label: 'Pre-stage',
-            method: 'POST',
-            confirmationText: `Pre-stage the sauna to ${prestage.targetTemperature}°F for ${prestage.duration} minutes?`,
-            fields: [
-              { id: 'targetTemperature', label: 'Target Temperature (F)', type: 'number', defaultValue: prestage.targetTemperature, required: true },
-              { id: 'duration', label: 'Duration (minutes)', type: 'number', defaultValue: prestage.duration, required: true },
-            ],
-            recommendation: prestage,
-          }] : []),
-          {
-            id: 'start',
-            label: 'Start',
-            method: 'POST',
-            confirmationText: 'Start the sauna with these settings?',
-            fields: [
-              { id: 'targetTemperature', label: 'Target Temperature (F)', type: 'number', defaultValue: startDefaults.targetTemperature ?? 190, required: true },
-              { id: 'duration', label: 'Duration (minutes)', type: 'number', defaultValue: startDefaults.duration ?? 180, required: true },
-            ],
-          },
-          {
-            id: 'stop',
-            label: 'Stop',
-            method: 'POST',
-            confirmationText: 'Stop the sauna now?',
-            fields: [],
-          },
-        ],
+        actions: buildHuumSaunaActions(tile, prestage),
       };
     } else {
       const request = tile.config?.request || {};
       const url = resolveConnectionUrl(connection.config.baseUrl, request.path || '/');
-      const response = await fetch(url.toString(), {
-        method: 'GET',
-        headers: buildConnectionHeaders(connection),
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!response.ok) {
-        throw new Error(`Tile request failed: ${response.status} ${response.statusText}`);
+      let raw;
+      try {
+        const response = await fetch(url.toString(), {
+          method: 'GET',
+          headers: buildConnectionHeaders(connection),
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!response.ok) {
+          throw new Error(`Tile request failed: ${response.status} ${response.statusText}`);
+        }
+        raw = await response.json();
+      } catch (err) {
+        if (tile.id === 'pool-screenlogic') {
+          payload = buildOfflineTilePayload(tileId, {
+            subtitle: 'ScreenLogic unavailable',
+            error: err,
+          });
+          this.setCachedTileData(tileId, tile.refreshMs, payload);
+          publishTileSensor(tile, tile.mode || 'generic', { offline: true, error: err.message }, 'offline', { ok: false });
+          publishTileLatency(tile, tile.mode || 'generic', Date.now() - requestStartedAt);
+          return {
+            ...deepClone(payload),
+            cache: { hit: false, expiresInMs: tile.refreshMs, refreshMs: tile.refreshMs },
+          };
+        }
+        throw err;
       }
-      const raw = await response.json();
       // Generic tile: publish the raw response to the registry. Summary tries
       // to pull a sensible one-liner from common fields; otherwise fall back
       // to JSON size.
@@ -1243,6 +1319,33 @@ class Home23TileService {
     };
     publishTileLatency(tile, tile.mode || 'generic', Date.now() - servedStartedAt);
     return servedPayload;
+  }
+
+  describeTileAction(tileId, actionId) {
+    const tile = this.resolveTile(tileId);
+    if (!tile || tile.kind !== 'custom') {
+      throw new Error(`Unknown custom tile: ${tileId}`);
+    }
+
+    let actions;
+    if (tile.mode === 'huum-sauna') {
+      const prestage = buildSaunaPrestageRecommendation(tile, this.getTemporalContext?.());
+      actions = buildHuumSaunaActions(tile, prestage);
+    } else if (tile.mode === 'generic-http-json') {
+      actions = deepClone(tile.config?.actions || []).map((action) => ({
+        id: action.id,
+        label: action.label,
+        method: action.method,
+        confirmationText: action.confirmationText,
+        fields: deepClone(action.fields || []),
+      }));
+    } else {
+      throw new Error(`Tile "${tileId}" does not expose runtime actions`);
+    }
+
+    const action = actions.find((entry) => entry.id === actionId);
+    if (!action) throw new Error(`Unknown tile action: ${actionId}`);
+    return action;
   }
 
   async runTileAction(tileId, actionId, rawInput = {}) {
@@ -1319,4 +1422,5 @@ module.exports = {
   materializeHomeLayoutForContext,
   buildHomeTileContext,
   buildSaunaPrestageRecommendation,
+  buildOfflineTilePayload,
 };

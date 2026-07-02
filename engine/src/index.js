@@ -8,6 +8,8 @@ const path = require('path');
 
 // Load environment variables from COSMO's .env only (don't search parent dirs)
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+const { assertPm2AgentIdentity } = require('../../scripts/lib/pm2-agent-identity-guard.cjs');
+assertPm2AgentIdentity({ root: path.join(__dirname, '..', '..') });
 const { ConfigLoader } = require('./core/config-loader');
 const { ConfigValidator } = require('./core/config-validator');
 const { PathResolver } = require('./core/path-resolver');
@@ -768,7 +770,7 @@ async function main() {
       config: {
         ...agencyCfg,
         enabled: agencyCfg.enabled !== false,
-        mode: agencyCfg.mode || 'dry_run',
+        mode: agencyCfg.mode || 'live',
         approvals: agencyCfg.approvals || [],
       },
       logger,

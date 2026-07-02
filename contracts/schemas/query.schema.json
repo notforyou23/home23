@@ -54,6 +54,67 @@
         }
       }
     },
+    "queryCatalogResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["agent", "available", "endpoints", "models", "brains", "streaming"],
+      "properties": {
+        "agent": { "type": ["string", "null"] },
+        "available": { "type": "boolean" },
+        "reason": { "type": ["string", "null"] },
+        "endpoints": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "required": ["run", "stream", "export"]
+        },
+        "models": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/providerModel" }
+        },
+        "defaults": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "properties": {
+            "model": { "type": ["string", "null"] },
+            "provider": { "type": ["string", "null"] },
+            "mode": { "type": ["string", "null"] },
+            "enablePGSByDefault": { "type": ["boolean", "null"] },
+            "pgsSweepModel": { "type": ["string", "null"] },
+            "pgsSweepProvider": { "type": ["string", "null"] },
+            "pgsSynthModel": { "type": ["string", "null"] },
+            "pgsSynthProvider": { "type": ["string", "null"] },
+            "pgsDepth": { "type": ["number", "null"] }
+          }
+        },
+        "brains": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "id": { "type": ["string", "null"] },
+              "routeKey": { "type": ["string", "null"] },
+              "displayName": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "cosmo": {
+          "type": ["object", "null"],
+          "additionalProperties": true,
+          "properties": {
+            "apiReachable": { "type": ["boolean", "null"] },
+            "running": { "type": ["boolean", "null"] },
+            "activeRun": { "type": ["boolean", "null"] }
+          }
+        },
+        "streaming": { "type": "boolean" },
+        "limits": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "lastRouteError": { "type": ["string", "null"] }
+      }
+    },
     "queryRequest": {
       "type": "object",
       "additionalProperties": true,
@@ -80,6 +141,8 @@
           }
         },
         "pgsSweepModel": { "type": ["string", "null"] },
+        "pgsSweepProvider": { "type": ["string", "null"] },
+        "pgsSynthProvider": { "type": ["string", "null"] },
         "exportFormat": { "type": ["string", "null"] },
         "provider": { "type": ["string", "null"] },
         "priorContext": {
@@ -105,6 +168,35 @@
         "actionError": { "type": ["string", "null"] },
         "actionResult": { "type": ["object", "null"], "additionalProperties": true },
         "exportedTo": { "type": ["string", "null"] }
+      }
+    },
+    "queryRunResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "result": { "$ref": "#/$defs/queryResult" },
+        "error": { "type": ["string", "null"] },
+        "unavailable": { "type": ["boolean", "null"] }
+      }
+    },
+    "queryExportResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "success": { "type": ["boolean", "null"] },
+        "dryRun": { "type": ["boolean", "null"] },
+        "exportedTo": { "type": ["string", "null"] },
+        "filepath": { "type": ["string", "null"] },
+        "filename": { "type": ["string", "null"] },
+        "relativePath": { "type": ["string", "null"] },
+        "query": { "type": ["string", "null"] },
+        "answer": { "type": ["string", "null"] },
+        "format": { "type": ["string", "null"] },
+        "metadata": { "type": ["object", "null"], "additionalProperties": true },
+        "error": { "type": ["string", "null"] },
+        "unavailable": { "type": ["boolean", "null"] }
       }
     },
     "streamEvent": {

@@ -1,15 +1,19 @@
 {
   "ok": true,
   "tileId": "sauna-control",
-  "fetchedAt": "2026-04-28T12:00:00Z",
+  "fetchedAt": "2026-06-26T14:28:00Z",
   "content": {
-    "status": "idle",
-    "value": "142°F",
-    "subtitle": "Ready",
+    "status": "Heating",
+    "value": "178F",
+    "subtitle": "Target 190F - 22 min remaining - Door closed",
     "metrics": [
       {
-        "label": "door",
-        "value": "closed"
+        "label": "Target",
+        "value": "190F"
+      },
+      {
+        "label": "Duration",
+        "value": "22 min"
       }
     ]
   },
@@ -18,15 +22,38 @@
       "id": "start",
       "label": "Start",
       "method": "POST",
+      "confirmationText": "Start the sauna with these settings?",
       "fields": [
         {
-          "id": "targetTempF",
-          "label": "Target",
+          "id": "targetTemperature",
+          "label": "Target Temperature (F)",
           "type": "number",
           "defaultValue": 190,
+          "min": 100,
+          "max": 240,
+          "step": 1,
+          "unit": "°F",
+          "required": true
+        },
+        {
+          "id": "duration",
+          "label": "Duration (minutes)",
+          "type": "number",
+          "defaultValue": 180,
+          "min": 15,
+          "max": 720,
+          "step": 15,
+          "unit": "minutes",
           "required": true
         }
       ]
+    },
+    {
+      "id": "stop",
+      "label": "Stop",
+      "method": "POST",
+      "confirmationText": "Stop the sauna now?",
+      "fields": []
     }
   ]
 }

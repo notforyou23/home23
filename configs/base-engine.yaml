@@ -338,17 +338,17 @@ architecture:
   reflection:
     enabled: true
 models:
-  primary: MiniMax-M2.7
+  primary: MiniMax-M3
   fast: nemotron-3-nano:30b
   nano: nemotron-3-nano:30b
   embeddings: nomic-embed-text
-  strategicModel: MiniMax-M2.7
-  coordinatorStrategic: MiniMax-M2.7
+  strategicModel: MiniMax-M3
+  coordinatorStrategic: MiniMax-M3
   coordinatorStandard: nemotron-3-nano:30b
   plannerModel: nemotron-3-nano:30b
   curatorModel: nemotron-3-nano:30b
-  curatorStrategic: MiniMax-M2.7
-  compiler: minimax-m2.7
+  curatorStrategic: MiniMax-M3
+  compiler: MiniMax-M3
   defaultReasoningEffort: low
   defaultMaxTokens: 4000
   enableWebSearch: true
@@ -385,24 +385,24 @@ modelAssignments:
   # Default tracks chat default (MiniMax). Tune in Settings → Models.
   pulseVoice:
     provider: minimax
-    model: MiniMax-M2.7
+    model: MiniMax-M3
   # PGS sweep + synthesis (Phase 3 of thinking-machine-cycle rebuild).
   # Used by the new autonomous pipeline; does not affect legacy_roles mode.
   # Many small sweep calls in parallel → use the cheap fast tier.
   pgsSweep:
     provider: minimax
-    model: MiniMax-M2.7
+    model: MiniMax-M3
   pgsSynthesis:
     provider: minimax
-    model: MiniMax-M2.7
+    model: MiniMax-M3
   # Deep-dive and critique — Phase 2 + 4 of thinking-machine-cycle. Both
   # need reasoning headroom; critique needs tight JSON output discipline.
   deepDive:
     provider: minimax
-    model: MiniMax-M2.7
+    model: MiniMax-M3
   critique:
     provider: minimax
-    model: MiniMax-M2.7
+    model: MiniMax-M3
   quantumReasoner.branches:
     provider: ollama-cloud
     model: nemotron-3-nano:30b
@@ -659,11 +659,11 @@ feeder:
     intervalSeconds: 30
   converter:
     enabled: true
-    visionModel: MiniMax-M2.7
+    visionModel: MiniMax-M3
     pythonPath: python3
   compiler:
     enabled: true
-    model: MiniMax-M2.7
+    model: MiniMax-M3
   additionalWatchPaths: []
   excludePatterns:
     - "**/node_modules/**"

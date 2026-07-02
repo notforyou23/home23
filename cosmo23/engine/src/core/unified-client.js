@@ -832,7 +832,7 @@ class UnifiedClient extends GPT5Client {
       throw new Error('MiniMax provider not initialized. Enable providers.minimax in config or set MINIMAX_API_KEY.');
     }
 
-    const modelToUse = assignment.model || 'MiniMax-M2.7';
+    const modelToUse = assignment.model || 'MiniMax-M3';
 
     try {
       this.logger?.info(`[UnifiedClient] Using MiniMax provider with model ${modelToUse}`);

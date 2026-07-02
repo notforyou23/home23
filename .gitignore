@@ -86,6 +86,7 @@ cosmo23/.worktrees/
 .worktrees/
 .claude/
 workspace/skills/.telemetry/
+workspace/skills/*/data/cache/
 
 # IDE
 .vscode/
@@ -100,6 +101,9 @@ step20review.md
 query-*.md
 x-trae-harness-snapshot.md
 server.pid
+probe/
+__pycache__/
+*.pyc
 
 # Screenshots (session artifacts)
 *.png

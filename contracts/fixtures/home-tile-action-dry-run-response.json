@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "dryRun": true,
+  "action": {
+    "id": "start",
+    "label": "Start",
+    "method": "POST",
+    "confirmationText": "Start the sauna with these settings?",
+    "fields": [
+      {
+        "id": "targetTemperature",
+        "label": "Target Temperature",
+        "type": "number",
+        "defaultValue": 190,
+        "min": 100,
+        "max": 240,
+        "step": 1,
+        "unit": "°F",
+        "required": true
+      },
+      {
+        "id": "duration",
+        "label": "Duration",
+        "type": "number",
+        "defaultValue": 180,
+        "min": 15,
+        "max": 720,
+        "step": 15,
+        "unit": "minutes",
+        "required": true
+      }
+    ]
+  }
+}

@@ -394,10 +394,12 @@ class Home23VibeService {
 
   enrichItem(item) {
     if (!item) return null;
+    const id = String(item.id || '');
     return {
       ...item,
       url: this.mediaUrl(item.imagePath),
-      galleryUrl: this.galleryUrl(),
+      galleryUrl: id ? `${this.galleryUrl()}?image=${encodeURIComponent(id)}` : this.galleryUrl(),
+      fullGalleryUrl: this.galleryUrl(),
     };
   }
 
@@ -623,6 +625,8 @@ class Home23VibeService {
 
         const baseName = path.basename(name, ext);
         const meta = manifestLookup.get(baseName);
+        const caption = meta?.caption || meta?.title || meta?.thought || meta?.prompt || '';
+        const prompt = meta?.prompt || meta?.thought || caption;
 
         items.push({
           id: `ext:${crypto.createHash('sha1').update(abs).digest('hex').slice(0, 16)}`,
@@ -630,10 +634,15 @@ class Home23VibeService {
           imagePath: abs,
           generatedAt: meta?.generatedAt || fileStat.mtime.toISOString(),
           createdAt: meta?.generatedAt || fileStat.mtime.toISOString(),
-          caption: meta?.thought || '',
-          prompt: meta?.thought || '',
+          caption,
+          prompt,
+          title: meta?.title || null,
+          provider: meta?.provider || null,
+          model: meta?.model || null,
+          algorithm: meta?.algorithm || meta?.promptTemplate || null,
           source: 'external',
           sourceRoot: root,
+          sourceId: meta?.id || baseName,
         });
       }
     }
@@ -664,14 +673,12 @@ class Home23VibeService {
   }
 
   mergeItems(storedItems, externalItems) {
-    // Local (agent-generated) images first; external images fill the tail.
-    // Within each group, newest first.
     const byDate = (a, b) => {
       const ta = new Date(a.generatedAt || a.createdAt || 0).getTime();
       const tb = new Date(b.generatedAt || b.createdAt || 0).getTime();
       return tb - ta;
     };
-    return [...storedItems].sort(byDate).concat([...externalItems].sort(byDate));
+    return [...storedItems, ...externalItems].sort(byDate);
   }
 
   getStoredItems(manifest) {
@@ -706,19 +713,34 @@ class Home23VibeService {
     return items[bucket % items.length];
   }
 
-  async listGallery(limit = null) {
-    const config = this.getConfig();
-    const manifest = await this.loadManifest();
-    const storedItems = this.getStoredItems(manifest);
-    const externalItems = await this.getExternalItems(config);
-    const allItems = this.mergeItems(storedItems, externalItems);
-    const resolvedLimit = Math.max(
+  resolveGalleryLimit(limit, allItemsLength, config) {
+    if (typeof limit === 'string' && limit.toLowerCase() === 'all') {
+      return allItemsLength;
+    }
+    if (limit && typeof limit === 'object' && limit.all === true) {
+      return allItemsLength;
+    }
+    return Math.max(
       1,
       Math.min(
         config.galleryLimit,
         Math.floor(positiveNumber(limit, config.galleryLimit))
       )
     );
+  }
+
+  async collectGalleryItems() {
+    const config = this.getConfig();
+    const manifest = await this.loadManifest();
+    const storedItems = this.getStoredItems(manifest);
+    const externalItems = await this.getExternalItems(config);
+    const allItems = this.mergeItems(storedItems, externalItems);
+    return { config, storedItems, externalItems, allItems };
+  }
+
+  async listGallery(limit = null) {
+    const { config, storedItems, externalItems, allItems } = await this.collectGalleryItems();
+    const resolvedLimit = this.resolveGalleryLimit(limit, allItems.length, config);
     const items = allItems.slice(0, resolvedLimit).map(item => this.enrichItem(item));
 
     return {
@@ -730,6 +752,14 @@ class Home23VibeService {
       policy: this.describePolicy(config),
       images: items,
     };
+  }
+
+  async getGalleryItem(id) {
+    const needle = String(id || '').trim();
+    if (!needle) return null;
+    const { allItems } = await this.collectGalleryItems();
+    const found = allItems.find((item) => String(item.id) === needle || String(item.sourceId || '') === needle);
+    return found ? this.enrichItem(found) : null;
   }
 
   async getCurrent() {

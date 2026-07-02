@@ -287,6 +287,7 @@ export class CronScheduler {
   private runtimeDir: string;
   private jobs: Map<string, CronJob> = new Map();
   private tickTimer: ReturnType<typeof setInterval> | null = null;
+  private initialTickTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private jobsFilePath: string;
   private runsDirPath: string;
@@ -295,6 +296,7 @@ export class CronScheduler {
   private ownershipDirPath: string;
   private ownershipFilePath: string;
   private ownershipLeaseMs: number;
+  private tickInProgress = false;
 
   constructor(config: SchedulerConfig, handler: JobHandler, runtimeDir: string) {
     this.config = config;
@@ -320,11 +322,21 @@ export class CronScheduler {
   start(): void {
     if (this.running) return;
     this.running = true;
-    console.log(`[scheduler] Started — ${this.jobs.size} job(s) loaded, tick every 30s`);
+    const tickIntervalMs = 30_000;
+    const initialTickDelayMs = Math.max(0, this.config.initialTickDelayMs ?? 60_000);
+    console.log(`[scheduler] Started — ${this.jobs.size} job(s) loaded, first tick in ${initialTickDelayMs}ms, then every ${tickIntervalMs}ms`);
 
-    // Run first tick immediately, then every 30 seconds
-    void this.tick();
-    this.tickTimer = setInterval(() => void this.tick(), 30_000);
+    const rescheduled = this.rescheduleOverdueJobsOnStartup(Date.now());
+    if (rescheduled > 0) {
+      console.log(`[scheduler] Rescheduled ${rescheduled} overdue job(s) on startup; missed runs will not stampede the harness`);
+    }
+
+    this.initialTickTimer = setTimeout(() => {
+      this.initialTickTimer = null;
+      void this.tick();
+      this.tickTimer = setInterval(() => void this.tick(), tickIntervalMs);
+    }, initialTickDelayMs);
+    this.initialTickTimer.unref?.();
   }
 
   stop(): void {
@@ -337,8 +349,31 @@ export class CronScheduler {
       clearInterval(this.tickTimer);
       this.tickTimer = null;
     }
+    if (this.initialTickTimer) {
+      clearTimeout(this.initialTickTimer);
+      this.initialTickTimer = null;
+    }
     this.releaseOwnership();
     console.log('[scheduler] Stopped');
+  }
+
+  private rescheduleOverdueJobsOnStartup(now: number): number {
+    let rescheduled = 0;
+    for (const job of this.jobs.values()) {
+      if (!job.enabled || now < job.state.nextRunAtMs) continue;
+      if (job.schedule.kind === 'at') {
+        job.enabled = false;
+      }
+      job.state.nextRunAtMs = this.computeNextRun(job);
+      job.state.lastDecisionAtMs = now;
+      job.state.lastDecisionAction = 'defer';
+      job.state.lastDecisionReason = 'missed during scheduler downtime; rescheduled on startup';
+      rescheduled++;
+    }
+    if (rescheduled > 0) {
+      this.saveJobs();
+    }
+    return rescheduled;
   }
 
   // ─── Job Management ────────────────────────────────────
@@ -444,6 +479,11 @@ export class CronScheduler {
   // ─── Tick Loop ─────────────────────────────────────────
 
   private async tick(): Promise<void> {
+    if (this.tickInProgress) {
+      return;
+    }
+    this.tickInProgress = true;
+    try {
     if (!this.ensureOwnership()) return;
 
     const now = Date.now();
@@ -458,6 +498,9 @@ export class CronScheduler {
     if (dueJobs.length > 0) {
       const runnable: Array<{ job: CronJob; decision: JobDecision }> = [];
       const hasForegroundDue = dueJobs.some((job) => this.queueClass(job) !== 'background');
+      const maxJobsPerTick = Math.max(1, Math.floor(this.config.maxConcurrentJobsPerTick ?? 4));
+      const maxAgentTurns = Math.max(1, Math.floor(this.config.maxConcurrentAgentTurns ?? 1));
+      let scheduledAgentTurns = 0;
       dueJobs.sort((a, b) => this.queuePriority(a) - this.queuePriority(b));
 
       // Pre-compute next run BEFORE firing to prevent double-fire
@@ -467,11 +510,26 @@ export class CronScheduler {
         const decision = hasForegroundDue && this.queueClass(job) === 'background'
           ? this.deferBackgroundJob(job, now)
           : this.decideJobPreflight(job, now, 'scheduled');
-        this.appendDecisionLog(decision);
         if (!decision.willExecute) {
+          this.appendDecisionLog(decision);
           this.withholdJob(job, decision);
           continue;
         }
+
+        if (runnable.length >= maxJobsPerTick) {
+          const capacityDecision = this.deferJobForTickCapacity(job, now, maxJobsPerTick);
+          this.appendDecisionLog(capacityDecision);
+          this.withholdJob(job, capacityDecision);
+          continue;
+        }
+
+        if (job.payload.kind === 'agentTurn' && scheduledAgentTurns >= maxAgentTurns) {
+          const capacityDecision = this.deferAgentTurnForCapacity(job, now, maxAgentTurns);
+          this.appendDecisionLog(capacityDecision);
+          this.withholdJob(job, capacityDecision);
+          continue;
+        }
+        this.appendDecisionLog(decision);
 
         if (job.schedule.kind === 'at') {
           job.enabled = false;
@@ -481,6 +539,9 @@ export class CronScheduler {
         job.state.lastDecisionAction = decision.action;
         job.state.lastDecisionReason = decision.reason;
         runnable.push({ job, decision });
+        if (job.payload.kind === 'agentTurn') {
+          scheduledAgentTurns++;
+        }
       }
       this.saveJobs();
 
@@ -488,6 +549,9 @@ export class CronScheduler {
       await Promise.allSettled(runnable.map(({ job, decision }) => this.executeJob(job, decision).catch(err => {
           console.error(`[scheduler] Unhandled error executing job ${job.id}:`, err);
       })));
+    }
+    } finally {
+      this.tickInProgress = false;
     }
   }
 
@@ -656,6 +720,58 @@ export class CronScheduler {
       overdueMs: Number.isFinite(dueAtMs) ? Math.max(0, now - dueAtMs) : 0,
       consecutiveErrors: job.state.consecutiveErrors,
       inputFreshness: { status: 'current', reason: 'load-shedding deferral, not input failure' },
+      sourceIssue: 71,
+      resourceContract: this.buildResourceContract(job),
+      nextReviewAtMs,
+    };
+  }
+
+  private deferAgentTurnForCapacity(job: CronJob, now: number, maxAgentTurns: number): JobDecision {
+    const dueAtMs = Number(job.state?.nextRunAtMs);
+    const nextReviewAtMs = now + 2 * 60 * 1000;
+    return {
+      schema: 'home23.scheduler.job-decision.v1',
+      decisionId: `sched-dec-${randomUUID().slice(0, 12)}`,
+      jobId: job.id,
+      jobName: job.name,
+      decidedAt: new Date(now).toISOString(),
+      source: 'scheduled',
+      action: 'defer',
+      reason: `agent turn deferred because ${maxAgentTurns} scheduled agent turn is already running this tick; preserve bridge/chat responsiveness`,
+      durableState: 'withheld_after_decision',
+      willExecute: false,
+      scheduleKind: job.schedule.kind,
+      payloadKind: job.payload.kind,
+      dueAt: Number.isFinite(dueAtMs) ? new Date(dueAtMs).toISOString() : null,
+      overdueMs: Number.isFinite(dueAtMs) ? Math.max(0, now - dueAtMs) : 0,
+      consecutiveErrors: job.state.consecutiveErrors,
+      inputFreshness: { status: 'current', reason: 'capacity deferral, not input failure' },
+      sourceIssue: 71,
+      resourceContract: this.buildResourceContract(job),
+      nextReviewAtMs,
+    };
+  }
+
+  private deferJobForTickCapacity(job: CronJob, now: number, maxJobsPerTick: number): JobDecision {
+    const dueAtMs = Number(job.state?.nextRunAtMs);
+    const nextReviewAtMs = now + 2 * 60 * 1000;
+    return {
+      schema: 'home23.scheduler.job-decision.v1',
+      decisionId: `sched-dec-${randomUUID().slice(0, 12)}`,
+      jobId: job.id,
+      jobName: job.name,
+      decidedAt: new Date(now).toISOString(),
+      source: 'scheduled',
+      action: 'defer',
+      reason: `job deferred because ${maxJobsPerTick} scheduler jobs are already running this tick; preserve dashboard/chat responsiveness`,
+      durableState: 'withheld_after_decision',
+      willExecute: false,
+      scheduleKind: job.schedule.kind,
+      payloadKind: job.payload.kind,
+      dueAt: Number.isFinite(dueAtMs) ? new Date(dueAtMs).toISOString() : null,
+      overdueMs: Number.isFinite(dueAtMs) ? Math.max(0, now - dueAtMs) : 0,
+      consecutiveErrors: job.state.consecutiveErrors,
+      inputFreshness: { status: 'current', reason: 'scheduler capacity deferral, not input failure' },
       sourceIssue: 71,
       resourceContract: this.buildResourceContract(job),
       nextReviewAtMs,

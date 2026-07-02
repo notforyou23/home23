@@ -6,7 +6,19 @@
  * the turn endpoints read them via HistoryStore.loadRaw().
  */
 
-export type TurnStatus = 'pending' | 'complete' | 'error' | 'stopped' | 'orphaned';
+export type TurnStatus =
+  | 'pending'
+  | 'accepted'
+  | 'running'
+  | 'awaiting_model'
+  | 'streaming'
+  | 'tool_running'
+  | 'stopping'
+  | 'stopped'
+  | 'complete'
+  | 'error'
+  | 'timeout'
+  | 'orphaned';
 
 export interface TurnEnvelope {
   type: 'turn';
@@ -16,9 +28,14 @@ export interface TurnEnvelope {
   role: 'assistant';
   started_at: string;
   ended_at?: string;
+  deadline_at?: string;
+  first_token_deadline_at?: string;
   model?: string;
+  provider?: string;
   stop_reason?: string;
   error?: string;
+  error_code?: string;
+  error_message?: string;
   /** Max seq of any event belonging to this turn. Written on status-end records. */
   last_seq?: number;
 }
@@ -28,11 +45,48 @@ export interface TurnEvent {
   turn_id: string;
   seq: number;
   ts: string;
-  kind: 'thinking' | 'tool_start' | 'tool_result' | 'response_chunk' | 'media' | 'subagent_result' | 'cache';
+  kind: 'thinking' | 'tool_start' | 'tool_result' | 'response_chunk' | 'media' | 'subagent_result' | 'cache' | 'status';
   data: Record<string, unknown>;
 }
 
 export type TurnRecord = TurnEnvelope | TurnEvent;
+
+export interface TurnStatusOptions {
+  active?: boolean;
+  provider?: string | null;
+  defaultModel?: string | null;
+  defaultProvider?: string | null;
+}
+
+export interface TurnStatusResponse {
+  turn_id: string;
+  chat_id: string;
+  status: Exclude<TurnStatus, 'pending'>;
+  phase: string;
+  active: boolean;
+  started_at: string;
+  updated_at: string;
+  last_event_at: string | null;
+  first_event_at: string | null;
+  deadline_at?: string | null;
+  first_token_deadline_at?: string | null;
+  last_seq: number | null;
+  model: string | null;
+  provider: string | null;
+  configured_default: {
+    provider: string | null;
+    model: string | null;
+  };
+  runtime_model: {
+    provider: string | null;
+    model: string | null;
+  };
+  stop_requested_at?: string | null;
+  stop_reason?: string | null;
+  error_code?: string | null;
+  error_message?: string | null;
+  recoverable: boolean;
+}
 
 export function isTurnEnvelope(r: unknown): r is TurnEnvelope {
   return typeof r === 'object' && r !== null && (r as { type?: string }).type === 'turn';

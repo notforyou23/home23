@@ -58,7 +58,7 @@ test('Anthropic-compatible non-Anthropic adapters do not rewrite model ids', asy
     beta: {
       models: {
         list: async () => ({
-          data: [{ id: 'MiniMax-M2.7' }]
+          data: [{ id: 'MiniMax-M3' }]
         })
       }
     },
@@ -77,10 +77,10 @@ test('Anthropic-compatible non-Anthropic adapters do not rewrite model ids', asy
   };
 
   await adapter.createMessage({
-    model: 'MiniMax-M2.7',
+    model: 'MiniMax-M3',
     messages: [{ role: 'user', content: 'Hi' }],
     maxTokens: 16
   });
 
-  assert.equal(capturedRequest.model, 'MiniMax-M2.7');
+  assert.equal(capturedRequest.model, 'MiniMax-M3');
 });

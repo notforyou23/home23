@@ -656,6 +656,7 @@ class ExecutionBaseAgent extends BaseAgent {
     let consecutiveNoProgress = 0;
     const MAX_NO_PROGRESS = 3;
     let conclusion = '';
+    let failureReason = null;
 
     while (iteration < this.maxIterations) {
       iteration++;
@@ -687,6 +688,27 @@ class ExecutionBaseAgent extends BaseAgent {
 
       // ── Check for completion (no tool calls) ────────────────────────────
       if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) {
+        if (totalToolCalls === 0 && this._requiresConcreteAction()) {
+          failureReason = 'Action-required mission ended without any tool call';
+          if (iteration < this.maxIterations) {
+            this.logger.warn('Action-required mission produced text without a tool call; requesting concrete action', {
+              iteration,
+              agentType: this.getAgentType()
+            });
+            messages.push({
+              role: 'user',
+              content: 'This mission requires concrete tool execution. Do not describe what you will do next. Call an available tool now, or explain why no tool can complete the task.'
+            });
+            continue;
+          }
+
+          this.logger.warn('Action-required mission failed with zero tool calls', {
+            iteration,
+            conclusionLength: (assistantMsg.content || '').length
+          });
+          break;
+        }
+
         this.logger.info('Agentic loop concluded (no more tool calls)', {
           iteration,
           totalToolCalls,
@@ -769,7 +791,7 @@ class ExecutionBaseAgent extends BaseAgent {
     // reports isComplete:true. Without this, single-instance runs (cluster
     // disabled, the default) never get a marker — agent-executor's
     // ensureManifestAndCompletion only fires when clusterStateStore is set.
-    if (this._outputDir) {
+    if (this._outputDir && !failureReason) {
       try {
         await this.writeCompletionMarker(this._outputDir, {
           fileCount: this.totalFilesCreated || 0,
@@ -785,10 +807,11 @@ class ExecutionBaseAgent extends BaseAgent {
     }
 
     return {
-      success: true,
+      success: !failureReason,
       iterations: iteration,
       toolCalls: totalToolCalls,
       conclusion,
+      failureReason,
       metadata: {
         filesCreated: this.totalFilesCreated,
         artifactsCreated: this.totalFilesCreated,
@@ -796,6 +819,25 @@ class ExecutionBaseAgent extends BaseAgent {
         commandsRun: this.totalCommandsRun
       }
     };
+  }
+
+  _requiresConcreteAction() {
+    const metadata = this.mission?.metadata || {};
+    if (metadata.requiresAction === true) return true;
+    if (metadata.researchContract?.required === true) return true;
+
+    const actionAgentTypes = new Set([
+      'automation',
+      'dataacquisition',
+      'datapipeline',
+      'infrastructure'
+    ]);
+
+    try {
+      return actionAgentTypes.has(this.getAgentType());
+    } catch {
+      return false;
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════

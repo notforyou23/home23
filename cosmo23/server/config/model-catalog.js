@@ -28,6 +28,7 @@ const BUILTIN_MODEL_CATALOG = {
         { id: 'kimi-k2-thinking', label: 'Kimi K2 Thinking', kind: 'chat' },
         { id: 'kimi-k2:1t', label: 'Kimi K2 1T', kind: 'chat' },
         { id: 'gemma4:31b', label: 'Gemma 4 31B', kind: 'chat' },
+        { id: 'glm-5.2:cloud', label: 'GLM-5.2 Cloud', kind: 'chat' },
         { id: 'glm-5.1', label: 'GLM-5.1', kind: 'chat' },
         { id: 'glm-5', label: 'GLM-5 744B', kind: 'chat' },
         { id: 'glm-4.7', label: 'GLM-4.7', kind: 'chat' },
@@ -50,10 +51,6 @@ const BUILTIN_MODEL_CATALOG = {
         { id: 'ministral-3:3b', label: 'Ministral 3 3B', kind: 'chat' },
         { id: 'devstral-2:123b', label: 'Devstral 2 123B', kind: 'chat' },
         { id: 'devstral-small-2:24b', label: 'Devstral Small 2 24B', kind: 'chat' },
-        { id: 'minimax-m2.7', label: 'Minimax M2.7', kind: 'chat' },
-        { id: 'minimax-m2.5', label: 'Minimax M2.5', kind: 'chat' },
-        { id: 'minimax-m2.1', label: 'Minimax M2.1', kind: 'chat' },
-        { id: 'minimax-m2', label: 'Minimax M2', kind: 'chat' },
         { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview', kind: 'chat' },
         { id: 'cogito-2.1:671b', label: 'Cogito 2.1 671B', kind: 'chat' },
         { id: 'rnj-1:8b', label: 'Rnj-1 8B', kind: 'chat' }
@@ -63,20 +60,14 @@ const BUILTIN_MODEL_CATALOG = {
       label: 'Anthropic',
       models: [
         { id: 'claude-sonnet-4-7', label: 'Claude Sonnet 4.7', kind: 'chat' },
-        { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', kind: 'chat' },
+        { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', kind: 'chat' },
         { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', kind: 'chat' }
       ]
     },
     minimax: {
       label: 'MiniMax',
       models: [
-        { id: 'MiniMax-M2.7', label: 'MiniMax M2.7', kind: 'chat' },
-        { id: 'MiniMax-M2.7-highspeed', label: 'MiniMax M2.7 Highspeed', kind: 'chat' },
-        { id: 'MiniMax-M2.5', label: 'MiniMax M2.5', kind: 'chat' },
-        { id: 'MiniMax-M2.5-highspeed', label: 'MiniMax M2.5 Highspeed', kind: 'chat' },
-        { id: 'MiniMax-M2.1', label: 'MiniMax M2.1', kind: 'chat' },
-        { id: 'MiniMax-M2.1-highspeed', label: 'MiniMax M2.1 Highspeed', kind: 'chat' },
-        { id: 'MiniMax-M2', label: 'MiniMax M2', kind: 'chat' }
+        { id: 'MiniMax-M3', label: 'MiniMax M3', kind: 'chat' }
       ]
     },
     xai: {
@@ -101,8 +92,8 @@ const BUILTIN_MODEL_CATALOG = {
     }
   },
   defaults: {
-    queryModel: 'MiniMax-M2.7',
-    pgsSweepModel: 'MiniMax-M2.7',
+    queryModel: 'MiniMax-M3',
+    pgsSweepModel: 'MiniMax-M3',
     launch: {
       primary: 'gpt-5.5',
       fast: 'nemotron-3-nano:30b',

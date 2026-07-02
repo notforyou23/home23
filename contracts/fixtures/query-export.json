@@ -1,0 +1,14 @@
+{
+  "success": true,
+  "exportedTo": "/Users/jtr/_JTR23_/release/home23/instances/jerry/workspace/query-exports/contract-smoke.md",
+  "filename": "contract-smoke.md",
+  "relativePath": "instances/jerry/workspace/query-exports/contract-smoke.md",
+  "query": "What changed recently?",
+  "answer": "Recent Home23 activity is summarized here.",
+  "format": "markdown",
+  "metadata": {
+    "model": "gpt-5.5",
+    "mode": "dive",
+    "timestamp": "2026-06-26T14:28:00Z"
+  }
+}

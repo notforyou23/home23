@@ -672,8 +672,8 @@ async function handleFunctionCalling(openai, anthropic, xai, indexer, params, ev
         }
         
         // Use exact model names from COSMO (tested and working)
-        const claudeModel = model === 'claude-opus-4-7' 
-          ? 'claude-opus-4-7'  // Opus - latest
+        const claudeModel = model === 'claude-opus-4-8'
+          ? 'claude-opus-4-8'  // Opus - latest
           : 'claude-sonnet-4-7';  // Sonnet - latest
         
         const response = await anthropic.messages.create({
@@ -965,4 +965,3 @@ async function handleFunctionCalling(openai, anthropic, xai, indexer, params, ev
 }
 
 module.exports = { handleFunctionCalling };
-

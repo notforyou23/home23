@@ -34,6 +34,11 @@ export class DeviceRegistry {
     bundle_id: string;
     env: 'sandbox' | 'production';
     chat_ids: string[];
+    agent_id?: string;
+    platform?: string;
+    app_build?: string | number;
+    contract_version?: string;
+    capabilities_hash?: string;
   }): DeviceRegistration {
     const file = this.load();
     const now = new Date().toISOString();
@@ -47,6 +52,11 @@ export class DeviceRegistry {
         chat_ids: mergedChats,
         last_seen_at: now,
         env: input.env,
+        agent_id: input.agent_id ?? existing.agent_id,
+        platform: input.platform ?? existing.platform,
+        app_build: input.app_build ?? existing.app_build,
+        contract_version: input.contract_version ?? existing.contract_version,
+        capabilities_hash: input.capabilities_hash ?? existing.capabilities_hash,
       };
       file.devices[idx] = updated;
       this.save(file);
@@ -59,6 +69,11 @@ export class DeviceRegistry {
       last_seen_at: now,
       bundle_id: input.bundle_id,
       env: input.env,
+      agent_id: input.agent_id,
+      platform: input.platform,
+      app_build: input.app_build,
+      contract_version: input.contract_version,
+      capabilities_hash: input.capabilities_hash,
     };
     file.devices.push(fresh);
     this.save(file);
@@ -75,6 +90,60 @@ export class DeviceRegistry {
       return true;
     }
     return false;
+  }
+
+  /** Remove selected chat_id subscriptions. Removes the device if no subscriptions remain. */
+  unregisterChats(deviceToken: string, bundleId: string, chatIds: string[]): {
+    found: boolean;
+    device_removed: boolean;
+    removed_chat_ids: string[];
+    remaining_chat_ids: string[];
+    updated_at: string | null;
+  } {
+    const file = this.load();
+    const key = `${bundleId}::${deviceToken}`;
+    const idx = file.devices.findIndex(d => `${d.bundle_id}::${d.device_token}` === key);
+    if (idx < 0) {
+      return {
+        found: false,
+        device_removed: false,
+        removed_chat_ids: [],
+        remaining_chat_ids: [],
+        updated_at: null,
+      };
+    }
+
+    const existing = file.devices[idx]!;
+    const removeSet = new Set(chatIds);
+    const removed_chat_ids = existing.chat_ids.filter(chatId => removeSet.has(chatId));
+    const remaining_chat_ids = existing.chat_ids.filter(chatId => !removeSet.has(chatId));
+    const updated_at = new Date().toISOString();
+
+    if (remaining_chat_ids.length === 0) {
+      file.devices.splice(idx, 1);
+      this.save(file);
+      return {
+        found: true,
+        device_removed: true,
+        removed_chat_ids,
+        remaining_chat_ids,
+        updated_at,
+      };
+    }
+
+    file.devices[idx] = {
+      ...existing,
+      chat_ids: remaining_chat_ids,
+      last_seen_at: updated_at,
+    };
+    this.save(file);
+    return {
+      found: true,
+      device_removed: false,
+      removed_chat_ids,
+      remaining_chat_ids,
+      updated_at,
+    };
   }
 
   /** Devices subscribed to a chat_id. */

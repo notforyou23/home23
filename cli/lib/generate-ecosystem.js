@@ -111,6 +111,17 @@ export function generateEcosystem(home23Root) {
   lines.push(`  XAI_API_KEY: secrets.providers?.xai?.apiKey || '',`);
   lines.push(`};`);
   lines.push(``);
+  lines.push(`const sharedServiceEnv = {`);
+  lines.push(`  HOME23_AGENT: '',`);
+  lines.push(`  INSTANCE_ID: '',`);
+  lines.push(`  DASHBOARD_PORT: '',`);
+  lines.push(`  COSMO_DASHBOARD_PORT: '',`);
+  lines.push(`  REALTIME_PORT: '',`);
+  lines.push(`  MCP_HTTP_PORT: '',`);
+  lines.push(`  COSMO_RUNTIME_DIR: '',`);
+  lines.push(`  COSMO_WORKSPACE_PATH: '',`);
+  lines.push(`};`);
+  lines.push(``);
   lines.push(`module.exports = {`);
   lines.push(`  apps: [`);
 
@@ -182,10 +193,11 @@ export function generateEcosystem(home23Root) {
   }
 
   // PM2 watchdog — shared supervisor for agent engine/dashboard/harness triplets.
-  // This intentionally lives outside the agent harnesses so it can repair a
-  // missing engine or harness instead of depending on the failed process.
+  // Disabled pending redesign: the daemon previously accumulated duplicate
+  // waiters and could leave the live PM2 set without Jerry's required triplet.
+  // The one-shot repair script remains available for manual diagnostics.
   lines.push(``);
-  lines.push(`    // ── pm2 watchdog (shared) ──`);
+  lines.push(`    // ── pm2 watchdog (shared, disabled pending redesign) ──`);
   lines.push(`    {`);
   lines.push(`      name: 'home23-watchdog',`);
   lines.push(`      script: path.join(HOME23, 'scripts', 'home23-pm2-watchdog-daemon.cjs'),`);
@@ -195,10 +207,11 @@ export function generateEcosystem(home23Root) {
   // cron_restart onto shared services. An impossible schedule wins over that
   // inherited value while behaving as "no cron restart" for the watchdog.
   lines.push(`      cron_restart: '0 0 31 2 *',`);
-  lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+  lines.push(`      autostart: false,`);
+  lines.push(`      autorestart: false, watch: false, merge_logs: true,`);
   lines.push(`      out_file: path.join(HOME23, 'logs', 'pm2-watchdog-out.log'),`);
   lines.push(`      error_file: path.join(HOME23, 'logs', 'pm2-watchdog-err.log'),`);
-  lines.push(`      env: { HOME23_WATCHDOG_INTERVAL_MS: '60000' },`);
+  lines.push(`      env: { ...sharedServiceEnv, HOME23_WATCHDOG_INTERVAL_MS: '60000', HOME23_WATCHDOG_DAEMON_DISABLED: 'true' },`);
   lines.push(`    },`);
 
   // Chrome CDP — shared headless browser for web_browse tool
@@ -212,7 +225,7 @@ export function generateEcosystem(home23Root) {
   lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
   lines.push(`      out_file: path.join(HOME23, 'logs', 'chrome-cdp-out.log'),`);
   lines.push(`      error_file: path.join(HOME23, 'logs', 'chrome-cdp-err.log'),`);
-  lines.push(`      env: { CDP_PORT: '9222' },`);
+  lines.push(`      env: { ...sharedServiceEnv, CDP_PORT: '9222' },`);
   lines.push(`    },`);
 
   // Evobrew — shared process (one per installation)

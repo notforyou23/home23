@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "currentAgent": "jerry",
+  "primaryAgent": "jerry",
+  "selectedAgent": "jerry",
+  "tabs": {
+    "query": {
+      "kind": "agent",
+      "chip": "Agent",
+      "agentTarget": "selected",
+      "summaryTemplate": "Query defaults are saved on jerry.",
+      "routes": [
+        {
+          "method": "GET",
+          "path": "/query"
+        }
+      ]
+    }
+  },
+  "agents": [
+    {
+      "name": "jerry",
+      "displayName": "Jerry",
+      "isPrimary": true,
+      "isCurrentDashboard": true
+    }
+  ]
+}

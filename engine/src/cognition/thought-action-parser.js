@@ -18,6 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const { executeAction } = require('./action-dispatcher');
 const { appendSignal } = require('./signals');
+const { appendJsonlDurableSync } = require('../utils/durable-write.js');
 
 // Match action tags liberally: model may emit "INVESTIGATE:", "INVESTIGATE ",
 // "INVESTIGATE\n", or even just "INVESTIGATE" at the start/end of a line
@@ -334,7 +335,7 @@ function appendNotification(brainDir, { message, source, cycle, severity = 'info
     hash,
     count: 1,
   };
-  fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+  appendJsonlDurableSync(file, entry);
 
   // Mirror queued notifications onto the positive-signal stream so external
   // delivery-channel verifiers can prove the notification path is alive without

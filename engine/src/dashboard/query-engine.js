@@ -412,7 +412,7 @@ STYLE:
     return {
       style: 'executive',
       text: executiveText,
-      model: response.model || this.config?.models?.primary || 'MiniMax-M2.7',
+      model: response.model || this.config?.models?.primary || 'MiniMax-M3',
       base: {
         model: safeMetadata.model || 'unknown',
         mode: safeMetadata.mode || null,
@@ -1135,7 +1135,7 @@ STYLE:
     const startTime = Date.now(); // Performance tracking
 
     const {
-      model = this.config?.models?.primary || 'MiniMax-M2.7',
+      model = this.config?.models?.primary || 'MiniMax-M3',
       mode = 'normal',
       exportFormat = null,
       // NEW: Enhancement options (all opt-in)
@@ -2177,7 +2177,7 @@ SECTION E: Prioritize immediate next actions (design partners, pilots, validatio
    * This ensures executives get compressed views that are 100% faithful to the original answer
    */
   async executeExecutiveCompression(query, baseAnswer, options = {}) {
-    const { model = this.config?.models?.primary || 'MiniMax-M2.7', baseMetadata = {} } = options;
+    const { model = this.config?.models?.primary || 'MiniMax-M3', baseMetadata = {} } = options;
     
     // SMART DETECTION: Determine query type to add contextual emphasis
     const queryType = this.detectQueryType(query, baseAnswer);
@@ -3351,7 +3351,7 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
    */
   async executeEnhancedQuery(query, options = {}) {
     const {
-      model = this.config?.models?.primary || 'MiniMax-M2.7',
+      model = this.config?.models?.primary || 'MiniMax-M3',
       mode = 'normal',
       exportFormat = null,
       includeFiles = true,

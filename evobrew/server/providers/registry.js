@@ -83,13 +83,7 @@ class ProviderRegistry {
         providerId: 'minimax',
         baseUrl: config.baseUrl || 'https://api.minimax.io/anthropic',
         seedModels: [
-          'MiniMax-M2.7',
-          'MiniMax-M2.7-highspeed',
-          'MiniMax-M2.5',
-          'MiniMax-M2.5-highspeed',
-          'MiniMax-M2.1',
-          'MiniMax-M2.1-highspeed',
-          'MiniMax-M2'
+          'MiniMax-M3'
         ],
         discoveryEnabled: false,
         useOAuthService: false
@@ -154,6 +148,7 @@ class ProviderRegistry {
           'kimi-k2-thinking',
           'kimi-k2:1t',
           'gemma4:31b',
+          'glm-5.2:cloud',
           'glm-5.1',
           'glm-5',
           'glm-4.7',
@@ -176,10 +171,6 @@ class ProviderRegistry {
           'ministral-3:3b',
           'devstral-2:123b',
           'devstral-small-2:24b',
-          'minimax-m2.7',
-          'minimax-m2.5',
-          'minimax-m2.1',
-          'minimax-m2',
           'gemini-3-flash-preview',
           'cogito-2.1:671b',
           'rnj-1:8b'

@@ -10,7 +10,7 @@ All 6 phases live. Brain-driven pre-turn context assembly: 10 brain cues + 5 dom
 Adaptive debounce (1.5s-6s), queue-during-run.
 
 ## Scheduler / Cron System (ACTIVE)
-Recurring/one-shot tasks. Engine: `src/scheduler/cron.ts`, 6 tools in `src/agent/tools/cron.ts`, delivery in `src/scheduler/delivery.ts`. Jobs file: `instances/jerry/conversations/cron-jobs.json` (~15 jobs). Key jobs: ticker-home23-pre-market (5:30am ET), mid-session (11:30am), evening-research (8pm), brain-housekeeping (hourly), pi-pressure-bridge (5min), pi-health-bridge (15min), x-timeline-morning/evening, field-report-cycle (2h). Tools: `cron_schedule`, `cron_list`, `cron_delete`, `cron_enable`, `cron_disable`, `cron_update`. Delivery to Telegram `8317115546` or Discord `1480393008791818474` (must be numeric chat ID, never `dashboard-jerry-*`). Bug fixes 2026-04-16: timezone-aware matching, delivery failure surfacing, input validation, enable/disable/update tools, corrupt job cleanup.
+Recurring/one-shot tasks. Engine: `src/scheduler/cron.ts`, 6 tools in `src/agent/tools/cron.ts`, delivery in `src/scheduler/delivery.ts`. Jobs file: `instances/jerry/conversations/cron-jobs.json` (~15 jobs). Key jobs: ticker-home23-pre-market (5:30am ET), mid-session (11:30am), evening-research (8pm), brain-housekeeping (hourly), pi-pressure-bridge (5min), pi-health-bridge (15min), x-timeline-morning/evening. `field-report-cycle` is disabled as of 2026-06-17 after jtr called out the From The Inside loop as repetitive literary theatre; do not re-enable until the applied-curriculum contract, learning ledger, and consequence-gated dispatcher are verified. Tools: `cron_schedule`, `cron_list`, `cron_delete`, `cron_enable`, `cron_disable`, `cron_update`. Delivery to Telegram `8317115546` or Discord `1480393008791818474` (must be numeric chat ID, never `dashboard-jerry-*`). Bug fixes 2026-04-16: timezone-aware matching, delivery failure surfacing, input validation, enable/disable/update tools, corrupt job cleanup.
 
 ## Home23 iOS App (SHIPPED 2026-04-15)
 Native iOS app: chat with agents, sauna controls, pulse/vibe/dreams/sensors/goals on Home tab, push notifications. Location: `/Users/jtr/xCode_Builds/Home23/`. Backend: Turn protocol (POST /api/chat/turn + SSE stream), APNs pusher, device registry, per-turn model override, TTS via MiniMax Speech 2.8.
@@ -18,12 +18,10 @@ Native iOS app: chat with agents, sauna controls, pulse/vibe/dreams/sensors/goal
 ## Brain Insights (curator-promoted)
 - Brain: 21,048+ nodes, 44,649+ edges, 1,468+ cognitive cycles — rich knowledge
 
-### Image generation without text artifacts
-When generating images for situational awareness visualization, avoid text artifacts in the image output
-_Changed: Generated images with text artifacts → Must regenerate to remove text artifacts (User preference for clean visual representation without embedded text)_
-_Added: 2026-04-28_
 
-### Empty conversation
-No actual conversation content was provided - all turns appear empty
-_Changed: (unknown prior state) → N/A (Nothing to extract - conversation is blank)_
-_Added: 2026-04-28_
+
+
+### Failure mode confidence level
+Old failure mode is now materially harder but still requires monitoring
+_Changed: Failure mode was not addressed → Failure mode addressed with monitoring in place (Confidence in fix is high but not absolute)_
+_Added: 2026-06-17_

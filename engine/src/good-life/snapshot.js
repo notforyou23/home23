@@ -413,11 +413,56 @@ function summarizePublish(runtimeRoot) {
   const useful = rows
     .filter((r) => ['workspace_insights', 'dashboard', 'bridge_chat', 'dream_log', 'signals'].includes(r.target || r.kind))
     .slice(-1)[0];
+  const agencyUseful = latestUsefulAgencyConsequence(runtimeRoot);
+  const publishUsefulAt = toIsoTime(useful?.at || useful?.timestamp || stat);
+  const agencyUsefulAt = toIsoTime(agencyUseful?.at || agencyUseful?.timestamp);
+  const lastUsefulOutputAt = latestIso([publishUsefulAt, agencyUsefulAt]);
   return {
     lastLedgerWriteAt: stat,
-    lastUsefulOutputAt: toIsoTime(useful?.at || useful?.timestamp || stat),
+    lastUsefulOutputAt,
+    lastUsefulOutputSource: lastUsefulOutputAt && agencyUsefulAt === lastUsefulOutputAt
+      ? 'agency_consequence'
+      : (publishUsefulAt ? 'publish_ledger' : null),
+    lastAgencyUsefulOutputAt: agencyUsefulAt,
     sampled: rows.length,
   };
+}
+
+function latestUsefulAgencyConsequence(runtimeRoot) {
+  const consequence = findLatestJsonl(path.join(runtimeRoot || '', 'agency', 'consequences.jsonl'), isUsefulAgencyConsequence, 5000);
+  const pursuit = findLatestJsonl(path.join(runtimeRoot || '', 'agency', 'pursuits.jsonl'), isUsefulPursuitTransitionConsequence, 5000);
+  return latestByAt([consequence, pursuit]);
+}
+
+function isUsefulAgencyConsequence(row = {}) {
+  const status = String(row.status || '').toLowerCase();
+  if (!['applied', 'closed', 'resolved', 'advanced'].includes(status)) return false;
+  const changeType = String(row.changeType || '').toLowerCase();
+  if (/(explicit_no_change|no_change|stale|duplicate|discard|killed)/.test(changeType)) return false;
+  const summary = String(row.summary || '').trim();
+  return summary.length > 0;
+}
+
+function isUsefulPursuitTransitionConsequence(row = {}) {
+  if (row.type !== 'transition') return false;
+  const status = String(row.detail?.status || row.pursuit?.status || '').toLowerCase();
+  if (!['applied', 'closed', 'resolved', 'advanced'].includes(status)) return false;
+  const changeType = String(row.detail?.changeType || '').toLowerCase();
+  if (/(explicit_no_change|no_change|stale|duplicate|discard|killed)/.test(changeType)) return false;
+  const changed = row.pursuit?.consequence?.changed !== false;
+  const summary = String(row.detail?.summary || row.pursuit?.consequence?.summary || '').trim();
+  return changed && summary.length > 0;
+}
+
+function latestByAt(rows = []) {
+  return rows
+    .filter(Boolean)
+    .sort((a, b) => String(rowAt(a)).localeCompare(String(rowAt(b))))
+    .at(-1) || null;
+}
+
+function rowAt(row = {}) {
+  return toIsoTime(row.at || row.timestamp || row.detail?.at || row.pursuit?.updatedAt) || '';
 }
 
 function summarizeScheduler(runtimeRoot) {
@@ -566,6 +611,22 @@ function readJsonl(file) {
   }
 }
 
+function findLatestJsonl(file, predicate, maxScan = 5000) {
+  try {
+    if (!file || !fs.existsSync(file)) return null;
+    const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
+    let scanned = 0;
+    for (let i = lines.length - 1; i >= 0 && scanned < maxScan; i -= 1, scanned += 1) {
+      let row = null;
+      try { row = JSON.parse(lines[i]); } catch { continue; }
+      if (predicate(row)) return row;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function readJson(file) {
   try {
     if (!file || !fs.existsSync(file)) return null;
@@ -596,6 +657,14 @@ function toIsoTime(value) {
     if (!Number.isNaN(t)) return new Date(t).toISOString();
   }
   return null;
+}
+
+function latestIso(values = []) {
+  return values
+    .filter(Boolean)
+    .map(String)
+    .sort()
+    .at(-1) || null;
 }
 
 function entriesOf(collection) {

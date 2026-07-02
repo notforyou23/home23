@@ -1266,7 +1266,7 @@ STYLE:
     'gpt-5.3-codex': 128000,
     'gpt-5.3-codex-spark': 128000,
     'gpt-5': 128000,
-    'claude-opus-4-7': 200000,
+    'claude-opus-4-8': 200000,
     'claude-opus': 200000,
     'claude-sonnet-4-7': 128000,
     'claude-sonnet': 128000,
@@ -1282,7 +1282,7 @@ STYLE:
     'gpt-5.3-codex': 3000,
     'gpt-5.3-codex-spark': 2600,
     'gpt-5': 3000,         // 128K context, max reasoning
-    'claude-opus-4-7': 4200,
+    'claude-opus-4-8': 4200,
     'claude-opus': 4000,
     'claude-sonnet-4-7': 3000,
     'claude-sonnet': 2800,
@@ -1325,7 +1325,7 @@ STYLE:
     // Validate model - GPT-5 and Claude models supported
     const isClaudeModel = model.startsWith('claude');
     if (!model.includes('gpt-5') && !isClaudeModel) {
-      throw new Error(`Model ${model} not supported. Supported models: GPT-5.5/GPT-5.4 family and Claude 4.7.`);
+      throw new Error(`Model ${model} not supported. Supported models: GPT-5.5/GPT-5.4 family and Claude 4 models.`);
     }
     
     // EXECUTIVE MODE SPECIAL CASE: Compress existing answer, don't re-query brain

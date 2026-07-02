@@ -140,7 +140,7 @@ Heartbeat pulls top candidate. This phase loads **broad graph context** via grap
 
 LLM call: long tokens (16k max output), reasoning high, no grammar forced. Prompt: "Here's what's weird in the graph, here's the neighborhood, here's what jtr's been engaging with, here's how long this has been the way it is, here's your last thought. Think."
 
-**Model tier:** default MiniMax-M2.7 (fast, cheap, reasoning-capable). Opus escalation optional for high-stakes candidates (flag in candidate metadata).
+**Model tier:** default MiniMax-M3 (fast, cheap, reasoning-capable). Opus escalation optional for high-stakes candidates (flag in candidate metadata).
 
 **Output:** raw thought, as long as needed. Structured metadata attached (referenced node IDs, temporal context, pipeline provenance).
 
@@ -488,11 +488,11 @@ Rules-based first pass. Can be upgraded to emergent classifier later if rules mi
 
 **Daily (~60-80 cycles after accounting for critique recursion + sleep gaps):** ~2-3M tokens input, ~800k-1.2M tokens output.
 
-**At MiniMax-M2.7 pricing** (~$0.30/M input, ~$1.20/M output): ~$1-2/day per agent. Monthly: ~$30-60.
+**At MiniMax-M3 pricing** (~$0.30/M input, ~$1.20/M output): ~$1-2/day per agent. Monthly: ~$30-60.
 
 **At Opus pricing** (~$15/M input, ~$75/M output): ~$30-60/day. Monthly: ~$900-1800.
 
-**Decision: MiniMax-M2.7 default for all phases.** Opus reserved for explicit escalation via future observability-driven tuning. Document the escalation criteria in a follow-up once we have data.
+**Decision: MiniMax-M3 default for all phases.** Opus reserved for explicit escalation via future observability-driven tuning. Document the escalation criteria in a follow-up once we have data.
 
 **Budget target:** $100/month per agent cap as a sanity rail. Observability panel surfaces daily spend; alert if trending over.
 

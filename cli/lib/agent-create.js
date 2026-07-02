@@ -156,10 +156,10 @@ export async function runAgentCreate(home23Root, name) {
       bridge: ports.bridge,
     },
     engine: {
-      thought: 'minimax-m2.7',
-      consolidation: 'minimax-m2.7',
-      dreaming: 'minimax-m2.7',
-      query: 'minimax-m2.7',
+      thought: 'MiniMax-M3',
+      consolidation: 'MiniMax-M3',
+      dreaming: 'MiniMax-M3',
+      query: 'MiniMax-M3',
     },
     // Per-agent feeder override. Default watch paths cover the standard
     // workspace subdirs where session transcripts, memory snapshots,

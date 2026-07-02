@@ -186,10 +186,10 @@ models:
   consolidation: nemotron-3-nano:30b
   dreaming: nemotron-3-nano:30b
   query: nemotron-3-nano:30b
-  compiler: minimax-m2.7          # fast, cheap, good at synthesis
+  compiler: MiniMax-M3          # fast, cheap, good at synthesis
 ```
 
-Configurable per-agent in `instances/<agent>/config.yaml` under `engine.compiler`. Defaults to `minimax-m2.7`. Should be a fast model — this runs on every ingestion.
+Configurable per-agent in `instances/<agent>/config.yaml` under `engine.compiler`. Defaults to `MiniMax-M3`. Should be a fast model — this runs on every ingestion.
 
 ## 7. What Needs Building
 

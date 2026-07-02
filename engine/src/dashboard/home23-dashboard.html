@@ -23,22 +23,21 @@
         <nav class="h23-tabs h23-tabs-primary">
           <button class="h23-tab active" data-tab="home" data-tab-label="Home">Home</button>
           <button class="h23-tab" data-tab="agency" data-tab-label="Agency">Agency</button>
+          <button class="h23-tab" data-tab="briefs" data-tab-label="Briefs">Briefs</button>
+          <button class="h23-tab" data-tab="workers" data-tab-label="Workers">Workers</button>
+          <button class="h23-tab" data-tab="query" data-tab-label="Query">Query</button>
+          <button class="h23-tab" data-tab="brain-map" data-tab-label="Brain Map">Brain Map</button>
         </nav>
 
-        <details class="h23-organ-drawer" id="organs-drawer">
-          <summary>Controls</summary>
-          <div class="h23-organ-panel">
-            <div class="h23-linked-tabs">
-              <a class="h23-tab h23-tab-external" href="/home23/chat" data-scope-tab="chat" data-tab-label="Chat">Chat</a>
-              <button class="h23-tab h23-tab-settings" id="settings-btn" data-scope-tab="settings" data-tab-label="Settings">Settings</button>
-              <button class="h23-tab" data-tab="workers" data-tab-label="Workers">Workers</button>
-              <button class="h23-tab" data-tab="query" data-tab-label="Query">Query</button>
-              <button class="h23-tab" data-tab="brain-map" data-tab-label="Brain Map">Brain Map</button>
-              <button class="h23-tab h23-tab-external h23-tab-cosmo23" id="cosmo23-btn" data-scope-tab="cosmo23" data-tab-label="cosmo23">cosmo23</button>
-              <a class="h23-tab h23-tab-external h23-tab-evobrew" id="evobrew-btn" href="#" target="_blank" data-scope-tab="evobrew" data-tab-label="evobrew">evobrew</a>
-            </div>
+        <div class="h23-sidebar-group h23-sidebar-group-surfaces">
+          <div class="h23-sidebar-group-label">Surfaces</div>
+          <div class="h23-linked-tabs">
+            <a class="h23-tab h23-tab-external" href="/home23/chat" data-scope-tab="chat" data-tab-label="Chat">Chat</a>
+            <button class="h23-tab h23-tab-settings" id="settings-btn" data-scope-tab="settings" data-tab-label="Settings">Settings</button>
+            <button class="h23-tab h23-tab-external h23-tab-cosmo23" id="cosmo23-btn" data-scope-tab="cosmo23" data-tab-label="cosmo23">cosmo23</button>
+            <a class="h23-tab h23-tab-external h23-tab-evobrew" id="evobrew-btn" href="#" target="_blank" data-scope-tab="evobrew" data-tab-label="evobrew">evobrew</a>
           </div>
-        </details>
+        </div>
       </div>
 
     </aside>
@@ -149,40 +148,150 @@
     </div>
   </div>
 
-      <!-- Home panel — resident agency command surface. The agent handles routine organs; this surface shows only attention, consequence, and controls with teeth. -->
+      <!-- Home panel — human front door. Agency/operator detail lives behind the Agency tab. -->
   <main class="h23-main">
     <div class="h23-panel active" id="panel-home">
-      <section class="h23-resident-home" id="resident-home">
-        <div class="h23-resident-column h23-resident-left">
-          <div class="h23-resident-command">
-            <div class="h23-resident-command-head">
-              <span class="h23-resident-mode" id="resident-mode">Loading</span>
+      <section class="h23-human-home" id="human-home">
+        <div class="h23-human-hero">
+          <div class="h23-human-clock">
+            <div class="h23-human-time" id="tz1-time">--:--</div>
+            <div class="h23-human-place" id="tz1-label">New York</div>
+          </div>
+          <div class="h23-human-clock secondary" id="tz2-container" style="display:none;">
+            <div class="h23-human-time" id="tz2-time">--:--</div>
+            <div class="h23-human-place" id="tz2-label">Florence</div>
+          </div>
+          <a class="h23-human-chat" href="/home23/chat">Chat</a>
+        </div>
+
+        <div class="h23-human-grid">
+          <section class="h23-human-card h23-human-card-vibe" data-home-tile-id="vibe">
+            <div class="h23-human-card-head">
+              <span id="vibe-trigger">Vibe</span>
+              <a id="home-vibe-gallery-link" href="/home23/vibe-gallery">Gallery</a>
             </div>
-            <div class="h23-resident-command-row">
-              <button class="h23-resident-action-btn primary" id="resident-run-tick" type="button" disabled>Loading</button>
-            </div>
-            <div class="h23-resident-health" id="resident-health-strip"></div>
-            <div class="h23-resident-inline-next" id="resident-next-action" hidden>
+            <div class="h23-vibe-image h23-human-vibe-image" id="home-vibe-image"><span class="h23-vibe-placeholder">Loading...</span></div>
+            <div class="h23-vibe-caption" id="home-vibe-caption"></div>
+          </section>
+
+          <div class="h23-vibe-detail-modal" id="home-vibe-detail-modal" aria-hidden="true">
+            <div class="h23-vibe-detail-panel" role="dialog" aria-modal="true" aria-labelledby="home-vibe-detail-title">
+              <button class="h23-vibe-detail-close" id="home-vibe-detail-close" type="button">Close</button>
+              <div class="h23-vibe-detail-body">
+                <div class="h23-vibe-detail-image">
+                  <img id="home-vibe-detail-image" alt="Vibe image full view">
+                </div>
+                <div class="h23-vibe-detail-copy">
+                  <p class="h23-vibe-detail-kicker" id="home-vibe-detail-source"></p>
+                  <h2 id="home-vibe-detail-title">Vibe Image</h2>
+                  <p id="home-vibe-detail-caption"></p>
+                  <div class="h23-vibe-detail-prompt">
+                    <span>Prompt</span>
+                    <p id="home-vibe-detail-prompt"></p>
+                  </div>
+                  <p class="h23-vibe-detail-meta" id="home-vibe-detail-meta"></p>
+                  <div class="h23-vibe-detail-actions">
+                    <a id="home-vibe-detail-open" href="#" target="_blank" rel="noreferrer">Open image</a>
+                    <a id="home-vibe-detail-gallery" href="/home23/vibe-gallery">Full gallery</a>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 
-          <section class="h23-resident-panel h23-resident-operator" id="resident-operator-needed" hidden>
-            <div class="h23-resident-section-title">Needed From You</div>
-            <div class="h23-resident-empty">Only interruptions and hard authority requests appear here.</div>
-          </section>
-        </div>
-
-        <div class="h23-resident-column h23-resident-right">
-          <section class="h23-resident-panel h23-resident-attention" id="resident-attention-panel" hidden>
-            <div class="h23-resident-section-head">
-              <div class="h23-resident-section-title">Active Attention</div>
+          <section class="h23-human-card h23-human-card-chat h23-tile-chat" data-home-tile-id="chat" aria-label="Chat with Home23 agents">
+            <div class="h23-chat-header">
+              <button class="h23-chat-agent-pill" id="chat-agent-pill" type="button" title="Change agent">
+                <span class="h23-chat-agent-avatar" id="chat-agent-avatar">?</span>
+                <span class="h23-chat-agent-name" id="chat-agent-name">Loading...</span>
+              </button>
+              <div class="h23-chat-actions">
+                <button class="h23-chat-model-pill" id="chat-model-pill" type="button" title="Change model">
+                  <span id="chat-model-pill-label">model</span>
+                </button>
+                <button class="h23-chat-expand-btn" id="chat-more-btn" type="button" title="More" aria-haspopup="menu" aria-expanded="false">&#8230;</button>
+                <button class="h23-chat-expand-btn" id="chat-expand-btn" type="button" title="Expand chat">&#8599;</button>
+              </div>
             </div>
-            <div class="h23-resident-stream" id="resident-active-pursuits"></div>
+            <select class="h23-chat-agent-select" id="chat-agent-select" hidden></select>
+            <select class="h23-chat-model-select" id="chat-model-select" hidden></select>
+            <div class="h23-chat-slot" id="chat-slot-tile" data-slot="tile"></div>
+            <div class="h23-chat-conv-panel" id="chat-conv-panel">
+              <div class="h23-chat-conv-head">
+                <button class="h23-chat-conv-nav" id="chat-conv-back-btn" type="button">Back</button>
+                <div>
+                  <strong>Conversations</strong>
+                  <span id="chat-conv-count">History</span>
+                </div>
+                <button class="h23-chat-conv-nav" id="chat-conv-new-btn" type="button">New</button>
+              </div>
+              <div class="h23-chat-conv-list" id="chat-conv-list"></div>
+            </div>
           </section>
 
-          <section class="h23-resident-panel h23-resident-consequence" id="resident-consequence-panel" hidden>
-            <div class="h23-resident-section-title">What Changed</div>
-            <div class="h23-resident-stream" id="resident-consequences"></div>
+          <section class="h23-human-card h23-human-card-sensor" data-home-tile-id="outside-weather">
+            <div class="h23-human-card-head"><span>Weather</span><small id="human-weather-status">checking</small></div>
+            <div class="h23-human-value" id="human-weather-value">--</div>
+            <div class="h23-human-subtitle" id="human-weather-subtitle">Outside sensor</div>
+            <div class="h23-human-metrics" id="human-weather-metrics"></div>
+          </section>
+
+          <section class="h23-human-card h23-human-card-sauna" data-home-tile-id="sauna-control">
+            <div class="h23-human-card-head"><span>Sauna</span><small id="human-sauna-status">checking</small></div>
+            <div class="h23-human-sauna-layout">
+              <div class="h23-human-sauna-gauge" id="human-sauna-gauge" style="--sauna-heat:0.18;">
+                <div class="h23-human-sauna-gauge-core">
+                  <div class="h23-human-value" id="human-sauna-value">--</div>
+                  <div class="h23-human-subtitle" id="human-sauna-subtitle">Huum</div>
+                </div>
+              </div>
+              <div class="h23-human-sauna-control">
+                <label>
+                  <span>Target</span>
+                  <input id="human-sauna-target" type="number" min="100" max="240" step="5" value="190">
+                </label>
+                <label>
+                  <span>Minutes</span>
+                  <input id="human-sauna-duration" type="number" min="15" max="720" step="15" value="180">
+                </label>
+              </div>
+            </div>
+            <div class="h23-human-actions" id="human-sauna-actions"></div>
+            <div class="h23-human-metrics" id="human-sauna-metrics"></div>
+          </section>
+
+          <section class="h23-human-card h23-human-card-sensor" data-home-tile-id="pool-screenlogic">
+            <div class="h23-human-card-head"><span>Pool</span><small id="human-pool-status">checking</small></div>
+            <div class="h23-human-value" id="human-pool-value">--</div>
+            <div class="h23-human-subtitle" id="human-pool-subtitle">ScreenLogic</div>
+            <div class="h23-human-metrics" id="human-pool-metrics"></div>
+          </section>
+
+          <button class="h23-human-card h23-human-card-button" type="button" onclick="openProblemsPanel()">
+            <div class="h23-human-card-head"><span>Issues</span><small id="human-issues-status">checking</small></div>
+            <div class="h23-human-value" id="human-issues-value">--</div>
+            <div class="h23-human-subtitle" id="human-issues-subtitle">Live problems</div>
+          </button>
+
+          <button class="h23-human-card h23-human-card-button" data-home-tile-id="good-life" type="button" onclick="openGoodLifeOperator('home')">
+            <div class="h23-human-card-head"><span>Good Life</span><small id="human-goodlife-status">checking</small></div>
+            <div class="h23-human-value" id="human-goodlife-value">--</div>
+            <div class="h23-human-subtitle" id="human-goodlife-subtitle">Current policy</div>
+          </button>
+
+          <section class="h23-human-card h23-human-card-wide h23-human-jerry" data-home-tile-id="system-summary">
+            <div class="h23-human-card-head"><span>Jerry Says</span><small id="human-jerry-status">listening</small></div>
+            <div class="h23-human-jerry-remark" id="human-jerry-remark">Loading Home23 signal...</div>
+            <div class="h23-human-jerry-context" id="human-jerry-context"></div>
+          </section>
+
+          <section class="h23-human-card h23-human-card-wide h23-human-briefs">
+            <div class="h23-human-card-head">
+              <span>Briefs</span>
+              <button type="button" onclick="selectDashboardTab('briefs')">Open</button>
+            </div>
+            <div class="h23-human-brief-status" id="human-briefs-status">checking</div>
+            <div class="h23-human-brief-list" id="human-briefs-list"></div>
           </section>
         </div>
       </section>
@@ -198,6 +307,41 @@
     <!-- Query panel — scoped to the current dashboard agent brain, powered by cosmo23's PGS. -->
     <div class="h23-panel" id="panel-query"></div>
 
+    <!-- Briefs panel — human-facing outputs from Jerry, Forrest, cron runs, and worker receipts. -->
+    <div class="h23-panel" id="panel-briefs">
+      <div class="h23-workers-header">
+        <div>
+          <h2>Briefs</h2>
+          <div class="h23-workers-subtitle">Readable reports, agent-turn cron outputs, worker receipts, sessions, and insights from Jerry and Forrest.</div>
+        </div>
+        <div class="h23-workers-actions">
+          <select id="briefs-agent-filter" aria-label="Agent">
+            <option value="">All agents</option>
+            <option value="jerry">Jerry</option>
+            <option value="forrest">Forrest</option>
+          </select>
+          <select id="briefs-type-filter" aria-label="Brief type">
+            <option value="">All documents</option>
+            <option value="cron">Cron outputs</option>
+            <option value="report">Reports</option>
+            <option value="insight">Insights</option>
+            <option value="research">Research</option>
+            <option value="session">Sessions</option>
+            <option value="worker">Worker receipts</option>
+          </select>
+          <button class="h23-worker-btn secondary" id="briefs-refresh" type="button">Refresh</button>
+          <span class="h23-workers-status" id="briefs-status">idle</span>
+        </div>
+      </div>
+
+      <div class="h23-briefs-layout">
+        <section class="h23-briefs-list" id="briefs-list"></section>
+        <section class="h23-briefs-reader" id="briefs-reader">
+          <div class="h23-briefs-reader-empty">Choose a brief.</div>
+        </section>
+      </div>
+    </div>
+
     <!-- Workers panel — operator-facing reusable specialists. -->
     <div class="h23-panel" id="panel-workers">
       <div class="h23-workers-header">
@@ -210,8 +354,6 @@
           <a class="h23-worker-btn" href="/home23/settings#workers">Worker Library</a>
         </div>
       </div>
-
-      <div class="h23-workers-capabilities" id="workers-capabilities"></div>
 
       <div class="h23-worker-stats" id="workers-stats">
         <div class="h23-worker-stat"><span>—</span><label>Installed Specialists</label></div>
@@ -241,23 +383,30 @@
         </section>
 
         <section class="h23-workers-section">
-          <div class="h23-workers-section-title">Installed Specialists</div>
-          <div id="workers-roster" class="h23-workers-roster"></div>
+          <div class="h23-workers-section-title">Proof Trail</div>
+          <div id="workers-runs" class="h23-workers-runs"></div>
         </section>
       </div>
 
       <div class="h23-workers-grid h23-workers-grid-wide">
-        <section class="h23-workers-section">
-          <div class="h23-workers-section-title">Proof Trail</div>
-          <div id="workers-runs" class="h23-workers-runs"></div>
-        </section>
         <section class="h23-workers-section">
           <div class="h23-workers-section-title">Proof Receipt</div>
           <div id="workers-receipt" class="h23-workers-receipt">
             <p class="h23-muted">Select a completed check to see what was inspected, what passed, what failed, and what Jerry can learn from it.</p>
           </div>
         </section>
+        <section class="h23-workers-section">
+          <div class="h23-workers-section-title">Installed Specialists</div>
+          <div id="workers-roster" class="h23-workers-roster"></div>
+        </section>
       </div>
+
+      <details class="h23-agency-evidence-drawer h23-workers-capability-drawer">
+        <summary>
+          <span>Worker Capability Guide</span>
+        </summary>
+        <div class="h23-workers-capabilities" id="workers-capabilities"></div>
+      </details>
     </div>
 
     <!-- Agency panel — resident pursuit inspector. -->
@@ -269,6 +418,7 @@
         </div>
       </div>
 
+      <div class="h23-agency-warning" id="agency-load-warning" hidden></div>
       <div class="h23-worker-stats" id="agency-stats" hidden></div>
 
       <div class="h23-workers-grid h23-workers-grid-wide">
@@ -276,6 +426,44 @@
           <div class="h23-workers-section-title">Resident Brief</div>
           <div id="agency-brief" class="h23-workers-receipt"></div>
         </section>
+      </div>
+
+      <div class="h23-workers-grid h23-workers-grid-wide">
+        <details class="h23-agency-evidence-drawer" id="agency-pursuits-drawer" hidden>
+          <summary>
+            <span>Pursuit Ledger</span>
+          </summary>
+          <section class="h23-workers-section">
+            <div id="agency-pursuits" class="h23-workers-runs"></div>
+          </section>
+        </details>
+        <details class="h23-agency-evidence-drawer" id="agency-receipts-drawer" hidden>
+          <summary>
+            <span>Latest Route Receipts</span>
+          </summary>
+          <section class="h23-workers-section">
+            <div id="agency-receipts" class="h23-workers-receipt"></div>
+          </section>
+        </details>
+      </div>
+
+      <div class="h23-workers-grid h23-workers-grid-wide">
+        <details class="h23-agency-evidence-drawer" id="agency-inbox-drawer" hidden>
+          <summary>
+            <span>Inbox Decisions</span>
+          </summary>
+          <section class="h23-workers-section">
+            <div id="agency-inbox" class="h23-workers-runs"></div>
+          </section>
+        </details>
+        <details class="h23-agency-evidence-drawer" id="agency-consequences-drawer" hidden>
+          <summary>
+            <span>Consequences</span>
+          </summary>
+          <section class="h23-workers-section">
+            <div id="agency-consequences" class="h23-workers-receipt"></div>
+          </section>
+        </details>
       </div>
 
       <div class="h23-workers-grid h23-workers-grid-wide">
@@ -315,44 +503,6 @@
           </summary>
           <section class="h23-workers-section">
             <div id="agency-retirement-proposals" class="h23-workers-receipt"></div>
-          </section>
-        </details>
-      </div>
-
-      <div class="h23-workers-grid h23-workers-grid-wide">
-        <details class="h23-agency-evidence-drawer" id="agency-pursuits-drawer" hidden>
-          <summary>
-            <span>Pursuit Ledger</span>
-          </summary>
-          <section class="h23-workers-section">
-            <div id="agency-pursuits" class="h23-workers-runs"></div>
-          </section>
-        </details>
-        <details class="h23-agency-evidence-drawer" id="agency-receipts-drawer" hidden>
-          <summary>
-            <span>Latest Route Receipts</span>
-          </summary>
-          <section class="h23-workers-section">
-            <div id="agency-receipts" class="h23-workers-receipt"></div>
-          </section>
-        </details>
-      </div>
-
-      <div class="h23-workers-grid h23-workers-grid-wide">
-        <details class="h23-agency-evidence-drawer" id="agency-inbox-drawer" hidden>
-          <summary>
-            <span>Inbox Decisions</span>
-          </summary>
-          <section class="h23-workers-section">
-            <div id="agency-inbox" class="h23-workers-runs"></div>
-          </section>
-        </details>
-        <details class="h23-agency-evidence-drawer" id="agency-consequences-drawer" hidden>
-          <summary>
-            <span>Consequences</span>
-          </summary>
-          <section class="h23-workers-section">
-            <div id="agency-consequences" class="h23-workers-receipt"></div>
           </section>
         </details>
       </div>
@@ -430,10 +580,10 @@
     </div>
   </template>
 
-  <script src="https://unpkg.com/3d-force-graph@1.73.3/dist/3d-force-graph.min.js"></script>
-  <script type="module" src="/home23-chat.js"></script>
-  <script src="/home23-brain-map.js"></script>
-  <script src="/home23-query.js"></script>
-  <script src="/home23-dashboard.js"></script>
+  <script async src="https://unpkg.com/3d-force-graph@1.73.3/dist/3d-force-graph.min.js"></script>
+  <script type="module" src="/home23-chat.js?v=20260526-dashboard-repair6"></script>
+  <script src="/home23-brain-map.js?v=20260526-dashboard-repair6"></script>
+  <script src="/home23-query.js?v=20260526-dashboard-repair6"></script>
+  <script src="/home23-dashboard.js?v=20260612-briefs-compact"></script>
 </body>
 </html>

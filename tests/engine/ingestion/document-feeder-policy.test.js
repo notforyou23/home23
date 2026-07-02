@@ -238,7 +238,7 @@ test('document feeder opens compiler circuit after repeated failures', async () 
 test('document feeder status exposes compile queue and circuit state', async () => {
   const feeder = makeFeeder({
     compiler: {
-      model: 'minimax-m2.7',
+      model: 'MiniMax-M3',
       maxConcurrent: 2,
       maxQueue: 3,
       circuitCooldownMs: 1234,
@@ -260,7 +260,7 @@ test('document feeder status exposes compile queue and circuit state', async () 
     maxConcurrent: 2,
     maxQueued: 3,
   });
-  assert.equal(status.compiler.model, 'minimax-m2.7');
+  assert.equal(status.compiler.model, 'MiniMax-M3');
   assert.equal(status.compiler.circuit.open, true);
   assert.equal(status.compiler.circuit.failureCount, 4);
   assert.equal(status.compiler.circuit.cooldownMs, 1234);

@@ -45,7 +45,7 @@ function initFilesTab() {
           <div class="ai-quick-actions-title">🤖 Model</div>
           <select id="filesAIModel" class="ai-quick-action-btn" style="cursor: pointer; padding: 6px 12px; width: 100%;">
             <option value="claude-sonnet-4-7">Claude Sonnet 4.5 (Default - Fast)</option>
-            <option value="claude-opus-4-7">Claude Opus 4.5 (Most Capable)</option>
+            <option value="claude-opus-4-8">Claude Opus 4.8 (Most Capable)</option>
             <option value="gpt-5.5">GPT-5.2</option>
           </select>
         </div>

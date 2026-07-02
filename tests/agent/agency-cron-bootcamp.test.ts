@@ -193,7 +193,7 @@ test('reviewBoundRecurringCronJobsForAgency includes recent run-log excerpts in 
   assert.match(String(runEvidence[0].layers), /intent:unknown/);
 });
 
-test('reviewBoundRecurringCronJobsForAgency disables only bound stale recurring jobs in live mode', async () => {
+test('reviewBoundRecurringCronJobsForAgency proposes stale recurring cron retirement by default in live mode', async () => {
   const saved: CronJob[] = [];
   const consequences: Array<Record<string, unknown>> = [];
   const stale = recurringJob('stale-bound', { pursuitId: 'ap_stale', charterRule: 'existing_recurring_cron_requires_pursuit' });
@@ -220,14 +220,12 @@ test('reviewBoundRecurringCronJobsForAgency disables only bound stale recurring 
   });
 
   assert.equal(result.checked, 3);
-  assert.equal(result.retired, 1);
+  assert.equal(result.retired, 0);
+  assert.equal(result.proposed, 1);
   assert.equal(result.kept, 1);
   assert.equal(result.skippedNonRecurring, 1);
-  assert.equal(saved.length, 1);
-  assert.equal(saved[0].id, 'stale-bound');
-  assert.equal(saved[0].enabled, false);
-  assert.equal(saved[0].agency?.auditDecision, 'retired_by_agency_editor');
-  assert.equal(saved[0].agency?.retiredAt, '2026-05-25T21:05:00.000Z');
-  assert.equal(consequences[0].changeType, 'cron_retired_by_editor');
-  assert.equal(consequences[0].status, 'applied');
+  assert.equal(saved.length, 0);
+  assert.equal(stale.enabled, true);
+  assert.equal(consequences[0].changeType, 'cron_retirement_proposed');
+  assert.equal(consequences[0].status, 'proposed');
 });

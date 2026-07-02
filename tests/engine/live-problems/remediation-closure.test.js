@@ -75,6 +75,106 @@ test('seedAll prunes cross-agent system seeds from an agent store', () => {
   }
 });
 
+test('seedAll prunes promoted action-ledger heartbeat problems', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-'));
+  try {
+    writeFileSync(join(dir, 'live-problems.json'), JSON.stringify({
+      problems: [
+        {
+          id: 'actions_jsonl_write_freshness',
+          seedOrigin: 'promoter',
+          state: 'chronic',
+          claim: 'actions.jsonl is fresh',
+          verifier: {
+            type: 'file_mtime',
+            args: {
+              path: '/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/actions.jsonl',
+              maxAgeMin: 60,
+            },
+          },
+          remediation: [],
+        },
+        {
+          id: 'specific_action_receipt',
+          seedOrigin: 'promoter',
+          state: 'open',
+          claim: 'specific action receipt was written',
+          verifier: {
+            type: 'jsonl_recent_match',
+            args: {
+              path: '/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/actions.jsonl',
+              matchField: 'action',
+              matchValue: 'write_note',
+              minCount: 1,
+            },
+          },
+          remediation: [],
+        },
+      ],
+    }));
+
+    const store = new LiveProblemStore({ brainDir: dir });
+    seedAll(store, { agentName: 'forrest', dashboardPort: '5012', bridgePort: '5014' });
+
+    assert.equal(store.get('actions_jsonl_write_freshness'), undefined);
+    assert.equal(store.get('specific_action_receipt')?.state, 'open');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('seedAll prunes obsolete promoted notification signal tag problems', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-live-problems-'));
+  try {
+    writeFileSync(join(dir, 'live-problems.json'), JSON.stringify({
+      problems: [
+        {
+          id: 'notification_channel_to_jtr_working',
+          seedOrigin: 'promoter',
+          state: 'chronic',
+          claim: 'notification delivery has legacy success tag',
+          verifier: {
+            type: 'jsonl_recent_match',
+            args: {
+              path: '/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/signals.jsonl',
+              tsField: 'timestamp',
+              matchField: 'tag',
+              matchValue: 'NOTIFY_SUCCESS',
+              minCount: 1,
+            },
+          },
+          remediation: [],
+        },
+        {
+          id: 'specific_notification_receipt',
+          seedOrigin: 'promoter',
+          state: 'open',
+          claim: 'current notification signal exists',
+          verifier: {
+            type: 'jsonl_recent_match',
+            args: {
+              path: '/Users/jtr/_JTR23_/release/home23/instances/jerry/brain/signals.jsonl',
+              tsField: 'timestamp',
+              matchField: 'type',
+              matchValue: 'notification',
+              minCount: 1,
+            },
+          },
+          remediation: [],
+        },
+      ],
+    }));
+
+    const store = new LiveProblemStore({ brainDir: dir });
+    seedAll(store, { agentName: 'forrest', dashboardPort: '5012', bridgePort: '5014' });
+
+    assert.equal(store.get('notification_channel_to_jtr_working'), undefined);
+    assert.equal(store.get('specific_notification_receipt')?.state, 'open');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('default seeds include agent-local operational log pressure invariants', () => {
   const seeds = defaultSeeds({ agentName: 'forrest', dashboardPort: '5012', bridgePort: '5014' });
   const byId = new Map(seeds.map((seed) => [seed.id, seed]));

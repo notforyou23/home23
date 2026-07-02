@@ -138,7 +138,7 @@ test('PGS synthesis applies commit step and records receipt metadata', async () 
   engine.qe = {
     runtimeDir: tmpDir,
     resolveQueryRuntime: () => ({
-      effectiveModel: 'claude-opus-4-7',
+      effectiveModel: 'claude-opus-4-8',
       client: {
         generate: async (params) => {
           instructions = params.instructions;
@@ -173,7 +173,7 @@ test('PGS synthesis applies commit step and records receipt metadata', async () 
     keywords: ['retrieve', 'projection'],
     sweepOutput: 'retrieve_and_fill and projection are candidate operations.'
   }], {
-    model: 'claude-opus-4-7',
+    model: 'claude-opus-4-8',
     totalNodes: 400,
     totalEdges: 800,
     totalPartitions: 4,
@@ -195,7 +195,7 @@ test('PGS synthesis applies commit step and records receipt metadata', async () 
   const receipts = await fs.readFile(path.join(tmpDir, 'synthesis-commit-receipts.jsonl'), 'utf8');
   const parsed = JSON.parse(receipts.trim());
   assert.equal(parsed.mode, 'pgs');
-  assert.equal(parsed.model, 'claude-opus-4-7');
+  assert.equal(parsed.model, 'claude-opus-4-8');
   assert.equal(parsed.synthesis_commit.spine_count, 2);
 });
 
@@ -207,7 +207,7 @@ test('PGS synthesis records disabled commit receipt without prompt block', async
   engine.qe = {
     runtimeDir: tmpDir,
     resolveQueryRuntime: () => ({
-      effectiveModel: 'claude-opus-4-7',
+      effectiveModel: 'claude-opus-4-8',
       client: {
         generate: async (params) => {
           instructions = params.instructions;
@@ -224,7 +224,7 @@ test('PGS synthesis records disabled commit receipt without prompt block', async
     keywords: [],
     sweepOutput: 'candidate one'
   }], {
-    model: 'claude-opus-4-7',
+    model: 'claude-opus-4-8',
     totalNodes: 400,
     totalEdges: 800,
     totalPartitions: 4,
@@ -265,7 +265,7 @@ test('uses direct enhanced query path for small PGS brains', async () => {
   };
 
   const result = await engine.execute('query', {
-    model: 'claude-opus-4-7',
+    model: 'claude-opus-4-8',
     mode: 'full',
     includeFiles: true,
     includeCoordinatorInsights: true,

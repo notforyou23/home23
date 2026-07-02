@@ -113,7 +113,22 @@ export class SourceTruthHierarchy {
         if (byRank !== 0) return byRank;
         return String(b.acceptedAt || '').localeCompare(String(a.acceptedAt || ''));
       });
-    const unresolved = latest.filter(claim => claim.contradicts && claim.status !== 'resolved' && claim.status !== 'superseded' && !claim.resolvesContradiction);
+    const unresolved = latest.filter(claim => {
+      if (!claim.contradicts || claim.status === 'resolved' || claim.status === 'superseded' || claim.resolvesContradiction) return false;
+      // Auto-resolve contradictions against implicit assumptions (string, not a claim ID)
+      // after 72 hours if no higher-authority claim has contested this one.
+      const contradictsIsClaimId = latest.some(row => row.id === claim.contradicts);
+      if (!contradictsIsClaimId) {
+        const ageHours = (Date.now() - new Date(claim.acceptedAt || 0).getTime()) / (60 * 60 * 1000);
+        if (ageHours >= 72) {
+          claim.status = 'resolved';
+          claim.resolutionReason = 'auto_resolved_implicit_contradiction_stale';
+          claim.resolvedAt = nowIso();
+          return false;
+        }
+      }
+      return true;
+    });
     const superseded = latest.filter(claim => claim.status === 'superseded');
     return {
       currentSourceHierarchy: [...this.hierarchy],

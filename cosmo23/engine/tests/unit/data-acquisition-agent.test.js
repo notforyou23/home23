@@ -375,9 +375,14 @@ describe('DataAcquisitionAgent', function () {
       expect(result.metrics.filesDownloaded).to.equal(10);
     });
 
-    it('should return true when bytes acquired', function () {
+    it('should return true when bytes are tied to a successful source contact', function () {
       const agent = new DataAcquisitionAgent(makeMission(), makeConfig(), makeLogger());
       agent.acquisitionManifest.bytesAcquired = 1024;
+      agent.acquisitionManifest.sources.push({
+        url: 'https://example.com/products.json',
+        status: 200,
+        bytes: 1024
+      });
 
       const result = agent.assessAccomplishment({ metadata: {} }, []);
       expect(result.accomplished).to.be.true;

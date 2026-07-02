@@ -385,7 +385,7 @@ class Orchestrator {
           try {
             const { maybeBackup } = require('./brain-backups');
             await maybeBackup(this.logsDir, {
-              intervalHours: 0, retention: 10, logger: this.logger, force: true,
+              intervalHours: 0, retention: 3, logger: this.logger, force: true,
             });
           } catch (err) {
             this.logger?.warn?.('[closer-migration] backup failed, continuing', { error: err.message });
@@ -804,6 +804,71 @@ class Orchestrator {
       this.logger.warn?.('live-problems start failed (non-fatal)', { error: e.message });
     }
 
+    // Diagnostic scanner — honest mirror that catches the system lying to
+    // itself. Reads reality directly (files, PM2, cron state), never trusts
+    // self-reports. Findings feed into the live-problems store.
+    try {
+      if (!this.diagnosticScanner) {
+        const { DiagnosticScanner } = require('../diagnostic/scanner');
+        this.diagnosticScanner = new DiagnosticScanner({
+          brainDir: this.logsDir,
+          logger: this.logger,
+          liveProblemStore: this.liveProblems?.store || null,
+        });
+        this.diagnosticScanner.start();
+      }
+    } catch (e) {
+      this.logger.warn?.('diagnostic scanner start failed (non-fatal)', { error: e.message });
+    }
+
+    // Circulatory system — keeps the pipes clear so signal can flow.
+    // Sweeper: removes empty agent dirs, truncates overgrown JSONL files.
+    // Composter: extracts patterns from discarded thoughts before clearing.
+    // SynthesisTrigger: guarantees brain synthesis runs at least every 6h.
+    try {
+      const circBrainDir = process.env.COSMO_RUNTIME_DIR
+        || (process.env.COSMO_WORKSPACE_PATH ? path.join(process.env.COSMO_WORKSPACE_PATH, '..', 'brain') : this.logsDir);
+      if (!this.sweeper) {
+        const { Sweeper } = require('../circulatory/sweeper');
+        this.sweeper = new Sweeper({
+          brainDir: circBrainDir,
+          logsDir: this.logsDir,
+          logger: this.logger,
+        });
+      }
+      if (!this.composter) {
+        const { Composter } = require('../circulatory/composter');
+        this.composter = new Composter({
+          brainDir: circBrainDir,
+          memory: this.memory,
+          logger: this.logger,
+        });
+      }
+      if (!this.synthesisTrigger) {
+        const { SynthesisTrigger } = require('../circulatory/synthesis-trigger');
+        // Wire synthesis agent if available
+        let synthesisAgent = null;
+        try {
+          const { SynthesisAgent } = require('../synthesis/synthesis-agent');
+          synthesisAgent = new SynthesisAgent({
+            brainDir: circBrainDir,
+            workspacePath: process.env.COSMO_WORKSPACE_PATH,
+            dashboardPort: this.config?.dashboard?.port || process.env.HOME23_DASHBOARD_PORT,
+            logger: this.logger,
+          });
+        } catch (e) {
+          this.logger.warn?.('synthesis agent not available for auto-trigger', { error: e.message });
+        }
+        this.synthesisTrigger = new SynthesisTrigger({
+          brainDir: circBrainDir,
+          logger: this.logger,
+          synthesisAgent,
+        });
+      }
+    } catch (e) {
+      this.logger.warn?.('circulatory system init failed (non-fatal)', { error: e.message });
+    }
+
     // Start the discovery engine (Phase 2 of thinking-machine-cycle rebuild).
     // Runs continuously in background, populating a ranked queue of graph-
     // derived mining candidates. Pure graph math — no LLM calls, doesn't
@@ -1164,6 +1229,38 @@ class Orchestrator {
       this.logger.error('[ClusterSync] Failed to start cycle tracking', {
         error: error.message
       });
+    }
+
+    // Circulatory system — sweep waste, compost discarded thoughts,
+    // trigger synthesis if stale. Non-fatal, non-blocking.
+    try {
+      if (this.sweeper) await this.sweeper.tick(cycleStart.getTime());
+    } catch (e) {
+      this.logger.warn?.('sweeper tick failed (non-fatal)', { error: e.message });
+    }
+    try {
+      if (this.composter) await this.composter.tick(cycleStart.getTime());
+    } catch (e) {
+      this.logger.warn?.('composter tick failed (non-fatal)', { error: e.message });
+    }
+    try {
+      if (this.synthesisTrigger) await this.synthesisTrigger.tick(cycleStart.getTime());
+    } catch (e) {
+      this.logger.warn?.('synthesis trigger tick failed (non-fatal)', { error: e.message });
+    }
+    // Write circulatory stats to file for dashboard visibility
+    try {
+      const fsSync = require('fs');
+      const circStats = {
+        generatedAt: new Date().toISOString(),
+        sweeper: this.sweeper?.getStats?.() || null,
+        composter: this.composter?.getStats?.() || null,
+        synthesisTrigger: this.synthesisTrigger?.getStats?.() || null,
+      };
+      const statsPath = path.join(this.logsDir, 'circulatory-stats.json');
+      fsSync.writeFileSync(statsPath, JSON.stringify(circStats, null, 2));
+    } catch (e) {
+      this.logger.warn?.('circulatory stats write failed (non-fatal)', { error: e.message });
     }
 
     this.logger.info(`\n═══ Cycle ${this.cycleCount} [${this.oscillator.getCurrentMode().toUpperCase()}] [GPT-5.5] ═══`);
@@ -2528,17 +2625,17 @@ class Orchestrator {
 
       const thought = await this.quantum.collapseSuperposition(superposition);
       
-      // DEBUG: Log what we got
-      this.logger.info('Thought collapsed', {
-        hasHypothesis: Boolean(thought.hypothesis),
-        hypothesisLength: thought.hypothesis?.length || 0,
-        hasContent: Boolean(thought.content),
-        contentLength: thought.content?.length || 0,
-        hadError: thought.hadError || false
-      });
-
-      // Validate thought has content
+      // Validate thought has content — skip empty thoughts early
       if (!thought.hypothesis || thought.hypothesis.length < 10) {
+        if (!this.emptyThoughtsSkipped) this.emptyThoughtsSkipped = 0;
+        this.emptyThoughtsSkipped++;
+        // Batched logging: only log every 10th empty thought
+        if (this.emptyThoughtsSkipped % 10 === 0) {
+          this.logger.info('Thought collapsed (batched)', {
+            emptySkippedTotal: this.emptyThoughtsSkipped,
+            hadError: thought.hadError || false,
+          });
+        }
         this.logger.warn('Thought too short or empty, skipping cycle', {
           hypothesis: thought.hypothesis,
           hadError: thought.hadError
@@ -2936,6 +3033,17 @@ class Orchestrator {
               preview: String(thought.hypothesis || '').slice(0, 120)
             });
             this._criticOutputsDiscardedCount24h = (this._criticOutputsDiscardedCount24h || 0) + 1;
+            // Leave a freshness marker so a run of tagless-critic cycles does not
+            // make thoughts.jsonl look stale while cognition is in fact active.
+            // Mirrors the hallucination/operational-truth discard paths above —
+            // those already mark freshness; this path was the gap that let the
+            // liveness verifier (thoughts.jsonl recent within 20m) fail during
+            // critic-heavy stretches even though the loop was cycling.
+            await this._logThoughtJournalFreshnessMarker({
+              roleId: role?.id,
+              reason: 'critic_no_verdict_tag',
+              preview: thought.hypothesis,
+            });
             return; // Skip journal push + downstream side-effects
           }
         } catch (err) {
@@ -3727,6 +3835,23 @@ class Orchestrator {
 
     } catch (error) {
       this.logger.error('Cycle error', { error: error.message, stack: error.stack });
+
+      try {
+        await this._logInternalThought({
+          role: 'journal_freshness',
+          thought: `Cycle ${this.cycleCount} hit a non-fatal cycle error before producing a public thought; cognition is still active. Error: ${String(error?.message || error).slice(0, 220)}`,
+          metadata: {
+            cycleError: true,
+            errorMessage: String(error?.message || error).slice(0, 500),
+          },
+        });
+        this.logger?.info?.('[thoughts-flowing] cycle error wrote freshness row', {
+          cycle: this.cycleCount,
+          error: String(error?.message || error).slice(0, 180),
+        });
+      } catch (journalError) {
+        this.logger?.warn?.('[thoughts-flowing] cycle-error freshness marker failed', { error: journalError.message });
+      }
 
       this.stateModulator.updateState({
         type: 'error',
@@ -4705,6 +4830,52 @@ class Orchestrator {
     };
   }
 
+  attachDocumentMissionIntake(missionSpec, goal = {}, spec = {}) {
+    if (!missionSpec || missionSpec.agentType !== 'document_creation') {
+      return missionSpec;
+    }
+
+    const existingClaim =
+      missionSpec.intake?.claimText ||
+      missionSpec.intake?.claim ||
+      missionSpec.metadata?.claimText ||
+      missionSpec.claimText;
+
+    if (existingClaim && typeof existingClaim === 'string' && existingClaim.trim().length >= 10) {
+      return missionSpec;
+    }
+
+    if (this.coordinator?.attachDocumentCreationIntake) {
+      return this.coordinator.attachDocumentCreationIntake(missionSpec, goal, {
+        description: spec.description || missionSpec.description,
+        rationale: spec.rationale || goal?.metadata?.rationale || missionSpec.rationale,
+      });
+    }
+
+    const rationale = spec.rationale || goal?.metadata?.rationale || missionSpec.rationale;
+    const claimText = [
+      goal?.description,
+      missionSpec.description && missionSpec.description !== goal?.description ? missionSpec.description : null,
+      rationale ? `Rationale: ${rationale}` : null,
+    ].filter(Boolean).join('\n\n');
+
+    if (!claimText.trim()) {
+      return missionSpec;
+    }
+
+    missionSpec.intake = {
+      ...(missionSpec.intake || {}),
+      claimText,
+    };
+    missionSpec.metadata = {
+      ...(missionSpec.metadata || {}),
+      claimText,
+      intakeSource: missionSpec.metadata?.intakeSource || 'goal_description',
+    };
+
+    return missionSpec;
+  }
+
   /**
    * Handle plan completion - determine next actions
    */
@@ -5363,6 +5534,17 @@ class Orchestrator {
         missionSpec.description = `Process and extract content from binary files related to: ${missionSpec.description}`;
       }
     }
+
+    if (missionSpec.agentType === 'document_creation') {
+      this.attachDocumentMissionIntake(missionSpec, {
+        id: missionSpec.goalId,
+        description: action.mission || missionSpec.description,
+        metadata: action.metadata || missionSpec.metadata || {},
+      }, {
+        description: missionSpec.description,
+        rationale: missionSpec.rationale,
+      });
+    }
     
     // Add cycle and provenance info if not already present
     if (!missionSpec.spawnCycle) {
@@ -5781,6 +5963,11 @@ class Orchestrator {
               urgency: goal.metadata?.urgency
             }
           };
+
+          this.attachDocumentMissionIntake(missionSpec, goal, {
+            description: goal.description,
+            rationale: goal.metadata?.rationale,
+          });
           
           this.logger.info(`   Spawning ${agentType} for urgent goal...`, {
             goalId: goal.id,
@@ -5922,6 +6109,11 @@ class Orchestrator {
               urgency: goal.metadata?.urgency
             }
           };
+
+          this.attachDocumentMissionIntake(missionSpec, goal, {
+            description: goal.description,
+            rationale: goal.metadata?.rationale,
+          });
           
           const agentId = await this.agentExecutor.spawnAgent(missionSpec);
           
@@ -7156,9 +7348,33 @@ class Orchestrator {
       (async () => {
         try {
           const { maybeBackup } = require('./brain-backups');
+          // Backups are ~800MB each (compressed memory sidecars). On a near-full
+          // data volume, hourly x5 retention = ~4GB/agent and repeatedly broke the
+          // disk_free_ok 10GiB floor (2026-06-04). Reduced to every 6h, keep 2, then
+          // to keep 1 (2026-06-04 second pass): the live memory-nodes/edges sidecars
+          // are authoritative, so one historical backup is sufficient safety while a
+          // second redundant ~1.5GB/agent copy kept re-breaching the 10GiB floor.
+          // 2026-06-28: even one backup per agent (~1.9GB combined as brains grew)
+          // can re-breach the 10GiB disk_free_ok verifier between guard runs. Do not
+          // create a new backup while the Data volume is already tight; the live
+          // sidecars remain authoritative and the maintenance guard purges backups as
+          // a last-resort recovery when the verifier is failing.
+          try {
+            const st = await fs.statfs('/System/Volumes/Data');
+            const freeGiB = (Number(st.bavail) * Number(st.bsize)) / 1024 / 1024 / 1024;
+            if (freeGiB < 14) {
+              this.logger?.warn?.('[brain-backup] skipped: low disk headroom', {
+                freeGiB: Number(freeGiB.toFixed(2)),
+                minHeadroomGiB: 14,
+              });
+              return;
+            }
+          } catch (err) {
+            this.logger?.warn?.('[brain-backup] disk headroom check failed; continuing backup', { error: err.message });
+          }
           const result = await maybeBackup(this.logsDir, {
-            intervalHours: 1,
-            retention: 5,
+            intervalHours: 6,
+            retention: 1,
             logger: this.logger,
           });
           // Only the creation log is noisy enough to surface; 'within-interval'

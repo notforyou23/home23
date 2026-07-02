@@ -15,7 +15,18 @@ function makeFakeAgent(captured: { media?: unknown }) {
     },
   };
 }
-function makeFakeHistory() { return {}; }
+function makeFakeHistory() {
+  const records: Record<string, unknown[]> = {};
+  return {
+    loadRaw(chatId: string) {
+      return records[chatId] ?? [];
+    },
+    appendRecord(chatId: string, record: unknown) {
+      if (!records[chatId]) records[chatId] = [];
+      records[chatId]!.push(record);
+    },
+  };
+}
 
 async function postJson(app: express.Express, body: unknown): Promise<{ status: number; body: any }> {
   return await new Promise((resolve, reject) => {

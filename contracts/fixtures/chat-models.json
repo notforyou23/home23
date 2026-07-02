@@ -1,0 +1,16 @@
+{
+  "models": [
+    {
+      "alias": "opus",
+      "provider": "anthropic",
+      "model": "claude-opus-4-8"
+    },
+    {
+      "alias": "codex",
+      "provider": "openai-codex",
+      "model": "gpt-5.5"
+    }
+  ],
+  "defaultModel": "claude-opus-4-8",
+  "defaultProvider": "anthropic"
+}

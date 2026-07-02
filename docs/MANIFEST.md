@@ -12,6 +12,7 @@ Everything that ships in the public repository.
 | ecosystem.config.cjs | PM2 config (auto-generated placeholder) |
 | .gitignore | Repository ignore rules |
 | README.md | Project documentation |
+| docs/ONBOARDING.md | Fresh-install and first-run validation guide |
 | AGENTS.md | Repository-specific operating instructions for AI assistants |
 | LICENSE | MIT license |
 | CLAUDE.md | Codebase instructions for AI assistants |
@@ -140,8 +141,9 @@ Full research engine with 9-tab UI, multi-phase research runs, and brain integra
 - `design/` — Design specs for each build step
 - `vision/` — Product vision documents
 - `audits/` — Pre-release audit reports
-- `handoff/` — Recent implementation handoffs and verified runtime snapshots
+- `handoff/` — Recent implementation handoffs and verified runtime snapshots, including the 1.0 release receipt
 - `SECURITY-AUDIT.md` — Security audit findings
+- `ONBOARDING.md` — Fresh-install quickstart, validation commands, and no-data-loss operating notes
 
 ## scripts/ — Dev Scripts
 

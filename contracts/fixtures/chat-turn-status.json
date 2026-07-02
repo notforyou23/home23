@@ -1,0 +1,25 @@
+{
+  "turn_id": "t_contract_123",
+  "chat_id": "ios_contract_smoke",
+  "status": "streaming",
+  "phase": "response",
+  "active": true,
+  "started_at": "2026-06-26T14:28:00Z",
+  "updated_at": "2026-06-26T14:28:02Z",
+  "last_event_at": "2026-06-26T14:28:02Z",
+  "first_event_at": "2026-06-26T14:28:01Z",
+  "deadline_at": "2026-06-26T14:43:00Z",
+  "first_token_deadline_at": "2026-06-26T14:28:30Z",
+  "last_seq": 2,
+  "model": "claude-opus-4-8",
+  "provider": "anthropic",
+  "configured_default": {
+    "provider": "anthropic",
+    "model": "claude-opus-4-8"
+  },
+  "runtime_model": {
+    "provider": "anthropic",
+    "model": "claude-opus-4-8"
+  },
+  "recoverable": true
+}

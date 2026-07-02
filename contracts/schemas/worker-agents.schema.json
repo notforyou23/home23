@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://home23.local/contracts/worker-agents.schema.json",
+  "title": "Home23 Worker Agent Contracts",
+  "$defs": {
+    "workersResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["workers"],
+      "properties": {
+        "workers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/worker" }
+        }
+      }
+    },
+    "worker": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "displayName", "ownerAgent", "class", "purpose"],
+      "properties": {
+        "name": { "type": "string" },
+        "displayName": { "type": "string" },
+        "ownerAgent": { "type": "string" },
+        "class": { "type": "string" },
+        "purpose": { "type": "string" }
+      }
+    }
+  }
+}

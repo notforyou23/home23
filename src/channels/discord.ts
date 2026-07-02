@@ -85,6 +85,12 @@ export class DiscordAdapter implements ChannelAdapter {
     this.ws.on('close', (code, reason) => {
       console.log(`[discord] WebSocket closed: ${code} ${reason}`);
       this.stopHeartbeat();
+      if (code === 4004) {
+        this.running = false;
+        this.ws = null;
+        console.warn('[discord] Authentication failed; disabling reconnect until the token is corrected');
+        return;
+      }
       if (this.running) {
         console.log('[discord] Reconnecting in 5s...');
         setTimeout(() => this.start(), 5000);

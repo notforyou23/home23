@@ -297,6 +297,60 @@ test('GoodLifeRegulator maps continuity help drift to memory worker route', asyn
   assert.equal(added[0].topicTags.includes('worker:memory'), true);
 });
 
+test('GoodLifeRegulator defers help drift to active non-Good-Life agency work when live problems are clean', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-regulator-'));
+  mkdirSync(join(dir, 'agency'), { recursive: true });
+  writeFileSync(join(dir, 'agency', 'state.json'), JSON.stringify({
+    attention: { activePursuits: 1 },
+    currentPursuit: {
+      id: 'ap_visible_work',
+      status: 'active',
+      source: 'work.worker-runs',
+      title: 'Verified Home23 repair already in progress.',
+    },
+    activePursuits: [{
+      id: 'ap_visible_work',
+      status: 'active',
+      source: 'work.worker-runs',
+      title: 'Verified Home23 repair already in progress.',
+    }],
+  }));
+  let added = 0;
+  const obs = recoverObservation();
+  obs.payload.summary = 'help - strained continuity drift';
+  obs.payload.policy.mode = 'help';
+  obs.payload.policy.reason = 'strained continuity drift';
+  obs.payload.policy.actionCard.intent = 'help';
+  obs.payload.policy.actionCard.riskTier = 0;
+  obs.payload.evidence = { liveProblems: { open: 0, chronic: 0, resolved: 21 } };
+  obs.payload.lanes = {
+    continuity: { status: 'strained', reasons: ['open goals'] },
+    usefulness: { status: 'watch', reasons: ['visible progress required'] },
+  };
+  const regulator = new GoodLifeRegulator({
+    brainDir: dir,
+    getAgendaStore: () => ({
+      add() {
+        added += 1;
+        return { id: 'ag-should-not-exist', status: 'candidate' };
+      },
+    }),
+  });
+
+  const result = await regulator.handleObservation(obs);
+
+  assert.equal(result.status, 'covered_by_active_agency_pursuit');
+  assert.equal(result.pursuitId, 'ap_visible_work');
+  assert.equal(added, 0);
+
+  const receipts = readFileSync(join(dir, 'good-life-restraint-receipts.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map(JSON.parse);
+  assert.equal(receipts[0].status, 'covered_by_active_agency_pursuit');
+  assert.equal(receipts[0].context.pursuitId, 'ap_visible_work');
+});
+
 test('GoodLifeRegulator maps viability repair drift to systems worker route', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-regulator-'));
   const added = [];

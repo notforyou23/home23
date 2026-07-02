@@ -85,7 +85,7 @@ class AnthropicAdapter extends ProviderAdapter {
       ? config.seedModels.slice()
       : [
           'claude-sonnet-4-7',
-          'claude-opus-4-7',
+          'claude-opus-4-8',
           'claude-haiku-4-5'
         ];
     this._discoveryEnabled = config.discoveryEnabled !== false;

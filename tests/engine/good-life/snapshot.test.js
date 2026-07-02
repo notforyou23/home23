@@ -61,6 +61,107 @@ test('Good Life agenda summary counts latest item status, not raw JSONL events',
   }
 });
 
+test('Good Life useful-output freshness counts verified agency consequences', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-useful-'));
+  try {
+    mkdirSync(join(dir, 'agency'), { recursive: true });
+    writeFileSync(join(dir, 'publish-ledger.jsonl'), `${JSON.stringify({
+      target: 'dashboard',
+      at: '2026-05-09T17:18:53.375Z',
+    })}\n`);
+    writeFileSync(join(dir, 'agency', 'consequences.jsonl'), `${JSON.stringify({
+      schema: 'home23.agency.consequence.v1',
+      at: '2026-06-07T14:45:00.000Z',
+      status: 'applied',
+      changeType: 'forrest_recent_digest_corrected',
+      summary: 'Forrest RECENT digest now carries current feel-route correction evidence.',
+      evidence: [{ type: 'file', ref: 'instances/forrest/workspace/RECENT.md' }],
+    })}\n`);
+
+    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    assert.equal(snapshot.publish.lastUsefulOutputAt, '2026-06-07T14:45:00.000Z');
+    assert.equal(snapshot.publish.lastUsefulOutputSource, 'agency_consequence');
+    assert.equal(snapshot.publish.lastAgencyUsefulOutputAt, '2026-06-07T14:45:00.000Z');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Good Life useful-output freshness looks past noisy no-change consequence tails', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-useful-tail-'));
+  try {
+    mkdirSync(join(dir, 'agency'), { recursive: true });
+    writeFileSync(join(dir, 'publish-ledger.jsonl'), `${JSON.stringify({
+      target: 'dashboard',
+      at: '2026-05-09T17:18:53.375Z',
+    })}\n`);
+    const useful = {
+      schema: 'home23.agency.consequence.v1',
+      at: '2026-06-07T14:45:00.000Z',
+      status: 'applied',
+      changeType: 'forrest_recent_digest_corrected',
+      summary: 'Forrest RECENT digest now carries current feel-route correction evidence.',
+      evidence: [{ type: 'file', ref: 'instances/forrest/workspace/RECENT.md' }],
+    };
+    const noise = Array.from({ length: 350 }, (_, index) => ({
+      schema: 'home23.agency.consequence.v1',
+      at: `2026-06-07T15:${String(index % 60).padStart(2, '0')}:00.000Z`,
+      status: 'discard',
+      changeType: 'explicit_no_change',
+      summary: `Resolved live-problem poll ${index} produced no change.`,
+    }));
+    writeFileSync(join(dir, 'agency', 'consequences.jsonl'), `${[useful, ...noise].map(row => JSON.stringify(row)).join('\n')}\n`);
+
+    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    assert.equal(snapshot.publish.lastUsefulOutputAt, '2026-06-07T14:45:00.000Z');
+    assert.equal(snapshot.publish.lastUsefulOutputSource, 'agency_consequence');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Good Life useful-output freshness counts closed pursuit transition consequences', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-good-life-useful-pursuit-'));
+  try {
+    mkdirSync(join(dir, 'agency'), { recursive: true });
+    writeFileSync(join(dir, 'publish-ledger.jsonl'), `${JSON.stringify({
+      target: 'dashboard',
+      at: '2026-05-09T17:18:53.375Z',
+    })}\n`);
+    writeFileSync(join(dir, 'agency', 'consequences.jsonl'), `${JSON.stringify({
+      schema: 'home23.agency.consequence.v1',
+      at: '2026-06-07T15:00:00.000Z',
+      status: 'discard',
+      changeType: 'explicit_no_change',
+      summary: 'Resolved live-problem poll produced no change.',
+    })}\n`);
+    writeFileSync(join(dir, 'agency', 'pursuits.jsonl'), `${JSON.stringify({
+      type: 'transition',
+      at: '2026-06-07T14:45:00.000Z',
+      pursuit: {
+        id: 'ap_useful',
+        status: 'closed',
+        consequence: {
+          changed: true,
+          summary: 'Forrest RECENT digest now carries current feel-route correction evidence.',
+          evidence: [{ type: 'file', ref: 'instances/forrest/workspace/RECENT.md' }],
+        },
+      },
+      detail: {
+        status: 'closed',
+        changeType: 'forrest_recent_digest_corrected',
+        summary: 'Forrest RECENT digest now carries current feel-route correction evidence.',
+      },
+    })}\n`);
+
+    const snapshot = buildGoodLifeSnapshot({ runtimeRoot: dir });
+    assert.equal(snapshot.publish.lastUsefulOutputAt, '2026-06-07T14:45:00.000Z');
+    assert.equal(snapshot.publish.lastUsefulOutputSource, 'agency_consequence');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('Good Life goal summary does not count completed goals still present in active storage as open', () => {
   const goals = {
     getGoals() {

@@ -24,7 +24,7 @@ function getAnthropicStealthHeaders() {
 }
 
 function isAnthropicSamplingDeprecatedModel(model) {
-  return /^claude-opus-4-7(?:$|[-@])/.test(String(model || '').trim());
+  return /^(?:[^/]+\/)?claude-opus-4-8(?:$|[-@])/.test(String(model || '').trim());
 }
 
 /**
@@ -910,7 +910,7 @@ class UnifiedClient extends GPT5Client {
       }
     }
 
-    // Tool forwarding — MiniMax-M2.7 and Claude both accept Anthropic-format tools:
+    // Tool forwarding — MiniMax-M3 and Claude both accept Anthropic-format tools:
     //   { name, description, input_schema }
     // Callers may pass OpenAI-format tools: { type: 'function', function: {...} }
     // Skip built-in tools that don't exist in the Anthropic API (web_search, etc.)
@@ -932,7 +932,7 @@ class UnifiedClient extends GPT5Client {
     // Call the API
     const response = await client.messages.create(payload);
 
-    // Extract all block types. MiniMax-M2.7 and Claude can interleave:
+    // Extract all block types. MiniMax-M3 and Claude can interleave:
     //   - text blocks (normal response content)
     //   - thinking blocks (interleaved reasoning — M2.7 returns this before tool calls)
     //   - tool_use blocks (structured function calls)

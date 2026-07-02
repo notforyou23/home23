@@ -1,18 +1,21 @@
-# Home23 v0.6.0
+# Home23 v1.0.0
 
 **An installable AI operating system — persistent agents with living brains.**
 
 Home23 is not another chatbot framework. It is a complete AI operating system that runs on your machine, with agents that think autonomously, grow a persistent brain over time, dream during idle periods, and are reachable through Telegram, Discord, a web dashboard, an AI IDE, a research engine, and a mobile-optimized chat page you can Add to Home Screen on iOS.
 
-**Documentation status:** refreshed 2026-05-16 against the running Home23 app. The release metadata, README, changelog, manifest, and dashboard welcome/version banner now agree on v0.6.0. Older step-by-step design files in `docs/design/` are historical build records; use this README plus `CLAUDE.md`, `AGENTS.md`, `CHANGELOG.md`, and `docs/MANIFEST.md` for the current public repo shape.
+**Documentation status:** refreshed 2026-07-02 for the 1.0 release. The release metadata, README, changelog, manifest, onboarding guide, and validation commands now agree on v1.0.0. Older step-by-step design files in `docs/design/` are historical build records; use this README plus `docs/ONBOARDING.md`, `CHANGELOG.md`, `docs/MANIFEST.md`, `CLAUDE.md`, and `AGENTS.md` for the current public repo shape.
 
 ## Current Public State
 
 - **Good Life governance is first-class.** The engine evaluates viability, continuity, usefulness, development, coherence, friction, and recovery, then routes bounded repair/recover/help policies into the live operator loop.
 - **Live problems are verifier-backed.** The dashboard exposes deterministic problem state, remediation steps, escalation/user-intervention receipts, and re-check actions instead of relying on stale narrative status.
+- **Resident agency and scheduler loops are guarded.** Pursuits close only on independent receipts, stale high-salience signals are deferred without interrupting chat, and repeated scheduler failures are escalated instead of stampeding the harness.
+- **Contracts are first-class.** Apple/client-facing routes ship schemas, fixtures, a manifest, and read-only live validation via `npm run test:contracts:live`.
 - **The agent runtime has 49 registered tools.** That includes files, shell, web, brain search/query/export/PGS-adjacent graph access, 11 COSMO research tools, workers, skills, cron, media, TTS, and governed memory promotion.
 - **The dashboard is the main operating surface.** Home, Intelligence, Workers, Query, Brain Map, Settings, Good Life/operator panels, Evobrew, and COSMO are wired from the browser, with the CLI used for setup, lifecycle, and updates.
 - **The bundled systems are still one install.** Home23 owns provider configuration; Evobrew and COSMO23 consume the same managed config instead of becoming separate setup islands.
+- **COSMO23 completed-run answers are artifact-grounded.** Structured run artifact inventories now surface extracted record counts, route receipts, invalid JSON status, and markdown report headings before graph synthesis.
 
 Four integrated systems, one install:
 
@@ -31,6 +34,8 @@ Four integrated systems, one install:
 
 ## Install
 
+For the shortest path, follow [docs/ONBOARDING.md](docs/ONBOARDING.md). The core flow is:
+
 ```bash
 git clone https://github.com/notforyou23/home23.git
 cd home23
@@ -38,6 +43,19 @@ node cli/home23.js init
 ```
 
 Init checks prerequisites, installs all dependencies (including MarkItDown for document ingestion), sets up encryption keys and the OAuth database, builds the TypeScript harness, and seeds all configuration. No API keys needed — provider setup happens in the web dashboard.
+
+Before handing a fresh install to someone else, run:
+
+```bash
+npm run build
+npm test
+npm run test:contracts
+node cli/home23.js start
+npm run test:contracts:live
+node cli/home23.js status
+```
+
+Those checks verify TypeScript, unit coverage, schema/fixture contracts, read-only live API contracts, and PM2 process wiring.
 
 ## Setup — Web Dashboard
 

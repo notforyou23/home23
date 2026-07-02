@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -15,6 +15,38 @@ function readJsonl(file) {
       try { return JSON.parse(line); } catch { return null; }
     })
     .filter(Boolean);
+}
+
+function parseJsonlLines(text) {
+  return String(text || '')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    })
+    .filter(Boolean);
+}
+
+function readJsonlTail(file, limit = 100, maxBytes = 4 * 1024 * 1024) {
+  if (!existsSync(file)) return [];
+  const boundedLimit = Math.max(1, Number(limit) || 100);
+  const fd = openSync(file, 'r');
+  try {
+    const size = statSync(file).size;
+    const start = Math.max(0, size - Math.max(1024, maxBytes));
+    const buffer = Buffer.alloc(size - start);
+    readSync(fd, buffer, 0, buffer.length, start);
+    let text = buffer.toString('utf8');
+    if (start > 0) {
+      const firstNewline = text.indexOf('\n');
+      text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
+    }
+    return parseJsonlLines(text).slice(-boundedLimit);
+  } catch {
+    return [];
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function stableHash(input) {
@@ -98,23 +130,57 @@ export class PursuitStore {
   }
 
   listInbox({ limit = 100 } = {}) {
-    return readJsonl(this.inboxPath).slice(-limit).reverse();
+    return readJsonlTail(this.inboxPath, limit, 8 * 1024 * 1024).reverse();
+  }
+
+  countInboxLines() {
+    try {
+      const fd = openSync(this.inboxPath, 'r');
+      try {
+        const size = statSync(this.inboxPath).size;
+        if (size === 0) return 0;
+        // Count newlines by scanning the file in chunks — no JSON parsing
+        let count = 0;
+        const chunkSize = 64 * 1024;
+        const buf = Buffer.alloc(chunkSize);
+        let pos = 0;
+        while (pos < size) {
+          const toRead = Math.min(chunkSize, size - pos);
+          readSync(fd, buf, 0, toRead, pos);
+          for (let i = 0; i < toRead; i++) {
+            if (buf[i] === 0x0a) count++;
+          }
+          pos += toRead;
+        }
+        // Count last line if file doesn't end with newline
+        if (size > 0) {
+          const last = Buffer.alloc(1);
+          readSync(fd, last, 0, 1, size - 1);
+          if (last[0] !== 0x0a) count++;
+        }
+        return count;
+      } finally {
+        closeSync(fd);
+      }
+    } catch {
+      return 0;
+    }
   }
 
   listReceipts({ limit = 100 } = {}) {
-    return readJsonl(this.receiptsPath).slice(-limit).reverse();
+    return readJsonlTail(this.receiptsPath, limit).reverse();
   }
 
   listConsequences({ limit = 100 } = {}) {
-    return readJsonl(this.consequencesPath).slice(-limit).reverse();
+    return readJsonlTail(this.consequencesPath, limit).reverse();
   }
 
   listScratch({ limit = 100 } = {}) {
-    return readJsonl(this.scratchPath).slice(-limit).reverse();
+    return readJsonlTail(this.scratchPath, limit).reverse();
   }
 
   listTruth({ limit = 100 } = {}) {
-    return readJsonl(this.truthPath).slice(-limit).reverse();
+    return readJsonlTail(this.truthPath, limit).reverse();
   }
 
   listTasks({ status = null, limit = 100 } = {}) {
@@ -318,7 +384,7 @@ export class PursuitStore {
       ...patch,
       lastTouched: nowIso(),
     }, { type: 'transition', reason: transition.reason || transition.summary || status, detail: transition });
-    if (status === 'closed' || transition.consequence) {
+    if (status === 'closed' || status === 'provisional' || transition.consequence) {
       this.appendConsequence({
         schema: 'home23.agency.consequence.v1',
         at: nowIso(),

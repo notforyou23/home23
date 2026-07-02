@@ -204,17 +204,86 @@ class AgentRegistry {
   // where tasks use taskId (not goalId) for agent correlation
   // ═══════════════════════════════════════════════════════════════
 
+  _toEpochMs(value) {
+    if (value === null || value === undefined) return null;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (value instanceof Date) return value.getTime();
+    if (typeof value === 'string') {
+      const parsed = Date.parse(value);
+      return Number.isNaN(parsed) ? null : parsed;
+    }
+    return null;
+  }
+
+  _getAgentId(agentState) {
+    return agentState?.agent?.agentId || agentState?.agentId || agentState?.id || null;
+  }
+
+  _getTaskMission(agentState) {
+    return agentState?.mission || agentState?.agent?.mission || {};
+  }
+
+  _getAgentTime(agentState) {
+    return this._toEpochMs(agentState?.registeredAt)
+      ?? this._toEpochMs(agentState?.startTime)
+      ?? this._toEpochMs(agentState?.agent?.startTime)
+      ?? this._toEpochMs(agentState?.endTime)
+      ?? this._toEpochMs(agentState?.agent?.endTime)
+      ?? this._toEpochMs(agentState?.mission?.metadata?.baseTimestamp)
+      ?? null;
+  }
+
+  _matchesTaskScope(agentState, taskId, scope = {}) {
+    if (!taskId) return false;
+
+    const mission = this._getTaskMission(agentState);
+    if (mission?.taskId !== taskId) return false;
+
+    if (scope.assignedAgentId && this._getAgentId(agentState) !== scope.assignedAgentId) {
+      return false;
+    }
+
+    if (scope.planId) {
+      const agentPlanId =
+        mission?.planId ||
+        mission?.metadata?.planId ||
+        agentState?.planId ||
+        agentState?.metadata?.planId ||
+        agentState?.agent?.planId ||
+        agentState?.agent?.metadata?.planId ||
+        null;
+
+      if (agentPlanId && agentPlanId !== scope.planId) {
+        return false;
+      }
+    }
+
+    const minCreatedAt =
+      this._toEpochMs(scope.taskCreatedAt) ??
+      this._toEpochMs(scope.planCreatedAt) ??
+      this._toEpochMs(scope.baseTimestamp);
+
+    if (minCreatedAt !== null) {
+      const agentTime = this._getAgentTime(agentState);
+      if (agentTime !== null && agentTime < minCreatedAt) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
   /**
    * Get active agent working on a specific task
    * @param {string} taskId - The task ID (e.g., 'task:phase1')
    * @returns {Object|null} The agent state if found, null otherwise
    */
-  getActiveAgentByTaskId(taskId) {
+  getActiveAgentByTaskId(taskId, scope = {}) {
     if (!taskId) return null;
     
     for (const agentId of this.activeAgents) {
       const agentState = this.agents.get(agentId);
-      if (agentState?.mission?.taskId === taskId) {
+      if (this._matchesTaskScope(agentState, taskId, scope)) {
         return agentState;
       }
     }
@@ -226,11 +295,11 @@ class AgentRegistry {
    * @param {string} taskId - The task ID
    * @returns {Array} All agent states for this task
    */
-  getAgentsByTaskId(taskId) {
+  getAgentsByTaskId(taskId, scope = {}) {
     if (!taskId) return [];
     
     return Array.from(this.agents.values())
-      .filter(a => a.mission?.taskId === taskId);
+      .filter(a => this._matchesTaskScope(a, taskId, scope));
   }
 
   /**
@@ -239,11 +308,11 @@ class AgentRegistry {
    * @param {string} taskId - The task ID
    * @returns {Array} Completed agent states for this task
    */
-  getCompletedAgentsByTaskId(taskId) {
+  getCompletedAgentsByTaskId(taskId, scope = {}) {
     if (!taskId) return [];
     
     return Array.from(this.completedAgents.values())
-      .filter(a => a.mission?.taskId === taskId);
+      .filter(a => this._matchesTaskScope(a, taskId, scope));
   }
 
   /**
@@ -251,11 +320,11 @@ class AgentRegistry {
    * @param {string} taskId - The task ID
    * @returns {Array} Failed agent states for this task
    */
-  getFailedAgentsByTaskId(taskId) {
+  getFailedAgentsByTaskId(taskId, scope = {}) {
     if (!taskId) return [];
     
     return Array.from(this.failedAgents.values())
-      .filter(a => a.mission?.taskId === taskId);
+      .filter(a => this._matchesTaskScope(a, taskId, scope));
   }
 
   /**
@@ -272,8 +341,8 @@ class AgentRegistry {
    * @param {string} taskId - The task ID
    * @returns {boolean}
    */
-  hasCompletedAgentsForTask(taskId) {
-    return this.getCompletedAgentsByTaskId(taskId).length > 0;
+  hasCompletedAgentsForTask(taskId, scope = {}) {
+    return this.getCompletedAgentsByTaskId(taskId, scope).length > 0;
   }
 
   /**
@@ -304,10 +373,10 @@ class AgentRegistry {
    * @param {string} taskId - The task ID
    * @returns {Object} Status summary
    */
-  getTaskAgentStatus(taskId) {
-    const active = this.getActiveAgentByTaskId(taskId);
-    const completed = this.getCompletedAgentsByTaskId(taskId);
-    const failed = this.getFailedAgentsByTaskId(taskId);
+  getTaskAgentStatus(taskId, scope = {}) {
+    const active = this.getActiveAgentByTaskId(taskId, scope);
+    const completed = this.getCompletedAgentsByTaskId(taskId, scope);
+    const failed = this.getFailedAgentsByTaskId(taskId, scope);
     
     // Check if any completed agent actually accomplished their mission
     const accomplishedAgents = completed.filter(a => {
@@ -318,6 +387,7 @@ class AgentRegistry {
     // CRITICAL LOGGING (Jan 21, 2026): Track task agent status for plan execution debugging
     this.logger.debug('[AgentRegistry] getTaskAgentStatus', {
       taskId,
+      scope,
       hasActive: !!active,
       completedCount: completed.length,
       accomplishedCount: accomplishedAgents.length,
@@ -531,4 +601,3 @@ class AgentRegistry {
 }
 
 module.exports = { AgentRegistry };
-

@@ -63,7 +63,7 @@ real use case emerges.
 ### 3. Compiler
 
 - **Enabled** toggle (default on)
-- **Model** — dropdown populated from `home.yaml providers.*.defaultModels`. Default: `minimax-m2.7`. The compiler uses this LLM to synthesize raw documents into structured knowledge before brain insertion.
+- **Model** — dropdown populated from `home.yaml providers.*.defaultModels`. Default: `MiniMax-M3`. The compiler uses this LLM to synthesize raw documents into structured knowledge before brain insertion.
 - **Help text** — explains the compiler's role: raw text → concept extraction → BRAIN_INDEX.md update → memory node. Warns that disabling means documents go in as raw chunks (lower quality, more noise).
 
 ### 4. Converter (binary formats)

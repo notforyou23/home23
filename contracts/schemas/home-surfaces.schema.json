@@ -129,6 +129,62 @@
         "query": { "type": ["string", "null"] },
         "results": { "type": ["array", "null"] }
       }
+    },
+    "tileAction": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["id", "label", "method"],
+      "properties": {
+        "id": { "type": "string" },
+        "label": { "type": "string" },
+        "method": { "type": "string" },
+        "confirmationText": { "type": ["string", "null"] },
+        "fields": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["id", "label", "type"],
+            "properties": {
+              "id": { "type": "string" },
+              "label": { "type": "string" },
+              "type": { "type": "string" },
+              "defaultValue": {},
+              "min": { "type": ["number", "null"] },
+              "max": { "type": ["number", "null"] },
+              "step": { "type": ["number", "null"] },
+              "unit": { "type": ["string", "null"] },
+              "required": { "type": ["boolean", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "tileActionDryRunResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok", "dryRun", "action"],
+      "properties": {
+        "ok": { "type": "boolean", "const": true },
+        "dryRun": { "type": "boolean", "const": true },
+        "action": { "$ref": "#/$defs/tileAction" }
+      }
+    },
+    "tileActionResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok", "action", "data"],
+      "properties": {
+        "ok": { "type": "boolean", "const": true },
+        "action": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "data": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
     }
   }
 }

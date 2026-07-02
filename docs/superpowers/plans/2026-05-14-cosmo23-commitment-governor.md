@@ -855,7 +855,7 @@ Add to `run-commitment-governor.test.js`:
     const event = governor.normalizeProviderError({
       cycle: 12,
       provider: 'anthropic',
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-4-8',
       error: new Error('429 {"type":"error","error":{"type":"rate_limit_error"}}')
     });
 

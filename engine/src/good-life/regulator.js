@@ -41,6 +41,24 @@ class GoodLifeRegulator {
       return { status: 'blocked_usefulness_gate', reason: usefulness.reason };
     }
 
+    const key = this._actionKey(evaluation);
+    const activeCoverage = this._activeAgencyWorkCoverage(evaluation);
+    if (activeCoverage) {
+      this._writeRestraintReceipt({
+        status: 'covered_by_active_agency_pursuit',
+        reason: 'resident_agency_already_has_active_non_good_life_work',
+        evaluation,
+        obs,
+        key,
+        context: activeCoverage,
+      });
+      return {
+        status: 'covered_by_active_agency_pursuit',
+        key,
+        pursuitId: activeCoverage.pursuitId,
+      };
+    }
+
     const agendaStore = this.getAgendaStore();
     const cleanupAt = new Date().toISOString();
     const staledSupersededRepair = agendaStore
@@ -50,7 +68,6 @@ class GoodLifeRegulator {
       ? this._staleSupersededDriftAgendaStore(agendaStore, evaluation, cleanupAt)
       : this._staleSupersededDriftAgenda(evaluation, cleanupAt);
 
-    const key = this._actionKey(evaluation);
     const state = this._readState();
     const last = state[key];
     const nowMs = Date.now();
@@ -610,6 +627,45 @@ class GoodLifeRegulator {
     if (mode === 'repair' || category === 'resolves-drift') return false;
     if (mode === 'help' || category === 'visible-progress') return false;
     return true;
+  }
+
+  _activeAgencyWorkCoverage(evaluation = {}) {
+    const mode = String(evaluation.policy?.mode || 'observe').toLowerCase();
+    if (!['help', 'learn', 'rest'].includes(mode)) return null;
+    const live = evaluation.evidence?.liveProblems || {};
+    const activeProblems = Number(live.open || 0) + Number(live.chronic || 0);
+    if (activeProblems > 0) return null;
+    const agencyState = this._readAgencyState();
+    const rows = [
+      agencyState?.currentPursuit,
+      ...(Array.isArray(agencyState?.activePursuits) ? agencyState.activePursuits : []),
+    ].filter(Boolean);
+    const active = rows.find((row) => {
+      const status = String(row.status || 'active').toLowerCase();
+      const source = String(row.source || '').toLowerCase();
+      return ['active', 'watch'].includes(status) && source && source !== 'domain.good-life';
+    });
+    if (!active) return null;
+    return {
+      pursuitId: active.id || null,
+      source: active.source || null,
+      title: active.title || active.summary || null,
+      mode,
+      liveProblems: {
+        open: Number(live.open || 0),
+        chronic: Number(live.chronic || 0),
+      },
+    };
+  }
+
+  _readAgencyState() {
+    try {
+      const file = path.join(this.brainDir, 'agency', 'state.json');
+      if (!fs.existsSync(file)) return null;
+      return JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      return null;
+    }
   }
 
   _nextDailyState(existing, evaluation, usefulness, agendaId) {

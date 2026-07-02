@@ -62,11 +62,53 @@
       "properties": {
         "agent": { "type": ["string", "null"] },
         "defaultModel": { "type": "string" },
+        "defaultProvider": { "type": ["string", "null"] },
         "defaultMode": { "type": "string" },
         "enablePGSByDefault": { "type": "boolean" },
         "pgsSweepModel": { "type": "string" },
+        "pgsSweepProvider": { "type": ["string", "null"] },
         "pgsSynthModel": { "type": "string" },
+        "pgsSynthProvider": { "type": ["string", "null"] },
         "pgsDepth": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "modelsResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["agent", "chat", "aliases"],
+      "properties": {
+        "agent": { "type": ["string", "null"] },
+        "currentAgent": { "type": ["string", "null"] },
+        "primaryAgent": { "type": ["string", "null"] },
+        "chat": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["defaultProvider", "defaultModel"],
+          "properties": {
+            "defaultProvider": { "type": ["string", "null"] },
+            "defaultModel": { "type": ["string", "null"] }
+          }
+        },
+        "aliases": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["provider", "model"],
+            "properties": {
+              "provider": { "type": "string" },
+              "model": { "type": "string" }
+            }
+          }
+        },
+        "providers": {
+          "type": ["object", "null"],
+          "additionalProperties": true
+        },
+        "engineRoles": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "string" }
+        }
       }
     },
     "saveResponse": {

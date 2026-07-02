@@ -259,6 +259,7 @@ async function resolveCurrentAgentBrainThenLoad() {
       c.classList.toggle('qt-depth-active', parseFloat(c.dataset.depth) === qDefaults.pgsDepth);
     });
   }
+  updateQueryOptionsSummary();
 
   // Prefer explicit URL override, then the dashboard's own agent, then primary.
   let dashboardAgent = '';
@@ -319,7 +320,7 @@ async function resolveCurrentAgentBrainThenLoad() {
 
   // Header label (if present) + placeholder text.
   const label = document.getElementById('qt-brain-label');
-  if (label) label.textContent = `Querying ${dashboardAgent} brain`;
+  if (label) label.textContent = dashboardAgent;
 
   loadQueryHistory();
   checkBrainStatus();
@@ -408,18 +409,7 @@ function bindQueryTabEvents() {
   });
 
   // Update options summary
-  const updateSummary = () => {
-    const summary = document.getElementById('qt-options-summary');
-    if (summary) {
-      const mode = modeSelect?.value || 'full';
-      const model = modelSelect?.selectedOptions?.[0]?.textContent || modelSelect?.value || '...';
-      const pgsOn = document.getElementById('qt-pgs')?.checked;
-      const pgsDepthVal = parseFloat(document.getElementById('qt-pgs-depth')?.value || '0.25');
-      const depthName = {0.1: 'Skim', 0.25: 'Sample', 0.5: 'Deep', 1.0: 'Full'}[pgsDepthVal] || `${Math.round(pgsDepthVal * 100)}%`;
-      const pgs = pgsOn ? ` · 🧬 PGS ${depthName} (${Math.round(pgsDepthVal * 100)}%)` : '';
-      summary.textContent = `${mode.charAt(0).toUpperCase() + mode.slice(1)} mode · ${model}${pgs}`;
-    }
-  };
+  const updateSummary = updateQueryOptionsSummary;
   modeSelect?.addEventListener('change', updateSummary);
   modelSelect?.addEventListener('change', () => {
     // Sync PGS synthesis model with main model unless user has diverged
@@ -486,6 +476,20 @@ function bindQueryTabEvents() {
   });
 
   // HOME23 — no brain picker to wire; brain is fixed once per page load.
+}
+
+function updateQueryOptionsSummary() {
+  const summary = document.getElementById('qt-options-summary');
+  if (!summary) return;
+  const modeSelect = document.getElementById('qt-mode');
+  const modelSelect = document.getElementById('qt-model');
+  const mode = modeSelect?.value || 'full';
+  const model = modelSelect?.selectedOptions?.[0]?.textContent || modelSelect?.value || 'model unavailable';
+  const pgsOn = document.getElementById('qt-pgs')?.checked;
+  const pgsDepthVal = parseFloat(document.getElementById('qt-pgs-depth')?.value || '0.25');
+  const depthName = {0.1: 'Skim', 0.25: 'Sample', 0.5: 'Deep', 1.0: 'Full'}[pgsDepthVal] || `${Math.round(pgsDepthVal * 100)}%`;
+  const pgs = pgsOn ? ` · PGS ${depthName} (${Math.round(pgsDepthVal * 100)}%)` : '';
+  summary.textContent = `${mode.charAt(0).toUpperCase() + mode.slice(1)} mode · ${model}${pgs}`;
 }
 
 /* ═══════════════════════════════════════════════════════

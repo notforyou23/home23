@@ -1,5 +1,7 @@
 const express = require('express');
 const path = require('path');
+const { assertPm2AgentIdentity } = require('../../../scripts/lib/pm2-agent-identity-guard.cjs');
+assertPm2AgentIdentity({ root: path.join(__dirname, '..', '..', '..') });
 const fs = require('fs').promises;
 const { createReadStream } = require('fs');
 const { createInterface } = require('readline');
@@ -16,6 +18,7 @@ const { IntelligenceBuilder } = require('./intelligence-builder');
 const { ClusterDataProxy } = require('../cluster/cluster-data-proxy');
 const { MissionTracer } = require('../../scripts/TRACE_RESEARCH_MISSIONS');
 const { Home23VibeService } = require('./home23-vibe/service');
+const { Home23BriefsService } = require('./home23-briefs');
 const { Home23TileService } = require('./home23-tiles');
 const {
   classifyMemoryProvenance,
@@ -72,6 +75,67 @@ function readJsonlTail(file, limit = 20, maxBytes = 256 * 1024) {
     return lines.map((line) => {
       try { return JSON.parse(line); } catch { return null; }
     }).filter(Boolean);
+  } catch {
+    return [];
+  } finally {
+    if (fd !== null) {
+      try { fsSync.closeSync(fd); } catch {}
+    }
+  }
+}
+
+function readJsonlTailLines(filePath, limit = 100, maxBytes = 1024 * 1024) {
+  const fsSync = require('fs');
+  const count = Math.max(0, Number(limit) || 0);
+  if (!filePath || count === 0) return [];
+
+  let fd = null;
+  try {
+    const stat = fsSync.statSync(filePath);
+    if (!stat.isFile() || stat.size <= 0) return [];
+
+    const bytesToRead = Math.min(stat.size, Math.max(4096, Number(maxBytes) || 1024 * 1024));
+    const start = stat.size - bytesToRead;
+    const buffer = Buffer.alloc(bytesToRead);
+    fd = fsSync.openSync(filePath, 'r');
+    fsSync.readSync(fd, buffer, 0, bytesToRead, start);
+
+    let text = buffer.toString('utf8');
+    if (start > 0) {
+      const firstNewline = text.indexOf('\n');
+      text = firstNewline >= 0 ? text.slice(firstNewline + 1) : '';
+    }
+    return text.split('\n').map(line => line.trim()).filter(Boolean).slice(-count);
+  } catch {
+    return [];
+  } finally {
+    if (fd !== null) {
+      try { fsSync.closeSync(fd); } catch {}
+    }
+  }
+}
+
+function readJsonlHeadLines(filePath, limit = 200, maxBytes = 256 * 1024) {
+  const fsSync = require('fs');
+  const count = Math.max(0, Number(limit) || 0);
+  if (!filePath || count === 0) return [];
+
+  let fd = null;
+  try {
+    const stat = fsSync.statSync(filePath);
+    if (!stat.isFile() || stat.size <= 0) return [];
+
+    const bytesToRead = Math.min(stat.size, Math.max(4096, Number(maxBytes) || 256 * 1024));
+    const buffer = Buffer.alloc(bytesToRead);
+    fd = fsSync.openSync(filePath, 'r');
+    fsSync.readSync(fd, buffer, 0, bytesToRead, 0);
+
+    let text = buffer.toString('utf8');
+    if (bytesToRead < stat.size) {
+      const lastNewline = text.lastIndexOf('\n');
+      text = lastNewline >= 0 ? text.slice(0, lastNewline) : '';
+    }
+    return text.split('\n').map(line => line.trim()).filter(Boolean).slice(0, count);
   } catch {
     return [];
   } finally {
@@ -156,6 +220,10 @@ class DashboardServer {
       getTemporalContext: () => buildTemporalContext({
         workspacePath: this.getHome23AgentContext().workspacePath,
       }),
+    });
+    this.home23Briefs = new Home23BriefsService({
+      home23Root: this.getHome23Root(),
+      logger: this.logger,
     });
     this.home23Vibe = new Home23VibeService({
       home23Root: this.getHome23Root(),
@@ -1138,7 +1206,13 @@ class DashboardServer {
   }
 
   setupRoutes() {
-    this.app.use(express.static(path.join(__dirname)));
+    this.app.use(express.static(path.join(__dirname), {
+      setHeaders(res, filePath) {
+        if (/\.(?:html|js|css)$/.test(filePath)) {
+          res.setHeader('Cache-Control', 'no-store, max-age=0');
+        }
+      },
+    }));
 
     // Home23 — first-run detection: welcome screen or dashboard
     this.app.get('/home23', (req, res) => {
@@ -1152,14 +1226,17 @@ class DashboardServer {
         });
       }
       if (hasAgents) {
+        res.setHeader('Cache-Control', 'no-store, max-age=0');
         res.sendFile(path.join(__dirname, 'home23-dashboard.html'));
       } else {
+        res.setHeader('Cache-Control', 'no-store, max-age=0');
         res.sendFile(path.join(__dirname, 'home23-welcome.html'));
       }
     });
 
     // Settings page (always accessible)
     this.app.get('/home23/settings', (req, res) => {
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
       res.sendFile(path.join(__dirname, 'home23-settings.html'));
     });
 
@@ -1191,6 +1268,32 @@ class DashboardServer {
         evobrewPort: parseInt(process.env.EVOBREW_PORT || '3415', 10),
         cosmo23Port: parseInt(process.env.COSMO23_PORT || '43210', 10)
       });
+    });
+
+    this.app.post(['/api/feel', '/home23/api/feel'], async (req, res) => {
+      const healthApiPort = Number(process.env.HOME23_HEALTH_API_PORT || '8091');
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      try {
+        const upstream = await fetch(`http://127.0.0.1:${healthApiPort}/api/feel`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(req.body || {}),
+          signal: controller.signal,
+        });
+        const text = await upstream.text();
+        let payload;
+        try {
+          payload = JSON.parse(text);
+        } catch {
+          payload = { ok: false, error: 'invalid_health_api_response', body: text };
+        }
+        res.status(upstream.status).json(payload);
+      } catch (err) {
+        res.status(502).json({ ok: false, error: 'health_api_unreachable', detail: err.message });
+      } finally {
+        clearTimeout(timeout);
+      }
     });
 
     this.app.get('/home23/api/scope', (req, res) => {
@@ -1232,6 +1335,15 @@ class DashboardServer {
               { method: 'POST', path: '/home23/api/workers/:name/runs' },
               { method: 'GET', path: '/home23/api/workers/runs/:runId/receipt' },
               { method: 'POST', path: '/home23/api/workers/runs/:runId/promote-memory' },
+            ],
+          },
+          briefs: {
+            kind: 'mixed',
+            chip: 'Jerry + Forrest',
+            summaryTemplate: 'Briefs collects human-facing reports, cron deliveries, worker receipts, and agent documents from Jerry and Forrest into readable dashboard pages.',
+            routes: [
+              { method: 'GET', path: '/home23/api/briefs' },
+              { method: 'GET', path: '/home23/api/briefs/:id' },
             ],
           },
           query: {
@@ -1340,6 +1452,19 @@ class DashboardServer {
 
     this.app.post('/home23/api/tiles/:tileId/actions/:actionId', async (req, res) => {
       try {
+        const dryRun = req.body?.dryRun === true
+          || req.body?.dry_run === true
+          || req.body?.validateOnly === true
+          || req.body?.validate_only === true
+          || ['1', 'true', 'yes', 'dry-run', 'validate-only'].includes(String(req.query?.dryRun || req.query?.dry_run || req.query?.validateOnly || req.query?.validate_only || '').toLowerCase());
+        if (dryRun) {
+          const action = this.home23Tiles.describeTileAction(
+            req.params.tileId,
+            req.params.actionId
+          );
+          res.json({ ok: true, dryRun: true, action });
+          return;
+        }
         const action = await this.home23Tiles.runTileAction(
           req.params.tileId,
           req.params.actionId,
@@ -1349,6 +1474,33 @@ class DashboardServer {
         res.json({ ok: true, action, data });
       } catch (err) {
         res.status(400).json({ ok: false, error: err.message });
+      }
+    });
+
+    this.app.get('/home23/api/briefs', async (req, res) => {
+      try {
+        const data = await this.home23Briefs.list({
+          limit: req.query.limit,
+          agent: req.query.agent,
+          type: req.query.type,
+          compact: req.query.compact,
+        });
+        res.json(data);
+      } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+      }
+    });
+
+    this.app.get('/home23/api/briefs/:id', async (req, res) => {
+      try {
+        const data = await this.home23Briefs.get(req.params.id);
+        if (!data.ok) {
+          res.status(data.error === 'not_found' ? 404 : 400).json(data);
+          return;
+        }
+        res.json(data);
+      } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
       }
     });
 
@@ -1601,7 +1753,28 @@ class DashboardServer {
         }
       };
 
-      this.app.get('/home23/feeder/live-status', (req, res) => proxyJson(req, res, 'GET', '/admin/feeder/status'));
+      this.app.get('/home23/feeder/live-status', async (req, res) => {
+        try {
+          const target = this.getHome23AgentContext(req.query?.agent);
+          const result = await fetchAdminJson(target, 'GET', '/admin/feeder/status', {}, 10_000);
+          if (result.status === 503 && /Feeder not available/i.test(String(result.body?.error || ''))) {
+            return res.status(200).json({
+              ok: false,
+              available: false,
+              error: result.body.error,
+              status: null,
+            });
+          }
+          return res.status(result.status).json(result.body);
+        } catch (err) {
+          return res.status(200).json({
+            ok: false,
+            available: false,
+            error: `Engine admin unreachable: ${err.message}`,
+            status: null,
+          });
+        }
+      });
       this.app.post('/home23/feeder/flush', (req, res) => proxyJson(req, res, 'POST', '/admin/feeder/flush'));
       this.app.post('/home23/feeder/add-watch-path', (req, res) => proxyJson(req, res, 'POST', '/admin/feeder/addWatchPath'));
       this.app.post('/home23/feeder/remove-watch-path', (req, res) => proxyJson(req, res, 'POST', '/admin/feeder/removeWatchPath'));
@@ -1706,7 +1879,15 @@ class DashboardServer {
     // Home23 Settings API
     try {
       const { createSettingsRouter } = require('./home23-settings-api.js');
+      const { registerClientCapabilitiesRoute } = require('./client-capabilities.js');
+      const { registerQueryApiRoutes } = require('./home23-query-api.js');
       const home23Root = this.getHome23Root();
+      registerClientCapabilitiesRoute(this.app, { home23Root });
+      registerQueryApiRoutes(this.app, {
+        home23Root,
+        getDefaultAgent: () => this.getHome23AgentName(),
+        resolveAgent: (candidate) => this.resolveRequestedHome23Agent(candidate),
+      });
       const { router: settingsRouter } = createSettingsRouter(home23Root);
       this.app.use('/home23/api/settings', settingsRouter);
     } catch (err) {
@@ -1936,40 +2117,58 @@ class DashboardServer {
     }
 
     // Chat History API
-    // Helper: parse JSONL conversation file into messages
+    const isMachineConversation = (id) => {
+      const value = String(id || '');
+      return value === 'cron-decisions'
+        || value.startsWith('cron-agent-')
+        || value.startsWith('diagnose_')
+        || value.startsWith('repair_')
+        || value.startsWith('verify_')
+        || value.startsWith('worker_');
+    };
+
+    const parseConversationLines = (lines, limit) => {
+      const messages = [];
+      for (const line of lines || []) {
+        if (!line.trim()) continue;
+        try {
+          const record = JSON.parse(line);
+          // Handle both direct StoredMessage format and wrapped {type,message} format
+          const msg = record.message || record;
+          if (msg.role) {
+            let text = '';
+            if (typeof msg.content === 'string') {
+              text = msg.content;
+            } else if (Array.isArray(msg.content)) {
+              text = msg.content
+                .filter(b => b.type === 'text')
+                .map(b => b.text)
+                .join('');
+            }
+            messages.push({
+              role: msg.role,
+              content: text,
+              timestamp: record.timestamp || msg.ts || null,
+            });
+          }
+        } catch { /* skip bad lines */ }
+      }
+      return limit ? messages.slice(-limit) : messages;
+    };
+
     const parseConversationFile = (filePath, limit) => {
       const fsSync = require('fs');
       if (!fsSync.existsSync(filePath)) return [];
-      try {
-        const raw = fsSync.readFileSync(filePath, 'utf8').trim();
-        if (!raw) return [];
-        const messages = [];
-        for (const line of raw.split('\n')) {
-          if (!line.trim()) continue;
-          try {
-            const record = JSON.parse(line);
-            // Handle both direct StoredMessage format and wrapped {type,message} format
-            const msg = record.message || record;
-            if (msg.role) {
-              let text = '';
-              if (typeof msg.content === 'string') {
-                text = msg.content;
-              } else if (Array.isArray(msg.content)) {
-                text = msg.content
-                  .filter(b => b.type === 'text')
-                  .map(b => b.text)
-                  .join('');
-              }
-              messages.push({
-                role: msg.role,
-                content: text,
-                timestamp: record.timestamp || msg.ts || null,
-              });
-            }
-          } catch { /* skip bad lines */ }
-        }
-        return limit ? messages.slice(-limit) : messages;
-      } catch { return []; }
+      const boundedLimit = Math.max(1, Math.min(parseInt(limit || 100, 10) || 100, 250));
+      return parseConversationLines(readJsonlTailLines(filePath, boundedLimit, 2 * 1024 * 1024), boundedLimit);
+    };
+
+    const previewConversationFile = (filePath) => {
+      const lines = [
+        ...readJsonlHeadLines(filePath, 80, 256 * 1024),
+        ...readJsonlTailLines(filePath, 80, 512 * 1024),
+      ];
+      return parseConversationLines(lines, null);
     };
 
     // List all conversations for an agent
@@ -2007,7 +2206,8 @@ class DashboardServer {
         }
 
         const nsPrefix = `${agentName}__`;
-        const conversations = files.map(({ file: f, dir }) => {
+        const listLimit = Math.max(1, Math.min(parseInt(req.query.limit || 80, 10) || 80, 200));
+        const candidateFiles = files.map(({ file: f, dir }) => {
           const rawId = f.replace('.jsonl', '');
           // Strip ALL leading `${agentName}__` prefixes (handles legacy double-prefix files).
           // The client will round-trip this clean id back through loadHistory/sendMessage,
@@ -2015,9 +2215,17 @@ class DashboardServer {
           let id = rawId;
           while (id.startsWith(nsPrefix)) id = id.slice(nsPrefix.length);
 
+          if (isMachineConversation(id)) return null;
+
           const filePath = path.join(dir, f);
           const stat = fsSync.statSync(filePath);
-          const allMsgs = parseConversationFile(filePath, null);
+          return { id, filePath, stat };
+        }).filter(Boolean)
+          .sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs)
+          .slice(0, listLimit);
+
+        const conversations = candidateFiles.map(({ id, filePath, stat }) => {
+          const allMsgs = previewConversationFile(filePath);
           const firstUserMsg = allMsgs.find(m => m.role === 'user');
           let preview = firstUserMsg?.content?.slice(0, 80) || 'New conversation';
           // Strip channel prefixes like "[telegram J R] "
@@ -2025,7 +2233,8 @@ class DashboardServer {
 
           const source = id.startsWith('dashboard') ? 'dashboard'
             : id.startsWith('evobrew') ? 'evobrew'
-            : id.startsWith('cron-') ? 'cron'
+            : id === 'cron-decisions' || id.startsWith('cron-') ? 'cron'
+            : id.startsWith('diagnose_') ? 'diagnostic'
             : (firstUserMsg?.content || '').includes('[telegram') ? 'telegram'
             : 'chat';
 
@@ -2039,8 +2248,6 @@ class DashboardServer {
           };
         });
 
-        // Sort by last activity, newest first
-        conversations.sort((a, b) => new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime());
         res.json({ conversations });
       } catch (err) {
         res.json({ conversations: [], error: err.message });
@@ -2130,10 +2337,22 @@ class DashboardServer {
 
     this.app.get('/home23/api/vibe/gallery', async (req, res) => {
       try {
-        const limit = parseInt(req.query.limit || '60', 10);
+        const limit = String(req.query.limit || '').toLowerCase() === 'all'
+          ? 'all'
+          : parseInt(req.query.limit || '60', 10);
         res.json(await this.home23Vibe.listGallery(limit));
       } catch (error) {
         res.status(500).json({ error: error.message });
+      }
+    });
+
+    this.app.get('/home23/api/vibe/gallery/items/:id', async (req, res) => {
+      try {
+        const item = await this.home23Vibe.getGalleryItem(req.params.id);
+        if (!item) return res.status(404).json({ error: 'Image not found' });
+        return res.json({ item });
+      } catch (error) {
+        return res.status(500).json({ error: error.message });
       }
     });
 
@@ -2163,9 +2382,124 @@ class DashboardServer {
     // Brain graph data for 3D visualization
     this.app.get('/home23/api/brain/graph', async (req, res) => {
       try {
+        const fullGraph = req.query.full === '1' || req.query.full === 'true';
+        const requestedLimit = Number.parseInt(String(req.query.limit || ''), 10);
+        const maxNodes = fullGraph ? Number.POSITIVE_INFINITY : Math.min(
+          Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 2500, 250),
+          8000
+        );
+        const requestedEdgeLimit = Number.parseInt(String(req.query.edgeLimit || ''), 10);
+        const maxEdges = fullGraph ? Number.POSITIVE_INFINITY : Math.min(
+          Math.max(Number.isFinite(requestedEdgeLimit) ? requestedEdgeLimit : maxNodes * 4, 1000),
+          32000
+        );
+        if (!fullGraph) {
+          const { readJsonlGz, nodesPath, edgesPath } = require('../core/memory-sidecar');
+          const nodeSidecar = nodesPath(this.logsDir);
+          const edgeSidecar = edgesPath(this.logsDir);
+          const fsSync = require('fs');
+          if (fsSync.existsSync(nodeSidecar) && fsSync.existsSync(edgeSidecar)) {
+            const snapshotPath = path.join(this.logsDir, 'brain-snapshot.json');
+            let snapshot = {};
+            try {
+              snapshot = JSON.parse(fsSync.readFileSync(snapshotPath, 'utf8'));
+            } catch { /* snapshot may not exist yet */ }
+            const state = await this.loadStateLean();
+            const memory = state.memory || {};
+            const selectedIds = new Set();
+            const selectedEdges = [];
+            await readJsonlGz(edgeSidecar, (rec) => {
+              const source = String(rec.source);
+              const target = String(rec.target);
+              if (!source || !target || source === target) return true;
+
+              const newIds = [source, target].filter(id => !selectedIds.has(id));
+              if (selectedIds.size + newIds.length <= maxNodes) {
+                newIds.forEach(id => selectedIds.add(id));
+                selectedEdges.push(rec);
+              }
+              return selectedEdges.length < maxEdges;
+            });
+            const selectedRawNodes = [];
+            await readJsonlGz(nodeSidecar, (rec) => {
+              if (selectedIds.has(String(rec.id))) {
+                selectedRawNodes.push(rec);
+              }
+              return selectedRawNodes.length < selectedIds.size;
+            });
+            if (selectedRawNodes.length < Math.min(maxNodes, 500)) {
+              await readJsonlGz(nodeSidecar, (rec) => {
+                const id = String(rec.id);
+                if (!selectedIds.has(id)) {
+                  selectedIds.add(id);
+                  selectedRawNodes.push(rec);
+                }
+                return selectedRawNodes.length < maxNodes;
+              });
+            }
+            const hydratedIds = new Set(selectedRawNodes.map(n => String(n.id)));
+            const visibleEdges = selectedEdges.filter(e =>
+              hydratedIds.has(String(e.source)) && hydratedIds.has(String(e.target))
+            );
+            const nodes = selectedRawNodes.map(n => ({
+              id: String(n.id),
+              concept: n.concept || '',
+              tag: n.tag || 'general',
+              weight: n.weight || 0,
+              activation: n.activation || 0,
+              cluster: n.cluster,
+              created: n.created,
+              accessed: n.accessed,
+              accessCount: n.accessCount || 0
+            }));
+            const edges = visibleEdges.map(e => ({
+              source: String(e.source),
+              target: String(e.target),
+              weight: e.weight || 0,
+              type: e.type || 'associative'
+            }));
+            const totalNodes = Number.isFinite(snapshot.nodeCount) ? snapshot.nodeCount : nodes.length;
+            const totalEdges = Number.isFinite(snapshot.edgeCount) ? snapshot.edgeCount : edges.length;
+            return res.json({
+              success: true,
+              nodes,
+              edges,
+              clusters: memory.clusters || [],
+              meta: {
+                nodeCount: totalNodes,
+                edgeCount: totalEdges,
+                displayedNodeCount: nodes.length,
+                displayedEdgeCount: edges.length,
+                limited: nodes.length < totalNodes,
+                clusterCount: (memory.clusters || []).length || memory.nextClusterId || snapshot.clusterCount || 0,
+                cycleCount: state.cycleCount || snapshot.cycle || 0
+              }
+            });
+          }
+        }
+
         const state = await this.loadState();
         const memory = state.memory || {};
-        const nodes = (memory.nodes || []).map(n => ({
+        const allNodes = Array.isArray(memory.nodes) ? memory.nodes : [];
+        const allEdges = Array.isArray(memory.edges) ? memory.edges : [];
+        const scoredNodes = allNodes.map((node, index) => {
+          const accessedMs = Date.parse(node.accessed || node.created || '') || 0;
+          const recency = accessedMs ? Math.min(accessedMs / 1e13, 2) : 0;
+          const score =
+            Number(node.activation || 0) * 3 +
+            Number(node.weight || 0) * 2 +
+            Math.log1p(Number(node.accessCount || 0)) +
+            recency;
+          return { node, index, score };
+        });
+        scoredNodes.sort((a, b) => b.score - a.score || a.index - b.index);
+        const selectedRawNodes = fullGraph ? allNodes : scoredNodes.slice(0, maxNodes).map(item => item.node);
+        const selectedIds = new Set(selectedRawNodes.map(n => String(n.id)));
+        const selectedEdges = allEdges
+          .filter(e => selectedIds.has(String(e.source)) && selectedIds.has(String(e.target)))
+          .sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0))
+          .slice(0, maxEdges);
+        const nodes = selectedRawNodes.map(n => ({
           id: String(n.id),
           concept: n.concept || '',
           tag: n.tag || 'general',
@@ -2176,7 +2510,7 @@ class DashboardServer {
           accessed: n.accessed,
           accessCount: n.accessCount || 0
         }));
-        const edges = (memory.edges || []).map(e => ({
+        const edges = selectedEdges.map(e => ({
           source: String(e.source),
           target: String(e.target),
           weight: e.weight || 0,
@@ -2188,8 +2522,11 @@ class DashboardServer {
           edges,
           clusters: memory.clusters || [],
           meta: {
-            nodeCount: nodes.length,
-            edgeCount: edges.length,
+            nodeCount: allNodes.length,
+            edgeCount: allEdges.length,
+            displayedNodeCount: nodes.length,
+            displayedEdgeCount: edges.length,
+            limited: !fullGraph && nodes.length < allNodes.length,
             clusterCount: (memory.clusters || []).length || memory.nextClusterId || 0,
             cycleCount: state.cycleCount || 0
           }
@@ -5911,6 +6248,44 @@ Be specific, actionable, and maintain research continuity.`;
       });
     });
 
+    // API: Diagnostic scanner report
+    this.app.get('/api/diagnostic', (req, res) => {
+      try {
+        const fs = require('fs');
+        const reportPath = path.join(path.dirname(liveProblemsFile(liveProblemTarget(req))), 'diagnostic-report.json');
+        if (!fs.existsSync(reportPath)) {
+          return res.json({ available: false, findings: [], message: 'no diagnostic report yet' });
+        }
+        const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+        res.json({ available: true, ...report });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
+    this.app.get('/api/circulatory', (req, res) => {
+      try {
+        const fs = require('fs');
+        const agent = liveProblemTarget(req);
+        const statsPath = path.join(path.dirname(liveProblemsFile(agent)), 'circulatory-stats.json');
+        let stats = null;
+        try {
+          stats = JSON.parse(fs.readFileSync(statsPath, 'utf8'));
+        } catch (e) {
+          // File may not exist yet — return empty
+        }
+        res.json({
+          available: true,
+          sweeper: stats?.sweeper || null,
+          composter: stats?.composter || null,
+          synthesisTrigger: stats?.synthesisTrigger || null,
+          generatedAt: stats?.generatedAt || null,
+        });
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
     this.app.get('/api/live-problems/:id', (req, res) => {
       const data = loadLiveProblems(liveProblemTarget(req));
       const p = (data.problems || []).find(x => x.id === req.params.id);
@@ -7109,7 +7484,7 @@ Be specific, actionable, and maintain research continuity.`;
           language,          // File language (markdown, json, etc.)
           fileTreeContext,   // Project file structure (for awareness)
           currentFolder,     // Current working directory (for file creation)
-          model = 'MiniMax-M2.7',
+          model = 'MiniMax-M3',
           conversationHistory // Previous messages (optional)
         } = req.body;
         
@@ -7420,7 +7795,7 @@ You are empowered to explore and understand. The user trusts you to discover the
               const userMessages = messages.filter(m => m.role !== 'system');
               
               // Determine correct Claude model (December 2025)
-              const claudeModel = model === 'claude-opus-4-7' 
+              const claudeModel = model === 'claude-opus-4-8'
                 ? 'claude-3-opus-20240229'  // Claude 3 Opus
                 : 'claude-sonnet-4-7-20250929';  // Claude Sonnet 4.7
               
@@ -7639,7 +8014,7 @@ You are empowered to explore and understand. The user trusts you to discover the
         console.log(`[QUERY API] Query: "${query.substring(0, 60)}..."`);
         console.log(`[QUERY API] Target Run: ${targetRunName}`);
         console.log(`[QUERY API] Directory: ${targetRunDir}`);
-        console.log(`[QUERY API] Model: ${model || 'MiniMax-M2.7'} | Mode: ${mode || 'normal'}`);
+        console.log(`[QUERY API] Model: ${model || 'MiniMax-M3'} | Mode: ${mode || 'normal'}`);
         console.log(`[QUERY API] Include Files: ${includeFiles !== false} | Allow Actions: ${allowActions || false}`);
         const effectiveBackendOverride = backendOverride || 'openai';
         console.log(`[QUERY API] Backend Override: ${effectiveBackendOverride} ${backendOverride ? '(explicit)' : '(defaulted to remote)'}`);
@@ -7673,7 +8048,7 @@ You are empowered to explore and understand. The user trusts you to discover the
         
         // Execute enhanced query
         const result = await runQueryEngine.executeEnhancedQuery(query, {
-          model: model || runConfig?.models?.primary || 'MiniMax-M2.7',
+          model: model || runConfig?.models?.primary || 'MiniMax-M3',
           mode: mode || 'normal',
           exportFormat: exportFormat,
           includeFiles: includeFiles !== false, // Default true
@@ -7713,7 +8088,7 @@ You are empowered to explore and understand. The user trusts you to discover the
             timestamp: new Date().toISOString(),
             runName: targetRunName,
             query,
-            model: model || runConfig?.models?.primary || 'MiniMax-M2.7',
+            model: model || runConfig?.models?.primary || 'MiniMax-M3',
             mode: mode || 'normal',
             answer: result.answer,
             evidence: result.evidence ? result.evidence.length : 0,
@@ -7858,13 +8233,13 @@ You are empowered to explore and understand. The user trusts you to discover the
           };
         })();
 
-        // Defaults: use engine's quantumReasoner model assignment (MiniMax-M2.7
+        // Defaults: use engine's quantumReasoner model assignment (MiniMax-M3
         // in the current config) for sweeps, and the same for synthesis unless
         // the user passed a stronger model. Works out of the box.
         const cfgAssignments = this.config?.models?.modelAssignments || {};
         const defaultFast = cfgAssignments['quantumReasoner.branches']?.model
           || this.config?.models?.defaultModel
-          || 'MiniMax-M2.7';
+          || 'MiniMax-M3';
         const defaultStrong = cfgAssignments['synthesis']?.model
           || this.config?.models?.strategicModel
           || defaultFast;
@@ -8288,7 +8663,7 @@ You are empowered to explore and understand. The user trusts you to discover the
 
         // Execute query with follow-up context
         const result = await this.queryEngine.executeQuery(query, {
-          model: model || this.config?.models?.primary || 'MiniMax-M2.7',
+          model: model || this.config?.models?.primary || 'MiniMax-M3',
           mode: mode || 'normal',
           followUpContext: {
             sessionId,
@@ -8814,7 +9189,7 @@ You are empowered to explore and understand. The user trusts you to discover the
         proc.unref();  // Allow parent to exit independently
         
         const timeEstimate = queryTimestamps.length * 
-          (model === 'claude-opus-4-7' ? 25 : model === 'claude-sonnet-4-7' ? 15 : 20);
+          (model === 'claude-opus-4-8' ? 25 : model === 'claude-sonnet-4-7' ? 15 : 20);
         
         res.json({
           success: true,
@@ -11086,7 +11461,8 @@ You are empowered to explore and understand. The user trusts you to discover the
         brainDir: this.logsDir,
         workspacePath,
         dashboardPort: this.port,
-        config: { intervalHours: 4 },
+        // ollama-cloud model IDs are case-sensitive/lowercase; 'MiniMax-M3' 404s on this endpoint.
+        config: { intervalHours: 4, model: process.env.SYNTHESIS_LLM_MODEL || 'minimax-m3' },
         logger: console,
       });
       this._synthesisAgent.startSchedule({ runOnStart: false });

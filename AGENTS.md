@@ -29,6 +29,13 @@ curl -s http://localhost:43210/api/status | python3 -c "import sys,json; d=json.
 
 Good Life autonomy is the current first-class direction for the Home23 engine loop. Treat it as live engine governance, not research theater and not COSMO23 work.
 
+Immediate operational truth as of 2026-07-02:
+- Home23 is being promoted to the 1.0.0 release line. Package metadata, README, changelog, onboarding guide, and release handoff were refreshed for v1.0.0.
+- Verification passed during release prep: `npm run build`, `npm test` (582 tests), `npm run test:contracts`, focused COSMO23 query/PGS/provider/artifact regressions, `npm run test:contracts:live`, and `git diff --check`.
+- COSMO23 is healthy-idle unless a current `/api/status` check proves otherwise; the release-prep check showed `running=false`, `lifecycle=idle`, and `activeRun=false`.
+- Good Life can be in `repair` on jtr's live machine because of local scheduler/host posture even when package tests pass. On 2026-07-02 the remaining live caveat was chronic `jerry_harness_cron_jobs_healthy` from repeated errors in enabled `empire-*` / `imac-*` cron jobs. Do not disable, delete, or rewrite those live jobs without explicit operator approval.
+- Fresh installers should start with `docs/ONBOARDING.md`; release evidence is in `docs/handoff/session_2026-07-02_1.0-release.md`.
+
 Immediate operational truth as of 2026-05-07:
 - Good Life is still the first-class engine-governance direction. Live check at 2026-05-07 10:34 EDT showed policy `help`, viability healthy, continuity strained, usefulness watch, zero open live problems, and Jerry's brain at ~65.1k nodes / ~110.9k edges.
 - Health freshness is semantic, not file-mtime-only. The `health_log_fresh` verifier passed on 2026-05-07 with `metrics.heartRateVariability.date=2026-05-07`.
@@ -37,6 +44,17 @@ Immediate operational truth as of 2026-05-07:
 - COSMO23 was live on port 43210 with active run `labor23` at the May 7 handoff. Verify the active run before diagnosing Query, PGS, or run-output issues.
 
 ### Recent completions (most recent first)
+
+#### Done: Home23 1.0 Release Prep + Onboarding (2026-07-02)
+
+Home23 was validated for the 1.0.0 release line without deleting local runtime data or mutating live scheduler jobs.
+
+- `package.json` / `package-lock.json` — version set to `1.0.0`.
+- `README.md`, `CHANGELOG.md`, `docs/MANIFEST.md`, `docs/ONBOARDING.md`, and `docs/handoff/session_2026-07-02_1.0-release.md` — refreshed release/onboarding surface.
+- `engine/src/agency/resident-kernel.js` — live-problem verifier and cron binding receipts count as independent system evidence for closure; self-only closes remain provisional.
+- `engine/src/publish/bridge-chat-publisher.js` — stale high-salience action requests stay suppressed from chat but keep a log receipt.
+- Verification passed: `npm run build`, `npm test`, `npm run test:contracts`, focused COSMO23 regressions, `npm run test:contracts:live`, and `git diff --check`.
+- Live caveat not changed: chronic `jerry_harness_cron_jobs_healthy` from local enabled scheduler jobs with repeated errors; leave it for explicit operator review.
 
 #### Done: COSMO23 Query/PGS Small-Run Repair + Checkpoint (2026-05-07)
 

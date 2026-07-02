@@ -55,7 +55,7 @@ test('AgencyKernel dry-run intake selects actionable observations into pursuits 
   assert.equal(state.attention.currentPursuitId, result.pursuit.id);
 });
 
-test('AgencyKernel dedupes repeated Good Life usefulness drift into one pursuit', async () => {
+test('AgencyKernel suppresses repeated Good Life usefulness drift when an active pursuit already covers it', async () => {
   const dir = brainDir();
   const kernel = new AgencyKernel({
     brainDir: dir,
@@ -81,9 +81,15 @@ test('AgencyKernel dedupes repeated Good Life usefulness drift into one pursuit'
   });
 
   assert.equal(first.pursuit.id, second.pursuit.id);
-  assert.equal(second.decision.route, 'pursue');
-  assert.equal(second.decision.reason, 'merged_with_existing_pursuit');
-  assert.equal(second.pursuit.seenCount, 2);
+  assert.equal(second.decision.route, 'discard');
+  assert.equal(second.decision.reason, 'active_good_life_policy_already_tracked');
+  assert.equal(second.pursuit.seenCount, 1);
+
+  const agencyDir = join(dir, 'agency');
+  const inbox = readJsonl(join(agencyDir, 'inbox.jsonl'));
+  const pursuits = readJsonl(join(agencyDir, 'pursuits.jsonl'));
+  assert.equal(inbox.length, 1);
+  assert.equal(pursuits.some(row => row.type === 'merged'), false);
 });
 
 test('AgencyKernel merges repeated unbound world-stream cron receipts instead of filling active attention', async () => {
@@ -610,6 +616,40 @@ test('AuthorityPolicy blocks L4 actions without explicit approval even in live m
     level: 'L4',
     reason: 'requires_human_approval',
   });
+});
+
+test('AgencyKernel live config overrides persisted dry-run state and next action flags', async () => {
+  const dir = brainDir();
+  const agencyDir = join(dir, 'agency');
+  mkdirSync(agencyDir, { recursive: true });
+  writeFileSync(join(agencyDir, 'state.json'), JSON.stringify({
+    schema: 'home23.agency.state.v1',
+    agent: 'jerry',
+    mode: 'dry_run',
+    updatedAt: '2026-05-25T10:00:00.000Z',
+    nextAction: {
+      kind: 'advance_one_step',
+      authorityLevel: 'L2',
+      dryRun: true,
+      reason: 'persisted before live agency was enabled',
+    },
+  }, null, 2));
+
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'live' },
+  });
+
+  const state = kernel.state();
+  const receipts = readJsonl(join(agencyDir, 'receipts.jsonl'));
+  const consequences = readJsonl(join(agencyDir, 'consequences.jsonl'));
+
+  assert.equal(state.mode, 'live');
+  assert.equal(state.self.posture, 'bounded-live');
+  assert.equal(state.nextAction.dryRun, false);
+  assert.equal(receipts.some(row => row.event === 'agency_mode_changed' && row.fromMode === 'dry_run' && row.toMode === 'live'), true);
+  assert.equal(consequences.some(row => row.changeType === 'agency_mode_changed' && row.status === 'applied'), true);
 });
 
 test('AgencyKernel loads a charter and enforces active/watch attention caps', async () => {

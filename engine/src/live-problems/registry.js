@@ -78,6 +78,29 @@ class TargetsRegistry {
       if (!p) return { ok: false, reason: `${spec.type} needs args.path` };
       const known = reg.files.some((f) => expandHome(f.path) === expandHome(p));
       if (!known) return { ok: false, reason: `file not in registry: ${p}` };
+
+      // actions.jsonl is an event-driven ACT dispatcher ledger, not a heartbeat.
+      // Freshness checks against it create false live-problems whenever the brain
+      // correctly goes hours without emitting an allow-listed action. Existence is
+      // still valid, and specific receipt lookups remain valid when matchField is
+      // supplied (for example: "did action X execute recently?").
+      if (/\/brain\/actions\.jsonl$/.test(expandHome(p))) {
+        if (spec.type === 'file_mtime') {
+          return { ok: false, reason: `actions.jsonl is event-driven; use file_exists plus thoughts freshness, not file_mtime: ${p}` };
+        }
+        if (spec.type === 'jsonl_recent_match' && !args.matchField) {
+          return { ok: false, reason: `actions.jsonl is event-driven; jsonl_recent_match needs matchField for a specific action receipt: ${p}` };
+        }
+      }
+
+      return { ok: true };
+    }
+
+    if (spec.type === 'cron_job_errors') {
+      const p = typeof args.path === 'string' ? args.path : '';
+      if (!p) return { ok: false, reason: 'cron_job_errors needs args.path' };
+      const known = reg.files.some((f) => expandHome(f.path) === expandHome(p));
+      if (!known) return { ok: false, reason: `file not in registry: ${p}` };
       return { ok: true };
     }
 

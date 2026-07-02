@@ -184,6 +184,10 @@ export interface HomeConfig {
     approvals?: string[];
     charterPath?: string;
     residentTickMs?: number;
+    cronBootcamp?: {
+      startupAudit?: boolean;
+      retireEnabled?: boolean;
+    };
     charter?: Record<string, unknown>;
   };
 
@@ -298,6 +302,9 @@ export interface SchedulerConfig {
   jobsFile: string;
   runsDir: string;
   ownershipLeaseMs?: number;
+  initialTickDelayMs?: number;
+  maxConcurrentJobsPerTick?: number;
+  maxConcurrentAgentTurns?: number;
 }
 
 export type DeliveryProfiles = Record<string, {

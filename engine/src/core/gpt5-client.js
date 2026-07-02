@@ -255,6 +255,25 @@ class GPT5Client {
     }
   }
 
+  async complete(options = {}) {
+    const {
+      max_tokens,
+      ...rest
+    } = options || {};
+    const normalized = { ...rest };
+
+    if (
+      max_tokens !== undefined
+      && normalized.maxTokens === undefined
+      && normalized.maxOutputTokens === undefined
+      && normalized.max_output_tokens === undefined
+    ) {
+      normalized.maxTokens = max_tokens;
+    }
+
+    return this.generateWithRetry(normalized, 1);
+  }
+
   /**
    * Generate with automatic retry on failures
    * Wrapper around generate() with exponential backoff

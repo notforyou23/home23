@@ -33,6 +33,8 @@ let activeEventSource = null;
 let currentTurnCtx = null;
 let chatConversationId = null;  // current conversation ID
 let chatConversations = [];     // list of all conversations
+let chatInitialized = false;
+let chatMode = 'tile';
 
 // ── Image attachment state ──
 let pendingAttachments = []; // Array<{ id, file, dataUrl }>
@@ -134,6 +136,10 @@ function _syncState() {
 // ── Init ──
 
 async function initChat(mode) {
+  if (chatInitialized) return;
+  chatInitialized = true;
+  chatMode = mode || 'tile';
+
   // Load agents
   try {
     const res = await fetch('/home23/api/settings/agents');
@@ -172,7 +178,11 @@ async function initChat(mode) {
   mountSharedChatNodes();
 
   renderAgentSelectors(initialAgent.name);
-  await switchAgent(initialAgent.name, { preferRestore: true });
+  const shouldResumeHistory = chatMode === 'standalone';
+  await switchAgent(initialAgent.name, {
+    preferRestore: shouldResumeHistory,
+    preferLatest: shouldResumeHistory,
+  });
 
   // Model selector — use agent's current model (may have been changed in settings)
   chatModel = initialAgent.model;
@@ -204,6 +214,7 @@ async function initChat(mode) {
   // ⋯ menu + agent pill + model pill (replaces the old + / ☰ / model-select
   // button row).
   setupMoreMenu();
+  setupConversationPanelControls();
   setupAgentPill();
   setupModelPill();
 
@@ -277,12 +288,25 @@ function setupMoreMenu() {
 function handleMenuAction(action) {
   if (action === 'new-conversation') {
     newConversation();
+    closeConversationList();
   } else if (action === 'toggle-conversations') {
     toggleConversationList();
   } else if (action === 'open-standalone') {
     cacheHistory();
     window.open(`/home23/chat?agent=${chatAgent?.agentName || ''}`, '_blank');
   }
+}
+
+function setupConversationPanelControls() {
+  document.getElementById('chat-conv-back-btn')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    closeConversationList();
+  });
+  document.getElementById('chat-conv-new-btn')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    newConversation();
+    closeConversationList();
+  });
 }
 
 /**
@@ -404,7 +428,7 @@ function setupModelPill() {
 }
 
 /** Compact display name for the pill. Strips common provider prefixes and
- *  truncates date-stamped suffixes so "claude-opus-4-7-20260101" fits. */
+ *  truncates date-stamped suffixes so "claude-opus-4-8-20260101" fits. */
 function shortenModelName(model) {
   if (!model) return '';
   const trimmed = String(model).trim();
@@ -625,7 +649,10 @@ function cmdHelp(text, source) {
 // ── Agent Switching ──
 
 async function switchAgent(name, options = {}) {
-  const { preferRestore = false } = options;
+  const {
+    preferRestore = false,
+    preferLatest = chatMode === 'standalone',
+  } = options;
   if (chatAgent) cacheHistory();
 
   try {
@@ -658,13 +685,13 @@ async function switchAgent(name, options = {}) {
     return;
   }
 
-  // Prefer resuming the most recent conversation for this agent over silently
-  // starting a fresh one. Without this, every agent switch creates an empty
-  // chatId that the user has to manually back out of.
-  const latest = Array.isArray(chatConversations) && chatConversations.length > 0
-    ? chatConversations[0]
+  // Standalone chat is a continuity surface. The dashboard tile is the human
+  // front door, so it starts clean and leaves old threads behind the history
+  // menu instead of flooding Home with yesterday's technical transcript.
+  const latest = Array.isArray(chatConversations)
+    ? chatConversations.find(isResumableConversation)
     : null;
-  if (latest && latest.id) {
+  if (preferLatest && latest && latest.id) {
     chatConversationId = latest.id;
     await loadHistory(name, latest.id);
     renderConversationList();
@@ -673,6 +700,22 @@ async function switchAgent(name, options = {}) {
     await loadHistory(name);
   }
   _syncState();
+}
+
+function isMachineConversationId(id) {
+  const value = String(id || '');
+  return value === 'cron-decisions'
+    || value.startsWith('cron-agent-')
+    || value.startsWith('diagnose_')
+    || value.startsWith('repair_')
+    || value.startsWith('verify_')
+    || value.startsWith('worker_');
+}
+
+function isResumableConversation(conversation) {
+  if (!conversation || isMachineConversationId(conversation.id)) return false;
+  if (String(conversation.id || '').startsWith('codex-')) return false;
+  return !['cron', 'diagnostic', 'machine'].includes(conversation.source);
 }
 
 // ── History ──
@@ -760,7 +803,11 @@ async function loadConversationList(agentName) {
 
 function renderConversationList() {
   const list = document.getElementById('chat-conv-list');
+  const count = document.getElementById('chat-conv-count');
   if (!list) return;
+  if (count) count.textContent = chatConversations.length
+    ? `${chatConversations.length} saved`
+    : 'History';
 
   if (chatConversations.length === 0) {
     list.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:var(--text-muted);font-style:italic;">No previous conversations</div>';
@@ -792,17 +839,24 @@ async function openConversation(convId) {
   chatConversationId = convId;
   await loadHistory(chatAgent?.agentName, convId);
   renderConversationList();
+  closeConversationList();
   scheduleChatPersist();
   _syncState();
 }
 
-function toggleConversationList() {
+function closeConversationList() {
   const panel = document.getElementById('chat-conv-panel');
-  if (panel) {
-    panel.classList.toggle('open');
-    if (panel.classList.contains('open') && chatAgent) {
-      loadConversationList(chatAgent.agentName);
-    }
+  if (!panel) return;
+  panel.classList.remove('open');
+}
+
+function toggleConversationList(forceOpen = null) {
+  const panel = document.getElementById('chat-conv-panel');
+  if (!panel) return;
+  const willOpen = forceOpen === null ? !panel.classList.contains('open') : forceOpen === true;
+  panel.classList.toggle('open', willOpen);
+  if (willOpen && chatAgent) {
+    loadConversationList(chatAgent.agentName);
   }
 }
 
@@ -1338,10 +1392,17 @@ function restoreChatState(agentName) {
       return false;
     }
 
-    chatConversationId = saved.conversationId || `dashboard-${agentName}-${Date.now()}`;
+    const restoredConversationId = saved.conversationId || `dashboard-${agentName}-${Date.now()}`;
+    if (isMachineConversationId(restoredConversationId) || String(restoredConversationId).startsWith('codex-')) {
+      return false;
+    }
 
     const messagesEl = document.getElementById('chat-messages');
     const html = saved.html || '<div class="h23-chat-empty">Start a conversation with your agent.</div>';
+    if (/h23-chat-empty/.test(html) && /Loading/.test(html)) {
+      return false;
+    }
+    chatConversationId = restoredConversationId;
     if (messagesEl) messagesEl.innerHTML = html;
 
     const input = document.getElementById('chat-input');
@@ -1384,4 +1445,16 @@ if (typeof window !== 'undefined') {
   window.stopChat = stopChat;
   window.sendMessage = sendMessage;
   window.toggleConversationList = toggleConversationList;
+
+  window.maybeAutoInitDashboardChat = function maybeAutoInitDashboardChat() {
+    if (!document.getElementById('chat-slot-tile')) return;
+    if (document.getElementById('chat-slot-standalone')) return;
+    initChat('tile');
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', window.maybeAutoInitDashboardChat, { once: true });
+  } else {
+    window.maybeAutoInitDashboardChat();
+  }
 }

@@ -69,3 +69,26 @@ test('shell tool caps stderr independently from stdout', async () => {
   assert.match(result.content, /Exit code: 2/);
   assert.ok(result.content.length < 900);
 });
+
+test('shell tool stops a running command when the turn abort signal fires', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'home23-shell-test-'));
+  const ac = new AbortController();
+  const start = Date.now();
+
+  const resultPromise = shellTool.execute(
+    {
+      command: "node -e \"setInterval(() => {}, 1000)\"",
+      cwd,
+      timeout_ms: 1000,
+    },
+    { ...testContext(cwd), abortSignal: ac.signal },
+  );
+
+  setTimeout(() => ac.abort(new Error('operator_stop')), 30);
+  const result = await resultPromise;
+  const elapsedMs = Date.now() - start;
+
+  assert.equal(result.is_error, true);
+  assert.ok(elapsedMs < 500, `expected abort before shell timeout, elapsed=${elapsedMs}ms`);
+  assert.match(result.content, /operator_stop|AbortError|SIGTERM|aborted/i);
+});

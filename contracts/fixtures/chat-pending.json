@@ -1,0 +1,14 @@
+{
+  "pending": [
+    {
+      "type": "turn",
+      "turn_id": "t_contract_123",
+      "chat_id": "ios_contract_smoke",
+      "status": "pending",
+      "role": "assistant",
+      "started_at": "2026-06-26T14:28:00Z",
+      "model": "claude-opus-4-8",
+      "provider": "anthropic"
+    }
+  ]
+}

@@ -22,6 +22,7 @@ const PM2_ENV_BLOCKLIST = [
   'COSMO_RUNTIME_DIR',
   'COSMO_WORKSPACE_PATH',
 ];
+const PM2_ENV_UNSET_ARGS = PM2_ENV_BLOCKLIST.flatMap((key) => ['-u', key]);
 
 function cleanCommandEnv(extra = {}) {
   const env = { ...process.env, ...extra };
@@ -372,7 +373,7 @@ async function repairContract(expected, plan, options = {}) {
     const action = { action: 'pm2_start', names: plan.startNames };
     actions.push(action);
     try {
-      execFileSync('pm2', ['start', expected.ecosystemPath, '--only', plan.startNames.join(','), '--update-env', '--silent'], {
+      execFileSync('env', [...PM2_ENV_UNSET_ARGS, 'pm2', 'start', expected.ecosystemPath, '--only', plan.startNames.join(','), '--update-env', '--silent'], {
         cwd: expected.root,
         env: cleanCommandEnv(),
         stdio: 'pipe',

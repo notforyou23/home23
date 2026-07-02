@@ -433,6 +433,44 @@ function defaultSeeds({ agentName, dashboardPort, bridgePort }) {
       seedOrigin: 'system',
     },
     {
+      // Canonical, correctly-framed replacement for the dynamically-promoted
+      // `${agent}_dispatch_ledger_write_path_healthy`. That dynamic verifier was
+      // misframed twice: (1) it used tsField:"timestamp" but actions.jsonl
+      // records use "ts"; (2) it demanded a 5-min heartbeat from an EVENT-DRIVEN
+      // log that only writes when an ACT: tag passes the allow-list (rare by
+      // design — last real write was a normal cognitive gap, not a fault).
+      //
+      // "Dispatch ledger write path healthy" really means: the cognitive loop is
+      // alive (so it CAN emit ACT:) AND the ledger file exists and is appendable
+      // (so a dispatch WOULD be recorded). It must NOT require a recent ACT — that
+      // would force fake writes to pass a check. thoughts_flowing is the live
+      // proxy for "loop alive"; file_exists proves the write target is present.
+      id: `${agent}_dispatch_ledger_write_path_healthy`,
+      claim: 'Dispatch write path is healthy: cognitive loop alive (can emit ACT:) and actions.jsonl ledger present/appendable',
+      verifier: {
+        type: 'composed',
+        args: {
+          op: 'all_of',
+          verifiers: [
+            { type: 'jsonl_recent_match', args: { path: thoughtsPath, tsField: 'timestamp', windowMinutes: 20, minCount: 1 } },
+            { type: 'file_exists', args: { path: `${instanceRoot}/brain/actions.jsonl` } },
+          ],
+        },
+      },
+      remediation: [
+        { type: 'dispatch_to_agent', args: { budgetHours: 2 }, cooldownMin: 30 },
+        {
+          type: 'notify_jtr',
+          args: {
+            severity: 'normal',
+            text: `${agent} dispatch write path looks unhealthy: either the cognitive loop has stalled (no thoughts in 20+ min) or actions.jsonl is missing. This is NOT about whether a recent ACT: fired — that is event-driven and expected to be sparse.`,
+          },
+          cooldownMin: 120,
+        },
+      ],
+      seedOrigin: 'system',
+    },
+    {
       id: `${agent}_operator_attention_notifications_clear`,
       claim: `${agent} has no unresolved operator-attention notifications in the last 24 hours`,
       verifier: {
@@ -552,8 +590,43 @@ function seedAll(store, opts) {
       .filter(id => id.startsWith(`${agent}_`))
       .map(id => id.slice(agent.length + 1))
   );
-  if (agent !== 'agent') {
-    for (const p of store.all()) {
+  const verifierHasActionLedgerHeartbeat = (spec) => {
+    if (!spec || !spec.type) return false;
+    if (spec.type === 'composed') {
+      const children = Array.isArray(spec.args?.verifiers) ? spec.args.verifiers : [];
+      return children.some(verifierHasActionLedgerHeartbeat);
+    }
+    const p = String(spec.args?.path || '');
+    if (!/\/brain\/actions\.jsonl$/.test(p)) return false;
+    if (spec.type === 'file_mtime') return true;
+    return spec.type === 'jsonl_recent_match' && !spec.args?.matchField;
+  };
+  const verifierHasLegacyNotificationSignalTag = (spec) => {
+    if (!spec || !spec.type) return false;
+    if (spec.type === 'composed') {
+      const children = Array.isArray(spec.args?.verifiers) ? spec.args.verifiers : [];
+      return children.some(verifierHasLegacyNotificationSignalTag);
+    }
+    const p = String(spec.args?.path || '');
+    if (!/\/brain\/signals\.jsonl$/.test(p)) return false;
+    if (spec.type !== 'jsonl_recent_match') return false;
+    if (spec.args?.matchField !== 'tag') return false;
+    return /^(NOTIFY_SUCCESS|NOTIFY_JTR_OK)$/.test(String(spec.args?.matchValue || ''));
+  };
+
+  for (const p of store.all()) {
+    const isPromotedActionLedgerHeartbeat =
+      p?.seedOrigin === 'promoter'
+      && verifierHasActionLedgerHeartbeat(p.verifier);
+    const isLegacyPromotedNotificationSignalTag =
+      p?.seedOrigin === 'promoter'
+      && verifierHasLegacyNotificationSignalTag(p.verifier);
+    if (isPromotedActionLedgerHeartbeat || isLegacyPromotedNotificationSignalTag) {
+      store.remove(p.id);
+      continue;
+    }
+
+    if (agent !== 'agent') {
       const isObsoleteGeneric =
         p?.seedOrigin === 'system'
         && (p.id === 'agent_harness_online' || p.id === 'agent_dashboard_ping')

@@ -192,6 +192,44 @@ describe('ExecutionBaseAgent', function () {
     });
   });
 
+  describe('agentic loop action enforcement', function () {
+    it('fails action-required missions when the model returns text without any tool call', async function () {
+      const agent = new TestExecutionAgent(
+        makeMission({
+          description: 'Fetch a web page and write the downloaded JSON to disk.',
+          metadata: { requiresAction: true }
+        }),
+        makeConfig({ execution: { maxIterations: 1 } }),
+        makeLogger()
+      );
+
+      agent.gpt5 = {
+        createCompletion: async () => ({
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: 'I will fetch the page and then save it.'
+              }
+            }
+          ]
+        })
+      };
+      agent.writeAuditTrail = async () => {};
+      agent.reportProgress = async () => {};
+      agent.addFinding = async () => {};
+
+      const result = await agent.runAgenticLoop(
+        'You are an execution agent. Use tools.',
+        'Fetch https://example.com and write output.json.'
+      );
+
+      expect(result.success).to.equal(false);
+      expect(result.toolCalls).to.equal(0);
+      expect(result.failureReason).to.include('tool call');
+    });
+  });
+
   // ── executeBash ───────────────────────────────────────────────────────────
 
   describe('executeBash', function () {

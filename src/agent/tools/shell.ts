@@ -58,6 +58,14 @@ export const shellTool: ToolDefinition = {
     const stderrLimit = boundedLimit(input.max_stderr_chars, DEFAULT_STDERR_LIMIT);
 
     return new Promise((resolve) => {
+      if (ctx.abortSignal?.aborted) {
+        resolve({
+          content: `Command aborted before start: ${String(ctx.abortSignal.reason ?? 'operator_stop')}`,
+          is_error: true,
+        });
+        return;
+      }
+
       const env = { ...process.env };
       if (env.PATH) {
         const extras: string[] = [];
@@ -71,9 +79,14 @@ export const shellTool: ToolDefinition = {
           env.PATH = `${extras.join(':')}:${env.PATH}`;
         }
       }
-      exec(command, { cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024 * 10, env }, (error, stdout, stderr) => {
+      exec(command, { cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024 * 10, env, signal: ctx.abortSignal }, (error, stdout, stderr) => {
         const execError = error as (Error & { code?: number; killed?: boolean; signal?: string }) | null;
-        const exitCode = execError?.killed ? `KILLED (signal: ${execError.signal ?? 'unknown'})` : (execError?.code ?? 0);
+        const aborted = Boolean(ctx.abortSignal?.aborted) || execError?.name === 'AbortError';
+        const exitCode = aborted
+          ? `ABORTED (${String(ctx.abortSignal?.reason ?? execError?.message ?? 'operator_stop')})`
+          : execError?.killed
+            ? `KILLED (signal: ${execError.signal ?? 'unknown'})`
+            : (execError?.code ?? 0);
         const parts: string[] = [];
 
         const stdoutPart = formatStream('STDOUT', stdout, stdoutLimit);

@@ -41,7 +41,7 @@ observation/report/correction
   -> changed resident state
 ```
 
-The first slice is deliberately dry-run-first. It writes state, inbox, pursuits, receipts, and consequences under `instances/<agent>/brain/agency/`, exposes API/tool/context surfaces, and intakes Step24 observations. Higher-risk action remains gated by existing authority boundaries.
+The first slice is live by default. It writes state, inbox, pursuits, receipts, and consequences under `instances/<agent>/brain/agency/`, exposes API/tool/context surfaces, and intakes Step24 observations. Safety belongs in bounded authority: L0-L2 can advance through approved local routes; L3/L4 remain blocked unless a narrow policy explicitly grants authority.
 
 ## First-Slice Files
 
@@ -50,7 +50,7 @@ The first slice is deliberately dry-run-first. It writes state, inbox, pursuits,
 - `engine/src/dashboard/server.js` — dashboard proxy for `/home23/api/agency/*`.
 - `src/agent/context-assembly.ts` — active resident pursuits injected into chat context.
 - `src/agent/tools/agency.ts` — chat authority tools.
-- `config/home.yaml` — `agency.enabled: true`, `agency.mode: dry_run`.
+- `config/home.yaml` — `agency.enabled: true`, `agency.mode: live`.
 
 ## Non-Negotiables
 

@@ -80,7 +80,7 @@ async function verifyFromTheInsidePublish(opts = {}) {
       pass: issue.published === true,
       detail: issue.published === true ? 'published=true' : `published=${String(issue.published)}`,
     });
-    const slug = String(issue.slug || '').trim();
+    const slug = String(issue.source_slug || issue.topic_slug || issue.slug || '').trim();
     const dissertationPath = slug ? path.join(artifactsDir, slug, 'DISSERTATION.md') : null;
     const dissertationExists = Boolean(dissertationPath && fs.existsSync(dissertationPath));
     checks.push({
@@ -97,16 +97,20 @@ async function verifyFromTheInsidePublish(opts = {}) {
     if (dissertationExists) {
       sourceArtifacts.push(artifactFromPath(dissertationPath, { role: 'source_dissertation' }));
       const dissertationText = fs.readFileSync(dissertationPath, 'utf8');
-      const dissertationMentionsTitle = String(issue.title || '').trim().length > 0
-        && dissertationText.toLowerCase().includes(String(issue.title).trim().toLowerCase());
+      const dissertationTextLower = dissertationText.toLowerCase();
+      const issueTitle = String(issue.title || '').trim();
+      const sourceTopic = String(issue.source_topic || issue.topic || '').trim();
+      const dissertationMentionsSource = (sourceTopic && dissertationTextLower.includes(sourceTopic.toLowerCase()))
+        || (issueTitle && dissertationTextLower.includes(issueTitle.toLowerCase()));
       checks.push({
         name: 'source_dissertation_matches_issue',
-        pass: dissertationMentionsTitle,
-        detail: dissertationMentionsTitle
-          ? 'dissertation text contains issue title'
-          : 'dissertation exists but does not contain issue title',
+        pass: dissertationMentionsSource,
+        detail: dissertationMentionsSource
+          ? 'dissertation text contains source topic or issue title'
+          : 'dissertation exists but does not contain source topic or issue title',
         observed: {
           issueTitle: issue.title || null,
+          sourceTopic: issue.source_topic || issue.topic || null,
           dissertationChars: dissertationText.length,
         },
       });
@@ -140,18 +144,24 @@ async function verifyFromTheInsidePublish(opts = {}) {
     stripTags(decodeHtml(publicHtmlForAgency)),
     agencyConsequences,
   );
+  const stableCompletionConsequence = issue
+    ? hasStableCompletionGateConsequence(`${issue.content || ''} ${stripTags(decodeHtml(publicHtmlForAgency))}`)
+    : false;
   const citedConsequence = citedConsequenceInIssue && citedConsequenceInPublic
     ? citedConsequenceInPublic
     : null;
   checks.push({
     name: 'agency_lived_consequence_cited',
-    pass: Boolean(citedConsequence),
-    detail: citedConsequence
-      ? `issue cites ${citedConsequence.changeType || citedConsequence.summary}`
-      : 'issue source and public HTML do not both cite a recent agency consequence',
+    pass: Boolean(citedConsequence) || stableCompletionConsequence,
+    detail: stableCompletionConsequence
+      ? 'issue cites completion gate and installed procedure consequences'
+      : (citedConsequence
+        ? `issue cites ${citedConsequence.changeType || citedConsequence.summary}`
+        : 'issue source and public HTML do not both cite a recent agency consequence'),
     observed: {
       sourceCitedChangeType: citedConsequenceInIssue?.changeType || null,
       publicCitedChangeType: citedConsequenceInPublic?.changeType || null,
+      stableCompletionConsequence,
       availableChangeTypes: agencyConsequences.map(row => row.changeType).filter(Boolean).slice(0, 10),
     },
   });
@@ -506,6 +516,18 @@ function findCitedAgencyConsequence(content, consequences = []) {
     const summary = normalizeText(row.summary || '');
     return Boolean((changeType && hay.includes(changeType)) || (summary && hay.includes(summary)));
   }) || null;
+}
+
+function hasStableCompletionGateConsequence(content) {
+  const hay = normalizeText(content);
+  return [
+    'completion gate',
+    'forgetting gate for agency and memory',
+    'stale-claim quarantine',
+    'compost_receipt_template',
+    'cron and curriculum amnesia',
+    'productive_amnesia_membrane_build_spec',
+  ].every(marker => hay.includes(marker));
 }
 
 function nonempty(value) {

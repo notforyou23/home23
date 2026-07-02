@@ -25,6 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { appendJsonlDurableSync } = require('../utils/durable-write.js');
 
 const SIGNALS_FILE = 'signals.jsonl';
 // Keep file bounded. Anything older than this is dropped on append.
@@ -45,7 +46,7 @@ function appendSignal(brainDir, { type, source, title, message, evidence, cycle 
     ...(typeof cycle === 'number' ? { cycle } : {}),
   };
   try {
-    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+    appendJsonlDurableSync(file, entry);
   } catch (err) {
     // Best-effort — signals are observational; losing one shouldn't break anything.
     return null;

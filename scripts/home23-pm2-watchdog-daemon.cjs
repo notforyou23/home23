@@ -105,7 +105,12 @@ function isPm2ManagedProcess() {
 }
 
 function duplicateLockMode(env = process.env) {
-  return env.pm_id !== undefined || env.NODE_APP_INSTANCE !== undefined ? 'retry' : 'exit';
+  return 'exit';
+}
+
+function watchdogDaemonDisabled(env = process.env) {
+  const value = String(env.HOME23_WATCHDOG_DAEMON_DISABLED || '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
 }
 
 function sleep(ms) {
@@ -120,10 +125,16 @@ function shouldReplaceLockHolder(lock, holderPid) {
   if (!isPm2ManagedProcess()) return false;
   if (!holderPid || holderPid === process.pid) return false;
   const command = commandForPid(holderPid);
+  return shouldReplaceLockHolderWithCommand(lock, holderPid, command, process.env);
+}
+
+function shouldReplaceLockHolderWithCommand(lock, holderPid, command, env = process.env) {
   if (!command.includes('home23-pm2-watchdog-daemon.cjs')) return false;
-  const currentPmId = String(process.env.pm_id ?? '');
+  const currentPmId = String(env.pm_id ?? '');
   const holderPmId = lock?.pmId === undefined ? '' : String(lock.pmId);
-  return !holderPmId || holderPmId === currentPmId;
+  const currentPmName = String(env.name ?? env.pm_name ?? '');
+  const holderPmName = lock?.pmName === undefined ? '' : String(lock.pmName);
+  return !holderPmId || holderPmId === currentPmId || (currentPmName && holderPmName === currentPmName);
 }
 
 function replaceLockHolder(pid) {
@@ -225,6 +236,12 @@ async function waitForDaemonLock() {
 }
 
 async function main() {
+  if (watchdogDaemonDisabled()) {
+    appendStatus({ event: 'disabled', pid: process.pid });
+    console.log('[pm2-watchdog-daemon] disabled; one-shot watchdog remains available via scripts/home23-pm2-watchdog.cjs');
+    return;
+  }
+
   const args = parseArgs(process.argv);
   const agents = args.agents.length ? args.agents : discoverAgents(ROOT);
   if (agents.length === 0) throw new Error('No Home23 agent triplets found in ecosystem.config.cjs');
@@ -285,4 +302,4 @@ if (require.main === module || process.env.NODE_APP_INSTANCE !== undefined || pr
   });
 }
 
-module.exports = { discoverAgents, parseArgs, duplicateLockMode };
+module.exports = { discoverAgents, parseArgs, duplicateLockMode, watchdogDaemonDisabled, shouldReplaceLockHolder, shouldReplaceLockHolderWithCommand };

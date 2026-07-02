@@ -1,15 +1,17 @@
 {
-  "query": "What changed recently?",
-  "answer": "Recent Home23 activity is summarized here.",
-  "metadata": {
-    "model": "gpt-5.2",
-    "mode": "full",
-    "timestamp": "2026-04-28T12:00:00Z",
-    "sources": {
-      "memoryNodes": 12,
-      "thoughts": 4,
-      "edges": 21
+  "ok": true,
+  "result": {
+    "query": "What changed recently?",
+    "answer": "Recent Home23 activity is summarized here.",
+    "metadata": {
+      "model": "gpt-5.5",
+      "mode": "dive",
+      "timestamp": "2026-06-26T14:28:00Z",
+      "sources": {
+        "memoryNodes": 12,
+        "thoughts": 4,
+        "edges": 21
+      }
     }
-  },
-  "actionExecuted": false
+  }
 }

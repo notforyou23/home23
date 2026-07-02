@@ -598,11 +598,16 @@ class DiscoveryEngine {
     if (!novelty.accept) {
       this.stats.candidatesByeSignal['observation-suppressed'] =
         (this.stats.candidatesByeSignal['observation-suppressed'] || 0) + 1;
-      this.logger.debug?.('[discovery] suppressed repeated observation delta', {
-        channelId: obs.channelId,
-        bucket: novelty.bucket,
-        reason: novelty.reason,
-      });
+      // Batched logging: only log every 50th suppression to avoid spam
+      const suppressed = this.stats.candidatesByeSignal['observation-suppressed'];
+      if (suppressed % 50 === 0) {
+        this.logger.debug?.('[discovery] suppressed observation batch', {
+          totalSuppressed: suppressed,
+          lastChannelId: obs.channelId,
+          lastBucket: novelty.bucket,
+          lastReason: novelty.reason,
+        });
+      }
       return false;
     }
 

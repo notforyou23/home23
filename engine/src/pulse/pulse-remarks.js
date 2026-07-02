@@ -16,8 +16,11 @@
  *      nothing is opaque — the tile shows the remark, the detail
  *      overlay shows the brief the LLM saw
  *
- * Cadence: every 3 min minimum, escalates if "notable" events
- * accumulate. 60s floor between remarks so it can't spiral.
+ * Cadence: every 5 min. This is the house-voice heartbeat for the
+ * dashboard: Jerry should say what the place feels like, what might be
+ * coming up, what needs attention, or a small useful oddity. It still stays
+ * grounded in verified state; it just doesn't disappear for half an hour
+ * because nothing broke.
  */
 
 const fs = require('fs');
@@ -64,9 +67,9 @@ function buildDefaultSystemPrompt({ agentLabel = 'the agent', ownerName = 'jtr' 
 
 You're talking to ${ownerName}. ${ownerName} runs you. Talk directly, one to one.
 
-Be direct, calm, and low-drama by default. Turn it up only when something materially changed. Sound like a living operator, not a therapist, coach, or hype man. You're not performing intimacy and you're not filling silence.
+Be cool, direct, laid back, and whimsical. You can be loud when something matters. You can be weird, dry, funny, or profane when it fits. Sound like Jerry living in the house, not a therapist, coach, SaaS assistant, or text-reporting machine.
 
-Stay grounded in current verified state. If everything is boring, say it's quiet and stop. If something changed, say what changed and why it matters. Brief color is fine; drift is not.
+Stay grounded in current verified state. If everything is boring, say it's quiet, but still say it like you have a pulse. If something changed, say what changed and why it matters. Brief color is fine; drift is not.
 
 Do not turn background owner context into advice or commentary unless the current verified brief actually supports that domain. No unsolicited body, recovery, or life coaching unless that domain is explicitly present in the current brief.
 
@@ -74,12 +77,13 @@ GROUND TRUTH ONLY: The brief contains a LIVE PROBLEMS block that is the single s
 
 STATUS CHANGES ONLY: If a live problem is still OPEN and you already mentioned it recently, stay silent on it — ${ownerName} knows, and repeating it is the exact failure mode you are designed to avoid. Only speak about an open problem on state change: newly opened, newly chronic, newly escalated, newly resolved. RESOLVED-just-now is worth one short acknowledgment.
 
+Every five minutes, leave one small house note: the state of things, what may be coming up, what might need doing, a quirky insight, a follow-up from a thread that still has heat, a joke, or a short quote-like line if it actually fits the brief.
+
 2-3 sentences. No preamble. No "I noticed that" or "It appears." Just talk.`;
 }
 
-const DEFAULT_INTERVAL_MS = 3 * 60 * 1000; // 3 min baseline cadence
+const DEFAULT_INTERVAL_MS = 5 * 60 * 1000; // five-minute house voice cadence
 const MIN_GAP_MS = 60 * 1000;              // floor between remarks
-const QUIET_INTERVAL_MS = 30 * 60 * 1000;  // if nothing verified changed, stay quiet longer
 const NOVELTY_WINDOW = 30;                 // cycles for thought novelty dedup
 const REMARKED_TTL_MS = 30 * 60 * 1000;    // 30 min: don't re-remark on same hash within this window
 const RECENT_BRIEF_DEPTH = 3;              // drop notable events seen in last N briefs (regardless of remark)
@@ -344,21 +348,7 @@ class PulseRemarks {
       const snapshot = this.gather();
       const brief = this.synthesize(snapshot);
       const now = Date.now();
-      const sinceLast = now - this.lastRemarkAt;
-
-      // Decide whether to fire the LLM this tick
-      const timeReady = sinceLast >= DEFAULT_INTERVAL_MS;
-      const tooSoon = sinceLast < MIN_GAP_MS;
-      const quietDue = sinceLast >= QUIET_INTERVAL_MS;
-
-      let shouldFire = false;
-      if (!tooSoon) {
-        if (brief.groundedSignalCount > 0 && timeReady) {
-          shouldFire = true;
-        } else if (brief.mode === 'quiet' && quietDue) {
-          shouldFire = true;
-        }
-      }
+      const shouldFire = this.shouldGenerateRemark(brief, now);
 
       if (shouldFire) {
         const remark = await this.generateRemark(brief);
@@ -368,14 +358,21 @@ class PulseRemarks {
         }
       }
 
-      // Reschedule. If we just fired, wait a full interval. If not, check again
-      // in 45s — gives us quick reaction to new notable events.
-      const nextDelay = shouldFire ? DEFAULT_INTERVAL_MS : 45 * 1000;
-      this.schedule(nextDelay);
+      this.schedule(this.nextDelayAfterTick(shouldFire));
     } catch (err) {
       this.logger?.warn?.('[pulse] tick failed', { error: err.message });
       this.schedule(60 * 1000);
     }
+  }
+
+  shouldGenerateRemark(_brief, now = Date.now()) {
+    const sinceLast = now - this.lastRemarkAt;
+    if (sinceLast < MIN_GAP_MS) return false;
+    return sinceLast >= DEFAULT_INTERVAL_MS;
+  }
+
+  nextDelayAfterTick(didFire) {
+    return didFire ? DEFAULT_INTERVAL_MS : 45 * 1000;
   }
 
   // ── Stage 1: Gather ─────────────────────────────────────────────
@@ -912,6 +909,7 @@ class PulseRemarks {
 
     parts.push('');
     parts.push('Now: one remark to jtr. Your voice. Be real.');
+    parts.push('This is the every five minutes house note. Choose one: state of things, what is coming up, what might need doing, a quirky insight, a follow-up with heat, a joke, or a quote-like line that fits the verified brief.');
     parts.push('HARD RULES — ground truth only:');
     parts.push('  1. You can only make specific state claims — "X is broken", "Y isn\'t built", "Z hasn\'t happened", "A is overdue", "B is decaying", "C is stale" — if that specific claim is in the LIVE PROBLEMS block (for issues) or the SIGNALS block (for wins/observations). Sensor readings and brain stats are also ground truth.');
     parts.push('  2. Notable items are current triggers, not licenses to free-associate. Do not turn them into coaching, autobiography, or speculative owner analysis unless the current verified brief explicitly supports that domain.');

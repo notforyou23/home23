@@ -1,122 +1,93 @@
-# Action Allow-List — Autonomous Agent Actions
-#
-# Governs what actions the cognitive loop is permitted to execute on its own
-# when a thought emits an ACT: tag. Anything not listed here is auto-rejected
-# and logged to requested-actions.jsonl for the user to review.
-#
-# Curated by the user. The agent can REQUEST new actions (writes to
-# requested-actions.jsonl) but cannot add itself.
-#
-# Each action has:
-#   enabled      — true/false. false = rejected on dispatch (no side effect).
-#   dry_run      — true = log intent + simulated outcome, skip handler side
-#                  effects. Useful for new/untested actions.
-#   max_per_hour — sliding-window rate limit. Hitting it rejects with
-#                  status=rate_limit. Generous defaults; tune per need.
-#   handler      — name of module under engine/src/cognition/actions/.
-#   notes        — free-text description for the user.
-#
-# Changes hot-apply on next dispatch (re-reads yaml). No restart needed.
-
 actions:
-
-  # ── Sensors / external data refreshes (low risk, idempotent) ──
-
   run_shortcut:
     enabled: true
     dry_run: false
     max_per_hour: 60
     handler: run-shortcut
-    notes: "Invoke an iOS Shortcut via the shortcut-bridge HTTP endpoint. Targets are the shortcut name. Requires bridge URL configured in engine yaml under integrations.shortcut_bridge. Idempotent refreshes."
-    allowed_targets: [Health, Weather, Pressure, Sauna]
-
+    notes: >-
+      Invoke an iOS Shortcut via the shortcut-bridge HTTP endpoint. Targets are the shortcut name. Requires bridge URL
+      configured in engine yaml under integrations.shortcut_bridge. Idempotent refreshes.
+    allowed_targets:
+      - Health
+      - Weather
+      - Pressure
+      - Sauna
   refresh_sensor:
     enabled: true
     dry_run: false
     max_per_hour: 120
     handler: refresh-sensor
-    notes: "Force-poll a Home23-owned sensor source: weather, sauna, pressure (pi-sensor). No external side effects."
-    allowed_targets: [weather, sauna, pressure]
-
+    notes: 'Force-poll a Home23-owned sensor source: weather, sauna, pressure (pi-sensor). No external side effects.'
+    allowed_targets:
+      - weather
+      - sauna
+      - pressure
   launch_research:
     enabled: true
     dry_run: false
     max_per_hour: 4
     handler: launch-research
-    notes: "Start a COSMO 2.3 research run. Target is the topic. Costs real time + tokens, kept rate-limited."
-
-  # ── Memory / knowledge (contained to the agent's own state) ──
-
+    notes: Start a COSMO 2.3 research run. Target is the topic. Costs real time + tokens, kept rate-limited.
   promote_to_memory:
     enabled: true
     dry_run: false
     max_per_hour: 120
     handler: promote-to-memory
-    notes: "Create a durable MemoryObject from a cycle insight. Writes to the brain. Reversible via memory audit."
-
+    notes: Create a durable MemoryObject from a cycle insight. Writes to the brain. Reversible via memory audit.
   prune_stale_cluster:
     enabled: true
     dry_run: false
     max_per_hour: 20
     handler: prune-stale-cluster
-    notes: "Mark a cluster's low-activation nodes as stale (flag only — does NOT delete). User can review and purge later."
-
+    notes: Mark a cluster's low-activation nodes as stale (flag only — does NOT delete). User can review and purge later.
   compile_research_section:
     enabled: true
     dry_run: false
     max_per_hour: 12
     handler: compile-research-section
-    notes: "Save one specific COSMO research goal/insight as a focused memory node. Requires brainId + section."
-
-  # ── Surfaces / notes (path-confined writes) ──
-
+    notes: Save one specific COSMO research goal/insight as a focused memory node. Requires brainId + section.
   update_surface:
     enabled: true
     dry_run: false
     max_per_hour: 20
     handler: update-surface
-    notes: "Rewrite a domain surface file. Target must be one of the allowed surfaces. Already what curator role does manually — exposing as an explicit agent action."
-    allowed_targets: [TOPOLOGY, PROJECTS, PERSONAL, DOCTRINE, RECENT]
-
+    notes: >-
+      Rewrite a domain surface file. Target must be one of the allowed surfaces. Already what curator role does manually
+      — exposing as an explicit agent action.
+    allowed_targets:
+      - TOPOLOGY
+      - PROJECTS
+      - PERSONAL
+      - DOCTRINE
+      - RECENT
   write_note:
     enabled: true
     dry_run: false
     max_per_hour: 40
     handler: write-note
-    notes: "Write a markdown note to instances/<agent>/workspace/notes/<name>.md. Path-confined; cannot escape notes/."
-
-  # ── Goals / self-management ──
-
+    notes: Write a markdown note to instances/<agent>/workspace/notes/<name>.md. Path-confined; cannot escape notes/.
   create_goal:
     enabled: true
     dry_run: false
     max_per_hour: 12
     handler: create-goal
-    notes: "Add an intrinsic goal the agent will pursue on its own. Target is the goal description."
-
+    notes: Add an intrinsic goal the agent will pursue on its own. Target is the goal description.
   break_goal:
     enabled: true
     dry_run: false
     max_per_hour: 20
     handler: break-goal
-    notes: "Retire an active goal (marks as broken with reason). Target is the goal id."
-
+    notes: Retire an active goal (marks as broken with reason). Target is the goal id.
   ack_notification:
     enabled: true
     dry_run: false
     max_per_hour: 60
     handler: ack-notification
-    notes: "Self-clear a queued notification the agent no longer considers actionable. Target is the notification id."
-
-# ── Global rate limit: catches runaway bugs even if an individual action
-#    doesn't. If total executed actions in any hour exceed this, the
-#    dispatcher rejects all new actions until the window clears.
+    notes: Self-clear a queued notification the agent no longer considers actionable. Target is the notification id.
 global:
   max_per_hour: 500
   enabled: true
-
-# ── Integrations (bridge URLs etc. that handlers need) ──
 integrations:
   shortcut_bridge:
-    url: ""          # e.g. "http://localhost:9876/shortcut"
-    enabled: false   # flip true + set url when the bridge exists
+    url: ''
+    enabled: false

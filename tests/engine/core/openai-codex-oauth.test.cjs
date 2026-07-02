@@ -63,3 +63,59 @@ test('openai-codex rejects API-key shaped values in the OAuth slot', () => {
     process.env = oldEnv;
   }
 });
+
+test('openai-codex moves system and developer messages into instructions', async () => {
+  const oldEnv = { ...process.env };
+  const oldFetch = global.fetch;
+  let captured = null;
+
+  try {
+    process.env.OPENAI_CODEX_AUTH_TOKEN = futureJwt();
+    global.fetch = async (url, options = {}) => {
+      captured = {
+        url,
+        body: JSON.parse(options.body),
+      };
+      return {
+        ok: true,
+        body: {
+          getReader() {
+            const chunks = [
+              Buffer.from('data: {"type":"response.output_text.delta","delta":"ok"}\n\n'),
+              Buffer.from('data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}\n\n'),
+            ];
+            let index = 0;
+            return {
+              async read() {
+                if (index >= chunks.length) return { done: true };
+                return { done: false, value: chunks[index++] };
+              },
+            };
+          },
+        },
+      };
+    };
+
+    const { OpenAICodexClient } = loadFresh();
+    const client = new OpenAICodexClient({}, { info() {} });
+
+    await client.generate({
+      model: 'gpt-5.5',
+      instructions: 'Base instruction.',
+      messages: [
+        { role: 'system', content: 'System instruction.' },
+        { role: 'developer', content: 'Developer instruction.' },
+        { role: 'user', content: 'Hello.' },
+      ],
+    });
+
+    assert.equal(captured.url, 'https://chatgpt.com/backend-api/codex/responses');
+    assert.match(captured.body.instructions, /Base instruction/);
+    assert.match(captured.body.instructions, /System instruction/);
+    assert.match(captured.body.instructions, /Developer instruction/);
+    assert.deepEqual(captured.body.input.map(item => item.role), ['user']);
+  } finally {
+    process.env = oldEnv;
+    global.fetch = oldFetch;
+  }
+});

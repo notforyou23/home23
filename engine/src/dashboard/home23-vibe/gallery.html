@@ -145,6 +145,20 @@
       letter-spacing: 0.08em;
     }
 
+    .h23-vg-source {
+      display: inline-flex;
+      width: fit-content;
+      margin-bottom: 8px;
+      padding: 3px 7px;
+      border-radius: 6px;
+      background: rgba(90, 200, 250, 0.12);
+      color: rgba(150, 226, 255, 0.86);
+      font-size: 0.7rem;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
     .h23-vg-empty {
       padding: 60px 24px;
       text-align: center;
@@ -193,6 +207,8 @@
 
     .h23-vg-lightbox img {
       width: 100%;
+      max-height: calc(92vh - 96px);
+      object-fit: contain;
       border-radius: 14px;
       background: rgba(0, 0, 0, 0.3);
     }
@@ -219,8 +235,18 @@
       margin-bottom: 12px;
     }
 
-    @media (max-width: 900px) {
+    @media (max-width: 720px) {
       .h23-vg-lightbox-top {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .h23-vg-shell {
+        padding: 16px;
+      }
+
+      .h23-vg-grid {
         grid-template-columns: 1fr;
       }
     }
@@ -232,7 +258,7 @@
     <div class="h23-vg-header">
       <div class="h23-vg-title">
         <h1>Vibe Gallery</h1>
-        <p>CHAOS MODE image history for the current Home23 agent.</p>
+        <p>CHAOS MODE image history across generated images and configured source folders.</p>
       </div>
       <div class="h23-vg-actions">
         <a class="h23-vg-btn" href="/home23">&larr; Dashboard</a>
@@ -308,13 +334,31 @@
       }
     }
 
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function sourceLabel(item) {
+      return item.source === 'external' ? 'Source image' : `${item.agentName || 'Home23'} generated`;
+    }
+
     function openLightbox(item) {
       lightboxImage.src = item.url;
-      lightboxCaption.textContent = item.caption || '';
-      lightboxSeed.textContent = item.algorithm ? `Algorithm: ${item.algorithm}` : '';
-      lightboxPrompt.textContent = item.prompt ? `Prompt: ${item.prompt}` : '';
-      lightboxMeta.textContent = [formatDate(item.generatedAt), item.model].filter(Boolean).join(' · ');
+      lightboxCaption.textContent = item.caption || item.title || 'Vibe image';
+      lightboxSeed.textContent = [sourceLabel(item), item.algorithm ? `Algorithm: ${item.algorithm}` : ''].filter(Boolean).join(' · ');
+      lightboxPrompt.textContent = item.prompt ? `Prompt: ${item.prompt}` : 'No prompt metadata recorded for this image.';
+      lightboxMeta.textContent = [formatDate(item.generatedAt), item.model, item.sourceRoot].filter(Boolean).join(' · ');
       lightbox.classList.add('open');
+      if (item.id) {
+        const url = new URL(window.location.href);
+        url.searchParams.set('image', item.id);
+        window.history.replaceState(null, '', url);
+      }
     }
 
     function closeLightbox() {
@@ -329,7 +373,8 @@
 
     async function loadGallery() {
       try {
-        const res = await fetch('/home23/api/vibe/gallery', { signal: AbortSignal.timeout(10000) });
+        const selectedId = new URLSearchParams(window.location.search).get('image');
+        const res = await fetch('/home23/api/vibe/gallery?limit=all', { signal: AbortSignal.timeout(10000) });
         const data = await res.json();
         const rotation = data.policy?.rotationIntervalSeconds
           ? `rotates every ${data.policy.rotationIntervalSeconds}s`
@@ -338,7 +383,9 @@
           ? `auto-generates at most every ${describeHours(data.policy.generationIntervalHours)}`
           : '';
         metaBar.textContent = [
-          `${data.total} image${data.total === 1 ? '' : 's'} stored`,
+          `${data.total} image${data.total === 1 ? '' : 's'} available`,
+          `${data.storedTotal || 0} generated`,
+          `${data.externalTotal || 0} source`,
           rotation,
           cadence,
           data.generating ? 'generation in progress' : ''
@@ -350,11 +397,12 @@
         }
 
         grid.innerHTML = data.images.map((item, index) => {
-          const caption = item.caption || '';
+          const caption = escapeHtml(item.caption || item.prompt || '');
           return `
           <article class="h23-vg-card" data-index="${index}">
             <img src="${item.url}" alt="Vibe image ${index + 1}" loading="lazy">
             <div class="h23-vg-card-body">
+              <div class="h23-vg-source">${escapeHtml(sourceLabel(item))}</div>
               <div class="h23-vg-caption">${caption}</div>
               <div class="h23-vg-date">${formatDate(item.generatedAt)}</div>
             </div>
@@ -367,6 +415,11 @@
             if (item) openLightbox(item);
           });
         });
+
+        if (selectedId) {
+          const selected = data.images.find((item) => item.id === selectedId || item.sourceId === selectedId);
+          if (selected) openLightbox(selected);
+        }
       } catch (error) {
         grid.innerHTML = `<div class="h23-vg-empty">Failed to load gallery: ${error.message}</div>`;
       }

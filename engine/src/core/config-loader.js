@@ -129,7 +129,7 @@ class ConfigLoader {
    *   modelAssignments:
    *     quantumReasoner.branches:
    *       provider: minimax
-   *       model: MiniMax-M2.7-highspeed
+   *       model: MiniMax-M3
    *       fallback:
    *         - provider: ollama-cloud
    *           model: nemotron-3-nano:30b

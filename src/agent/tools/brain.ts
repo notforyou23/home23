@@ -71,7 +71,7 @@ export const brainSearchTool: ToolDefinition = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, topK: limit, minSimilarity: 0.15, tag: tag || null }),
-        signal: AbortSignal.timeout(120_000),
+        signal: AbortSignal.timeout(180_000),
       });
 
       if (!res.ok) return { content: `Brain search failed: HTTP ${res.status}`, is_error: true };

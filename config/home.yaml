@@ -13,9 +13,9 @@ cosmo23:
 dashboard:
   vibe:
     autoGenerate: true
-    generationIntervalHours: 2
+    generationIntervalHours: 1
     rotationIntervalSeconds: 120
-    galleryLimit: 1600
+    galleryLimit: 2600
     sourcePaths:
       - /Volumes/Casey Jones/_cosmoImages/images
     dreams:
@@ -25,16 +25,13 @@ dashboard:
   tiles:
     version: 1
     homeLayout:
-      - tileId: thought-feed
+      - tileId: outside-weather
         enabled: true
         size: third
       - tileId: vibe
         enabled: true
         size: third
       - tileId: chat
-        enabled: true
-        size: third
-      - tileId: outside-weather
         enabled: true
         size: third
       - tileId: sauna-control
@@ -48,7 +45,7 @@ dashboard:
         size: third
       - tileId: system-summary
         enabled: true
-        size: third
+        size: half
       - tileId: good-life
         enabled: true
         size: third
@@ -200,6 +197,7 @@ providers:
       - gpt-oss:20b
       - kimi-k2.6
       - gemma4:31b
+      - glm-5.2:cloud
       - glm-5.1
       - qwen3.5:397b
       - qwen3-coder:480b
@@ -210,17 +208,13 @@ providers:
       - deepseek-v4-flash
       - nemotron-3-super
       - nemotron-3-nano:30b
-      - minimax-m2.7
-      - minimax-m2.5
-      - minimax-m2.1
-      - minimax-m2
       - cogito-2.1:671b
   ollama-local:
     baseUrl: http://127.0.0.1:11434
   anthropic:
     defaultModels:
       - claude-sonnet-4-7
-      - claude-opus-4-7
+      - claude-opus-4-8
       - claude-haiku-4-5
   openai:
     defaultModels:
@@ -240,8 +234,7 @@ providers:
   minimax:
     baseUrl: https://api.minimax.io/anthropic
     defaultModels:
-      - MiniMax-M2.7
-      - MiniMax-M2.7-highspeed
+      - MiniMax-M3
   xai:
     baseUrl: https://api.x.ai/v1
     defaultModels:
@@ -354,13 +347,13 @@ osEngine:
       dashboard: 15m
 agency:
   enabled: true
-  mode: dry_run
+  mode: live
   charterPath: agency/charter.yaml
   residentTickMs: 60000
 media:
   imageGeneration:
-    provider: minimax
-    model: image-01
+    provider: openai
+    model: gpt-image-2
 models:
   aliases:
     sonnet:
@@ -368,7 +361,7 @@ models:
       model: claude-sonnet-4-7
     opus:
       provider: anthropic
-      model: claude-opus-4-7
+      model: claude-opus-4-8
     haiku:
       provider: anthropic
       model: claude-haiku-4-5
@@ -413,7 +406,7 @@ models:
       model: deepseek-v4-flash
     minimax:
       provider: minimax
-      model: MiniMax-M2.7
+      model: MiniMax-M3
     nemotron:
       provider: ollama-cloud
       model: nemotron-3-super
@@ -434,10 +427,13 @@ models:
       model: gemma4:31b
     glm:
       provider: ollama-cloud
-      model: glm-5.1
+      model: glm-5.2:cloud
     glm5:
       provider: ollama-cloud
-      model: glm-5.1
+      model: glm-5.2:cloud
+    glm52:
+      provider: ollama-cloud
+      model: glm-5.2:cloud
     codex:
       provider: openai-codex
       model: gpt-5.5
@@ -447,9 +443,9 @@ skills:
       quick: true
       saveMarkdown: true
 query:
-  defaultModel: claude-opus-4-7
+  defaultModel: claude-opus-4-8
   defaultMode: full
   enablePGSByDefault: false
-  pgsSweepModel: MiniMax-M2.7
-  pgsSynthModel: claude-opus-4-7
+  pgsSweepModel: MiniMax-M3
+  pgsSynthModel: claude-opus-4-8
   pgsDepth: 0.25

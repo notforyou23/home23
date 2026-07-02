@@ -79,6 +79,47 @@ function writeFileDurableSync(filePath, content, options = 'utf8') {
   }
 }
 
+function appendJsonlDurableSync(filePath, obj) {
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true });
+  const line = `${JSON.stringify(obj)}\n`;
+  const bytes = Buffer.byteLength(line, 'utf8');
+  let fd = null;
+  try {
+    fd = fs.openSync(filePath, 'a+');
+    fs.writeSync(fd, line, null, 'utf8');
+    fs.fsyncSync(fd);
+    fs.closeSync(fd);
+    fd = null;
+
+    const stat = fs.statSync(filePath);
+    const readLength = Math.min(stat.size, bytes);
+    const verifyFd = fs.openSync(filePath, 'r');
+    try {
+      const buffer = Buffer.alloc(readLength);
+      fs.readSync(verifyFd, buffer, 0, readLength, stat.size - readLength);
+      if (buffer.toString('utf8') !== line) {
+        throw new Error(`durable JSONL append verification failed for ${filePath}`);
+      }
+    } finally {
+      fs.closeSync(verifyFd);
+    }
+
+    return {
+      path: filePath,
+      bytesWritten: bytes,
+      size: stat.size,
+      fileSynced: true,
+      verified: true,
+    };
+  } catch (err) {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+    throw err;
+  }
+}
+
 async function writeFileDurable(filePath, content, options = 'utf8') {
   const dir = path.dirname(filePath);
   await fsp.mkdir(dir, { recursive: true });
@@ -105,6 +146,7 @@ async function writeFileDurable(filePath, content, options = 'utf8') {
 }
 
 module.exports = {
+  appendJsonlDurableSync,
   writeFileDurable,
   writeFileDurableSync,
 };

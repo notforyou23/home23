@@ -29,7 +29,7 @@ export class EngineEventListener {
   private stopped = false;
 
   constructor(engineWsPort: number, reconnectMs = 5000) {
-    this.url = `ws://localhost:${engineWsPort}`;
+    this.url = `ws://127.0.0.1:${engineWsPort}`;
     this.reconnectMs = reconnectMs;
   }
 

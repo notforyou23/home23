@@ -43,6 +43,96 @@ function writeFileDurable(filePath, content) {
   } catch { /* directory fsync is best-effort on some filesystems */ }
 }
 
+function readJsonSafe(filePath, fallback = null) {
+  try {
+    if (!fs.existsSync(filePath)) return fallback;
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function collectVerifiedDigestFacts({ workspacePath, brainDir, agentName }) {
+  const facts = [];
+  const flags = {};
+
+  if (brainDir) {
+    const liveProblems = readJsonSafe(path.join(brainDir, 'live-problems.json'), { problems: [] });
+    const problems = Array.isArray(liveProblems?.problems) ? liveProblems.problems : [];
+    if (problems.length > 0) {
+      const active = problems.filter(p => p?.state === 'open' || p?.state === 'chronic');
+      flags.activeLiveProblemCount = active.length;
+      facts.push(`live-problems active: ${active.length}${active.length ? ` (${active.map(p => p.id).join(', ')})` : ''}`);
+    }
+  }
+
+  if (agentName === 'forrest' && workspacePath) {
+    const ledgerPath = path.join(workspacePath, 'health_jtr', 'ledgers', 'subjective_state.jsonl');
+    const healthApiPath = path.join(workspacePath, 'scripts', 'health-api.py');
+    const homeRoot = path.resolve(workspacePath, '..', '..', '..');
+    const durableWritePath = path.join(homeRoot, 'engine', 'src', 'utils', 'durable-write.js');
+
+    let ledger = '';
+    try { ledger = fs.existsSync(ledgerPath) ? fs.readFileSync(ledgerPath, 'utf8') : ''; } catch { ledger = ''; }
+    const hasJune3Run = /2026-06-03[\s\S]{0,500}First run back after 37 days off/.test(ledger);
+    const hasJune3Correction = /2026-06-03[\s\S]{0,800}(CORRECTION|RESOLVED|resolved)/i.test(ledger);
+
+    let healthApi = '';
+    let durableWrite = '';
+    try { healthApi = fs.existsSync(healthApiPath) ? fs.readFileSync(healthApiPath, 'utf8') : ''; } catch { healthApi = ''; }
+    try { durableWrite = fs.existsSync(durableWritePath) ? fs.readFileSync(durableWritePath, 'utf8') : ''; } catch { durableWrite = ''; }
+    const hasDurableFeelPath =
+      /append_jsonl_durable/.test(healthApi)
+      && /durability/.test(healthApi)
+      && /appendJsonlDurableSync/.test(durableWrite);
+
+    if (hasJune3Run && hasJune3Correction) {
+      flags.june3SubjectiveDataPresent = true;
+      facts.push('June 3 subjective data present in subjective_state.jsonl (run row plus resolved/deadness correction row)');
+    }
+    if (hasJune3Run && hasJune3Correction && hasDurableFeelPath) {
+      flags.forrestFeelRouteCorrected = true;
+      facts.push('Forrest /api/feel write-path correction is current: subjective data was not lost, and durable fsync/read-back code is present');
+    }
+  }
+
+  return { facts, flags };
+}
+
+function appendStateChangeFact(digest, fact) {
+  const line = `- Verified current state: ${fact}`;
+  if (digest.includes(fact)) return digest;
+  const marker = '**State changes**';
+  const markerIdx = digest.indexOf(marker);
+  if (markerIdx >= 0) {
+    const before = digest.slice(0, markerIdx + marker.length);
+    const after = digest.slice(markerIdx + marker.length).replace(/^\s*/, '\n');
+    return `${before}\n${line}${after}`;
+  }
+  return `${digest.trim()}\n\n**State changes**\n${line}`;
+}
+
+function applyVerifiedDigestFacts(digest, verified) {
+  let out = String(digest || '');
+  if (verified?.flags?.forrestFeelRouteCorrected) {
+    out = out
+      .split('\n')
+      .filter(line => {
+        const isBullet = /^\s*[-*]\s+/.test(line);
+        const mentionsFeel = /\/api\/feel/i.test(line);
+        const staleClaim = /(unwired|wire\b|blocker|gates?|critical|only living|endpoint)/i.test(line);
+        const repairClaim = /(repaired|durable|verified|present|not lost|corrected|current)/i.test(line);
+        return !(isBullet && mentionsFeel && staleClaim && !repairClaim);
+      })
+      .join('\n');
+  }
+
+  for (const fact of verified?.facts || []) {
+    out = appendStateChangeFact(out, fact);
+  }
+  return out;
+}
+
 // Match a single appended entry block. Format produced by orchestrator.js:2650
 //   ### {title}
 //   {statement}
@@ -80,7 +170,7 @@ function _dropOldEntries(content, daysOldThreshold) {
 async function compactSurface({
   surfacePath,
   budget,
-  model = 'MiniMax-M2.7',
+  model = 'MiniMax-M3',
   client = null,
   config = null,
   logger = null,
@@ -169,7 +259,7 @@ async function generateRecentDigest({
   brainDir,
   journal = [],
   agentName = 'agent',
-  model = 'MiniMax-M2.7',
+  model = 'MiniMax-M3',
   client = null,
   config = null,
   logger = null,
@@ -228,9 +318,18 @@ async function generateRecentDigest({
   ).join('\n').slice(-5000);
 
   const nowIso = new Date().toISOString();
+  const verified = collectVerifiedDigestFacts({ workspacePath, brainDir, agentName });
+  const verifiedLines = verified.facts.length
+    ? verified.facts.map(f => `- ${f}`).join('\n')
+    : '- no verified current-state facts available';
   const prompt = `You write a tight 24-48 hour activity digest for an AI agent's situational awareness.
 
 The agent is ${agentName}. Now: ${nowIso}.
+
+Current verified state (authoritative; these facts override older events, thoughts, memory, and prior RECENT.md text):
+---
+${verifiedLines}
+---
 
 Recent events from the ledger (last ${windowHours}h, oldest first):
 ---
@@ -244,9 +343,10 @@ ${thoughtLines || '(no thoughts in window)'}
 
 Write a markdown digest with these three sections, in this order:
 - **Last 24h** — what actually happened (bulleted, terse, factual)
-- **Open threads** — work in progress or unresolved questions
+- **Open threads** — work in progress or unresolved questions; do not list a thread if it is contradicted by Current verified state
 - **State changes** — anything now different from yesterday
 
+If Current verified state says live-problems active: 0, do not infer operational blockers from old thoughts alone.
 Hard cap: ${maxBytes} characters total. No headers beyond the three above. No motivational filler. State facts only.`;
 
   const llm = client || new UnifiedClient(config, logger);
@@ -265,6 +365,7 @@ Hard cap: ${maxBytes} characters total. No headers beyond the three above. No mo
   }
 
   if (!digest) return { skipped: 'empty' };
+  digest = applyVerifiedDigestFacts(digest, verified);
 
   const header = `# Recent Activity\n\n_Generated: ${nowIso} — covers last ${windowHours}h_\n\n`;
   writeFileDurable(recentPath, header + digest + '\n');

@@ -529,7 +529,7 @@ function createSettingsRouter(home23Root) {
           'anthropic-version': '2023-06-01',
         },
         body: JSON.stringify({
-          model: 'MiniMax-M2.7',
+          model: 'MiniMax-M3',
           max_tokens: 1,
           messages: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
         }),
@@ -704,7 +704,7 @@ function createSettingsRouter(home23Root) {
         maxSubAgents: 3,
       },
       ports,
-      engine: { thought: model || 'minimax-m2.7', consolidation: model || 'minimax-m2.7', dreaming: model || 'minimax-m2.7', query: model || 'minimax-m2.7' },
+      engine: { thought: model || 'MiniMax-M3', consolidation: model || 'MiniMax-M3', dreaming: model || 'MiniMax-M3', query: model || 'MiniMax-M3' },
       channels: {
         telegram: botToken
           ? { enabled: true, streaming: 'partial', dmPolicy: 'open', groupPolicy: 'restricted', groups: {}, ackReaction: true }
@@ -1155,13 +1155,17 @@ function createSettingsRouter(home23Root) {
     const targetAgent = resolveRequestedAgent(req.query.agent);
     const agentConfig = loadAgentConfig(targetAgent);
     const q = agentConfig.query || homeConfig.query || {};
+    const agentChat = agentConfig.chat || homeConfig.chat || {};
     res.json({
       agent: targetAgent,
       defaultModel: q.defaultModel || '',
+      defaultProvider: q.defaultProvider || q.provider || agentChat.defaultProvider || agentChat.provider || '',
       defaultMode: q.defaultMode || 'full',
       enablePGSByDefault: !!q.enablePGSByDefault,
       pgsSweepModel: q.pgsSweepModel || '',
+      pgsSweepProvider: q.pgsSweepProvider || '',
       pgsSynthModel: q.pgsSynthModel || '',
+      pgsSynthProvider: q.pgsSynthProvider || q.defaultProvider || q.provider || agentChat.defaultProvider || agentChat.provider || '',
       pgsDepth: typeof q.pgsDepth === 'number' ? q.pgsDepth : 0.25,
     });
   });
@@ -1177,10 +1181,13 @@ function createSettingsRouter(home23Root) {
       if (!agentConfig.query) agentConfig.query = {};
       const b = req.body || {};
       if (typeof b.defaultModel === 'string') agentConfig.query.defaultModel = b.defaultModel;
+      if (typeof b.defaultProvider === 'string') agentConfig.query.defaultProvider = b.defaultProvider;
       if (typeof b.defaultMode === 'string') agentConfig.query.defaultMode = b.defaultMode;
       if (typeof b.enablePGSByDefault === 'boolean') agentConfig.query.enablePGSByDefault = b.enablePGSByDefault;
       if (typeof b.pgsSweepModel === 'string') agentConfig.query.pgsSweepModel = b.pgsSweepModel;
+      if (typeof b.pgsSweepProvider === 'string') agentConfig.query.pgsSweepProvider = b.pgsSweepProvider;
       if (typeof b.pgsSynthModel === 'string') agentConfig.query.pgsSynthModel = b.pgsSynthModel;
+      if (typeof b.pgsSynthProvider === 'string') agentConfig.query.pgsSynthProvider = b.pgsSynthProvider;
       if (typeof b.pgsDepth === 'number') agentConfig.query.pgsDepth = b.pgsDepth;
       saveYaml(configPath, agentConfig);
       res.json({ ok: true, agent: targetAgent });
@@ -1856,7 +1863,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     excludePatterns: [],
     chunking: { maxChunkSize: 3000, overlap: 300 },
     flush: { batchSize: 20, intervalSeconds: 30 },
-    compiler: { enabled: true, model: 'minimax-m2.7' },
+    compiler: { enabled: true, model: 'MiniMax-M3' },
     converter: { enabled: true, visionModel: 'gpt-4o-mini', pythonPath: 'python3' },
   };
 

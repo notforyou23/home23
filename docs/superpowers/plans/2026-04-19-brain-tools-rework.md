@@ -101,7 +101,7 @@ brainRoute is nullable because resolution can fail (cosmo23 down) but
 harness still needs to boot. Tools returning is_error when brainRoute
 is null is handled in the follow-up tasks.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -303,7 +303,7 @@ when the harness comes up.
 
 Tests use Node's built-in test runner via tsx — no new dependency.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -381,7 +381,7 @@ URL on ToolContext for every tool call. Logs a clear warning (with the
 curl command for manual verification) when resolution fails so the
 failure mode is visible at boot, not only when an agent invokes a tool.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -723,7 +723,7 @@ to the brain's own exports/ dir.
 Tests assert the wire payload field-by-field so future drift between the
 tab and the tool fails CI.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -796,7 +796,7 @@ brain_pgs is merged into brain_query (enablePGS flag). Agent system
 prompt is updated to reference the new invocation shape so jerry/coz
 don't keep trying to call the old tool name.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -966,7 +966,7 @@ creates the run there with a symlink back to cosmo23/runs/<runName>.
 Result line includes the runRoot so jerry/coz see exactly where the run
 lives and the feeder picks up markdown output as it appears.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1172,7 +1172,7 @@ preserves today's behavior exactly.
 Tests cover: override path + symlink creation + ownership record;
 legacy path without override; existing collisions.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1226,7 +1226,7 @@ Tracked patch so it survives the next upstream cosmo23 resync.
 Re-applies as: optional runRoot payload field + non-fatal symlink at
 legacy path + run.json ownership record.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1281,7 +1281,7 @@ cycle-log JSONL is operational plumbing, not brain content.
 
 Only research markdown docs get ingested.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1332,7 +1332,7 @@ Sweep of cli/templates + instances workspace files. brain_pgs is no
 longer a tool — PGS is a flag on brain_query. Agents reading these
 skill/identity files will now invoke the correct tool.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1496,7 +1496,7 @@ metadata.json when present.
 Not run automatically — operator runs after the harness + cosmo23 deploy
 is stable. Leaves untouched runs in place.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1632,7 +1632,7 @@ same way the harness does, hits /api/memory/search, /api/state, cosmo23
 query, export-query. Asserts non-error + shape, non-zero exit on any
 failure. Run during deploy verification.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```

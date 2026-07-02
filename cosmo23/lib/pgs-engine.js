@@ -97,7 +97,7 @@ class PGSEngine {
    */
   async execute(query, options = {}) {
     const {
-      model = 'claude-opus-4-7',
+      model = 'claude-opus-4-8',
       mode: legacyMode = 'full',
       pgsMode,
       pgsSessionId = DEFAULT_SESSION_ID,
@@ -1240,7 +1240,7 @@ Explicitly state what was searched for and NOT found in this partition. "This pa
    * Synthesize all sweep outputs into a unified answer
    */
   async synthesize(query, sweepResults, options = {}) {
-    const { model = 'claude-opus-4-7', onChunk, totalNodes, totalEdges, totalPartitions, selectedPartitions, config: cfg } = options;
+    const { model = 'claude-opus-4-8', onChunk, totalNodes, totalEdges, totalPartitions, selectedPartitions, config: cfg } = options;
     const synthesisMaxTokens = cfg?.synthesisMaxTokens || PGS_DEFAULTS.synthesisMaxTokens;
     const synthesisConfig = resolveSynthesisCommitConfig(
       options.synthesis || cfg?.synthesis || this.qe.runConfig?.synthesis || this.qe.runMetadata?.synthesis,

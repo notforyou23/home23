@@ -28,7 +28,7 @@ test('QuantumReasoner does not request web search when the assigned provider can
       },
       async generate(opts) {
         calls.push(opts);
-        return { content: 'NO_ACTION\nNo current action.', model: 'MiniMax-M2.7' };
+        return { content: 'NO_ACTION\nNo current action.', model: 'MiniMax-M3' };
       },
     };
 

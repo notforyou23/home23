@@ -747,10 +747,10 @@ async function handleFunctionCalling(openai, anthropic, xai, indexer, params, ev
         const sanitizedClaudeMessages = sanitizeClaudeMessages(claudeMessages);
 
         // Use exact model names from COSMO (tested and working)
-        const claudeModel = model === 'claude-opus-4-7'
-          ? 'claude-opus-4-7'  // Opus 4.6 - latest
-          : model === 'claude-opus-4-7'
-          ? 'claude-opus-4-7'  // Opus 4.5
+        const claudeModel = model === 'claude-opus-4-8'
+          ? 'claude-opus-4-8'  // Opus 4.8 - latest
+          : model === 'claude-opus-4-8'
+          ? 'claude-opus-4-8'  // Opus 4.8
           : 'claude-sonnet-4-7';  // Sonnet 4.5 - default
 
         // Check if using OAuth mode - requires Claude Code identity injection

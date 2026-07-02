@@ -13,7 +13,9 @@ const {
   materializeHomeLayout,
   materializeHomeLayoutForContext,
   buildSaunaPrestageRecommendation,
+  buildOfflineTilePayload,
 } = require('../../../engine/src/dashboard/home23-tiles.js');
+const { createContractValidator } = require('../../../tests/contracts/contract-validator.cjs');
 
 test('Good Life is a core tile for every agent dashboard', () => {
   const tile = CORE_TILES.find((candidate) => candidate.id === 'good-life');
@@ -51,7 +53,7 @@ test('materialized default layout exposes Good Life as a core tile', () => {
   assert.equal(item.tile.mode, 'core-good-life');
 });
 
-test('family-evening context suppresses project-facing home tiles but keeps enabled chat visible', () => {
+test('family-evening context suppresses project-facing home tiles but keeps enabled chat and vibe visible', () => {
   const normalized = normalizeDashboardTilesConfig({});
   const normalLayout = materializeHomeLayout(normalized);
   const contextual = materializeHomeLayoutForContext(normalized, {
@@ -61,6 +63,7 @@ test('family-evening context suppresses project-facing home tiles but keeps enab
 
   assert.ok(normalLayout.some((item) => item.tileId === 'brain-log'));
   assert.ok(!contextual.layout.some((item) => item.tileId === 'brain-log'));
+  assert.ok(contextual.layout.some((item) => item.tileId === 'vibe'));
   assert.ok(contextual.layout.some((item) => item.tileId === 'chat'));
   assert.ok(contextual.layout.some((item) => item.tileId === 'system-summary'));
   assert.ok(contextual.layout.some((item) => item.tileId === 'good-life'));
@@ -68,7 +71,6 @@ test('family-evening context suppresses project-facing home tiles but keeps enab
     'brain-log',
     'dream-log',
     'feeder',
-    'vibe',
   ]);
   assert.ok(!normalized.homeLayout.some((item) => item.tileId === 'thought-feed'));
 });
@@ -168,6 +170,11 @@ dashboard:
   assert.ok(prestage);
   assert.equal(data.content.recommendation.actionId, 'prestage');
   assert.equal(prestage.fields[0].defaultValue, 190);
+  assert.equal(prestage.fields[0].min, 100);
+  assert.equal(prestage.fields[0].max, 240);
+  assert.equal(prestage.fields[0].unit, '°F');
+  assert.equal(prestage.fields[1].step, 15);
+  assert.equal(prestage.fields[1].unit, 'minutes');
 
   await service.runTileAction('sauna-control', 'prestage', {
     targetTemperature: 185,
@@ -178,4 +185,216 @@ dashboard:
   assert.ok(startCall);
   assert.equal(JSON.parse(startCall.options.body).duration, 90);
   assert.equal(Math.round(JSON.parse(startCall.options.body).targetTemperature), 85);
+});
+
+test('sauna action contract can be described without calling HUUM', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-tiles-'));
+  mkdirSync(join(root, 'config'), { recursive: true });
+  writeFileSync(join(root, 'config', 'home.yaml'), `
+dashboard:
+  tiles:
+    customTiles:
+      - id: sauna-control
+        kind: custom
+        title: Sauna
+        mode: huum-sauna
+        connectionId: jtr-huum
+        refreshMs: 15000
+        config:
+          startDefaults:
+            targetTemperature: 190
+            duration: 180
+    homeLayout:
+      - tileId: sauna-control
+        enabled: true
+        size: third
+`, 'utf8');
+  writeFileSync(join(root, 'config', 'secrets.yaml'), `
+dashboard:
+  tileConnections:
+    connections:
+      - id: jtr-huum
+        name: Huum
+        type: huum
+        config:
+          baseUrl: http://huum.local/api/
+        secrets:
+          username: test-user
+          password: test-pass
+`, 'utf8');
+
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => {
+    throw new Error('describeTileAction must not call fetch');
+  };
+
+  const service = new Home23TileService({
+    home23Root: root,
+    autoStartBackgroundRefresh: false,
+  });
+
+  const action = service.describeTileAction('sauna-control', 'start');
+
+  assert.equal(action.id, 'start');
+  assert.equal(action.fields[0].id, 'targetTemperature');
+  assert.equal(action.fields[0].min, 100);
+  assert.equal(action.fields[0].max, 240);
+  assert.equal(action.fields[0].step, 1);
+  assert.equal(action.fields[0].unit, '°F');
+  assert.equal(action.fields[1].id, 'duration');
+  assert.equal(action.fields[1].min, 15);
+  assert.equal(action.fields[1].max, 720);
+  assert.equal(action.fields[1].step, 15);
+  assert.equal(action.fields[1].unit, 'minutes');
+});
+
+test('mocked tile action response envelope validates against the dashboard action contract', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-tiles-'));
+  mkdirSync(join(root, 'config'), { recursive: true });
+  writeFileSync(join(root, 'config', 'home.yaml'), `
+dashboard:
+  tiles:
+    customTiles:
+      - id: sauna-control
+        kind: custom
+        title: Sauna
+        mode: huum-sauna
+        connectionId: jtr-huum
+        refreshMs: 15000
+        config:
+          startDefaults:
+            targetTemperature: 190
+            duration: 180
+    homeLayout:
+      - tileId: sauna-control
+        enabled: true
+        size: third
+`, 'utf8');
+  writeFileSync(join(root, 'config', 'secrets.yaml'), `
+dashboard:
+  tileConnections:
+    connections:
+      - id: jtr-huum
+        name: Huum
+        type: huum
+        config:
+          baseUrl: http://huum.local/api/
+        secrets:
+          username: test-user
+          password: test-pass
+`, 'utf8');
+
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async (url) => {
+    if (String(url).endsWith('/start')) {
+      return new Response(JSON.stringify({ ok: true, started: true }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (String(url).endsWith('/status')) {
+      return new Response(JSON.stringify({
+        statusCode: 232,
+        temperature: 68,
+        targetTemperature: 88,
+        duration: 90,
+        door: false,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response('{}', { status: 404 });
+  };
+
+  const service = new Home23TileService({
+    home23Root: root,
+    autoStartBackgroundRefresh: false,
+  });
+  const envelope = {
+    ok: true,
+    action: await service.runTileAction('sauna-control', 'start', {
+      targetTemperature: 190,
+      duration: 90,
+    }),
+    data: await service.getTileData('sauna-control'),
+  };
+
+  const validator = createContractValidator(process.cwd());
+  const manifest = require('../../../contracts/manifest.json');
+  const entry = manifest.entries.find((candidate) => candidate.id === 'home-tile-action-response');
+  assert.ok(entry, 'home-tile-action-response manifest entry must exist');
+  const result = validator.validateValue(entry, envelope);
+  assert.equal(result.valid, true, result.errorsText);
+});
+
+test('pool ScreenLogic tile returns an offline payload when the bridge is unreachable', async (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'home23-tiles-'));
+  mkdirSync(join(root, 'config'), { recursive: true });
+  writeFileSync(join(root, 'config', 'home.yaml'), `
+dashboard:
+  tiles:
+    customTiles:
+      - id: pool-screenlogic
+        kind: custom
+        title: Pool
+        mode: generic-http-json
+        connectionId: jtr-screenlogic
+        refreshMs: 30000
+        config:
+          request:
+            path: /status
+            method: GET
+    homeLayout:
+      - tileId: pool-screenlogic
+        enabled: true
+        size: half
+`, 'utf8');
+  writeFileSync(join(root, 'config', 'secrets.yaml'), `
+dashboard:
+  tileConnections:
+    connections:
+      - id: jtr-screenlogic
+        name: ScreenLogic
+        type: generic-http
+        config:
+          baseUrl: http://127.0.0.1:5023
+          authType: none
+          headers: {}
+        secrets: {}
+`, 'utf8');
+
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async () => {
+    throw new Error('fetch failed');
+  };
+
+  const service = new Home23TileService({
+    home23Root: root,
+    autoStartBackgroundRefresh: false,
+    logger: { warn() {} },
+  });
+
+  const data = await service.getTileData('pool-screenlogic');
+  assert.equal(data.tileId, 'pool-screenlogic');
+  assert.equal(data.offline, true);
+  assert.equal(data.content.status, 'Offline');
+  assert.equal(data.content.subtitle, 'ScreenLogic unavailable');
+  assert.equal(data.cache.hit, false);
+});
+
+test('offline tile payload keeps the dashboard display shape stable', () => {
+  const payload = buildOfflineTilePayload('pool-screenlogic', {
+    subtitle: 'ScreenLogic unavailable',
+    error: new Error('fetch failed'),
+  });
+
+  assert.equal(payload.tileId, 'pool-screenlogic');
+  assert.equal(payload.content.status, 'Offline');
+  assert.deepEqual(payload.content.metrics, []);
+  assert.equal(payload.actions.length, 0);
+  assert.equal(payload.error, 'fetch failed');
 });

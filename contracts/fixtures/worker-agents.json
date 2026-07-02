@@ -1,0 +1,18 @@
+{
+  "workers": [
+    {
+      "name": "systems",
+      "displayName": "Systems",
+      "ownerAgent": "jerry",
+      "class": "ops",
+      "purpose": "Diagnose Home23 host, PM2, ports, logs, and scoped service issues without destructive global operations."
+    },
+    {
+      "name": "parity",
+      "displayName": "Parity",
+      "ownerAgent": "jerry",
+      "class": "product",
+      "purpose": "Compare Home23 surfaces and client contracts, then produce portable native/web parity instructions."
+    }
+  ]
+}

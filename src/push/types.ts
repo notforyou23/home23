@@ -6,6 +6,11 @@ export interface DeviceRegistration {
   last_seen_at: string;      // ISO8601, updated on any register call
   bundle_id: string;         // com.regina6.home23 — allows multiple apps later
   env: 'sandbox' | 'production';  // APNs environment
+  agent_id?: string;         // owning Home23 agent bridge
+  platform?: string;         // ios, mac, tvos
+  app_build?: string | number;
+  contract_version?: string;
+  capabilities_hash?: string;
 }
 
 /** In-memory + on-disk registry shape. */

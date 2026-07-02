@@ -15,10 +15,10 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const { getAnthropicApiKey, prepareSystemPrompt, isOAuthToken, getStealthHeaders } = require('../server/services/anthropic-oauth');
 
-// HOME23 PATCH — Claude Opus 4.7 rejects legacy sampling params such as
+// HOME23 PATCH — Claude Opus 4.8 rejects legacy sampling params such as
 // temperature and uses adaptive thinking instead of the older budgeted shape.
 function isAnthropicSamplingDeprecatedModel(model) {
-  return /^claude-opus-4-7(?:$|[-@])/.test(String(model || '').trim());
+  return /^(?:[^/]+\/)?claude-opus-4-8(?:$|[-@])/.test(String(model || '').trim());
 }
 
 class AnthropicClient {
@@ -209,7 +209,7 @@ class AnthropicClient {
       // Determine if extended thinking should be used
       const useExtendedThinking = this._shouldUseExtendedThinking(options.reasoningEffort, wireModel);
 
-      // Pre-4.7 thinking required temperature=1. Opus 4.7 removes sampling parameters entirely.
+      // Pre-4.7 thinking required temperature=1. Opus 4.8 removes sampling parameters entirely.
       let temperature = options.temperature !== undefined ? options.temperature : this.temperature;
       if (useExtendedThinking && !usesAdaptiveThinking) {
         this.logger?.info?.('[AnthropicClient] Extended thinking enabled, forcing temperature=1', {

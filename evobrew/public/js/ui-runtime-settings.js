@@ -3,11 +3,11 @@
   const DEFAULTS = {
     favorites: [
       'openai-codex/gpt-5.5',
-      'anthropic/claude-opus-4-7',
+      'anthropic/claude-opus-4-8',
       'anthropic/claude-sonnet-4-7',
       'openai/gpt-5.5',
       'openai/gpt-5.5-pro',
-      'minimax/MiniMax-M2.7',
+      'minimax/MiniMax-M3',
       'xai/grok-4.3',
       'xai/grok-4.20-0309-reasoning',
       'ollama-cloud/kimi-k2.6',
@@ -19,8 +19,8 @@
     defaults: {
       chat: 'openai-codex/gpt-5.5',
       query: 'openai-codex/gpt-5.5',
-      pgsSweep: 'minimax/MiniMax-M2.7',
-      pgsSynth: 'anthropic/claude-opus-4-7'
+      pgsSweep: 'minimax/MiniMax-M3',
+      pgsSynth: 'anthropic/claude-opus-4-8'
     }
   };
 
@@ -28,7 +28,7 @@
     {
       title: 'Anthropic',
       note: 'Home23 Claude models from the shared provider catalog.',
-      values: ['anthropic/claude-opus-4-7', 'anthropic/claude-sonnet-4-7', 'anthropic/claude-haiku-4-5']
+      values: ['anthropic/claude-opus-4-8', 'anthropic/claude-sonnet-4-7', 'anthropic/claude-haiku-4-5']
     },
     {
       title: 'OpenAI Codex',
@@ -43,7 +43,7 @@
     {
       title: 'MiniMax',
       note: 'MiniMax models exposed by Home23.',
-      values: ['minimax/MiniMax-M2.7', 'minimax/MiniMax-M2.7-highspeed']
+      values: ['minimax/MiniMax-M3']
     },
     {
       title: 'xAI',
@@ -53,7 +53,7 @@
     {
       title: 'Ollama Cloud',
       note: 'Ollama Cloud models from Home23.',
-      values: ['ollama-cloud/kimi-k2.6', 'ollama-cloud/deepseek-v4-pro', 'ollama-cloud/deepseek-v4-flash', 'ollama-cloud/qwen3.5:397b', 'ollama-cloud/minimax-m2.7', 'ollama-cloud/nemotron-3-super']
+      values: ['ollama-cloud/kimi-k2.6', 'ollama-cloud/deepseek-v4-pro', 'ollama-cloud/deepseek-v4-flash', 'ollama-cloud/qwen3.5:397b', 'ollama-cloud/nemotron-3-super']
     },
     {
       title: 'Agents',

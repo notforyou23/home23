@@ -16,17 +16,23 @@
       "additionalProperties": true,
       "required": ["type", "turn_id", "chat_id", "status", "role", "started_at"],
       "properties": {
-        "type": { "type": "string" },
-        "turn_id": { "type": "string" },
-        "chat_id": { "type": "string" },
-        "status": { "type": "string" },
+        "type": { "type": "string", "const": "turn" },
+        "turn_id": { "type": "string", "minLength": 1 },
+        "chat_id": { "type": "string", "minLength": 1 },
+        "status": {
+          "type": "string",
+          "enum": ["pending", "accepted", "running", "awaiting_model", "streaming", "tool_running", "stopping", "stopped", "complete", "error", "timeout", "orphaned"]
+        },
         "role": { "type": "string" },
         "started_at": { "type": "string" },
         "ended_at": { "type": ["string", "null"] },
         "model": { "type": ["string", "null"] },
+        "provider": { "type": ["string", "null"] },
         "stop_reason": { "type": ["string", "null"] },
         "error": { "type": ["string", "null"] },
-        "last_seq": { "type": ["integer", "null"] }
+        "error_code": { "type": ["string", "null"] },
+        "error_message": { "type": ["string", "null"] },
+        "last_seq": { "type": ["integer", "null"], "minimum": 0 }
       }
     },
     "turnEvent": {
@@ -34,11 +40,14 @@
       "additionalProperties": true,
       "required": ["type", "turn_id", "seq", "ts", "kind", "data"],
       "properties": {
-        "type": { "type": "string" },
-        "turn_id": { "type": "string" },
+        "type": { "type": "string", "const": "event" },
+        "turn_id": { "type": "string", "minLength": 1 },
         "seq": { "type": "integer", "minimum": 0 },
         "ts": { "type": "string" },
-        "kind": { "type": "string" },
+        "kind": {
+          "type": "string",
+          "enum": ["thinking", "tool_start", "tool_result", "response_chunk", "media", "subagent_result", "cache", "status"]
+        },
         "data": {
           "type": "object",
           "additionalProperties": true,
@@ -54,8 +63,99 @@
             "mediaType": { "type": ["string", "null"] },
             "path": { "type": ["string", "null"] },
             "caption": { "type": ["string", "null"] },
-            "task": { "type": ["string", "null"] }
+            "task": { "type": ["string", "null"] },
+            "status": { "type": ["string", "null"] }
           }
+        }
+      }
+    },
+    "turnStatus": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["turn_id", "chat_id", "status", "phase", "active", "started_at", "updated_at", "last_event_at", "last_seq", "model", "provider", "configured_default", "runtime_model", "recoverable"],
+      "properties": {
+        "turn_id": { "type": "string", "minLength": 1 },
+        "chat_id": { "type": "string", "minLength": 1 },
+        "status": {
+          "type": "string",
+          "enum": ["accepted", "running", "awaiting_model", "streaming", "tool_running", "stopping", "stopped", "complete", "error", "timeout", "orphaned"]
+        },
+        "phase": { "type": "string" },
+        "active": { "type": "boolean" },
+        "started_at": { "type": "string" },
+        "updated_at": { "type": "string" },
+        "last_event_at": { "type": ["string", "null"] },
+        "first_event_at": { "type": ["string", "null"] },
+        "deadline_at": { "type": ["string", "null"] },
+        "first_token_deadline_at": { "type": ["string", "null"] },
+        "last_seq": { "type": ["integer", "null"], "minimum": 0 },
+        "model": { "type": ["string", "null"] },
+        "provider": { "type": ["string", "null"] },
+        "configured_default": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["provider", "model"],
+          "properties": {
+            "provider": { "type": ["string", "null"] },
+            "model": { "type": ["string", "null"] }
+          }
+        },
+        "runtime_model": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["provider", "model"],
+          "properties": {
+            "provider": { "type": ["string", "null"] },
+            "model": { "type": ["string", "null"] }
+          }
+        },
+        "stop_requested_at": { "type": ["string", "null"] },
+        "stop_reason": { "type": ["string", "null"] },
+        "error_code": { "type": ["string", "null"] },
+        "error_message": { "type": ["string", "null"] },
+        "recoverable": { "type": "boolean" }
+      }
+    },
+    "stopTurnRequest": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["chatId", "turn_id"],
+      "properties": {
+        "chatId": { "type": "string", "minLength": 1 },
+        "turn_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "stopTurnResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["stopped", "chatIds"],
+      "properties": {
+        "stopped": { "type": "boolean" },
+        "chatIds": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "turn_id": { "type": ["string", "null"] },
+        "turnId": { "type": ["string", "null"] },
+        "activeTurnId": { "type": ["string", "null"] },
+        "alreadyTerminal": { "type": ["boolean", "null"] },
+        "status": { "type": ["string", "null"] },
+        "error": { "type": ["string", "null"] }
+      }
+    },
+    "stopTurnErrorResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["error"],
+      "properties": {
+        "error": { "type": "string", "minLength": 1 },
+        "turn_id": { "type": ["string", "null"] },
+        "chatId": { "type": ["string", "null"] },
+        "activeTurnId": { "type": ["string", "null"] },
+        "stopped": { "type": ["boolean", "null"] },
+        "chatIds": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
         }
       }
     },
@@ -70,15 +170,47 @@
         }
       }
     },
-    "conversation": {
+    "conversationSummary": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["id", "agent", "updatedAt"],
+      "required": ["chatId", "count"],
       "properties": {
-        "id": { "type": "string" },
-        "agent": { "type": "string" },
-        "title": { "type": ["string", "null"] },
-        "updatedAt": { "type": "string" }
+        "chatId": { "type": "string" },
+        "count": { "type": "integer", "minimum": 0 },
+        "lastTs": { "type": ["string", "null"] },
+        "agent": { "type": ["string", "null"] },
+        "title": { "type": ["string", "null"] }
+      }
+    },
+    "conversationsResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["conversations"],
+      "properties": {
+        "conversations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/conversationSummary" }
+        }
+      }
+    },
+    "historyResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["chatId", "count", "total", "records"],
+      "properties": {
+        "chatId": { "type": "string" },
+        "count": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "records": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              { "$ref": "#/$defs/turnEnvelope" },
+              { "$ref": "#/$defs/turnEvent" },
+              { "type": "object", "additionalProperties": true }
+            ]
+          }
+        }
       }
     },
     "modelsResponse": {

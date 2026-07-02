@@ -115,8 +115,8 @@ function makeSweepProvider(unifiedClient, modelAssignment) {
 
 Two separate providers because PGS differentiates sweep (cheap, per-partition) from synthesis (more capable, single pass):
 
-- `pgsSweep` model assignment — default MiniMax-M2.7 (cheap, fast, many calls)
-- `pgsSynthesis` model assignment — default MiniMax-M2.7 (can be upgraded to higher-reasoning later via Settings → Models)
+- `pgsSweep` model assignment — default MiniMax-M3 (cheap, fast, many calls)
+- `pgsSynthesis` model assignment — default MiniMax-M3 (can be upgraded to higher-reasoning later via Settings → Models)
 
 Both model assignments added to `configs/base-engine.yaml` `modelAssignments` block.
 

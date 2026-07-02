@@ -20,6 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
+const { appendJsonlDurableSync } = require('../utils/durable-write');
 
 const ALLOWLIST_PATH_ENV = 'HOME23_ACTION_ALLOWLIST';
 const DEFAULT_ALLOWLIST_PATH = path.join(__dirname, '..', '..', '..', 'configs', 'action-allowlist.yaml');
@@ -68,14 +69,14 @@ function countRecentGlobal(now) {
 function appendRequestedAction(brainDir, entry) {
   try {
     const file = path.join(brainDir, 'requested-actions.jsonl');
-    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+    appendJsonlDurableSync(file, entry);
   } catch { /* best-effort */ }
 }
 
 function appendActionLog(brainDir, entry) {
   try {
     const file = path.join(brainDir, 'actions.jsonl');
-    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+    appendJsonlDurableSync(file, entry);
   } catch { /* best-effort */ }
 }
 
@@ -118,12 +119,15 @@ async function executeAction(opts) {
   } = opts;
 
   const ts = new Date().toISOString();
+  // Keep both fields. Older action-ledger readers use `ts`; live-problem
+  // verifiers and newer JSONL utilities standardize on `timestamp`.
+  const timestamp = ts;
   const now = Date.now();
 
   // ── Validate shape ──
   if (!action || typeof action !== 'object' || !action.action) {
     appendRequestedAction(brainDir, {
-      ts, cycle, role, status: 'rejected', detail: 'malformed_action', action,
+      ts, timestamp, cycle, role, status: 'rejected', detail: 'malformed_action', action,
     });
     return { status: 'rejected', detail: 'malformed_action' };
   }
@@ -144,6 +148,7 @@ async function executeAction(opts) {
     source: 'brain_decision',
     trust_level: 'high',
     ts,
+    timestamp,
   };
   if (typeof writeReceipt === 'function') {
     try { await writeReceipt(intentReceipt); } catch { /* ok */ }
@@ -171,7 +176,7 @@ async function executeAction(opts) {
   const actionCfg = (allowlist.actions || {})[actionName];
   if (!actionCfg) {
     appendRequestedAction(brainDir, {
-      ts, cycle, role, status: 'not_in_allowlist', action: actionName, target, reason,
+      ts, timestamp, cycle, role, status: 'not_in_allowlist', action: actionName, target, reason,
     });
     return finaliseReject(brainDir, intentReceipt, 'not_in_allowlist', null, writeReceipt);
   }
@@ -202,6 +207,7 @@ async function executeAction(opts) {
       detail: 'handler not invoked (dry_run)',
       ts: new Date().toISOString(),
     };
+    outcome.timestamp = outcome.ts;
     if (typeof writeReceipt === 'function') {
       try { await writeReceipt(outcome); } catch { /* ok */ }
     }
@@ -246,6 +252,7 @@ async function executeAction(opts) {
     source: 'execution_outcome',
     ts: new Date().toISOString(),
   };
+  outcomeReceipt.timestamp = outcomeReceipt.ts;
   if (typeof writeReceipt === 'function') {
     try { await writeReceipt(outcomeReceipt); } catch { /* ok */ }
   }
@@ -267,6 +274,7 @@ function finaliseReject(brainDir, intentReceipt, detailCode, extra, writeReceipt
     source: 'execution_outcome',
     ts: new Date().toISOString(),
   };
+  outcome.timestamp = outcome.ts;
   if (typeof writeReceipt === 'function') {
     try { writeReceipt(outcome); } catch { /* ok */ }
   }

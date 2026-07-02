@@ -33,7 +33,7 @@ class AnthropicClient {
     // Model mapping (GPT names → Claude models)
     this.modelMapping = config.modelMapping || {
       'gpt-5.5': 'claude-sonnet-4-7',
-      'gpt-5.5-pro': 'claude-opus-4-7',
+      'gpt-5.5-pro': 'claude-opus-4-8',
       'gpt-5.4': 'claude-sonnet-4-7',
       'gpt-5.4-mini': 'claude-sonnet-4-7',
       'gpt-5.4-nano': 'claude-sonnet-4-7',

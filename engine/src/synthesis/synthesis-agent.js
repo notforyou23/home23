@@ -113,7 +113,7 @@ class SynthesisAgent {
     const apiKey = config.apiKey || process.env.COMPILER_LLM_API_KEY || process.env.OLLAMA_CLOUD_API_KEY || 'ollama';
 
     this.client = new OpenAI({ apiKey, baseURL });
-    this.model = config.model || 'minimax-m2.7';
+    this.model = config.model || 'MiniMax-M3';
     this.intervalHours = config.intervalHours || 4;
     this._timer = null;
   }

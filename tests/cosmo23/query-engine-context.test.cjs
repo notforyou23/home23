@@ -66,7 +66,7 @@ test('quick query mode stays bounded on large brains', () => {
     mode: 'quick',
     totalNodes: 56210,
     isMergedBrain: false,
-    model: 'claude-opus-4-7'
+    model: 'claude-opus-4-8'
   });
 
   assert.equal(limit, 50);
@@ -77,14 +77,14 @@ test('direct full query mode preserves the old bounded query contract', () => {
     mode: 'full',
     totalNodes: 56210,
     isMergedBrain: false,
-    model: 'claude-opus-4-7'
+    model: 'claude-opus-4-8'
   });
 
   assert.equal(limit, 400);
 });
 
 test('direct query modes stay bounded while PGS owns large graph coverage', () => {
-  const base = { totalNodes: 56210, isMergedBrain: true, model: 'claude-opus-4-7' };
+  const base = { totalNodes: 56210, isMergedBrain: true, model: 'claude-opus-4-8' };
 
   assert.equal(QueryEngine.calculateMemoryNodeLimit({ ...base, mode: 'deep' }), 400);
   assert.equal(QueryEngine.calculateMemoryNodeLimit({ ...base, mode: 'report' }), 600);
@@ -94,7 +94,6 @@ test('direct query modes stay bounded while PGS owns large graph coverage', () =
 
 test('current Claude family query models keep deep context instead of falling to safety caps', () => {
   assert.equal(QueryEngine.resolveModelMaxNodes('claude-sonnet-4-7'), 3000);
-  assert.equal(QueryEngine.resolveModelMaxNodes('claude-opus-4-7'), 4200);
   assert.equal(QueryEngine.resolveModelMaxNodes('claude-opus-4-8'), 4200);
   assert.equal(QueryEngine.resolveModelMaxNodes('claude-sonnet-4-8'), 3000);
 });
@@ -127,10 +126,10 @@ test('large Anthropic query contexts are capped before provider streaming', () =
     null,
     'dive',
     null,
-    'claude-opus-4-7'
+    'claude-opus-4-8'
   );
 
-  assert.ok(context.length <= QueryEngine.resolveContextCharLimit('claude-opus-4-7', 'dive'));
+  assert.ok(context.length <= QueryEngine.resolveContextCharLimit('claude-opus-4-8', 'dive'));
   assert.match(context, /Context budget reached/);
 });
 

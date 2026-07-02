@@ -39,7 +39,7 @@ New module: `engine/src/synthesis/synthesis-agent.js`. Runs in-process inside th
 2. **Queries `/api/memory/search`** with key themes extracted from the index categories — gets the strongest, most relevant nodes for each topic
 3. **Queries `/api/state`** for brain vitals — cycle count, node count, edge count
 4. **Reads identity files** (SOUL.md, MISSION.md) for self-understanding context
-5. **Sends everything to the LLM** (same compiler model, minimax-m2.7 via Ollama Cloud) with a synthesis prompt: "Given this brain's index, identity, and representative nodes, produce: self-understanding summary, top consolidated insights, current themes, recent activity highlights"
+5. **Sends everything to the LLM** (same compiler model, MiniMax-M3 via Ollama Cloud) with a synthesis prompt: "Given this brain's index, identity, and representative nodes, produce: self-understanding summary, top consolidated insights, current themes, recent activity highlights"
 6. **Writes `brain-state.json`** to the agent's brain directory
 
 Uses the same LLM client pattern as the ingestion compiler — Ollama Cloud, fast model, simple chat completion. The synthesis prompt asks for structured JSON output so parsing is deterministic.
@@ -83,7 +83,7 @@ Lives at `instances/<agent>/brain/brain-state.json`. Written by the synthesis ag
 {
   "generatedAt": "2026-04-08T15:00:00Z",
   "trigger": "scheduled",
-  "model": "minimax-m2.7",
+  "model": "MiniMax-M3",
   "brainStats": {
     "nodes": 6420,
     "edges": 22468,

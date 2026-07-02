@@ -73,13 +73,13 @@ async function captureWebSearchParams(Client, options) {
 }
 
 for (const [name, Client] of clients) {
-  test(`${name} omits deprecated sampling params for Claude Opus 4.7`, async () => {
+  test(`${name} omits deprecated sampling params for Claude Opus 4.8`, async () => {
     const params = await captureGenerateParams(Client, {
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-4-8',
       reasoningEffort: 'high'
     });
 
-    assert.equal(params.model, 'claude-opus-4-7');
+    assert.equal(params.model, 'claude-opus-4-8');
     assert.equal(Object.hasOwn(params, 'temperature'), false);
     assert.deepEqual(params.thinking, {
       type: 'adaptive',
@@ -90,7 +90,7 @@ for (const [name, Client] of clients) {
     });
   });
 
-  test(`${name} keeps temperature for non-Opus 4.7 models`, async () => {
+  test(`${name} keeps temperature for non-Opus 4.8 models`, async () => {
     const params = await captureGenerateParams(Client, {
       model: 'claude-sonnet-4-7'
     });
@@ -102,11 +102,11 @@ for (const [name, Client] of clients) {
 
   test(`${name} omits deprecated sampling params during native web search`, async () => {
     const params = await captureWebSearchParams(Client, {
-      model: 'claude-opus-4-7',
+      model: 'claude-opus-4-8',
       query: 'station newsletter pipeline'
     });
 
-    assert.equal(params.model, 'claude-opus-4-7');
+    assert.equal(params.model, 'claude-opus-4-8');
     assert.equal(Object.hasOwn(params, 'temperature'), false);
     assert.equal(params.tools?.[0]?.type, 'web_search_20250305');
   });

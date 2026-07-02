@@ -30,6 +30,8 @@ const MAX_ITERATIONS = 500;
 const TYPING_INTERVAL_MS = 4000;
 const MODEL_TOOL_RESULT_LIMIT_CHARS = 4000;
 const TOOL_EVENT_RESULT_LIMIT_CHARS = 4000;
+const DEFAULT_TURN_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 30 * 1000;
 
 function hashText(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
@@ -66,6 +68,47 @@ function getClaudeCodeSystemPrompt(): { type: 'text'; text: string; cache_contro
     cache_control: { type: 'ephemeral' },
   };
 }
+
+function inferProviderFromModel(model: string, provider?: string): string {
+  return provider ?? (
+    model.includes('claude') ? 'anthropic' :
+    model.includes('grok') ? 'xai' :
+    model.includes('MiniMax') ? 'minimax' :
+    model.startsWith('gpt') ? 'openai' :
+    'unknown'
+  );
+}
+
+function createAnthropicRuntimeClient(apiKey: string, baseURL?: string): { client: Anthropic; isOAuth: boolean } {
+  const isOAuth = apiKey.startsWith('sk-ant-oat');
+  const client = isOAuth
+    ? new Anthropic({
+        authToken: apiKey,
+        ...(baseURL ? { baseURL } : {}),
+        defaultHeaders: getStealthHeaders(),
+        dangerouslyAllowBrowser: true,
+      })
+    : new Anthropic({
+        apiKey,
+        ...(baseURL ? { baseURL } : {}),
+      });
+  return { client, isOAuth };
+}
+
+type RuntimeModelContext = {
+  model: string;
+  provider: string;
+  client: Anthropic;
+  isOAuth: boolean;
+  memory: MemoryManager;
+};
+
+type TerminalTurnOverride = {
+  status: 'stopped' | 'timeout';
+  stop_reason: string;
+  error_code?: string;
+  error_message?: string;
+};
 
 // Cache model capabilities from Ollama Cloud /api/show
 const ollamaCapabilitiesCache = new Map<string, Set<string>>();
@@ -201,7 +244,7 @@ function getXaiServerToolNameFromItem(item: Record<string, unknown> | undefined)
 }
 
 function isAnthropicSamplingDeprecatedModel(model: string): boolean {
-  return /^claude-opus-4-7(?:$|[-@])/.test(String(model || '').trim());
+  return /^(?:[^/]+\/)?claude-opus-4-8(?:$|[-@])/.test(String(model || '').trim());
 }
 
 export class AgentLoop {
@@ -219,6 +262,8 @@ export class AgentLoop {
   private compaction: CompactionManager | null;
   private cacheDiagnostics?: CacheDiagnosticsConfig;
   private activeRuns = new Map<string, AbortController>();
+  private activeTurnIds = new Map<string, string>();
+  private terminalTurnOverrides = new Map<string, TerminalTurnOverride>();
   private sessionGapMs: number;
   private workspacePath: string;
   private eventLedger: EventLedger;
@@ -226,6 +271,7 @@ export class AgentLoop {
   private memoryStore: MemoryObjectStore;
   private turnStore: TurnStore;
   private pusher: import('../push/apns-pusher.js').ApnsPusher | null = null;
+  private codexCredentialsProvider: typeof getCodexCredentials = getCodexCredentials;
   private situationalAwareness?: import('./session-bootstrap.js').SituationalAwarenessConfig;
 
   constructor(opts: {
@@ -246,20 +292,11 @@ export class AgentLoop {
     situationalAwareness?: import('./session-bootstrap.js').SituationalAwarenessConfig;
   }) {
     // OAuth tokens (sk-ant-oat*) need stealth headers + authToken param
-    this.isOAuth = opts.apiKey.startsWith('sk-ant-oat');
-    this.client = this.isOAuth
-      ? new Anthropic({
-          authToken: opts.apiKey,
-          ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
-          defaultHeaders: getStealthHeaders(),
-          dangerouslyAllowBrowser: true,
-        })
-      : new Anthropic({
-          apiKey: opts.apiKey,
-          ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
-        });
+    const runtimeClient = createAnthropicRuntimeClient(opts.apiKey, opts.baseURL);
+    this.isOAuth = runtimeClient.isOAuth;
+    this.client = runtimeClient.client;
     this.model = opts.model;
-    this.provider = opts.provider ?? (opts.model.includes('claude') ? 'anthropic' : 'unknown');
+    this.provider = inferProviderFromModel(opts.model, opts.provider);
     this.maxTokens = opts.maxTokens ?? 16384;
     this.temperature = opts.temperature ?? 0.7;
     this.registry = opts.registry;
@@ -417,14 +454,35 @@ export class AgentLoop {
     this.providerMap = new Map(Object.entries(map));
   }
 
+  private createRuntimeContext(modelOverride?: { model: string; provider?: string }): RuntimeModelContext {
+    const model = modelOverride?.model ?? this.model;
+    const provider = modelOverride?.model
+      ? inferProviderFromModel(modelOverride.model, modelOverride.provider)
+      : this.provider;
+
+    let client = this.client;
+    let isOAuth = this.isOAuth;
+    const sdkProviders = new Set(['anthropic', 'minimax']);
+    if (modelOverride?.model && sdkProviders.has(provider)) {
+      const cfg = this.providerMap.get(provider);
+      if (cfg?.apiKey) {
+        const runtimeClient = createAnthropicRuntimeClient(cfg.apiKey, cfg.baseURL);
+        client = runtimeClient.client;
+        isOAuth = runtimeClient.isOAuth;
+      } else {
+        console.warn(`[agent] model override: no provider config for ${provider} — using configured client`);
+      }
+    }
+
+    const memory = modelOverride?.model
+      ? new MemoryManager({ client, model, workspacePath: this.workspacePath })
+      : this.memory;
+
+    return { model, provider, client, isOAuth, memory };
+  }
+
   setModel(model: string, provider?: string): void {
-    const newProvider = provider ?? (
-      model.includes('claude') ? 'anthropic' :
-      model.includes('grok') ? 'xai' :
-      model.includes('MiniMax') ? 'minimax' :
-      model.startsWith('gpt') ? 'openai' :
-      'unknown'
-    );
+    const newProvider = inferProviderFromModel(model, provider);
 
     // Rebuild the Anthropic SDK client when switching between SDK providers
     // (anthropic <-> minimax). Their baseURLs differ; the client is bound at construction.
@@ -432,18 +490,9 @@ export class AgentLoop {
     if (newProvider !== this.provider && sdkProviders.has(newProvider)) {
       const cfg = this.providerMap.get(newProvider);
       if (cfg && cfg.apiKey) {
-        this.isOAuth = cfg.apiKey.startsWith('sk-ant-oat');
-        this.client = this.isOAuth
-          ? new Anthropic({
-              authToken: cfg.apiKey,
-              ...(cfg.baseURL ? { baseURL: cfg.baseURL } : {}),
-              defaultHeaders: getStealthHeaders(),
-              dangerouslyAllowBrowser: true,
-            })
-          : new Anthropic({
-              apiKey: cfg.apiKey,
-              ...(cfg.baseURL ? { baseURL: cfg.baseURL } : {}),
-            });
+        const runtimeClient = createAnthropicRuntimeClient(cfg.apiKey, cfg.baseURL);
+        this.isOAuth = runtimeClient.isOAuth;
+        this.client = runtimeClient.client;
         console.log(`[agent] provider switched to ${newProvider} (baseURL=${cfg.baseURL ?? 'default'})`);
       } else {
         console.warn(`[agent] setModel: no provider config for ${newProvider} — keeping existing client`);
@@ -463,21 +512,39 @@ export class AgentLoop {
   }
 
   /** Stop an active run. Returns true if a run was aborted. */
-  stop(chatId?: string): { stopped: boolean; chatIds: string[] } {
+  stop(chatId?: string, turnId?: string): { stopped: boolean; chatIds: string[]; turnIds?: string[]; activeTurnId?: string } {
     if (chatId) {
       const ac = this.activeRuns.get(chatId);
       if (ac) {
-        ac.abort();
+        const activeTurnId = this.activeTurnIds.get(chatId);
+        if (turnId && activeTurnId && activeTurnId !== turnId) {
+          return { stopped: false, chatIds: [], activeTurnId };
+        }
+        const terminalTurnId = activeTurnId ?? turnId;
+        if (terminalTurnId) {
+          this.terminalTurnOverrides.set(this.turnKey(chatId, terminalTurnId), {
+            status: 'stopped',
+            stop_reason: 'operator_stop',
+          });
+        }
+        ac.abort(new Error('operator_stop'));
         this.activeRuns.delete(chatId);
-        return { stopped: true, chatIds: [chatId] };
+        this.activeTurnIds.delete(chatId);
+        return { stopped: true, chatIds: [chatId], turnIds: [activeTurnId ?? turnId].filter(Boolean) as string[] };
       }
       return { stopped: false, chatIds: [] };
     }
     // Stop all active runs
     const ids = [...this.activeRuns.keys()];
+    const turnIds = [...this.activeTurnIds.values()];
     for (const ac of this.activeRuns.values()) ac.abort();
     this.activeRuns.clear();
-    return { stopped: ids.length > 0, chatIds: ids };
+    this.activeTurnIds.clear();
+    return { stopped: ids.length > 0, chatIds: ids, turnIds };
+  }
+
+  private turnKey(chatId: string, turnId: string): string {
+    return `${chatId}\u0000${turnId}`;
   }
 
   /** Check if the agent is currently running for a given chatId. */
@@ -488,6 +555,25 @@ export class AgentLoop {
   /** List all active run chatIds. */
   getActiveRuns(): string[] {
     return [...this.activeRuns.keys()];
+  }
+
+  /** Recover stale pending turn envelopes after process restarts or abandoned runs. */
+  recoverStaleTurns(maxAgeMs: number = 10 * 60 * 1000): Array<{ chatId: string; turnId: string }> {
+    const recovered: Array<{ chatId: string; turnId: string }> = [];
+    for (const chatId of this.history.listChatIds()) {
+      const activeTurnId = this.activeTurnIds.get(chatId);
+      const activeTurnIds = activeTurnId ? new Set([activeTurnId]) : undefined;
+      const turnIds = this.turnStore.sweepOrphans(chatId, maxAgeMs, { activeTurnIds });
+      for (const turnId of turnIds) {
+        const env = this.turnStore.finalEnvelope(chatId, turnId);
+        if (env) {
+          turnBus.emit(chatId, turnId, env);
+          turnBus.close(chatId, turnId);
+        }
+        recovered.push({ chatId, turnId });
+      }
+    }
+    return recovered;
   }
 
   /** Optional: install an APNs pusher to fire notifications on turn completion. */
@@ -504,19 +590,23 @@ export class AgentLoop {
   async runWithTurn(
     chatId: string,
     userText: string,
-    opts: { turnId?: string; media?: import('../types.js').MediaAttachment[]; onEvent?: import('./types.js').AgentEventCallback; modelOverride?: { model: string; provider?: string }; maxDurationMs?: number } = {},
+    opts: { turnId?: string; media?: import('../types.js').MediaAttachment[]; onEvent?: import('./types.js').AgentEventCallback; modelOverride?: { model: string; provider?: string }; maxDurationMs?: number; firstTokenTimeoutMs?: number } = {},
   ): Promise<{ turnId: string; response: Promise<import('./types.js').AgentResponse> }> {
     const turnId = opts.turnId ?? newTurnId();
+    this.activeTurnIds.set(chatId, turnId);
+    const startedAtMs = Date.now();
+    const maxDurationMs = opts.maxDurationMs ?? DEFAULT_TURN_TIMEOUT_MS;
+    const firstTokenTimeoutMs = opts.firstTokenTimeoutMs ?? DEFAULT_FIRST_TOKEN_TIMEOUT_MS;
+    const deadline_at = new Date(startedAtMs + maxDurationMs).toISOString();
+    const first_token_deadline_at = new Date(startedAtMs + firstTokenTimeoutMs).toISOString();
 
-    // Per-turn model override — swap before start, restore after.
-    const prevModel = this.model;
-    const prevProvider = this.provider;
-    if (opts.modelOverride?.model) {
-      this.setModel(opts.modelOverride.model, opts.modelOverride.provider);
-    }
-
-    const model = this.getModel?.() ?? undefined;
-    this.turnStore.writeStart(chatId, turnId, model);
+    const runtime = this.createRuntimeContext(opts.modelOverride);
+    const model = runtime.model;
+    const provider = runtime.provider;
+    this.turnStore.writeStart(chatId, turnId, model, provider, {
+      deadline_at,
+      first_token_deadline_at,
+    });
 
     let seq = 0;
     const persistAndFanOut = (event: import('./types.js').AgentEvent): void => {
@@ -542,19 +632,42 @@ export class AgentLoop {
     // AbortController this.run uses between iterations so tools/API calls
     // that honor the signal unwind cleanly, then let the catch path write
     // the error envelope. Configurable via opts.maxDurationMs.
-    const maxDurationMs = opts.maxDurationMs ?? 15 * 60 * 1000; // 15 minutes
     let watchdog: ReturnType<typeof setTimeout> | null = setTimeout(() => {
       const ac = this.activeRuns.get(chatId);
       if (ac) {
         console.warn(`[loop] turn ${turnId} exceeded ${maxDurationMs}ms — aborting`);
-        ac.abort(new Error(`turn timeout after ${maxDurationMs}ms`));
+        const error_message = `turn timeout after ${maxDurationMs}ms`;
+        this.terminalTurnOverrides.set(this.turnKey(chatId, turnId), {
+          status: 'timeout',
+          stop_reason: 'turn_timeout',
+          error_code: 'turn_timeout',
+          error_message,
+        });
+        ac.abort(new Error(error_message));
       }
     }, maxDurationMs);
+    let firstTokenWatchdog: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+      if (seq === 0 && this.activeTurnIds.get(chatId) === turnId) {
+        persistAndFanOut({
+          type: 'status',
+          status: 'awaiting_model',
+          message: `waiting for first model token after ${firstTokenTimeoutMs}ms`,
+        });
+      }
+    }, firstTokenTimeoutMs);
 
     const response = (async () => {
       try {
-        const result = await this.run(chatId, userText, opts.media, persistAndFanOut);
-        const endEnv = this.turnStore.writeEnd(chatId, turnId, 'complete', { last_seq: seq, stop_reason: 'end_turn' });
+        const result = await this.run(chatId, userText, opts.media, persistAndFanOut, runtime);
+        const terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
+        const endEnv = this.turnStore.writeEnd(chatId, turnId, terminalOverride?.status ?? 'complete', {
+          last_seq: seq,
+          stop_reason: terminalOverride?.stop_reason ?? 'end_turn',
+          error_code: terminalOverride?.error_code,
+          error_message: terminalOverride?.error_message,
+          deadline_at,
+          first_token_deadline_at,
+        });
         turnBus.emit(chatId, turnId, endEnv);
         turnBus.close(chatId, turnId);
         if (this.pusher) {
@@ -574,30 +687,45 @@ export class AgentLoop {
         });
         return result;
       } catch (err) {
+        const terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
         const msg = err instanceof Error ? err.message : String(err);
-        const isAbort = msg.includes('aborted') || msg.includes('AbortError');
-        const isTimeout = msg.includes('turn timeout');
-        const status = isTimeout ? 'error' : (isAbort ? 'stopped' : 'error');
-        const endEnv = this.turnStore.writeEnd(chatId, turnId, status, { last_seq: seq, error: msg });
+        const isAbort = terminalOverride?.status === 'stopped' || msg.includes('aborted') || msg.includes('AbortError') || msg.includes('operator_stop');
+        const isTimeout = terminalOverride?.status === 'timeout' || msg.includes('turn timeout');
+        const status = terminalOverride?.status ?? (isTimeout ? 'timeout' : (isAbort ? 'stopped' : 'error'));
+        const endEnv = this.turnStore.writeEnd(chatId, turnId, status, {
+          last_seq: seq,
+          error: msg,
+          error_code: terminalOverride?.error_code ?? (isTimeout ? 'turn_timeout' : (status === 'error' ? 'provider_error' : undefined)),
+          error_message: terminalOverride?.error_message ?? (status === 'error' || status === 'timeout' ? msg : undefined),
+          stop_reason: terminalOverride?.stop_reason,
+          deadline_at,
+          first_token_deadline_at,
+        });
         turnBus.emit(chatId, turnId, endEnv);
         turnBus.close(chatId, turnId);
         throw err;
       } finally {
         if (watchdog) { clearTimeout(watchdog); watchdog = null; }
-        // Restore class-level model state if we swapped it.
-        if (opts.modelOverride?.model) {
-          this.setModel(prevModel, prevProvider);
+        if (firstTokenWatchdog) { clearTimeout(firstTokenWatchdog); firstTokenWatchdog = null; }
+        if (this.activeTurnIds.get(chatId) === turnId) {
+          this.activeTurnIds.delete(chatId);
         }
+        this.terminalTurnOverrides.delete(this.turnKey(chatId, turnId));
       }
     })();
 
     return { turnId, response };
   }
 
-  async run(chatId: string, userText: string, userMedia?: MediaAttachment[], onEvent?: import('./types.js').AgentEventCallback): Promise<AgentResponse> {
+  async run(chatId: string, userText: string, userMedia?: MediaAttachment[], onEvent?: import('./types.js').AgentEventCallback, runtime: RuntimeModelContext = this.createRuntimeContext()): Promise<AgentResponse> {
     const startMs = Date.now();
     let toolCallCount = 0;
     const allMedia: MediaAttachment[] = [];
+    const runtimeModel = runtime.model;
+    const runtimeProvider = runtime.provider;
+    const runtimeClient = runtime.client;
+    const runtimeIsOAuth = runtime.isOAuth;
+    const runtimeMemory = runtime.memory;
 
     // Abort controller for this run — checked between iterations, passed to API calls
     const ac = new AbortController();
@@ -690,7 +818,7 @@ export class AgentLoop {
 
       if (this.compaction && this.compaction.needsCompaction(storedHistory, this.history.budget)) {
         try {
-          const { messages: compactedMsgs, result } = await this.compaction.compact(chatId, storedHistory, this.model);
+          const { messages: compactedMsgs, result } = await this.compaction.compact(chatId, storedHistory, runtimeModel);
           truncated = compactedMsgs;
           didTruncate = result.compacted;
           recoveryBundle = result.recoveryBundle;
@@ -712,7 +840,7 @@ export class AgentLoop {
       // Static identity portion — stable across calls, cacheable long-term.
       // Dynamic additions (situational awareness, COSMO state, recovery notes)
       // are kept separate so the static prefix hits cache on every call.
-      const staticSystemPrompt = this.contextManager.getSystemPrompt(this.provider);
+      const staticSystemPrompt = this.contextManager.getSystemPrompt(runtimeProvider);
       let rawSystemPrompt = staticSystemPrompt;
 
       // ── Session Bootstrap (situational + temporal awareness) ──
@@ -798,7 +926,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           if (recoveryBundle) {
             rawSystemPrompt = `${rawSystemPrompt}\n\n${recoveryBundle}`;
           } else if (!this.compaction) {
-            const bundle = this.memory.buildRecoveryBundle();
+            const bundle = runtimeMemory.buildRecoveryBundle();
             if (bundle) {
               rawSystemPrompt = `${rawSystemPrompt}\n\n${bundle}`;
             }
@@ -821,12 +949,12 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
       //
       // For OAuth (Claude via sk-ant-oat*): keep Claude Code stub + full real prompt
       // as two blocks (stub already has cache_control via getClaudeCodeSystemPrompt).
-      const supportsCacheControl = this.provider === 'anthropic' || this.provider === 'minimax';
+      const supportsCacheControl = runtimeProvider === 'anthropic' || runtimeProvider === 'minimax';
       const dynamicTail = rawSystemPrompt.length > staticSystemPrompt.length
         ? rawSystemPrompt.slice(staticSystemPrompt.length)
         : '';
       const systemPrompt: string | Array<{ type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }> =
-        this.isOAuth
+        runtimeIsOAuth
           ? [
               getClaudeCodeSystemPrompt(),
               { type: 'text' as const, text: rawSystemPrompt },
@@ -872,8 +1000,8 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             type: 'turn',
             timestamp: new Date().toISOString(),
             chatId,
-            provider: this.provider,
-            model: this.model,
+            provider: runtimeProvider,
+            model: runtimeModel,
             systemPromptHash: hashText(systemPromptText),
             systemPromptLength: systemPromptText.length,
             toolsHash: hashText(JSON.stringify(toolNames)),
@@ -895,23 +1023,29 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
       // Per-run context copy — avoids race condition when concurrent runs
       // (e.g., telegram message + cron job) would overwrite each other's chatId
-      const runContext: ToolContext = { ...this.toolContext, chatId, onEvent, conversationHistory: this.history };
+      const runContext: ToolContext = {
+        ...this.toolContext,
+        chatId,
+        onEvent,
+        conversationHistory: this.history,
+        abortSignal: ac.signal,
+      };
 
       // Track all messages exchanged during this turn for persistence
       const turnMessages: HistoryRecord[] = [userMsg];
 
       // Non-Claude model — chat-only, no tools
-      const isClaudeModel = this.provider === 'anthropic' || this.provider === 'minimax';
+      const isClaudeModel = runtimeProvider === 'anthropic' || runtimeProvider === 'minimax';
 
       if (!isClaudeModel) {
         try {
-          if (this.provider === 'openai-codex') {
+          if (runtimeProvider === 'openai-codex') {
             // ── OpenAI Codex OAuth path ──
             // Uses ChatGPT OAuth credentials from ~/.evobrew/auth-profiles.json.
             // Calls https://chatgpt.com/backend-api/codex/responses (Responses API, SSE).
             // Returns respMsg in OAI Chat Completions format so the tool loop below runs unchanged.
 
-            const creds = await getCodexCredentials();
+            const creds = await this.codexCredentialsProvider();
             if (!creds) throw new Error('openai-codex credentials not found — run evobrew login');
 
             const sysText = typeof systemPrompt === 'string'
@@ -984,7 +1118,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 const interruptText = `Stopped. (${toolCallCount} tool call${toolCallCount !== 1 ? 's' : ''}, ${((Date.now() - startMs) / 1000).toFixed(1)}s)`;
                 turnMessages.push({ role: 'assistant', content: interruptText });
                 this.history.append(chatId, turnMessages);
-                return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
+                return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
               }
 
               // ── Convert apiMessages → Responses API input ──
@@ -1038,7 +1172,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
               // ── POST to Codex endpoint ──
               const codexBody = {
-                model: this.model,
+                model: runtimeModel,
                 instructions,
                 input: inputItems,
                 tools: codexTools.length > 0 ? codexTools : undefined,
@@ -1047,7 +1181,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 store: false,
               };
 
-              console.log(`[agent] codex request: model=${this.model}, tools=${codexTools.length}, input_items=${inputItems.length}, instructions_len=${instructions.length}`);
+              console.log(`[agent] codex request: model=${runtimeModel}, tools=${codexTools.length}, input_items=${inputItems.length}, instructions_len=${instructions.length}`);
 
               const codexTimeout = 120_000;
               // AbortSignal.any is Node 20+; fall back to ac.signal if unavailable
@@ -1104,7 +1238,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   : undefined,
               };
 
-              console.log(`[agent] codex response: content=${(respMsg.content || '').length} chars, tool_calls=${respMsg.tool_calls?.length ?? 0}, tools_sent=${codexTools.length}, model=${this.model}`);
+              console.log(`[agent] codex response: content=${(respMsg.content || '').length} chars, tool_calls=${respMsg.tool_calls?.length ?? 0}, tools_sent=${codexTools.length}, model=${runtimeModel}`);
 
               // ── Process the response ──
               const toolCalls = respMsg.tool_calls;
@@ -1135,9 +1269,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 turnMessages.push({ role: 'assistant', content: answer });
                 this.history.append(chatId, turnMessages);
                 if (messages.length > 10) {
-                  this.memory.extractAndSave(chatId, messages, this.model).catch(() => {});
+                  runtimeMemory.extractAndSave(chatId, messages, runtimeModel).catch(() => {});
                 }
-                return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
+                return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
               }
 
               // Model wants to call tools — append to apiMessages and execute
@@ -1192,8 +1326,8 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             const capText = `Hit max tool calls (${MAX_ITERATIONS}).`;
             turnMessages.push({ role: 'assistant', content: capText });
             this.history.append(chatId, turnMessages);
-            return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
-          } else if (this.provider === 'xai' || this.model.includes('grok')) {
+            return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
+          } else if (runtimeProvider === 'xai' || runtimeModel.includes('grok')) {
             // ── xAI Responses API path (all Grok models) ──
             const xaiKey = process.env.XAI_API_KEY;
             if (!xaiKey) throw new Error('XAI_API_KEY not set');
@@ -1234,13 +1368,13 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 const interruptText = `Stopped. (${toolCallCount} tool call${toolCallCount !== 1 ? 's' : ''}, ${((Date.now() - startMs) / 1000).toFixed(1)}s)`;
                 turnMessages.push({ role: 'assistant', content: interruptText });
                 this.history.append(chatId, turnMessages);
-                return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
+                return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
               }
 
               const inputItems = nextInputItems ?? initialInput;
 
               const xaiBody = {
-                model: this.model,
+                model: runtimeModel,
                 input: inputItems,
                 tools: xaiTools.length > 0 ? xaiTools : undefined,
                 tool_choice: xaiTools.length > 0 ? 'auto' : undefined,
@@ -1327,7 +1461,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 function: { name: fc.name, arguments: fc.arguments },
               }));
 
-              console.log(`[agent] xai responses: content=${answerText.length} chars, tool_calls=${toolCalls.length}, tools_sent=${xaiTools.length}, model=${this.model}`);
+              console.log(`[agent] xai responses: content=${answerText.length} chars, tool_calls=${toolCalls.length}, tools_sent=${xaiTools.length}, model=${runtimeModel}`);
 
               if (toolCalls.length === 0) {
                 const answer = answerText || '(no response)';
@@ -1340,9 +1474,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 turnMessages.push({ role: 'assistant', content: answer });
                 this.history.append(chatId, turnMessages);
                 if (messages.length > 10) {
-                  this.memory.extractAndSave(chatId, messages, this.model).catch(() => {});
+                  runtimeMemory.extractAndSave(chatId, messages, runtimeModel).catch(() => {});
                 }
-                return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
+                return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
               }
 
               if (!responseId) {
@@ -1379,21 +1513,21 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             const capText = `Hit max tool calls (${MAX_ITERATIONS}).`;
             turnMessages.push({ role: 'assistant', content: capText });
             this.history.append(chatId, turnMessages);
-            return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
+            return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
 
           } else {
           // ── Non-Claude tool-use loop ──
           // Ollama Cloud: native /api/chat (proper tool support, configurable num_ctx)
           // OpenAI: /v1/chat/completions (standard OpenAI format)
 
-          const isOllamaCloud = this.provider === 'ollama-cloud';
+          const isOllamaCloud = runtimeProvider === 'ollama-cloud';
 
           const providerConfig: Record<string, { keyEnv: string; timeout: number }> = {
             'openai': { keyEnv: 'OPENAI_API_KEY', timeout: 60_000 },
             'ollama-cloud': { keyEnv: 'OLLAMA_CLOUD_API_KEY', timeout: 120_000 },
           };
-          const pconf = providerConfig[this.provider];
-          if (!pconf) throw new Error(`Unknown provider: ${this.provider}`);
+          const pconf = providerConfig[runtimeProvider];
+          if (!pconf) throw new Error(`Unknown provider: ${runtimeProvider}`);
 
           const apiKey = process.env[pconf.keyEnv];
           if (!apiKey) throw new Error(`${pconf.keyEnv} not set`);
@@ -1422,24 +1556,24 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           // Check if model supports tools (Ollama Cloud only — cache per model)
           let modelSupportsTools = true;
           if (isOllamaCloud) {
-            if (!ollamaCapabilitiesCache.has(this.model)) {
+            if (!ollamaCapabilitiesCache.has(runtimeModel)) {
               try {
                 const showRes = await fetch('https://ollama.com/api/show', {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-                  body: JSON.stringify({ model: this.model }),
+                  body: JSON.stringify({ model: runtimeModel }),
                   signal: AbortSignal.timeout(5_000),
                 });
                 if (showRes.ok) {
                   const showData = await showRes.json() as { capabilities?: string[] };
-                  ollamaCapabilitiesCache.set(this.model, new Set(showData.capabilities ?? []));
+                  ollamaCapabilitiesCache.set(runtimeModel, new Set(showData.capabilities ?? []));
                 }
               } catch { /* assume tools supported */ }
             }
-            const caps = ollamaCapabilitiesCache.get(this.model);
+            const caps = ollamaCapabilitiesCache.get(runtimeModel);
             if (caps && !caps.has('tools')) {
               modelSupportsTools = false;
-              console.log(`[agent] Model ${this.model} does not support tools — chat-only mode`);
+              console.log(`[agent] Model ${runtimeModel} does not support tools — chat-only mode`);
             }
           }
 
@@ -1457,7 +1591,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               const interruptText = `Stopped. (${toolCallCount} tool call${toolCallCount !== 1 ? 's' : ''}, ${((Date.now() - startMs) / 1000).toFixed(1)}s)`;
               turnMessages.push({ role: 'assistant', content: interruptText });
               this.history.append(chatId, turnMessages);
-              return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
+              return { text: interruptText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
             }
 
             // ── Make the API call ──
@@ -1471,7 +1605,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
                 body: JSON.stringify({
-                  model: this.model,
+                  model: runtimeModel,
                   messages: apiMessages,
                   tools: oaiTools.length > 0 ? oaiTools : undefined,
                   stream: false,
@@ -1488,14 +1622,14 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             } else {
               // OpenAI — standard /v1/chat/completions
               const baseUrl = 'https://api.openai.com/v1';
-              const isGpt5Plus = this.model.includes('gpt-5') || this.model.includes('gpt5');
+              const isGpt5Plus = runtimeModel.includes('gpt-5') || runtimeModel.includes('gpt5');
               const tokenParam = isGpt5Plus ? { max_completion_tokens: this.maxTokens } : { max_tokens: this.maxTokens };
 
               const res = await fetch(`${baseUrl}/chat/completions`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
                 body: JSON.stringify({
-                  model: this.model,
+                  model: runtimeModel,
                   messages: apiMessages,
                   tools: oaiTools.length > 0 ? oaiTools : undefined,
                   ...tokenParam,
@@ -1515,7 +1649,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             const toolCalls = respMsg.tool_calls;
 
             // Log response shape for debugging
-            console.log(`[agent] Response: content=${(respMsg.content || '').length} chars, tool_calls=${toolCalls?.length ?? 0}, tools_sent=${oaiTools.length}, model=${this.model}`);
+            console.log(`[agent] Response: content=${(respMsg.content || '').length} chars, tool_calls=${toolCalls?.length ?? 0}, tools_sent=${oaiTools.length}, model=${runtimeModel}`);
 
             if (!toolCalls || toolCalls.length === 0) {
               let contentStr = (respMsg.content || '').trim();
@@ -1549,9 +1683,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               turnMessages.push({ role: 'assistant', content: answer });
               this.history.append(chatId, turnMessages);
               if (messages.length > 10) {
-                this.memory.extractAndSave(chatId, messages, this.model).catch(() => {});
+                runtimeMemory.extractAndSave(chatId, messages, runtimeModel).catch(() => {});
               }
-              return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
+              return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
             }
 
             // Model wants to call tools
@@ -1606,21 +1740,12 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           const capText = `Hit max tool calls (${MAX_ITERATIONS}).`;
           turnMessages.push({ role: 'assistant', content: capText });
           this.history.append(chatId, turnMessages);
-          return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: this.model, toolCallCount, durationMs: Date.now() - startMs };
+          return { text: capText, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
           } // end else (non-codex providers)
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
-          const errorText = `Error calling ${this.model}: ${errMsg}`;
-          if (onEvent) onEvent({ type: 'response_chunk', chunk: errorText });
-          turnMessages.push({ role: 'assistant', content: errorText });
-          this.history.append(chatId, turnMessages);
-          return {
-            text: errorText,
-            media: allMedia.length > 0 ? allMedia : undefined,
-            model: this.model,
-            toolCallCount,
-            durationMs: Date.now() - startMs,
-          };
+          const errorText = `Error calling ${runtimeModel}: ${errMsg}`;
+          throw new Error(errorText);
         }
       }
 
@@ -1634,7 +1759,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           return {
             text: interruptText,
             media: allMedia.length > 0 ? allMedia : undefined,
-            model: this.model,
+            model: runtimeModel,
             toolCallCount,
             durationMs: Date.now() - startMs,
           };
@@ -1646,9 +1771,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           // then resolve the full Message at the end for tool-loop processing.
           // SDK: messages.stream() returns an iterable of server-sent events plus
           // a finalMessage() method that yields the fully-accumulated Message.
-          const omitSamplingParams = isAnthropicSamplingDeprecatedModel(this.model);
+          const omitSamplingParams = isAnthropicSamplingDeprecatedModel(runtimeModel);
           const requestParams: Record<string, unknown> = {
-            model: this.model,
+            model: runtimeModel,
             max_tokens: this.maxTokens,
             system: systemPrompt,
             messages: messages as Anthropic.MessageParam[],
@@ -1659,7 +1784,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             delete requestParams.temperature;
           }
 
-          const stream = this.client.messages.stream(
+          const stream = runtimeClient.messages.stream(
             requestParams as unknown as Anthropic.MessageCreateParams,
             { signal: ac.signal },
           );
@@ -1690,7 +1815,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             return {
               text: interruptText,
               media: allMedia.length > 0 ? allMedia : undefined,
-              model: this.model,
+              model: runtimeModel,
               toolCallCount,
               durationMs: Date.now() - startMs,
             };
@@ -1800,13 +1925,13 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
           // ── Memory: Extract and save (fire-and-forget) ───
           if (messages.length > 10) {
-            this.memory.extractAndSave(chatId, messages, this.model).catch(() => {});
+            runtimeMemory.extractAndSave(chatId, messages, runtimeModel).catch(() => {});
           }
 
           return {
             text: finalText || '(no response)',
             media: allMedia.length > 0 ? allMedia : undefined,
-            model: this.model,
+            model: runtimeModel,
             toolCallCount,
             durationMs: Date.now() - startMs,
           };
@@ -1820,7 +1945,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
         return {
           text: '(unexpected response)',
           media: allMedia.length > 0 ? allMedia : undefined,
-          model: this.model,
+          model: runtimeModel,
           toolCallCount,
           durationMs: Date.now() - startMs,
         };
@@ -1834,7 +1959,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
       return {
         text: capText,
         media: allMedia.length > 0 ? allMedia : undefined,
-        model: this.model,
+        model: runtimeModel,
         toolCallCount,
         durationMs: Date.now() - startMs,
       };

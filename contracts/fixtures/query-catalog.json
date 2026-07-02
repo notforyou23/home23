@@ -1,0 +1,57 @@
+{
+  "agent": "jerry",
+  "available": true,
+  "reason": null,
+  "endpoints": {
+    "run": "/home23/api/query/run",
+    "stream": "/home23/api/query/stream",
+    "export": "/home23/api/query/export"
+  },
+  "models": [
+    {
+      "id": "gpt-5.5",
+      "name": "GPT 5.5",
+      "provider": "openai",
+      "providerLabel": "OpenAI",
+      "kind": "chat",
+      "source": "catalog"
+    }
+  ],
+  "defaults": {
+    "model": "gpt-5.5",
+    "provider": "openai-codex",
+    "mode": "dive",
+    "enablePGSByDefault": false,
+    "pgsSweepModel": "claude-sonnet-4-7",
+    "pgsSweepProvider": "anthropic",
+    "pgsSynthModel": "claude-opus-4-8",
+    "pgsSynthProvider": "anthropic",
+    "pgsDepth": 0.25
+  },
+  "brains": [
+    {
+      "id": "5a8323c3fe6fd70b",
+      "routeKey": "5a8323c3fe6fd70b",
+      "name": "brain",
+      "displayName": "Jerry Brain",
+      "sourceLabel": "Jerry"
+    }
+  ],
+  "selectedBrain": {
+    "id": "5a8323c3fe6fd70b",
+    "routeKey": "5a8323c3fe6fd70b",
+    "name": "brain",
+    "displayName": "Jerry Brain",
+    "sourceLabel": "Jerry"
+  },
+  "cosmo": {
+    "apiReachable": true,
+    "running": false,
+    "activeRun": false
+  },
+  "streaming": false,
+  "limits": {
+    "maxQueryChars": 12000
+  },
+  "lastRouteError": null
+}

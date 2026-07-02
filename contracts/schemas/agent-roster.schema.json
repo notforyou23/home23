@@ -2,18 +2,23 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://home23.local/contracts/agent-roster.schema.json",
   "title": "Home23 Agent Roster",
-  "type": "object",
-  "additionalProperties": true,
-  "required": ["agents"],
-  "properties": {
-    "agents": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/agent" }
-    },
-    "currentAgent": { "type": ["string", "null"] },
-    "primaryAgent": { "type": ["string", "null"] }
-  },
+  "allOf": [
+    { "$ref": "#/$defs/agentRosterResponse" }
+  ],
   "$defs": {
+    "agentRosterResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["agents"],
+      "properties": {
+        "agents": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/agent" }
+        },
+        "currentAgent": { "type": ["string", "null"] },
+        "primaryAgent": { "type": ["string", "null"] }
+      }
+    },
     "agent": {
       "type": "object",
       "additionalProperties": true,

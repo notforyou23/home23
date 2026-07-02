@@ -45,6 +45,17 @@ const commonEnv = {
   XAI_API_KEY: secrets.providers?.xai?.apiKey || '',
 };
 
+const sharedServiceEnv = {
+  HOME23_AGENT: '',
+  INSTANCE_ID: '',
+  DASHBOARD_PORT: '',
+  COSMO_DASHBOARD_PORT: '',
+  REALTIME_PORT: '',
+  MCP_HTTP_PORT: '',
+  COSMO_RUNTIME_DIR: '',
+  COSMO_WORKSPACE_PATH: '',
+};
+
 module.exports = {
   apps: [
 
@@ -126,17 +137,18 @@ module.exports = {
       env: { ...commonEnv, HOME23_AGENT: 'forrest', COSMO_RUNTIME_DIR: path.join(HOME23, 'instances', 'forrest', 'brain'), COSMO_WORKSPACE_PATH: path.join(HOME23, 'instances', 'forrest', 'workspace'), DASHBOARD_PORT: '5012', COSMO_DASHBOARD_PORT: '5012', REALTIME_PORT: '5011', MCP_HTTP_PORT: '5013', INSTANCE_ID: 'home23-forrest' },
     },
 
-    // ── pm2 watchdog (shared) ──
+    // ── pm2 watchdog (shared, disabled pending redesign) ──
     {
       name: 'home23-watchdog',
       script: path.join(HOME23, 'scripts', 'home23-pm2-watchdog-daemon.cjs'),
       cwd: HOME23,
       filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH'],
       cron_restart: '0 0 31 2 *',
-      autorestart: true, watch: false, merge_logs: true,
+      autostart: false,
+      autorestart: false, watch: false, merge_logs: true,
       out_file: path.join(HOME23, 'logs', 'pm2-watchdog-out.log'),
       error_file: path.join(HOME23, 'logs', 'pm2-watchdog-err.log'),
-      env: { HOME23_WATCHDOG_INTERVAL_MS: '60000' },
+      env: { ...sharedServiceEnv, HOME23_WATCHDOG_INTERVAL_MS: '60000', HOME23_WATCHDOG_DAEMON_DISABLED: 'true' },
     },
 
     // ── chrome-cdp (shared) ──
@@ -148,7 +160,7 @@ module.exports = {
       autorestart: true, watch: false, merge_logs: true,
       out_file: path.join(HOME23, 'logs', 'chrome-cdp-out.log'),
       error_file: path.join(HOME23, 'logs', 'chrome-cdp-err.log'),
-      env: { CDP_PORT: '9222' },
+      env: { ...sharedServiceEnv, CDP_PORT: '9222' },
     },
 
     // ── evobrew (shared) ──

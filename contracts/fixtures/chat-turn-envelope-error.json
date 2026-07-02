@@ -1,0 +1,15 @@
+{
+  "type": "turn",
+  "turn_id": "t_contract_error",
+  "chat_id": "ios_contract_smoke",
+  "status": "error",
+  "role": "assistant",
+  "started_at": "2026-06-26T14:28:00Z",
+  "ended_at": "2026-06-26T14:28:04Z",
+  "model": "gpt-5.5",
+  "provider": "openai-codex",
+  "last_seq": 1,
+  "error_code": "provider_error",
+  "error_message": "Provider request failed",
+  "error": "Provider request failed"
+}

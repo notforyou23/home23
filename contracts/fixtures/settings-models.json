@@ -1,0 +1,30 @@
+{
+  "agent": "jerry",
+  "currentAgent": "jerry",
+  "primaryAgent": "jerry",
+  "chat": {
+    "defaultProvider": "openai-codex",
+    "defaultModel": "gpt-5.5"
+  },
+  "aliases": {
+    "opus": {
+      "provider": "anthropic",
+      "model": "claude-opus-4-8"
+    },
+    "codex": {
+      "provider": "openai-codex",
+      "model": "gpt-5.5"
+    }
+  },
+  "providers": {
+    "anthropic": {
+      "defaultModels": ["claude-sonnet-4-7", "claude-opus-4-8"]
+    },
+    "openai-codex": {
+      "defaultModels": ["gpt-5.5", "gpt-5.4-mini"]
+    }
+  },
+  "engineRoles": {
+    "query": "glm-5.2:cloud"
+  }
+}

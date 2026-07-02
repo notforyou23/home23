@@ -109,8 +109,8 @@ function resolveMusicGeneratorConfig(): MusicGeneratorConfig {
   const providers = config.providers as Record<string, { apiKey?: string; baseUrl?: string }> | undefined;
   const textBaseUrl = normalizeAnthropicCompatibleBase(providers?.minimax?.baseUrl);
   const textModel = config.chat?.defaultProvider === 'minimax'
-    ? (config.chat?.defaultModel || 'MiniMax-M2.7')
-    : 'MiniMax-M2.7';
+    ? (config.chat?.defaultModel || 'MiniMax-M3')
+    : 'MiniMax-M3';
 
   if (provider === 'minimax') {
     return {

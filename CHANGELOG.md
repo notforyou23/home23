@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.0 (2026-07-02)
+
+### Release posture
+- Promoted Home23 to the 1.0.0 release line with package metadata and lockfile aligned.
+- Added a fresh-install onboarding path and release handoff receipt so a new operator can install, start, validate, and orient without reading the whole historical design archive.
+- Added contract validation scripts and Apple/client route schemas/fixtures for the dashboard, chat, settings, query, home-surface, tile, worker, and device-facing API surfaces.
+
+### Runtime hardening
+- Resident agency closes live-problem and cron bootcamp pursuits on independent system receipts while keeping self-only closure evidence provisional.
+- Bridge chat publishing now suppresses stale high-salience action requests without interrupting chat, while preserving a log receipt for operator review.
+- Scheduler guardrails defer stampedes, cap concurrent scheduled work, escalate repeated failures, and preserve semantic run receipts.
+
+### COSMO23 and research
+- COSMO23 research acceptance moved from prose obligations to source-route receipts, artifact validation, guided task output contracts, and artifact-first completed-run query readback.
+- Completed-run artifact inventories now expose exact raw-artifact counts, Archive identifier status, extracted entries, forum/blog candidates, route outcomes, invalid JSON status, and markdown report headings.
+- Query and PGS regressions remain covered for small-run direct fallback, one-partition synthesis skip, MiniMax routing, Claude Opus 4.8 request shape, and artifact-grounded answers.
+
+### Verification
+- Passed `npm run build`.
+- Passed `npm test` with 582 tests.
+- Passed `npm run test:contracts`.
+- Passed focused COSMO23 query/PGS/provider/artifact regressions.
+- Passed read-only live route validation with `npm run test:contracts:live`.
+
 ## 0.6.0 (2026-05-16)
 
 ### Operating-system loop

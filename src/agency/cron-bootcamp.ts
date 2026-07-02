@@ -10,7 +10,7 @@ interface AgencyKernelLike {
   intake?(input: Record<string, unknown>): Promise<{ pursuit?: { id?: string } }>;
   recordConsequence?(input: Record<string, unknown>): Promise<unknown> | unknown;
   pursuit?(id: string): { id?: string; status?: string; nextMove?: string; summary?: string } | null | undefined;
-  config?: { mode?: string };
+  config?: { mode?: string; cronBootcamp?: { retireEnabled?: boolean } };
 }
 
 export interface CronBootcampAuditResult {
@@ -207,7 +207,7 @@ export async function reviewBoundRecurringCronJobsForAgency({
     skippedNonRecurring: 0,
     failed: [],
   };
-  const liveMode = kernel.config?.mode === 'live';
+  const liveMode = kernel.config?.mode === 'live' && kernel.config?.cronBootcamp?.retireEnabled === true;
 
   for (const job of scheduler.getJobs()) {
     result.checked += 1;

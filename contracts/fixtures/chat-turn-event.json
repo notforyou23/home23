@@ -1,11 +1,11 @@
 {
   "type": "event",
-  "turn_id": "turn_123",
+  "turn_id": "t_contract_123",
   "seq": 1,
-  "ts": "2026-04-28T12:00:00Z",
-  "kind": "assistant_delta",
+  "ts": "2026-06-26T14:28:00Z",
+  "kind": "response_chunk",
   "data": {
-    "type": "delta",
+    "type": "response_chunk",
     "chunk": "Hello from Home23."
   }
 }

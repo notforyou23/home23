@@ -263,7 +263,7 @@ listener off().
 No wiring yet — this task only adds the module and its tests. Migration
 of home23-chat.js to use it comes next.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -459,7 +459,7 @@ No visible behavior change. Prereq for the DOM-move transition in the
 next task: with state flowing through one store, views can subscribe to
 changes rather than polling globals.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -629,7 +629,7 @@ trap handling. Backdrop click still closes via event handler.
 
 Fixes pain point A (state/message sync between modes) directly.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -853,7 +853,7 @@ chatState streaming events — no more per-view button swapping.
 Fixes pain point B (control clutter) for the tile; same menu component
 reused by the overlay in the next task.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -991,7 +991,7 @@ Native <dialog> handles Esc + backdrop + focus trap.
 
 Fixes pain point B for the overlay; consistent menu across modes.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1253,7 +1253,7 @@ where overlay fills viewport, consistent ⋯ menu + icon button styles.
 
 Fixes pain point E (sizing / cramped).
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```
@@ -1442,7 +1442,7 @@ close wiring is nice-to-have separate change if not needed).
 Fixes pain point E for standalone; completes the 5-step rollout from
 the spec.
 
-Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 EOF
 )"
 ```

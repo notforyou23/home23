@@ -27,7 +27,13 @@ export class BridgeChatPublisher {
         temporalContext: this.getTemporalContext ? this.getTemporalContext() : null,
       });
       if (attention.mode !== 'interruptive') {
-        this.logger.info?.(`[publish] bridge-chat suppressed ambient observation: ${attention.reason}`);
+        // Don't log routine ambient suppressions — they fire every cycle
+        // during deep-work rhythm and create log spam. Only log if the
+        // reason is novel (not the common deep_work or protected_rhythm cases).
+        const routineReasons = ['deep_work_suppresses_non_action', 'protected_rhythm_defers_non_urgent', 'routine_observation'];
+        if (!routineReasons.includes(attention.reason)) {
+          this.logger.info?.(`[publish] bridge-chat suppressed ambient observation: ${attention.reason}`);
+        }
         return null;
       }
       observation.attentionDecision = attention;

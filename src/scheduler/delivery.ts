@@ -146,7 +146,7 @@ export class DeliveryManager {
           : `[scheduler] Job "${job.name}" failed: ${result.error ?? 'unknown error'}`;
       case 'summary':
         return result.status === 'ok'
-          ? `[scheduler] ${job.name}: ok (${result.durationMs}ms)`
+          ? this.formatSummarySuccess(job, result)
           : `[scheduler] ${job.name}: failed — ${result.error ?? 'unknown error'}`;
       case 'failures':
         return result.status === 'error'
@@ -160,5 +160,26 @@ export class DeliveryManager {
           ? result.response ?? `[scheduler] Job "${job.name}" completed successfully.`
           : `[scheduler] Job "${job.name}" failed: ${result.error ?? 'unknown error'}`;
     }
+  }
+
+  private formatSummarySuccess(job: CronJob, result: JobResult): string {
+    const response = this.humanSummaryExcerpt(result.response);
+    if (!response) {
+      return `[scheduler] ${job.name}: ok (${result.durationMs}ms)`;
+    }
+    return response;
+  }
+
+  private humanSummaryExcerpt(response: string | undefined): string | null {
+    if (!response) return null;
+
+    const humanSection = response.split(/\n+AGENCY_INTAKE_PACKET:/)[0]?.trim() ?? '';
+    const normalized = humanSection.replace(/\n{3,}/g, '\n\n').trim();
+    if (!normalized) return null;
+
+    const maxLength = 2800;
+    return normalized.length > maxLength
+      ? `${normalized.slice(0, maxLength).trimEnd()}...`
+      : normalized;
   }
 }

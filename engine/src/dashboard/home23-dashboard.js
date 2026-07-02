@@ -27,6 +27,20 @@ let goodLifeOverlayState = {
   selectedProblemId: null,
 };
 let residentHomeLatestState = null;
+let humanHomeRefreshPromise = null;
+let briefsState = {
+  items: [],
+  selectedId: null,
+  selected: null,
+  pendingSelectedId: null,
+  lastLoadedAt: null,
+};
+let homeTileLayoutState = {
+  layout: [],
+  hiddenTiles: [],
+};
+let homeTileLayoutControlsBound = false;
+let homeTileLayoutChannel = null;
 let workersState = {
   workers: [],
   templates: [],
@@ -49,6 +63,11 @@ const DASHBOARD_SCOPE_FALLBACK = {
     kind: 'mixed',
     chip: 'Workers',
     summaryTemplate: 'Workers are reusable house capabilities. They run through {{dashboardAgent}}\'s connector, keep their own workspaces, and feed receipts back into house-agent memory.',
+  },
+  briefs: {
+    kind: 'mixed',
+    chip: 'Jerry + Forrest',
+    summaryTemplate: 'Briefs collects human-facing reports, cron deliveries, worker receipts, and agent documents from Jerry and Forrest into readable dashboard pages.',
   },
   agency: {
     kind: 'dashboard',
@@ -156,20 +175,45 @@ const enginePulse = {
 };
 
 // ── Init ──
+let dashboardInitStarted = false;
 
 async function init() {
+  if (dashboardInitStarted) return;
+  dashboardInitStarted = true;
   updateClocks();
   setInterval(updateClocks, 10000);
-  await loadDashboardScopeRegistry();
-  await loadAgents();
-  refreshDashboardScopeUI();
   setupTabHandlers();
   setupOrganDrawer();
+  setupHumanHomeSurface();
   setupResidentHomeSurface();
   setupWorkersSurface();
+  setupBriefsSurface();
+  const selectedFromHash = selectInitialDashboardTabFromHash();
   connectEnginePulse();
-  loadResidentHomeSurface().catch(() => { /* agency bridge may still be booting */ });
+
+  Promise.allSettled([
+    loadDashboardScopeRegistry(),
+    loadAgents(),
+  ]).then(() => {
+    refreshDashboardScopeUI();
+    refreshDashboardIdentityUI();
+    if (currentTab === 'home') loadHumanHomeSurface().catch(renderHumanHomeError);
+  });
+
+  if (!selectedFromHash && currentTab === 'agency') {
+    loadAgencySurface().catch(renderAgencySurfaceError);
+  } else if (!selectedFromHash && currentTab === 'workers') {
+    loadWorkersSurface().catch(() => {});
+  } else if (!selectedFromHash && currentTab === 'briefs') {
+    loadBriefsSurface().catch(() => {});
+  }
   startAutoRefresh();
+
+  // Some browsers expose the hash after the initial DOM startup path. Re-apply
+  // once without forcing Home to stay active when a deep link was requested.
+  setTimeout(() => {
+    selectInitialDashboardTabFromHash();
+  }, 0);
 
   // Update pulse "ago" timer every second
   setInterval(updatePulseAgo, 1000);
@@ -181,11 +225,15 @@ async function init() {
   }, 30000);
 
   setInterval(() => {
-    if (currentTab === 'agency') loadAgencySurface().catch(() => {});
+    if (currentTab === 'agency') loadAgencySurface().catch(renderAgencySurfaceError);
   }, 15000);
 
   setInterval(() => {
-    if (currentTab === 'home') loadResidentHomeSurface().catch(() => {});
+    if (currentTab === 'briefs') loadBriefsSurface({ preserveSelection: true }).catch(() => {});
+  }, 30000);
+
+  setInterval(() => {
+    if (currentTab === 'home') loadHumanHomeSurface().catch(() => {});
   }, 15000);
 }
 
@@ -1177,6 +1225,16 @@ function syncOrganDrawerForTab() {
   }
 }
 
+function selectDashboardTab(tabKey) {
+  const tab = tabKey ? document.querySelector(`.h23-tab[data-tab="${tabKey}"]`) : null;
+  if (!tab) return false;
+  if (currentTab === tabKey && document.getElementById(`panel-${tabKey}`)?.classList.contains('active')) {
+    return true;
+  }
+  tab.click();
+  return true;
+}
+
 function setupTabHandlers() {
   document.querySelectorAll('.h23-tab[data-tab]').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -1193,6 +1251,9 @@ function setupTabHandlers() {
 
       tab.classList.add('active');
       currentTab = tab.dataset.tab;
+      if (currentTab && window.location.hash !== `#${currentTab}`) {
+        window.history.replaceState(null, '', `#${currentTab}`);
+      }
       refreshDashboardScopeUI();
       syncOrganDrawerForTab();
 
@@ -1202,6 +1263,9 @@ function setupTabHandlers() {
       // Brain Map tab: initialize on first visit
       if (currentTab === 'brain-map') {
         if (typeof initBrainMap === 'function') initBrainMap();
+        if (typeof setBrainMapActive === 'function') setBrainMapActive(true);
+      } else if (typeof setBrainMapActive === 'function') {
+        setBrainMapActive(false);
       }
 
       // Query tab: initialize on first visit (resolves current dashboard agent brain via cosmo23).
@@ -1213,14 +1277,642 @@ function setupTabHandlers() {
         loadWorkersSurface().catch(() => {});
       }
 
-      if (currentTab === 'agency') {
-        loadAgencySurface().catch(() => {});
+      if (currentTab === 'briefs') {
+        loadBriefsSurface().catch(() => {});
       }
 
-      if (currentTab === 'home') loadResidentHomeSurface().catch(() => {});
+      if (currentTab === 'agency') {
+        loadAgencySurface().catch(renderAgencySurfaceError);
+      }
+
+      if (currentTab === 'home') loadHumanHomeSurface().catch(renderHumanHomeError);
 
     });
   });
+}
+
+function selectInitialDashboardTabFromHash() {
+  const tabKey = String(window.location.hash || '').replace(/^#/, '');
+  if (!tabKey || tabKey === 'home') return false;
+  return selectDashboardTab(tabKey);
+}
+
+window.addEventListener('hashchange', () => {
+  const tabKey = String(window.location.hash || '').replace(/^#/, '');
+  if (!tabKey) return;
+  selectDashboardTab(tabKey);
+});
+
+// ── Human Home ──
+
+function setupHumanHomeSurface() {
+  setupHomeTileLayoutControls();
+  refreshHomeTileLayout().catch(() => {});
+  setupVibeActions();
+  document.getElementById('human-sauna-actions')?.addEventListener('click', (event) => {
+    const preset = event.target.closest('[data-sauna-preset]');
+    if (preset) {
+      event.preventDefault();
+      setSaunaPreset(Number(preset.dataset.target), Number(preset.dataset.duration));
+      return;
+    }
+
+    const actionButton = event.target.closest('[data-sauna-action]');
+    if (!actionButton) return;
+    event.preventDefault();
+    runHumanSaunaAction(actionButton.dataset.saunaAction, actionButton).catch((err) => {
+      setText('human-sauna-status', 'action failed');
+      setText('human-sauna-subtitle', err?.message || 'Sauna action failed');
+    });
+  });
+  ['human-sauna-target', 'human-sauna-duration'].forEach((id) => {
+    document.getElementById(id)?.addEventListener('input', (event) => {
+      event.currentTarget.dataset.userEdited = 'true';
+    });
+  });
+}
+
+function setupHomeTileLayoutControls() {
+  if (homeTileLayoutControlsBound) return;
+  homeTileLayoutControlsBound = true;
+
+  const grid = document.querySelector('.h23-human-grid');
+  grid?.addEventListener('click', (event) => {
+    const moveButton = event.target.closest('[data-home-tile-move]');
+    if (!moveButton) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const card = moveButton.closest('[data-home-tile-id]');
+    const delta = Number(moveButton.dataset.homeTileMove || 0);
+    if (!card || !Number.isFinite(delta) || delta === 0) return;
+    moveHomeTile(card.dataset.homeTileId, delta, moveButton).catch((err) => {
+      console.warn('[home tiles] move failed', err);
+    });
+  });
+
+  grid?.addEventListener('change', (event) => {
+    const sizeSelect = event.target.closest('[data-home-tile-size-control]');
+    if (!sizeSelect) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const card = sizeSelect.closest('[data-home-tile-id]');
+    if (!card) return;
+    resizeHomeTile(card.dataset.homeTileId, sizeSelect.value, sizeSelect).catch((err) => {
+      console.warn('[home tiles] resize failed', err);
+    });
+  });
+
+  if (typeof BroadcastChannel !== 'undefined') {
+    homeTileLayoutChannel = new BroadcastChannel('home23-dashboard-tiles');
+    homeTileLayoutChannel.addEventListener('message', () => {
+      refreshHomeTileLayout().catch(() => {});
+    });
+  }
+}
+
+async function refreshHomeTileLayout() {
+  const config = await apiFetch('/home23/api/tiles/config', { timeoutMs: 8000 });
+  homeTileLayoutState = {
+    layout: Array.isArray(config?.layout) ? config.layout : [],
+    hiddenTiles: Array.isArray(config?.hiddenTiles) ? config.hiddenTiles : [],
+  };
+  applyHomeTileLayout(homeTileLayoutState);
+}
+
+function applyHomeTileLayout(state) {
+  const layout = Array.isArray(state?.layout) ? state.layout : [];
+  const hiddenIds = new Set((state?.hiddenTiles || []).map((item) => item.tileId));
+  const byId = new Map(layout.map((item, index) => [item.tileId, { ...item, order: index }]));
+  const managedIds = new Set([...byId.keys(), ...hiddenIds]);
+
+  document.querySelectorAll('[data-home-tile-id]').forEach((card) => {
+    const tileId = card.dataset.homeTileId;
+    const layoutItem = byId.get(tileId);
+    if (managedIds.has(tileId) && (!layoutItem || hiddenIds.has(tileId))) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    if (layoutItem) {
+      card.style.order = String(layoutItem.order);
+      card.dataset.homeTileSize = layoutItem.size || 'third';
+    }
+    renderHomeTileInlineControls(card, layoutItem);
+  });
+}
+
+function renderHomeTileInlineControls(card, layoutItem) {
+  if (!card || card.tagName === 'BUTTON') return;
+  let tools = card.querySelector(':scope > .h23-home-tile-tools');
+  if (!layoutItem) {
+    if (tools) tools.remove();
+    return;
+  }
+  if (!tools) {
+    tools = document.createElement('div');
+    tools.className = 'h23-home-tile-tools';
+    tools.innerHTML = `
+      <button type="button" data-home-tile-move="-1" title="Move earlier" aria-label="Move tile earlier">↑</button>
+      <button type="button" data-home-tile-move="1" title="Move later" aria-label="Move tile later">↓</button>
+      <select data-home-tile-size-control aria-label="Tile width">
+        <option value="third">third</option>
+        <option value="half">half</option>
+        <option value="full">full</option>
+      </select>
+    `;
+    card.appendChild(tools);
+  }
+  const select = tools.querySelector('[data-home-tile-size-control]');
+  if (select && select.value !== layoutItem.size) select.value = layoutItem.size || 'third';
+}
+
+async function mutateHomeTileLayout(mutator) {
+  const data = await apiFetch('/home23/api/settings/tiles', { timeoutMs: 8000 });
+  const tiles = data?.tiles || {};
+  const homeLayout = Array.isArray(tiles.homeLayout) ? tiles.homeLayout.map((item) => ({
+    tileId: item.tileId,
+    enabled: item.enabled !== false,
+    size: item.size || item.tile?.sizeDefault || 'third',
+  })) : [];
+  mutator(homeLayout);
+  const res = await fetch('/home23/api/settings/tiles', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tiles: {
+        version: 1,
+        homeLayout,
+        customTiles: tiles.customTiles || [],
+      },
+    }),
+  });
+  const saved = await res.json();
+  if (!res.ok || saved?.ok === false) throw new Error(saved?.error || 'tile layout save failed');
+  await refreshHomeTileLayout();
+  homeTileLayoutChannel?.postMessage({ type: 'tiles-updated', at: Date.now() });
+}
+
+async function moveHomeTile(tileId, delta, control = null) {
+  if (!tileId) return;
+  if (control) control.disabled = true;
+  try {
+    await mutateHomeTileLayout((homeLayout) => {
+      const fromIndex = homeLayout.findIndex((item) => item.tileId === tileId);
+      if (fromIndex < 0) return;
+      const toIndex = Math.max(0, Math.min(homeLayout.length - 1, fromIndex + delta));
+      if (toIndex === fromIndex) return;
+      const [entry] = homeLayout.splice(fromIndex, 1);
+      homeLayout.splice(toIndex, 0, entry);
+    });
+  } finally {
+    if (control) control.disabled = false;
+  }
+}
+
+async function resizeHomeTile(tileId, size, control = null) {
+  if (!tileId || !['third', 'half', 'full'].includes(size)) return;
+  if (control) control.disabled = true;
+  try {
+    await mutateHomeTileLayout((homeLayout) => {
+      const item = homeLayout.find((entry) => entry.tileId === tileId);
+      if (item) item.size = size;
+    });
+  } finally {
+    if (control) control.disabled = false;
+  }
+}
+
+function settledValue(result) {
+  return result?.status === 'fulfilled' ? result.value : null;
+}
+
+async function loadHumanHomeSurface() {
+  if (humanHomeRefreshPromise) return humanHomeRefreshPromise;
+
+  humanHomeRefreshPromise = (async () => {
+    updateClocks();
+    if (primaryAgent) {
+      void loadVibeTile(primaryAgent, {
+        imageId: 'home-vibe-image',
+        captionId: 'home-vibe-caption',
+        galleryHrefId: 'home-vibe-gallery-link',
+      }).catch(() => {});
+    }
+
+    const tasks = [];
+    const latest = {};
+    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/outside-weather/data', { timeoutMs: 8000 }), (data) => {
+      renderHumanSensor('weather', data, 'Weather', 'Outside sensor');
+    });
+    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/sauna-control/data', { timeoutMs: 8000 }), renderHumanSauna);
+    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/pool-screenlogic/data', { timeoutMs: 8000 })
+      .then((data) => data || offlineTilePayload('pool-screenlogic', 'Offline', '—', 'ScreenLogic unavailable'))
+      .catch(() => offlineTilePayload('pool-screenlogic', 'Offline', '—', 'ScreenLogic unavailable')), (data) => {
+      renderHumanSensor('pool', data, 'Pool', 'ScreenLogic');
+    });
+    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/live-problems`, { timeoutMs: 8000 }), renderHumanIssues);
+    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/good-life`, { timeoutMs: GOOD_LIFE_API_TIMEOUT_MS }), renderHumanGoodLife);
+    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/state`, { timeoutMs: 8000 }), (data) => {
+      latest.state = data;
+      renderJerryVoiceTile(latest.pulse, latest.homeSummary, latest.state, latest.agency);
+    });
+    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/agency/state', { timeoutMs: 8000 }), (data) => {
+      latest.agency = data;
+      renderJerryVoiceTile(latest.pulse, latest.homeSummary, latest.state, latest.agency);
+    });
+    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/pulse/latest`, { timeoutMs: 5000 }), (data) => {
+      latest.pulse = data;
+      renderJerryVoiceTile(latest.pulse, latest.homeSummary, latest.state, latest.agency);
+    });
+    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/home/summary`, { timeoutMs: 5000 }), (data) => {
+      latest.homeSummary = data;
+      renderJerryVoiceTile(latest.pulse, latest.homeSummary, latest.state, latest.agency);
+    });
+    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/briefs?limit=12&compact=1', { timeoutMs: 8000 }), renderHomeBriefs, () => {
+      setText('human-briefs-status', 'offline');
+      setHtml('human-briefs-list', '<div class="h23-human-brief-empty">Briefs unavailable.</div>');
+    });
+    await Promise.allSettled(tasks);
+  })().finally(() => {
+    humanHomeRefreshPromise = null;
+  });
+
+  return humanHomeRefreshPromise;
+}
+
+function scheduleHumanHomeFetch(tasks, promise, onValue, onError = null) {
+  const task = promise
+    .then((data) => {
+      if (data) onValue(data);
+    })
+    .catch((err) => {
+      if (onError) onError(err);
+    });
+  tasks.push(task);
+  return task;
+}
+
+function renderHumanSensor(prefix, payload, fallbackStatus, fallbackSubtitle) {
+  const content = payload?.content || {};
+  setText(`human-${prefix}-status`, content.status || fallbackStatus);
+  setText(`human-${prefix}-value`, content.value || '--');
+  setText(`human-${prefix}-subtitle`, content.subtitle || fallbackSubtitle);
+  const metrics = Array.isArray(content.metrics) ? content.metrics.slice(0, 4) : [];
+  setHtml(`human-${prefix}-metrics`, metrics.map((metric) => `
+    <div class="h23-human-metric">
+      <span>${escapeHtml(metric.label || '')}</span>
+      <strong>${escapeHtml(metric.value || '--')}</strong>
+    </div>
+  `).join(''));
+}
+
+function offlineTilePayload(tileId, status, value, subtitle) {
+  return {
+    tileId,
+    fetchedAt: new Date().toISOString(),
+    content: {
+      status,
+      value,
+      subtitle,
+      metrics: [],
+    },
+    actions: [],
+  };
+}
+
+function renderHumanSauna(payload) {
+  renderHumanSensor('sauna', payload, 'Sauna', 'Huum');
+  const content = payload?.content || {};
+  const valueNumber = parseFloat(String(content.value || '').replace(/[^\d.-]/g, ''));
+  const heat = Number.isFinite(valueNumber)
+    ? Math.max(0.05, Math.min(1, (valueNumber - 60) / 160))
+    : 0.12;
+  const gauge = document.getElementById('human-sauna-gauge');
+  if (gauge) {
+    gauge.style.setProperty('--sauna-heat', String(heat));
+    gauge.classList.toggle('heating', /\byes\b/i.test(String(content.metrics?.find?.((m) => m.label === 'Heating')?.value || '')));
+  }
+
+  const startAction = (payload?.actions || []).find((action) => action.id === 'start')
+    || (payload?.actions || []).find((action) => action.id === 'prestage');
+  applySaunaActionDefaults(startAction);
+  setHtml('human-sauna-actions', renderHumanSaunaActions(payload?.actions || []));
+}
+
+function applySaunaActionDefaults(action) {
+  if (!action?.fields) return;
+  for (const field of action.fields) {
+    const input = document.getElementById(field.id === 'targetTemperature' ? 'human-sauna-target' : field.id === 'duration' ? 'human-sauna-duration' : '');
+    if (!input || input.dataset.userEdited === 'true' || document.activeElement === input) continue;
+    if (field.defaultValue != null) input.value = String(field.defaultValue);
+  }
+}
+
+function renderHumanSaunaActions(actions) {
+  const actionButtons = actions
+    .filter((action) => ['prestage', 'start', 'stop'].includes(action.id))
+    .map((action) => `
+      <button class="h23-human-action ${action.id === 'stop' ? 'danger' : 'primary'}" type="button" data-sauna-action="${escapeHtml(action.id)}">
+        ${escapeHtml(action.label || action.id)}
+      </button>
+    `).join('');
+  return `
+    <div class="h23-human-sauna-command">
+      ${actionButtons || '<span class="h23-human-action-note">Sauna actions unavailable</span>'}
+    </div>
+    <div class="h23-human-sauna-presets" aria-label="Sauna presets">
+      <button type="button" data-sauna-preset data-target="150" data-duration="60">Warm</button>
+      <button type="button" data-sauna-preset data-target="190" data-duration="180">Standard</button>
+      <button type="button" data-sauna-preset data-target="210" data-duration="120">Inferno</button>
+    </div>
+  `;
+}
+
+function setSaunaPreset(targetTemperature, duration) {
+  const targetInput = document.getElementById('human-sauna-target');
+  const durationInput = document.getElementById('human-sauna-duration');
+  if (targetInput && Number.isFinite(targetTemperature)) {
+    targetInput.value = String(targetTemperature);
+    targetInput.dataset.userEdited = 'true';
+  }
+  if (durationInput && Number.isFinite(duration)) {
+    durationInput.value = String(duration);
+    durationInput.dataset.userEdited = 'true';
+  }
+}
+
+async function runHumanSaunaAction(actionId, button) {
+  if (!actionId) return;
+  const payload = actionId === 'stop'
+    ? {}
+    : {
+        targetTemperature: Number(document.getElementById('human-sauna-target')?.value || 190),
+        duration: Number(document.getElementById('human-sauna-duration')?.value || 180),
+      };
+  const confirmText = actionId === 'stop'
+    ? 'Stop the sauna now?'
+    : `Start the sauna at ${payload.targetTemperature}°F for ${payload.duration} minutes?`;
+  if (!window.confirm(confirmText)) return;
+
+  if (button) button.disabled = true;
+  setText('human-sauna-status', 'sending');
+  try {
+    const result = await apiFetch(`/home23/api/tiles/sauna-control/actions/${encodeURIComponent(actionId)}`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      timeoutMs: 15000,
+    });
+    if (result?.data) renderHumanSauna(result.data);
+    else await loadHumanHomeSurface();
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function renderHumanIssues(payload) {
+  if (!payload?.available) {
+    setText('human-issues-status', 'offline');
+    setText('human-issues-value', '--');
+    setText('human-issues-subtitle', 'Live problem route unavailable');
+    return;
+  }
+  const counts = payload.snapshot?.counts || {};
+  const open = Number(counts.open || 0) + Number(counts.chronic || 0);
+  setText('human-issues-status', open > 0 ? 'needs attention' : 'clear');
+  setText('human-issues-value', open > 0 ? String(open) : 'Clear');
+  setText('human-issues-subtitle', open > 0 ? `${open} open live problem${open === 1 ? '' : 's'}` : 'No open live problems');
+}
+
+function renderHumanGoodLife(payload) {
+  const state = payload?.state || payload || {};
+  const policy = state.policy?.mode || state.policy || '--';
+  const lanes = Object.entries(state.lanes || {})
+    .filter(([, lane]) => lane?.status && lane.status !== 'healthy')
+    .map(([name, lane]) => `${name}: ${lane.status}`)
+    .slice(0, 3);
+  setText('human-goodlife-status', lanes.length ? 'watch' : 'steady');
+  setText('human-goodlife-value', String(policy).toUpperCase());
+  setText('human-goodlife-subtitle', lanes.length ? lanes.join(' · ') : 'Lanes in bounds');
+}
+
+function renderJerryVoiceTile(pulsePayload, homeSummary, statePayload, agencyPayload) {
+  const cycle = statePayload?.cycleCount;
+  const nodes = Array.isArray(statePayload?.memory?.nodes)
+    ? statePayload.memory.nodes.length
+    : statePayload?.memory?.nodes;
+  const mode = agencyPayload?.state?.mode || agencyPayload?.mode;
+  const bootcamp = agencyPayload?.state?.bootcamp?.enabled ?? agencyPayload?.bootcamp?.enabled;
+  const remark = pulsePayload?.remark;
+  const thought = homeSummary?.lastThoughtText
+    || statePayload?.thoughts?.[0]?.content
+    || statePayload?.recentThoughts?.[0]?.content;
+  const parts = [
+    remark?.ts ? timeSince(new Date(remark.ts)) : homeSummary?.lastThoughtAt ? timeSince(new Date(homeSummary.lastThoughtAt)) : null,
+    cycle != null ? `cycle ${formatCompactNumber(cycle)}` : homeSummary?.cycleCount != null ? `cycle ${formatCompactNumber(homeSummary.cycleCount)}` : null,
+    nodes != null ? `${formatCompactNumber(nodes)} brain nodes` : homeSummary?.memoryNodes != null ? `${formatCompactNumber(homeSummary.memoryNodes)} brain nodes` : null,
+    mode ? `agency ${mode}` : null,
+    bootcamp === true ? 'bootcamp on' : null,
+  ].filter(Boolean);
+  const voice = remark?.text
+    || humanizeJerryFallback(thought, homeSummary)
+    || 'I am here, watching the house breathe. Nothing needs your hands yet.';
+  setText('human-jerry-status', parts.length ? parts.join(' · ') : 'latest');
+  setText('human-jerry-remark', voice);
+  setText('human-jerry-context', jerryContextLine(remark, homeSummary));
+}
+
+function humanizeJerryFallback(thought, homeSummary) {
+  if (!thought) return '';
+  const text = String(thought).replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (/^sleep cycle/i.test(text)) {
+    const energy = Math.round(Number(homeSummary?.cognitiveState?.energy || 0) * 100);
+    return `I am in low-power housekeeping mode, sorting the shelves while energy comes back${energy ? ` (${energy}%)` : ''}.`;
+  }
+  return text.slice(0, 260);
+}
+
+function jerryContextLine(remark, homeSummary) {
+  const bits = [];
+  if (remark?.model) bits.push(`voice ${remark.model}`);
+  if (homeSummary?.lastThoughtRole) bits.push(`last ${homeSummary.lastThoughtRole}`);
+  if (homeSummary?.oscillatorMode) bits.push(homeSummary.oscillatorMode);
+  return bits.join(' · ');
+}
+
+function renderHumanHomeError(err) {
+  setText('human-jerry-status', 'offline');
+  setText('human-jerry-remark', `Home surface did not load: ${err?.message || err}`);
+}
+
+function renderHomeBriefs(payload) {
+  const items = Array.isArray(payload?.items)
+    ? payload.items.filter(isHomeBriefItem).slice(0, 4)
+    : [];
+  setText('human-briefs-status', items.length ? `${items.length} latest` : 'quiet');
+  if (!items.length) {
+    setHtml('human-briefs-list', '<div class="h23-human-brief-empty">No new readable briefs yet.</div>');
+    return;
+  }
+  setHtml('human-briefs-list', items.map((item) => `
+    <button class="h23-human-brief-row" type="button" onclick="openBriefFromHome('${escapeAttr(item.id)}')">
+      <span class="h23-human-brief-meta">${escapeHtml(briefLabel(item))} · ${escapeHtml(formatBriefTime(item.timestamp))}</span>
+      <strong>${escapeHtml(item.title || 'Untitled brief')}</strong>
+      <span>${escapeHtml(item.summary || '')}</span>
+    </button>
+  `).join(''));
+}
+
+function isHomeBriefItem(item) {
+  if (!item) return false;
+  if (item.status === 'error') return false;
+  if (item.type === 'session') return false;
+  return true;
+}
+
+function openBriefFromHome(id) {
+  if (!id) return;
+  briefsState.selectedId = id;
+  briefsState.pendingSelectedId = id;
+  selectDashboardTab('briefs');
+  loadBriefsSurface({ selectedId: id, preserveSelection: true }).catch(() => {});
+}
+
+function setupBriefsSurface() {
+  document.getElementById('briefs-list')?.addEventListener('click', (event) => {
+    const row = event.target.closest('[data-brief-id]');
+    if (!row) return;
+    event.preventDefault();
+    selectBrief(row.dataset.briefId);
+  });
+  ['briefs-agent-filter', 'briefs-type-filter'].forEach((id) => {
+    document.getElementById(id)?.addEventListener('change', () => {
+      briefsState.selectedId = null;
+      loadBriefsSurface().catch(renderBriefsError);
+    });
+  });
+  document.getElementById('briefs-refresh')?.addEventListener('click', () => {
+    loadBriefsSurface({ preserveSelection: true }).catch(renderBriefsError);
+  });
+  document.getElementById('briefs-reader')?.addEventListener('click', (event) => {
+    const backButton = event.target.closest('[data-briefs-back]');
+    if (!backButton) return;
+    event.preventDefault();
+    showBriefsList();
+  });
+}
+
+async function loadBriefsSurface(options = {}) {
+  const agent = document.getElementById('briefs-agent-filter')?.value || '';
+  const type = document.getElementById('briefs-type-filter')?.value || '';
+  const params = new URLSearchParams({ limit: '90' });
+  if (agent) params.set('agent', agent);
+  if (type) params.set('type', type);
+
+  setText('briefs-status', 'loading');
+  const data = await apiFetch(`/home23/api/briefs?limit=${params.get('limit')}${agent ? `&agent=${encodeURIComponent(agent)}` : ''}${type ? `&type=${encodeURIComponent(type)}` : ''}`, {
+    timeoutMs: 12000,
+  });
+  briefsState.items = Array.isArray(data?.items) ? data.items : [];
+  briefsState.lastLoadedAt = new Date();
+  const shouldOpenReader = !!(options.selectedId || briefsState.pendingSelectedId);
+  const requested = options.selectedId || briefsState.pendingSelectedId || briefsState.selectedId;
+  const selected = requested
+    ? briefsState.items.find((item) => item.id === requested)
+    : null;
+  if (selected) briefsState.pendingSelectedId = null;
+  briefsState.selectedId = selected?.id || briefsState.items[0]?.id || null;
+  briefsState.selected = briefsState.items.find((item) => item.id === briefsState.selectedId) || null;
+  renderBriefsList();
+  renderBriefsReader(briefsState.selected);
+  if (shouldOpenReader && briefsState.selected) showBriefsReader();
+  setText('briefs-status', briefsState.items.length ? `${briefsState.items.length} documents` : 'empty');
+}
+
+function renderBriefsList() {
+  const list = document.getElementById('briefs-list');
+  if (!list) return;
+  if (!briefsState.items.length) {
+    list.innerHTML = '<div class="h23-briefs-empty">No readable briefs found for this filter.</div>';
+    return;
+  }
+  list.innerHTML = briefsState.items.map((item) => `
+    <button class="h23-briefs-row ${item.id === briefsState.selectedId ? 'active' : ''}" type="button" data-brief-id="${escapeAttr(item.id)}">
+      <span class="h23-briefs-row-meta">${escapeHtml(briefLabel(item))} · ${escapeHtml(formatBriefTime(item.timestamp))}</span>
+      <strong>${escapeHtml(item.title || 'Untitled brief')}</strong>
+      <span>${escapeHtml(item.summary || '')}</span>
+    </button>
+  `).join('');
+}
+
+async function selectBrief(id) {
+  if (!id) return;
+  briefsState.selectedId = id;
+  briefsState.selected = briefsState.items.find((item) => item.id === id) || null;
+  renderBriefsList();
+  if (!briefsState.selected) {
+    const detail = await apiFetch(`/home23/api/briefs/${encodeURIComponent(id)}`, { timeoutMs: 10000 });
+    briefsState.selected = detail?.item || null;
+  }
+  renderBriefsReader(briefsState.selected);
+  showBriefsReader();
+}
+
+function renderBriefsReader(item) {
+  const reader = document.getElementById('briefs-reader');
+  if (!reader) return;
+  if (!item) {
+    reader.innerHTML = '<div class="h23-briefs-reader-empty">Choose a brief.</div>';
+    return;
+  }
+  reader.innerHTML = `
+    <button class="h23-briefs-reader-back" type="button" data-briefs-back>Back to briefs</button>
+    <div class="h23-briefs-reader-head">
+      <div>
+        <div class="h23-briefs-reader-meta">${escapeHtml(briefLabel(item))} · ${escapeHtml(formatBriefTime(item.timestamp))}</div>
+        <h2>${escapeHtml(item.title || 'Untitled brief')}</h2>
+      </div>
+      <span class="h23-briefs-status-pill">${escapeHtml(item.status || 'recorded')}</span>
+    </div>
+    <article class="h23-briefs-document">${item.html || `<p>${escapeHtml(item.text || item.summary || '')}</p>`}</article>
+    <details class="h23-briefs-provenance">
+      <summary>Source</summary>
+      <div>${escapeHtml(item.provenance?.kind || item.type || 'brief')}</div>
+      ${item.sourcePath ? `<code>${escapeHtml(item.sourcePath)}</code>` : ''}
+    </details>
+  `;
+}
+
+function showBriefsReader() {
+  const panel = document.getElementById('panel-briefs');
+  panel?.classList.add('h23-briefs-reading');
+  const reader = document.getElementById('briefs-reader');
+  if (window.matchMedia('(max-width: 1120px)').matches) {
+    reader?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+}
+
+function showBriefsList() {
+  const panel = document.getElementById('panel-briefs');
+  panel?.classList.remove('h23-briefs-reading');
+  const list = document.getElementById('briefs-list');
+  if (window.matchMedia('(max-width: 1120px)').matches) {
+    list?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  }
+}
+
+function renderBriefsError(err) {
+  setText('briefs-status', 'offline');
+  setHtml('briefs-reader', `<div class="h23-briefs-reader-empty">Briefs did not load: ${escapeHtml(err?.message || err)}</div>`);
+}
+
+function briefLabel(item) {
+  return [item?.agent, item?.type].filter(Boolean).join(' / ') || 'brief';
+}
+
+function formatBriefTime(iso) {
+  if (!iso) return 'unknown time';
+  return timeSinceSafe(iso);
 }
 
 // ── Resident Home ──
@@ -1283,17 +1975,48 @@ async function fetchAgencySnapshot() {
   };
 }
 
+async function fetchHomeOperatorSnapshot() {
+  const [stateRes, goodLifeRes, liveProblemsRes] = await Promise.allSettled([
+    fetch(`${dashboardBaseUrl()}/api/state`),
+    fetch(`${dashboardBaseUrl()}/api/good-life`),
+    fetch(`${dashboardBaseUrl()}/api/live-problems`),
+  ]);
+  const parse = async (settled) => {
+    if (settled.status !== 'fulfilled' || !settled.value.ok) return null;
+    try {
+      return await settled.value.json();
+    } catch {
+      return null;
+    }
+  };
+  return {
+    state: await parse(stateRes),
+    goodLife: await parse(goodLifeRes),
+    liveProblems: await parse(liveProblemsRes),
+  };
+}
+
 async function loadResidentHomeSurface() {
-  const snapshot = await fetchAgencySnapshot();
-  renderResidentHomeSurface(snapshot);
+  const [operatorResult, agencyResult] = await Promise.allSettled([
+    fetchHomeOperatorSnapshot(),
+    fetchAgencySnapshot(),
+  ]);
+  if (operatorResult.status === 'fulfilled') {
+    renderHomeOperatorStrip(operatorResult.value);
+  }
+  if (agencyResult.status === 'fulfilled') {
+    renderResidentHomeSurface(agencyResult.value);
+    return;
+  }
+  renderResidentHomeError(agencyResult.reason);
 }
 
 async function runResidentTickFromDashboard() {
   const button = document.getElementById('resident-run-tick');
-  const isRehearsal = button?.dataset?.actionMode === 'rehearsal';
+  const isNotLive = button?.dataset?.actionMode === 'not-live';
   if (button) {
     button.disabled = true;
-    button.textContent = isRehearsal ? 'Rehearsing' : 'Advancing';
+    button.textContent = isNotLive ? 'Checking' : 'Advancing';
   }
   try {
     const res = await fetch(`${dashboardBaseUrl()}/home23/api/agency/tick`, {
@@ -1388,14 +2111,56 @@ function syncResidentActionButton(state) {
   button.dataset.actionMode = action.mode;
 }
 
+function renderHomeOperatorStrip({ state, goodLife, liveProblems } = {}) {
+  const cycle = state?.cycleCount;
+  const temporal = state?.temporal?.state || state?.cognitiveState?.mode || 'unknown';
+  const phase = state?.phase || state?.oscillatorMode || '';
+  const lastUpdated = state?.lastUpdated || state?.lastThoughtAt;
+  setText('operator-engine-state', temporal);
+  setText('operator-engine-detail', [
+    cycle ? `cycle ${cycle}` : null,
+    phase || null,
+    lastUpdated ? timeSinceSafe(lastUpdated) : null,
+  ].filter(Boolean).join(' · ') || 'live state unavailable');
+
+  const nodeCount = extractNodeCount(state);
+  const activeGoalCount = extractActiveGoalCount(state);
+  setText('operator-brain-nodes', formatCompactNumber(nodeCount));
+  setText('operator-brain-detail', [
+    activeGoalCount != null ? `${activeGoalCount} active goals` : null,
+    state?.memory?.source || null,
+  ].filter(Boolean).join(' · ') || 'brain snapshot unavailable');
+
+  const lpSnapshot = liveProblems?.snapshot || {};
+  const counts = lpSnapshot.counts || {};
+  const open = Number(counts.open || 0);
+  const chronic = Number(counts.chronic || 0);
+  const totalOpen = open + chronic;
+  setText('operator-live-problems', totalOpen ? String(totalOpen) : 'clear');
+  setText('operator-live-problems-detail', [
+    chronic ? `${chronic} chronic` : null,
+    counts.resolved != null ? `${counts.resolved} resolved` : null,
+  ].filter(Boolean).join(' · ') || 'no open verifier issues');
+
+  const goodLifeState = goodLife?.state || {};
+  const policy = goodLifeState.policy?.mode || goodLife?.operatorBrief?.status || 'unknown';
+  const lanes = goodLifeState.lanes || {};
+  const strained = Object.entries(lanes)
+    .filter(([, lane]) => lane && !['healthy', 'unknown'].includes(String(lane.status || '').toLowerCase()))
+    .map(([key, lane]) => `${key}:${lane.status}`)
+    .slice(0, 2);
+  setText('operator-good-life', policy);
+  setText('operator-good-life-detail', strained.length ? strained.join(' · ') : 'lanes in bounds');
+}
+
 function residentActionButtonState(state = {}) {
   const next = state.nextAction || {};
-  const rehearsal = state.mode === 'dry_run' || next.dryRun;
-  if (rehearsal) {
+  const notLive = state.mode === 'dry_run' || next.dryRun;
+  if (notLive) {
     return {
-      label: 'Rehearse',
-      title: 'Dry-run mode: records resident intent and receipts without live action.',
-      mode: 'rehearsal',
+      label: 'Not Live',
+      title: 'Dry-run is not live agency. Change agency.mode to live before this can execute bounded action.',
+      mode: 'not-live',
     };
   }
   return {
@@ -1415,7 +2180,7 @@ function renderResidentAttentionBudget({ active, activeMax, watch, watchMax }) {
 function residentPostureText(state = {}) {
   if (state.bootcamp?.enabled) return 'in agency bootcamp';
   const mode = String(state.mode || '').trim();
-  if (mode === 'dry_run') return 'rehearsing agency';
+  if (mode === 'dry_run') return 'dry-run, not live agency';
   if (mode === 'live') return 'acting live';
   if (mode) return humanizeResidentMachineText(mode).toLowerCase();
   return 'waiting for resident state';
@@ -1564,7 +2329,7 @@ function residentActionReasonLabel(reason) {
 }
 
 function residentActionModeLabel(next) {
-  if (next?.dryRun) return 'rehearsal';
+  if (next?.dryRun) return 'dry-run blocked';
   return '';
 }
 
@@ -1574,16 +2339,24 @@ function renderResidentNextAction(state) {
   if (!next.kind && !pursuit.id) {
     return '';
   }
+  const evidence = [
+    pursuit.source ? residentSourceLabel(pursuit.source) : null,
+    pursuit.id || next.pursuitId || null,
+    pursuit.updatedAt ? timeSinceSafe(pursuit.updatedAt) : null,
+    pursuit.stopCondition ? 'has stop condition' : null,
+  ].filter(Boolean).join(' · ');
   return `
     <div class="h23-resident-section-title">Next Action</div>
     <div class="h23-resident-next-title">${escapeHtml(renderResidentNextActionTitle(pursuit, next))}</div>
     <div class="h23-resident-next-meta">${escapeHtml(renderResidentNextActionMeta(pursuit, next))}</div>
+    ${pursuit.whyItMatters ? `<div class="h23-resident-next-why">${escapeHtml(humanizeResidentMachineText(pursuit.whyItMatters))}</div>` : ''}
+    ${evidence ? `<div class="h23-resident-evidence-line">${escapeHtml(evidence)}</div>` : ''}
   `;
 }
 
 function residentOperatorItems(state, brief) {
   const obligations = Array.isArray(state.obligations) ? state.obligations : [];
-  const questions = brief?.questions?.whatNeedsJtr || [];
+  const questions = brief?.questions?.whatNeedFromJtr || brief?.questions?.whatNeedsJtr || [];
   return obligations.length ? obligations : questions;
 }
 
@@ -1599,12 +2372,22 @@ function renderResidentOperatorNeeded(items) {
 
 function renderResidentPursuitCard(p) {
   const statusClass = p.status === 'active' ? 'active' : (p.status || 'watch');
+  const title = renderResidentPursuitTitle(p);
+  const evidence = [
+    p.status,
+    p.source ? residentSourceLabel(p.source) : null,
+    p.lastTouched ? timeSinceSafe(p.lastTouched) : null,
+    p.stopCondition ? 'stop condition set' : null,
+  ].filter(Boolean).join(' · ');
+  const nextMove = humanizeResidentMachineText(p.nextMove || p.desiredChangedFuture || p.whyItMatters || '', '');
   return `
     <article class="h23-resident-pursuit ${escapeAttr(statusClass)}">
       <div class="h23-resident-pursuit-head">
         <code>${escapeHtml(renderResidentPursuitAuthority(p))}</code>
+        <small>${escapeHtml(evidence)}</small>
       </div>
-      <h3>${escapeHtml(renderResidentPursuitTitle(p))}</h3>
+      <h3>${escapeHtml(title)}</h3>
+      ${nextMove ? `<p>${escapeHtml(nextMove)}</p>` : ''}
       <div class="h23-resident-pursuit-actions">
         ${renderResidentPursuitInspectLink(p)}
         <button type="button" class="h23-resident-action-btn danger h23-resident-veto-btn" aria-label="Veto resident pursuit as noise" title="Veto resident pursuit as noise" data-requires-confirmation="true" data-pursuit-id="${escapeAttr(p.id)}" data-resident-pursuit-transition="discarded" data-transition-summary="Vetoed from resident dashboard: this is noise or no longer worth active operator attention."></button>
@@ -1659,12 +2442,14 @@ function groupResidentSchedulerEvidence(row) {
   const type = String(row?.changeType || row?.status || '');
   const summary = String(row?.summary || row?.reason || '');
   return type === 'cron_receipt_reattached'
+    || (type === 'defer' && /^Scheduler check finished$/i.test(summary))
+    || (type === 'defer' && /^Cron agent-[\w-]+ \([^)]+\) finished with status ok\.$/i.test(summary))
     || /^Cron receipt pursuit ap_[\w-]+ reattached to ap_[\w-]+\.$/i.test(summary)
     || (type === 'pursue' && /^Cron agent-[\w-]+ \([^)]+\) finished with status ok\.$/i.test(summary));
 }
 
 function residentHomeConsequenceRows(rows = []) {
-  return (rows || []).filter((row) => !groupResidentSchedulerEvidence(row));
+  return rows || [];
 }
 
 function groupResidentConsequences(rows = []) {
@@ -1705,7 +2490,7 @@ function groupResidentConsequences(rows = []) {
         status: 'reviewed',
         count: schedulerRows.length,
         at: schedulerRows[0]?.at,
-        summary: `${schedulerRows.length} scheduler receipts were reviewed and folded into existing resident pursuits.`,
+        summary: `${schedulerRows.length} scheduler receipts were reviewed without becoming new operator work.`,
         items: schedulerRows,
       });
     }
@@ -1790,37 +2575,113 @@ function renderResidentHomeError(err) {
 }
 
 // ── Agency Inspector ──
+let agencySurfaceLoadSeq = 0;
 
 async function loadAgencySurface() {
-  const [stateRes, briefRes, inspectorRes, pursuitsRes, eventsRes] = await Promise.all([
-    fetch(`${dashboardBaseUrl()}/home23/api/agency/state`),
-    fetch(`${dashboardBaseUrl()}/home23/api/agency/brief`),
-    fetch(`${dashboardBaseUrl()}/home23/api/agency/inspector?filter=cron_retirement_proposals&limit=20`),
-    fetch(`${dashboardBaseUrl()}/home23/api/agency/pursuits?limit=24`),
-    fetch(`${dashboardBaseUrl()}/home23/api/agency/events?limit=40`),
-  ]);
-  if (!stateRes.ok || !briefRes.ok || !inspectorRes.ok || !pursuitsRes.ok || !eventsRes.ok) {
-    throw new Error('agency surface unavailable');
+  const loadSeq = ++agencySurfaceLoadSeq;
+  renderAgencySurfaceLoading();
+  const criticalRequests = [
+    ['state', 'state', `${dashboardBaseUrl()}/home23/api/agency/state`],
+    ['brief', 'brief', `${dashboardBaseUrl()}/home23/api/agency/brief`],
+  ];
+  const criticalSettled = await Promise.allSettled(criticalRequests.map(([key, label, url]) => (
+    fetchAgencyJson(label, url).then((data) => ({ key, data }))
+  )));
+  const payload = {};
+  const warnings = [];
+  criticalSettled.forEach((result, index) => {
+    const [key, label] = criticalRequests[index];
+    if (result.status === 'fulfilled') {
+      payload[key] = result.value.data;
+    } else {
+      warnings.push(`${label}: ${result.reason?.message || 'unavailable'}`);
+    }
+  });
+  if (!payload.state && !payload.brief) {
+    throw new Error(warnings.join('; ') || 'agency surface unavailable');
   }
-  const state = await stateRes.json();
-  const brief = await briefRes.json();
-  const inspector = await inspectorRes.json();
-  const pursuits = await pursuitsRes.json();
-  const events = await eventsRes.json();
+  const state = payload.state || {};
+  const brief = payload.brief || {};
   renderAgencySurface({
     state,
     brief,
-    inspector,
-    pursuits: pursuits.pursuits || [],
-    inbox: events.inbox || [],
-    receipts: events.receipts || events.actions || [],
-    consequences: events.consequences || [],
-    scratch: events.scratch || [],
-    truth: events.truth || [],
+    inspector: {},
+    pursuits: [],
+    inbox: [],
+    receipts: [],
+    consequences: [],
+    scratch: [],
+    truth: [],
+    warnings,
+  });
+  const evidenceRequests = [
+    ['inspector', 'inspector', `${dashboardBaseUrl()}/home23/api/agency/inspector?filter=cron_retirement_proposals&limit=20`],
+    ['pursuits', 'pursuits', `${dashboardBaseUrl()}/home23/api/agency/pursuits?limit=24`],
+    ['events', 'events', `${dashboardBaseUrl()}/home23/api/agency/events?limit=16`],
+  ];
+  Promise.allSettled(evidenceRequests.map(([key, label, url]) => (
+    fetchAgencyJson(label, url).then((data) => ({ key, data }))
+  ))).then((evidenceSettled) => {
+    if (loadSeq !== agencySurfaceLoadSeq) return;
+    const evidence = {};
+    const evidenceWarnings = warnings.slice();
+    evidenceSettled.forEach((result, index) => {
+      const [key, label] = evidenceRequests[index];
+      if (result.status === 'fulfilled') {
+        evidence[key] = result.value.data;
+      } else {
+        evidenceWarnings.push(`${label}: ${result.reason?.message || 'unavailable'}`);
+      }
+    });
+    const events = evidence.events || {};
+    renderAgencySurface({
+      state,
+      brief,
+      inspector: evidence.inspector || {},
+      pursuits: evidence.pursuits?.pursuits || [],
+      inbox: events.inbox || [],
+      receipts: events.receipts || events.actions || [],
+      consequences: events.consequences || [],
+      scratch: events.scratch || [],
+      truth: events.truth || [],
+      warnings: evidenceWarnings,
+    });
   });
 }
 
-function renderAgencySurface({ state, brief, inspector, pursuits, inbox, receipts, consequences, scratch, truth }) {
+function renderAgencySurfaceLoading() {
+  const stats = document.getElementById('agency-stats');
+  const brief = document.getElementById('agency-brief-section');
+  const briefEl = document.getElementById('agency-brief');
+  if (stats?.hidden) {
+    stats.hidden = false;
+    stats.innerHTML = `
+      <div class="h23-worker-stat"><span>loading</span><label>Mode</label></div>
+      <div class="h23-worker-stat"><span>—</span><label>Active/Watch</label></div>
+      <div class="h23-worker-stat"><span>—</span><label>Needs jtr</label></div>
+      <div class="h23-worker-stat"><span>—</span><label>Next Authority</label></div>
+    `;
+  }
+  if (brief?.hidden) brief.hidden = false;
+  if (briefEl && !briefEl.textContent.trim()) {
+    briefEl.innerHTML = '<p class="h23-muted">Loading resident agency state, pursuits, and receipts...</p>';
+  }
+}
+
+async function fetchAgencyJson(label, url) {
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`${res.status}`);
+  }
+  try {
+    return await res.json();
+  } catch (err) {
+    throw new Error(`bad json (${err?.message || 'parse failed'})`);
+  }
+}
+
+function renderAgencySurface({ state, brief, inspector, pursuits, inbox, receipts, consequences, scratch, truth, warnings = [] }) {
+  renderAgencyWarnings(warnings);
   const stats = document.getElementById('agency-stats');
   if (stats) {
     const active = Number(state.attention?.activePursuits || 0);
@@ -1892,6 +2753,29 @@ function renderAgencySurface({ state, brief, inspector, pursuits, inbox, receipt
   revealAgencyInspectorContract();
 }
 
+function renderAgencyWarnings(warnings = []) {
+  const warningEl = document.getElementById('agency-load-warning');
+  if (!warningEl) return;
+  if (!warnings.length) {
+    warningEl.hidden = true;
+    warningEl.innerHTML = '';
+    return;
+  }
+  warningEl.hidden = false;
+  warningEl.innerHTML = `
+    <strong>Partial agency data</strong>
+    <span>${escapeHtml(warnings.join(' · '))}</span>
+  `;
+}
+
+function renderAgencySurfaceError(err) {
+  renderAgencyWarnings([`agency: ${err?.message || 'unavailable'}`]);
+  revealAgencyInspectorContract();
+  setHtml('agency-brief', '<p class="h23-muted">Agency state did not load. The route warning above is the current evidence.</p>');
+  setHtml('agency-pursuits', '<p class="h23-muted">Pursuit ledger unavailable.</p>');
+  setHtml('agency-receipts', '<p class="h23-muted">Route receipts unavailable.</p>');
+}
+
 function revealAgencyInspectorContract() {
   const stats = document.getElementById('agency-stats');
   const brief = document.getElementById('agency-brief-section');
@@ -1903,6 +2787,9 @@ function revealAgencyInspectorContract() {
 function revealAgencyEvidenceDrawers() {
   document.querySelectorAll('#panel-agency .h23-agency-evidence-drawer:not(#agency-retirement-drawer)').forEach((drawer) => {
     drawer.hidden = false;
+    if (drawer.id === 'agency-pursuits-drawer' || drawer.id === 'agency-receipts-drawer') {
+      drawer.open = true;
+    }
   });
 }
 
@@ -1925,14 +2812,14 @@ function agencyOperatorNeedCount(state, brief) {
 }
 
 function residentAgencyModeLabel(mode) {
-  if (mode === 'dry_run') return 'rehearsal';
+  if (mode === 'dry_run') return 'not live';
   if (mode === 'live') return 'live';
   return humanizeResidentMachineText(mode || 'unknown');
 }
 
 function residentActionAuthorityLabel(next) {
   if (!next?.authorityLevel) return 'none';
-  return next.dryRun ? `${next.authorityLevel} rehearsal` : next.authorityLevel;
+  return next.dryRun ? `${next.authorityLevel} dry-run blocked` : next.authorityLevel;
 }
 
 function renderAgencyScratchBlock(state, scratch = []) {
@@ -4652,6 +5539,99 @@ function setupVibeActions() {
     });
     vibeTrigger.dataset.bound = 'true';
   }
+
+  const detailModal = document.getElementById('home-vibe-detail-modal');
+  const detailClose = document.getElementById('home-vibe-detail-close');
+  if (detailModal && detailModal.dataset.bound !== 'true') {
+    detailModal.addEventListener('click', (event) => {
+      if (event.target === detailModal) closeVibeImageDetail();
+    });
+    detailModal.dataset.bound = 'true';
+  }
+  if (detailClose && detailClose.dataset.bound !== 'true') {
+    detailClose.addEventListener('click', closeVibeImageDetail);
+    detailClose.dataset.bound = 'true';
+  }
+}
+
+function resolveDashboardUrl(base, url) {
+  if (!url) return '';
+  if (/^https?:\/\//i.test(url)) return url;
+  return `${base || ''}${url}`;
+}
+
+function formatVibeDate(iso) {
+  if (!iso) return '';
+  const ts = new Date(iso);
+  if (Number.isNaN(ts.getTime())) return '';
+  return ts.toLocaleString([], {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function renderVibeImageDetail(item, base = '') {
+  const detailModal = document.getElementById('home-vibe-detail-modal');
+  const image = document.getElementById('home-vibe-detail-image');
+  const source = document.getElementById('home-vibe-detail-source');
+  const title = document.getElementById('home-vibe-detail-title');
+  const caption = document.getElementById('home-vibe-detail-caption');
+  const prompt = document.getElementById('home-vibe-detail-prompt');
+  const meta = document.getElementById('home-vibe-detail-meta');
+  const open = document.getElementById('home-vibe-detail-open');
+  const gallery = document.getElementById('home-vibe-detail-gallery');
+  if (!detailModal || !image || !item?.url) return;
+
+  const imageUrl = resolveDashboardUrl(base, item.url);
+  const galleryUrl = resolveDashboardUrl(base, item.fullGalleryUrl || item.galleryUrl || '/home23/vibe-gallery');
+  const sourceLabel = item.source === 'external'
+    ? 'Source image'
+    : `${item.agentName || 'Home23'} generated`;
+  const metaParts = [
+    formatVibeDate(item.generatedAt || item.createdAt),
+    item.model,
+    item.algorithm,
+  ].filter(Boolean);
+
+  image.src = imageUrl;
+  image.alt = item.caption || item.prompt || 'Vibe image full view';
+  if (source) source.textContent = sourceLabel;
+  if (title) title.textContent = item.title || item.caption || 'Vibe image';
+  if (caption) caption.textContent = item.caption || item.prompt || '';
+  if (prompt) prompt.textContent = item.prompt || item.caption || 'No prompt metadata recorded for this source image.';
+  if (meta) meta.textContent = metaParts.join(' · ');
+  if (open) open.href = imageUrl;
+  if (gallery) gallery.href = galleryUrl;
+
+  detailModal.classList.add('open');
+  detailModal.setAttribute('aria-hidden', 'false');
+}
+
+function closeVibeImageDetail() {
+  const detailModal = document.getElementById('home-vibe-detail-modal');
+  const image = document.getElementById('home-vibe-detail-image');
+  if (!detailModal) return;
+  detailModal.classList.remove('open');
+  detailModal.setAttribute('aria-hidden', 'true');
+  if (image) image.src = '';
+}
+
+async function openVibeImageDetail(item, base = '') {
+  if (!item?.url) return;
+  renderVibeImageDetail(item, base);
+  if (!item.id) return;
+
+  try {
+    const detail = await apiFetch(`${base}/home23/api/vibe/gallery/items/${encodeURIComponent(item.id)}`, {
+      timeoutMs: 10000,
+    });
+    if (detail?.item) renderVibeImageDetail(detail.item, base);
+  } catch {
+    // The visible image is already open; metadata lookup is best-effort.
+  }
 }
 
 async function triggerVibeGeneration() {
@@ -4685,12 +5665,11 @@ async function loadVibeTile(agent, { imageId, captionId, galleryHrefId = null })
 
   try {
     const data = await apiFetch(`${base}/home23/api/vibe/current`);
-    const galleryUrl = `${base}/home23/vibe-gallery`;
 
     if (data?.item?.url) {
       imageEl.innerHTML = `<img src="${data.item.url}" alt="Vibe image for ${agent.displayName || agent.name}" loading="lazy">`;
       imageEl.classList.add('clickable');
-      imageEl.onclick = () => { window.location.href = galleryUrl; };
+      imageEl.onclick = () => { openVibeImageDetail(data.item, base); };
       captionEl.textContent = data.item.caption || '';
       return;
     }
@@ -4713,8 +5692,15 @@ async function loadVibeTile(agent, { imageId, captionId, galleryHrefId = null })
 }
 
 async function apiFetch(url, options = {}) {
-  const { timeoutMs = 15000 } = options;
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+  const { timeoutMs = 15000, ...fetchOptions } = options;
+  const headers = fetchOptions.body
+    ? { 'Content-Type': 'application/json', ...(fetchOptions.headers || {}) }
+    : fetchOptions.headers;
+  const res = await fetch(url, {
+    ...fetchOptions,
+    headers,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   if (!res.ok) return null;
   return res.json();
 }
@@ -4772,4 +5758,4 @@ function formatDurationMs(ms) {
 
 // ── Start ──
 
-document.addEventListener('DOMContentLoaded', init);
+init();

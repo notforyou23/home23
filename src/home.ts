@@ -11,6 +11,8 @@
 import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
 import { execSync, exec } from 'node:child_process';
 import { promisify } from 'node:util';
+import { setDefaultResultOrder } from 'node:dns';
+import { createRequire } from 'node:module';
 
 // Async exec for cron shell-jobs. execSync blocks the harness's main event
 // loop for the entire duration of the script — Telegram polls timeout, SSE
@@ -18,6 +20,7 @@ import { promisify } from 'node:util';
 // causing visible chat drops. Async exec runs in a worker subprocess and
 // resolves via callback, leaving the event loop free.
 const execAsync = promisify(exec);
+setDefaultResultOrder('ipv4first');
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { loadConfig } from './config.js';
@@ -47,6 +50,7 @@ import {
   createModelsHandler,
   createTurnStreamHandler,
   createTurnStopHandler,
+  createTurnStatusHandler,
   createPendingTurnsHandler,
 } from './routes/chat-turn.js';
 import { EngineEventListener } from './engine-events.js';
@@ -70,6 +74,10 @@ import {
 } from './agency/cron-bootcamp.js';
 
 // ─── Constants ──────────────────────────────────────────────
+
+const requireCjs = createRequire(import.meta.url);
+const { assertPm2AgentIdentity } = requireCjs('../scripts/lib/pm2-agent-identity-guard.cjs');
+assertPm2AgentIdentity();
 
 const AGENT_NAME = process.env.HOME23_AGENT ?? 'test-agent';
 const HOME23_ROOT = resolve(import.meta.dirname, '..');
@@ -213,7 +221,7 @@ async function main(): Promise<void> {
     if (!agencyKernelPromise) {
       agencyKernelPromise = (async () => {
         const mod = await import(resolve(PROJECT_ROOT, 'engine/src/agency/resident-kernel.js'));
-        const agencyCfg = config.agency || { enabled: true, mode: 'dry_run' };
+        const agencyCfg = config.agency || { enabled: true, mode: 'live' };
         const charterPath = agencyCfg.charterPath
           ? resolve(PROJECT_ROOT, agencyCfg.charterPath)
           : resolve(PROJECT_ROOT, 'agency/charter.yaml');
@@ -410,6 +418,20 @@ async function main(): Promise<void> {
     xai: { apiKey: resolveApiKey('xai'), baseURL: resolveBaseUrl('xai') },
     'ollama-cloud': { apiKey: resolveApiKey('ollama-cloud'), baseURL: resolveBaseUrl('ollama-cloud') },
   });
+
+  const CHAT_TURN_ORPHAN_MAX_AGE_MS = 10 * 60 * 1000;
+  const CHAT_TURN_ORPHAN_SWEEP_MS = 60 * 1000;
+  const logRecoveredTurns = (source: string, recovered: Array<{ chatId: string; turnId: string }>): void => {
+    if (recovered.length === 0) return;
+    const sample = recovered.slice(0, 5).map(t => `${t.chatId}/${t.turnId}`).join(', ');
+    const suffix = recovered.length > 5 ? `, +${recovered.length - 5} more` : '';
+    console.warn(`[chat-turn] ${source} recovered ${recovered.length} stale pending turn(s): ${sample}${suffix}`);
+  };
+  logRecoveredTurns('startup', agent.recoverStaleTurns(CHAT_TURN_ORPHAN_MAX_AGE_MS));
+  const chatTurnRecoveryInterval = setInterval(() => {
+    logRecoveredTurns('janitor', agent.recoverStaleTurns(CHAT_TURN_ORPHAN_MAX_AGE_MS));
+  }, CHAT_TURN_ORPHAN_SWEEP_MS);
+  chatTurnRecoveryInterval.unref?.();
 
   // ── Command Handler ──
   const commandCtx: CommandContext = {
@@ -798,11 +820,13 @@ async function main(): Promise<void> {
       }
     }
 
-    if (config.agency?.enabled !== false) {
+    const bootcampScheduler = scheduler;
+    const runCronBootcampAudit = async (activeScheduler: CronScheduler): Promise<void> => {
+      if (config.agency?.enabled === false) return;
       try {
         const kernel = await getAgencyKernel();
-        const audit = await auditExistingRecurringCronJobsForAgency({ scheduler, kernel });
-        const review = await reviewBoundRecurringCronJobsForAgency({ scheduler, kernel });
+        const audit = await auditExistingRecurringCronJobsForAgency({ scheduler: activeScheduler, kernel });
+        const review = await reviewBoundRecurringCronJobsForAgency({ scheduler: activeScheduler, kernel });
         if (audit.bound > 0 || audit.failed.length > 0) {
           console.log(`[agency] Cron bootcamp audit: checked=${audit.checked} bound=${audit.bound} alreadyBound=${audit.skippedAlreadyBound} failed=${audit.failed.length}`);
         }
@@ -812,6 +836,16 @@ async function main(): Promise<void> {
       } catch (err) {
         console.warn(`[agency] Cron bootcamp audit failed: ${err instanceof Error ? err.message : String(err)}`);
       }
+    };
+
+    if (config.agency?.enabled !== false && config.agency?.cronBootcamp?.startupAudit === true) {
+      const bootcampTimer = setTimeout(() => {
+        void runCronBootcampAudit(bootcampScheduler);
+      }, 30_000);
+      bootcampTimer.unref?.();
+      console.log('[agency] Cron bootcamp audit scheduled after startup');
+    } else {
+      console.log('[agency] Cron bootcamp startup audit disabled');
     }
 
     console.log('[home] Scheduler initialized');
@@ -1400,6 +1434,7 @@ async function main(): Promise<void> {
   bridgeApp.post('/api/chat/turn', createTurnStartHandler(chatTurnConfig));
   bridgeApp.get('/api/chat/stream', createTurnStreamHandler(chatTurnConfig));
   bridgeApp.post('/api/chat/stop-turn', createTurnStopHandler(chatTurnConfig));
+  bridgeApp.get('/api/chat/turn-status', createTurnStatusHandler(chatTurnConfig));
   bridgeApp.get('/api/chat/pending', createPendingTurnsHandler(chatTurnConfig));
   bridgeApp.get('/api/chat/models', createModelsHandler(chatTurnConfig));
   bridgeApp.get('/api/chat/media', async (req, res) => {

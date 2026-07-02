@@ -1,0 +1,12 @@
+{
+  "devices": [
+    {
+      "device_token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "bundle_id": "com.regina6.home23",
+      "env": "sandbox",
+      "agent_id": "jerry",
+      "chat_ids": ["ios_contract_smoke"],
+      "updated_at": "2026-06-26T14:28:00Z"
+    }
+  ]
+}

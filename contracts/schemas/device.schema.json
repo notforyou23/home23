@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://home23.local/contracts/device.schema.json",
+  "title": "Home23 Device Registration Contracts",
+  "$defs": {
+    "registerRequest": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["device_token", "chat_ids", "bundle_id", "env"],
+      "properties": {
+        "device_token": { "type": "string", "minLength": 32 },
+        "agent_id": { "type": ["string", "null"] },
+        "chat_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "bundle_id": { "type": "string" },
+        "env": { "type": "string", "enum": ["sandbox", "production"] },
+        "platform": { "type": ["string", "null"] },
+        "app_build": { "type": ["string", "integer", "null"] },
+        "contract_version": { "type": ["string", "null"] },
+        "capabilities_hash": { "type": ["string", "null"] },
+        "registered_at": { "type": ["string", "null"] }
+      }
+    },
+    "registerResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok", "agent_id", "registered_chat_ids", "updated_at"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "agent_id": { "type": ["string", "null"] },
+        "registered_chat_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "ignored_chat_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "updated_at": { "type": "string" }
+      }
+    },
+    "unregisterRequest": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["device_token", "bundle_id"],
+      "properties": {
+        "device_token": { "type": "string", "minLength": 32 },
+        "bundle_id": { "type": "string" },
+        "chat_ids": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "unregisterResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["ok", "agent_id", "unregistered", "device_unregistered", "removed_chat_ids", "remaining_chat_ids"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "agent_id": { "type": ["string", "null"] },
+        "found": { "type": ["boolean", "null"] },
+        "unregistered": { "type": "boolean" },
+        "device_unregistered": { "type": "boolean" },
+        "removed_chat_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "remaining_chat_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "updated_at": { "type": ["string", "null"] }
+      }
+    },
+    "registryResponse": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["devices"],
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["device_token", "bundle_id", "env"],
+            "properties": {
+              "device_token": { "type": "string" },
+              "bundle_id": { "type": "string" },
+              "env": { "type": "string" },
+              "agent_id": { "type": ["string", "null"] },
+              "chat_ids": {
+                "type": ["array", "null"],
+                "items": { "type": "string" }
+              },
+              "updated_at": { "type": ["string", "null"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

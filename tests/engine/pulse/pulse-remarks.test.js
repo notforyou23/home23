@@ -150,3 +150,23 @@ test('pulse brief warns when stable open problems are omitted from the visible b
   assert.match(userMessage, /Do not claim there are no open problems/);
   assert.doesNotMatch(userMessage, /No open, chronic, or newly resolved live problems/);
 });
+
+test('pulse voice is a five-minute house voice even during quiet cycles', () => {
+  const brainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pulse-remarks-'));
+  const pulse = new PulseRemarks({ logsDir: brainDir, agentName: 'jerry' });
+  const now = Date.parse('2026-05-27T14:00:00.000Z');
+  const brief = pulse.synthesize(baseSnapshot());
+
+  pulse.lastRemarkAt = now - (4 * 60 * 1000 + 59 * 1000);
+  assert.equal(pulse.shouldGenerateRemark(brief, now), false);
+
+  pulse.lastRemarkAt = now - 5 * 60 * 1000;
+  assert.equal(pulse.shouldGenerateRemark(brief, now), true);
+  assert.equal(pulse.nextDelayAfterTick(true), 5 * 60 * 1000);
+
+  const { systemPrompt, userMessage } = pulse.buildPrompt(brief);
+  assert.match(systemPrompt, /cool, direct, laid back/i);
+  assert.match(systemPrompt, /whimsical/i);
+  assert.match(userMessage, /every five minutes/i);
+  assert.match(userMessage, /coming up|follow-up|quirky insight|joke|quote/i);
+});

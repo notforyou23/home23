@@ -4731,6 +4731,25 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
     if (!pending || !pending.tiers || pending.tiers.length === 0) {
       return false;
     }
+
+    if (typeof stateStore.getPlan === 'function') {
+      const planId = pending.planId || 'plan:main';
+      try {
+        const activePlan = await stateStore.getPlan(planId);
+        if (activePlan?.status && activePlan.status !== 'ACTIVE') {
+          await stateStore.delete('pending_agent_tiers');
+          this.logger.warn('Discarded pending guided tiers because canonical plan is not active', {
+            planId,
+            status: activePlan.status
+          });
+          return false;
+        }
+      } catch (error) {
+        this.logger.debug('Could not inspect active plan before guided tier spawn', {
+          error: error.message
+        });
+      }
+    }
     
     const executor = this.phase2bSubsystems?.agentExecutor;
     if (!executor) return false;
@@ -4786,11 +4805,48 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
     for (const mission of missionsToSpawn) {
       const goalMapping = pending.missionGoalIds.find(m => m.missionIdx === mission.originalIndex);
       const goalId = goalMapping?.goalId || `goal_tier${currentTier}_${mission.type}_${Date.now()}`;
+      const associatedTaskId = Number.isInteger(mission.originalIndex)
+        ? `task:phase${mission.originalIndex + 1}`
+        : (mission.taskId || mission.metadata?.taskId || null);
+
+      let associatedTask = null;
+      if (associatedTaskId && typeof stateStore.getTask === 'function') {
+        associatedTask = await stateStore.getTask(associatedTaskId);
+
+        if (associatedTask?.state && ['DONE', 'COMPLETED', 'FAILED', 'BLOCKED'].includes(associatedTask.state)) {
+          this.logger.warn('Skipping guided tier mission for terminal task state', {
+            taskId: associatedTaskId,
+            state: associatedTask.state
+          });
+          continue;
+        }
+
+        const deps = Array.isArray(associatedTask?.deps) ? associatedTask.deps : [];
+        let depsMet = true;
+        for (const depId of deps) {
+          const depTask = await stateStore.getTask(depId);
+          if (!depTask || depTask.state !== 'DONE') {
+            depsMet = false;
+            break;
+          }
+        }
+
+        if (!depsMet) {
+          this.logger.info('Deferring guided tier mission until task dependencies are done', {
+            taskId: associatedTaskId,
+            deps
+          });
+          deferredMissions.push(mission);
+          continue;
+        }
+      }
       
       const spec = {
         missionId: `mission_tier${currentTier}_${mission.type}_${Date.now()}`,
         agentType: mission.type,
         goalId: goalId,
+        taskId: associatedTaskId,
+        planId: pending.planId || 'plan:main',
         description: mission.mission,
         successCriteria: mission.successCriteria || [mission.expectedOutput],
         deliverable: pending.deliverableSpec,
@@ -4805,6 +4861,8 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
         metadata: {
           ...(mission.metadata || {}),
           guidedMission: true,
+          taskId: associatedTaskId,
+          planId: pending.planId || 'plan:main',
           sourceScope: mission.sourceScope || mission.metadata?.sourceScope || `${mission.type} tier ${currentTier}`,
           artifactInputs: Array.isArray(mission.artifactInputs)
             ? mission.artifactInputs
@@ -4819,6 +4877,20 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
       try {
         const agentId = await executor.spawnAgent(spec);
         if (agentId) {
+          if (associatedTask && typeof stateStore.upsertTask === 'function') {
+            await stateStore.upsertTask({
+              ...associatedTask,
+              assignedAgentId: agentId,
+              agentAssignedAt: Date.now(),
+              metadata: {
+                ...(associatedTask.metadata || {}),
+                goalId,
+                guidedTier: currentTier,
+                spawnInProgress: false
+              },
+              updatedAt: Date.now()
+            });
+          }
           spawned++;
           this.logger.info(`   ✓ Spawned ${mission.type}: ${agentId}`);
         }

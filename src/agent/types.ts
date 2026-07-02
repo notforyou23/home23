@@ -52,6 +52,7 @@ export interface ToolContext {
   fetch?: typeof fetch;
   onEvent?: AgentEventCallback;
   conversationHistory?: { append(chatId: string, records: unknown[]): void };
+  abortSignal?: AbortSignal;
 }
 
 /** Minimal interface to avoid circular deps — implemented by ContextManager */
@@ -100,7 +101,8 @@ export type AgentEvent =
   | { type: 'response_chunk'; chunk: string }
   | { type: 'media'; mediaType: string; path: string; caption?: string }
   | { type: 'subagent_result'; task: string; result: string }
-  | { type: 'cache'; read: number; write: number; input: number; output: number };
+  | { type: 'cache'; read: number; write: number; input: number; output: number }
+  | { type: 'status'; status: string; message?: string };
 
 export type AgentEventCallback = (event: AgentEvent) => void;
 

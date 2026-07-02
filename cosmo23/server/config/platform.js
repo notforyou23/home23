@@ -128,7 +128,7 @@ function getDefaultModelAssignments() {
       },
       reasoning: {
         provider: 'anthropic',
-        model: 'claude-opus-4-7'
+        model: 'claude-opus-4-8'
       }
     };
   }
@@ -146,7 +146,7 @@ function getDefaultModelAssignments() {
     },
     reasoning: {
       provider: 'anthropic',
-      model: 'claude-opus-4-7'
+      model: 'claude-opus-4-8'
     }
   };
 }

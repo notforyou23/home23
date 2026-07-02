@@ -207,7 +207,7 @@ cosmo23 routes to PGS engine, sweeps 25% of partitions, synthesizes
   ↓
 Returns { answer, evidence, metadata: { models, pgsPartitions, ... } }
   ↓
-Tool formats: "<answer>\n\n---\n[12 evidence nodes · PGS: 7/28 partitions swept · sweep=MiniMax-M2.7-highspeed / synth=claude-opus-4-7]"
+Tool formats: "<answer>\n\n---\n[12 evidence nodes · PGS: 7/28 partitions swept · sweep=MiniMax-M3 / synth=claude-opus-4-8]"
 ```
 
 ### research_launch

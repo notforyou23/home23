@@ -59,6 +59,33 @@ test('due cron jobs write a preflight decision receipt before the handler runs',
   assert.equal(savedJobs[0].state.consecutiveNoConsequence, 1);
 });
 
+test('scheduler start delays first automatic tick to avoid startup stampede', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-start-delay-'));
+  const job = makeDueJob();
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([job], null, 2));
+  let handlerCalls = 0;
+  const scheduler = new CronScheduler({
+    timezone: 'America/New_York',
+    jobsFile: 'cron-jobs.json',
+    runsDir: 'cron-runs',
+    initialTickDelayMs: 60_000,
+  }, async (): Promise<JobResult> => {
+    handlerCalls++;
+    return { status: 'ok', response: 'fresh', durationMs: 2 };
+  }, dir);
+
+  scheduler.start();
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  scheduler.stop();
+
+  assert.equal(handlerCalls, 0);
+  assert.equal(readJsonl(join(dir, 'cron-runs', 'job-1.jsonl')).length, 0);
+  const savedJobs = JSON.parse(readFileSync(join(dir, 'cron-jobs.json'), 'utf8'));
+  assert.ok(savedJobs[0].state.nextRunAtMs > Date.now());
+  assert.equal(savedJobs[0].state.lastDecisionAction, 'defer');
+  assert.equal(savedJobs[0].state.lastDecisionReason, 'missed during scheduler downtime; rescheduled on startup');
+});
+
 test('cron preflight decisions carry a resource stewardship contract', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'home23-cron-resource-contract-'));
   const job = makeDueJob({
@@ -200,6 +227,79 @@ test('background cron jobs defer under mixed due load without counting as failur
   assert.equal(savedBackground.state.lastSemanticStatus, 'withheld');
   assert.equal(savedBackground.state.consecutiveErrors, 0);
   assert.ok(savedBackground.state.nextRunAtMs > Date.now());
+});
+
+test('scheduler caps scheduled agent turns so chat bridge stays responsive', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-agent-cap-'));
+  const first = makeDueJob({
+    id: 'agent-first',
+    name: 'Agent first',
+    queueClass: 'scheduled',
+    payload: { kind: 'agentTurn', message: 'first' },
+  } as Partial<CronJob>);
+  const second = makeDueJob({
+    id: 'agent-second',
+    name: 'Agent second',
+    queueClass: 'scheduled',
+    payload: { kind: 'agentTurn', message: 'second' },
+  } as Partial<CronJob>);
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify([first, second], null, 2));
+
+  const calls: string[] = [];
+  const scheduler = new CronScheduler({
+    timezone: 'America/New_York',
+    jobsFile: 'cron-jobs.json',
+    runsDir: 'cron-runs',
+    maxConcurrentAgentTurns: 1,
+  }, async (job): Promise<JobResult> => {
+    calls.push(job.id);
+    return { status: 'ok', durationMs: 1 };
+  }, dir);
+
+  await (scheduler as any).tick();
+
+  assert.deepEqual(calls, ['agent-first']);
+  const decisions = readJsonl(join(dir, 'cron-decisions.jsonl'));
+  const deferred = decisions.find((decision) => decision.jobId === 'agent-second');
+  assert.equal(deferred.action, 'defer');
+  assert.match(deferred.reason, /preserve bridge\/chat responsiveness/);
+
+  const runLog = readJsonl(join(dir, 'cron-runs', 'agent-second.jsonl'));
+  assert.equal(runLog.length, 1);
+  assert.equal(runLog[0].withheld, true);
+  assert.equal(runLog[0].status, 'ok');
+});
+
+test('scheduler caps total jobs per tick to avoid live harness stampedes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'home23-cron-total-cap-'));
+  const jobs = [1, 2, 3].map((n) => makeDueJob({
+    id: `job-${n}`,
+    name: `Job ${n}`,
+    payload: { kind: 'exec', command: `echo ${n}` },
+  } as Partial<CronJob>));
+  writeFileSync(join(dir, 'cron-jobs.json'), JSON.stringify(jobs, null, 2));
+
+  const calls: string[] = [];
+  const scheduler = new CronScheduler({
+    timezone: 'America/New_York',
+    jobsFile: 'cron-jobs.json',
+    runsDir: 'cron-runs',
+    maxConcurrentJobsPerTick: 2,
+  }, async (job): Promise<JobResult> => {
+    calls.push(job.id);
+    return { status: 'ok', durationMs: 1 };
+  }, dir);
+
+  await (scheduler as any).tick();
+
+  assert.deepEqual(calls, ['job-1', 'job-2']);
+  const decisions = readJsonl(join(dir, 'cron-decisions.jsonl'));
+  const deferred = decisions.find((decision) => decision.jobId === 'job-3');
+  assert.equal(deferred.action, 'defer');
+  assert.match(deferred.reason, /preserve dashboard\/chat responsiveness/);
+  const runLog = readJsonl(join(dir, 'cron-runs', 'job-3.jsonl'));
+  assert.equal(runLog[0].status, 'ok');
+  assert.equal(runLog[0].withheld, true);
 });
 
 test('run logs separate mechanical completion from failed semantic outcome layers', async () => {

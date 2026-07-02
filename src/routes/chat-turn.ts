@@ -19,6 +19,8 @@ export interface ChatTurnConfig {
   instanceDir?: string;
 }
 
+const PERSISTED_PENDING_MAX_AGE_MS = 10 * 60 * 1000;
+
 function checkAuth(req: Request, res: Response, token?: string): boolean {
   if (!token) return true;
   const h = req.headers.authorization;
@@ -73,15 +75,28 @@ export function createTurnStartHandler(config: ChatTurnConfig) {
       }
     }
 
-    // Reject concurrent runs for same chatId — surface the already-running turn
-    if (config.agent.isRunning(chatId)) {
-      const store = new TurnStore(config.history);
-      const pending = store.pendingTurns(chatId);
-      const existing = pending[pending.length - 1];
-      if (existing) {
-        res.status(409).json({ error: 'turn in progress', turn_id: existing.turn_id });
-        return;
+    // Reject or recover persisted pending turns before starting a duplicate.
+    const store = new TurnStore(config.history);
+    const isActive = config.agent.isRunning(chatId);
+    if (!isActive) {
+      for (const recoveredTurnId of store.sweepOrphans(chatId, PERSISTED_PENDING_MAX_AGE_MS)) {
+        const env = store.finalEnvelope(chatId, recoveredTurnId);
+        if (env) {
+          turnBus.emit(chatId, recoveredTurnId, env);
+          turnBus.close(chatId, recoveredTurnId);
+        }
       }
+    }
+    const pending = store.pendingTurns(chatId);
+    const existing = pending[pending.length - 1];
+    if (existing) {
+      res.status(409).json({
+        error: 'turn in progress',
+        turn_id: existing.turn_id,
+        active: isActive,
+        recoverable: !isActive,
+      });
+      return;
     }
 
     // Resolve model alias → { model, provider } for per-turn override.
@@ -159,43 +174,53 @@ export function createTurnStreamHandler(config: ChatTurnConfig) {
       'Connection': 'keep-alive',
       'X-Accel-Buffering': 'no',
     });
+    res.write(': connected\n\n');
 
     const write = (data: unknown): void => {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
-    const store = new TurnStore(config.history);
-
-    // Phase 1: catch-up from JSONL
-    const catchup = store.eventsSince(chatId, turnId, cursor);
     let lastSeq = cursor;
-    for (const ev of catchup) {
-      write(ev);
-      lastSeq = ev.seq;
-    }
-
-    // Check if turn already finished before we subscribe
-    const finalEnv = store.finalEnvelope(chatId, turnId);
-    if (finalEnv) {
-      write(finalEnv);
+    let finished = false;
+    let unsubscribe = (): void => {};
+    const finish = (): void => {
+      if (finished) return;
+      finished = true;
       res.write('data: [DONE]\n\n');
       res.end();
-      return;
-    }
+      unsubscribe();
+    };
 
-    // Phase 2: subscribe for live events (dedup against what we just replayed)
-    let finished = false;
-    const unsubscribe = turnBus.subscribe(chatId, turnId, (record) => {
+    // Subscribe before replay/final-state checks so a terminal envelope cannot
+    // land between catch-up and live tail attachment.
+    unsubscribe = turnBus.subscribe(chatId, turnId, (record) => {
       if (finished) return;
       if (isTurnEvent(record) && record.seq <= lastSeq) return; // already sent during catch-up
       write(record);
       if (isTurnEvent(record)) lastSeq = record.seq;
       if (isTurnEnvelope(record) && record.status !== 'pending') {
-        finished = true;
-        res.write('data: [DONE]\n\n');
-        res.end();
+        finish();
       }
     });
+
+    const store = new TurnStore(config.history);
+
+    // Phase 1: catch-up from JSONL
+    const catchup = store.eventsSince(chatId, turnId, cursor);
+    for (const ev of catchup) {
+      if (finished) break;
+      write(ev);
+      lastSeq = ev.seq;
+    }
+    if (finished) return;
+
+    // Check if turn already finished after subscribing.
+    const finalEnv = store.finalEnvelope(chatId, turnId);
+    if (finalEnv && !finished) {
+      write(finalEnv);
+      finish();
+      return;
+    }
 
     // Client disconnect
     req.on('close', () => {
@@ -220,9 +245,77 @@ export function createTurnStopHandler(config: ChatTurnConfig) {
 
     const chatId = req.body?.chatId;
     if (!chatId) { res.status(400).json({ error: 'chatId required' }); return; }
+    const turnId = typeof req.body?.turn_id === 'string' && req.body.turn_id.length > 0
+      ? req.body.turn_id
+      : undefined;
 
-    const result = config.agent.stop(chatId);
-    res.json(result);
+    const store = new TurnStore(config.history);
+    if (turnId) {
+      const requested = store.listTurns(chatId).find(t => t.turn_id === turnId);
+      if (!requested) {
+        res.status(404).json({ error: 'turn not found', turn_id: turnId });
+        return;
+      }
+      if (requested.status !== 'pending') {
+        res.json({ stopped: false, chatIds: [], turn_id: turnId, alreadyTerminal: true, status: requested.status });
+        return;
+      }
+    }
+
+    const result = config.agent.stop(chatId, turnId);
+
+    if (turnId && result.activeTurnId && result.activeTurnId !== turnId) {
+      res.status(409).json({
+        stopped: false,
+        chatIds: [],
+        turn_id: turnId,
+        activeTurnId: result.activeTurnId,
+        error: 'different turn is active',
+      });
+      return;
+    }
+
+    if (turnId && !store.finalEnvelope(chatId, turnId)) {
+      const events = store.eventsSince(chatId, turnId, -1);
+      const lastSeq = events.length ? events[events.length - 1]!.seq : 0;
+      const env = store.writeEnd(chatId, turnId, 'stopped', {
+        last_seq: lastSeq,
+        stop_reason: result.stopped ? 'operator_stop' : 'operator_stop_no_active_run',
+      });
+      turnBus.emit(chatId, turnId, env);
+      turnBus.close(chatId, turnId);
+    }
+
+    res.json(turnId ? { ...result, turn_id: turnId } : result);
+  };
+}
+
+/** GET /api/chat/turn-status?chatId=X&turn_id=Y — non-mutating turn status read. */
+export function createTurnStatusHandler(config: ChatTurnConfig) {
+  return (req: Request, res: Response): void => {
+    if (!checkAuth(req, res, config.token)) return;
+
+    const chatId = String(req.query.chatId || '');
+    const turnId = String(req.query.turn_id || '');
+    if (!chatId || !turnId) {
+      res.status(400).json({ error: 'chatId and turn_id required' });
+      return;
+    }
+
+    const store = new TurnStore(config.history);
+    const status = store.statusForTurn(chatId, turnId, {
+      active: config.agent.isRunning(chatId),
+      provider: config.agent.getProvider?.() ?? null,
+      defaultModel: config.agent.getModel?.() ?? null,
+      defaultProvider: config.agent.getProvider?.() ?? null,
+    });
+
+    if (!status) {
+      res.status(404).json({ error: 'turn not found' });
+      return;
+    }
+
+    res.json(status);
   };
 }
 
@@ -244,7 +337,7 @@ export function createModelsHandler(config: ChatTurnConfig) {
   };
 }
 
-/** GET /api/chat/pending?chatId=X — list pending turns (for page-load resume). Sweeps orphans >10min. */
+/** GET /api/chat/pending?chatId=X — list pending turns for page-load resume. */
 export function createPendingTurnsHandler(config: ChatTurnConfig) {
   return (req: Request, res: Response): void => {
     if (!checkAuth(req, res, config.token)) return;
@@ -253,8 +346,6 @@ export function createPendingTurnsHandler(config: ChatTurnConfig) {
     if (!chatId) { res.status(400).json({ error: 'chatId required' }); return; }
 
     const store = new TurnStore(config.history);
-    // Sweep orphans older than 10 minutes for this chatId before listing
-    store.sweepOrphans(chatId, 10 * 60 * 1000);
     res.json({ pending: store.pendingTurns(chatId) });
   };
 }

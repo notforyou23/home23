@@ -68,17 +68,119 @@ function toCodexMessage(role, content) {
   };
 }
 
+function isCodexInstructionRole(role) {
+  return role === 'system' || role === 'developer';
+}
+
+function extractCodexText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map(part => {
+        if (typeof part === 'string') return part;
+        if (typeof part?.text === 'string') return part.text;
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (typeof content?.text === 'string') return content.text;
+  return '';
+}
+
+function extractCodexInstructionText({ input = null, messages = [], instructions = null, systemPrompt = null } = {}) {
+  const parts = [];
+  const explicit = systemPrompt ?? instructions;
+
+  if (typeof explicit === 'string' && explicit.trim()) {
+    parts.push(explicit.trim());
+  }
+
+  for (const msg of messages || []) {
+    if (!isCodexInstructionRole(msg?.role)) continue;
+    const text = extractCodexText(msg.content).trim();
+    if (text) parts.push(text);
+  }
+
+  if (Array.isArray(input)) {
+    for (const item of input) {
+      if (!isCodexInstructionRole(item?.role)) continue;
+      const text = extractCodexText(item.content).trim();
+      if (text) parts.push(text);
+    }
+  }
+
+  return parts.join('\n\n');
+}
+
+function sanitizeCodexInputItems(items) {
+  if (!Array.isArray(items)) return items;
+  return items.filter(item => !isCodexInstructionRole(item?.role));
+}
+
 function buildCodexInputItems({ input = null, query = null, messages = [] } = {}) {
   if (input !== null) {
-    return typeof input === 'string' ? [toCodexMessage('user', input)] : input;
+    return sanitizeCodexInputItems(
+      typeof input === 'string' ? [toCodexMessage('user', input)] : input
+    );
   }
   if (query) {
     return [toCodexMessage('user', query)];
   }
   if (messages && messages.length > 0) {
-    return messages.map(msg => toCodexMessage(msg.role, msg.content));
+    return messages
+      .filter(msg => !isCodexInstructionRole(msg?.role))
+      .map(msg => toCodexMessage(msg.role, msg.content));
   }
   throw new Error('Either input, messages, or query must be provided');
+}
+
+function toCodexTool(tool) {
+  if (!tool || typeof tool !== 'object') return null;
+
+  // Built-in Responses API tools already have a concrete type. Preserve only
+  // the known built-ins; dropping unknowns is safer than sending `type: null`
+  // to ChatGPT's codex/responses endpoint and killing the whole branch.
+  if (['web_search', 'file_search', 'code_interpreter'].includes(tool.type)) {
+    return tool;
+  }
+
+  // Anthropic-format cycle tools: { name, description, input_schema }.
+  if (tool.name && tool.input_schema) {
+    return {
+      type: 'function',
+      name: tool.name,
+      description: tool.description || '',
+      parameters: tool.input_schema || { type: 'object', properties: {} },
+    };
+  }
+
+  // OpenAI Chat Completions format: { type: 'function', function: {...} }.
+  if (tool.type === 'function' && tool.function?.name) {
+    return {
+      type: 'function',
+      name: tool.function.name,
+      description: tool.function.description || '',
+      parameters: tool.function.parameters || { type: 'object', properties: {} },
+    };
+  }
+
+  // Responses API function format: { type: 'function', name, parameters }.
+  if (tool.type === 'function' && tool.name) {
+    return {
+      type: 'function',
+      name: tool.name,
+      description: tool.description || '',
+      parameters: tool.parameters || { type: 'object', properties: {} },
+    };
+  }
+
+  return null;
+}
+
+function buildCodexTools(tools = []) {
+  if (!Array.isArray(tools) || tools.length === 0) return [];
+  return tools.map(toCodexTool).filter(Boolean);
 }
 
 function extractTextFromResponse(response) {
@@ -123,7 +225,7 @@ class OpenAICodexClient {
   async generate(options = {}) {
     const credentials = getOpenAICodexCredentials(this.config);
     const model = options.model || this.config.providers?.['openai-codex']?.defaultModel || 'gpt-5.5';
-    const tools = options.tools || [];
+    const tools = buildCodexTools(options.tools || []);
     const body = {
       model,
       store: false,
@@ -131,7 +233,7 @@ class OpenAICodexClient {
       input: buildCodexInputItems(options),
     };
 
-    const instructions = options.systemPrompt ?? options.instructions;
+    const instructions = extractCodexInstructionText(options);
     body.instructions = typeof instructions === 'string' && instructions.trim()
       ? instructions.trim()
       : 'You are a helpful Home23 assistant. Be concise and accurate.';
