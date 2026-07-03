@@ -48,10 +48,15 @@ A new user should be able to run:
 
 ```bash
 node cli/home23.js setup
-node cli/home23.js start <name>
 ```
 
-`setup` seeds local config from `config/*.example`, creates the first personal agent, records its purpose, accepts starter project/import folders for ingestion, marks it as `home.primaryAgent`, and regenerates `ecosystem.config.cjs`.
+`setup` seeds local config from `config/*.example`, starts the web-guided first-run page, and walks the user through provider setup, first-agent creation, owner/user facts, purpose, starter project/import folders, model choice, and launch. The resulting agent is marked as `home.primaryAgent`, and `ecosystem.config.cjs` is regenerated.
+
+The terminal-guided fallback is:
+
+```bash
+node cli/home23.js setup --cli
+```
 
 For scripted/manual setup, the equivalent lower-level flow is:
 

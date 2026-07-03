@@ -1240,6 +1240,13 @@ class DashboardServer {
       res.sendFile(path.join(__dirname, 'home23-settings.html'));
     });
 
+    // Web-first setup page. Same assets/API as Settings, but client code forces
+    // the onboarding overlay even when the normal Settings tabs are available.
+    this.app.get('/home23/setup', (req, res) => {
+      res.setHeader('Cache-Control', 'no-store, max-age=0');
+      res.sendFile(path.join(__dirname, 'home23-settings.html'));
+    });
+
     // Agenda surface — fruit layer (Phase 6 of thinking-machine-cycle).
     this.app.get('/home23/agenda', (req, res) => {
       res.sendFile(path.join(__dirname, 'home23-agenda.html'));

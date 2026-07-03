@@ -27,9 +27,19 @@ cd home23
 node cli/home23.js setup
 ```
 
-`setup` is the easiest first-run path. It installs Home23, creates the first personal agent, asks for the agent's purpose, and asks for project folders to ingest right away.
+`setup` is the easiest first-run path. It installs Home23, starts a temporary local setup server, and opens the browser to the web-guided first-run page. Keep that terminal open until the page has launched the agent.
 
-Starter folders can be normal work folders, Claude/Codex project exports, imported notes, reports, or fresh project directories. Home23 adds them to the agent's Document Feeder watch paths so supported files flow into the agent's brain as they change.
+The setup page walks through:
+
+- provider setup through Anthropic OAuth, OpenAI Codex OAuth, or API keys for OpenAI, Ollama Cloud, MiniMax, xAI, and fallback Anthropic access
+- first personal agent name and owner name
+- up-front user facts the agent should know
+- agent purpose
+- starter project/import folders, including Claude/Codex exports, notes, reports, or fresh project directories
+- default provider/model choice
+- live launch
+
+Starter folders are added to the agent's Document Feeder watch paths so supported files flow into the agent's brain as they change.
 
 Conversation memory is part of the default setup. Each agent writes session transcripts into `instances/<name>/workspace/sessions/`, the feeder watches that folder, the chat loop searches brain memory by default, and the seeded `conversation-backfill-daily` scheduler job converts any accumulated JSONL chat history into feeder-ready markdown once a day. Compaction and memory extraction use the agent's configured default provider/model rather than a separate hard-coded model.
 
@@ -40,19 +50,29 @@ node cli/home23.js init
 node cli/home23.js agent create <name>
 ```
 
+For the older terminal-guided first-run path, use:
+
+```bash
+node cli/home23.js setup --cli
+```
+
 `init` installs root, engine, Evobrew, COSMO23, and COSMO23 engine dependencies; generates Home23/COSMO config plumbing; creates the COSMO OAuth database; builds TypeScript; and prepares the MarkItDown Python environment.
 
 Provider credentials are configured in the dashboard, not during `init`.
 
 `agent create` writes the first local `instances/<name>/` runtime directory, records its purpose, configures starter ingestion folders, and regenerates the PM2 ecosystem. `instances/` is intentionally local state and is not committed.
 
-## 3. Start
+## 3. Web Setup and Start
 
-```bash
-node cli/home23.js start <name>
+The browser should open automatically to `/home23/setup` on a temporary local setup server, usually:
+
+```text
+http://localhost:50523/home23/setup
 ```
 
-Open:
+If that port is busy, the setup command prints the next available setup URL.
+
+After the setup page launches the agent, open:
 
 - Dashboard: `http://localhost:5002/home23`
 - Settings: `http://localhost:5002/home23/settings`
@@ -60,7 +80,7 @@ Open:
 - Evobrew: `http://localhost:3415`
 - COSMO23: `http://localhost:43210`
 
-Use Settings to configure providers, confirm the agent's model and purpose, and add more ingestion folders through the Feeder tab.
+Use Settings later to adjust providers, the agent's model and purpose, owner context, and ingestion folders through the Feeder tab.
 
 ## 4. Validate
 

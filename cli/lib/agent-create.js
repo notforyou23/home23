@@ -164,6 +164,21 @@ function projectSurface(today, ingestPaths = []) {
   return `# Active Projects\n\n## Starter Project Folders\n${rows}\n\nThese folders are watched by the Document Feeder and will be ingested into the agent's brain as files change.\n\n_Curator-maintained. Last updated: ${today}._\n`;
 }
 
+function parsePersonalFacts(input) {
+  return String(input || '')
+    .split(/\n/)
+    .map(line => line.replace(/^-+\s*/, '').trim())
+    .filter(Boolean);
+}
+
+function personalSurface(ownerName, personalFacts = []) {
+  const facts = Array.isArray(personalFacts) ? personalFacts : parsePersonalFacts(personalFacts);
+  const factBlock = facts.length
+    ? `\n## Up-Front Context\n${facts.map(line => `- ${line}`).join('\n')}\n`
+    : '\n## Up-Front Context\n_No additional personal context provided during setup._\n';
+  return `# Personal Context — ${ownerName}\n\n## Profile\n- Owner: ${ownerName}\n${factBlock}\n_Personal memory. Surface only on direct relevance. Curator-maintained._\n`;
+}
+
 function addBotTokenToSecrets(home23Root, agentName, botToken) {
   const secretsPath = join(home23Root, 'config', 'secrets.yaml');
   let content = '';
@@ -235,6 +250,8 @@ export async function runAgentCreate(home23Root, name, options = {}) {
 
   const displayName = await promptWithDefault('Agent display name', displayDefault);
   const ownerName = await promptWithDefault('Owner name', defaultOwner);
+  const personalFacts = await promptWithDefault('Important facts this agent should know about you (optional)', '');
+  const parsedPersonalFacts = parsePersonalFacts(personalFacts);
   const purpose = await promptWithDefault('What should this agent help with?', defaultPurpose(ownerName));
   const ingestInput = await promptWithDefault('Project folders to ingest now (comma-separated paths, optional)', '');
   const ownerTelegramId = await promptWithDefault('Owner Telegram ID', defaultTelegramId);
@@ -265,7 +282,7 @@ export async function runAgentCreate(home23Root, name, options = {}) {
       name,
       displayName,
       purpose,
-      owner: { name: ownerName, telegramId: ownerTelegramId || undefined },
+      owner: { name: ownerName, telegramId: ownerTelegramId || undefined, facts: parsedPersonalFacts.length ? parsedPersonalFacts : undefined },
       timezone,
       maxSubAgents: 3,
     },
@@ -370,7 +387,7 @@ export async function runAgentCreate(home23Root, name, options = {}) {
   const surfaces = {
     'TOPOLOGY.md': `# House Topology\n\n_No services registered yet. The curator cycle will populate this as the agent learns about the house._\n\n_Last verified: ${new Date().toISOString().split('T')[0]}. Source: initial setup._\n`,
     'PROJECTS.md': projectSurface(today, ingestPaths),
-    'PERSONAL.md': `# Personal Context — ${ownerName}\n\n## Profile\n- Owner: ${ownerName}\n\n_Personal memory. Surface only on direct relevance. Curator-maintained._\n`,
+    'PERSONAL.md': personalSurface(ownerName, parsedPersonalFacts),
     'DOCTRINE.md': `# Doctrine — How We Work\n\n## Conventions\n- Engine is JS. Harness is TS. Two languages, one system.\n- NEVER pm2 delete/stop all — scope commands to specific process names.\n\n_Curator-maintained. Includes boundaries and operating constraints._\n`,
     'RECENT.md': `# Recent Activity (Last 48 Hours)\n\n## ${today}\n\n### Agent created\n- ${displayName} initialized with Home23\n- Purpose: ${purpose}\n- Starter ingestion paths: ${ingestPaths.length || 0}\n- Situational awareness engine active\n\n_Auto-generated. Entries older than 48h drop from assembly loading._\n`,
   };

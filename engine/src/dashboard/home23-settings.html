@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home23 — Settings</title>
+  <link rel="icon" href="data:,">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/home23-dashboard.css">
   <link rel="stylesheet" href="/home23-settings.css">
@@ -85,7 +86,7 @@
     <div id="onboarding-overlay" class="h23s-onboarding" style="display:none;">
       <div class="h23s-onboarding-header">
         <h1 class="h23s-onboarding-title">Welcome to Home23</h1>
-        <p class="h23s-onboarding-subtitle">Let's get your AI operating system running. This takes about 2 minutes.</p>
+        <p class="h23s-onboarding-subtitle">Walk through the setup checklist, connect models, create your first personal agent, and launch the live system.</p>
       </div>
 
       <!-- Step indicator -->
@@ -106,10 +107,19 @@
         </div>
       </div>
 
+      <div class="h23s-onboarding-checklist" id="ob-checklist" aria-label="Setup checklist">
+        <div class="h23s-ob-check" data-ob-check="system"><span></span>System prepared</div>
+        <div class="h23s-ob-check" data-ob-check="provider"><span></span>Provider connected</div>
+        <div class="h23s-ob-check" data-ob-check="identity"><span></span>Agent identity</div>
+        <div class="h23s-ob-check" data-ob-check="personal"><span></span>User context</div>
+        <div class="h23s-ob-check" data-ob-check="folders"><span></span>Project imports</div>
+        <div class="h23s-ob-check" data-ob-check="launch"><span></span>Live launch</div>
+      </div>
+
       <!-- Onboarding Step 1: Providers -->
       <div class="h23s-onboarding-page active" id="ob-step-1">
         <h2 class="h23s-panel-title">Connect a Provider</h2>
-        <p class="h23s-panel-desc">Your agent needs at least one AI provider to think. OAuth is recommended — it's free with Claude Max or ChatGPT Plus and refreshes automatically.</p>
+        <p class="h23s-panel-desc">Your agent needs at least one reachable AI provider. OAuth is recommended for Anthropic and OpenAI Codex. API keys are available for OpenAI, Ollama Cloud, MiniMax, xAI, and fallback Anthropic access.</p>
 
         <!-- OAuth cards (reference the same IDs — the existing HTML above has them) -->
         <div class="h23s-section" id="ob-oauth-host">
@@ -273,6 +283,11 @@
             <input type="text" id="wiz-owner" placeholder="owner">
           </div>
           <div class="h23s-field">
+            <label>Important User Facts</label>
+            <textarea id="wiz-user-facts" rows="4" placeholder="Examples: what you work on, people or projects that matter, preferred communication style, privacy boundaries, current priorities."></textarea>
+            <span class="h23s-hint">Optional. One fact per line. Saved into the agent's personal context.</span>
+          </div>
+          <div class="h23s-field">
             <label>Purpose</label>
             <textarea id="wiz-purpose" rows="3" placeholder="Help me organize work, remember important context, and keep projects moving."></textarea>
           </div>
@@ -320,6 +335,7 @@
               <option value="ollama-cloud">Ollama Cloud</option>
               <option value="minimax">MiniMax</option>
               <option value="anthropic">Anthropic</option>
+              <option value="openai-codex">OpenAI Codex</option>
               <option value="openai">OpenAI</option>
               <option value="xai">xAI</option>
             </select>

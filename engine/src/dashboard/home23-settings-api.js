@@ -720,6 +720,21 @@ function createSettingsRouter(home23Root) {
     return `# Active Projects\n\n## Starter Project Folders\n${rows}\n\nThese folders are watched by the Document Feeder and will be ingested into the agent's brain as files change.\n\n_Curator-maintained. Last updated: ${today}._\n`;
   }
 
+  function parsePersonalFacts(input) {
+    return String(input || '')
+      .split(/\n/)
+      .map(line => line.replace(/^-+\s*/, '').trim())
+      .filter(Boolean);
+  }
+
+  function personalSurface(ownerName, personalFacts = []) {
+    const facts = Array.isArray(personalFacts) ? personalFacts : parsePersonalFacts(personalFacts);
+    const factBlock = facts.length
+      ? `\n## Up-Front Context\n${facts.map(line => `- ${line}`).join('\n')}\n`
+      : '\n## Up-Front Context\n_No additional personal context provided during setup._\n';
+    return `# Personal Context — ${ownerName}\n\n## Profile\n- Owner: ${ownerName}\n${factBlock}\n_Personal memory. Surface only on direct relevance. Curator-maintained._\n`;
+  }
+
   function writeMissionFile(instanceDir, vars) {
     const template = loadTemplate('MISSION.md');
     const content = renderTemplate(template, vars);
@@ -762,6 +777,7 @@ function createSettingsRouter(home23Root) {
       model,
       provider,
       purpose,
+      personalFacts,
       ingestPaths,
     } = req.body;
 
@@ -781,6 +797,7 @@ function createSettingsRouter(home23Root) {
     const resolvedOwnerName = String(ownerName || '').trim() || 'owner';
     const resolvedDisplayName = String(displayName || '').trim() || name.charAt(0).toUpperCase() + name.slice(1);
     const resolvedPurpose = String(purpose || '').trim() || defaultPurpose(resolvedOwnerName);
+    const resolvedPersonalFacts = parsePersonalFacts(personalFacts);
     const starterIngestPaths = parseIngestPaths(ingestPaths);
 
     for (const dir of ['workspace', 'workspace/scripts', 'brain', 'conversations', 'conversations/sessions', 'logs', 'cron-runs']) {
@@ -792,7 +809,7 @@ function createSettingsRouter(home23Root) {
         name,
         displayName: resolvedDisplayName,
         purpose: resolvedPurpose,
-        owner: { name: resolvedOwnerName, telegramId: ownerTelegramId || undefined },
+        owner: { name: resolvedOwnerName, telegramId: ownerTelegramId || undefined, facts: resolvedPersonalFacts.length ? resolvedPersonalFacts : undefined },
         timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
         maxSubAgents: 3,
       },
@@ -821,7 +838,7 @@ function createSettingsRouter(home23Root) {
         defaultProvider: provider || 'ollama-cloud',
         defaultModel: model || 'kimi-k2.6',
         maxTokens: 4096, temperature: 0.7, historyDepth: 20, historyBudget: 400000, sessionGapMs: 1800000,
-        memorySearch: { enabled: false, timeoutMs: 10000, topK: 5 },
+        memorySearch: { enabled: true, timeoutMs: 10000, topK: 5 },
         identityFiles: ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'LEARNINGS.md', 'GOOD_LIFE.md', 'COSMO_RESEARCH.md'],
         heartbeatRefreshMs: 60000,
       },
@@ -864,7 +881,7 @@ function createSettingsRouter(home23Root) {
     const surfaces = {
       'TOPOLOGY.md': `# House Topology\n\n_No services registered yet. The curator cycle will populate this as the agent learns about the house._\n\n_Last verified: ${today}. Source: initial setup._\n`,
       'PROJECTS.md': projectSurface(today, starterIngestPaths),
-      'PERSONAL.md': `# Personal Context — ${resolvedOwnerName}\n\n## Profile\n- Owner: ${resolvedOwnerName}\n\n_Personal memory. Surface only on direct relevance. Curator-maintained._\n`,
+      'PERSONAL.md': personalSurface(resolvedOwnerName, resolvedPersonalFacts),
       'DOCTRINE.md': `# Doctrine — How We Work\n\n## Conventions\n- Engine is JS. Harness is TS. Two languages, one system.\n- NEVER pm2 delete/stop all — scope commands to specific process names.\n\n_Curator-maintained. Includes boundaries and operating constraints._\n`,
       'RECENT.md': `# Recent Activity (Last 48 Hours)\n\n## ${today}\n\n### Agent created\n- ${resolvedDisplayName} initialized with Home23\n- Purpose: ${resolvedPurpose}\n- Starter ingestion paths: ${starterIngestPaths.length || 0}\n- Situational awareness engine active\n\n_Auto-generated. Entries older than 48h drop from assembly loading._\n`,
     };
@@ -900,6 +917,7 @@ function createSettingsRouter(home23Root) {
         name,
         displayName: resolvedDisplayName,
         purpose: resolvedPurpose,
+        personalFacts: resolvedPersonalFacts,
         ingestPaths: starterIngestPaths,
         ports,
         isPrimary: isFirst,

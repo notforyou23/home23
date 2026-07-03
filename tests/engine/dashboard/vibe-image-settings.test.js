@@ -80,6 +80,7 @@ test('settings agent creation records purpose and starter ingestion folders', as
     fs.mkdirSync(claudeDir, { recursive: true });
 
     const purpose = 'Help JTR run client projects, remember decisions, and surface next actions.';
+    const personalFacts = 'Prefers receipts before summaries.\nWorks through Home23 and project imports.';
     const createRes = await fetch(`${baseUrl}/home23/api/settings/agents`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -88,6 +89,7 @@ test('settings agent creation records purpose and starter ingestion folders', as
         displayName: 'Ada',
         ownerName: 'JTR',
         purpose,
+        personalFacts,
         ingestPaths: `${projectDir}\n${claudeDir}`,
         provider: 'ollama-cloud',
         model: 'kimi-k2.6',
@@ -97,18 +99,24 @@ test('settings agent creation records purpose and starter ingestion folders', as
     const createBody = await createRes.json();
     assert.equal(createBody.ok, true);
     assert.equal(createBody.agent.purpose, purpose);
+    assert.deepEqual(createBody.agent.personalFacts, ['Prefers receipts before summaries.', 'Works through Home23 and project imports.']);
     assert.equal(createBody.agent.ingestPaths.length, 2);
 
     const instanceDir = path.join(root, 'instances', 'ada');
     const config = yaml.load(fs.readFileSync(path.join(instanceDir, 'config.yaml'), 'utf8'));
     assert.equal(config.agent.purpose, purpose);
+    assert.equal(config.chat.memorySearch.enabled, true);
+    assert.deepEqual(config.agent.owner.facts, ['Prefers receipts before summaries.', 'Works through Home23 and project imports.']);
     assert.ok(config.feeder.additionalWatchPaths.some((entry) => entry.path === projectDir && entry.label === 'sample-project'));
     assert.ok(config.feeder.additionalWatchPaths.some((entry) => entry.path === claudeDir && entry.label === 'client-notes'));
 
     const mission = fs.readFileSync(path.join(instanceDir, 'workspace', 'MISSION.md'), 'utf8');
+    const personal = fs.readFileSync(path.join(instanceDir, 'workspace', 'PERSONAL.md'), 'utf8');
     const projects = fs.readFileSync(path.join(instanceDir, 'workspace', 'PROJECTS.md'), 'utf8');
     const recent = fs.readFileSync(path.join(instanceDir, 'workspace', 'RECENT.md'), 'utf8');
     assert.match(mission, new RegExp(purpose.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(personal, /Prefers receipts before summaries\./);
+    assert.match(personal, /Works through Home23 and project imports\./);
     assert.match(projects, /sample-project:/);
     assert.match(projects, /client-notes:/);
     assert.match(recent, /Starter ingestion paths: 2/);

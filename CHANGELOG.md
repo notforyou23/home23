@@ -4,7 +4,7 @@
 
 ### Release posture
 - Promoted Home23 to the 1.0.0 release line with package metadata and lockfile aligned.
-- Added a guided fresh-install onboarding path and release handoff receipt so a new operator can set purpose, add starter project/import folders, start, validate, and orient without reading the whole historical design archive.
+- Added a web-guided fresh-install onboarding path and release handoff receipt so a new operator can connect providers, create a personal agent, save user facts and purpose, add starter project/import folders, choose a model, start, validate, and orient without reading the whole historical design archive.
 - Added contract validation scripts and Apple/client route schemas/fixtures for the dashboard, chat, settings, query, home-surface, tile, worker, and device-facing API surfaces.
 
 ### Runtime hardening

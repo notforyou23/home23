@@ -699,6 +699,7 @@ const PROVIDER_DISPLAY = {
   'ollama-cloud': 'Ollama Cloud',
   'minimax': 'MiniMax',
   'anthropic': 'Anthropic',
+  'openai-codex': 'OpenAI Codex',
   'openai': 'OpenAI',
   'xai': 'xAI',
 };
@@ -1178,7 +1179,7 @@ function hideWizard() {
   wizard.classList.remove('open');
   createButton.disabled = false;
   createButton.textContent = '+ Create Agent';
-  for (const id of ['wiz-name', 'wiz-display-name', 'wiz-owner', 'wiz-purpose', 'wiz-ingest-paths', 'wiz-timezone', 'wiz-bot-token', 'wiz-telegram-id']) {
+  for (const id of ['wiz-name', 'wiz-display-name', 'wiz-owner', 'wiz-user-facts', 'wiz-purpose', 'wiz-ingest-paths', 'wiz-timezone', 'wiz-bot-token', 'wiz-telegram-id']) {
     const el = document.getElementById(id);
     if (el) el.value = '';
   }
@@ -1273,6 +1274,7 @@ async function createAgent() {
     name: document.getElementById('wiz-name').value.trim(),
     displayName: document.getElementById('wiz-display-name').value.trim(),
     ownerName: document.getElementById('wiz-owner').value.trim(),
+    personalFacts: document.getElementById('wiz-user-facts')?.value.trim() || '',
     purpose: document.getElementById('wiz-purpose').value.trim(),
     ingestPaths: parseWizardIngestPaths(),
     timezone: document.getElementById('wiz-timezone').value.trim(),
@@ -3421,6 +3423,12 @@ async function checkOnboarding() {
 function showOnboarding() {
   onboardingActive = true;
   onboardingStep = 1;
+  document.body.classList.add('h23s-onboarding-active');
+  document.title = 'Home23 — Setup';
+  const pageTitle = document.querySelector('.h23s-page-title');
+  const modePill = document.querySelector('.h23s-mode-pill');
+  if (pageTitle) pageTitle.textContent = 'Setup';
+  if (modePill) modePill.textContent = 'First Run';
 
   // Hide normal settings UI
   document.querySelector('.h23s-tabs').style.display = 'none';
@@ -3434,12 +3442,19 @@ function showOnboarding() {
   populateOnboardingProviders();
 
   updateOnboardingStep();
+  updateOnboardingChecklist();
   startOnboardingProviderPoll();
 }
 
 function hideOnboarding() {
   onboardingActive = false;
   stopOnboardingProviderPoll();
+  document.body.classList.remove('h23s-onboarding-active');
+  document.title = 'Home23 — Settings';
+  const pageTitle = document.querySelector('.h23s-page-title');
+  const modePill = document.querySelector('.h23s-mode-pill');
+  if (pageTitle) pageTitle.textContent = 'Settings';
+  if (modePill) modePill.textContent = 'Control Surface';
 
   // Restore OAuth cards to original location if they were moved
   restoreOAuthCards();
@@ -3590,6 +3605,7 @@ async function checkOnboardingProviderGate() {
       }
     }
     if (nextBtn) nextBtn.disabled = !satisfied;
+    updateOnboardingChecklist({ provider: satisfied });
 
     // Also refresh OAuth card statuses
     renderOAuthCard('anthropic', oauthData.anthropic || {});
@@ -3689,6 +3705,23 @@ function goToOnboardingStep(step) {
   }
 }
 
+function updateOnboardingChecklist(state = {}) {
+  const checks = {
+    system: true,
+    provider: false,
+    identity: !!onboardingCreatedAgent,
+    personal: !!onboardingCreatedAgent?.personalFacts?.length,
+    folders: !!onboardingCreatedAgent?.ingestPaths?.length,
+    launch: false,
+    ...state,
+  };
+  for (const [key, done] of Object.entries(checks)) {
+    const el = document.querySelector(`[data-ob-check="${key}"]`);
+    if (!el) continue;
+    el.classList.toggle('done', !!done);
+  }
+}
+
 function setupOnboardingWizard() {
   // Move the existing wizard into the onboarding host
   const wizard = document.getElementById('agent-wizard');
@@ -3734,6 +3767,7 @@ async function obCreateAgent() {
     name: document.getElementById('wiz-name').value.trim(),
     displayName: document.getElementById('wiz-display-name').value.trim(),
     ownerName: document.getElementById('wiz-owner').value.trim(),
+    personalFacts: document.getElementById('wiz-user-facts')?.value.trim() || '',
     purpose: document.getElementById('wiz-purpose').value.trim(),
     ingestPaths: parseWizardIngestPaths(),
     timezone: document.getElementById('wiz-timezone').value.trim(),
@@ -3764,10 +3798,16 @@ async function obCreateAgent() {
         name: body.name,
         displayName: body.displayName || body.name,
         purpose: data.agent?.purpose || body.purpose,
+        personalFacts: data.agent?.personalFacts || body.personalFacts.split('\n').map(s => s.trim()).filter(Boolean),
         ingestPaths: data.agent?.ingestPaths || body.ingestPaths || [],
         provider: body.provider,
         model: body.model,
       };
+      updateOnboardingChecklist({
+        identity: true,
+        personal: !!onboardingCreatedAgent.personalFacts?.length,
+        folders: !!onboardingCreatedAgent.ingestPaths?.length,
+      });
       goToOnboardingStep(3);
     } else {
       alert('Error: ' + data.error);
@@ -3787,6 +3827,7 @@ function populateOnboardingLaunchSummary() {
   const a = onboardingCreatedAgent;
   const provLabel = PROVIDER_DISPLAY[a.provider] || a.provider || '?';
   const ingestCount = Array.isArray(a.ingestPaths) ? a.ingestPaths.length : 0;
+  const factsCount = Array.isArray(a.personalFacts) ? a.personalFacts.length : 0;
 
   summary.innerHTML = `
     <div class="h23s-onboarding-summary-row">
@@ -3804,6 +3845,10 @@ function populateOnboardingLaunchSummary() {
     <div class="h23s-onboarding-summary-row">
       <span class="h23s-onboarding-summary-label">Purpose</span>
       <span class="h23s-onboarding-summary-value">${escapeHtml(a.purpose || 'not set')}</span>
+    </div>
+    <div class="h23s-onboarding-summary-row">
+      <span class="h23s-onboarding-summary-label">User facts</span>
+      <span class="h23s-onboarding-summary-value">${factsCount ? `${factsCount} saved` : 'Add later in agent settings'}</span>
     </div>
     <div class="h23s-onboarding-summary-row">
       <span class="h23s-onboarding-summary-label">Folders</span>
@@ -3830,6 +3875,7 @@ async function obLaunchAgent() {
     if (data.ok || data.status === 'started') {
       statusEl.textContent = 'Agent started. Redirecting to dashboard...';
       statusEl.style.color = 'var(--accent-green)';
+      updateOnboardingChecklist({ launch: true });
 
       // Get the agent's dashboard port to redirect
       try {
@@ -4545,8 +4591,10 @@ async function init() {
   setupWizard();
 
   // Check if onboarding is needed
+  const forceOnboarding = window.location.pathname.endsWith('/setup')
+    || new URLSearchParams(window.location.search).get('onboarding') === '1';
   const needsOnboarding = await checkOnboarding();
-  if (needsOnboarding) {
+  if (forceOnboarding || needsOnboarding) {
     showOnboarding();
   }
 }

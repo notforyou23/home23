@@ -42,7 +42,9 @@ cd home23
 node cli/home23.js setup
 ```
 
-`setup` runs install initialization, creates the first personal agent, asks what the agent should help with, and lets you paste project folders to ingest immediately. Those folders can be normal work folders, Claude/Codex project exports, or other local project directories you want the agent to learn from.
+`setup` runs install initialization, starts a temporary local setup page, and opens the browser to the guided first-run flow. Keep that terminal open while you finish setup.
+
+The web setup page walks through provider sign-in/API keys, the first personal agent name, owner name, up-front user facts, purpose, project folders/imports to ingest, model choice, and launch. Starter folders can be normal work folders, Claude/Codex project exports, or other local project directories you want the agent to learn from.
 
 Manual operator flow:
 
@@ -55,6 +57,8 @@ node cli/home23.js start <name>
 Init checks prerequisites, installs all dependencies (including MarkItDown for document ingestion), sets up encryption keys and the OAuth database, builds the TypeScript harness, and seeds all configuration. No API keys needed — provider setup happens in the web dashboard.
 
 `agent create` creates the first local runtime under `instances/<name>/`, records its purpose, configures starter feeder watch paths, and regenerates the PM2 ecosystem. Local runtime/config files are intentionally ignored by Git; public defaults live in `config/*.example`.
+
+For the older terminal-guided setup path, run `node cli/home23.js setup --cli`.
 
 Fresh agents also preserve conversation continuity by default: session transcripts are written into `workspace/sessions`, historical JSONL chats are backfilled daily into that same watched folder, chat searches brain memory, and compaction/memory extraction use the agent's configured provider/model defaults.
 
@@ -73,19 +77,13 @@ Those checks verify TypeScript, unit coverage, schema/fixture contracts, read-on
 
 ## Setup — Web Dashboard
 
-After `setup`, start the system:
+`setup` opens **`/home23/setup`** on a temporary local setup server, usually `http://localhost:50523/home23/setup` or the next available port.
 
-```bash
-node cli/home23.js start <name>
-```
-
-Then open **`http://localhost:5002/home23`** in your browser.
-
-Use Settings to finish or adjust:
-1. **Providers** — sign in with OAuth where available or enter API keys.
-2. **Agents** — review the personal agent name, purpose, owner, channels, and model.
-3. **Feeder** — add or remove project folders, uploads, Claude exports, reports, and other local files to ingest.
-4. **Chat** — start using the agent once the provider and model are configured.
+Use the setup page to finish first run:
+1. **Providers** — sign in with Anthropic or OpenAI Codex OAuth, or enter API keys for OpenAI, Ollama Cloud, MiniMax, xAI, or Anthropic fallback access.
+2. **Agent** — name the first personal agent, name the owner, add up-front user facts, set purpose, and add project/import folders.
+3. **Model** — choose the provider/model default, including Ollama Cloud, Anthropic, OpenAI Codex, OpenAI, MiniMax, and xAI options.
+4. **Launch** — start the agent and then use the live dashboard at **`http://localhost:5002/home23`**.
 
 The web dashboard is the primary interface for everything — provider configuration, agent creation, model selection, feeder settings, and day-to-day use. The CLI handles init, start/stop, and updates.
 

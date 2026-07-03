@@ -40,6 +40,7 @@ test('agent create records fresh onboarding purpose, imports, and primary agent'
     const answers = [
       'Ada',
       'JTR',
+      'Prefers direct evidence before claims.\nWorks across active project folders.',
       'Help JTR turn fresh projects into durable working memory.',
       `${starter}, ${claudeExport}`,
       '',
@@ -57,6 +58,7 @@ test('agent create records fresh onboarding purpose, imports, and primary agent'
 
     const agentConfig = yaml.load(readFileSync(join(root, 'instances', 'ada', 'config.yaml'), 'utf8'));
     assert.equal(agentConfig.agent.purpose, 'Help JTR turn fresh projects into durable working memory.');
+    assert.deepEqual(agentConfig.agent.owner.facts, ['Prefers direct evidence before claims.', 'Works across active project folders.']);
     assert.equal(agentConfig.ports.bridge, 5004);
     assert.equal(agentConfig.chat.defaultProvider, 'ollama-cloud');
     assert.equal(agentConfig.chat.defaultModel, 'kimi-k2.6');
@@ -72,6 +74,10 @@ test('agent create records fresh onboarding purpose, imports, and primary agent'
     const projects = readFileSync(join(root, 'instances', 'ada', 'workspace', 'PROJECTS.md'), 'utf8');
     assert.match(projects, new RegExp(starter.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.match(projects, new RegExp(claudeExport.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+    const personal = readFileSync(join(root, 'instances', 'ada', 'workspace', 'PERSONAL.md'), 'utf8');
+    assert.match(personal, /Prefers direct evidence before claims\./);
+    assert.match(personal, /Works across active project folders\./);
 
     assert.ok(existsSync(join(root, 'ecosystem.config.cjs')));
     assert.ok(existsSync(join(root, 'config', 'agents.json')));
@@ -97,7 +103,7 @@ test('agent create auto-heals an existing missing primary by port order', async 
 
   try {
     await runAgentCreate(root, 'new-agent', {
-      prompt: promptFromAnswers(['New Agent', 'JTR', 'Help with new work.', '', '', 'America/New_York', 'kimi-k2.6', 'ollama-cloud']),
+      prompt: promptFromAnswers(['New Agent', 'JTR', '', 'Help with new work.', '', '', 'America/New_York', 'kimi-k2.6', 'ollama-cloud']),
     });
 
     const homeConfig = yaml.load(readFileSync(join(root, 'config', 'home.yaml'), 'utf8'));

@@ -5,7 +5,8 @@
  *
  * Usage:
  *   node cli/home23.js init                 — Set up API keys, install deps, build
- *   node cli/home23.js setup                — Guided first run: init + personal agent
+ *   node cli/home23.js setup                — Web guided first run
+ *   node cli/home23.js setup --cli          — Terminal guided first run
  *   node cli/home23.js agent create <name>  — Create a new agent
  *   node cli/home23.js start [name]         — Start agent(s) via PM2
  *   node cli/home23.js stop [name]          — Stop agent(s) via PM2
@@ -27,7 +28,8 @@ Home23 — Installable AI operating system
 
 Commands:
   init                    First-time setup (deps, build, plumbing)
-  setup                   Guided first run (init + personal agent)
+  setup                   Web guided first run
+  setup --cli             Terminal guided first run (init + personal agent)
   start [name]            Start agent(s) via PM2
   stop [name]             Stop agent(s) via PM2
   worker create <name>    Create a reusable worker without a full engine
@@ -49,7 +51,7 @@ Commands:
     await runInit(HOME23_ROOT);
   } else if (command === 'setup') {
     const { runSetup } = await import('./lib/setup.js');
-    await runSetup(HOME23_ROOT);
+    await runSetup(HOME23_ROOT, { mode: args.includes('--cli') ? 'cli' : 'web' });
   } else if (command === 'agent' && subcommand === 'create') {
     const name = args[2];
     if (!name) {
