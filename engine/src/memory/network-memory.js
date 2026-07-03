@@ -328,16 +328,15 @@ class NetworkMemory {
       return null;
     }
 
-    // All nodes use same dimensions for network consistency
+    // All nodes use same dimensions for network consistency when embeddings are
+    // available. Memory Lite keeps the text node even when vectors are offline.
     const embed = this.normalizeEmbedding(nodeEmbedding || await this.embed(conceptText));
 
-    // Skip adding nodes with null embeddings
     if (!embed) {
-      this.logger?.warn?.('Skipping node with null embedding', {
+      this.logger?.warn?.('Embedding unavailable; storing node in Memory Lite mode', {
         concept: conceptText.substring(0, 100),
         tag: nodeTag
       });
-      return null;
     }
 
     // Generate extractive summary if enabled
@@ -389,7 +388,8 @@ class NetworkMemory {
       summary,      // Compressed version for prompts
       keyPhrase,    // Ultra-compressed for quick reference
       tag: nodeTag,
-      embedding: embed,
+      embedding: embed || null,
+      embedding_status: embed ? 'embedded' : 'missing',
       activation: inputNode?.activation ?? 0,
       cluster: inputNode?.cluster ?? null,
       weight: inputNode?.weight ?? 1.0,
@@ -562,6 +562,7 @@ class NetworkMemory {
       concept: node.concept,
       tag: node.tag,
       embedding: this.serializeEmbedding(node.embedding),
+      embedding_status: node.embedding_status,
       weight: node.weight,
       activation: node.activation,
       cluster: node.cluster,
@@ -827,12 +828,11 @@ class NetworkMemory {
     
     const queryEmbedding = await this.embed(queryText);
     
-    // If embedding failed, return empty results
     if (!queryEmbedding) {
-      this.logger?.warn?.('Query embedding failed, returning empty results', {
+      this.logger?.warn?.('Query embedding failed, using Memory Lite keyword retrieval', {
         queryText: queryText?.substring(0, 100)
       });
-      return [];
+      return this.queryByKeyword(queryText, topK);
     }
     
     // Find best matching node
@@ -853,7 +853,7 @@ class NetworkMemory {
       }
     }
     
-    if (!bestMatch) return [];
+    if (!bestMatch) return this.queryByKeyword(queryText, topK);
     
     // Spread activation from best match
     const activated = await this.spreadActivation(bestMatch);
@@ -872,6 +872,12 @@ class NetworkMemory {
       }));
 
     for (const candidate of snapshotCandidates) {
+      if (!scored.some(n => n.id === candidate.id)) {
+        scored.push(candidate);
+      }
+    }
+
+    for (const candidate of this.queryByKeyword(queryText, topK, { markAccess: false, retrievalMode: 'keyword-supplement' })) {
       if (!scored.some(n => n.id === candidate.id)) {
         scored.push(candidate);
       }
@@ -898,6 +904,71 @@ class NetworkMemory {
       .toLowerCase()
       .split(/[^a-z0-9_:-]+/)
       .filter(word => word.length >= 3);
+  }
+
+  keywordScoreNode(node, queryText, queryWords = null) {
+    if (!node) return 0;
+    const words = queryWords || this.extractQueryWords(queryText);
+    if (words.length === 0) return 0;
+
+    const concept = String(node.concept || '').toLowerCase();
+    const tag = String(node.tag || '').toLowerCase();
+    const tags = Array.isArray(node.tags) ? node.tags.join(' ').toLowerCase() : '';
+    const metadata = node.metadata && typeof node.metadata === 'object'
+      ? Object.values(node.metadata).filter(value => typeof value === 'string').join(' ').toLowerCase()
+      : '';
+    const haystack = `${concept} ${tag} ${tags} ${metadata}`;
+    const phrase = String(queryText || '').trim().toLowerCase();
+
+    let score = phrase && concept.includes(phrase) ? 0.45 : 0;
+    let matched = 0;
+    for (const word of words) {
+      if (haystack.includes(word)) {
+        matched += 1;
+        score += concept.includes(word) ? 0.16 : 0.08;
+      }
+    }
+    if (matched === 0) return 0;
+    score += Math.min(0.2, matched / words.length * 0.2);
+    return Math.min(1, score);
+  }
+
+  queryByKeyword(queryText, topK = 5, options = {}) {
+    const queryWords = this.extractQueryWords(queryText);
+    if (queryWords.length === 0) return [];
+
+    const results = Array.from(this.nodes.values())
+      .map((node) => {
+        const keywordScore = this.keywordScoreNode(node, queryText, queryWords);
+        if (keywordScore <= 0) return null;
+        return {
+          ...node,
+          similarity: keywordScore,
+          activation: keywordScore,
+          retrievalMode: options.retrievalMode || 'keyword',
+          retrievalScore: this.scoreTemporalRetrieval(node, keywordScore, { baseSimilarity: keywordScore }) + Math.min(0.15, keywordScore * 0.1),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        const scoreDelta = (b.retrievalScore || 0) - (a.retrievalScore || 0);
+        if (Math.abs(scoreDelta) > 0.001) return scoreDelta;
+        return this.nodeTimeMs(b) - this.nodeTimeMs(a);
+      })
+      .slice(0, topK);
+
+    if (options.markAccess !== false) {
+      results.forEach(node => {
+        const stored = this.nodes.get(node.id);
+        if (!stored) return;
+        stored.accessed = new Date();
+        stored.accessCount++;
+        stored.weight = Math.min(1.0, stored.weight + 0.05);
+        this.markNodeDirty(stored.id);
+      });
+    }
+
+    return results;
   }
 
   isStateSnapshotNode(node) {
@@ -972,7 +1043,7 @@ class NetworkMemory {
     if (this.nodes.size === 0) return [];
     
     const queryEmbedding = await this.embed(queryText);
-    if (!queryEmbedding) return [];
+    if (!queryEmbedding) return this.queryByKeyword(queryText, topK, { retrievalMode: 'keyword-peripheral' });
     
     // Get all nodes with similarity scores
     const allScored = [];
@@ -1392,6 +1463,7 @@ class NetworkMemory {
         concept: n.concept,
         tag: n.tag,
         embedding: this.serializeEmbedding(n.embedding), // CRITICAL: Include embeddings for memory persistence
+        embedding_status: n.embedding_status,
         weight: n.weight,
         activation: n.activation,
         cluster: n.cluster,

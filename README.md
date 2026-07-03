@@ -30,7 +30,7 @@ Four integrated systems, one install:
 - **PM2** — process manager (`npm install -g pm2`)
 - **Python 3** — for the document feeder's binary-format converter (MarkItDown installed automatically by init)
 - **An LLM provider** — at least one of: Ollama Cloud (free), Anthropic, OpenAI, xAI, MiniMax
-- **An embedding provider** — Ollama local (free, recommended), OpenAI API, or Ollama Cloud. A Claude Max or ChatGPT/Codex OAuth subscription covers chat, but it does not by itself provide a standard embeddings endpoint.
+- **Recommended: an embedding provider** — Ollama local (free), OpenAI API, or Ollama Cloud. Without embeddings, Home23 runs in Memory Lite mode: it stores text memory and uses keyword retrieval until semantic embeddings are configured.
 
 ## Install
 
@@ -136,7 +136,9 @@ Channel configuration is per-agent in **Settings → Agents**. Multiple channels
 
 ## Embedding Provider
 
-Your agent's brain uses vector embeddings for semantic memory and file ingestion. Pick one provider and stick with it — switching embedding providers means re-embedding your entire brain.
+Your agent's brain uses vector embeddings for semantic memory and higher-quality file retrieval. Pick one provider and stick with it — switching embedding providers means re-embedding your entire brain.
+
+Embeddings are recommended, not required for first launch. If embeddings are unavailable, Home23 stores memory as text and uses keyword retrieval in Memory Lite mode. When you add an embedding provider later, semantic search can be backfilled.
 
 **Recommended (free):** Install [Ollama](https://ollama.com) locally and pull `nomic-embed-text`:
 
@@ -172,7 +174,7 @@ Unlike embeddings, you can switch LLM providers freely. Configure providers from
 
 Model aliases are defined in `config/home.yaml` — use short names like `sonnet`, `gpt`, `kimi` instead of full model IDs.
 
-**Minimum practical setup:** one chat LLM provider plus one embedding provider. The lowest-friction baseline is any paid/free chat provider plus local Ollama `nomic-embed-text` for embeddings.
+**Minimum practical setup:** one chat LLM provider. For durable semantic memory, add one embedding provider. The lowest-friction baseline is any paid/free chat provider plus local Ollama `nomic-embed-text` for embeddings.
 
 ## OAuth Sign-in (Anthropic + ChatGPT)
 

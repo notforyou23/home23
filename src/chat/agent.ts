@@ -273,15 +273,18 @@ export class ChatAgent {
 
   private async searchBrainMemory(query: string): Promise<{ context: string; count: number }> {
     try {
-      const url = `http://localhost:${this.enginePort}/api/memory?search=${encodeURIComponent(query)}&limit=${this.config.memorySearch.topK}`;
+      const url = `http://localhost:${this.enginePort}/api/memory/search?query=${encodeURIComponent(query)}&limit=${this.config.memorySearch.topK}`;
       const res = await fetch(url, {
         signal: AbortSignal.timeout(this.config.memorySearch.timeoutMs),
       });
 
       if (!res.ok) return { context: '', count: 0 };
 
-      const data = await res.json() as { nodes?: Array<{ concept?: string; tag?: string; id?: string | number }> };
-      const nodes = data.nodes ?? [];
+      const data = await res.json() as {
+        results?: Array<{ concept?: string; tag?: string; id?: string | number }>;
+        nodes?: Array<{ concept?: string; tag?: string; id?: string | number }>;
+      };
+      const nodes = data.results ?? data.nodes ?? [];
       if (nodes.length === 0) return { context: '', count: 0 };
 
       const context = nodes

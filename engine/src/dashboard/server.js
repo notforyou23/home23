@@ -6955,6 +6955,108 @@ Be specific, actionable, and maintain research continuity.`;
       }
     };
 
+    const extractMemorySearchWords = (queryText) => String(queryText || '')
+      .toLowerCase()
+      .split(/[^a-z0-9_:-]+/)
+      .filter((word) => word.length >= 3);
+
+    const scoreKeywordMemoryNode = (node, queryText, queryWords) => {
+      if (!node) return 0;
+      const concept = String(node.concept || node.content || node.summary || '').toLowerCase();
+      const tagText = String(node.tag || '').toLowerCase();
+      const tagsText = Array.isArray(node.tags) ? node.tags.join(' ').toLowerCase() : '';
+      const metadataText = node.metadata && typeof node.metadata === 'object'
+        ? Object.values(node.metadata).filter((value) => typeof value === 'string').join(' ').toLowerCase()
+        : '';
+      const haystack = `${concept} ${tagText} ${tagsText} ${metadataText}`;
+      const phrase = String(queryText || '').trim().toLowerCase();
+      let score = phrase && concept.includes(phrase) ? 0.45 : 0;
+      let matched = 0;
+      for (const word of queryWords) {
+        if (haystack.includes(word)) {
+          matched += 1;
+          score += concept.includes(word) ? 0.16 : 0.08;
+        }
+      }
+      if (matched === 0) return 0;
+      score += Math.min(0.2, matched / queryWords.length * 0.2);
+      return Math.min(1, score);
+    };
+
+    const runKeywordMemorySearch = async ({ query, topK, tag = null, sourceNote = 'keyword fallback' }) => {
+      const resultLimit = Math.max(1, Math.min(100, parseInt(topK, 10) || 10));
+      const queryWords = extractMemorySearchWords(query);
+      const topCandidates = [];
+      let totalSearched = 0;
+      let totalMatched = 0;
+      let source = 'state';
+
+      const scoreNode = (node) => {
+        if (!node) return;
+        if (tag && node.tag !== tag) return;
+        totalSearched += 1;
+        const keywordScore = scoreKeywordMemoryNode(node, query, queryWords);
+        if (keywordScore <= 0) return;
+        totalMatched += 1;
+        const provenance = classifyMemoryProvenance(node);
+        const retrievalScore = scoreMemorySalience(node, keywordScore);
+        topCandidates.push({
+          retrievalScore,
+          result: {
+            id: node.id,
+            concept: node.concept || node.content || node.summary || '',
+            tag: node.tag,
+            similarity: Math.round(keywordScore * 10000) / 10000,
+            retrievalScore: Math.round(retrievalScore * 10000) / 10000,
+            retrievalMode: 'keyword',
+            sourceClass: provenance.sourceClass,
+            salienceWeight: provenance.salienceWeight,
+            weight: node.weight,
+            activation: node.activation,
+            cluster: node.cluster,
+            created: node.created,
+            accessed: node.accessed,
+            accessCount: node.accessCount,
+          },
+        });
+        topCandidates.sort((a, b) => b.retrievalScore - a.retrievalScore);
+        if (topCandidates.length > resultLimit) topCandidates.length = resultLimit;
+      };
+
+      try {
+        const { sidecarsExist, readJsonlGz, nodesPath } = require('../core/memory-sidecar');
+        if (sidecarsExist(this.logsDir)) {
+          source = 'memory-sidecar';
+          await readJsonlGz(nodesPath(this.logsDir), scoreNode);
+        } else {
+          let state = { memory: { nodes: [] } };
+          try {
+            state = await this.loadState();
+          } catch {
+            state = { memory: { nodes: [] } };
+          }
+          let nodes = state.memory?.nodes || [];
+          if (!Array.isArray(nodes)) nodes = Object.values(nodes);
+          for (const node of nodes) scoreNode(node);
+        }
+      } catch (error) {
+        console.error('[/api/memory/search] Keyword fallback failed:', error.message);
+        return { query, results: [], stats: { totalSearched, totalMatched: 0, source, retrievalMode: 'keyword', note: error.message } };
+      }
+
+      return {
+        query,
+        results: topCandidates.map((candidate) => candidate.result),
+        stats: {
+          totalSearched,
+          totalMatched,
+          source: `${source}-keyword`,
+          retrievalMode: 'keyword',
+          note: sourceNote,
+        },
+      };
+    };
+
     // Semantic search over memory nodes via embedding cosine similarity
     const handleMemorySearch = async (req, res) => {
       try {
@@ -6981,11 +7083,27 @@ Be specific, actionable, and maintain research continuity.`;
           createParams.encoding_format = 'float';
         }
 
-        const embResponse = await client.embeddings.create(createParams);
+        let embResponse;
+        try {
+          embResponse = await client.embeddings.create(createParams);
+        } catch (embeddingError) {
+          console.warn('[/api/memory/search] Query embedding failed; using keyword fallback:', embeddingError.message);
+          return res.json(await runKeywordMemorySearch({
+            query,
+            topK,
+            tag,
+            sourceNote: 'query embedding unavailable; used keyword fallback',
+          }));
+        }
         const queryEmbedding = embResponse?.data?.[0]?.embedding;
 
         if (!queryEmbedding || !Array.isArray(queryEmbedding)) {
-          return res.status(500).json({ error: 'Failed to generate query embedding' });
+          return res.json(await runKeywordMemorySearch({
+            query,
+            topK,
+            tag,
+            sourceNote: 'query embedding response was empty; used keyword fallback',
+          }));
         }
 
         const resultLimit = Math.max(1, Math.min(100, parseInt(topK, 10) || 10));
@@ -7131,7 +7249,12 @@ Be specific, actionable, and maintain research continuity.`;
         }
 
         if (totalSearched === 0) {
-          return res.json({ query, results: [], stats: { totalSearched: 0, totalMatched: 0, source, note: 'No nodes with embeddings found' } });
+          return res.json(await runKeywordMemorySearch({
+            query,
+            topK,
+            tag,
+            sourceNote: 'no nodes with embeddings; used keyword fallback',
+          }));
         }
 
         // Population standard deviation for z-score

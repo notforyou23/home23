@@ -23,6 +23,12 @@ function makeMemory() {
   return memory;
 }
 
+function makeMemoryLite() {
+  const memory = makeMemory();
+  memory.embed = async () => null;
+  return memory;
+}
+
 function makeRewireMemory() {
   const memory = makeMemory();
   memory.config.smallWorld = {
@@ -155,6 +161,32 @@ test('runtime embeddings use typed arrays while exports stay JSON arrays', async
   const changes = memory.consumePersistenceChanges();
   assert.equal(Array.isArray(changes.nodes[0].embedding), true);
   assert.deepEqual(changes.nodes[0].embedding, [1, 0]);
+});
+
+test('Memory Lite stores text nodes when embeddings are unavailable', async () => {
+  const memory = makeMemoryLite();
+  const node = await memory.addNode('Project Alpha should remember the launch checklist.', 'project_note');
+
+  assert.ok(node);
+  assert.equal(node.embedding, null);
+  assert.equal(node.embedding_status, 'missing');
+  assert.equal(memory.nodes.size, 1);
+
+  const exported = memory.exportGraph().nodes[0];
+  assert.equal(exported.embedding, null);
+  assert.equal(exported.embedding_status, 'missing');
+});
+
+test('Memory Lite query falls back to keyword retrieval when query embedding fails', async () => {
+  const memory = makeMemoryLite();
+  await memory.addNode('Project Alpha should remember the launch checklist.', 'project_note');
+  await memory.addNode('Garden notes about compost and watering.', 'personal_note');
+
+  const results = await memory.query('alpha launch', 2);
+
+  assert.equal(results.length, 1);
+  assert.match(results[0].concept, /Project Alpha/);
+  assert.equal(results[0].retrievalMode, 'keyword');
 });
 
 test('persistence changes capture node, edge, and removal mutations', async () => {

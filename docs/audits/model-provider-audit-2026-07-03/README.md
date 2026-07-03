@@ -28,7 +28,7 @@ For a user with only one paid LLM subscription, the release story must be explic
 - Ollama Cloud can cover chat and hosted embeddings when configured as the embedding provider.
 - Any paid chat LLM can pair with free local Ollama `nomic-embed-text` for embeddings.
 
-So the practical v1 minimum is one chat LLM provider plus one embedding lane. The easiest baseline is paid/free chat provider + local Ollama embeddings.
+So the practical v1 minimum is one chat LLM provider for launch. The recommended baseline is paid/free chat provider + local Ollama embeddings, with Memory Lite available when embeddings are not configured yet.
 
 ## Evidence Captured
 
@@ -115,6 +115,11 @@ Three read-only code explorers also audited the system in parallel:
 8. Updated onboarding docs to state that one paid chat subscription still needs an embedding lane.
    - `README.md`
    - `docs/ONBOARDING.md`
+
+9. Added Memory Lite behavior so missing embeddings no longer prevent text memory storage or keyword retrieval.
+   - `engine/src/memory/network-memory.js`
+   - `engine/src/dashboard/server.js`
+   - `src/chat/agent.ts`
 
 No existing agent configs, provider credentials, or runtime data were modified.
 
@@ -213,6 +218,15 @@ Settings Models should become:
 - Model Plan card: Documents, Query, Engine, Embeddings, Media with status chips.
 - Advanced editor: current cognitive routing table, but provider-qualified and slot-based.
 - Runtime receipt: last provider/model used per slot, with source layer and error if unavailable.
+
+### Phase 4b: Memory Lite Onboarding
+
+Expose the memory state plainly in setup and Settings:
+
+- `Chat ready`: at least one chat provider is configured.
+- `Memory Lite`: embeddings are missing; Home23 stores text and uses keyword retrieval.
+- `Semantic Brain`: embeddings are configured and current.
+- `Backfill needed`: text nodes exist without embeddings and should be vectorized in the background.
 
 ### Phase 5: Tests
 

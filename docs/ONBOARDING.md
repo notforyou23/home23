@@ -17,7 +17,7 @@ ollama --version
 ollama pull nomic-embed-text
 ```
 
-Home23 can start without Ollama if you configure an embedding-capable provider such as OpenAI API or Ollama Cloud. A Claude Max or ChatGPT/Codex OAuth login covers chat, but not Home23's embeddings lane. Local Ollama is the lowest-friction companion for users who only have one paid chat subscription.
+Home23 can start without Ollama. If no embedding provider is available, it runs in Memory Lite mode: text memory is stored and keyword retrieval works, while semantic memory waits for local Ollama, OpenAI API, or Ollama Cloud embeddings. A Claude Max or ChatGPT/Codex OAuth login covers chat, but not Home23's embeddings lane. Local Ollama is the lowest-friction companion for users who only have one paid chat subscription.
 
 ## 2. Install
 
@@ -39,7 +39,7 @@ The setup page walks through:
 - default provider/model choice
 - live launch
 
-Before large file ingestion, verify the embedding lane: use local Ollama `nomic-embed-text` unless the user has OpenAI API or Ollama Cloud configured for embeddings.
+Before large file ingestion, verify the embedding lane if the user wants semantic retrieval immediately. Without it, ingestion still stores text memory and can be backfilled later.
 
 Starter folders are added to the agent's Document Feeder watch paths so supported files flow into the agent's brain as they change.
 
