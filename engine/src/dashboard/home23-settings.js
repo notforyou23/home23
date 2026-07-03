@@ -16,9 +16,118 @@ let settingsPrimaryAgent = null;
 let settingsCurrentAgent = null;
 let selectedSettingsAgent = null;
 let activeSettingsTab = 'models';
+let setupReadinessData = null;
 const tilesBroadcast = typeof BroadcastChannel !== 'undefined'
   ? new BroadcastChannel('home23-dashboard-tiles')
   : null;
+
+function readinessCard({ title, body, state = 'warn' }) {
+  const dot = state === 'ok' ? 'ok' : state === 'fail' ? 'fail' : '';
+  return `
+    <div class="h23s-readiness-card ${state}">
+      <div class="h23s-readiness-card-title">
+        <span class="h23s-status-dot ${dot}"></span>
+        <span>${escapeHtml(title)}</span>
+      </div>
+      <div class="h23s-readiness-card-body">${body}</div>
+    </div>
+  `;
+}
+
+async function loadSetupReadiness(options = {}) {
+  const params = new URLSearchParams();
+  const agent = options.agent ?? selectedSettingsAgent;
+  if (agent) params.set('agent', agent);
+  if (options.provider) params.set('provider', options.provider);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(`${API}/setup/readiness${suffix}`);
+  setupReadinessData = await res.json();
+  return setupReadinessData;
+}
+
+function renderOnboardingReadiness(data = setupReadinessData) {
+  const host = document.getElementById('ob-readiness');
+  if (!host || !data?.ok) return;
+  const configured = data.providers?.configured || [];
+  const memory = data.memory || {};
+  const memoryCounts = memory.nodes || {};
+  const providerBody = configured.length
+    ? `${configured.map(name => PROVIDER_DISPLAY[name] || name).join(', ')} configured.`
+    : 'Connect one chat provider to continue.';
+  const memoryBody = memory.mode === 'semantic_ready'
+    ? `${memory.embedding?.provider || 'Embedding'} ${memory.embedding?.model || ''} is ready.`
+    : memory.mode === 'backfill_needed'
+      ? `${memoryCounts.missing || 0} memory node${memoryCounts.missing === 1 ? '' : 's'} can be backfilled.`
+      : 'Embeddings can wait. Text memory and keyword search are active.';
+  host.innerHTML = [
+    readinessCard({ title: 'Chat Provider', body: escapeHtml(providerBody), state: configured.length ? 'ok' : 'fail' }),
+    readinessCard({ title: memory.label || 'Memory Lite', body: escapeHtml(memoryBody), state: memory.mode === 'semantic_ready' ? 'ok' : 'warn' }),
+  ].join('');
+}
+
+function renderModelPlan(data = setupReadinessData) {
+  const host = document.getElementById('models-plan');
+  if (!host) return;
+  const plan = data?.modelPlan;
+  if (!plan) {
+    host.innerHTML = readinessCard({
+      title: 'Model Plan',
+      body: 'Create an agent first. Home23 will start with one chat model and keep advanced routing on defaults.',
+      state: 'warn',
+    });
+    return;
+  }
+  const chatProvider = PROVIDER_DISPLAY[plan.chat?.provider] || plan.chat?.provider || 'not set';
+  const queryProvider = PROVIDER_DISPLAY[plan.query?.provider] || plan.query?.provider || chatProvider;
+  const internalModels = Object.values(plan.internal || {}).filter(Boolean);
+  const uniqueInternal = Array.from(new Set(internalModels));
+  host.innerHTML = [
+    readinessCard({
+      title: 'Chat',
+      body: `${escapeHtml(chatProvider)} / ${escapeHtml(plan.chat?.model || 'not set')}`,
+      state: plan.chat?.provider && plan.chat?.model ? 'ok' : 'warn',
+    }),
+    readinessCard({
+      title: 'Query',
+      body: `${escapeHtml(queryProvider)} / ${escapeHtml(plan.query?.model || 'chat default')}`,
+      state: 'ok',
+    }),
+    readinessCard({
+      title: 'Internal Defaults',
+      body: uniqueInternal.length ? escapeHtml(uniqueInternal.join(', ')) : 'Base routing defaults apply.',
+      state: 'ok',
+    }),
+  ].join('');
+}
+
+function renderMemoryReadiness(data = setupReadinessData) {
+  const host = document.getElementById('memory-readiness');
+  const backfillBtn = document.getElementById('btn-backfill-embeddings');
+  if (!host) return;
+  const memory = data?.memory;
+  if (!memory) {
+    host.innerHTML = readinessCard({ title: 'Memory', body: 'Memory status is not available yet.', state: 'warn' });
+    if (backfillBtn) backfillBtn.disabled = true;
+    return;
+  }
+  const nodes = memory.nodes || {};
+  const body = memory.mode === 'semantic_ready'
+    ? `${nodes.embedded || 0}/${nodes.total || 0} memory nodes have embeddings.`
+    : memory.mode === 'backfill_needed'
+      ? `${nodes.missing || 0} of ${nodes.total || 0} memory nodes need embeddings.`
+      : 'Memory Lite is active. Home23 stores text memory and uses keyword retrieval until embeddings are configured.';
+  host.innerHTML = readinessCard({
+    title: memory.label || 'Memory',
+    body: escapeHtml(body),
+    state: memory.mode === 'semantic_ready' ? 'ok' : 'warn',
+  });
+  if (backfillBtn) {
+    backfillBtn.disabled = !memory.canBackfill;
+    backfillBtn.title = memory.canBackfill
+      ? 'Generate embeddings for stored text memory'
+      : 'Configure embeddings and store memory before backfill is needed';
+  }
+}
 
 const SETTINGS_TAB_CHROME = {
   providers: {
@@ -1167,6 +1276,7 @@ async function showWizard() {
   document.getElementById('wiz-timezone').value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York';
   const purposeEl = document.getElementById('wiz-purpose');
   if (purposeEl && !purposeEl.value.trim()) purposeEl.value = defaultWizardPurpose();
+  await loadSetupReadiness().catch(() => null);
 
   // Check if this will be the primary agent
   try {
@@ -1254,8 +1364,14 @@ function getProviderModelList(provider) {
 function getWizardChatDefault() {
   const chat = modelsData?.chat || {};
   const shared = modelsData?.sharedChatDefaults || {};
+  const configured = setupReadinessData?.providers?.configured || [];
+  const configuredDefault = configured.includes(chat.defaultProvider || chat.provider)
+    ? (chat.defaultProvider || chat.provider)
+    : configured.includes(shared.defaultProvider || shared.provider)
+      ? (shared.defaultProvider || shared.provider)
+      : configured[0];
   return {
-    provider: chat.defaultProvider || chat.provider || shared.defaultProvider || shared.provider || 'ollama-cloud',
+    provider: configuredDefault || chat.defaultProvider || chat.provider || shared.defaultProvider || shared.provider || 'ollama-cloud',
     model: chat.defaultModel || chat.model || shared.defaultModel || shared.model || 'kimi-k2.6',
   };
 }
@@ -1316,6 +1432,28 @@ function populateWizardModels(options = {}) {
     const providerLabel = PROVIDER_DISPLAY[provider] || provider;
     hint.textContent = `Used for direct chat with this agent through ${providerLabel}. File ingestion, Query, and cognition keep their recommended defaults until you tune advanced routing.`;
   }
+  updateWizardProviderReadiness(provider);
+}
+
+async function updateWizardProviderReadiness(provider) {
+  const status = document.getElementById('wiz-provider-readiness');
+  if (!status || !provider) return;
+  status.textContent = 'Checking selected provider...';
+  status.style.color = 'var(--text-muted)';
+  try {
+    const readiness = await loadSetupReadiness({ provider });
+    const ready = readiness.providers?.selectedReady;
+    const label = PROVIDER_DISPLAY[provider] || provider;
+    status.textContent = ready
+      ? `${label} is configured for chat.`
+      : `${label} is not configured yet. Go back and connect it before creating the agent.`;
+    status.style.color = ready ? 'var(--accent-green)' : 'var(--accent-red)';
+    const createBtn = document.getElementById('wiz-create');
+    if (createBtn) createBtn.disabled = !ready && wizardStep === 3;
+  } catch (err) {
+    status.textContent = `Could not verify provider: ${err.message}`;
+    status.style.color = 'var(--accent-red)';
+  }
 }
 
 async function createAgent() {
@@ -1365,9 +1503,13 @@ async function createAgent() {
 
 async function loadModels() {
   try {
-    const res = await fetch(settingsApiUrl('/models', { agentScoped: true }));
+    const [res, readiness] = await Promise.all([
+      fetch(settingsApiUrl('/models', { agentScoped: true })),
+      loadSetupReadiness().catch(() => null),
+    ]);
     modelsData = await res.json();
     renderModels(modelsData);
+    if (readiness) renderModelPlan(readiness);
   } catch (err) {
     console.error('Failed to load models:', err);
   }
@@ -1402,6 +1544,7 @@ function renderModels(data) {
     provSelect.dataset.bound = 'true';
   }
   fillModelSelect();
+  renderModelPlan(setupReadinessData);
 
   // Per-provider model lists
   const pmList = document.getElementById('provider-models-list');
@@ -1622,9 +1765,13 @@ async function saveQuerySettings() {
 
 async function loadSystem() {
   try {
-    const res = await fetch(`${API}/system`);
+    const [res, readiness] = await Promise.all([
+      fetch(`${API}/system`),
+      loadSetupReadiness().catch(() => null),
+    ]);
     const data = await res.json();
     renderSystem(data);
+    if (readiness) renderMemoryReadiness(readiness);
   } catch (err) {
     console.error('Failed to load system:', err);
   }
@@ -1677,6 +1824,7 @@ function renderSystem(data) {
 
   const embList = document.getElementById('embeddings-list');
   const embProviders = data.embeddings?.providers || [];
+  renderMemoryReadiness(setupReadinessData);
   embList.innerHTML = embProviders.map((p, i) => `
     <div class="h23s-provider-card" style="padding:12px 16px;margin-bottom:8px;" data-emb-entry>
       <div style="display:flex;gap:8px;align-items:center;font-size:12px;flex-wrap:wrap;">
@@ -1761,10 +1909,54 @@ async function saveSystem() {
     const data = await res.json();
     statusEl.textContent = data.ok ? 'Saved' : ('Error: ' + data.error);
     statusEl.style.color = data.ok ? 'var(--accent-green)' : 'var(--accent-red)';
+    if (data.ok) {
+      const readiness = await loadSetupReadiness().catch(() => null);
+      if (readiness) renderMemoryReadiness(readiness);
+    }
     setTimeout(() => { statusEl.textContent = ''; }, 3000);
   } catch (err) {
     statusEl.textContent = 'Error: ' + err.message;
     statusEl.style.color = 'var(--accent-red)';
+  }
+}
+
+async function backfillEmbeddings() {
+  const btn = document.getElementById('btn-backfill-embeddings');
+  const statusEl = document.getElementById('system-status');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Backfilling...';
+  }
+  if (statusEl) {
+    statusEl.textContent = 'Requesting semantic memory backfill...';
+    statusEl.style.color = 'var(--text-muted)';
+  }
+  try {
+    const res = await fetch(`${API}/memory/backfill-embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: selectedSettingsAgent }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (statusEl) {
+      statusEl.textContent = data.mode === 'live'
+        ? `Backfill queued for ${data.missing || 0} memory nodes.`
+        : 'Backfill will run on the next engine load.';
+      statusEl.style.color = 'var(--accent-green)';
+    }
+    const readiness = await loadSetupReadiness().catch(() => null);
+    if (readiness) renderMemoryReadiness(readiness);
+  } catch (err) {
+    if (statusEl) {
+      statusEl.textContent = 'Error: ' + err.message;
+      statusEl.style.color = 'var(--accent-red)';
+    }
+  } finally {
+    if (btn) {
+      btn.textContent = 'Backfill Semantic Memory';
+      renderMemoryReadiness(setupReadinessData);
+    }
   }
 }
 
@@ -2091,6 +2283,14 @@ function feederAgentUrl(path) {
 }
 
 async function loadFeeder() {
+  if (!selectedSettingsAgent) {
+    renderFeeder({ feeder: {}, autoWatchPaths: [], agent: null });
+    for (const id of ['fd-live-started', 'fd-live-watchers', 'fd-live-pending', 'fd-live-converter']) {
+      const el = document.getElementById(id);
+      if (el) el.textContent = 'Create an agent first';
+    }
+    return;
+  }
   try {
     const res = await fetch(settingsApiUrl('/feeder', { agentScoped: true }));
     const data = await res.json();
@@ -2301,6 +2501,7 @@ async function saveFeeder() {
 }
 
 async function loadFeederLiveStatus() {
+  if (!selectedSettingsAgent) return;
   try {
     const [liveRes, summaryRes] = await Promise.all([
       fetch(feederAgentUrl('/home23/feeder/live-status')).catch(() => null),
@@ -3629,9 +3830,10 @@ function stopOnboardingProviderPoll() {
 
 async function checkOnboardingProviderGate() {
   try {
-    const [provRes, oauthRes] = await Promise.all([
+    const [provRes, oauthRes, readiness] = await Promise.all([
       fetch(`${API}/providers`),
       fetch(`${API}/oauth/status`),
+      loadSetupReadiness().catch(() => null),
     ]);
     const provData = await provRes.json();
     const oauthData = await oauthRes.json();
@@ -3655,6 +3857,7 @@ async function checkOnboardingProviderGate() {
     }
     if (nextBtn) nextBtn.disabled = !satisfied;
     updateOnboardingChecklist({ provider: satisfied });
+    if (readiness) renderOnboardingReadiness(readiness);
 
     // Also refresh OAuth card statuses
     renderOAuthCard('anthropic', oauthData.anthropic || {});
@@ -3857,6 +4060,7 @@ async function obCreateAgent() {
         personal: !!onboardingCreatedAgent.personalFacts?.length,
         folders: !!onboardingCreatedAgent.ingestPaths?.length,
       });
+      await loadSetupReadiness({ agent: onboardingCreatedAgent.name }).catch(() => null);
       goToOnboardingStep(3);
     } else {
       alert('Error: ' + data.error);
@@ -3877,6 +4081,10 @@ function populateOnboardingLaunchSummary() {
   const provLabel = PROVIDER_DISPLAY[a.provider] || a.provider || '?';
   const ingestCount = Array.isArray(a.ingestPaths) ? a.ingestPaths.length : 0;
   const factsCount = Array.isArray(a.personalFacts) ? a.personalFacts.length : 0;
+  const memory = setupReadinessData?.memory;
+  const memoryText = memory?.label
+    ? `${memory.label}${memory.mode === 'memory_lite' ? ' active' : ''}`
+    : 'Memory Lite available';
 
   summary.innerHTML = `
     <div class="h23s-onboarding-summary-row">
@@ -3890,6 +4098,10 @@ function populateOnboardingLaunchSummary() {
     <div class="h23s-onboarding-summary-row">
       <span class="h23s-onboarding-summary-label">Model</span>
       <span class="h23s-onboarding-summary-value">${a.model || 'default'}</span>
+    </div>
+    <div class="h23s-onboarding-summary-row">
+      <span class="h23s-onboarding-summary-label">Memory</span>
+      <span class="h23s-onboarding-summary-value">${escapeHtml(memoryText)}</span>
     </div>
     <div class="h23s-onboarding-summary-row">
       <span class="h23s-onboarding-summary-label">Purpose</span>
@@ -4625,6 +4837,7 @@ async function init() {
   document.getElementById('btn-save-pulse-voice')?.addEventListener('click', savePulseVoice);
   document.getElementById('btn-reset-pulse-prompt')?.addEventListener('click', resetPulsePrompt);
   document.getElementById('btn-save-system').addEventListener('click', saveSystem);
+  document.getElementById('btn-backfill-embeddings')?.addEventListener('click', backfillEmbeddings);
   document.getElementById('btn-install-deps').addEventListener('click', installDeps);
   document.getElementById('btn-build-ts').addEventListener('click', buildTS);
   setupTilesHandlers();

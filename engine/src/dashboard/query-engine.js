@@ -90,7 +90,7 @@ class QueryEngine {
     this.embeddingsCache = path.join(runtimeDir, 'embeddings-cache.json');
     this.exportsDir = path.join(runtimeDir, 'exports');
     
-    this.openai = new OpenAI({ apiKey: openaiKey });
+    this.openai = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
     this.gpt5Client = new UnifiedClient(this.config, console); // Use UnifiedClient for queries (supports local LLM)
     
     // In-memory cache for frequent queries
@@ -797,6 +797,7 @@ STYLE:
    */
   async getEmbedding(text) {
     try {
+      if (!this.openai) return null;
       const response = await this.openai.embeddings.create({
         model: 'text-embedding-3-small',
         input: text.substring(0, 8000),

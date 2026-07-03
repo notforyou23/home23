@@ -125,6 +125,7 @@ __pycache__/
 
 # Screenshots (session artifacts)
 *.png
+!docs/audits/**/screenshots/*.png
 
 # Published docs (runtime, served separately)
 published/

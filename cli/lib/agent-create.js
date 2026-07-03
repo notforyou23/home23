@@ -8,9 +8,13 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
 import { askWithDefault, askSecret, closeRL } from './prompts.js';
 import { generateEcosystem } from './generate-ecosystem.js';
+
+const require = createRequire(import.meta.url);
+const { buildAgentConfig, buildFeederConfig } = require('./agent-config-builder.cjs');
 
 function findNextPorts(home23Root) {
   const instancesDir = join(home23Root, 'instances');
@@ -145,17 +149,6 @@ function parseIngestPaths(input) {
   return out;
 }
 
-function buildFeederWatchPaths(instanceDir, ingestPaths = []) {
-  return [
-    { path: `${instanceDir}/workspace/sessions`, label: 'conversation_sessions' },
-    { path: `${instanceDir}/workspace/memory`, label: 'memory_snapshots' },
-    { path: `${instanceDir}/workspace/projects`, label: 'projects' },
-    { path: `${instanceDir}/workspace/reports`, label: 'reports' },
-    { path: `${instanceDir}/workspace/research-runs`, label: 'research_runs' },
-    ...ingestPaths,
-  ];
-}
-
 function projectSurface(today, ingestPaths = []) {
   if (!ingestPaths.length) {
     return `# Active Projects\n\n_No projects tracked yet. Add project folders through Settings -> Feeder or rerun setup when you are ready._\n\n_Curator-maintained. Last updated: ${today}._\n`;
@@ -277,98 +270,33 @@ export async function runAgentCreate(home23Root, name, options = {}) {
   }
 
   // Write config.yaml
-  const agentConfig = {
-    agent: {
-      name,
-      displayName,
-      purpose,
-      owner: { name: ownerName, telegramId: ownerTelegramId || undefined, facts: parsedPersonalFacts.length ? parsedPersonalFacts : undefined },
-      timezone,
-      maxSubAgents: 3,
-    },
+  const agentConfig = buildAgentConfig({
+    name,
+    displayName,
+    ownerName,
+    ownerTelegramId,
+    personalFacts: parsedPersonalFacts,
+    timezone,
+    purpose,
+    home23Version,
+    provider: defaultProvider,
+    model: defaultModel,
+    instanceDir,
+    ingestPaths,
+    botToken,
     ports: {
       engine: ports.engine,
       dashboard: ports.dashboard,
       mcp: ports.mcp,
       bridge: ports.bridge,
     },
-    engine: {
-      thought: 'MiniMax-M3',
-      consolidation: 'MiniMax-M3',
-      dreaming: 'MiniMax-M3',
-      query: 'MiniMax-M3',
-    },
-    // Per-agent feeder override. Default watch paths cover the standard
-    // workspace subdirs where session transcripts, memory snapshots,
-    // projects, reports, and research runs land — so everything the agent
-    // writes to its own workspace flows back into its brain. Additional
-    // user-defined paths can be added via the Settings → Feeder tab.
-    feeder: {
-      additionalWatchPaths: [
-        ...buildFeederWatchPaths(instanceDir, ingestPaths),
-      ],
-      excludePatterns: [
-        '**/node_modules/**',
-        '**/dist/**',
-        '**/.git/**',
-        '**/.DS_Store',
-        '**/research-runs/*/brain/**',
-        '**/research-runs/*/*.jsonl',
-      ],
-    },
-    channels: {
-      telegram: {
-        enabled: !!botToken,
-        streaming: 'partial',
-        dmPolicy: 'open',
-        groupPolicy: 'restricted',
-        groups: {},
-        ackReaction: true,
-      },
-    },
-    system: { name: 'home23', version: home23Version, workspace: 'workspace' },
-    chat: {
-      provider: defaultProvider,
-      model: defaultModel,
-      defaultProvider,
-      defaultModel,
-      maxTokens: 4096,
-      temperature: 0.7,
-      historyDepth: 20,
-      historyBudget: 400000,
-      sessionGapMs: 1800000,
-      memorySearch: { enabled: true, timeoutMs: 10000, topK: 5 },
-      identityFiles: ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'LEARNINGS.md', 'GOOD_LIFE.md', 'COSMO_RESEARCH.md'],
-      heartbeatRefreshMs: 60000,
-    },
-    sessions: {
-      threadBindings: { enabled: true, idleHours: 24 },
-      messageQueue: { mode: 'collect', debounceMs: 3000, adaptiveDebounce: true, cap: 10, overflowStrategy: 'summarize', queueDuringRun: true },
-    },
-    scheduler: { timezone, jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' },
-    sibling: {
-      enabled: false, name: '', remoteUrl: '', token: '',
-      rateLimits: { maxPerMinute: 5, retries: 2, dedupWindowSeconds: 300 },
-      ackMode: false,
-      bridgeChat: { enabled: false, dbPath: '', telegramBotToken: '', telegramTargetId: '' },
-    },
-    acp: { enabled: false, defaultAgent: '', allowedAgents: [], permissionMode: 'ask' },
-    browser: { enabled: true, headless: true, cdpUrl: 'http://localhost:9222' },
-    tts: { enabled: false, auto: 'off', provider: '', apiKey: '', voiceId: '', modelId: '' },
-  };
+  });
 
   writeFileSync(join(instanceDir, 'config.yaml'), yaml.dump(agentConfig, { lineWidth: 120 }), 'utf8');
   console.log(`  config.yaml    \u2713 (ports: ${ports.engine}/${ports.dashboard}/${ports.mcp}/${ports.bridge})`);
 
   // Write feeder.yaml
-  const feederConfig = {
-    member: name,
-    state_file: `../instances/${name}/brain/state.json.gz`,
-    watch: [{ path: `../instances/${name}/workspace`, label: 'workspace', glob: '*.md' }],
-    ollama: { endpoint: 'http://127.0.0.1:11434', model: 'nomic-embed-text', dims: 768 },
-    flush_interval_seconds: 300,
-    flush_batch_size: 20,
-  };
+  const feederConfig = buildFeederConfig(name);
 
   writeFileSync(join(instanceDir, 'feeder.yaml'), yaml.dump(feederConfig, { lineWidth: 120 }), 'utf8');
   console.log(`  feeder.yaml    \u2713`);

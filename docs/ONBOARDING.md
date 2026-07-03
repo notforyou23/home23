@@ -37,6 +37,7 @@ The setup page walks through:
 - agent purpose
 - starter project/import folders, including Claude/Codex exports, notes, reports, or fresh project directories
 - default provider/model choice
+- setup readiness status for Chat Provider, Memory Lite, Semantic Brain, and Backfill Needed
 - live launch
 
 Before large file ingestion, verify the embedding lane if the user wants semantic retrieval immediately. Without it, ingestion still stores text memory and can be backfilled later.

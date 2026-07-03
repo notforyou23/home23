@@ -69,6 +69,8 @@ test('agent create records fresh onboarding purpose, imports, and primary agent'
     assert.equal(agentConfig.ports.bridge, 5004);
     assert.equal(agentConfig.chat.defaultProvider, 'ollama-cloud');
     assert.equal(agentConfig.chat.defaultModel, 'kimi-k2.6');
+    assert.equal(agentConfig.engine.thought, 'MiniMax-M3');
+    assert.equal(agentConfig.engine.query, 'MiniMax-M3');
     assert.equal(agentConfig.chat.memorySearch.enabled, true);
 
     const watchPaths = agentConfig.feeder.additionalWatchPaths.map((entry) => entry.path);

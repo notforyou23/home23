@@ -1197,6 +1197,51 @@ body {
   font-family: 'SF Mono', monospace;
 }
 
+.h23s-readiness-grid,
+.h23s-model-plan,
+.h23s-memory-readiness {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  margin: 12px 0 16px;
+}
+
+.h23s-readiness-card {
+  background: var(--glass-secondary);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  min-height: 86px;
+}
+
+.h23s-readiness-card.ok {
+  border-color: rgba(48, 209, 88, 0.35);
+}
+
+.h23s-readiness-card.warn {
+  border-color: rgba(251, 146, 60, 0.35);
+}
+
+.h23s-readiness-card.fail {
+  border-color: rgba(255, 69, 58, 0.35);
+}
+
+.h23s-readiness-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 6px;
+}
+
+.h23s-readiness-card-body {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 /* ── Table (aliases) ── */
 
 .h23s-table {

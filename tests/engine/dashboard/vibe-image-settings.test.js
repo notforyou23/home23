@@ -11,10 +11,11 @@ const express = require('express');
 const yaml = require('js-yaml');
 const { createSettingsRouter } = require('../../../engine/src/dashboard/home23-settings-api.js');
 
-async function withSettingsServer(homeConfig, fn) {
+async function withSettingsServer(homeConfig, fn, secrets = { providers: { 'ollama-cloud': { apiKey: 'oc-test' } } }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-vibe-settings-'));
   fs.mkdirSync(path.join(root, 'config'), { recursive: true });
   fs.writeFileSync(path.join(root, 'config', 'home.yaml'), yaml.dump(homeConfig), 'utf8');
+  fs.writeFileSync(path.join(root, 'config', 'secrets.yaml'), yaml.dump(secrets), 'utf8');
   fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ type: 'module' }), 'utf8');
   fs.mkdirSync(path.join(root, 'cli', 'lib'), { recursive: true });
   fs.writeFileSync(
@@ -105,6 +106,9 @@ test('settings agent creation records purpose and starter ingestion folders', as
     const instanceDir = path.join(root, 'instances', 'ada');
     const config = yaml.load(fs.readFileSync(path.join(instanceDir, 'config.yaml'), 'utf8'));
     assert.equal(config.agent.purpose, purpose);
+    assert.equal(config.engine.thought, 'MiniMax-M3');
+    assert.equal(config.engine.query, 'MiniMax-M3');
+    assert.equal(config.chat.defaultModel, 'kimi-k2.6');
     assert.equal(config.chat.memorySearch.enabled, true);
     assert.deepEqual(config.agent.owner.facts, ['Prefers receipts before summaries.', 'Works through Home23 and project imports.']);
     assert.ok(config.feeder.additionalWatchPaths.some((entry) => entry.path === projectDir && entry.label === 'sample-project'));
@@ -135,4 +139,65 @@ test('settings agent creation records purpose and starter ingestion folders', as
     const updatedMission = fs.readFileSync(path.join(instanceDir, 'workspace', 'MISSION.md'), 'utf8');
     assert.match(updatedMission, new RegExp(updatedPurpose.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   });
+});
+
+test('settings agent creation rejects an unconfigured selected chat provider', async () => {
+  await withSettingsServer({ home: {} }, async (baseUrl) => {
+    const createRes = await fetch(`${baseUrl}/home23/api/settings/agents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'bad-provider',
+        displayName: 'Bad Provider',
+        ownerName: 'JTR',
+        purpose: 'Test provider guard.',
+        provider: 'openai',
+        model: 'gpt-5.4',
+      }),
+    });
+    assert.equal(createRes.status, 400);
+    const body = await createRes.json();
+    assert.match(body.error, /openai.*not configured/i);
+  });
+});
+
+test('setup readiness reports Memory Lite and configured provider status', async () => {
+  await withSettingsServer({ home: {} }, async (baseUrl) => {
+    const res = await fetch(`${baseUrl}/home23/api/settings/setup/readiness?provider=ollama-cloud`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.deepEqual(body.providers.configured, ['ollama-cloud']);
+    assert.equal(body.providers.selectedReady, true);
+    assert.equal(body.memory.mode, 'memory_lite');
+    assert.equal(body.memory.label, 'Memory Lite');
+  });
+});
+
+test('embedding backfill request is queued safely when no live engine is attached', async () => {
+  await withSettingsServer({
+    home: { primaryAgent: 'ada' },
+    embeddings: {
+      providers: [{ provider: 'openai', model: 'text-embedding-3-small', dimensions: 1536 }],
+    },
+  }, async (baseUrl, root) => {
+    const instanceDir = path.join(root, 'instances', 'ada');
+    fs.mkdirSync(path.join(instanceDir, 'brain'), { recursive: true });
+    fs.writeFileSync(
+      path.join(instanceDir, 'config.yaml'),
+      yaml.dump({ agent: { name: 'ada' }, ports: { engine: 5001, dashboard: 5002 } }),
+      'utf8'
+    );
+
+    const res = await fetch(`${baseUrl}/home23/api/settings/memory/backfill-embeddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: 'ada' }),
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.mode, 'pending_next_engine_load');
+    assert.ok(fs.existsSync(path.join(instanceDir, 'brain', 'embedding-backfill-request.json')));
+  }, { providers: { openai: { apiKey: 'sk-test' } } });
 });

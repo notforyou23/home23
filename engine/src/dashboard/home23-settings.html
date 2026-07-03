@@ -120,6 +120,8 @@
       <div class="h23s-onboarding-page active" id="ob-step-1">
         <h2 class="h23s-panel-title">Connect a Provider</h2>
         <p class="h23s-panel-desc">Your agent needs at least one reachable AI provider. OAuth is recommended for Anthropic and OpenAI Codex. API keys are available for OpenAI, Ollama Cloud, MiniMax, xAI, and fallback Anthropic access.</p>
+        <div class="h23s-readiness-grid" id="ob-readiness">
+        </div>
 
         <!-- OAuth cards (reference the same IDs — the existing HTML above has them) -->
         <div class="h23s-section" id="ob-oauth-host">
@@ -348,6 +350,7 @@
             <select id="wiz-model">
             </select>
             <span class="h23s-hint" id="wiz-model-hint">Used for direct chat with this agent. Advanced model routing stays on recommended defaults.</span>
+            <span class="h23s-hint" id="wiz-provider-readiness"></span>
           </div>
           <div class="h23s-field">
             <label>Ports</label>
@@ -461,6 +464,8 @@
       <div class="h23s-section">
         <h3 class="h23s-section-title">Chat Default</h3>
         <p class="h23s-panel-desc" style="margin-top:0;">The model this agent uses for normal chat unless a conversation explicitly picks another model.</p>
+        <div class="h23s-model-plan" id="models-plan">
+        </div>
         <div class="h23s-field-row">
           <div class="h23s-field">
             <label>Default Provider</label>
@@ -1139,9 +1144,12 @@
       <div class="h23s-section">
         <h3 class="h23s-section-title">Embeddings</h3>
         <p class="h23s-panel-desc" style="margin-top:0;color:#fb923c;">Changing the embedding model or dimensions requires re-ingesting all documents. Existing brain embeddings become incompatible with the new model.</p>
+        <div class="h23s-memory-readiness" id="memory-readiness">
+        </div>
         <div class="h23s-embed-list" id="embeddings-list">
         </div>
         <button class="h23s-btn-secondary" id="btn-add-embedding" style="margin-top:8px;">+ Add Embedding Provider</button>
+        <button class="h23s-btn-secondary" id="btn-backfill-embeddings" style="margin-top:8px;margin-left:8px;">Backfill Semantic Memory</button>
       </div>
 
       <div class="h23s-actions">

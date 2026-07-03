@@ -6,6 +6,9 @@ const { pathToFileURL } = require('url');
 const yaml = require('js-yaml');
 const { Home23TileService } = require('./home23-tiles');
 const { writeYamlSafely } = require('./yaml-write-safety');
+const { StateCompression } = require('../core/state-compression');
+const { readJsonlGz, sidecarsExist, nodesPath } = require('../core/memory-sidecar');
+const { buildAgentConfig, buildFeederConfig } = require('../../../cli/lib/agent-config-builder.cjs');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -26,9 +29,12 @@ function cleanPm2Env(extra = {}) {
   return env;
 }
 
-function createSettingsRouter(home23Root) {
+function createSettingsRouter(home23Root, options = {}) {
   const router = express.Router();
   const tileService = new Home23TileService({ home23Root });
+  const getOrchestrator = typeof options.getOrchestrator === 'function'
+    ? options.getOrchestrator
+    : () => null;
 
   function loadYaml(filePath) {
     if (!fs.existsSync(filePath)) return {};
@@ -390,6 +396,103 @@ function createSettingsRouter(home23Root) {
     });
   });
 
+  router.get('/setup/readiness', async (req, res) => {
+    const homeConfig = loadHomeConfig();
+    const secrets = loadSecrets();
+    const targetAgent = resolveRequestedAgent(req.query.agent);
+    const primaryAgent = getPrimaryAgent({ autoHeal: true });
+    const memoryCounts = await readAgentMemorySummary(targetAgent || primaryAgent);
+    const embedding = getPrimaryEmbeddingProvider(homeConfig, secrets);
+    const providersWithKeys = Array.from(configuredApiKeyProviders(secrets));
+    const chatProvider = req.query.provider
+      ? String(req.query.provider)
+      : getSimpleModelPlan(targetAgent || primaryAgent).chat.provider;
+    const selectedProviderReady = chatProvider
+      ? isSelectedProviderConfigured(chatProvider, secrets)
+      : providersWithKeys.length > 0;
+    const memoryMode = embedding.configured
+      ? (memoryCounts.missing > 0 ? 'backfill_needed' : 'semantic_ready')
+      : 'memory_lite';
+
+    res.json({
+      ok: true,
+      agent: targetAgent || primaryAgent || null,
+      providers: {
+        configured: providersWithKeys,
+        selected: chatProvider || null,
+        selectedReady: selectedProviderReady,
+      },
+      memory: {
+        mode: memoryMode,
+        label: memoryMode === 'semantic_ready'
+          ? 'Semantic Brain'
+          : memoryMode === 'backfill_needed'
+            ? 'Backfill Needed'
+            : 'Memory Lite',
+        embedding,
+        nodes: memoryCounts,
+        canBackfill: embedding.configured && memoryCounts.missing > 0,
+      },
+      modelPlan: targetAgent || primaryAgent ? getSimpleModelPlan(targetAgent || primaryAgent) : null,
+    });
+  });
+
+  router.post('/memory/backfill-embeddings', async (req, res) => {
+    const targetAgent = resolveRequestedAgent(req.body?.agent || req.query.agent);
+    if (!targetAgent) {
+      return res.status(400).json({ ok: false, error: 'No target agent selected' });
+    }
+
+    const embedding = getPrimaryEmbeddingProvider();
+    if (!embedding.configured) {
+      return res.status(400).json({
+        ok: false,
+        error: 'No embedding provider is configured. Add Ollama Local, OpenAI, or Ollama Cloud embeddings first.',
+      });
+    }
+
+    const orchestrator = getOrchestrator();
+    const currentAgent = getCurrentDashboardAgent();
+    const liveMemory = currentAgent === targetAgent ? orchestrator?.memory : null;
+    const liveBackfill = currentAgent === targetAgent && typeof orchestrator?._regenerateEmbeddingsInBackground === 'function' && liveMemory?.nodes;
+
+    if (liveBackfill) {
+      const missingIds = Array.from(liveMemory.nodes.values())
+        .filter((node) => !node?.embedding)
+        .map((node) => node.id)
+        .filter((id) => id !== undefined && id !== null);
+
+      if (missingIds.length === 0) {
+        return res.json({ ok: true, agent: targetAgent, queued: false, mode: 'live', missing: 0 });
+      }
+      if (orchestrator.__home23EmbeddingBackfillActive) {
+        return res.json({ ok: true, agent: targetAgent, queued: true, mode: 'live', alreadyRunning: true, missing: missingIds.length });
+      }
+
+      orchestrator.__home23EmbeddingBackfillActive = true;
+      orchestrator._regenerateEmbeddingsInBackground(missingIds)
+        .catch((error) => console.warn('[Settings] Embedding backfill failed:', error.message))
+        .finally(() => { orchestrator.__home23EmbeddingBackfillActive = false; });
+
+      return res.json({ ok: true, agent: targetAgent, queued: true, mode: 'live', missing: missingIds.length });
+    }
+
+    const request = {
+      requestedAt: new Date().toISOString(),
+      agent: targetAgent,
+      provider: embedding.provider,
+      model: embedding.model,
+      status: 'pending_next_engine_load',
+      note: 'The engine regenerates missing embeddings in the background when it loads memory with an embedding provider configured.',
+    };
+    const brainDir = path.join(home23Root, 'instances', targetAgent, 'brain');
+    fs.mkdirSync(brainDir, { recursive: true });
+    fs.appendFileSync(path.join(brainDir, 'embedding-backfill-requests.jsonl'), JSON.stringify(request) + '\n', 'utf8');
+    fs.writeFileSync(path.join(brainDir, 'embedding-backfill-request.json'), JSON.stringify(request, null, 2), 'utf8');
+
+    res.json({ ok: true, agent: targetAgent, queued: true, mode: 'pending_next_engine_load', request });
+  });
+
   // ── Task 2: Providers API ──
 
   function maskKey(key) {
@@ -411,6 +514,137 @@ function createSettingsRouter(home23Root) {
 
   function loadSecrets() {
     return loadYaml(getSecretsPath());
+  }
+
+  function configuredApiKeyProviders(secrets = loadSecrets()) {
+    const providers = secrets.providers || {};
+    return new Set(
+      Object.entries(providers)
+        .filter(([, config]) => !!config?.apiKey)
+        .map(([name]) => name)
+    );
+  }
+
+  function isApiKeyProviderConfigured(provider, secrets = loadSecrets()) {
+    if (provider === 'ollama-local') return true;
+    return configuredApiKeyProviders(secrets).has(provider);
+  }
+
+  function isSelectedProviderConfigured(provider, secrets = loadSecrets()) {
+    if (!provider) return false;
+    return isApiKeyProviderConfigured(provider, secrets);
+  }
+
+  function assertSelectedChatProviderReady(provider, model) {
+    const resolvedProvider = String(provider || '').trim();
+    const resolvedModel = String(model || '').trim();
+    if (!resolvedProvider) {
+      return { ok: false, error: 'Choose a chat provider before creating the agent.' };
+    }
+    if (!resolvedModel) {
+      return { ok: false, error: 'Choose a chat model before creating the agent.' };
+    }
+    if (!isSelectedProviderConfigured(resolvedProvider)) {
+      const label = resolvedProvider === 'openai-codex'
+        ? 'OpenAI Codex'
+        : resolvedProvider === 'anthropic'
+          ? 'Anthropic'
+          : resolvedProvider;
+      return {
+        ok: false,
+        error: `${label} is selected for chat but is not configured yet. Connect it in Providers, then create the agent.`,
+      };
+    }
+    return { ok: true };
+  }
+
+  function getPrimaryEmbeddingProvider(homeConfig = loadHomeConfig(), secrets = loadSecrets()) {
+    const providers = Array.isArray(homeConfig.embeddings?.providers) ? homeConfig.embeddings.providers : [];
+    const primary = providers.find((entry) => entry?.provider && entry?.model) || null;
+    if (!primary) {
+      return {
+        configured: false,
+        status: 'memory_lite',
+        label: 'Memory Lite',
+        message: 'No embedding provider is configured. Text memory and keyword retrieval are available.',
+        provider: null,
+        model: null,
+      };
+    }
+
+    const provider = String(primary.provider || '').trim();
+    const needsKey = provider !== 'ollama-local';
+    const hasKey = !needsKey || !!secrets.providers?.[provider]?.apiKey;
+    return {
+      configured: hasKey,
+      status: hasKey ? 'semantic_configured' : 'memory_lite',
+      label: hasKey ? 'Semantic Brain' : 'Memory Lite',
+      message: hasKey
+        ? 'Embedding provider is configured. Semantic memory can be used and backfilled.'
+        : `${provider} embeddings are listed but no credential is saved. Memory Lite remains active.`,
+      provider,
+      model: primary.model || '',
+      dimensions: primary.dimensions || null,
+      endpoint: primary.endpoint || null,
+      needsKey,
+    };
+  }
+
+  function countMemoryNode(node, counts) {
+    counts.total += 1;
+    const hasEmbedding = Array.isArray(node?.embedding)
+      ? node.embedding.length > 0
+      : Boolean(node?.embedding && typeof node.embedding.length === 'number' && node.embedding.length > 0);
+    if (hasEmbedding || node?.embedding_status === 'embedded') {
+      counts.embedded += 1;
+    } else {
+      counts.missing += 1;
+    }
+  }
+
+  async function readAgentMemorySummary(agentName) {
+    if (!agentName) {
+      return { agent: null, total: 0, embedded: 0, missing: 0, source: 'none' };
+    }
+    const logsDir = path.join(home23Root, 'instances', agentName, 'logs');
+    const counts = { agent: agentName, total: 0, embedded: 0, missing: 0, source: 'none' };
+
+    try {
+      if (sidecarsExist(logsDir)) {
+        await readJsonlGz(nodesPath(logsDir), (node) => {
+          countMemoryNode(node, counts);
+        });
+        counts.source = 'sidecar';
+        return counts;
+      }
+
+      const statePath = path.join(logsDir, 'state.json');
+      const state = await StateCompression.loadCompressed(statePath);
+      const nodes = Array.isArray(state?.memory?.nodes) ? state.memory.nodes : [];
+      for (const node of nodes) countMemoryNode(node, counts);
+      counts.source = nodes.length ? 'state' : 'none';
+      return counts;
+    } catch (error) {
+      return { ...counts, source: 'unavailable', error: error.message };
+    }
+  }
+
+  function getSimpleModelPlan(agentName) {
+    const homeConfig = loadHomeConfig();
+    const agentConfig = loadAgentConfig(agentName);
+    const chat = agentConfig.chat || {};
+    const provider = chat.defaultProvider || chat.provider || homeConfig.chat?.defaultProvider || '';
+    const model = chat.defaultModel || chat.model || homeConfig.chat?.defaultModel || '';
+    const aliases = homeConfig.models?.aliases || {};
+    return {
+      chat: { provider, model },
+      query: {
+        provider: agentConfig.query?.defaultProvider || homeConfig.query?.defaultProvider || provider,
+        model: agentConfig.query?.defaultModel || homeConfig.query?.defaultModel || model,
+      },
+      internal: agentConfig.engine || {},
+      aliases,
+    };
   }
 
   function normalizeXResearchSettings(stored = {}) {
@@ -701,17 +935,6 @@ function createSettingsRouter(home23Root) {
     return out;
   }
 
-  function buildFeederWatchPaths(instanceDir, ingestPaths = []) {
-    return [
-      { path: `${instanceDir}/workspace/sessions`, label: 'conversation_sessions' },
-      { path: `${instanceDir}/workspace/memory`, label: 'memory_snapshots' },
-      { path: `${instanceDir}/workspace/projects`, label: 'projects' },
-      { path: `${instanceDir}/workspace/reports`, label: 'reports' },
-      { path: `${instanceDir}/workspace/research-runs`, label: 'research_runs' },
-      ...ingestPaths,
-    ];
-  }
-
   function projectSurface(today, ingestPaths = []) {
     if (!ingestPaths.length) {
       return `# Active Projects\n\n_No projects tracked yet. Add project folders through Settings -> Feeder or rerun setup when you are ready._\n\n_Curator-maintained. Last updated: ${today}._\n`;
@@ -789,6 +1012,10 @@ function createSettingsRouter(home23Root) {
     if (fs.existsSync(instanceDir)) {
       return res.status(409).json({ error: `Agent "${name}" already exists` });
     }
+    const providerReady = assertSelectedChatProviderReady(provider, model);
+    if (!providerReady.ok) {
+      return res.status(400).json({ error: providerReady.error });
+    }
 
     // Determine if this is the first agent (will be primary)
     const isFirst = discoverAgents().length === 0;
@@ -804,64 +1031,25 @@ function createSettingsRouter(home23Root) {
       fs.mkdirSync(path.join(instanceDir, dir), { recursive: true });
     }
 
-    const agentConfig = {
-      agent: {
-        name,
-        displayName: resolvedDisplayName,
-        purpose: resolvedPurpose,
-        owner: { name: resolvedOwnerName, telegramId: ownerTelegramId || undefined, facts: resolvedPersonalFacts.length ? resolvedPersonalFacts : undefined },
-        timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
-        maxSubAgents: 3,
-      },
+    const agentConfig = buildAgentConfig({
+      name,
+      displayName: resolvedDisplayName,
+      ownerName: resolvedOwnerName,
+      ownerTelegramId,
+      personalFacts: resolvedPersonalFacts,
+      timezone: timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York',
       ports,
-      engine: { thought: model || 'MiniMax-M3', consolidation: model || 'MiniMax-M3', dreaming: model || 'MiniMax-M3', query: model || 'MiniMax-M3' },
-      feeder: {
-        additionalWatchPaths: buildFeederWatchPaths(instanceDir, starterIngestPaths),
-        excludePatterns: [
-          '**/node_modules/**',
-          '**/dist/**',
-          '**/.git/**',
-          '**/.DS_Store',
-          '**/research-runs/*/brain/**',
-          '**/research-runs/*/*.jsonl',
-        ],
-      },
-      channels: {
-        telegram: botToken
-          ? { enabled: true, streaming: 'partial', dmPolicy: 'open', groupPolicy: 'restricted', groups: {}, ackReaction: true }
-          : { enabled: false },
-      },
-      system: { name: 'home23', version: getHome23Version(), workspace: 'workspace' },
-      chat: {
-        provider: provider || 'ollama-cloud',
-        model: model || 'kimi-k2.6',
-        defaultProvider: provider || 'ollama-cloud',
-        defaultModel: model || 'kimi-k2.6',
-        maxTokens: 4096, temperature: 0.7, historyDepth: 20, historyBudget: 400000, sessionGapMs: 1800000,
-        memorySearch: { enabled: true, timeoutMs: 10000, topK: 5 },
-        identityFiles: ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'LEARNINGS.md', 'GOOD_LIFE.md', 'COSMO_RESEARCH.md'],
-        heartbeatRefreshMs: 60000,
-      },
-      sessions: {
-        threadBindings: { enabled: true, idleHours: 24 },
-        messageQueue: { mode: 'collect', debounceMs: 3000, adaptiveDebounce: true, cap: 10, overflowStrategy: 'summarize', queueDuringRun: true },
-      },
-      scheduler: { timezone: timezone || 'America/New_York', jobsFile: 'cron-jobs.json', runsDir: 'cron-runs' },
-      sibling: { enabled: false, name: '', remoteUrl: '', token: '', rateLimits: { maxPerMinute: 5, retries: 2, dedupWindowSeconds: 300 }, ackMode: false, bridgeChat: { enabled: false, dbPath: '', telegramBotToken: '', telegramTargetId: '' } },
-      acp: { enabled: false, defaultAgent: '', allowedAgents: [], permissionMode: 'ask' },
-      browser: { enabled: true, headless: true, cdpUrl: 'http://localhost:9222' },
-      tts: { enabled: false, auto: 'off', provider: '', apiKey: '', voiceId: '', modelId: '' },
-    };
-
+      purpose: resolvedPurpose,
+      home23Version: getHome23Version(),
+      provider,
+      model,
+      instanceDir,
+      ingestPaths: starterIngestPaths,
+      botToken,
+    });
     saveYaml(path.join(instanceDir, 'config.yaml'), agentConfig);
 
-    const feederConfig = {
-      member: name,
-      state_file: `../instances/${name}/brain/state.json.gz`,
-      watch: [{ path: `../instances/${name}/workspace`, label: 'workspace', glob: '*.md' }],
-      ollama: { endpoint: 'http://127.0.0.1:11434', model: 'nomic-embed-text', dims: 768 },
-      flush_interval_seconds: 300, flush_batch_size: 20,
-    };
+    const feederConfig = buildFeederConfig(name);
     saveYaml(path.join(instanceDir, 'feeder.yaml'), feederConfig);
 
     const templateVars = {

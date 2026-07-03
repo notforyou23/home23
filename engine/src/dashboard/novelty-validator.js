@@ -22,7 +22,14 @@ class NoveltyValidator {
     this.config = config;
     this.logger = logger;
     this.logsDir = logsDir || path.join(__dirname, '..', '..', 'runtime');
-    this.client = getOpenAIClient();
+    try {
+      this.client = getOpenAIClient();
+    } catch (error) {
+      this.client = null;
+      this.logger?.warn?.('NoveltyValidator: OpenAI client unavailable; embedding checks disabled until credentials are configured', {
+        error: error.message
+      });
+    }
     this.gpt5 = new UnifiedClient(config, logger);
     
     // Thresholds (configurable)
@@ -654,6 +661,9 @@ class NoveltyValidator {
     }
     
     try {
+      if (!this.client) {
+        throw new Error('OpenAI embeddings are not configured');
+      }
       // Use same dimensions as memory (512) for proper comparison
       const response = await this.withTimeout(
         this.client.embeddings.create({

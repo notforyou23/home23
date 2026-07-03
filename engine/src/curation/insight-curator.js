@@ -497,10 +497,11 @@ Return ONLY a JSON array: [{"index": 1, "actionability": X, "specificity": X, "n
           });
 
         } catch (error) {
-          if (this.logger && this.logger.error) {
-            this.logger.error('Scoring batch failed', { error: error.message });
+          if (this.logger && this.logger.warn) {
+            this.logger.warn('Scoring batch degraded; using default scores', { error: error.message });
           }
-          // Return batch with default scores
+          // Scoring is advisory. Provider/network failures should not poison live-problem
+          // health when the curator can safely continue with neutral defaults.
           return batch.map(ins => ({
             ...ins,
             scores: { actionability: 5, specificity: 5, novelty: 5, businessValue: 5 },

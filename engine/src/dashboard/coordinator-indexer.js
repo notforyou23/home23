@@ -136,6 +136,8 @@ class CoordinatorIndexer {
    * Generate embeddings for insights
    */
   async generateEmbeddings(insights) {
+    if (!this.openai) return;
+
     // Process in batches to avoid rate limits
     const batchSize = 20;
     
@@ -177,6 +179,7 @@ class CoordinatorIndexer {
     // Generate query embedding
     let queryEmbedding;
     try {
+      if (!this.openai) return this.keywordSearch(insights, query, limit);
       const response = await this.openai.embeddings.create({
         model: 'text-embedding-3-small',
         input: query
@@ -274,4 +277,3 @@ class CoordinatorIndexer {
 }
 
 module.exports = { CoordinatorIndexer };
-

@@ -121,6 +121,28 @@ Three read-only code explorers also audited the system in parallel:
    - `engine/src/dashboard/server.js`
    - `src/chat/agent.ts`
 
+10. Added setup readiness status for Chat Provider, Memory Lite, Semantic Brain, and Backfill Needed.
+    - `engine/src/dashboard/home23-settings-api.js`
+    - `engine/src/dashboard/home23-settings.html`
+    - `engine/src/dashboard/home23-settings.js`
+
+11. Added a safe embedding backfill action. Live current-agent engines run the existing background regeneration immediately; otherwise the request is recorded as ignored runtime state for the next engine load path.
+    - `engine/src/dashboard/home23-settings-api.js`
+    - `engine/src/core/orchestrator.js`
+
+12. Enforced that web agent creation cannot select an unconfigured chat provider.
+    - `engine/src/dashboard/home23-settings-api.js`
+    - `engine/src/dashboard/home23-settings.js`
+
+13. Added a simple Models "Model Plan" surface above advanced routing.
+    - `engine/src/dashboard/home23-settings.html`
+    - `engine/src/dashboard/home23-settings.js`
+
+14. Shared the initial agent config builder between CLI and web setup so chat defaults and internal engine defaults cannot drift.
+    - `cli/lib/agent-config-builder.cjs`
+    - `cli/lib/agent-create.js`
+    - `engine/src/dashboard/home23-settings-api.js`
+
 No existing agent configs, provider credentials, or runtime data were modified.
 
 ## Recommended Architecture

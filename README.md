@@ -168,13 +168,15 @@ Unlike embeddings, you can switch LLM providers freely. Configure providers from
 | **OpenAI Codex** | OAuth (recommended, requires ChatGPT Plus/Pro) | GPT-5.5, GPT-5.5 Pro, Codex |
 | **OpenAI** | API key | GPT-5.4, GPT-5.4-mini |
 | **Ollama Cloud** | API key from ollama.com | kimi-k2.6, qwen3.5, deepseek-v4, nemotron-3, gemma4, GLM-5.1, and more |
-| **MiniMax** | API key | MiniMax-M2.7 |
+| **MiniMax** | API key | MiniMax-M3 |
 | **xAI** | API key | Grok-4.3, Grok-4.20 variants |
 | **Ollama Local** | Ollama running locally | Any pulled model |
 
 Model aliases are defined in `config/home.yaml` — use short names like `sonnet`, `gpt`, `kimi` instead of full model IDs.
 
 **Minimum practical setup:** one chat LLM provider. For durable semantic memory, add one embedding provider. The lowest-friction baseline is any paid/free chat provider plus local Ollama `nomic-embed-text` for embeddings.
+
+The web setup page shows this explicitly: Chat Provider is required, Memory Lite is available without embeddings, Semantic Brain appears when embeddings are configured, and Backfill Needed appears when stored text memory can be vectorized later.
 
 ## OAuth Sign-in (Anthropic + ChatGPT)
 

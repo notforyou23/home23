@@ -7930,7 +7930,11 @@ class Orchestrator {
       try {
         const embedding = await this.memory.embed(node.concept);
         if (embedding) {
-          node.embedding = embedding;
+          node.embedding = this.memory.normalizeEmbedding
+            ? this.memory.normalizeEmbedding(embedding)
+            : embedding;
+          node.embedding_status = 'embedded';
+          this.memory.markNodeDirty?.(node.id);
           done++;
         } else {
           failed++;
@@ -7954,6 +7958,14 @@ class Orchestrator {
     this.logger?.info?.('Background embedding regen complete', {
       done, failed, skipped, total, elapsedMin,
     });
+
+    if (done > 0) {
+      try {
+        await this.saveState();
+      } catch (error) {
+        this.logger?.warn?.('Background embedding regen save failed', { error: error.message });
+      }
+    }
   }
 
   /**

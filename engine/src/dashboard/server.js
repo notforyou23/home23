@@ -1895,7 +1895,9 @@ class DashboardServer {
         getDefaultAgent: () => this.getHome23AgentName(),
         resolveAgent: (candidate) => this.resolveRequestedHome23Agent(candidate),
       });
-      const { router: settingsRouter } = createSettingsRouter(home23Root);
+      const { router: settingsRouter } = createSettingsRouter(home23Root, {
+        getOrchestrator: () => this.orchestrator,
+      });
       this.app.use('/home23/api/settings', settingsRouter);
     } catch (err) {
       console.warn('[Settings API] Failed to mount:', err.message);
