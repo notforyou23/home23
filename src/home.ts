@@ -374,6 +374,10 @@ async function main(): Promise<void> {
     client: anthropicClient,
     history,
     memory: null as unknown as import('./agent/memory.js').MemoryManager, // wired after agent creation
+    provider: startupProvider,
+    model: startupModel,
+    apiKey: authToken,
+    baseURL: startupBaseURL,
   });
 
   const agent = new AgentLoop({
@@ -415,6 +419,7 @@ async function main(): Promise<void> {
     anthropic: { apiKey: resolveApiKey('anthropic'), baseURL: resolveBaseUrl('anthropic') },
     minimax: { apiKey: resolveApiKey('minimax'), baseURL: resolveBaseUrl('minimax') },
     openai: { apiKey: resolveApiKey('openai'), baseURL: resolveBaseUrl('openai') },
+    'openai-codex': { apiKey: resolveApiKey('openai-codex'), baseURL: resolveBaseUrl('openai-codex') },
     xai: { apiKey: resolveApiKey('xai'), baseURL: resolveBaseUrl('xai') },
     'ollama-cloud': { apiKey: resolveApiKey('ollama-cloud'), baseURL: resolveBaseUrl('ollama-cloud') },
   });

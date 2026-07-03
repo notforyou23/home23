@@ -7,6 +7,7 @@ import type { StoredMessage, HistoryRecord } from './history.js';
 import type { ConversationHistory } from './history.js';
 import type { MemoryManager } from './memory.js';
 import { DefaultCompactionHooks, type CompactionHooks } from './compaction-hooks.js';
+import { generateText, inferTextGenerationProvider } from './text-generation.js';
 
 export interface CompactionResult {
   compacted: boolean;
@@ -39,6 +40,10 @@ export class CompactionManager {
   private memory: MemoryManager;
   private config: CompactionConfig;
   private hooks: CompactionHooks;
+  private provider?: string;
+  private model?: string;
+  private apiKey?: string;
+  private baseURL?: string;
 
   constructor(opts: {
     client: Anthropic;
@@ -46,12 +51,20 @@ export class CompactionManager {
     memory: MemoryManager;
     config?: Partial<CompactionConfig>;
     hooks?: CompactionHooks;
+    provider?: string;
+    model?: string;
+    apiKey?: string;
+    baseURL?: string;
   }) {
     this.client = opts.client;
     this.history = opts.history;
     this.memory = opts.memory;
     this.config = { ...DEFAULT_CONFIG, ...opts.config };
     this.hooks = opts.hooks ?? new DefaultCompactionHooks();
+    this.provider = opts.provider;
+    this.model = opts.model;
+    this.apiKey = opts.apiKey;
+    this.baseURL = opts.baseURL;
   }
 
   /** Check if compaction is needed based on current history size. */
@@ -63,7 +76,11 @@ export class CompactionManager {
   /**
    * Use LLM to summarize older messages into a condensed summary.
    */
-  private async summarizeMessages(olderMessages: StoredMessage[]): Promise<string> {
+  private async summarizeMessages(
+    olderMessages: StoredMessage[],
+    currentModel?: string,
+    currentProvider?: string,
+  ): Promise<string> {
     const transcript = olderMessages
       .map(m => {
         const role = m.role === 'user' ? 'Human' : 'Assistant';
@@ -79,22 +96,20 @@ export class CompactionManager {
       })
       .join('\n\n');
 
-    const response = await this.client.messages.create({
-      model: 'claude-haiku-4-5',
-      max_tokens: 800,
+    const provider = inferTextGenerationProvider(currentModel || this.model, currentProvider || this.provider);
+    const summary = await generateText({
+      provider,
+      model: currentModel || this.model,
+      client: this.client,
+      apiKey: this.apiKey,
+      baseURL: this.baseURL,
+      maxTokens: 800,
+      temperature: 0.1,
       system: 'You are a conversation summarizer. Produce a dense, factual summary that preserves: key decisions, tool actions taken, current goals, important context. No fluff. No preamble.',
-      messages: [{
-        role: 'user',
-        content: `Summarize this conversation segment. Preserve all important context, decisions, and state. The summary will replace these messages in the conversation history.\n\n${transcript.slice(0, 12000)}`,
-      }],
+      prompt: `Summarize this conversation segment. Preserve all important context, decisions, and state. The summary will replace these messages in the conversation history.\n\n${transcript.slice(0, 12000)}`,
     });
 
-    return response.content
-      .filter(b => b.type === 'text')
-      .map(b => (b as { text: string }).text)
-      .join('\n')
-      .trim()
-      .slice(0, this.config.maxSummaryChars);
+    return summary.slice(0, this.config.maxSummaryChars);
   }
 
   /**
@@ -107,6 +122,7 @@ export class CompactionManager {
     chatId: string,
     records: HistoryRecord[],
     currentModel?: string,
+    currentProvider?: string,
   ): Promise<{ messages: StoredMessage[]; result: CompactionResult }> {
     const messages = records.filter(
       (r): r is StoredMessage => !('type' in r && r.type === 'session_boundary'),
@@ -130,13 +146,14 @@ export class CompactionManager {
       chatId,
       olderMessages,
       currentModel,
+      currentProvider,
       memory: this.memory,
     });
 
     // Phase 2: LLM summarization
     let summary: string;
     try {
-      summary = await this.summarizeMessages(olderMessages);
+      summary = await this.summarizeMessages(olderMessages, currentModel, currentProvider);
     } catch (err) {
       console.warn('[compaction] Summarization failed, falling back to truncation:', err);
       const charsAfter = this.history.estimateChars(recentMessages);
@@ -147,6 +164,7 @@ export class CompactionManager {
         recentMessages,
         compacted: true,
         currentModel,
+        currentProvider,
         memory: this.memory,
       });
       return {
@@ -176,6 +194,7 @@ export class CompactionManager {
       summary,
       compacted: true,
       currentModel,
+      currentProvider,
       memory: this.memory,
     });
 

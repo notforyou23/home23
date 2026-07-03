@@ -56,6 +56,8 @@ Init checks prerequisites, installs all dependencies (including MarkItDown for d
 
 `agent create` creates the first local runtime under `instances/<name>/`, records its purpose, configures starter feeder watch paths, and regenerates the PM2 ecosystem. Local runtime/config files are intentionally ignored by Git; public defaults live in `config/*.example`.
 
+Fresh agents also preserve conversation continuity by default: session transcripts are written into `workspace/sessions`, historical JSONL chats are backfilled daily into that same watched folder, chat searches brain memory, and compaction/memory extraction use the agent's configured provider/model defaults.
+
 Before handing a fresh install to someone else, run:
 
 ```bash

@@ -5,6 +5,7 @@ export interface PreCompactionContext {
   chatId: string;
   olderMessages: StoredMessage[];
   currentModel?: string;
+  currentProvider?: string;
   memory: MemoryManager;
 }
 
@@ -15,6 +16,7 @@ export interface PostCompactionContext {
   summary?: string;
   compacted: boolean;
   currentModel?: string;
+  currentProvider?: string;
   memory: MemoryManager;
 }
 
@@ -29,14 +31,11 @@ export interface CompactionHooks {
 
 export class DefaultCompactionHooks implements CompactionHooks {
   async preCompaction(ctx: PreCompactionContext): Promise<{ extractedLearnings: boolean }> {
-    if (!(ctx.currentModel ?? 'claude').includes('claude')) {
-      return { extractedLearnings: false };
-    }
-
     const extracted = await ctx.memory.preCompactionExtract(
       ctx.chatId,
       ctx.olderMessages,
       ctx.currentModel,
+      ctx.currentProvider,
     );
 
     return { extractedLearnings: !!extracted };

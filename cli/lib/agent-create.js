@@ -320,7 +320,7 @@ export async function runAgentCreate(home23Root, name, options = {}) {
       historyDepth: 20,
       historyBudget: 400000,
       sessionGapMs: 1800000,
-      memorySearch: { enabled: false, timeoutMs: 10000, topK: 5 },
+      memorySearch: { enabled: true, timeoutMs: 10000, topK: 5 },
       identityFiles: ['SOUL.md', 'MISSION.md', 'HEARTBEAT.md', 'LEARNINGS.md', 'GOOD_LIFE.md', 'COSMO_RESEARCH.md'],
       heartbeatRefreshMs: 60000,
     },

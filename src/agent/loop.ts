@@ -307,6 +307,9 @@ export class AgentLoop {
     this.memory = new MemoryManager({
       client: this.client,
       model: this.model,
+      provider: this.provider,
+      apiKey: opts.apiKey,
+      baseURL: opts.baseURL,
       workspacePath: opts.workspacePath,
     });
     this.compaction = opts.compaction ?? null;
@@ -323,10 +326,9 @@ export class AgentLoop {
 
   /**
    * Write (or overwrite) workspace/sessions/active-<chatId>.md with the
-   * current conversation so the feeder can ingest recent dialogue without
-   * waiting for the 30-min session-gap compile. Throttled so we only rewrite
-   * when the transcript has meaningfully grown (6+ new messages since last
-   * snapshot, ~3 user↔assistant exchanges).
+   * current conversation as a live recovery surface. The feeder ignores
+   * active-* snapshots to avoid recompiling every turn; durable session
+   * transcripts and daily backfills are the ingestion path.
    */
   private activeSnapshotLastCount: Map<string, number> = new Map();
   private async updateActiveSnapshot(chatId: string): Promise<void> {
@@ -398,7 +400,8 @@ export class AgentLoop {
     if (lines.length < 2) return;
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const filename = `session-${timestamp}.md`;
+    const safeChatId = String(chatId).replace(/[^A-Za-z0-9_-]/g, '_');
+    const filename = `session-${timestamp}-${safeChatId}.md`;
     const sessionsDir = join(this.workspacePath, 'sessions');
 
     try {
@@ -474,8 +477,16 @@ export class AgentLoop {
       }
     }
 
+    const cfg = this.providerMap.get(provider);
     const memory = modelOverride?.model
-      ? new MemoryManager({ client, model, workspacePath: this.workspacePath })
+      ? new MemoryManager({
+          client,
+          model,
+          provider,
+          apiKey: cfg?.apiKey,
+          baseURL: cfg?.baseURL,
+          workspacePath: this.workspacePath,
+        })
       : this.memory;
 
     return { model, provider, client, isOAuth, memory };
@@ -501,6 +512,15 @@ export class AgentLoop {
 
     this.model = model;
     this.provider = newProvider;
+    const cfg = this.providerMap.get(newProvider);
+    this.memory = new MemoryManager({
+      client: this.client,
+      model: this.model,
+      provider: this.provider,
+      apiKey: cfg?.apiKey,
+      baseURL: cfg?.baseURL,
+      workspacePath: this.workspacePath,
+    });
   }
 
   getModel(): string {
@@ -678,9 +698,9 @@ export class AgentLoop {
           }).catch(err => console.warn('[push] notifyTurnComplete failed:', err));
         }
         // Active-conversation snapshot: write/overwrite a markdown file in
-        // workspace/sessions/active-<chatId>.md after each turn so the feeder
-        // can ingest recent dialogue without waiting for the 30-minute idle
-        // session-gap compile. Fire-and-forget — snapshot failure shouldn't
+        // workspace/sessions/active-<chatId>.md after each turn for live
+        // recovery/debugging. Durable session files and daily backfills are
+        // what the feeder ingests. Fire-and-forget; snapshot failure should not
         // poison turn completion.
         this.updateActiveSnapshot(chatId).catch(err => {
           console.warn(`[loop] active snapshot failed for ${chatId}:`, err?.message || err);
@@ -818,7 +838,7 @@ export class AgentLoop {
 
       if (this.compaction && this.compaction.needsCompaction(storedHistory, this.history.budget)) {
         try {
-          const { messages: compactedMsgs, result } = await this.compaction.compact(chatId, storedHistory, runtimeModel);
+          const { messages: compactedMsgs, result } = await this.compaction.compact(chatId, storedHistory, runtimeModel, runtimeProvider);
           truncated = compactedMsgs;
           didTruncate = result.compacted;
           recoveryBundle = result.recoveryBundle;
@@ -1269,7 +1289,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 turnMessages.push({ role: 'assistant', content: answer });
                 this.history.append(chatId, turnMessages);
                 if (messages.length > 10) {
-                  runtimeMemory.extractAndSave(chatId, messages, runtimeModel).catch(() => {});
+                  runtimeMemory.extractAndSave(chatId, messages, runtimeModel, runtimeProvider).catch(() => {});
                 }
                 return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
               }
@@ -1474,7 +1494,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 turnMessages.push({ role: 'assistant', content: answer });
                 this.history.append(chatId, turnMessages);
                 if (messages.length > 10) {
-                  runtimeMemory.extractAndSave(chatId, messages, runtimeModel).catch(() => {});
+                  runtimeMemory.extractAndSave(chatId, messages, runtimeModel, runtimeProvider).catch(() => {});
                 }
                 return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
               }
@@ -1683,7 +1703,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               turnMessages.push({ role: 'assistant', content: answer });
               this.history.append(chatId, turnMessages);
               if (messages.length > 10) {
-                runtimeMemory.extractAndSave(chatId, messages, runtimeModel).catch(() => {});
+                runtimeMemory.extractAndSave(chatId, messages, runtimeModel, runtimeProvider).catch(() => {});
               }
               return { text: answer, media: allMedia.length > 0 ? allMedia : undefined, model: runtimeModel, toolCallCount, durationMs: Date.now() - startMs };
             }
@@ -1925,7 +1945,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
           // ── Memory: Extract and save (fire-and-forget) ───
           if (messages.length > 10) {
-            runtimeMemory.extractAndSave(chatId, messages, runtimeModel).catch(() => {});
+            runtimeMemory.extractAndSave(chatId, messages, runtimeModel, runtimeProvider).catch(() => {});
           }
 
           return {

@@ -18,6 +18,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import type { StoredMessage } from './history.js';
+import { generateText, inferTextGenerationProvider } from './text-generation.js';
 
 const MEMORY_DIR_NAME = 'memory';
 const MAX_RECOVERY_CHARS = 2000;
@@ -27,6 +28,9 @@ const MAX_RECOVERY_CHARS = 2000;
 export class MemoryManager {
   private client: Anthropic;
   private model: string;
+  private provider?: string;
+  private apiKey?: string;
+  private baseURL?: string;
   private workspacePath: string;
   private memoryDir: string;
 
@@ -34,9 +38,15 @@ export class MemoryManager {
     client: Anthropic;
     model: string;
     workspacePath: string;
+    provider?: string;
+    apiKey?: string;
+    baseURL?: string;
   }) {
     this.client = opts.client;
     this.model = opts.model;
+    this.provider = opts.provider;
+    this.apiKey = opts.apiKey;
+    this.baseURL = opts.baseURL;
     this.workspacePath = opts.workspacePath;
     this.memoryDir = join(opts.workspacePath, MEMORY_DIR_NAME);
     mkdirSync(this.memoryDir, { recursive: true });
@@ -52,6 +62,7 @@ export class MemoryManager {
     chatId: string,
     messages: Array<{ role: string; content: unknown }>,
     currentModel?: string,
+    currentProvider?: string,
   ): Promise<void> {
     try {
       if (messages.length < 4) return; // Not enough to be worth extracting
@@ -72,9 +83,15 @@ export class MemoryManager {
         })
         .join('\n\n');
 
-      const response = await this.client.messages.create({
-        model: 'claude-haiku-4-5',
-        max_tokens: 500,
+      const provider = inferTextGenerationProvider(currentModel || this.model, currentProvider || this.provider);
+      const extracted = await generateText({
+        provider,
+        model: currentModel || this.model,
+        client: this.client,
+        apiKey: this.apiKey,
+        baseURL: this.baseURL,
+        maxTokens: 500,
+        temperature: 0.1,
         system: `You are a memory extraction assistant for a persistent AI agent. Extract structured memory objects from conversations.
 
 For each important item, output a JSON object on its own line with these fields:
@@ -92,19 +109,8 @@ For each important item, output a JSON object on its own line with these fields:
 Prioritize: corrections (agent was wrong about something), new conventions, topology changes, personal context shared, key decisions.
 Skip: pleasantries, repetitive questions, implementation details already in code.
 Output ONLY the JSON objects, one per line. No prose.`,
-        messages: [
-          {
-            role: 'user',
-            content: `Extract structured memory objects from this conversation:\n\n${transcript}`,
-          },
-        ],
+        prompt: `Extract structured memory objects from this conversation:\n\n${transcript}`,
       });
-
-      const extracted = response.content
-        .filter(b => b.type === 'text')
-        .map(b => (b as { text: string }).text)
-        .join('\n')
-        .trim();
 
       if (!extracted) return;
 
@@ -254,10 +260,10 @@ Output ONLY the JSON objects, one per line. No prose.`,
     chatId: string,
     messages: StoredMessage[],
     currentModel?: string,
+    currentProvider?: string,
   ): Promise<string | null> {
     try {
       if (messages.length < 3) return null;
-      if (!(currentModel ?? this.model).includes('claude')) return null;
 
       const transcript = messages
         .map(m => {
@@ -274,21 +280,18 @@ Output ONLY the JSON objects, one per line. No prose.`,
         })
         .join('\n');
 
-      const response = await this.client.messages.create({
-        model: 'claude-haiku-4-5',
-        max_tokens: 600,
+      const provider = inferTextGenerationProvider(currentModel || this.model, currentProvider || this.provider);
+      const extracted = await generateText({
+        provider,
+        model: currentModel || this.model,
+        client: this.client,
+        apiKey: this.apiKey,
+        baseURL: this.baseURL,
+        maxTokens: 600,
+        temperature: 0.1,
         system: 'Extract structured learnings from this conversation segment. Be terse. Bullet points only.',
-        messages: [{
-          role: 'user',
-          content: `Extract learnings from this conversation in these 5 categories:\n\n1. DECISIONS MADE\n2. WHAT WORKED\n3. WHAT FAILED/BLOCKED\n4. FACTS LEARNED\n5. OPEN QUESTIONS\n\nSkip any category with nothing notable. Be concise.\n\n${transcript}`,
-        }],
+        prompt: `Extract learnings from this conversation in these 5 categories:\n\n1. DECISIONS MADE\n2. WHAT WORKED\n3. WHAT FAILED/BLOCKED\n4. FACTS LEARNED\n5. OPEN QUESTIONS\n\nSkip any category with nothing notable. Be concise.\n\n${transcript}`,
       });
-
-      const extracted = response.content
-        .filter(b => b.type === 'text')
-        .map(b => (b as { text: string }).text)
-        .join('\n')
-        .trim();
 
       if (!extracted) return null;
 

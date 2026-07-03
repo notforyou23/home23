@@ -2,16 +2,20 @@
 /**
  * Backfill historical conversation JSONL into workspace-ingestable markdown.
  *
- * Walks every agent's instances/<agent>/conversations/*.jsonl and
+ * Walks an agent's instances/<agent>/conversations/*.jsonl and
  * conversations/sessions/*.jsonl, extracts user + assistant text, writes
  * workspace/sessions/backfill-<chatId>.md — where the feeder picks them up
- * automatically on its next scan.
+ * automatically on its next scan. When HOME23_AGENT is set by a harness, only
+ * that agent is processed; manual shell runs without HOME23_AGENT process all
+ * agents unless --agent is supplied.
  *
  * Idempotent — rewrites only when the source JSONL is newer than the
  * existing backfill file, so repeated runs skip already-handled chats.
  *
  * Usage:
  *   node cli/lib/backfill-conversations.js
+ *   node cli/lib/backfill-conversations.js --agent jerry
+ *   node cli/lib/backfill-conversations.js --all
  */
 
 import * as fs from 'node:fs/promises';
@@ -22,6 +26,31 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const INSTANCES = path.join(REPO_ROOT, 'instances');
+
+function parseArgs(argv) {
+  const args = [...argv];
+  let agent = process.env.HOME23_AGENT || '';
+  let all = false;
+
+  while (args.length > 0) {
+    const arg = args.shift();
+    if (arg === '--all') {
+      all = true;
+      agent = '';
+      continue;
+    }
+    if (arg === '--agent') {
+      agent = args.shift() || '';
+      continue;
+    }
+    if (arg?.startsWith('--agent=')) {
+      agent = arg.slice('--agent='.length);
+      continue;
+    }
+  }
+
+  return { agent: agent.trim(), all };
+}
 
 /** Pull plain user/assistant text out of an Anthropic-style content value. */
 function extractText(content) {
@@ -134,8 +163,14 @@ async function processAgent(agentDir) {
 
 async function main() {
   console.log(`Backfilling conversations from ${INSTANCES}`);
+  const args = parseArgs(process.argv.slice(2));
   const entries = await fs.readdir(INSTANCES, { withFileTypes: true });
-  const agents = entries.filter(e => e.isDirectory()).map(e => e.name);
+  const availableAgents = entries.filter(e => e.isDirectory()).map(e => e.name);
+  const agents = args.agent && !args.all ? availableAgents.filter(name => name === args.agent) : availableAgents;
+  if (args.agent && agents.length === 0) {
+    console.error(`Agent "${args.agent}" not found under instances/. Abort.`);
+    process.exit(1);
+  }
   if (agents.length === 0) { console.error('No agents under instances/. Abort.'); process.exit(1); }
   console.log(`Agents: ${agents.join(', ')}\n`);
 

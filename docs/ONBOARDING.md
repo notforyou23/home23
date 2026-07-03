@@ -31,6 +31,8 @@ node cli/home23.js setup
 
 Starter folders can be normal work folders, Claude/Codex project exports, imported notes, reports, or fresh project directories. Home23 adds them to the agent's Document Feeder watch paths so supported files flow into the agent's brain as they change.
 
+Conversation memory is part of the default setup. Each agent writes session transcripts into `instances/<name>/workspace/sessions/`, the feeder watches that folder, the chat loop searches brain memory by default, and the seeded `conversation-backfill-daily` scheduler job converts any accumulated JSONL chat history into feeder-ready markdown once a day. Compaction and memory extraction use the agent's configured default provider/model rather than a separate hard-coded model.
+
 Manual operator flow:
 
 ```bash

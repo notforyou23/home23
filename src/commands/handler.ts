@@ -144,7 +144,8 @@ export class CommandHandler {
       writeFileSync(snapshotPath, `---\nchatId: ${chatId}\ntrigger: /reset\ndate: ${new Date().toISOString()}\n---\n\n# Session Memory Snapshot\n\n${transcript}\n`, 'utf-8');
 
       const model = this.ctx.agent.getModel();
-      this.ctx.agent.getMemory().extractAndSave(chatId, messages, model).catch(() => {});
+      const provider = this.ctx.agent.getProvider();
+      this.ctx.agent.getMemory().extractAndSave(chatId, messages, model, provider).catch(() => {});
     } catch { /* non-fatal */ }
   }
 
@@ -383,7 +384,12 @@ export class CommandHandler {
 
     if (this.ctx.compaction) {
       try {
-        const { result } = await this.ctx.compaction.compact(chatId, records);
+        const { result } = await this.ctx.compaction.compact(
+          chatId,
+          records,
+          this.ctx.agent.getModel(),
+          this.ctx.agent.getProvider(),
+        );
         if (!result.compacted) return `No compaction needed (${result.reason})`;
         const parts = [`Compacted: ${result.tokensBefore} → ${result.tokensAfter} chars`];
         if (result.extractedLearnings) parts.push('Learnings extracted to daily memory');
@@ -467,19 +473,24 @@ export class CommandHandler {
   }
 
   private cmdExtract(): string {
-    if (!this.ctx.scheduler) return 'Scheduler not available.';
-
-    const job = this.ctx.scheduler.getJob('session-summarizer');
-    if (!job) return 'Session-summarizer job not found in scheduler.';
-    if (job.payload.kind !== 'agentTurn') return 'Session-summarizer job has unexpected payload kind.';
-
-    // Fire-and-forget — runs in background with isolated chat history
-    const cronChatId = `cron-${job.id}`;
-    this.ctx.agent.run(cronChatId, job.payload.message ?? '').catch(err => {
-      console.error('[extract] Manual extraction failed:', err);
-    });
-
-    return 'Session extraction started (running in background).';
+    try {
+      const output = execSync('node cli/lib/backfill-conversations.js', {
+        cwd: this.ctx.projectRoot,
+        encoding: 'utf-8',
+        timeout: 120_000,
+        maxBuffer: 1024 * 1024,
+      });
+      const summary = output
+        .split('\n')
+        .map(line => line.trim())
+        .filter(Boolean)
+        .slice(-3)
+        .join('\n');
+      return `Conversation extraction backfill complete.\n${summary}`;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return `Conversation extraction backfill failed: ${message}`;
+    }
   }
 
   private cmdStop(chatId: string, arg: string): string {

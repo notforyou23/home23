@@ -1,1 +1,27 @@
-[]
+[
+  {
+    "id": "conversation-backfill-daily",
+    "name": "Conversation backfill into memory feeder",
+    "enabled": true,
+    "queueClass": "background",
+    "schedule": {
+      "kind": "cron",
+      "expr": "15 3 * * *",
+      "tz": "America/New_York"
+    },
+    "sessionTarget": "isolated",
+    "wakeMode": "next-heartbeat",
+    "payload": {
+      "kind": "exec",
+      "command": "node cli/lib/backfill-conversations.js",
+      "timeoutSeconds": 120
+    },
+    "delivery": {
+      "mode": "failures"
+    },
+    "state": {
+      "nextRunAtMs": 0,
+      "consecutiveErrors": 0
+    }
+  }
+]
