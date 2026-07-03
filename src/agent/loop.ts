@@ -1066,7 +1066,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             // Returns respMsg in OAI Chat Completions format so the tool loop below runs unchanged.
 
             const creds = await this.codexCredentialsProvider();
-            if (!creds) throw new Error('openai-codex credentials not found — run evobrew login');
+            if (!creds) throw new Error('openai-codex credentials not found — connect OpenAI Codex in Home23 Setup or Settings > Providers');
 
             const sysText = typeof systemPrompt === 'string'
               ? systemPrompt

@@ -259,12 +259,12 @@
           <button class="h23s-btn-secondary" id="wiz-close" type="button">Close</button>
         </div>
         <div id="wiz-primary-banner" style="display:none;background:rgba(10,132,255,0.08);border:1px solid rgba(10,132,255,0.2);border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--accent-blue);">
-          This will be your <strong>home primary agent</strong> &mdash; the house-level default Home23 falls back to when a surface needs a primary. Its chat model becomes the initial system default.
+          This will be your <strong>home primary agent</strong> &mdash; the house-level default Home23 falls back to when a surface needs a primary. Its chat model becomes this agent's first chat default.
         </div>
         <div class="h23s-wizard-steps">
           <span class="h23s-wizard-step active" data-step="1">1. Purpose</span>
           <span class="h23s-wizard-step" data-step="2">2. Channels</span>
-          <span class="h23s-wizard-step" data-step="3">3. Model</span>
+          <span class="h23s-wizard-step" data-step="3">3. Chat Model</span>
         </div>
 
         <!-- Step 1: Identity and purpose -->
@@ -327,10 +327,13 @@
           </div>
         </div>
 
-        <!-- Step 3: Model -->
+        <!-- Step 3: Chat model -->
         <div class="h23s-wizard-page" id="wizard-step-3">
+          <p class="h23s-panel-desc" style="margin-bottom:16px;">
+            Choose the model this agent uses for normal conversation. Background jobs such as file ingestion, Query, and internal cognition keep their recommended defaults and can be tuned later in Settings.
+          </p>
           <div class="h23s-field">
-            <label>Default Provider</label>
+            <label>Chat Provider</label>
             <select id="wiz-provider">
               <option value="ollama-cloud">Ollama Cloud</option>
               <option value="minimax">MiniMax</option>
@@ -341,9 +344,10 @@
             </select>
           </div>
           <div class="h23s-field">
-            <label>Default Model</label>
+            <label>Chat Model</label>
             <select id="wiz-model">
             </select>
+            <span class="h23s-hint" id="wiz-model-hint">Used for direct chat with this agent. Advanced model routing stays on recommended defaults.</span>
           </div>
           <div class="h23s-field">
             <label>Ports</label>

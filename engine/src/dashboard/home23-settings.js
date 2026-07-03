@@ -706,6 +706,14 @@ const PROVIDER_DISPLAY = {
 const PROVIDERS_WITH_API_KEYS = ['ollama-cloud', 'minimax', 'anthropic', 'openai', 'xai'];
 const SETTINGS_PROVIDER_ORDER = ['ollama-cloud', 'minimax', 'anthropic', 'openai', 'xai'];
 const MODEL_PROVIDER_ORDER = ['ollama-cloud', 'minimax', 'anthropic', 'openai', 'openai-codex', 'xai'];
+const WIZARD_MODEL_FALLBACKS = {
+  'ollama-cloud': ['gpt-oss:120b', 'kimi-k2.6', 'qwen3.5:397b', 'deepseek-v4-pro', 'glm-5.2:cloud', 'glm-5.1'],
+  minimax: ['MiniMax-M3'],
+  anthropic: ['claude-sonnet-4-7', 'claude-opus-4-8'],
+  openai: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4-mini'],
+  'openai-codex': ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'],
+  xai: ['grok-4.3', 'grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning', 'grok-4.20-multi-agent-0309'],
+};
 
 async function loadProviders() {
   try {
@@ -1217,7 +1225,7 @@ function setupWizard() {
   document.getElementById('wiz-next-2').addEventListener('click', () => {
     wizardStep = 3;
     updateWizardStep();
-    populateWizardModels();
+    populateWizardModels({ preferChatDefault: true });
   });
 
   document.getElementById('wiz-back-3').addEventListener('click', () => { wizardStep = 2; updateWizardStep(); });
@@ -1236,36 +1244,77 @@ function setupWizard() {
   });
   document.getElementById('wiz-purpose').addEventListener('input', function() { this.dataset.manual = 'true'; });
 
-  document.getElementById('wiz-provider').addEventListener('change', populateWizardModels);
+  document.getElementById('wiz-provider').addEventListener('change', () => populateWizardModels());
 }
 
-function populateWizardModels() {
-  const provider = document.getElementById('wiz-provider').value;
+function getProviderModelList(provider) {
+  return modelsData?.providers?.[provider]?.defaultModels || WIZARD_MODEL_FALLBACKS[provider] || ['default'];
+}
+
+function getWizardChatDefault() {
+  const chat = modelsData?.chat || {};
+  const shared = modelsData?.sharedChatDefaults || {};
+  return {
+    provider: chat.defaultProvider || chat.provider || shared.defaultProvider || shared.provider || 'ollama-cloud',
+    model: chat.defaultModel || chat.model || shared.defaultModel || shared.model || 'kimi-k2.6',
+  };
+}
+
+function ensureWizardProviderOptions(selectedProvider) {
+  const providerSelect = document.getElementById('wiz-provider');
+  if (!providerSelect) return;
+
+  const providers = [...MODEL_PROVIDER_ORDER];
+  if (selectedProvider && !providers.includes(selectedProvider)) providers.unshift(selectedProvider);
+
+  providerSelect.innerHTML = '';
+  for (const name of providers) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = PROVIDER_DISPLAY[name] || name;
+    providerSelect.appendChild(opt);
+  }
+  providerSelect.value = providers.includes(selectedProvider) ? selectedProvider : providers[0];
+}
+
+function populateWizardModels(options = {}) {
+  const providerSelect = document.getElementById('wiz-provider');
   const select = document.getElementById('wiz-model');
+  if (!providerSelect || !select) return;
+
+  const chatDefault = getWizardChatDefault();
+  const provider = options.preferChatDefault
+    ? (chatDefault.provider || providerSelect.value || 'ollama-cloud')
+    : (providerSelect.value || chatDefault.provider || 'ollama-cloud');
+  ensureWizardProviderOptions(provider);
+  providerSelect.value = provider;
+
+  const previousModel = select.value;
+  const preferredModel = options.preferChatDefault && provider === chatDefault.provider
+    ? chatDefault.model
+    : previousModel;
   select.innerHTML = '';
 
-  if (modelsData?.providers?.[provider]?.defaultModels) {
-    for (const model of modelsData.providers[provider].defaultModels) {
-      const opt = document.createElement('option');
-      opt.value = model;
-      opt.textContent = model;
-      select.appendChild(opt);
+  const models = getProviderModelList(provider);
+  let selected = false;
+  for (const model of models) {
+    const opt = document.createElement('option');
+    opt.value = model;
+    opt.textContent = model;
+    if (model === preferredModel) {
+      opt.selected = true;
+      selected = true;
     }
-  } else {
-    const fallback = {
-      'ollama-cloud': ['gpt-oss:120b', 'kimi-k2.6', 'qwen3.5:397b', 'deepseek-v4-pro', 'glm-5.2:cloud', 'glm-5.1', 'MiniMax-M3'],
-      'minimax': ['MiniMax-M3'],
-      'anthropic': ['claude-sonnet-4-7', 'claude-opus-4-8'],
-      'openai': ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4-mini'],
-      'openai-codex': ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'],
-      'xai': ['grok-4.3', 'grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning', 'grok-4.20-multi-agent-0309'],
-    };
-    for (const m of (fallback[provider] || ['default'])) {
-      const opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = m;
-      select.appendChild(opt);
-    }
+    select.appendChild(opt);
+  }
+  if (!selected && models.length > 0) {
+    select.value = models[0];
+  }
+
+  const hint = document.getElementById('wiz-model-hint');
+  if (hint) {
+    const providerLabel = PROVIDER_DISPLAY[provider] || provider;
+    hint.textContent = `Used for direct chat with this agent through ${providerLabel}. File ingestion, Query, and cognition keep their recommended defaults until you tune advanced routing.`;
   }
 }
 
