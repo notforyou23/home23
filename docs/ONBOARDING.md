@@ -17,7 +17,7 @@ ollama --version
 ollama pull nomic-embed-text
 ```
 
-Home23 can start without Ollama if you configure cloud embeddings later, but local embeddings are the lowest-friction default.
+Home23 can start without Ollama if you configure an embedding-capable provider such as OpenAI API or Ollama Cloud. A Claude Max or ChatGPT/Codex OAuth login covers chat, but not Home23's embeddings lane. Local Ollama is the lowest-friction companion for users who only have one paid chat subscription.
 
 ## 2. Install
 
@@ -38,6 +38,8 @@ The setup page walks through:
 - starter project/import folders, including Claude/Codex exports, notes, reports, or fresh project directories
 - default provider/model choice
 - live launch
+
+Before large file ingestion, verify the embedding lane: use local Ollama `nomic-embed-text` unless the user has OpenAI API or Ollama Cloud configured for embeddings.
 
 Starter folders are added to the agent's Document Feeder watch paths so supported files flow into the agent's brain as they change.
 

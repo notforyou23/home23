@@ -21,6 +21,15 @@ The right product direction is not "one model everywhere." The right direction i
 
 First-run setup should only ask the user to connect providers and pick the Chat model profile. Everything else should use recommended defaults and be visible later as advanced model routing.
 
+For a user with only one paid LLM subscription, the release story must be explicit:
+
+- Claude Max OAuth or ChatGPT/Codex OAuth can cover chat, but not embeddings.
+- OpenAI API can cover chat and embeddings.
+- Ollama Cloud can cover chat and hosted embeddings when configured as the embedding provider.
+- Any paid chat LLM can pair with free local Ollama `nomic-embed-text` for embeddings.
+
+So the practical v1 minimum is one chat LLM provider plus one embedding lane. The easiest baseline is paid/free chat provider + local Ollama embeddings.
+
 ## Evidence Captured
 
 Screenshots are stored in `docs/audits/model-provider-audit-2026-07-03/screenshots/`:
@@ -96,6 +105,16 @@ Three read-only code explorers also audited the system in parallel:
 
 5. Updated the OpenAI Codex missing-credentials error to point users to Home23 Setup or Settings > Providers instead of `evobrew login`.
    - `src/agent/loop.ts`
+
+6. Wired generated PM2 env to the configured embedding provider instead of hardcoding local Ollama.
+   - `cli/lib/generate-ecosystem.js`
+
+7. Updated memory embedding request parameters to honor `EMBEDDING_MODEL` and `EMBEDDING_DIMENSIONS`.
+   - `engine/src/memory/network-memory.js`
+
+8. Updated onboarding docs to state that one paid chat subscription still needs an embedding lane.
+   - `README.md`
+   - `docs/ONBOARDING.md`
 
 No existing agent configs, provider credentials, or runtime data were modified.
 

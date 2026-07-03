@@ -30,7 +30,7 @@ Four integrated systems, one install:
 - **PM2** — process manager (`npm install -g pm2`)
 - **Python 3** — for the document feeder's binary-format converter (MarkItDown installed automatically by init)
 - **An LLM provider** — at least one of: Ollama Cloud (free), Anthropic, OpenAI, xAI, MiniMax
-- **An embedding provider** — Ollama local (free, recommended), OpenAI, or Ollama Cloud
+- **An embedding provider** — Ollama local (free, recommended), OpenAI API, or Ollama Cloud. A Claude Max or ChatGPT/Codex OAuth subscription covers chat, but it does not by itself provide a standard embeddings endpoint.
 
 ## Install
 
@@ -136,7 +136,7 @@ Channel configuration is per-agent in **Settings → Agents**. Multiple channels
 
 ## Embedding Provider
 
-Your agent's brain uses vector embeddings for semantic memory. Pick one provider and stick with it — switching embedding providers means re-embedding your entire brain.
+Your agent's brain uses vector embeddings for semantic memory and file ingestion. Pick one provider and stick with it — switching embedding providers means re-embedding your entire brain.
 
 **Recommended (free):** Install [Ollama](https://ollama.com) locally and pull `nomic-embed-text`:
 
@@ -149,6 +149,12 @@ This runs entirely on your machine with no API key needed. `node cli/home23.js i
 **Alternatives:**
 - **Ollama Cloud** — same model, hosted (requires Ollama Cloud API key)
 - **OpenAI** — `text-embedding-3-small` (requires OpenAI API key, 1536 dimensions)
+
+If you only have one paid chat subscription, use this rule:
+
+- **Claude Max OAuth or ChatGPT/Codex OAuth:** use that for chat, and use local Ollama for embeddings.
+- **OpenAI API key:** can cover both chat and embeddings.
+- **Ollama Cloud API key:** can cover chat and hosted embeddings when configured as the embedding provider.
 
 ## LLM Providers
 
@@ -166,7 +172,7 @@ Unlike embeddings, you can switch LLM providers freely. Configure providers from
 
 Model aliases are defined in `config/home.yaml` — use short names like `sonnet`, `gpt`, `kimi` instead of full model IDs.
 
-**Minimum setup (free):** Ollama Cloud provides free API access to many models. Use it for both LLM and embeddings to run Home23 with zero cost.
+**Minimum practical setup:** one chat LLM provider plus one embedding provider. The lowest-friction baseline is any paid/free chat provider plus local Ollama `nomic-embed-text` for embeddings.
 
 ## OAuth Sign-in (Anthropic + ChatGPT)
 

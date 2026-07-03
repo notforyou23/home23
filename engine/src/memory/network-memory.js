@@ -83,6 +83,38 @@ class NetworkMemory {
     };
   }
 
+  getEmbeddingModel() {
+    return process.env.EMBEDDING_MODEL || this.config.embedding?.model || 'nomic-embed-text';
+  }
+
+  getEmbeddingDimensions() {
+    const envDims = Number.parseInt(process.env.EMBEDDING_DIMENSIONS || '', 10);
+    if (Number.isFinite(envDims) && envDims > 0) return envDims;
+
+    let dims = this.config.embedding?.dimensions;
+    if (typeof dims === 'object') {
+      dims = dims.default || 512;
+    }
+    return Number.isFinite(Number(dims)) ? Number(dims) : 512;
+  }
+
+  isOllamaEmbeddingEndpoint() {
+    return (process.env.EMBEDDING_PROVIDER || '').includes('ollama')
+      || (process.env.EMBEDDING_BASE_URL || '').includes('11434');
+  }
+
+  buildEmbeddingCreateParams(input) {
+    const createParams = {
+      model: this.getEmbeddingModel(),
+      input,
+    };
+    if (!this.isOllamaEmbeddingEndpoint()) {
+      createParams.encoding_format = 'float';
+      createParams.dimensions = this.getEmbeddingDimensions();
+    }
+    return createParams;
+  }
+
   /**
    * Generate embedding using OpenAI
    * @param {string} text - Text to embed
@@ -123,26 +155,7 @@ class NetworkMemory {
       }
       
       const client = getEmbeddingClient();
-      
-      // Get dimension size from config (support both number and object format)
-      let dims = this.config.embedding.dimensions;
-      if (typeof dims === 'object') {
-        // Legacy support for old multi-dimension config
-        dims = dims.default || 512;
-      }
-      
-      // Ollama doesn't support encoding_format or dimensions params
-      // Only pass them for OpenAI-compatible endpoints
-      const isOllama = (process.env.EMBEDDING_BASE_URL || '').includes('11434');
-      const createParams = {
-        model: this.config.embedding.model,
-        input: text,
-      };
-      if (!isOllama) {
-        createParams.encoding_format = 'float';
-        createParams.dimensions = dims;
-      }
-      const response = await client.embeddings.create(createParams);
+      const response = await client.embeddings.create(this.buildEmbeddingCreateParams(text));
 
       if (!response?.data?.[0]?.embedding) {
         this.logger?.error?.('Embedding API returned invalid response', {
@@ -199,12 +212,6 @@ class NetworkMemory {
     const batchSize = 2048; // OpenAI's max batch size
     const allEmbeddings = [];
     
-    // Get dimension size from config (support both number and object format)
-    let dims = this.config.embedding.dimensions;
-    if (typeof dims === 'object') {
-      dims = dims.default || 512;
-    }
-    
     // Process in batches of 2048
     for (let i = 0; i < texts.length; i += batchSize) {
       const batch = texts.slice(i, i + batchSize);
@@ -226,12 +233,7 @@ class NetworkMemory {
       
       try {
         const client = getEmbeddingClient();
-        const response = await client.embeddings.create({
-          model: this.config.embedding.model,
-          input: processedBatch,  // Array of strings
-          encoding_format: 'float',
-          dimensions: dims
-        });
+        const response = await client.embeddings.create(this.buildEmbeddingCreateParams(processedBatch));
         
         // Sort by index to ensure order matches input
         const embeddings = response.data

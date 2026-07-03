@@ -51,6 +51,19 @@ function makeRewireMemory() {
   return memory;
 }
 
+function restoreEmbeddingEnv(previous) {
+  const entries = {
+    EMBEDDING_PROVIDER: previous.provider,
+    EMBEDDING_BASE_URL: previous.baseUrl,
+    EMBEDDING_MODEL: previous.model,
+    EMBEDDING_DIMENSIONS: previous.dimensions,
+  };
+  for (const [key, value] of Object.entries(entries)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
+
 test('query boosts current state_snapshot above older cue-matched nodes', async () => {
   const memory = makeMemory();
 
@@ -200,5 +213,55 @@ test('rewireSmallWorld does not scan all bridges for each dream bridge insertion
     assert.ok(rewired > 0);
   } finally {
     Math.random = originalRandom;
+  }
+});
+
+test('embedding request params honor environment-selected provider model and dimensions', () => {
+  const previous = {
+    provider: process.env.EMBEDDING_PROVIDER,
+    baseUrl: process.env.EMBEDDING_BASE_URL,
+    model: process.env.EMBEDDING_MODEL,
+    dimensions: process.env.EMBEDDING_DIMENSIONS,
+  };
+  try {
+    process.env.EMBEDDING_PROVIDER = 'openai';
+    process.env.EMBEDDING_BASE_URL = 'https://api.openai.com/v1';
+    process.env.EMBEDDING_MODEL = 'text-embedding-3-small';
+    process.env.EMBEDDING_DIMENSIONS = '1536';
+
+    const memory = makeMemory();
+    const params = memory.buildEmbeddingCreateParams('hello');
+
+    assert.equal(params.model, 'text-embedding-3-small');
+    assert.equal(params.input, 'hello');
+    assert.equal(params.encoding_format, 'float');
+    assert.equal(params.dimensions, 1536);
+  } finally {
+    restoreEmbeddingEnv(previous);
+  }
+});
+
+test('embedding request params avoid OpenAI-only options for Ollama embeddings', () => {
+  const previous = {
+    provider: process.env.EMBEDDING_PROVIDER,
+    baseUrl: process.env.EMBEDDING_BASE_URL,
+    model: process.env.EMBEDDING_MODEL,
+    dimensions: process.env.EMBEDDING_DIMENSIONS,
+  };
+  try {
+    process.env.EMBEDDING_PROVIDER = 'ollama-local';
+    process.env.EMBEDDING_BASE_URL = 'http://127.0.0.1:11434/v1';
+    process.env.EMBEDDING_MODEL = 'nomic-embed-text';
+    process.env.EMBEDDING_DIMENSIONS = '768';
+
+    const memory = makeMemory();
+    const params = memory.buildEmbeddingCreateParams(['hello']);
+
+    assert.equal(params.model, 'nomic-embed-text');
+    assert.deepEqual(params.input, ['hello']);
+    assert.equal(params.encoding_format, undefined);
+    assert.equal(params.dimensions, undefined);
+  } finally {
+    restoreEmbeddingEnv(previous);
   }
 });

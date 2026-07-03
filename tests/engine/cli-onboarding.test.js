@@ -1,10 +1,14 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import yaml from 'js-yaml';
 import { runAgentCreate } from '../../cli/lib/agent-create.js';
+import { generateEcosystem } from '../../cli/lib/generate-ecosystem.js';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 
 function makeHome23Root() {
   const root = mkdtempSync(join(tmpdir(), 'home23-cli-onboarding-'));
@@ -12,6 +16,9 @@ function makeHome23Root() {
   mkdirSync(join(root, 'cli', 'templates'), { recursive: true });
   mkdirSync(join(root, 'starter-project'), { recursive: true });
   mkdirSync(join(root, 'claude-export'), { recursive: true });
+  if (existsSync(join(process.cwd(), 'node_modules'))) {
+    symlinkSync(join(process.cwd(), 'node_modules'), join(root, 'node_modules'), 'dir');
+  }
 
   writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '1.0.0' }, null, 2), 'utf8');
   writeFileSync(join(root, 'config', 'home.yaml'), yaml.dump({ home: { name: 'home23', version: '1.0.0' } }), 'utf8');
@@ -112,6 +119,53 @@ test('agent create auto-heals an existing missing primary by port order', async 
     const manifest = JSON.parse(readFileSync(join(root, 'config', 'agents.json'), 'utf8'));
     assert.equal(manifest.find((agent) => agent.name === 'first')?.isPrimary, true);
     assert.equal(manifest.find((agent) => agent.name === 'new-agent')?.isPrimary, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('ecosystem generation uses configured embedding provider instead of hardcoded local Ollama', () => {
+  const root = makeHome23Root();
+  mkdirSync(join(root, 'instances', 'ada'), { recursive: true });
+  writeFileSync(
+    join(root, 'instances', 'ada', 'config.yaml'),
+    yaml.dump({ agent: { owner: { name: 'JTR' }, timezone: 'America/New_York' }, ports: { engine: 5001, dashboard: 5002, mcp: 5003, bridge: 5004 } }),
+    'utf8'
+  );
+  writeFileSync(
+    join(root, 'config', 'home.yaml'),
+    yaml.dump({
+      home: { name: 'home23', version: '1.0.0' },
+      providers: {
+        openai: {},
+        'ollama-local': { baseUrl: 'http://127.0.0.1:11434' },
+      },
+      embeddings: {
+        providers: [
+          { provider: 'openai', model: 'text-embedding-3-small', dimensions: 1536 },
+        ],
+      },
+    }),
+    'utf8'
+  );
+  writeFileSync(
+    join(root, 'config', 'secrets.yaml'),
+    yaml.dump({ providers: { openai: { apiKey: 'sk-test-embedding' } }, cosmo23: { encryptionKey: 'test-key' } }),
+    'utf8'
+  );
+
+  try {
+    generateEcosystem(root);
+    const ecosystemPath = join(root, 'ecosystem.config.cjs');
+    delete require.cache[ecosystemPath];
+    const ecosystem = require(ecosystemPath);
+    const app = ecosystem.apps.find((entry) => entry.name === 'home23-ada');
+
+    assert.equal(app.env.EMBEDDING_PROVIDER, 'openai');
+    assert.equal(app.env.EMBEDDING_BASE_URL, 'https://api.openai.com/v1');
+    assert.equal(app.env.EMBEDDING_API_KEY, 'sk-test-embedding');
+    assert.equal(app.env.EMBEDDING_MODEL, 'text-embedding-3-small');
+    assert.equal(app.env.EMBEDDING_DIMENSIONS, '1536');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
