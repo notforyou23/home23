@@ -2,6 +2,24 @@ const express = require('express');
 const path = require('path');
 const { assertPm2AgentIdentity } = require('../../../scripts/lib/pm2-agent-identity-guard.cjs');
 assertPm2AgentIdentity({ root: path.join(__dirname, '..', '..', '..') });
+
+/**
+ * Open a file or folder in the OS default app WITHOUT invoking a shell.
+ * The target path is passed as a discrete argv entry, so shell metacharacters
+ * in the path ("$(...)", backticks, quotes) are inert rather than executed.
+ */
+function openWithSystemApp(targetPath, callback) {
+  const { execFile } = require('child_process');
+  if (process.platform === 'darwin') {
+    execFile('open', [targetPath], callback);
+  } else if (process.platform === 'win32') {
+    // cmd's `start` needs an (empty) title arg; execFile avoids shell parsing
+    // of targetPath itself.
+    execFile('cmd', ['/c', 'start', '', targetPath], callback);
+  } else {
+    execFile('xdg-open', [targetPath], callback);
+  }
+}
 const fs = require('fs').promises;
 const { createReadStream } = require('fs');
 const { createInterface } = require('readline');
@@ -9401,25 +9419,24 @@ You are empowered to explore and understand. The user trusts you to discover the
           return res.status(400).json({ error: 'filePath required' });
         }
         
-        // Security: Only allow opening files in workspace
+        // Security: Only allow opening files in workspace. Require a path
+        // separator boundary so a sibling dir ("<root>-evil") cannot pass.
         const resolvedPath = path.resolve(filePath);
         const workspaceRoot = path.resolve(path.join(__dirname, '..', '..'));
-        
-        if (!resolvedPath.startsWith(workspaceRoot)) {
+
+        if (resolvedPath !== workspaceRoot && !resolvedPath.startsWith(workspaceRoot + path.sep)) {
           return res.status(403).json({ error: 'Access denied: file outside workspace' });
         }
-        
-        // Open file using system default app
-        const { exec } = require('child_process');
-        const command = process.platform === 'darwin' ? 'open' : 
-                       process.platform === 'win32' ? 'start' : 'xdg-open';
-        
-        exec(`${command} "${resolvedPath}"`, (error) => {
+
+        // Open file using system default app. Use execFile with an argument
+        // array (no shell) so a path containing shell metacharacters like
+        // "$(...)" or backticks is passed literally instead of executed.
+        openWithSystemApp(resolvedPath, (error) => {
           if (error) {
             console.error('Failed to open file:', error);
           }
         });
-        
+
         res.json({ success: true });
         
       } catch (error) {
@@ -9439,14 +9456,15 @@ You are empowered to explore and understand. The user trusts you to discover the
           return res.status(400).json({ error: 'filePath required' });
         }
         
-        // Security: Only allow reading files in workspace
+        // Security: Only allow reading files in workspace. Require a path
+        // separator boundary so a sibling dir ("<root>-evil") cannot pass.
         const resolvedPath = path.resolve(filePath);
         const workspaceRoot = path.resolve(path.join(__dirname, '..', '..'));
-        
-        if (!resolvedPath.startsWith(workspaceRoot)) {
+
+        if (resolvedPath !== workspaceRoot && !resolvedPath.startsWith(workspaceRoot + path.sep)) {
           return res.status(403).json({ error: 'Access denied: file outside workspace' });
         }
-        
+
         // Read file
         const fsSync = require('fs');
         if (!fsSync.existsSync(resolvedPath)) {
@@ -9479,31 +9497,29 @@ You are empowered to explore and understand. The user trusts you to discover the
         }
         
         // Resolve relative to workspace
-        const workspaceRoot = path.join(__dirname, '..', '..');
+        const workspaceRoot = path.resolve(path.join(__dirname, '..', '..'));
         const resolvedPath = path.resolve(workspaceRoot, folderPath);
-        
-        // Security: Only allow opening folders in workspace
-        if (!resolvedPath.startsWith(path.resolve(workspaceRoot))) {
+
+        // Security: Only allow opening folders in workspace. Require a path
+        // separator boundary so a sibling dir ("<root>-evil") cannot pass.
+        if (resolvedPath !== workspaceRoot && !resolvedPath.startsWith(workspaceRoot + path.sep)) {
           return res.status(403).json({ error: 'Access denied: folder outside workspace' });
         }
-        
+
         // Check if folder exists
         const fsSync = require('fs');
         if (!fsSync.existsSync(resolvedPath)) {
           return res.status(404).json({ error: 'Folder not found' });
         }
-        
-        // Open folder using system command
-        const { exec } = require('child_process');
-        const command = process.platform === 'darwin' ? 'open' : 
-                       process.platform === 'win32' ? 'explorer' : 'xdg-open';
-        
-        exec(`${command} "${resolvedPath}"`, (error) => {
+
+        // Open folder using system command. Use execFile with an argument
+        // array (no shell) so shell metacharacters in the path are inert.
+        openWithSystemApp(resolvedPath, (error) => {
           if (error) {
             console.error('Failed to open folder:', error);
           }
         });
-        
+
         console.log(`📁 Opening folder: ${resolvedPath}`);
         res.json({ success: true });
         
