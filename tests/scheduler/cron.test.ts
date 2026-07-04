@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { CronScheduler, type CronJob, type JobResult } from '../../src/scheduler/cron.ts';
+import { CronScheduler, nextMatch, type CronJob, type JobResult } from '../../src/scheduler/cron.ts';
 
 function readJsonl(path: string): any[] {
   if (!existsSync(path)) return [];
@@ -398,4 +398,13 @@ test('only one scheduler instance owns a runtime cron lease at a time', async ()
   await (third as any).tick();
 
   assert.deepEqual(calls, ['first:job-1', 'third:job-1']);
+});
+
+test('nextMatch rejects a zero step instead of looping forever', () => {
+  // "*/0" would make the field expansion loop never advance — an infinite
+  // loop that hangs the scheduler tick and the whole harness event loop.
+  assert.throws(() => nextMatch('*/0 * * * *', new Date(), 'America/New_York'), /step must be a positive integer/);
+  // A valid step still resolves.
+  const next = nextMatch('*/15 * * * *', new Date('2026-01-01T00:00:00Z'), 'UTC');
+  assert.ok(next instanceof Date && !Number.isNaN(next.getTime()));
 });

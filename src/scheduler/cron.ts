@@ -173,6 +173,12 @@ function parseCronField(field: string, min: number, max: number): CronField {
       // */N or N/M
       const [base, stepStr] = part.split('/');
       const step = parseInt(stepStr!, 10);
+      // A non-positive or non-numeric step would make the loop below never
+      // advance — an infinite loop that hangs the scheduler tick (and, since
+      // the tick runs on the harness event loop, the whole process). Reject it.
+      if (!Number.isFinite(step) || step <= 0) {
+        throw new Error(`Invalid cron step "/${stepStr}" in field "${field}" (step must be a positive integer)`);
+      }
       let start = min;
       if (base !== '*') {
         start = parseInt(base!, 10);

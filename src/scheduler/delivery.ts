@@ -34,19 +34,25 @@ export class DeliveryManager {
    * Deliver a job result to the configured channel(s).
    * Respects job.delivery.mode — if 'none' or missing, does nothing.
    * Supports profile (expanded from the profiles map), channels[] (multi), and channel/to (single).
+   *
+   * Returns `{ error }` describing the last delivery failure (or null on success /
+   * nothing-to-deliver). Callers MUST read this return value rather than the
+   * `lastDeliveryError` field: the scheduler fires jobs concurrently, so a shared
+   * mutable field is racy — one job's failure could be attributed to another.
    */
-  async deliver(job: CronJob, result: JobResult): Promise<void> {
+  async deliver(job: CronJob, result: JobResult): Promise<{ error: string | null }> {
+    let deliveryError: string | null = null;
     if (!job.delivery || job.delivery.mode === 'none') {
-      return;
+      return { error: null };
     }
 
     if (job.delivery.mode === 'failures' && result.status !== 'error') {
-      return;
+      return { error: null };
     }
 
     const text = this.formatText(job, result);
     if (!text) {
-      return;
+      return { error: null };
     }
 
     const targets: Array<{ channel: string; to: string }> = [];
@@ -68,7 +74,7 @@ export class DeliveryManager {
 
     if (targets.length === 0) {
       console.warn(`[delivery] Job ${job.id} has delivery mode "${job.delivery.mode}" but no channel configured`);
-      return;
+      return { error: null };
     }
 
     for (const target of targets) {
@@ -97,12 +103,18 @@ export class DeliveryManager {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         console.error(`[delivery] Failed to deliver job ${job.id} to ${target.channel}:${target.to}: ${msg}`);
+        deliveryError = msg;
         this.lastDeliveryError = msg;
       }
     }
+
+    return { error: deliveryError };
   }
 
-  /** Last delivery error from the most recent deliver() call. Null if success or no attempt. */
+  /**
+   * Last delivery error observed, for diagnostics only. NOT safe to read across
+   * concurrent deliver() calls — use the value returned by deliver() instead.
+   */
   lastDeliveryError: string | null = null;
 
   private appendDeliveryLedgerEvent(

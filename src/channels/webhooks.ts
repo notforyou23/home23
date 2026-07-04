@@ -13,7 +13,7 @@
 import express, { type Request, type Response, type Application } from 'express';
 import type { Server } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import type { ChannelAdapter, IncomingMessage, OutgoingResponse } from './router.js';
 
 // ─── Config ──────────────────────────────────────────────────
@@ -469,6 +469,15 @@ export class WebhookServer implements ChannelAdapter {
   }
 
   private handleMedia(req: Request, res: Response): void {
+    // Auth-gate like every other session-API handler. Without this, the
+    // endpoint served any file under process.cwd() (the project root, which
+    // contains config/secrets.yaml) to unauthenticated callers.
+    const authHeader = req.headers.authorization;
+    if (!authHeader || authHeader !== `Bearer ${this.config.token}`) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const filePath = req.query.path;
     if (!filePath || typeof filePath !== 'string') {
       res.status(400).json({ error: 'path required' });
@@ -476,7 +485,9 @@ export class WebhookServer implements ChannelAdapter {
     }
 
     const resolvedPath = resolve(filePath);
-    if (!resolvedPath.startsWith(process.cwd()) && !resolvedPath.startsWith('/tmp/')) {
+    // Require a trailing separator so a sibling directory (e.g. "<cwd>-evil")
+    // cannot satisfy the prefix check.
+    if (!isWithin(resolvedPath, process.cwd()) && !isWithin(resolvedPath, '/tmp')) {
       res.status(403).json({ error: 'Access denied' });
       return;
     }
@@ -499,4 +510,13 @@ export class WebhookServer implements ChannelAdapter {
       url: `${this.config.path}/media?path=${encodeURIComponent(item.path)}`.replace(/\/+/g, '/'),
     }));
   }
+}
+
+/**
+ * True if `target` is `root` itself or a descendant of it. Uses a normalized
+ * separator boundary so "/a/b" is not considered inside "/a/b-sibling".
+ */
+function isWithin(target: string, root: string): boolean {
+  const normalizedRoot = resolve(root);
+  return target === normalizedRoot || target.startsWith(normalizedRoot + sep);
 }

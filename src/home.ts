@@ -21,7 +21,7 @@ import { createRequire } from 'node:module';
 // resolves via callback, leaving the event loop free.
 const execAsync = promisify(exec);
 setDefaultResultOrder('ipv4first');
-import { resolve, join } from 'node:path';
+import { resolve, join, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { loadConfig } from './config.js';
 import { CompactionManager } from './agent/compaction.js';
@@ -725,11 +725,10 @@ async function main(): Promise<void> {
             const durationMs = Date.now() - startMs;
 
             const jobResult: JobResult = { status: 'ok', response: result.text, durationMs };
-            delivery.lastDeliveryError = null;
-            await delivery.deliver(job, jobResult);
-            if (delivery.lastDeliveryError) {
+            const { error: deliveryError } = await delivery.deliver(job, jobResult);
+            if (deliveryError) {
               jobResult.status = 'error';
-              jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
+              jobResult.error = `Delivery failed: ${deliveryError}`;
             }
             await assimilateCronResult(job, jobResult);
             return jobResult;
@@ -752,11 +751,10 @@ async function main(): Promise<void> {
           const durationMs = Date.now() - startMs;
 
           const jobResult: JobResult = { status: 'ok', response: stdout.trim(), durationMs };
-          delivery.lastDeliveryError = null;
-          await delivery.deliver(job, jobResult);
-          if (delivery.lastDeliveryError) {
+          const { error: deliveryError } = await delivery.deliver(job, jobResult);
+          if (deliveryError) {
             jobResult.status = 'error';
-            jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
+            jobResult.error = `Delivery failed: ${deliveryError}`;
           }
           await assimilateCronResult(job, jobResult);
           return jobResult;
@@ -771,11 +769,10 @@ async function main(): Promise<void> {
           const durationMs = Date.now() - startMs;
 
           const jobResult: JobResult = { status: 'ok', response: result.answer, durationMs };
-          delivery.lastDeliveryError = null;
-          await delivery.deliver(job, jobResult);
-          if (delivery.lastDeliveryError) {
+          const { error: deliveryError } = await delivery.deliver(job, jobResult);
+          if (deliveryError) {
             jobResult.status = 'error';
-            jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
+            jobResult.error = `Delivery failed: ${deliveryError}`;
           }
           await assimilateCronResult(job, jobResult);
           return jobResult;
@@ -1450,7 +1447,14 @@ async function main(): Promise<void> {
     }
 
     const resolved = resolve(filePath);
-    if (!resolved.startsWith(PROJECT_ROOT) && !resolved.startsWith('/tmp/')) {
+    // Scope to this agent's instance dir (where all chat media — uploads,
+    // generated images, TTS, downloads — lives) plus /tmp. Previously this
+    // allowed the entire project root, which exposed config/secrets.yaml and
+    // source to any caller. The separator boundary stops sibling-dir escapes
+    // like "<instance>-evil".
+    const withinInstance = resolved === INSTANCE_DIR || resolved.startsWith(INSTANCE_DIR + sep);
+    const withinTmp = resolved.startsWith('/tmp' + sep);
+    if (!withinInstance && !withinTmp) {
       res.status(403).json({ error: 'Access denied' });
       return;
     }
