@@ -1961,3 +1961,580 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* Glass Light settings surface
+   Explicit page scoping keeps this dense control surface from changing the
+   dashboard, standalone Chat, or first-run pages that share base tokens. */
+body.h23-settings-page {
+  --glass-primary: var(--h23-glass-card);
+  --glass-secondary: var(--h23-glass-input);
+  --glass-border: var(--h23-hairline);
+  --bg-gradient: var(--h23-bg);
+  --text-primary: var(--h23-text-primary);
+  --text-secondary: var(--h23-text-secondary);
+  --text-muted: var(--h23-text-muted-aa);
+  --text-dim: var(--h23-text-muted);
+  --accent-blue: var(--h23-accent);
+  --accent-green: var(--h23-green-aa);
+  --accent-orange: var(--h23-amber-aa);
+  --accent-red: var(--h23-red-aa);
+  --shadow-glass: var(--h23-shadow-card);
+  --radius-sm: 10px;
+  --radius-md: var(--h23-radius-card);
+  --radius-lg: var(--h23-radius-panel);
+  color: var(--h23-text-body);
+  font-family: var(--h23-font-ui);
+  background: var(--h23-bg-wash-1), var(--h23-bg-wash-2), var(--h23-bg);
+  background-attachment: fixed;
+}
+
+body.h23-settings-page::before {
+  background: none;
+}
+
+body.h23-settings-page #particles-js {
+  opacity: 0.12;
+}
+
+body.h23-settings-page :is(button, input, select, textarea) {
+  font: inherit;
+}
+
+body.h23-settings-page :is(a, button, input, select, textarea, summary):focus-visible {
+  outline: 3px solid var(--h23-accent-tint-border);
+  outline-offset: 2px;
+}
+
+body.h23-settings-page .h23s-app-shell {
+  width: min(1460px, 100%);
+  padding: 28px 28px 44px;
+  gap: 22px;
+}
+
+body.h23-settings-page .h23s-topbar {
+  min-height: 66px;
+  padding: 8px 10px;
+  border: 1px solid var(--h23-glass-border);
+  border-radius: var(--h23-radius-panel);
+  background: var(--h23-glass-panel);
+  box-shadow: var(--h23-shadow-panel);
+  backdrop-filter: blur(var(--h23-glass-blur-panel));
+  -webkit-backdrop-filter: blur(var(--h23-glass-blur-panel));
+}
+
+body.h23-settings-page .h23s-home-button {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--h23-radius-input);
+  color: var(--h23-accent);
+  border: 1px solid var(--h23-accent-tint-border);
+  background: var(--h23-accent-tint);
+  box-shadow: none;
+}
+
+body.h23-settings-page .h23s-home-button:hover {
+  color: #fff;
+  border-color: var(--h23-accent);
+  background: var(--h23-accent);
+}
+
+body.h23-settings-page .h23s-kicker,
+body.h23-settings-page .h23s-sidebar-kicker,
+body.h23-settings-page .h23s-surface-heading h2 + .h23s-scope-chip {
+  color: var(--h23-accent);
+}
+
+body.h23-settings-page .h23s-kicker,
+body.h23-settings-page .h23s-sidebar-kicker,
+body.h23-settings-page .h23s-field label,
+body.h23-settings-page .h23s-field-label,
+body.h23-settings-page .h23s-table th,
+body.h23-settings-page .h23s-worker-guide-kicker {
+  font-family: var(--h23-font-mono);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+body.h23-settings-page .h23s-page-title,
+body.h23-settings-page .h23s-panel-title,
+body.h23-settings-page .h23s-section-title,
+body.h23-settings-page .h23s-surface-heading h2,
+body.h23-settings-page .h23s-onboarding-title,
+body.h23-settings-page .h23s-agent-name,
+body.h23-settings-page .h23s-builder-title,
+body.h23-settings-page .h23s-config-card-title,
+body.h23-settings-page .h23s-layout-title,
+body.h23-settings-page .h23s-provider-name,
+body.h23-settings-page .h23s-onboarding-summary-value,
+body.h23-settings-page .h23s-worker-guide-card h4 {
+  color: var(--h23-text-heading);
+}
+
+body.h23-settings-page .h23s-page-title {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+body.h23-settings-page .h23s-mode-pill,
+body.h23-settings-page .h23s-status-pill,
+body.h23-settings-page .h23s-scope-chip,
+body.h23-settings-page .h23s-badge,
+body.h23-settings-page .h23s-oauth-badge,
+body.h23-settings-page .h23s-agent-badge {
+  border-radius: var(--h23-radius-pill);
+  box-shadow: var(--h23-shadow-pill);
+}
+
+body.h23-settings-page .h23s-mode-pill {
+  min-height: 34px;
+  padding: 0 15px;
+  color: var(--h23-accent);
+  border-color: var(--h23-accent-tint-border);
+  background: var(--h23-accent-tint);
+  font-family: var(--h23-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+body.h23-settings-page .h23s-back-link,
+body.h23-settings-page .h23s-status-pill {
+  min-height: 42px;
+  border-radius: var(--h23-radius-pill);
+}
+
+body.h23-settings-page .h23s-back-link {
+  color: var(--h23-text-secondary);
+  border-color: var(--h23-hairline);
+  background: rgba(255, 255, 255, 0.48);
+}
+
+body.h23-settings-page .h23s-back-link:hover {
+  color: var(--h23-accent);
+  border-color: var(--h23-accent-tint-border);
+  background: var(--h23-hover-card);
+}
+
+body.h23-settings-page .h23s-status-pill {
+  color: var(--h23-green-aa);
+  border: 1px solid rgba(30, 158, 111, 0.18);
+  background: rgba(30, 158, 111, 0.08);
+}
+
+body.h23-settings-page .h23s-settings-layout {
+  grid-template-columns: 264px minmax(0, 1fr);
+  gap: var(--h23-gap);
+}
+
+body.h23-settings-page .h23s-config-sidebar {
+  top: 16px;
+  gap: 18px;
+  padding: 22px 18px;
+  border-radius: var(--h23-radius-panel);
+  border: 1px solid var(--h23-glass-border);
+  background: var(--h23-glass-panel);
+  box-shadow: var(--h23-shadow-panel);
+  backdrop-filter: blur(var(--h23-glass-blur-panel));
+  -webkit-backdrop-filter: blur(var(--h23-glass-blur-panel));
+}
+
+body.h23-settings-page .h23s-sidebar-copy p,
+body.h23-settings-page .h23s-panel-desc,
+body.h23-settings-page .h23s-oauth-desc,
+body.h23-settings-page .h23s-oauth-subdesc,
+body.h23-settings-page .h23s-config-card-subtitle,
+body.h23-settings-page .h23s-agent-meta,
+body.h23-settings-page .h23s-hint,
+body.h23-settings-page .h23s-inline-note,
+body.h23-settings-page .h23s-worker-guide p,
+body.h23-settings-page .h23s-worker-empty {
+  color: var(--h23-text-secondary);
+}
+
+body.h23-settings-page .h23s-tabs {
+  gap: 6px;
+}
+
+body.h23-settings-page .h23s-tab {
+  min-height: 42px;
+  color: var(--h23-text-secondary);
+  border-color: transparent;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
+  font-weight: 600;
+}
+
+body.h23-settings-page .h23s-tab:hover {
+  color: var(--h23-text-primary);
+  border-color: var(--h23-hairline);
+  background: var(--h23-hover-row);
+  transform: none;
+}
+
+body.h23-settings-page .h23s-tab.active {
+  color: var(--h23-accent);
+  border-color: var(--h23-accent-tint-border);
+  background: var(--h23-accent-tint);
+  box-shadow: none;
+}
+
+body.h23-settings-page .h23s-tab-icon {
+  color: var(--h23-text-muted-aa);
+}
+
+body.h23-settings-page .h23s-tab.active .h23s-tab-icon {
+  color: var(--h23-accent);
+}
+
+body.h23-settings-page .h23s-scope-chip.scope-global {
+  color: var(--h23-accent);
+  border-color: var(--h23-accent-tint-border);
+  background: var(--h23-accent-tint);
+}
+
+body.h23-settings-page .h23s-scope-chip.scope-agent {
+  color: var(--h23-green-aa);
+  border-color: rgba(30, 158, 111, 0.2);
+  background: rgba(30, 158, 111, 0.08);
+}
+
+body.h23-settings-page .h23s-scope-chip.scope-mixed {
+  color: var(--h23-amber-aa);
+  border-color: rgba(217, 118, 43, 0.2);
+  background: rgba(217, 118, 43, 0.08);
+}
+
+body.h23-settings-page .h23s-scope-chip.scope-roster {
+  color: #7654b5;
+  border-color: rgba(118, 84, 181, 0.2);
+  background: rgba(118, 84, 181, 0.08);
+}
+
+body.h23-settings-page .h23s-main {
+  gap: var(--h23-gap);
+}
+
+body.h23-settings-page .h23s-surface-hero,
+body.h23-settings-page .h23s-panel,
+body.h23-settings-page .h23s-onboarding {
+  border: 1px solid var(--h23-glass-border);
+  border-radius: var(--h23-radius-panel);
+  background: var(--h23-glass-panel);
+  box-shadow: var(--h23-shadow-panel);
+  backdrop-filter: blur(var(--h23-glass-blur-panel));
+  -webkit-backdrop-filter: blur(var(--h23-glass-blur-panel));
+}
+
+body.h23-settings-page .h23s-panel {
+  background: var(--h23-glass-panel);
+}
+
+body.h23-settings-page .h23s-surface-hero {
+  padding: 22px 24px;
+}
+
+body.h23-settings-page .h23s-surface-icon {
+  color: var(--h23-accent);
+  border-color: var(--h23-accent-tint-border);
+  background: var(--h23-accent-tint);
+  box-shadow: none;
+}
+
+body.h23-settings-page .h23s-surface-title-row p,
+body.h23-settings-page #settings-scope-kicker,
+body.h23-settings-page #settings-scope-summary {
+  color: var(--h23-text-secondary);
+}
+
+body.h23-settings-page #settings-scope-kicker {
+  color: var(--h23-text-heading);
+}
+
+body.h23-settings-page #settings-agent-select-field {
+  border-color: var(--h23-hairline);
+}
+
+body.h23-settings-page .h23s-scope-card,
+body.h23-settings-page .h23s-section,
+body.h23-settings-page .h23s-provider-card,
+body.h23-settings-page .h23s-oauth-card,
+body.h23-settings-page .h23s-agent-card,
+body.h23-settings-page .h23s-config-card,
+body.h23-settings-page .h23s-builder-card,
+body.h23-settings-page .h23s-readiness-card,
+body.h23-settings-page .h23s-model-plan,
+body.h23-settings-page .h23s-layout-row,
+body.h23-settings-page .h23s-worker-guide-card,
+body.h23-settings-page .h23s-worker-item,
+body.h23-settings-page .h23s-worker-run,
+body.h23-settings-page .h23s-wizard,
+body.h23-settings-page .h23s-disclosure,
+body.h23-settings-page .h23s-onboarding-details,
+body.h23-settings-page .h23s-onboarding-summary,
+body.h23-settings-page .h23s-onboarding-checklist {
+  color: var(--h23-text-body);
+  border-color: var(--h23-hairline);
+  background: var(--h23-glass-card);
+  box-shadow: var(--h23-shadow-card);
+}
+
+body.h23-settings-page .h23s-panel {
+  padding: 26px 28px 30px;
+}
+
+body.h23-settings-page .h23s-section {
+  border-radius: var(--h23-radius-card);
+}
+
+body.h23-settings-page .h23s-scope-info,
+body.h23-settings-page .h23s-onboarding-step.active .h23s-onboarding-step-num,
+body.h23-settings-page .h23s-wizard-step.active {
+  color: #fff;
+  border-color: var(--h23-accent);
+  background: var(--h23-accent);
+}
+
+body.h23-settings-page .h23s-onboarding-step-num,
+body.h23-settings-page .h23s-wizard-step,
+body.h23-settings-page .h23s-onboarding-step-line {
+  color: var(--h23-text-muted-aa);
+  border-color: var(--h23-input-border);
+  background: rgba(255, 255, 255, 0.68);
+}
+
+body.h23-settings-page .h23s-onboarding-step-label,
+body.h23-settings-page .h23s-onboarding-subtitle,
+body.h23-settings-page .h23s-onboarding-summary-label,
+body.h23-settings-page .h23s-onboarding-gate,
+body.h23-settings-page .h23s-ob-check {
+  color: var(--h23-text-secondary);
+}
+
+body.h23-settings-page .h23s-onboarding-step.active .h23s-onboarding-step-label {
+  color: var(--h23-accent);
+}
+
+body.h23-settings-page .h23s-ob-check.complete,
+body.h23-settings-page .h23s-onboarding-gate.ready,
+body.h23-settings-page .h23s-onboarding-launch-status.success {
+  color: var(--h23-green-aa);
+}
+
+body.h23-settings-page :is(input, select, textarea) {
+  color: var(--h23-text-primary);
+  border: 1px solid var(--h23-input-border);
+  border-radius: var(--h23-radius-input);
+  background: var(--h23-glass-input);
+  box-shadow: inset 0 1px 2px rgba(30, 45, 70, 0.035);
+}
+
+body.h23-settings-page :is(input, select, textarea):focus {
+  border-color: var(--h23-accent);
+  box-shadow: 0 0 0 3px var(--h23-accent-tint);
+}
+
+body.h23-settings-page :is(input, textarea)::placeholder {
+  color: var(--h23-text-muted);
+}
+
+body.h23-settings-page input[type="checkbox"],
+body.h23-settings-page input[type="radio"] {
+  accent-color: var(--h23-accent);
+}
+
+body.h23-settings-page :is(.h23s-btn-primary, .h23s-btn-launch) {
+  color: #fff;
+  border-color: var(--h23-accent);
+  background: var(--h23-accent);
+  box-shadow: var(--h23-shadow-accent-btn);
+}
+
+body.h23-settings-page :is(.h23s-btn-primary, .h23s-btn-launch):hover {
+  background: #356fd0;
+}
+
+body.h23-settings-page :is(.h23s-btn-secondary, .h23s-btn-icon) {
+  color: var(--h23-text-secondary);
+  border-color: var(--h23-input-border);
+  background: rgba(255, 255, 255, 0.66);
+}
+
+body.h23-settings-page :is(.h23s-btn-secondary, .h23s-btn-icon):hover {
+  color: var(--h23-accent);
+  border-color: var(--h23-accent-tint-border);
+  background: var(--h23-hover-card);
+}
+
+body.h23-settings-page .h23s-layout-quick-actions button:hover {
+  color: var(--h23-accent);
+}
+
+body.h23-settings-page .h23s-btn-danger {
+  color: var(--h23-red-aa);
+  border-color: rgba(181, 63, 63, 0.2);
+  background: rgba(201, 79, 79, 0.08);
+}
+
+body.h23-settings-page :is(.h23s-btn-primary, .h23s-btn-secondary, .h23s-btn-danger, .h23s-btn-icon):disabled {
+  opacity: 0.48;
+  box-shadow: none;
+}
+
+body.h23-settings-page .h23s-table {
+  border-color: var(--h23-hairline);
+  background: rgba(255, 255, 255, 0.38);
+}
+
+body.h23-settings-page .h23s-table :is(th, td) {
+  color: var(--h23-text-body);
+  border-color: var(--h23-hairline);
+}
+
+body.h23-settings-page .h23s-table th {
+  color: var(--h23-text-muted-aa);
+  background: rgba(255, 255, 255, 0.46);
+}
+
+body.h23-settings-page .h23s-table tr:hover td {
+  background: var(--h23-hover-row);
+}
+
+body.h23-settings-page :is(code, pre, .h23s-ports-preview, .h23s-action-output, .h23s-worker-commands code) {
+  color: var(--h23-text-body);
+  border-color: var(--h23-hairline);
+  background: rgba(245, 247, 250, 0.88);
+  font-family: var(--h23-font-mono);
+}
+
+body.h23-settings-page .h23s-dropzone {
+  color: var(--h23-text-secondary);
+  border-color: var(--h23-accent-tint-border);
+  background: rgba(62, 123, 224, 0.045);
+}
+
+body.h23-settings-page .h23s-dropzone:hover,
+body.h23-settings-page .h23s-dropzone.dragover {
+  border-color: var(--h23-accent);
+  background: var(--h23-accent-tint);
+}
+
+body.h23-settings-page .h23s-badge.custom {
+  color: var(--h23-green-aa);
+  border-color: rgba(30, 158, 111, 0.2);
+  background: rgba(30, 158, 111, 0.08);
+}
+
+body.h23-settings-page .h23s-worker-guide-kicker {
+  color: var(--h23-green-aa);
+}
+
+body.h23-settings-page .h23s-worker-guide-columns strong,
+body.h23-settings-page :is(.h23s-worker-item, .h23s-worker-run) strong {
+  color: var(--h23-text-heading);
+}
+
+body.h23-settings-page .h23s-worker-guide-columns ul,
+body.h23-settings-page :is(.h23s-worker-item, .h23s-worker-run) :is(span, time, p) {
+  color: var(--h23-text-secondary);
+}
+
+body.h23-settings-page .h23s-status-dot.ok,
+body.h23-settings-page .h23s-oauth-connected,
+body.h23-settings-page .h23s-save-status.success {
+  color: var(--h23-green-aa);
+}
+
+body.h23-settings-page .h23s-status-dot.fail,
+body.h23-settings-page .h23s-oauth-expired,
+body.h23-settings-page .h23s-save-status.error {
+  color: var(--h23-red-aa);
+}
+
+body.h23-settings-page .h23s-oauth-disconnected,
+body.h23-settings-page .h23s-save-status,
+body.h23-settings-page .h23s-status {
+  color: var(--h23-text-muted-aa);
+}
+
+body.h23-settings-page [style*="background:rgba(0,0,0"],
+body.h23-settings-page [style*="background: rgba(0, 0, 0"] {
+  color: var(--h23-text-body) !important;
+  border-color: var(--h23-hairline) !important;
+  background: rgba(255, 255, 255, 0.48) !important;
+}
+
+body.h23-settings-page [style*="color:#fff"],
+body.h23-settings-page [style*="color: #fff"] {
+  color: var(--h23-text-heading) !important;
+}
+
+@media (max-width: 1120px) {
+  body.h23-settings-page .h23s-settings-layout {
+    grid-template-columns: 1fr;
+  }
+
+  body.h23-settings-page .h23s-config-sidebar {
+    position: static;
+  }
+
+  body.h23-settings-page .h23s-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  body.h23-settings-page .h23s-app-shell {
+    padding: 10px 10px 24px;
+  }
+
+  body.h23-settings-page .h23s-topbar {
+    padding: 14px;
+  }
+
+  body.h23-settings-page .h23s-title-cluster {
+    gap: 10px;
+  }
+
+  body.h23-settings-page .h23s-mode-pill {
+    width: fit-content;
+  }
+
+  body.h23-settings-page .h23s-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  body.h23-settings-page .h23s-panel,
+  body.h23-settings-page .h23s-surface-hero,
+  body.h23-settings-page .h23s-onboarding {
+    padding: 20px 16px 22px;
+  }
+}
+
+@media (max-width: 430px) {
+  body.h23-settings-page .h23s-tabs {
+    grid-template-columns: 1fr;
+  }
+
+  body.h23-settings-page .h23s-top-actions,
+  body.h23-settings-page .h23s-back-link,
+  body.h23-settings-page .h23s-status-pill {
+    width: 100%;
+  }
+
+  body.h23-settings-page .h23s-back-link,
+  body.h23-settings-page .h23s-status-pill {
+    justify-content: center;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.h23-settings-page *,
+  body.h23-settings-page *::before,
+  body.h23-settings-page *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

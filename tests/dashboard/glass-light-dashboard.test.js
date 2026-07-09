@@ -12,6 +12,11 @@ const html = read('engine/src/dashboard/home23-dashboard.html');
 const js = read('engine/src/dashboard/home23-dashboard.js');
 const css = read('engine/src/dashboard/home23-dashboard.css');
 const chatCss = read('engine/src/dashboard/home23-chat.css');
+const settingsHtml = read('engine/src/dashboard/home23-settings.html');
+const settingsCss = read('engine/src/dashboard/home23-settings.css');
+const standaloneChatHtml = read('engine/src/dashboard/home23-chat.html');
+const vibeGalleryHtml = read('engine/src/dashboard/home23-vibe/gallery.html');
+const welcomeHtml = read('engine/src/dashboard/home23-welcome.html');
 const spec = read('docs/superpowers/specs/2026-07-09-glass-light-dashboard-integration-design.md');
 const jsAst = ts.createSourceFile(
   'home23-dashboard.js',
@@ -1525,6 +1530,63 @@ test('standalone Chat remaps every legacy light-shell alias and control state', 
     const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     assert.match(chatCss, new RegExp(`body:not\\(\\.h23-dashboard-page\\) ${escaped}`), `missing ${selector} light override`);
   }
+});
+
+test('related Home23 pages declare isolated light-theme scopes and approved type', () => {
+  const pages = [
+    [settingsHtml, 'h23-settings-page'],
+    [standaloneChatHtml, 'h23-chat-page'],
+    [vibeGalleryHtml, 'h23-vibe-page'],
+    [welcomeHtml, 'h23-welcome-page'],
+  ];
+
+  for (const [page, scope] of pages) {
+    assert.match(page, new RegExp(`<body[^>]*class="[^"]*\\b${scope}\\b[^"]*"`), `${scope} body scope is missing`);
+    assert.match(page, /family=Instrument\+Sans:wght@400;500;600;700&family=IBM\+Plex\+Mono:wght@400;500;600/);
+    assert.doesNotMatch(page, /(?:prototype|support-runtime)\.js/i);
+  }
+
+  assert.match(settingsCss, /Glass Light settings surface/);
+  assert.match(settingsCss, /body\.h23-settings-page\s*\{/);
+  assert.match(standaloneChatHtml, /Glass Light standalone Chat surface/);
+  assert.match(vibeGalleryHtml, /Glass Light Vibe gallery surface/);
+  assert.match(welcomeHtml, /Glass Light welcome surface/);
+});
+
+test('full Settings light-theme shell retains every control-surface route and primary binding', () => {
+  for (const tab of [
+    'providers', 'agents', 'workers', 'models', 'query', 'feeder',
+    'skills', 'vibe', 'tiles', 'agency', 'system',
+  ]) assert.match(settingsHtml, new RegExp(`data-stab="${tab}"`), `missing Settings tab ${tab}`);
+
+  for (const id of [
+    'settings-agent-select', 'onboarding-overlay', 'ob-oauth-host', 'ob-apikeys-host',
+    'ob-save-keys', 'btn-save-models', 'btn-save-query', 'btn-save-feeder',
+    'vibe-save', 'btn-save-tiles', 'btn-save-agency', 'btn-save-system',
+  ]) assert.match(settingsHtml, new RegExp(`id="${id}"`), `missing Settings control #${id}`);
+
+  assert.match(settingsCss, /body\.h23-settings-page \.h23s-config-sidebar\s*\{[^}]*background:\s*var\(--h23-glass-panel\)/);
+  assert.match(settingsCss, /body\.h23-settings-page \.h23s-panel\s*\{[^}]*background:\s*var\(--h23-glass-panel\)/);
+  assert.match(settingsCss, /body\.h23-settings-page :is\(input, select, textarea\)/);
+});
+
+test('standalone Chat, Vibe gallery, and Welcome retain their production bindings', () => {
+  for (const id of [
+    'sh-menu-btn', 'sh-title', 'sh-new-btn', 'chat-messages', 'chat-attach-tray',
+    'chat-attach-btn', 'chat-attach-input', 'chat-input', 'chat-send-btn',
+    'sh-drawer', 'chat-conv-list', 'sh-sheet', 'chat-agent-select', 'chat-model-select',
+  ]) assert.match(standaloneChatHtml, new RegExp(`id="${id}"`), `missing standalone Chat control #${id}`);
+
+  for (const id of [
+    'meta-bar', 'gallery-grid', 'lightbox', 'lightbox-close', 'lightbox-image',
+    'lightbox-caption', 'lightbox-seed', 'lightbox-prompt', 'lightbox-meta',
+  ]) assert.match(vibeGalleryHtml, new RegExp(`id="${id}"`), `missing Vibe gallery control #${id}`);
+
+  assert.match(welcomeHtml, /href="\/home23\/setup"/);
+  assert.match(welcomeHtml, /id="welcome-version"/);
+  assert.match(standaloneChatHtml, /body\.h23-chat-page \.sh-shell\s*\{[^}]*background:\s*var\(--h23-glass-card\)/);
+  assert.match(vibeGalleryHtml, /body\.h23-vibe-page \.h23-vg-card\s*\{[^}]*background:\s*var\(--h23-glass-card\)/);
+  assert.match(welcomeHtml, /body\.h23-welcome-page \.welcome-card\s*\{[^}]*background:\s*var\(--h23-glass-overlay\)/);
 });
 
 test('active navigation, sensor hover, and Vibe overlay match approved details', () => {
