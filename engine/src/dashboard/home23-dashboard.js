@@ -39,8 +39,27 @@ let homeTileLayoutState = {
   layout: [],
   hiddenTiles: [],
 };
+const HOME_LAYOUT_MANAGED_SENSOR_IDS = new Set([
+  'outside-weather',
+  'sauna-control',
+  'pool-screenlogic',
+]);
 let homeTileLayoutControlsBound = false;
 let homeTileLayoutChannel = null;
+const DASHBOARD_OVERLAY_IDS = [
+  'problems-overlay',
+  'goodlife-overlay',
+  'brain-storage-overlay',
+  'home-vibe-detail-modal',
+  'chat-overlay',
+  'problem-editor-overlay',
+];
+const dashboardOverlayFocusOrigins = new Map();
+const dashboardOverlayVisibility = new Map();
+let dashboardOverlayAccessibilityBound = false;
+let dashboardOverlayLastInvoker = null;
+let dashboardOverlayLastInvokerAt = 0;
+let dashboardBodyOverflowBeforeOverlay = null;
 let workersState = {
   workers: [],
   templates: [],
@@ -181,31 +200,26 @@ async function init() {
   if (dashboardInitStarted) return;
   dashboardInitStarted = true;
   updateClocks();
-  setInterval(updateClocks, 10000);
+  setInterval(updateClocks, 1000);
   setupTabHandlers();
   setupOrganDrawer();
   setupHumanHomeSurface();
   setupResidentHomeSurface();
   setupWorkersSurface();
   setupBriefsSurface();
-  const selectedFromHash = selectInitialDashboardTabFromHash();
-  connectEnginePulse();
+  setupDashboardOverlayAccessibility();
 
-  Promise.allSettled([
-    loadDashboardScopeRegistry(),
+  await Promise.allSettled([
     loadAgents(),
-  ]).then(() => {
-    refreshDashboardScopeUI();
-    refreshDashboardIdentityUI();
-    if (currentTab === 'home') loadHumanHomeSurface().catch(renderHumanHomeError);
-  });
+    loadDashboardScopeRegistry(),
+  ]);
+  connectEnginePulse();
+  refreshDashboardScopeUI();
+  refreshDashboardIdentityUI();
 
-  if (!selectedFromHash && currentTab === 'agency') {
-    loadAgencySurface().catch(renderAgencySurfaceError);
-  } else if (!selectedFromHash && currentTab === 'workers') {
-    loadWorkersSurface().catch(() => {});
-  } else if (!selectedFromHash && currentTab === 'briefs') {
-    loadBriefsSurface().catch(() => {});
+  const selectedFromHash = selectInitialDashboardTabFromHash();
+  if (!selectedFromHash && currentTab === 'home') {
+    loadHumanHomeSurface().catch(renderHumanHomeError);
   }
   startAutoRefresh();
 
@@ -235,6 +249,148 @@ async function init() {
   setInterval(() => {
     if (currentTab === 'home') loadHumanHomeSurface().catch(() => {});
   }, 15000);
+}
+
+function dashboardOverlayIsVisible(overlay) {
+  if (!overlay || overlay.hidden || overlay.getAttribute('aria-hidden') === 'true') return false;
+  if (overlay.id === 'chat-overlay' || overlay.id === 'home-vibe-detail-modal') {
+    return overlay.classList.contains('open');
+  }
+  const style = getComputedStyle(overlay);
+  return style.display !== 'none' && style.visibility !== 'hidden';
+}
+
+function dashboardOverlayFocusableElements(overlay) {
+  if (!overlay) return [];
+  return Array.from(overlay.querySelectorAll(
+    '[autofocus], input:not([type="hidden"]), textarea, select, button, [href], [tabindex]:not([tabindex="-1"])',
+  )).filter((element) => (
+    !element.disabled
+    && element.getAttribute('aria-hidden') !== 'true'
+    && !element.hidden
+    && getComputedStyle(element).display !== 'none'
+    && getComputedStyle(element).visibility !== 'hidden'
+    && element.getClientRects().length > 0
+  ));
+}
+
+function syncDashboardOverlayScrollLock() {
+  const anyOverlayOpen = DASHBOARD_OVERLAY_IDS
+    .map((id) => document.getElementById(id))
+    .some(dashboardOverlayIsVisible);
+  document.body.classList.toggle('h23-overlay-open', anyOverlayOpen);
+  if (anyOverlayOpen && dashboardBodyOverflowBeforeOverlay === null) {
+    dashboardBodyOverflowBeforeOverlay = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+  } else if (!anyOverlayOpen && dashboardBodyOverflowBeforeOverlay !== null) {
+    document.body.style.overflow = dashboardBodyOverflowBeforeOverlay;
+    dashboardBodyOverflowBeforeOverlay = null;
+  }
+}
+
+function restoreDashboardOverlayFocus(overlay) {
+  const invoker = dashboardOverlayFocusOrigins.get(overlay.id);
+  if (invoker?.isConnected) dashboardOverlayFocusOrigins.get(overlay.id)?.focus();
+  dashboardOverlayFocusOrigins.delete(overlay.id);
+}
+
+function closeTopmostDashboardOverlay() {
+  const visibleOverlays = DASHBOARD_OVERLAY_IDS
+    .map((id) => document.getElementById(id))
+    .filter(dashboardOverlayIsVisible);
+  const overlay = visibleOverlays.at(-1);
+  if (!overlay) return false;
+
+  if (overlay.id === 'problems-overlay') closeProblemsPanel();
+  else if (overlay.id === 'goodlife-overlay') closeGoodLifeOperator();
+  else if (overlay.id === 'brain-storage-overlay') closeBrainStoragePanel();
+  else if (overlay.id === 'home-vibe-detail-modal') closeVibeImageDetail();
+  else if (overlay.id === 'chat-overlay') overlay.querySelector('#chat-overlay-close-btn')?.click();
+  else if (overlay.id === 'problem-editor-overlay') closeProblemEditor();
+
+  restoreDashboardOverlayFocus(overlay);
+  dashboardOverlayVisibility.set(overlay.id, false);
+  syncDashboardOverlayScrollLock();
+  return true;
+}
+
+function setupDashboardOverlayAccessibility() {
+  if (dashboardOverlayAccessibilityBound) return;
+  dashboardOverlayAccessibilityBound = true;
+  const overlays = DASHBOARD_OVERLAY_IDS
+    .map((id) => document.getElementById(id))
+    .filter(Boolean);
+
+  document.addEventListener('click', (event) => {
+    const invoker = event.target.closest?.('button, [href], input, select, textarea, [tabindex]');
+    if (invoker) {
+      dashboardOverlayLastInvoker = invoker;
+      dashboardOverlayLastInvokerAt = Date.now();
+    }
+  }, true);
+
+  const observer = new MutationObserver(() => {
+    overlays.forEach((overlay) => {
+      const visible = dashboardOverlayIsVisible(overlay);
+      const wasVisible = dashboardOverlayVisibility.get(overlay.id) === true;
+      if (dashboardOverlayIsVisible(overlay) && !wasVisible) {
+        dashboardOverlayFocusOrigins.set(overlay.id, document.activeElement);
+        const hasRecentExternalInvoker = dashboardOverlayLastInvoker
+          && !overlay.contains(dashboardOverlayLastInvoker)
+          && Date.now() - dashboardOverlayLastInvokerAt < 1000;
+        if (hasRecentExternalInvoker) {
+          dashboardOverlayFocusOrigins.set(overlay.id, dashboardOverlayLastInvoker);
+        }
+        const focusTarget = overlay.querySelector(
+          '[autofocus], input:not([type="hidden"]), textarea, select, button, [href], [tabindex]:not([tabindex="-1"])',
+        );
+        if (!overlay.contains(document.activeElement)) focusTarget?.focus();
+      } else if (!dashboardOverlayIsVisible(overlay) && wasVisible) {
+        restoreDashboardOverlayFocus(overlay);
+      }
+      dashboardOverlayVisibility.set(overlay.id, visible);
+    });
+    syncDashboardOverlayScrollLock();
+  });
+
+  overlays.forEach((overlay) => {
+    dashboardOverlayVisibility.set(overlay.id, dashboardOverlayIsVisible(overlay));
+    observer.observe(overlay, {
+      attributes: true,
+      attributeFilter: ['style', 'class', 'hidden', 'aria-hidden'],
+    });
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (closeTopmostDashboardOverlay()) event.preventDefault();
+      return;
+    }
+    if (event.key === 'Tab') {
+      const visibleOverlays = overlays.filter(dashboardOverlayIsVisible);
+      const overlay = visibleOverlays.at(-1);
+      if (!overlay) return;
+      const focusable = dashboardOverlayFocusableElements(overlay);
+      if (!focusable.length) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!overlay.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  });
+
+  syncDashboardOverlayScrollLock();
 }
 
 // ── Live Problems (verifier-backed ground truth) ──
@@ -618,6 +774,37 @@ async function deleteProblemFromEditor() {
 // ── Brain Storage (disk vs memory truth) ──
 let _brainStorage = null;
 
+function brainStorageStatus(data = {}) {
+  const authoritative = String(
+    data.coherenceStatus
+      || data.storageStatus
+      || data.coherence?.status
+      || data.coherence?.state
+      || data.state
+      || data.status
+      || '',
+  ).trim().toLowerCase();
+  if (['in-sync', 'pending', 'mismatch'].includes(authoritative)) return authoritative;
+
+  const finiteCount = (value) => (
+    value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+      ? Number(value)
+      : null
+  );
+  const snapshotNodes = finiteCount(data.snapshot?.nodeCount);
+  const memoryNodes = finiteCount(data.inMemory?.nodes);
+  const snapshotEdges = finiteCount(data.snapshot?.edgeCount);
+  const memoryEdges = finiteCount(data.inMemory?.edges);
+  if ([snapshotNodes, memoryNodes, snapshotEdges, memoryEdges].every((value) => value !== null)) {
+    const nodeDelta = memoryNodes - snapshotNodes;
+    const edgeDelta = memoryEdges - snapshotEdges;
+    if (nodeDelta === 0 && edgeDelta === 0) return 'in-sync';
+    if (nodeDelta >= 0 && edgeDelta >= 0 && (nodeDelta > 0 || edgeDelta > 0)) return 'pending';
+    return 'mismatch';
+  }
+  return data.mismatch === true ? 'mismatch' : 'unavailable';
+}
+
 async function updateBrainStorageBadge() {
   try {
     const r = await fetch(`${dashboardBaseUrl()}/api/brain/storage`);
@@ -640,10 +827,16 @@ async function updateBrainStorageBadge() {
 
     const ageMs = data.snapshot?.savedAt ? (Date.now() - new Date(data.snapshot.savedAt).getTime()) : null;
     const ageStr = ageMs == null ? '?' : (ageMs < 60000 ? `${Math.round(ageMs/1000)}s` : `${Math.round(ageMs/60000)}m`);
+    const coherence = brainStorageStatus(data);
+    badge.classList.remove('in-sync', 'pending', 'mismatch');
+    if (coherence !== 'unavailable') badge.classList.add(coherence);
 
-    if (data.mismatch) {
+    if (coherence === 'mismatch') {
       badge.textContent = `🧠 ${snapNodes} ⚠️ mismatch`;
       badge.style.color = '#ff6b6b';
+    } else if (coherence === 'pending') {
+      badge.textContent = `🧠 ${snapNodes.toLocaleString()} · pending snapshot`;
+      badge.style.color = '#d9762b';
     } else {
       badge.textContent = `🧠 ${snapNodes.toLocaleString()} · saved ${ageStr} ago`;
       badge.style.color = 'rgba(255,255,255,0.55)';
@@ -677,13 +870,19 @@ async function renderBrainStoragePanel() {
     const hw = data.highWater;
     const files = data.files || {};
     const backups = data.backups || [];
+    const coherence = brainStorageStatus(data);
 
     const mb = (b) => { if (b == null) return '—'; if (b < 1024) return `${b} B`; if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`; return `${(b / 1048576).toFixed(1)} MB`; };
     const ago = (iso) => { if (!iso) return '—'; const ms = Date.now() - new Date(iso).getTime(); if (ms < 60000) return `${Math.round(ms/1000)}s ago`; if (ms < 3600000) return `${Math.round(ms/60000)}m ago`; return `${Math.round(ms/3600000)}h ago`; };
 
-    const mismatchWarn = data.mismatch
-      ? `<div style="background:rgba(255,107,107,0.15);border:1px solid rgba(255,107,107,0.4);border-radius:6px;padding:10px 14px;margin-bottom:14px;color:#ff6b6b;">⚠️ MISMATCH: disk says ${snap?.nodeCount} nodes, memory says ${mem?.nodes}. Something is wrong — do NOT restart the engine until investigated.</div>`
-      : '';
+    const coherenceCopy = coherence === 'in-sync'
+      ? 'Disk snapshot and live memory are in sync.'
+      : coherence === 'pending'
+        ? `Live memory is ahead of disk (${mem?.nodes ?? '—'} vs ${snap?.nodeCount ?? '—'} nodes); the next successful snapshot should close this expected working delta.`
+        : coherence === 'mismatch'
+          ? `Mismatch: disk says ${snap?.nodeCount ?? '—'} nodes, memory says ${mem?.nodes ?? '—'}. Investigate before restarting the engine.`
+          : 'Live-memory comparison is unavailable; disk snapshot details are shown below.';
+    const mismatchWarn = `<div class="h23-brain-storage-status ${coherence}" style="border-radius:6px;padding:10px 14px;margin-bottom:14px;">${escapeHtml(coherenceCopy)}</div>`;
 
     content.innerHTML = `
       ${mismatchWarn}
@@ -889,11 +1088,19 @@ function _renderPulseNow() {
   if (!_pulseEls.dot) return;
 
   const runtimeState = enginePulse.state && enginePulse.state !== 'unknown' ? enginePulse.state : '';
-  const showRuntime = isOperatorRuntimeAlert(runtimeState);
-  if (_pulseEls.rail) _pulseEls.rail.hidden = !showRuntime;
-  if (_pulseEls.runtime) _pulseEls.runtime.hidden = !showRuntime;
+  const runtimeAlert = isOperatorRuntimeAlert(runtimeState);
+  if (_pulseEls.rail) {
+    _pulseEls.rail.hidden = false;
+    _pulseEls.rail.classList.toggle('alert', isOperatorRuntimeAlert(runtimeState));
+    _pulseEls.rail.setAttribute('aria-label', runtimeAlert
+      ? `Engine alert: ${runtimeState}`
+      : `Engine status: ${runtimeState || 'connecting'}`);
+  }
+  if (_pulseEls.runtime) _pulseEls.runtime.hidden = false;
   _pulseEls.dot.className = 'h23-pulse-dot ' + runtimeState;
-  if (_pulseEls.state) _pulseEls.state.textContent = runtimeState;
+  if (_pulseEls.state) _pulseEls.state.textContent = runtimeAlert
+    ? `${runtimeState} alert`
+    : runtimeState || 'connecting';
   if (_pulseEls.energy) _pulseEls.energy.textContent = `⚡ ${Math.round((enginePulse.energy || 0) * 100)}%`;
   if (_pulseEls.cycle) _pulseEls.cycle.textContent = `cycle ${enginePulse.cycle || '—'}`;
 }
@@ -958,17 +1165,26 @@ function updateClocks() {
 
   const tz1Time = document.getElementById('tz1-time');
   if (tz1Time) tz1Time.textContent = fmt(agentTz);
+  const headerLocalTime = document.getElementById('header-local-time');
+  if (headerLocalTime) {
+    headerLocalTime.textContent = fmt(agentTz);
+    headerLocalTime.dateTime = now.toISOString();
+  }
   const tz1Label = document.getElementById('tz1-label');
   if (tz1Label) tz1Label.textContent = agentTz.split('/').pop().replace(/_/g, ' ');
 
   const secondaryTz = window.__secondaryTimezone;
   const tz2Container = document.getElementById('tz2-container');
   if (secondaryTz && tz2Container) {
+    tz2Container.hidden = false;
     tz2Container.style.display = 'flex';
     const tz2Time = document.getElementById('tz2-time');
     if (tz2Time) tz2Time.textContent = fmt24(secondaryTz);
     const tz2Label = document.getElementById('tz2-label');
     if (tz2Label) tz2Label.textContent = secondaryTz.split('/').pop().replace(/_/g, ' ');
+  } else if (tz2Container) {
+    tz2Container.hidden = true;
+    tz2Container.style.display = 'none';
   }
 }
 
@@ -1020,14 +1236,6 @@ async function loadAgents() {
     }
   } catch { /* config offline */ }
 
-  // Wire settings button
-  const settingsBtn = document.getElementById('settings-btn');
-  if (settingsBtn) {
-    settingsBtn.addEventListener('click', () => {
-      window.location.href = '/home23/settings';
-    });
-  }
-
   // Wire COSMO tab button
   const cosmoBtn = document.getElementById('cosmo23-btn');
   if (cosmoBtn) {
@@ -1037,6 +1245,9 @@ async function loadAgents() {
       document.querySelectorAll('.h23-tab[data-tab]').forEach(t => t.classList.remove('active'));
       cosmoBtn.classList.add('active');
       currentTab = 'cosmo23';
+      if (window.location.hash !== '#cosmo23') {
+        window.history.replaceState(null, '', '#cosmo23');
+      }
       refreshDashboardScopeUI();
       syncOrganDrawerForTab();
       setCosmoHomeDrawerOpen(false);
@@ -1226,7 +1437,11 @@ function syncOrganDrawerForTab() {
 }
 
 function selectDashboardTab(tabKey) {
-  const tab = tabKey ? document.querySelector(`.h23-tab[data-tab="${tabKey}"]`) : null;
+  const tab = tabKey
+    ? document.querySelector(`.h23-tab[data-tab="${tabKey}"]`)
+      || (tabKey === 'settings' ? document.getElementById('settings-btn') : null)
+      || (tabKey === 'cosmo23' ? document.getElementById('cosmo23-btn') : null)
+    : null;
   if (!tab) return false;
   if (currentTab === tabKey && document.getElementById(`panel-${tabKey}`)?.classList.contains('active')) {
     return true;
@@ -1236,6 +1451,8 @@ function selectDashboardTab(tabKey) {
 }
 
 function setupTabHandlers() {
+  const settingsBtn = document.getElementById('settings-btn');
+  if (settingsBtn) settingsBtn.dataset.tab = 'settings';
   document.querySelectorAll('.h23-tab[data-tab]').forEach(tab => {
     tab.addEventListener('click', () => {
       // Deactivate all tabs (including cosmo button)
@@ -1286,9 +1503,82 @@ function setupTabHandlers() {
       }
 
       if (currentTab === 'home') loadHumanHomeSurface().catch(renderHumanHomeError);
+      if (currentTab === 'settings') loadSettingsOverview().catch(() => {});
 
     });
   });
+}
+
+function settingsOverviewResult(result) {
+  return result?.status === 'fulfilled' ? result.value : null;
+}
+
+function renderSettingsOverviewUnavailable(id, label) {
+  setHtml(id, `<p class="h23-settings-overview-unavailable">${escapeHtml(label)} unavailable.</p>`);
+}
+
+async function loadSettingsOverview() {
+  const requests = [
+    apiFetch('/home23/api/settings/agents', { timeoutMs: 8000 }),
+    apiFetch('/home23/api/settings/feeder', { timeoutMs: 8000 }),
+    apiFetch(`${dashboardBaseUrl()}/api/state`, { timeoutMs: 8000 }),
+    apiFetch('/home23/api/settings/vibe', { timeoutMs: 8000 }),
+  ];
+  const [agentsResult, feederResult, operationsResult, vibeResult] = await Promise.allSettled(requests);
+
+  const agentsData = settingsOverviewResult(agentsResult);
+  if (agentsData) {
+    const agentRows = Array.isArray(agentsData.agents) ? agentsData.agents : [];
+    const running = agentRows.filter((agent) => agent.status === 'running').length;
+    const current = agentRows.find((agent) => agent.name === agentsData.currentAgent) || primaryAgent;
+    setHtml('settings-overview-agents', `
+      <p><strong>${escapeHtml(String(agentRows.length))}</strong> configured · ${escapeHtml(String(running))} running</p>
+      <p>Current: ${escapeHtml(current?.displayName || current?.name || 'unavailable')}</p>
+    `);
+  } else {
+    renderSettingsOverviewUnavailable('settings-overview-agents', 'Agent status');
+  }
+
+  const feederData = settingsOverviewResult(feederResult);
+  if (feederData) {
+    const feeder = feederData.feeder || {};
+    const watchPaths = [
+      ...(Array.isArray(feeder.additionalWatchPaths) ? feeder.additionalWatchPaths : []),
+      ...(Array.isArray(feederData.autoWatchPaths) ? feederData.autoWatchPaths : []),
+    ];
+    setHtml('settings-overview-feeds', `
+      <p><strong>${escapeHtml(String(watchPaths.length))}</strong> watched source${watchPaths.length === 1 ? '' : 's'}</p>
+      <p>Feeder: ${feeder.enabled === false ? 'disabled' : feeder.enabled === true ? 'enabled' : 'unavailable'}</p>
+      <p>Compiler: ${feeder.compiler?.enabled === false ? 'disabled' : feeder.compiler?.enabled === true ? 'enabled' : 'unavailable'}</p>
+    `);
+  } else {
+    renderSettingsOverviewUnavailable('settings-overview-feeds', 'Data feed status');
+  }
+
+  const operationsData = settingsOverviewResult(operationsResult);
+  if (operationsData) {
+    const operationCycle = operationsData.cycleCount ?? enginePulse.cycle;
+    const operationState = operationsData.temporalState || operationsData.cognitiveState?.mode || enginePulse.state;
+    setHtml('settings-overview-operations', `
+      <p>Engine: ${escapeHtml(operationState || 'status unavailable')}</p>
+      <p>Cycle: ${escapeHtml(operationCycle != null ? formatCompactNumber(operationCycle) : 'unavailable')}</p>
+      <p>Model: ${escapeHtml(primaryAgent?.model || 'unavailable')}</p>
+    `);
+  } else {
+    renderSettingsOverviewUnavailable('settings-overview-operations', 'Operations status');
+  }
+
+  const vibeData = settingsOverviewResult(vibeResult);
+  if (vibeData) {
+    const vibe = vibeData.vibe || {};
+    setHtml('settings-overview-house', `
+      <p>Vibe generation: ${vibe.autoGenerate === false ? 'manual' : vibe.autoGenerate === true ? 'automatic' : 'unavailable'}</p>
+      <p>Rotation: ${Number.isFinite(Number(vibe.rotationIntervalSeconds)) ? `${escapeHtml(String(vibe.rotationIntervalSeconds))} seconds` : 'unavailable'}</p>
+      <p>Gallery limit: ${Number.isFinite(Number(vibe.galleryLimit)) ? escapeHtml(String(vibe.galleryLimit)) : 'unavailable'}</p>
+    `);
+  } else {
+    renderSettingsOverviewUnavailable('settings-overview-house', 'House settings');
+  }
 }
 
 function selectInitialDashboardTabFromHash() {
@@ -1336,8 +1626,8 @@ function setupHomeTileLayoutControls() {
   if (homeTileLayoutControlsBound) return;
   homeTileLayoutControlsBound = true;
 
-  const grid = document.querySelector('.h23-human-grid');
-  grid?.addEventListener('click', (event) => {
+  const sensorLayout = document.querySelector('[data-home-sensor-layout="true"]');
+  sensorLayout?.addEventListener('click', (event) => {
     const moveButton = event.target.closest('[data-home-tile-move]');
     if (!moveButton) return;
     event.preventDefault();
@@ -1350,7 +1640,7 @@ function setupHomeTileLayoutControls() {
     });
   });
 
-  grid?.addEventListener('change', (event) => {
+  sensorLayout?.addEventListener('change', (event) => {
     const sizeSelect = event.target.closest('[data-home-tile-size-control]');
     if (!sizeSelect) return;
     event.preventDefault();
@@ -1381,14 +1671,19 @@ async function refreshHomeTileLayout() {
 
 function applyHomeTileLayout(state) {
   const layout = Array.isArray(state?.layout) ? state.layout : [];
-  const hiddenIds = new Set((state?.hiddenTiles || []).map((item) => item.tileId));
-  const byId = new Map(layout.map((item, index) => [item.tileId, { ...item, order: index }]));
-  const managedIds = new Set([...byId.keys(), ...hiddenIds]);
+  const hiddenIds = new Set((state?.hiddenTiles || [])
+    .map((item) => item.tileId)
+    .filter((tileId) => HOME_LAYOUT_MANAGED_SENSOR_IDS.has(tileId)));
+  const byId = new Map(layout
+    .filter((item) => HOME_LAYOUT_MANAGED_SENSOR_IDS.has(item.tileId))
+    .map((item, index) => [item.tileId, { ...item, order: index }]));
+  const sensorLayout = document.querySelector('[data-home-sensor-layout="true"]');
 
-  document.querySelectorAll('[data-home-tile-id]').forEach((card) => {
+  sensorLayout?.querySelectorAll('[data-home-tile-id]').forEach((card) => {
     const tileId = card.dataset.homeTileId;
+    if (!HOME_LAYOUT_MANAGED_SENSOR_IDS.has(tileId)) return;
     const layoutItem = byId.get(tileId);
-    if (managedIds.has(tileId) && (!layoutItem || hiddenIds.has(tileId))) {
+    if (hiddenIds.has(tileId)) {
       card.hidden = true;
       return;
     }
@@ -1396,12 +1691,17 @@ function applyHomeTileLayout(state) {
     if (layoutItem) {
       card.style.order = String(layoutItem.order);
       card.dataset.homeTileSize = layoutItem.size || 'third';
+    } else {
+      card.style.removeProperty('order');
+      delete card.dataset.homeTileSize;
     }
     renderHomeTileInlineControls(card, layoutItem);
   });
 }
 
 function renderHomeTileInlineControls(card, layoutItem) {
+  const tileId = card?.dataset?.homeTileId;
+  if (!HOME_LAYOUT_MANAGED_SENSOR_IDS.has(tileId)) return;
   if (!card || card.tagName === 'BUTTON') return;
   let tools = card.querySelector(':scope > .h23-home-tile-tools');
   if (!layoutItem) {
@@ -1426,15 +1726,25 @@ function renderHomeTileInlineControls(card, layoutItem) {
   if (select && select.value !== layoutItem.size) select.value = layoutItem.size || 'third';
 }
 
-async function mutateHomeTileLayout(mutator) {
+async function mutateHomeTileLayout(mutator, tileId) {
+  if (!HOME_LAYOUT_MANAGED_SENSOR_IDS.has(tileId)) return;
   const data = await apiFetch('/home23/api/settings/tiles', { timeoutMs: 8000 });
   const tiles = data?.tiles || {};
-  const homeLayout = Array.isArray(tiles.homeLayout) ? tiles.homeLayout.map((item) => ({
+  const originalHomeLayout = Array.isArray(tiles.homeLayout) ? tiles.homeLayout.map((item) => ({
+    ...item,
     tileId: item.tileId,
     enabled: item.enabled !== false,
     size: item.size || item.tile?.sizeDefault || 'third',
   })) : [];
-  mutator(homeLayout);
+  const managedLayout = originalHomeLayout
+    .filter((item) => HOME_LAYOUT_MANAGED_SENSOR_IDS.has(item.tileId));
+  mutator(managedLayout);
+  let managedIndex = 0;
+  const homeLayout = originalHomeLayout.map((item) => (
+    HOME_LAYOUT_MANAGED_SENSOR_IDS.has(item.tileId)
+      ? managedLayout[managedIndex++] || item
+      : item
+  ));
   const res = await fetch('/home23/api/settings/tiles', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -1463,7 +1773,7 @@ async function moveHomeTile(tileId, delta, control = null) {
       if (toIndex === fromIndex) return;
       const [entry] = homeLayout.splice(fromIndex, 1);
       homeLayout.splice(toIndex, 0, entry);
-    });
+    }, tileId);
   } finally {
     if (control) control.disabled = false;
   }
@@ -1476,7 +1786,7 @@ async function resizeHomeTile(tileId, size, control = null) {
     await mutateHomeTileLayout((homeLayout) => {
       const item = homeLayout.find((entry) => entry.tileId === tileId);
       if (item) item.size = size;
-    });
+    }, tileId);
   } finally {
     if (control) control.disabled = false;
   }
@@ -1510,23 +1820,31 @@ async function loadHumanHomeSurface() {
       .catch(() => offlineTilePayload('pool-screenlogic', 'Offline', '—', 'ScreenLogic unavailable')), (data) => {
       renderHumanSensor('pool', data, 'Pool', 'ScreenLogic');
     });
-    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/live-problems`, { timeoutMs: 8000 }), renderHumanIssues);
-    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/good-life`, { timeoutMs: GOOD_LIFE_API_TIMEOUT_MS }), renderHumanGoodLife);
+    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/live-problems`, { timeoutMs: 8000 }), (data) => {
+      latest.problems = data;
+      renderHumanIssues(data);
+      renderLatestJerryVoice(latest);
+    });
+    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/good-life`, { timeoutMs: GOOD_LIFE_API_TIMEOUT_MS }), (data) => {
+      latest.goodLife = data;
+      renderHumanGoodLife(data);
+      renderLatestJerryVoice(latest);
+    });
     scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/state`, { timeoutMs: 8000 }), (data) => {
       latest.state = data;
-      renderJerryVoiceTile(latest.pulse, latest.homeSummary, latest.state, latest.agency);
+      renderLatestJerryVoice(latest);
     });
     scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/agency/state', { timeoutMs: 8000 }), (data) => {
       latest.agency = data;
-      renderJerryVoiceTile(latest.pulse, latest.homeSummary, latest.state, latest.agency);
+      renderLatestJerryVoice(latest);
     });
     scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/pulse/latest`, { timeoutMs: 5000 }), (data) => {
       latest.pulse = data;
-      renderJerryVoiceTile(latest.pulse, latest.homeSummary, latest.state, latest.agency);
+      renderLatestJerryVoice(latest);
     });
     scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/home/summary`, { timeoutMs: 5000 }), (data) => {
       latest.homeSummary = data;
-      renderJerryVoiceTile(latest.pulse, latest.homeSummary, latest.state, latest.agency);
+      renderLatestJerryVoice(latest);
     });
     scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/briefs?limit=12&compact=1', { timeoutMs: 8000 }), renderHomeBriefs, () => {
       setText('human-briefs-status', 'offline');
@@ -1583,20 +1901,43 @@ function offlineTilePayload(tileId, status, value, subtitle) {
 function renderHumanSauna(payload) {
   renderHumanSensor('sauna', payload, 'Sauna', 'Huum');
   const content = payload?.content || {};
+  const metrics = Array.isArray(content.metrics) ? content.metrics : [];
+  const metricValue = (label) => metrics.find((metric) => (
+    String(metric?.label || '').toLowerCase() === label.toLowerCase()
+  ))?.value;
   const valueNumber = parseFloat(String(content.value || '').replace(/[^\d.-]/g, ''));
+  const targetTemperature = parseFloat(String(metricValue('Target') || '').replace(/[^\d.-]/g, ''));
+  const heating = /\byes\b/i.test(String(metricValue('Heating') || ''))
+    || /\bheating\b/i.test(String(content.status || ''));
+  const running = heating
+    || /\b(?:locked|running|in use)\b/i.test(String(content.status || ''))
+    || (parseFloat(String(metricValue('Duration') || '').replace(/[^\d.-]/g, '')) > 0);
   const heat = Number.isFinite(valueNumber)
     ? Math.max(0.05, Math.min(1, (valueNumber - 60) / 160))
     : 0.12;
   const gauge = document.getElementById('human-sauna-gauge');
   if (gauge) {
     gauge.style.setProperty('--sauna-heat', String(heat));
-    gauge.classList.toggle('heating', /\byes\b/i.test(String(content.metrics?.find?.((m) => m.label === 'Heating')?.value || '')));
+    gauge.classList.toggle('heating', heating);
   }
+  const saunaCard = document.querySelector('[data-home-tile-id="sauna-control"]');
+  saunaCard?.classList.toggle('heating', heating);
+  saunaCard?.classList.toggle('running', running);
 
   const startAction = (payload?.actions || []).find((action) => action.id === 'start')
     || (payload?.actions || []).find((action) => action.id === 'prestage');
   applySaunaActionDefaults(startAction);
-  setHtml('human-sauna-actions', renderHumanSaunaActions(payload?.actions || []));
+  const targetInput = document.getElementById('human-sauna-target');
+  const selectedTarget = targetInput?.dataset.userEdited === 'true' || document.activeElement === targetInput
+    ? Number(targetInput.value || 190)
+    : Number.isFinite(targetTemperature)
+      ? targetTemperature
+      : Number(targetInput?.value || 190);
+  setHtml('human-sauna-actions', renderHumanSaunaActions(payload?.actions || [], {
+    targetTemperature: selectedTarget,
+    running,
+    heating,
+  }));
 }
 
 function applySaunaActionDefaults(action) {
@@ -1608,7 +1949,7 @@ function applySaunaActionDefaults(action) {
   }
 }
 
-function renderHumanSaunaActions(actions) {
+function renderHumanSaunaActions(actions, state = {}) {
   const actionButtons = actions
     .filter((action) => ['prestage', 'start', 'stop'].includes(action.id))
     .map((action) => `
@@ -1621,9 +1962,12 @@ function renderHumanSaunaActions(actions) {
       ${actionButtons || '<span class="h23-human-action-note">Sauna actions unavailable</span>'}
     </div>
     <div class="h23-human-sauna-presets" aria-label="Sauna presets">
-      <button type="button" data-sauna-preset data-target="150" data-duration="60">Warm</button>
-      <button type="button" data-sauna-preset data-target="190" data-duration="180">Standard</button>
-      <button type="button" data-sauna-preset data-target="210" data-duration="120">Inferno</button>
+      ${[170, 180, 190].map((target) => `
+        <button class="${Math.round(Number(state.targetTemperature)) === target ? 'active' : ''}" type="button"
+          data-sauna-preset data-target="${target}" data-duration="180"
+          aria-pressed="${Math.round(Number(state.targetTemperature)) === target}">${target}°F</button>
+      `).join('')}
+      ${state.running ? `<span class="h23-human-action-note">${state.heating ? 'Heating' : 'Running'}</span>` : ''}
     </div>
   `;
 }
@@ -1639,6 +1983,11 @@ function setSaunaPreset(targetTemperature, duration) {
     durationInput.value = String(duration);
     durationInput.dataset.userEdited = 'true';
   }
+  document.querySelectorAll('[data-sauna-preset]').forEach((button) => {
+    const active = Number(button.dataset.target) === targetTemperature;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
 }
 
 async function runHumanSaunaAction(actionId, button) {
@@ -1695,30 +2044,62 @@ function renderHumanGoodLife(payload) {
   setText('human-goodlife-subtitle', lanes.length ? lanes.join(' · ') : 'Lanes in bounds');
 }
 
-function renderJerryVoiceTile(pulsePayload, homeSummary, statePayload, agencyPayload) {
+function renderLatestJerryVoice(latest) {
+  renderJerryVoiceTile(
+    latest.pulse,
+    latest.homeSummary,
+    latest.state,
+    latest.agency,
+    latest.problems,
+    latest.goodLife,
+  );
+}
+
+function renderJerryVoiceTile(pulsePayload, homeSummary, statePayload, agencyPayload, problemsPayload, goodLifePayload) {
   const cycle = statePayload?.cycleCount;
-  const nodes = Array.isArray(statePayload?.memory?.nodes)
-    ? statePayload.memory.nodes.length
-    : statePayload?.memory?.nodes;
   const mode = agencyPayload?.state?.mode || agencyPayload?.mode;
   const bootcamp = agencyPayload?.state?.bootcamp?.enabled ?? agencyPayload?.bootcamp?.enabled;
   const remark = pulsePayload?.remark;
   const thought = homeSummary?.lastThoughtText
     || statePayload?.thoughts?.[0]?.content
     || statePayload?.recentThoughts?.[0]?.content;
-  const parts = [
-    remark?.ts ? timeSince(new Date(remark.ts)) : homeSummary?.lastThoughtAt ? timeSince(new Date(homeSummary.lastThoughtAt)) : null,
+  const thoughtAt = remark?.ts || homeSummary?.lastThoughtAt || null;
+  const thoughtDate = thoughtAt ? new Date(thoughtAt) : null;
+  const nodeCount = extractNodeCount(statePayload) ?? extractNodeCount(homeSummary);
+  const problemCounts = problemsPayload?.snapshot?.counts || problemsPayload?.counts || null;
+  const openProblems = problemCounts
+    ? Number(problemCounts.open || 0) + Number(problemCounts.chronic || 0)
+    : null;
+  const verificationTimes = (problemsPayload?.problems || [])
+    .map((problem) => problem?.lastCheckedAt)
+    .filter(Boolean)
+    .map((value) => new Date(value))
+    .filter((value) => !Number.isNaN(value.getTime()));
+  const verifiedAt = verificationTimes.sort((a, b) => b.getTime() - a.getTime())[0]
+    || ((goodLifePayload?.evaluatedAt || goodLifePayload?.state?.evaluatedAt)
+      ? new Date(goodLifePayload.evaluatedAt || goodLifePayload.state.evaluatedAt)
+      : null);
+  const kickerAge = thoughtDate && !Number.isNaN(thoughtDate.getTime())
+    ? timeSince(thoughtDate).toUpperCase()
+    : 'LIVE';
+  const footerParts = [
+    nodeCount != null ? `${formatCompactNumber(nodeCount)} brain nodes` : 'brain nodes unavailable',
+    openProblems != null ? `${openProblems} open problem${openProblems === 1 ? '' : 's'}` : 'open problems unavailable',
+    verifiedAt && !Number.isNaN(verifiedAt.getTime()) ? `verified ${timeSince(verifiedAt)}` : 'verification time unavailable',
+  ];
+  const contextParts = [
     cycle != null ? `cycle ${formatCompactNumber(cycle)}` : homeSummary?.cycleCount != null ? `cycle ${formatCompactNumber(homeSummary.cycleCount)}` : null,
-    nodes != null ? `${formatCompactNumber(nodes)} brain nodes` : homeSummary?.memoryNodes != null ? `${formatCompactNumber(homeSummary.memoryNodes)} brain nodes` : null,
     mode ? `agency ${mode}` : null,
     bootcamp === true ? 'bootcamp on' : null,
+    jerryContextLine(remark, homeSummary),
   ].filter(Boolean);
   const voice = remark?.text
     || humanizeJerryFallback(thought, homeSummary)
     || 'I am here, watching the house breathe. Nothing needs your hands yet.';
-  setText('human-jerry-status', parts.length ? parts.join(' · ') : 'latest');
+  setText('human-jerry-kicker', `JERRY · ${kickerAge}`);
+  setText('human-jerry-status', footerParts.join(' · '));
   setText('human-jerry-remark', voice);
-  setText('human-jerry-context', jerryContextLine(remark, homeSummary));
+  setText('human-jerry-context', contextParts.join(' · '));
 }
 
 function humanizeJerryFallback(thought, homeSummary) {

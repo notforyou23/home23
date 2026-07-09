@@ -708,6 +708,51 @@ test('Home layout persistence is scoped to environmental sensor cards', () => {
   }
 });
 
+test('runtime initialization resolves the dashboard agent before connecting and keeps native status current', () => {
+  const init = functionFragment(js, 'init');
+  assert.ok(init.indexOf('loadAgents()') < init.indexOf('connectEnginePulse()'), 'agent discovery must precede WebSocket connection');
+  assert.match(init, /await\s+Promise\.allSettled\(/);
+  assert.match(init, /setInterval\(updateClocks,\s*1000\)/);
+
+  const pulse = functionFragment(js, '_renderPulseNow');
+  assert.match(pulse, /rail\.hidden\s*=\s*false/);
+  assert.match(pulse, /classList\.toggle\(['"]alert['"],\s*isOperatorRuntimeAlert/);
+  assert.match(pulse, /state\.textContent/);
+  assert.match(pulse, /cycle\.textContent/);
+
+  const clocks = functionFragment(js, 'updateClocks');
+  assert.match(clocks, /header-local-time/);
+  assert.match(clocks, /tz1-time/);
+});
+
+test('native Settings routing, sauna presets, hero metadata, and brain coherence use production data', () => {
+  const tabSetup = functionClosure(js, ['setupTabHandlers', 'selectDashboardTab']);
+  assert.match(tabSetup, /settings-btn/);
+  assert.match(tabSetup, /loadSettingsOverview/);
+  assert.doesNotMatch(functionFragment(js, 'loadAgents'), /window\.location\.href\s*=\s*['"]\/home23\/settings/);
+
+  const sauna = functionClosure(js, ['renderHumanSauna', 'renderHumanSaunaActions', 'setSaunaPreset']);
+  assert.match(sauna, /\[170,\s*180,\s*190\]/);
+  assert.match(sauna, /data-target=["']\$\{target\}["']/);
+  assert.doesNotMatch(sauna, /data-target=["'](?:150|210)["']/);
+  assert.match(sauna, /data-duration=["']180["']/);
+  assert.match(sauna, /\?\s*['"]active['"]\s*:/);
+  assert.match(sauna, /classList\.toggle\(['"]active['"]/);
+  assert.match(sauna, /(?:Heating|isHeating|heating)/);
+
+  const hero = functionClosure(js, ['loadHumanHomeSurface', 'renderJerryVoiceTile']);
+  assert.match(hero, /human-jerry-kicker/);
+  assert.match(hero, /human-jerry-status/);
+  assert.match(hero, /brain nodes/);
+  assert.match(hero, /open problem/);
+  assert.doesNotMatch(hero, /api\/brain\/storage/);
+
+  const coherence = functionClosure(js, ['brainStorageStatus', 'renderBrainStoragePanel']);
+  for (const status of ['in-sync', 'pending', 'mismatch']) assert.match(coherence, new RegExp(status));
+  assert.match(coherence, /nodeDelta\s*>?=\s*0/);
+  assert.match(coherence, /edgeDelta\s*>?=\s*0/);
+});
+
 test('dashboard Settings is a read-only overview linked to the full control surface', () => {
   assert.match(html, /id="panel-settings"/);
   assert.match(js, /loadSettingsOverview/);
