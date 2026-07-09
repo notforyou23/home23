@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import vm from 'node:vm';
 import ts from 'typescript';
 
 const HOME23_ROOT = process.cwd();
@@ -598,6 +599,198 @@ function cssValuePattern(value) {
   return escapedParts.join('\\s*');
 }
 
+class RuntimeClassList {
+  constructor(initial = []) {
+    this.values = new Set(initial);
+  }
+
+  add(...values) { values.forEach((value) => this.values.add(value)); }
+  remove(...values) { values.forEach((value) => this.values.delete(value)); }
+  contains(value) { return this.values.has(value); }
+  toggle(value, force) {
+    const enabled = force === undefined ? !this.values.has(value) : Boolean(force);
+    if (enabled) this.values.add(value);
+    else this.values.delete(value);
+    return enabled;
+  }
+}
+
+class RuntimeElement {
+  constructor(document, id, { tagName = 'DIV', display = '', classes = [] } = {}) {
+    this.ownerDocument = document;
+    this.id = id;
+    this.tagName = tagName.toUpperCase();
+    this.dataset = {};
+    this.attributes = new Map();
+    this.children = [];
+    this.parentElement = null;
+    this.hidden = false;
+    this.disabled = false;
+    this.isConnected = true;
+    this.value = '';
+    this.textContent = '';
+    this.innerHTML = '';
+    this.classList = new RuntimeClassList(classes);
+    this.style = {
+      display,
+      visibility: 'visible',
+      overflow: '',
+      setProperty(name, value) { this[name] = String(value); },
+      removeProperty(name) { delete this[name]; },
+    };
+  }
+
+  appendChild(child) {
+    child.parentElement = this;
+    this.children.push(child);
+    this.ownerDocument.register(child);
+    return child;
+  }
+
+  descendants() {
+    return this.children.flatMap((child) => [child, ...child.descendants()]);
+  }
+
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
+  focus() { this.ownerDocument.activeElement = this; }
+  contains(element) { return element === this || this.descendants().includes(element); }
+  getClientRects() {
+    return this.hidden || this.style.display === 'none' || this.style.visibility === 'hidden' ? [] : [{}];
+  }
+
+  matches(selector) {
+    if (selector.startsWith('#')) return this.id === selector.slice(1);
+    if (selector.includes('[data-sauna-preset]') && this.dataset.saunaPreset !== undefined) return true;
+    if (selector.includes('[data-home-tile-id="sauna-control"]')) return this.dataset.homeTileId === 'sauna-control';
+    if (selector.includes('[href]') && this.attributes.has('href')) return true;
+    if (selector.includes('[tabindex]') && this.attributes.has('tabindex')) return this.attributes.get('tabindex') !== '-1';
+    const tag = this.tagName.toLowerCase();
+    return ['button', 'input', 'textarea', 'select'].some((candidate) => (
+      selector.includes(candidate) && tag === candidate
+    ));
+  }
+
+  querySelectorAll(selector) {
+    return this.descendants().filter((element) => element.matches(selector));
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  closest(selector) {
+    let current = this;
+    while (current) {
+      if (current.matches(selector)) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  click() {
+    this.ownerDocument.dispatch('click', { target: this });
+  }
+}
+
+class RuntimeDocument {
+  constructor() {
+    this.elements = new Map();
+    this.listeners = new Map();
+    this.body = new RuntimeElement(this, 'body', { tagName: 'BODY' });
+    this.register(this.body);
+    this.activeElement = this.body;
+  }
+
+  register(element) {
+    if (element?.id) this.elements.set(element.id, element);
+    return element;
+  }
+
+  createElement(id, options = {}) {
+    return this.register(new RuntimeElement(this, id, options));
+  }
+
+  getElementById(id) { return this.elements.get(id) || null; }
+  querySelector(selector) { return [...this.elements.values()].find((element) => element.matches(selector)) || null; }
+  querySelectorAll(selector) { return [...this.elements.values()].filter((element) => element.matches(selector)); }
+  addEventListener(type, handler) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(handler);
+  }
+
+  dispatch(type, event = {}) {
+    const dispatched = {
+      key: '',
+      shiftKey: false,
+      defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() {},
+      ...event,
+    };
+    for (const handler of this.listeners.get(type) || []) handler(dispatched);
+    return dispatched;
+  }
+}
+
+function createDashboardRuntime() {
+  const document = new RuntimeDocument();
+  const mutationObservers = [];
+  class RuntimeMutationObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.targets = new Set();
+      mutationObservers.push(this);
+    }
+
+    observe(target) { this.targets.add(target); }
+  }
+
+  const windowListeners = new Map();
+  const window = {
+    location: { hostname: 'localhost', port: '5002', hash: '' },
+    history: { replaceState(_state, _title, hash) { window.location.hash = hash; } },
+    addEventListener(type, handler) { windowListeners.set(type, handler); },
+    confirm: () => true,
+  };
+  const context = vm.createContext({
+    console,
+    document,
+    window,
+    MutationObserver: RuntimeMutationObserver,
+    getComputedStyle: (element) => ({
+      display: element?.style?.display || '',
+      visibility: element?.style?.visibility || 'visible',
+    }),
+    requestAnimationFrame: (callback) => callback(),
+    setInterval: () => 1,
+    clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    fetch: async () => new Response('{}', { status: 200 }),
+    Response,
+    URLSearchParams,
+    AbortSignal,
+    Intl,
+    confirm: () => true,
+    alert: () => {},
+  });
+  const runtimeSource = js.replace(/\ninit\(\);\s*$/, '\n');
+  vm.runInContext(runtimeSource, context, { filename: 'home23-dashboard.js' });
+  return {
+    context,
+    document,
+    run(expression) { return vm.runInContext(expression, context); },
+    flushMutationRecords(targets) {
+      const records = targets.map((target) => ({ target, type: 'attributes' }));
+      for (const observer of mutationObservers) {
+        const observed = records.filter((record) => observer.targets.has(record.target));
+        if (observed.length) observer.callback(observed, observer);
+      }
+    },
+  };
+}
+
 test('glass dashboard replaces the dark sidebar shell with the complete top navigation', () => {
   assert.match(html, /class="h23-topbar"/);
   assert.doesNotMatch(html, /class="h23-sidebar"/);
@@ -751,6 +944,216 @@ test('native Settings routing, sauna presets, hero metadata, and brain coherence
   for (const status of ['in-sync', 'pending', 'mismatch']) assert.match(coherence, new RegExp(status));
   assert.match(coherence, /nodeDelta\s*>?=\s*0/);
   assert.match(coherence, /edgeDelta\s*>?=\s*0/);
+});
+
+test('startup waits for agent identity but not a stalled scope registry', async () => {
+  const runtime = createDashboardRuntime();
+  runtime.run(`
+    globalThis.runtimeEvents = [];
+    updateClocks = () => {};
+    setupTabHandlers = () => {};
+    setupOrganDrawer = () => {};
+    setupHumanHomeSurface = () => {};
+    setupResidentHomeSurface = () => {};
+    setupWorkersSurface = () => {};
+    setupBriefsSurface = () => {};
+    setupDashboardOverlayAccessibility = () => {};
+    refreshDashboardIdentityUI = () => runtimeEvents.push('identity');
+    refreshDashboardScopeUI = () => runtimeEvents.push('scope-ui');
+    selectInitialDashboardTabFromHash = () => false;
+    startAutoRefresh = () => runtimeEvents.push('polling');
+    loadHumanHomeSurface = () => { runtimeEvents.push('home'); return Promise.resolve(); };
+    connectEnginePulse = () => runtimeEvents.push('socket');
+    loadAgents = () => new Promise((resolve) => {
+      globalThis.releaseAgentDiscovery = () => { runtimeEvents.push('agents'); resolve(); };
+    });
+    loadDashboardScopeRegistry = () => new Promise((resolve) => {
+      globalThis.releaseScopeRegistry = () => { runtimeEvents.push('scope-settled'); resolve(); };
+    });
+  `);
+
+  const initialization = runtime.run('init()');
+  await Promise.resolve();
+  assert.deepEqual([...runtime.context.runtimeEvents], [], 'socket and Home must wait for agent discovery');
+
+  runtime.run('releaseAgentDiscovery()');
+  const settledWithoutScope = await Promise.race([
+    initialization.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 50)),
+  ]);
+  assert.equal(settledWithoutScope, true, 'scope registry must not hold startup open');
+  const startupEvents = [...runtime.context.runtimeEvents];
+  assert.ok(startupEvents.indexOf('agents') < startupEvents.indexOf('socket'));
+  assert.ok(startupEvents.indexOf('socket') < startupEvents.indexOf('home'));
+  assert.ok(startupEvents.includes('polling'));
+
+  const refreshesBeforeScope = startupEvents.filter((event) => event === 'scope-ui').length;
+  runtime.run('releaseScopeRegistry()');
+  await Promise.resolve();
+  await Promise.resolve();
+  const refreshesAfterScope = [...runtime.context.runtimeEvents].filter((event) => event === 'scope-ui').length;
+  assert.equal(refreshesAfterScope, refreshesBeforeScope + 1, 'settled scope data must refresh its UI independently');
+});
+
+test('overlay focus, Tab, Escape, and scroll restoration follow actual paint order', () => {
+  const runtime = createDashboardRuntime();
+  const { document } = runtime;
+  document.body.style.overflow = 'auto';
+
+  const overlays = new Map();
+  for (const id of [
+    'problems-overlay', 'goodlife-overlay', 'brain-storage-overlay',
+    'home-vibe-detail-modal', 'chat-overlay', 'problem-editor-overlay',
+  ]) {
+    const overlay = document.createElement(id, { display: 'none' });
+    overlay.setAttribute('aria-hidden', id === 'home-vibe-detail-modal' ? 'true' : 'false');
+    overlays.set(id, overlay);
+  }
+  const brain = overlays.get('brain-storage-overlay');
+  const brainFirst = brain.appendChild(document.createElement('brain-first', { tagName: 'BUTTON' }));
+  brain.appendChild(document.createElement('brain-last', { tagName: 'BUTTON' }));
+  const problems = overlays.get('problems-overlay');
+  const problemsFirst = problems.appendChild(document.createElement('problems-first', { tagName: 'BUTTON' }));
+  const problemsLast = problems.appendChild(document.createElement('problems-last', { tagName: 'BUTTON' }));
+  const brainInvoker = document.createElement('open-brain', { tagName: 'BUTTON' });
+  const problemsInvoker = document.createElement('open-problems', { tagName: 'BUTTON' });
+
+  runtime.run('setupDashboardOverlayAccessibility()');
+  document.dispatch('click', { target: brainInvoker });
+  brain.style.display = 'flex';
+  runtime.flushMutationRecords([brain]);
+  assert.equal(document.activeElement, brainFirst);
+  assert.equal(document.body.style.overflow, 'hidden');
+
+  document.dispatch('click', { target: problemsInvoker });
+  problems.style.display = 'flex';
+  runtime.flushMutationRecords([problems]);
+  assert.equal(document.activeElement, problemsFirst, 'newly painted dialog receives focus');
+
+  problemsLast.focus();
+  const tabEvent = document.dispatch('keydown', { key: 'Tab', target: problemsLast });
+  assert.equal(tabEvent.defaultPrevented, true);
+  assert.equal(document.activeElement, problemsFirst, 'Tab wraps within the actual top dialog');
+
+  const firstEscape = document.dispatch('keydown', { key: 'Escape', target: problemsFirst });
+  assert.equal(firstEscape.defaultPrevented, true);
+  assert.equal(problems.style.display, 'none', 'last-painted Problems dialog closes first');
+  assert.equal(brain.style.display, 'flex');
+  assert.equal(document.activeElement, problemsInvoker, 'Problems invoker regains focus');
+  assert.equal(document.body.style.overflow, 'hidden', 'scroll stays locked while Brain Storage remains open');
+
+  document.dispatch('keydown', { key: 'Escape', target: problemsInvoker });
+  assert.equal(brain.style.display, 'none');
+  assert.equal(document.activeElement, brainInvoker, 'Brain Storage invoker regains focus');
+  assert.equal(document.body.style.overflow, 'auto', 'original overflow is restored after the last dialog closes');
+});
+
+test('Settings overview settles GET sections independently without mutation requests', async () => {
+  const runtime = createDashboardRuntime();
+  for (const id of [
+    'settings-overview-agents', 'settings-overview-feeds',
+    'settings-overview-operations', 'settings-overview-house',
+  ]) runtime.document.createElement(id);
+  runtime.context.__settingsCalls = [];
+  runtime.context.__settingsApiFetch = async (url, options = {}) => {
+    runtime.context.__settingsCalls.push({ url, options });
+    if (url.includes('/settings/feeder')) throw new Error('feeder offline');
+    if (url.includes('/settings/agents')) return {
+      currentAgent: 'jerry',
+      agents: [{ name: 'jerry', displayName: 'Jerry', status: 'running' }],
+    };
+    if (url.includes('/api/state')) return { temporalState: 'awake', cycleCount: 42 };
+    if (url.includes('/settings/vibe')) return { vibe: { autoGenerate: true, rotationIntervalSeconds: 45, galleryLimit: 60 } };
+    throw new Error(`unexpected ${url}`);
+  };
+  runtime.run(`
+    apiFetch = globalThis.__settingsApiFetch;
+    primaryAgent = { name: 'jerry', displayName: 'Jerry', model: 'production-model' };
+  `);
+
+  await runtime.run('loadSettingsOverview()');
+  assert.equal(runtime.context.__settingsCalls.length, 4);
+  assert.ok(runtime.context.__settingsCalls.every(({ options }) => !options.method || options.method === 'GET'));
+  assert.match(runtime.document.getElementById('settings-overview-agents').innerHTML, /Jerry/);
+  assert.match(runtime.document.getElementById('settings-overview-feeds').innerHTML, /unavailable/i);
+  assert.match(runtime.document.getElementById('settings-overview-operations').innerHTML, /42/);
+  assert.match(runtime.document.getElementById('settings-overview-house').innerHTML, /automatic/);
+});
+
+test('sauna polling preserves user-edited request state and reflects live heating state', () => {
+  const runtime = createDashboardRuntime();
+  const target = runtime.document.createElement('human-sauna-target', { tagName: 'INPUT' });
+  target.value = '190';
+  const duration = runtime.document.createElement('human-sauna-duration', { tagName: 'INPUT' });
+  duration.value = '180';
+  const actions = runtime.document.createElement('human-sauna-actions');
+  const card = runtime.document.createElement('sauna-card');
+  card.dataset.homeTileId = 'sauna-control';
+  runtime.context.__saunaPayload = {
+    content: {
+      status: 'Heating',
+      value: '145°F',
+      subtitle: 'Target 170°F',
+      metrics: [
+        { label: 'Target', value: '170°F' },
+        { label: 'Duration', value: '120 min' },
+        { label: 'Heating', value: 'Yes' },
+      ],
+    },
+    actions: [{
+      id: 'start',
+      label: 'Start',
+      fields: [
+        { id: 'targetTemperature', defaultValue: 190 },
+        { id: 'duration', defaultValue: 180 },
+      ],
+    }],
+  };
+
+  runtime.run('renderHumanSauna(globalThis.__saunaPayload)');
+  assert.match(actions.innerHTML, /class="active"[^>]*data-target="170"/);
+  assert.equal(card.classList.contains('heating'), true);
+  assert.equal(card.classList.contains('running'), true);
+
+  runtime.run('setSaunaPreset(180, 180)');
+  runtime.run('renderHumanSauna(globalThis.__saunaPayload)');
+  assert.equal(target.value, '180');
+  assert.equal(duration.value, '180');
+  assert.equal(target.dataset.userEdited, 'true');
+  assert.match(actions.innerHTML, /class="active"[^>]*data-target="180"/);
+  assert.doesNotMatch(actions.innerHTML, /class="active"[^>]*data-target="170"/);
+});
+
+test('Brain Storage classification and color semantics execute for all states', async () => {
+  const runtime = createDashboardRuntime();
+  const cases = [
+    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: { nodes: 10, edges: 20 } }, 'in-sync', '--h23-green-aa'],
+    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: { nodes: 12, edges: 22 } }, 'pending', '--h23-amber-aa'],
+    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: { nodes: 9, edges: 22 } }, 'mismatch', '--h23-red-aa'],
+    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: null }, 'unavailable', '--h23-text-secondary'],
+  ];
+  for (const [data, state, colorToken] of cases) {
+    runtime.context.__brainCase = data;
+    const presentation = runtime.run('brainStorageStatusPresentation(globalThis.__brainCase)');
+    assert.equal(presentation.state, state);
+    assert.equal(presentation.color, `var(${colorToken})`);
+  }
+
+  const content = runtime.document.createElement('brain-storage-content');
+  runtime.context.__brainCase = cases[2][0];
+  runtime.context.fetch = async () => ({ ok: true, json: async () => runtime.context.__brainCase });
+  await runtime.run('renderBrainStoragePanel()');
+  assert.match(content.innerHTML, /h23-brain-storage-status mismatch/);
+  assert.match(content.innerHTML, /Investigate before restarting/i);
+
+  for (const [state, token] of [
+    ['in-sync', '--h23-green-aa'],
+    ['pending', '--h23-amber-aa'],
+    ['mismatch', '--h23-red-aa'],
+    ['unavailable', '--h23-text-secondary'],
+  ]) {
+    assert.match(css, new RegExp(`h23-brain-storage-status\\.${state}[\\s\\S]*var\\(${token}\\)`));
+  }
 });
 
 test('dashboard Settings is a read-only overview linked to the full control surface', () => {

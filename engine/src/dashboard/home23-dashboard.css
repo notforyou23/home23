@@ -7617,6 +7617,41 @@ body.h23-dashboard-page .h23-vibe-detail-body {
   color: var(--h23-text-body);
 }
 
+body.h23-dashboard-page .h23-brain-storage-status {
+  margin-bottom: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--h23-input-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--h23-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+body.h23-dashboard-page .h23-brain-storage-status.in-sync {
+  border-color: rgba(30, 158, 111, 0.28);
+  background: rgba(30, 158, 111, 0.1);
+  color: var(--h23-green-aa);
+}
+
+body.h23-dashboard-page .h23-brain-storage-status.pending {
+  border-color: rgba(217, 118, 43, 0.3);
+  background: rgba(217, 118, 43, 0.1);
+  color: var(--h23-amber-aa);
+}
+
+body.h23-dashboard-page .h23-brain-storage-status.mismatch {
+  border-color: rgba(201, 79, 79, 0.32);
+  background: rgba(201, 79, 79, 0.1);
+  color: var(--h23-red-aa);
+}
+
+body.h23-dashboard-page .h23-brain-storage-status.unavailable {
+  border-color: var(--h23-input-border);
+  background: rgba(255, 255, 255, 0.52);
+  color: var(--h23-text-secondary);
+}
+
 body.h23-dashboard-page .h23-vibe-detail-body {
   margin-top: 0;
   padding: 18px 26px 26px;

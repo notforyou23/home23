@@ -56,6 +56,8 @@ const DASHBOARD_OVERLAY_IDS = [
 ];
 const dashboardOverlayFocusOrigins = new Map();
 const dashboardOverlayVisibility = new Map();
+const dashboardOverlayPaintOrder = new Map();
+let dashboardOverlayPaintSequence = 0;
 let dashboardOverlayAccessibilityBound = false;
 let dashboardOverlayLastInvoker = null;
 let dashboardOverlayLastInvokerAt = 0;
@@ -209,13 +211,15 @@ async function init() {
   setupBriefsSurface();
   setupDashboardOverlayAccessibility();
 
-  await Promise.allSettled([
-    loadAgents(),
-    loadDashboardScopeRegistry(),
-  ]);
+  const scopeRegistryPromise = Promise.resolve().then(() => loadDashboardScopeRegistry());
+  await Promise.allSettled([loadAgents()]);
   connectEnginePulse();
   refreshDashboardScopeUI();
   refreshDashboardIdentityUI();
+  void scopeRegistryPromise.then(
+    () => refreshDashboardScopeUI(),
+    () => refreshDashboardScopeUI(),
+  ).catch(() => {});
 
   const selectedFromHash = selectInitialDashboardTabFromHash();
   if (!selectedFromHash && currentTab === 'home') {
@@ -294,10 +298,20 @@ function restoreDashboardOverlayFocus(overlay) {
   dashboardOverlayFocusOrigins.delete(overlay.id);
 }
 
-function closeTopmostDashboardOverlay() {
-  const visibleOverlays = DASHBOARD_OVERLAY_IDS
+function visibleDashboardOverlaysInPaintOrder(overlays = null) {
+  const candidates = overlays || DASHBOARD_OVERLAY_IDS
     .map((id) => document.getElementById(id))
-    .filter(dashboardOverlayIsVisible);
+    .filter(Boolean);
+  return candidates
+    .filter(dashboardOverlayIsVisible)
+    .sort((left, right) => (
+      (dashboardOverlayPaintOrder.get(left.id) || 0)
+      - (dashboardOverlayPaintOrder.get(right.id) || 0)
+    ));
+}
+
+function closeTopmostDashboardOverlay() {
+  const visibleOverlays = visibleDashboardOverlaysInPaintOrder();
   const overlay = visibleOverlays.at(-1);
   if (!overlay) return false;
 
@@ -310,6 +324,7 @@ function closeTopmostDashboardOverlay() {
 
   restoreDashboardOverlayFocus(overlay);
   dashboardOverlayVisibility.set(overlay.id, false);
+  dashboardOverlayPaintOrder.delete(overlay.id);
   syncDashboardOverlayScrollLock();
   return true;
 }
@@ -329,11 +344,22 @@ function setupDashboardOverlayAccessibility() {
     }
   }, true);
 
-  const observer = new MutationObserver(() => {
-    overlays.forEach((overlay) => {
+  const observer = new MutationObserver((records) => {
+    const recordTargets = [];
+    for (const record of records) {
+      if (!overlays.includes(record.target) || recordTargets.includes(record.target)) continue;
+      recordTargets.push(record.target);
+    }
+    const orderedOverlays = [
+      ...recordTargets,
+      ...overlays.filter((overlay) => !recordTargets.includes(overlay)),
+    ];
+    orderedOverlays.forEach((overlay) => {
       const visible = dashboardOverlayIsVisible(overlay);
       const wasVisible = dashboardOverlayVisibility.get(overlay.id) === true;
       if (dashboardOverlayIsVisible(overlay) && !wasVisible) {
+        dashboardOverlayPaintSequence += 1;
+        dashboardOverlayPaintOrder.set(overlay.id, dashboardOverlayPaintSequence);
         dashboardOverlayFocusOrigins.set(overlay.id, document.activeElement);
         const hasRecentExternalInvoker = dashboardOverlayLastInvoker
           && !overlay.contains(dashboardOverlayLastInvoker)
@@ -347,6 +373,7 @@ function setupDashboardOverlayAccessibility() {
         if (!overlay.contains(document.activeElement)) focusTarget?.focus();
       } else if (!dashboardOverlayIsVisible(overlay) && wasVisible) {
         restoreDashboardOverlayFocus(overlay);
+        dashboardOverlayPaintOrder.delete(overlay.id);
       }
       dashboardOverlayVisibility.set(overlay.id, visible);
     });
@@ -354,7 +381,12 @@ function setupDashboardOverlayAccessibility() {
   });
 
   overlays.forEach((overlay) => {
-    dashboardOverlayVisibility.set(overlay.id, dashboardOverlayIsVisible(overlay));
+    const visible = dashboardOverlayIsVisible(overlay);
+    dashboardOverlayVisibility.set(overlay.id, visible);
+    if (visible) {
+      dashboardOverlayPaintSequence += 1;
+      dashboardOverlayPaintOrder.set(overlay.id, dashboardOverlayPaintSequence);
+    }
     observer.observe(overlay, {
       attributes: true,
       attributeFilter: ['style', 'class', 'hidden', 'aria-hidden'],
@@ -367,7 +399,7 @@ function setupDashboardOverlayAccessibility() {
       return;
     }
     if (event.key === 'Tab') {
-      const visibleOverlays = overlays.filter(dashboardOverlayIsVisible);
+      const visibleOverlays = visibleDashboardOverlaysInPaintOrder(overlays);
       const overlay = visibleOverlays.at(-1);
       if (!overlay) return;
       const focusable = dashboardOverlayFocusableElements(overlay);
@@ -805,6 +837,35 @@ function brainStorageStatus(data = {}) {
   return data.mismatch === true ? 'mismatch' : 'unavailable';
 }
 
+function brainStorageStatusPresentation(data = {}) {
+  const state = brainStorageStatus(data);
+  const snapNodes = data.snapshot?.nodeCount ?? '—';
+  const memoryNodes = data.inMemory?.nodes ?? '—';
+  const presentations = {
+    'in-sync': {
+      state: 'in-sync',
+      color: 'var(--h23-green-aa)',
+      text: 'Disk snapshot and live memory are in sync.',
+    },
+    pending: {
+      state: 'pending',
+      color: 'var(--h23-amber-aa)',
+      text: `Live memory is ahead of disk (${memoryNodes} vs ${snapNodes} nodes); the next successful snapshot should close this expected working delta.`,
+    },
+    mismatch: {
+      state: 'mismatch',
+      color: 'var(--h23-red-aa)',
+      text: `Mismatch: disk says ${snapNodes} nodes, memory says ${memoryNodes}. Investigate before restarting the engine.`,
+    },
+    unavailable: {
+      state: 'unavailable',
+      color: 'var(--h23-text-secondary)',
+      text: 'Live-memory comparison is unavailable; disk snapshot details are shown below.',
+    },
+  };
+  return presentations[state] || presentations.unavailable;
+}
+
 async function updateBrainStorageBadge() {
   try {
     const r = await fetch(`${dashboardBaseUrl()}/api/brain/storage`);
@@ -827,19 +888,18 @@ async function updateBrainStorageBadge() {
 
     const ageMs = data.snapshot?.savedAt ? (Date.now() - new Date(data.snapshot.savedAt).getTime()) : null;
     const ageStr = ageMs == null ? '?' : (ageMs < 60000 ? `${Math.round(ageMs/1000)}s` : `${Math.round(ageMs/60000)}m`);
-    const coherence = brainStorageStatus(data);
-    badge.classList.remove('in-sync', 'pending', 'mismatch');
-    if (coherence !== 'unavailable') badge.classList.add(coherence);
+    const presentation = brainStorageStatusPresentation(data);
+    const coherence = presentation.state;
+    badge.classList.remove('in-sync', 'pending', 'mismatch', 'unavailable');
+    badge.classList.add(coherence);
+    badge.style.color = presentation.color;
 
     if (coherence === 'mismatch') {
       badge.textContent = `🧠 ${snapNodes} ⚠️ mismatch`;
-      badge.style.color = '#ff6b6b';
     } else if (coherence === 'pending') {
       badge.textContent = `🧠 ${snapNodes.toLocaleString()} · pending snapshot`;
-      badge.style.color = '#d9762b';
     } else {
       badge.textContent = `🧠 ${snapNodes.toLocaleString()} · saved ${ageStr} ago`;
-      badge.style.color = 'rgba(255,255,255,0.55)';
     }
   } catch { /* silent */ }
 }
@@ -866,23 +926,15 @@ async function renderBrainStoragePanel() {
     _brainStorage = data;
 
     const snap = data.snapshot;
-    const mem = data.inMemory;
     const hw = data.highWater;
     const files = data.files || {};
     const backups = data.backups || [];
-    const coherence = brainStorageStatus(data);
+    const presentation = brainStorageStatusPresentation(data);
 
     const mb = (b) => { if (b == null) return '—'; if (b < 1024) return `${b} B`; if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`; return `${(b / 1048576).toFixed(1)} MB`; };
     const ago = (iso) => { if (!iso) return '—'; const ms = Date.now() - new Date(iso).getTime(); if (ms < 60000) return `${Math.round(ms/1000)}s ago`; if (ms < 3600000) return `${Math.round(ms/60000)}m ago`; return `${Math.round(ms/3600000)}h ago`; };
 
-    const coherenceCopy = coherence === 'in-sync'
-      ? 'Disk snapshot and live memory are in sync.'
-      : coherence === 'pending'
-        ? `Live memory is ahead of disk (${mem?.nodes ?? '—'} vs ${snap?.nodeCount ?? '—'} nodes); the next successful snapshot should close this expected working delta.`
-        : coherence === 'mismatch'
-          ? `Mismatch: disk says ${snap?.nodeCount ?? '—'} nodes, memory says ${mem?.nodes ?? '—'}. Investigate before restarting the engine.`
-          : 'Live-memory comparison is unavailable; disk snapshot details are shown below.';
-    const mismatchWarn = `<div class="h23-brain-storage-status ${coherence}" style="border-radius:6px;padding:10px 14px;margin-bottom:14px;">${escapeHtml(coherenceCopy)}</div>`;
+    const mismatchWarn = `<div class="h23-brain-storage-status ${presentation.state}" role="status">${escapeHtml(presentation.text)}</div>`;
 
     content.innerHTML = `
       ${mismatchWarn}
