@@ -57,6 +57,7 @@ const DASHBOARD_OVERLAY_IDS = [
 const dashboardOverlayFocusOrigins = new Map();
 const dashboardOverlayVisibility = new Map();
 const dashboardOverlayPaintOrder = new Map();
+const DASHBOARD_OVERLAY_BASE_Z_INDEX = 1000;
 let dashboardOverlayPaintSequence = 0;
 let dashboardOverlayAccessibilityBound = false;
 let dashboardOverlayLastInvoker = null;
@@ -310,6 +311,25 @@ function visibleDashboardOverlaysInPaintOrder(overlays = null) {
     ));
 }
 
+function syncDashboardOverlayVisualStack(overlays = null) {
+  const candidates = overlays || DASHBOARD_OVERLAY_IDS
+    .map((id) => document.getElementById(id))
+    .filter(Boolean);
+  const visibleOverlays = visibleDashboardOverlaysInPaintOrder(candidates);
+  const visibleIds = new Set(visibleOverlays.map((overlay) => overlay.id));
+  candidates.forEach((overlay) => {
+    overlay.style.zIndex = '';
+    if (!visibleIds.has(overlay.id)) dashboardOverlayPaintOrder.delete(overlay.id);
+  });
+  visibleOverlays.forEach((overlay, index) => {
+    const normalizedOrder = index + 1;
+    dashboardOverlayPaintOrder.set(overlay.id, normalizedOrder);
+    overlay.style.zIndex = String(DASHBOARD_OVERLAY_BASE_Z_INDEX + index);
+  });
+  dashboardOverlayPaintSequence = visibleOverlays.length;
+  return visibleOverlays;
+}
+
 function closeTopmostDashboardOverlay() {
   const visibleOverlays = visibleDashboardOverlaysInPaintOrder();
   const overlay = visibleOverlays.at(-1);
@@ -325,6 +345,7 @@ function closeTopmostDashboardOverlay() {
   restoreDashboardOverlayFocus(overlay);
   dashboardOverlayVisibility.set(overlay.id, false);
   dashboardOverlayPaintOrder.delete(overlay.id);
+  syncDashboardOverlayVisualStack();
   syncDashboardOverlayScrollLock();
   return true;
 }
@@ -377,6 +398,7 @@ function setupDashboardOverlayAccessibility() {
       }
       dashboardOverlayVisibility.set(overlay.id, visible);
     });
+    syncDashboardOverlayVisualStack(overlays);
     syncDashboardOverlayScrollLock();
   });
 
@@ -422,6 +444,7 @@ function setupDashboardOverlayAccessibility() {
     }
   });
 
+  syncDashboardOverlayVisualStack(overlays);
   syncDashboardOverlayScrollLock();
 }
 

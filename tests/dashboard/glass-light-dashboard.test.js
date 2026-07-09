@@ -599,6 +599,13 @@ function cssValuePattern(value) {
   return escapedParts.join('\\s*');
 }
 
+/**
+ * Intentional minimal DOM harness for dashboard runtime contracts. It supports
+ * only the selectors exercised here: #id, button/input/textarea/select,
+ * [href], [tabindex], [data-sauna-preset], and the sauna tile's exact
+ * [data-home-tile-id] selector. It is not a general CSS selector or layout
+ * engine; browser QA remains the authority for full DOM/CSS integration.
+ */
 class RuntimeClassList {
   constructor(initial = []) {
     this.values = new Set(initial);
@@ -1029,6 +1036,8 @@ test('overlay focus, Tab, Escape, and scroll restoration follow actual paint ord
   problems.style.display = 'flex';
   runtime.flushMutationRecords([problems]);
   assert.equal(document.activeElement, problemsFirst, 'newly painted dialog receives focus');
+  assert.equal(brain.style.zIndex, '1000', 'the lower open dialog retains the base overlay layer');
+  assert.equal(problems.style.zIndex, '1001', 'the latest painted dialog is visibly above it');
 
   problemsLast.focus();
   const tabEvent = document.dispatch('keydown', { key: 'Tab', target: problemsLast });
@@ -1046,6 +1055,29 @@ test('overlay focus, Tab, Escape, and scroll restoration follow actual paint ord
   assert.equal(brain.style.display, 'none');
   assert.equal(document.activeElement, brainInvoker, 'Brain Storage invoker regains focus');
   assert.equal(document.body.style.overflow, 'auto', 'original overflow is restored after the last dialog closes');
+
+  // Reverse DOM order: Problems appears after Brain Storage in markup, so
+  // opening Problems then Brain proves visual z-order follows paint order.
+  document.dispatch('click', { target: problemsInvoker });
+  problems.style.display = 'flex';
+  runtime.flushMutationRecords([problems]);
+  document.dispatch('click', { target: brainInvoker });
+  brain.style.display = 'flex';
+  runtime.flushMutationRecords([brain]);
+  assert.equal(problems.style.zIndex, '1000');
+  assert.equal(brain.style.zIndex, '1001', 'reverse-order Brain dialog is visually and logically topmost');
+  assert.equal(document.activeElement, brainFirst);
+
+  document.dispatch('keydown', { key: 'Escape', target: brainFirst });
+  assert.equal(brain.style.display, 'none');
+  assert.equal(problems.style.display, 'flex');
+  assert.equal(problems.style.zIndex, '1000', 'remaining dialog resets to the base overlay layer');
+  assert.equal(document.activeElement, brainInvoker);
+
+  document.dispatch('keydown', { key: 'Escape', target: brainInvoker });
+  assert.equal(problems.style.display, 'none');
+  assert.equal(document.activeElement, problemsInvoker);
+  assert.equal(document.body.style.overflow, 'auto');
 });
 
 test('Settings overview settles GET sections independently without mutation requests', async () => {
