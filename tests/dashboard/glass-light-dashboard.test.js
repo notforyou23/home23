@@ -645,6 +645,7 @@ test('Home regions are correctly nested with five sensor cards and Chat first', 
   );
   assert.equal(sensorStrip.children[3].tag, 'button');
   assert.ok(findDescendant(sensorStrip.children[3], (node) => node.attrs.get('id') === 'human-issues-value'));
+  assert.match(sourceForNode(html, sensorStrip.children[3]), /<span>Problems<\/span>/);
   assert.equal(sensorStrip.children[4].tag, 'button');
   assert.ok(findDescendant(sensorStrip.children[4], (node) => node.attrs.get('id') === 'human-goodlife-value'));
 
@@ -667,6 +668,12 @@ test('the redesign preserves production chat, operator, COSMO, and Brain Map hoo
     'renderProblemsList', 'renderBrainStoragePanel', 'openGoodLifeOperator',
     'setSaunaPreset', 'runHumanSaunaAction', 'showCosmoFrame',
   ]) assert.match(js, new RegExp(`function ${fn}\\b`));
+
+  assert.match(html, /class="h23-cosmo-heading"[\s\S]*?<h2>COSMO 2\.3<\/h2>/);
+  assert.match(
+    html,
+    /id="chat-attach-btn"[^>]*aria-label="Attach image"[^>]*>[\s\S]*?&#x1F4CE;&#xFE0E;[\s\S]*?<\/button>/i,
+  );
 });
 
 test('the approved redesign boundary excludes server, settings API, and runtime state', () => {
