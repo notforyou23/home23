@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-09
 
-**Status:** Design approved; awaiting written-spec review
+**Status:** Written spec approved; ready for implementation
 
 **Scope:** Home23 CLI startup for the shared `home23-evobrew`, `home23-cosmo23`, and `home23-screenlogic` PM2 services, plus the bounded live COSMO recovery procedure.
 
