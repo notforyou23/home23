@@ -1354,14 +1354,23 @@ function createSettingsRouter(home23Root, options = {}) {
 
   router.post('/cosmo23/restart', async (req, res) => {
     try {
-      const { execSync } = require('child_process');
-      const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
       // Seed config before starting
       try {
         const { seedCosmo23Config } = await import(path.join(home23Root, 'cli', 'lib', 'cosmo23-config.js'));
         seedCosmo23Config(home23Root);
       } catch { /* config seeding optional */ }
-      execSync(`pm2 start ${ecosystemPath} --only home23-cosmo23 --update-env --silent`, { cwd: home23Root, env: cleanPm2Env(), stdio: 'pipe', timeout: 15000 });
+      const { pathToFileURL } = require('url');
+      const sharedStart = await import(pathToFileURL(
+        path.join(home23Root, 'cli', 'lib', 'shared-service-start.js')
+      ).href);
+      const cosmoService = sharedStart.SHARED_SERVICES.find(
+        service => service.name === 'home23-cosmo23'
+      );
+      if (!cosmoService) throw new Error('COSMO shared-service definition is missing');
+      await sharedStart.coordinateSharedServiceStartup({
+        home23Root,
+        services: [cosmoService],
+      });
       res.json({ ok: true, status: 'started' });
     } catch (err) {
       res.status(500).json({ error: err.message });

@@ -2047,9 +2047,17 @@ class DashboardServer {
           if (proc && proc.pm2_env?.status === 'online') return; // PM2 says online, just slow to respond
 
           console.log('[COSMO watchdog] cosmo23 not responding — starting...');
-          const ecosystemPath = path.join(home23RootForWatchdog, 'ecosystem.config.cjs');
-          execFileSync('pm2', ['start', ecosystemPath, '--only', 'home23-cosmo23', '--update-env', '--silent'], {
-            cwd: home23RootForWatchdog, env: cleanPm2Env(), stdio: 'pipe', timeout: 15_000
+          const { pathToFileURL } = require('url');
+          const sharedStart = await import(pathToFileURL(
+            path.join(home23RootForWatchdog, 'cli', 'lib', 'shared-service-start.js')
+          ).href);
+          const cosmoService = sharedStart.SHARED_SERVICES.find(
+            service => service.name === 'home23-cosmo23'
+          );
+          if (!cosmoService) throw new Error('COSMO shared-service definition is missing');
+          await sharedStart.coordinateSharedServiceStartup({
+            home23Root: home23RootForWatchdog,
+            services: [cosmoService],
           });
           console.log('[COSMO watchdog] cosmo23 started');
         } catch (err) {

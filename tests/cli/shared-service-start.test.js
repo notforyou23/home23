@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import {
   SHARED_SERVICES,
   coordinateSharedServiceStartup,
+  startEcosystemProcesses,
 } from '../../cli/lib/shared-service-start.js';
 
 function onlineRow(name, pid) {
@@ -168,6 +169,7 @@ test('stale cleanup preserves a replacement lock with a different token', async 
 test('duplicate PM2 records fail closed without calling startService', async (t) => {
   const { lockPath, receiptPath } = await makeTempPaths(t);
   let starts = 0;
+  let capturedReceipt;
 
   await assert.rejects(
     coordinateSharedServiceStartup({
@@ -180,13 +182,16 @@ test('duplicate PM2 records fail closed without calling startService', async (t)
           onlineRow('home23-evobrew', 6002),
         ],
         startService: async () => { starts += 1; },
-        appendReceipt: async () => {},
+        appendReceipt: async (receipt) => { capturedReceipt = receipt; },
       },
     }),
     /Duplicate PM2 records/,
   );
 
   assert.equal(starts, 0);
+  assert.equal(capturedReceipt.services[0].action, 'failed');
+  assert.equal(capturedReceipt.services[0].before.length, 2);
+  assert.match(capturedReceipt.services[0].error, /Duplicate PM2 records/);
   await assertAbsent(lockPath);
 });
 
@@ -262,4 +267,122 @@ test('receipt failure warns without hiding successful startup', async (t) => {
   assert.equal(result.ok, true);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /receipt write failed: synthetic receipt failure/);
+});
+
+test('receipts summarize PM2 state without copying environment secrets', async (t) => {
+  const { lockPath, receiptPath } = await makeTempPaths(t);
+  const result = await coordinateSharedServiceStartup({
+    home23Root: '/tmp/home23',
+    lockPath,
+    receiptPath,
+    services: [SHARED_SERVICES[0]],
+    dependencies: {
+      listProcesses: async () => [{
+        name: 'home23-evobrew',
+        pid: 8100,
+        pm_id: 4,
+        pm2_env: {
+          status: 'online',
+          restart_time: 2,
+          pm_exec_path: '/tmp/home23/evobrew/server/server.js',
+          pm_cwd: '/tmp/home23/evobrew',
+          OPENAI_API_KEY: 'must-not-leak',
+        },
+      }],
+      appendReceipt: async () => {},
+    },
+  });
+
+  assert.deepEqual(result.services[0].before, [{
+    name: 'home23-evobrew',
+    pid: 8100,
+    pmId: 4,
+    status: 'online',
+    restarts: 2,
+    script: '/tmp/home23/evobrew/server/server.js',
+    cwd: '/tmp/home23/evobrew',
+  }]);
+  assert.doesNotMatch(JSON.stringify(result), /must-not-leak|OPENAI_API_KEY/);
+});
+
+test('shared startup contract covers Evobrew, COSMO, and ScreenLogic in order', () => {
+  assert.deepEqual(SHARED_SERVICES.map(({ name }) => name), [
+    'home23-evobrew',
+    'home23-cosmo23',
+    'home23-screenlogic',
+  ]);
+});
+
+test('named ecosystem starts use exact PM2 targets with a sanitized environment', () => {
+  let invocation;
+  const env = {
+    PATH: process.env.PATH,
+    HOME23_AGENT: 'jerry',
+    INSTANCE_ID: 'home23-jerry',
+    cron_restart: '*/5 * * * *',
+  };
+
+  const started = startEcosystemProcesses({
+    home23Root: '/tmp/home23',
+    names: ['home23-jerry', 'home23-jerry-dash'],
+    env,
+    execFile: (command, args, options) => { invocation = { command, args, options }; },
+  });
+
+  assert.deepEqual(started, ['home23-jerry', 'home23-jerry-dash']);
+  assert.equal(invocation.command, 'env');
+  assert.deepEqual(invocation.args.slice(-7), [
+    'pm2',
+    'start',
+    '/tmp/home23/ecosystem.config.cjs',
+    '--only',
+    'home23-jerry,home23-jerry-dash',
+    '--update-env',
+    '--silent',
+  ]);
+  assert.equal(invocation.options.env.HOME23_AGENT, undefined);
+  assert.equal(invocation.options.env.INSTANCE_ID, undefined);
+  assert.equal(invocation.options.env.cron_restart, undefined);
+});
+
+test('home23 start delegates one coordinated shared-service startup pass', async () => {
+  const source = await readFile(new URL('../../cli/lib/pm2-commands.js', import.meta.url), 'utf8');
+
+  assert.match(source, /coordinateSharedServiceStartup\(\{ home23Root \}\)/);
+  assert.doesNotMatch(source, /Start evobrew|Start cosmo23|Start ScreenLogic bridge/);
+  assert.doesNotMatch(source, /execSync\(`pm2 start \$\{ecosystemPath\}`/);
+});
+
+test('other automatic COSMO startup entry points share the coordinator lock', async () => {
+  const updateSource = await readFile(new URL('../../cli/lib/update.js', import.meta.url), 'utf8');
+  const dashboardSource = await readFile(new URL('../../engine/src/dashboard/server.js', import.meta.url), 'utf8');
+  const settingsSource = await readFile(
+    new URL('../../engine/src/dashboard/home23-settings-api.js', import.meta.url),
+    'utf8',
+  );
+
+  assert.match(updateSource, /coordinateSharedServiceStartup/);
+  assert.doesNotMatch(updateSource, /execSync\(`pm2 start \$\{ecosystemPath\}`/);
+  assert.match(dashboardSource, /coordinateSharedServiceStartup/);
+  assert.doesNotMatch(
+    dashboardSource,
+    /execFileSync\('pm2', \['start', ecosystemPath, '--only', 'home23-cosmo23'/,
+  );
+  assert.match(settingsSource, /coordinateSharedServiceStartup/);
+  assert.doesNotMatch(
+    settingsSource,
+    /execSync\(`pm2 start \$\{ecosystemPath\} --only home23-cosmo23/,
+  );
+});
+
+test('npm pm2:start routes through the coordinated Home23 CLI', async () => {
+  const packageJson = JSON.parse(
+    await readFile(new URL('../../package.json', import.meta.url), 'utf8'),
+  );
+
+  assert.equal(packageJson.scripts['pm2:start'], 'node cli/home23.js start');
+  assert.equal(
+    packageJson.scripts['pm2:restart'],
+    'node cli/home23.js stop && node cli/home23.js start',
+  );
 });

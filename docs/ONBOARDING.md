@@ -105,6 +105,12 @@ Expected:
 - `npm run test:contracts:live` checks read-only live routes and skips action probes unless explicitly enabled
 - `node cli/home23.js status` shows only Home23 processes and their PM2 state
 
+### Concurrent starts and shared services
+
+`home23 start` serializes startup of the shared Evobrew, COSMO, and ScreenLogic services. Multiple concurrent start commands re-check PM2 state inside one cross-process lock, so each missing shared service is started once. Local evidence is appended to `logs/shared-service-startup.jsonl`.
+
+If PM2 reports duplicate records or a service port is owned by an untracked process, stop and inspect the exact service. Use only exact-name PM2 commands; never use global stop/delete commands.
+
 For action-writing live contract probes, run only when you are ready for bounded local state changes:
 
 ```bash

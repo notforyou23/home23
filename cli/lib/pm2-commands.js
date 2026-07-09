@@ -6,8 +6,18 @@
 
 import { execSync, spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { ensureSystemHealth } from './system-health.js';
+import {
+  SHARED_SERVICES,
+  coordinateSharedServiceStartup,
+  startEcosystemProcesses,
+} from './shared-service-start.js';
+
+const SHARED_SERVICE_LABELS = new Map(
+  SHARED_SERVICES.map((service) => [service.name, service.label]),
+);
+const AUTOSTART_SUPPORT_PROCESS_NAMES = Object.freeze(['home23-chrome-cdp']);
 
 function exec(cmd, opts = {}) {
   try {
@@ -23,6 +33,18 @@ function agentProcessNames(agentName) {
     `home23-${agentName}`,
     `home23-${agentName}-dash`,
     `home23-${agentName}-harness`,
+  ];
+}
+
+function allNonSharedAutostartProcessNames(home23Root) {
+  const manifestPath = join(home23Root, 'config', 'agents.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  if (!Array.isArray(manifest) || manifest.length === 0) {
+    throw new Error('No agents found in config/agents.json');
+  }
+  return [
+    ...manifest.flatMap((agent) => agentProcessNames(agent.name)),
+    ...AUTOSTART_SUPPORT_PROCESS_NAMES,
   ];
 }
 
@@ -62,7 +84,7 @@ export async function runStart(home23Root, agentName) {
     const names = agentProcessNames(agentName);
     console.log(`Starting ${agentName}...`);
     try {
-      execSync(`pm2 start ${ecosystemPath} --only ${names.join(',')}`, { cwd: home23Root, stdio: 'inherit' });
+      startEcosystemProcesses({ home23Root, names, stdio: 'inherit' });
     } catch (err) {
       console.error(`Failed to start ${agentName}: ${err.message}`);
       process.exit(1);
@@ -71,51 +93,21 @@ export async function runStart(home23Root, agentName) {
     // Start all
     console.log('Starting all agents...');
     try {
-      execSync(`pm2 start ${ecosystemPath}`, { cwd: home23Root, stdio: 'inherit' });
+      startEcosystemProcesses({
+        home23Root,
+        names: allNonSharedAutostartProcessNames(home23Root),
+        stdio: 'inherit',
+      });
     } catch (err) {
       console.error(`Failed to start Home23: ${err.message}`);
       process.exit(1);
     }
   }
 
-  // Start evobrew (shared process) if not already running
-  try {
-    const jlist = exec('pm2 jlist');
-    const procs = JSON.parse(jlist);
-    const evobrewRunning = procs.some(p => p.name === 'home23-evobrew' && p.pm2_env?.status === 'online');
-    if (!evobrewRunning) {
-      console.log('Starting evobrew...');
-      execSync(`pm2 start ${ecosystemPath} --only home23-evobrew`, { cwd: home23Root, stdio: 'inherit' });
-    }
-  } catch {
-    console.log('  (evobrew not started)');
-  }
-
-  // Start cosmo23 (shared process) if not already running
-  try {
-    const jlist2 = exec('pm2 jlist');
-    const procs2 = JSON.parse(jlist2);
-    const cosmo23Running = procs2.some(p => p.name === 'home23-cosmo23' && p.pm2_env?.status === 'online');
-    if (!cosmo23Running) {
-      console.log('Starting COSMO 2.3...');
-      execSync(`pm2 start ${ecosystemPath} --only home23-cosmo23`, { cwd: home23Root, stdio: 'inherit' });
-    }
-  } catch (err) {
-    console.error(`  ⚠ COSMO 2.3 failed to start: ${err.message}`);
-    console.log('  Check logs/cosmo23-err.log for details');
-  }
-
-  // Start ScreenLogic bridge (shared personal tile bridge) if present in the ecosystem.
-  try {
-    const jlist3 = exec('pm2 jlist');
-    const procs3 = JSON.parse(jlist3);
-    const screenlogicRunning = procs3.some(p => p.name === 'home23-screenlogic' && p.pm2_env?.status === 'online');
-    if (!screenlogicRunning) {
-      console.log('Starting ScreenLogic bridge...');
-      execSync(`pm2 start ${ecosystemPath} --only home23-screenlogic`, { cwd: home23Root, stdio: 'inherit' });
-    }
-  } catch {
-    console.log('  (ScreenLogic bridge not started)');
+  const sharedStartup = await coordinateSharedServiceStartup({ home23Root });
+  for (const service of sharedStartup.services) {
+    const label = SHARED_SERVICE_LABELS.get(service.name) || service.name;
+    console.log(`  ${label}: ${service.action}`);
   }
 
   // Find dashboard port for the URL

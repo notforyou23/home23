@@ -15,6 +15,11 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { ensureSystemHealth } from './system-health.js';
+import {
+  SHARED_SERVICES,
+  coordinateSharedServiceStartup,
+  startEcosystemProcesses,
+} from './shared-service-start.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -80,18 +85,30 @@ function stopHome23Processes() {
   return stopped;
 }
 
-/** Restart all home23-* PM2 processes from ecosystem config. */
-function restartHome23Processes(home23Root) {
+/** Restart only the home23-* PM2 processes that this update stopped. */
+async function restartHome23Processes(home23Root, processNames) {
   const ecosystemPath = join(home23Root, 'ecosystem.config.cjs');
   if (!existsSync(ecosystemPath)) {
     console.log('  No ecosystem.config.cjs — skipping process restart');
     return;
   }
+  if (processNames.length === 0) {
+    console.log('  No previously running Home23 processes to restart');
+    return;
+  }
+
   console.log('  Restarting Home23 processes...');
+  const sharedNames = new Set(SHARED_SERVICES.map(({ name }) => name));
+  const nonSharedNames = processNames.filter((name) => !sharedNames.has(name));
+  const sharedServices = SHARED_SERVICES.filter(({ name }) => processNames.includes(name));
   try {
-    execSync(`pm2 start ${ecosystemPath}`, { cwd: home23Root, stdio: 'inherit' });
-  } catch {
-    console.error('  PM2 restart failed — run "home23 start" manually');
+    startEcosystemProcesses({ home23Root, names: nonSharedNames, stdio: 'inherit' });
+    if (sharedServices.length > 0) {
+      await coordinateSharedServiceStartup({ home23Root, services: sharedServices });
+    }
+  } catch (err) {
+    console.error(`  PM2 restart failed: ${err.message}`);
+    console.error('  Run "home23 start" manually after inspecting exact PM2 state');
   }
 }
 
@@ -455,7 +472,7 @@ export async function runUpdate(home23Root, checkOnly = false) {
     if (stoppedNames.length > 0) {
       console.log('');
       console.log('Restarting previously running processes...');
-      restartHome23Processes(home23Root);
+      await restartHome23Processes(home23Root, stoppedNames);
     }
     process.exit(1);
   }
@@ -493,7 +510,7 @@ export async function runUpdate(home23Root, checkOnly = false) {
 
   // Step 13: Restart processes
   console.log('');
-  restartHome23Processes(home23Root);
+  await restartHome23Processes(home23Root, stoppedNames);
 
   // Step 14: Summary
   console.log('');

@@ -4,7 +4,7 @@
 
 **Status:** Written spec approved; ready for implementation
 
-**Scope:** Home23 CLI startup for the shared `home23-evobrew`, `home23-cosmo23`, and `home23-screenlogic` PM2 services, plus the bounded live COSMO recovery procedure.
+**Scope:** Home23 startup entry points for the shared `home23-evobrew`, `home23-cosmo23`, and `home23-screenlogic` PM2 services, plus the bounded live COSMO recovery procedure.
 
 ## Problem
 
@@ -41,6 +41,8 @@ The July 9 COSMO incident demonstrated the failure mode after reboot: PM2 resurr
 ## Architecture
 
 Add a focused module at `cli/lib/shared-service-start.js`. It owns cross-process coordination, PM2 state refresh, sequential shared-service starts, stale-lock recovery, and local receipts. `cli/lib/pm2-commands.js` remains the command orchestrator and calls the module once after the requested agent processes have been started.
+
+The implementation audit found additional ways to start COSMO that must share the same lock: the self-updater, the dashboard COSMO watchdog, the settings COSMO endpoint, and the public `pm2:start`/`pm2:restart` scripts. The unfiltered `home23 start` ecosystem launch also included shared services before lock acquisition. Those entry points route through the coordinator, while non-shared process starts use exact PM2 names and a sanitized environment.
 
 The coordinator receives the three service definitions in deterministic order:
 

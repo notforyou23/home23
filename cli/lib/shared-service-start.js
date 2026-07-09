@@ -195,32 +195,44 @@ export async function coordinateSharedServiceStartup(options) {
 
     for (const service of options.services || SHARED_SERVICES) {
       const before = exactRecords(await dependencies.listProcesses(), service.name);
-      if (before.length > 1) throw new Error(`Duplicate PM2 records for ${service.name}`);
-      if (isOnline(before[0])) {
+      if (before.length > 1) {
+        const message = `Duplicate PM2 records for ${service.name}`;
         receipt.services.push({
           name: service.name,
-          before,
+          before: summarizeRecords(before),
+          action: 'failed',
+          after: [],
+          error: message,
+        });
+        throw new Error(message);
+      }
+      if (isOnline(before[0])) {
+        const beforeSummary = summarizeRecords(before);
+        receipt.services.push({
+          name: service.name,
+          before: beforeSummary,
           action: 'already-online',
-          after: before,
+          after: beforeSummary,
         });
         continue;
       }
 
       const serviceReceipt = {
         name: service.name,
-        before,
+        before: summarizeRecords(before),
         action: 'starting',
         after: [],
       };
       receipt.services.push(serviceReceipt);
       try {
         await dependencies.startService(service);
-        serviceReceipt.after = await waitForOnline(
+        const after = await waitForOnline(
           service.name,
           dependencies,
           options.startupTimeoutMs ?? 15_000,
           options.pollMs ?? 100,
         );
+        serviceReceipt.after = summarizeRecords(after);
         serviceReceipt.action = 'started';
       } catch (error) {
         serviceReceipt.action = 'failed';
@@ -253,6 +265,18 @@ function isOnline(entry) {
   return entry?.pm2_env?.status === 'online' && Number(entry.pid) > 0;
 }
 
+function summarizeRecords(records) {
+  return records.map((entry) => ({
+    name: entry.name,
+    pid: Number(entry.pid) || 0,
+    pmId: entry.pm_id,
+    status: entry.pm2_env?.status || 'unknown',
+    restarts: Number(entry.pm2_env?.restart_time) || 0,
+    script: entry.pm2_env?.pm_exec_path,
+    cwd: entry.pm2_env?.pm_cwd,
+  }));
+}
+
 async function waitForOnline(name, dependencies, timeoutMs, pollMs) {
   const deadline = dependencies.now() + timeoutMs;
   for (;;) {
@@ -281,10 +305,43 @@ function parsePm2List(text) {
   throw new Error('pm2 jlist did not return a JSON process list');
 }
 
-function cleanCommandEnv() {
-  const env = { ...process.env };
+function cleanCommandEnv(source = process.env) {
+  const env = { ...source };
   for (const key of PM2_ENV_BLOCKLIST) delete env[key];
   return env;
+}
+
+export function startEcosystemProcesses({
+  home23Root,
+  names,
+  env = process.env,
+  execFile = execFileSync,
+  stdio = 'pipe',
+  timeoutMs = 45_000,
+}) {
+  const exactNames = [...new Set(names || [])];
+  if (exactNames.length === 0) return [];
+  if (exactNames.some((name) => !/^[a-z0-9][a-z0-9-]*$/.test(name))) {
+    throw new Error('PM2 process names must be lowercase alphanumeric with hyphens');
+  }
+
+  const unsetArgs = PM2_ENV_BLOCKLIST.flatMap((key) => ['-u', key]);
+  execFile('env', [
+    ...unsetArgs,
+    'pm2',
+    'start',
+    join(home23Root, 'ecosystem.config.cjs'),
+    '--only',
+    exactNames.join(','),
+    '--update-env',
+    '--silent',
+  ], {
+    cwd: home23Root,
+    env: cleanCommandEnv(env),
+    stdio,
+    timeout: timeoutMs,
+  });
+  return exactNames;
 }
 
 async function listProcessesDefault() {
@@ -297,22 +354,7 @@ async function listProcessesDefault() {
 }
 
 async function startServiceDefault(service, home23Root) {
-  const unsetArgs = PM2_ENV_BLOCKLIST.flatMap((key) => ['-u', key]);
-  execFileSync('env', [
-    ...unsetArgs,
-    'pm2',
-    'start',
-    join(home23Root, 'ecosystem.config.cjs'),
-    '--only',
-    service.name,
-    '--update-env',
-    '--silent',
-  ], {
-    cwd: home23Root,
-    env: cleanCommandEnv(),
-    stdio: 'pipe',
-    timeout: 45_000,
-  });
+  startEcosystemProcesses({ home23Root, names: [service.name] });
 }
 
 async function appendReceiptDefault(receiptPath, receipt) {

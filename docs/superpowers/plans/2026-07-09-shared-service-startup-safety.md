@@ -438,12 +438,17 @@ git commit -m "test: harden shared startup failure handling"
 
 **Files:**
 - Modify: `cli/lib/pm2-commands.js:8-120`
+- Modify: `cli/lib/update.js`
+- Modify: `engine/src/dashboard/server.js`
+- Modify: `engine/src/dashboard/home23-settings-api.js`
+- Modify: `package.json`
 - Modify: `tests/cli/shared-service-start.test.js`
 - Modify: `docs/ONBOARDING.md:92-132`
 
 **Interfaces:**
 - Consumes: `coordinateSharedServiceStartup({ home23Root })` from Task 1.
 - Produces: one coordinated startup pass for Evobrew, COSMO, and ScreenLogic after agent PM2 startup.
+- Produces: no automatic shared-service startup path that bypasses the coordinator lock.
 
 - [ ] **Step 1: Add the failing public-contract assertion**
 
@@ -474,6 +479,14 @@ At the top of `cli/lib/pm2-commands.js`, add:
 ```js
 import { coordinateSharedServiceStartup } from './shared-service-start.js';
 ```
+
+- [ ] **Step 2b: Close every automatic startup bypass found during implementation audit**
+
+- Make unfiltered `home23 start` launch only exact non-shared agent/support names before the coordinated shared pass.
+- Route the updater's shared-service restore through the coordinator and restart only names it stopped.
+- Route the dashboard COSMO watchdog and settings COSMO endpoint through the same coordinator lock.
+- Route `pm2:start` and `pm2:restart` package scripts through the Home23 CLI rather than direct ecosystem startup.
+- Retain exact-name, sanitized PM2 starts for non-shared process groups.
 
 Delete the three independent `pm2 jlist` / `pm2 start --only` blocks for Evobrew, COSMO, and ScreenLogic. Replace them with:
 
