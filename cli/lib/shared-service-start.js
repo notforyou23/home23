@@ -45,12 +45,25 @@ function pidAliveDefault(pid) {
   }
 }
 
-function readLock(lockPath) {
+function readLockSnapshot(lockPath) {
   try {
-    return JSON.parse(readFileSync(lockPath, 'utf8'));
+    const raw = readFileSync(lockPath, 'utf8');
+    let owner = null;
+    try {
+      owner = JSON.parse(raw);
+    } catch {
+      // A malformed lock can be recovered only after it ages past the stale threshold.
+    }
+    return { raw, owner };
   } catch {
     return null;
   }
+}
+
+function sameLock(left, right) {
+  if (!left || !right) return false;
+  if (left.owner?.token) return left.owner.token === right.owner?.token;
+  return left.raw === right.raw;
 }
 
 export async function acquireStartupLock({
@@ -93,7 +106,7 @@ export async function acquireStartupLock({
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
 
-      const current = readLock(lockPath);
+      const current = readLockSnapshot(lockPath);
       let ageMs = 0;
       try {
         ageMs = dependencies.now() - statSync(lockPath).mtimeMs;
@@ -101,13 +114,13 @@ export async function acquireStartupLock({
         if (statError.code === 'ENOENT') continue;
         throw statError;
       }
-      const stale = current?.pid
-        ? !dependencies.pidAlive(Number(current.pid))
+      const stale = current?.owner?.pid
+        ? !dependencies.pidAlive(Number(current.owner.pid))
         : ageMs >= staleLockAgeMs;
 
       if (stale) {
-        const latest = readLock(lockPath);
-        if (latest?.token !== current?.token) continue;
+        const latest = readLockSnapshot(lockPath);
+        if (!sameLock(current, latest)) continue;
         try {
           unlinkSync(lockPath);
           staleLocksRecovered += 1;
@@ -119,7 +132,7 @@ export async function acquireStartupLock({
 
       if (dependencies.now() - startedAtMs >= timeoutMs) {
         throw new Error(
-          `Timed out waiting for shared-service startup lock owned by pid ${current?.pid || 'unknown'}`,
+          `Timed out waiting for shared-service startup lock owned by pid ${current?.owner?.pid || 'unknown'}`,
         );
       }
       await dependencies.wait(pollMs);
@@ -128,8 +141,8 @@ export async function acquireStartupLock({
 }
 
 export function releaseStartupLock(lockPath, token) {
-  const current = readLock(lockPath);
-  if (!current || current.token !== token) return false;
+  const current = readLockSnapshot(lockPath);
+  if (!current || current.owner?.token !== token) return false;
   try {
     unlinkSync(lockPath);
     return true;
@@ -193,14 +206,27 @@ export async function coordinateSharedServiceStartup(options) {
         continue;
       }
 
-      await dependencies.startService(service);
-      const after = await waitForOnline(
-        service.name,
-        dependencies,
-        options.startupTimeoutMs ?? 15_000,
-        options.pollMs ?? 100,
-      );
-      receipt.services.push({ name: service.name, before, action: 'started', after });
+      const serviceReceipt = {
+        name: service.name,
+        before,
+        action: 'starting',
+        after: [],
+      };
+      receipt.services.push(serviceReceipt);
+      try {
+        await dependencies.startService(service);
+        serviceReceipt.after = await waitForOnline(
+          service.name,
+          dependencies,
+          options.startupTimeoutMs ?? 15_000,
+          options.pollMs ?? 100,
+        );
+        serviceReceipt.action = 'started';
+      } catch (error) {
+        serviceReceipt.action = 'failed';
+        serviceReceipt.error = error.message;
+        throw error;
+      }
     }
     receipt.ok = true;
   } catch (error) {
