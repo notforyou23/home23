@@ -6919,6 +6919,19 @@ body.h23-dashboard-page .h23-panel:not(#panel-home) {
   color: var(--h23-text-body);
 }
 
+/* These three legacy panel roots own their own shell and otherwise retain the
+   old --surface-2 navy behind light renderer text and cards. Keep their
+   existing radius, padding, minimum height, grid, and overflow contracts. */
+body.h23-dashboard-page #panel-workers,
+body.h23-dashboard-page #panel-query,
+body.h23-dashboard-page #panel-brain-map {
+  background: var(--h23-glass-panel);
+  border: 1px solid var(--h23-hairline);
+  box-shadow: var(--h23-shadow-panel);
+  backdrop-filter: blur(var(--h23-glass-blur-panel)) saturate(1.05);
+  -webkit-backdrop-filter: blur(var(--h23-glass-blur-panel)) saturate(1.05);
+}
+
 body.h23-dashboard-page .h23-page-header,
 body.h23-dashboard-page .h23-workers-header,
 body.h23-dashboard-page .h23-brain-map-header,

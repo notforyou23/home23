@@ -970,6 +970,15 @@ test('light operational panels override legacy white renderer text', () => {
     /body\.h23-dashboard-page \.qt-container\s*\{[^}]*--bg-primary:\s*var\(--h23-glass-panel\)[^}]*--text-primary:\s*var\(--h23-text-primary\)/,
     'the dynamically injected Query renderer must inherit explicit light surface tokens',
   );
+
+  for (const panel of ['#panel-workers', '#panel-query', '#panel-brain-map']) {
+    const escapedPanel = panel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(
+      css,
+      new RegExp(`body\\.h23-dashboard-page ${escapedPanel}[^\\{]*\\{[^}]*background:\\s*var\\(--h23-glass-panel\\)[^}]*border:\\s*1px solid var\\(--h23-hairline\\)`),
+      `${panel} must replace the legacy --surface-2 shell beneath light renderer text`,
+    );
+  }
 });
 
 test('standalone Chat remaps every legacy light-shell alias and control state', () => {
