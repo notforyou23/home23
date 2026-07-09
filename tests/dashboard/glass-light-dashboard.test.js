@@ -10,6 +10,7 @@ const read = (relativePath) => fs.readFileSync(path.join(HOME23_ROOT, relativePa
 const html = read('engine/src/dashboard/home23-dashboard.html');
 const js = read('engine/src/dashboard/home23-dashboard.js');
 const css = read('engine/src/dashboard/home23-dashboard.css');
+const chatCss = read('engine/src/dashboard/home23-chat.css');
 const spec = read('docs/superpowers/specs/2026-07-09-glass-light-dashboard-integration-design.md');
 const jsAst = ts.createSourceFile(
   'home23-dashboard.js',
@@ -906,4 +907,61 @@ test('dashboard installs the approved light-glass tokens and uses them on render
   const dashboardScopedCss = css.slice(css.indexOf('body.h23-dashboard-page'));
   assert.doesNotMatch(dashboardScopedCss, /background-size:\s*88px 88px/);
   assert.doesNotMatch(dashboardScopedCss, /rgba\(255,\s*255,\s*255,\s*0\.025\) 1px/);
+});
+
+test('glass override selectors stay dashboard-scoped while tokens remain shareable', () => {
+  const marker = 'Glass Light dashboard system';
+  const overrideStart = css.indexOf(marker);
+  assert.notEqual(overrideStart, -1, 'missing final Glass Light override layer');
+  const overrideCss = css.slice(overrideStart);
+  const unscopedSelectors = overrideCss
+    .split('\n')
+    .filter((line) => /^\s*(?:\.h23|#(?:panel|brain|problem))/.test(line.trimStart()));
+  assert.deepEqual(unscopedSelectors, [], `unscoped dashboard selectors:\n${unscopedSelectors.join('\n')}`);
+  assert.doesNotMatch(overrideCss, /^\s*:root\s*\{/m, 'responsive dashboard tokens must be body-scoped');
+});
+
+test('light operational panels override legacy white renderer text', () => {
+  for (const selector of ['#panel-agency', '#panel-workers', '.h23-log-overlay-body']) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(css, new RegExp(`body\\.h23-dashboard-page ${escaped} \\[style\\*="color:#fff"\\]`));
+    assert.match(css, new RegExp(`body\\.h23-dashboard-page ${escaped} \\[style\\*="color:rgba\\(255"\\]`));
+  }
+  assert.match(css, /body\.h23-dashboard-page \.h23-problems-history-row span\s*\{[^}]*color:\s*var\(--h23-text-body\)/);
+  assert.match(css, /body\.h23-dashboard-page \.h23-problem-evidence-grid span[\s\S]*color:\s*var\(--h23-text-secondary\)/);
+});
+
+test('standalone Chat remaps every legacy light-shell alias and control state', () => {
+  const standalone = chatCss.match(/body:not\(\.h23-dashboard-page\)\s*\{([^}]+)\}/)?.[1] || '';
+  for (const alias of [
+    '--glass-primary', '--glass-secondary', '--glass-border',
+    '--text-primary', '--text-secondary', '--text-muted',
+    '--accent-blue', '--accent-red', '--shadow-glass',
+  ]) assert.match(standalone, new RegExp(`${alias}:`), `standalone Chat does not remap ${alias}`);
+
+  for (const selector of [
+    '.sh-icon-btn', '.sh-title', '.sh-dashboard-link', '.sh-drawer-title',
+    '.sh-field-label', '.sh-sheet-action', '.sh-sheet-grip', '.sh-input',
+  ]) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(chatCss, new RegExp(`body:not\\(\\.h23-dashboard-page\\) ${escaped}`), `missing ${selector} light override`);
+  }
+});
+
+test('active navigation, sensor hover, and Vibe overlay match approved details', () => {
+  const activeTab = css.match(/body\.h23-dashboard-page \.h23-topbar \.h23-tab\.active\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(activeTab, /padding:\s*7px 16px/);
+  assert.match(activeTab, /font-weight:\s*600/);
+  assert.match(activeTab, /background:\s*rgba\(255,\s*255,\s*255,\s*0\.9\)/);
+  assert.match(activeTab, /border:\s*1px solid rgba\(255,\s*255,\s*255,\s*1\)/);
+
+  const sensorHover = css.match(/body\.h23-dashboard-page \.h23-human-sensor-strip button\.h23-human-card:hover\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(sensorHover, /background:\s*var\(--h23-hover-card\)/);
+  assert.doesNotMatch(sensorHover, /transform:/);
+
+  const marker = css.indexOf('Glass Light dashboard system');
+  const overrideCss = css.slice(marker);
+  assert.doesNotMatch(overrideCss, /\.h23-vibe-detail-panel > header/);
+  assert.match(overrideCss, /body\.h23-dashboard-page \.h23-vibe-detail-panel > \.h23-vibe-detail-close:first-child/);
+  assert.match(overrideCss, /body\.h23-dashboard-page \.h23-vibe-detail-body\s*\{[^}]*border-top:\s*1px solid var\(--h23-hairline\)/);
 });
