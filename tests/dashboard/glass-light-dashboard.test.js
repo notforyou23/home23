@@ -927,8 +927,49 @@ test('light operational panels override legacy white renderer text', () => {
     assert.match(css, new RegExp(`body\\.h23-dashboard-page ${escaped} \\[style\\*="color:#fff"\\]`));
     assert.match(css, new RegExp(`body\\.h23-dashboard-page ${escaped} \\[style\\*="color:rgba\\(255"\\]`));
   }
-  assert.match(css, /body\.h23-dashboard-page \.h23-problems-history-row span\s*\{[^}]*color:\s*var\(--h23-text-body\)/);
-  assert.match(css, /body\.h23-dashboard-page \.h23-problem-evidence-grid span[\s\S]*color:\s*var\(--h23-text-secondary\)/);
+  const colorContracts = new Map([
+    ['.h23-problems-history-row span', '--h23-text-body'],
+    ['.h23-problem-evidence-grid span', '--h23-text-secondary'],
+    ['.h23-human-brief-row strong', '--h23-text-heading'],
+    ['.h23-human-brief-row span:last-child', '--h23-text-secondary'],
+    ['.h23-human-brief-meta', '--h23-text-muted-aa'],
+    ['.h23-briefs-row-meta', '--h23-text-muted-aa'],
+    ['.h23-briefs-reader-meta', '--h23-text-muted-aa'],
+    ['.h23-briefs-row strong', '--h23-text-heading'],
+    ['.h23-briefs-row span:last-child', '--h23-text-secondary'],
+    ['.h23-briefs-reader-head h2', '--h23-text-heading'],
+    ['.h23-briefs-document', '--h23-text-body'],
+    ['.h23-briefs-provenance', '--h23-text-muted-aa'],
+    ['.h23-goodlife-lane', '--h23-text-secondary'],
+    ['.h23-goodlife-lane.critical', '--h23-red-aa'],
+    ['.h23-goodlife-lane.strained', '--h23-amber-aa'],
+    ['.h23-goodlife-lane.watch', '--h23-accent'],
+    ['.h23-goodlife-lane.healthy', '--h23-green-aa'],
+    ['.h23-goodlife-overlay-status', '--h23-text-secondary'],
+    ['.h23-goodlife-evidence-row.info em', '--h23-text-muted-aa'],
+    ['.h23-worker-capability-kicker', '--h23-green-aa'],
+    ['.h23-worker-status.pass', '--h23-green-aa'],
+    ['.h23-worker-status.fail', '--h23-red-aa'],
+    ['.h23-worker-status.blocked', '--h23-amber-aa'],
+    ['.h23-resident-command p', '--h23-text-body'],
+    ['.h23-resident-health', '--h23-text-muted-aa'],
+  ]);
+
+  for (const [selector, token] of colorContracts) {
+    const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escapedToken = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(
+      css,
+      new RegExp(`body\\.h23-dashboard-page ${escapedSelector}[^\\{]*\\{[^}]*color:\\s*var\\(${escapedToken}\\)`),
+      `${selector} must use ${token} on the light operational surface`,
+    );
+  }
+
+  assert.match(
+    css,
+    /body\.h23-dashboard-page \.qt-container\s*\{[^}]*--bg-primary:\s*var\(--h23-glass-panel\)[^}]*--text-primary:\s*var\(--h23-text-primary\)/,
+    'the dynamically injected Query renderer must inherit explicit light surface tokens',
+  );
 });
 
 test('standalone Chat remaps every legacy light-shell alias and control state', () => {
