@@ -113,6 +113,25 @@ function stringArrayConstants(source) {
     }));
 }
 
+function hasMembershipGate(source, setName) {
+  const directGate = new RegExp(
+    `(?:\\bif\\s*\\(|\\.(?:filter|find|some|every)\\s*\\())[\\s\\S]{0,320}${setName}\\.has\\s*\\(`,
+  );
+  if (directGate.test(source)) return true;
+
+  const functionNames = [...source.matchAll(/(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b/g)]
+    .map((match) => match[1]);
+  for (const name of functionNames) {
+    const fragment = functionFragment(source, name);
+    if (!new RegExp(`\\breturn\\s+!?\\s*${setName}\\.has\\s*\\(`).test(fragment)) continue;
+    const predicateGate = new RegExp(
+      `(?:\\bif\\s*\\(|\\.(?:filter|find|some|every)\\s*\\())[\\s\\S]{0,320}\\b${name}\\s*\\(`,
+    );
+    if (predicateGate.test(source)) return true;
+  }
+  return false;
+}
+
 const htmlTree = parseHtmlTree(html);
 
 function fragmentFromId(source, id, nextPattern) {
@@ -226,10 +245,10 @@ test('Home layout persistence is scoped to environmental sensor cards', () => {
   assert.deepEqual(managedIds, ['outside-weather', 'pool-screenlogic', 'sauna-control']);
 
   for (const fn of ['applyHomeTileLayout', 'renderHomeTileInlineControls', 'mutateHomeTileLayout']) {
-    assert.match(
-      functionClosure(js, [fn]),
-      /HOME_LAYOUT_MANAGED_SENSOR_IDS/,
-      `${fn} must enforce the sensor allowlist`,
+    const closure = functionClosure(js, [fn]);
+    assert.ok(
+      hasMembershipGate(closure, 'HOME_LAYOUT_MANAGED_SENSOR_IDS'),
+      `${fn} must condition or filter behavior with HOME_LAYOUT_MANAGED_SENSOR_IDS.has(...)`,
     );
   }
 });
@@ -313,7 +332,11 @@ test('overlay dialogs have real dismiss, labelling, focus, Escape, and scroll-lo
     assert.equal(dialog.attrs.get('aria-modal'), 'true', `${id} must be modal`);
     const labelledBy = dialog.attrs.get('aria-labelledby');
     assert.ok(labelledBy, `${id} must use aria-labelledby`);
-    assert.ok(findById(htmlTree, labelledBy), `${id} references missing #${labelledBy}`);
+    for (const headingId of labelledBy.split(/\s+/).filter(Boolean)) {
+      const heading = findDescendant(dialog, (node) => node.attrs.get('id') === headingId);
+      assert.ok(heading, `${id} references #${headingId} outside its dialog subtree`);
+      assert.match(heading.tag, /^h[1-6]$/, `${id} label #${headingId} must be a heading`);
+    }
 
     const overlaySource = sourceForNode(html, overlay);
     assert.match(
@@ -357,6 +380,25 @@ test('overlay dialogs have real dismiss, labelling, focus, Escape, and scroll-lo
     && /document\.body\.classList\.(?:remove|toggle)\([\s\S]*overlay[\w-]*open/i.test(js)
     && /body\.[\w-]*overlay[\w-]*open[^\{]*\{[^}]*overflow:\s*hidden/i.test(css);
   assert.ok(inlineScrollLock || classScrollLock, 'overlay lifecycle must lock and restore background scrolling');
+});
+
+test('opening or revealing an overlay moves focus inside it before keyboard trapping', () => {
+  const setup = functionClosure(js, ['setupDashboardOverlayAccessibility']);
+  const observesVisibility = /new\s+MutationObserver\b/.test(setup)
+    && /\.observe\s*\(/.test(setup)
+    && /(?:attributeFilter|aria-hidden|classList|hidden)/.test(setup);
+  const listensForOpen = /addEventListener\(\s*['"][^'"]*(?:overlay|dialog)[^'"]*(?:open|show)[^'"]*['"]/.test(setup);
+  assert.ok(observesVisibility || listensForOpen, 'focus entry must run from an overlay open/visibility lifecycle');
+
+  const scopedFocusTargets = [...setup.matchAll(
+    /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*(?:\.querySelector\(|\[role=["']dialog["']))/g,
+  )].filter((match) => !/document\.(?:querySelector|querySelectorAll)/.test(match[2]));
+  assert.ok(scopedFocusTargets.length, 'focus target must be selected from the opened overlay/dialog');
+  assert.match(setup, /(?:button|\[href\]|input|select|textarea|\[tabindex|\[role=["']dialog["'])/);
+  assert.ok(
+    scopedFocusTargets.some((match) => new RegExp(`${match[1]}(?:\\.|\\?\\.)focus\\(`).test(setup)),
+    'the overlay-scoped focus target must receive focus on open',
+  );
 });
 
 test('dashboard installs the approved light-glass tokens and uses them on rendered surfaces', () => {
