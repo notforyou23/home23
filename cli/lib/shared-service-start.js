@@ -159,6 +159,7 @@ export async function coordinateSharedServiceStartup(options) {
   const dependencies = {
     listProcesses: listProcessesDefault,
     startService: (service) => startServiceDefault(service, home23Root),
+    restartService: (service) => restartServiceDefault(service, home23Root),
     appendReceipt: (receipt) => appendReceiptDefault(receiptPath, receipt),
     pidAlive: pidAliveDefault,
     wait: waitDefault,
@@ -206,7 +207,8 @@ export async function coordinateSharedServiceStartup(options) {
         });
         throw new Error(message);
       }
-      if (isOnline(before[0])) {
+      const restartOnline = isOnline(before[0]) && options.restartOnline === true;
+      if (isOnline(before[0]) && !restartOnline) {
         const beforeSummary = summarizeRecords(before);
         receipt.services.push({
           name: service.name,
@@ -220,12 +222,13 @@ export async function coordinateSharedServiceStartup(options) {
       const serviceReceipt = {
         name: service.name,
         before: summarizeRecords(before),
-        action: 'starting',
+        action: restartOnline ? 'restarting' : 'starting',
         after: [],
       };
       receipt.services.push(serviceReceipt);
       try {
-        await dependencies.startService(service);
+        if (restartOnline) await dependencies.restartService(service);
+        else await dependencies.startService(service);
         const after = await waitForOnline(
           service.name,
           dependencies,
@@ -233,7 +236,7 @@ export async function coordinateSharedServiceStartup(options) {
           options.pollMs ?? 100,
         );
         serviceReceipt.after = summarizeRecords(after);
-        serviceReceipt.action = 'started';
+        serviceReceipt.action = restartOnline ? 'restarted' : 'started';
       } catch (error) {
         serviceReceipt.action = 'failed';
         serviceReceipt.error = error.message;
@@ -319,6 +322,45 @@ export function startEcosystemProcesses({
   stdio = 'pipe',
   timeoutMs = 45_000,
 }) {
+  return runEcosystemProcessCommand('start', {
+    home23Root,
+    names,
+    env,
+    execFile,
+    stdio,
+    timeoutMs,
+  });
+}
+
+export function restartEcosystemProcesses({
+  home23Root,
+  names,
+  env = process.env,
+  execFile = execFileSync,
+  stdio = 'pipe',
+  timeoutMs = 45_000,
+}) {
+  return runEcosystemProcessCommand('restart', {
+    home23Root,
+    names,
+    env,
+    execFile,
+    stdio,
+    timeoutMs,
+  });
+}
+
+function runEcosystemProcessCommand(command, {
+  home23Root,
+  names,
+  env,
+  execFile,
+  stdio,
+  timeoutMs,
+}) {
+  if (command !== 'start' && command !== 'restart') {
+    throw new Error(`Unsupported PM2 ecosystem command: ${command}`);
+  }
   const exactNames = [...new Set(names || [])];
   if (exactNames.length === 0) return [];
   if (exactNames.some((name) => !/^[a-z0-9][a-z0-9-]*$/.test(name))) {
@@ -329,7 +371,7 @@ export function startEcosystemProcesses({
   execFile('env', [
     ...unsetArgs,
     'pm2',
-    'start',
+    command,
     join(home23Root, 'ecosystem.config.cjs'),
     '--only',
     exactNames.join(','),
@@ -355,6 +397,10 @@ async function listProcessesDefault() {
 
 async function startServiceDefault(service, home23Root) {
   startEcosystemProcesses({ home23Root, names: [service.name] });
+}
+
+async function restartServiceDefault(service, home23Root) {
+  restartEcosystemProcesses({ home23Root, names: [service.name] });
 }
 
 async function appendReceiptDefault(receiptPath, receipt) {

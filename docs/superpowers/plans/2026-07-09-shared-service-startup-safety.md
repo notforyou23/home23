@@ -485,6 +485,7 @@ import { coordinateSharedServiceStartup } from './shared-service-start.js';
 - Make unfiltered `home23 start` launch only exact non-shared agent/support names before the coordinated shared pass.
 - Route the updater's shared-service restore through the coordinator and restart only names it stopped.
 - Route the dashboard COSMO watchdog and settings COSMO endpoint through the same coordinator lock.
+- Preserve explicit settings restart semantics with a lock-serialized `restartOnline` path and `restarted` receipt action.
 - Route `pm2:start` and `pm2:restart` package scripts through the Home23 CLI rather than direct ecosystem startup.
 - Retain exact-name, sanitized PM2 starts for non-shared process groups.
 

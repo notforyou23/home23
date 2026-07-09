@@ -305,6 +305,35 @@ test('receipts summarize PM2 state without copying environment secrets', async (
   assert.doesNotMatch(JSON.stringify(result), /must-not-leak|OPENAI_API_KEY/);
 });
 
+test('explicit online restart is serialized and recorded as restarted', async (t) => {
+  const { lockPath, receiptPath } = await makeTempPaths(t);
+  let pid = 8200;
+  let restarts = 0;
+
+  const result = await coordinateSharedServiceStartup({
+    home23Root: '/tmp/home23',
+    lockPath,
+    receiptPath,
+    services: [SHARED_SERVICES[1]],
+    restartOnline: true,
+    dependencies: {
+      listProcesses: async () => [onlineRow('home23-cosmo23', pid)],
+      startService: async () => { throw new Error('start must not handle an explicit restart'); },
+      restartService: async () => {
+        restarts += 1;
+        pid = 8201;
+      },
+      appendReceipt: async () => {},
+    },
+  });
+
+  assert.equal(restarts, 1);
+  assert.equal(result.ok, true);
+  assert.equal(result.services[0].action, 'restarted');
+  assert.equal(result.services[0].before[0].pid, 8200);
+  assert.equal(result.services[0].after[0].pid, 8201);
+});
+
 test('shared startup contract covers Evobrew, COSMO, and ScreenLogic in order', () => {
   assert.deepEqual(SHARED_SERVICES.map(({ name }) => name), [
     'home23-evobrew',
@@ -369,6 +398,7 @@ test('other automatic COSMO startup entry points share the coordinator lock', as
     /execFileSync\('pm2', \['start', ecosystemPath, '--only', 'home23-cosmo23'/,
   );
   assert.match(settingsSource, /coordinateSharedServiceStartup/);
+  assert.match(settingsSource, /restartOnline: true/);
   assert.doesNotMatch(
     settingsSource,
     /execSync\(`pm2 start \$\{ecosystemPath\} --only home23-cosmo23/,

@@ -99,6 +99,7 @@ The receipt contains:
 - lock wait and stale-lock recovery information;
 - per-service PM2 state before the decision;
 - action taken: `already-online`, `started`, or `failed`;
+- explicit settings restart action: `restarted`;
 - per-service PM2 state after the action;
 - command error text when a start fails;
 - overall success boolean.

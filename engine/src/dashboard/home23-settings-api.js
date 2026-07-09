@@ -1370,6 +1370,7 @@ function createSettingsRouter(home23Root, options = {}) {
       await sharedStart.coordinateSharedServiceStartup({
         home23Root,
         services: [cosmoService],
+        restartOnline: true,
       });
       res.json({ ok: true, status: 'started' });
     } catch (err) {
