@@ -1,13 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
   SHARED_SERVICES,
   coordinateSharedServiceStartup,
+  isSharedServiceName,
   startEcosystemProcesses,
 } from '../../cli/lib/shared-service-start.js';
 
@@ -30,6 +30,19 @@ async function makeTempPaths(t) {
 
 async function assertAbsent(path) {
   await assert.rejects(access(path), { code: 'ENOENT' });
+}
+
+function lockOwnerPath(lockPath, token) {
+  return join(lockPath, `owner-${token}.json`);
+}
+
+async function seedLock(lockPath, owner, { stale = false } = {}) {
+  await mkdir(lockPath);
+  await writeFile(join(lockPath, `owner-${owner.token}.json`), `${JSON.stringify(owner)}\n`);
+  if (stale) {
+    const old = new Date(Date.now() - 10_000);
+    await utimes(lockPath, old, old);
+  }
 }
 
 test('concurrent callers start each missing shared service exactly once', async (t) => {
@@ -90,14 +103,14 @@ test('concurrent callers start each missing shared service exactly once', async 
 
 test('stale dead-owner lock is recovered and recorded', async (t) => {
   const { lockPath, receiptPath } = await makeTempPaths(t);
-  await writeFile(lockPath, `${JSON.stringify({ token: 'dead-owner', pid: 999999 })}\n`);
+  await seedLock(lockPath, { token: 'dead-owner', pid: 999999 }, { stale: true });
 
   const result = await coordinateSharedServiceStartup({
     home23Root: '/tmp/home23',
     lockPath,
     receiptPath,
+    staleLockAgeMs: 2_000,
     dependencies: {
-      pidAlive: () => false,
       listProcesses: async () => SHARED_SERVICES.map(({ name }, index) => onlineRow(name, 5000 + index)),
       appendReceipt: async () => {},
     },
@@ -106,11 +119,12 @@ test('stale dead-owner lock is recovered and recorded', async (t) => {
   assert.equal(result.ok, true);
   assert.equal(result.lock.staleLocksRecovered, 1);
   await assertAbsent(lockPath);
+  await assertAbsent(lockOwnerPath(lockPath, 'dead-owner'));
 });
 
 test('live lock owner is not displaced before timeout', async (t) => {
   const { lockPath, receiptPath } = await makeTempPaths(t);
-  await writeFile(lockPath, `${JSON.stringify({ token: 'live-owner', pid: 1234 })}\n`);
+  await seedLock(lockPath, { token: 'live-owner', pid: 1234 });
   let now = 0;
 
   await assert.rejects(
@@ -121,7 +135,6 @@ test('live lock owner is not displaced before timeout', async (t) => {
       lockTimeoutMs: 20,
       pollMs: 5,
       dependencies: {
-        pidAlive: () => true,
         now: () => now,
         wait: async () => { now += 5; },
         appendReceipt: async () => {},
@@ -130,40 +143,41 @@ test('live lock owner is not displaced before timeout', async (t) => {
     /Timed out waiting/,
   );
 
-  assert.equal(JSON.parse(await readFile(lockPath, 'utf8')).token, 'live-owner');
+  assert.equal(JSON.parse(await readFile(lockOwnerPath(lockPath, 'live-owner'), 'utf8')).token, 'live-owner');
 });
 
-test('stale cleanup preserves a replacement lock with a different token', async (t) => {
+test('concurrent stale recovery preserves exclusive startup ownership', async (t) => {
   const { lockPath, receiptPath } = await makeTempPaths(t);
-  await writeFile(lockPath, `${JSON.stringify({ token: 'dead-owner', pid: 999999 })}\n`);
-  let now = 0;
-  let pidChecks = 0;
+  await seedLock(lockPath, { token: 'dead-owner', pid: 999999 }, { stale: true });
+  const online = new Map();
+  let starts = 0;
+  const dependencies = {
+    listProcesses: async () => Array.from(online, ([name, pid]) => onlineRow(name, pid)),
+    startService: async ({ name }) => {
+      starts += 1;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      online.set(name, 5500 + starts);
+    },
+    appendReceipt: async () => {},
+  };
+  const options = {
+    home23Root: '/tmp/home23',
+    lockPath,
+    receiptPath,
+    staleLockAgeMs: 2_000,
+    lockTimeoutMs: 2_000,
+    pollMs: 5,
+    dependencies,
+  };
 
-  await assert.rejects(
-    coordinateSharedServiceStartup({
-      home23Root: '/tmp/home23',
-      lockPath,
-      receiptPath,
-      lockTimeoutMs: 10,
-      pollMs: 5,
-      dependencies: {
-        pidAlive: () => {
-          pidChecks += 1;
-          if (pidChecks === 1) {
-            writeFileSync(lockPath, `${JSON.stringify({ token: 'replacement-owner', pid: 1234 })}\n`);
-            return false;
-          }
-          return true;
-        },
-        now: () => now,
-        wait: async () => { now += 5; },
-        appendReceipt: async () => {},
-      },
-    }),
-    /Timed out waiting/,
-  );
+  const results = await Promise.all([
+    coordinateSharedServiceStartup(options),
+    coordinateSharedServiceStartup(options),
+  ]);
 
-  assert.equal(JSON.parse(await readFile(lockPath, 'utf8')).token, 'replacement-owner');
+  assert.equal(starts, SHARED_SERVICES.length);
+  assert.equal(results.reduce((sum, result) => sum + result.lock.staleLocksRecovered, 0), 1);
+  await assertAbsent(lockPath);
 });
 
 test('duplicate PM2 records fail closed without calling startService', async (t) => {
@@ -198,6 +212,7 @@ test('duplicate PM2 records fail closed without calling startService', async (t)
 test('start failure releases the lock and writes a failed receipt', async (t) => {
   const { lockPath, receiptPath } = await makeTempPaths(t);
   let capturedReceipt;
+  let listCalls = 0;
 
   await assert.rejects(
     coordinateSharedServiceStartup({
@@ -206,7 +221,10 @@ test('start failure releases the lock and writes a failed receipt', async (t) =>
       receiptPath,
       services: [SHARED_SERVICES[0]],
       dependencies: {
-        listProcesses: async () => [],
+        listProcesses: async () => {
+          listCalls += 1;
+          return listCalls === 1 ? [] : [stoppedRow('home23-evobrew')];
+        },
         startService: async () => { throw new Error('synthetic start failure'); },
         appendReceipt: async (receipt) => { capturedReceipt = receipt; },
       },
@@ -217,7 +235,37 @@ test('start failure releases the lock and writes a failed receipt', async (t) =>
   await assertAbsent(lockPath);
   assert.equal(capturedReceipt.ok, false);
   assert.equal(capturedReceipt.services[0].action, 'failed');
+  assert.equal(capturedReceipt.services[0].after[0].status, 'stopped');
   assert.match(capturedReceipt.services[0].error, /synthetic start failure/);
+});
+
+test('receipt caller and errors redact command-line and credential secrets', async (t) => {
+  const { lockPath, receiptPath } = await makeTempPaths(t);
+  let capturedReceipt;
+  const secret = 'sk-proj-super-secret-value';
+
+  await assert.rejects(
+    coordinateSharedServiceStartup({
+      home23Root: '/tmp/home23',
+      lockPath,
+      receiptPath,
+      services: [SHARED_SERVICES[0]],
+      dependencies: {
+        argv: ['node', 'home23.js', `--api-key=${secret}`],
+        listProcesses: async () => [],
+        startService: async () => {
+          throw new Error(`OPENAI_API_KEY=${secret}`);
+        },
+        appendReceipt: async (receipt) => { capturedReceipt = receipt; },
+      },
+    }),
+    /OPENAI_API_KEY/,
+  );
+
+  const serialized = JSON.stringify(capturedReceipt);
+  assert.doesNotMatch(serialized, new RegExp(secret));
+  assert.equal('argv' in capturedReceipt.caller, false);
+  assert.match(capturedReceipt.services[0].error, /\[REDACTED\]/);
 });
 
 test('startup timeout releases the lock', async (t) => {
@@ -374,6 +422,17 @@ test('named ecosystem starts use exact PM2 targets with a sanitized environment'
   assert.equal(invocation.options.env.cron_restart, undefined);
 });
 
+test('generic ecosystem mutations reject shared service names', () => {
+  for (const service of SHARED_SERVICES) {
+    assert.equal(isSharedServiceName(service.name), true);
+    assert.throws(
+      () => startEcosystemProcesses({ home23Root: '/tmp/home23', names: [service.name] }),
+      new RegExp(`Refusing generic PM2 mutation for shared service: ${service.name}`),
+    );
+  }
+  assert.equal(isSharedServiceName('home23-jerry'), false);
+});
+
 test('home23 start delegates one coordinated shared-service startup pass', async () => {
   const source = await readFile(new URL('../../cli/lib/pm2-commands.js', import.meta.url), 'utf8');
 
@@ -389,9 +448,15 @@ test('other automatic COSMO startup entry points share the coordinator lock', as
     new URL('../../engine/src/dashboard/home23-settings-api.js', import.meta.url),
     'utf8',
   );
+  const watchdogSource = await readFile(
+    new URL('../../scripts/home23-pm2-watchdog.cjs', import.meta.url),
+    'utf8',
+  );
 
   assert.match(updateSource, /coordinateSharedServiceStartup/);
+  assert.match(updateSource, /restartOnline: true/);
   assert.doesNotMatch(updateSource, /execSync\(`pm2 start \$\{ecosystemPath\}`/);
+  assert.match(updateSource, /throw err;/);
   assert.match(dashboardSource, /coordinateSharedServiceStartup/);
   assert.doesNotMatch(
     dashboardSource,
@@ -399,10 +464,20 @@ test('other automatic COSMO startup entry points share the coordinator lock', as
   );
   assert.match(settingsSource, /coordinateSharedServiceStartup/);
   assert.match(settingsSource, /restartOnline: true/);
+  assert.match(settingsSource, /restartOnlineProcessesWithSharedLock\(targets\)/);
+  assert.match(settingsSource, /Refusing generic PM2 mutation for shared service/);
   assert.doesNotMatch(
     settingsSource,
     /execSync\(`pm2 start \$\{ecosystemPath\} --only home23-cosmo23/,
   );
+  assert.match(watchdogSource, /SHARED_SERVICE_NAMES/);
+  assert.match(watchdogSource, /shared service requires coordinated startup/);
+  const remediatorSource = await readFile(
+    new URL('../../engine/src/live-problems/remediators.js', import.meta.url),
+    'utf8',
+  );
+  assert.match(remediatorSource, /SHARED_PM2_PROCESS_NAMES/);
+  assert.match(remediatorSource, /coordinateSharedServiceStartup/);
 });
 
 test('npm pm2:start routes through the coordinated Home23 CLI', async () => {

@@ -71,9 +71,12 @@ function stopHome23Processes() {
     console.log('  No running Home23 processes');
     return [];
   }
-  console.log(`  Stopping ${running.length} Home23 process(es)...`);
+  const sharedNames = new Set(SHARED_SERVICES.map(({ name }) => name));
+  const sharedRunning = running.filter((p) => sharedNames.has(p.name));
+  const stoppable = running.filter((p) => !sharedNames.has(p.name));
+  console.log(`  Stopping ${stoppable.length} non-shared Home23 process(es)...`);
   const stopped = [];
-  for (const p of running) {
+  for (const p of stoppable) {
     try {
       execSync(`pm2 stop ${p.name}`, { stdio: 'pipe' });
       stopped.push(p.name);
@@ -81,8 +84,11 @@ function stopHome23Processes() {
       // Already stopped
     }
   }
+  if (sharedRunning.length > 0) {
+    console.log(`  Preserving shared service(s) for coordinated restart: ${sharedRunning.map((p) => p.name).join(', ')}`);
+  }
   console.log(`  Stopped: ${stopped.join(', ') || '(none)'}`);
-  return stopped;
+  return [...stopped, ...sharedRunning.map((p) => p.name)];
 }
 
 /** Restart only the home23-* PM2 processes that this update stopped. */
@@ -104,11 +110,12 @@ async function restartHome23Processes(home23Root, processNames) {
   try {
     startEcosystemProcesses({ home23Root, names: nonSharedNames, stdio: 'inherit' });
     if (sharedServices.length > 0) {
-      await coordinateSharedServiceStartup({ home23Root, services: sharedServices });
+      await coordinateSharedServiceStartup({ home23Root, services: sharedServices, restartOnline: true });
     }
   } catch (err) {
     console.error(`  PM2 restart failed: ${err.message}`);
     console.error('  Run "home23 start" manually after inspecting exact PM2 state');
+    throw err;
   }
 }
 

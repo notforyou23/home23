@@ -9,7 +9,23 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const express = require('express');
 const yaml = require('js-yaml');
-const { createSettingsRouter } = require('../../../engine/src/dashboard/home23-settings-api.js');
+const {
+  assertNoSharedPm2Targets,
+  createSettingsRouter,
+} = require('../../../engine/src/dashboard/home23-settings-api.js');
+
+test('generic settings PM2 mutation boundary rejects every shared service', () => {
+  for (const name of ['home23-evobrew', 'home23-cosmo23', 'home23-screenlogic']) {
+    assert.throws(
+      () => assertNoSharedPm2Targets(['home23-jerry', name]),
+      new RegExp(`Refusing generic PM2 mutation for shared service: ${name}`),
+    );
+  }
+  assert.doesNotThrow(() => assertNoSharedPm2Targets([
+    'home23-jerry',
+    'home23-jerry-harness',
+  ]));
+});
 
 async function withSettingsServer(homeConfig, fn, secrets = { providers: { 'ollama-cloud': { apiKey: 'oc-test' } } }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-vibe-settings-'));
@@ -158,6 +174,24 @@ test('settings agent creation rejects an unconfigured selected chat provider', a
     assert.equal(createRes.status, 400);
     const body = await createRes.json();
     assert.match(body.error, /openai.*not configured/i);
+  });
+});
+
+test('settings agent creation reserves shared-service names', async () => {
+  await withSettingsServer({ home: {} }, async (baseUrl, root) => {
+    const createRes = await fetch(`${baseUrl}/home23/api/settings/agents`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: 'cosmo23',
+        provider: 'ollama-cloud',
+        model: 'kimi-k2.6',
+      }),
+    });
+    assert.equal(createRes.status, 400);
+    const body = await createRes.json();
+    assert.match(body.error, /reserved for a Home23 shared service/);
+    assert.equal(fs.existsSync(path.join(root, 'instances', 'cosmo23')), false);
   });
 });
 

@@ -4,9 +4,27 @@
 
 **Goal:** Serialize Home23 shared-service startup across concurrent CLI callers, preserve evidence about every startup pass, and repair the current COSMO PM2/listener split without disturbing unrelated PM2 apps or user-owned changes.
 
-**Architecture:** A new ESM module owns one atomic cross-process lock for the entire Evobrew/COSMO/ScreenLogic startup pass. It refreshes exact-name PM2 state only after lock acquisition, starts missing services sequentially, waits for verified online PIDs, writes an ignored JSONL receipt, and fails closed on duplicates or timeouts. `runStart()` delegates its three existing check-then-start blocks to this coordinator.
+**Status:** Implemented, independently reviewed, fully verified, and ready for the scoped main-branch commit.
 
-**Tech Stack:** Node.js ESM, Node built-in test runner, PM2 CLI, atomic filesystem operations, existing Home23 CLI and onboarding docs.
+**Architecture:** A new ESM module owns one atomic cross-process lock for the entire Evobrew/COSMO/ScreenLogic startup pass. It refreshes exact-name PM2 state only after lock acquisition, starts missing services sequentially, waits for verified online PIDs, writes an ignored JSONL receipt, and fails closed on duplicates or timeouts. `runStart()` and every other automatic shared-service mutation path delegate to this coordinator.
+
+**Tech Stack:** Node.js ESM, Node built-in test runner, PM2 CLI, atomic filesystem coordination, existing Home23 CLI/dashboard and onboarding docs.
+
+## As-Built Review Hardening
+
+The initial task pseudocode below records the intended red/green sequence. The reviewed implementation strengthens it in these ways:
+
+- uses an atomic `mkdir` lock directory, mtime heartbeat, unique quarantine rename for stale recovery, and token-specific owner files instead of custom read-then-unlink recovery;
+- stores only allowlisted owner metadata and excludes command arguments/environment values;
+- redacts credential-shaped values from bounded receipt errors and refreshes final PM2 state after failed starts/timeouts;
+- rejects all shared-service names at the generic dashboard PM2 mutation boundary;
+- rejects shared names from generic ecosystem PM2 helpers, reserves them from agent creation, and routes live-problem shared restarts through the coordinator;
+- routes provider-setting shared restarts through the coordinator with explicit restart semantics;
+- propagates self-updater restart failures so an update cannot print a false successful closeout.
+
+The shipped module and regression tests are authoritative where this hardening differs from the early minimal implementation sketch.
+
+Completion evidence for this implementation is recorded in the live ignored COSMO recovery receipt and the command results in the handoff: focused shared-start tests pass, the full suite passes (596 tests), build and contracts pass, and the live COSMO PM2/listener identity is healthy-idle.
 
 ## Global Constraints
 

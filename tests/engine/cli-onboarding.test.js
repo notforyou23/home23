@@ -95,6 +95,19 @@ test('agent create records fresh onboarding purpose, imports, and primary agent'
   }
 });
 
+test('agent create reserves shared-service names', async () => {
+  const root = makeHome23Root();
+  try {
+    await assert.rejects(
+      runAgentCreate(root, 'cosmo23'),
+      /reserved for a Home23 shared service/,
+    );
+    assert.equal(existsSync(join(root, 'instances', 'cosmo23')), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('agent create auto-heals an existing missing primary by port order', async () => {
   const root = makeHome23Root();
   mkdirSync(join(root, 'instances', 'later'), { recursive: true });
