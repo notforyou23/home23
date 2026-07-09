@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
+import ts from 'typescript';
 
 const HOME23_ROOT = process.cwd();
 const read = (relativePath) => fs.readFileSync(path.join(HOME23_ROOT, relativePath), 'utf8');
@@ -10,6 +11,13 @@ const html = read('engine/src/dashboard/home23-dashboard.html');
 const js = read('engine/src/dashboard/home23-dashboard.js');
 const css = read('engine/src/dashboard/home23-dashboard.css');
 const spec = read('docs/superpowers/specs/2026-07-09-glass-light-dashboard-integration-design.md');
+const jsAst = ts.createSourceFile(
+  'home23-dashboard.js',
+  js,
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.JS,
+);
 
 const VOID_ELEMENTS = new Set([
   'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
@@ -113,23 +121,462 @@ function stringArrayConstants(source) {
     }));
 }
 
-function hasMembershipGate(source, setName) {
-  const directGate = new RegExp(
-    `(?:\\bif\\s*\\(|\\.(?:filter|find|some|every)\\s*\\())[\\s\\S]{0,320}${setName}\\.has\\s*\\(`,
-  );
-  if (directGate.test(source)) return true;
+function unwrapExpression(node) {
+  let current = node;
+  while (
+    ts.isParenthesizedExpression(current)
+    || ts.isAwaitExpression(current)
+    || ts.isAsExpression(current)
+    || ts.isNonNullExpression(current)
+  ) current = current.expression;
+  return current;
+}
 
-  const functionNames = [...source.matchAll(/(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\b/g)]
-    .map((match) => match[1]);
-  for (const name of functionNames) {
-    const fragment = functionFragment(source, name);
-    if (!new RegExp(`\\breturn\\s+!?\\s*${setName}\\.has\\s*\\(`).test(fragment)) continue;
-    const predicateGate = new RegExp(
-      `(?:\\bif\\s*\\(|\\.(?:filter|find|some|every)\\s*\\())[\\s\\S]{0,320}\\b${name}\\s*\\(`,
-    );
-    if (predicateGate.test(source)) return true;
+function collectNamedFunctions(sourceFile) {
+  const functions = new Map();
+  const visit = (node) => {
+    if (ts.isFunctionDeclaration(node) && node.name) functions.set(node.name.text, node);
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      const initializer = node.initializer && unwrapExpression(node.initializer);
+      if (initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))) {
+        functions.set(node.name.text, initializer);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return functions;
+}
+
+const jsFunctions = collectNamedFunctions(jsAst);
+
+function visitFunctionBody(functionNode, visitor) {
+  const root = functionNode.body;
+  if (!root) return;
+  const visit = (node) => {
+    visitor(node);
+    if (node !== root && ts.isFunctionLike(node)) return;
+    ts.forEachChild(node, visit);
+  };
+  visit(root);
+}
+
+function expressionContains(node, predicate) {
+  let matched = false;
+  const visit = (child) => {
+    if (matched) return;
+    if (predicate(child)) {
+      matched = true;
+      return;
+    }
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return matched;
+}
+
+function isNamedCall(node, name) {
+  const expression = ts.isCallExpression(node) ? unwrapExpression(node.expression) : null;
+  return expression && ts.isIdentifier(expression) && expression.text === name;
+}
+
+function isSetHasCall(node, setName) {
+  if (!ts.isCallExpression(node)) return false;
+  const expression = unwrapExpression(node.expression);
+  return ts.isPropertyAccessExpression(expression)
+    && ts.isIdentifier(unwrapExpression(expression.expression))
+    && unwrapExpression(expression.expression).text === setName
+    && expression.name.text === 'has';
+}
+
+function directMembershipSense(expression, setName, predicateSenses) {
+  const node = unwrapExpression(expression);
+  if (isSetHasCall(node, setName)) return 1;
+  if (ts.isCallExpression(node) && ts.isIdentifier(unwrapExpression(node.expression))) {
+    return predicateSenses.get(unwrapExpression(node.expression).text) || 0;
+  }
+  if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) {
+    return -directMembershipSense(node.operand, setName, predicateSenses);
+  }
+  if (ts.isBinaryExpression(node)) {
+    const leftSense = directMembershipSense(node.left, setName, predicateSenses);
+    const rightSense = directMembershipSense(node.right, setName, predicateSenses);
+    if (leftSense) {
+      const right = unwrapExpression(node.right);
+      if (right.kind === ts.SyntaxKind.FalseKeyword) return -leftSense;
+      return leftSense;
+    }
+    if (rightSense) {
+      const left = unwrapExpression(node.left);
+      if (left.kind === ts.SyntaxKind.FalseKeyword) return -rightSense;
+      return rightSense;
+    }
+  }
+  return 0;
+}
+
+function returnedExpressions(functionNode) {
+  if (!functionNode.body) return [];
+  if (!ts.isBlock(functionNode.body)) return [functionNode.body];
+  const expressions = [];
+  visitFunctionBody(functionNode, (node) => {
+    if (ts.isReturnStatement(node) && node.expression) expressions.push(node.expression);
+  });
+  return expressions;
+}
+
+function membershipPredicateSenses(setName) {
+  const senses = new Map();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [name, functionNode] of jsFunctions) {
+      if (senses.has(name)) continue;
+      const returned = returnedExpressions(functionNode)
+        .map((expression) => directMembershipSense(expression, setName, senses))
+        .filter(Boolean);
+      if (!returned.length || new Set(returned).size !== 1) continue;
+      senses.set(name, returned[0]);
+      changed = true;
+    }
+  }
+  return senses;
+}
+
+function containsOperationalWork(node, setName, predicateSenses) {
+  return expressionContains(node, (child) => {
+    if (ts.isBinaryExpression(child)
+        && child.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+        && child.operatorToken.kind <= ts.SyntaxKind.LastAssignment) return true;
+    if (ts.isPrefixUnaryExpression(child) || ts.isPostfixUnaryExpression(child)) {
+      if (child.operator === ts.SyntaxKind.PlusPlusToken || child.operator === ts.SyntaxKind.MinusMinusToken) return true;
+    }
+    if (!ts.isCallExpression(child)) return false;
+    if (isSetHasCall(child, setName)) return false;
+    if (ts.isIdentifier(unwrapExpression(child.expression)) && predicateSenses.has(unwrapExpression(child.expression).text)) return false;
+    const callText = child.expression.getText(jsAst);
+    return !callText.startsWith('console.');
+  });
+}
+
+function isAbrupt(statement) {
+  if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)
+      || ts.isContinueStatement(statement) || ts.isBreakStatement(statement)) return true;
+  return ts.isBlock(statement) && statement.statements.length > 0 && isAbrupt(statement.statements.at(-1));
+}
+
+function hasOperationalWorkAfter(functionNode, position, setName, predicateSenses) {
+  let found = false;
+  visitFunctionBody(functionNode, (node) => {
+    if (node.pos >= position && containsOperationalWork(node, setName, predicateSenses)) found = true;
+  });
+  return found;
+}
+
+function filterUsesMembership(call, setName, predicateSenses) {
+  if (!ts.isCallExpression(call)) return false;
+  const expression = unwrapExpression(call.expression);
+  if (!ts.isPropertyAccessExpression(expression) || !['filter', 'find', 'some', 'every'].includes(expression.name.text)) return false;
+  const callback = call.arguments[0] && unwrapExpression(call.arguments[0]);
+  if (!callback || (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback))) return false;
+  const callbackExpressions = ts.isBlock(callback.body) ? returnedExpressions(callback) : [callback.body];
+  return callbackExpressions.some((item) => directMembershipSense(item, setName, predicateSenses) === 1)
+    && !ts.isExpressionStatement(call.parent);
+}
+
+function delegatedFunction(functionNode) {
+  if (!functionNode.body || !ts.isBlock(functionNode.body)) return null;
+  const statements = [...functionNode.body.statements];
+  const last = statements.at(-1);
+  if (!last) return null;
+  let expression = null;
+  if (ts.isReturnStatement(last) && last.expression) expression = unwrapExpression(last.expression);
+  if (ts.isExpressionStatement(last)) expression = unwrapExpression(last.expression);
+  if (expression && ts.isCallExpression(expression) && ts.isIdentifier(unwrapExpression(expression.expression))) {
+    const priorAreDeclarations = statements.slice(0, -1).every((statement) => ts.isVariableStatement(statement));
+    if (priorAreDeclarations) return unwrapExpression(expression.expression).text;
+  }
+  return null;
+}
+
+function functionHasCausalMembershipGate(functionName, setName, predicateSenses, seen = new Set()) {
+  if (seen.has(functionName)) return false;
+  seen.add(functionName);
+  const functionNode = jsFunctions.get(functionName);
+  assert.ok(functionNode, `missing function ${functionName}`);
+  let gated = false;
+  visitFunctionBody(functionNode, (node) => {
+    if (gated) return;
+    if (ts.isIfStatement(node)) {
+      const sense = directMembershipSense(node.expression, setName, predicateSenses);
+      if (sense === 1 && containsOperationalWork(node.thenStatement, setName, predicateSenses)) gated = true;
+      if (sense === -1 && node.elseStatement && containsOperationalWork(node.elseStatement, setName, predicateSenses)) gated = true;
+      if (sense === -1 && isAbrupt(node.thenStatement)
+          && hasOperationalWorkAfter(functionNode, node.end, setName, predicateSenses)) gated = true;
+    }
+    if (filterUsesMembership(node, setName, predicateSenses)) gated = true;
+  });
+  if (gated) return true;
+  const delegate = delegatedFunction(functionNode);
+  return delegate && jsFunctions.has(delegate)
+    ? functionHasCausalMembershipGate(delegate, setName, predicateSenses, seen)
+    : false;
+}
+
+function localFunctionCalls(node) {
+  const names = new Set();
+  const visit = (child) => {
+    if (ts.isCallExpression(child)) {
+      const expression = unwrapExpression(child.expression);
+      if (ts.isIdentifier(expression) && jsFunctions.has(expression.text)) names.add(expression.text);
+      for (const argument of child.arguments) {
+        const callback = unwrapExpression(argument);
+        if (ts.isIdentifier(callback) && jsFunctions.has(callback.text)) names.add(callback.text);
+      }
+    }
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return names;
+}
+
+function ownLocalFunctionCalls(functionNode) {
+  const names = new Set();
+  visitFunctionBody(functionNode, (node) => {
+    if (!ts.isCallExpression(node)) return;
+    const expression = unwrapExpression(node.expression);
+    if (ts.isIdentifier(expression) && jsFunctions.has(expression.text)) names.add(expression.text);
+  });
+  return names;
+}
+
+function isNonDocumentQuery(node) {
+  if (!ts.isCallExpression(node)) return false;
+  const expression = unwrapExpression(node.expression);
+  if (!ts.isPropertyAccessExpression(expression)
+      || !['querySelector', 'querySelectorAll'].includes(expression.name.text)) return false;
+  const owner = unwrapExpression(expression.expression).getText(jsAst);
+  return owner !== 'document' && owner !== 'window.document';
+}
+
+function queryReturningFunctions() {
+  const names = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [name, functionNode] of jsFunctions) {
+      if (names.has(name)) continue;
+      const returnsScopedQuery = returnedExpressions(functionNode).some((expression) => expressionContains(expression, (node) => (
+        isNonDocumentQuery(node)
+        || (ts.isCallExpression(node)
+          && ts.isIdentifier(unwrapExpression(node.expression))
+          && names.has(unwrapExpression(node.expression).text))
+      )));
+      if (!returnsScopedQuery) continue;
+      names.add(name);
+      changed = true;
+    }
+  }
+  return names;
+}
+
+const scopedQueryFunctions = queryReturningFunctions();
+
+function initializerIsOverlayScoped(initializer, scopedNames) {
+  return expressionContains(initializer, (node) => {
+    if (isNonDocumentQuery(node)) return true;
+    if (ts.isPropertyAccessExpression(node) && ['target', 'currentTarget'].includes(node.name.text)) return true;
+    if (ts.isCallExpression(node)
+        && ts.isIdentifier(unwrapExpression(node.expression))
+        && scopedQueryFunctions.has(unwrapExpression(node.expression).text)) return true;
+    return ts.isIdentifier(node) && scopedNames.has(node.text);
+  });
+}
+
+function overlayScopedBindings(functionNode, seededNames = new Set()) {
+  const declarations = [];
+  const visit = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) declarations.push(node);
+    ts.forEachChild(node, visit);
+  };
+  if (functionNode.body) visit(functionNode.body);
+
+  const scoped = new Set(seededNames);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const declaration of declarations) {
+      if (scoped.has(declaration.name.text)) continue;
+      if (!initializerIsOverlayScoped(declaration.initializer, scoped)) continue;
+      scoped.add(declaration.name.text);
+      changed = true;
+    }
+  }
+  return scoped;
+}
+
+function regionHasOverlayScopedFocus(region, functionNode, seen = new Set(), seededNames = new Set()) {
+  const scoped = overlayScopedBindings(functionNode, seededNames);
+  let focused = false;
+  const localCalls = [];
+  const visit = (node) => {
+    if (focused) return;
+    if (ts.isCallExpression(node)) {
+      const expression = unwrapExpression(node.expression);
+      if (ts.isPropertyAccessExpression(expression) && expression.name.text === 'focus') {
+        const receiver = unwrapExpression(expression.expression);
+        if ((ts.isIdentifier(receiver) && scoped.has(receiver.text)) || isNonDocumentQuery(receiver)) {
+          focused = true;
+          return;
+        }
+      }
+      if (ts.isIdentifier(expression) && jsFunctions.has(expression.text)) {
+        localCalls.push({ name: expression.text, arguments: [...node.arguments] });
+      }
+      for (const argument of node.arguments) {
+        const callback = unwrapExpression(argument);
+        if (ts.isIdentifier(callback) && jsFunctions.has(callback.text)) {
+          localCalls.push({ name: callback.text, arguments: [] });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(region);
+  if (focused) return true;
+
+  for (const call of localCalls) {
+    const { name } = call;
+    const helper = jsFunctions.get(name);
+    const scopedParameters = new Set();
+    helper?.parameters.forEach((parameter, index) => {
+      if (!ts.isIdentifier(parameter.name) || !call.arguments[index]) return;
+      if (initializerIsOverlayScoped(call.arguments[index], scoped)) scopedParameters.add(parameter.name.text);
+    });
+    const visitKey = `${name}:${[...scopedParameters].sort().join(',')}`;
+    if (seen.has(visitKey)) continue;
+    seen.add(visitKey);
+    if (helper?.body && regionHasOverlayScopedFocus(helper.body, helper, seen, scopedParameters)) return true;
   }
   return false;
+}
+
+function hasDirectVisibilityEvidence(node) {
+  return expressionContains(node, (child) => {
+    if (ts.isStringLiteralLike(child) && child.text === 'aria-hidden') return true;
+    if (ts.isPropertyAccessExpression(child) && child.name.text === 'hidden') return true;
+    if (ts.isCallExpression(child)) {
+      const expression = unwrapExpression(child.expression);
+      if (ts.isIdentifier(expression) && expression.text === 'getComputedStyle') return true;
+      if (ts.isPropertyAccessExpression(expression)) {
+        const text = expression.getText(jsAst);
+        if (text.endsWith('.classList.contains') || text.endsWith('.matches')) return true;
+      }
+    }
+    return false;
+  });
+}
+
+function visibilityPredicateFunctions() {
+  const names = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [name, functionNode] of jsFunctions) {
+      if (names.has(name)) continue;
+      const isVisibilityPredicate = returnedExpressions(functionNode).some((expression) => (
+        hasDirectVisibilityEvidence(expression)
+        || expressionContains(expression, (node) => (
+          ts.isCallExpression(node)
+          && ts.isIdentifier(unwrapExpression(node.expression))
+          && names.has(unwrapExpression(node.expression).text)
+        ))
+      ));
+      if (!isVisibilityPredicate) continue;
+      names.add(name);
+      changed = true;
+    }
+  }
+  return names;
+}
+
+const visibilityPredicates = visibilityPredicateFunctions();
+
+function expressionTestsVisibility(expression) {
+  return hasDirectVisibilityEvidence(expression)
+    || expressionContains(expression, (node) => (
+      ts.isCallExpression(node)
+      && ts.isIdentifier(unwrapExpression(node.expression))
+      && visibilityPredicates.has(unwrapExpression(node.expression).text)
+    ));
+}
+
+function handlerHasVisibilityControlledFocus(handler, seen = new Set()) {
+  if (!handler?.body) return false;
+  let causalFocus = false;
+  const visit = (node) => {
+    if (causalFocus) return;
+    if (ts.isIfStatement(node) && expressionTestsVisibility(node.expression)) {
+      causalFocus = regionHasOverlayScopedFocus(node.thenStatement, handler)
+        || Boolean(node.elseStatement && regionHasOverlayScopedFocus(node.elseStatement, handler));
+      if (causalFocus) return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(handler.body);
+  if (causalFocus) return true;
+
+  for (const name of localFunctionCalls(handler.body)) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    if (handlerHasVisibilityControlledFocus(jsFunctions.get(name), seen)) return true;
+  }
+  return false;
+}
+
+function resolveFunctionArgument(argument) {
+  const node = argument && unwrapExpression(argument);
+  if (!node) return null;
+  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) return node;
+  return ts.isIdentifier(node) ? jsFunctions.get(node.text) || null : null;
+}
+
+function collectOpenFocusHandlers(functionName, seen = new Set()) {
+  if (seen.has(functionName)) return [];
+  seen.add(functionName);
+  const functionNode = jsFunctions.get(functionName);
+  assert.ok(functionNode, `missing function ${functionName}`);
+  const handlers = [];
+  visitFunctionBody(functionNode, (node) => {
+    if (ts.isNewExpression(node)
+        && ts.isIdentifier(unwrapExpression(node.expression))
+        && unwrapExpression(node.expression).text === 'MutationObserver') {
+      const handler = resolveFunctionArgument(node.arguments?.[0]);
+      if (handler) handlers.push({ kind: 'visibility', handler });
+    }
+    if (ts.isCallExpression(node)) {
+      const expression = unwrapExpression(node.expression);
+      if (!ts.isPropertyAccessExpression(expression) || expression.name.text !== 'addEventListener') return;
+      const eventName = node.arguments[0];
+      if (!eventName || !ts.isStringLiteralLike(eventName)
+          || !/(?:overlay|dialog).*(?:open|show|reveal)/i.test(eventName.text)) return;
+      const handler = resolveFunctionArgument(node.arguments[1]);
+      if (handler) handlers.push({ kind: 'open-event', handler });
+    }
+  });
+  for (const calledName of ownLocalFunctionCalls(functionNode)) {
+    handlers.push(...collectOpenFocusHandlers(calledName, seen));
+  }
+  return handlers;
+}
+
+function setupHasCausalOpenFocus() {
+  const handlers = collectOpenFocusHandlers('setupDashboardOverlayAccessibility');
+  return handlers.some(({ kind, handler }) => (
+    kind === 'visibility'
+      ? handlerHasVisibilityControlledFocus(handler)
+      : regionHasOverlayScopedFocus(handler.body, handler)
+  ));
 }
 
 const htmlTree = parseHtmlTree(html);
@@ -244,11 +691,11 @@ test('Home layout persistence is scoped to environmental sensor cards', () => {
     .sort();
   assert.deepEqual(managedIds, ['outside-weather', 'pool-screenlogic', 'sauna-control']);
 
+  const predicateSenses = membershipPredicateSenses('HOME_LAYOUT_MANAGED_SENSOR_IDS');
   for (const fn of ['applyHomeTileLayout', 'renderHomeTileInlineControls', 'mutateHomeTileLayout']) {
-    const closure = functionClosure(js, [fn]);
     assert.ok(
-      hasMembershipGate(closure, 'HOME_LAYOUT_MANAGED_SENSOR_IDS'),
-      `${fn} must condition or filter behavior with HOME_LAYOUT_MANAGED_SENSOR_IDS.has(...)`,
+      functionHasCausalMembershipGate(fn, 'HOME_LAYOUT_MANAGED_SENSOR_IDS', predicateSenses),
+      `${fn} must causally gate layout work with HOME_LAYOUT_MANAGED_SENSOR_IDS.has(...)`,
     );
   }
 });
@@ -383,21 +830,9 @@ test('overlay dialogs have real dismiss, labelling, focus, Escape, and scroll-lo
 });
 
 test('opening or revealing an overlay moves focus inside it before keyboard trapping', () => {
-  const setup = functionClosure(js, ['setupDashboardOverlayAccessibility']);
-  const observesVisibility = /new\s+MutationObserver\b/.test(setup)
-    && /\.observe\s*\(/.test(setup)
-    && /(?:attributeFilter|aria-hidden|classList|hidden)/.test(setup);
-  const listensForOpen = /addEventListener\(\s*['"][^'"]*(?:overlay|dialog)[^'"]*(?:open|show)[^'"]*['"]/.test(setup);
-  assert.ok(observesVisibility || listensForOpen, 'focus entry must run from an overlay open/visibility lifecycle');
-
-  const scopedFocusTargets = [...setup.matchAll(
-    /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]*(?:\.querySelector\(|\[role=["']dialog["']))/g,
-  )].filter((match) => !/document\.(?:querySelector|querySelectorAll)/.test(match[2]));
-  assert.ok(scopedFocusTargets.length, 'focus target must be selected from the opened overlay/dialog');
-  assert.match(setup, /(?:button|\[href\]|input|select|textarea|\[tabindex|\[role=["']dialog["'])/);
   assert.ok(
-    scopedFocusTargets.some((match) => new RegExp(`${match[1]}(?:\\.|\\?\\.)focus\\(`).test(setup)),
-    'the overlay-scoped focus target must receive focus on open',
+    setupHasCausalOpenFocus(),
+    'an open/visibility handler must causally focus a target selected inside the opened overlay',
   );
 });
 
