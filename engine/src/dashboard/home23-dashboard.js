@@ -318,13 +318,16 @@ function syncDashboardOverlayVisualStack(overlays = null) {
   const visibleOverlays = visibleDashboardOverlaysInPaintOrder(candidates);
   const visibleIds = new Set(visibleOverlays.map((overlay) => overlay.id));
   candidates.forEach((overlay) => {
-    overlay.style.zIndex = '';
-    if (!visibleIds.has(overlay.id)) dashboardOverlayPaintOrder.delete(overlay.id);
+    if (!visibleIds.has(overlay.id)) {
+      if (overlay.style.zIndex) overlay.style.zIndex = '';
+      dashboardOverlayPaintOrder.delete(overlay.id);
+    }
   });
   visibleOverlays.forEach((overlay, index) => {
     const normalizedOrder = index + 1;
+    const desiredZIndex = String(DASHBOARD_OVERLAY_BASE_Z_INDEX + index);
     dashboardOverlayPaintOrder.set(overlay.id, normalizedOrder);
-    overlay.style.zIndex = String(DASHBOARD_OVERLAY_BASE_Z_INDEX + index);
+    if (overlay.style.zIndex !== desiredZIndex) overlay.style.zIndex = desiredZIndex;
   });
   dashboardOverlayPaintSequence = visibleOverlays.length;
   return visibleOverlays;

@@ -638,13 +638,23 @@ class RuntimeElement {
     this.textContent = '';
     this.innerHTML = '';
     this.classList = new RuntimeClassList(classes);
-    this.style = {
+    let zIndex = '';
+    const style = {
       display,
       visibility: 'visible',
       overflow: '',
       setProperty(name, value) { this[name] = String(value); },
       removeProperty(name) { delete this[name]; },
     };
+    Object.defineProperty(style, 'zIndex', {
+      enumerable: true,
+      get() { return zIndex; },
+      set: (value) => {
+        zIndex = String(value ?? '');
+        this.ownerDocument.styleWrites.push({ element: this.id, property: 'z-index', value: zIndex });
+      },
+    });
+    this.style = style;
   }
 
   appendChild(child) {
@@ -704,6 +714,7 @@ class RuntimeDocument {
   constructor() {
     this.elements = new Map();
     this.listeners = new Map();
+    this.styleWrites = [];
     this.body = new RuntimeElement(this, 'body', { tagName: 'BODY' });
     this.register(this.body);
     this.activeElement = this.body;
@@ -1078,6 +1089,44 @@ test('overlay focus, Tab, Escape, and scroll restoration follow actual paint ord
   assert.equal(problems.style.display, 'none');
   assert.equal(document.activeElement, problemsInvoker);
   assert.equal(document.body.style.overflow, 'auto');
+});
+
+test('overlay visual-stack normalization is idempotent under observer feedback', () => {
+  const runtime = createDashboardRuntime();
+  const { document } = runtime;
+  const overlays = [];
+  for (const id of [
+    'problems-overlay', 'goodlife-overlay', 'brain-storage-overlay',
+    'home-vibe-detail-modal', 'chat-overlay', 'problem-editor-overlay',
+  ]) {
+    const overlay = document.createElement(id, { display: 'none' });
+    overlay.setAttribute('aria-hidden', id === 'home-vibe-detail-modal' ? 'true' : 'false');
+    overlays.push(overlay);
+  }
+  const brain = document.getElementById('brain-storage-overlay');
+  brain.appendChild(document.createElement('brain-feedback-close', { tagName: 'BUTTON' }));
+
+  runtime.run('setupDashboardOverlayAccessibility()');
+  document.styleWrites.length = 0;
+  brain.style.display = 'flex';
+  runtime.flushMutationRecords([brain]);
+  assert.deepEqual(document.styleWrites, [
+    { element: 'brain-storage-overlay', property: 'z-index', value: '1000' },
+  ]);
+
+  document.styleWrites.length = 0;
+  runtime.flushMutationRecords([brain]);
+  assert.equal(document.styleWrites.length, 0, 'observer feedback performs no redundant z-index writes');
+
+  brain.style.display = 'none';
+  runtime.flushMutationRecords([brain]);
+  assert.deepEqual(document.styleWrites, [
+    { element: 'brain-storage-overlay', property: 'z-index', value: '' },
+  ]);
+  document.styleWrites.length = 0;
+  runtime.flushMutationRecords([brain]);
+  assert.equal(document.styleWrites.length, 0, 'cleared hidden overlays remain write-free on feedback');
+  assert.ok(overlays.every((overlay) => overlay.style.zIndex === ''));
 });
 
 test('Settings overview settles GET sections independently without mutation requests', async () => {
