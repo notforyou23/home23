@@ -33,6 +33,7 @@ let humanHomeRefreshPromise = null;
 let humanSaunaConfirmedPayload = null;
 let humanSaunaPendingAction = null;
 let humanSaunaActionRevision = 0;
+let humanSaunaStateGeneration = 0;
 let briefsState = {
   items: [],
   selectedId: null,
@@ -2119,8 +2120,14 @@ async function loadHumanHomeSurface() {
     }, () => {
       renderHumanSensor('weather', offlineTilePayload('outside-weather', 'Offline', '--', 'Weather unavailable'), 'Offline', 'Weather unavailable');
     });
-    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/sauna-control/data', { timeoutMs: 8000 }), renderHumanSauna, () => {
-      renderHumanSauna(offlineTilePayload('sauna-control', 'Offline', '--', 'Sauna unavailable'), { confirmed: false });
+    const saunaRequestGeneration = humanSaunaStateGeneration;
+    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/sauna-control/data', { timeoutMs: 8000 }), (data) => {
+      renderHumanSauna(data, { requestGeneration: saunaRequestGeneration });
+    }, () => {
+      renderHumanSauna(offlineTilePayload('sauna-control', 'Offline', '--', 'Sauna unavailable'), {
+        confirmed: false,
+        requestGeneration: saunaRequestGeneration,
+      });
     });
     scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/pool-screenlogic/data', { timeoutMs: 8000 }), (data) => {
       renderHumanSensor('pool', data, 'Pool', 'ScreenLogic');
@@ -2215,6 +2222,7 @@ function offlineTilePayload(tileId, status, value, subtitle) {
 }
 
 function renderHumanSauna(payload, options = {}) {
+  if (options.requestGeneration !== undefined && options.requestGeneration !== humanSaunaStateGeneration) return;
   if (options.confirmed !== false) humanSaunaConfirmedPayload = payload;
   if (humanSaunaPendingAction && options.allowDuringAction !== true) return;
   renderHumanSensor('sauna', payload, 'Sauna', 'Huum');
@@ -2350,6 +2358,7 @@ async function runHumanSaunaAction(actionId, button) {
   if (!window.confirm(confirmText)) return;
 
   const actionRevision = ++humanSaunaActionRevision;
+  humanSaunaStateGeneration += 1;
   humanSaunaPendingAction = { actionId, actionRevision };
   const optimisticPayload = optimisticHumanSaunaPayload(actionId, payload, humanSaunaConfirmedPayload);
   if (button) button.disabled = true;
@@ -2362,6 +2371,7 @@ async function runHumanSaunaAction(actionId, button) {
     });
     if (!result || result.ok === false) throw new Error(result?.error || 'Sauna action failed');
     if (humanSaunaPendingAction?.actionRevision !== actionRevision) return;
+    humanSaunaStateGeneration += 1;
     if (result.data) {
       humanSaunaPendingAction = null;
       renderHumanSauna(result.data);

@@ -1950,6 +1950,119 @@ test('Sauna actions render optimistic state before settlement and roll back fail
   assert.equal(duration.value, '90');
 });
 
+test('successful Sauna actions ignore older polls while later polls remain independent', async () => {
+  const runtime = createDashboardRuntime();
+  for (const id of [
+    'human-sauna-status', 'human-sauna-value', 'human-sauna-subtitle',
+    'human-sauna-metrics', 'human-sauna-actions', 'human-sauna-gauge',
+  ]) runtime.document.createElement(id);
+  const card = runtime.document.createElement('sauna-card');
+  card.dataset.homeTileId = 'sauna-control';
+  const target = runtime.document.createElement('human-sauna-target', { tagName: 'INPUT' });
+  target.value = '180';
+  target.dataset.userEdited = 'true';
+  const duration = runtime.document.createElement('human-sauna-duration', { tagName: 'INPUT' });
+  duration.value = '90';
+  duration.dataset.userEdited = 'true';
+  const button = runtime.document.createElement('sauna-action', { tagName: 'BUTTON' });
+  runtime.context.__saunaActions = [
+    { id: 'prestage', label: 'Pre-stage' },
+    { id: 'start', label: 'Start' },
+    { id: 'stop', label: 'Stop' },
+  ];
+  runtime.context.__idleSauna = {
+    content: {
+      status: 'Idle',
+      value: '72°F',
+      subtitle: 'Ready',
+      metrics: [
+        { label: 'Target', value: '180°F' },
+        { label: 'Duration', value: '0 min' },
+        { label: 'Heating', value: 'No' },
+      ],
+    },
+    actions: runtime.context.__saunaActions,
+  };
+  runtime.context.__runningSauna = {
+    content: {
+      status: 'Heating',
+      value: '145°F',
+      subtitle: 'Target 180°F',
+      metrics: [
+        { label: 'Target', value: '180°F' },
+        { label: 'Duration', value: '90 min' },
+        { label: 'Heating', value: 'Yes' },
+      ],
+    },
+    actions: runtime.context.__saunaActions,
+  };
+  runtime.context.__saunaDataRequests = [];
+  runtime.context.__saunaActionRequests = [];
+  runtime.context.__saunaApiFetch = (url, options = {}) => {
+    if (url === '/home23/api/tiles/sauna-control/data') {
+      return new Promise((resolve) => runtime.context.__saunaDataRequests.push({ resolve, options }));
+    }
+    if (url.includes('/home23/api/tiles/sauna-control/actions/')) {
+      return new Promise((resolve) => runtime.context.__saunaActionRequests.push({ url, resolve, options }));
+    }
+    return Promise.resolve(null);
+  };
+  runtime.run(`
+    primaryAgent = null;
+    loadVibeTile = () => Promise.resolve();
+    apiFetch = globalThis.__saunaApiFetch;
+    renderHumanSauna(globalThis.__idleSauna);
+  `);
+
+  const preStartPoll = runtime.run('loadHumanHomeSurface()');
+  await Promise.resolve();
+  assert.equal(runtime.context.__saunaDataRequests.length, 1);
+  const startRequest = runtime.run(`runHumanSaunaAction('start', document.getElementById('sauna-action'))`);
+  assert.equal(runtime.context.__saunaActionRequests[0].url, '/home23/api/tiles/sauna-control/actions/start');
+  assert.deepEqual(JSON.parse(runtime.context.__saunaActionRequests[0].options.body), {
+    targetTemperature: 180,
+    duration: 90,
+  });
+  runtime.context.__saunaActionRequests[0].resolve({ ok: true, data: runtime.context.__runningSauna });
+  await startRequest;
+  assert.equal(card.classList.contains('running'), true);
+  assert.equal(runtime.document.getElementById('human-sauna-status').textContent, 'Heating');
+
+  runtime.context.__saunaDataRequests[0].resolve(runtime.context.__idleSauna);
+  await preStartPoll;
+  assert.equal(card.classList.contains('running'), true, 'a poll started before Start must not replace its successful Heating state');
+  assert.equal(runtime.document.getElementById('human-sauna-status').textContent, 'Heating');
+  assert.match(runtime.document.getElementById('human-sauna-actions').innerHTML, /data-sauna-action="stop"/);
+
+  const preStopPoll = runtime.run('loadHumanHomeSurface()');
+  await Promise.resolve();
+  assert.equal(runtime.context.__saunaDataRequests.length, 2);
+  const stopRequest = runtime.run(`runHumanSaunaAction('stop', document.getElementById('sauna-action'))`);
+  assert.equal(runtime.context.__saunaActionRequests[1].url, '/home23/api/tiles/sauna-control/actions/stop');
+  assert.deepEqual(JSON.parse(runtime.context.__saunaActionRequests[1].options.body), {});
+  runtime.context.__saunaActionRequests[1].resolve({ ok: true, data: runtime.context.__idleSauna });
+  await stopRequest;
+  assert.equal(card.classList.contains('running'), false);
+  assert.equal(runtime.document.getElementById('human-sauna-status').textContent, 'Idle');
+
+  runtime.context.__saunaDataRequests[1].resolve(runtime.context.__runningSauna);
+  await preStopPoll;
+  assert.equal(card.classList.contains('running'), false, 'a poll started before Stop must not replace its successful Idle state');
+  assert.equal(runtime.document.getElementById('human-sauna-status').textContent, 'Idle');
+  assert.match(runtime.document.getElementById('human-sauna-actions').innerHTML, /data-sauna-action="start"/);
+
+  const futurePoll = runtime.run('loadHumanHomeSurface()');
+  await Promise.resolve();
+  assert.equal(runtime.context.__saunaDataRequests.length, 3);
+  runtime.context.__saunaDataRequests[2].resolve(runtime.context.__runningSauna);
+  await futurePoll;
+  assert.equal(card.classList.contains('running'), true, 'a poll started after the action must still reconcile live state');
+  assert.equal(runtime.document.getElementById('human-sauna-status').textContent, 'Heating');
+  assert.equal(target.value, '180');
+  assert.equal(duration.value, '90');
+  assert.equal(button.disabled, false);
+});
+
 test('Brain Storage classification and color semantics execute for all states', async () => {
   const runtime = createDashboardRuntime();
   const cases = [
