@@ -1,7 +1,7 @@
 # Brain Operations Reliability and Cross-Brain Read Design
 
 **Date:** 2026-07-09
-**Status:** Design approved through Section 4; awaiting final spec review
+**Status:** Design approved; implementation in progress
 **Author:** Codex + jtr
 **Supersedes in part:** docs/superpowers/specs/2026-04-19-brain-tools-rework-design.md
 **Related:** docs/design/COSMO23-VENDORED-PATCHES.md, docs/design/STEP16-AGENT-COSMO-TOOLKIT-DESIGN.md
@@ -28,6 +28,7 @@ The design responds to reproduced failures in the live Jerry installation and so
 - brain_memory_graph requested the full memory graph. On Jerry's roughly 139,000-node and 455,000-edge brain, the dashboard exhausted its 2 GB heap and restarted.
 - brain_synthesize failed immediately afterward because the dashboard had restarted.
 - brain_status also requests the full graph after fetching state.
+- A fresh read-only baseline on July 10 caught `home23-cosmo23` after repeated sidecar hydration at about 3.9 GiB reported V8 heap, 99.8% heap use, and 99.9% CPU; `/api/health`, `/api/status`, and `/` all returned no response within their 3–5 second probes. The error log then recorded `FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory`; PM2 restarted the crashed process once, after which `/api/health` returned in about 4 ms and reported heap fell to about 24 MiB. This proves the current failure can starve the control plane and crash even when PM2 initially says `online`.
 - research_search_all_brains silently drops per-brain timeouts and can report no relevant findings when every target failed.
 - Multiple non-Anthropic tool-loop branches record is_error tool results as success.
 - Dashboard search can serve an ANN built from an older base while ignoring newer delta upserts and deletes.
@@ -88,11 +89,12 @@ The requester agent's dashboard is the canonical BrainOperationCoordinator for e
 For COSMO work, the coordinator issues a short-lived signed capability containing:
 
 - Requester agent.
-- Target brain ID and canonical root identity.
+- Target domain and exactly one canonical brain, owned-run, or requester identity;
+  brain/run domains also bind the canonical root.
 - Access mode and allowed operation type.
 - Operation ID, expiry, and nonce.
 
-Setup generates a local internal capability key in ignored installation state and injects it only into the relevant dashboard and COSMO processes. COSMO validates the signature, expiry, target, and operation on every start, status, stream, result, cancel, and export request. Operation IDs and result handles are not bearer credentials. Legacy direct COSMO routes remain compatibility surfaces but are not used to authorize new cross-brain agent operations.
+Setup generates a local internal capability key in ignored installation state and injects it only into the relevant dashboard and COSMO processes. COSMO validates the signature, expiry, target, and operation on every start, status, stream, result, and cancel request. Canonical stored-result export is separately authorized and performed only by the requester dashboard; COSMO exposes no internal worker export endpoint. Operation IDs and result handles are not bearer credentials. Legacy direct COSMO routes remain compatibility surfaces but are not used to authorize new cross-brain agent operations.
 
 The coordinator owns the canonical operation record. COSMO and synthesis workers report monotonic, operation-scoped events back to it; they do not create a second competing source of operation truth.
 
@@ -166,7 +168,10 @@ The server operation API provides:
 - Cancel explicitly.
 - Reattach after a transport or caller disconnect.
 
-The exact route names may follow the existing COSMO brain-route namespace, but all long-operation implementations share one durable execution state machine:
+The public operation routes are exactly the `/home23/api/brain-operations`
+catalog/start/status/events/result/cancel/detach/export routes defined by the
+execution index. Protected worker routes remain internal. All long-operation
+implementations share one durable execution state machine:
 
 - queued
 - running
@@ -212,6 +217,11 @@ Waiting is based on verified operation activity, not a fixed 60- or 120-second f
 - Reaching an attachment wait deadline detaches only that caller. Reaching the server execution deadline cancels worker/provider work and terminalizes the operation with operation_timeout.
 - Short search/status/graph operations keep smaller configurable bounds because they have no legitimate multi-hour execution path.
 - Heartbeats prove transport/worker liveness but do not by themselves prove provider progress. Provider adapters update lastProviderActivityAt from real provider events. Provider-specific stall bounds are configurable and enforced separately from the hard execution deadline.
+- Stall tracking is per active provider call. Query/synthesis/compile use stable
+  singleton IDs; every PGS sweep and final synthesis has its own ID. Only a
+  matching authenticated provider-activity event renews that call from local
+  receipt/monotonic time; child timestamps and transport heartbeats are
+  diagnostic and cannot hide a silent sibling call.
 
 The agent's turn controller must cooperate with long tools. Verified operation events renew the turn activity lease. All entry points, including main chat, Evobrew bridge, and cron execution, must use the same turn/tool lifecycle rather than bypassing it with raw agent.run calls.
 
@@ -235,6 +245,22 @@ All memory consumers use one dependency-light streaming library under shared/mem
 3. Delta tombstones/deletes.
 
 The portable module owns format parsing, revision comparison, bounded iteration, delta application, and evidence generation. Engine and COSMO adapters own only path discovery and domain-specific projection. Shared contract fixtures must produce identical results through every adapter.
+
+All streaming boundaries cap compressed input selection, decompressed bytes,
+one record, retained projections, scratch/disk use, and final response bytes.
+A large committed delta spills into requester-operation SQLite rather than an
+unbounded JavaScript Map. An oversized/corrupt source fails typed before V8 heap
+exhaustion; it never becomes a partial empty result.
+
+One aggregate 8-GiB default quota covers all source-operation scratch,
+including SQLite/journals, immutable legacy projections, PGS projection state,
+and graph-export temp/final files; lower component ceilings still apply.
+Manifest reads are capped at 1 MiB with exactly three scalar summary fields.
+Every source file is opened as a stable nonsymlink regular file confined to its
+canonical root. The committed delta prefix must exist and exactly match its
+declared epoch, first/last revision, sequence, record count, and byte cutoff;
+missing, malformed, gapped, or truncated committed data is unavailable/unknown,
+never healthy partial coverage.
 
 Authoritative ordering uses a versioned manifest/epoch transaction:
 
@@ -305,16 +331,25 @@ brain_memory_graph and brain_status will never fetch /api/memory to count the gr
 
 - Status reads summary metadata and source health.
 - Graph reads require server-side node and edge limits with safe maximums.
+- Inline graph maxima are 2,000 nodes and 8,000 edges, with independent
+  16-MiB node, 8-MiB edge, 1-MiB cluster-breakdown, and 32-MiB response caps.
 - The server obtains summary metadata and a bounded sample through streaming/indexed reads before full graph deserialization or object materialization.
 - Responses include authoritative total counts separately from returned sample counts.
 - Numeric and string cluster identifiers are normalized before filtering.
 - Arbitrary COSMO brain graph routes receive the same server-side limits and evidence as resident dashboard routes.
 - The compatibility full=1 escape hatch is rejected or clamped. A true full graph is available only as a durable asynchronous file export into requester-owned storage.
-- The default sample is deterministic for a pinned revision: stream/select the requested cluster and ranking into a bounded top-K node set, then stream edges and retain at most edgeLimit edges whose endpoints are in the selected set. Authoritative tag/cluster totals come from manifest summaries or a streaming count, never from the bounded sample.
+- The default sample is deterministic for a pinned revision: stream/select the requested cluster and ranking into a bounded top-K node set, then stream edges and retain at most edgeLimit edges whose endpoints are in the selected set. Authoritative node/edge/cluster counts come from the pinned manifest's three bounded scalar summary fields. Optional tag/cluster breakdowns use a key/byte-bounded streaming count and become explicit `null`/omitted when they cannot remain exact; an empty map never stands in for omitted totals.
 
 ### MCP
 
 HTTP MCP and internal MCPBridge hydrate the same base-plus-delta logical view. Read failures return unavailable with evidence, never totalNodes zero.
+
+Every MCP/AgentExecutor construction receives an explicit trusted local source
+context. Resident processes resolve their configured resident root; active
+research processes may resolve only their exact owned active run. Each read
+uses a requester-owned ephemeral operation root and cleans it in `finally`.
+Caller/tool fields cannot choose requester, catalog identity, source root,
+projection, lock, or scratch. `limit:0` is no longer an unlimited graph request.
 
 Generated runtime configuration must either:
 
@@ -377,7 +412,11 @@ Existing names remain:
 
 Behavior changes:
 
-- The five read-oriented brain tools accept the optional target. brain_synthesize stays own-brain only.
+- The four target-selecting read tools—brain_search, brain_query,
+  brain_memory_graph, and brain_status—accept the optional target.
+  brain_query_export is bound to an already-authorized requester operation (or
+  requester-owned ad-hoc content) and rejects target; brain_synthesize stays
+  own-brain only.
 - brain_query reports progress, operation ID, and complete/partial/typed-failure status.
 - brain_query and the tool-loop formatter never silently slice an answer. A shortened display includes a clear truncation marker and result/export handle.
 - brain_status and brain_memory_graph use bounded summary routes.
@@ -416,6 +455,10 @@ Request validation rejects:
 - Query or prior-context text beyond the published maximum.
 - Invalid topK, node limit, edge limit, mode, model/provider pairing, or target.
 - Mismatched agent and brain identifiers.
+- Public brain-operation JSON bodies over 1 MiB, protected internal worker-start
+  bodies over 2 MiB, and protected internal cancel/control bodies over 256 KiB.
+  These strict parsers are mounted before any legacy broad dashboard parser, so
+  an over-budget request is rejected without first being retained by that parser.
 
 Transport and application errors use appropriate non-2xx status codes for direct APIs. Compatibility endpoints that cannot change status immediately must still return a typed non-success envelope that tools reject.
 
@@ -512,6 +555,12 @@ Required cases:
 - MCP reads sidecar-plus-delta data when inline state arrays are empty.
 - Batch embedding success returns one ordered vector per input with no duplicate fallback calls.
 - Semantic access reinforcement updates the stored own-brain node, while cross-brain read-only queries do not.
+- Highly compressible oversized JSONL records/decompressed streams fail at the
+  byte boundary; a large committed delta spills outside the target and cleans
+  up on success, failure, and cancellation.
+- Million-node/three-million-edge graph/query/PGS probes run under explicit
+  small V8 heaps without a full materializer, or fail at the first typed byte
+  quota rather than exhausting the process.
 
 ### Target and tool tests
 
@@ -563,7 +612,7 @@ Live rollout is scoped and non-destructive.
    - Explicit completed research-brain read.
    - Exact keyword canary through the same public tool route.
 6. Snapshot hashes/stats for all target brain state boundaries, run cross-brain direct and PGS reads, and prove only requester-owned operation/workspace paths changed.
-7. Run one deliberately scoped PGS canary using a configured healthy provider. If no live provider is healthy, record that external blocker and use the controlled integration provider without claiming a live-provider pass.
+7. Run one deliberately scoped PGS canary using a configured healthy provider only when the pinned live source has at least 100,000 authoritative nodes. If either live size or provider health blocks that proof, record the blocker and run a 100,000-node controlled provider only in a separate isolated Home23 fixture without claiming a live-provider pass. Retain its stopped durable store until protected readback succeeds.
 8. Prove PGS progress, operation status, and complete or honest partial result.
 9. Exercise synthesis run/status against an isolated fixture or safe dedicated canary brain; do not mutate Jerry's live brain merely to prove polling.
 10. Confirm the bounded Jerry graph call does not restart the dashboard and increases peak heap by no more than 256 MB over its pre-call baseline.
@@ -594,6 +643,9 @@ The work is complete only when:
 - Server-derived requester capabilities protect every operation/result endpoint, and target filesystem proof shows no cross-brain mutation.
 - Multi-brain failures remain visible.
 - MCP and dashboard retrieval agree on sidecar-backed memory or clearly report unavailability.
+- Every production AgentExecutor/MCPBridge call site has a canonical local
+  source-context dependency; missing context fails readiness rather than
+  claiming zero nodes.
 - Existing tool calls remain compatible.
 - Focused, full, contract, clean-install, and live acceptance checks pass or any external-provider limitation is explicitly documented.
 - The portable implementation, design/plan updates, COSMO vendored-patch record, tests, and verification receipt are committed and pushed without tracked local runtime state.
