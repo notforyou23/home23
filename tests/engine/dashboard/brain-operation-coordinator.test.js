@@ -860,6 +860,18 @@ test('source-required production work fails closed without complete source, quot
   assert.equal(fixture.worker.startCalls.length, 0);
 });
 
+test('source readiness requires exact worker support for the requested operation type', async (t) => {
+  const worker = new BrainOperationWorkerAdapter({ supportsSourceOperations: true });
+  t.after(() => worker.stop());
+  const fixture = makeFixture(t, { worker });
+  await assert.rejects(
+    () => fixture.coordinator.start(request({ requestId: 'global-source-flag' })),
+    typedCode('source_operations_unavailable'),
+  );
+  assert.deepEqual(await fixture.store.list(), []);
+  assert.equal(fixture.counters.pin, 0);
+});
+
 test('non-source local operation accepts a deliberately null scratch quota seam', async (t) => {
   const fixture = makeFixture(t, {
     sourcePins: null,
@@ -2518,6 +2530,63 @@ test('worker adapter cancellation aborts the exact local executor and event snap
     assert.equal(status.eventSequence >= 2, true);
   });
   controller.abort();
+});
+
+test('worker adapter GC bounds observed and unread terminal retention but never evicts live work', async (t) => {
+  const timers = new FakeTimers();
+  const adapter = new BrainOperationWorkerAdapter({
+    clock: { now: () => timers.now, monotonicNow: () => timers.now },
+  });
+  t.after(() => adapter.stop?.());
+  let releases = 0;
+  const liveGate = deferred();
+  adapter.registerLocalExecutor('research_launch', async ({ parameters, signal }) => {
+    if (parameters.live === true) {
+      await Promise.race([
+        liveGate.promise,
+        new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true })),
+      ]);
+      return {
+        state: signal.aborted ? 'cancelled' : 'complete',
+        result: null, resultArtifact: null, error: null, sourceEvidence: null,
+      };
+    }
+    return {
+      state: 'complete', result: { done: true }, resultArtifact: null,
+      error: null, sourceEvidence: null,
+    };
+  });
+  const start = async (operationId, parameters = {}) => adapter.start({
+    operationId,
+    operationType: 'research_launch',
+    requesterAgent: 'jerry',
+    target: { domain: 'requester', requesterAgent: 'jerry' },
+    parameters: {
+      ...parameters,
+      operationControl: { hardDeadlineAt: new Date(timers.now + 48 * 60 * 60 * 1000).toISOString() },
+    },
+    scratchDir: `/tmp/${operationId}`,
+    scratchQuota: null,
+    sourcePin: { descriptor: validDescriptor(), async release() { releases += 1; } },
+  }, `cap-${operationId}`);
+
+  const observedId = `brop_${'5'.repeat(32)}`;
+  await start(observedId);
+  await eventually(async () => assert.equal((await adapter.status(observedId, 'cap')).state, 'complete'));
+  await adapter.result(observedId, 'cap-result');
+  await timers.advance(10 * 60 * 1000);
+  await assert.rejects(() => adapter.status(observedId, 'cap'), typedCode('worker_not_found'));
+
+  const unreadId = `brop_${'4'.repeat(32)}`;
+  await start(unreadId);
+  await eventually(async () => assert.equal((await adapter.status(unreadId, 'cap')).state, 'complete'));
+  const liveId = `brop_${'3'.repeat(32)}`;
+  await start(liveId, { live: true });
+  await timers.advance(24 * 60 * 60 * 1000);
+  await assert.rejects(() => adapter.status(unreadId, 'cap'), typedCode('worker_not_found'));
+  assert.equal((await adapter.status(liveId, 'cap')).state, 'running');
+  assert.equal(releases, 2);
+  await adapter.cancel(liveId, 'cap-cancel');
 });
 
 test('worker adapter event streams surface an interior compacted sequence gap', async (t) => {

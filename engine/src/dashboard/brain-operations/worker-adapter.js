@@ -28,6 +28,8 @@ const NOISY_EVENT_TYPES = new Set([
   'heartbeat', 'progress', 'progress_update', 'token', 'token_estimate',
 ]);
 const MAX_ACTIVE_PROVIDER_CALLS = 4096;
+const OBSERVED_TERMINAL_RETENTION_MS = 10 * 60 * 1000;
+const UNREAD_TERMINAL_RETENTION_MS = 24 * 60 * 60 * 1000;
 const WORKER_EVENT_TYPES = new Set([
   'event_gap', 'heartbeat', 'phase', 'progress', 'progress_update', 'provider_activity',
   'provider_call_terminal', 'provider_selected', 'terminal', 'token', 'token_estimate',
@@ -287,7 +289,17 @@ class BrainOperationWorkerAdapter {
       : this.now;
     this.localExecutors = new Map();
     this.localRecords = new Map();
+    this.localTombstones = new Set();
     this.stopped = false;
+    if (options.sourceOperationTypes !== undefined
+        && !Array.isArray(options.sourceOperationTypes)) {
+      throw workerError('worker_configuration_invalid');
+    }
+    this.sourceOperationTypes = new Set();
+    for (const operationType of options.sourceOperationTypes || []) {
+      assertIdentifier(operationType, 'operationType');
+      this.sourceOperationTypes.add(operationType);
+    }
     this.supportsSourceOperations = options.supportsSourceOperations === true
       || this.remoteWorker?.supportsSourceOperations === true;
   }
@@ -297,6 +309,29 @@ class BrainOperationWorkerAdapter {
     if (typeof executor !== 'function') throw workerError('executor_invalid');
     if (this.localExecutors.has(operationType)) throw workerError('executor_conflict');
     this.localExecutors.set(operationType, executor);
+  }
+
+  _gcLocalRecords() {
+    const now = this.now();
+    for (const [operationId, record] of this.localRecords) {
+      if (!WORKER_TERMINAL_STATES.has(record.state) || !Number.isFinite(record.terminalAt)) continue;
+      const expiresAt = record.resultObservedAt === null
+        ? record.terminalAt + UNREAD_TERMINAL_RETENTION_MS
+        : record.resultObservedAt + OBSERVED_TERMINAL_RETENTION_MS;
+      if (now < expiresAt) continue;
+      record.events.length = 0;
+      record.eventByteSizes.clear();
+      record.eventBytes = 0;
+      record.activeProviderCalls.clear();
+      record.result = null;
+      record.context = null;
+      this.localRecords.delete(operationId);
+      this.localTombstones.add(operationId);
+    }
+  }
+
+  _assertNotEvicted(operationId) {
+    if (this.localTombstones.has(operationId)) throw workerError('worker_not_found');
   }
 
   async _releaseUnownedContext(context, retainedContext = null) {
@@ -314,6 +349,19 @@ class BrainOperationWorkerAdapter {
   usesLocalExecutor(operationType) {
     assertIdentifier(operationType, 'operationType');
     return this.localExecutors.has(operationType);
+  }
+
+  supportsSourceOperation(operationType) {
+    assertIdentifier(operationType, 'operationType');
+    if (this.localExecutors.has(operationType)) {
+      return this.sourceOperationTypes.has(operationType);
+    }
+    if (typeof this.remoteWorker?.supportsSourceOperation === 'function') {
+      return this.remoteWorker.supportsSourceOperation(operationType) === true;
+    }
+    return this.remoteWorker?.start
+      ? this.sourceOperationTypes.has(operationType)
+      : false;
   }
 
   _publicRecord(record) {
@@ -433,11 +481,12 @@ class BrainOperationWorkerAdapter {
 
   async _releaseLocalResources(record) {
     if (record.releasePromise) return record.releasePromise;
+    const context = record.context;
     record.releasePromise = (async () => {
       try {
-        await record.context.sourcePin?.release?.();
+        await context?.sourcePin?.release?.();
       } finally {
-        await record.context.scratchQuota?.close?.();
+        await context?.scratchQuota?.close?.();
       }
     })();
     return record.releasePromise;
@@ -484,6 +533,7 @@ class BrainOperationWorkerAdapter {
     record.result = envelope;
     record.state = envelope.state;
     record.phase = 'terminal';
+    record.terminalAt = this.now();
     record.eventSequence += 1;
     this._pushEvent(record, Object.freeze({
       type: 'terminal',
@@ -497,6 +547,8 @@ class BrainOperationWorkerAdapter {
   }
 
   async _startLocal(context, executor) {
+    this._gcLocalRecords();
+    this._assertNotEvicted(context.operationId);
     const fingerprint = fingerprintContext(context);
     const existing = this.localRecords.get(context.operationId);
     if (existing) {
@@ -532,6 +584,8 @@ class BrainOperationWorkerAdapter {
       fingerprint,
       releasePromise: null,
       runPromise: null,
+      terminalAt: null,
+      resultObservedAt: null,
     };
     this.localRecords.set(context.operationId, record);
     record.runPromise = Promise.resolve().then(() => this._runLocal(record, executor));
@@ -570,6 +624,8 @@ class BrainOperationWorkerAdapter {
 
   async status(operationId, capability) {
     assertOperationId(operationId);
+    this._gcLocalRecords();
+    this._assertNotEvicted(operationId);
     const local = this.localRecords.get(operationId);
     if (local) return this._publicRecord(local);
     if (!this.remoteWorker?.status) throw workerError('worker_not_found');
@@ -581,6 +637,8 @@ class BrainOperationWorkerAdapter {
 
   async *events(operationId, input, capability) {
     assertOperationId(operationId);
+    this._gcLocalRecords();
+    this._assertNotEvicted(operationId);
     if (!input || !Number.isSafeInteger(input.afterSequence) || input.afterSequence < 0
         || !(input.signal instanceof AbortSignal)) {
       throw workerError('worker_event_cursor_invalid');
@@ -632,9 +690,12 @@ class BrainOperationWorkerAdapter {
 
   async result(operationId, capability) {
     assertOperationId(operationId);
+    this._gcLocalRecords();
+    this._assertNotEvicted(operationId);
     const local = this.localRecords.get(operationId);
     if (local) {
       if (!local.result) throw workerError('worker_result_unavailable');
+      if (local.resultObservedAt === null) local.resultObservedAt = this.now();
       return clone(local.result, 'worker_result_invalid');
     }
     if (!this.remoteWorker?.result) throw workerError('worker_not_found');
@@ -643,6 +704,8 @@ class BrainOperationWorkerAdapter {
 
   async cancel(operationId, capability) {
     assertOperationId(operationId);
+    this._gcLocalRecords();
+    this._assertNotEvicted(operationId);
     const local = this.localRecords.get(operationId);
     if (local) {
       if (!WORKER_TERMINAL_STATES.has(local.state) && !local.controller.signal.aborted) {
@@ -670,12 +733,16 @@ class BrainOperationWorkerAdapter {
     await Promise.allSettled([...this.localRecords.values()]
       .map((record) => record.runPromise)
       .filter(Boolean));
+    this.localRecords.clear();
+    this.localTombstones.clear();
   }
 }
 
 module.exports = {
   BrainOperationWorkerAdapter,
   MAX_ACTIVE_PROVIDER_CALLS,
+  OBSERVED_TERMINAL_RETENTION_MS,
+  UNREAD_TERMINAL_RETENTION_MS,
   WORKER_STATES,
   WORKER_TERMINAL_STATES,
   validateActiveProviderCalls,

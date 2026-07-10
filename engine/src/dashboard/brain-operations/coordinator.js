@@ -452,12 +452,15 @@ class BrainOperationCoordinator {
   }
 
   _sourceOperationsReady(operationType) {
+    const workerReady = typeof this.worker.supportsSourceOperation === 'function'
+      ? this.worker.supportsSourceOperation(operationType) === true
+      : this.worker.supportsSourceOperations === true;
     const sourceAndQuotaReady = this.sourcePins
       && typeof this.sourcePins.pin === 'function'
       && typeof this.sourcePins.openPinnedSource === 'function'
       && typeof this.sourcePins.releaseOperationPins === 'function'
       && typeof this.scratchQuotaFactory === 'function'
-      && this.worker.supportsSourceOperations === true;
+      && workerReady;
     return sourceAndQuotaReady
       && (!PROVIDER_OPERATION_TYPES.has(operationType)
         || typeof this.operationModelResolver === 'function');
@@ -1057,17 +1060,22 @@ class BrainOperationCoordinator {
     if (subscriber.queue.length > 0) return subscriber.queue.shift();
     if (subscriber.finished.settled) return null;
     if (subscriber.waiting.length > 0) throw coordinatorError('attachment_read_pending');
-    const rows = await this.store.readEvents(runtime.operationId, subscriber.cursor);
-    this._deliverRowsToSubscriber(subscriber, rows);
-    if (subscriber.queue.length > 0) return subscriber.queue.shift();
-    if (subscriber.finished.settled) return null;
-    return new Promise((resolve) => {
-      subscriber.waiting.push(resolve);
-      if (subscriber.queue.length > 0) {
-        subscriber.waiting.splice(subscriber.waiting.indexOf(resolve), 1);
-        resolve(subscriber.queue.shift());
+    let resolvePending;
+    const pending = new Promise((resolve) => { resolvePending = resolve; });
+    subscriber.waiting.push(resolvePending);
+    try {
+      const rows = await this.store.readEvents(runtime.operationId, subscriber.cursor);
+      this._deliverRowsToSubscriber(subscriber, rows);
+      if (subscriber.finished.settled && subscriber.waiting.includes(resolvePending)) {
+        subscriber.waiting.splice(subscriber.waiting.indexOf(resolvePending), 1);
+        resolvePending(null);
       }
-    });
+    } catch (error) {
+      const index = subscriber.waiting.indexOf(resolvePending);
+      if (index >= 0) subscriber.waiting.splice(index, 1);
+      throw error;
+    }
+    return pending;
   }
 
   async attach(operationId, input) {
