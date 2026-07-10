@@ -72,7 +72,7 @@ class ChatCompletionsClient {
     this.chat = {
       completions: {
         create: async (params) => {
-          return await this.client.chat.completions.create(params);
+          return await this.getClient().chat.completions.create(params);
         }
       }
     };
@@ -358,7 +358,7 @@ class ChatCompletionsClient {
       this.logger?.error?.('Chat Completions API call failed', {
         error: error.message,
         model: mappedModel,
-        baseURL: this.client.baseURL
+        baseURL: this.getClient().baseURL
       });
       throw error;
     }
@@ -368,7 +368,7 @@ class ChatCompletionsClient {
    * Generate with streaming (preferred method)
    */
   async generateStreaming(payload, originalModel) {
-    const stream = await this.client.chat.completions.create(payload);
+    const stream = await this.getClient().chat.completions.create(payload);
 
     let aggregatedText = '';
     let aggregatedReasoning = '';

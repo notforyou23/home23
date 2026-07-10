@@ -80,7 +80,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`const HOME23 = __dirname;`);
   lines.push(`const ENGINE = path.join(HOME23, 'engine');`);
   lines.push(`const ENGINE_KILL_TIMEOUT_MS = 210000;`);
-  lines.push(`const PM2_INHERITANCE_BLOCKLIST = ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'];`);
+  lines.push(`const PM2_INHERITANCE_BLOCKLIST = ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'];`);
   lines.push(`for (const key of PM2_INHERITANCE_BLOCKLIST) delete process.env[key];`);
   lines.push(``);
   lines.push(`function loadYaml(filePath) {`);
@@ -152,6 +152,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`  COSMO_DASHBOARD_PORT: '',`);
   lines.push(`  REALTIME_PORT: '',`);
   lines.push(`  MCP_HTTP_PORT: '',`);
+  lines.push(`  HOME23_MCP_AVAILABLE: 'false',`);
   lines.push(`  COSMO_RUNTIME_DIR: '',`);
   lines.push(`  COSMO_WORKSPACE_PATH: '',`);
   lines.push(`};`);
@@ -167,6 +168,7 @@ export function generateEcosystem(home23Root, options = {}) {
     const brainDir = `path.join(HOME23, 'instances', '${agent.name}', 'brain')`;
     const workspaceDir = `path.join(HOME23, 'instances', '${agent.name}', 'workspace')`;
     const logsDir = `path.join(HOME23, 'instances', '${agent.name}', 'logs')`;
+    const mcpEnabled = agent.config.mcp?.enabled !== false;
 
     lines.push(``);
     lines.push(`    // ── ${agent.name} ──`);
@@ -176,7 +178,7 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      name: 'home23-${agent.name}',`);
     lines.push(`      script: 'src/index.js',`);
     lines.push(`      cwd: ENGINE,`);
-    lines.push(`      filter_env: ['HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'],`);
+    lines.push(`      filter_env: ['HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'],`);
     // Heap sized for a cognitive engine with a growing brain — see commit
     // 174c76c (Step: engine OOM fix). 768MB caused a restart loop at ~7k nodes.
     lines.push(`      node_args: '--expose-gc --max-old-space-size=4096',`);
@@ -185,7 +187,7 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/engine-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/engine-err.log',`);
-    lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
 
     // Dashboard
@@ -193,21 +195,36 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      name: 'home23-${agent.name}-dash',`);
     lines.push(`      script: 'src/dashboard/server.js',`);
     lines.push(`      cwd: ENGINE,`);
-    lines.push(`      filter_env: ['HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'],`);
+    lines.push(`      filter_env: ['HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'],`);
     lines.push(`      node_args: '--max-old-space-size=2048',`);
     lines.push(`      max_memory_restart: '3G',`);
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/dashboard-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/dashboard-err.log',`);
-    lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: brainOperationsCapabilityKey, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: '${mcpEnabled ? 'true' : 'false'}', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
+
+    // Agent-scoped MCP HTTP server. It is loopback-only; the dashboard still
+    // probes /health before advertising or proxying it.
+    if (mcpEnabled) {
+      lines.push(`    {`);
+      lines.push(`      name: 'home23-${agent.name}-mcp',`);
+      lines.push(`      script: 'mcp/http-server.js',`);
+      lines.push(`      cwd: ENGINE,`);
+      lines.push(`      filter_env: ['HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'],`);
+      lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
+      lines.push(`      out_file: ${logsDir} + '/mcp-out.log',`);
+      lines.push(`      error_file: ${logsDir} + '/mcp-err.log',`);
+      lines.push(`      env: { ...commonEnv, HOME23_ROOT: HOME23, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, MCP_HTTP_HOST: '127.0.0.1', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'true', INSTANCE_ID: 'home23-${agent.name}' },`);
+      lines.push(`    },`);
+    }
 
     // Harness
     lines.push(`    {`);
     lines.push(`      name: 'home23-${agent.name}-harness',`);
     lines.push(`      script: 'dist/home.js',`);
     lines.push(`      cwd: HOME23,`);
-    lines.push(`      filter_env: ['cron_restart', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'],`);
+    lines.push(`      filter_env: ['cron_restart', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'],`);
     // Heap raised from 1.5GB default to 4GB. Long-running agent sessions
     // with many LLM calls + tool-use chains can accumulate response blobs
     // in closure scope faster than GC reclaims. max_memory_restart acts
@@ -222,7 +239,7 @@ export function generateEcosystem(home23Root, options = {}) {
     lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
     lines.push(`      out_file: ${logsDir} + '/harness-out.log',`);
     lines.push(`      error_file: ${logsDir} + '/harness-err.log',`);
-    lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', INSTANCE_ID: 'home23-${agent.name}' },`);
+    lines.push(`      env: { ...commonEnv, HOME23_AGENT: '${agent.name}', COSMO_RUNTIME_DIR: ${brainDir}, COSMO_WORKSPACE_PATH: ${workspaceDir}, DASHBOARD_PORT: '${dashPort}', COSMO_DASHBOARD_PORT: '${dashPort}', REALTIME_PORT: '${wsPort}', MCP_HTTP_PORT: '${mcpPort}', HOME23_MCP_AVAILABLE: 'false', INSTANCE_ID: 'home23-${agent.name}' },`);
     lines.push(`    },`);
   }
 
@@ -236,7 +253,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`      name: 'home23-watchdog',`);
   lines.push(`      script: path.join(HOME23, 'scripts', 'home23-pm2-watchdog-daemon.cjs'),`);
   lines.push(`      cwd: HOME23,`);
-  lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'],`);
+  lines.push(`      filter_env: ['cron_restart', 'watch', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'],`);
   // PM2 merges daemon/app env into new starts and can leak a harness
   // cron_restart onto shared services. An impossible schedule wins over that
   // inherited value while behaving as "no cron restart" for the watchdog.
@@ -255,7 +272,7 @@ export function generateEcosystem(home23Root, options = {}) {
   lines.push(`      name: 'home23-chrome-cdp',`);
   lines.push(`      script: path.join(HOME23, 'scripts', 'chrome-cdp.sh'),`);
   lines.push(`      interpreter: 'none',`);
-  lines.push(`      filter_env: ['cron_restart', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'],`);
+  lines.push(`      filter_env: ['cron_restart', 'HOME23_AGENT', 'INSTANCE_ID', 'DASHBOARD_PORT', 'COSMO_DASHBOARD_PORT', 'REALTIME_PORT', 'MCP_HTTP_PORT', 'HOME23_MCP_AVAILABLE', 'COSMO_RUNTIME_DIR', 'COSMO_WORKSPACE_PATH', 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY'],`);
   lines.push(`      autorestart: true, watch: false, merge_logs: true,`);
   lines.push(`      out_file: path.join(HOME23, 'logs', 'chrome-cdp-out.log'),`);
   lines.push(`      error_file: path.join(HOME23, 'logs', 'chrome-cdp-err.log'),`);

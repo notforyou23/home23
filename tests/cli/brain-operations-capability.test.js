@@ -7,6 +7,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   readFileSync,
   readdirSync,
   rmSync,
@@ -36,6 +37,7 @@ import * as capabilitySecretModule from '../../cli/lib/brain-operations-capabili
 
 const require = createRequire(import.meta.url);
 const CAPABILITY_ENV = 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY';
+const MCP_AVAILABLE_ENV = 'HOME23_MCP_AVAILABLE';
 const TEST_NODE_MODULES = dirname(dirname(require.resolve('js-yaml/package.json')));
 
 function makeInstall({ key, mode = 0o600 } = {}) {
@@ -160,6 +162,57 @@ test('generated ecosystem isolates one shared capability to dashboards and COSMO
     for (const name of ['home23-jerry', 'home23-forrest', 'home23-jerry-harness', 'home23-forrest-harness']) {
       assert.ok(apps.get(name)?.filter_env?.includes(CAPABILITY_ENV), `${name} blocks inherited capability`);
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('generated ecosystem starts one loopback MCP service per enabled agent', () => {
+  const root = makeInstall({ key: 'b'.repeat(64) });
+  try {
+    const ecosystem = loadEcosystem(root);
+    const agentApps = ecosystem.apps.filter((app) => /^home23-(jerry|forrest)(?:$|-dash$|-harness$|-mcp$)/.test(app.name));
+    const mcpApps = ecosystem.apps.filter((app) => /^home23-(jerry|forrest)-mcp$/.test(app.name));
+    assert.equal(agentApps.length, 8);
+    assert.equal(mcpApps.length, 2);
+    for (const app of agentApps) {
+      assert.ok(app.filter_env?.includes(MCP_AVAILABLE_ENV), `${app.name} scrubs inherited MCP availability`);
+    }
+    for (const app of mcpApps) {
+      assert.equal(app.script, 'mcp/http-server.js');
+      assert.equal(app.cwd.endsWith('/engine') || app.cwd === 'engine', true);
+      assert.equal(app.env.MCP_HTTP_HOST, '127.0.0.1');
+      assert.equal(app.env[MCP_AVAILABLE_ENV], 'true');
+      assert.equal(realpathSync(app.env.HOME23_ROOT), realpathSync(root));
+      assert.match(app.env.COSMO_RUNTIME_DIR, /instances\/(?:jerry|forrest)\/brain$/);
+    }
+    for (const app of ecosystem.apps.filter((app) => /-dash$/.test(app.name) && /^home23-(jerry|forrest)-/.test(app.name))) {
+      assert.equal(app.env?.[MCP_AVAILABLE_ENV], 'true', `${app.name} probes local MCP`);
+    }
+
+    const source = readFileSync(join(root, 'ecosystem.config.cjs'), 'utf8');
+    assert.match(source, /name: 'home23-jerry-mcp'/);
+    assert.match(source, /MCP_HTTP_HOST: '127\.0\.0\.1'/);
+    assert.match(source, /PM2_INHERITANCE_BLOCKLIST[^\n]*HOME23_MCP_AVAILABLE/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('generated ecosystem omits agent-scoped MCP when an agent disables it', () => {
+  const root = makeInstall({ key: 'c'.repeat(64) });
+  try {
+    const forrestConfigPath = join(root, 'instances', 'forrest', 'config.yaml');
+    const forrestConfig = yaml.load(readFileSync(forrestConfigPath, 'utf8'));
+    forrestConfig.mcp = { enabled: false };
+    writeFileSync(forrestConfigPath, yaml.dump(forrestConfig), 'utf8');
+    generateEcosystem(root);
+
+    const ecosystem = loadEcosystem(root);
+    assert.ok(ecosystem.apps.some((app) => app.name === 'home23-jerry-mcp'));
+    assert.equal(ecosystem.apps.some((app) => app.name === 'home23-forrest-mcp'), false);
+    assert.equal(ecosystem.apps.find((app) => app.name === 'home23-jerry-dash')?.env?.[MCP_AVAILABLE_ENV], 'true');
+    assert.equal(ecosystem.apps.find((app) => app.name === 'home23-forrest-dash')?.env?.[MCP_AVAILABLE_ENV], 'false');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

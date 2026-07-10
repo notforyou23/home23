@@ -37,6 +37,11 @@ const {
 } = require('./brain-operations/router.js');
 const { createSourceOperationExecutors } = require('./brain-operations/source-executors.js');
 const { createGraphExportExecutor } = require('./brain-operations/graph-export-executor.js');
+const {
+  buildMcpUnavailableEnvelope,
+  isMcpProxyAvailable,
+  probeMcpAvailability,
+} = require('./mcp-proxy-availability.js');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -47,6 +52,7 @@ const PM2_ENV_BLOCKLIST = [
   'COSMO_DASHBOARD_PORT',
   'REALTIME_PORT',
   'MCP_HTTP_PORT',
+  'HOME23_MCP_AVAILABLE',
   'COSMO_RUNTIME_DIR',
   'COSMO_WORKSPACE_PATH',
   'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY',
@@ -3696,17 +3702,13 @@ class DashboardServer {
           // No orchestrator running
         }
 
-        // Check MCP servers
-        try {
-          const mcpPorts = [];
-          const lsofOutput = execSync('lsof -iTCP -sTCP:LISTEN -n -P').toString();
-          if (lsofOutput.includes(':3346')) mcpPorts.push(3346);
-          if (lsofOutput.includes(':3347')) mcpPorts.push(3347);
-          status.mcp.running = mcpPorts.length > 0;
-          status.mcp.ports = mcpPorts;
-        } catch (e) {
-          // MCP not running
-        }
+        const mcp = await probeMcpAvailability({
+          enabled: isMcpProxyAvailable(),
+          port: this.mcpPort,
+        });
+        status.mcp.running = mcp.available;
+        status.mcp.ports = mcp.available ? [this.mcpPort] : [];
+        status.mcp.reason = mcp.reason;
 
         // Check cluster status from config
         const configPath = path.join(__dirname, '..', 'config.yaml');
@@ -8290,6 +8292,14 @@ You are empowered to explore and understand. The user trusts you to discover the
     // This enables intelligence view to work regardless of MCP port
     this.app.post('/api/mcp', async (req, res) => {
       try {
+        const availability = await probeMcpAvailability({
+          enabled: isMcpProxyAvailable(),
+          port: this.mcpPort,
+        });
+        if (!availability.available) {
+          return res.status(503).json(buildMcpUnavailableEnvelope(this.mcpPort, availability));
+        }
+
         const http = require('http');
         const mcpUrl = `http://localhost:${this.mcpPort}/mcp`;
         
