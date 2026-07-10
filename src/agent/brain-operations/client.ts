@@ -16,6 +16,7 @@ import type {
   BrainCatalogEntry,
   BrainOperationEvent,
   BrainOperationEventGap,
+  BrainOperationNotification,
   BrainOperationRecord,
   BrainOperationResult,
   BrainOperationResultEnvelope,
@@ -506,6 +507,27 @@ export class BrainOperationsClient {
       const payload = await this.getResult(operationId, options.signal?.aborted ? undefined : options.signal);
       return { ...status, ...payload, attachmentState: 'closed' };
     };
+    const emitActivity = (
+      event: BrainOperationNotification,
+      status: BrainOperationRecord = last,
+    ): void => {
+      const eventPhase = event.phase !== undefined ? event.phase : status.phase;
+      const eventUpdatedAt = event.updatedAt ?? event.at ?? status.updatedAt;
+      const providerActivity = event.lastProviderActivityAt !== undefined
+        ? event.lastProviderActivityAt
+        : event.type === 'provider_activity' && event.at
+          ? event.at
+          : status.lastProviderActivityAt;
+      this.options.onActivity?.({
+        source: 'brain_operation',
+        operationId,
+        sequence: event.eventSequence,
+        state: status.state,
+        phase: eventPhase,
+        updatedAt: eventUpdatedAt,
+        lastProviderActivityAt: providerActivity,
+      });
+    };
     const pauseBeforeReconnect = (): Promise<void> => new Promise((resolve, reject) => {
       const delayMs = Math.max(1, this.options.reconnectDelayMs ?? 250);
       let settled = false;
@@ -522,43 +544,56 @@ export class BrainOperationsClient {
       attachmentSignal.addEventListener('abort', onAbort, { once: true });
     });
     const handleAbort = async (): Promise<BrainOperationResult> => {
+      let status: BrainOperationRecord | null = null;
       try {
-        const status = await this.getOperation(operationId);
+        status = await this.getOperation(operationId);
         last = status;
-        if (TERMINAL.has(status.state)) return canonicalTerminal(status);
       } catch {
         // Detach/cancel endpoints perform their own authoritative compare-and-swap.
       }
+      if (status && TERMINAL.has(status.state)) return canonicalTerminal(status);
       const reason = attachmentSignal.reason as { code?: string; message?: string } | undefined;
       const code = reason?.code || reason?.message || 'transport_disconnect';
       if (code === 'operator_stop' || !DURABLE_OPERATION_TYPES.has(options.operationType)) {
         const cancelled = await this.cancel(operationId);
-        return canonicalTerminal(cancelled);
+        if (TERMINAL.has(cancelled.state)) return canonicalTerminal(cancelled);
+        last = cancelled;
+        return detachLast('cancel_not_terminal');
       }
       return detachLast(code === 'wait_deadline' ? 'wait_deadline' : 'transport_disconnect');
     };
     const statusOrDetach = async (
       reason: string,
       retainedAtLeast = after,
+      activityEvent?: BrainOperationNotification,
     ): Promise<BrainOperationResult | null> => {
+      const priorCursor = after;
+      let status: BrainOperationRecord;
       try {
-        const priorCursor = after;
-        const status = await this.getOperation(operationId, attachmentSignal);
-        if (!Number.isSafeInteger(status.eventSequence)
-            || status.eventSequence < retainedAtLeast
-            || status.eventSequence < priorCursor) {
-          return detachLast(reason === 'event_gap'
-            ? 'operation_event_gap_invalid' : 'operation_status_regressed');
-        }
-        last = status;
-        after = status.eventSequence;
-        if (TERMINAL.has(status.state)) return canonicalTerminal(status);
-        if (after === priorCursor) await pauseBeforeReconnect();
-        return null;
+        status = await this.getOperation(operationId, attachmentSignal);
       } catch {
         if (attachmentSignal.aborted) return handleAbort();
         return detachLast(reason);
       }
+      if (!Number.isSafeInteger(status.eventSequence)
+          || status.eventSequence < retainedAtLeast
+          || status.eventSequence < priorCursor) {
+        return detachLast(reason === 'event_gap'
+          ? 'operation_event_gap_invalid' : 'operation_status_regressed');
+      }
+      last = status;
+      after = status.eventSequence;
+      if (activityEvent) emitActivity(activityEvent, status);
+      if (TERMINAL.has(status.state)) return canonicalTerminal(status);
+      if (after === priorCursor) {
+        try {
+          await pauseBeforeReconnect();
+        } catch {
+          if (attachmentSignal.aborted) return handleAbort();
+          throw new Error('operation_reconnect_pause_failed');
+        }
+      }
+      return null;
     };
 
     try {
@@ -566,7 +601,6 @@ export class BrainOperationsClient {
       while (true) {
         if (attachmentSignal.aborted) return handleAbort();
         let response: Response;
-        let gapRecovered = false;
         try {
           response = await this.requestResponse(
             `/home23/api/brain-operations/${encodeURIComponent(operationId)}/events?after=${after}&attachmentId=${encodeURIComponent(attachmentId)}`,
@@ -598,16 +632,19 @@ export class BrainOperationsClient {
             || ['operation_connect_timeout', 'source_unavailable'].includes(typed.code || '');
           if (!recoverable) return detachLast(typed.code || 'event_transport_error');
           if (typed.code === 'operation_connect_timeout') {
+            let status: BrainOperationRecord | null = null;
             try {
-              const status = await this.getOperation(operationId, attachmentSignal);
+              status = await this.getOperation(operationId, attachmentSignal);
+            } catch {
+              if (attachmentSignal.aborted) return handleAbort();
+            }
+            if (status) {
               if (!Number.isSafeInteger(status.eventSequence) || status.eventSequence < after) {
                 return detachLast('operation_status_regressed');
               }
               last = status;
               after = status.eventSequence;
               if (TERMINAL.has(status.state)) return canonicalTerminal(status);
-            } catch {
-              if (attachmentSignal.aborted) return handleAbort();
             }
             return detachLast('connect_or_header_timeout');
           }
@@ -616,6 +653,8 @@ export class BrainOperationsClient {
           continue;
         }
 
+        let recoveryEvent: BrainOperationEventGap | BrainOperationNotification | null = null;
+        let streamError: unknown = null;
         try {
           if (!response.body) throw new Error('operation_event_body_missing');
           for await (const event of parseOperationEvents(response.body, operationId, after, {
@@ -625,26 +664,48 @@ export class BrainOperationsClient {
             clearTimeout: this.options.clearTimeout,
           })) {
             if (operationEventIsGap(event)) {
-              const terminalOrDetached = await statusOrDetach('event_gap', event.latestSequence);
-              if (terminalOrDetached) return terminalOrDetached;
-              gapRecovered = true;
+              recoveryEvent = event;
               break;
             }
-            last = event;
             after = event.eventSequence;
-            this.options.onActivity?.({
-              source: 'brain_operation', operationId, sequence: after, state: event.state,
-              phase: event.phase, updatedAt: event.updatedAt,
-              lastProviderActivityAt: event.lastProviderActivityAt,
-            });
-            if (TERMINAL.has(event.state)) return canonicalTerminal(event);
+            if (event.type === 'terminal' || (event.state !== undefined && TERMINAL.has(event.state))) {
+              recoveryEvent = event;
+              break;
+            }
+            emitActivity(event);
           }
         } catch (error) {
+          streamError = error;
+        }
+
+        if (recoveryEvent) {
+          try {
+            await response.body?.cancel(
+              operationEventIsGap(recoveryEvent) ? 'event_gap_reconnect' : 'terminal_status_refresh',
+            );
+          } catch {
+            return detachLast('event_body_close_failed');
+          }
+          if (operationEventIsGap(recoveryEvent)) {
+            try {
+              await this.detach(operationId, attachmentId, 'event_gap_reconnect');
+            } catch (error) {
+              if ((error as { code?: string }).code !== 'attachment_closed') throw error;
+            }
+          }
+          const terminalOrDetached = operationEventIsGap(recoveryEvent)
+            ? await statusOrDetach('event_gap', recoveryEvent.latestSequence)
+            : await statusOrDetach('terminal_notification', after, recoveryEvent);
+          if (terminalOrDetached) return terminalOrDetached;
+          continue;
+        }
+
+        if (streamError) {
           if (attachmentSignal.aborted) return handleAbort();
-          const code = (error as { code?: string }).code;
-          const message = error instanceof Error ? error.message : String(error);
+          const code = (streamError as { code?: string }).code;
+          const message = streamError instanceof Error ? streamError.message : String(streamError);
           if (['operation_event_gap_invalid', 'operation_event_mismatch',
-            'operation_event_out_of_order'].includes(code || message)) {
+            'operation_event_out_of_order', 'operation_event_invalid'].includes(code || message)) {
             return detachLast(code || message);
           }
           const terminalOrDetached = await statusOrDetach(
@@ -654,7 +715,6 @@ export class BrainOperationsClient {
           continue;
         }
 
-        if (gapRecovered) continue;
         const terminalOrDetached = await statusOrDetach('event_eof');
         if (terminalOrDetached) return terminalOrDetached;
       }
@@ -726,7 +786,11 @@ export class BrainOperationsClient {
   async cancel(operationId: string, signal?: AbortSignal): Promise<BrainOperationRecord> {
     return this.requestJson<BrainOperationRecord>(
       `/home23/api/brain-operations/${encodeURIComponent(operationId)}/cancel`,
-      { method: 'POST' },
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      },
       { code: 'cancel_timeout', timeoutMs: this.options.statusReadMs ?? 10_000, signal },
     );
   }
@@ -736,18 +800,28 @@ export class BrainOperationsClient {
       operationId: string;
       resultHandle?: string;
       format: string;
-      metadata?: Record<string, unknown>;
+      fileName?: string;
     },
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
     if ('answer' in request || !request.operationId) {
       throw new Error('canonical_export_requires_operation_id');
     }
-    const { operationId, resultHandle: _descriptiveOnly, ...exportOptions } = request;
+    const keys = Reflect.ownKeys(request);
+    if (keys.some((key) => typeof key !== 'string'
+        || !['operationId', 'resultHandle', 'format', 'fileName'].includes(key))) {
+      throw invalid();
+    }
+    if (typeof request.format !== 'string' || !request.format
+        || (request.fileName !== undefined
+          && (typeof request.fileName !== 'string' || !request.fileName))) {
+      throw invalid();
+    }
+    const { operationId, resultHandle: _descriptiveOnly, format, fileName } = request;
     return this.requestJson<Record<string, unknown>>(
       `/home23/api/brain-operations/${encodeURIComponent(operationId)}/export`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(exportOptions),
+        body: JSON.stringify({ format, ...(fileName !== undefined ? { fileName } : {}) }),
       }, { code: 'export_timeout', timeoutMs: this.options.resultReadMs ?? 10_000, signal },
     );
   }

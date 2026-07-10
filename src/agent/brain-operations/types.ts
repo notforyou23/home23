@@ -99,10 +99,88 @@ export interface BrainOperationEventGap {
   operationId: string;
   oldestSequence: number;
   latestSequence: number;
-  currentStatus: BrainOperationRecord;
+  eventSequence?: number;
+  currentStatus?: BrainOperationRecord;
 }
 
-export type BrainOperationEvent = BrainOperationRecord | BrainOperationEventGap;
+export type BrainOperationNotificationType =
+  | 'heartbeat'
+  | 'phase'
+  | 'progress'
+  | 'progress_update'
+  | 'provider_activity'
+  | 'provider_call_terminal'
+  | 'provider_selected'
+  | 'result_ready'
+  | 'source_pin_attached'
+  | 'state'
+  | 'terminal'
+  | 'token'
+  | 'token_estimate'
+  | 'worker_assigned';
+
+interface BrainOperationNotificationBase {
+  type: BrainOperationNotificationType;
+  operationId: string;
+  eventSequence: number;
+  sequence?: number;
+  at?: string;
+  state?: BrainOperationState;
+  phase?: string | null;
+  updatedAt?: string;
+  lastProviderActivityAt?: string | null;
+  lastProgressAt?: string | null;
+}
+
+export interface BrainOperationProgressNotification extends BrainOperationNotificationBase {
+  type: 'progress' | 'progress_update' | 'token' | 'token_estimate';
+  completed?: number;
+  total?: number;
+}
+
+export interface BrainOperationPhaseNotification extends BrainOperationNotificationBase {
+  type: 'phase';
+  phase: string;
+}
+
+export interface BrainOperationTerminalNotification extends BrainOperationNotificationBase {
+  type: 'terminal';
+  state: Extract<BrainOperationState, 'complete' | 'partial' | 'failed' | 'cancelled' | 'interrupted'>;
+}
+
+export interface BrainOperationStateNotification extends BrainOperationNotificationBase {
+  type: 'state';
+  state: BrainOperationState;
+}
+
+export interface BrainOperationHeartbeatNotification extends BrainOperationNotificationBase {
+  type: 'heartbeat';
+  state: BrainOperationState;
+  phase: string | null;
+  updatedAt: string;
+  lastProviderActivityAt: string | null;
+  lastProgressAt: string | null;
+}
+
+export interface BrainOperationProviderNotification extends BrainOperationNotificationBase {
+  type: 'provider_selected' | 'provider_activity' | 'provider_call_terminal';
+  providerCallId?: string;
+}
+
+export interface BrainOperationLifecycleNotification extends BrainOperationNotificationBase {
+  type: 'result_ready' | 'source_pin_attached' | 'worker_assigned';
+}
+
+export type BrainOperationNotification =
+  | BrainOperationProgressNotification
+  | BrainOperationPhaseNotification
+  | BrainOperationTerminalNotification
+  | BrainOperationStateNotification
+  | BrainOperationHeartbeatNotification
+  | BrainOperationProviderNotification
+  | BrainOperationLifecycleNotification;
+
+export type BrainOperationEvent = BrainOperationNotification | BrainOperationEventGap;
 
 export interface BrainOperationResultEnvelope {
   operationId: string;

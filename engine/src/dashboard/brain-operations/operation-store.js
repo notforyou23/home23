@@ -2195,6 +2195,22 @@ class BrainOperationStore {
       try {
         const existing = await this._readAttachmentFile(operationId, attachmentId);
         if (existing.state === 'attached') return safeJsonClone(existing, 'attachment_corrupt');
+        if (existing.state === 'detached') {
+          const reopened = {
+            ...existing,
+            state: 'attached',
+            updatedAt: isoTime(this._nowMs()),
+            detachedAt: null,
+            closedAt: null,
+            reason: null,
+          };
+          await this._withDirectoryConfinement(
+            [...this._operationAncestorPaths(operationId), path.dirname(attachmentPath)],
+            'attachment_corrupt',
+            () => this._writeJson(attachmentPath, reopened, 'before_attachment_rename'),
+          );
+          return safeJsonClone(reopened, 'attachment_corrupt');
+        }
         throw operationError('attachment_closed');
       } catch (error) {
         if (error.code !== 'attachment_not_found') throw error;

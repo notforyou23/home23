@@ -1888,6 +1888,42 @@ test('closed attachment state is explicitly reachable, idempotent, and independe
   assert.equal((await fixture.store.get(record.operationId)).recordVersion, terminal.recordVersion);
 });
 
+test('a detached attachment ID reopens atomically while a closed ID remains permanent', async (t) => {
+  const fixture = makeFixture(t);
+  const { record } = await createOne(fixture, { requestId: 'attachment-reopen' });
+  const opened = await fixture.store.openAttachment(record.operationId, 'stable-attachment');
+  fixture.clock.now += 1_000;
+  const detached = await fixture.store.detachAttachment(
+    record.operationId,
+    'stable-attachment',
+    'event_gap_reconnect',
+  );
+  assert.equal(detached.state, 'detached');
+  assert.ok(detached.detachedAt);
+  assert.equal(detached.reason, 'event_gap_reconnect');
+
+  fixture.clock.now += 1_000;
+  const reopened = await anotherStore(fixture).openAttachment(
+    record.operationId,
+    'stable-attachment',
+  );
+  assert.equal(reopened.state, 'attached');
+  assert.equal(reopened.openedAt, opened.openedAt, 'stable attachment history keeps its first open');
+  assert.equal(reopened.updatedAt, new Date(fixture.clock.now).toISOString());
+  assert.equal(reopened.detachedAt, null);
+  assert.equal(reopened.closedAt, null);
+  assert.equal(reopened.reason, null);
+  assert.deepEqual(await fixture.store.getAttachment(record.operationId, 'stable-attachment'), reopened);
+
+  fixture.clock.now += 1_000;
+  await fixture.store.closeAttachment(record.operationId, 'stable-attachment', 'response_complete');
+  fixture.clock.now += 1_000;
+  await assert.rejects(
+    () => fixture.store.openAttachment(record.operationId, 'stable-attachment'),
+    typedCode('attachment_closed'),
+  );
+});
+
 test('cancel-versus-complete permits exactly one terminal winner', async (t) => {
   const fixture = makeFixture(t);
   const { record } = await createOne(fixture);

@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import http from 'node:http';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { BrainOperationsClient } from '../../src/agent/brain-operations/client.js';
 import { parseOperationEvents } from '../../src/agent/brain-operations/sse.js';
 import { ManualClock, deferred, flushMicrotasks } from '../helpers/manual-clock.js';
@@ -11,10 +16,29 @@ import {
   makeBrainOperationRecord,
 } from '../helpers/brain-operation-record.js';
 import type {
-  BrainCatalogEntry, BrainOperationEvent, BrainOperationEventGap, BrainOperationRecord,
+  BrainCatalogEntry, BrainOperationEvent, BrainOperationEventGap, BrainOperationNotification,
+  BrainOperationRecord,
 } from '../../src/agent/brain-operations/types.js';
 
 const OPAQUE_RESULT_HANDLE = 'brres_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const require = createRequire(import.meta.url);
+const express = require('express');
+const {
+  createBrainOperationsPlaceholderRouter,
+  createBrainOperationsRouter,
+} = require('../../engine/src/dashboard/brain-operations/router.js');
+const {
+  BrainOperationStore,
+} = require('../../engine/src/dashboard/brain-operations/operation-store.js');
+const {
+  BrainOperationCoordinator,
+} = require('../../engine/src/dashboard/brain-operations/coordinator.js');
+const {
+  createBrainOperationStoreReader,
+} = require('../../engine/src/dashboard/brain-operations/store-reader.js');
+const {
+  createBrainOperationExporter,
+} = require('../../engine/src/dashboard/brain-operations/exporter.js');
 
 function record(
   operationId: string,
@@ -54,8 +78,26 @@ function record(
   });
 }
 
+function notificationFromRecord(value: BrainOperationRecord): BrainOperationNotification {
+  return {
+    type: ['complete', 'partial', 'failed', 'cancelled', 'interrupted'].includes(value.state)
+      ? 'terminal'
+      : 'heartbeat',
+    operationId: value.operationId,
+    eventSequence: value.eventSequence,
+    sequence: value.eventSequence,
+    at: value.updatedAt,
+    state: value.state,
+    phase: value.phase,
+    updatedAt: value.updatedAt,
+    lastProviderActivityAt: value.lastProviderActivityAt,
+    lastProgressAt: value.lastProgressAt,
+  } as BrainOperationNotification;
+}
+
 function controlledStream() {
   let controller!: ReadableStreamDefaultController<Uint8Array>;
+  let latestRecord: BrainOperationRecord | null = null;
   const opened = deferred<void>();
   const stream = new ReadableStream<Uint8Array>({
     start(value) {
@@ -68,9 +110,12 @@ function controlledStream() {
       opened.resolve(undefined);
       return stream;
     },
+    get latestRecord() { return latestRecord; },
     opened: opened.promise,
-    frame(value: BrainOperationEvent, terminated = true) {
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify(value)}${terminated ? '\n\n' : ''}`));
+    frame(value: BrainOperationEvent | BrainOperationRecord, terminated = true) {
+      latestRecord = 'type' in value ? null : value;
+      const payload = 'type' in value ? value : notificationFromRecord(value);
+      controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}${terminated ? '\n\n' : ''}`));
     },
     raw(value: string) { controller.enqueue(encoder.encode(value)); },
     close() { controller.close(); },
@@ -86,6 +131,243 @@ function resultEnvelope(value: BrainOperationRecord) {
     resultArtifact: value.resultArtifact,
     error: value.error,
     sourceEvidence: value.sourceEvidence,
+  };
+}
+
+function realBrainTarget(home23Root: string) {
+  const canonicalRoot = path.join(home23Root, 'instances', 'jerry', 'brain');
+  return {
+    domain: 'brain',
+    brainId: 'brain-jerry',
+    ownerAgent: 'jerry',
+    displayName: 'Jerry',
+    kind: 'resident',
+    lifecycle: 'resident',
+    catalogRevision: 'catalog-client-boundary',
+    route: '/api/brain/brain-jerry',
+    canonicalRoot,
+    accessMode: 'own',
+    mutationBoundaries: [
+      { kind: 'brain', path: canonicalRoot },
+      { kind: 'run', path: canonicalRoot },
+      { kind: 'pgs', path: path.join(canonicalRoot, 'pgs-sessions') },
+      { kind: 'session', path: path.join(canonicalRoot, 'sessions') },
+      { kind: 'cache', path: path.join(canonicalRoot, 'cache') },
+      { kind: 'export', path: path.join(canonicalRoot, 'exports') },
+      { kind: 'agency', path: path.join(canonicalRoot, 'agency') },
+    ],
+  };
+}
+
+async function createRealClientBoundary(t: { after(callback: () => void | Promise<void>): void }) {
+  const home23Root = fs.realpathSync.native(fs.mkdtempSync(
+    path.join(tmpdir(), 'home23-brain-client-boundary-'),
+  ));
+  for (const relative of [
+    'instances/jerry/brain',
+    'instances/jerry/runtime',
+    'instances/jerry/workspace',
+  ]) fs.mkdirSync(path.join(home23Root, relative), { recursive: true });
+  const operationsRoot = path.join(home23Root, 'instances/jerry/runtime/brain-operations');
+  const store = new BrainOperationStore({ root: operationsRoot, requesterAgent: 'jerry' });
+  const reader = createBrainOperationStoreReader({
+    operationsRoot,
+    expectedRequester: 'jerry',
+    liveStore: store,
+  });
+  const exporter = createBrainOperationExporter({ home23Root, requesterAgent: 'jerry', reader });
+  const coordinator = {
+    async start(input: {
+      requestId: string; operationType: string; parameters: Record<string, unknown>;
+    }) {
+      const created = await store.create({
+        requestId: input.requestId,
+        requesterAgent: 'jerry',
+        target: realBrainTarget(home23Root),
+        operationType: input.operationType,
+        requestParameters: input.parameters,
+        parameters: input.parameters,
+        sourcePinDescriptor: null,
+        sourcePinDigest: null,
+        canonicalEvidence: true,
+      });
+      return created.record;
+    },
+    async cancel(operationId: string) {
+      const current = await store.get(operationId);
+      return store.transition(operationId, {
+        expectedVersion: current.recordVersion,
+        state: 'cancelled',
+        error: { code: 'cancelled', message: 'operator stop', retryable: false },
+      });
+    },
+    async detach(operationId: string) { return store.get(operationId); },
+    async attach() {
+      throw Object.assign(new Error('operation_unavailable'), { code: 'operation_unavailable' });
+    },
+  };
+  const app = express();
+  const placeholder = createBrainOperationsPlaceholderRouter();
+  app.use('/home23/api/brain-operations', placeholder.router);
+  app.use((req: unknown, res: unknown, next: () => void) => {
+    const parsed = req as { brainOperationBodyParsed?: boolean };
+    if (parsed.brainOperationBodyParsed === true) return next();
+    return express.json({ limit: '10gb' })(req, res, next);
+  });
+  placeholder.attach(createBrainOperationsRouter({
+    requesterAgent: 'jerry',
+    coordinator,
+    reader,
+    exporter,
+    buildCatalog: async () => ({
+      catalogRevision: 'catalog-client-boundary',
+      brains: [{ ...canonicalCatalogEntry('jerry'), canonicalRoot: realBrainTarget(home23Root).canonicalRoot }],
+    }),
+  }).router);
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('test_server_address_unavailable');
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  const cancelRequests: Array<{ contentType: string | null; body: string | null }> = [];
+  const client = new BrainOperationsClient({
+    baseUrl,
+    callerAgent: 'jerry',
+    fetchImpl: async (url, init) => {
+      if (String(url).endsWith('/cancel')) {
+        cancelRequests.push({
+          contentType: new Headers(init?.headers).get('content-type'),
+          body: init?.body === undefined || init.body === null ? null : String(init.body),
+        });
+      }
+      return fetch(url, init);
+    },
+  });
+  t.after(async () => {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    fs.rmSync(home23Root, { recursive: true, force: true });
+  });
+  return { client, coordinator, store, cancelRequests };
+}
+
+async function createRealReconnectBoundary(t: { after(callback: () => void | Promise<void>): void }) {
+  const home23Root = fs.realpathSync.native(fs.mkdtempSync(
+    path.join(tmpdir(), 'home23-brain-reconnect-boundary-'),
+  ));
+  for (const relative of [
+    'instances/jerry/brain',
+    'instances/jerry/runtime',
+    'instances/jerry/workspace',
+  ]) fs.mkdirSync(path.join(home23Root, relative), { recursive: true });
+  const operationsRoot = path.join(home23Root, 'instances/jerry/runtime/brain-operations');
+  const store = new BrainOperationStore({
+    root: operationsRoot,
+    requesterAgent: 'jerry',
+    eventMaxCount: 3,
+  });
+  const reader = createBrainOperationStoreReader({
+    operationsRoot,
+    expectedRequester: 'jerry',
+    liveStore: store,
+  });
+  const exporter = createBrainOperationExporter({ home23Root, requesterAgent: 'jerry', reader });
+  let timerId = 0;
+  const timers = {
+    setTimeout() { timerId += 1; return timerId; },
+    clearTimeout() {},
+  };
+  const coordinator = new BrainOperationCoordinator({
+    requesterAgent: 'jerry',
+    store,
+    buildCanonicalCatalog: async () => ({ catalogRevision: 'catalog-reconnect', brains: [] }),
+    resolveCanonicalTarget: () => realBrainTarget(home23Root),
+    worker: {},
+    capabilityIssuer: () => 'test-capability',
+    clock: { now: Date.now },
+    timers,
+  });
+  const created = await store.create({
+    requestId: 'real-gap-reconnect',
+    requesterAgent: 'jerry',
+    target: realBrainTarget(home23Root),
+    operationType: 'query',
+    requestParameters: { query: 'real gap reconnect' },
+    parameters: {
+      query: 'real gap reconnect',
+      operationControl: {
+        hardDeadlineAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      },
+    },
+    sourcePinDescriptor: null,
+    sourcePinDigest: null,
+    canonicalEvidence: true,
+  });
+  let current = await store.transition(created.record.operationId, {
+    expectedVersion: created.record.recordVersion,
+    state: 'running',
+    phase: 'provider',
+  });
+  for (let index = 0; index < 10; index += 1) {
+    current = await store.appendEvent(created.record.operationId, {
+      type: 'progress',
+      completed: index + 1,
+    });
+  }
+  const replay = await store.readEvents(created.record.operationId, 0);
+  assert.equal(replay[0]?.type, 'event_gap', 'fixture must cross the real compacted journal boundary');
+
+  const secondAttach = deferred<{ ok: boolean; error?: unknown }>();
+  let attachCalls = 0;
+  const realAttach = coordinator.attach.bind(coordinator);
+  coordinator.attach = async (...args: unknown[]) => {
+    attachCalls += 1;
+    try {
+      const attached = await realAttach(...args);
+      if (attachCalls === 2) secondAttach.resolve({ ok: true });
+      return attached;
+    } catch (error) {
+      if (attachCalls === 2) secondAttach.resolve({ ok: false, error });
+      throw error;
+    }
+  };
+
+  const app = express();
+  const placeholder = createBrainOperationsPlaceholderRouter();
+  app.use('/home23/api/brain-operations', placeholder.router);
+  app.use((req: unknown, res: unknown, next: () => void) => {
+    const parsed = req as { brainOperationBodyParsed?: boolean };
+    if (parsed.brainOperationBodyParsed === true) return next();
+    return express.json({ limit: '10gb' })(req, res, next);
+  });
+  placeholder.attach(createBrainOperationsRouter({
+    requesterAgent: 'jerry',
+    coordinator,
+    reader,
+    exporter,
+    buildCatalog: async () => ({ catalogRevision: 'catalog-reconnect', brains: [] }),
+  }).router);
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('test_server_address_unavailable');
+  const client = new BrainOperationsClient({
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    callerAgent: 'jerry',
+    attachmentIdFactory: () => 'real-gap-attachment',
+    reconnectDelayMs: 1,
+  });
+  t.after(async () => {
+    await coordinator.stop().catch(() => undefined);
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    fs.rmSync(home23Root, { recursive: true, force: true });
+  });
+  return {
+    client,
+    store,
+    initial: created.record as BrainOperationRecord,
+    current: current as BrainOperationRecord,
+    secondAttach: secondAttach.promise,
+    get attachCalls() { return attachCalls; },
   };
 }
 
@@ -117,7 +399,10 @@ function createTwoAttachmentFetch(options: {
       });
     }
     if (parsed.pathname.endsWith(`/${options.operationId}`)) {
-      return new Response(JSON.stringify(running));
+      const latest = [...options.streams].reverse()
+        .map((stream) => stream.latestRecord)
+        .find((value) => value !== null);
+      return new Response(JSON.stringify(latest || running));
     }
     return new Response('', { status: 404 });
   };
@@ -165,7 +450,7 @@ function createSingleOperationFetch(options: {
       });
     }
     if (parsed.pathname.endsWith(`/${options.operationId}`)) {
-      return new Response(JSON.stringify(running));
+      return new Response(JSON.stringify(options.sse.latestRecord || running));
     }
     return new Response('', { status: 404 });
   };
@@ -179,6 +464,7 @@ function createEventGapFetch(options: {
 }) {
   const afterValues: number[] = []; const attachmentIds: string[] = [];
   const detachReasons: string[] = []; let detachCalls = 0;
+  let terminalServed = false;
   const fetchImpl: typeof fetch = async (url, init) => {
     const parsed = new URL(String(url));
     if (init?.method === 'POST' && parsed.pathname.endsWith('/detach')) {
@@ -194,7 +480,9 @@ function createEventGapFetch(options: {
         resultArtifact: null, error: null, sourceEvidence: null }));
     }
     if (parsed.pathname.endsWith(`/${options.operationId}`)) {
-      return new Response(JSON.stringify(record(options.operationId, 20, 'running')));
+      return new Response(JSON.stringify(terminalServed
+        ? record(options.operationId, options.terminalSequence, 'complete', { answer: 'after gap' })
+        : record(options.operationId, 20, 'running')));
     }
     if (parsed.pathname.endsWith('/events')) {
       const after = Number(parsed.searchParams.get('after')); afterValues.push(after);
@@ -213,8 +501,11 @@ function createEventGapFetch(options: {
         } }), { headers: { 'content-type': 'text/event-stream' } });
       }
       const terminal = record(options.operationId, options.terminalSequence, 'complete', { answer: 'after gap' });
+      terminalServed = true;
       return new Response(new ReadableStream({ start(controller) {
-        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(terminal)}\n\n`));
+        controller.enqueue(new TextEncoder().encode(
+          `data: ${JSON.stringify(notificationFromRecord(terminal))}\n\n`,
+        ));
         controller.close();
       } }), { headers: { 'content-type': 'text/event-stream' } });
     }
@@ -254,7 +545,12 @@ function createRepeatedRecoveryFetch(options: {
       return new Response(JSON.stringify(resultEnvelope(terminal)));
     }
     if (parsed.pathname.endsWith(`/${options.operationId}`)) {
-      return new Response(JSON.stringify(record(options.operationId, currentStatusSequence, 'running')));
+      const latestTerminal = [...streams].reverse()
+        .map((stream) => stream.latestRecord)
+        .find((value) => value !== null
+          && ['complete', 'partial', 'failed', 'cancelled', 'interrupted'].includes(value.state));
+      return new Response(JSON.stringify(latestTerminal
+        || record(options.operationId, currentStatusSequence, 'running')));
     }
     if (parsed.pathname.endsWith('/events')) {
       eventRequests.push({
@@ -343,6 +639,9 @@ test('verified operation events keep a query attachment alive beyond the old fix
         result: terminal.result, resultHandle: terminal.resultHandle, resultArtifact: null,
         error: null, sourceEvidence: null }), { status: 200 });
     }
+    if (parsed.pathname.endsWith('/op-1')) {
+      return new Response(JSON.stringify(sse.latestRecord || record('op-1', 0, 'queued')));
+    }
     assert.match(String(url), /events\?after=0&attachmentId=attachment-1$/);
     return new Response(sse.body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
   };
@@ -378,12 +677,12 @@ test('verified operation events keep a query attachment alive beyond the old fix
 test('SSE parser flushes one valid final frame when EOF has no blank-line terminator', async () => {
   const sse = controlledStream();
   const clock = new ManualClock();
-  const parsed: BrainOperationRecord[] = [];
+  const parsed: BrainOperationNotification[] = [];
   const pending = (async () => {
     for await (const event of parseOperationEvents(sse.body, 'op-final', 0, {
       inactivityMs: 20, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
     })) {
-      if ('type' in event) throw new Error('unexpected gap');
+      if (event.type === 'event_gap') throw new Error('unexpected gap');
       parsed.push(event);
     }
   })();
@@ -392,7 +691,8 @@ test('SSE parser flushes one valid final frame when EOF has no blank-line termin
   sse.close();
   await pending;
   assert.equal(parsed.length, 1);
-  assert.equal(parsed[0]?.result?.answer, 'final frame');
+  assert.equal(parsed[0]?.type, 'terminal');
+  assert.equal(parsed[0]?.eventSequence, 1);
 });
 
 test('stream silence performs a bounded status read and reconnects from the last sequence', async () => {
@@ -413,7 +713,9 @@ test('stream silence performs a bounded status read and reconnects from the last
     }
     if (parsed.pathname.endsWith('/op-reconnect')) {
       statusReads += 1;
-      return new Response(JSON.stringify(record('op-reconnect', 1, 'running')), { status: 200 });
+      return new Response(JSON.stringify(
+        second.latestRecord || first.latestRecord || record('op-reconnect', 1, 'running'),
+      ), { status: 200 });
     }
     if (parsed.pathname.endsWith('/events') && parsed.searchParams.get('after') === '1') {
       secondAttachments += 1;
@@ -446,7 +748,7 @@ test('stream silence performs a bounded status read and reconnects from the last
   const result = await pending;
   assert.equal(result.result?.answer, 'reattached');
   assert.equal(starts, 1);
-  assert.equal(statusReads, 1);
+  assert.equal(statusReads, 2, 'one inactivity recovery plus one terminal authentication');
   assert.equal(secondAttachments, 1);
 });
 
@@ -467,7 +769,9 @@ test('attachment deadline detaches while the durable operation remains running a
     }
     if (parsed.pathname.endsWith('/events') && parsed.searchParams.get('after') === '0') {
       return new Response(new ReadableStream({ start(controller) {
-        controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(running)}\n\n`));
+        controller.enqueue(new TextEncoder().encode(
+          `data: ${JSON.stringify(notificationFromRecord(running))}\n\n`,
+        ));
         streamOpened.resolve(controller);
       } }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
     }
@@ -779,7 +1083,8 @@ test('event_gap reloads canonical status and resumes from its sequence without r
   assert.deepEqual(fixture.afterValues, [0, 20]);
   assert.deepEqual(fixture.attachmentIds, ['attachment-gap', 'attachment-gap']);
   assert.deepEqual(activities, [21]);
-  assert.equal(fixture.detachCalls, 0);
+  assert.equal(fixture.detachCalls, 1);
+  assert.deepEqual(fixture.detachReasons, ['event_gap_reconnect']);
 
   const httpFixture = createEventGapFetch({ operationId: 'op-gap-http', delivery: 'http',
     gap: { oldestSequence: 10, latestSequence: 20 }, terminalSequence: 21 });
@@ -787,6 +1092,25 @@ test('event_gap reloads canonical status and resumes from its sequence without r
     fetchImpl: httpFixture.fetchImpl, attachmentIdFactory: () => 'attachment-gap-http' });
   assert.equal((await httpClient.query({ query: 'gap-http' })).state, 'complete');
   assert.deepEqual(httpFixture.afterValues, [0, 20]);
+
+  const descriptive = createEventGapFetch({
+    operationId: 'op-gap-descriptive', delivery: 'sse',
+    gap: { oldestSequence: 10, latestSequence: 20 }, terminalSequence: 21,
+    mutate: (gap) => {
+      gap.currentStatus = record('op-gap-descriptive', 999, 'complete', {
+        answer: 'forged descriptive status',
+      });
+    },
+  });
+  const descriptiveClient = new BrainOperationsClient({
+    baseUrl: 'http://fixture', callerAgent: 'jerry',
+    fetchImpl: descriptive.fetchImpl,
+    attachmentIdFactory: () => 'attachment-gap-descriptive',
+  });
+  const descriptiveResult = await descriptiveClient.query({ query: 'ignore descriptive gap status' });
+  assert.equal(descriptiveResult.result?.answer, 'after gap');
+  assert.deepEqual(descriptive.afterValues, [0, 20],
+    'only requester-authenticated status selects the reconnect cursor');
 });
 
 test('malformed or regressive event_gap detaches instead of fabricating continuity', async () => {
@@ -930,7 +1254,7 @@ test('owned-run operations send exactly one runId target and never consult brain
   assert.equal(bodies.length, 1);
 });
 
-test('large canonical results are read by operation route and export never resubmits answer bytes', async () => {
+test('large canonical results are read by operation route and export uses only operation export fields', async () => {
   const answer = 'x'.repeat(1_000_000);
   let exportBody: Record<string, unknown> | null = null;
   const fetchImpl: typeof fetch = async (url, init) => {
@@ -949,12 +1273,22 @@ test('large canonical results are read by operation route and export never resub
   const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl });
   const result = await client.getResult('op-large');
   assert.equal((result.result as { answer: string }).answer.length, 1_000_000);
-  await client.exportResult({ operationId: 'op-large', resultHandle: OPAQUE_RESULT_HANDLE, format: 'markdown' });
+  await client.exportResult({
+    operationId: 'op-large', resultHandle: OPAQUE_RESULT_HANDLE,
+    format: 'markdown', fileName: 'brain-answer.md',
+  } as never);
   assert.equal('answer' in (exportBody || {}), false);
   assert.equal('resultHandle' in (exportBody || {}), false);
+  assert.deepEqual(exportBody, { format: 'markdown', fileName: 'brain-answer.md' });
   await assert.rejects(
     client.exportResult({ operationId: 'op-large', format: 'markdown', answer } as never),
     /canonical_export_requires_operation_id/,
+  );
+  await assert.rejects(
+    client.exportResult({
+      operationId: 'op-large', format: 'markdown', metadata: { caller: 'unsupported' },
+    } as never),
+    (error: unknown) => (error as { code?: string }).code === 'invalid_request',
   );
 });
 
@@ -1015,13 +1349,13 @@ test('SSE accepts CRLF and parses a terminal final frame without a trailing blan
     for await (const event of parseOperationEvents(sse.body, 'op-final', 0, {
       inactivityMs: 20, setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout,
     })) {
-      if ('type' in event) throw new Error('unexpected gap');
-      events.push([event.eventSequence, event.state]);
+      if (event.type === 'event_gap') throw new Error('unexpected gap');
+      events.push([event.eventSequence, event.state || 'unknown']);
     }
   })();
   await sse.opened;
-  sse.raw(`data: ${JSON.stringify(record('op-final', 1, 'running'))}\r\n\r\n`);
-  sse.raw(`data: ${JSON.stringify(record('op-final', 2, 'complete'))}`);
+  sse.raw(`data: ${JSON.stringify(notificationFromRecord(record('op-final', 1, 'running')))}\r\n\r\n`);
+  sse.raw(`data: ${JSON.stringify(notificationFromRecord(record('op-final', 2, 'complete')))}`);
   sse.close();
   await pending;
   assert.deepEqual(events, [[1, 'running'], [2, 'complete']]);
@@ -1059,7 +1393,7 @@ test('PGS resume derives its six-hour wait from authenticated status and survive
     if (parsed.pathname.endsWith('/result')) return new Response(JSON.stringify(resultEnvelope(terminal)));
     if (parsed.pathname.endsWith('/events')) return new Response(sse.body,
       { headers: { 'content-type': 'text/event-stream' } });
-    return new Response(JSON.stringify(running));
+    return new Response(JSON.stringify(sse.latestRecord || running));
   };
   const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl,
     inactivityMs: 2 * 60 * 60_000, queryWaitMs: 90 * 60_000, pgsWaitMs: 6 * 60 * 60_000,
@@ -1141,21 +1475,32 @@ test('target resolution distinguishes mismatch, unavailable, and not found while
     makeClient().resolveTarget({ brainId: 'brain-missing' }),
     (error: unknown) => (error as { code?: string }).code === 'target_not_found',
   );
+  const own = await makeClient().resolveTarget();
+  assert.equal(own.id, 'brain-jerry');
+  assert.equal(own.accessMode, 'own');
 
-  let posted: Record<string, unknown> | null = null;
+  const posted: Record<string, unknown>[] = [];
   const startClient = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry',
     fetchImpl: async (url, init) => {
       if (String(url).endsWith('/catalog')) return new Response(JSON.stringify(catalog));
-      posted = JSON.parse(String(init?.body));
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      posted.push(body);
+      const requestedTarget = body.target as { agent?: string } | undefined;
       return new Response(JSON.stringify(makeBrainOperationRecord({
         ...record('op-reresolved', 0, 'queued'),
-        target: canonicalBrainTarget('forrest', 'read-only'),
+        target: requestedTarget?.agent === 'forrest'
+          ? canonicalBrainTarget('forrest', 'read-only')
+          : canonicalBrainTarget('jerry', 'own'),
       })));
     } });
   const started = await startClient.start('query', { target: { agent: 'forrest' }, query: 'x' });
-  assert.deepEqual(posted?.target, { agent: 'forrest' });
+  assert.deepEqual(posted[0]?.target, { agent: 'forrest' });
   assert.equal(started.target.domain === 'brain' && started.target.brainId, 'brain-forrest');
-  assert.equal('canonicalRoot' in (posted?.target as object), false);
+  assert.equal('canonicalRoot' in (posted[0]?.target as object), false);
+  const ownStarted = await startClient.start('query', { query: 'use my own brain' });
+  assert.equal(Object.hasOwn(posted[1] || {}, 'target'), false);
+  assert.equal(ownStarted.target.domain === 'brain' && ownStarted.target.brainId, 'brain-jerry');
+  assert.equal(ownStarted.target.domain === 'brain' && ownStarted.target.accessMode, 'own');
 });
 
 test('short waits use five minutes while query and PGS attachments retain their long defaults', async () => {
@@ -1168,10 +1513,12 @@ test('short waits use five minutes while query and PGS attachments retain their 
     const clock = new ManualClock();
     const sse = controlledStream();
     const scheduled: number[] = [];
+    let cancelCalls = 0;
     const cancelled = record(fixture.operationId, 2, 'cancelled');
     const fetchImpl: typeof fetch = async (url, init) => {
       const parsed = new URL(String(url));
       if (init?.method === 'POST' && parsed.pathname.endsWith('/cancel')) {
+        cancelCalls += 1;
         return new Response(JSON.stringify(cancelled));
       }
       if (init?.method === 'POST') {
@@ -1188,6 +1535,7 @@ test('short waits use five minutes while query and PGS attachments retain their 
     const controller = new AbortController();
     const client = new BrainOperationsClient({
       baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl,
+      inactivityMs: fixture.expected + 1_000,
       now: clock.now,
       setTimeout: (fn, ms) => { scheduled.push(ms); return clock.setTimeout(fn, ms); },
       clearTimeout: clock.clearTimeout,
@@ -1201,9 +1549,15 @@ test('short waits use five minutes while query and PGS attachments retain their 
       await flushMicrotasks();
     }
     assert.ok(scheduled.includes(fixture.expected), fixture.kind);
-    controller.abort(Object.assign(new Error('operator_stop'), { code: 'operator_stop' }));
-    if (fixture.kind === 'search') await assert.rejects(pending, /cancelled/);
-    else assert.equal((await pending).state, 'cancelled');
+    if (fixture.kind === 'search') {
+      clock.advance(fixture.expected + 1);
+      await assert.rejects(pending, /cancelled/);
+      assert.equal(cancelCalls, 1, 'the short attachment deadline cancels short work');
+    } else {
+      controller.abort(Object.assign(new Error('operator_stop'), { code: 'operator_stop' }));
+      assert.equal((await pending).state, 'cancelled');
+      assert.equal(cancelCalls, 1);
+    }
   }
 });
 
@@ -1227,7 +1581,7 @@ test('terminal SSE bytes are descriptive and the protected result route stays ca
     if (parsed.pathname.endsWith('/events')) {
       return new Response(sse.body, { headers: { 'content-type': 'text/event-stream' } });
     }
-    return new Response(JSON.stringify(record(operationId, 1, 'running')));
+    return new Response(JSON.stringify(sse.latestRecord || record(operationId, 1, 'running')));
   };
   const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl });
   const pending = client.query({ query: 'canonical result' });
@@ -1265,7 +1619,11 @@ test('status, result, cancel, and resume stay requester-authorized without a sec
       return new Response(resumeStream.body, { headers: { 'content-type': 'text/event-stream' } });
     }
     const id = parsed.pathname.includes(resumeId) ? resumeId : operationId;
-    return new Response(JSON.stringify(record(id, 1, 'running')));
+    return new Response(JSON.stringify(
+      id === resumeId && resumeStream.latestRecord
+        ? resumeStream.latestRecord
+        : record(id, 1, 'running'),
+    ));
   };
   const client = new BrainOperationsClient({ baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl });
   assert.equal((await client.inspectOperation(operationId, 'status')).state, 'running');
@@ -1289,4 +1647,260 @@ test('status, result, cancel, and resume stay requester-authorized without a sec
     assert.equal((error as { httpStatus?: number }).httpStatus, 403);
     return true;
   });
+});
+
+test('real store, reader, router, and client preserve exact cancel and no-result terminal envelopes', async (t) => {
+  const fixture = await createRealClientBoundary(t);
+  const started = await fixture.client.start('query', { query: 'cancel at the real boundary' });
+  assert.equal(started.target.domain, 'brain');
+  assert.equal(started.target.domain === 'brain' && started.target.accessMode, 'own');
+
+  const cancelled = await fixture.client.inspectOperation(started.operationId, 'cancel');
+  assert.equal(cancelled.state, 'cancelled');
+  assert.equal('result' in cancelled && cancelled.result, null);
+  assert.deepEqual(fixture.cancelRequests, [{
+    contentType: 'application/json',
+    body: '{}',
+  }]);
+  const resumedCancelled = await fixture.client.resumeOperation(started.operationId);
+  assert.equal(resumedCancelled.state, 'cancelled');
+  assert.equal(resumedCancelled.result, null);
+  assert.equal(resumedCancelled.attachmentState, 'closed');
+
+  for (const state of ['failed', 'interrupted'] as const) {
+    const operation = await fixture.coordinator.start({
+      requestId: `terminal-${state}`,
+      operationType: 'query',
+      parameters: { query: `terminal ${state}` },
+    });
+    const terminal = await fixture.store.transition(operation.operationId, {
+      expectedVersion: operation.recordVersion,
+      state,
+      error: { code: state, message: `${state} without a result`, retryable: true },
+    });
+    assert.equal(terminal.result, null);
+    assert.equal(terminal.resultHandle, null);
+    const inspected = await fixture.client.inspectOperation(operation.operationId, 'result');
+    assert.equal(inspected.state, state);
+    assert.equal(inspected.result, null);
+    const resumed = await fixture.client.resumeOperation(operation.operationId);
+    assert.equal(resumed.state, state);
+    assert.equal(resumed.result, null);
+    assert.equal(resumed.attachmentState, 'closed');
+  }
+
+  const running = await fixture.coordinator.start({
+    requestId: 'running-result-unavailable',
+    operationType: 'query',
+    parameters: { query: 'still running' },
+  });
+  await assert.rejects(
+    fixture.client.getResult(running.operationId),
+    (error: unknown) => (error as { code?: string }).code === 'result_unavailable',
+  );
+});
+
+test('a protected result read failure after terminal status is never converted into detached success', async () => {
+  const operationId = 'brop_FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF';
+  const clock = new ManualClock();
+  const sse = controlledStream();
+  let detachCalls = 0;
+  const terminal = record(operationId, 2, 'complete', { answer: 'must not be trusted' });
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture',
+    callerAgent: 'jerry',
+    inactivityMs: 10,
+    queryWaitMs: 100,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    fetchImpl: async (url, init) => {
+      const parsed = new URL(String(url));
+      if (init?.method === 'POST' && parsed.pathname.endsWith('/detach')) {
+        detachCalls += 1;
+        return new Response(JSON.stringify(terminal));
+      }
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify(record(operationId, 0, 'running')));
+      }
+      if (parsed.pathname.endsWith('/events')) {
+        return new Response(sse.body, { headers: { 'content-type': 'text/event-stream' } });
+      }
+      if (parsed.pathname.endsWith('/result')) {
+        return new Response(JSON.stringify({ error: {
+          code: 'result_corrupt', message: 'canonical result bytes failed verification', retryable: false,
+        } }), { status: 500 });
+      }
+      return new Response(JSON.stringify(terminal));
+    },
+  });
+  const pending = client.query({ query: 'protect result failure' });
+  await sse.opened;
+  sse.frame({
+    type: 'progress', operationId, eventSequence: 1, sequence: 1,
+    at: '2026-07-10T12:00:01.000Z', completed: 1,
+  } as never);
+  await flushMicrotasks();
+  clock.advance(11);
+  await assert.rejects(pending, (error: unknown) => {
+    assert.equal((error as { code?: string }).code, 'result_corrupt');
+    return true;
+  });
+  assert.equal(detachCalls, 0);
+});
+
+test('store-shaped gaps omit status, close the old body, and reuse one attachment after authenticated recovery', async () => {
+  const operationId = 'brop_GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG';
+  let oldBodyCancelled = false;
+  let eventRequests = 0;
+  let statusReads = 0;
+  let terminalAvailable = false;
+  const attachmentIds: string[] = [];
+  const firstBody = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({
+        type: 'event_gap', operationId, eventSequence: 5,
+        oldestSequence: 2, latestSequence: 5,
+      })}\n\n`));
+    },
+    cancel() { oldBodyCancelled = true; },
+  });
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture',
+    callerAgent: 'jerry',
+    attachmentIdFactory: () => 'attachment-gap-real-shape',
+    fetchImpl: async (url, init) => {
+      const parsed = new URL(String(url));
+      if (init?.method === 'POST' && parsed.pathname.endsWith('/detach')) {
+        return new Response(JSON.stringify(record(operationId, 5, 'running')));
+      }
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify(record(operationId, 0, 'running')));
+      }
+      if (parsed.pathname.endsWith('/result')) {
+        return new Response(JSON.stringify(resultEnvelope(
+          record(operationId, 6, 'complete', { answer: 'gap recovered' }),
+        )));
+      }
+      if (parsed.pathname.endsWith(`/${operationId}`)) {
+        statusReads += 1;
+        return new Response(JSON.stringify(terminalAvailable
+          ? record(operationId, 6, 'complete', { answer: 'descriptive only' })
+          : record(operationId, 5, 'running')));
+      }
+      if (parsed.pathname.endsWith('/events')) {
+        eventRequests += 1;
+        attachmentIds.push(String(parsed.searchParams.get('attachmentId')));
+        if (eventRequests === 1) {
+          return new Response(firstBody, { headers: { 'content-type': 'text/event-stream' } });
+        }
+        if (!oldBodyCancelled) {
+          return new Response(JSON.stringify({ error: {
+            code: 'attachment_already_attached', message: 'old body is still attached', retryable: true,
+          } }), { status: 409 });
+        }
+        terminalAvailable = true;
+        return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({
+            type: 'terminal', operationId, eventSequence: 6, sequence: 6,
+            state: 'complete', at: '2026-07-10T12:00:06.000Z',
+          })}\n\n`));
+          controller.close();
+        } }), { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return new Response('', { status: 404 });
+    },
+  });
+  const result = await client.query({ query: 'recover an actual store gap' });
+  assert.equal(result.result?.answer, 'gap recovered');
+  assert.equal(oldBodyCancelled, true);
+  assert.equal(eventRequests, 2);
+  assert.ok(statusReads >= 2);
+  assert.deepEqual(new Set(attachmentIds), new Set(['attachment-gap-real-shape']));
+});
+
+test('real coordinator and router detach then reopen the same attachment ID across a compacted gap', async (t) => {
+  const fixture = await createRealReconnectBoundary(t);
+  const controller = new AbortController();
+  const pending = fixture.client.wait(fixture.initial.operationId, {
+    operationType: 'query',
+    initial: fixture.initial,
+    signal: controller.signal,
+    waitMs: 60_000,
+  });
+  const secondAttach = await fixture.secondAttach;
+  controller.abort(Object.assign(new Error('transport_disconnect'), {
+    code: 'transport_disconnect',
+  }));
+  const result = await pending;
+  assert.deepEqual(secondAttach, { ok: true });
+  assert.equal(fixture.attachCalls, 2);
+  assert.equal(result.attachmentState, 'detached');
+  assert.equal(result.state, 'running');
+  assert.equal((await fixture.store.getAttachment(
+    fixture.initial.operationId,
+    'real-gap-attachment',
+  )).state, 'detached');
+});
+
+test('progress, phase, and terminal notifications never masquerade as operation records', async () => {
+  const operationId = 'brop_HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH';
+  const sse = controlledStream();
+  const activities: Array<{ sequence: number; state: string; phase: string | null; updatedAt: string }> = [];
+  let statusReads = 0;
+  let resultReads = 0;
+  let terminalAvailable = false;
+  const terminal = record(operationId, 3, 'complete', { answer: 'authenticated terminal' });
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture',
+    callerAgent: 'jerry',
+    onActivity: (activity) => activities.push({
+      sequence: activity.sequence,
+      state: activity.state,
+      phase: activity.phase,
+      updatedAt: activity.updatedAt,
+    }),
+    fetchImpl: async (url, init) => {
+      const parsed = new URL(String(url));
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify(record(operationId, 0, 'running')));
+      }
+      if (parsed.pathname.endsWith('/events')) {
+        return new Response(sse.body, { headers: { 'content-type': 'text/event-stream' } });
+      }
+      if (parsed.pathname.endsWith('/result')) {
+        resultReads += 1;
+        return new Response(JSON.stringify(resultEnvelope(terminal)));
+      }
+      statusReads += 1;
+      return new Response(JSON.stringify(terminalAvailable
+        ? terminal
+        : record(operationId, 0, 'running')));
+    },
+  });
+  const pending = client.query({ query: 'typed notifications' });
+  await sse.opened;
+  sse.frame({
+    type: 'progress', operationId, eventSequence: 1, sequence: 1,
+    at: '2026-07-10T12:00:01.000Z', completed: 1,
+  } as never);
+  sse.frame({
+    type: 'phase', operationId, eventSequence: 2, sequence: 2,
+    at: '2026-07-10T12:00:02.000Z', phase: 'synthesizing',
+  } as never);
+  terminalAvailable = true;
+  sse.frame({
+    type: 'terminal', operationId, eventSequence: 3, sequence: 3,
+    at: '2026-07-10T12:00:03.000Z', state: 'complete',
+  } as never);
+  sse.close();
+  const result = await pending;
+  assert.equal(result.result?.answer, 'authenticated terminal');
+  assert.equal(statusReads, 1, 'terminal notification requires authenticated status');
+  assert.equal(resultReads, 1);
+  assert.deepEqual(activities, [
+    { sequence: 1, state: 'running', phase: 'provider', updatedAt: '2026-07-10T12:00:01.000Z' },
+    { sequence: 2, state: 'running', phase: 'synthesizing', updatedAt: '2026-07-10T12:00:02.000Z' },
+    { sequence: 3, state: 'complete', phase: 'done', updatedAt: '2026-07-10T12:00:03.000Z' },
+  ]);
 });

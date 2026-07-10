@@ -497,6 +497,85 @@ test('collection and result fail closed on caller identity or handle injection',
   });
 });
 
+test('no-result failure terminals are canonical while unavailable, expired, and corrupt stay distinct', async () => {
+  for (const state of ['failed', 'cancelled', 'interrupted']) {
+    let resultReads = 0;
+    const terminal = record({
+      state,
+      phase: state,
+      result: null,
+      resultHandle: null,
+      resultArtifact: null,
+      resultExpiredAt: null,
+      error: { code: state, message: `${state} without result`, retryable: true },
+    });
+    const deps = fakes({
+      reader: {
+        ...fakes().reader,
+        getAuthorized: async () => terminal,
+        getResultAuthorized: async () => {
+          resultReads += 1;
+          throw Object.assign(new Error('result_unavailable'), { code: 'result_unavailable' });
+        },
+      },
+    });
+    await withRouter(deps, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/${OPERATION_ID}/result`);
+      assert.equal(response.status, 200, state);
+      assert.deepEqual(await response.json(), {
+        operationId: OPERATION_ID,
+        state,
+        result: null,
+        error: terminal.error,
+        resultHandle: null,
+        resultArtifact: null,
+        sourceEvidence: null,
+      });
+    });
+    assert.equal(resultReads, 0, state);
+  }
+
+  const cases = [
+    {
+      name: 'running',
+      operation: record({ result: null, resultHandle: null, resultArtifact: null }),
+      code: 'result_unavailable',
+      status: 500,
+    },
+    {
+      name: 'expired',
+      operation: record({
+        state: 'failed', result: null, resultHandle: null, resultArtifact: null,
+        resultExpiredAt: '2026-07-10T12:00:02.000Z',
+      }),
+      code: 'result_expired',
+      status: 410,
+    },
+    {
+      name: 'corrupt',
+      operation: record({ state: 'complete', result: null, resultHandle: RESULT_HANDLE }),
+      code: 'result_corrupt',
+      status: 500,
+    },
+  ];
+  for (const fixture of cases) {
+    const deps = fakes({
+      reader: {
+        ...fakes().reader,
+        getAuthorized: async () => fixture.operation,
+        getResultAuthorized: async () => {
+          throw Object.assign(new Error(fixture.code), { code: fixture.code });
+        },
+      },
+    });
+    await withRouter(deps, async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/${OPERATION_ID}/result`);
+      assert.equal(response.status, fixture.status, fixture.name);
+      assert.equal((await response.json()).error.code, fixture.code, fixture.name);
+    });
+  }
+});
+
 test('events require an attachment and stream canonical resumable SSE', async () => {
   const deps = fakes();
   await withRouter(deps, async (baseUrl) => {

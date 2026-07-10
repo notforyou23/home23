@@ -1103,6 +1103,55 @@ test('duplicate attachment IDs are rejected and slow pull consumers retain no un
   assert.equal(event.eventSequence > current.eventSequence, true);
 });
 
+test('the coordinator reuses one attachment ID only after durable detach and never after close', async (t) => {
+  const fixture = makeFixture(t);
+  const operation = await fixture.coordinator.start(request({ requestId: 'coordinator-reopen' }));
+  const current = await fixture.store.get(operation.operationId);
+  const first = await fixture.coordinator.attach(operation.operationId, {
+    attachmentId: 'stable-reconnect',
+    afterSequence: current.eventSequence,
+  });
+  await assert.rejects(
+    () => fixture.coordinator.attach(operation.operationId, {
+      attachmentId: 'stable-reconnect',
+      afterSequence: current.eventSequence,
+    }),
+    typedCode('attachment_already_attached'),
+  );
+
+  await fixture.coordinator.detach(operation.operationId, {
+    attachmentId: 'stable-reconnect',
+    reason: 'event_gap_reconnect',
+  });
+  await first.done;
+  const reopened = await fixture.coordinator.attach(operation.operationId, {
+    attachmentId: 'stable-reconnect',
+    afterSequence: current.eventSequence,
+  });
+  assert.equal((await fixture.store.getAttachment(
+    operation.operationId,
+    'stable-reconnect',
+  )).state, 'attached');
+
+  await fixture.coordinator.detach(operation.operationId, {
+    attachmentId: 'stable-reconnect',
+    reason: 'test_complete',
+  });
+  await reopened.done;
+  await fixture.store.closeAttachment(
+    operation.operationId,
+    'stable-reconnect',
+    'response_complete',
+  );
+  await assert.rejects(
+    () => fixture.coordinator.attach(operation.operationId, {
+      attachmentId: 'stable-reconnect',
+      afterSequence: current.eventSequence,
+    }),
+    typedCode('attachment_closed'),
+  );
+});
+
 test('queued and running heartbeats use ten-second cadence and stop clears timers without terminalizing', async (t) => {
   const worker = new ControlledWorker();
   worker.blockStart = deferred();

@@ -448,15 +448,23 @@ function createBrainOperationsRouter(options = {}) {
     assertOperationId(req.params.operationId);
     assertNoQuery(req);
     const operation = await reader.getAuthorized(req.params.operationId);
-    const storedResult = await reader.getResultAuthorized(
-      req.params.operationId,
-      operation.resultHandle || undefined,
-    );
-    const result = operation.resultArtifact
-      && storedResult?.result === null
-      && storedResult?.resultHandle === operation.resultHandle
-      ? null
-      : storedResult;
+    const resultlessTerminal = ['failed', 'cancelled', 'interrupted'].includes(operation.state)
+      && operation.result === null
+      && operation.resultHandle === null
+      && operation.resultArtifact === null
+      && operation.resultExpiredAt === null;
+    let result = null;
+    if (!resultlessTerminal) {
+      const storedResult = await reader.getResultAuthorized(
+        req.params.operationId,
+        operation.resultHandle || undefined,
+      );
+      result = operation.resultArtifact
+        && storedResult?.result === null
+        && storedResult?.resultHandle === operation.resultHandle
+        ? null
+        : storedResult;
+    }
     res.json({
       operationId: operation.operationId,
       state: operation.state,

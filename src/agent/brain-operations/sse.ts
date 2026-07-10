@@ -1,4 +1,10 @@
-import type { BrainOperationEvent, BrainOperationEventGap } from './types.js';
+import type {
+  BrainOperationEvent,
+  BrainOperationEventGap,
+  BrainOperationNotification,
+  BrainOperationNotificationType,
+  BrainOperationState,
+} from './types.js';
 
 export interface OperationEventReadOptions {
   signal?: AbortSignal;
@@ -7,8 +13,9 @@ export interface OperationEventReadOptions {
   clearTimeout?: (id: unknown) => void;
 }
 
-export function isEventGap(event: BrainOperationEvent): event is BrainOperationEventGap {
-  return (event as { type?: unknown }).type === 'event_gap';
+export function isEventGap(event: unknown): event is BrainOperationEventGap {
+  return Boolean(event) && typeof event === 'object'
+    && (event as { type?: unknown }).type === 'event_gap';
 }
 
 export function validateEventGap(
@@ -16,7 +23,9 @@ export function validateEventGap(
   after: number,
   input: BrainOperationEventGap | { details?: unknown },
 ): BrainOperationEventGap {
-  const raw = ('type' in input ? input : input.details) as Partial<BrainOperationEventGap> | undefined;
+  const raw = (input && typeof input === 'object' && 'type' in input
+    ? input
+    : input?.details) as Partial<BrainOperationEventGap> | undefined;
   const gap = raw?.type === 'event_gap'
     ? raw
     : ({ ...raw, type: 'event_gap' } as Partial<BrainOperationEventGap>);
@@ -25,16 +34,74 @@ export function validateEventGap(
       || !Number.isSafeInteger(gap.latestSequence)
       || Number(gap.oldestSequence) <= after
       || Number(gap.oldestSequence) > Number(gap.latestSequence)
-      || !gap.currentStatus
-      || gap.currentStatus.operationId !== operationId
-      || !Number.isSafeInteger(gap.currentStatus.eventSequence)
-      || gap.currentStatus.eventSequence < Number(gap.latestSequence)
-      || gap.currentStatus.eventSequence <= after) {
+      || (gap.eventSequence !== undefined
+        && (!Number.isSafeInteger(gap.eventSequence)
+          || Number(gap.eventSequence) < Number(gap.latestSequence)
+          || Number(gap.eventSequence) <= after))
+      || (gap.currentStatus !== undefined
+        && (gap.currentStatus.operationId !== operationId
+          || !Number.isSafeInteger(gap.currentStatus.eventSequence)
+          || gap.currentStatus.eventSequence < Number(gap.latestSequence)
+          || gap.currentStatus.eventSequence <= after))) {
     throw Object.assign(new Error('operation_event_gap_invalid'), {
       code: 'operation_event_gap_invalid',
     });
   }
   return gap as BrainOperationEventGap;
+}
+
+const NOTIFICATION_TYPES = new Set<BrainOperationNotificationType>([
+  'heartbeat', 'phase', 'progress', 'progress_update', 'provider_activity',
+  'provider_call_terminal', 'provider_selected', 'result_ready',
+  'source_pin_attached', 'state', 'terminal', 'token', 'token_estimate',
+  'worker_assigned',
+]);
+
+const OPERATION_STATES = new Set<BrainOperationState>([
+  'queued', 'running', 'complete', 'partial', 'failed', 'cancelled', 'interrupted',
+]);
+
+const TERMINAL_STATES = new Set<BrainOperationState>([
+  'complete', 'partial', 'failed', 'cancelled', 'interrupted',
+]);
+
+function validateNotification(
+  operationId: string,
+  lastSequence: number,
+  input: unknown,
+): BrainOperationNotification {
+  if (!input || Array.isArray(input) || typeof input !== 'object') {
+    throw Object.assign(new Error('operation_event_invalid'), { code: 'operation_event_invalid' });
+  }
+  const event = input as Partial<BrainOperationNotification> & Record<string, unknown>;
+  if (event.operationId !== operationId) {
+    throw Object.assign(new Error('operation_event_mismatch'), { code: 'operation_event_mismatch' });
+  }
+  if (typeof event.type !== 'string'
+      || !NOTIFICATION_TYPES.has(event.type as BrainOperationNotificationType)) {
+    throw Object.assign(new Error('operation_event_invalid'), { code: 'operation_event_invalid' });
+  }
+  if (!Number.isSafeInteger(event.eventSequence) || Number(event.eventSequence) <= lastSequence
+      || (event.sequence !== undefined && event.sequence !== event.eventSequence)) {
+    throw Object.assign(new Error('operation_event_out_of_order'), {
+      code: 'operation_event_out_of_order',
+    });
+  }
+  if (event.state !== undefined && !OPERATION_STATES.has(event.state)) {
+    throw Object.assign(new Error('operation_event_invalid'), { code: 'operation_event_invalid' });
+  }
+  if (event.type === 'terminal' && (!event.state || !TERMINAL_STATES.has(event.state))) {
+    throw Object.assign(new Error('operation_event_invalid'), { code: 'operation_event_invalid' });
+  }
+  if (event.type === 'phase' && (typeof event.phase !== 'string' || !event.phase)) {
+    throw Object.assign(new Error('operation_event_invalid'), { code: 'operation_event_invalid' });
+  }
+  for (const field of ['at', 'updatedAt'] as const) {
+    if (event[field] !== undefined && typeof event[field] !== 'string') {
+      throw Object.assign(new Error('operation_event_invalid'), { code: 'operation_event_invalid' });
+    }
+  }
+  return event as BrainOperationNotification;
 }
 
 function readWithInactivity(
@@ -88,18 +155,15 @@ export async function* parseOperationEvents(
       .join('\n')
       .trim();
     if (!payload || payload === '[DONE]') return null;
-    const event = JSON.parse(payload) as BrainOperationEvent;
+    const event = JSON.parse(payload) as unknown;
     if (isEventGap(event)) {
       const gap = validateEventGap(operationId, lastSequence, event);
-      lastSequence = gap.currentStatus.eventSequence;
+      lastSequence = gap.eventSequence ?? gap.latestSequence;
       return gap;
     }
-    if (event.operationId !== operationId) throw new Error('operation_event_mismatch');
-    if (!Number.isInteger(event.eventSequence) || event.eventSequence <= lastSequence) {
-      throw new Error('operation_event_out_of_order');
-    }
-    lastSequence = event.eventSequence;
-    return event;
+    const notification = validateNotification(operationId, lastSequence, event);
+    lastSequence = notification.eventSequence;
+    return notification;
   };
   try {
     while (true) {
