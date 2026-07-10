@@ -1,5 +1,13 @@
-const OpenAI = require('openai');
 const { getOpenAIClient } = require('./openai-client');
+
+function loadOpenAI() {
+  try {
+    return require('openai');
+  } catch (error) {
+    error.message = `OpenAI SDK is unavailable: ${error.message}`;
+    throw error;
+  }
+}
 
 /**
  * GPT-5 Responses API Client Wrapper
@@ -595,6 +603,7 @@ class GPT5Client {
   async uploadFileToContainer(containerId, file, filename) {
     try {
       this.logger?.debug?.('Uploading file to container', { containerId, filename });
+      const OpenAI = loadOpenAI();
       const fileForUpload = file instanceof File ? file : await OpenAI.toFile(file, filename || 'container_file');
       const result = await this.getClient().containers.files.create(containerId, {
         file: fileForUpload

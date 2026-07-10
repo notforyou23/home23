@@ -18,7 +18,14 @@
  * 6. Graceful degradation for unsupported features
  */
 
-const OpenAI = require('openai');
+function loadOpenAI() {
+  try {
+    return require('openai');
+  } catch (error) {
+    error.message = `OpenAI SDK is unavailable: ${error.message}`;
+    throw error;
+  }
+}
 
 // ─── Per-baseURL concurrency gate + 429 retry ─────────────────────────────────
 // Some upstreams (ollama-cloud, notably) rate-limit "too many concurrent
@@ -156,6 +163,7 @@ class ChatCompletionsClient {
                    process.env.OPENAI_API_KEY ||
                    'not-needed';
 
+    const OpenAI = loadOpenAI();
     this.client = new OpenAI({
       apiKey,
       baseURL

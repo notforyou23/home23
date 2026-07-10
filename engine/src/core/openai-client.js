@@ -1,11 +1,22 @@
-const OpenAI = require('openai');
 const path = require('path');
-const dotenv = require('dotenv');
 
 // Load environment variables from local .env file
-dotenv.config({ path: path.join(__dirname, '..', '..', '.env') });
+try {
+  require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+} catch {
+  // dotenv is optional for tests and deployments that inject env directly.
+}
 
 let cachedClient;
+
+function loadOpenAI() {
+  try {
+    return require('openai');
+  } catch (error) {
+    error.message = `OpenAI SDK is unavailable: ${error.message}`;
+    throw error;
+  }
+}
 
 /**
  * Self-contained OpenAI client for Phase 2B
@@ -20,6 +31,7 @@ function getOpenAIClient() {
       throw new Error('OPENAI_API_KEY environment variable is required');
     }
 
+    const OpenAI = loadOpenAI();
     cachedClient = new OpenAI({
       apiKey,
       baseURL,
@@ -41,6 +53,7 @@ function getEmbeddingClient() {
     const baseURL = process.env.EMBEDDING_BASE_URL || 'http://127.0.0.1:11434/v1';
     const apiKey = process.env.EMBEDDING_API_KEY || 'ollama';
 
+    const OpenAI = loadOpenAI();
     cachedEmbeddingClient = new OpenAI({
       apiKey,
       baseURL,
