@@ -47,4 +47,6 @@ test('saveState and loadState delegate memory graph persistence to revisioned so
   assert.match(source, /memoryRevision: sidecarsWritten\.manifest\.currentRevision/);
   assert.match(source, /baseRevision: sidecarsWritten\.manifest\.baseRevision/);
   assert.match(source, /deltaEpoch: sidecarsWritten\.manifest\.activeDeltaEpoch/);
+  assert.match(source, /persistence\.mode === 'legacy-delta'/);
+  assert.match(source, /state\.json\.gz[\s\S]*whole live graph and can OOM/);
 });

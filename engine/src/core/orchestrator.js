@@ -7181,9 +7181,43 @@ class Orchestrator {
                 bytes: persistence.bytes,
               } : null,
             };
+          } else if (persistence?.manifest === null && (persistence.mode === 'legacy-delta' || persistence.mode === 'reused')) {
+            const statBytes = async (name) => {
+              try {
+                const stat = await fs.stat(path.join(this.logsDir, name));
+                return stat.size;
+              } catch {
+                return 0;
+              }
+            };
+            sidecarsWritten = {
+              mode: persistence.mode,
+              manifest: null,
+              cleaned: persistence.cleaned,
+              nodes: {
+                file: 'memory-nodes.jsonl.gz',
+                count: expectedNodes,
+                bytes: await statBytes('memory-nodes.jsonl.gz'),
+              },
+              edges: {
+                file: 'memory-edges.jsonl.gz',
+                count: expectedEdges,
+                bytes: await statBytes('memory-edges.jsonl.gz'),
+              },
+              delta: {
+                file: 'memory-delta.jsonl',
+                entries: persistence.count || 0,
+                bytes: persistence.bytes || await statBytes('memory-delta.jsonl'),
+              },
+            };
+          }
+          if (sidecarsWritten) {
             // Swap the arrays out of the state object for the upcoming
             // monolithic save. The original references stay live in
-            // this.memory so running cycles don't notice.
+            // this.memory so running cycles don't notice. This must also run
+            // for legacy sidecar brains that append memory-delta.jsonl but do
+            // not yet have a memory-manifest.json; otherwise state.json.gz
+            // tries to compress the whole live graph and can OOM.
             state.memory = { ...state.memory, nodes: [], edges: [] };
           }
         } catch (err) {

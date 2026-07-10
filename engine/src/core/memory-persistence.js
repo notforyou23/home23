@@ -141,8 +141,31 @@ async function persistMemoryRevision({
   writer = { readManifest, appendMemoryRevision, rewriteMemoryBase },
 }) {
   const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
-  const snapshot = memory.capturePersistenceSnapshot();
   const manifest = await writer.readManifest(brainDir);
+  const legacySelection = !forceFull && !manifest
+    ? await resolveMemorySourceSelection(brainDir).catch(() => null)
+    : null;
+  if (legacySelection?.authority === 'legacy-resident-sidecars') {
+    const snapshot = typeof memory.capturePersistenceChangesSnapshot === 'function'
+      ? memory.capturePersistenceChangesSnapshot()
+      : memory.capturePersistenceSnapshot();
+    const { appendMemoryDelta } = require('./memory-sidecar');
+    const result = await appendMemoryDelta(brainDir, {
+      ...snapshot.changes,
+      summary: snapshot.summary,
+    });
+    const committed = result.count > 0;
+    const cleaned = committed ? memory.markPersistenceCleanIfGeneration(snapshot.generation) : false;
+    return {
+      ...result,
+      manifest: null,
+      mode: committed ? 'legacy-delta' : 'reused',
+      cleaned,
+      persistedGeneration: snapshot.generation,
+      persistedChanges: snapshot.changes,
+    };
+  }
+  const snapshot = memory.capturePersistenceSnapshot();
   const rewrite = forceFull || !manifest
     || (manifest.baseWrittenAt && Date.now() - Date.parse(manifest.baseWrittenAt) >= fullRewriteIntervalMs);
   let result;

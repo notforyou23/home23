@@ -688,6 +688,27 @@ class NetworkMemory {
     });
   }
 
+  capturePersistenceChangesSnapshot() {
+    return this.withPersistenceBarrier(() => {
+      const deepClone = (value) => JSON.parse(JSON.stringify(value));
+      const changes = deepClone(this.getPersistenceChanges());
+      return Object.freeze({
+        generation: this.persistenceGeneration,
+        changes: Object.freeze({
+          nodes: Object.freeze(changes.nodes || []),
+          edges: Object.freeze(changes.edges || []),
+          removedNodeIds: Object.freeze(changes.removedNodeIds || []),
+          removedEdgeKeys: Object.freeze(changes.removedEdgeKeys || []),
+        }),
+        summary: Object.freeze({
+          nodeCount: this.nodes?.size || 0,
+          edgeCount: this.edges?.size || 0,
+          clusterCount: this.clusters?.size || 0,
+        }),
+      });
+    });
+  }
+
   markPersistenceCleanIfGeneration(expectedGeneration) {
     return this.withPersistenceBarrier(() => {
       if (!Number.isSafeInteger(expectedGeneration) || this.persistenceGeneration !== expectedGeneration) {

@@ -209,6 +209,80 @@ test('engine load supports legacy resident sidecars before manifest migration', 
   assert.equal(loaded.evidence.deltaWatermark.appliedRecords, 3);
 });
 
+test('legacy resident sidecar save appends delta instead of full manifest rewrite', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-legacy-sidecar-save-'));
+  await writeJsonlGzAtomic(path.join(dir, 'memory-nodes.jsonl.gz'), [
+    { id: 'base', concept: 'base node' },
+  ]);
+  await writeJsonlGzAtomic(path.join(dir, 'memory-edges.jsonl.gz'), []);
+  const events = [];
+  const memory = createTrackedMemory([{ id: 'delta', concept: 'delta node' }], events);
+
+  const result = await persistMemoryRevision({
+    brainDir: dir,
+    memory,
+    writer: {
+      readManifest: async () => null,
+      appendMemoryRevision: async () => { throw new Error('manifest append not expected'); },
+      rewriteMemoryBase: async () => { throw new Error('full rewrite not expected'); },
+    },
+  });
+
+  assert.equal(result.mode, 'legacy-delta');
+  assert.equal(result.cleaned, true);
+  assert.equal(result.manifest, null);
+  await assert.rejects(fsp.stat(path.join(dir, 'memory-manifest.json')), /ENOENT/);
+  const deltaText = await fsp.readFile(path.join(dir, 'memory-delta.jsonl'), 'utf8');
+  assert.match(deltaText, /"op":"upsert_node"/);
+  assert.match(deltaText, /"id":"delta"/);
+  assert.deepEqual(events, ['captured:1', 'clean-if:1']);
+});
+
+test('legacy resident sidecar save uses changes-only snapshot when available', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-legacy-sidecar-changes-only-'));
+  await writeJsonlGzAtomic(path.join(dir, 'memory-nodes.jsonl.gz'), [
+    { id: 'base', concept: 'base node' },
+  ]);
+  await writeJsonlGzAtomic(path.join(dir, 'memory-edges.jsonl.gz'), []);
+  const events = [];
+  const memory = {
+    capturePersistenceSnapshot() {
+      throw new Error('full snapshot not expected');
+    },
+    capturePersistenceChangesSnapshot() {
+      events.push('changes-only');
+      return Object.freeze({
+        generation: 7,
+        changes: Object.freeze({
+          nodes: Object.freeze([{ id: 'delta', concept: 'delta node' }]),
+          edges: Object.freeze([]),
+          removedNodeIds: Object.freeze([]),
+          removedEdgeKeys: Object.freeze([]),
+        }),
+        summary: Object.freeze({ nodeCount: 2, edgeCount: 0, clusterCount: 0 }),
+      });
+    },
+    markPersistenceCleanIfGeneration(expected) {
+      events.push(`clean-if:${expected}`);
+      return expected === 7;
+    },
+  };
+
+  const result = await persistMemoryRevision({
+    brainDir: dir,
+    memory,
+    writer: {
+      readManifest: async () => null,
+      appendMemoryRevision: async () => { throw new Error('manifest append not expected'); },
+      rewriteMemoryBase: async () => { throw new Error('full rewrite not expected'); },
+    },
+  });
+
+  assert.equal(result.mode, 'legacy-delta');
+  assert.equal(result.cleaned, true);
+  assert.deepEqual(events, ['changes-only', 'clean-if:7']);
+});
+
 test('a successful full rewrite schedules production retirement with global pin discovery', async () => {
   const scheduled = [];
   const calls = [];
