@@ -595,6 +595,10 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
+      body.h23-chat-page #particles-js {
+        display: none !important;
+      }
+
       body.h23-chat-page *,
       body.h23-chat-page *::before,
       body.h23-chat-page *::after {
@@ -778,8 +782,9 @@
       const syncTimer = setInterval(refreshTitle, 400);
       setTimeout(() => clearInterval(syncTimer), 4000);
 
-      // Particles — keep on all sizes per preference
-      if (typeof particlesJS !== 'undefined') {
+      // Particles — keep on all sizes unless reduced motion disables the loop
+      const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      if (!reduceMotion && typeof particlesJS !== 'undefined') {
         particlesJS('particles-js', {
           particles: {
             number: { value: 40, density: { enable: true, value_area: 1000 } },

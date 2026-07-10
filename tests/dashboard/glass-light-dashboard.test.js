@@ -1699,6 +1699,7 @@ test('Vibe gallery cards are keyboard reachable and Enter or Space opens the unc
 test('reduced-motion preference causally prevents particle canvas initialization', () => {
   for (const [page, label] of [
     [settingsHtml, 'Settings'],
+    [standaloneChatHtml, 'Standalone Chat'],
     [vibeGalleryHtml, 'Vibe gallery'],
     [welcomeHtml, 'Welcome'],
   ]) {
@@ -1709,6 +1710,12 @@ test('reduced-motion preference causally prevents particle canvas initialization
     assert.match(beforeCall, /matchMedia\?\.\(['"]\(prefers-reduced-motion: reduce\)['"]\)\.matches/);
     assert.match(beforeCall, /if\s*\(\s*!reduceMotion\s*&&\s*typeof particlesJS !== ['"]undefined['"]\s*\)/);
   }
+
+  const chatStyle = standaloneChatHtml.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
+  assert.match(
+    chatStyle,
+    /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{[\s\S]*?body\.h23-chat-page #particles-js\s*\{[^}]*display:\s*none\s*!important/,
+  );
 });
 
 test('active navigation, sensor hover, and Vibe overlay match approved details', () => {
