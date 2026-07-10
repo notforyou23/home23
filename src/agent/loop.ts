@@ -21,6 +21,7 @@ import type {
 import type { OperationActivity } from './brain-operations/types.js';
 import type { BrainOperationsClient } from './brain-operations/client.js';
 import { ActivityLease, MAX_TIMER_DELAY_MS, type LeaseExpiryReason } from './activity-lease.js';
+import { executeAndFormatTool } from './tool-result.js';
 import { MemoryManager } from './memory.js';
 import type { CompactionManager } from './compaction.js';
 import type { MediaAttachment } from '../types.js';
@@ -1500,13 +1501,21 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 if (onEvent) onEvent({ type: 'tool_start', tool: tc.function.name, args: input });
 
                 try {
-                  const result = await this.registry.execute(tc.function.name, input, runContext);
+                  const formatted = await executeAndFormatTool({
+                    registry: this.registry,
+                    name: tc.function.name,
+                    input,
+                    context: runContext,
+                    onEvent,
+                    modelLimit: MODEL_TOOL_RESULT_LIMIT_CHARS,
+                    eventLimit: TOOL_EVENT_RESULT_LIMIT_CHARS,
+                  });
+                  const { result } = formatted;
                   if (result.media) {
                     allMedia.push(...result.media);
                     if (onEvent) for (const m of result.media) onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption });
                   }
-                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: result.content.slice(0, MODEL_TOOL_RESULT_LIMIT_CHARS) });
-                  if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, result: result.content.slice(0, TOOL_EVENT_RESULT_LIMIT_CHARS), success: true });
+                  apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: formatted.modelContent });
                 } catch (toolErr) {
                   console.error(`[agent] Tool ${tc.function.name} threw:`, toolErr);
                   const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
@@ -1638,7 +1647,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                       const args = item ? getXaiServerToolArgs(item) : {};
                       if (onEvent) {
                         onEvent({ type: 'tool_start', tool: toolName, args });
-                        onEvent({ type: 'tool_result', tool: toolName, result: summarizeXaiServerToolResult(toolName, item ?? {}), success: true });
+                        onEvent({ type: 'tool_result', tool: toolName, result: summarizeXaiServerToolResult(toolName, item ?? {}), success: Boolean(toolName) });
                       }
                     }
                   }
@@ -1692,10 +1701,18 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 catch { input = {}; }
                 if (onEvent) onEvent({ type: 'tool_start', tool: tc.function.name, args: input });
                 try {
-                  const result = await this.registry.get(tc.function.name)!.execute(input, runContext);
+                  const formatted = await executeAndFormatTool({
+                    registry: this.registry,
+                    name: tc.function.name,
+                    input,
+                    context: runContext,
+                    onEvent,
+                    modelLimit: MODEL_TOOL_RESULT_LIMIT_CHARS,
+                    eventLimit: TOOL_EVENT_RESULT_LIMIT_CHARS,
+                  });
+                  const { result } = formatted;
                   if (result.media?.length) { allMedia.push(...result.media); if (onEvent) for (const m of result.media) onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption }); }
-                  nextInputItems.push({ type: 'function_call_output', call_id: tc.id, output: result.content.slice(0, MODEL_TOOL_RESULT_LIMIT_CHARS) });
-                  if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, result: result.content.slice(0, TOOL_EVENT_RESULT_LIMIT_CHARS), success: true });
+                  nextInputItems.push({ type: 'function_call_output', call_id: tc.id, output: formatted.modelContent });
                 } catch (toolErr) {
                   const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
                   nextInputItems.push({ type: 'function_call_output', call_id: tc.id, output: `Error: ${errMsg}` });
@@ -1911,13 +1928,21 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               if (onEvent) onEvent({ type: 'tool_start', tool: tc.function.name, args: input });
 
               try {
-                const result = await this.registry.execute(tc.function.name, input, runContext);
+                const formatted = await executeAndFormatTool({
+                  registry: this.registry,
+                  name: tc.function.name,
+                  input,
+                  context: runContext,
+                  onEvent,
+                  modelLimit: MODEL_TOOL_RESULT_LIMIT_CHARS,
+                  eventLimit: TOOL_EVENT_RESULT_LIMIT_CHARS,
+                });
+                const { result } = formatted;
                 if (result.media) {
                   allMedia.push(...result.media);
                   if (onEvent) for (const m of result.media) onEvent({ type: 'media', mediaType: m.type || 'image', path: m.path, caption: m.caption });
                 }
-                apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: result.content.slice(0, MODEL_TOOL_RESULT_LIMIT_CHARS) });
-                if (onEvent) onEvent({ type: 'tool_result', tool: tc.function.name, result: result.content.slice(0, TOOL_EVENT_RESULT_LIMIT_CHARS), success: true });
+                apiMessages.push({ role: 'tool', tool_call_id: tc.id, content: formatted.modelContent });
               } catch (toolErr) {
                 console.error(`[agent] Tool ${tc.function.name} threw:`, toolErr);
                 const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
@@ -2057,7 +2082,16 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
 
             // Catch per-tool errors so one bad tool doesn't kill the whole turn
             try {
-              const result = await this.registry.execute(toolCall.name, toolCall.input, runContext);
+              const formatted = await executeAndFormatTool({
+                registry: this.registry,
+                name: toolCall.name,
+                input: toolCall.input,
+                context: runContext,
+                onEvent,
+                modelLimit: MODEL_TOOL_RESULT_LIMIT_CHARS,
+                eventLimit: TOOL_EVENT_RESULT_LIMIT_CHARS,
+              });
+              const { result } = formatted;
 
               if (result.media) {
                 allMedia.push(...result.media);
@@ -2068,14 +2102,12 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                 }
               }
 
-              const resultContent = result.content.slice(0, MODEL_TOOL_RESULT_LIMIT_CHARS);
               toolResults.push({
                 type: 'tool_result',
                 tool_use_id: toolCall.id,
-                content: resultContent,
+                content: formatted.modelContent,
                 ...(result.is_error ? { is_error: true } : {}),
               });
-              if (onEvent) onEvent({ type: 'tool_result', tool: toolCall.name, result: resultContent.slice(0, TOOL_EVENT_RESULT_LIMIT_CHARS), success: !result.is_error });
             } catch (toolErr) {
               console.error(`[agent] Tool ${toolCall.name} threw:`, toolErr);
               const errMsg = toolErr instanceof Error ? toolErr.message : String(toolErr);
