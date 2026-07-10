@@ -105,8 +105,9 @@ test('openPinnedSource rejects digest, root, and revision mismatch before readin
   const pinned = await provider.pin(brain, operationId);
   const operationRoot = path.join(home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId);
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const wrongDigest = `${pinned.digest.slice(0, -1)}${pinned.digest.endsWith('0') ? '1' : '0'}`;
   await assert.rejects(() => openPinnedSource(pinned.descriptor, {
-    expectedDigest: pinned.digest.replace(/.$/, '0'),
+    expectedDigest: wrongDigest,
     operationRoot,
     scratchQuota,
   }), { code: 'source_changed' });
