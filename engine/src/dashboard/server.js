@@ -30,6 +30,10 @@ const {
   buildLiveProblemSnapshot,
   buildGoodLifeObligationSnapshot,
 } = require('./good-life-operator');
+const {
+  createBrainOperationsPlaceholderRouter,
+  createBrainOperationsRouter,
+} = require('./brain-operations/router.js');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -152,7 +156,11 @@ function readJsonlHeadLines(filePath, limit = 200, maxBytes = 256 * 1024) {
  * Real-time visualization of all Phase 2B features
  */
 class DashboardServer {
-  constructor(port = 3344, logsDir) {
+  constructor(port = 3344, logsDir, options = {}) {
+    if (!options || Array.isArray(options) || typeof options !== 'object') {
+      throw new TypeError('dashboard_options_invalid');
+    }
+    this._dashboardOptions = options;
     this.port = port;
     this.mcpPort = parseInt(process.env.MCP_HTTP_PORT || process.env.MCP_PORT || 3347);
     this.runsDir = process.env.COSMO_RUNS_DIR
@@ -183,10 +191,21 @@ class DashboardServer {
       }
     });
 
+    // Brain-operation requests must be bounded before the dashboard's legacy
+    // compatibility parser can retain them. The delegate is attached after
+    // requester-bound coordinator dependencies have been constructed.
+    this.brainOperationsPlaceholder = createBrainOperationsPlaceholderRouter();
+    this.app.use('/home23/api/brain-operations', this.brainOperationsPlaceholder.router);
+
     // COSMO is a local research system - no artificial limits on data ingestion
     // Set to 10GB to handle serious document collections, large queries, and AI analysis
     // This is a LOCAL system, not a public API - memory constraints come from OS, not app limits
-    this.app.use(express.json({ limit: '10gb' }));
+    const broadJsonParser = options.broadJsonParser || express.json({ limit: '10gb' });
+    if (typeof broadJsonParser !== 'function') throw new TypeError('dashboard_options_invalid');
+    this.app.use((req, res, next) => {
+      if (req.brainOperationBodyParsed === true) return next();
+      return broadJsonParser(req, res, next);
+    });
     this.app.use(express.urlencoded({ limit: '10gb', extended: true }));
     this.clients = new Set();
     this.insightAnalyzer = new InsightAnalyzer(this.logsDir, console);
@@ -233,8 +252,122 @@ class DashboardServer {
       loadState: () => this.loadState(),
       logger: this.logger,
     });
+
+    this.initializeBrainOperations(options.brainOperations);
     
     this.setupRoutes();
+  }
+
+  initializeBrainOperations(injectedDependencies) {
+    const requesterAgent = this.getHome23AgentName();
+    const dependencies = injectedDependencies || this.createDefaultBrainOperationsDependencies({
+      requesterAgent,
+    });
+    if (!dependencies || Array.isArray(dependencies) || typeof dependencies !== 'object') {
+      throw new TypeError('brain_operations_configuration_invalid');
+    }
+    const route = createBrainOperationsRouter({
+      requesterAgent,
+      coordinator: dependencies.coordinator,
+      reader: dependencies.reader,
+      exporter: dependencies.exporter,
+      buildCatalog: dependencies.buildCatalog,
+    });
+    this.brainOperationsPlaceholder.attach(route.router);
+    this.brainOperationsCoordinator = dependencies.coordinator;
+    this.brainOperationsWorker = dependencies.worker || null;
+    this.brainOperationsReader = dependencies.reader;
+    this.brainOperationsExporter = dependencies.exporter;
+  }
+
+  createDefaultBrainOperationsDependencies({ requesterAgent }) {
+    const fsSync = require('node:fs');
+    const {
+      buildCanonicalCatalog,
+      parseReferenceRunsPaths,
+      resolveCanonicalTarget,
+    } = require('../../../cosmo23/server/lib/brain-registry.js');
+    const { OPERATION_AUTHORITY, authorizeBrainOperation } =
+      require('../../../shared/brain-operations/authority.cjs');
+    const { BrainOperationStore } = require('./brain-operations/operation-store.js');
+    const { createBrainOperationStoreReader } = require('./brain-operations/store-reader.js');
+    const { createBrainOperationExporter } = require('./brain-operations/exporter.js');
+    const { BrainOperationCoordinator } = require('./brain-operations/coordinator.js');
+    const { BrainOperationWorkerAdapter } = require('./brain-operations/worker-adapter.js');
+    const home23Root = this.getHome23Root();
+    const operationRoot = path.join(
+      home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations',
+    );
+    const store = new BrainOperationStore({ root: operationRoot, requesterAgent });
+    const reader = createBrainOperationStoreReader({
+      operationsRoot: operationRoot,
+      expectedRequester: requesterAgent,
+      liveStore: store,
+    });
+    const exporter = createBrainOperationExporter({
+      home23Root,
+      requesterAgent,
+      reader,
+    });
+    const worker = new BrainOperationWorkerAdapter({ supportsSourceOperations: false });
+    worker.registerLocalExecutor('ad_hoc_export', async (context) => ({
+      state: 'complete',
+      result: await exporter.exportAdHoc({
+        requesterAgent,
+        operationId: context.operationId,
+        ...context.parameters,
+      }),
+      resultArtifact: null,
+      error: null,
+      sourceEvidence: null,
+    }));
+
+    const buildCatalog = async () => {
+      const agentsPath = path.join(home23Root, 'config', 'agents.json');
+      let manifest = [];
+      if (fsSync.existsSync(agentsPath)) manifest = JSON.parse(fsSync.readFileSync(agentsPath, 'utf8'));
+      if (!Array.isArray(manifest)) {
+        const error = new Error('catalog_configuration_invalid');
+        error.code = 'catalog_configuration_invalid';
+        throw error;
+      }
+      const configuredAgentNames = manifest.map((agent) => agent?.name);
+      const cosmoRoot = path.join(home23Root, 'cosmo23');
+      const localRunsPath = path.join(cosmoRoot, 'runs');
+      const referenceRunsPaths = parseReferenceRunsPaths(
+        process.env.COSMO_REFERENCE_RUNS_PATHS || process.env.COSMO_REFERENCE_RUNS_PATH || '',
+        cosmoRoot,
+        localRunsPath,
+      );
+      return buildCanonicalCatalog({
+        instancesRoot: path.join(home23Root, 'instances'),
+        localRunsPath,
+        referenceRunsPaths,
+        configuredAgentNames,
+        activeRunPath: path.join(cosmoRoot, 'runtime'),
+      });
+    };
+    const resolveOwnedRunTarget = async () => {
+      const error = new Error('owned_run_operations_unavailable');
+      error.code = 'operation_unavailable';
+      throw error;
+    };
+    const coordinator = new BrainOperationCoordinator({
+      requesterAgent,
+      store,
+      buildCanonicalCatalog: buildCatalog,
+      resolveCanonicalTarget,
+      resolveOwnedRunTarget,
+      operationAuthority: OPERATION_AUTHORITY,
+      authorizeBrainOperation,
+      worker,
+      sourcePins: null,
+      scratchQuotaFactory: null,
+      operationModelResolver: null,
+      capabilityKey: process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY || null,
+      exporter,
+    });
+    return { coordinator, worker, store, reader, exporter, buildCatalog };
   }
 
   /**

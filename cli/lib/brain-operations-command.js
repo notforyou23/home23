@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import {
@@ -12,6 +13,7 @@ import {
 import { generateEcosystem } from './generate-ecosystem.js';
 
 const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
 const CAPABILITY_ENV = 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY';
 const DRY_RUN_CAPABILITY = '0'.repeat(64);
 
@@ -274,17 +276,114 @@ export async function prepareBrainOperationsCapability(home23Root, options = {})
   };
 }
 
-export async function runBrainOperationsCommand(home23Root, args, dependencies = {}) {
-  if (!Array.isArray(args)
-      || args[0] !== 'prepare'
-      || args.length > 2
-      || (args.length === 2 && args[1] !== '--dry-run')) {
-    throw commandError('brain_operations_usage');
+function projectOperatorOperation(record) {
+  return {
+    operationId: record.operationId,
+    requestId: record.requestId,
+    operationType: record.operationType,
+    requesterAgent: record.requesterAgent,
+    target: record.target,
+    state: record.state,
+    phase: record.phase,
+    recordVersion: record.recordVersion,
+    eventSequence: record.eventSequence,
+    startedAt: record.startedAt,
+    updatedAt: record.updatedAt,
+    completedAt: record.completedAt,
+    lastProviderActivityAt: record.lastProviderActivityAt,
+    lastProgressAt: record.lastProgressAt,
+  };
+}
+
+function isCanonicalDirectory(stat) {
+  return stat.isDirectory() && !stat.isSymbolicLink();
+}
+
+async function readCanonicalDirectory(directoryPath, { optional = false } = {}) {
+  try {
+    const before = await fs.promises.lstat(directoryPath, { bigint: true });
+    if (!isCanonicalDirectory(before)) throw commandError('brain_operations_store_invalid');
+    const entries = await fs.promises.readdir(directoryPath, { withFileTypes: true });
+    const after = await fs.promises.lstat(directoryPath, { bigint: true });
+    if (!isCanonicalDirectory(after) || before.dev !== after.dev || before.ino !== after.ino) {
+      throw commandError('brain_operations_store_invalid');
+    }
+    return entries;
+  } catch (error) {
+    if (optional && error.code === 'ENOENT') return null;
+    if (error.code === 'brain_operations_store_invalid') throw error;
+    throw commandError('brain_operations_store_invalid', error);
   }
-  return prepareBrainOperationsCapability(home23Root, {
-    ...dependencies,
-    dryRun: args[1] === '--dry-run',
-  });
+}
+
+async function listBrainOperations(home23Root, dependencies) {
+  const instancesRoot = path.join(home23Root, 'instances');
+  const instanceEntries = await readCanonicalDirectory(instancesRoot, { optional: true });
+  const createStoreReader = dependencies.createStoreReader
+    || require('../../engine/src/dashboard/brain-operations/store-reader.js')
+      .createBrainOperationStoreReader;
+  if (typeof createStoreReader !== 'function') throw commandError('brain_operations_store_invalid');
+
+  const requesters = [];
+  const operations = [];
+  for (const entry of (instanceEntries || []).sort((left, right) => left.name.localeCompare(right.name))) {
+    if (entry.isSymbolicLink()) throw commandError('brain_operations_store_invalid');
+    if (!entry.isDirectory()) continue;
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(entry.name)) {
+      throw commandError('brain_operations_store_invalid');
+    }
+    const instanceRoot = path.join(instancesRoot, entry.name);
+    if (await readCanonicalDirectory(instanceRoot, { optional: false }) === null) {
+      throw commandError('brain_operations_store_invalid');
+    }
+    const runtimeRoot = path.join(instanceRoot, 'runtime');
+    if (await readCanonicalDirectory(runtimeRoot, { optional: true }) === null) continue;
+    const operationsRoot = path.join(runtimeRoot, 'brain-operations');
+    if (await readCanonicalDirectory(operationsRoot, { optional: true }) === null) continue;
+
+    let records;
+    try {
+      records = await createStoreReader({
+        operationsRoot,
+        expectedRequester: entry.name,
+      }).listNonterminalAuthorized();
+    } catch (error) {
+      throw commandError('brain_operations_store_invalid', error);
+    }
+    if (!Array.isArray(records)
+        || records.some((record) => record?.requesterAgent !== entry.name
+          || (record.state !== 'queued' && record.state !== 'running'))) {
+      throw commandError('brain_operations_store_invalid');
+    }
+    requesters.push(entry.name);
+    for (const record of records) operations.push(projectOperatorOperation(record));
+  }
+
+  operations.sort((left, right) => left.requesterAgent.localeCompare(right.requesterAgent)
+    || left.operationId.localeCompare(right.operationId));
+  const now = dependencies.now ? dependencies.now() : new Date();
+  const checkedAt = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+  return { checkedAt, requesters, operations, count: operations.length };
+}
+
+export async function runBrainOperationsCommand(home23Root, args, dependencies = {}) {
+  if (!Array.isArray(args)) throw commandError('brain_operations_usage');
+  if (args[0] === 'prepare'
+      && args.length <= 2
+      && (args.length === 1 || args[1] === '--dry-run')) {
+    return prepareBrainOperationsCapability(home23Root, {
+      ...dependencies,
+      dryRun: args[1] === '--dry-run',
+    });
+  }
+  if (args.length === 4
+      && args[0] === 'list'
+      && args[1] === '--state'
+      && args[2] === 'nonterminal'
+      && args[3] === '--all-requesters') {
+    return listBrainOperations(home23Root, dependencies);
+  }
+  throw commandError('brain_operations_usage');
 }
 
 export function buildScopedPm2RefreshArgs(receipt) {

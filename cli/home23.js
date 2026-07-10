@@ -39,6 +39,8 @@ Commands:
   trust explain <claim>   Explain whether a claim is safe to inherit
   brain-operations prepare [--dry-run]
                           Prepare the signed internal brain-operation boundary
+  brain-operations list --state nonterminal --all-requesters
+                          Read-only preflight of durable active operations
   update                  Update to latest release
   update --check          Check for updates
   agent create <name>     Create a new agent instance
