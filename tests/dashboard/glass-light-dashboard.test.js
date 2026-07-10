@@ -2539,6 +2539,46 @@ test('Vibe detail ignores stale or post-close async results and keeps visibility
   assert.doesNotMatch(functionFragment(js, 'setVibeDetailGallery'), /renderVibeImageDetail/);
 });
 
+test('Vibe navigation supersedes the opening image slower detail response', async () => {
+  const runtime = createDashboardRuntime();
+  for (const id of [
+    'home-vibe-detail-modal', 'home-vibe-detail-image', 'home-vibe-detail-source',
+    'home-vibe-detail-title', 'home-vibe-detail-caption', 'home-vibe-detail-prompt',
+    'home-vibe-detail-meta', 'home-vibe-detail-open', 'home-vibe-detail-gallery',
+    'home-vibe-detail-previous', 'home-vibe-detail-next', 'home-vibe-detail-position',
+  ]) runtime.document.createElement(id, {
+    tagName: id.includes('previous') || id.includes('next') ? 'BUTTON' : id.includes('open') || id.includes('gallery') ? 'A' : 'DIV',
+  });
+
+  runtime.context.__vibeA = { id: 'a', url: '/a.jpg', caption: 'Image A' };
+  runtime.context.__vibeB = { id: 'b', url: '/b.jpg', caption: 'Image B' };
+  let resolveDetail;
+  const detailPromise = new Promise((resolve) => { resolveDetail = resolve; });
+  runtime.context.__vibeFetch = (url) => url.includes('?limit=all')
+    ? Promise.resolve({ images: [runtime.context.__vibeA, runtime.context.__vibeB] })
+    : detailPromise;
+  runtime.run('apiFetch = globalThis.__vibeFetch');
+
+  const open = runtime.run("openVibeImageDetail(globalThis.__vibeA, '/jerry')");
+  await new Promise((resolve) => setImmediate(resolve));
+  const caption = runtime.document.getElementById('home-vibe-detail-caption');
+  const position = runtime.document.getElementById('home-vibe-detail-position');
+  assert.equal(position.textContent, '1 of 2', 'gallery must settle while the original detail request stays pending');
+
+  runtime.run('navigateVibeImageDetail(1)');
+  assert.equal(caption.textContent, 'Image B');
+  assert.equal(position.textContent, '2 of 2');
+
+  resolveDetail({
+    item: { id: 'a', url: '/a.jpg', caption: 'Image A detailed', prompt: 'Late detail for A' },
+  });
+  await open;
+  assert.equal(caption.textContent, 'Image B', 'late detail for A must not replace navigated image B');
+  assert.equal(position.textContent, '2 of 2', 'late detail for A must not reset the gallery position');
+  assert.equal(runtime.document.getElementById('home-vibe-detail-previous').disabled, false);
+  assert.equal(runtime.document.getElementById('home-vibe-detail-next').disabled, true);
+});
+
 test('COSMO new-tab control receives the resolved runtime URL without a hash placeholder', () => {
   const tree = parseHtmlTree(html);
   const link = findById(tree, 'cosmo23-open-link');

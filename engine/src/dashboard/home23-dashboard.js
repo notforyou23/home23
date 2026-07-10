@@ -56,6 +56,7 @@ let vibeDetailGalleryState = {
 };
 let vibeDetailSessionSequence = 0;
 let activeVibeDetailSession = 0;
+let vibeDetailViewRevision = 0;
 const DASHBOARD_OVERLAY_IDS = [
   'problems-overlay',
   'goodlife-overlay',
@@ -6313,6 +6314,7 @@ function navigateVibeImageDetail(delta) {
     return;
   }
   vibeDetailGalleryState.index = nextIndex;
+  vibeDetailViewRevision += 1;
   renderVibeImageDetail(vibeDetailGalleryState.items[nextIndex], vibeDetailGalleryState.base);
   syncVibeDetailNavigation();
 }
@@ -6360,6 +6362,7 @@ function showVibeImageDetail() {
 
 function beginVibeDetailSession() {
   activeVibeDetailSession = ++vibeDetailSessionSequence;
+  vibeDetailViewRevision += 1;
   return activeVibeDetailSession;
 }
 
@@ -6397,6 +6400,7 @@ function closeVibeImageDetail() {
 async function openVibeImageDetail(item, base = '') {
   if (!item?.url) return;
   const sessionId = beginVibeDetailSession();
+  const openingViewRevision = vibeDetailViewRevision;
   renderVibeImageDetail(item, base);
   showVibeImageDetail();
   setVibeDetailGallery([], item, base, { unavailable: true });
@@ -6406,9 +6410,11 @@ async function openVibeImageDetail(item, base = '') {
       const detail = await apiFetch(`${base}/home23/api/vibe/gallery/items/${encodeURIComponent(item.id)}`, {
         timeoutMs: 10000,
       });
-      if (detail?.item && vibeDetailSessionIsActive(sessionId)) {
+      if (detail?.item
+          && vibeDetailSessionIsActive(sessionId)
+          && openingViewRevision === vibeDetailViewRevision) {
         const galleryItems = await galleryPromise;
-        if (!vibeDetailSessionIsActive(sessionId)) return;
+        if (!vibeDetailSessionIsActive(sessionId) || openingViewRevision !== vibeDetailViewRevision) return;
         const mergedItems = galleryItems.map((galleryItem) => (
           vibeItemsMatch(galleryItem, detail.item) ? detail.item : galleryItem
         ));
