@@ -5,7 +5,7 @@
 - Browser result: PARTIAL against the complete Task 7 checklist; all executed checks passed, but 200% zoom, reduced-motion emulation, and final Vibe gallery/Welcome/Setup browser rendering remain unexecuted because the in-app Browser session closed and the replacement session could not reopen the local QA URL
 - Tested branch: `codex/glass-light-dashboard`
 - Browser baseline commit: `ef7e534a2f261dfa623662e2c583e79e5c3e4cd3`
-- Final automated code commit: `24c5fad` (post-review safety/fidelity repair)
+- Final automated code commit: `313e7ef` (post-review safety/fidelity and fail-closed status repair)
 - Comparison base: `c2b19654b7d784b43cdbdf231257adeba3b0675e`
 - Verification date: 2026-07-09 America/New_York
 
@@ -52,7 +52,7 @@ The full automated gate below was rerun after the post-review safety/fidelity re
 |---|---|
 | `node --check engine/src/dashboard/home23-dashboard.js` | PASS |
 | `node --check engine/src/dashboard/home23-chat.js` | PASS |
-| `node --test --test-concurrency=1 tests/dashboard/glass-light-dashboard.test.js tests/dashboard/operator-ui.test.js tests/dashboard/briefs.test.js tests/dashboard/forrest-feel-route.test.js` | PASS — 59/59 |
+| `node --test --test-concurrency=1 tests/dashboard/glass-light-dashboard.test.js tests/dashboard/operator-ui.test.js tests/dashboard/briefs.test.js tests/dashboard/forrest-feel-route.test.js` | PASS — 60/60 |
 | `node --import tsx --test --test-concurrency=1 tests/dashboard/chat-state.test.ts` | PASS — 6/6 |
 | `node --test --test-concurrency=1 tests/scripts/read-only-dashboard-qa-server.test.mjs` | PASS — 4/4 |
 | `npm run build` | PASS |
@@ -62,11 +62,11 @@ The full automated gate below was rerun after the post-review safety/fidelity re
 | `git diff --check` | PASS |
 | `git diff --check c2b19654b7d784b43cdbdf231257adeba3b0675e` | PASS |
 
-The broad-test caveats are unchanged: one local-agent identity test skips because installation instances are not copied into the worktree; Node reports existing `punycode` deprecations and one module-type warning. None originate in the dashboard files.
+The broad-test caveats are unchanged: one local-agent identity test skips because installation instances are not copied into the worktree; Node reports existing `punycode` deprecations and one module-type warning. The first final `npm test` attempt stalled in the existing WatchChannel test and was stopped by its exact test process; that test then passed 4/4 in isolation and the immediate full-suite retry passed all 692 runnable tests. None of these caveats originate in the dashboard files.
 
 ### Browser repair TDD receipts
 
-Every production repair was preceded by a focused failing contract. The post-review safety wave first ran 41 pass / 7 fail across 48 glass tests, then passed 48/48 after the repairs. A final no-emoji contract produced the expected red result against the remaining dashboard/Chat copy and passed after repair, bringing the glass suite to 49/49 and the combined focused run to 59/59. The standalone Chat geometry contract was also checked against the preceding committed HTML and produced the expected red result before passing against the repair.
+Every production repair was preceded by a focused failing contract. The post-review safety wave first ran 41 pass / 7 fail across 48 glass tests, then passed 48/48 after the repairs. A final no-emoji contract produced the expected red result against the remaining dashboard/Chat copy and passed after repair. The Problems request-failure contract then failed against stale-clear behavior before passing for both null/non-OK and rejected/timeout requests. The final glass suite is 50/50 and the combined focused run is 60/60. The standalone Chat geometry contract was also checked against the preceding committed HTML and produced the expected red result before passing against the repair.
 
 - Top bar stretching and horizontal navigation.
 - Sensor-strip legacy span resets, phone span collapse, and hidden Sauna fields.
@@ -78,6 +78,7 @@ Every production repair was preceded by a focused failing contract. The post-rev
 - Full Settings description override with the light-theme dark muted text token.
 - Brain Storage fail-closed mismatch classification and real disk/live counts, with no unsupported pending state.
 - Clear/open/chronic/unverifiable Home Problems semantics and non-green attention states.
+- Fail-closed Home Problems rendering after a previously clear state when the live route returns non-OK/null or rejects/times out.
 - Glass Light COSMO offline presentation while retaining Start/Retry/status behavior.
 - Native Settings Agents, Data Feeds, Notifications, and House read-only sections.
 - Non-emoji accessible attachment controls with file-picker, paste, and drop bindings preserved.
@@ -257,10 +258,10 @@ The branch remains inside the approved dashboard/page/test/spec/plan/report boun
 | Design-spec criterion | Exact evidence | Status |
 |---|---|---|
 | 1. Match the supplied light-glass handoff at the primary laptop target | Matched 1440 × 1000 DPR 1 source/implementation captures; `comparison-home-1440-final.png`, `comparison-header-1440-final.png`, and `comparison-main-1440-final.png`; measured geometry in “Matched visual comparison” | PASS |
-| 2. Apply the new design language to all documented dashboard surfaces and six overlays | Branch HTML/CSS in `engine/src/dashboard/`; 49 glass contracts inside the 59-test focused run; surface and overlay matrices; Home, Brain Map, Full Settings, standalone Chat, Problems, and responsive captures | PASS for inspected surfaces; the final related-page Browser recapture gap is recorded under criterion 7 |
+| 2. Apply the new design language to all documented dashboard surfaces and six overlays | Branch HTML/CSS in `engine/src/dashboard/`; 50 glass contracts inside the 60-test focused run; surface and overlay matrices; Home, Brain Map, Full Settings, standalone Chat, Problems, and responsive captures | PASS for inspected surfaces; the final related-page Browser recapture gap is recorded under criterion 7 |
 | 3. Keep every existing functional route, data source, action, and production-only detail reachable | Preservation contracts in `tests/dashboard/glass-light-dashboard.test.js` and `tests/dashboard/operator-ui.test.js`; ChatState 6/6; browser surface/overlay matrices; all write controls deliberately left intact but unissued | PASS |
 | 4. Leave stored runtime/config/instance data untouched | `git diff --name-only c2b19654b7d784b43cdbdf231257adeba3b0675e..HEAD` contains only dashboard/page/test/spec/plan/report files; no `instances/`, local config, secrets, PM2 dump, or generated runtime data | PASS |
-| 5. Pass focused and broad automated checks | Final syntax 3/3, glass 49/49, focused 59/59, ChatState 6/6, QA harness 4/4, `npm run build`, `npm test` 692 pass/0 fail/1 intentional skip, and `npm run test:contracts` 12 pass/1 expected skip | PASS at `24c5fad` |
+| 5. Pass focused and broad automated checks | Final syntax 3/3, glass 50/50, focused 60/60, ChatState 6/6, QA harness 4/4, `npm run build`, `npm test` 692 pass/0 fail/1 intentional skip, and `npm run test:contracts` 12 pass/1 expected skip | PASS at `313e7ef` |
 | 6. Pass read-only live contracts | `npm run test:contracts:live`: 13 GET/read-only routes checked, 21 action/stream/fixture contracts skipped, action opt-in unset | PASS |
 | 7. Prove navigation, live rendering, responsive behavior, accessibility basics, Chat state preservation, and clean console output in Browser | Executed evidence covers native hashes/surfaces, real Home data, six overlays, Chat singleton/draft state, 1440/1200/1024/768/390/320 layouts, focus/Escape/scroll lock, and clean checked-surface console. 200% zoom, reduced-motion emulation, final Vibe gallery/Welcome/Setup rendering, the standalone Chat recapture, and post-review Browser readback of Brain Storage, Problems severity, Notifications, COSMO offline, and attachment copy remain unexecuted | PARTIAL — criterion not fully proven |
 | 8. Record exact commands, results, screenshots, and intentionally unexercised live writes | This committed report, tracked QA harness, local ignored screenshot inventory, automated command table, server/read-only boundary disclosure, and “Intentionally unexercised live writes” section | PASS for this installation, with screenshot portability caveat recorded below |
