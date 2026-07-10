@@ -2137,6 +2137,37 @@ proves the bounded router handles the request first.
 
 ---
 
+## Patch 49 — Provider client import-time isolation
+
+**Files touched:**
+- `cosmo23/engine/src/core/openai-client.js`
+- `cosmo23/engine/src/core/gpt5-client.js`
+- `cosmo23/engine/src/core/unified-client.js`
+- `cosmo23/engine/src/core/chat-completions-client.js`
+- `cosmo23/engine/src/core/mcp-client.js`
+- `cosmo23/engine/src/services/codex-oauth-engine.js`
+
+**Problem:** Provider and OAuth support modules imported optional runtime
+packages such as `openai`, `dotenv`, `node-fetch`, and Prisma during module
+load. In Home23's isolated verification worktree that prevented unrelated
+Codex/provider tests from importing COSMO clients even when the tested route
+used env-backed Codex credentials and never needed those optional packages.
+
+**Fix:** COSMO provider clients now lazy-load optional packages only on the code
+paths that need them. GPT/OpenAI construction is deferred until actual
+OpenAI-path calls, xAI construction loads the OpenAI SDK only when xAI is
+enabled, Anthropic/MiniMax load their adapter only when selected, HTTP MCP uses
+global `fetch` before `node-fetch`, and the Codex OAuth engine defers Prisma
+until database credentials are required. Env-backed Codex credentials remain
+usable without a generated Prisma client.
+
+**Verification:** Focused provider import/routing tests passed:
+`node --test --test-concurrency=1 tests/engine/core/gpt5-client-complete.test.cjs
+tests/engine/core/unified-client-codex-oauth.test.cjs
+tests/cosmo23/codex-unified-client-request.test.cjs`.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.

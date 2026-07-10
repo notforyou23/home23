@@ -1,9 +1,20 @@
 const { GPT5Client } = require('./gpt5-client');
 const { MCPClient } = require('./mcp-client');
 const { ChatCompletionsClient } = require('./chat-completions-client');
-const AnthropicClient = require('./anthropic-client');
-const OpenAI = require('openai');
 const { wrapSystemPrompt } = require('./provider-prompts');
+
+function loadAnthropicClient() {
+  return require('./anthropic-client');
+}
+
+function loadOpenAI() {
+  try {
+    return require('openai');
+  } catch (error) {
+    error.message = `OpenAI SDK is unavailable: ${error.message}`;
+    throw error;
+  }
+}
 
 /**
  * UnifiedClient - Extends GPT5Client with multi-provider and MCP support
@@ -53,6 +64,7 @@ class UnifiedClient extends GPT5Client {
     if (this.config.providers?.xai?.enabled) {
       const apiKey = process.env.XAI_API_KEY || this.config.providers.xai.apiKey;
       if (apiKey) {
+        const OpenAI = loadOpenAI();
         this.xai = new OpenAI({
           apiKey: apiKey,
           baseURL: 'https://api.x.ai/v1'
@@ -65,6 +77,7 @@ class UnifiedClient extends GPT5Client {
 
     // Initialize Anthropic provider with OAuth support
     if (this.config.providers?.anthropic?.enabled || process.env.LLM_BACKEND === 'anthropic') {
+      const AnthropicClient = loadAnthropicClient();
       const anthropicConfig = this.config.providers?.anthropic || {};
       this.anthropicClient = new AnthropicClient({
         providerId: 'anthropic',
@@ -78,6 +91,7 @@ class UnifiedClient extends GPT5Client {
     }
 
     if (this.config.providers?.minimax?.enabled) {
+      const AnthropicClient = loadAnthropicClient();
       const minimaxConfig = this.config.providers?.minimax || {};
       const minimaxApiKey = minimaxConfig.apiKey || process.env.MINIMAX_API_KEY;
       if (minimaxApiKey) {
