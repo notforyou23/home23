@@ -38,6 +38,7 @@ Initial comparison captures are retained beside the final images to preserve the
 - Native controls have visible focus treatment. Dashboard dialogs are labelled, move focus inside on open, close with Escape/backdrop/button, restore focus, and lock background scrolling.
 - The semantic Vibe button supports pointer activation; native button semantics require Enter and Space activation, but the in-app Browser did not synthesize those defaults during this run. COSMO's new-tab control receives only the resolved runtime URL and never navigates to a `#` placeholder.
 - Brain Map keeps its functional WebGL canvas inside the light outer shell; Full Settings keeps its complete control surface inside the light design scope.
+- The standalone Chat 1440 capture exposed inherited fixed-shell geometry that pushed the panel off the right edge. The desktop shell now has explicit centered viewport-safe geometry and a passing focused contract; a final Browser recapture remains pending with the other unexecuted checks.
 - Console warnings/errors were empty on Home at 1440 and remained clean through the checked native surfaces; no redesign-caused error was observed before the in-app Browser native pipe closed.
 - The Browser session closed before 200% zoom, reduced-motion emulation, and final Vibe gallery/Welcome/Setup rendering. The responsive captures and executable contracts are adjacent evidence, not substitutes for those unexecuted checks.
 - The in-app Browser focused the native Vibe button but did not synthesize default Enter/Space activation. Native-button semantics and the focused executable contract pass; no redundant key handler was added for a tool-emulation limitation.
@@ -57,7 +58,7 @@ Initial comparison captures are retained beside the final images to preserve the
 - [x] Matched source and implementation captured at the same viewport and state.
 - [x] Full-view and focused-region comparison inputs created.
 - [x] All P0/P1/P2 visual findings repaired and recaptured.
-- [ ] Full related-page Browser rendering, 200% zoom, and reduced-motion emulation remain unexecuted; all other dashboard, responsive, and dialog surfaces were inspected.
+- [ ] Full related-page Browser rendering, the post-repair standalone Chat recapture, 200% zoom, and reduced-motion emulation remain unexecuted; all other dashboard, responsive, and dialog surfaces were inspected.
 - [x] Existing production functionality and data hooks retained.
 - [x] Final console and interaction readback consolidated; zoom/motion tool limitations recorded against passing executable and responsive evidence.
 

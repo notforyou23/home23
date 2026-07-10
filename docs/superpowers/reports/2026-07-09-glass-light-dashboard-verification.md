@@ -24,13 +24,13 @@ No live PM2 process was stopped, restarted, replaced, or rebound. The implementa
 
 | Purpose | Durable reproduction command | URL | Historical QA PID |
 |---|---|---|---:|
-| Worktree implementation with same-origin write blocking | `QA_PORT=51923 QA_UPSTREAM=http://127.0.0.1:5002 node tests/dashboard/fixtures/qa-readonly-server.mjs` | `http://127.0.0.1:51923/home23` | 58538 |
+| Worktree implementation with same-origin write blocking | `QA_PORT=51923 QA_UPSTREAM=http://127.0.0.1:5002 node scripts/read-only-dashboard-qa-server.mjs` | `http://127.0.0.1:51923/home23` | 58538 |
 | Approved source prototype | `python3 -m http.server 51924 --bind 127.0.0.1 --directory /Users/jtr/Downloads/design_handoff_glass_dashboard` | `http://127.0.0.1:51924/Home23%20Dashboard.dc.html` | 79909 |
-| Synthetic open-invariant presentation fixture | `QA_PORT=51925 QA_UPSTREAM=http://127.0.0.1:5002 QA_FIXTURE=open-invariant node tests/dashboard/fixtures/qa-readonly-server.mjs` | `http://127.0.0.1:51925/home23` | 15086 |
+| Synthetic open-invariant presentation fixture | `QA_PORT=51925 QA_UPSTREAM=http://127.0.0.1:5002 QA_FIXTURE=open-invariant node scripts/read-only-dashboard-qa-server.mjs` | `http://127.0.0.1:51925/home23` | 15086 |
 
 The implementation proxy initially ran as PID 79793. It was stopped by exact PID and restarted as PID 58538 only to correct the QA server's `.mjs` MIME type; the live dashboard was not involved.
 
-The historical PIDs above ran the ignored development copy at `.superpowers/sdd/qa-readonly-server.js`. Review identified that as non-portable, so the same harness was committed at `tests/dashboard/fixtures/qa-readonly-server.mjs`. The committed path was revalidated on port 51926: Home returned HTTP 200 and a representative Query POST returned HTTP 405 with `qa_server_is_read_only`; that validation process was then stopped by its exact PID.
+The historical PIDs above ran the ignored development copy at `.superpowers/sdd/qa-readonly-server.js`. Review identified that as non-portable, so the harness was promoted to the reusable, importable `scripts/read-only-dashboard-qa-server.mjs` with focused tests. The committed behavior was revalidated on ephemeral ports: GET/HEAD were the only methods forwarded; POST/PUT/PATCH/DELETE/OPTIONS returned HTTP 405; the open-invariant fixture kept explicit synthetic provenance and blocked writes.
 
 Both proxies return HTTP 405 with `qa_server_is_read_only` for non-GET/HEAD requests addressed to the proxy origins. The fixture server overrides only GETs to `/api/live-problems` and `/home23/api/live-problems`, uses the production `buildLiveProblemSnapshot` shape, marks provenance as `qaFixture.synthetic=true`, and blocks same-origin writes. It is evidence for the invariant-editor UI path, not evidence about live health.
 
@@ -52,6 +52,7 @@ This is not a complete network-isolation boundary: production code can resolve p
 | `node --check engine/src/dashboard/home23-chat.js` | PASS |
 | `node --test --test-concurrency=1 tests/dashboard/glass-light-dashboard.test.js tests/dashboard/operator-ui.test.js tests/dashboard/briefs.test.js tests/dashboard/forrest-feel-route.test.js` | PASS — 55/55 |
 | `node --import tsx --test --test-concurrency=1 tests/dashboard/chat-state.test.ts` | PASS — 6/6 |
+| `node --test --test-concurrency=1 tests/scripts/read-only-dashboard-qa-server.test.mjs` | PASS — 2/2 |
 | `npm run build` | PASS |
 | `npm test` | PASS — 692 pass, 0 fail, 1 intentional skip across 693 tests |
 | `npm run test:contracts` | PASS — 12 pass, 0 fail, 1 expected live-validator skip |
@@ -100,6 +101,7 @@ Accepted source-to-production differences are data-driven: Jerry's live remark i
 5. P1 accessibility: Vibe image was a non-semantic click target. Replaced with a native button while retaining the overlay path.
 6. P1 functional: COSMO used a `#` placeholder. It now receives the resolved runtime URL or remains disabled without href.
 7. P1 related page: Full Settings description inherited pale dark-theme text. Repaired with a higher-specificity page-scoped token.
+8. P1 related page: the standalone desktop Chat shell inherited fixed full-width geometry and rendered off the right edge in its 1440 capture. Added explicit centered 880px viewport-safe geometry and a focused contract; final Browser recapture remains unexecuted after the session failure.
 
 Original and intermediate captures remain in the asset directory as failure-and-repair evidence. No open P0, P1, or P2 finding remains.
 
@@ -131,7 +133,7 @@ No viewport override persisted after the in-app Browser process closed.
 | Settings overview | `#settings`, native GET-only overview and full-settings links | PASS |
 | COSMO | `#cosmo23`, iframe and new-tab href resolve to 43210 | PASS |
 | COSMO lazy preservation | Home→COSMO keeps frameCount=1/src unchanged; wrapper none→block | PASS |
-| Standalone Chat | Light page, Jerry/gpt-5.5, 37 model options, attach control and file input | PASS, no send/file action |
+| Standalone Chat | Initial 1440 capture exposed an off-right-edge shell; Jerry/gpt-5.5, 37 model options, attach control, and file input were present. The shell geometry was repaired with a focused passing contract | CODE REPAIRED; FINAL BROWSER RECAPTURE NOT EXECUTED; no send/file action |
 | Full Settings | Complete light control surface; final description contrast verified | PASS, no write |
 | Vibe gallery / Welcome / Setup | Page-scope production contracts pass; final Browser rendering/recapture was interrupted when the session closed | NOT EXECUTED IN FINAL BROWSER PASS; contracts only |
 | Hash deep links + refresh + back/forward | Native hashes survive direct load/refresh; back returns prior hash; forward returns `#cosmo23` | PASS |
@@ -227,7 +229,8 @@ engine/src/dashboard/home23-dashboard.html
 engine/src/dashboard/home23-dashboard.js
 engine/src/dashboard/home23-settings.css
 tests/dashboard/glass-light-dashboard.test.js
-tests/dashboard/fixtures/qa-readonly-server.mjs
+scripts/read-only-dashboard-qa-server.mjs
+tests/scripts/read-only-dashboard-qa-server.test.mjs
 design-qa.md
 docs/superpowers/reports/2026-07-09-glass-light-dashboard-verification.md
 docs/superpowers/reports/assets/glass-light-dashboard/*.png
@@ -245,9 +248,9 @@ The branch remains inside the approved dashboard/page/test/spec/plan/report boun
 | 4. Leave stored runtime/config/instance data untouched | `git diff --name-only c2b19654b7d784b43cdbdf231257adeba3b0675e..HEAD` contains only dashboard/page/test/spec/plan/report files; no `instances/`, local config, secrets, PM2 dump, or generated runtime data | PASS |
 | 5. Pass focused and broad automated checks | Syntax 2/2; focused 55/55; ChatState 6/6; `npm run build`; `npm test` 692 pass/0 fail/1 intentional skip; `npm run test:contracts` 12 pass/1 expected skip | PASS at the recorded commit; final-gate rerun belongs to Task 8 |
 | 6. Pass read-only live contracts | `npm run test:contracts:live`: 13 GET/read-only routes checked, 21 action/stream/fixture contracts skipped, action opt-in unset | PASS |
-| 7. Prove navigation, live rendering, responsive behavior, accessibility basics, Chat state preservation, and clean console output in Browser | Executed evidence covers native hashes/surfaces, real Home data, six overlays, Chat singleton/draft state, 1440/1200/1024/768/390/320 layouts, focus/Escape/scroll lock, and clean checked-surface console. 200% zoom, reduced-motion emulation, and final Vibe gallery/Welcome/Setup rendering remain unexecuted | PARTIAL — criterion not fully proven |
+| 7. Prove navigation, live rendering, responsive behavior, accessibility basics, Chat state preservation, and clean console output in Browser | Executed evidence covers native hashes/surfaces, real Home data, six overlays, Chat singleton/draft state, 1440/1200/1024/768/390/320 layouts, focus/Escape/scroll lock, and clean checked-surface console. 200% zoom, reduced-motion emulation, final Vibe gallery/Welcome/Setup rendering, and the post-repair standalone Chat recapture remain unexecuted | PARTIAL — criterion not fully proven |
 | 8. Record exact commands, results, screenshots, and intentionally unexercised live writes | This committed report, tracked QA harness, screenshot inventory, automated command table, server/read-only boundary disclosure, and “Intentionally unexercised live writes” section | PASS, with screenshot payload caveat recorded below |
 
 ## Caveats
 
-The in-app Browser did not synthesize native-button default key activation and closed before 200% zoom/reduced-motion emulation plus final Vibe gallery/Welcome/Setup rendering. A replacement browser session could not reopen the local QA URL, so those checklist items remain unexecuted. Semantic/executable contracts and adjacent responsive evidence reduce risk but do not prove the missing Browser behaviors. Separately, 20 of the 26 capture files have `.png` names but JPEG/JFIF payloads from the in-app screenshot encoder; the six final combined comparison files are true PNGs and all images render, but payload normalization remains a portability follow-up.
+The in-app Browser did not synthesize native-button default key activation and closed before 200% zoom/reduced-motion emulation plus final Vibe gallery/Welcome/Setup rendering and the standalone Chat repair recapture. A replacement browser session could not reopen the local QA URL, so those checklist items remain unexecuted. Semantic/executable contracts and adjacent responsive evidence reduce risk but do not prove the missing Browser behaviors. Separately, 20 of the 26 capture files have `.png` names but JPEG/JFIF payloads from the in-app screenshot encoder; the six final combined comparison files are true PNGs and all images render, but payload normalization remains a portability follow-up.

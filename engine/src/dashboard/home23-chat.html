@@ -585,9 +585,14 @@
 
     @media (min-width: 820px) {
       body.h23-chat-page .sh-shell {
+        left: 50%;
+        right: auto;
         top: 22px;
         bottom: 22px;
+        width: min(880px, calc(100vw - 48px));
         height: calc(100dvh - 44px);
+        margin: 0;
+        transform: translateX(-50%);
         border: 1px solid var(--h23-glass-border);
         border-radius: var(--h23-radius-panel);
         overflow: hidden;

@@ -1897,3 +1897,13 @@ test('full Settings description overrides the legacy pale dark-theme text', () =
     /body\.h23-settings-page #settings-surface-desc\s*\{[^}]*color:\s*var\(--h23-text-secondary\)\s*;/,
   );
 });
+
+test('standalone desktop Chat uses explicit viewport-safe fixed-shell geometry', () => {
+  const lightScope = standaloneChatHtml.slice(standaloneChatHtml.indexOf('Glass Light standalone Chat surface'));
+  const desktopRule = lightScope.match(/@media\s*\(min-width:\s*820px\)\s*\{[\s\S]*?body\.h23-chat-page \.sh-shell\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(desktopRule, /left:\s*50%\s*;/);
+  assert.match(desktopRule, /right:\s*auto\s*;/);
+  assert.match(desktopRule, /width:\s*min\(880px,\s*calc\(100vw - 48px\)\)\s*;/);
+  assert.match(desktopRule, /margin:\s*0\s*;/);
+  assert.match(desktopRule, /transform:\s*translateX\(-50%\)\s*;/);
+});
