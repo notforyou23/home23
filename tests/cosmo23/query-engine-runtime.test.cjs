@@ -9,6 +9,7 @@ const {
   flattenCatalogModels,
   getModelCapabilities,
   loadModelCatalogSync,
+  normalizeModelCatalog,
   saveModelCatalogSync,
   validateSelectableModelCapabilities,
 } = require('../../cosmo23/server/config/model-catalog');
@@ -20,6 +21,21 @@ function useCatalogPath(t, catalogPath) {
     if (previous === undefined) delete process.env.COSMO23_MODEL_CATALOG_PATH;
     else process.env.COSMO23_MODEL_CATALOG_PATH = previous;
   });
+}
+
+function useTemporaryCatalog(t, prefix = 'model-catalog-isolated-') {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const catalogPath = path.join(root, 'model-catalog.json');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  useCatalogPath(t, catalogPath);
+  return { root, catalogPath };
+}
+
+function assertCatalogError(action, code = 'model_catalog_invalid') {
+  assert.throws(
+    action,
+    error => error.code === code && error.retryable === false,
+  );
 }
 
 function makeRuntime(overrides = {}) {
@@ -37,7 +53,8 @@ function makeRuntime(overrides = {}) {
   return Object.assign(runtime, overrides);
 }
 
-test('routes MiniMax query defaults to the MiniMax query client', () => {
+test('routes MiniMax query defaults to the MiniMax query client', t => {
+  useTemporaryCatalog(t);
   const runtime = makeRuntime();
 
   const resolved = runtime.resolveQueryRuntime('MiniMax-M3');
@@ -48,7 +65,8 @@ test('routes MiniMax query defaults to the MiniMax query client', () => {
   assert.equal(resolved.effectiveModel, 'MiniMax-M3');
 });
 
-test('fails clearly when MiniMax is selected but no MiniMax query client is configured', () => {
+test('fails clearly when MiniMax is selected but no MiniMax query client is configured', t => {
+  useTemporaryCatalog(t);
   const runtime = makeRuntime({ minimaxQueryClient: null });
 
   assert.throws(
@@ -65,7 +83,8 @@ test('builds Codex query input as response input items', () => {
   }]);
 });
 
-test('model catalog preserves declared provider execution capabilities', () => {
+test('model catalog preserves declared provider execution capabilities', t => {
+  useTemporaryCatalog(t);
   const catalog = loadModelCatalogSync();
   const capabilities = getModelCapabilities(catalog, 'minimax', 'MiniMax-M3');
   assert.equal(capabilities.maxOutputTokens, 32768);
@@ -93,7 +112,52 @@ test('capability lookup uses provider plus model rather than model alone', () =>
   });
 });
 
-test('every selectable built-in chat model has valid execution capabilities', () => {
+test('custom models under built-in providers require source-declared capabilities', () => {
+  const customModel = { id: 'custom-openai-model', kind: 'chat' };
+  const catalog = providers => ({ version: 1, providers });
+
+  assertCatalogError(
+    () => normalizeModelCatalog(catalog({
+      openai: { models: [customModel] },
+    })),
+    'model_capability_invalid',
+  );
+  assertCatalogError(
+    () => normalizeModelCatalog(catalog({
+      openai: {
+        executionDefaults: { maxOutputTokens: 4096 },
+        models: [customModel],
+      },
+    })),
+    'model_capability_invalid',
+  );
+
+  const explicit = normalizeModelCatalog(catalog({
+    openai: {
+      executionDefaults: {
+        maxOutputTokens: 4096,
+        providerStallMs: 120000,
+        transport: 'responses',
+      },
+      models: [customModel],
+    },
+  }));
+  assert.deepEqual(
+    getModelCapabilities(explicit, 'openai', 'custom-openai-model'),
+    { maxOutputTokens: 4096, providerStallMs: 120000 },
+  );
+
+  const legacy = normalizeModelCatalog(catalog({
+    openai: { models: [{ id: 'gpt-5.4-mini', kind: 'chat' }] },
+  }));
+  assert.deepEqual(
+    getModelCapabilities(legacy, 'openai', 'gpt-5.4-mini'),
+    { maxOutputTokens: 32768, providerStallMs: 900000 },
+  );
+});
+
+test('every selectable built-in chat model has valid execution capabilities', t => {
+  useTemporaryCatalog(t);
   const catalog = loadModelCatalogSync();
   assert.doesNotThrow(() => validateSelectableModelCapabilities(catalog));
   for (const model of flattenCatalogModels(catalog).filter(entry => entry.kind === 'chat')) {
@@ -171,6 +235,120 @@ test('valid custom providers survive an atomic save and reload', t => {
   );
 });
 
+test('structurally invalid saves fail closed and preserve the prior catalog bytes', t => {
+  const { catalogPath } = useTemporaryCatalog(t, 'model-catalog-invalid-save-');
+  const valid = { version: 1, providers: {
+    acme: {
+      executionDefaults: {
+        maxOutputTokens: 4096,
+        providerStallMs: 120000,
+        transport: 'chat-completions',
+      },
+      models: [{ id: 'acme-model', kind: 'chat' }],
+    },
+  } };
+  saveModelCatalogSync(valid);
+  const priorBytes = fs.readFileSync(catalogPath);
+
+  for (const [name, invalid] of [
+    ['null root', null],
+    ['array root', []],
+    ['missing providers', {}],
+    ['array providers', { version: 1, providers: [] }],
+    ['string providers', { version: 1, providers: 'invalid' }],
+    ['invalid provider row', { version: 1, providers: { acme: 'invalid' } }],
+    ['invalid models shape', { version: 1, providers: { acme: { models: 'invalid' } } }],
+    ['invalid defaults shape', { version: 1, providers: {
+      acme: { executionDefaults: 'invalid', models: [] },
+    } }],
+    ['null model row', { version: 1, providers: { acme: { models: [null] } } }],
+    ['missing model id', { version: 1, providers: { acme: { models: [{}] } } }],
+  ]) {
+    assertCatalogError(
+      () => saveModelCatalogSync(invalid),
+      'model_catalog_invalid',
+    );
+    assert.deepEqual(fs.readFileSync(catalogPath), priorBytes, name);
+    assert.equal(loadModelCatalogSync().providers.acme.models[0].id, 'acme-model', name);
+  }
+});
+
+test('present structurally invalid catalogs fail closed on load', t => {
+  const { catalogPath } = useTemporaryCatalog(t, 'model-catalog-invalid-load-');
+  for (const [name, invalid] of [
+    ['null root', null],
+    ['array root', []],
+    ['missing providers', {}],
+    ['array providers', { version: 1, providers: [] }],
+    ['string providers', { version: 1, providers: 'invalid' }],
+    ['invalid provider row', { version: 1, providers: { acme: 'invalid' } }],
+    ['invalid models shape', { version: 1, providers: { acme: { models: 'invalid' } } }],
+    ['null model row', { version: 1, providers: { acme: { models: [null] } } }],
+    ['missing model id', { version: 1, providers: { acme: { models: [{}] } } }],
+  ]) {
+    fs.writeFileSync(catalogPath, JSON.stringify(invalid));
+    assertCatalogError(
+      () => loadModelCatalogSync(),
+      'model_catalog_invalid',
+    );
+    assert.equal(fs.existsSync(catalogPath), true, name);
+  }
+});
+
+test('an absent catalog alone receives built-in defaults', t => {
+  useTemporaryCatalog(t, 'model-catalog-absent-');
+  const loaded = loadModelCatalogSync();
+  assert.equal(loaded.providers.minimax.models[0].id, 'MiniMax-M3');
+});
+
+test('a dangling catalog symlink fails closed instead of loading built-ins', t => {
+  const { root, catalogPath } = useTemporaryCatalog(t, 'model-catalog-dangling-');
+  fs.symlinkSync(path.join(root, 'missing-target.json'), catalogPath);
+  assert.equal(fs.lstatSync(catalogPath).isSymbolicLink(), true);
+  assertCatalogError(
+    () => loadModelCatalogSync(),
+    'model_catalog_invalid',
+  );
+});
+
+test('an unreadable present catalog path fails closed', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'model-catalog-unreadable-'));
+  const locked = path.join(root, 'locked');
+  const catalogPath = path.join(locked, 'model-catalog.json');
+  fs.mkdirSync(locked);
+  fs.writeFileSync(catalogPath, JSON.stringify({ version: 1, providers: {} }));
+  useCatalogPath(t, catalogPath);
+  t.after(() => {
+    try {
+      fs.chmodSync(locked, 0o700);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  fs.chmodSync(locked, 0o000);
+  let directReadError = null;
+  try {
+    fs.readFileSync(catalogPath, 'utf8');
+  } catch (error) {
+    directReadError = error;
+  }
+  if (directReadError?.code !== 'EACCES') {
+    fs.chmodSync(locked, 0o700);
+    t.skip('filesystem permissions do not produce EACCES for this process');
+    return;
+  }
+  try {
+    assertCatalogError(
+      () => loadModelCatalogSync(),
+      'model_catalog_invalid',
+    );
+  } finally {
+    fs.chmodSync(locked, 0o700);
+  }
+});
+
 test('present invalid custom catalogs fail closed on save and load', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'model-catalog-invalid-'));
   const catalogPath = path.join(root, 'model-catalog.json');
@@ -214,22 +392,44 @@ test('atomic catalog save leaves a complete old or new file across injected cras
     },
     models: [{ id: 'acme-model', kind: 'chat' }],
   });
+  const realFsyncSync = fs.fsyncSync;
+  let fsyncCalls = 0;
+  fs.fsyncSync = function trackedFsyncSync(fd) {
+    fsyncCalls += 1;
+    return realFsyncSync.call(fs, fd);
+  };
+  t.after(() => {
+    fs.fsyncSync = realFsyncSync;
+  });
+
   saveModelCatalogSync({ version: 1, providers: { acme: provider('Old', 2048) } });
+  assert.equal(fsyncCalls, 2, 'successful save fsyncs the file and directory');
   const oldBytes = fs.readFileSync(catalogPath);
 
+  fsyncCalls = 0;
   assert.throws(() => saveModelCatalogSync(
     { version: 1, providers: { acme: provider('New', 4096) } },
     { _testCrashAt: 'before-rename' },
   ), /injected model catalog crash/);
+  assert.equal(fsyncCalls, 1, 'pre-rename crash occurs after only the temp-file fsync');
   assert.deepEqual(fs.readFileSync(catalogPath), oldBytes);
   assert.equal(loadModelCatalogSync().providers.acme.label, 'Old');
 
+  fsyncCalls = 0;
   assert.throws(() => saveModelCatalogSync(
     { version: 1, providers: { acme: provider('New', 4096) } },
     { _testCrashAt: 'after-rename' },
   ), /injected model catalog crash/);
-  assert.equal(loadModelCatalogSync().providers.acme.label, 'New');
-  assert.equal(loadModelCatalogSync().providers.acme.models[0].maxOutputTokens, 4096);
+  assert.equal(
+    fsyncCalls,
+    1,
+    'post-rename crash is injected before the directory fsync',
+  );
+  const reloaded = loadModelCatalogSync();
+  assert.equal(new Set(['Old', 'New']).has(reloaded.providers.acme.label), true);
+  if (reloaded.providers.acme.label === 'New') {
+    assert.equal(reloaded.providers.acme.models[0].maxOutputTokens, 4096);
+  }
   assert.deepEqual(
     fs.readdirSync(root).filter(name => name.includes('.tmp-')),
     [],

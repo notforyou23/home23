@@ -164,6 +164,69 @@ function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function isPlainRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function modelCatalogError(message, cause = null) {
+  const error = Object.assign(new Error(message), {
+    code: 'model_catalog_invalid',
+    retryable: false,
+  });
+  if (cause) error.cause = cause;
+  return error;
+}
+
+function validateCatalogStructure(input) {
+  if (!isPlainRecord(input)) {
+    throw modelCatalogError('Model catalog root must be an object');
+  }
+  if (!hasOwn(input, 'providers') || !isPlainRecord(input.providers)) {
+    throw modelCatalogError('Model catalog providers must be an object');
+  }
+  if (hasOwn(input, 'defaults') && !isPlainRecord(input.defaults)) {
+    throw modelCatalogError('Model catalog defaults must be an object');
+  }
+
+  for (const [providerId, provider] of Object.entries(input.providers)) {
+    if (!isPlainRecord(provider)) {
+      throw modelCatalogError(`Model catalog provider ${providerId} must be an object`);
+    }
+    if (hasOwn(provider, 'executionDefaults') && !isPlainRecord(provider.executionDefaults)) {
+      throw modelCatalogError(`Model catalog provider ${providerId} executionDefaults must be an object`);
+    }
+    if (!hasOwn(provider, 'models')) {
+      if (!hasOwn(BUILTIN_MODEL_CATALOG.providers, providerId)) {
+        throw modelCatalogError(`Model catalog provider ${providerId} models must be an array`);
+      }
+      continue;
+    }
+    if (!Array.isArray(provider.models)) {
+      throw modelCatalogError(`Model catalog provider ${providerId} models must be an array`);
+    }
+
+    for (const [index, model] of provider.models.entries()) {
+      if (typeof model === 'string') {
+        if (model.trim()) continue;
+      } else if (isPlainRecord(model)) {
+        const modelId = model.id || model.name;
+        if (typeof modelId === 'string' && modelId.trim()) continue;
+      }
+      throw modelCatalogError(`Invalid model catalog row ${providerId}[${index}]`);
+    }
+  }
+
+  return input;
+}
+
 function getModelCatalogPath() {
   return process.env.COSMO23_MODEL_CATALOG_PATH || path.join(getConfigDir(), MODEL_CATALOG_FILE_NAME);
 }
@@ -251,22 +314,39 @@ function normalizeProviderConfig(providerId, providerConfig = {}, fallbackConfig
   const sourceModels = Array.isArray(provider.models)
     ? provider.models
     : (Array.isArray(fallback.models) ? fallback.models : []);
+  const providerExecutionDefaults = isPlainRecord(provider.executionDefaults)
+    ? provider.executionDefaults
+    : {};
+  const fallbackExecutionDefaults = isPlainRecord(fallback.executionDefaults)
+    ? fallback.executionDefaults
+    : {};
   const executionDefaults = {
-    ...(fallback.executionDefaults || {}),
-    ...(provider.executionDefaults || {}),
+    ...fallbackExecutionDefaults,
+    ...providerExecutionDefaults,
   };
+  const providerDeclaredModels = Array.isArray(provider.models);
+  const fallbackModelIds = new Set(
+    (Array.isArray(fallback.models) ? fallback.models : [])
+      .map(model => normalizeModelEntry(model, providerId)?.id)
+      .filter(Boolean),
+  );
   const normalizedModels = sourceModels
     .map(model => normalizeModelEntry(model, providerId))
     .filter(Boolean)
     .map(model => {
       if (model.kind !== 'chat') return model;
+      const canUseBuiltInDefaults = !providerDeclaredModels || fallbackModelIds.has(model.id);
+      const modelDefaults = {
+        ...(canUseBuiltInDefaults ? fallbackExecutionDefaults : {}),
+        ...providerExecutionDefaults,
+      };
       const maxOutputTokens = positiveSafeInteger(
-        model.maxOutputTokens ?? executionDefaults.maxOutputTokens,
+        model.maxOutputTokens ?? modelDefaults.maxOutputTokens,
       );
       const providerStallMs = positiveSafeInteger(
-        model.providerStallMs ?? executionDefaults.providerStallMs,
+        model.providerStallMs ?? modelDefaults.providerStallMs,
       );
-      const transport = model.transport ?? executionDefaults.transport;
+      const transport = model.transport ?? modelDefaults.transport;
       if (!maxOutputTokens) {
         throw capabilityError(providerId, model.id, 'maxOutputTokens');
       }
@@ -375,9 +455,9 @@ function resolveDefaultModel(requestedId, fallbackId, catalog, kind = 'chat') {
   return models[0]?.id || null;
 }
 
-function normalizeModelCatalog(input = null) {
+function normalizeModelCatalog(input) {
   const base = deepClone(BUILTIN_MODEL_CATALOG);
-  const source = input && typeof input === 'object' ? input : {};
+  const source = arguments.length === 0 ? {} : validateCatalogStructure(input);
   const requestedEmbeddingModel = source.defaults?.embeddings?.model;
   const requestedEmbeddingDimensions = Number.parseInt(source.defaults?.embeddings?.dimensions, 10);
 
@@ -462,18 +542,37 @@ function normalizeModelCatalog(input = null) {
 
 function loadModelCatalogSync() {
   const catalogPath = getModelCatalogPath();
-  if (!fs.existsSync(catalogPath)) {
-    return normalizeModelCatalog();
+  let serialized;
+  try {
+    serialized = fs.readFileSync(catalogPath, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      try {
+        fs.lstatSync(catalogPath);
+      } catch (lstatError) {
+        if (lstatError.code === 'ENOENT') {
+          return normalizeModelCatalog();
+        }
+        throw modelCatalogError(
+          `Invalid model catalog at ${catalogPath}: ${lstatError.message}`,
+          lstatError,
+        );
+      }
+    }
+    throw modelCatalogError(
+      `Invalid model catalog at ${catalogPath}: ${error.message}`,
+      error,
+    );
   }
+
   let raw;
   try {
-    raw = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+    raw = JSON.parse(serialized);
   } catch (error) {
-    throw Object.assign(new Error(`Invalid model catalog at ${catalogPath}: ${error.message}`), {
-      code: 'model_catalog_invalid',
-      retryable: false,
-      cause: error,
-    });
+    throw modelCatalogError(
+      `Invalid model catalog at ${catalogPath}: ${error.message}`,
+      error,
+    );
   }
   return normalizeModelCatalog(raw);
 }
@@ -515,8 +614,8 @@ function saveModelCatalogSync(input, options = {}) {
     if (options?._testCrashAt === 'before-rename') injectedCatalogCrash('before-rename');
     fs.renameSync(tempPath, catalogPath);
     renamed = true;
-    fsyncDirectorySync(directory);
     if (options?._testCrashAt === 'after-rename') injectedCatalogCrash('after-rename');
+    fsyncDirectorySync(directory);
   } finally {
     if (tempFd !== null) fs.closeSync(tempFd);
     if (!renamed) {

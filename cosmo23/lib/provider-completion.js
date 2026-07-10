@@ -32,10 +32,15 @@ function isErrorPayload(content) {
 }
 
 function normalizeProviderCompletion(input = {}) {
-  const content = String(input.content || '').trim();
-  const finishReason = input.finishReason == null ? null : String(input.finishReason);
-  const terminalReceived = input.terminalReceived === true;
-  const hadError = input.hadError === true;
+  const source = input && typeof input === 'object' && !Array.isArray(input)
+    ? input
+    : {};
+  const content = String(source.content || '').trim();
+  const finishReason = source.finishReason == null ? null : String(source.finishReason);
+  const terminalReceived = source.terminalReceived === true;
+  const hadError = source.hadError === true
+    || source.error != null
+    || source.errorType != null;
   const abnormal = finishReason && ABNORMAL_FINISH_REASONS.has(finishReason);
   const normal = finishReason && NORMAL_FINISH_REASONS.has(finishReason);
   const errorPayload = isErrorPayload(content);
@@ -58,19 +63,19 @@ function normalizeProviderCompletion(input = {}) {
     hadError,
     error: code ? {
       code,
-      message: input.error?.message
-        || input.errorType
+      message: source.error?.message
+        || source.errorType
         || `Provider ended with ${finishReason || 'no terminal event'}`,
-      retryable: input.retryable !== false,
+      retryable: source.retryable !== false,
     } : null,
-    usage: input.usage || null,
-    provider: input.provider || null,
-    model: input.model || null,
-    responseId: input.responseId || null,
-    reasoning: input.reasoning || null,
-    output: input.output || null,
-    webSearchSources: input.webSearchSources || [],
-    citations: input.citations || [],
+    usage: source.usage || null,
+    provider: source.provider || null,
+    model: source.model || null,
+    responseId: source.responseId || null,
+    reasoning: source.reasoning || null,
+    output: source.output || null,
+    webSearchSources: source.webSearchSources || [],
+    citations: source.citations || [],
   };
 }
 

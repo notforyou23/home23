@@ -29,6 +29,8 @@ for (const [name, patch, expectedStatus, expectedCode] of [
   ['chat length', { finishReason: 'length' }, 'partial', 'provider_incomplete'],
   ['anthropic max tokens', { finishReason: 'max_tokens' }, 'partial', 'provider_incomplete'],
   ['partial stream error', { hadError: true, error: { message: 'socket reset' } }, 'partial', 'provider_failed'],
+  ['provider error object without flag', { error: { message: 'socket reset' } }, 'partial', 'provider_failed'],
+  ['provider error type without flag', { errorType: 'socket_reset' }, 'partial', 'provider_failed'],
   ['empty normal response', { content: '' }, 'failed', 'provider_incomplete'],
   ['error payload', { content: '[Error: provider returned no content]' }, 'failed', 'provider_failed'],
 ]) {
@@ -55,5 +57,14 @@ test('status-labeled envelopes are normalized and revalidated', () => {
       terminalReceived: false,
     }),
     error => error instanceof ProviderCompletionError && error.code === 'provider_incomplete',
+  );
+});
+
+test('null provider results fail through the typed completion boundary', () => {
+  assert.throws(
+    () => requireCompleteProviderResult(null),
+    error => error instanceof ProviderCompletionError
+      && error.code === 'provider_incomplete'
+      && error.status === 'failed',
   );
 });
