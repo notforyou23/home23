@@ -169,6 +169,7 @@ function buildBrainOperationIdempotencyKey(requesterAgent, requestId, operationT
 
 function validateMutationBoundaries(rawBoundaries, canonicalRoot) {
   const code = 'target_invalid';
+  assertAbsoluteCanonicalRoot(canonicalRoot);
   if (!Array.isArray(rawBoundaries) || rawBoundaries.length !== MUTATION_BOUNDARY_KINDS.length) {
     throw operationError(code);
   }
@@ -179,10 +180,6 @@ function validateMutationBoundaries(rawBoundaries, canonicalRoot) {
       throw operationError(code);
     }
     const boundaryPath = assertAbsoluteCanonicalPath(boundary.path, code);
-    const relative = path.relative(canonicalRoot, boundaryPath);
-    if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-      throw operationError(code);
-    }
     byKind.set(boundary.kind, {
       kind: boundary.kind,
       path: boundaryPath,

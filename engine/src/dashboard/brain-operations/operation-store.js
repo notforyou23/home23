@@ -67,6 +67,50 @@ const NOISY_EVENT_TYPES = new Set([
   'token',
   'token_estimate',
 ]);
+const PRIVATE_RECORD_FIELDS = Object.freeze([
+  'operationId',
+  'requestId',
+  'operationType',
+  'requestParameters',
+  'parameters',
+  'canonicalEvidence',
+  'recordVersion',
+  'eventSequence',
+  'requesterAgent',
+  'target',
+  'state',
+  'phase',
+  'startedAt',
+  'updatedAt',
+  'completedAt',
+  'lastProviderActivityAt',
+  'lastProgressAt',
+  'result',
+  'resultHandle',
+  'resultArtifact',
+  'error',
+  'sourceEvidence',
+  'sourcePinDescriptor',
+  'sourcePinDigest',
+  'sourcePinReleasedAt',
+  'resultExpiresAt',
+  'resultExpiredAt',
+  'metadataExpiresAt',
+  '_idempotencyKey',
+  '_requestFingerprint',
+  '_worker',
+  '_resultKind',
+  '_resultCleanup',
+  '_eventBytes',
+  '_eventOldestSequence',
+  '_deleting',
+]);
+const EVENT_PRIVATE_PATH_FIELDS = new Set([
+  'scratchPath',
+  'privatePath',
+  'sourcePath',
+  'artifactPath',
+]);
 
 function exactInputKeys(value, allowed, code) {
   if (!value || Array.isArray(value) || typeof value !== 'object') throw operationError(code);
@@ -98,6 +142,80 @@ function sameFileIdentity(left, right) {
 function sameArtifactSourceIdentity(left, right) {
   return sameFileIdentity(left, right)
     && left.nlink === right.nlink;
+}
+
+function assertConfiguredRootCanonical(root) {
+  let cursor = root;
+  const missing = [];
+  while (true) {
+    try {
+      const stat = fs.lstatSync(cursor);
+      if (stat.isSymbolicLink()) throw operationError('store_configuration_invalid');
+      const real = fs.realpathSync.native(cursor);
+      if (real !== cursor) throw operationError('store_configuration_invalid');
+      break;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        if (error?.code === 'store_configuration_invalid') throw error;
+        throw operationError('store_configuration_invalid', error);
+      }
+      missing.unshift(path.basename(cursor));
+      const parent = path.dirname(cursor);
+      if (parent === cursor) throw operationError('store_configuration_invalid', error);
+      cursor = parent;
+    }
+  }
+  let rebuilt = cursor;
+  for (const component of missing) {
+    if (component === '.' || component === '..' || component === '') {
+      throw operationError('store_configuration_invalid');
+    }
+    rebuilt = path.join(rebuilt, component);
+  }
+  if (rebuilt !== root) throw operationError('store_configuration_invalid');
+}
+
+function assertIsoOrNull(value, code = 'operation_corrupt') {
+  if (value === null) return;
+  if (typeof value !== 'string') throw operationError(code);
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString() !== value) {
+    throw operationError(code);
+  }
+}
+
+function assertPlainObjectOrNull(value, code = 'operation_corrupt') {
+  if (value === null) return;
+  if (!value || Array.isArray(value) || typeof value !== 'object') throw operationError(code);
+  safeJsonClone(value, code);
+}
+
+function assertPlainObject(value, code = 'operation_corrupt') {
+  if (!value || Array.isArray(value) || typeof value !== 'object') throw operationError(code);
+  safeJsonClone(value, code);
+}
+
+function assertResultArtifactMetadata(value, expectedKind, code = 'operation_corrupt') {
+  if (!value || Array.isArray(value) || typeof value !== 'object') throw operationError(code);
+  exactInputKeys(value, ['mediaType', 'contentEncoding', 'bytes', 'sha256'], code);
+  if (value.contentEncoding !== 'identity'
+      || !Number.isSafeInteger(value.bytes)
+      || value.bytes < 0
+      || typeof value.sha256 !== 'string'
+      || !SHA256_HEX_PATTERN.test(value.sha256)) {
+    throw operationError(code);
+  }
+  if (expectedKind === 'json-file' && value.mediaType !== 'application/json') {
+    throw operationError(code);
+  }
+  if (expectedKind === 'artifact' && value.mediaType !== 'application/x-ndjson') {
+    throw operationError(code);
+  }
+  if (expectedKind === 'expired'
+      && value.mediaType !== 'application/json'
+      && value.mediaType !== 'application/x-ndjson') {
+    throw operationError(code);
+  }
 }
 
 function fileIdentity(stat) {
@@ -152,6 +270,7 @@ class BrainOperationStore {
         || root.includes('\0')) {
       throw operationError('store_configuration_invalid');
     }
+    assertConfiguredRootCanonical(root);
     assertIdentifier(options.requesterAgent, 'requesterAgent');
     this.root = root;
     this.requesterAgent = options.requesterAgent;
@@ -440,16 +559,43 @@ class BrainOperationStore {
     if (!record || Array.isArray(record) || typeof record !== 'object') {
       throw operationError('operation_corrupt');
     }
+    exactInputKeys(record, PRIVATE_RECORD_FIELDS, 'operation_corrupt');
     if (record.operationId !== expectedOperationId || !OPERATION_ID_PATTERN.test(record.operationId)) {
       throw operationError('operation_corrupt');
+    }
+    try {
+      assertIdentifier(record.requestId, 'requestId');
+      assertIdentifier(record.operationType, 'operationType');
+      assertIdentifier(record.requesterAgent, 'requesterAgent');
+    } catch (error) {
+      throw operationError('operation_corrupt', error);
     }
     if (record.requesterAgent !== this.requesterAgent) throw operationError('operation_corrupt');
     if (!Number.isSafeInteger(record.recordVersion) || record.recordVersion < 1
         || !Number.isSafeInteger(record.eventSequence) || record.eventSequence < 0
         || !Array.from(new Set(['queued', 'running', ...TERMINAL_STATES])).includes(record.state)
+        || typeof record.canonicalEvidence !== 'boolean'
         || typeof record._idempotencyKey !== 'string' || !SHA256_PATTERN.test(record._idempotencyKey)
-        || typeof record._requestFingerprint !== 'string' || !SHA256_PATTERN.test(record._requestFingerprint)) {
+        || typeof record._requestFingerprint !== 'string' || !SHA256_PATTERN.test(record._requestFingerprint)
+        || !Number.isSafeInteger(record._eventBytes) || record._eventBytes < 0
+        || !Number.isSafeInteger(record._eventOldestSequence) || record._eventOldestSequence < 1
+        || typeof record._deleting !== 'boolean') {
       throw operationError('operation_corrupt');
+    }
+    try {
+      assertPlainObject(record.requestParameters);
+      assertPlainObject(record.parameters);
+      if (record.phase !== null) assertIdentifier(record.phase, 'phase');
+      assertIsoOrNull(record.startedAt);
+      assertIsoOrNull(record.updatedAt);
+      assertIsoOrNull(record.completedAt);
+      assertIsoOrNull(record.lastProviderActivityAt);
+      assertIsoOrNull(record.lastProgressAt);
+      assertIsoOrNull(record.resultExpiresAt);
+      assertIsoOrNull(record.resultExpiredAt);
+      assertIsoOrNull(record.metadataExpiresAt);
+    } catch (error) {
+      throw operationError('operation_corrupt', error);
     }
     let expectedKey;
     let expectedFingerprint;
@@ -480,6 +626,32 @@ class BrainOperationStore {
     } catch (error) {
       if (error?.code === 'operation_corrupt') throw error;
       throw operationError('operation_corrupt', error);
+    }
+    if (record._worker !== null) assertPlainObjectOrNull(record._worker);
+    if (![null, 'inline', 'json-file', 'artifact', 'expired'].includes(record._resultKind)) {
+      throw operationError('operation_corrupt');
+    }
+    if (record._resultKind === null) {
+      if (record.result !== null || record.resultHandle !== null || record.resultArtifact !== null
+          || record.resultExpiredAt !== null) throw operationError('operation_corrupt');
+    } else if (record._resultKind === 'inline') {
+      assertPlainObjectOrNull(record.result);
+      if (record.result === null || record.resultHandle !== null || record.resultArtifact !== null
+          || record.resultExpiredAt !== null) throw operationError('operation_corrupt');
+    } else if (record._resultKind === 'json-file' || record._resultKind === 'artifact') {
+      if (record.result !== null
+          || typeof record.resultHandle !== 'string'
+          || !RESULT_HANDLE_PATTERN.test(record.resultHandle)
+          || record.resultExpiredAt !== null) {
+        throw operationError('operation_corrupt');
+      }
+      assertResultArtifactMetadata(record.resultArtifact, record._resultKind);
+    } else if (record._resultKind === 'expired') {
+      if (record.result !== null || record.resultHandle !== null
+          || record.resultExpiredAt === null) throw operationError('operation_corrupt');
+      if (record.resultArtifact !== null) {
+        assertResultArtifactMetadata(record.resultArtifact, 'expired');
+      }
     }
     const descriptorIsNull = record.sourcePinDescriptor === null;
     const digestIsNull = record.sourcePinDigest === null;
@@ -1014,7 +1186,17 @@ class BrainOperationStore {
     if (Object.hasOwn(event, 'sequence') || Object.hasOwn(event, 'operationId')) {
       throw operationError('event_invalid');
     }
+    for (const field of EVENT_PRIVATE_PATH_FIELDS) {
+      if (Object.hasOwn(event, field)) throw operationError('event_invalid');
+    }
     assertIdentifier(event.type, 'eventType');
+    if (event.type === 'phase') {
+      try {
+        assertIdentifier(event.phase, 'phase');
+      } catch (error) {
+        throw operationError('event_invalid', error);
+      }
+    }
     let normalized = {
       ...event,
       operationId: record.operationId,
@@ -1128,7 +1310,7 @@ class BrainOperationStore {
         if (rawEvent.type === 'progress' || rawEvent.type === 'progress_update') {
           draft.lastProgressAt = isoTime(now);
         }
-        if (rawEvent.type === 'phase' && typeof rawEvent.phase === 'string') draft.phase = rawEvent.phase;
+        if (rawEvent.type === 'phase') draft.phase = rawEvent.phase;
       }, rawEvent);
       return projectPublicRecord(next);
     });
@@ -2237,14 +2419,17 @@ class BrainOperationStore {
       let { index, syntaxCorrupt } = await this._readIndex();
       if (syntaxCorrupt) {
         const claims = await this._scanClaims();
-        claims.delete(recordForDelete._idempotencyKey);
+        const claim = claims.get(recordForDelete._idempotencyKey);
+        if (!claim || claim.operationId === operationId) claims.delete(recordForDelete._idempotencyKey);
         index = await this._rebuildIndexFromClaims(claims, 'before_gc_index_rename');
       } else {
         const entry = index.entries[recordForDelete._idempotencyKey];
-        if (entry && entry.operationId !== operationId) throw operationError('idempotency_corrupt');
-        delete index.entries[recordForDelete._idempotencyKey];
-        await this._writeJson(this.idempotencyIndexPath, index, 'before_gc_index_rename');
+        if (!entry || entry.operationId === operationId) {
+          delete index.entries[recordForDelete._idempotencyKey];
+          await this._writeJson(this.idempotencyIndexPath, index, 'before_gc_index_rename');
+        }
       }
+      await this._inject('before_gc_operation_rm', { operationId });
       await fsp.rm(this._operationDirectory(operationId), { recursive: true, force: true });
       await this._syncDirectory(this.operationsRoot);
       this.eventCache.delete(operationId);

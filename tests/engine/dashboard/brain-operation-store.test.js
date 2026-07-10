@@ -45,10 +45,11 @@ function typedCode(code) {
 }
 
 function validTarget(overrides = {}) {
+  const canonicalRoot = overrides.canonicalRoot ?? '/brains/jerry';
   return {
     domain: 'brain',
     brainId: 'brain-jerry',
-    canonicalRoot: '/brains/jerry',
+    canonicalRoot,
     accessMode: 'own',
     ownerAgent: 'jerry',
     displayName: 'jerry',
@@ -56,7 +57,7 @@ function validTarget(overrides = {}) {
     lifecycle: 'resident',
     catalogRevision: 'catalog-1',
     route: '/api/brain/brain-jerry',
-    mutationBoundaries: validMutationBoundaries('/brains/jerry'),
+    mutationBoundaries: overrides.mutationBoundaries ?? validMutationBoundaries('/instances/jerry/brain'),
     ...overrides,
   };
 }
@@ -128,7 +129,7 @@ function descriptorDigest(descriptor) {
 }
 
 function makeFixture(t, options = {}) {
-  const root = fs.mkdtempSync(path.join(tmpdir(), 'home23-brain-operation-store-'));
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(tmpdir(), 'home23-brain-operation-store-')));
   const clock = { now: options.initialNow ?? INITIAL_NOW };
   const fixture = {
     root,
@@ -312,10 +313,43 @@ async function crashJsonResult(root, operationId, expectedVersion, result, crash
   );
 }
 
+async function crashCollectGarbage(root, now, crashStage) {
+  const childSource = `
+    const { BrainOperationStore } = require(process.env.STORE_MODULE);
+    const store = new BrainOperationStore({
+      root: process.env.STORE_ROOT,
+      requesterAgent: 'jerry',
+      now: () => Number(process.env.NOW_MS),
+      crashInjector: async (stage) => {
+        if (stage === process.env.CRASH_STAGE) process.kill(process.pid, 'SIGKILL');
+      },
+    });
+    store.collectGarbage().then(() => process.exit(0)).catch((error) => {
+      process.stderr.write(String(error && error.stack || error));
+      process.exit(2);
+    });
+  `;
+  await assert.rejects(
+    () => execFileAsync(process.execPath, ['-e', childSource], {
+      cwd: process.cwd(),
+      timeout: 10_000,
+      env: {
+        ...process.env,
+        STORE_MODULE: path.resolve('engine/src/dashboard/brain-operations/operation-store.js'),
+        STORE_ROOT: root,
+        NOW_MS: String(now),
+        CRASH_STAGE: crashStage,
+      },
+    }),
+    (error) => error?.signal === 'SIGKILL',
+  );
+}
+
 function ageCrashLocks(root, operationId) {
   for (const lockPath of [
     path.join(operationDirectory(root, operationId), '.operation.lock'),
     path.join(root, 'result-handles', '.index.lock'),
+    path.join(root, 'idempotency', '.index.lock'),
   ]) {
     if (fs.existsSync(lockPath)) fs.utimesSync(lockPath, new Date(0), new Date(0));
   }
@@ -440,10 +474,6 @@ test('target union requires exact public snapshots and seven canonical mutation 
     }),
     validTarget({
       mutationBoundaries: validTarget().mutationBoundaries.map((boundary, index) =>
-        index === 0 ? { ...boundary, path: '/outside/brain' } : boundary),
-    }),
-    validTarget({
-      mutationBoundaries: validTarget().mutationBoundaries.map((boundary, index) =>
         index === 0 ? { ...boundary, projectionRoot: '/private' } : boundary),
     }),
     validOwnedRunTarget({ operationRoot: '/private/operation' }),
@@ -515,6 +545,52 @@ test('persisted target snapshot drift outside the exact union fails operation_co
   }
 });
 
+test('persisted private record schema drift fails closed before public projection', async (t) => {
+  const mutations = [
+    (record) => { record.parameters = 'not-an-object'; },
+    (record) => { record.canonicalEvidence = 'yes'; },
+    (record) => { record.phase = '/tmp/private-phase'; },
+    (record) => { record.resultArtifact = { arbitrary: '/tmp/private' }; },
+    (record) => { delete record.startedAt; },
+    (record) => { record.privatePath = '/tmp/private'; },
+  ];
+  for (let index = 0; index < mutations.length; index += 1) {
+    const fixture = makeFixture(t);
+    const created = await createOne(fixture, { requestId: `persisted-private-${index}` });
+    const recordPath = statusPath(fixture.root, created.record.operationId);
+    const privateRecord = JSON.parse(fs.readFileSync(recordPath, 'utf8'));
+    mutations[index](privateRecord);
+    fs.writeFileSync(recordPath, JSON.stringify(privateRecord));
+    await assert.rejects(
+      () => anotherStore(fixture).get(created.record.operationId),
+      typedCode('operation_corrupt'),
+      String(index),
+    );
+  }
+});
+
+test('phase events reject private paths and path-like phases before public status', async (t) => {
+  const fixture = makeFixture(t);
+  const created = await createOne(fixture, { requestId: 'phase-event-validation' });
+  await assert.rejects(
+    () => fixture.store.appendEvent(created.record.operationId, {
+      type: 'phase',
+      phase: '/private/worker/scratch',
+      scratchPath: '/private/also-event',
+    }),
+    typedCode('event_invalid'),
+  );
+  const committed = await fixture.store.appendEvent(created.record.operationId, {
+    type: 'phase',
+    phase: 'source-open',
+  });
+  assert.equal(committed.phase, 'source-open');
+  assert.deepEqual(
+    (await fixture.store.readEvents(created.record.operationId, 0)).map((event) => event.phase),
+    ['source-open'],
+  );
+});
+
 test('top-level Proxy input is rejected without invoking ownKeys or property traps', async (t) => {
   const fixture = makeFixture(t);
   let traps = 0;
@@ -526,6 +602,20 @@ test('top-level Proxy input is rejected without invoking ownKeys or property tra
   await assert.rejects(() => fixture.store.create(proxy), typedCode('request_invalid'));
   assert.equal(traps, 0);
   assert.deepEqual(fs.readdirSync(fixture.root), []);
+});
+
+test('configured root under a persistent parent symlink is rejected before writes', (t) => {
+  const base = fs.realpathSync.native(fs.mkdtempSync(path.join(tmpdir(), 'home23-store-root-symlink-')));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const realParent = path.join(base, 'real-parent');
+  const linkedParent = path.join(base, 'linked-parent');
+  fs.mkdirSync(realParent);
+  fs.symlinkSync(realParent, linkedParent);
+  assert.throws(() => new BrainOperationStore({
+    root: path.join(linkedParent, 'brain-operations'),
+    requesterAgent: 'jerry',
+  }), typedCode('store_configuration_invalid'));
+  assert.deepEqual(fs.readdirSync(realParent), []);
 });
 
 test('operation and attachment path-like identifiers are exhaustively rejected without artifacts', async (t) => {
@@ -2394,6 +2484,30 @@ test('real process crashes across large-JSON publication scavenge temps and orph
         .map((event) => [event.sequence, event.type]),
       [[1, 'result_ready']],
     );
+
+    const terminal = await retryStore.transition(created.record.operationId, {
+      expectedVersion: recovered.recordVersion,
+      state: 'complete',
+    });
+    fixture.clock.now = Date.parse(terminal.metadataExpiresAt) + 1;
+    await retryStore.collectGarbage();
+    const postGcMappings = fs.existsSync(handleRoot)
+      ? fs.readdirSync(handleRoot)
+        .filter((name) => /^[a-f0-9]{64}\.json$/.test(name))
+        .map((name) => JSON.parse(fs.readFileSync(path.join(handleRoot, name), 'utf8')))
+      : [];
+    assert.equal(
+      postGcMappings.filter((mapping) => mapping.operationId === created.record.operationId).length,
+      0,
+    );
+    if (otherPublication) {
+      assert.equal(
+        postGcMappings.filter((mapping) => mapping.operationId === otherPublication.operationId).length,
+        1,
+      );
+    } else {
+      assert.equal(postGcMappings.length, 0);
+    }
   }
 });
 
@@ -3467,6 +3581,31 @@ test('metadata GC resumes a durable delete marker after an index-publication cra
   assert.equal(fs.existsSync(operationDirectory(fixture.root, created.record.operationId)), false);
   const retry = await reloaded.create(validRequest({ requestId: 'gc-delete-resume' }));
   assert.equal(retry.created, true);
+});
+
+test('metadata GC resumes after operation-delete crash without removing a reused idempotency key', async (t) => {
+  const fixture = makeFixture(t);
+  const created = await createOne(fixture, { requestId: 'gc-delete-reused-key' });
+  const terminal = await fixture.store.transition(created.record.operationId, {
+    expectedVersion: created.record.recordVersion,
+    state: 'complete',
+  });
+  fixture.clock.now = Date.parse(terminal.metadataExpiresAt) + 1;
+  await crashCollectGarbage(fixture.root, fixture.clock.now, 'before_gc_operation_rm');
+  ageCrashLocks(fixture.root, created.record.operationId);
+  const deleting = JSON.parse(fs.readFileSync(statusPath(fixture.root, created.record.operationId), 'utf8'));
+  assert.equal(deleting._deleting, true);
+  const replacement = await fixture.store.create(validRequest({ requestId: 'gc-delete-reused-key' }));
+  assert.equal(replacement.created, true);
+  assert.notEqual(replacement.record.operationId, created.record.operationId);
+
+  const receipt = await anotherStore(fixture).collectGarbage();
+  assert.equal(receipt.metadataDeleted, 1);
+  assert.equal(fs.existsSync(operationDirectory(fixture.root, created.record.operationId)), false);
+  assert.equal(fs.existsSync(operationDirectory(fixture.root, replacement.record.operationId)), true);
+  const key = buildBrainOperationIdempotencyKey('jerry', 'gc-delete-reused-key', 'query');
+  const found = await anotherStore(fixture).findByIdempotencyKey(key);
+  assert.equal(found.operationId, replacement.record.operationId);
 });
 
 test('non-source operations remain null-pinned through terminalization and reconciliation lists', async (t) => {
