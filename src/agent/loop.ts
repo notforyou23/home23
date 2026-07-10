@@ -267,7 +267,14 @@ function summarizeXaiServerToolResult(toolName: string, item: Record<string, unk
   const args = typeof item.arguments === 'string' ? item.arguments.trim() : '';
   const input = typeof item.input === 'string' ? item.input.trim() : '';
   const details = query || args || input || (typeof item.id === 'string' ? `id=${item.id}` : 'handled by xAI server');
-  return `${toolName} completed via xAI server: ${details}`.slice(0, 300);
+  const outcome = xaiServerToolSucceeded(item) ? 'completed' : 'failed';
+  return `${toolName} ${outcome} via xAI server: ${details}`.slice(0, 300);
+}
+
+function xaiServerToolSucceeded(item: Record<string, unknown>): boolean {
+  const status = typeof item.status === 'string' ? item.status.trim().toLowerCase() : '';
+  return item.error == null
+    && !['failed', 'error', 'cancelled', 'incomplete'].includes(status);
 }
 
 function getXaiServerToolNameFromItem(item: Record<string, unknown> | undefined): string | null {
@@ -1647,7 +1654,12 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                       const args = item ? getXaiServerToolArgs(item) : {};
                       if (onEvent) {
                         onEvent({ type: 'tool_start', tool: toolName, args });
-                        onEvent({ type: 'tool_result', tool: toolName, result: summarizeXaiServerToolResult(toolName, item ?? {}), success: Boolean(toolName) });
+                        onEvent({
+                          type: 'tool_result',
+                          tool: toolName,
+                          result: summarizeXaiServerToolResult(toolName, item ?? {}),
+                          success: xaiServerToolSucceeded(item ?? {}),
+                        });
                       }
                     }
                   }

@@ -180,6 +180,10 @@ async function runProvider(provider: typeof PROVIDERS[number]): Promise<{
         if (providerCall === 1) return sse([
           { type: 'response.created', response: { id: 'xai-response-1' } },
           { type: 'response.output_item.done', item: {
+            type: 'web_search_call', status: 'failed', query: 'test query',
+            error: { message: 'server search failed' },
+          } },
+          { type: 'response.output_item.done', item: {
             type: 'function_call', call_id: 'call-1', name: TOOL_NAME, arguments: '{}',
           } },
         ]);
@@ -249,7 +253,13 @@ for (const provider of PROVIDERS) {
     const result = await runProvider(provider);
     assert.equal(result.contexts.length, 1);
     assert.ok(result.contexts[0]?.turnRuntime);
-    assert.deepEqual(result.toolEvents.map(event => event.success), [false]);
+    assert.deepEqual(
+      result.toolEvents.map(event => event.success),
+      provider === 'xai' ? [false, false] : [false],
+    );
+    if (provider === 'xai') {
+      assert.match(String(result.toolEvents[0]?.result), /failed/i);
+    }
     assert.match(JSON.stringify(result.nativeToolResult), /typed failure/);
     if (provider === 'anthropic' || provider === 'minimax') {
       assert.equal((result.nativeToolResult as { is_error?: boolean }).is_error, true);
