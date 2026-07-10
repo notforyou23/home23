@@ -33,3 +33,18 @@ test('saveState serializes overlapping saves and fails closed on large sidecar e
   assert.match(source, /REFUSING STATE SAVE — sidecar write failed for large brain/);
   assert.match(source, /reason: 'memory_sidecar_write_failed'/);
 });
+
+test('saveState and loadState delegate memory graph persistence to revisioned source adapter', () => {
+  const saveBlockStart = source.indexOf("const { persistMemoryRevision } = require('./memory-persistence');");
+  const saveBlockEnd = source.indexOf('// Save with compression', saveBlockStart);
+  const saveBlock = source.slice(saveBlockStart, saveBlockEnd);
+  assert.match(source, /const \{ persistMemoryRevision \} = require\('\.\/memory-persistence'\);/);
+  assert.match(source, /await persistMemoryRevision\(\{/);
+  assert.doesNotMatch(saveBlock, /appendMemoryDelta\(this\.logsDir/);
+  assert.doesNotMatch(saveBlock, /this\.memory\.markPersistenceClean\?\.\(\)/);
+  assert.match(source, /const \{ loadMemoryRevision \} = require\('\.\/memory-persistence'\);/);
+  assert.match(source, /await loadMemoryRevision\(this\.logsDir/);
+  assert.match(source, /memoryRevision: sidecarsWritten\.manifest\.currentRevision/);
+  assert.match(source, /baseRevision: sidecarsWritten\.manifest\.baseRevision/);
+  assert.match(source, /deltaEpoch: sidecarsWritten\.manifest\.activeDeltaEpoch/);
+});
