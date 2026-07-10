@@ -1237,18 +1237,27 @@ test('failed Home Problems requests replace stale clear state with unavailable t
   runtime.run('renderHumanIssues(globalThis.__issuesPayload)');
   assert.equal(card.dataset.problemSeverity, 'clear');
 
-  await runtime.run(`(async () => {
-    const tasks = [];
-    const problemsRequest = Promise.resolve(null).then((data) => data || { available: false });
-    scheduleHumanHomeFetch(tasks, problemsRequest, (data) => renderHumanIssues(data));
-    await Promise.all(tasks);
-  })()`);
-  assert.equal(card.dataset.problemSeverity, 'unavailable');
-  assert.equal(status.textContent, 'unavailable');
-  assert.equal(value.textContent, '--');
+  for (const requestSource of [
+    'Promise.resolve(null)',
+    "Promise.reject(new Error('request timed out'))",
+  ]) {
+    runtime.run('renderHumanIssues(globalThis.__issuesPayload)');
+    await runtime.run(`(async () => {
+      const tasks = [];
+      const problemsRequest = ${requestSource}
+        .then((data) => data || { available: false })
+        .catch(() => ({ available: false }));
+      scheduleHumanHomeFetch(tasks, problemsRequest, (data) => renderHumanIssues(data));
+      await Promise.all(tasks);
+    })()`);
+    assert.equal(card.dataset.problemSeverity, 'unavailable');
+    assert.equal(status.textContent, 'unavailable');
+    assert.equal(value.textContent, '--');
+  }
 
   const loader = functionFragment(js, 'loadHumanHomeSurface');
   assert.match(loader, /api\/live-problems[\s\S]{0,300}\.then\(\(data\) => data \|\| \{ available: false \}\)/);
+  assert.match(loader, /api\/live-problems[\s\S]{0,400}\.catch\(\(\) => \(\{ available: false \}\)\)/);
   assert.match(loader, /api\/live-problems[\s\S]{0,900}renderHumanIssues\(data\)/);
 });
 

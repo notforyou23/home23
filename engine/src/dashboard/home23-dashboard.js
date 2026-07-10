@@ -1894,7 +1894,8 @@ async function loadHumanHomeSurface() {
       renderHumanSensor('pool', data, 'Pool', 'ScreenLogic');
     });
     scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/live-problems`, { timeoutMs: 8000 })
-      .then((data) => data || { available: false }), (data) => {
+      .then((data) => data || { available: false })
+      .catch(() => ({ available: false })), (data) => {
       latest.problems = data;
       renderHumanIssues(data);
       renderLatestJerryVoice(latest);
