@@ -11,6 +11,10 @@ import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import yaml from 'js-yaml';
+import {
+  ensureBrainOperationsCapabilityKey,
+  updateHome23Secrets,
+} from './brain-operations-capability.js';
 
 function loadYaml(filePath) {
   if (!existsSync(filePath)) return {};
@@ -84,7 +88,8 @@ function computeBrainRoots(home23Root) {
   return unique;
 }
 
-export function seedCosmo23Config(home23Root) {
+export async function seedCosmo23Config(home23Root) {
+  await ensureBrainOperationsCapabilityKey(home23Root);
   const secrets = loadYaml(join(home23Root, 'config', 'secrets.yaml'));
   const homeConfig = loadYaml(join(home23Root, 'config', 'home.yaml'));
 
@@ -171,17 +176,20 @@ export function seedCosmo23Config(home23Root) {
     config.security.encryption_key = secretsEncKey;
   } else {
     // Cases 2 and 3: adopt existing config key or generate new one
-    const key = config.security.encryption_key || randomBytes(32).toString('hex');
+    const preferredKey = config.security.encryption_key || randomBytes(32).toString('hex');
+    const encryptionUpdate = await updateHome23Secrets(home23Root, (currentSecrets) => {
+      if (!currentSecrets.cosmo23) currentSecrets.cosmo23 = {};
+      if (currentSecrets.cosmo23.encryptionKey) {
+        return { changed: false, value: currentSecrets.cosmo23.encryptionKey };
+      }
+      currentSecrets.cosmo23.encryptionKey = preferredKey;
+      return { changed: true, value: preferredKey };
+    });
+    const key = encryptionUpdate.value;
     config.security.encryption_key = key;
-    // Persist to secrets.yaml so ecosystem and init can read it
-    if (!secrets.cosmo23) secrets.cosmo23 = {};
-    secrets.cosmo23.encryptionKey = key;
-    try {
-      writeFileSync(join(home23Root, 'config', 'secrets.yaml'),
-        '# Home23 secrets — API keys and tokens\n# This file is gitignored. Never commit it.\n\n'
-        + yaml.dump(secrets, { lineWidth: 120 }), 'utf8');
+    if (encryptionUpdate.changed) {
       console.log('[cosmo23] Encryption key synced to secrets.yaml');
-    } catch { /* non-fatal */ }
+    }
   }
 
   // Set security profile

@@ -20,6 +20,7 @@ const { MissionTracer } = require('../../scripts/TRACE_RESEARCH_MISSIONS');
 const { Home23VibeService } = require('./home23-vibe/service');
 const { Home23BriefsService } = require('./home23-briefs');
 const { Home23TileService } = require('./home23-tiles');
+const { updateDashboardOAuthTokenSecrets } = require('./home23-secrets');
 const {
   classifyMemoryProvenance,
   scoreMemorySalience,
@@ -41,6 +42,7 @@ const PM2_ENV_BLOCKLIST = [
   'MCP_HTTP_PORT',
   'COSMO_RUNTIME_DIR',
   'COSMO_WORKSPACE_PATH',
+  'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY',
 ];
 
 function cleanPm2Env(extra = {}) {
@@ -1911,7 +1913,6 @@ class DashboardServer {
     try {
       const home23RootForPoll = this.getHome23Root();
       const fsSync = require('fs');
-      const yaml = require('js-yaml');
       const cosmoPort = parseInt(process.env.COSMO23_PORT || '43210', 10);
       const cosmoBase = `http://localhost:${cosmoPort}`;
       const secretsPath = path.join(home23RootForPoll, 'config', 'secrets.yaml');
@@ -1943,16 +1944,12 @@ class DashboardServer {
               if (!newToken) continue;
 
               if (!fsSync.existsSync(secretsPath)) continue;
-              const secrets = yaml.load(fsSync.readFileSync(secretsPath, 'utf8')) || {};
-              const current = secrets.providers?.[provider]?.apiKey;
-              if (current === newToken) continue; // no rotation
-
-              // Rotate: write new token, regenerate ecosystem, restart
-              if (!secrets.providers) secrets.providers = {};
-              if (!secrets.providers[provider]) secrets.providers[provider] = {};
-              secrets.providers[provider].apiKey = newToken;
-              secrets.providers[provider].oauthManaged = true;
-              fsSync.writeFileSync(secretsPath, yaml.dump(secrets, { lineWidth: 120 }));
+              const tokenUpdate = await updateDashboardOAuthTokenSecrets(
+                home23RootForPoll,
+                provider,
+                newToken,
+              );
+              if (!tokenUpdate.changed) continue;
 
               try {
                 const { execSync } = require('child_process');
@@ -12131,4 +12128,4 @@ if (require.main === module) {
   server.start();
 }
 
-module.exports = { DashboardServer, readJsonlTail };
+module.exports = { DashboardServer, readJsonlTail, updateDashboardOAuthTokenSecrets };

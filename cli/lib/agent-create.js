@@ -16,6 +16,7 @@ import { isSharedServiceName } from './shared-service-start.js';
 
 const require = createRequire(import.meta.url);
 const { buildAgentConfig, buildFeederConfig } = require('./agent-config-builder.cjs');
+const { updateHome23Secrets } = require('../../shared/home23-secrets.cjs');
 
 function findNextPorts(home23Root) {
   const instancesDir = join(home23Root, 'instances');
@@ -173,33 +174,18 @@ function personalSurface(ownerName, personalFacts = []) {
   return `# Personal Context — ${ownerName}\n\n## Profile\n- Owner: ${ownerName}\n${factBlock}\n_Personal memory. Surface only on direct relevance. Curator-maintained._\n`;
 }
 
-function addBotTokenToSecrets(home23Root, agentName, botToken) {
-  const secretsPath = join(home23Root, 'config', 'secrets.yaml');
-  let content = '';
-  if (existsSync(secretsPath)) {
-    content = readFileSync(secretsPath, 'utf8');
-  }
-
-  // Add or update agents section
-  if (content.includes(`\nagents:`)) {
-    // Agents section exists — append under it
-    const agentEntry = `  ${agentName}:\n    telegram:\n      botToken: "${botToken}"`;
-    // Check if this agent already exists
-    if (content.includes(`  ${agentName}:`)) {
-      // Replace existing entry (simple approach: regex)
-      content = content.replace(
-        new RegExp(`  ${agentName}:\\n    telegram:\\n      botToken: "[^"]*"`),
-        agentEntry
-      );
-    } else {
-      content = content.trimEnd() + '\n' + agentEntry + '\n';
+export async function addBotTokenToSecrets(home23Root, agentName, botToken) {
+  return updateHome23Secrets(home23Root, (secrets) => {
+    if (!secrets.agents || typeof secrets.agents !== 'object') secrets.agents = {};
+    if (!secrets.agents[agentName] || typeof secrets.agents[agentName] !== 'object') {
+      secrets.agents[agentName] = {};
     }
-  } else {
-    // No agents section — add it
-    content = content.trimEnd() + `\n\nagents:\n  ${agentName}:\n    telegram:\n      botToken: "${botToken}"\n`;
-  }
-
-  writeFileSync(secretsPath, content, 'utf8');
+    const agentSecrets = secrets.agents[agentName];
+    const previous = agentSecrets.telegram?.botToken || '';
+    if (previous === botToken) return { changed: false };
+    agentSecrets.telegram = { ...(agentSecrets.telegram || {}), botToken };
+    return { changed: true };
+  });
 }
 
 export async function runAgentCreate(home23Root, name, options = {}) {
@@ -341,7 +327,7 @@ export async function runAgentCreate(home23Root, name, options = {}) {
 
   // Add bot token to secrets.yaml (if provided)
   if (botToken) {
-    addBotTokenToSecrets(home23Root, name, botToken);
+    await addBotTokenToSecrets(home23Root, name, botToken);
     console.log(`  secrets.yaml   \u2713 (bot token added)`);
   }
 

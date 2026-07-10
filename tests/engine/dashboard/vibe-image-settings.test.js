@@ -60,6 +60,114 @@ async function withSettingsServer(homeConfig, fn, secrets = { providers: { 'olla
   }
 }
 
+async function withCapabilityFailureSettingsServer(fn, options = {}) {
+  const { seedFails = true, pm2JlistFails = false } = options;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-capability-settings-'));
+  const childProcess = require('node:child_process');
+  const originalExecFileSync = childProcess.execFileSync;
+  fs.mkdirSync(path.join(root, 'config'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'cli', 'lib'), { recursive: true });
+  fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'config', 'home.yaml'), 'home: {}\n', 'utf8');
+  fs.writeFileSync(path.join(root, 'config', 'secrets.yaml'), 'providers: {}\n', 'utf8');
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ type: 'module' }), 'utf8');
+  fs.writeFileSync(
+    path.join(root, 'scripts', 'home23-pm2-watchdog.cjs'),
+    'module.exports.parsePm2JlistOutput = (text) => JSON.parse(text);\n',
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(root, 'cli', 'lib', 'generate-ecosystem.js'),
+    'export function generateEcosystem() {}\n',
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(root, 'cli', 'lib', 'evobrew-config.js'),
+    'export function writeEvobrewConfig() {}\n',
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(root, 'cli', 'lib', 'cosmo23-config.js'),
+    seedFails ? `export async function seedCosmo23Config() {
+      const error = new Error('capability_secret_invalid');
+      error.code = 'capability_secret_invalid';
+      throw error;
+    }\n` : 'export async function seedCosmo23Config() {}\n',
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(root, 'cli', 'lib', 'shared-service-start.js'),
+    `import fs from 'node:fs';
+     export const SHARED_SERVICES = [{ name: 'home23-cosmo23' }];
+     export async function coordinateSharedServiceStartup({ home23Root }) {
+       fs.writeFileSync(home23Root + '/restart-called', 'yes');
+     }\n`,
+    'utf8',
+  );
+
+  childProcess.execFileSync = (command, args, options) => {
+    if (command === 'pm2' && args?.[0] === 'jlist') {
+      if (pm2JlistFails) throw new Error('pm2 jlist unavailable');
+      return '[]';
+    }
+    return originalExecFileSync(command, args, options);
+  };
+  const app = express();
+  app.use(express.json());
+  app.use('/home23/api/settings', createSettingsRouter(root).router);
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    await fn(`http://127.0.0.1:${port}`, root);
+  } finally {
+    childProcess.execFileSync = originalExecFileSync;
+    await new Promise((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test('COSMO settings restart propagates capability preparation failure without restarting', async () => {
+  await withCapabilityFailureSettingsServer(async (baseUrl, root) => {
+    const response = await fetch(`${baseUrl}/home23/api/settings/cosmo23/restart`, { method: 'POST' });
+    assert.equal(response.status, 500);
+    const body = await response.json();
+    assert.equal(body.ok, false);
+    assert.match(body.error, /capability_secret_invalid/);
+    assert.equal(fs.existsSync(path.join(root, 'restart-called')), false);
+  });
+});
+
+test('provider settings propagate COSMO capability seeding failure and do not report success', async () => {
+  await withCapabilityFailureSettingsServer(async (baseUrl, root) => {
+    const response = await fetch(`${baseUrl}/home23/api/settings/providers`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providers: { openai: { apiKey: 'test-key' } } }),
+    });
+    assert.equal(response.status, 500);
+    const body = await response.json();
+    assert.equal(body.ok, false);
+    assert.match(body.error, /capability_secret_invalid/);
+    assert.equal(fs.existsSync(path.join(root, 'restart-called')), false);
+  });
+});
+
+test('provider settings preserve warning response for an ordinary PM2 inspection failure', async () => {
+  await withCapabilityFailureSettingsServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/home23/api/settings/providers`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providers: { openai: { apiKey: 'test-key' } } }),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.restarted, false);
+    assert.match(body.warn, /pm2 jlist unavailable/);
+  }, { seedFails: false, pm2JlistFails: true });
+});
+
 test('vibe settings expose and preserve xAI Grok image models', async () => {
   await withSettingsServer({
     dashboard: { vibe: { autoGenerate: true } },
