@@ -5,7 +5,7 @@
 - Browser result: BLOCKED for final-current-code acceptance. Historical Browser checks passed where executed at the baseline commit, but the final completion wave could not be recaptured because the Codex in-app Browser enterprise network policy blocks `http://127.0.0.1:51923`
 - Tested branch: `codex/glass-light-dashboard`
 - Browser baseline commit: `ef7e534a2f261dfa623662e2c583e79e5c3e4cd3`
-- Final automated code commit: `77673f4` (complete handoff repair plus reviewed interaction-state hardening)
+- Final automated code commit: `1d90e14` (complete handoff repair plus reviewed pulse ownership, optimistic Sauna actions, and stale-poll reconciliation)
 - Comparison base: `c2b19654b7d784b43cdbdf231257adeba3b0675e`
 - Verification date: 2026-07-09 America/New_York
 
@@ -52,7 +52,7 @@ The full automated gate below was rerun after the post-review safety/fidelity re
 |---|---|
 | `node --check engine/src/dashboard/home23-dashboard.js` | PASS |
 | `node --check engine/src/dashboard/home23-chat.js` | PASS |
-| `node --test --test-concurrency=1 tests/dashboard/glass-light-dashboard.test.js tests/dashboard/operator-ui.test.js tests/dashboard/briefs.test.js tests/dashboard/forrest-feel-route.test.js` | PASS — 72/72 |
+| `node --test --test-concurrency=1 tests/dashboard/glass-light-dashboard.test.js tests/dashboard/operator-ui.test.js tests/dashboard/briefs.test.js tests/dashboard/forrest-feel-route.test.js` | PASS — 75/75 |
 | `node --import tsx --test --test-concurrency=1 tests/dashboard/chat-state.test.ts` | PASS — 6/6 |
 | `node --test --test-concurrency=1 tests/scripts/read-only-dashboard-qa-server.test.mjs` | PASS — 4/4 |
 | `npm run build` | PASS |
@@ -66,7 +66,7 @@ The final plain `npm test` attempt could not resolve `lockfile`, `openai`, and `
 
 ### Browser repair TDD receipts
 
-Every production repair was preceded by a focused failing contract. The post-review safety wave first ran 41 pass / 7 fail across 48 glass tests, then passed 48/48. Later no-emoji and Problems request-failure contracts failed against the remaining defects before passing. The completion audit then produced 11 expected failures across 58 glass contracts for the missing invariant shell, overlay token cleanup, sensor ordering, tab semantics, bounded startup, Settings rows, six-feed fail-closed behavior, Sauna action exclusivity, Welcome/gallery semantics, and Vibe navigation. Independent review added RED contracts for tab keyboard reachability, Data Feed object normalization, Good Life `state:null`, Vibe close/new-open staleness, and same-session navigation staleness. The final glass suite is 62/62 and the combined focused run is 72/72. The standalone Chat geometry contract was also checked against the preceding committed HTML and produced the expected red result before passing against the repair.
+Every production repair was preceded by a focused failing contract. The post-review safety wave first ran 41 pass / 7 fail across 48 glass tests, then passed 48/48. Later no-emoji and Problems request-failure contracts failed against the remaining defects before passing. The completion audit then produced 11 expected failures across 58 glass contracts for the missing invariant shell, overlay token cleanup, sensor ordering, tab semantics, bounded startup, Settings rows, six-feed fail-closed behavior, Sauna action exclusivity, Welcome/gallery semantics, and Vibe navigation. Independent review added RED contracts for tab keyboard reachability, Data Feed object normalization, Good Life `state:null`, Vibe close/new-open staleness, and same-session navigation staleness. Final whole-branch review then reproduced two additional gaps before repair: late agent discovery left the pulse bound to the provisional default engine port, and Sauna Start/Stop did not render optimistically. A follow-up reviewer reproduced a third race where a poll begun before a successful Sauna action could repaint the card with stale state. The final implementation closes all three with single pulse socket/timer ownership, optimistic Start/Stop plus rollback, and request-generation guards that reject older polls while accepting later independent polls. The final glass suite is 65/65 and the combined focused run is 75/75. The standalone Chat geometry contract was also checked against the preceding committed HTML and produced the expected red result before passing against the repair.
 
 - Top bar stretching and horizontal navigation.
 - Sensor-strip legacy span resets, phone span collapse, and hidden Sauna fields.
@@ -89,7 +89,8 @@ Every production repair was preceded by a focused failing contract. The post-rev
 - Locked managed-sensor order followed by Problems and Good Life.
 - Native tab relationships plus keyboard Arrow/Home/End reachability.
 - Production-shaped read-only Settings rows, including object-form Data Feed sources.
-- Mutually exclusive idle/running Sauna actions.
+- Mutually exclusive optimistic idle/running Sauna actions with rollback, stale-poll rejection, and future-poll acceptance.
+- Late agent discovery transfers pulse socket/timer ownership to the selected agent without duplicate or stale reconnects.
 - Native Vibe gallery buttons and Welcome without emoji iconography.
 - Vibe previous/next navigation protected against close, new-open, and same-session stale async responses.
 
@@ -97,7 +98,7 @@ The Full Settings contrast test first ran 44 pass/1 fail, then 45/45 after repai
 
 ## Matched visual comparison
 
-The source prototype and implementation were captured in the in-app Browser at 1440 × 1000 CSS pixels, DPR 1, then combined into side-by-side comparison inputs at Browser baseline `ef7e534`. These captures prove the primary shell/composition baseline, but they do not prove the later completion-wave overlay, Settings-row, offline-state, Vibe-navigation, tab-keyboard, and related-page changes at `77673f4`.
+The source prototype and implementation were captured in the in-app Browser at 1440 × 1000 CSS pixels, DPR 1, then combined into side-by-side comparison inputs at Browser baseline `ef7e534`. These captures prove the primary shell/composition baseline, but they do not prove the later completion-wave overlay, Settings-row, offline-state, Vibe-navigation, tab-keyboard, pulse-ownership, Sauna-action, and related-page changes at `1d90e14`.
 
 - Top bar: x=24, y=20, width=1388, height=60.
 - Full-gutter hero: x=0, y=94, width=1436, height=382.6; copy x=52.
@@ -272,11 +273,11 @@ No merge, cherry-pick, stash, reset, or main-worktree edit was performed. Zero p
 
 | Design-spec criterion | Exact evidence | Status |
 |---|---|---|
-| 1. Match the supplied light-glass handoff at the primary laptop target | Matched 1440 × 1000 DPR 1 source/implementation captures at baseline `ef7e534`; `comparison-home-1440-final.png`, `comparison-header-1440-final.png`, and `comparison-main-1440-final.png`; final code retains executable geometry/token contracts | PARTIAL — baseline visual match proven; final `77673f4` recapture blocked |
-| 2. Apply the new design language to all documented dashboard surfaces and six overlays | Branch HTML/CSS in `engine/src/dashboard/`; 62 glass contracts inside the 72-test focused run; completion fix-wave review found no production-code issue; historical surface/overlay matrices and captures | PARTIAL — source/test/review evidence passes; final changed surfaces were not recaptured |
-| 3. Keep every existing functional route, data source, action, and production-only detail reachable | Preservation contracts in `tests/dashboard/glass-light-dashboard.test.js` and `tests/dashboard/operator-ui.test.js`; ChatState 6/6; task review approved at `77673f4`; all live write controls retained but deliberately unissued | PASS by source/executable review; live-write paths intentionally not exercised |
+| 1. Match the supplied light-glass handoff at the primary laptop target | Matched 1440 × 1000 DPR 1 source/implementation captures at baseline `ef7e534`; `comparison-home-1440-final.png`, `comparison-header-1440-final.png`, and `comparison-main-1440-final.png`; final code retains executable geometry/token contracts | PARTIAL — baseline visual match proven; final `1d90e14` recapture blocked |
+| 2. Apply the new design language to all documented dashboard surfaces and six overlays | Branch HTML/CSS in `engine/src/dashboard/`; 65 glass contracts inside the 75-test focused run; completion fix-wave and final repair reviews found no remaining production-code issue; historical surface/overlay matrices and captures | PARTIAL — source/test/review evidence passes; final changed surfaces were not recaptured |
+| 3. Keep every existing functional route, data source, action, and production-only detail reachable | Preservation contracts in `tests/dashboard/glass-light-dashboard.test.js` and `tests/dashboard/operator-ui.test.js`; ChatState 6/6; final task-quality review approved at `1d90e14`; all live write controls retained but deliberately unissued | PASS by source/executable review; live-write paths intentionally not exercised |
 | 4. Leave stored runtime/config/instance data untouched | Branch range contains dashboard/page/test/evidence files plus the opt-in QA proxy/test; no `instances/`, local config, secrets, PM2 dump, generated runtime data, or production server file. Current dirty-main audit found 52 main paths, 16 branch paths, and zero overlap | PASS |
-| 5. Pass focused and broad automated checks | Final syntax/diff checks, glass 62/62, focused 72/72, ChatState 6/6, QA harness 4/4, `npm run build`, dependency-path `npm test` 692 pass/0 fail/1 intentional skip, and `npm run test:contracts` 12 pass/1 expected skip | PASS at `77673f4` |
+| 5. Pass focused and broad automated checks | Final syntax/diff checks, glass 65/65, focused 75/75, ChatState 6/6, QA harness 4/4, `npm run build`, dependency-path `npm test` 692 pass/0 fail/1 intentional skip, and `npm run test:contracts` 12 pass/1 expected skip | PASS at `1d90e14` |
 | 6. Pass read-only live contracts | `npm run test:contracts:live`: 13 GET/read-only routes checked, 21 action/stream/fixture contracts skipped, action opt-in unset | PASS |
 | 7. Prove navigation, live rendering, responsive behavior, accessibility basics, Chat state preservation, and clean console output in Browser | Historical evidence covers native hashes/surfaces, real Home data, six overlays, Chat singleton/draft state, 1440/1200/1024/768/390/320 layouts, focus/Escape/scroll lock, and clean checked-surface console. Final Browser readback is still required for the invariant shell, overlay tokens/states, sensor order, Settings rows, feed failure states, Sauna action states, Vibe navigation/races, tab keyboard behavior, Welcome/gallery semantics, standalone Chat geometry, 200% zoom, and reduced motion | BLOCKED — enterprise policy rejects the local QA origin |
 | 8. Record exact commands, results, screenshots, and intentionally unexercised live writes | This committed report, tracked QA-only proxy, local ignored screenshot inventory, automated command table, dependency-path caveat, server/read-only boundary disclosure, and “Intentionally unexercised live writes” section | PARTIAL — commands/results and local evidence are durable here, but screenshots are baseline-only, ignored, and non-portable |
