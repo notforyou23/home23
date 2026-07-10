@@ -38,8 +38,13 @@ export class NotifyChannel extends TailChannel {
 
   async start() {
     await super.start();
-    this._lastAckKeys = new Set(Object.keys(this.loadAcks()));
-    this._startAckWatcher();
+    try {
+      this._lastAckKeys = new Set(Object.keys(this.loadAcks()));
+      await this._startAckWatcher();
+    } catch (error) {
+      await super.stop();
+      throw error;
+    }
   }
 
   async stop() {
@@ -50,7 +55,7 @@ export class NotifyChannel extends TailChannel {
     await super.stop();
   }
 
-  _startAckWatcher() {
+  async _startAckWatcher() {
     if (this._ackWatcher) return;
     this._ackWatcher = chokidar.watch(this.ackPath, {
       persistent: false,
@@ -61,6 +66,18 @@ export class NotifyChannel extends TailChannel {
     });
     this._ackWatcher.on('add', () => this._emitAckUpdates());
     this._ackWatcher.on('change', () => this._emitAckUpdates());
+    await new Promise((resolve, reject) => {
+      const onReady = () => {
+        this._ackWatcher?.off('error', onError);
+        resolve();
+      };
+      const onError = (error) => {
+        this._ackWatcher?.off('ready', onReady);
+        reject(error);
+      };
+      this._ackWatcher.once('ready', onReady);
+      this._ackWatcher.once('error', onError);
+    });
   }
 
   _emitAckUpdates() {
