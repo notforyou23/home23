@@ -1224,6 +1224,9 @@ Expected: FAIL because the authority, coordinator/router, authenticated reader, 
 Implement this exact public interface:
 
     interface BrainOperationCoordinator {
+      resolveTargetContext(selector?): Promise<{
+        catalogRevision: string, target: BrainTarget, accessMode: 'own' | 'read-only'
+      }>;
       start(input: { requestId, operationType, target?, parameters }): Promise<BrainOperationRecord>;
       status(operationId): Promise<BrainOperationRecord>;
       listNonterminal(): Promise<BrainOperationRecord[]>;
@@ -1241,10 +1244,21 @@ The injected worker is one composite adapter:
       registerLocalExecutor(operationType, executor): void;
       start(context, capability): Promise<WorkerRecord>;
       status(operationId, capability): Promise<WorkerRecord>;
-      events(operationId, afterSequence, capability): AsyncIterable<WorkerEvent>;
+      events(operationId, { afterSequence, signal }, capability): AsyncIterable<WorkerEvent>;
       result(operationId, capability): Promise<WorkerResult>;
       cancel(operationId, capability): Promise<WorkerRecord>;
     }
+
+The persisted worker reference is exact
+`{version:1,workerId,workerType:'local'|'cosmo',operationType}`. A returned
+`WorkerRecord` contains that `reference` plus exact `operationId`, execution
+`state`, `phase`, monotonic `eventSequence`, and a bounded unique
+`activeProviderCalls:Array<{providerCallId,providerStallMs,idleMs}>`. Startup
+reconciliation proves liveness through authenticated `status()` and resumes
+through `events()`; there is no separate `proveActive` or unbound reattach API.
+Every adapter method obtains a fresh one-use capability from the coordinator.
+The signal-bearing events input is the deterministic shutdown/reconnect seam
+for a blocked worker stream.
 
 Every executor receives the same context and returns the same envelope:
 
@@ -1274,6 +1288,21 @@ Every executor receives the same context and returns the same envelope:
       sourceEvidence: object | null }
 
 `registerLocalExecutor` is the only dashboard-local executor seam; the provider plan registers synthesis there. Query and PGS use the protected COSMO routes. Construct `sourcePins` only through the source plan's `createMemorySourcePinProvider({home23Root,requesterAgent})`. It supplies idempotent `pin(canonicalRoot, operationId) -> {descriptor,digest}`, `openPinnedSource(descriptor, expectations)`, and idempotent `releaseOperationPins(operationId)`. Repeating `pin` for one operation returns the same canonical descriptor/digest or a typed conflict; this is the crash-recovery seam. The provider derives the requester operation root and external `<home23Root>/runtime/brain-source-locks` from trusted construction/context, uses the source plan's `withMemorySourceLock()` internally, and never accepts a lock/projection/pin path from operation input. After Source Task 2 is injected, every process touching scratch creates a source-plan `OperationScratchQuota` handle for the exact durable operation root; all handles coordinate through that root's one durable quota ledger, so projection, overlay, protected COSMO PGS, local export, and result adoption share one logical aggregate rather than independent ceilings. Until Source Tasks 1-3 land, source-requiring operation types remain disabled and a local worker-context handle may be null. Once enabled, every `requiresSourcePin:true` worker requires a nonnull reconciled handle before pin/open/start. For rows with `requiresSourcePin:false`, `OperationWorkerContext.sourcePin` is exactly null and no implementation may substitute the current live source.
+
+The coordinator receives one injected `resolveOwnedRunTarget({runId})` beside
+the canonical brain catalog builder/resolver. It returns the exact owned-run
+target union from trusted run metadata or a typed not-found/unavailable/
+ambiguity error. No catalog display name, caller path, or global all-run scan
+may substitute for this resolver. `authorizeBrainOperation()` consumes the one
+canonical discriminated `target` for all domains; it has no second `run`
+argument that could disagree with that target.
+
+Local executors receive the in-process `sourcePin` reader object in their
+executor context. Remote COSMO transport never serializes that object: it sends
+only the durable descriptor/digest and capability-bound canonical identity;
+the protected worker opens its own process-local reader in Task 5. Until that
+boundary exists, remote source operations are disabled rather than silently
+running without a pin.
 
 Because the existing dashboard installs a broad 10-GiB compatibility JSON
 parser, create and mount a dedicated placeholder operation router **before**
@@ -1305,6 +1334,17 @@ Target-shape validation is domain-specific and happens before resolution: brain-
 Only when no idempotency record exists does the coordinator resolve and snapshot a discriminated target union. Brain records add `domain:'brain'` to the full canonical brain fields, including `ownerAgent`, `kind`, `lifecycle`, `catalogRevision`, `route`, and server-derived `mutationBoundaries`; owned-run records add `domain:'owned-run'`, exact run ID/root/owner/state and canonical run metadata; requester records are exactly `{domain:'requester',requesterAgent}`. It calls `authorizeBrainOperation()` with that snapshot before store creation, pinning, capability issuance, or executor selection.
 
 Before persistence or capability issuance, call one injected `operationModelResolver` for provider-backed operations. For `query`, resolve an omitted or exact `requestParameters.modelSelection` into trusted `parameters.modelSelection:{provider,model}`. For `pgs`, independently resolve omitted or exact nested `requestParameters.pgsSweep` and `requestParameters.pgsSynth` into both trusted nested pairs; never infer one pair from the other. The resolver validates the exact catalog row, client availability, `maxOutputTokens`, and `providerStallMs`; model ID alone, flat/legacy spellings, implicit provider fallback, or ambiguous configured defaults fail before store/capability/provider work. Non-provider operation parameters pass through their route-specific sanitizer.
+
+The coordinator also adds trusted
+`parameters.operationControl:{hardDeadlineAt}` before `store.create()` and
+rejects that key from caller parameters. This timestamp is derived once from
+the server clock and operation-type deadline, survives a lost-response retry,
+and is the durable queued/running deadline authority after restart. The worker
+adapter strips `operationControl` from provider/domain parameters and receives
+it only as coordinator control metadata. A queued record without this trusted
+field is old/incomplete and reconciliation marks it retryable `interrupted`
+before worker work; it never invents or renews a deadline from a heartbeat
+timestamp.
 
 For synthesis, callers cannot provide any pair. The resolver loads the configured synthesis pair and forms executor `parameters` as `{...requestParameters,provider,model}`. The idempotency fingerprint always remains based on normalized caller `requestParameters`, so a lost-response retry returns the original operation and trusted pair(s) even if configuration later changes. Until the provider plan registers the real resolver, all provider-backed source operations remain disabled; Plan A tests use only an injected fake and never introduce model inference.
 
@@ -1361,7 +1401,7 @@ A failed start after a pin is durable terminalizes and then releases. Every tran
 
 `releaseSourcePinOnce()` serializes the callback and marker under the operation lock. Startup reconciliation first repairs terminal records from `listPinsPendingRelease()`, then repairs queued source records through idempotent pin plus `attachSourcePin()`, and finally reconciles nonterminal workers. Repeated/concurrent terminal callbacks or reconciliation therefore leave one durable marker and one normal-path callback invocation, while the provider's idempotency covers the crash window after provider release but before the marker. Heartbeat events carry operationId, monotonic eventSequence, recordVersion, state, phase, updatedAt, lastProviderActivityAt, and lastProgressAt. Transport heartbeat and provider activity use separate clocks. The coordinator maintains one timer per authenticated active `providerCallId`; selected creates that call entry, matching activity alone renews it at the coordinator receipt clock, matching terminal clears it, and heartbeat/progress, child timestamps, or another call's activity never affect it. Worker status supplies bounded authenticated `{providerCallId,providerStallMs,idleMs}` snapshots needed to rebuild those timers after reattachment. Any one call's expiry cancels the whole operation as retryable `provider_stalled` and records the expired call ID.
 
-Implement `OPERATION_AUTHORITY` and `authorizeBrainOperation({requesterAgent, operationType, target, run})` in the shared CommonJS module. Freeze every row and array. Derive `own` only for the requester's canonical resident brain; completed research targets are always `read-only`. Derive run owner/state from canonical persisted run metadata resolved through the exact `{runId}` selector. The function returns the matching frozen row or throws a typed deny before a capability exists. The coordinator and COSMO worker import this same module; neither keeps a second allowlist.
+Implement `OPERATION_AUTHORITY` and `authorizeBrainOperation({requesterAgent, operationType, target})` in the shared CommonJS module. Freeze every row and array. Derive `own` only for the requester's canonical resident brain; completed research targets are always `read-only`. Derive run owner/state from the canonical persisted target resolved through the exact `{runId}` selector. The function returns the matching frozen row or throws a typed deny before a capability exists. The coordinator and COSMO worker import this same module; neither keeps a second allowlist.
 
 `BrainOperationStoreReader` is the only read facade used by HTTP routes and the operator CLI:
 
