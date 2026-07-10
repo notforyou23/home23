@@ -38,6 +38,8 @@ class NetworkMemory {
     this.nodeIdFormat = 'numeric'; // 'numeric' or 'string' - detected from loaded state
     this.nodeIdPrefix = null; // For string IDs (e.g., "fa7572")
     this.persistenceRevision = 0;
+    this.persistenceGeneration = 0;
+    this.persistenceBarrierActive = false;
     this.dirtyNodeIds = new Set();
     this.dirtyEdgeKeys = new Set();
     this.deletedNodeIds = new Set();
@@ -445,6 +447,7 @@ class NetworkMemory {
       }
     }
     this.persistenceRevision += 1;
+    this.persistenceGeneration += 1;
     return true;
   }
 
@@ -541,12 +544,30 @@ class NetworkMemory {
     this.dirtyNodeIds.add(nodeId);
     this.deletedNodeIds.delete(nodeId);
     this.persistenceRevision += 1;
+    this.persistenceGeneration += 1;
   }
 
   markEdgeDirty(edgeKey) {
     this.dirtyEdgeKeys.add(edgeKey);
     this.deletedEdgeKeys.delete(edgeKey);
     this.persistenceRevision += 1;
+    this.persistenceGeneration += 1;
+  }
+
+  withPersistenceBarrier(callback) {
+    if (this.persistenceBarrierActive) {
+      throw new Error('persistence_barrier_reentry');
+    }
+    this.persistenceBarrierActive = true;
+    try {
+      const result = callback();
+      if (result && typeof result.then === 'function') {
+        throw new Error('persistence_barrier_async_callback');
+      }
+      return result;
+    } finally {
+      this.persistenceBarrierActive = false;
+    }
   }
 
   hasPersistenceChanges() {
@@ -631,6 +652,50 @@ class NetworkMemory {
     this.dirtyEdgeKeys.clear();
     this.deletedNodeIds.clear();
     this.deletedEdgeKeys.clear();
+  }
+
+  capturePersistenceSnapshot() {
+    return this.withPersistenceBarrier(() => {
+      const deepClone = (value) => JSON.parse(JSON.stringify(value));
+      const deepFreeze = (value) => {
+        if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+        for (const child of Object.values(value)) deepFreeze(child);
+        return Object.freeze(value);
+      };
+      const nodes = Array.from(this.nodes.values()).map((node) => deepClone(this.serializeNodeRecord(node)));
+      const edges = Array.from(this.edges.entries()).map(([key, edge]) => {
+        let source = edge.source;
+        let target = edge.target;
+        if (source === undefined || target === undefined) {
+          const parts = key.split('->');
+          source = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
+          target = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
+        }
+        return deepClone({ ...edge, source, target });
+      });
+      const changes = deepClone(this.getPersistenceChanges());
+      const clusters = new Set(nodes.map((node) => node.cluster).filter((cluster) => cluster !== null && cluster !== undefined));
+      return deepFreeze({
+        generation: this.persistenceGeneration,
+        changes,
+        fullView: { nodes, edges },
+        summary: {
+          nodeCount: nodes.length,
+          edgeCount: edges.length,
+          clusterCount: clusters.size,
+        },
+      });
+    });
+  }
+
+  markPersistenceCleanIfGeneration(expectedGeneration) {
+    return this.withPersistenceBarrier(() => {
+      if (!Number.isSafeInteger(expectedGeneration) || this.persistenceGeneration !== expectedGeneration) {
+        return false;
+      }
+      this.markPersistenceClean();
+      return true;
+    });
   }
 
   /**
@@ -808,6 +873,12 @@ class NetworkMemory {
     }).join('->');
     const existed = this.edges.has(edgeKey);
     this.edges.delete(edgeKey);
+    if (existed) {
+      this.deletedEdgeKeys.add(edgeKey);
+      this.dirtyEdgeKeys.delete(edgeKey);
+      this.persistenceRevision += 1;
+      this.persistenceGeneration += 1;
+    }
     return existed;
   }
 
@@ -894,6 +965,7 @@ class NetworkMemory {
       node.accessed = new Date();
       node.accessCount++;
       node.weight = Math.min(1.0, node.weight + 0.1);
+      this.markNodeDirty(node.id);
     });
     
     return results;
