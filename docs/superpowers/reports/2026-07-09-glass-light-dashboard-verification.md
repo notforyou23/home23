@@ -3,11 +3,13 @@
 ## Result
 
 - Browser result: BLOCKED for final-current-code acceptance. Historical Browser checks passed where executed at the baseline commit, but the final completion wave could not be recaptured because the Codex in-app Browser enterprise network policy blocks `http://127.0.0.1:51923`
+- Live integration result: APPLIED to the live Home23 `main` checkout; `http://127.0.0.1:5002/home23` now serves the Glass Light markup, CSS tokens, and reviewed dashboard JavaScript without a PM2 restart
 - Tested branch: `codex/glass-light-dashboard`
 - Browser baseline commit: `ef7e534a2f261dfa623662e2c583e79e5c3e4cd3`
 - Final automated code commit: `1d90e14` (complete handoff repair plus reviewed pulse ownership, optimistic Sauna actions, and stale-poll reconciliation)
+- Live integration commit: `82ed08ea5597a4f076d9ff3ba0f7143733dde449`
 - Comparison base: `c2b19654b7d784b43cdbdf231257adeba3b0675e`
-- Verification date: 2026-07-09 America/New_York
+- Verification dates: 2026-07-09 through 2026-07-10 America/New_York
 
 ## Authority
 
@@ -15,8 +17,8 @@
 - Source visual: `/Users/jtr/Downloads/design_handoff_glass_dashboard/Home23 Dashboard.dc.html`
 - Integration guidance: `/Users/jtr/Downloads/design_handoff_glass_dashboard/IMPLEMENTATION.md`
 - Design tokens: `/Users/jtr/Downloads/design_handoff_glass_dashboard/glass-theme-tokens.css`
-- Integration spec: `/Users/jtr/_JTR23_/release/home23/.worktrees/glass-light-dashboard/docs/superpowers/specs/2026-07-09-glass-light-dashboard-integration-design.md`
-- Implementation plan: `/Users/jtr/_JTR23_/release/home23/.worktrees/glass-light-dashboard/docs/superpowers/plans/2026-07-09-glass-light-dashboard-integration.md`
+- Integration spec: `/Users/jtr/_JTR23_/release/home23/docs/superpowers/specs/2026-07-09-glass-light-dashboard-integration-design.md`
+- Implementation plan: `/Users/jtr/_JTR23_/release/home23/docs/superpowers/plans/2026-07-09-glass-light-dashboard-integration.md`
 
 ## Isolated verification servers
 
@@ -43,6 +45,7 @@ This is not a complete network-isolation boundary: production code can resolve p
 - Scope, Settings status, Home summary, weather, Sauna, pool, Problems, Good Life, and Briefs GETs returned HTTP 200.
 - Representative same-origin Settings, Sauna action, and Query POSTs returned HTTP 405; a final Query POST read back `{"ok":false,"error":"qa_server_is_read_only"}`. This proves the proxy behavior only, not direct agent/bridge routes.
 - All three isolated servers and live `http://127.0.0.1:5002/home23` read back HTTP 200 after Browser QA.
+- After live integration, `/home23`, `/home23/settings`, `/home23/chat`, and `/home23/vibe-gallery` returned HTTP 200 directly from port 5002. The live Home response contains `.h23-topbar`, the live CSS contains `--h23-glass-card`, and the live JavaScript contains the reviewed pulse-ownership revision guard.
 
 ## Automated verification after Browser repairs
 
@@ -63,6 +66,14 @@ The full automated gate below was rerun after the post-review safety/fidelity re
 | `git diff --check c2b19654b7d784b43cdbdf231257adeba3b0675e` | PASS |
 
 The final plain `npm test` attempt could not resolve `lockfile`, `openai`, and `js-yaml` because the isolated worktree intentionally has no `node_modules`. The packages are present in the existing main-workspace dependency trees, so the identical suite was rerun with those read-only paths in `NODE_PATH` and passed all 692 runnable tests. One local-agent identity test skips because installation instances are not copied into the worktree; Node reports existing `punycode` deprecations and one module-type warning. None of these environment caveats originate in the dashboard files.
+
+### Live integration receipt
+
+On 2026-07-10, the redesign was merged with `main` in a clean integration worktree and then fast-forwarded into the live checkout at `82ed08e`. Immediately before that fast-forward, the dashboard's 16 paths had zero overlap with the live checkout's staged, unstaged, deleted, and untracked paths. SHA-256 readbacks of the complete status stream, staged patch, unstaged patch, and untracked-file contents were identical before and after the fast-forward. No stash, reset, checkout overwrite, broad PM2 command, or process restart was used.
+
+The clean merged commit passed dashboard syntax, 75/75 focused dashboard checks, ChatState 6/6, QA harness 4/4, `npm run build`, all 692 runnable broad tests with one intentional local-instance skip, and 12/12 static contracts with one expected live-validator skip. The live checkout, including the operator's unrelated local work, independently passed the same focused dashboard checks, ChatState, QA harness, build, static contracts, and 13 read-only live contract routes. Its broad `npm test` reported 689 pass and one failure in `tests/engine/core/orchestrator-goal-snapshot.test.js`; the failure concerns an extra `accessibility: 'mcp-required'` field from local `engine/src/core/orchestrator.js` work, and neither file is changed by the dashboard merge.
+
+Direct live readback required no restart: Home, Settings, Chat, and Vibe Gallery returned HTTP 200, and the served Home HTML/CSS/JavaScript contain the Glass top bar, Glass token layer, and pulse-ownership guard. The current Codex in-app Browser binding is unavailable, so fresh post-integration screenshots and interactive visual acceptance still require a user-opened browser surface.
 
 ### Browser repair TDD receipts
 
@@ -265,9 +276,9 @@ The branch remains inside the approved dashboard/page/test/spec/plan/report boun
 
 ## Dirty-main reconciliation and integration boundary
 
-The live main worktree was re-read immediately before closeout. It was `main...origin/main [ahead 3]` with 53 staged, unstaged, deleted, or untracked paths. The dashboard branch changes 16 paths. A sorted path intersection between current main changes and `git diff --name-only c2b19654b7d784b43cdbdf231257adeba3b0675e..HEAD` returned zero paths.
+Before integration, live `main` was at `eb3188d`, ahead of `origin/main` by three commits, with 53 staged, unstaged, deleted, or untracked paths. The dashboard branch changed 16 different paths; both committed-since-base overlap and live dirty-path overlap were zero, and a three-way merge preview contained no conflict markers.
 
-No merge, cherry-pick, stash, reset, or main-worktree edit was performed. Zero path overlap lowers conflict risk but does not make a dirty merge appropriate. After the current main work is intentionally reconciled and the Browser gate is complete, the safe local integration path is to enter a clean main worktree and merge `codex/glass-light-dashboard`; a pushed branch/PR is the alternative if remote review is preferred.
+The merge commit was created and verified in `.worktrees/glass-light-dashboard-integration`, outside the dirty checkout. Live `main` was then fast-forwarded to `82ed08e`. The unrelated status, index patch, worktree patch, and untracked-file content hashes were identical before and after integration, leaving the same 53 user-owned paths in place. `main` is now ahead of `origin/main` by 46 commits because it contains the preserved feature history and the merge commit. No user-owned path was staged, unstaged, deleted, restored, or included in the dashboard merge.
 
 ## Acceptance-criterion audit
 
@@ -276,12 +287,12 @@ No merge, cherry-pick, stash, reset, or main-worktree edit was performed. Zero p
 | 1. Match the supplied light-glass handoff at the primary laptop target | Matched 1440 × 1000 DPR 1 source/implementation captures at baseline `ef7e534`; `comparison-home-1440-final.png`, `comparison-header-1440-final.png`, and `comparison-main-1440-final.png`; final code retains executable geometry/token contracts | PARTIAL — baseline visual match proven; final `1d90e14` recapture blocked |
 | 2. Apply the new design language to all documented dashboard surfaces and six overlays | Branch HTML/CSS in `engine/src/dashboard/`; 65 glass contracts inside the 75-test focused run; completion fix-wave and final repair reviews found no remaining production-code issue; historical surface/overlay matrices and captures | PARTIAL — source/test/review evidence passes; final changed surfaces were not recaptured |
 | 3. Keep every existing functional route, data source, action, and production-only detail reachable | Preservation contracts in `tests/dashboard/glass-light-dashboard.test.js` and `tests/dashboard/operator-ui.test.js`; ChatState 6/6; final task-quality review approved at `1d90e14`; all live write controls retained but deliberately unissued | PASS by source/executable review; live-write paths intentionally not exercised |
-| 4. Leave stored runtime/config/instance data untouched | Branch range contains dashboard/page/test/evidence files plus the opt-in QA proxy/test; no `instances/`, local config, secrets, PM2 dump, generated runtime data, or production server file. Current dirty-main audit found 53 main paths, 16 branch paths, and zero overlap | PASS |
-| 5. Pass focused and broad automated checks | Final syntax/diff checks, glass 65/65, focused 75/75, ChatState 6/6, QA harness 4/4, `npm run build`, dependency-path `npm test` 692 pass/0 fail/1 intentional skip, and `npm run test:contracts` 12 pass/1 expected skip | PASS at `1d90e14` |
+| 4. Leave stored runtime/config/instance data untouched | Branch range contains dashboard/page/test/evidence files plus the opt-in QA proxy/test; no `instances/`, local config, secrets, PM2 dump, generated runtime data, or production server file. The clean merge and live fast-forward preserved the same 53 unrelated local paths byte-for-byte and introduced only the 16 dashboard paths | PASS at `82ed08e` |
+| 5. Pass focused and broad automated checks | Clean merged commit: syntax/diff checks, glass 65/65, focused 75/75, ChatState 6/6, QA harness 4/4, `npm run build`, dependency-path `npm test` 692 pass/0 fail/1 intentional skip, and `npm run test:contracts` 12 pass/1 expected skip. Live dirty checkout repeats the focused/build/contracts gate; its one broad failure is in unrelated local orchestrator work outside the merge | PASS for the integrated dashboard at `82ed08e` |
 | 6. Pass read-only live contracts | `npm run test:contracts:live`: 13 GET/read-only routes checked, 21 action/stream/fixture contracts skipped, action opt-in unset | PASS |
-| 7. Prove navigation, live rendering, responsive behavior, accessibility basics, Chat state preservation, and clean console output in Browser | Historical evidence covers native hashes/surfaces, real Home data, six overlays, Chat singleton/draft state, 1440/1200/1024/768/390/320 layouts, focus/Escape/scroll lock, and clean checked-surface console. Final Browser readback is still required for the invariant shell, overlay tokens/states, sensor order, Settings rows, feed failure states, Sauna action states, Vibe navigation/races, tab keyboard behavior, Welcome/gallery semantics, standalone Chat geometry, 200% zoom, and reduced motion | BLOCKED — enterprise policy rejects the local QA origin |
+| 7. Prove navigation, live rendering, responsive behavior, accessibility basics, Chat state preservation, and clean console output in Browser | Historical evidence covers native hashes/surfaces, real Home data, six overlays, Chat singleton/draft state, 1440/1200/1024/768/390/320 layouts, focus/Escape/scroll lock, and clean checked-surface console. Direct HTTP readback proves the live server now serves final Glass assets. Final Browser readback is still required for the invariant shell, overlay tokens/states, sensor order, Settings rows, feed failure states, Sauna action states, Vibe navigation/races, tab keyboard behavior, Welcome/gallery semantics, standalone Chat geometry, 200% zoom, and reduced motion | BLOCKED — prior local QA navigation was policy-rejected and the current in-app Browser binding is unavailable |
 | 8. Record exact commands, results, screenshots, and intentionally unexercised live writes | This committed report, tracked QA-only proxy, local ignored screenshot inventory, automated command table, dependency-path caveat, server/read-only boundary disclosure, and “Intentionally unexercised live writes” section | PARTIAL — commands/results and local evidence are durable here, but screenshots are baseline-only, ignored, and non-portable |
 
 ## Caveats
 
-The in-app Browser did not synthesize native-button default key activation and closed before 200% zoom/reduced-motion emulation, final related-page rendering, and post-review safety/fidelity recaptures. A replacement session is rejected from `http://127.0.0.1:51923` by enterprise network policy; no alternate browser or policy workaround was attempted. Semantic/executable contracts and independent task review reduce risk but do not prove the missing current-code Browser behaviors. Separately, the 26 capture files are intentionally ignored local artifacts; 20 have `.png` names but JPEG/JFIF payloads from the in-app screenshot encoder, while the six final combined comparison files are true PNGs. All render locally, but the captures are not portable branch artifacts.
+The in-app Browser did not synthesize native-button default key activation and closed before 200% zoom/reduced-motion emulation, final related-page rendering, and post-review safety/fidelity recaptures. A replacement session was rejected from `http://127.0.0.1:51923` by enterprise network policy, and the current Codex in-app Browser binding is unavailable; no alternate browser or policy workaround was attempted. Semantic/executable contracts, direct live asset readback, and independent task review reduce risk but do not prove the missing current-code Browser behaviors. Separately, the 26 capture files are intentionally ignored local artifacts; 20 have `.png` names but JPEG/JFIF payloads from the in-app screenshot encoder, while the six final combined comparison files are true PNGs. All render locally, but the captures are not portable branch artifacts.
