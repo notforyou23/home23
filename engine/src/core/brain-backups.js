@@ -24,6 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const fsp = fs.promises;
+const { openMemorySource, readManifest } = require('../../../shared/memory-source');
 
 const BACKUPS_DIR = 'backups';
 const BACKUP_FILES = [
@@ -75,6 +76,8 @@ async function maybeBackup(brainDir, opts = {}) {
     retention = DEFAULT_RETENTION,
     logger,
     force = false,
+    home23Root = path.dirname(path.resolve(brainDir)),
+    requesterAgent = 'backup',
   } = opts;
 
   const root = backupsRoot(brainDir);
@@ -89,14 +92,8 @@ async function maybeBackup(brainDir, opts = {}) {
     }
   }
 
-  // Verify every source file exists before attempting the backup so we
-  // don't persist partial snapshots.
-  for (const f of BACKUP_FILES) {
-    const full = path.join(brainDir, f);
-    if (!fs.existsSync(full)) {
-      return { created: false, reason: `missing-source:${f}` };
-    }
-  }
+  const sourceSet = await resolveBackupSources(brainDir, { home23Root, requesterAgent });
+  if (!sourceSet.ok) return sourceSet.result;
 
   // Coherent copy: build tmp dir, copy all files, atomically rename.
   const stamp = new Date().toISOString().replace(/:/g, '-').replace(/\..+$/, '');
@@ -110,13 +107,21 @@ async function maybeBackup(brainDir, opts = {}) {
 
   let bytes = 0;
   try {
-    for (const f of [...BACKUP_FILES, ...OPTIONAL_BACKUP_FILES]) {
-      const src = path.join(brainDir, f);
+    for (const f of sourceSet.files) {
+      const src = path.join(sourceSet.physicalRoot || brainDir, f);
       if (!fs.existsSync(src)) continue;
       const dst = path.join(tmpDir, f);
+      await fsp.mkdir(path.dirname(dst), { recursive: true });
       await fsp.copyFile(src, dst);
       bytes += (await fsp.stat(dst)).size;
     }
+    await fsp.writeFile(path.join(tmpDir, 'backup-manifest.json'), `${JSON.stringify({
+      version: 1,
+      source: sourceSet.source,
+      generation: sourceSet.descriptor?.generation || null,
+      revision: sourceSet.descriptor?.cutoffRevision || null,
+      files: sourceSet.files,
+    }, null, 2)}\n`);
     await fsp.rename(tmpDir, finalDir);
   } catch (err) {
     try { await fsp.rm(tmpDir, { recursive: true, force: true }); } catch {}
@@ -147,4 +152,59 @@ async function maybeBackup(brainDir, opts = {}) {
   return { created: true, backupName, pruned, sizeMB: +(bytes / 1048576).toFixed(1) };
 }
 
-module.exports = { maybeBackup, listBackups, BACKUPS_DIR, BACKUP_FILES, OPTIONAL_BACKUP_FILES };
+async function resolveBackupSources(brainDir, { home23Root, requesterAgent }) {
+  const manifest = await readManifest(brainDir).catch(() => null);
+  if (!manifest) {
+    for (const f of BACKUP_FILES) {
+      const full = path.join(brainDir, f);
+      if (!fs.existsSync(full)) {
+        return { ok: false, result: { created: false, reason: `missing-source:${f}` } };
+      }
+    }
+    return {
+      ok: true,
+      source: 'legacy-sidecars',
+      physicalRoot: brainDir,
+      files: [...BACKUP_FILES, ...OPTIONAL_BACKUP_FILES].filter((file) =>
+        fs.existsSync(path.join(brainDir, file))),
+      descriptor: null,
+    };
+  }
+
+  const operationId = `backup-${process.pid}-${Date.now()}`;
+  const operationRoot = path.join(home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations', operationId);
+  const source = await openMemorySource(brainDir, {
+    requesterAgent,
+    operationId,
+    operationRoot,
+    lockRoot: path.join(home23Root, 'runtime', 'brain-source-locks'),
+  });
+  try {
+    const files = new Set(['state.json.gz', 'brain-snapshot.json', 'memory-manifest.json']);
+    for (const filePath of source.physicalFiles || []) files.add(path.basename(filePath));
+    for (const f of files) {
+      if (!fs.existsSync(path.join(brainDir, f))) {
+        return { ok: false, result: { created: false, reason: `missing-source:${f}` } };
+      }
+    }
+    return {
+      ok: true,
+      source: 'memory-manifest',
+      physicalRoot: brainDir,
+      files: [...files].sort(),
+      descriptor: source.descriptor,
+    };
+  } finally {
+    await source.close();
+    await fsp.rm(operationRoot, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+module.exports = {
+  maybeBackup,
+  listBackups,
+  BACKUPS_DIR,
+  BACKUP_FILES,
+  OPTIONAL_BACKUP_FILES,
+  resolveBackupSources,
+};
