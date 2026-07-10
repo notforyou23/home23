@@ -21,10 +21,7 @@ const { Home23VibeService } = require('./home23-vibe/service');
 const { Home23BriefsService } = require('./home23-briefs');
 const { Home23TileService } = require('./home23-tiles');
 const { updateDashboardOAuthTokenSecrets } = require('./home23-secrets');
-const {
-  classifyMemoryProvenance,
-  scoreMemorySalience,
-} = require('../memory/provenance-salience');
+const { createMemorySearchService } = require('./memory-search');
 const {
   buildGoodLifeOperatorModel,
   buildLiveProblemSnapshot,
@@ -254,6 +251,13 @@ class DashboardServer {
     });
 
     this.initializeBrainOperations(options.brainOperations);
+    this.memorySearchService = createMemorySearchService({
+      brainDir: this.logsDir,
+      home23Root: this.getHome23Root(),
+      requesterAgent: this.getHome23AgentName(),
+      resolveTargetContext: (selector) => this.brainOperationsCoordinator.resolveTargetContext(selector),
+      logger: this.logger,
+    });
     
     this.setupRoutes();
   }
@@ -7071,370 +7075,43 @@ Be specific, actionable, and maintain research continuity.`;
       }
     });
 
-    // Lazy-loaded persistent HNSW ANN index (built by engine/src/merge/build-ann-index.js).
-    // Turns brain_search from a ~69s linear scan over the 1.67GB sidecar into a ~1ms searchKnn.
-    // Cached and auto-reloaded when the .meta.json mtime changes (rebuild). Falls back to the
-    // full sidecar scan if the index is missing/stale/unloadable — search never breaks.
-    const loadAnnIndex = () => {
-      try {
-        const fsSync = require('fs');
-        const metaPath = path.join(this.logsDir, 'memory-ann.meta.json');
-        const indexPath = path.join(this.logsDir, 'memory-ann.index');
-        if (!fsSync.existsSync(metaPath) || !fsSync.existsSync(indexPath)) return null;
-        const mtime = fsSync.statSync(metaPath).mtimeMs;
-        if (this._annCache && this._annCache.mtime === mtime) return this._annCache;
-        const hnswlib = require('hnswlib-node');
-        const meta = JSON.parse(fsSync.readFileSync(metaPath, 'utf8'));
-        const index = new hnswlib.HierarchicalNSW('cosine', meta.dim);
-        index.readIndexSync(indexPath);
-        index.setEf(Math.max(100, meta.efConstruction || 100));
-        this._annCache = { mtime, index, labels: meta.labels, dim: meta.dim, count: meta.count };
-        console.log(`[/api/memory/search] ANN index loaded: ${meta.count} nodes (built ${meta.builtAt})`);
-        return this._annCache;
-      } catch (err) {
-        console.error('[/api/memory/search] ANN load failed, falling back to scan:', err.message);
-        return null;
-      }
-    };
-
-    const extractMemorySearchWords = (queryText) => String(queryText || '')
-      .toLowerCase()
-      .split(/[^a-z0-9_:-]+/)
-      .filter((word) => word.length >= 3);
-
-    const scoreKeywordMemoryNode = (node, queryText, queryWords) => {
-      if (!node) return 0;
-      const concept = String(node.concept || node.content || node.summary || '').toLowerCase();
-      const tagText = String(node.tag || '').toLowerCase();
-      const tagsText = Array.isArray(node.tags) ? node.tags.join(' ').toLowerCase() : '';
-      const metadataText = node.metadata && typeof node.metadata === 'object'
-        ? Object.values(node.metadata).filter((value) => typeof value === 'string').join(' ').toLowerCase()
-        : '';
-      const haystack = `${concept} ${tagText} ${tagsText} ${metadataText}`;
-      const phrase = String(queryText || '').trim().toLowerCase();
-      let score = phrase && concept.includes(phrase) ? 0.45 : 0;
-      let matched = 0;
-      for (const word of queryWords) {
-        if (haystack.includes(word)) {
-          matched += 1;
-          score += concept.includes(word) ? 0.16 : 0.08;
-        }
-      }
-      if (matched === 0) return 0;
-      score += Math.min(0.2, matched / queryWords.length * 0.2);
-      return Math.min(1, score);
-    };
-
-    const runKeywordMemorySearch = async ({ query, topK, tag = null, sourceNote = 'keyword fallback' }) => {
-      const resultLimit = Math.max(1, Math.min(100, parseInt(topK, 10) || 10));
-      const queryWords = extractMemorySearchWords(query);
-      const topCandidates = [];
-      let totalSearched = 0;
-      let totalMatched = 0;
-      let source = 'state';
-
-      const scoreNode = (node) => {
-        if (!node) return;
-        if (tag && node.tag !== tag) return;
-        totalSearched += 1;
-        const keywordScore = scoreKeywordMemoryNode(node, query, queryWords);
-        if (keywordScore <= 0) return;
-        totalMatched += 1;
-        const provenance = classifyMemoryProvenance(node);
-        const retrievalScore = scoreMemorySalience(node, keywordScore);
-        topCandidates.push({
-          retrievalScore,
-          result: {
-            id: node.id,
-            concept: node.concept || node.content || node.summary || '',
-            tag: node.tag,
-            similarity: Math.round(keywordScore * 10000) / 10000,
-            retrievalScore: Math.round(retrievalScore * 10000) / 10000,
-            retrievalMode: 'keyword',
-            sourceClass: provenance.sourceClass,
-            salienceWeight: provenance.salienceWeight,
-            weight: node.weight,
-            activation: node.activation,
-            cluster: node.cluster,
-            created: node.created,
-            accessed: node.accessed,
-            accessCount: node.accessCount,
-          },
-        });
-        topCandidates.sort((a, b) => b.retrievalScore - a.retrievalScore);
-        if (topCandidates.length > resultLimit) topCandidates.length = resultLimit;
-      };
-
-      try {
-        const { sidecarsExist, readJsonlGz, nodesPath } = require('../core/memory-sidecar');
-        if (sidecarsExist(this.logsDir)) {
-          source = 'memory-sidecar';
-          await readJsonlGz(nodesPath(this.logsDir), scoreNode);
-        } else {
-          let state = { memory: { nodes: [] } };
-          try {
-            state = await this.loadState();
-          } catch {
-            state = { memory: { nodes: [] } };
-          }
-          let nodes = state.memory?.nodes || [];
-          if (!Array.isArray(nodes)) nodes = Object.values(nodes);
-          for (const node of nodes) scoreNode(node);
-        }
-      } catch (error) {
-        console.error('[/api/memory/search] Keyword fallback failed:', error.message);
-        return { query, results: [], stats: { totalSearched, totalMatched: 0, source, retrievalMode: 'keyword', note: error.message } };
-      }
-
-      return {
-        query,
-        results: topCandidates.map((candidate) => candidate.result),
-        stats: {
-          totalSearched,
-          totalMatched,
-          source: `${source}-keyword`,
-          retrievalMode: 'keyword',
-          note: sourceNote,
-        },
-      };
-    };
-
-    // Semantic search over memory nodes via embedding cosine similarity
+    // Semantic/keyword memory search over the canonical logical memory source.
+    const pickSearchParameters = (input = {}) => ({
+      query: input.query || input.search || input.q,
+      topK: input.topK ?? input.limit ?? 10,
+      minSimilarity: input.minSimilarity ?? 0.4,
+      noiseFloor: input.noiseFloor ?? 0.55,
+      tag: input.tag || null,
+    });
     const handleMemorySearch = async (req, res) => {
+      const controller = new AbortController();
+      req.once('close', () => controller.abort(Object.assign(new Error('client disconnected'), {
+        name: 'AbortError',
+        code: 'cancelled',
+      })));
       try {
-        const { query, topK = 10, minSimilarity = 0.4, noiseFloor = 0.55, tag = null } = req.body;
-        if (!query || typeof query !== 'string') {
-          return res.status(400).json({ error: 'query string is required' });
-        }
-
-        // Embed the query using the same client/model as the engine
-        const { getEmbeddingClient } = require('../core/openai-client');
-        const client = getEmbeddingClient();
-
-        const embeddingModel = process.env.EMBEDDING_MODEL || 'nomic-embed-text';
-        const isOllama = (process.env.EMBEDDING_BASE_URL || '').includes('11434');
-
-        // Truncate query for embedding (same safety limits as NetworkMemory)
-        let queryText = query;
-        if (queryText.length > 2000) {
-          queryText = queryText.substring(0, 2000);
-        }
-
-        const createParams = { model: embeddingModel, input: queryText };
-        if (!isOllama) {
-          createParams.encoding_format = 'float';
-        }
-
-        let embResponse;
-        try {
-          embResponse = await client.embeddings.create(createParams);
-        } catch (embeddingError) {
-          console.warn('[/api/memory/search] Query embedding failed; using keyword fallback:', embeddingError.message);
-          return res.json(await runKeywordMemorySearch({
-            query,
-            topK,
-            tag,
-            sourceNote: 'query embedding unavailable; used keyword fallback',
-          }));
-        }
-        const queryEmbedding = embResponse?.data?.[0]?.embedding;
-
-        if (!queryEmbedding || !Array.isArray(queryEmbedding)) {
-          return res.json(await runKeywordMemorySearch({
-            query,
-            topK,
-            tag,
-            sourceNote: 'query embedding response was empty; used keyword fallback',
-          }));
-        }
-
-        const resultLimit = Math.max(1, Math.min(100, parseInt(topK, 10) || 10));
-        const similarityThreshold = Number.isFinite(Number(minSimilarity)) ? Number(minSimilarity) : 0.4;
-
-        // ── ANN fast path ──────────────────────────────────────────────
-        // If the persistent HNSW index is available, query it in ms instead of
-        // scanning the full sidecar. Pull a wide candidate pool so salience can
-        // rescue low-volume conversation/identity nodes from high-volume chatter.
-        const ann = loadAnnIndex();
-        if (ann && ann.index) {
-          try {
-            const k = Math.min(ann.count, Math.max(resultLimit * 100, 1000));
-            const knn = ann.index.searchKnn(queryEmbedding, k);
-            const annResults = [];
-            for (let i = 0; i < knn.neighbors.length; i++) {
-              const label = ann.labels[knn.neighbors[i]];
-              if (!label) continue;
-              if (tag && label.tag !== tag) continue;
-              const similarity = 1 - knn.distances[i]; // cosine space distance -> similarity
-              if (similarity < similarityThreshold) continue;
-              const provenance = classifyMemoryProvenance(label);
-              const retrievalScore = scoreMemorySalience(label, similarity);
-              annResults.push({
-                id: label.id,
-                concept: label.concept,
-                tag: label.tag,
-                similarity: Math.round(similarity * 10000) / 10000,
-                retrievalScore: Math.round(retrievalScore * 10000) / 10000,
-                sourceClass: provenance.sourceClass,
-                salienceWeight: provenance.salienceWeight,
-                weight: label.weight,
-                activation: label.activation,
-                cluster: label.cluster,
-                created: label.created,
-              });
-            }
-            annResults.sort((a, b) => (b.retrievalScore ?? b.similarity) - (a.retrievalScore ?? a.similarity));
-            const results = annResults.slice(0, resultLimit);
-            return res.json({
-              query,
-              results,
-              stats: {
-                totalSearched: ann.count,
-                totalMatched: annResults.length,
-                topSimilarity: results.length ? Math.max(...results.map((r) => r.similarity || 0)) : 0,
-                topRetrievalScore: results.length ? results[0].retrievalScore : 0,
-                source: 'ann-hnsw',
-                salienceWeighted: true,
-                noiseFiltered: false,
-              },
-            });
-          } catch (annErr) {
-            console.error('[/api/memory/search] ANN query failed, falling back to scan:', annErr.message);
-            // fall through to the full scan below
-          }
-        }
-        // ───────────────────────────────────────────────────────────────
-
-        // Cosine similarity (inlined from NetworkMemory)
-        function cosineSimilarity(a, b) {
-          if (!a || !b || a.length !== b.length) return 0;
-          let dot = 0, nA = 0, nB = 0;
-          for (let i = 0; i < a.length; i++) {
-            dot += a[i] * b[i];
-            nA += a[i] * a[i];
-            nB += b[i] * b[i];
-          }
-          if (nA === 0 || nB === 0) return 0;
-          return dot / (Math.sqrt(nA) * Math.sqrt(nB));
-        }
-
-        // Score searchable nodes without materializing the full sidecar graph in
-        // dashboard heap. The live Jerry sidecar is hundreds of MB compressed.
-        let totalSearched = 0;
-        let totalMatched = 0;
-        let popMean = 0;
-        let popM2 = 0;
-        let topScore = 0;
-        const topCandidates = [];
-        let source = 'state';
-
-        const scoreNode = (node) => {
-          if (!node?.embedding || !Array.isArray(node.embedding) || node.embedding.length === 0) return;
-          if (tag && node.tag !== tag) return;
-          const similarity = cosineSimilarity(queryEmbedding, node.embedding);
-          totalSearched += 1;
-          const delta = similarity - popMean;
-          popMean += delta / totalSearched;
-          popM2 += delta * (similarity - popMean);
-          if (similarity > topScore) topScore = similarity;
-
-          if (similarity >= similarityThreshold) {
-            totalMatched += 1;
-            const provenance = classifyMemoryProvenance(node);
-            const retrievalScore = scoreMemorySalience(node, similarity);
-            topCandidates.push({
-              rawSimilarity: similarity,
-              retrievalScore,
-              result: {
-                id: node.id,
-                concept: node.concept,
-                tag: node.tag,
-                similarity: Math.round(similarity * 10000) / 10000,
-                retrievalScore: Math.round(retrievalScore * 10000) / 10000,
-                sourceClass: provenance.sourceClass,
-                salienceWeight: provenance.salienceWeight,
-                weight: node.weight,
-                activation: node.activation,
-                cluster: node.cluster,
-                created: node.created,
-                accessed: node.accessed,
-                accessCount: node.accessCount,
-              },
-            });
-            topCandidates.sort((a, b) => b.retrievalScore - a.retrievalScore);
-            if (topCandidates.length > resultLimit) topCandidates.length = resultLimit;
-          }
-        };
-
-        try {
-          const { sidecarsExist, readJsonlGz, nodesPath } = require('../core/memory-sidecar');
-          if (sidecarsExist(this.logsDir)) {
-            source = 'memory-sidecar';
-            await readJsonlGz(nodesPath(this.logsDir), scoreNode);
-          } else {
-            let state = { memory: { nodes: [] } };
-            try {
-              state = await this.loadState();
-            } catch {
-              return res.json({ query, results: [], stats: { totalSearched: 0, totalMatched: 0 } });
-            }
-
-            let nodes = state.memory?.nodes || [];
-            if (!Array.isArray(nodes)) {
-              nodes = Object.values(nodes);
-            }
-            for (const node of nodes) scoreNode(node);
-          }
-        } catch (error) {
-          console.error('[/api/memory/search] Sidecar search failed:', error.message);
-          return res.status(500).json({ error: error.message });
-        }
-
-        if (totalSearched === 0) {
-          return res.json(await runKeywordMemorySearch({
-            query,
-            topK,
-            tag,
-            sourceNote: 'no nodes with embeddings; used keyword fallback',
-          }));
-        }
-
-        // Population standard deviation for z-score
-        const popStdDev = totalSearched > 0 ? Math.sqrt(popM2 / totalSearched) : 0;
-
-        // Z-score: how many standard deviations is the top result above the mean?
-        // Real semantic matches: z > 2.5 (top result is a clear outlier)
-        // Noise/generic matches: z < 2.0 (top result is within the normal distribution)
-        const zScore = popStdDev > 0 ? (topScore - popMean) / popStdDev : 0;
-
-        // Adaptive threshold: stricter for large brains (noise), lenient for small ones
-        // Also accept results above absolute similarity threshold (0.45) regardless of z-score
-        const minZScore = totalSearched < 50 ? 1.0 : totalSearched < 500 ? 2.0 : 3.0;
-        const minAbsSimilarity = 0.45;
-
-        const candidateResults = topCandidates.map(c => c.result);
-        const hasSignal = candidateResults.length > 0 && (zScore >= minZScore || topScore >= minAbsSimilarity);
-        const results = hasSignal ? candidateResults : [];
-
-        res.json({
-          query,
-          results,
-          stats: {
-            totalSearched,
-            totalMatched: hasSignal ? totalMatched : 0,
-            topSimilarity: Math.round(topScore * 10000) / 10000,
-            topRetrievalScore: candidateResults.length ? candidateResults[0].retrievalScore : 0,
-            populationMean: Math.round(popMean * 10000) / 10000,
-            populationStdDev: Math.round(popStdDev * 10000) / 10000,
-            zScore: Math.round(zScore * 100) / 100,
-            noiseFiltered: !hasSignal,
-            source,
-            salienceWeighted: true,
-          }
+        const result = await this.memorySearchService.search({
+          ...pickSearchParameters(req.body),
+          signal: controller.signal,
         });
+        if (result.evidence?.sourceHealth === 'unavailable') {
+          return res.status(503).json({
+            ok: false,
+            error: { code: 'source_unavailable' },
+            ...result,
+          });
+        }
+        return res.json(result);
       } catch (error) {
-        console.error('[/api/memory/search] Error:', error.message);
-        res.status(500).json({ error: error.message });
+        if (error?.name === 'AbortError' || error?.code === 'cancelled') {
+          return res.status(499).json({ ok: false, error: { code: 'cancelled' } });
+        }
+        const status = Number(error?.status) || (error?.code === 'invalid_request' ? 400 : 500);
+        if (status >= 500) console.error('[/api/memory/search] Error:', error.message);
+        return res.status(status).json({
+          ok: false,
+          error: { code: error?.code || 'memory_search_failed', message: error.message },
+        });
       }
     };
     this.app.post('/api/memory/search', handleMemorySearch);
