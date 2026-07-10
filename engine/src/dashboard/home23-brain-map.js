@@ -435,7 +435,7 @@
     }
 
     try {
-      const res = await fetch('/home23/api/brain/graph?limit=2500&edgeLimit=10000');
+      const res = await fetch('/home23/api/brain/graph?nodeLimit=2000&edgeLimit=8000');
       if (!res.ok) throw new Error('Failed to load graph: ' + res.status);
       const data = await res.json();
 

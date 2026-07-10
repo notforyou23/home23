@@ -23,6 +23,10 @@ const { Home23TileService } = require('./home23-tiles');
 const { updateDashboardOAuthTokenSecrets } = require('./home23-secrets');
 const { createMemorySearchService } = require('./memory-search');
 const {
+  createBrainSourceRouter,
+  createBrainSourceService,
+} = require('./brain-source-api');
+const {
   buildGoodLifeOperatorModel,
   buildLiveProblemSnapshot,
   buildGoodLifeObligationSnapshot,
@@ -251,6 +255,12 @@ class DashboardServer {
     });
 
     this.initializeBrainOperations(options.brainOperations);
+    this.brainSourceService = createBrainSourceService({
+      brainDir: this.logsDir,
+      home23Root: this.getHome23Root(),
+      requesterAgent: this.getHome23AgentName(),
+      resolveTargetContext: (selector) => this.brainOperationsCoordinator.resolveTargetContext(selector),
+    });
     this.memorySearchService = createMemorySearchService({
       brainDir: this.logsDir,
       home23Root: this.getHome23Root(),
@@ -2532,162 +2542,9 @@ class DashboardServer {
       res.sendFile(resolved);
     });
 
-    // Brain graph data for 3D visualization
-    this.app.get('/home23/api/brain/graph', async (req, res) => {
-      try {
-        const fullGraph = req.query.full === '1' || req.query.full === 'true';
-        const requestedLimit = Number.parseInt(String(req.query.limit || ''), 10);
-        const maxNodes = fullGraph ? Number.POSITIVE_INFINITY : Math.min(
-          Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 2500, 250),
-          8000
-        );
-        const requestedEdgeLimit = Number.parseInt(String(req.query.edgeLimit || ''), 10);
-        const maxEdges = fullGraph ? Number.POSITIVE_INFINITY : Math.min(
-          Math.max(Number.isFinite(requestedEdgeLimit) ? requestedEdgeLimit : maxNodes * 4, 1000),
-          32000
-        );
-        if (!fullGraph) {
-          const { readJsonlGz, nodesPath, edgesPath } = require('../core/memory-sidecar');
-          const nodeSidecar = nodesPath(this.logsDir);
-          const edgeSidecar = edgesPath(this.logsDir);
-          const fsSync = require('fs');
-          if (fsSync.existsSync(nodeSidecar) && fsSync.existsSync(edgeSidecar)) {
-            const snapshotPath = path.join(this.logsDir, 'brain-snapshot.json');
-            let snapshot = {};
-            try {
-              snapshot = JSON.parse(fsSync.readFileSync(snapshotPath, 'utf8'));
-            } catch { /* snapshot may not exist yet */ }
-            const state = await this.loadStateLean();
-            const memory = state.memory || {};
-            const selectedIds = new Set();
-            const selectedEdges = [];
-            await readJsonlGz(edgeSidecar, (rec) => {
-              const source = String(rec.source);
-              const target = String(rec.target);
-              if (!source || !target || source === target) return true;
-
-              const newIds = [source, target].filter(id => !selectedIds.has(id));
-              if (selectedIds.size + newIds.length <= maxNodes) {
-                newIds.forEach(id => selectedIds.add(id));
-                selectedEdges.push(rec);
-              }
-              return selectedEdges.length < maxEdges;
-            });
-            const selectedRawNodes = [];
-            await readJsonlGz(nodeSidecar, (rec) => {
-              if (selectedIds.has(String(rec.id))) {
-                selectedRawNodes.push(rec);
-              }
-              return selectedRawNodes.length < selectedIds.size;
-            });
-            if (selectedRawNodes.length < Math.min(maxNodes, 500)) {
-              await readJsonlGz(nodeSidecar, (rec) => {
-                const id = String(rec.id);
-                if (!selectedIds.has(id)) {
-                  selectedIds.add(id);
-                  selectedRawNodes.push(rec);
-                }
-                return selectedRawNodes.length < maxNodes;
-              });
-            }
-            const hydratedIds = new Set(selectedRawNodes.map(n => String(n.id)));
-            const visibleEdges = selectedEdges.filter(e =>
-              hydratedIds.has(String(e.source)) && hydratedIds.has(String(e.target))
-            );
-            const nodes = selectedRawNodes.map(n => ({
-              id: String(n.id),
-              concept: n.concept || '',
-              tag: n.tag || 'general',
-              weight: n.weight || 0,
-              activation: n.activation || 0,
-              cluster: n.cluster,
-              created: n.created,
-              accessed: n.accessed,
-              accessCount: n.accessCount || 0
-            }));
-            const edges = visibleEdges.map(e => ({
-              source: String(e.source),
-              target: String(e.target),
-              weight: e.weight || 0,
-              type: e.type || 'associative'
-            }));
-            const totalNodes = Number.isFinite(snapshot.nodeCount) ? snapshot.nodeCount : nodes.length;
-            const totalEdges = Number.isFinite(snapshot.edgeCount) ? snapshot.edgeCount : edges.length;
-            return res.json({
-              success: true,
-              nodes,
-              edges,
-              clusters: memory.clusters || [],
-              meta: {
-                nodeCount: totalNodes,
-                edgeCount: totalEdges,
-                displayedNodeCount: nodes.length,
-                displayedEdgeCount: edges.length,
-                limited: nodes.length < totalNodes,
-                clusterCount: (memory.clusters || []).length || memory.nextClusterId || snapshot.clusterCount || 0,
-                cycleCount: state.cycleCount || snapshot.cycle || 0
-              }
-            });
-          }
-        }
-
-        const state = await this.loadState();
-        const memory = state.memory || {};
-        const allNodes = Array.isArray(memory.nodes) ? memory.nodes : [];
-        const allEdges = Array.isArray(memory.edges) ? memory.edges : [];
-        const scoredNodes = allNodes.map((node, index) => {
-          const accessedMs = Date.parse(node.accessed || node.created || '') || 0;
-          const recency = accessedMs ? Math.min(accessedMs / 1e13, 2) : 0;
-          const score =
-            Number(node.activation || 0) * 3 +
-            Number(node.weight || 0) * 2 +
-            Math.log1p(Number(node.accessCount || 0)) +
-            recency;
-          return { node, index, score };
-        });
-        scoredNodes.sort((a, b) => b.score - a.score || a.index - b.index);
-        const selectedRawNodes = fullGraph ? allNodes : scoredNodes.slice(0, maxNodes).map(item => item.node);
-        const selectedIds = new Set(selectedRawNodes.map(n => String(n.id)));
-        const selectedEdges = allEdges
-          .filter(e => selectedIds.has(String(e.source)) && selectedIds.has(String(e.target)))
-          .sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0))
-          .slice(0, maxEdges);
-        const nodes = selectedRawNodes.map(n => ({
-          id: String(n.id),
-          concept: n.concept || '',
-          tag: n.tag || 'general',
-          weight: n.weight || 0,
-          activation: n.activation || 0,
-          cluster: n.cluster,
-          created: n.created,
-          accessed: n.accessed,
-          accessCount: n.accessCount || 0
-        }));
-        const edges = selectedEdges.map(e => ({
-          source: String(e.source),
-          target: String(e.target),
-          weight: e.weight || 0,
-          type: e.type || 'associative'
-        }));
-        res.json({
-          success: true,
-          nodes,
-          edges,
-          clusters: memory.clusters || [],
-          meta: {
-            nodeCount: allNodes.length,
-            edgeCount: allEdges.length,
-            displayedNodeCount: nodes.length,
-            displayedEdgeCount: edges.length,
-            limited: !fullGraph && nodes.length < allNodes.length,
-            clusterCount: (memory.clusters || []).length || memory.nextClusterId || 0,
-            cycleCount: state.cycleCount || 0
-          }
-        });
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
+    this.app.use('/home23/api/brain', createBrainSourceRouter({
+      service: this.brainSourceService,
+    }));
 
     // NEW: Serve curated insights reports (from coordinator directory)
     this.app.use('/reports', express.static(path.join(this.logsDir, 'coordinator')));
@@ -10744,6 +10601,20 @@ You are empowered to explore and understand. The user trusts you to discover the
   }
 
   async getFastMemoryGraphSummary() {
+    try {
+      const status = await this.brainSourceService.status();
+      if (Number.isFinite(status?.summary?.nodes)) {
+        return {
+          nodes: status.summary.nodes,
+          edges: Number.isFinite(status.summary.edges) ? status.summary.edges : 0,
+          clusters: Number.isFinite(status.summary.clusters) ? status.summary.clusters : 0,
+          source: 'brain-source',
+        };
+      }
+    } catch {
+      // Fall through to advisory compatibility sources for bootstrapping.
+    }
+
     const snapshotPath = path.join(this.logsDir, 'brain-snapshot.json');
     try {
       const snapshot = JSON.parse(await fs.readFile(snapshotPath, 'utf8'));
