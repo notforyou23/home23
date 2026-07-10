@@ -276,6 +276,32 @@ test('valid custom providers survive an atomic save and reload', t => {
   );
 });
 
+test('generated built-in execution defaults stay non-declared across save and reload', t => {
+  useTemporaryCatalog(t, 'model-catalog-default-provenance-');
+  saveModelCatalogSync({ version: 1, providers: {
+    openai: {
+      models: [{
+        id: 'custom-openai-explicit',
+        kind: 'chat',
+        maxOutputTokens: 2048,
+        providerStallMs: 60000,
+        transport: 'responses',
+      }],
+    },
+  } });
+
+  const reloaded = loadModelCatalogSync();
+  reloaded.providers.openai.models.push({
+    id: 'custom-openai-capability-less',
+    kind: 'chat',
+  });
+
+  assertCatalogError(
+    () => saveModelCatalogSync(reloaded),
+    'model_capability_invalid',
+  );
+});
+
 test('structurally invalid saves fail closed and preserve the prior catalog bytes', t => {
   const { catalogPath } = useTemporaryCatalog(t, 'model-catalog-invalid-save-');
   const valid = { version: 1, providers: {

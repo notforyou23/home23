@@ -48,6 +48,19 @@ test('requireCompleteProviderResult throws typed error for partial completion', 
   );
 });
 
+test('a normalized incomplete result remains incomplete when required', () => {
+  const normalized = normalizeProviderCompletion({ ...base, finishReason: 'length' });
+
+  assert.equal(normalized.hadError, false);
+  assert.equal(normalized.error.code, 'provider_incomplete');
+  assert.throws(
+    () => requireCompleteProviderResult(normalized),
+    error => error instanceof ProviderCompletionError
+      && error.code === 'provider_incomplete'
+      && error.result?.error?.code === 'provider_incomplete',
+  );
+});
+
 test('status-labeled envelopes are normalized and revalidated', () => {
   assert.throws(
     () => requireCompleteProviderResult({

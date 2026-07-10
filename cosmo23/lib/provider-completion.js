@@ -38,8 +38,11 @@ function normalizeProviderCompletion(input = {}) {
   const content = String(source.content || '').trim();
   const finishReason = source.finishReason == null ? null : String(source.finishReason);
   const terminalReceived = source.terminalReceived === true;
+  const derivedIncomplete = source.hadError === false
+    && source.error?.code === 'provider_incomplete'
+    && (source.status === 'partial' || source.status === 'failed');
   const hadError = source.hadError === true
-    || source.error != null
+    || (source.error != null && !derivedIncomplete)
     || source.errorType != null;
   const abnormal = finishReason && ABNORMAL_FINISH_REASONS.has(finishReason);
   const normal = finishReason && NORMAL_FINISH_REASONS.has(finishReason);
@@ -66,7 +69,7 @@ function normalizeProviderCompletion(input = {}) {
       message: source.error?.message
         || source.errorType
         || `Provider ended with ${finishReason || 'no terminal event'}`,
-      retryable: source.retryable !== false,
+      retryable: source.retryable !== false && source.error?.retryable !== false,
     } : null,
     usage: source.usage || null,
     provider: source.provider || null,

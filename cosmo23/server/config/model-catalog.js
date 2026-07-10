@@ -331,10 +331,10 @@ function normalizeProviderConfig(providerId, providerConfig = {}, fallbackConfig
   const fallbackExecutionDefaults = isPlainRecord(fallback.executionDefaults)
     ? fallback.executionDefaults
     : {};
-  const executionDefaults = {
-    ...fallbackExecutionDefaults,
-    ...providerExecutionDefaults,
-  };
+  // Built-in defaults are normalization inputs, not catalog declarations.
+  // Persist only defaults supplied by this provider so a normalized catalog
+  // cannot grant those built-ins to a later custom model after a round trip.
+  const executionDefaults = { ...providerExecutionDefaults };
   const providerDeclaredModels = Array.isArray(provider.models);
   const fallbackModelIds = new Set(
     (Array.isArray(fallback.models) ? fallback.models : [])
@@ -376,13 +376,18 @@ function normalizeProviderConfig(providerId, providerConfig = {}, fallbackConfig
       };
     });
 
-  return {
+  const normalizedProvider = {
     ...fallback,
     ...provider,
     label: String(provider.label || fallback.label || providerId),
-    ...(Object.keys(executionDefaults).length > 0 ? { executionDefaults } : {}),
     models: dedupeModels(normalizedModels),
   };
+  if (Object.keys(executionDefaults).length > 0) {
+    normalizedProvider.executionDefaults = executionDefaults;
+  } else {
+    delete normalizedProvider.executionDefaults;
+  }
+  return normalizedProvider;
 }
 
 function flattenCatalogModels(source, options = {}) {
