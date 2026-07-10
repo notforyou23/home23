@@ -189,6 +189,54 @@ test('Memory Lite query falls back to keyword retrieval when query embedding fai
   assert.equal(results[0].retrievalMode, 'keyword');
 });
 
+test('own-brain semantic query reinforces access metadata and persistence changes', async () => {
+  const memory = makeMemory();
+  const node = await memory.addNode('Semantic access canary for own brain.', 'project_note', [1, 0]);
+  node.weight = 0.2;
+  memory.consumePersistenceChanges();
+  const beforeAccessed = node.accessed;
+  const beforeWeight = node.weight;
+
+  const results = await memory.query('semantic access canary', 1);
+
+  assert.equal(results[0].id, node.id);
+  assert.equal(node.accessCount, 1);
+  assert.notEqual(node.accessed, beforeAccessed);
+  assert.ok(node.weight > beforeWeight);
+  assert.equal(memory.hasPersistenceChanges(), true);
+  assert.deepEqual(memory.consumePersistenceChanges().nodes.map((row) => row.id), [node.id]);
+});
+
+test('read-only semantic and keyword queries do not mutate access metadata', async () => {
+  const semantic = makeMemory();
+  const semanticNode = await semantic.addNode('Cross-brain semantic canary.', 'project_note', [1, 0]);
+  semantic.consumePersistenceChanges();
+  const semanticAccessed = semanticNode.accessed;
+  const semanticWeight = semanticNode.weight;
+
+  const semanticResults = await semantic.query('cross brain semantic canary', 1, { accessMode: 'read-only' });
+
+  assert.equal(semanticResults[0].id, semanticNode.id);
+  assert.equal(semanticNode.accessCount, 0);
+  assert.equal(semanticNode.accessed, semanticAccessed);
+  assert.equal(semanticNode.weight, semanticWeight);
+  assert.equal(semantic.hasPersistenceChanges(), false);
+
+  const keyword = makeMemoryLite();
+  const keywordNode = await keyword.addNode('Cross-brain keyword canary.', 'project_note');
+  keyword.consumePersistenceChanges();
+  const keywordAccessed = keywordNode.accessed;
+  const keywordWeight = keywordNode.weight;
+
+  const keywordResults = await keyword.query('cross brain keyword canary', 1, { markAccess: false });
+
+  assert.equal(keywordResults[0].id, keywordNode.id);
+  assert.equal(keywordNode.accessCount, 0);
+  assert.equal(keywordNode.accessed, keywordAccessed);
+  assert.equal(keywordNode.weight, keywordWeight);
+  assert.equal(keyword.hasPersistenceChanges(), false);
+});
+
 test('persistence changes capture node, edge, and removal mutations', async () => {
   const memory = makeMemory();
   const first = await memory.addNode('first durable memory', 'test', [1, 0]);

@@ -55,6 +55,23 @@ async function markAnn(dir, { builtFromRevision, indexFile = 'memory-ann.test.in
   return manifest;
 }
 
+async function fileSnapshot(dir) {
+  const names = (await fsp.readdir(dir)).sort();
+  const rows = {};
+  for (const name of names) {
+    if (!/^memory-/.test(name)) continue;
+    const file = path.join(dir, name);
+    const stat = await fsp.stat(file);
+    if (!stat.isFile()) continue;
+    rows[name] = {
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      bytes: await fsp.readFile(file, 'base64'),
+    };
+  }
+  return rows;
+}
+
 async function sourceSearch({ dir, embedQuery, loadAnn, query = 'canary', request = {} }) {
   const source = await openMemorySource(dir);
   const service = createMemorySearchService({
@@ -324,4 +341,41 @@ test('compatibility search derives canonical own-target identity and private scr
     () => service.search({ query: 'canary', identity: { requesterAgent: 'mallory' } }),
     (error) => error.code === 'invalid_request',
   );
+});
+
+test('read-only pinned source search leaves target memory files unchanged', async () => {
+  const dir = await createBrain({ nodes: [{ id: 'canary', concept: 'read only canary', embedding: [1, 0] }] });
+  await appendRevision(dir, {
+    nodes: [{ id: 'delta', concept: 'read only delta canary', embedding: [1, 0] }],
+  }, { nodeCount: 2, edgeCount: 0, clusterCount: 1 });
+  const source = await openMemorySource(dir);
+  const before = await fileSnapshot(dir);
+  const service = createMemorySearchService({
+    brainDir: dir,
+    embedQuery: async () => [1, 0],
+    loadAnn: async () => null,
+    logger: { warn() {} },
+  });
+
+  try {
+    const result = await service.search({
+      sourcePin: source,
+      identity: {
+        operationId: 'read-only-search',
+        requesterAgent: 'jerry',
+        targetAgent: 'forrest',
+        brainId: 'brain-forrest',
+        accessMode: 'read-only',
+      },
+      query: 'read only canary',
+      topK: 5,
+      minSimilarity: 0.1,
+      noiseFloor: 0.1,
+    });
+    assert.equal(result.results.length > 0, true);
+    assert.equal(result.evidence.identity.accessMode, 'read-only');
+    assert.deepEqual(await fileSnapshot(dir), before);
+  } finally {
+    await source.close();
+  }
 });

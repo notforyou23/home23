@@ -885,7 +885,7 @@ class NetworkMemory {
   /**
    * Query with spreading activation
    */
-  async query(queryText, topK = 5) {
+  async query(queryText, topK = 5, options = {}) {
     if (this.nodes.size === 0) return [];
     
     // Ensure queryText is a string
@@ -903,7 +903,7 @@ class NetworkMemory {
       this.logger?.warn?.('Query embedding failed, using Memory Lite keyword retrieval', {
         queryText: queryText?.substring(0, 100)
       });
-      return this.queryByKeyword(queryText, topK);
+      return this.queryByKeyword(queryText, topK, options);
     }
     
     // Find best matching node
@@ -924,7 +924,7 @@ class NetworkMemory {
       }
     }
     
-    if (!bestMatch) return this.queryByKeyword(queryText, topK);
+    if (!bestMatch) return this.queryByKeyword(queryText, topK, options);
     
     // Spread activation from best match
     const activated = await this.spreadActivation(bestMatch);
@@ -961,12 +961,19 @@ class NetworkMemory {
       .slice(0, topK);
     
     // Mark as accessed and boost weight
-    results.forEach(node => {
-      node.accessed = new Date();
-      node.accessCount++;
-      node.weight = Math.min(1.0, node.weight + 0.1);
-      this.markNodeDirty(node.id);
-    });
+    if (options.markAccess !== false && options.accessMode !== 'read-only') {
+      results.forEach(node => {
+        const stored = this.nodes.get(node.id);
+        if (!stored) return;
+        stored.accessed = new Date();
+        stored.accessCount++;
+        stored.weight = Math.min(1.0, stored.weight + 0.1);
+        node.accessed = stored.accessed;
+        node.accessCount = stored.accessCount;
+        node.weight = stored.weight;
+        this.markNodeDirty(stored.id);
+      });
+    }
     
     return results;
   }
