@@ -117,7 +117,8 @@ export type AgentEvent =
   | { type: 'media'; mediaType: string; path: string; caption?: string }
   | { type: 'subagent_result'; task: string; result: string }
   | { type: 'cache'; read: number; write: number; input: number; output: number }
-  | { type: 'status'; status: string; message?: string };
+  | { type: 'status'; status: string; message?: string;
+      activity_deadline_at?: string; hard_deadline_at?: string };
 
 export type AgentEventCallback = (event: AgentEvent) => void;
 

@@ -16,7 +16,12 @@ import {
 export class TurnStore {
   constructor(private history: ConversationHistory) {}
 
-  writeStart(chatId: string, turn_id: string, model?: string, provider?: string, extras: { deadline_at?: string; first_token_deadline_at?: string } = {}): TurnEnvelope {
+  writeStart(chatId: string, turn_id: string, model?: string, provider?: string, extras: {
+    deadline_at?: string;
+    activity_deadline_at?: string;
+    hard_deadline_at?: string;
+    first_token_deadline_at?: string;
+  } = {}): TurnEnvelope {
     const env: TurnEnvelope = {
       type: 'turn',
       turn_id,
@@ -25,6 +30,8 @@ export class TurnStore {
       role: 'assistant',
       started_at: new Date().toISOString(),
       deadline_at: extras.deadline_at,
+      activity_deadline_at: extras.activity_deadline_at,
+      hard_deadline_at: extras.hard_deadline_at,
       first_token_deadline_at: extras.first_token_deadline_at,
       model,
       provider,
@@ -33,7 +40,17 @@ export class TurnStore {
     return env;
   }
 
-  writeEnd(chatId: string, turn_id: string, status: Exclude<TurnStatus, 'pending'>, extras: { last_seq: number; stop_reason?: string; error?: string; error_code?: string; error_message?: string; deadline_at?: string; first_token_deadline_at?: string }): TurnEnvelope {
+  writeEnd(chatId: string, turn_id: string, status: Exclude<TurnStatus, 'pending'>, extras: {
+    last_seq: number;
+    stop_reason?: string;
+    error?: string;
+    error_code?: string;
+    error_message?: string;
+    deadline_at?: string;
+    activity_deadline_at?: string;
+    hard_deadline_at?: string;
+    first_token_deadline_at?: string;
+  }): TurnEnvelope {
     const env: TurnEnvelope = {
       type: 'turn',
       turn_id,
@@ -43,6 +60,8 @@ export class TurnStore {
       started_at: '', // envelope records the END event — started_at lives on the start record
       ended_at: new Date().toISOString(),
       deadline_at: extras.deadline_at,
+      activity_deadline_at: extras.activity_deadline_at,
+      hard_deadline_at: extras.hard_deadline_at,
       first_token_deadline_at: extras.first_token_deadline_at,
       last_seq: extras.last_seq,
       stop_reason: extras.stop_reason,
@@ -99,6 +118,8 @@ export class TurnStore {
     let final: TurnEnvelope | null = null;
     let firstEvent: TurnEvent | null = null;
     let lastEvent: TurnEvent | null = null;
+    let activityDeadlineAt: string | null = null;
+    let hardDeadlineAt: string | null = null;
 
     for (const record of all) {
       if (isTurnEnvelope(record) && record.turn_id === turn_id) {
@@ -107,6 +128,12 @@ export class TurnStore {
       } else if (isTurnEvent(record) && record.turn_id === turn_id) {
         if (!firstEvent) firstEvent = record;
         lastEvent = record;
+        if (typeof record.data.activity_deadline_at === 'string') {
+          activityDeadlineAt = record.data.activity_deadline_at;
+        }
+        if (typeof record.data.hard_deadline_at === 'string') {
+          hardDeadlineAt = record.data.hard_deadline_at;
+        }
       }
     }
 
@@ -132,7 +159,15 @@ export class TurnStore {
       updated_at: updatedAt,
       last_event_at: lastEvent?.ts ?? final?.ended_at ?? null,
       first_event_at: firstEvent?.ts ?? null,
-      deadline_at: final?.deadline_at ?? start?.deadline_at ?? null,
+      deadline_at: final?.deadline_at ?? activityDeadlineAt ?? start?.deadline_at ?? null,
+      activity_deadline_at: final?.activity_deadline_at
+        ?? activityDeadlineAt
+        ?? start?.activity_deadline_at
+        ?? null,
+      hard_deadline_at: final?.hard_deadline_at
+        ?? hardDeadlineAt
+        ?? start?.hard_deadline_at
+        ?? null,
       first_token_deadline_at: final?.first_token_deadline_at ?? start?.first_token_deadline_at ?? null,
       last_seq: lastSeq,
       model,

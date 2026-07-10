@@ -3,12 +3,28 @@ import assert from 'node:assert/strict';
 import express from 'express';
 import { createEvobrewChatHandler } from '../../src/routes/evobrew-bridge.js';
 
-function makeFakeAgent(captured: { chatId?: string; userText?: string }) {
+function makeFakeAgent(captured: {
+  chatId?: string;
+  userText?: string;
+  onEventForwarded?: boolean;
+}) {
   return {
-    run: async (chatId: string, userText: string) => {
+    run: async () => {
+      throw new Error('raw run forbidden');
+    },
+    runWithTurn: async (chatId: string, userText: string, options: {
+      onEvent?: (event: { type: string; content?: string }) => void;
+    }) => {
       captured.chatId = chatId;
       captured.userText = userText;
-      return { text: 'ok', toolCallCount: 0, durationMs: 1 };
+      captured.onEventForwarded = typeof options.onEvent === 'function';
+      options.onEvent?.({ type: 'thinking', content: 'working' });
+      return {
+        turnId: 'evobrew-turn',
+        response: Promise.resolve({
+          text: 'ok', model: 'test', toolCallCount: 0, durationMs: 1,
+        }),
+      };
     },
   };
 }
@@ -35,7 +51,7 @@ async function postSse(app: express.Express, body: unknown): Promise<{ status: n
 }
 
 test('evobrew bridge forwards structured IDE context to the local agent loop', async () => {
-  const captured: { chatId?: string; userText?: string } = {};
+  const captured: { chatId?: string; userText?: string; onEventForwarded?: boolean } = {};
   const app = express();
   app.use(express.json({ limit: '5mb' }));
   app.post('/api/chat', createEvobrewChatHandler({
@@ -68,6 +84,7 @@ test('evobrew bridge forwards structured IDE context to the local agent loop', a
 
   assert.equal(res.status, 200);
   assert.equal(captured.chatId, 'evobrew:jerry:workspace123');
+  assert.equal(captured.onEventForwarded, true);
   assert.match(captured.userText || '', /\[Evobrew IDE Context\]/);
   assert.match(captured.userText || '', /Working directory: \/tmp\/project/);
   assert.match(captured.userText || '', /Open file: src\/app\.ts/);
@@ -79,10 +96,11 @@ test('evobrew bridge forwards structured IDE context to the local agent loop', a
   assert.match(captured.userText || '', /package\.json/);
   assert.match(captured.userText || '', /Use this context\./);
   assert.match(res.text, /data: \[DONE\]/);
+  assert.match(res.text, /"type":"thinking"/);
 });
 
 test('evobrew bridge understands current Evobrew prompt labels as a fallback', async () => {
-  const captured: { chatId?: string; userText?: string } = {};
+  const captured: { chatId?: string; userText?: string; onEventForwarded?: boolean } = {};
   const app = express();
   app.use(express.json({ limit: '5mb' }));
   app.post('/api/chat', createEvobrewChatHandler({

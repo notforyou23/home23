@@ -1863,7 +1863,7 @@ test('progress, phase, and terminal notifications never masquerade as operation 
     fetchImpl: async (url, init) => {
       const parsed = new URL(String(url));
       if (init?.method === 'POST') {
-        return new Response(JSON.stringify(record(operationId, 0, 'running')));
+        return new Response(JSON.stringify(record(operationId, 0, 'queued')));
       }
       if (parsed.pathname.endsWith('/events')) {
         return new Response(sse.body, { headers: { 'content-type': 'text/event-stream' } });
@@ -1875,14 +1875,14 @@ test('progress, phase, and terminal notifications never masquerade as operation 
       statusReads += 1;
       return new Response(JSON.stringify(terminalAvailable
         ? terminal
-        : record(operationId, 0, 'running')));
+        : record(operationId, 0, 'queued')));
     },
   });
   const pending = client.query({ query: 'typed notifications' });
   await sse.opened;
   sse.frame({
     type: 'progress', operationId, eventSequence: 1, sequence: 1,
-    at: '2026-07-10T12:00:01.000Z', completed: 1,
+    at: '2026-07-10T12:00:01.000Z', state: 'running', completed: 1,
   } as never);
   sse.frame({
     type: 'phase', operationId, eventSequence: 2, sequence: 2,

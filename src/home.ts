@@ -35,6 +35,7 @@ import { DeliveryManager } from './scheduler/delivery.js';
 import { SiblingProtocol } from './sibling/protocol.js';
 import { BridgeChat } from './sibling/bridge-chat.js';
 import { AgentLoop } from './agent/loop.js';
+import { executeTrackedTurn } from './agent/turn-entrypoint.js';
 import { ContextManager } from './agent/context.js';
 import { ConversationHistory } from './agent/history.js';
 import { createToolRegistry } from './agent/tools/index.js';
@@ -418,7 +419,7 @@ async function main(): Promise<void> {
 
   // Wire sub-agent runner
   toolContext.runAgentLoop = async (_systemPrompt, userMessage, _tools, ctx) => {
-    return agent.run(ctx.chatId, userMessage);
+    return (await executeTrackedTurn(agent, ctx.chatId, userMessage)).response;
   };
 
   // Give AgentLoop the provider map so runtime setModel can rebuild the client
@@ -515,7 +516,12 @@ async function main(): Promise<void> {
     router.markRunActive(routerKey);
 
     try {
-      const result = await agent.run(message.chatId, text, message.media);
+      const { response: result } = await executeTrackedTurn(
+        agent,
+        message.chatId,
+        text,
+        { media: message.media },
+      );
       const response = {
         text: result.text,
         channel: message.channel,
@@ -689,7 +695,7 @@ async function main(): Promise<void> {
       try {
         if (job.payload.kind === 'agentTurn') {
           // Full AgentLoop — 19 tools, isolated chat history per job
-          const timeoutMs = (job.payload.timeoutSeconds ?? 900) * 1000;
+          const timeoutMs = (job.payload.timeoutSeconds ?? 21_600) * 1000;
 
           // Resolve message: prefer messagePath if set (and readable), else inline message.
           let resolvedMessage = job.payload.message ?? '';
@@ -714,37 +720,26 @@ async function main(): Promise<void> {
             return { status: 'error', error: 'agentTurn payload has neither message nor readable messagePath', durationMs };
           }
 
-          let timeoutId: ReturnType<typeof setTimeout>;
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            timeoutId = setTimeout(() => {
-              // Actually stop the agent — don't just stop waiting
-              agent.stop(cronChatId);
-              reject(new Error(`Cron agent timeout after ${timeoutMs}ms`));
-            }, timeoutMs);
-          });
-
-          try {
-            if (job.payload.sessionHistory === 'fresh') {
-              agent.getHistory().rotate(cronChatId);
-            }
-            const agentPromise = agent.run(cronChatId, resolvedMessage);
-            const result = await Promise.race([agentPromise, timeoutPromise]);
-            clearTimeout(timeoutId!);
-            const durationMs = Date.now() - startMs;
-
-            const jobResult: JobResult = { status: 'ok', response: result.text, durationMs };
-            delivery.lastDeliveryError = null;
-            await delivery.deliver(job, jobResult);
-            if (delivery.lastDeliveryError) {
-              jobResult.status = 'error';
-              jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
-            }
-            await assimilateCronResult(job, jobResult);
-            return jobResult;
-          } catch (err) {
-            clearTimeout(timeoutId!);
-            throw err;
+          if (job.payload.sessionHistory === 'fresh') {
+            agent.getHistory().rotate(cronChatId);
           }
+          const { response: result } = await executeTrackedTurn(
+            agent,
+            cronChatId,
+            resolvedMessage,
+            { hardDurationMs: timeoutMs },
+          );
+          const durationMs = Date.now() - startMs;
+
+          const jobResult: JobResult = { status: 'ok', response: result.text, durationMs };
+          delivery.lastDeliveryError = null;
+          await delivery.deliver(job, jobResult);
+          if (delivery.lastDeliveryError) {
+            jobResult.status = 'error';
+            jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
+          }
+          await assimilateCronResult(job, jobResult);
+          return jobResult;
         }
 
         if (job.payload.kind === 'exec') {

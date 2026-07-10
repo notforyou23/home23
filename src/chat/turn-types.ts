@@ -29,6 +29,8 @@ export interface TurnEnvelope {
   started_at: string;
   ended_at?: string;
   deadline_at?: string;
+  activity_deadline_at?: string;
+  hard_deadline_at?: string;
   first_token_deadline_at?: string;
   model?: string;
   provider?: string;
@@ -69,6 +71,8 @@ export interface TurnStatusResponse {
   last_event_at: string | null;
   first_event_at: string | null;
   deadline_at?: string | null;
+  activity_deadline_at?: string | null;
+  hard_deadline_at?: string | null;
   first_token_deadline_at?: string | null;
   last_seq: number | null;
   model: string | null;

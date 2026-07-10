@@ -13,7 +13,14 @@ import { join } from 'node:path';
 import type { ToolRegistry } from './tools/index.js';
 import type { ContextManager } from './context.js';
 import { ConversationHistory, type StoredMessage, type ContentBlock, type HistoryRecord, type SessionBoundary } from './history.js';
-import type { AgentResponse, ToolContext } from './types.js';
+import type {
+  AgentResponse,
+  ToolContext,
+  TurnRuntimeContext,
+} from './types.js';
+import type { OperationActivity } from './brain-operations/types.js';
+import type { BrainOperationsClient } from './brain-operations/client.js';
+import { ActivityLease, type LeaseExpiryReason } from './activity-lease.js';
 import { MemoryManager } from './memory.js';
 import type { CompactionManager } from './compaction.js';
 import type { MediaAttachment } from '../types.js';
@@ -31,6 +38,7 @@ const TYPING_INTERVAL_MS = 4000;
 const MODEL_TOOL_RESULT_LIMIT_CHARS = 4000;
 const TOOL_EVENT_RESULT_LIMIT_CHARS = 4000;
 const DEFAULT_TURN_TIMEOUT_MS = 15 * 60 * 1000;
+const DEFAULT_TURN_HARD_DURATION_MS = 8 * 60 * 60 * 1000;
 const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 30 * 1000;
 
 function hashText(text: string): string {
@@ -270,6 +278,11 @@ export class AgentLoop {
   private triggerIndex: TriggerIndex;
   private memoryStore: MemoryObjectStore;
   private turnStore: TurnStore;
+  private turnTiming = {
+    now: Date.now,
+    setTimeout: (fn: () => void, ms: number): unknown => setTimeout(fn, ms),
+    clearTimeout: (id: unknown): void => clearTimeout(id as ReturnType<typeof setTimeout>),
+  };
   private pusher: import('../push/apns-pusher.js').ApnsPusher | null = null;
   private codexCredentialsProvider: typeof getCodexCredentials = getCodexCredentials;
   private situationalAwareness?: import('./session-bootstrap.js').SituationalAwarenessConfig;
@@ -605,23 +618,34 @@ export class AgentLoop {
   async runWithTurn(
     chatId: string,
     userText: string,
-    opts: { turnId?: string; media?: import('../types.js').MediaAttachment[]; onEvent?: import('./types.js').AgentEventCallback; modelOverride?: { model: string; provider?: string }; maxDurationMs?: number; firstTokenTimeoutMs?: number } = {},
+    opts: {
+      turnId?: string;
+      media?: import('../types.js').MediaAttachment[];
+      onEvent?: import('./types.js').AgentEventCallback;
+      modelOverride?: { model: string; provider?: string };
+      inactivityMs?: number;
+      hardDurationMs?: number;
+      maxDurationMs?: number;
+      firstTokenTimeoutMs?: number;
+    } = {},
   ): Promise<{ turnId: string; response: Promise<import('./types.js').AgentResponse> }> {
     const turnId = opts.turnId ?? newTurnId();
-    this.activeTurnIds.set(chatId, turnId);
-    const startedAtMs = Date.now();
-    const maxDurationMs = opts.maxDurationMs ?? DEFAULT_TURN_TIMEOUT_MS;
+    const startedAtMs = this.turnTiming.now();
+    const inactivityMs = opts.inactivityMs ?? opts.maxDurationMs ?? DEFAULT_TURN_TIMEOUT_MS;
+    const hardDurationMs = opts.hardDurationMs ?? DEFAULT_TURN_HARD_DURATION_MS;
     const firstTokenTimeoutMs = opts.firstTokenTimeoutMs ?? DEFAULT_FIRST_TOKEN_TIMEOUT_MS;
-    const deadline_at = new Date(startedAtMs + maxDurationMs).toISOString();
+    if (![inactivityMs, hardDurationMs, firstTokenTimeoutMs]
+      .every(value => Number.isSafeInteger(value) && value > 0)) {
+      throw new TypeError('invalid turn deadline');
+    }
+    const activity_deadline_at = new Date(startedAtMs + inactivityMs).toISOString();
+    const hard_deadline_at = new Date(startedAtMs + hardDurationMs).toISOString();
+    const deadline_at = activity_deadline_at;
     const first_token_deadline_at = new Date(startedAtMs + firstTokenTimeoutMs).toISOString();
 
     const runtime = this.createRuntimeContext(opts.modelOverride);
     const model = runtime.model;
     const provider = runtime.provider;
-    this.turnStore.writeStart(chatId, turnId, model, provider, {
-      deadline_at,
-      first_token_deadline_at,
-    });
 
     let seq = 0;
     const persistAndFanOut = (event: import('./types.js').AgentEvent): void => {
@@ -641,27 +665,63 @@ export class AgentLoop {
       }
     };
 
-    // Wall-clock watchdog. MAX_ITERATIONS=500 plus per-tool timeouts of 30s-5min
-    // means a runaway turn can burn 40+ hours. 25-minute stalls have been
-    // observed in practice. After MAX_TURN_DURATION_MS, fire the same
-    // AbortController this.run uses between iterations so tools/API calls
-    // that honor the signal unwind cleanly, then let the catch path write
-    // the error envelope. Configurable via opts.maxDurationMs.
-    let watchdog: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-      const ac = this.activeRuns.get(chatId);
-      if (ac) {
-        console.warn(`[loop] turn ${turnId} exceeded ${maxDurationMs}ms — aborting`);
-        const error_message = `turn timeout after ${maxDurationMs}ms`;
-        this.terminalTurnOverrides.set(this.turnKey(chatId, turnId), {
-          status: 'timeout',
-          stop_reason: 'turn_timeout',
-          error_code: 'turn_timeout',
-          error_message,
-        });
-        ac.abort(new Error(error_message));
-      }
-    }, maxDurationMs);
-    let firstTokenWatchdog: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    const ac = new AbortController();
+    const expireTurn = (reason: LeaseExpiryReason): void => {
+      if (ac.signal.aborted) return;
+      const hard = reason === 'hard_timeout';
+      const timeoutMs = hard ? hardDurationMs : inactivityMs;
+      const code = hard ? 'turn_hard_timeout' : 'turn_timeout';
+      const label = hard ? 'hard' : 'inactivity';
+      const error_message = `turn ${label} timeout after ${timeoutMs}ms`;
+      console.warn(`[loop] turn ${turnId} ${label} deadline reached — aborting`);
+      this.terminalTurnOverrides.set(this.turnKey(chatId, turnId), {
+        status: 'timeout',
+        stop_reason: code,
+        error_code: code,
+        error_message,
+      });
+      ac.abort(Object.assign(new Error(error_message), { code }));
+    };
+    const lease = new ActivityLease({
+      inactivityMs,
+      hardDurationMs,
+      now: this.turnTiming.now,
+      setTimeout: this.turnTiming.setTimeout,
+      clearTimeout: this.turnTiming.clearTimeout,
+      onExpire: expireTurn,
+    });
+    const onOperationActivity = (activity: OperationActivity): void => {
+      if (!lease.observe(activity)) return;
+      persistAndFanOut({
+        type: 'status',
+        status: 'brain_operation_active',
+        message: `${activity.operationId} ${activity.state} ${activity.phase || ''}`.trim(),
+        activity_deadline_at: new Date(lease.activityDeadlineMs!).toISOString(),
+        hard_deadline_at: new Date(lease.hardDeadlineMs!).toISOString(),
+      });
+    };
+    const baseBrainOperations = this.toolContext.brainOperations;
+    const runBrainOperations = baseBrainOperations?.withActivityHandler
+      ? baseBrainOperations.withActivityHandler(onOperationActivity)
+      : baseBrainOperations;
+    const turnRuntime: TurnRuntimeContext = Object.freeze({
+      turnId,
+      abortController: ac,
+      signal: ac.signal,
+      brainOperations: runBrainOperations as BrainOperationsClient,
+      onOperationActivity,
+    });
+    this.turnStore.writeStart(chatId, turnId, model, provider, {
+      deadline_at,
+      activity_deadline_at,
+      hard_deadline_at,
+      first_token_deadline_at,
+    });
+    this.activeTurnIds.set(chatId, turnId);
+    this.activeRuns.set(chatId, ac);
+    lease.start();
+
+    let firstTokenWatchdog: unknown = this.turnTiming.setTimeout(() => {
       if (seq === 0 && this.activeTurnIds.get(chatId) === turnId) {
         persistAndFanOut({
           type: 'status',
@@ -673,14 +733,26 @@ export class AgentLoop {
 
     const response = (async () => {
       try {
-        const result = await this.run(chatId, userText, opts.media, persistAndFanOut, runtime);
+        const result = await this.run(
+          chatId,
+          userText,
+          opts.media,
+          persistAndFanOut,
+          runtime,
+          turnRuntime,
+        );
         const terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
+        const terminalActivityDeadlineAt = new Date(
+          lease.activityDeadlineMs ?? startedAtMs + inactivityMs,
+        ).toISOString();
         const endEnv = this.turnStore.writeEnd(chatId, turnId, terminalOverride?.status ?? 'complete', {
           last_seq: seq,
           stop_reason: terminalOverride?.stop_reason ?? 'end_turn',
           error_code: terminalOverride?.error_code,
           error_message: terminalOverride?.error_message,
-          deadline_at,
+          deadline_at: terminalActivityDeadlineAt,
+          activity_deadline_at: terminalActivityDeadlineAt,
+          hard_deadline_at,
           first_token_deadline_at,
         });
         turnBus.emit(chatId, turnId, endEnv);
@@ -706,21 +778,30 @@ export class AgentLoop {
         const isAbort = terminalOverride?.status === 'stopped' || msg.includes('aborted') || msg.includes('AbortError') || msg.includes('operator_stop');
         const isTimeout = terminalOverride?.status === 'timeout' || msg.includes('turn timeout');
         const status = terminalOverride?.status ?? (isTimeout ? 'timeout' : (isAbort ? 'stopped' : 'error'));
+        const terminalActivityDeadlineAt = new Date(
+          lease.activityDeadlineMs ?? startedAtMs + inactivityMs,
+        ).toISOString();
         const endEnv = this.turnStore.writeEnd(chatId, turnId, status, {
           last_seq: seq,
           error: msg,
           error_code: terminalOverride?.error_code ?? (isTimeout ? 'turn_timeout' : (status === 'error' ? 'provider_error' : undefined)),
           error_message: terminalOverride?.error_message ?? (status === 'error' || status === 'timeout' ? msg : undefined),
           stop_reason: terminalOverride?.stop_reason,
-          deadline_at,
+          deadline_at: terminalActivityDeadlineAt,
+          activity_deadline_at: terminalActivityDeadlineAt,
+          hard_deadline_at,
           first_token_deadline_at,
         });
         turnBus.emit(chatId, turnId, endEnv);
         turnBus.close(chatId, turnId);
         throw err;
       } finally {
-        if (watchdog) { clearTimeout(watchdog); watchdog = null; }
-        if (firstTokenWatchdog) { clearTimeout(firstTokenWatchdog); firstTokenWatchdog = null; }
+        lease.close();
+        if (firstTokenWatchdog !== null) {
+          this.turnTiming.clearTimeout(firstTokenWatchdog);
+          firstTokenWatchdog = null;
+        }
+        if (this.activeRuns.get(chatId) === ac) this.activeRuns.delete(chatId);
         if (this.activeTurnIds.get(chatId) === turnId) {
           this.activeTurnIds.delete(chatId);
         }
@@ -731,7 +812,14 @@ export class AgentLoop {
     return { turnId, response };
   }
 
-  async run(chatId: string, userText: string, userMedia?: MediaAttachment[], onEvent?: import('./types.js').AgentEventCallback, runtime: RuntimeModelContext = this.createRuntimeContext()): Promise<AgentResponse> {
+  async run(
+    chatId: string,
+    userText: string,
+    userMedia?: MediaAttachment[],
+    onEvent?: import('./types.js').AgentEventCallback,
+    runtime: RuntimeModelContext = this.createRuntimeContext(),
+    turnRuntime?: TurnRuntimeContext,
+  ): Promise<AgentResponse> {
     const startMs = Date.now();
     let toolCallCount = 0;
     const allMedia: MediaAttachment[] = [];
@@ -742,7 +830,7 @@ export class AgentLoop {
     const runtimeMemory = runtime.memory;
 
     // Abort controller for this run — checked between iterations, passed to API calls
-    const ac = new AbortController();
+    const ac = turnRuntime?.abortController ?? new AbortController();
     this.activeRuns.set(chatId, ac);
 
     // Start typing indicator (via toolContext.telegramAdapter)
@@ -1043,6 +1131,9 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
         onEvent,
         conversationHistory: this.history,
         abortSignal: ac.signal,
+        brainOperations: turnRuntime?.brainOperations ?? this.toolContext.brainOperations,
+        onOperationActivity: turnRuntime?.onOperationActivity,
+        turnRuntime: turnRuntime ?? null,
       };
 
       // Track all messages exchanged during this turn for persistence
@@ -1982,7 +2073,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
       if (err instanceof Error && err.stack) console.error('[agent] Stack:', err.stack);
       throw err;
     } finally {
-      this.activeRuns.delete(chatId);
+      if (this.activeRuns.get(chatId) === ac) this.activeRuns.delete(chatId);
       if (typingInterval) clearInterval(typingInterval);
     }
   }

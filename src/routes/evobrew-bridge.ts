@@ -11,6 +11,7 @@
 
 import type { Request, Response } from 'express';
 import type { AgentLoop } from '../agent/loop.js';
+import { executeTrackedTurn } from '../agent/turn-entrypoint.js';
 
 export interface BridgeConfig {
   agent: AgentLoop;
@@ -205,7 +206,12 @@ export function createEvobrewChatHandler(config: BridgeConfig) {
       };
 
       // Run the full agent loop — identity, memory, history, tools, everything
-      const result = await config.agent.run(chatId, enrichedMessage, undefined, onEvent);
+      const { response: result } = await executeTrackedTurn(
+        config.agent,
+        chatId,
+        enrichedMessage,
+        { onEvent },
+      );
 
       const text = result.text || '';
 
