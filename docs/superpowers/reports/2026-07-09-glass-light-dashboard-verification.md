@@ -5,7 +5,7 @@
 - Browser result: PARTIAL against the complete Task 7 checklist; all executed checks passed, but 200% zoom, reduced-motion emulation, and final Vibe gallery/Welcome/Setup browser rendering remain unexecuted because the in-app Browser session closed and the replacement session could not reopen the local QA URL
 - Tested branch: `codex/glass-light-dashboard`
 - Browser baseline commit: `ef7e534a2f261dfa623662e2c583e79e5c3e4cd3`
-- Final automated commit: `0a5274df156ff9522a95b64229e1ac6a58025137`
+- Final automated commit: `b38364a34f4ac11f0ccd40880a117c7330b96b3a`
 - Comparison base: `c2b19654b7d784b43cdbdf231257adeba3b0675e`
 - Verification date: 2026-07-09 America/New_York
 
@@ -50,9 +50,9 @@ This is not a complete network-isolation boundary: production code can resolve p
 |---|---|
 | `node --check engine/src/dashboard/home23-dashboard.js` | PASS |
 | `node --check engine/src/dashboard/home23-chat.js` | PASS |
-| `node --test --test-concurrency=1 tests/dashboard/glass-light-dashboard.test.js tests/dashboard/operator-ui.test.js tests/dashboard/briefs.test.js tests/dashboard/forrest-feel-route.test.js` | PASS — 55/55 |
+| `node --test --test-concurrency=1 tests/dashboard/glass-light-dashboard.test.js tests/dashboard/operator-ui.test.js tests/dashboard/briefs.test.js tests/dashboard/forrest-feel-route.test.js` | PASS — 56/56 |
 | `node --import tsx --test --test-concurrency=1 tests/dashboard/chat-state.test.ts` | PASS — 6/6 |
-| `node --test --test-concurrency=1 tests/scripts/read-only-dashboard-qa-server.test.mjs` | PASS — 2/2 |
+| `node --test --test-concurrency=1 tests/scripts/read-only-dashboard-qa-server.test.mjs` | PASS — 4/4 |
 | `npm run build` | PASS |
 | `npm test` | PASS — 692 pass, 0 fail, 1 intentional skip across 693 tests |
 | `npm run test:contracts` | PASS — 12 pass, 0 fail, 1 expected live-validator skip |
@@ -64,7 +64,7 @@ The broad-test caveats are unchanged: one local-agent identity test skips becaus
 
 ### Browser repair TDD receipts
 
-Every production repair was preceded by a focused failing contract. The final glass test is 45/45 and combined focused run is 55/55.
+Every production repair was preceded by a focused failing contract. The final glass test is 46/46 and combined focused run is 56/56. The standalone Chat geometry contract was also checked against the preceding committed HTML and produced the expected red result before passing against the repair.
 
 - Top bar stretching and horizontal navigation.
 - Sensor-strip legacy span resets, phone span collapse, and hidden Sauna fields.
@@ -103,7 +103,7 @@ Accepted source-to-production differences are data-driven: Jerry's live remark i
 7. P1 related page: Full Settings description inherited pale dark-theme text. Repaired with a higher-specificity page-scoped token.
 8. P1 related page: the standalone desktop Chat shell inherited fixed full-width geometry and rendered off the right edge in its 1440 capture. Added explicit centered 880px viewport-safe geometry and a focused contract; final Browser recapture remains unexecuted after the session failure.
 
-Original and intermediate captures remain in the asset directory as failure-and-repair evidence. No open P0, P1, or P2 finding remains.
+Original and intermediate captures remain in the asset directory as failure-and-repair evidence. No open P0, P1, or P2 finding remains among the Browser checks that were executed; the unexecuted checks are listed explicitly below.
 
 ## Viewport matrix
 
@@ -246,7 +246,7 @@ The branch remains inside the approved dashboard/page/test/spec/plan/report boun
 | 2. Apply the new design language to all documented dashboard surfaces and six overlays | Branch HTML/CSS in `engine/src/dashboard/`; 45 glass contracts inside the 55-test focused run; surface and overlay matrices; Home, Brain Map, Full Settings, standalone Chat, Problems, and responsive captures | PASS for inspected surfaces; the final related-page Browser recapture gap is recorded under criterion 7 |
 | 3. Keep every existing functional route, data source, action, and production-only detail reachable | Preservation contracts in `tests/dashboard/glass-light-dashboard.test.js` and `tests/dashboard/operator-ui.test.js`; ChatState 6/6; browser surface/overlay matrices; all write controls deliberately left intact but unissued | PASS |
 | 4. Leave stored runtime/config/instance data untouched | `git diff --name-only c2b19654b7d784b43cdbdf231257adeba3b0675e..HEAD` contains only dashboard/page/test/spec/plan/report files; no `instances/`, local config, secrets, PM2 dump, or generated runtime data | PASS |
-| 5. Pass focused and broad automated checks | Syntax 2/2; focused 55/55; ChatState 6/6; `npm run build`; `npm test` 692 pass/0 fail/1 intentional skip; `npm run test:contracts` 12 pass/1 expected skip | PASS at the recorded commit; final-gate rerun belongs to Task 8 |
+| 5. Pass focused and broad automated checks | Final-gate syntax 3/3; focused 56/56; ChatState 6/6; QA harness 4/4; `npm run build`; `npm test` 692 pass/0 fail/1 intentional skip; `npm run test:contracts` 12 pass/1 expected skip | PASS at `b38364a` |
 | 6. Pass read-only live contracts | `npm run test:contracts:live`: 13 GET/read-only routes checked, 21 action/stream/fixture contracts skipped, action opt-in unset | PASS |
 | 7. Prove navigation, live rendering, responsive behavior, accessibility basics, Chat state preservation, and clean console output in Browser | Executed evidence covers native hashes/surfaces, real Home data, six overlays, Chat singleton/draft state, 1440/1200/1024/768/390/320 layouts, focus/Escape/scroll lock, and clean checked-surface console. 200% zoom, reduced-motion emulation, final Vibe gallery/Welcome/Setup rendering, and the post-repair standalone Chat recapture remain unexecuted | PARTIAL — criterion not fully proven |
 | 8. Record exact commands, results, screenshots, and intentionally unexercised live writes | This committed report, tracked QA harness, screenshot inventory, automated command table, server/read-only boundary disclosure, and “Intentionally unexercised live writes” section | PASS, with screenshot payload caveat recorded below |
