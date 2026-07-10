@@ -4,84 +4,73 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home23</title>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/home23-dashboard.css">
   <link rel="stylesheet" href="/home23-chat.css">
 </head>
-<body>
+<body class="h23-dashboard-page">
   <div class="h23-app-shell">
-    <aside class="h23-sidebar">
-      <div class="h23-sidebar-brand">
-        <div class="h23-brand-mark" aria-hidden="true">23</div>
-        <div class="h23-sidebar-brand-copy">
-          <div class="h23-logo">Home23</div>
-          <div class="h23-subtitle" id="header-subtitle">RESIDENT AI OS</div>
-        </div>
+    <header class="h23-topbar" aria-label="Home23 navigation">
+      <a class="h23-topbar-brand" href="#home" aria-label="Home23 home">
+        <span class="h23-logo">Home23</span>
+        <span class="h23-topbar-agent" id="header-agent-name">Agent</span>
+      </a>
+      <nav class="h23-tabs h23-tabs-primary" aria-label="Dashboard sections" role="tablist">
+        <button class="h23-tab active" id="dashboard-tab-home" data-tab="home" data-tab-label="Home" type="button" role="tab" aria-selected="true" aria-controls="panel-home" tabindex="0">Home</button>
+        <button class="h23-tab" id="dashboard-tab-agency" data-tab="agency" data-tab-label="Agency" type="button" role="tab" aria-selected="false" aria-controls="panel-agency" tabindex="-1">Agency</button>
+        <button class="h23-tab" id="dashboard-tab-briefs" data-tab="briefs" data-tab-label="Briefs" type="button" role="tab" aria-selected="false" aria-controls="panel-briefs" tabindex="-1">Briefs</button>
+        <button class="h23-tab" id="dashboard-tab-workers" data-tab="workers" data-tab-label="Workers" type="button" role="tab" aria-selected="false" aria-controls="panel-workers" tabindex="-1">Workers</button>
+        <button class="h23-tab" id="dashboard-tab-query" data-tab="query" data-tab-label="Query" type="button" role="tab" aria-selected="false" aria-controls="panel-query" tabindex="-1">Query</button>
+        <button class="h23-tab" id="dashboard-tab-brain-map" data-tab="brain-map" data-tab-label="Brain Map" type="button" role="tab" aria-selected="false" aria-controls="panel-brain-map" tabindex="-1">Brain Map</button>
+      </nav>
+      <nav class="h23-linked-tabs" aria-label="Home23 surfaces">
+        <a class="h23-tab h23-tab-external" href="/home23/chat" data-scope-tab="chat" data-tab-label="Chat">Chat <span aria-hidden="true">↗</span></a>
+        <span class="h23-linked-native-tabs" role="tablist" aria-label="Dashboard tools">
+          <button class="h23-tab h23-tab-settings" id="settings-btn" data-scope-tab="settings" data-tab-label="Settings" type="button" role="tab" aria-selected="false" aria-controls="panel-settings" tabindex="-1">Settings</button>
+          <button class="h23-tab h23-tab-cosmo23" id="cosmo23-btn" data-scope-tab="cosmo23" data-tab-label="cosmo23" type="button" role="tab" aria-selected="false" aria-controls="cosmo23-frame-wrap" tabindex="-1">cosmo23</button>
+        </span>
+        <a class="h23-tab h23-tab-external h23-tab-evobrew" id="evobrew-btn" href="#" target="_blank" rel="noreferrer" data-scope-tab="evobrew" data-tab-label="evobrew">evobrew <span aria-hidden="true">↗</span></a>
+      </nav>
+      <div class="h23-topbar-runtime" id="engine-pulse" aria-live="polite">
+        <span class="h23-pulse-dot" id="pulse-dot" aria-hidden="true"></span>
+        <span class="h23-pulse-state" id="pulse-state">connecting</span>
+        <span class="h23-pulse-cycle" id="pulse-cycle">cycle —</span>
+        <time class="h23-topbar-time" id="header-local-time">--:--</time>
       </div>
-
-      <div class="h23-sidebar-scroll">
-        <nav class="h23-tabs h23-tabs-primary">
-          <button class="h23-tab active" data-tab="home" data-tab-label="Home">Home</button>
-          <button class="h23-tab" data-tab="agency" data-tab-label="Agency">Agency</button>
-          <button class="h23-tab" data-tab="briefs" data-tab-label="Briefs">Briefs</button>
-          <button class="h23-tab" data-tab="workers" data-tab-label="Workers">Workers</button>
-          <button class="h23-tab" data-tab="query" data-tab-label="Query">Query</button>
-          <button class="h23-tab" data-tab="brain-map" data-tab-label="Brain Map">Brain Map</button>
-        </nav>
-
-        <div class="h23-sidebar-group h23-sidebar-group-surfaces">
-          <div class="h23-sidebar-group-label">Surfaces</div>
-          <div class="h23-linked-tabs">
-            <a class="h23-tab h23-tab-external" href="/home23/chat" data-scope-tab="chat" data-tab-label="Chat">Chat</a>
-            <button class="h23-tab h23-tab-settings" id="settings-btn" data-scope-tab="settings" data-tab-label="Settings">Settings</button>
-            <button class="h23-tab h23-tab-external h23-tab-cosmo23" id="cosmo23-btn" data-scope-tab="cosmo23" data-tab-label="cosmo23">cosmo23</button>
-            <a class="h23-tab h23-tab-external h23-tab-evobrew" id="evobrew-btn" href="#" target="_blank" data-scope-tab="evobrew" data-tab-label="evobrew">evobrew</a>
-          </div>
-        </div>
-      </div>
-
-    </aside>
+    </header>
 
     <div class="h23-shell-main">
-      <div class="h23-system-rail" id="engine-pulse" hidden>
-        <div class="h23-system-agent">
-          <div class="h23-header-agent-name" id="header-agent-name">Agent</div>
-        </div>
-
-        <div class="h23-system-runtime" id="system-runtime" hidden>
-          <span class="h23-pulse-dot" id="pulse-dot"></span>
-          <span class="h23-system-label">Runtime</span>
-          <span class="h23-pulse-state" id="pulse-state"></span>
-        </div>
-
-      </div>
-
   <!-- Brain Storage panel -->
   <div class="h23-log-overlay" id="brain-storage-overlay" onclick="if(event.target===this)closeBrainStoragePanel()">
-    <div class="h23-log-overlay-panel" style="max-width:860px;">
+    <div class="h23-log-overlay-panel h23-brain-storage-panel" role="dialog" aria-modal="true" aria-labelledby="brain-storage-title">
       <div class="h23-log-overlay-header">
-        <span class="h23-brainlog-title">🧠 Brain Storage</span>
-        <span style="font-size:11px;color:rgba(255,255,255,0.4);margin-left:10px;">Disk truth vs live memory. Mismatch = silent data loss. Should always match.</span>
-        <button class="h23-log-overlay-close" onclick="closeBrainStoragePanel()" style="margin-left:auto;">&#10005;</button>
+        <div>
+          <h2 class="h23-brainlog-title" id="brain-storage-title">Brain Storage</h2>
+          <p class="h23-overlay-description">Disk truth vs live memory. Mismatch means restart risk and must be investigated.</p>
+        </div>
+        <button class="h23-log-overlay-close" type="button" aria-label="Close Brain Storage" onclick="closeBrainStoragePanel()">Close</button>
       </div>
       <div class="h23-log-overlay-body">
-        <div id="brain-storage-content" style="padding:14px;"></div>
+        <div id="brain-storage-content" class="h23-overlay-content"></div>
       </div>
     </div>
   </div>
 
   <!-- Live Problems panel -->
   <div class="h23-log-overlay" id="problems-overlay" onclick="if(event.target===this)closeProblemsPanel()">
-    <div class="h23-log-overlay-panel h23-problems-overlay-panel">
+    <div class="h23-log-overlay-panel h23-problems-overlay-panel" role="dialog" aria-modal="true" aria-labelledby="problems-overlay-title">
       <div class="h23-log-overlay-header">
-        <span class="h23-brainlog-title">🩺 Live Problems</span>
-        <span style="font-size:11px;color:rgba(255,255,255,0.4);margin-left:10px;">Ground truth — auto-verified every ~90s, auto-remediated before escalation.</span>
-        <button class="h23-log-overlay-close" onclick="closeProblemsPanel()" style="margin-left:auto;">&#10005;</button>
+        <div>
+          <h2 class="h23-brainlog-title" id="problems-overlay-title">Live Problems</h2>
+          <p class="h23-overlay-description">Ground truth, automatically verified and remediated before escalation.</p>
+        </div>
+        <button class="h23-log-overlay-close" type="button" aria-label="Close Live Problems" onclick="closeProblemsPanel()">Close</button>
       </div>
       <div class="h23-log-overlay-body">
         <div id="problems-list" class="h23-problems-list"></div>
-        <div style="padding:12px;border-top:1px solid rgba(255,255,255,0.1);display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-          <button onclick="tickProblemsNow()" style="background:rgba(0,122,255,0.2);border:1px solid rgba(0,122,255,0.4);color:#fff;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;">Re-verify now</button>
+        <div class="h23-overlay-footer h23-problems-footer">
+          <button class="h23-overlay-action primary" type="button" onclick="tickProblemsNow()">Re-verify now</button>
+          <button class="h23-overlay-action" id="problems-edit-invariants" type="button" onclick="openProblemEditorList()">Edit invariants</button>
         </div>
       </div>
     </div>
@@ -89,16 +78,16 @@
 
   <!-- Good Life operator drill-down -->
   <div class="h23-log-overlay" id="goodlife-overlay" onclick="if(event.target===this)closeGoodLifeOperator()">
-    <div class="h23-log-overlay-panel h23-goodlife-overlay-panel">
+    <div class="h23-log-overlay-panel h23-goodlife-overlay-panel" role="dialog" aria-modal="true" aria-labelledby="goodlife-overlay-title">
       <div class="h23-log-overlay-header h23-goodlife-overlay-header">
         <div>
-          <span class="h23-brainlog-title" id="goodlife-overlay-title">Good Life</span>
+          <h2 class="h23-brainlog-title" id="goodlife-overlay-title">Good Life</h2>
           <span class="h23-goodlife-overlay-status" id="goodlife-overlay-status">UNKNOWN</span>
         </div>
         <div class="h23-goodlife-overlay-actions">
           <button class="h23-goodlife-plain-btn" type="button" onclick="refreshGoodLifeOperator()">Refresh</button>
           <button class="h23-goodlife-plain-btn" type="button" onclick="reverifyGoodLifeOperator()">Re-verify</button>
-          <button class="h23-log-overlay-close" onclick="closeGoodLifeOperator()" style="margin-left:8px;">&#10005;</button>
+          <button class="h23-log-overlay-close" type="button" aria-label="Close Good Life" onclick="closeGoodLifeOperator()" style="margin-left:8px;">&#10005;</button>
         </div>
       </div>
       <div class="h23-goodlife-overlay-body">
@@ -113,36 +102,54 @@
     </div>
   </div>
 
-  <!-- Live Problem editor dialog -->
+  <!-- Live invariant editor dialog -->
   <div class="h23-log-overlay" id="problem-editor-overlay" onclick="if(event.target===this)closeProblemEditor()">
-    <div class="h23-log-overlay-panel" style="max-width:720px;">
+    <div class="h23-log-overlay-panel h23-problem-editor-panel" role="dialog" aria-modal="true" aria-labelledby="problem-editor-title">
       <div class="h23-log-overlay-header">
-        <span class="h23-brainlog-title" id="problem-editor-title">Edit Problem</span>
-        <button class="h23-log-overlay-close" onclick="closeProblemEditor()" style="margin-left:auto;">&#10005;</button>
+        <div>
+          <h2 class="h23-brainlog-title" id="problem-editor-title">Invariant editor</h2>
+          <p class="h23-overlay-description">Choose an invariant, add one, or inspect its technical verifier and remediation plan.</p>
+        </div>
+        <button class="h23-log-overlay-close" type="button" aria-label="Close Invariant Editor" onclick="closeProblemEditor()">Close</button>
       </div>
       <div class="h23-log-overlay-body">
-        <div style="padding:14px;display:flex;flex-direction:column;gap:10px;">
-          <label style="font-size:12px;color:rgba(255,255,255,0.6);">ID (stable slug)
-            <input id="pe-id" type="text" style="width:100%;margin-top:4px;padding:6px 8px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#fff;font-size:13px;font-family:var(--font-mono,monospace);">
+        <section class="h23-invariant-list-shell" aria-labelledby="problem-invariant-list-title">
+          <div class="h23-invariant-list-head">
+            <div>
+              <h3 id="problem-invariant-list-title">Existing invariants</h3>
+              <p>Claim, plain-language rule, cadence, and removal controls.</p>
+            </div>
+            <button class="h23-overlay-action primary" id="problem-invariant-add" type="button" onclick="openProblemEditor()">Add invariant</button>
+          </div>
+          <div class="h23-invariant-list" id="problem-invariant-list"></div>
+        </section>
+        <section class="h23-problem-editor-form" id="problem-editor-form" aria-label="Technical invariant fields">
+          <h3>Technical fields</h3>
+          <label>ID (stable slug)
+            <input id="pe-id" type="text">
           </label>
-          <label style="font-size:12px;color:rgba(255,255,255,0.6);">Claim (human-readable)
-            <input id="pe-claim" type="text" style="width:100%;margin-top:4px;padding:6px 8px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#fff;font-size:13px;">
+          <label>Claim (human-readable)
+            <input id="pe-claim" type="text">
           </label>
-          <label style="font-size:12px;color:rgba(255,255,255,0.6);">Verifier (JSON: <code style="background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:3px;">{"type":"file_mtime","args":{"path":"~/.health_log.jsonl","maxAgeMin":360}}</code>)
-            <textarea id="pe-verifier" rows="4" style="width:100%;margin-top:4px;padding:6px 8px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#fff;font-size:12px;font-family:var(--font-mono,monospace);"></textarea>
+          <label>Verifier JSON
+            <textarea id="pe-verifier" rows="4"></textarea>
           </label>
-          <label style="font-size:12px;color:rgba(255,255,255,0.6);">Remediation plan (JSON array of <code style="background:rgba(255,255,255,0.05);padding:1px 4px;border-radius:3px;">{type,args,cooldownMin}</code> steps, executed in order)
-            <textarea id="pe-remediation" rows="6" style="width:100%;margin-top:4px;padding:6px 8px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:6px;color:#fff;font-size:12px;font-family:var(--font-mono,monospace);"></textarea>
+          <label>Remediation plan JSON
+            <textarea id="pe-remediation" rows="6"></textarea>
           </label>
-          <div style="font-size:11px;color:rgba(255,255,255,0.5);background:rgba(255,255,255,0.03);padding:8px 10px;border-radius:6px;">
+          <div class="h23-problem-editor-help">
             <div><b>Verifier types:</b> file_mtime, file_exists, pm2_status, http_ping, disk_free, graph_not_empty</div>
             <div><b>Remediator types:</b> pm2_restart (home23-* only), run_shortcut, fetch_url, exec_command (clean_pm2_logs, clean_npm_cache), <b>dispatch_to_agent</b> (hands the problem to the current agent with full tools, args.budgetHours), notify_jtr</div>
           </div>
-          <div style="display:flex;gap:10px;margin-top:6px;">
-            <button onclick="saveProblemEdit()" style="background:rgba(0,122,255,0.3);border:1px solid rgba(0,122,255,0.5);color:#fff;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;">Save</button>
-            <button id="pe-delete" onclick="deleteProblemFromEditor()" style="background:rgba(255,59,48,0.15);border:1px solid rgba(255,59,48,0.4);color:#fff;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;display:none;">Delete</button>
-            <span id="pe-status" style="align-self:center;font-size:12px;color:rgba(255,255,255,0.5);"></span>
+          <div class="h23-problem-editor-actions">
+            <button class="h23-overlay-action primary" type="button" onclick="saveProblemEdit()">Save</button>
+            <button class="h23-overlay-action danger" id="pe-delete" type="button" onclick="deleteProblemFromEditor()" hidden>Delete</button>
+            <span class="h23-problem-editor-status" id="pe-status" role="status" aria-live="polite"></span>
           </div>
+        </section>
+        <div class="h23-overlay-footer h23-problem-editor-nav">
+          <button class="h23-overlay-action" id="problem-editor-back" type="button" onclick="backToProblemsFromEditor()">Back to problems</button>
+          <button class="h23-overlay-action primary" id="problem-editor-done" type="button" onclick="closeProblemEditor()">Done</button>
         </div>
       </div>
     </div>
@@ -150,56 +157,77 @@
 
       <!-- Home panel — human front door. Agency/operator detail lives behind the Agency tab. -->
   <main class="h23-main">
-    <div class="h23-panel active" id="panel-home">
+    <div class="h23-panel active" id="panel-home" role="tabpanel" aria-labelledby="dashboard-tab-home" aria-hidden="false">
       <section class="h23-human-home" id="human-home">
-        <div class="h23-human-hero">
-          <div class="h23-human-clock">
-            <div class="h23-human-time" id="tz1-time">--:--</div>
-            <div class="h23-human-place" id="tz1-label">New York</div>
+        <section class="h23-human-hero" aria-labelledby="human-jerry-remark">
+          <div class="h23-human-hero-copy">
+            <p class="h23-human-hero-kicker" id="human-jerry-kicker">JERRY · LISTENING</p>
+            <h1 class="h23-human-jerry-remark" id="human-jerry-remark">Loading Home23 signal…</h1>
+            <button class="h23-human-jerry-status" id="human-jerry-status" type="button" onclick="openBrainStoragePanel()">Loading brain status…</button>
+            <p class="h23-human-jerry-context" id="human-jerry-context"></p>
           </div>
-          <div class="h23-human-clock secondary" id="tz2-container" style="display:none;">
-            <div class="h23-human-time" id="tz2-time">--:--</div>
-            <div class="h23-human-place" id="tz2-label">Florence</div>
-          </div>
-          <a class="h23-human-chat" href="/home23/chat">Chat</a>
-        </div>
-
-        <div class="h23-human-grid">
-          <section class="h23-human-card h23-human-card-vibe" data-home-tile-id="vibe">
-            <div class="h23-human-card-head">
-              <span id="vibe-trigger">Vibe</span>
-              <a id="home-vibe-gallery-link" href="/home23/vibe-gallery">Gallery</a>
+          <div class="h23-human-hero-clocks">
+            <div class="h23-human-clock">
+              <div class="h23-human-time" id="tz1-time">--:--</div>
+              <div class="h23-human-place" id="tz1-label">New York</div>
             </div>
-            <div class="h23-vibe-image h23-human-vibe-image" id="home-vibe-image"><span class="h23-vibe-placeholder">Loading...</span></div>
-            <div class="h23-vibe-caption" id="home-vibe-caption"></div>
+            <div class="h23-human-clock secondary" id="tz2-container" hidden>
+              <div class="h23-human-time" id="tz2-time">--:--</div>
+              <div class="h23-human-place" id="tz2-label">Florence</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="h23-human-sensor-strip" data-home-sensor-layout="true" aria-label="House sensors and status">
+          <section class="h23-human-card h23-human-card-sensor" data-home-tile-id="outside-weather">
+            <div class="h23-human-card-head"><span>Weather</span><small id="human-weather-status">checking</small></div>
+            <div class="h23-human-value" id="human-weather-value">--</div>
+            <div class="h23-human-subtitle" id="human-weather-subtitle">Outside sensor</div>
+            <div class="h23-human-metrics" id="human-weather-metrics"></div>
           </section>
 
-          <div class="h23-vibe-detail-modal" id="home-vibe-detail-modal" aria-hidden="true">
-            <div class="h23-vibe-detail-panel" role="dialog" aria-modal="true" aria-labelledby="home-vibe-detail-title">
-              <button class="h23-vibe-detail-close" id="home-vibe-detail-close" type="button">Close</button>
-              <div class="h23-vibe-detail-body">
-                <div class="h23-vibe-detail-image">
-                  <img id="home-vibe-detail-image" alt="Vibe image full view">
-                </div>
-                <div class="h23-vibe-detail-copy">
-                  <p class="h23-vibe-detail-kicker" id="home-vibe-detail-source"></p>
-                  <h2 id="home-vibe-detail-title">Vibe Image</h2>
-                  <p id="home-vibe-detail-caption"></p>
-                  <div class="h23-vibe-detail-prompt">
-                    <span>Prompt</span>
-                    <p id="home-vibe-detail-prompt"></p>
-                  </div>
-                  <p class="h23-vibe-detail-meta" id="home-vibe-detail-meta"></p>
-                  <div class="h23-vibe-detail-actions">
-                    <a id="home-vibe-detail-open" href="#" target="_blank" rel="noreferrer">Open image</a>
-                    <a id="home-vibe-detail-gallery" href="/home23/vibe-gallery">Full gallery</a>
-                  </div>
-                </div>
-              </div>
+          <section class="h23-human-card h23-human-card-sauna" data-home-tile-id="sauna-control">
+            <div class="h23-human-card-head"><span>Sauna</span><small id="human-sauna-status">checking</small></div>
+            <div class="h23-human-sauna-state">
+              <div class="h23-human-value" id="human-sauna-value">--</div>
+              <div class="h23-human-subtitle" id="human-sauna-subtitle">Huum</div>
             </div>
-          </div>
+            <div class="h23-human-sauna-control h23-integration-state" hidden aria-hidden="true">
+              <label>
+                <span>Target</span>
+                <input id="human-sauna-target" type="number" min="100" max="240" step="5" value="190" tabindex="-1">
+              </label>
+              <label>
+                <span>Minutes</span>
+                <input id="human-sauna-duration" type="number" min="15" max="720" step="15" value="180" tabindex="-1">
+              </label>
+            </div>
+            <div class="h23-human-actions" id="human-sauna-actions"></div>
+            <div class="h23-human-metrics" id="human-sauna-metrics"></div>
+          </section>
 
-          <section class="h23-human-card h23-human-card-chat h23-tile-chat" data-home-tile-id="chat" aria-label="Chat with Home23 agents">
+          <section class="h23-human-card h23-human-card-sensor" data-home-tile-id="pool-screenlogic">
+            <div class="h23-human-card-head"><span>Pool</span><small id="human-pool-status">checking</small></div>
+            <div class="h23-human-value" id="human-pool-value">--</div>
+            <div class="h23-human-subtitle" id="human-pool-subtitle">ScreenLogic</div>
+            <div class="h23-human-metrics" id="human-pool-metrics"></div>
+          </section>
+
+          <button class="h23-human-card h23-human-card-button" id="human-issues-card" data-home-sensor-fixed="problems" data-problem-severity="unavailable" type="button" onclick="openProblemsPanel()" aria-label="Problems: unavailable">
+            <div class="h23-human-card-head"><span>Problems</span><small id="human-issues-status" role="status" aria-live="polite">checking</small></div>
+            <div class="h23-human-value" id="human-issues-value">--</div>
+            <div class="h23-human-subtitle" id="human-issues-subtitle">Live problems</div>
+          </button>
+
+          <button class="h23-human-card h23-human-card-button" id="human-goodlife-card" data-home-sensor-fixed="good-life" type="button" onclick="openGoodLifeOperator('home')">
+            <div class="h23-human-card-head"><span>Good Life</span><small id="human-goodlife-status">checking</small></div>
+            <div class="h23-human-value" id="human-goodlife-value">--</div>
+            <div class="h23-human-subtitle" id="human-goodlife-subtitle">Current policy</div>
+          </button>
+        </section>
+
+        <section class="h23-human-main-grid" aria-label="Chat, vibe, and briefs">
+          <section class="h23-human-card h23-human-card-chat h23-tile-chat" aria-label="Chat with Home23 agents">
             <div class="h23-chat-header">
               <button class="h23-chat-agent-pill" id="chat-agent-pill" type="button" title="Change agent">
                 <span class="h23-chat-agent-avatar" id="chat-agent-avatar">?</span>
@@ -229,86 +257,117 @@
             </div>
           </section>
 
-          <section class="h23-human-card h23-human-card-sensor" data-home-tile-id="outside-weather">
-            <div class="h23-human-card-head"><span>Weather</span><small id="human-weather-status">checking</small></div>
-            <div class="h23-human-value" id="human-weather-value">--</div>
-            <div class="h23-human-subtitle" id="human-weather-subtitle">Outside sensor</div>
-            <div class="h23-human-metrics" id="human-weather-metrics"></div>
-          </section>
-
-          <section class="h23-human-card h23-human-card-sauna" data-home-tile-id="sauna-control">
-            <div class="h23-human-card-head"><span>Sauna</span><small id="human-sauna-status">checking</small></div>
-            <div class="h23-human-sauna-layout">
-              <div class="h23-human-sauna-gauge" id="human-sauna-gauge" style="--sauna-heat:0.18;">
-                <div class="h23-human-sauna-gauge-core">
-                  <div class="h23-human-value" id="human-sauna-value">--</div>
-                  <div class="h23-human-subtitle" id="human-sauna-subtitle">Huum</div>
-                </div>
+          <div class="h23-human-main-side">
+            <section class="h23-human-card h23-human-card-vibe">
+              <div class="h23-human-card-head">
+                <span id="vibe-trigger">Vibe</span>
+                <a id="home-vibe-gallery-link" href="/home23/vibe-gallery">Gallery</a>
               </div>
-              <div class="h23-human-sauna-control">
-                <label>
-                  <span>Target</span>
-                  <input id="human-sauna-target" type="number" min="100" max="240" step="5" value="190">
-                </label>
-                <label>
-                  <span>Minutes</span>
-                  <input id="human-sauna-duration" type="number" min="15" max="720" step="15" value="180">
-                </label>
+              <button class="h23-vibe-image h23-human-vibe-image" id="home-vibe-image" type="button"
+                aria-label="Current Vibe image unavailable" aria-disabled="true" disabled><span class="h23-vibe-placeholder">Loading...</span></button>
+              <div class="h23-vibe-caption" id="home-vibe-caption"></div>
+            </section>
+
+            <section class="h23-human-card h23-human-briefs">
+              <div class="h23-human-card-head">
+                <span>Briefs</span>
+                <button type="button" onclick="selectDashboardTab('briefs')">Open</button>
               </div>
-            </div>
-            <div class="h23-human-actions" id="human-sauna-actions"></div>
-            <div class="h23-human-metrics" id="human-sauna-metrics"></div>
-          </section>
-
-          <section class="h23-human-card h23-human-card-sensor" data-home-tile-id="pool-screenlogic">
-            <div class="h23-human-card-head"><span>Pool</span><small id="human-pool-status">checking</small></div>
-            <div class="h23-human-value" id="human-pool-value">--</div>
-            <div class="h23-human-subtitle" id="human-pool-subtitle">ScreenLogic</div>
-            <div class="h23-human-metrics" id="human-pool-metrics"></div>
-          </section>
-
-          <button class="h23-human-card h23-human-card-button" type="button" onclick="openProblemsPanel()">
-            <div class="h23-human-card-head"><span>Issues</span><small id="human-issues-status">checking</small></div>
-            <div class="h23-human-value" id="human-issues-value">--</div>
-            <div class="h23-human-subtitle" id="human-issues-subtitle">Live problems</div>
-          </button>
-
-          <button class="h23-human-card h23-human-card-button" data-home-tile-id="good-life" type="button" onclick="openGoodLifeOperator('home')">
-            <div class="h23-human-card-head"><span>Good Life</span><small id="human-goodlife-status">checking</small></div>
-            <div class="h23-human-value" id="human-goodlife-value">--</div>
-            <div class="h23-human-subtitle" id="human-goodlife-subtitle">Current policy</div>
-          </button>
-
-          <section class="h23-human-card h23-human-card-wide h23-human-jerry" data-home-tile-id="system-summary">
-            <div class="h23-human-card-head"><span>Jerry Says</span><small id="human-jerry-status">listening</small></div>
-            <div class="h23-human-jerry-remark" id="human-jerry-remark">Loading Home23 signal...</div>
-            <div class="h23-human-jerry-context" id="human-jerry-context"></div>
-          </section>
-
-          <section class="h23-human-card h23-human-card-wide h23-human-briefs">
-            <div class="h23-human-card-head">
-              <span>Briefs</span>
-              <button type="button" onclick="selectDashboardTab('briefs')">Open</button>
-            </div>
-            <div class="h23-human-brief-status" id="human-briefs-status">checking</div>
-            <div class="h23-human-brief-list" id="human-briefs-list"></div>
-          </section>
-        </div>
+              <div class="h23-human-brief-status" id="human-briefs-status">checking</div>
+              <div class="h23-human-brief-list" id="human-briefs-list"></div>
+            </section>
+          </div>
+        </section>
       </section>
     </div>
 
+    <div class="h23-vibe-detail-modal" id="home-vibe-detail-modal" aria-hidden="true">
+      <div class="h23-vibe-detail-panel" role="dialog" aria-modal="true" aria-labelledby="home-vibe-detail-title">
+        <button class="h23-vibe-detail-close" id="home-vibe-detail-close" type="button" aria-label="Close Vibe Image">Close</button>
+        <div class="h23-vibe-detail-body">
+          <div class="h23-vibe-detail-image">
+            <img id="home-vibe-detail-image" alt="Vibe image full view">
+          </div>
+          <div class="h23-vibe-detail-copy">
+            <p class="h23-vibe-detail-kicker" id="home-vibe-detail-source"></p>
+            <h2 id="home-vibe-detail-title">Vibe Image</h2>
+            <p id="home-vibe-detail-caption"></p>
+            <div class="h23-vibe-detail-prompt">
+              <span>Prompt</span>
+              <p id="home-vibe-detail-prompt"></p>
+            </div>
+            <p class="h23-vibe-detail-meta" id="home-vibe-detail-meta"></p>
+            <div class="h23-vibe-detail-actions">
+              <button id="home-vibe-detail-previous" type="button" onclick="navigateVibeImageDetail(-1)" disabled>Previous</button>
+              <span id="home-vibe-detail-position" role="status" aria-live="polite">Gallery unavailable</span>
+              <button id="home-vibe-detail-next" type="button" onclick="navigateVibeImageDetail(1)" disabled>Next</button>
+              <a id="home-vibe-detail-open" href="#" target="_blank" rel="noreferrer">Open image</a>
+              <a id="home-vibe-detail-gallery" href="/home23/vibe-gallery">Full gallery</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="h23-panel" id="panel-settings" role="tabpanel" aria-labelledby="settings-btn" aria-hidden="true">
+      <div class="h23-page-header">
+        <div>
+          <h2>Settings</h2>
+          <p>House and agent status with links to the full control surface.</p>
+        </div>
+        <a href="/home23/settings">Open full settings <span aria-hidden="true">↗</span></a>
+      </div>
+      <div class="h23-settings-overview-grid">
+        <section class="h23-settings-overview-panel" aria-labelledby="settings-overview-agents-title">
+          <h3 id="settings-overview-agents-title">Agents</h3>
+          <div id="settings-overview-agents"></div>
+          <a href="/home23/settings#agents">Open agents settings ›</a>
+        </section>
+        <section class="h23-settings-overview-panel" aria-labelledby="settings-overview-feeds-title">
+          <h3 id="settings-overview-feeds-title">Data Feeds</h3>
+          <div id="settings-overview-feeds"></div>
+          <a href="/home23/settings#feeder">Open data feeds ›</a>
+        </section>
+        <section class="h23-settings-overview-panel" aria-labelledby="settings-overview-notifications-title">
+          <h3 id="settings-overview-notifications-title">Notifications</h3>
+          <div id="settings-overview-notifications"></div>
+          <a href="/home23/settings">Open full settings ›</a>
+        </section>
+        <section class="h23-settings-overview-panel" aria-labelledby="settings-overview-house-title">
+          <h3 id="settings-overview-house-title">House</h3>
+          <div id="settings-overview-house"></div>
+          <a href="/home23/settings#vibe">Open house settings ›</a>
+        </section>
+      </div>
+    </div>
+
     <!-- COSMO 2.3 iframe (full-bleed, hidden until tab click) -->
-    <div id="cosmo23-frame-wrap" style="display:none; position:relative; width:100%; height:calc(100vh - 48px);">
-      <button id="cosmo23-home-toggle-btn" class="cosmo23-home-toggle" type="button" aria-expanded="false" title="Toggle Home23 navigation">Home23</button>
-      <button id="cosmo23-refresh-btn" title="Reload COSMO" style="position:absolute; top:10px; right:14px; z-index:10; background:rgba(30,30,40,0.85); border:1px solid rgba(255,255,255,0.15); color:#aaa; border-radius:6px; padding:4px 10px; font-size:12px; cursor:pointer; backdrop-filter:blur(4px);">⟳ Refresh</button>
-      <iframe id="cosmo23-frame" style="width:100%; height:100%; border:none;"></iframe>
+    <div id="cosmo23-frame-wrap" role="tabpanel" aria-labelledby="cosmo23-btn" aria-hidden="true" style="display:none; position:relative; width:100%; height:calc(100vh - 48px);">
+      <div class="h23-cosmo-header">
+        <div class="h23-cosmo-heading">
+          <p class="h23-page-kicker">Research engine</p>
+          <h2>COSMO 2.3</h2>
+        </div>
+        <div class="h23-cosmo-controls">
+          <div class="h23-cosmo-indicator" id="cosmo23-indicator" role="status" aria-live="polite">
+            <span class="h23-cosmo-indicator-dot" id="cosmo23-ind-dot" aria-hidden="true"></span>
+            <span id="cosmo23-ind-text">COSMO: checking</span>
+          </div>
+          <button id="cosmo23-refresh-btn" type="button" title="Reload COSMO">Reload</button>
+          <a class="h23-cosmo-open-link" id="cosmo23-open-link" target="_blank" rel="noreferrer" aria-disabled="true">Open in new tab <span aria-hidden="true">↗</span></a>
+          <button id="cosmo23-home-toggle-btn" class="cosmo23-home-toggle" type="button" aria-expanded="false" title="Toggle Home23 navigation">Home23</button>
+        </div>
+      </div>
+      <div class="h23-cosmo-frame-surface">
+        <iframe id="cosmo23-frame" title="cosmo23 research engine" style="width:100%; height:100%; border:none;"></iframe>
+      </div>
     </div>
 
     <!-- Query panel — scoped to the current dashboard agent brain, powered by cosmo23's PGS. -->
-    <div class="h23-panel" id="panel-query"></div>
+    <div class="h23-panel" id="panel-query" role="tabpanel" aria-labelledby="dashboard-tab-query" aria-hidden="true"></div>
 
     <!-- Briefs panel — human-facing outputs from Jerry, Forrest, cron runs, and worker receipts. -->
-    <div class="h23-panel" id="panel-briefs">
+    <div class="h23-panel" id="panel-briefs" role="tabpanel" aria-labelledby="dashboard-tab-briefs" aria-hidden="true">
       <div class="h23-workers-header">
         <div>
           <h2>Briefs</h2>
@@ -343,7 +402,7 @@
     </div>
 
     <!-- Workers panel — operator-facing reusable specialists. -->
-    <div class="h23-panel" id="panel-workers">
+    <div class="h23-panel" id="panel-workers" role="tabpanel" aria-labelledby="dashboard-tab-workers" aria-hidden="true">
       <div class="h23-workers-header">
         <div>
           <h2>Worker Desk</h2>
@@ -410,7 +469,7 @@
     </div>
 
     <!-- Agency panel — resident pursuit inspector. -->
-    <div class="h23-panel" id="panel-agency">
+    <div class="h23-panel" id="panel-agency" role="tabpanel" aria-labelledby="dashboard-tab-agency" aria-hidden="true">
       <div class="h23-workers-header">
         <div>
           <h2>Agency Inspector</h2>
@@ -509,7 +568,7 @@
     </div>
 
     <!-- Brain Map panel -->
-    <div class="h23-panel" id="panel-brain-map">
+    <div class="h23-panel" id="panel-brain-map" role="tabpanel" aria-labelledby="dashboard-tab-brain-map" aria-hidden="true">
       <div class="h23-brain-map-header">
         <div class="h23-brain-map-stats" id="brain-map-stats">Loading brain map...</div>
         <div class="h23-brain-map-toolbar" id="brain-map-toolbar">
@@ -531,16 +590,16 @@
        overlay opens, back when it closes. Moving the same nodes preserves
        all event bindings and mid-stream render state. -->
   <div class="h23-chat-overlay" id="chat-overlay">
-    <div class="h23-chat-overlay-panel">
+    <div class="h23-chat-overlay-panel" role="dialog" aria-modal="true" aria-labelledby="chat-overlay-title-label">
       <div class="h23-chat-overlay-header">
         <div class="h23-chat-overlay-brand">
           <div class="h23-chat-overlay-kicker">Home23 Native Chat</div>
-          <div class="h23-chat-overlay-title" id="chat-overlay-title-label">Loading agent…</div>
+          <h2 class="h23-chat-overlay-title" id="chat-overlay-title-label">Loading agent…</h2>
         </div>
         <div class="h23-chat-overlay-controls">
           <div class="h23-chat-actions">
             <button class="h23-chat-expand-btn" id="chat-overlay-more-btn" title="More" aria-haspopup="menu" aria-expanded="false">&#8230;</button>
-            <button class="h23-chat-expand-btn" id="chat-overlay-close-btn" title="Close">&#10005;</button>
+            <button class="h23-chat-expand-btn" id="chat-overlay-close-btn" type="button" aria-label="Close Expanded Chat" title="Close">&#10005;</button>
           </div>
         </div>
       </div>
@@ -570,7 +629,7 @@
       <div class="h23-chat-input-area" id="chat-input-area">
         <div class="h23-chat-attach-tray" id="chat-attach-tray" hidden></div>
         <div class="h23-chat-input-row">
-          <button class="h23-chat-attach-btn" id="chat-attach-btn" type="button" aria-label="Attach image" title="Attach image">📎</button>
+          <button class="h23-chat-attach-btn" id="chat-attach-btn" type="button" aria-label="Attach image" title="Attach image"><span class="h23-chat-attach-icon" aria-hidden="true">Attach</span></button>
           <input type="file" id="chat-attach-input" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
           <textarea class="h23-chat-input" id="chat-input" placeholder="Message your agent..." rows="1"></textarea>
           <button class="h23-chat-send-btn" id="chat-send-btn" type="button">&#9654;</button>

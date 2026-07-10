@@ -819,11 +819,15 @@ function renderConversationList() {
     const timeStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' +
                     date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
     const isActive = c.id === chatConversationId;
-    const sourceIcon = c.source === 'telegram' ? '&#9992; ' : c.source === 'dashboard' ? '&#128172; ' : '';
+    const sourcePrefix = c.source === 'telegram'
+      ? '<span class="h23-chat-conv-source">TG</span> · '
+      : c.source === 'dashboard'
+        ? '<span class="h23-chat-conv-source">Dashboard</span> · '
+        : '';
     const sourceLabel = c.source && c.source !== 'dashboard' ? `<span style="color:var(--text-muted);font-size:10px;text-transform:uppercase;">${c.source}</span> &middot; ` : '';
     return `
       <div class="h23-chat-conv-item ${isActive ? 'active' : ''}" onclick="openConversation('${c.id}')" title="${c.preview}">
-        <div class="h23-chat-conv-preview">${sourceIcon}${escapeHtml(c.preview)}</div>
+        <div class="h23-chat-conv-preview">${sourcePrefix}${escapeHtml(c.preview)}</div>
         <div class="h23-chat-conv-meta">${sourceLabel}${timeStr} &middot; ${c.messageCount} msgs</div>
       </div>
     `;

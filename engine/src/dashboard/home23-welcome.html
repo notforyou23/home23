@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home23 — Welcome</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/home23-dashboard.css">
   <style>
     .welcome-wrap {
@@ -77,13 +77,131 @@
       font-size: 12px;
       color: var(--text-muted);
     }
+
+    /* Glass Light welcome surface */
+    body.h23-welcome-page {
+      --glass-primary: var(--h23-glass-card);
+      --glass-border: var(--h23-glass-border);
+      --text-primary: var(--h23-text-primary);
+      --text-secondary: var(--h23-text-secondary);
+      --text-muted: var(--h23-text-muted-aa);
+      --accent-blue: var(--h23-accent);
+      --shadow-glass: var(--h23-shadow-overlay);
+      min-height: 100vh;
+      color: var(--h23-text-body);
+      font-family: var(--h23-font-ui);
+      background: var(--h23-bg-wash-1), var(--h23-bg-wash-2), var(--h23-bg);
+      background-attachment: fixed;
+    }
+
+    body.h23-welcome-page::before {
+      background: none;
+    }
+
+    body.h23-welcome-page #particles-js {
+      opacity: 0.12;
+      pointer-events: none;
+    }
+
+    body.h23-welcome-page .welcome-wrap {
+      min-height: 100dvh;
+      padding: 28px 20px;
+    }
+
+    body.h23-welcome-page .welcome-card {
+      background: var(--h23-glass-overlay);
+      border: 1px solid var(--h23-glass-border);
+      border-radius: var(--h23-radius-overlay);
+      padding: 50px 44px 38px;
+      box-shadow: var(--h23-shadow-overlay);
+      backdrop-filter: blur(var(--h23-glass-blur-overlay));
+      -webkit-backdrop-filter: blur(var(--h23-glass-blur-overlay));
+    }
+
+    body.h23-welcome-page .welcome-logo {
+      width: 82px;
+      height: 82px;
+      margin: 0 auto 22px;
+      display: grid;
+      place-items: center;
+      color: var(--h23-accent);
+      border: 1px solid var(--h23-accent-tint-border);
+      border-radius: 24px;
+      background: var(--h23-accent-tint);
+      box-shadow: var(--h23-shadow-pill);
+      font-family: var(--h23-font-mono);
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.04em;
+    }
+
+    body.h23-welcome-page .welcome-title {
+      color: var(--h23-text-heading);
+      font-size: 40px;
+      font-weight: 600;
+      letter-spacing: -0.045em;
+    }
+
+    body.h23-welcome-page .welcome-subtitle {
+      margin-bottom: 34px;
+      color: var(--h23-text-secondary);
+      line-height: 1.65;
+    }
+
+    body.h23-welcome-page .welcome-btn {
+      padding: 13px 30px;
+      color: #fff;
+      border-radius: var(--h23-radius-pill);
+      background: var(--h23-accent);
+      box-shadow: var(--h23-shadow-accent-btn);
+    }
+
+    body.h23-welcome-page .welcome-btn:hover {
+      background: #356fd0;
+    }
+
+    body.h23-welcome-page .welcome-btn:focus-visible {
+      outline: 3px solid var(--h23-accent-tint-border);
+      outline-offset: 4px;
+    }
+
+    body.h23-welcome-page .welcome-version {
+      margin-top: 32px;
+      color: var(--h23-text-muted-aa);
+      font-family: var(--h23-font-mono);
+      font-size: 11px;
+    }
+
+    @media (max-width: 540px) {
+      body.h23-welcome-page .welcome-card {
+        padding: 38px 24px 30px;
+      }
+
+      body.h23-welcome-page .welcome-title {
+        font-size: 34px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      body.h23-welcome-page #particles-js {
+        display: none;
+      }
+
+      body.h23-welcome-page *,
+      body.h23-welcome-page *::before,
+      body.h23-welcome-page *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
   </style>
 </head>
-<body>
+<body class="h23-welcome-page">
   <div id="particles-js"></div>
   <div class="welcome-wrap">
     <div class="welcome-card">
-      <div class="welcome-logo">&#129504;</div>
+      <div class="welcome-logo" aria-label="Home23">H23</div>
       <div class="welcome-title">Home23</div>
       <div class="welcome-subtitle">
         Installable AI operating system. Persistent agents with Good Life governance, verifier-backed operations, research engines, and creative tools.
@@ -109,7 +227,8 @@
       }
     })();
 
-    if (typeof particlesJS !== 'undefined') {
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (!reduceMotion && typeof particlesJS !== 'undefined') {
       particlesJS('particles-js', {
         particles: {
           number: { value: 40, density: { enable: true, value_area: 1000 } },

@@ -211,7 +211,6 @@ test('Home dashboard is the human front door, with agency detail behind the agen
   assert.match(html, /id="home-vibe-image"/);
   assert.match(html, /id="human-weather-value"/);
   assert.match(html, /id="human-sauna-value"/);
-  assert.match(html, /id="human-sauna-gauge"/);
   assert.match(html, /id="human-sauna-target"/);
   assert.match(html, /id="human-sauna-duration"/);
   assert.match(html, /id="human-sauna-actions"/);
@@ -220,12 +219,12 @@ test('Home dashboard is the human front door, with agency detail behind the agen
   assert.match(html, /id="human-goodlife-value"/);
   assert.match(html, /id="human-jerry-remark"/);
   assert.match(html, /id="human-jerry-context"/);
-  assert.match(html, /data-home-tile-id="vibe"/);
   assert.match(html, /data-home-tile-id="outside-weather"/);
   assert.match(html, /data-home-tile-id="sauna-control"/);
   assert.match(html, /data-home-tile-id="pool-screenlogic"/);
-  assert.match(html, /data-home-tile-id="good-life"/);
-  assert.match(html, /data-home-tile-id="system-summary"/);
+  assert.doesNotMatch(html, /data-home-tile-id="vibe"/);
+  assert.doesNotMatch(html, /data-home-tile-id="good-life"/);
+  assert.doesNotMatch(html, /data-home-tile-id="system-summary"/);
   assert.match(html, /href="\/home23\/chat"/);
   assert.doesNotMatch(html, /id="resident-home"/);
 
@@ -263,7 +262,6 @@ test('Home dashboard is the human front door, with agency detail behind the agen
   assert.match(css, /\.h23-human-vibe-image[\s\S]*aspect-ratio/);
   assert.match(css, /\.h23-vibe-detail-modal/);
   assert.match(css, /\.h23-vibe-detail-image/);
-  assert.match(css, /\.h23-human-sauna-gauge/);
   assert.match(css, /\.h23-human-sauna-control/);
   assert.match(css, /\.h23-human-jerry/);
   assert.match(css, /\.h23-human-metrics/);
@@ -309,7 +307,7 @@ test('Home dashboard exposes a mounted native chat tile, not only a standalone l
   const chatCss = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-chat.css'), 'utf8');
   const chatJs = fs.readFileSync(path.join(HOME23_ROOT, 'engine/src/dashboard/home23-chat.js'), 'utf8');
 
-  assert.match(html, /data-home-tile-id="chat"/);
+  assert.doesNotMatch(html, /data-home-tile-id="chat"/);
   assert.match(html, /id="chat-slot-tile"/);
   assert.match(html, /id="chat-agent-pill"/);
   assert.match(html, /id="chat-model-pill"/);

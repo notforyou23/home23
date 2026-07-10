@@ -9,6 +9,7 @@
 
 const REFRESH_MS = 30000;
 const GOOD_LIFE_API_TIMEOUT_MS = 12000;
+const AGENT_DISCOVERY_STARTUP_TIMEOUT_MS = 1500;
 let agents = [];
 // Back-compat variable name: this is the agent that owns the current dashboard.
 let primaryAgent = null;
@@ -19,6 +20,7 @@ let cosmo23Url = '';
 let evobrewUrl = '';
 let cosmo23Loaded = false;
 let cosmoOnline = false;
+let cosmoNavigationBound = false;
 const goodLifeSurfaceState = new Map();
 const goodLifeFleetState = new Map();
 let goodLifeOverlayState = {
@@ -28,6 +30,10 @@ let goodLifeOverlayState = {
 };
 let residentHomeLatestState = null;
 let humanHomeRefreshPromise = null;
+let humanSaunaConfirmedPayload = null;
+let humanSaunaPendingAction = null;
+let humanSaunaActionRevision = 0;
+let humanSaunaStateGeneration = 0;
 let briefsState = {
   items: [],
   selectedId: null,
@@ -39,8 +45,39 @@ let homeTileLayoutState = {
   layout: [],
   hiddenTiles: [],
 };
+const HOME_LAYOUT_MANAGED_SENSOR_IDS = new Set([
+  'outside-weather',
+  'sauna-control',
+  'pool-screenlogic',
+]);
 let homeTileLayoutControlsBound = false;
 let homeTileLayoutChannel = null;
+let vibeDetailGalleryState = {
+  items: [],
+  index: -1,
+  base: '',
+  unavailable: true,
+};
+let vibeDetailSessionSequence = 0;
+let activeVibeDetailSession = 0;
+let vibeDetailViewRevision = 0;
+const DASHBOARD_OVERLAY_IDS = [
+  'problems-overlay',
+  'goodlife-overlay',
+  'brain-storage-overlay',
+  'home-vibe-detail-modal',
+  'chat-overlay',
+  'problem-editor-overlay',
+];
+const dashboardOverlayFocusOrigins = new Map();
+const dashboardOverlayVisibility = new Map();
+const dashboardOverlayPaintOrder = new Map();
+const DASHBOARD_OVERLAY_BASE_Z_INDEX = 1000;
+let dashboardOverlayPaintSequence = 0;
+let dashboardOverlayAccessibilityBound = false;
+let dashboardOverlayLastInvoker = null;
+let dashboardOverlayLastInvokerAt = 0;
+let dashboardBodyOverflowBeforeOverlay = null;
 let workersState = {
   workers: [],
   templates: [],
@@ -173,39 +210,71 @@ const enginePulse = {
   lastEventTime: null, // Date of last engine event
   lastThought: null,   // timestamp of last thought
 };
+let enginePulseSocket = null;
+let enginePulseReconnectTimer = null;
+let enginePulsePort = null;
+let enginePulseConnectionRevision = 0;
 
 // ── Init ──
 let dashboardInitStarted = false;
+
+function settleDashboardStartupDependency(promise, timeoutMs = AGENT_DISCOVERY_STARTUP_TIMEOUT_MS) {
+  let timeoutId = null;
+  const settled = Promise.resolve(promise).then(() => true, () => true);
+  const timedOut = new Promise((resolve) => {
+    timeoutId = setTimeout(() => resolve(false), timeoutMs);
+  });
+  return Promise.race([settled, timedOut]).finally(() => {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+  });
+}
+
+function refreshDashboardAfterLateAgentDiscovery() {
+  refreshDashboardIdentityUI();
+  refreshDashboardScopeUI();
+  connectEnginePulse();
+  if (currentTab === 'home' && primaryAgent) {
+    void loadVibeTile(primaryAgent, {
+      imageId: 'home-vibe-image',
+      captionId: 'home-vibe-caption',
+      galleryHrefId: 'home-vibe-gallery-link',
+    }).catch(() => {});
+  }
+}
 
 async function init() {
   if (dashboardInitStarted) return;
   dashboardInitStarted = true;
   updateClocks();
-  setInterval(updateClocks, 10000);
+  setInterval(updateClocks, 1000);
   setupTabHandlers();
   setupOrganDrawer();
   setupHumanHomeSurface();
   setupResidentHomeSurface();
   setupWorkersSurface();
   setupBriefsSurface();
-  const selectedFromHash = selectInitialDashboardTabFromHash();
+  setupDashboardOverlayAccessibility();
+
+  const scopeRegistryPromise = Promise.resolve().then(() => loadDashboardScopeRegistry());
+  const agentDiscoveryPromise = Promise.resolve().then(() => loadAgents());
+  const agentDiscoverySettled = await settleDashboardStartupDependency(agentDiscoveryPromise);
   connectEnginePulse();
+  refreshDashboardScopeUI();
+  refreshDashboardIdentityUI();
+  if (!agentDiscoverySettled) {
+    void agentDiscoveryPromise.then(
+      () => refreshDashboardAfterLateAgentDiscovery(),
+      () => refreshDashboardIdentityUI(),
+    ).catch(() => {});
+  }
+  void scopeRegistryPromise.then(
+    () => refreshDashboardScopeUI(),
+    () => refreshDashboardScopeUI(),
+  ).catch(() => {});
 
-  Promise.allSettled([
-    loadDashboardScopeRegistry(),
-    loadAgents(),
-  ]).then(() => {
-    refreshDashboardScopeUI();
-    refreshDashboardIdentityUI();
-    if (currentTab === 'home') loadHumanHomeSurface().catch(renderHumanHomeError);
-  });
-
-  if (!selectedFromHash && currentTab === 'agency') {
-    loadAgencySurface().catch(renderAgencySurfaceError);
-  } else if (!selectedFromHash && currentTab === 'workers') {
-    loadWorkersSurface().catch(() => {});
-  } else if (!selectedFromHash && currentTab === 'briefs') {
-    loadBriefsSurface().catch(() => {});
+  const selectedFromHash = selectInitialDashboardTabFromHash();
+  if (!selectedFromHash && currentTab === 'home') {
+    loadHumanHomeSurface().catch(renderHumanHomeError);
   }
   startAutoRefresh();
 
@@ -237,6 +306,201 @@ async function init() {
   }, 15000);
 }
 
+function dashboardOverlayIsVisible(overlay) {
+  if (!overlay || overlay.hidden || overlay.getAttribute('aria-hidden') === 'true') return false;
+  if (overlay.id === 'chat-overlay' || overlay.id === 'home-vibe-detail-modal') {
+    return overlay.classList.contains('open');
+  }
+  const style = getComputedStyle(overlay);
+  return style.display !== 'none' && style.visibility !== 'hidden';
+}
+
+function dashboardOverlayFocusableElements(overlay) {
+  if (!overlay) return [];
+  return Array.from(overlay.querySelectorAll(
+    '[autofocus], input:not([type="hidden"]), textarea, select, button, [href], [tabindex]:not([tabindex="-1"])',
+  )).filter((element) => (
+    !element.disabled
+    && element.getAttribute('aria-hidden') !== 'true'
+    && !element.hidden
+    && getComputedStyle(element).display !== 'none'
+    && getComputedStyle(element).visibility !== 'hidden'
+    && element.getClientRects().length > 0
+  ));
+}
+
+function syncDashboardOverlayScrollLock() {
+  const anyOverlayOpen = DASHBOARD_OVERLAY_IDS
+    .map((id) => document.getElementById(id))
+    .some(dashboardOverlayIsVisible);
+  document.body.classList.toggle('h23-overlay-open', anyOverlayOpen);
+  if (anyOverlayOpen && dashboardBodyOverflowBeforeOverlay === null) {
+    dashboardBodyOverflowBeforeOverlay = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+  } else if (!anyOverlayOpen && dashboardBodyOverflowBeforeOverlay !== null) {
+    document.body.style.overflow = dashboardBodyOverflowBeforeOverlay;
+    dashboardBodyOverflowBeforeOverlay = null;
+  }
+}
+
+function restoreDashboardOverlayFocus(overlay) {
+  const invoker = dashboardOverlayFocusOrigins.get(overlay.id);
+  if (invoker?.isConnected) dashboardOverlayFocusOrigins.get(overlay.id)?.focus();
+  dashboardOverlayFocusOrigins.delete(overlay.id);
+}
+
+function visibleDashboardOverlaysInPaintOrder(overlays = null) {
+  const candidates = overlays || DASHBOARD_OVERLAY_IDS
+    .map((id) => document.getElementById(id))
+    .filter(Boolean);
+  return candidates
+    .filter(dashboardOverlayIsVisible)
+    .sort((left, right) => (
+      (dashboardOverlayPaintOrder.get(left.id) || 0)
+      - (dashboardOverlayPaintOrder.get(right.id) || 0)
+    ));
+}
+
+function syncDashboardOverlayVisualStack(overlays = null) {
+  const candidates = overlays || DASHBOARD_OVERLAY_IDS
+    .map((id) => document.getElementById(id))
+    .filter(Boolean);
+  const visibleOverlays = visibleDashboardOverlaysInPaintOrder(candidates);
+  const visibleIds = new Set(visibleOverlays.map((overlay) => overlay.id));
+  candidates.forEach((overlay) => {
+    if (!visibleIds.has(overlay.id)) {
+      if (overlay.style.zIndex) overlay.style.zIndex = '';
+      dashboardOverlayPaintOrder.delete(overlay.id);
+    }
+  });
+  visibleOverlays.forEach((overlay, index) => {
+    const normalizedOrder = index + 1;
+    const desiredZIndex = String(DASHBOARD_OVERLAY_BASE_Z_INDEX + index);
+    dashboardOverlayPaintOrder.set(overlay.id, normalizedOrder);
+    if (overlay.style.zIndex !== desiredZIndex) overlay.style.zIndex = desiredZIndex;
+  });
+  dashboardOverlayPaintSequence = visibleOverlays.length;
+  return visibleOverlays;
+}
+
+function closeTopmostDashboardOverlay() {
+  const visibleOverlays = visibleDashboardOverlaysInPaintOrder();
+  const overlay = visibleOverlays.at(-1);
+  if (!overlay) return false;
+
+  if (overlay.id === 'problems-overlay') closeProblemsPanel();
+  else if (overlay.id === 'goodlife-overlay') closeGoodLifeOperator();
+  else if (overlay.id === 'brain-storage-overlay') closeBrainStoragePanel();
+  else if (overlay.id === 'home-vibe-detail-modal') closeVibeImageDetail();
+  else if (overlay.id === 'chat-overlay') overlay.querySelector('#chat-overlay-close-btn')?.click();
+  else if (overlay.id === 'problem-editor-overlay') closeProblemEditor();
+
+  restoreDashboardOverlayFocus(overlay);
+  dashboardOverlayVisibility.set(overlay.id, false);
+  dashboardOverlayPaintOrder.delete(overlay.id);
+  syncDashboardOverlayVisualStack();
+  syncDashboardOverlayScrollLock();
+  return true;
+}
+
+function setupDashboardOverlayAccessibility() {
+  if (dashboardOverlayAccessibilityBound) return;
+  dashboardOverlayAccessibilityBound = true;
+  const overlays = DASHBOARD_OVERLAY_IDS
+    .map((id) => document.getElementById(id))
+    .filter(Boolean);
+
+  document.addEventListener('click', (event) => {
+    const invoker = event.target.closest?.('button, [href], input, select, textarea, [tabindex]');
+    if (invoker) {
+      dashboardOverlayLastInvoker = invoker;
+      dashboardOverlayLastInvokerAt = Date.now();
+    }
+  }, true);
+
+  const observer = new MutationObserver((records) => {
+    const recordTargets = [];
+    for (const record of records) {
+      if (!overlays.includes(record.target) || recordTargets.includes(record.target)) continue;
+      recordTargets.push(record.target);
+    }
+    const orderedOverlays = [
+      ...recordTargets,
+      ...overlays.filter((overlay) => !recordTargets.includes(overlay)),
+    ];
+    orderedOverlays.forEach((overlay) => {
+      const visible = dashboardOverlayIsVisible(overlay);
+      const wasVisible = dashboardOverlayVisibility.get(overlay.id) === true;
+      if (dashboardOverlayIsVisible(overlay) && !wasVisible) {
+        dashboardOverlayPaintSequence += 1;
+        dashboardOverlayPaintOrder.set(overlay.id, dashboardOverlayPaintSequence);
+        dashboardOverlayFocusOrigins.set(overlay.id, document.activeElement);
+        const hasRecentExternalInvoker = dashboardOverlayLastInvoker
+          && !overlay.contains(dashboardOverlayLastInvoker)
+          && Date.now() - dashboardOverlayLastInvokerAt < 1000;
+        if (hasRecentExternalInvoker) {
+          dashboardOverlayFocusOrigins.set(overlay.id, dashboardOverlayLastInvoker);
+        }
+        const focusTarget = overlay.querySelector(
+          '[autofocus], input:not([type="hidden"]), textarea, select, button, [href], [tabindex]:not([tabindex="-1"])',
+        );
+        if (!overlay.contains(document.activeElement)) focusTarget?.focus();
+      } else if (!dashboardOverlayIsVisible(overlay) && wasVisible) {
+        restoreDashboardOverlayFocus(overlay);
+        dashboardOverlayPaintOrder.delete(overlay.id);
+      }
+      dashboardOverlayVisibility.set(overlay.id, visible);
+    });
+    syncDashboardOverlayVisualStack(overlays);
+    syncDashboardOverlayScrollLock();
+  });
+
+  overlays.forEach((overlay) => {
+    const visible = dashboardOverlayIsVisible(overlay);
+    dashboardOverlayVisibility.set(overlay.id, visible);
+    if (visible) {
+      dashboardOverlayPaintSequence += 1;
+      dashboardOverlayPaintOrder.set(overlay.id, dashboardOverlayPaintSequence);
+    }
+    observer.observe(overlay, {
+      attributes: true,
+      attributeFilter: ['style', 'class', 'hidden', 'aria-hidden'],
+    });
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (closeTopmostDashboardOverlay()) event.preventDefault();
+      return;
+    }
+    if (event.key === 'Tab') {
+      const visibleOverlays = visibleDashboardOverlaysInPaintOrder(overlays);
+      const overlay = visibleOverlays.at(-1);
+      if (!overlay) return;
+      const focusable = dashboardOverlayFocusableElements(overlay);
+      if (!focusable.length) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!overlay.contains(document.activeElement)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  });
+
+  syncDashboardOverlayVisualStack(overlays);
+  syncDashboardOverlayScrollLock();
+}
+
 // ── Live Problems (verifier-backed ground truth) ──
 let _liveProblems = { problems: [], snapshot: null };
 let _problemEditingId = null;
@@ -266,11 +530,11 @@ async function updateProblemsBadge() {
     el.style.display = '';
     if (sep) sep.style.display = '';
     if (s.counts.chronic > 0) {
-      badge.textContent = `🩺 ${openCount} (${s.counts.chronic} chronic)`;
-      badge.style.color = '#ff6b6b';
+      badge.textContent = `${openCount} problems · ${s.counts.chronic} chronic`;
+      badge.style.color = 'var(--h23-red-aa)';
     } else {
-      badge.textContent = `🩺 ${openCount}`;
-      badge.style.color = '#ffb347';
+      badge.textContent = `${openCount} problem${openCount === 1 ? '' : 's'}`;
+      badge.style.color = 'var(--h23-amber-aa)';
     }
   } catch { /* silent */ }
 }
@@ -290,13 +554,13 @@ function closeProblemsPanel() {
 async function renderProblemsList() {
   const list = document.getElementById('problems-list');
   if (!list) return;
-  list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Loading...</div>';
+  list.innerHTML = '<div class="h23-overlay-message">Loading problems…</div>';
   try {
     const r = await fetch(`${dashboardBaseUrl()}/api/live-problems`);
     const data = await r.json();
     _liveProblems = data;
     if (!data.available) {
-      list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Live-problems not available (engine not running or not wired).</div>';
+      list.innerHTML = '<div class="h23-overlay-message unavailable">Live problems are unavailable. The engine route may be offline.</div>';
       return;
     }
     const problems = (data.problems || []).slice().sort((a, b) => {
@@ -304,7 +568,7 @@ async function renderProblemsList() {
       return (rank[a.state] ?? 9) - (rank[b.state] ?? 9);
     });
     if (problems.length === 0) {
-      list.innerHTML = '<div style="color:rgba(255,255,255,0.5);padding:20px;">No problems tracked. Add one below, or the engine will seed defaults on next start.</div>';
+      list.innerHTML = '<div class="h23-overlay-message">No invariants are tracked yet. Add one in Edit invariants.</div>';
       return;
     }
     const activeProblems = problems.filter((p) => p.state !== 'resolved');
@@ -314,7 +578,7 @@ async function renderProblemsList() {
       : '<div class="h23-problems-clear-note">No active live problems. Resolved verifier history is available below.</div>';
     list.innerHTML = `${renderProblemsOperatorSummary(data, problems)}${activeHtml}${renderProblemHistoryDrawer(resolvedProblems)}`;
   } catch (err) {
-    list.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
+    list.innerHTML = `<div class="h23-overlay-message error">Failed to load: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -409,9 +673,9 @@ function renderProblemsOperatorSummary(data, problems) {
 }
 
 function renderProblemCard(p) {
-  const stateColor = {
-    open: '#ffb347', chronic: '#ff6b6b', resolved: '#30d158', unverifiable: '#888',
-  }[p.state] || '#888';
+  const stateClass = ['open', 'chronic', 'resolved', 'unverifiable'].includes(p.state)
+    ? p.state
+    : 'unverifiable';
   const stateLabel = p.state.toUpperCase();
   const ageMin = p.openedAt ? Math.max(0, Math.round((Date.now() - Date.parse(p.openedAt)) / 60000)) : null;
   const last = p.lastResult ? `${p.lastResult.ok ? 'ok' : 'fail'}: ${escapeHtml(p.lastResult.detail || '')}` : 'not yet checked';
@@ -422,7 +686,7 @@ function renderProblemCard(p) {
   const currentLabel = p.state === 'resolved' ? 'Verifier result' : 'What broke';
   const repairLabel = p.state === 'resolved' ? 'Resolution' : 'What Home23 is doing';
   const originTag = p.seedOrigin && p.seedOrigin !== 'system'
-    ? ` <span style="color:rgba(255,255,255,0.4);font-size:10px;background:rgba(255,255,255,0.04);padding:1px 5px;border-radius:3px;text-transform:uppercase;letter-spacing:0.5px;">${escapeHtml(p.seedOrigin)}</span>`
+    ? ` <span class="h23-problem-origin">${escapeHtml(p.seedOrigin)}</span>`
     : '';
   // Active dispatch banner — Tier-2 agent is working on this right now.
   let dispatchBanner = '';
@@ -431,19 +695,19 @@ function renderProblemCard(p) {
     const budget = step?.args?.budgetHours ?? 12;
     const elapsed = (Date.now() - Date.parse(p.dispatchedAt)) / 3600000;
     const pct = Math.min(100, Math.round((elapsed / budget) * 100));
-    dispatchBanner = `<div style="background:rgba(90,200,250,0.08);border:1px solid rgba(90,200,250,0.2);border-radius:6px;padding:7px 10px;margin:6px 0;font-size:12px;color:#5ac8fa;display:flex;align-items:center;gap:10px;">
-      <span>🔍 Agent working</span>
-      <span style="color:rgba(255,255,255,0.65);">${elapsed.toFixed(1)}h / ${budget}h</span>
-      <div style="flex:1;height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;"><div style="width:${pct}%;height:100%;background:#5ac8fa;"></div></div>
-      ${p.dispatchedTurnId ? `<code style="font-size:10px;color:rgba(255,255,255,0.4);">${escapeHtml(p.dispatchedTurnId)}</code>` : ''}
+    dispatchBanner = `<div class="h23-problem-dispatch">
+      <strong>Agent working</strong>
+      <span>${elapsed.toFixed(1)}h / ${budget}h</span>
+      <div class="h23-problem-dispatch-track"><div class="h23-problem-dispatch-progress" style="width:${pct}%"></div></div>
+      ${p.dispatchedTurnId ? `<code>${escapeHtml(p.dispatchedTurnId)}</code>` : ''}
     </div>`;
   }
-  return `<div style="background:rgba(255,255,255,0.03);border:1px solid ${stateColor}33;border-left:3px solid ${stateColor};border-radius:8px;padding:12px 14px;margin-bottom:10px;">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-      <span style="color:${stateColor};font-weight:600;font-size:12px;letter-spacing:0.5px;">${stateLabel}${ageMin !== null && p.state !== 'resolved' ? ' · ' + ageMin + 'm' : ''}</span>
-      <span style="color:#fff;font-size:14px;flex:1;">${escapeHtml(p.claim)}${originTag}</span>
+  return `<article class="h23-problem-card ${stateClass}">
+    <div class="h23-problem-card-head">
+      <span class="h23-problem-state">${stateLabel}${ageMin !== null && p.state !== 'resolved' ? ' · ' + ageMin + 'm' : ''}</span>
+      <strong class="h23-problem-claim">${escapeHtml(p.claim)}${originTag}</strong>
       ${needsUser ? '<span class="h23-goodlife-needs-user">needs you</span>' : ''}
-      <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;font-size:11px;color:rgba(255,255,255,0.5);">${escapeHtml(p.id)}</code>
+      <code class="h23-problem-id">${escapeHtml(p.id)}</code>
     </div>
     ${dispatchBanner}
     ${renderProblemUserAction(p)}
@@ -453,7 +717,7 @@ function renderProblemCard(p) {
       <div><label>Needed from you</label><span>${escapeHtml(problemUserText(p))}</span></div>
     </div>
     ${renderProblemEvidenceDrawer(p, { last, lastChecked, stepsLabel, recentRem })}
-  </div>`;
+  </article>`;
 }
 
 function renderProblemEvidenceDrawer(p, { last, lastChecked, stepsLabel, recentRem } = {}) {
@@ -534,9 +798,62 @@ async function recordProblemUserIntervention(id) {
   } catch (err) {
     const list = document.getElementById('problems-list');
     if (list) {
-      list.insertAdjacentHTML('afterbegin', `<div style="color:#ff6b6b;padding:8px 12px;">Failed to record intervention: ${escapeHtml(err.message)}</div>`);
+      list.insertAdjacentHTML('afterbegin', `<div class="h23-overlay-message error">Failed to record intervention: ${escapeHtml(err.message)}</div>`);
     }
   }
+}
+
+function problemVerifierRule(problem = {}) {
+  const verifier = problem.verifier || {};
+  const args = verifier.args || {};
+  if (verifier.type === 'http_ping') return `Check ${args.url || args.endpoint || 'the endpoint'} responds successfully`;
+  if (verifier.type === 'pm2_status') return `Confirm ${args.name || args.process || 'the process'} stays online`;
+  if (verifier.type === 'file_mtime') return `Confirm ${args.path || 'the source file'} was updated recently`;
+  if (verifier.type === 'file_exists') return `Confirm ${args.path || 'the required file'} exists`;
+  if (verifier.type === 'disk_free') return 'Confirm the configured disk keeps enough free space';
+  if (verifier.type === 'graph_not_empty') return 'Confirm the memory graph contains live nodes';
+  return `Verify ${problem.claim || problem.id || 'this invariant'}`;
+}
+
+function problemCadenceLabel(problem = {}) {
+  const args = problem.verifier?.args || {};
+  const cadenceMin = Number(
+    problem.cadenceMin
+    ?? problem.intervalMin
+    ?? problem.verifier?.cadenceMin
+    ?? problem.verifier?.intervalMin
+    ?? args.cadenceMin
+    ?? args.intervalMin,
+  );
+  return Number.isFinite(cadenceMin) && cadenceMin > 0
+    ? `Every ${cadenceMin} min`
+    : 'Every verifier cycle';
+}
+
+function renderProblemInvariantList() {
+  const list = document.getElementById('problem-invariant-list');
+  if (!list) return;
+  const problems = Array.isArray(_liveProblems?.problems) ? _liveProblems.problems : [];
+  if (!problems.length) {
+    list.innerHTML = '<div class="h23-overlay-message">No invariants are available yet.</div>';
+    return;
+  }
+  list.innerHTML = problems.map((problem) => `
+    <div class="h23-invariant-row">
+      <button class="h23-invariant-select" type="button" data-problem-invariant-id="${escapeAttr(problem.id)}" onclick="openProblemEditor('${escapeAttr(problem.id)}')">
+        <strong>${escapeHtml(problem.claim || problem.id)}</strong>
+        <span>${escapeHtml(problemVerifierRule(problem))}</span>
+        <small>${escapeHtml(problemCadenceLabel(problem))}</small>
+      </button>
+      <button class="h23-invariant-remove" type="button" data-problem-remove="${escapeAttr(problem.id)}" aria-label="Remove ${escapeAttr(problem.claim || problem.id)}" onclick="event.stopPropagation();removeProblemInvariant('${escapeAttr(problem.id)}')">Remove</button>
+    </div>
+  `).join('');
+}
+
+function openProblemEditorList() {
+  _problemEditingId = null;
+  renderProblemInvariantList();
+  openProblemEditor(null);
 }
 
 function openProblemEditor(id) {
@@ -548,25 +865,36 @@ function openProblemEditor(id) {
   const rem = document.getElementById('pe-remediation');
   const del = document.getElementById('pe-delete');
   const status = document.getElementById('pe-status');
-  if (status) status.textContent = '';
+  if (status) {
+    status.textContent = '';
+    status.classList.remove('success', 'error');
+  }
+  renderProblemInvariantList();
   if (id) {
     const p = (_liveProblems.problems || []).find(x => x.id === id);
     if (!p) return;
-    title.textContent = `Edit: ${p.id}`;
+    title.textContent = `Invariant editor · ${p.id}`;
     pid.value = p.id; pid.disabled = true;
     claim.value = p.claim || '';
     verifier.value = JSON.stringify(p.verifier || {}, null, 2);
     rem.value = JSON.stringify(p.remediation || [], null, 2);
-    del.style.display = '';
+    del.hidden = false;
   } else {
-    title.textContent = 'Add Problem';
+    title.textContent = 'Invariant editor · Add';
     pid.value = ''; pid.disabled = false;
     claim.value = '';
     verifier.value = '{\n  "type": "file_mtime",\n  "args": { "path": "~/.health_log.jsonl", "maxAgeMin": 360 }\n}';
     rem.value = '[\n  { "type": "notify_jtr", "args": { "text": "Something\'s wrong — check." }, "cooldownMin": 360 }\n]';
-    del.style.display = 'none';
+    del.hidden = true;
   }
   document.getElementById('problem-editor-overlay').style.display = 'flex';
+}
+
+function backToProblemsFromEditor() {
+  closeProblemEditor();
+  const problemsOverlay = document.getElementById('problems-overlay');
+  if (problemsOverlay) problemsOverlay.style.display = 'flex';
+  void renderProblemsList();
 }
 
 function closeProblemEditor() {
@@ -581,10 +909,11 @@ async function saveProblemEdit() {
   const verifierText = document.getElementById('pe-verifier').value.trim();
   const remText = document.getElementById('pe-remediation').value.trim();
   const status = document.getElementById('pe-status');
-  if (!pid || !claim) { status.textContent = 'id + claim required'; status.style.color = '#ff6b6b'; return; }
+  status.classList.remove('success', 'error');
+  if (!pid || !claim) { status.textContent = 'id + claim required'; status.classList.add('error'); return; }
   let verifier, remediation;
-  try { verifier = verifierText ? JSON.parse(verifierText) : null; } catch (e) { status.textContent = 'verifier JSON invalid: ' + e.message; status.style.color = '#ff6b6b'; return; }
-  try { remediation = remText ? JSON.parse(remText) : []; } catch (e) { status.textContent = 'remediation JSON invalid: ' + e.message; status.style.color = '#ff6b6b'; return; }
+  try { verifier = verifierText ? JSON.parse(verifierText) : null; } catch (e) { status.textContent = 'verifier JSON invalid: ' + e.message; status.classList.add('error'); return; }
+  try { remediation = remText ? JSON.parse(remText) : []; } catch (e) { status.textContent = 'remediation JSON invalid: ' + e.message; status.classList.add('error'); return; }
   try {
     const method = _problemEditingId ? 'PUT' : 'POST';
     const url = _problemEditingId
@@ -596,27 +925,87 @@ async function saveProblemEdit() {
       body: JSON.stringify({ id: pid, claim, verifier, remediation, seedOrigin: 'user' }),
     });
     const data = await res.json();
-    if (!res.ok) { status.textContent = data.error || `HTTP ${res.status}`; status.style.color = '#ff6b6b'; return; }
-    status.textContent = 'saved'; status.style.color = '#30d158';
+    if (!res.ok) { status.textContent = data.error || `HTTP ${res.status}`; status.classList.add('error'); return; }
+    status.textContent = 'saved'; status.classList.add('success');
     await renderProblemsList();
+    renderProblemInvariantList();
     setTimeout(closeProblemEditor, 600);
   } catch (err) {
-    status.textContent = 'save failed: ' + err.message; status.style.color = '#ff6b6b';
+    status.textContent = 'save failed: ' + err.message;
+    status.classList.add('error');
+  }
+}
+
+async function removeProblemInvariant(id) {
+  if (!id) return;
+  if (!confirm(`Delete invariant "${id}"? Seeded invariants return on the next engine start.`)) return;
+  try {
+    const response = await fetch(`${dashboardBaseUrl()}/api/live-problems/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error(`delete failed (${response.status})`);
+    await renderProblemsList();
+    renderProblemInvariantList();
+    if (_problemEditingId === id) openProblemEditor(null);
+  } catch (err) {
+    const status = document.getElementById('pe-status');
+    if (status) {
+      status.textContent = err.message;
+      status.classList.remove('success');
+      status.classList.add('error');
+    }
   }
 }
 
 async function deleteProblemFromEditor() {
   if (!_problemEditingId) return;
-  if (!confirm(`Delete problem "${_problemEditingId}"? If it's a seeded invariant it will come back on next engine start.`)) return;
-  try {
-    await fetch(`${dashboardBaseUrl()}/api/live-problems/${encodeURIComponent(_problemEditingId)}`, { method: 'DELETE' });
-    await renderProblemsList();
-    closeProblemEditor();
-  } catch { /* silent */ }
+  await removeProblemInvariant(_problemEditingId);
 }
 
 // ── Brain Storage (disk vs memory truth) ──
 let _brainStorage = null;
+
+function brainStorageStatus(data = {}) {
+  if (data.mismatch === true) return 'mismatch';
+
+  const finiteCount = (value) => (
+    value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
+      ? Number(value)
+      : null
+  );
+  const snapshotNodes = finiteCount(data.snapshot?.nodeCount);
+  const memoryNodes = finiteCount(data.inMemory?.nodes);
+  const snapshotEdges = finiteCount(data.snapshot?.edgeCount);
+  const memoryEdges = finiteCount(data.inMemory?.edges);
+  if ([snapshotNodes, memoryNodes, snapshotEdges, memoryEdges].every((value) => value !== null)) {
+    return snapshotNodes === memoryNodes && snapshotEdges === memoryEdges
+      ? 'in-sync'
+      : 'mismatch';
+  }
+  return 'unavailable';
+}
+
+function brainStorageStatusPresentation(data = {}) {
+  const state = brainStorageStatus(data);
+  const snapNodes = data.snapshot?.nodeCount ?? '—';
+  const memoryNodes = data.inMemory?.nodes ?? '—';
+  const presentations = {
+    'in-sync': {
+      state: 'in-sync',
+      color: 'var(--h23-green-aa)',
+      text: 'Disk snapshot and live memory are in sync.',
+    },
+    mismatch: {
+      state: 'mismatch',
+      color: 'var(--h23-red-aa)',
+      text: `Mismatch: disk says ${snapNodes} nodes, memory says ${memoryNodes}. Investigate before restarting the engine.`,
+    },
+    unavailable: {
+      state: 'unavailable',
+      color: 'var(--h23-text-secondary)',
+      text: 'Live-memory comparison is unavailable; disk snapshot details are shown below.',
+    },
+  };
+  return presentations[state] || presentations.unavailable;
+}
 
 async function updateBrainStorageBadge() {
   try {
@@ -640,13 +1029,16 @@ async function updateBrainStorageBadge() {
 
     const ageMs = data.snapshot?.savedAt ? (Date.now() - new Date(data.snapshot.savedAt).getTime()) : null;
     const ageStr = ageMs == null ? '?' : (ageMs < 60000 ? `${Math.round(ageMs/1000)}s` : `${Math.round(ageMs/60000)}m`);
+    const presentation = brainStorageStatusPresentation(data);
+    const coherence = presentation.state;
+    badge.classList.remove('in-sync', 'pending', 'mismatch', 'unavailable');
+    badge.classList.add(coherence);
+    badge.style.color = presentation.color;
 
-    if (data.mismatch) {
-      badge.textContent = `🧠 ${snapNodes} ⚠️ mismatch`;
-      badge.style.color = '#ff6b6b';
+    if (coherence === 'mismatch') {
+      badge.textContent = `Brain ${snapNodes} · mismatch`;
     } else {
-      badge.textContent = `🧠 ${snapNodes.toLocaleString()} · saved ${ageStr} ago`;
-      badge.style.color = 'rgba(255,255,255,0.55)';
+      badge.textContent = `Brain ${snapNodes.toLocaleString()} · saved ${ageStr} ago`;
     }
   } catch { /* silent */ }
 }
@@ -666,61 +1058,60 @@ function closeBrainStoragePanel() {
 async function renderBrainStoragePanel() {
   const content = document.getElementById('brain-storage-content');
   if (!content) return;
-  content.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Loading...</div>';
+  content.innerHTML = '<div class="h23-overlay-message">Loading storage truth…</div>';
   try {
     const r = await fetch(`${dashboardBaseUrl()}/api/brain/storage`);
     const data = await r.json();
     _brainStorage = data;
 
     const snap = data.snapshot;
-    const mem = data.inMemory;
+    const live = data.inMemory;
     const hw = data.highWater;
     const files = data.files || {};
     const backups = data.backups || [];
+    const presentation = brainStorageStatusPresentation(data);
 
     const mb = (b) => { if (b == null) return '—'; if (b < 1024) return `${b} B`; if (b < 1048576) return `${(b / 1024).toFixed(1)} KB`; return `${(b / 1048576).toFixed(1)} MB`; };
     const ago = (iso) => { if (!iso) return '—'; const ms = Date.now() - new Date(iso).getTime(); if (ms < 60000) return `${Math.round(ms/1000)}s ago`; if (ms < 3600000) return `${Math.round(ms/60000)}m ago`; return `${Math.round(ms/3600000)}h ago`; };
 
-    const mismatchWarn = data.mismatch
-      ? `<div style="background:rgba(255,107,107,0.15);border:1px solid rgba(255,107,107,0.4);border-radius:6px;padding:10px 14px;margin-bottom:14px;color:#ff6b6b;">⚠️ MISMATCH: disk says ${snap?.nodeCount} nodes, memory says ${mem?.nodes}. Something is wrong — do NOT restart the engine until investigated.</div>`
-      : '';
+    const mismatchWarn = `<div class="h23-brain-storage-status ${presentation.state}" role="status">${escapeHtml(presentation.text)}</div>`;
 
     content.innerHTML = `
       ${mismatchWarn}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
-        <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;">
-          <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">On disk (snapshot)</div>
-          <div style="font-size:22px;color:#fff;">${(snap?.nodeCount ?? '—').toLocaleString()} nodes</div>
-          <div style="font-size:13px;color:rgba(255,255,255,0.6);margin-top:2px;">${(snap?.edgeCount ?? '—').toLocaleString()} edges · cycle ${snap?.cycle ?? '—'}</div>
-          <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:6px;">saved ${ago(snap?.savedAt)} · source: ${snap?.memorySource || '—'}</div>
-        </div>
-        <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;">
-          <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Last verified (engine)</div>
-          <div style="font-size:22px;color:#fff;">${snap?.nodeCount != null ? snap.nodeCount.toLocaleString() : '—'} nodes</div>
-          <div style="font-size:13px;color:rgba(255,255,255,0.6);margin-top:2px;">${snap?.edgeCount != null ? snap.edgeCount.toLocaleString() + ' edges' : ''}</div>
-        </div>
+      <div class="h23-brain-storage-grid">
+        <section class="h23-brain-storage-card">
+          <div class="h23-brain-storage-label">On disk (snapshot)</div>
+          <strong class="h23-brain-storage-number">${(snap?.nodeCount ?? '—').toLocaleString()} nodes</strong>
+          <p>${(snap?.edgeCount ?? '—').toLocaleString()} edges · cycle ${snap?.cycle ?? '—'}</p>
+          <small>saved ${ago(snap?.savedAt)} · source: ${escapeHtml(snap?.memorySource || '—')}</small>
+        </section>
+        <section class="h23-brain-storage-card">
+          <div class="h23-brain-storage-label">In memory (live)</div>
+          <strong class="h23-brain-storage-number">${live?.nodes != null ? live.nodes.toLocaleString() : '—'} nodes</strong>
+          <p>${live?.edges != null ? live.edges.toLocaleString() + ' edges' : 'live count unavailable'}</p>
+        </section>
       </div>
-      <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;margin-bottom:14px;">
-        <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Files</div>
-        <div style="font-family:var(--font-mono,monospace);font-size:12px;color:rgba(255,255,255,0.75);line-height:1.6;">
-          <div>state.json.gz            · ${mb(files.state?.bytes)}</div>
-          <div>memory-nodes.jsonl.gz    · ${mb(files.nodesSidecar?.bytes)}</div>
-          <div>memory-edges.jsonl.gz    · ${mb(files.edgesSidecar?.bytes)}</div>
-          <div>brain-snapshot.json      · ${mb(files.snapshot?.bytes)}</div>
-        </div>
-      </div>
-      ${hw ? `<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;margin-bottom:14px;">
-        <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">High-water mark</div>
-        <div style="font-size:14px;color:#fff;">${hw.maxNodeCount.toLocaleString()} nodes</div>
-        <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:4px;">last hit ${ago(hw.lastSeen)}. Drop-detector opens a live problem if current falls &gt;10% below.</div>
-      </div>` : ''}
-      <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;">
-        <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Rolling backups (${backups.length})</div>
-        ${backups.length === 0 ? '<div style="font-size:12px;color:rgba(255,255,255,0.45);">No backups yet — first one gets created after ~1 hour of successful saves.</div>' : `<div style="font-family:var(--font-mono,monospace);font-size:12px;color:rgba(255,255,255,0.7);line-height:1.5;">${backups.map(b => `<div>${b.name}</div>`).join('')}</div>`}
-      </div>
+      <section class="h23-brain-storage-card h23-brain-storage-files">
+        <div class="h23-brain-storage-label">Files</div>
+        <code>state.json.gz · ${mb(files.state?.bytes)}</code>
+        <code>memory-nodes.jsonl.gz · ${mb(files.nodesSidecar?.bytes)}</code>
+        <code>memory-edges.jsonl.gz · ${mb(files.edgesSidecar?.bytes)}</code>
+        <code>brain-snapshot.json · ${mb(files.snapshot?.bytes)}</code>
+      </section>
+      ${hw ? `<section class="h23-brain-storage-card">
+        <div class="h23-brain-storage-label">High-water mark</div>
+        <strong class="h23-brain-storage-number compact">${hw.maxNodeCount.toLocaleString()} nodes</strong>
+        <small>last hit ${ago(hw.lastSeen)}. Drop detector opens a live problem if current falls &gt;10% below.</small>
+      </section>` : ''}
+      <section class="h23-brain-storage-card h23-brain-storage-backups">
+        <div class="h23-brain-storage-label">Rolling backups (${backups.length})</div>
+        ${backups.length === 0
+          ? '<p>No backups yet. The first is created after successful saves.</p>'
+          : backups.map((backup) => `<code>${escapeHtml(backup.name)}</code>`).join('')}
+      </section>
     `;
   } catch (err) {
-    content.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
+    content.innerHTML = `<div class="h23-overlay-message error">Failed to load: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -731,16 +1122,41 @@ function dashboardBaseUrl() {
 // ── Engine Pulse (Live Activity Indicator) ──
 
 function connectEnginePulse() {
-  // Connect directly to engine's WebSocket (port 5001) for real-time events
-  const enginePort = primaryAgent ? primaryAgent.enginePort || 5001 : 5001;
+  // Connect directly to the selected dashboard agent's engine WebSocket.
+  const enginePort = Number(primaryAgent?.enginePort) || 5001;
   const wsUrl = `ws://${window.location.hostname}:${enginePort}`;
-  let ws;
-  let reconnectTimer = null;
+  const closingState = WebSocket.CLOSING ?? 2;
+  const closedState = WebSocket.CLOSED ?? 3;
+  const currentSocketIsLive = Boolean(enginePulseSocket)
+    && enginePulseSocket.readyState !== closingState
+    && enginePulseSocket.readyState !== closedState;
+  if (enginePulsePort === enginePort && (currentSocketIsLive || enginePulseReconnectTimer !== null)) return;
+
+  const connectionRevision = ++enginePulseConnectionRevision;
+  enginePulsePort = enginePort;
+  if (enginePulseReconnectTimer !== null) {
+    clearTimeout(enginePulseReconnectTimer);
+    enginePulseReconnectTimer = null;
+  }
+  const previousSocket = enginePulseSocket;
+  enginePulseSocket = null;
+  if (previousSocket) {
+    previousSocket.onopen = null;
+    previousSocket.onmessage = null;
+    previousSocket.onclose = null;
+    previousSocket.onerror = null;
+    if (previousSocket.readyState !== closingState && previousSocket.readyState !== closedState) {
+      try { previousSocket.close(); } catch { /* already closing */ }
+    }
+  }
 
   function connect() {
-    ws = new WebSocket(wsUrl);
+    if (connectionRevision !== enginePulseConnectionRevision || enginePulsePort !== enginePort) return;
+    const ws = new WebSocket(wsUrl);
+    enginePulseSocket = ws;
 
     ws.onopen = () => {
+      if (connectionRevision !== enginePulseConnectionRevision || ws !== enginePulseSocket) return;
       const dot = document.getElementById('pulse-dot');
       if (dot && !dot.className.includes('awake') && !dot.className.includes('sleeping')) {
         dot.className = 'h23-pulse-dot awake';
@@ -753,6 +1169,7 @@ function connectEnginePulse() {
     };
 
     ws.onmessage = (e) => {
+      if (connectionRevision !== enginePulseConnectionRevision || ws !== enginePulseSocket) return;
       try {
         const data = JSON.parse(e.data);
         if (data.type === 'connected') return; // welcome message
@@ -763,15 +1180,18 @@ function connectEnginePulse() {
     };
 
     ws.onclose = () => {
+      if (connectionRevision !== enginePulseConnectionRevision || ws !== enginePulseSocket) return;
+      enginePulseSocket = null;
       const dot = document.getElementById('pulse-dot');
       if (dot) dot.className = 'h23-pulse-dot';
       enginePulse.state = 'offline';
       renderPulse();
       setEngineOfflineStatus();
       // Reconnect after 5 seconds
-      if (!reconnectTimer) {
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
+      if (enginePulseReconnectTimer === null) {
+        enginePulseReconnectTimer = setTimeout(() => {
+          if (connectionRevision !== enginePulseConnectionRevision || enginePulsePort !== enginePort) return;
+          enginePulseReconnectTimer = null;
           connect();
         }, 5000);
       }
@@ -889,12 +1309,20 @@ function _renderPulseNow() {
   if (!_pulseEls.dot) return;
 
   const runtimeState = enginePulse.state && enginePulse.state !== 'unknown' ? enginePulse.state : '';
-  const showRuntime = isOperatorRuntimeAlert(runtimeState);
-  if (_pulseEls.rail) _pulseEls.rail.hidden = !showRuntime;
-  if (_pulseEls.runtime) _pulseEls.runtime.hidden = !showRuntime;
+  const runtimeAlert = isOperatorRuntimeAlert(runtimeState);
+  if (_pulseEls.rail) {
+    _pulseEls.rail.hidden = false;
+    _pulseEls.rail.classList.toggle('alert', isOperatorRuntimeAlert(runtimeState));
+    _pulseEls.rail.setAttribute('aria-label', runtimeAlert
+      ? `Engine alert: ${runtimeState}`
+      : `Engine status: ${runtimeState || 'connecting'}`);
+  }
+  if (_pulseEls.runtime) _pulseEls.runtime.hidden = false;
   _pulseEls.dot.className = 'h23-pulse-dot ' + runtimeState;
-  if (_pulseEls.state) _pulseEls.state.textContent = runtimeState;
-  if (_pulseEls.energy) _pulseEls.energy.textContent = `⚡ ${Math.round((enginePulse.energy || 0) * 100)}%`;
+  if (_pulseEls.state) _pulseEls.state.textContent = runtimeAlert
+    ? `${runtimeState} alert`
+    : runtimeState || 'connecting';
+  if (_pulseEls.energy) _pulseEls.energy.textContent = `Energy ${Math.round((enginePulse.energy || 0) * 100)}%`;
   if (_pulseEls.cycle) _pulseEls.cycle.textContent = `cycle ${enginePulse.cycle || '—'}`;
 }
 
@@ -958,21 +1386,41 @@ function updateClocks() {
 
   const tz1Time = document.getElementById('tz1-time');
   if (tz1Time) tz1Time.textContent = fmt(agentTz);
+  const headerLocalTime = document.getElementById('header-local-time');
+  if (headerLocalTime) {
+    headerLocalTime.textContent = fmt(agentTz);
+    headerLocalTime.dateTime = now.toISOString();
+  }
   const tz1Label = document.getElementById('tz1-label');
   if (tz1Label) tz1Label.textContent = agentTz.split('/').pop().replace(/_/g, ' ');
 
   const secondaryTz = window.__secondaryTimezone;
   const tz2Container = document.getElementById('tz2-container');
   if (secondaryTz && tz2Container) {
+    tz2Container.hidden = false;
     tz2Container.style.display = 'flex';
     const tz2Time = document.getElementById('tz2-time');
     if (tz2Time) tz2Time.textContent = fmt24(secondaryTz);
     const tz2Label = document.getElementById('tz2-label');
     if (tz2Label) tz2Label.textContent = secondaryTz.split('/').pop().replace(/_/g, ' ');
+  } else if (tz2Container) {
+    tz2Container.hidden = true;
+    tz2Container.style.display = 'none';
   }
 }
 
 // ── Load Agents ──
+
+function configureCosmoOpenLink(link, url) {
+  if (!link) return;
+  if (url) {
+    link.href = url;
+    link.setAttribute('aria-disabled', 'false');
+  } else {
+    link.removeAttribute('href');
+    link.setAttribute('aria-disabled', 'true');
+  }
+}
 
 async function loadAgents() {
   try {
@@ -1019,53 +1467,7 @@ async function loadAgents() {
       }
     }
   } catch { /* config offline */ }
-
-  // Wire settings button
-  const settingsBtn = document.getElementById('settings-btn');
-  if (settingsBtn) {
-    settingsBtn.addEventListener('click', () => {
-      window.location.href = '/home23/settings';
-    });
-  }
-
-  // Wire COSMO tab button
-  const cosmoBtn = document.getElementById('cosmo23-btn');
-  if (cosmoBtn) {
-    cosmoBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      // Deactivate all data-tab buttons
-      document.querySelectorAll('.h23-tab[data-tab]').forEach(t => t.classList.remove('active'));
-      cosmoBtn.classList.add('active');
-      currentTab = 'cosmo23';
-      refreshDashboardScopeUI();
-      syncOrganDrawerForTab();
-      setCosmoHomeDrawerOpen(false);
-      await updateCosmoIndicator();
-      showCosmoFrame();
-    });
-  }
-
-  // Wire COSMO indicator click -> switch to COSMO tab
-  const indicator = document.getElementById('cosmo23-indicator');
-  if (indicator) {
-    indicator.addEventListener('click', () => {
-      if (cosmoBtn) cosmoBtn.click();
-    });
-  }
-
-  // Wire COSMO iframe refresh button
-  const refreshBtn = document.getElementById('cosmo23-refresh-btn');
-  if (refreshBtn) {
-    refreshBtn.addEventListener('click', () => refreshCosmoFrame());
-  }
-
-  const homeToggleBtn = document.getElementById('cosmo23-home-toggle-btn');
-  if (homeToggleBtn) {
-    homeToggleBtn.addEventListener('click', () => {
-      setCosmoHomeDrawerOpen(!document.body.classList.contains('h23-external-drawer-open'));
-    });
-  }
-
+  configureCosmoOpenLink(document.getElementById('cosmo23-open-link'), cosmo23Url);
 }
 
 // ── COSMO iframe ──
@@ -1119,13 +1521,13 @@ function showCosmoOfflineOverlay() {
   if (!overlay) {
     overlay = document.createElement('div');
     overlay.id = 'cosmo23-offline-overlay';
-    overlay.style.cssText = 'position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; align-items:center; justify-content:center; background:rgba(10,10,18,0.95); gap:16px;';
+    overlay.className = 'h23-cosmo-offline-overlay';
     overlay.innerHTML = `
-      <div style="font-size:36px; opacity:0.4;">&#x1F52C;</div>
-      <div style="font-size:16px; color:#ccc; font-weight:500;">COSMO 2.3 is offline</div>
-      <div id="cosmo23-offline-detail" style="font-size:13px; color:#888; max-width:400px; text-align:center;">The research engine process is not running.</div>
-      <button id="cosmo23-restart-btn" style="margin-top:8px; padding:8px 24px; background:rgba(99,102,241,0.25); border:1px solid rgba(99,102,241,0.5); color:#a5b4fc; border-radius:8px; font-size:14px; cursor:pointer; transition:all 0.15s;">Start COSMO 2.3</button>
-      <div id="cosmo23-restart-status" style="font-size:12px; color:#888; min-height:18px;"></div>
+      <div class="h23-cosmo-offline-kicker">Research engine</div>
+      <div class="h23-cosmo-offline-title">COSMO 2.3 is offline</div>
+      <div class="h23-cosmo-offline-detail" id="cosmo23-offline-detail">The research engine process is not running.</div>
+      <button class="h23-cosmo-offline-action" id="cosmo23-restart-btn" type="button">Start COSMO 2.3</button>
+      <div class="h23-cosmo-offline-status" id="cosmo23-restart-status" role="status" aria-live="polite"></div>
     `;
     const wrap = document.getElementById('cosmo23-frame-wrap');
     if (wrap) wrap.appendChild(overlay);
@@ -1226,7 +1628,11 @@ function syncOrganDrawerForTab() {
 }
 
 function selectDashboardTab(tabKey) {
-  const tab = tabKey ? document.querySelector(`.h23-tab[data-tab="${tabKey}"]`) : null;
+  const tab = tabKey
+    ? document.querySelector(`.h23-tab[data-tab="${tabKey}"]`)
+      || (tabKey === 'settings' ? document.getElementById('settings-btn') : null)
+      || (tabKey === 'cosmo23' ? document.getElementById('cosmo23-btn') : null)
+    : null;
   if (!tab) return false;
   if (currentTab === tabKey && document.getElementById(`panel-${tabKey}`)?.classList.contains('active')) {
     return true;
@@ -1235,7 +1641,85 @@ function selectDashboardTab(tabKey) {
   return true;
 }
 
+function syncDashboardTabSemantics(activeTabKey = currentTab) {
+  document.querySelectorAll('.h23-tab[role="tab"]').forEach((tab) => {
+    const tabKey = tab.dataset.tab || tab.dataset.scopeTab;
+    const selected = tabKey === activeTabKey;
+    tab.setAttribute('aria-selected', String(selected));
+  });
+  document.querySelectorAll('[role="tablist"]').forEach((tablist) => {
+    const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+    if (!tabs.length) return;
+    const selected = tabs.find((tab) => tab.getAttribute('aria-selected') === 'true');
+    const previousEntry = tabs.find((tab) => tab.getAttribute('tabindex') === '0');
+    const keyboardEntry = selected || previousEntry || tabs[0];
+    tabs.forEach((tab) => tab.setAttribute('tabindex', tab === keyboardEntry ? '0' : '-1'));
+  });
+  document.querySelectorAll('.h23-panel[role="tabpanel"]').forEach((panel) => {
+    panel.setAttribute('aria-hidden', String(panel.id !== `panel-${activeTabKey}`));
+  });
+  const cosmoPanel = document.getElementById('cosmo23-frame-wrap');
+  if (cosmoPanel) cosmoPanel.setAttribute('aria-hidden', String(activeTabKey !== 'cosmo23'));
+}
+
+function setupDashboardTabKeyboardNavigation() {
+  document.querySelectorAll('[role="tablist"]').forEach((tablist) => {
+    if (tablist.dataset.dashboardKeyboardBound === 'true') return;
+    tablist.dataset.dashboardKeyboardBound = 'true';
+    tablist.addEventListener('keydown', (event) => {
+      const current = event.target.closest?.('[role="tab"]');
+      if (!current || !tablist.contains(current)) return;
+      const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+      const currentIndex = tabs.indexOf(current);
+      if (currentIndex < 0 || !tabs.length) return;
+      let nextIndex = null;
+      if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % tabs.length;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+      if (event.key === 'Home') nextIndex = 0;
+      if (event.key === 'End') nextIndex = tabs.length - 1;
+      if (nextIndex === null) return;
+      event.preventDefault();
+      tabs.forEach((tab, index) => tab.setAttribute('tabindex', index === nextIndex ? '0' : '-1'));
+      tabs[nextIndex].focus();
+      tabs[nextIndex].click();
+    });
+  });
+}
+
+function setupCosmoNavigation() {
+  if (cosmoNavigationBound) return;
+  const cosmoBtn = document.getElementById('cosmo23-btn');
+  if (!cosmoBtn) return;
+  cosmoNavigationBound = true;
+  cosmoBtn.addEventListener('click', async (event) => {
+    event.preventDefault();
+    document.querySelectorAll('.h23-tab[data-tab]').forEach((tab) => tab.classList.remove('active'));
+    cosmoBtn.classList.add('active');
+    currentTab = 'cosmo23';
+    syncDashboardTabSemantics('cosmo23');
+    if (window.location.hash !== '#cosmo23') {
+      window.history.replaceState(null, '', '#cosmo23');
+    }
+    refreshDashboardScopeUI();
+    syncOrganDrawerForTab();
+    setCosmoHomeDrawerOpen(false);
+    await updateCosmoIndicator();
+    showCosmoFrame();
+  });
+
+  document.getElementById('cosmo23-indicator')?.addEventListener('click', () => cosmoBtn.click());
+  document.getElementById('cosmo23-refresh-btn')?.addEventListener('click', () => refreshCosmoFrame());
+  document.getElementById('cosmo23-home-toggle-btn')?.addEventListener('click', () => {
+    setCosmoHomeDrawerOpen(!document.body.classList.contains('h23-external-drawer-open'));
+  });
+}
+
 function setupTabHandlers() {
+  const settingsBtn = document.getElementById('settings-btn');
+  if (settingsBtn) settingsBtn.dataset.tab = 'settings';
+  setupCosmoNavigation();
+  syncDashboardTabSemantics(currentTab);
+  setupDashboardTabKeyboardNavigation();
   document.querySelectorAll('.h23-tab[data-tab]').forEach(tab => {
     tab.addEventListener('click', () => {
       // Deactivate all tabs (including cosmo button)
@@ -1251,6 +1735,7 @@ function setupTabHandlers() {
 
       tab.classList.add('active');
       currentTab = tab.dataset.tab;
+      syncDashboardTabSemantics(currentTab);
       if (currentTab && window.location.hash !== `#${currentTab}`) {
         window.history.replaceState(null, '', `#${currentTab}`);
       }
@@ -1286,9 +1771,106 @@ function setupTabHandlers() {
       }
 
       if (currentTab === 'home') loadHumanHomeSurface().catch(renderHumanHomeError);
+      if (currentTab === 'settings') loadSettingsOverview().catch(() => {});
 
     });
   });
+}
+
+function renderSettingsOverviewUnavailable(id, label) {
+  setHtml(id, `<p class="h23-settings-overview-unavailable">${escapeHtml(label)} unavailable.</p>`);
+}
+
+function settingsOverviewRow(label, value, detail = '', state = '') {
+  return `
+    <div class="h23-settings-overview-row${state ? ` ${escapeAttr(state)}` : ''}">
+      <div>
+        <span class="h23-settings-overview-row-label">${escapeHtml(label)}</span>
+        ${detail ? `<small>${escapeHtml(detail)}</small>` : ''}
+      </div>
+      <strong class="h23-settings-overview-row-value">${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function renderSettingsOverviewAgents(data) {
+  const rows = Array.isArray(data?.agents) ? data.agents : [];
+  if (!rows.length) {
+    renderSettingsOverviewUnavailable('settings-overview-agents', 'Agent status');
+    return;
+  }
+  setHtml('settings-overview-agents', rows.map((agent) => settingsOverviewRow(
+    agent.displayName || agent.name || 'Unnamed agent',
+    agent.status || 'unknown',
+    [agent.name, agent.model].filter(Boolean).join(' · '),
+    agent.status === 'running' ? 'healthy' : 'muted',
+  )).join(''));
+}
+
+function renderSettingsOverviewFeeds(data) {
+  const feeder = data?.feeder || {};
+  const watchPaths = [
+    ...(Array.isArray(feeder.additionalWatchPaths) ? feeder.additionalWatchPaths : []),
+    ...(Array.isArray(data?.autoWatchPaths) ? data.autoWatchPaths : []),
+  ].map((entry, index) => {
+    if (typeof entry === 'string') {
+      return { label: `Source ${index + 1}`, path: entry, source: '' };
+    }
+    if (!entry || typeof entry !== 'object' || typeof entry.path !== 'string' || !entry.path.trim()) {
+      return null;
+    }
+    return {
+      label: typeof entry.label === 'string' && entry.label.trim() ? entry.label : `Source ${index + 1}`,
+      path: entry.path,
+      source: typeof entry.source === 'string' ? entry.source : '',
+    };
+  }).filter(Boolean);
+  const rows = [
+    settingsOverviewRow('Feeder', feeder.enabled === true ? 'Enabled' : feeder.enabled === false ? 'Disabled' : 'Unknown', `${watchPaths.length} watched sources`, feeder.enabled === true ? 'healthy' : 'muted'),
+    settingsOverviewRow('Compiler', feeder.compiler?.enabled === true ? 'Enabled' : feeder.compiler?.enabled === false ? 'Disabled' : 'Unknown'),
+    ...watchPaths.slice(0, 4).map((watchPath) => settingsOverviewRow(
+      watchPath.label,
+      watchPath.path,
+      watchPath.source ? `Source: ${watchPath.source}` : '',
+    )),
+  ];
+  setHtml('settings-overview-feeds', rows.join(''));
+}
+
+function renderSettingsOverviewNotifications(data) {
+  const recent = Number(data?.length || 0);
+  setHtml('settings-overview-notifications', [
+    settingsOverviewRow('Pending', String(Number(data?.pending || 0)), 'Needs review'),
+    settingsOverviewRow('Recent', String(recent), 'Current window'),
+    settingsOverviewRow('Total', String(Number(data?.total || recent)), 'Recorded notifications'),
+  ].join(''));
+}
+
+function renderSettingsOverviewHouse(data) {
+  const vibe = data?.vibe || {};
+  setHtml('settings-overview-house', [
+    settingsOverviewRow('Vibe generation', vibe.autoGenerate === true ? 'Automatic' : vibe.autoGenerate === false ? 'Manual' : 'Unavailable'),
+    settingsOverviewRow('Rotation', Number.isFinite(Number(vibe.rotationIntervalSeconds)) ? `${vibe.rotationIntervalSeconds} seconds` : 'Unavailable'),
+    settingsOverviewRow('Gallery limit', Number.isFinite(Number(vibe.galleryLimit)) ? String(vibe.galleryLimit) : 'Unavailable'),
+  ].join(''));
+}
+
+async function loadSettingsOverview() {
+  const sections = [
+    apiFetch('/home23/api/settings/agents', { timeoutMs: 8000 })
+      .then((data) => data ? renderSettingsOverviewAgents(data) : renderSettingsOverviewUnavailable('settings-overview-agents', 'Agent status'))
+      .catch(() => renderSettingsOverviewUnavailable('settings-overview-agents', 'Agent status')),
+    apiFetch('/home23/api/settings/feeder', { timeoutMs: 8000 })
+      .then((data) => data ? renderSettingsOverviewFeeds(data) : renderSettingsOverviewUnavailable('settings-overview-feeds', 'Data feed status'))
+      .catch(() => renderSettingsOverviewUnavailable('settings-overview-feeds', 'Data feed status')),
+    apiFetch(`${dashboardBaseUrl()}/api/notifications`, { timeoutMs: 8000 })
+      .then((data) => data ? renderSettingsOverviewNotifications(data) : renderSettingsOverviewUnavailable('settings-overview-notifications', 'Notification status'))
+      .catch(() => renderSettingsOverviewUnavailable('settings-overview-notifications', 'Notification status')),
+    apiFetch('/home23/api/settings/vibe', { timeoutMs: 8000 })
+      .then((data) => data ? renderSettingsOverviewHouse(data) : renderSettingsOverviewUnavailable('settings-overview-house', 'House settings'))
+      .catch(() => renderSettingsOverviewUnavailable('settings-overview-house', 'House settings')),
+  ];
+  await Promise.allSettled(sections);
 }
 
 function selectInitialDashboardTabFromHash() {
@@ -1336,8 +1918,8 @@ function setupHomeTileLayoutControls() {
   if (homeTileLayoutControlsBound) return;
   homeTileLayoutControlsBound = true;
 
-  const grid = document.querySelector('.h23-human-grid');
-  grid?.addEventListener('click', (event) => {
+  const sensorLayout = document.querySelector('[data-home-sensor-layout="true"]');
+  sensorLayout?.addEventListener('click', (event) => {
     const moveButton = event.target.closest('[data-home-tile-move]');
     if (!moveButton) return;
     event.preventDefault();
@@ -1350,7 +1932,7 @@ function setupHomeTileLayoutControls() {
     });
   });
 
-  grid?.addEventListener('change', (event) => {
+  sensorLayout?.addEventListener('change', (event) => {
     const sizeSelect = event.target.closest('[data-home-tile-size-control]');
     if (!sizeSelect) return;
     event.preventDefault();
@@ -1381,27 +1963,49 @@ async function refreshHomeTileLayout() {
 
 function applyHomeTileLayout(state) {
   const layout = Array.isArray(state?.layout) ? state.layout : [];
-  const hiddenIds = new Set((state?.hiddenTiles || []).map((item) => item.tileId));
-  const byId = new Map(layout.map((item, index) => [item.tileId, { ...item, order: index }]));
-  const managedIds = new Set([...byId.keys(), ...hiddenIds]);
+  const hiddenIds = new Set((state?.hiddenTiles || [])
+    .map((item) => item.tileId)
+    .filter((tileId) => HOME_LAYOUT_MANAGED_SENSOR_IDS.has(tileId)));
+  const byId = new Map(layout
+    .filter((item) => HOME_LAYOUT_MANAGED_SENSOR_IDS.has(item.tileId))
+    .map((item) => [item.tileId, item]));
+  const sensorLayout = document.querySelector('[data-home-sensor-layout="true"]');
+  const managedCards = Array.from(sensorLayout?.querySelectorAll('[data-home-tile-id]') || [])
+    .filter((card) => HOME_LAYOUT_MANAGED_SENSOR_IDS.has(card.dataset.homeTileId));
+  const persistedOrder = layout
+    .map((item) => item.tileId)
+    .filter((tileId, index, all) => HOME_LAYOUT_MANAGED_SENSOR_IDS.has(tileId) && all.indexOf(tileId) === index);
+  const managedOrder = [
+    ...persistedOrder,
+    ...managedCards.map((card) => card.dataset.homeTileId).filter((tileId) => !persistedOrder.includes(tileId)),
+  ];
 
-  document.querySelectorAll('[data-home-tile-id]').forEach((card) => {
+  managedCards.forEach((card) => {
     const tileId = card.dataset.homeTileId;
     const layoutItem = byId.get(tileId);
-    if (managedIds.has(tileId) && (!layoutItem || hiddenIds.has(tileId))) {
+    card.style.order = String(managedOrder.indexOf(tileId));
+    if (hiddenIds.has(tileId)) {
       card.hidden = true;
       return;
     }
     card.hidden = false;
     if (layoutItem) {
-      card.style.order = String(layoutItem.order);
       card.dataset.homeTileSize = layoutItem.size || 'third';
+    } else {
+      delete card.dataset.homeTileSize;
     }
     renderHomeTileInlineControls(card, layoutItem);
+  });
+
+  const visibleManagedCount = managedOrder.filter((tileId) => !hiddenIds.has(tileId)).length;
+  Array.from(sensorLayout?.querySelectorAll('[data-home-sensor-fixed]') || []).forEach((card, index) => {
+    card.style.order = String(visibleManagedCount + index);
   });
 }
 
 function renderHomeTileInlineControls(card, layoutItem) {
+  const tileId = card?.dataset?.homeTileId;
+  if (!HOME_LAYOUT_MANAGED_SENSOR_IDS.has(tileId)) return;
   if (!card || card.tagName === 'BUTTON') return;
   let tools = card.querySelector(':scope > .h23-home-tile-tools');
   if (!layoutItem) {
@@ -1426,15 +2030,25 @@ function renderHomeTileInlineControls(card, layoutItem) {
   if (select && select.value !== layoutItem.size) select.value = layoutItem.size || 'third';
 }
 
-async function mutateHomeTileLayout(mutator) {
+async function mutateHomeTileLayout(mutator, tileId) {
+  if (!HOME_LAYOUT_MANAGED_SENSOR_IDS.has(tileId)) return;
   const data = await apiFetch('/home23/api/settings/tiles', { timeoutMs: 8000 });
   const tiles = data?.tiles || {};
-  const homeLayout = Array.isArray(tiles.homeLayout) ? tiles.homeLayout.map((item) => ({
+  const originalHomeLayout = Array.isArray(tiles.homeLayout) ? tiles.homeLayout.map((item) => ({
+    ...item,
     tileId: item.tileId,
     enabled: item.enabled !== false,
     size: item.size || item.tile?.sizeDefault || 'third',
   })) : [];
-  mutator(homeLayout);
+  const managedLayout = originalHomeLayout
+    .filter((item) => HOME_LAYOUT_MANAGED_SENSOR_IDS.has(item.tileId));
+  mutator(managedLayout);
+  let managedIndex = 0;
+  const homeLayout = originalHomeLayout.map((item) => (
+    HOME_LAYOUT_MANAGED_SENSOR_IDS.has(item.tileId)
+      ? managedLayout[managedIndex++] || item
+      : item
+  ));
   const res = await fetch('/home23/api/settings/tiles', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -1463,7 +2077,7 @@ async function moveHomeTile(tileId, delta, control = null) {
       if (toIndex === fromIndex) return;
       const [entry] = homeLayout.splice(fromIndex, 1);
       homeLayout.splice(toIndex, 0, entry);
-    });
+    }, tileId);
   } finally {
     if (control) control.disabled = false;
   }
@@ -1476,7 +2090,7 @@ async function resizeHomeTile(tileId, size, control = null) {
     await mutateHomeTileLayout((homeLayout) => {
       const item = homeLayout.find((entry) => entry.tileId === tileId);
       if (item) item.size = size;
-    });
+    }, tileId);
   } finally {
     if (control) control.disabled = false;
   }
@@ -1503,30 +2117,56 @@ async function loadHumanHomeSurface() {
     const latest = {};
     scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/outside-weather/data', { timeoutMs: 8000 }), (data) => {
       renderHumanSensor('weather', data, 'Weather', 'Outside sensor');
+    }, () => {
+      renderHumanSensor('weather', offlineTilePayload('outside-weather', 'Offline', '--', 'Weather unavailable'), 'Offline', 'Weather unavailable');
     });
-    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/sauna-control/data', { timeoutMs: 8000 }), renderHumanSauna);
-    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/pool-screenlogic/data', { timeoutMs: 8000 })
-      .then((data) => data || offlineTilePayload('pool-screenlogic', 'Offline', '—', 'ScreenLogic unavailable'))
-      .catch(() => offlineTilePayload('pool-screenlogic', 'Offline', '—', 'ScreenLogic unavailable')), (data) => {
+    const saunaRequestGeneration = humanSaunaStateGeneration;
+    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/sauna-control/data', { timeoutMs: 8000 }), (data) => {
+      renderHumanSauna(data, { requestGeneration: saunaRequestGeneration });
+    }, () => {
+      renderHumanSauna(offlineTilePayload('sauna-control', 'Offline', '--', 'Sauna unavailable'), {
+        confirmed: false,
+        requestGeneration: saunaRequestGeneration,
+      });
+    });
+    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/pool-screenlogic/data', { timeoutMs: 8000 }), (data) => {
       renderHumanSensor('pool', data, 'Pool', 'ScreenLogic');
+    }, () => {
+      renderHumanSensor('pool', offlineTilePayload('pool-screenlogic', 'Offline', '—', 'ScreenLogic unavailable'), 'Offline', 'ScreenLogic unavailable');
     });
-    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/live-problems`, { timeoutMs: 8000 }), renderHumanIssues);
-    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/good-life`, { timeoutMs: GOOD_LIFE_API_TIMEOUT_MS }), renderHumanGoodLife);
+    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/live-problems`, { timeoutMs: 8000 }), (data) => {
+      latest.problems = data;
+      renderHumanIssues(data);
+      renderLatestJerryVoice(latest);
+    }, () => {
+      latest.problems = { available: false };
+      renderHumanIssues(latest.problems);
+      renderLatestJerryVoice(latest);
+    });
+    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/good-life`, { timeoutMs: GOOD_LIFE_API_TIMEOUT_MS }), (data) => {
+      latest.goodLife = data;
+      renderHumanGoodLife(data);
+      renderLatestJerryVoice(latest);
+    }, () => {
+      latest.goodLife = null;
+      renderHumanGoodLifeUnavailable();
+      renderLatestJerryVoice(latest);
+    });
     scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/state`, { timeoutMs: 8000 }), (data) => {
       latest.state = data;
-      renderJerryVoiceTile(latest.pulse, latest.homeSummary, latest.state, latest.agency);
+      renderLatestJerryVoice(latest);
     });
     scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/agency/state', { timeoutMs: 8000 }), (data) => {
       latest.agency = data;
-      renderJerryVoiceTile(latest.pulse, latest.homeSummary, latest.state, latest.agency);
+      renderLatestJerryVoice(latest);
     });
     scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/pulse/latest`, { timeoutMs: 5000 }), (data) => {
       latest.pulse = data;
-      renderJerryVoiceTile(latest.pulse, latest.homeSummary, latest.state, latest.agency);
+      renderLatestJerryVoice(latest);
     });
     scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/home/summary`, { timeoutMs: 5000 }), (data) => {
       latest.homeSummary = data;
-      renderJerryVoiceTile(latest.pulse, latest.homeSummary, latest.state, latest.agency);
+      renderLatestJerryVoice(latest);
     });
     scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/briefs?limit=12&compact=1', { timeoutMs: 8000 }), renderHomeBriefs, () => {
       setText('human-briefs-status', 'offline');
@@ -1543,7 +2183,8 @@ async function loadHumanHomeSurface() {
 function scheduleHumanHomeFetch(tasks, promise, onValue, onError = null) {
   const task = promise
     .then((data) => {
-      if (data) onValue(data);
+      if (data !== null && data !== undefined) onValue(data);
+      else if (onError) onError(new Error('feed unavailable'));
     })
     .catch((err) => {
       if (onError) onError(err);
@@ -1580,23 +2221,49 @@ function offlineTilePayload(tileId, status, value, subtitle) {
   };
 }
 
-function renderHumanSauna(payload) {
+function renderHumanSauna(payload, options = {}) {
+  if (options.requestGeneration !== undefined && options.requestGeneration !== humanSaunaStateGeneration) return;
+  if (options.confirmed !== false) humanSaunaConfirmedPayload = payload;
+  if (humanSaunaPendingAction && options.allowDuringAction !== true) return;
   renderHumanSensor('sauna', payload, 'Sauna', 'Huum');
   const content = payload?.content || {};
+  const metrics = Array.isArray(content.metrics) ? content.metrics : [];
+  const metricValue = (label) => metrics.find((metric) => (
+    String(metric?.label || '').toLowerCase() === label.toLowerCase()
+  ))?.value;
   const valueNumber = parseFloat(String(content.value || '').replace(/[^\d.-]/g, ''));
+  const targetTemperature = parseFloat(String(metricValue('Target') || '').replace(/[^\d.-]/g, ''));
+  const heating = /\byes\b/i.test(String(metricValue('Heating') || ''))
+    || /\bheating\b/i.test(String(content.status || ''));
+  const running = heating
+    || /\b(?:locked|running|in use)\b/i.test(String(content.status || ''))
+    || (parseFloat(String(metricValue('Duration') || '').replace(/[^\d.-]/g, '')) > 0);
   const heat = Number.isFinite(valueNumber)
     ? Math.max(0.05, Math.min(1, (valueNumber - 60) / 160))
     : 0.12;
   const gauge = document.getElementById('human-sauna-gauge');
   if (gauge) {
     gauge.style.setProperty('--sauna-heat', String(heat));
-    gauge.classList.toggle('heating', /\byes\b/i.test(String(content.metrics?.find?.((m) => m.label === 'Heating')?.value || '')));
+    gauge.classList.toggle('heating', heating);
   }
+  const saunaCard = document.querySelector('[data-home-tile-id="sauna-control"]');
+  saunaCard?.classList.toggle('heating', heating);
+  saunaCard?.classList.toggle('running', running);
 
   const startAction = (payload?.actions || []).find((action) => action.id === 'start')
     || (payload?.actions || []).find((action) => action.id === 'prestage');
   applySaunaActionDefaults(startAction);
-  setHtml('human-sauna-actions', renderHumanSaunaActions(payload?.actions || []));
+  const targetInput = document.getElementById('human-sauna-target');
+  const selectedTarget = targetInput?.dataset.userEdited === 'true' || document.activeElement === targetInput
+    ? Number(targetInput.value || 190)
+    : Number.isFinite(targetTemperature)
+      ? targetTemperature
+      : Number(targetInput?.value || 190);
+  setHtml('human-sauna-actions', renderHumanSaunaActions(payload?.actions || [], {
+    targetTemperature: selectedTarget,
+    running,
+    heating,
+  }));
 }
 
 function applySaunaActionDefaults(action) {
@@ -1608,9 +2275,12 @@ function applySaunaActionDefaults(action) {
   }
 }
 
-function renderHumanSaunaActions(actions) {
+function renderHumanSaunaActions(actions, state = {}) {
+  const compatibleActionIds = state.running
+    ? new Set(['stop'])
+    : new Set(['prestage', 'start']);
   const actionButtons = actions
-    .filter((action) => ['prestage', 'start', 'stop'].includes(action.id))
+    .filter((action) => compatibleActionIds.has(action.id))
     .map((action) => `
       <button class="h23-human-action ${action.id === 'stop' ? 'danger' : 'primary'}" type="button" data-sauna-action="${escapeHtml(action.id)}">
         ${escapeHtml(action.label || action.id)}
@@ -1621,9 +2291,12 @@ function renderHumanSaunaActions(actions) {
       ${actionButtons || '<span class="h23-human-action-note">Sauna actions unavailable</span>'}
     </div>
     <div class="h23-human-sauna-presets" aria-label="Sauna presets">
-      <button type="button" data-sauna-preset data-target="150" data-duration="60">Warm</button>
-      <button type="button" data-sauna-preset data-target="190" data-duration="180">Standard</button>
-      <button type="button" data-sauna-preset data-target="210" data-duration="120">Inferno</button>
+      ${[170, 180, 190].map((target) => `
+        <button class="${Math.round(Number(state.targetTemperature)) === target ? 'active' : ''}" type="button"
+          data-sauna-preset data-target="${target}" data-duration="180"
+          aria-pressed="${Math.round(Number(state.targetTemperature)) === target}">${target}°F</button>
+      `).join('')}
+      ${state.running ? `<span class="h23-human-action-note">${state.heating ? 'Heating' : 'Running'}</span>` : ''}
     </div>
   `;
 }
@@ -1639,10 +2312,40 @@ function setSaunaPreset(targetTemperature, duration) {
     durationInput.value = String(duration);
     durationInput.dataset.userEdited = 'true';
   }
+  document.querySelectorAll('[data-sauna-preset]').forEach((button) => {
+    const active = Number(button.dataset.target) === targetTemperature;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+}
+
+function optimisticHumanSaunaPayload(actionId, actionPayload, confirmedPayload) {
+  const starting = actionId !== 'stop';
+  const content = confirmedPayload?.content || {};
+  const metrics = Array.isArray(content.metrics)
+    ? content.metrics.filter((metric) => !['target', 'duration', 'heating'].includes(String(metric?.label || '').toLowerCase()))
+    : [];
+  metrics.push(
+    { label: 'Target', value: `${Number(actionPayload.targetTemperature || 190)}°F` },
+    { label: 'Duration', value: `${starting ? Number(actionPayload.duration || 180) : 0} min` },
+    { label: 'Heating', value: starting ? 'Yes' : 'No' },
+  );
+  return {
+    ...(confirmedPayload || {}),
+    content: {
+      ...content,
+      status: starting ? 'Heating' : 'Idle',
+      subtitle: starting
+        ? `Target ${Number(actionPayload.targetTemperature || 190)}°F · action pending`
+        : 'Stop requested · action pending',
+      metrics,
+    },
+    actions: Array.isArray(confirmedPayload?.actions) ? confirmedPayload.actions : [],
+  };
 }
 
 async function runHumanSaunaAction(actionId, button) {
-  if (!actionId) return;
+  if (!actionId || humanSaunaPendingAction) return;
   const payload = actionId === 'stop'
     ? {}
     : {
@@ -1654,37 +2357,94 @@ async function runHumanSaunaAction(actionId, button) {
     : `Start the sauna at ${payload.targetTemperature}°F for ${payload.duration} minutes?`;
   if (!window.confirm(confirmText)) return;
 
+  const actionRevision = ++humanSaunaActionRevision;
+  humanSaunaStateGeneration += 1;
+  humanSaunaPendingAction = { actionId, actionRevision };
+  const optimisticPayload = optimisticHumanSaunaPayload(actionId, payload, humanSaunaConfirmedPayload);
   if (button) button.disabled = true;
-  setText('human-sauna-status', 'sending');
+  renderHumanSauna(optimisticPayload, { confirmed: false, allowDuringAction: true });
   try {
     const result = await apiFetch(`/home23/api/tiles/sauna-control/actions/${encodeURIComponent(actionId)}`, {
       method: 'POST',
       body: JSON.stringify(payload),
       timeoutMs: 15000,
     });
-    if (result?.data) renderHumanSauna(result.data);
-    else await loadHumanHomeSurface();
+    if (!result || result.ok === false) throw new Error(result?.error || 'Sauna action failed');
+    if (humanSaunaPendingAction?.actionRevision !== actionRevision) return;
+    humanSaunaStateGeneration += 1;
+    if (result.data) {
+      humanSaunaPendingAction = null;
+      renderHumanSauna(result.data);
+      return;
+    }
+
+    const nextConfirmed = await apiFetch('/home23/api/tiles/sauna-control/data', { timeoutMs: 8000 });
+    if (humanSaunaPendingAction?.actionRevision !== actionRevision) return;
+    humanSaunaPendingAction = null;
+    if (nextConfirmed) renderHumanSauna(nextConfirmed);
+    else {
+      renderHumanSauna(optimisticPayload, { confirmed: false, allowDuringAction: true });
+      setText('human-sauna-status', 'refreshing');
+      setText('human-sauna-subtitle', 'Action accepted; live Sauna state unavailable');
+    }
+  } catch (err) {
+    if (humanSaunaPendingAction?.actionRevision === actionRevision) {
+      humanSaunaPendingAction = null;
+      if (humanSaunaConfirmedPayload) {
+        renderHumanSauna(humanSaunaConfirmedPayload, { confirmed: false, allowDuringAction: true });
+      }
+      setText('human-sauna-status', 'action failed');
+      setText('human-sauna-subtitle', err?.message || 'Sauna action failed');
+    }
+    throw err;
   } finally {
     if (button) button.disabled = false;
   }
 }
 
 function renderHumanIssues(payload) {
+  const card = document.getElementById('human-issues-card');
   if (!payload?.available) {
-    setText('human-issues-status', 'offline');
+    if (card) {
+      card.dataset.problemSeverity = 'unavailable';
+      card.setAttribute('aria-label', 'Problems: unavailable. Live problem route unavailable.');
+    }
+    setText('human-issues-status', 'unavailable');
     setText('human-issues-value', '--');
     setText('human-issues-subtitle', 'Live problem route unavailable');
     return;
   }
   const counts = payload.snapshot?.counts || {};
-  const open = Number(counts.open || 0) + Number(counts.chronic || 0);
-  setText('human-issues-status', open > 0 ? 'needs attention' : 'clear');
-  setText('human-issues-value', open > 0 ? String(open) : 'Clear');
-  setText('human-issues-subtitle', open > 0 ? `${open} open live problem${open === 1 ? '' : 's'}` : 'No open live problems');
+  const open = Number(counts.open || 0);
+  const chronic = Number(counts.chronic || 0);
+  const unverifiable = Number(counts.unverifiable || 0);
+  const attention = open + chronic + unverifiable;
+  const severity = chronic > 0 ? 'chronic' : open > 0 ? 'open' : unverifiable > 0 ? 'unverifiable' : 'clear';
+  const detail = attention > 0
+    ? [
+        open > 0 ? `${open} open` : null,
+        chronic > 0 ? `${chronic} chronic` : null,
+        unverifiable > 0 ? `${unverifiable} unverifiable` : null,
+      ].filter(Boolean).join(' · ')
+    : 'No open or unverifiable live problems';
+  if (card) {
+    card.dataset.problemSeverity = severity;
+    card.setAttribute('aria-label', `Problems: ${severity}. ${detail}.`);
+  }
+  setText('human-issues-status', severity);
+  setText('human-issues-value', attention > 0 ? String(attention) : 'Clear');
+  setText('human-issues-subtitle', detail);
 }
 
 function renderHumanGoodLife(payload) {
-  const state = payload?.state || payload || {};
+  const hasStateEnvelope = payload
+    && typeof payload === 'object'
+    && Object.prototype.hasOwnProperty.call(payload, 'state');
+  const state = hasStateEnvelope ? payload.state : payload;
+  if (!state || typeof state !== 'object') {
+    renderHumanGoodLifeUnavailable();
+    return;
+  }
   const policy = state.policy?.mode || state.policy || '--';
   const lanes = Object.entries(state.lanes || {})
     .filter(([, lane]) => lane?.status && lane.status !== 'healthy')
@@ -1695,30 +2455,68 @@ function renderHumanGoodLife(payload) {
   setText('human-goodlife-subtitle', lanes.length ? lanes.join(' · ') : 'Lanes in bounds');
 }
 
-function renderJerryVoiceTile(pulsePayload, homeSummary, statePayload, agencyPayload) {
+function renderHumanGoodLifeUnavailable() {
+  setText('human-goodlife-status', 'unavailable');
+  setText('human-goodlife-value', '--');
+  setText('human-goodlife-subtitle', 'Good Life feed unavailable');
+}
+
+function renderLatestJerryVoice(latest) {
+  renderJerryVoiceTile(
+    latest.pulse,
+    latest.homeSummary,
+    latest.state,
+    latest.agency,
+    latest.problems,
+    latest.goodLife,
+  );
+}
+
+function renderJerryVoiceTile(pulsePayload, homeSummary, statePayload, agencyPayload, problemsPayload, goodLifePayload) {
   const cycle = statePayload?.cycleCount;
-  const nodes = Array.isArray(statePayload?.memory?.nodes)
-    ? statePayload.memory.nodes.length
-    : statePayload?.memory?.nodes;
   const mode = agencyPayload?.state?.mode || agencyPayload?.mode;
   const bootcamp = agencyPayload?.state?.bootcamp?.enabled ?? agencyPayload?.bootcamp?.enabled;
   const remark = pulsePayload?.remark;
   const thought = homeSummary?.lastThoughtText
     || statePayload?.thoughts?.[0]?.content
     || statePayload?.recentThoughts?.[0]?.content;
-  const parts = [
-    remark?.ts ? timeSince(new Date(remark.ts)) : homeSummary?.lastThoughtAt ? timeSince(new Date(homeSummary.lastThoughtAt)) : null,
+  const thoughtAt = remark?.ts || homeSummary?.lastThoughtAt || null;
+  const thoughtDate = thoughtAt ? new Date(thoughtAt) : null;
+  const nodeCount = extractNodeCount(statePayload) ?? extractNodeCount(homeSummary);
+  const problemCounts = problemsPayload?.snapshot?.counts || problemsPayload?.counts || null;
+  const openProblems = problemCounts
+    ? Number(problemCounts.open || 0) + Number(problemCounts.chronic || 0)
+    : null;
+  const verificationTimes = (problemsPayload?.problems || [])
+    .map((problem) => problem?.lastCheckedAt)
+    .filter(Boolean)
+    .map((value) => new Date(value))
+    .filter((value) => !Number.isNaN(value.getTime()));
+  const verifiedAt = verificationTimes.sort((a, b) => b.getTime() - a.getTime())[0]
+    || ((goodLifePayload?.evaluatedAt || goodLifePayload?.state?.evaluatedAt)
+      ? new Date(goodLifePayload.evaluatedAt || goodLifePayload.state.evaluatedAt)
+      : null);
+  const kickerAge = thoughtDate && !Number.isNaN(thoughtDate.getTime())
+    ? timeSince(thoughtDate).toUpperCase()
+    : 'LIVE';
+  const footerParts = [
+    nodeCount != null ? `${formatCompactNumber(nodeCount)} brain nodes` : 'brain nodes unavailable',
+    openProblems != null ? `${openProblems} open problem${openProblems === 1 ? '' : 's'}` : 'open problems unavailable',
+    verifiedAt && !Number.isNaN(verifiedAt.getTime()) ? `verified ${timeSince(verifiedAt)}` : 'verification time unavailable',
+  ];
+  const contextParts = [
     cycle != null ? `cycle ${formatCompactNumber(cycle)}` : homeSummary?.cycleCount != null ? `cycle ${formatCompactNumber(homeSummary.cycleCount)}` : null,
-    nodes != null ? `${formatCompactNumber(nodes)} brain nodes` : homeSummary?.memoryNodes != null ? `${formatCompactNumber(homeSummary.memoryNodes)} brain nodes` : null,
     mode ? `agency ${mode}` : null,
     bootcamp === true ? 'bootcamp on' : null,
+    jerryContextLine(remark, homeSummary),
   ].filter(Boolean);
   const voice = remark?.text
     || humanizeJerryFallback(thought, homeSummary)
     || 'I am here, watching the house breathe. Nothing needs your hands yet.';
-  setText('human-jerry-status', parts.length ? parts.join(' · ') : 'latest');
+  setText('human-jerry-kicker', `JERRY · ${kickerAge}`);
+  setText('human-jerry-status', footerParts.join(' · '));
   setText('human-jerry-remark', voice);
-  setText('human-jerry-context', jerryContextLine(remark, homeSummary));
+  setText('human-jerry-context', contextParts.join(' · '));
 }
 
 function humanizeJerryFallback(thought, homeSummary) {
@@ -5472,7 +6270,7 @@ function updateOverviewMetrics(state, summary = null) {
   const activeGoalCount = extractActiveGoalCount(state) ?? extractActiveGoalCount(summary);
   const energy = state?.cognitiveState?.energy;
   if (typeof energy === 'number') {
-    setText('pulse-energy', `⚡ ${Math.round(energy * 100)}%`);
+    setText('pulse-energy', `Energy ${Math.round(energy * 100)}%`);
   }
   setText('pulse-node-count', formatCompactNumber(nodeCount));
   setText('pulse-active-goals', activeGoalCount != null ? String(activeGoalCount) : '—');
@@ -5573,6 +6371,56 @@ function formatVibeDate(iso) {
   });
 }
 
+function vibeItemsMatch(left, right) {
+  if (!left || !right) return false;
+  return Boolean(
+    (left.id && right.id && left.id === right.id)
+    || (left.sourceId && right.sourceId && left.sourceId === right.sourceId)
+    || (left.url && right.url && left.url === right.url),
+  );
+}
+
+function syncVibeDetailNavigation() {
+  const previous = document.getElementById('home-vibe-detail-previous');
+  const next = document.getElementById('home-vibe-detail-next');
+  const position = document.getElementById('home-vibe-detail-position');
+  const { items, index, unavailable } = vibeDetailGalleryState;
+  const hasGalleryPosition = !unavailable && items.length > 0 && index >= 0;
+  if (previous) previous.disabled = !hasGalleryPosition || index <= 0;
+  if (next) next.disabled = !hasGalleryPosition || index >= items.length - 1;
+  if (position) {
+    position.textContent = hasGalleryPosition
+      ? `${index + 1} of ${items.length}`
+      : unavailable
+        ? 'Gallery unavailable'
+        : 'Image not in gallery';
+  }
+}
+
+function setVibeDetailGallery(items, currentItem, base = '', options = {}) {
+  const galleryItems = Array.isArray(items) ? items.filter((item) => item?.url) : [];
+  const index = galleryItems.findIndex((item) => vibeItemsMatch(item, currentItem));
+  vibeDetailGalleryState = {
+    items: galleryItems,
+    index,
+    base,
+    unavailable: options.unavailable === true,
+  };
+  syncVibeDetailNavigation();
+}
+
+function navigateVibeImageDetail(delta) {
+  const nextIndex = vibeDetailGalleryState.index + Number(delta || 0);
+  if (!Number.isInteger(nextIndex) || nextIndex < 0 || nextIndex >= vibeDetailGalleryState.items.length) {
+    syncVibeDetailNavigation();
+    return;
+  }
+  vibeDetailGalleryState.index = nextIndex;
+  vibeDetailViewRevision += 1;
+  renderVibeImageDetail(vibeDetailGalleryState.items[nextIndex], vibeDetailGalleryState.base);
+  syncVibeDetailNavigation();
+}
+
 function renderVibeImageDetail(item, base = '') {
   const detailModal = document.getElementById('home-vibe-detail-modal');
   const image = document.getElementById('home-vibe-detail-image');
@@ -5605,14 +6453,46 @@ function renderVibeImageDetail(item, base = '') {
   if (meta) meta.textContent = metaParts.join(' · ');
   if (open) open.href = imageUrl;
   if (gallery) gallery.href = galleryUrl;
+}
 
+function showVibeImageDetail() {
+  const detailModal = document.getElementById('home-vibe-detail-modal');
+  if (!detailModal) return;
   detailModal.classList.add('open');
   detailModal.setAttribute('aria-hidden', 'false');
+}
+
+function beginVibeDetailSession() {
+  activeVibeDetailSession = ++vibeDetailSessionSequence;
+  vibeDetailViewRevision += 1;
+  return activeVibeDetailSession;
+}
+
+function vibeDetailSessionIsActive(sessionId) {
+  const detailModal = document.getElementById('home-vibe-detail-modal');
+  return sessionId === activeVibeDetailSession
+    && Boolean(detailModal?.classList.contains('open'))
+    && detailModal.getAttribute('aria-hidden') !== 'true';
+}
+
+async function loadVibeDetailGallery(currentItem, base = '', sessionId = activeVibeDetailSession) {
+  try {
+    const gallery = await apiFetch(`${base}/home23/api/vibe/gallery?limit=all`, { timeoutMs: 10000 });
+    if (!vibeDetailSessionIsActive(sessionId)) return [];
+    if (!Array.isArray(gallery?.images)) throw new Error('gallery unavailable');
+    setVibeDetailGallery(gallery.images, currentItem, base, { unavailable: false });
+    return gallery.images;
+  } catch {
+    if (!vibeDetailSessionIsActive(sessionId)) return [];
+    setVibeDetailGallery([], currentItem, base, { unavailable: true });
+    return [];
+  }
 }
 
 function closeVibeImageDetail() {
   const detailModal = document.getElementById('home-vibe-detail-modal');
   const image = document.getElementById('home-vibe-detail-image');
+  activeVibeDetailSession = ++vibeDetailSessionSequence;
   if (!detailModal) return;
   detailModal.classList.remove('open');
   detailModal.setAttribute('aria-hidden', 'true');
@@ -5621,17 +6501,33 @@ function closeVibeImageDetail() {
 
 async function openVibeImageDetail(item, base = '') {
   if (!item?.url) return;
+  const sessionId = beginVibeDetailSession();
+  const openingViewRevision = vibeDetailViewRevision;
   renderVibeImageDetail(item, base);
-  if (!item.id) return;
-
-  try {
-    const detail = await apiFetch(`${base}/home23/api/vibe/gallery/items/${encodeURIComponent(item.id)}`, {
-      timeoutMs: 10000,
-    });
-    if (detail?.item) renderVibeImageDetail(detail.item, base);
-  } catch {
-    // The visible image is already open; metadata lookup is best-effort.
+  showVibeImageDetail();
+  setVibeDetailGallery([], item, base, { unavailable: true });
+  const galleryPromise = loadVibeDetailGallery(item, base, sessionId);
+  if (item.id) {
+    try {
+      const detail = await apiFetch(`${base}/home23/api/vibe/gallery/items/${encodeURIComponent(item.id)}`, {
+        timeoutMs: 10000,
+      });
+      if (detail?.item
+          && vibeDetailSessionIsActive(sessionId)
+          && openingViewRevision === vibeDetailViewRevision) {
+        const galleryItems = await galleryPromise;
+        if (!vibeDetailSessionIsActive(sessionId) || openingViewRevision !== vibeDetailViewRevision) return;
+        const mergedItems = galleryItems.map((galleryItem) => (
+          vibeItemsMatch(galleryItem, detail.item) ? detail.item : galleryItem
+        ));
+        renderVibeImageDetail(detail.item, base);
+        setVibeDetailGallery(mergedItems, detail.item, base, { unavailable: !galleryItems.length });
+      }
+    } catch {
+      // The visible image and gallery navigation remain available when detail lookup fails.
+    }
   }
+  await galleryPromise;
 }
 
 async function triggerVibeGeneration() {
@@ -5652,6 +6548,20 @@ async function triggerVibeGeneration() {
   }
 }
 
+function configureVibeImageControl(imageEl, item, base = '') {
+  if (!imageEl) return;
+  const available = Boolean(item?.url);
+  imageEl.disabled = !available;
+  imageEl.setAttribute('aria-disabled', String(!available));
+  imageEl.setAttribute(
+    'aria-label',
+    available
+      ? `Open Vibe image: ${item.caption || item.title || item.prompt || 'current image'}`
+      : 'Current Vibe image unavailable',
+  );
+  imageEl.onclick = available ? () => openVibeImageDetail(item, base) : null;
+}
+
 async function loadVibeTile(agent, { imageId, captionId, galleryHrefId = null }) {
   const base = apiBase(agent);
   const imageEl = document.getElementById(imageId);
@@ -5669,13 +6579,13 @@ async function loadVibeTile(agent, { imageId, captionId, galleryHrefId = null })
     if (data?.item?.url) {
       imageEl.innerHTML = `<img src="${data.item.url}" alt="Vibe image for ${agent.displayName || agent.name}" loading="lazy">`;
       imageEl.classList.add('clickable');
-      imageEl.onclick = () => { openVibeImageDetail(data.item, base); };
+      configureVibeImageControl(imageEl, data.item, base);
       captionEl.textContent = data.item.caption || '';
       return;
     }
 
     imageEl.classList.remove('clickable');
-    imageEl.onclick = null;
+    configureVibeImageControl(imageEl, null, base);
     const placeholder = data?.generating
       ? 'Conjuring a new chaos vibe...'
       : 'No image yet';
@@ -5685,7 +6595,7 @@ async function loadVibeTile(agent, { imageId, captionId, galleryHrefId = null })
       : 'The gallery is empty. The dashboard will seed it on the next generation window.';
   } catch {
     imageEl.classList.remove('clickable');
-    imageEl.onclick = null;
+    configureVibeImageControl(imageEl, null, base);
     imageEl.innerHTML = '<span class="h23-vibe-placeholder">Vibe offline</span>';
     captionEl.textContent = 'Could not load the current vibe image.';
   }

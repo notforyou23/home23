@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Home23 Vibe Gallery</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/home23-dashboard.css">
   <style>
     .h23-vg-shell {
@@ -250,9 +250,220 @@
         grid-template-columns: 1fr;
       }
     }
+
+    /* Glass Light Vibe gallery surface */
+    body.h23-vibe-page {
+      --glass-primary: var(--h23-glass-card);
+      --glass-secondary: var(--h23-glass-input);
+      --glass-border: var(--h23-glass-border);
+      --text-primary: var(--h23-text-primary);
+      --text-secondary: var(--h23-text-secondary);
+      --text-muted: var(--h23-text-muted-aa);
+      --accent-blue: var(--h23-accent);
+      --shadow-glass: var(--h23-shadow-card);
+      min-height: 100vh;
+      color: var(--h23-text-body);
+      font-family: var(--h23-font-ui);
+      background: var(--h23-bg-wash-1), var(--h23-bg-wash-2), var(--h23-bg);
+      background-attachment: fixed;
+    }
+
+    body.h23-vibe-page::before {
+      background: none;
+    }
+
+    body.h23-vibe-page #particles-js {
+      opacity: 0.1;
+      pointer-events: none;
+    }
+
+    body.h23-vibe-page .h23-vg-shell {
+      max-width: 1360px;
+      padding: 36px 28px 52px;
+    }
+
+    body.h23-vibe-page .h23-vg-header {
+      margin-bottom: 20px;
+    }
+
+    body.h23-vibe-page .h23-vg-title h1 {
+      color: var(--h23-text-heading);
+      font-size: clamp(2rem, 3vw, 2.8rem);
+      font-weight: 600;
+      letter-spacing: -0.045em;
+    }
+
+    body.h23-vibe-page .h23-vg-title p {
+      color: var(--h23-text-secondary);
+      font-size: 1rem;
+    }
+
+    body.h23-vibe-page .h23-vg-btn {
+      min-height: 42px;
+      color: var(--h23-text-secondary);
+      border-color: var(--h23-input-border);
+      border-radius: var(--h23-radius-pill);
+      background: rgba(255, 255, 255, 0.62);
+      box-shadow: var(--h23-shadow-pill);
+      font-family: var(--h23-font-ui);
+    }
+
+    body.h23-vibe-page .h23-vg-btn:hover {
+      color: var(--h23-accent);
+      border-color: var(--h23-accent-tint-border);
+      background: var(--h23-hover-card);
+    }
+
+    body.h23-vibe-page .h23-vg-btn.primary {
+      color: #fff;
+      border-color: var(--h23-accent);
+      background: var(--h23-accent);
+      box-shadow: var(--h23-shadow-accent-btn);
+    }
+
+    body.h23-vibe-page :is(.h23-vg-btn, .h23-vg-card):focus-visible {
+      outline: 3px solid var(--h23-accent-tint-border);
+      outline-offset: 3px;
+    }
+
+    body.h23-vibe-page .h23-vg-meta {
+      margin-bottom: 22px;
+      padding: 13px 16px;
+      color: var(--h23-text-secondary);
+      border-color: var(--h23-glass-border);
+      border-radius: var(--h23-radius-card);
+      background: var(--h23-glass-panel);
+      box-shadow: var(--h23-shadow-card);
+      font-family: var(--h23-font-mono);
+      font-size: 0.8rem;
+      line-height: 1.65;
+    }
+
+    body.h23-vibe-page .h23-vg-grid {
+      grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+      gap: var(--h23-gap);
+    }
+
+    body.h23-vibe-page .h23-vg-card {
+      width: 100%;
+      padding: 0;
+      background: var(--h23-glass-card);
+      border: 1px solid var(--h23-glass-border);
+      border-radius: var(--h23-radius-card);
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      appearance: none;
+      box-shadow: var(--h23-shadow-card);
+      backdrop-filter: blur(var(--h23-glass-blur-card));
+      -webkit-backdrop-filter: blur(var(--h23-glass-blur-card));
+    }
+
+    body.h23-vibe-page .h23-vg-card:hover {
+      border-color: var(--h23-accent-tint-border);
+      background: var(--h23-hover-card);
+      box-shadow: var(--h23-shadow-panel);
+    }
+
+    body.h23-vibe-page .h23-vg-card img {
+      background: #d8dee7;
+    }
+
+    body.h23-vibe-page .h23-vg-card-body {
+      padding: 15px 16px 17px;
+    }
+
+    body.h23-vibe-page .h23-vg-caption {
+      color: var(--h23-text-body);
+    }
+
+    body.h23-vibe-page :is(.h23-vg-seed, .h23-vg-date) {
+      color: var(--h23-text-muted-aa);
+    }
+
+    body.h23-vibe-page .h23-vg-date,
+    body.h23-vibe-page .h23-vg-source {
+      font-family: var(--h23-font-mono);
+    }
+
+    body.h23-vibe-page .h23-vg-source {
+      color: var(--h23-accent);
+      border-radius: var(--h23-radius-pill);
+      background: var(--h23-accent-tint);
+    }
+
+    body.h23-vibe-page .h23-vg-empty {
+      color: var(--h23-text-secondary);
+      border-color: var(--h23-accent-tint-border);
+      border-radius: var(--h23-radius-card);
+      background: var(--h23-glass-card);
+      box-shadow: var(--h23-shadow-card);
+    }
+
+    body.h23-vibe-page .h23-vg-lightbox {
+      background: var(--h23-overlay-backdrop);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+    }
+
+    body.h23-vibe-page .h23-vg-lightbox-panel {
+      color: var(--h23-text-body);
+      border-color: var(--h23-glass-border);
+      border-radius: var(--h23-radius-overlay);
+      background: var(--h23-glass-overlay);
+      box-shadow: var(--h23-shadow-overlay);
+      backdrop-filter: blur(var(--h23-glass-blur-overlay));
+      -webkit-backdrop-filter: blur(var(--h23-glass-blur-overlay));
+    }
+
+    body.h23-vibe-page .h23-vg-lightbox img {
+      background: #d8dee7;
+    }
+
+    body.h23-vibe-page .h23-vg-lightbox-copy h2 {
+      color: var(--h23-text-heading);
+      font-weight: 600;
+    }
+
+    body.h23-vibe-page .h23-vg-lightbox-copy p {
+      color: var(--h23-text-secondary);
+    }
+
+    @media (max-width: 640px) {
+      body.h23-vibe-page .h23-vg-shell {
+        padding: 22px 14px 36px;
+      }
+
+      body.h23-vibe-page .h23-vg-actions,
+      body.h23-vibe-page .h23-vg-btn {
+        width: 100%;
+      }
+
+      body.h23-vibe-page .h23-vg-lightbox {
+        padding: 10px;
+      }
+
+      body.h23-vibe-page .h23-vg-lightbox-panel {
+        padding: 12px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      body.h23-vibe-page #particles-js {
+        display: none;
+      }
+
+      body.h23-vibe-page *,
+      body.h23-vibe-page *::before,
+      body.h23-vibe-page *::after {
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
   </style>
 </head>
-<body>
+<body class="h23-vibe-page">
   <div id="particles-js"></div>
   <div class="h23-vg-shell">
     <div class="h23-vg-header">
@@ -286,7 +497,8 @@
 
   <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
   <script>
-    if (typeof particlesJS !== 'undefined') {
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (!reduceMotion && typeof particlesJS !== 'undefined') {
       particlesJS('particles-js', {
         particles: {
           number: { value: 40, density: { enable: true, value_area: 1000 } },
@@ -399,21 +611,22 @@
         grid.innerHTML = data.images.map((item, index) => {
           const caption = escapeHtml(item.caption || item.prompt || '');
           return `
-          <article class="h23-vg-card" data-index="${index}">
+          <button class="h23-vg-card" type="button" aria-label="Open Vibe image ${index + 1}" data-index="${index}">
             <img src="${item.url}" alt="Vibe image ${index + 1}" loading="lazy">
             <div class="h23-vg-card-body">
               <div class="h23-vg-source">${escapeHtml(sourceLabel(item))}</div>
               <div class="h23-vg-caption">${caption}</div>
               <div class="h23-vg-date">${formatDate(item.generatedAt)}</div>
             </div>
-          </article>`;
+          </button>`;
         }).join('');
 
         grid.querySelectorAll('.h23-vg-card').forEach((card) => {
-          card.addEventListener('click', () => {
+          const openCard = () => {
             const item = data.images[Number(card.dataset.index)];
             if (item) openLightbox(item);
-          });
+          };
+          card.addEventListener('click', openCard);
         });
 
         if (selectedId) {
