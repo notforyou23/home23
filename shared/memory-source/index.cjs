@@ -4,4 +4,9 @@ module.exports = {
   ...require('./contracts.cjs'),
   ...require('./confined-file.cjs'),
   ...require('./jsonl.cjs'),
+  ...require('./manifest.cjs'),
+  ...require('./overlay-store.cjs'),
+  ...require('./scratch-quota.cjs'),
+  ...require('./reader.cjs'),
+  ...require('./pins.cjs'),
 };
