@@ -235,6 +235,19 @@ docs/superpowers/reports/assets/glass-light-dashboard/*.png
 
 The branch remains inside the approved dashboard/page/test/spec/plan/report boundary. No server implementation, Settings API, instance, config, secret, PM2 state, runtime data, or operator handoff file changed.
 
+## Acceptance-criterion audit
+
+| Design-spec criterion | Exact evidence | Status |
+|---|---|---|
+| 1. Match the supplied light-glass handoff at the primary laptop target | Matched 1440 × 1000 DPR 1 source/implementation captures; `comparison-home-1440-final.png`, `comparison-header-1440-final.png`, and `comparison-main-1440-final.png`; measured geometry in “Matched visual comparison” | PASS |
+| 2. Apply the new design language to all documented dashboard surfaces and six overlays | Branch HTML/CSS in `engine/src/dashboard/`; 45 glass contracts inside the 55-test focused run; surface and overlay matrices; Home, Brain Map, Full Settings, standalone Chat, Problems, and responsive captures | PASS for inspected surfaces; the final related-page Browser recapture gap is recorded under criterion 7 |
+| 3. Keep every existing functional route, data source, action, and production-only detail reachable | Preservation contracts in `tests/dashboard/glass-light-dashboard.test.js` and `tests/dashboard/operator-ui.test.js`; ChatState 6/6; browser surface/overlay matrices; all write controls deliberately left intact but unissued | PASS |
+| 4. Leave stored runtime/config/instance data untouched | `git diff --name-only c2b19654b7d784b43cdbdf231257adeba3b0675e..HEAD` contains only dashboard/page/test/spec/plan/report files; no `instances/`, local config, secrets, PM2 dump, or generated runtime data | PASS |
+| 5. Pass focused and broad automated checks | Syntax 2/2; focused 55/55; ChatState 6/6; `npm run build`; `npm test` 692 pass/0 fail/1 intentional skip; `npm run test:contracts` 12 pass/1 expected skip | PASS at the recorded commit; final-gate rerun belongs to Task 8 |
+| 6. Pass read-only live contracts | `npm run test:contracts:live`: 13 GET/read-only routes checked, 21 action/stream/fixture contracts skipped, action opt-in unset | PASS |
+| 7. Prove navigation, live rendering, responsive behavior, accessibility basics, Chat state preservation, and clean console output in Browser | Executed evidence covers native hashes/surfaces, real Home data, six overlays, Chat singleton/draft state, 1440/1200/1024/768/390/320 layouts, focus/Escape/scroll lock, and clean checked-surface console. 200% zoom, reduced-motion emulation, and final Vibe gallery/Welcome/Setup rendering remain unexecuted | PARTIAL — criterion not fully proven |
+| 8. Record exact commands, results, screenshots, and intentionally unexercised live writes | This committed report, tracked QA harness, screenshot inventory, automated command table, server/read-only boundary disclosure, and “Intentionally unexercised live writes” section | PASS, with screenshot payload caveat recorded below |
+
 ## Caveats
 
 The in-app Browser did not synthesize native-button default key activation and closed before 200% zoom/reduced-motion emulation plus final Vibe gallery/Welcome/Setup rendering. A replacement browser session could not reopen the local QA URL, so those checklist items remain unexecuted. Semantic/executable contracts and adjacent responsive evidence reduce risk but do not prove the missing Browser behaviors. Separately, 20 of the 26 capture files have `.png` names but JPEG/JFIF payloads from the in-app screenshot encoder; the six final combined comparison files are true PNGs and all images render, but payload normalization remains a portability follow-up.
