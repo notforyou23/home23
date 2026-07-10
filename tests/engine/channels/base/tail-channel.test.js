@@ -20,23 +20,26 @@ test('TailChannel constructor rejects missing path', () => {
   assert.throws(() => new TailChannel({ id: 'x.y', class: ChannelClass.WORK }), /requires path/);
 });
 
-test('TailChannel emits each new JSONL line as a parsed observation', async () => {
+test('TailChannel emits each new JSONL line as a parsed observation', { timeout: 5000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'tail-'));
   const path = join(dir, 'log.jsonl');
   writeFileSync(path, '');
   const ch = new FakeTail(path);
   await ch.start();
-  appendFileSync(path, JSON.stringify({ a: 1 }) + '\n');
-  appendFileSync(path, JSON.stringify({ a: 2 }) + '\n');
-  const out = [];
-  for await (const parsed of ch.source()) {
-    out.push(parsed);
-    if (out.length >= 2) break;
+  try {
+    appendFileSync(path, JSON.stringify({ a: 1 }) + '\n');
+    appendFileSync(path, JSON.stringify({ a: 2 }) + '\n');
+    const out = [];
+    for await (const parsed of ch.source()) {
+      out.push(parsed);
+      if (out.length >= 2) break;
+    }
+    assert.equal(out.length, 2);
+    assert.equal(out[0].payload.a, 1);
+    assert.equal(out[1].payload.a, 2);
+  } finally {
+    await ch.stop();
   }
-  ch.stop();
-  assert.equal(out.length, 2);
-  assert.equal(out[0].payload.a, 1);
-  assert.equal(out[1].payload.a, 2);
 });
 
 test('TailChannel.parseLine throws when subclass does not override', () => {

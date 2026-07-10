@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, appendFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HealthChannel } from '../../../../engine/src/channels/domain/health-channel.js';
@@ -10,12 +10,11 @@ function isoDate(daysAgo = 0) {
   return date.toISOString().slice(0, 10);
 }
 
-test('HealthChannel extracts nested metrics into flat payload', async () => {
+test('HealthChannel extracts nested metrics into flat payload', () => {
   const dir = mkdtempSync(join(tmpdir(), 'health-'));
   const path = join(dir, 'health.jsonl');
   writeFileSync(path, '');
   const ch = new HealthChannel({ path });
-  await ch.start();
   const line = JSON.stringify({
     ts: '2026-04-21T14:50:52Z',
     metrics: {
@@ -25,10 +24,7 @@ test('HealthChannel extracts nested metrics into flat payload', async () => {
       vo2Max: { unit: 'mL/kg/min', value: 31.04 },
     },
   });
-  appendFileSync(path, line + '\n');
-  const out = [];
-  for await (const p of ch.source()) { out.push(ch.verify(p)); if (out.length >= 1) break; }
-  await ch.stop();
+  const out = [ch.verify(ch.parseLine(line))];
   assert.equal(out[0].payload.hrv, 28.53);
   assert.equal(out[0].payload.rhr, 58);
   assert.equal(out[0].payload.sleepMin, 502.99);
@@ -44,12 +40,11 @@ test('HealthChannel extracts nested metrics into flat payload', async () => {
   assert.equal(out[0].flag, 'COLLECTED');
 });
 
-test('HealthChannel marks fresh wrapper writes around stale metric dates as uncertified', async () => {
+test('HealthChannel marks fresh wrapper writes around stale metric dates as uncertified', () => {
   const dir = mkdtempSync(join(tmpdir(), 'health-'));
   const path = join(dir, 'health.jsonl');
   writeFileSync(path, '');
   const ch = new HealthChannel({ path });
-  await ch.start();
   const line = JSON.stringify({
     ts: new Date().toISOString(),
     metrics: {
@@ -57,17 +52,14 @@ test('HealthChannel marks fresh wrapper writes around stale metric dates as unce
       restingHeartRate: { date: '2026-04-21', unit: 'bpm', value: 58 },
     },
   });
-  appendFileSync(path, line + '\n');
-  const out = [];
-  for await (const p of ch.source()) { out.push(ch.verify(p)); if (out.length >= 1) break; }
-  await ch.stop();
+  const out = [ch.verify(ch.parseLine(line))];
   assert.equal(out[0].payload.semanticStale, true);
   assert.equal(out[0].payload.healthDataEndDate, '2026-04-21');
   assert.equal(out[0].flag, 'UNCERTIFIED');
   assert.equal(out[0].verifierId, 'health:kit-export-stale');
 });
 
-test('HealthChannel compares HRV to local baseline and requires neighboring signals before interpretation', async () => {
+test('HealthChannel compares HRV to local baseline and requires neighboring signals before interpretation', () => {
   const dir = mkdtempSync(join(tmpdir(), 'health-baseline-'));
   const path = join(dir, 'health.jsonl');
   const hrvHistory = [50, 52, 51, 49, 50, 53, 52];
@@ -82,7 +74,7 @@ test('HealthChannel compares HRV to local baseline and requires neighboring sign
   writeFileSync(path, `${history}\n`);
 
   const ch = new HealthChannel({ path });
-  await ch.start();
+  ch.seedBaselineFromFile();
   const current = JSON.stringify({
     ts: new Date().toISOString(),
     metrics: {
@@ -92,11 +84,7 @@ test('HealthChannel compares HRV to local baseline and requires neighboring sign
       wristTemperature: { date: isoDate(1), unit: 'degF', value: 98.7 },
     },
   });
-  appendFileSync(path, current + '\n');
-
-  const out = [];
-  for await (const p of ch.source()) { out.push(ch.verify(p)); if (out.length >= 1) break; }
-  await ch.stop();
+  const out = [ch.verify(ch.parseLine(current))];
 
   const posture = out[0].payload.interpretationPosture;
   assert.equal(posture.hrv.baseline.status, 'ready');
