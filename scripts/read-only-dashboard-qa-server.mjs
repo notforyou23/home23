@@ -94,6 +94,13 @@ export function openInvariantFixture({ dashboardRoot = DEFAULT_DASHBOARD_ROOT } 
   };
 }
 
+export function buildUpstreamTarget(requestUrl, upstreamUrl) {
+  const target = new URL(upstreamUrl.href);
+  target.pathname = requestUrl.pathname;
+  target.search = requestUrl.search;
+  return target;
+}
+
 export function createReadOnlyDashboardQaServer({
   dashboardRoot = DEFAULT_DASHBOARD_ROOT,
   upstream = 'http://127.0.0.1:5002',
@@ -159,7 +166,7 @@ export function createReadOnlyDashboardQaServer({
     }
 
     try {
-      const target = new URL(requestUrl.pathname + requestUrl.search, upstreamUrl);
+      const target = buildUpstreamTarget(requestUrl, upstreamUrl);
       const response = await fetch(target, { method: req.method, redirect: 'manual' });
       const headers = {};
       for (const [name, value] of response.headers) {
@@ -204,4 +211,3 @@ if (isDirectExecution()) {
     }));
   });
 }
-

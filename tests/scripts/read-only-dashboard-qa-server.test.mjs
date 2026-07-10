@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { pathToFileURL } from 'node:url';
@@ -21,6 +23,39 @@ async function close(server) {
   if (!server.listening) return;
   await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 }
+
+async function rawRequest(base, requestPath, method = 'GET') {
+  const target = new URL(base);
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      host: target.hostname,
+      port: target.port,
+      method,
+      path: requestPath,
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(chunk));
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        headers: response.headers,
+        body: Buffer.concat(chunks).toString('utf8'),
+      }));
+    });
+    request.once('error', reject);
+    request.end();
+  });
+}
+
+test('upstream targets stay pinned to the configured origin for network-path inputs', async () => {
+  const { buildUpstreamTarget } = await import(harnessUrl.href);
+  const target = buildUpstreamTarget(
+    { pathname: '//untrusted.example/escape', search: '?probe=1' },
+    new URL('http://127.0.0.1:5002/base'),
+  );
+  assert.equal(target.origin, 'http://127.0.0.1:5002');
+  assert.equal(target.pathname, '//untrusted.example/escape');
+  assert.equal(target.search, '?probe=1');
+});
 
 test('QA server forwards only GET and HEAD while rejecting every write method', async (t) => {
   const { createReadOnlyDashboardQaServer } = await import(harnessUrl.href);
@@ -93,4 +128,34 @@ test('open-invariant fixture is synthetic, read-only, production-shaped, and pro
   const blockedWrite = await fetch(`${qa}/api/live-problems`, { method: 'POST' });
   assert.equal(blockedWrite.status, 405);
   assert.equal(upstreamCalls, 0);
+});
+
+test('malformed path encoding is rejected and traversal cannot read outside dashboardRoot', async (t) => {
+  const { createReadOnlyDashboardQaServer } = await import(harnessUrl.href);
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-qa-root-'));
+  const localRoot = path.join(fixtureRoot, 'dashboard');
+  fs.mkdirSync(localRoot);
+  fs.writeFileSync(path.join(localRoot, 'inside.txt'), 'inside');
+  fs.writeFileSync(path.join(fixtureRoot, 'outside.txt'), 'outside-secret');
+  t.after(() => fs.rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  const upstreamServer = http.createServer((_req, res) => {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('upstream-not-found');
+  });
+  const upstream = await listen(upstreamServer);
+  t.after(() => close(upstreamServer));
+
+  const qaServer = createReadOnlyDashboardQaServer({ dashboardRoot: localRoot, upstream });
+  const qa = await listen(qaServer);
+  t.after(() => close(qaServer));
+
+  const malformed = await rawRequest(qa, '/%E0%A4%A');
+  assert.equal(malformed.status, 400);
+  assert.deepEqual(JSON.parse(malformed.body), { ok: false, error: 'qa_invalid_path' });
+
+  const traversal = await rawRequest(qa, '/..%2Foutside.txt');
+  assert.equal(traversal.status, 404);
+  assert.equal(traversal.body, 'upstream-not-found');
+  assert.doesNotMatch(traversal.body, /outside-secret/);
 });
