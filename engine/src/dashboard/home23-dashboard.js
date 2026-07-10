@@ -1268,6 +1268,17 @@ function updateClocks() {
 
 // ── Load Agents ──
 
+function configureCosmoOpenLink(link, url) {
+  if (!link) return;
+  if (url) {
+    link.href = url;
+    link.setAttribute('aria-disabled', 'false');
+  } else {
+    link.removeAttribute('href');
+    link.setAttribute('aria-disabled', 'true');
+  }
+}
+
 async function loadAgents() {
   try {
     const res = await fetch('/home23/agents.json');
@@ -1313,6 +1324,7 @@ async function loadAgents() {
       }
     }
   } catch { /* config offline */ }
+  configureCosmoOpenLink(document.getElementById('cosmo23-open-link'), cosmo23Url);
 
   // Wire COSMO tab button
   const cosmoBtn = document.getElementById('cosmo23-btn');
@@ -6111,6 +6123,20 @@ async function triggerVibeGeneration() {
   }
 }
 
+function configureVibeImageControl(imageEl, item, base = '') {
+  if (!imageEl) return;
+  const available = Boolean(item?.url);
+  imageEl.disabled = !available;
+  imageEl.setAttribute('aria-disabled', String(!available));
+  imageEl.setAttribute(
+    'aria-label',
+    available
+      ? `Open Vibe image: ${item.caption || item.title || item.prompt || 'current image'}`
+      : 'Current Vibe image unavailable',
+  );
+  imageEl.onclick = available ? () => openVibeImageDetail(item, base) : null;
+}
+
 async function loadVibeTile(agent, { imageId, captionId, galleryHrefId = null }) {
   const base = apiBase(agent);
   const imageEl = document.getElementById(imageId);
@@ -6128,13 +6154,13 @@ async function loadVibeTile(agent, { imageId, captionId, galleryHrefId = null })
     if (data?.item?.url) {
       imageEl.innerHTML = `<img src="${data.item.url}" alt="Vibe image for ${agent.displayName || agent.name}" loading="lazy">`;
       imageEl.classList.add('clickable');
-      imageEl.onclick = () => { openVibeImageDetail(data.item, base); };
+      configureVibeImageControl(imageEl, data.item, base);
       captionEl.textContent = data.item.caption || '';
       return;
     }
 
     imageEl.classList.remove('clickable');
-    imageEl.onclick = null;
+    configureVibeImageControl(imageEl, null, base);
     const placeholder = data?.generating
       ? 'Conjuring a new chaos vibe...'
       : 'No image yet';
@@ -6144,7 +6170,7 @@ async function loadVibeTile(agent, { imageId, captionId, galleryHrefId = null })
       : 'The gallery is empty. The dashboard will seed it on the next generation window.';
   } catch {
     imageEl.classList.remove('clickable');
-    imageEl.onclick = null;
+    configureVibeImageControl(imageEl, null, base);
     imageEl.innerHTML = '<span class="h23-vibe-placeholder">Vibe offline</span>';
     captionEl.textContent = 'Could not load the current vibe image.';
   }

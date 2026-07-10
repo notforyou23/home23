@@ -2247,6 +2247,10 @@ body.h23-settings-page #settings-scope-summary {
   color: var(--h23-text-secondary);
 }
 
+body.h23-settings-page #settings-surface-desc {
+  color: var(--h23-text-secondary);
+}
+
 body.h23-settings-page #settings-scope-kicker {
   color: var(--h23-text-heading);
 }

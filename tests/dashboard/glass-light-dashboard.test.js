@@ -1735,3 +1735,165 @@ test('active navigation, sensor hover, and Vibe overlay match approved details',
   assert.match(overrideCss, /body\.h23-dashboard-page \.h23-vibe-detail-panel > \.h23-vibe-detail-close:first-child/);
   assert.match(overrideCss, /body\.h23-dashboard-page \.h23-vibe-detail-body\s*\{[^}]*border-top:\s*1px solid var\(--h23-hairline\)/);
 });
+
+test('glass shell stretches the top bar across the desktop row', () => {
+  const shellRule = css.match(/body\.h23-dashboard-page \.h23-app-shell\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(shellRule, /align-items:\s*stretch\s*;/);
+});
+
+test('sensor strip resets legacy 12-column spans while retaining resize states', () => {
+  const cardRule = css.match(/body\.h23-dashboard-page \.h23-human-sensor-strip \.h23-human-card\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(cardRule, /grid-column:\s*auto\s*;/);
+
+  const halfRule = css.match(/body\.h23-dashboard-page \.h23-human-sensor-strip \.h23-human-card\[data-home-tile-size="half"\]\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(halfRule, /grid-column:\s*span 2\s*;/);
+
+  const fullRule = css.match(/body\.h23-dashboard-page \.h23-human-sensor-strip \.h23-human-card\[data-home-tile-size="full"\]\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(fullRule, /grid-column:\s*1\s*\/\s*-1\s*;/);
+});
+
+test('phone sensor resize states collapse to the single available column', () => {
+  const glassRules = css.slice(css.indexOf('Glass Light dashboard system'));
+  const phoneRules = glassRules.match(/@media\s*\(max-width:\s*640px\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  assert.match(
+    phoneRules,
+    /body\.h23-dashboard-page \.h23-human-sensor-strip \.h23-human-card\[data-home-tile-size\]\s*\{[^}]*grid-column:\s*1\s*\/\s*-1\s*;/,
+  );
+});
+
+test('desktop top bar cancels legacy vertical sidebar navigation flow', () => {
+  const navRule = css.match(/body\.h23-dashboard-page \.h23-topbar \.h23-tabs,\s*body\.h23-dashboard-page \.h23-linked-tabs\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(navRule, /flex-direction:\s*row\s*;/);
+
+  const tabRule = css.match(/body\.h23-dashboard-page \.h23-topbar \.h23-tab\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(tabRule, /width:\s*auto\s*;/);
+});
+
+test('hidden sauna integration fields stay out of the rendered sensor card', () => {
+  assert.match(
+    css,
+    /body\.h23-dashboard-page \.h23-integration-state\[hidden\]\s*\{[^}]*display:\s*none\s*!important\s*;/,
+  );
+});
+
+test('glass top bar suppresses legacy decorative tab-label icons', () => {
+  const iconReset = css.match(/body\.h23-dashboard-page \.h23-topbar \.h23-tab-label::before\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(iconReset, /content:\s*none\s*;/);
+  assert.match(iconReset, /display:\s*none\s*;/);
+});
+
+test('Chat remains the first explicit track in the glass Home main grid', () => {
+  const chatRule = css.match(/body\.h23-dashboard-page \.h23-human-main-grid > \.h23-human-card-chat\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(chatRule, /order:\s*0\s*;/);
+  assert.match(chatRule, /grid-column:\s*auto\s*;/);
+});
+
+test('glass dashboard removes the legacy page inset', () => {
+  const pageRule = css.match(/body\.h23-dashboard-page\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(pageRule, /padding:\s*0\s*;/);
+});
+
+test('desktop hero extends through the content gutter while phone spacing stays inset', () => {
+  const heroRule = css.match(/body\.h23-dashboard-page \.h23-human-hero\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(heroRule, /margin-inline:\s*calc\(var\(--h23-gutter\) \* -1\)\s*;/);
+
+  const glassRules = css.slice(css.indexOf('Glass Light dashboard system'));
+  const phoneRules = glassRules.match(/@media\s*\(max-width:\s*640px\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  assert.match(
+    phoneRules,
+    /body\.h23-dashboard-page \.h23-human-hero\s*\{[^}]*margin-inline:\s*0\s*;/,
+  );
+});
+
+test('compact Home sauna card keeps actions while hiding redundant metric tiles', () => {
+  for (const id of ['human-sauna-value', 'human-sauna-status', 'human-sauna-subtitle', 'human-sauna-actions', 'human-sauna-metrics']) {
+    assert.match(html, new RegExp(`id="${id}"`), `missing preserved Sauna hook ${id}`);
+  }
+  assert.match(js, /renderHumanSensor\(['"]sauna['"],\s*payload/, 'Sauna metric renderer must remain wired');
+
+  const compactRule = css.match(/body\.h23-dashboard-page \.h23-human-sensor-strip \.h23-human-card-sauna #human-sauna-metrics\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(compactRule, /display:\s*none\s*;/);
+});
+
+test('phone top bar wraps navigation into reachable full-width rows', () => {
+  const glassRules = css.slice(css.indexOf('Glass Light dashboard system'));
+  const phoneRules = glassRules.match(/@media\s*\(max-width:\s*640px\)\s*\{([\s\S]*?)\n\}/)?.[1] || '';
+  const topbarRule = phoneRules.match(/body\.h23-dashboard-page \.h23-topbar\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(topbarRule, /flex-wrap:\s*wrap\s*;/);
+
+  const navRule = phoneRules.match(/body\.h23-dashboard-page \.h23-topbar \.h23-tabs,\s*body\.h23-dashboard-page \.h23-linked-tabs\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(navRule, /flex:\s*1 1 100%\s*;/);
+  assert.match(navRule, /width:\s*100%\s*;/);
+  assert.match(navRule, /overflow-x:\s*auto\s*;/);
+
+  const runtimeRule = phoneRules.match(/body\.h23-dashboard-page \.h23-topbar-runtime\s*\{([^}]+)\}/)?.[1] || '';
+  assert.match(runtimeRule, /flex:\s*1 1 100%\s*;/);
+  assert.match(runtimeRule, /width:\s*100%\s*;/);
+});
+
+test('Vibe image is a semantic overlay invoker with preserved open-path wiring', () => {
+  const tree = parseHtmlTree(html);
+  const control = findById(tree, 'home-vibe-image');
+  assert.equal(control?.tag, 'button');
+  assert.equal(control?.attrs.get('type'), 'button');
+  assert.match(control?.attrs.get('aria-label') || '', /Vibe image/i);
+
+  const helperSource = functionFragment(js, 'configureVibeImageControl');
+  const opened = [];
+  const context = vm.createContext({
+    openVibeImageDetail: (item, base) => opened.push({ item, base }),
+  });
+  const configure = vm.runInContext(`${helperSource}\nconfigureVibeImageControl`, context);
+  const attrs = new Map();
+  const imageControl = {
+    disabled: true,
+    onclick: null,
+    setAttribute: (name, value) => attrs.set(name, String(value)),
+  };
+  const item = { url: '/vibe.jpg', caption: 'Quiet workshop' };
+
+  configure(imageControl, item, '/jerry');
+  assert.equal(imageControl.disabled, false);
+  assert.equal(attrs.get('aria-disabled'), 'false');
+  assert.match(attrs.get('aria-label'), /Open Vibe image: Quiet workshop/);
+  imageControl.onclick();
+  assert.deepEqual(opened, [{ item, base: '/jerry' }]);
+
+  configure(imageControl, null, '/jerry');
+  assert.equal(imageControl.disabled, true);
+  assert.equal(attrs.get('aria-disabled'), 'true');
+  assert.equal(imageControl.onclick, null);
+  assert.match(functionFragment(js, 'loadVibeTile'), /configureVibeImageControl/);
+});
+
+test('COSMO new-tab control receives the resolved runtime URL without a hash placeholder', () => {
+  const tree = parseHtmlTree(html);
+  const link = findById(tree, 'cosmo23-open-link');
+  assert.equal(link?.tag, 'a');
+  assert.notEqual(link?.attrs.get('href'), '#');
+
+  const helperSource = functionFragment(js, 'configureCosmoOpenLink');
+  const configure = vm.runInNewContext(`${helperSource}\nconfigureCosmoOpenLink`);
+  const attrs = new Map([['href', '#']]);
+  const control = {
+    href: '#',
+    setAttribute: (name, value) => attrs.set(name, String(value)),
+    removeAttribute: (name) => attrs.delete(name),
+  };
+
+  configure(control, 'http://127.0.0.1:43210');
+  assert.equal(control.href, 'http://127.0.0.1:43210');
+  assert.equal(attrs.get('aria-disabled'), 'false');
+
+  configure(control, '');
+  assert.equal(attrs.has('href'), false);
+  assert.equal(attrs.get('aria-disabled'), 'true');
+  assert.match(functionFragment(js, 'loadAgents'), /configureCosmoOpenLink/);
+});
+
+test('full Settings description overrides the legacy pale dark-theme text', () => {
+  assert.match(
+    settingsCss,
+    /body\.h23-settings-page #settings-surface-desc\s*\{[^}]*color:\s*var\(--h23-text-secondary\)\s*;/,
+  );
+});

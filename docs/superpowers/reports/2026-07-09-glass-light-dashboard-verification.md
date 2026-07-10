@@ -1,0 +1,234 @@
+# Glass Light Dashboard End-to-End Verification
+
+## Result
+
+- Browser result: PASS, with two explicit in-app Browser tool limitations documented below
+- Tested branch: `codex/glass-light-dashboard`
+- Browser baseline commit: `ef7e534a2f261dfa623662e2c583e79e5c3e4cd3`
+- Comparison base: `c2b19654b7d784b43cdbdf231257adeba3b0675e`
+- Verification date: 2026-07-09 America/New_York
+
+## Authority
+
+- Approved handoff: `/Users/jtr/Downloads/design_handoff_glass_dashboard/`
+- Source visual: `/Users/jtr/Downloads/design_handoff_glass_dashboard/Home23 Dashboard.dc.html`
+- Integration guidance: `/Users/jtr/Downloads/design_handoff_glass_dashboard/IMPLEMENTATION.md`
+- Design tokens: `/Users/jtr/Downloads/design_handoff_glass_dashboard/glass-theme-tokens.css`
+- Integration spec: `/Users/jtr/_JTR23_/release/home23/.worktrees/glass-light-dashboard/docs/superpowers/specs/2026-07-09-glass-light-dashboard-integration-design.md`
+- Implementation plan: `/Users/jtr/_JTR23_/release/home23/.worktrees/glass-light-dashboard/docs/superpowers/plans/2026-07-09-glass-light-dashboard-integration.md`
+
+## Isolated verification servers
+
+No live PM2 process was stopped, restarted, replaced, or rebound. The implementation was served from the isolated worktree through a GET/HEAD-only proxy. The source handoff was served on a second safe port. A third GET/HEAD-only proxy exposed one production-shaped synthetic open invariant only after the live read-only Problems response proved there were zero open items.
+
+| Purpose | Exact command | URL | PID |
+|---|---|---|---:|
+| Worktree implementation with read-only upstream access | `QA_PORT=51923 QA_UPSTREAM=http://127.0.0.1:5002 node .superpowers/sdd/qa-readonly-server.js` | `http://127.0.0.1:51923/home23` | 58538 |
+| Approved source prototype | `python3 -m http.server 51924 --bind 127.0.0.1 --directory /Users/jtr/Downloads/design_handoff_glass_dashboard` | `http://127.0.0.1:51924/Home23%20Dashboard.dc.html` | 79909 |
+| Synthetic open-invariant presentation fixture | `QA_PORT=51925 QA_UPSTREAM=http://127.0.0.1:5002 QA_FIXTURE=open-invariant node .superpowers/sdd/qa-readonly-server.js` | `http://127.0.0.1:51925/home23` | 15086 |
+
+The implementation proxy initially ran as PID 79793. It was stopped by exact PID and restarted as PID 58538 only to correct the QA server's `.mjs` MIME type; the live dashboard was not involved.
+
+Both proxies return HTTP 405 with `qa_server_is_read_only` for non-GET/HEAD methods. The fixture server overrides only GETs to `/api/live-problems` and `/home23/api/live-problems`, uses the production `buildLiveProblemSnapshot` shape, marks provenance as `qaFixture.synthetic=true`, and blocks all writes. It is evidence for the invariant-editor UI path, not evidence about live health.
+
+### Read-only proof
+
+- Home, standalone Chat, full Settings, Setup/Welcome, Vibe gallery, dashboard CSS, and JavaScript returned HTTP 200 from port 51923.
+- Source prototype and `support.js` returned HTTP 200 from port 51924.
+- Scope, Settings status, Home summary, weather, Sauna, pool, Problems, Good Life, and Briefs GETs returned HTTP 200.
+- Representative Settings, Sauna action, and Query POSTs returned HTTP 405; a final Query POST read back `{"ok":false,"error":"qa_server_is_read_only"}`.
+- All three isolated servers and live `http://127.0.0.1:5002/home23` read back HTTP 200 after Browser QA.
+
+## Automated verification after Browser repairs
+
+| Command | Result |
+|---|---|
+| `node --check engine/src/dashboard/home23-dashboard.js` | PASS |
+| `node --check engine/src/dashboard/home23-chat.js` | PASS |
+| `node --test --test-concurrency=1 tests/dashboard/glass-light-dashboard.test.js tests/dashboard/operator-ui.test.js tests/dashboard/briefs.test.js tests/dashboard/forrest-feel-route.test.js` | PASS — 55/55 |
+| `node --import tsx --test --test-concurrency=1 tests/dashboard/chat-state.test.ts` | PASS — 6/6 |
+| `npm run build` | PASS |
+| `npm test` | PASS — 692 pass, 0 fail, 1 intentional skip across 693 tests |
+| `npm run test:contracts` | PASS — 12 pass, 0 fail, 1 expected live-validator skip |
+| `npm run test:contracts:live` | PASS — 13 read-only live routes checked; 21 action/stream/fixture contracts skipped; action opt-in explicitly unset |
+| `git diff --check` | PASS |
+| `git diff --check c2b19654b7d784b43cdbdf231257adeba3b0675e` | PASS |
+
+The broad-test caveats are unchanged: one local-agent identity test skips because installation instances are not copied into the worktree; Node reports existing `punycode` deprecations and one module-type warning. None originate in the dashboard files.
+
+### Browser repair TDD receipts
+
+Every production repair was preceded by a focused failing contract. The final glass test is 45/45 and combined focused run is 55/55.
+
+- Top bar stretching and horizontal navigation.
+- Sensor-strip legacy span resets, phone span collapse, and hidden Sauna fields.
+- Removal of legacy top-bar pseudo-icons.
+- Chat-first ordering, page/hero gutters, and compact Sauna presentation without action loss.
+- Reachable phone navigation.
+- Semantic Vibe overlay invoker and existing modal path.
+- Resolved COSMO new-tab URL without a hash placeholder.
+- Full Settings description override with the light-theme dark muted text token.
+
+The Full Settings contrast test first ran 44 pass/1 fail, then 45/45 after repair. Root cause was the legacy ID selector `#settings-surface-desc`, which outranked the earlier light-theme class selector. The final computed color is `rgb(90, 100, 116)` over the translucent white hero.
+
+## Matched visual comparison
+
+The source prototype and implementation were captured in the in-app Browser at 1440 × 1000 CSS pixels, DPR 1, then combined into side-by-side comparison inputs.
+
+- Top bar: x=24, y=20, width=1388, height=60.
+- Full-gutter hero: x=0, y=94, width=1436, height=382.6; copy x=52.
+- Five-card strip: x=24, y=492.6, width=1388, height=274.5.
+- Chat-first main: x=24, y=783.1, width=846.5.
+- Vibe/Briefs rail: x=886.5, y=783.1, width=525.5.
+- No document-level horizontal overflow.
+
+The final comparison proves the source hierarchy, pale paper canvas, floating glass top bar, active blue pill, full-width Jerry hero, five-card strip, Chat-first main, translucent borders/shadows, and readable dark type. No dark shell/grid remnant remains.
+
+Accepted source-to-production differences are data-driven: Jerry's live remark is longer; only one clock is configured; Sauna retains Start/Stop and presets; Vibe, Briefs, Problems, Good Life, pulse, and Chat show current production content.
+
+### Iteration history
+
+1. P1: top bar shrink-wrapped/stacked and sensors inherited legacy spans. Repaired shell stretch and grid spans.
+2. P1/P2: tabs retained sidebar direction/width, hidden Sauna fields rendered, and pseudo-icons appeared. Repaired scoped navigation, `[hidden]`, and pseudo-elements.
+3. P1/P2: Chat inherited order 900/span 7; page/hero gutters diverged; redundant Sauna metrics inflated the strip. Repaired ordering, spacing, and compact presentation.
+4. P1: phone navigation was clipped. Repaired wrapping and full-width scrollable navigation rows.
+5. P1 accessibility: Vibe image was a non-semantic click target. Replaced with a native button while retaining the overlay path.
+6. P1 functional: COSMO used a `#` placeholder. It now receives the resolved runtime URL or remains disabled without href.
+7. P1 related page: Full Settings description inherited pale dark-theme text. Repaired with a higher-specificity page-scoped token.
+
+Original and intermediate captures remain in the asset directory as failure-and-repair evidence. No open P0, P1, or P2 finding remains.
+
+## Viewport matrix
+
+| Viewport / mode | Shell and navigation | Content behavior | Result |
+|---|---|---|---|
+| 1440 × 1000 | Matched desktop geometry | Five sensors; Chat-first two-column main | PASS; no overflow |
+| 1200 × 900 | Top bar wraps and remains reachable | Two-column main | PASS; no overflow |
+| 1024 × 900 | Compact top bar remains usable | Four-column sensors; two-column main | PASS; no overflow |
+| 768 × 900 | Navigation/hero adapt | Three-column sensors; one-column main | PASS; no overflow |
+| 390 × 844 | Full-row wrapped, horizontally scrollable nav | One-column hero/sensors/main; mobile overlays | PASS; no overflow |
+| 320 × 800 | Same narrow-safe navigation contract | One-column readable cards | PASS; no overflow |
+| 200% zoom | In-app Browser native pipe closed before emulation | 720/768/390/320 reflow provides adjacent responsive evidence | TOOL-LIMITED; no app defect observed |
+| Reduced motion | Native pipe closed before media emulation | Executable CSS/JS contracts and standalone Chat reduced-motion test pass | TOOL-LIMITED; no app defect observed |
+
+No viewport override persisted after the in-app Browser process closed.
+
+## Surface and interaction matrix
+
+| Surface / interaction | Evidence exercised | Result |
+|---|---|---|
+| Home | Real identity/model, pulse, clocks, weather, Sauna, pool, Problems, Good Life, Vibe, Briefs, mounted Chat | PASS |
+| Agency | `#agency`, real inspector, refresh control preserved | PASS, no write issued |
+| Briefs | `#briefs`, 90 real documents and detail rendering | PASS |
+| Workers | `#workers`, real worker data/forms rendered | PASS, no run issued |
+| Query | `#query`, production states/controls rendered | PASS, no query/export |
+| Brain Map | Canvas count 1; 2,500/139,641 node stats; search/reset present | PASS |
+| Settings overview | `#settings`, native GET-only overview and full-settings links | PASS |
+| COSMO | `#cosmo23`, iframe and new-tab href resolve to 43210 | PASS |
+| COSMO lazy preservation | Home→COSMO keeps frameCount=1/src unchanged; wrapper none→block | PASS |
+| Standalone Chat | Light page, Jerry/gpt-5.5, 37 model options, attach control and file input | PASS, no send/file action |
+| Full Settings | Complete light control surface; final description contrast verified | PASS, no write |
+| Vibe gallery / Welcome / Setup | Page-scope production contracts pass; Browser recapture interrupted by native pipe close | PASS by executable contracts; screenshot tool-limited |
+| Hash deep links + refresh + back/forward | Native hashes survive direct load/refresh; back returns prior hash; forward returns `#cosmo23` | PASS |
+| Sensor-only layout controls | Half/full/reset scoped to environment cards; phone states one column | PASS |
+| Chat state preservation | Unsent draft, agent/model, and singleton DOM preserved tile→overlay→tile; draft cleared | PASS |
+
+COSMO href is `http://127.0.0.1:43210/`, target `_blank`, rel `noreferrer`, and aria-enabled; the iframe has the same source. Start/reload was not clicked.
+
+Chat at 390 preserved the harmless unsent draft `QA draft — do not send` while `#chat-shared` moved from `chat-slot-tile` to `chat-slot-overlay` and back. Focus moved to `#chat-input`, Escape restored `#chat-expand-btn`, and scroll locking released. No send, stream, file selection, paste, or drop occurred.
+
+## Overlay matrix
+
+| Overlay | Production content and controls | Focus / Escape / restoration | Result |
+|---|---|---|---|
+| Problems | Real live content; phone full-screen capture | Labelled dialog, focus close, Escape restores trigger | PASS |
+| Good Life | Real content/actions; Shift+Tab stayed inside | Escape restores trigger; body lock released | PASS |
+| Brain Storage | Real disk/live content and honest unavailable comparison | Escape restores trigger | PASS |
+| Vibe image | Real live image via semantic native button | Focus close; Escape restores Vibe button; body unlocks | PASS |
+| Expanded Chat | Same singleton Chat DOM at 390 × 844 | Focus input; Escape restores expand button | PASS |
+| Invariant editor | Synthetic fixture showed one open item; only Inspect Plan clicked; Close/Save/Delete intact | Editor focus close; first Escape restores Inspect Plan while Problems stays open; second Escape closes Problems | PASS, no write |
+
+The fixture was needed solely because the live response had zero open problems. Save, Delete, Re-check, and Mark Handled were not used; all fixture writes remained HTTP 405.
+
+## Accessibility and console
+
+- Dashboard dialogs are labelled, modal, focus-managed, Escape-dismissible, and body-scroll-locking. Visible controls remain keyboard reachable.
+- `#home-vibe-image` is a native enabled `BUTTON type=button` only with a live image and has a dynamic accessible name.
+- Pointer activation opens the Vibe modal and Escape restores the invoker.
+- The in-app Browser keyboard backend focused the native Vibe button but did not synthesize the browser default Enter/Space activation. Native-button semantics plus the focused executable contract cover this default action; redundant custom key handlers were intentionally not added.
+- Home console warnings/errors were `[]` at 1440 and remained clean through checked native surfaces. No redesign-caused console error was observed before the Browser backend closed.
+- Full Settings muted text computes to `rgb(90, 100, 116)` on the light hero after repair.
+- 200% zoom and reduced-motion emulation are the two explicit Browser tool limitations described in the viewport matrix. Responsive evidence and executable tests cover the same layout/motion contracts.
+
+## Intentionally unexercised live writes
+
+The following were deliberately not issued against the operator's live installation:
+
+- Chat send/stream/stop, conversation creation/deletion, file selection, paste, or drop.
+- Query submission/export.
+- COSMO start/reload/restart or research-run actions.
+- Sauna/pool Start/Stop/preset actions.
+- Problems re-verify, remediation, intervention, invariant save/delete, or Mark Handled.
+- Good Life Refresh/Re-verify/status mutation.
+- Agency tick/pursuit transitions, worker run/promotion, Vibe generation, Setup forms, Settings saves/restarts, agent lifecycle, feeder writes, model/provider changes, or other device/runtime mutations.
+
+Read-only state, control presence, labels, disabled/loading presentation, DOM preservation, and non-mutating navigation were used instead.
+
+## Screenshots
+
+Absolute root:
+
+`/Users/jtr/_JTR23_/release/home23/.worktrees/glass-light-dashboard/docs/superpowers/reports/assets/glass-light-dashboard/`
+
+Primary evidence:
+
+- `source-home-1440-viewport.png`
+- `implementation-home-1440-final2.png`
+- `comparison-home-1440-final.png`
+- `comparison-header-1440-final.png`
+- `comparison-main-1440-final.png`
+- `implementation-home-1200-full.png`
+- `implementation-home-1024-viewport.png`
+- `implementation-home-768-viewport.png`
+- `implementation-home-390-final.png`
+- `implementation-home-320-viewport.png`
+- `implementation-chat-overlay-390.png`
+- `implementation-problems-overlay-390.png`
+- `implementation-brain-map-1440.png`
+- `implementation-settings-1440-final.png`
+- `implementation-chat-1440.png`
+
+Initial/intermediate history:
+
+- `source-1440-home.png`
+- `implementation-1440-home.png`
+- `implementation-home-1440-viewport.png`
+- `implementation-home-1440-postfix.png`
+- `implementation-home-1440-postfix2.png`
+- `implementation-home-1440-final.png`
+- `comparison-home-1440.png`
+- `comparison-header-1440.png`
+- `comparison-main-1440.png`
+- `implementation-home-390-viewport.png`
+- `implementation-settings-1440.png`
+
+## Changed-file scope
+
+Task 7 changed only:
+
+```text
+engine/src/dashboard/home23-dashboard.css
+engine/src/dashboard/home23-dashboard.html
+engine/src/dashboard/home23-dashboard.js
+engine/src/dashboard/home23-settings.css
+tests/dashboard/glass-light-dashboard.test.js
+design-qa.md
+docs/superpowers/reports/2026-07-09-glass-light-dashboard-verification.md
+docs/superpowers/reports/assets/glass-light-dashboard/*.png
+```
+
+The branch remains inside the approved dashboard/page/test/spec/plan/report boundary. No server implementation, Settings API, instance, config, secret, PM2 state, runtime data, or operator handoff file changed.
+
+## Caveats
+
+Only the in-app Browser native-pipe limitations above remain: it did not synthesize native-button default key activation and closed before 200% zoom/reduced-motion emulation plus final Vibe/Welcome/Setup recaptures. Each affected behavior has semantic/executable contract coverage and adjacent responsive/browser evidence. These are evidence-tool limitations, not open P0/P1/P2 product findings.
