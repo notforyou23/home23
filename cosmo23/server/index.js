@@ -44,6 +44,7 @@ const {
   sanitizeRunName,
   parseReferenceRunsPaths,
   listBrains,
+  buildCanonicalCatalog,
   resolveBrainBySelector,
   importReferenceBrain,
   ensureUniqueRunName
@@ -78,6 +79,9 @@ const {
 } = require('../lib/execution-mode');
 
 const ROOT = path.resolve(__dirname, '..');
+const HOME23_ROOT = path.resolve(__dirname, '..', '..');
+const INSTANCES_ROOT = path.join(HOME23_ROOT, 'instances');
+const AGENTS_MANIFEST_PATH = path.join(HOME23_ROOT, 'config', 'agents.json');
 const ENGINE_DIR = path.join(ROOT, 'engine');
 const LOCAL_RUNS_PATH = path.join(ROOT, 'runs');
 const RUNTIME_PATH = path.join(ROOT, 'runtime');
@@ -171,6 +175,37 @@ function getReferenceRunsPaths() {
 
   const combinedRaw = [envPaths, ...configDirs].filter(Boolean).join(',');
   return parseReferenceRunsPaths(combinedRaw, ROOT, LOCAL_RUNS_PATH);
+}
+
+// HOME23 PATCH 47 — configured residents come only from Home23's ignored
+// agent manifest. Missing-before-setup is empty; malformed input fails closed.
+function getConfiguredAgentNames() {
+  if (!fs.existsSync(AGENTS_MANIFEST_PATH)) {
+    return [];
+  }
+  const manifest = JSON.parse(fs.readFileSync(AGENTS_MANIFEST_PATH, 'utf8'));
+  if (!Array.isArray(manifest)) {
+    const error = new Error('catalog_configuration_invalid');
+    error.code = 'catalog_configuration_invalid';
+    throw error;
+  }
+  return manifest.map(agent => agent?.name);
+}
+
+function getCanonicalRunsOptions() {
+  return {
+    instancesRoot: INSTANCES_ROOT,
+    localRunsPath: LOCAL_RUNS_PATH,
+    referenceRunsPaths: getReferenceRunsPaths(),
+    configuredAgentNames: getConfiguredAgentNames(),
+    activeRunPath: activeContext?.runPath || null
+  };
+}
+
+async function resolveCatalogBrainBySelector(selector) {
+  const runsOptions = getCanonicalRunsOptions();
+  const canonicalCatalog = await buildCanonicalCatalog(runsOptions);
+  return resolveBrainBySelector(selector, { ...runsOptions, canonicalCatalog });
 }
 
 function isRunLocal(runPath) {
@@ -613,11 +648,7 @@ async function ensureRuntimeLink(runName) {
 
 async function ensureLocalBrainForLaunch(payload) {
   if (payload.brainId) {
-    const selected = await resolveBrainBySelector(payload.brainId, {
-      localRunsPath: LOCAL_RUNS_PATH,
-      referenceRunsPaths: getReferenceRunsPaths(),
-      activeRunPath: activeContext?.runPath || null
-    });
+    const selected = await resolveCatalogBrainBySelector(payload.brainId);
 
     if (!selected) {
       const error = new Error('Brain not found');
@@ -1210,11 +1241,7 @@ app.post('/api/interactive/start', async (req, res) => {
     if (!sessionRunPath) {
       const requestedBrainId = req.body?.brainId || req.body?.runName || req.body?.name || null;
       const selected = requestedBrainId
-        ? await resolveBrainBySelector(requestedBrainId, {
-            localRunsPath: LOCAL_RUNS_PATH,
-            referenceRunsPaths: getReferenceRunsPaths(),
-            activeRunPath: activeContext?.runPath || null
-          })
+        ? await resolveCatalogBrainBySelector(requestedBrainId)
         : null;
 
       const fallbackBrains = selected ? [selected] : await listBrains({
@@ -1645,13 +1672,10 @@ app.use(createHubRouter({
 }));
 
 app.use(createBrainsRouter({
-  getRunsOptions: async () => ({
-    localRunsPath: LOCAL_RUNS_PATH,
-    referenceRunsPaths: getReferenceRunsPaths(),
-    activeRunPath: activeContext?.runPath || null
-  }),
+  getRunsOptions: async () => getCanonicalRunsOptions(),
   getActiveContext: () => activeContext,
   listBrains,
+  buildCanonicalCatalog,
   resolveBrainBySelector,
   launchResearch
 }));
@@ -1805,11 +1829,7 @@ app.get('/api/watch/logs', async (req, res) => {
 
 app.post('/api/brain/:name/query', async (req, res) => {
   try {
-    const brain = await resolveBrainBySelector(req.params.name, {
-      localRunsPath: LOCAL_RUNS_PATH,
-      referenceRunsPaths: getReferenceRunsPaths(),
-      activeRunPath: activeContext?.runPath || null
-    });
+    const brain = await resolveCatalogBrainBySelector(req.params.name);
 
     if (!brain) {
       return res.status(404).json({ error: 'Brain not found' });
@@ -1856,11 +1876,7 @@ app.post('/api/brain/:name/query', async (req, res) => {
 
 app.post('/api/brain/:name/query/stream', async (req, res) => {
   try {
-    const brain = await resolveBrainBySelector(req.params.name, {
-      localRunsPath: LOCAL_RUNS_PATH,
-      referenceRunsPaths: getReferenceRunsPaths(),
-      activeRunPath: activeContext?.runPath || null
-    });
+    const brain = await resolveCatalogBrainBySelector(req.params.name);
 
     if (!brain) {
       return res.status(404).json({ error: 'Brain not found' });
@@ -1916,11 +1932,7 @@ app.post('/api/brain/:name/query/stream', async (req, res) => {
 
 app.get('/api/brain/:name/suggestions', async (req, res) => {
   try {
-    const brain = await resolveBrainBySelector(req.params.name, {
-      localRunsPath: LOCAL_RUNS_PATH,
-      referenceRunsPaths: getReferenceRunsPaths(),
-      activeRunPath: activeContext?.runPath || null
-    });
+    const brain = await resolveCatalogBrainBySelector(req.params.name);
 
     if (!brain) {
       return res.status(404).json({ error: 'Brain not found' });
@@ -1939,11 +1951,7 @@ app.get('/api/brain/:name/suggestions', async (req, res) => {
 
 app.get('/api/brain/:name/graph', async (req, res) => {
   try {
-    const brain = await resolveBrainBySelector(req.params.name, {
-      localRunsPath: LOCAL_RUNS_PATH,
-      referenceRunsPaths: getReferenceRunsPaths(),
-      activeRunPath: activeContext?.runPath || null
-    });
+    const brain = await resolveCatalogBrainBySelector(req.params.name);
 
     if (!brain) {
       return res.status(404).json({ error: 'Brain not found' });
@@ -2003,11 +2011,7 @@ app.get('/api/brain/:name/graph', async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════
 
 async function resolveBrainPath(name) {
-  const brain = await resolveBrainBySelector(name, {
-    localRunsPath: LOCAL_RUNS_PATH,
-    referenceRunsPaths: getReferenceRunsPaths(),
-    activeRunPath: activeContext?.runPath || null
-  });
+  const brain = await resolveCatalogBrainBySelector(name);
   return brain?.path || null;
 }
 
@@ -2407,11 +2411,7 @@ app.get('/api/brain/:name/intelligence/deliverables', async (req, res) => {
 
 app.post('/api/brain/:name/export-query', async (req, res) => {
   try {
-    const brain = await resolveBrainBySelector(req.params.name, {
-      localRunsPath: LOCAL_RUNS_PATH,
-      referenceRunsPaths: getReferenceRunsPaths(),
-      activeRunPath: activeContext?.runPath || null
-    });
+    const brain = await resolveCatalogBrainBySelector(req.params.name);
 
     if (!brain) {
       return res.status(404).json({ error: 'Brain not found' });

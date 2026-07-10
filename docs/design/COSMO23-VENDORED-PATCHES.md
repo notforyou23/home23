@@ -2066,6 +2066,45 @@ completed run artifacts.
 
 ---
 
+## Patch 47 — Canonical brain catalog phase
+
+**Files touched:**
+- `cosmo23/server/lib/brain-registry.js`
+- `cosmo23/server/lib/brains-router.js`
+- `cosmo23/server/index.js`
+- `contracts/schemas/brain-operations.schema.json`
+- canonical catalog contract tests
+
+**Problem:** The legacy Brains picker used scan-path-derived identifiers and
+display names. Symlink spellings could represent the same brain more than once,
+empty configured residents disappeared instead of remaining known unavailable
+targets, and route input did not have a single server-derived identity or
+mutation-boundary contract.
+
+**Fix:** The Home23-managed server now builds a SHA-256-revisioned catalog from
+real roots, exact ignored `config/agents.json` agent names, canonical resident
+and research lifecycle metadata, and exactly seven server-derived mutation
+boundaries. Resident ownership comes only from exact configured
+`instances/<agent>/brain` roots. Research completion requires canonical
+`plans/plan:main.json` status `COMPLETED` plus numeric `completedAt`; active,
+unavailable, ambiguous, mismatched, malformed, and unknown selectors remain
+distinct fail-closed outcomes. Canonical IDs resolve through the existing
+detail and query surfaces, while legacy picker fields and route keys remain
+additive compatibility aliases rather than authorization identities.
+
+Catalog inspection bounds state-summary input and decompression; corrupt or
+oversized state is reported as an unknown summary instead of a false zero.
+Boundary realpaths must remain within their own catalog entry, preventing a
+resident subtree symlink from escaping into another configured brain.
+
+**Phase boundary:** This is Patch 47's canonical-catalog phase. Its
+capability-protected COSMO worker phase lands in Task 5 of the brain authority
+and operations foundation plan. Patch 48 remains reserved for source truth and
+Patch 49 remains reserved for provider execution; this phase does not allocate
+either number.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.

@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
 const http = require('http');
+const Ajv2020 = require('ajv/dist/2020');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -10,7 +11,8 @@ const { createBrainsRouter } = require('./brains-router');
 const {
   listBrains,
   resolveBrainBySelector,
-  importReferenceBrain
+  importReferenceBrain,
+  buildCanonicalCatalog
 } = require('./brain-registry');
 const {
   getSnapshotsDir,
@@ -154,6 +156,143 @@ test('GET /api/brains includes symlinked local run aliases', async () => {
     assert.equal(detailPayload.brain.topic, 'MAF low heart rate training');
     assert.equal(detailPayload.brain.nodes, 1);
   });
+});
+
+test('GET /api/brains exposes one canonical identity and resolves its canonical route through a symlink alias', async () => {
+  assert.equal(typeof buildCanonicalCatalog, 'function');
+  const root = await makeTempDir();
+  const instancesRoot = path.join(root, 'instances');
+  const localRunsPath = path.join(root, 'runs');
+  const referenceRunsPath = path.join(root, 'reference-runs');
+  const residentBrainRoot = path.join(instancesRoot, 'jerry', 'brain');
+  await writeRunMetadata(residentBrainRoot, { topic: 'Jerry resident brain' });
+  await fs.mkdir(localRunsPath, { recursive: true });
+  await fs.mkdir(referenceRunsPath, { recursive: true });
+  await fs.symlink(residentBrainRoot, path.join(referenceRunsPath, 'jerry-alias'));
+
+  const app = express();
+  app.use(express.json());
+  app.use(createBrainsRouter({
+    getRunsOptions: async () => ({
+      instancesRoot,
+      localRunsPath,
+      referenceRunsPaths: [referenceRunsPath],
+      configuredAgentNames: ['jerry'],
+      activeRunPath: null
+    }),
+    getActiveContext: () => null,
+    listBrains,
+    buildCanonicalCatalog,
+    resolveBrainBySelector,
+    launchResearch: async () => {
+      throw new Error('launch should not be called');
+    }
+  }));
+
+  await withServer(app, async baseUrl => {
+    const response = await fetch(`${baseUrl}/api/brains`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    const schema = JSON.parse(await fs.readFile(
+      path.join(process.cwd(), 'contracts/schemas/brain-operations.schema.json'),
+      'utf8'
+    ));
+    const validate = new Ajv2020({
+      strict: false,
+      allErrors: true,
+      formats: { 'date-time': true }
+    }).compile(schema);
+    assert.equal(validate(payload), true, JSON.stringify(validate.errors));
+    assert.match(payload.catalogRevision, /^[a-f0-9]{64}$/);
+    assert.equal(payload.count, 1);
+    assert.equal(payload.brains.length, 1);
+    assert.equal(payload.brains[0].canonicalRoot, await fs.realpath(residentBrainRoot));
+    assert.equal(typeof payload.brains[0].routeKey, 'string');
+    assert.equal(payload.brains[0].name, 'brain');
+    assert.equal(payload.brains[0].path, await fs.realpath(residentBrainRoot));
+    assert.equal(payload.brains[0].sourceLabel, 'jerry');
+    assert.equal(payload.brains[0].sourceType, 'home23-agent');
+    assert.equal(typeof payload.brains[0].modified, 'number');
+    assert.equal(payload.brains[0].nodes, 1);
+    assert.equal(payload.brains[0].edges, 0);
+    assert.equal(payload.brains[0].isActive, false);
+
+    assert.equal(payload.brains[0].route, `/api/brain/${payload.brains[0].id}`);
+    const detailResponse = await fetch(`${baseUrl}/api/brains/${payload.brains[0].id}`);
+    assert.equal(detailResponse.status, 200);
+    const detailPayload = await detailResponse.json();
+    assert.equal(detailPayload.brain.id, payload.brains[0].id);
+    assert.equal(detailPayload.brain.canonicalRoot, payload.brains[0].canonicalRoot);
+    assert.equal(detailPayload.brain.topic, 'Jerry resident brain');
+
+    const compatibilityDetailResponse = await fetch(`${baseUrl}/api/brains/${payload.brains[0].routeKey}`);
+    assert.equal(compatibilityDetailResponse.status, 200);
+  });
+
+  await fs.rm(root, { recursive: true, force: true });
+});
+
+test('GET /api/brains/:brainId rejects duplicate legacy names while ids and route keys remain exact', async () => {
+  const root = await makeTempDir();
+  const instancesRoot = path.join(root, 'instances');
+  const localRunsPath = path.join(root, 'runs');
+  const referenceRunsPath = path.join(root, 'reference-runs');
+  const localDuplicate = path.join(localRunsPath, 'duplicate');
+  const referenceDuplicate = path.join(referenceRunsPath, 'duplicate');
+  await fs.mkdir(instancesRoot, { recursive: true });
+  await writeRunMetadata(localDuplicate, { topic: 'Local duplicate' });
+  await writeRunMetadata(referenceDuplicate, { topic: 'Reference duplicate' });
+  for (const runRoot of [localDuplicate, referenceDuplicate]) {
+    await fs.mkdir(path.join(runRoot, 'plans'), { recursive: true });
+    await fs.writeFile(path.join(runRoot, 'plans', 'plan:main.json'), JSON.stringify({
+      status: 'COMPLETED',
+      completedAt: Date.UTC(2026, 6, 9)
+    }));
+  }
+
+  const app = express();
+  app.use(express.json());
+  app.use(createBrainsRouter({
+    getRunsOptions: async () => ({
+      instancesRoot,
+      localRunsPath,
+      referenceRunsPaths: [referenceRunsPath],
+      configuredAgentNames: [],
+      activeRunPath: null
+    }),
+    getActiveContext: () => null,
+    listBrains,
+    buildCanonicalCatalog,
+    resolveBrainBySelector,
+    launchResearch: async () => {
+      throw new Error('launch should not be called');
+    }
+  }));
+
+  await withServer(app, async baseUrl => {
+    const catalog = await (await fetch(`${baseUrl}/api/brains`)).json();
+    const duplicates = catalog.brains.filter((brain) => brain.name === 'duplicate');
+    assert.equal(duplicates.length, 2);
+
+    const ambiguousResponse = await fetch(`${baseUrl}/api/brains/duplicate`);
+    assert.notEqual(ambiguousResponse.status, 200);
+    const ambiguousPayload = await ambiguousResponse.json();
+    assert.equal(ambiguousPayload.error, 'target_ambiguous');
+
+    for (const entry of duplicates) {
+      const canonicalResponse = await fetch(`${baseUrl}/api/brains/${entry.id}`);
+      assert.equal(canonicalResponse.status, 200);
+      const canonicalPayload = await canonicalResponse.json();
+      assert.equal(canonicalPayload.brain.canonicalRoot, entry.canonicalRoot);
+
+      const compatibilityResponse = await fetch(`${baseUrl}/api/brains/${entry.routeKey}`);
+      assert.equal(compatibilityResponse.status, 200);
+      const compatibilityPayload = await compatibilityResponse.json();
+      assert.equal(compatibilityPayload.brain.canonicalRoot, entry.canonicalRoot);
+    }
+  });
+
+  await fs.rm(root, { recursive: true, force: true });
 });
 
 test('POST /api/continue/:brainId merges latest snapshot settings and writes a new snapshot after launch', async () => {
