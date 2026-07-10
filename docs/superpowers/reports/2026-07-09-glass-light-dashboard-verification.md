@@ -5,8 +5,7 @@
 - Browser result: PARTIAL against the complete Task 7 checklist; all executed checks passed, but 200% zoom, reduced-motion emulation, and final Vibe gallery/Welcome/Setup browser rendering remain unexecuted because the in-app Browser session closed and the replacement session could not reopen the local QA URL
 - Tested branch: `codex/glass-light-dashboard`
 - Browser baseline commit: `ef7e534a2f261dfa623662e2c583e79e5c3e4cd3`
-- Prior broad automated commit: `b38364a34f4ac11f0ccd40880a117c7330b96b3a`
-- Post-review safety gate: PASS on the focused repair recorded by this report update
+- Final automated code commit: `24c5fad` (post-review safety/fidelity repair)
 - Comparison base: `c2b19654b7d784b43cdbdf231257adeba3b0675e`
 - Verification date: 2026-07-09 America/New_York
 
@@ -47,7 +46,7 @@ This is not a complete network-isolation boundary: production code can resolve p
 
 ## Automated verification after Browser repairs
 
-The broad build, test, contract, and live-contract rows below remain the recorded gate from `b38364a`. Syntax, glass, combined focused, and ChatState checks were rerun on the post-review safety repair.
+The full automated gate below was rerun after the post-review safety/fidelity repair.
 
 | Command | Result |
 |---|---|
@@ -261,11 +260,11 @@ The branch remains inside the approved dashboard/page/test/spec/plan/report boun
 | 2. Apply the new design language to all documented dashboard surfaces and six overlays | Branch HTML/CSS in `engine/src/dashboard/`; 49 glass contracts inside the 59-test focused run; surface and overlay matrices; Home, Brain Map, Full Settings, standalone Chat, Problems, and responsive captures | PASS for inspected surfaces; the final related-page Browser recapture gap is recorded under criterion 7 |
 | 3. Keep every existing functional route, data source, action, and production-only detail reachable | Preservation contracts in `tests/dashboard/glass-light-dashboard.test.js` and `tests/dashboard/operator-ui.test.js`; ChatState 6/6; browser surface/overlay matrices; all write controls deliberately left intact but unissued | PASS |
 | 4. Leave stored runtime/config/instance data untouched | `git diff --name-only c2b19654b7d784b43cdbdf231257adeba3b0675e..HEAD` contains only dashboard/page/test/spec/plan/report files; no `instances/`, local config, secrets, PM2 dump, or generated runtime data | PASS |
-| 5. Pass focused and broad automated checks | Post-review syntax 2/2, glass 49/49, focused 59/59, and ChatState 6/6; prior `b38364a` gate: QA harness 4/4, `npm run build`, `npm test` 692 pass/0 fail/1 intentional skip, and `npm run test:contracts` 12 pass/1 expected skip | PASS for the focused repair; prior broad gate remains recorded at `b38364a` |
+| 5. Pass focused and broad automated checks | Final syntax 3/3, glass 49/49, focused 59/59, ChatState 6/6, QA harness 4/4, `npm run build`, `npm test` 692 pass/0 fail/1 intentional skip, and `npm run test:contracts` 12 pass/1 expected skip | PASS at `24c5fad` |
 | 6. Pass read-only live contracts | `npm run test:contracts:live`: 13 GET/read-only routes checked, 21 action/stream/fixture contracts skipped, action opt-in unset | PASS |
-| 7. Prove navigation, live rendering, responsive behavior, accessibility basics, Chat state preservation, and clean console output in Browser | Executed evidence covers native hashes/surfaces, real Home data, six overlays, Chat singleton/draft state, 1440/1200/1024/768/390/320 layouts, focus/Escape/scroll lock, and clean checked-surface console. 200% zoom, reduced-motion emulation, final Vibe gallery/Welcome/Setup rendering, and the post-repair standalone Chat recapture remain unexecuted | PARTIAL — criterion not fully proven |
+| 7. Prove navigation, live rendering, responsive behavior, accessibility basics, Chat state preservation, and clean console output in Browser | Executed evidence covers native hashes/surfaces, real Home data, six overlays, Chat singleton/draft state, 1440/1200/1024/768/390/320 layouts, focus/Escape/scroll lock, and clean checked-surface console. 200% zoom, reduced-motion emulation, final Vibe gallery/Welcome/Setup rendering, the standalone Chat recapture, and post-review Browser readback of Brain Storage, Problems severity, Notifications, COSMO offline, and attachment copy remain unexecuted | PARTIAL — criterion not fully proven |
 | 8. Record exact commands, results, screenshots, and intentionally unexercised live writes | This committed report, tracked QA harness, local ignored screenshot inventory, automated command table, server/read-only boundary disclosure, and “Intentionally unexercised live writes” section | PASS for this installation, with screenshot portability caveat recorded below |
 
 ## Caveats
 
-The in-app Browser did not synthesize native-button default key activation and closed before 200% zoom/reduced-motion emulation plus final Vibe gallery/Welcome/Setup rendering and the standalone Chat repair recapture. A replacement browser session could not reopen the local QA URL, so those checklist items remain unexecuted. Semantic/executable contracts and adjacent responsive evidence reduce risk but do not prove the missing Browser behaviors. Separately, the 26 capture files are intentionally ignored local artifacts; 20 have `.png` names but JPEG/JFIF payloads from the in-app screenshot encoder, while the six final combined comparison files are true PNGs. All render locally, but the captures are not portable branch artifacts.
+The in-app Browser did not synthesize native-button default key activation and closed before 200% zoom/reduced-motion emulation, final related-page rendering, and post-review safety/fidelity recaptures. A replacement browser session could not reopen the local QA URL, so those checklist items remain unexecuted. Semantic/executable contracts and adjacent responsive evidence reduce risk but do not prove the missing Browser behaviors. Separately, the 26 capture files are intentionally ignored local artifacts; 20 have `.png` names but JPEG/JFIF payloads from the in-app screenshot encoder, while the six final combined comparison files are true PNGs. All render locally, but the captures are not portable branch artifacts.
