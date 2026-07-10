@@ -193,6 +193,7 @@ test('buildForceOutputMissionSpec creates direct document mission for digest goa
     filename: 'digest-1.md',
     type: 'report',
     format: 'markdown',
+    accessibility: 'mcp-required',
   });
   assert.match(mission.description, /Produce outputs\/digest-1\.md/);
   assert.ok(mission.successCriteria.some((criterion) => criterion.includes('digest-1.md')));
