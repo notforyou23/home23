@@ -14,4 +14,5 @@ module.exports = {
   ...require('./legacy-snapshot.cjs'),
   ...require('./writer.cjs'),
   ...require('./graph.cjs'),
+  ...require('./mcp-tools.cjs'),
 };
