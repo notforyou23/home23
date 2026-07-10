@@ -103,4 +103,5 @@ Result: 12 tests passed, 1 skipped, 0 failed.
 
 - This branch changes portable source, tests, docs, and examples only. Runtime state under ignored installation paths remains local.
 - Live PM2 mutation was not performed as part of this receipt. The implementation was verified through deterministic source, contract, focused, and full repository tests.
+- A read-only live PM2 probe after push showed all listed Home23 processes online, but the currently deployed live COSMO process is not this branch and did not answer 5-second probes for `/`, `/api/health`, or `/api/status` on port 43210. That is live-runtime evidence that the old deployed bug class is still observable until the verified branch is deliberately applied/restarted.
 - The final design requirement to avoid treating a zero result as proof of an empty brain is covered by source evidence, unavailable envelopes, base-plus-delta tests, stale ANN canaries, MCP unavailable-source tests, and read-only pinned source mutation tests.
