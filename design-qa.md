@@ -19,7 +19,7 @@ The live implementation intentionally contains production content instead of the
 
 ## Required fidelity surfaces
 
-- Fonts and typography: Inter is used across the shell with source-consistent hierarchy, weight, and muted dark copy. The browser-discovered Full Settings `#settings-surface-desc` pale dark-theme inheritance was repaired with the scoped light-theme token.
+- Fonts and typography: Instrument Sans is used across the glass shell with source-consistent hierarchy, weight, and muted dark copy. The browser-discovered Full Settings `#settings-surface-desc` pale dark-theme inheritance was repaired with the scoped light-theme token.
 - Spacing and layout rhythm: final 1440 geometry is top bar x=24/y=20/w=1388/h=60, hero x=0/y=94/w=1436/h=382, sensor strip x=24/y=492.6/w=1388, Chat x=24/y=783.1/w=846.5, and right rail x=886.5/y=783.1/w=525.5.
 - Colors and visual tokens: light paper canvas, translucent white panels, hairline borders, dark navy text, blue active/navigation treatment, and functional green/amber/red status tokens match the handoff.
 - Image quality and asset fidelity: the live Vibe image is rendered at its natural crop in both the tile and modal; no placeholder drawing, ASCII icon, or fabricated asset was introduced.
