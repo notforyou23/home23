@@ -37,6 +37,17 @@ const BUILTIN_EXECUTION_DEFAULTS = Object.freeze({
   }),
 });
 
+const REVIEWED_LEGACY_MODEL_DEFAULTS = Object.freeze({
+  xai: Object.freeze({
+    'grok-4.20-0309-reasoning': BUILTIN_EXECUTION_DEFAULTS.xai,
+    'grok-4.20-0309-non-reasoning': BUILTIN_EXECUTION_DEFAULTS.xai,
+    'grok-4.20-multi-agent-0309': Object.freeze({
+      ...BUILTIN_EXECUTION_DEFAULTS.xai,
+      transport: 'responses',
+    }),
+  }),
+});
+
 const EXECUTION_TRANSPORTS = new Set([
   'responses',
   'chat-completions',
@@ -336,8 +347,9 @@ function normalizeProviderConfig(providerId, providerConfig = {}, fallbackConfig
     .map(model => {
       if (model.kind !== 'chat') return model;
       const canUseBuiltInDefaults = !providerDeclaredModels || fallbackModelIds.has(model.id);
+      const reviewedLegacyDefaults = REVIEWED_LEGACY_MODEL_DEFAULTS[providerId]?.[model.id] || {};
       const modelDefaults = {
-        ...(canUseBuiltInDefaults ? fallbackExecutionDefaults : {}),
+        ...(canUseBuiltInDefaults ? fallbackExecutionDefaults : reviewedLegacyDefaults),
         ...providerExecutionDefaults,
       };
       const maxOutputTokens = positiveSafeInteger(

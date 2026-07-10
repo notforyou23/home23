@@ -147,12 +147,53 @@ test('custom models under built-in providers require source-declared capabilitie
     { maxOutputTokens: 4096, providerStallMs: 120000 },
   );
 
+  const modelDeclared = normalizeModelCatalog(catalog({
+    openai: {
+      models: [{
+        ...customModel,
+        maxOutputTokens: 2048,
+        providerStallMs: 60000,
+        transport: 'responses',
+      }],
+    },
+  }));
+  assert.deepEqual(
+    getModelCapabilities(modelDeclared, 'openai', 'custom-openai-model'),
+    { maxOutputTokens: 2048, providerStallMs: 60000 },
+  );
+
   const legacy = normalizeModelCatalog(catalog({
     openai: { models: [{ id: 'gpt-5.4-mini', kind: 'chat' }] },
   }));
   assert.deepEqual(
     getModelCapabilities(legacy, 'openai', 'gpt-5.4-mini'),
     { maxOutputTokens: 32768, providerStallMs: 900000 },
+  );
+});
+
+test('reviewed legacy Home23 xAI models receive only the xAI built-in defaults', () => {
+  const legacyModels = [
+    ['grok-4.20-0309-reasoning', 'chat-completions'],
+    ['grok-4.20-0309-non-reasoning', 'chat-completions'],
+    ['grok-4.20-multi-agent-0309', 'responses'],
+  ];
+
+  for (const [modelId, transport] of legacyModels) {
+    const catalog = normalizeModelCatalog({ version: 1, providers: {
+      xai: { models: [{ id: modelId, kind: 'chat' }] },
+    } });
+    assert.deepEqual(
+      getModelCapabilities(catalog, 'xai', modelId),
+      { maxOutputTokens: 8192, providerStallMs: 900000 },
+    );
+    assert.equal(catalog.providers.xai.models[0].transport, transport);
+  }
+
+  assertCatalogError(
+    () => normalizeModelCatalog({ version: 1, providers: {
+      xai: { models: [{ id: 'grok-unreviewed-custom', kind: 'chat' }] },
+    } }),
+    'model_capability_invalid',
   );
 });
 
