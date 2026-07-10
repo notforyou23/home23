@@ -35,6 +35,8 @@ const {
   createBrainOperationsPlaceholderRouter,
   createBrainOperationsRouter,
 } = require('./brain-operations/router.js');
+const { createSourceOperationExecutors } = require('./brain-operations/source-executors.js');
+const { createGraphExportExecutor } = require('./brain-operations/graph-export-executor.js');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -268,6 +270,17 @@ class DashboardServer {
       resolveTargetContext: (selector) => this.brainOperationsCoordinator.resolveTargetContext(selector),
       logger: this.logger,
     });
+    if (this.brainOperationsWorker?.registerLocalExecutor) {
+      for (const [operationType, executor] of createSourceOperationExecutors({
+        searchService: this.memorySearchService,
+        brainSourceService: this.brainSourceService,
+        graphExportExecutor: createGraphExportExecutor(),
+      })) {
+        if (!this.brainOperationsWorker.usesLocalExecutor?.(operationType)) {
+          this.brainOperationsWorker.registerLocalExecutor(operationType, executor);
+        }
+      }
+    }
     
     this.setupRoutes();
   }
@@ -308,6 +321,8 @@ class DashboardServer {
     const { createBrainOperationExporter } = require('./brain-operations/exporter.js');
     const { BrainOperationCoordinator } = require('./brain-operations/coordinator.js');
     const { BrainOperationWorkerAdapter } = require('./brain-operations/worker-adapter.js');
+    const { createMemorySourcePinProvider } = require('../../../shared/memory-source');
+    const { createOperationScratchQuota } = require('../../../shared/memory-source');
     const home23Root = this.getHome23Root();
     const operationRoot = path.join(
       home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations',
@@ -323,7 +338,10 @@ class DashboardServer {
       requesterAgent,
       reader,
     });
-    const worker = new BrainOperationWorkerAdapter({ supportsSourceOperations: false });
+    const worker = new BrainOperationWorkerAdapter({
+      supportsSourceOperations: true,
+      sourceOperationTypes: ['search', 'status', 'graph', 'graph_export'],
+    });
     worker.registerLocalExecutor('ad_hoc_export', async (context) => ({
       state: 'complete',
       result: await exporter.exportAdHoc({
@@ -375,8 +393,8 @@ class DashboardServer {
       operationAuthority: OPERATION_AUTHORITY,
       authorizeBrainOperation,
       worker,
-      sourcePins: null,
-      scratchQuotaFactory: null,
+      sourcePins: createMemorySourcePinProvider({ home23Root, requesterAgent }),
+      scratchQuotaFactory: createOperationScratchQuota,
       operationModelResolver: null,
       capabilityKey: process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY || null,
       exporter,

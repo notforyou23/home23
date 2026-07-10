@@ -800,8 +800,11 @@ class BrainOperationCoordinator {
             requesterAgent: record.requesterAgent,
             operationId: record.operationId,
             operationType: record.operationType,
-            canonicalRoot: record.target.canonicalRoot,
-            digest: record.sourcePinDigest,
+            operationRoot: path.dirname(scratchDir),
+            scratchQuota,
+            expectedCanonicalRoot: record.target.canonicalRoot,
+            expectedDigest: record.sourcePinDigest,
+            expectedRevision: record.sourcePinDescriptor.cutoffRevision,
           });
         validatePinnedSourceHandle(sourcePin, record);
       }

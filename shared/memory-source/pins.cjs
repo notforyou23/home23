@@ -250,6 +250,9 @@ function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
     async openPinnedSource(descriptor, expectations) {
       return openPinnedSource(descriptor, expectations);
     },
+    async releaseOperationPins(operationId) {
+      return releaseOperationSource({ home23Root, requesterAgent, operationId });
+    },
   });
 }
 
