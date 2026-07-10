@@ -22,11 +22,27 @@ async function collect(iterator) {
 }
 
 async function overlayFiles(operationRoot) {
-  const directory = path.join(operationRoot, 'overlay');
-  return fsp.readdir(directory).catch((error) => {
-    if (error.code === 'ENOENT') return [];
-    throw error;
-  });
+  const artifacts = [];
+  async function walk(directory) {
+    const entries = await fsp.readdir(directory, { withFileTypes: true }).catch((error) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      const filePath = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) await walk(filePath);
+      else if (/\.sqlite$|-(journal|wal|shm)$/.test(entry.name)) artifacts.push(filePath);
+    }
+  }
+  await walk(operationRoot);
+  return artifacts.sort();
+}
+
+async function findOverlayDirectory(operationRoot) {
+  const artifacts = await overlayFiles(operationRoot);
+  assert.equal(artifacts.length > 0, true, 'expected a SQLite overlay artifact');
+  return path.dirname(artifacts.find((filePath) => filePath.endsWith('.sqlite')));
 }
 
 function node(id, concept = id) {
@@ -125,6 +141,9 @@ test('spills exact ordered state into private SQLite and removes every database 
   assert.equal(store.retainedBytes <= 160, true);
   const filesWhileOpen = await overlayFiles(operationRoot);
   assert.equal(filesWhileOpen.some((name) => name.endsWith('.sqlite')), true);
+  const privateDirectory = await findOverlayDirectory(operationRoot);
+  assert.equal(path.dirname(privateDirectory), operationRoot);
+  assert.notEqual(path.basename(privateDirectory), 'overlay');
   assert.deepEqual(
     (await collect(store.iterateNodeUpserts())).map((record) => record.id),
     ['a', 'c'],
@@ -137,10 +156,7 @@ test('spills exact ordered state into private SQLite and removes every database 
   await store.close();
   await store.close();
   const filesAfterClose = await overlayFiles(operationRoot);
-  assert.deepEqual(
-    filesAfterClose.filter((name) => /\.(sqlite|db)$|-(journal|wal|shm)$/.test(name)),
-    [],
-  );
+  assert.deepEqual(filesAfterClose, []);
   scratchQuota.close();
 });
 
@@ -156,21 +172,31 @@ test('requires an operation root at the spill threshold without partially applyi
   await store.close();
 });
 
-test('rejects an overlay-directory symlink without writing outside the operation root', async () => {
+test('creates the database exclusively and never follows a replaced basename', async () => {
   const operationRoot = await tempDir();
   const outside = await tempDir();
+  const outsideFile = path.join(outside, 'sentinel.sqlite');
+  await fsp.writeFile(outsideFile, 'outside');
   const scratchQuota = await createOperationScratchQuota({ operationRoot, maxBytes: 1024 * 1024 });
+  let injectedPath = null;
   const store = await createBoundedOverlayStore({
     operationRoot,
     scratchQuota,
     maxMemoryBytes: 64,
+    _testHooks: {
+      async beforeDatabaseCreate({ databasePath }) {
+        injectedPath = databasePath;
+        await fsp.symlink(outsideFile, databasePath);
+      },
+    },
   });
-  await fsp.symlink(outside, path.join(operationRoot, 'overlay'));
   await assert.rejects(
     () => store.apply(node('escape', 'x'.repeat(1024))),
     { code: 'invalid_memory_source' },
   );
-  assert.deepEqual(await fsp.readdir(outside), []);
+  assert.equal(await fsp.readFile(outsideFile, 'utf8'), 'outside');
+  assert.equal(injectedPath !== null, true);
+  await fsp.rm(injectedPath);
   await store.close();
   scratchQuota.close();
 });
@@ -257,4 +283,122 @@ test('abort during spill or ordered iteration stops work and permits complete cl
   await iterateStore.close();
   assert.deepEqual(await overlayFiles(iterateRoot), []);
   iterateQuota.close();
+});
+
+test('serializes concurrent threshold-crossing apply calls and spills exactly once', async () => {
+  const operationRoot = await tempDir();
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 16 * 1024 * 1024,
+  });
+  let spillCount = 0;
+  const store = await createBoundedOverlayStore({
+    operationRoot,
+    scratchQuota,
+    maxMemoryBytes: 64,
+    maxDiskBytes: 8 * 1024 * 1024,
+    _testHooks: {
+      async beforeDatabaseOpen() {
+        spillCount += 1;
+        await new Promise((resolve) => setImmediate(resolve));
+      },
+    },
+  });
+
+  await Promise.all(Array.from({ length: 24 }, (_, index) =>
+    store.apply(node(`node-${index % 8}`, `value-${index}`))));
+  assert.equal(spillCount, 1);
+  assert.equal(store.spilled, true);
+  const records = await collect(store.iterateNodeUpserts());
+  assert.deepEqual(records.map((record) => record.id), Array.from({ length: 8 }, (_, index) => `node-${index}`));
+  for (let index = 0; index < 8; index += 1) {
+    assert.equal(store.node(`node-${index}`).concept, `value-${index + 16}`);
+  }
+  assert.equal((await overlayFiles(operationRoot)).filter((name) => name.endsWith('.sqlite')).length, 1);
+  await store.close();
+  scratchQuota.close();
+});
+
+test('directory replacement fails closed, preserves the replacement, and retains accounting until retry cleanup', async () => {
+  const operationRoot = await tempDir();
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 8 * 1024 * 1024,
+  });
+  let swapBeforeMutation = false;
+  let originalDirectory = null;
+  let movedDirectory = null;
+  const store = await createBoundedOverlayStore({
+    operationRoot,
+    scratchQuota,
+    maxMemoryBytes: 64,
+    maxDiskBytes: 4 * 1024 * 1024,
+    _testHooks: {
+      async beforeDiskMutation({ overlayRoot }) {
+        if (!swapBeforeMutation) return;
+        swapBeforeMutation = false;
+        originalDirectory = overlayRoot;
+        movedDirectory = `${overlayRoot}-original`;
+        await fsp.rename(overlayRoot, movedDirectory);
+        await fsp.mkdir(overlayRoot, { mode: 0o700 });
+        await fsp.writeFile(path.join(overlayRoot, 'replacement-sentinel'), 'keep');
+      },
+    },
+  });
+  await store.apply(node('first', 'x'.repeat(1024)));
+  assert.equal(store.spilled, true);
+
+  swapBeforeMutation = true;
+  await assert.rejects(() => store.apply(node('second', 'y'.repeat(1024))), {
+    code: 'invalid_memory_source',
+  });
+  assert.equal(await fsp.readFile(path.join(originalDirectory, 'replacement-sentinel'), 'utf8'), 'keep');
+  await assert.rejects(() => store.close(), { code: 'invalid_memory_source' });
+  assert.equal(await fsp.readFile(path.join(originalDirectory, 'replacement-sentinel'), 'utf8'), 'keep');
+
+  const failedLedger = JSON.parse(await fsp.readFile(path.join(operationRoot, '.scratch-quota.json'), 'utf8'));
+  const failedReserved = Object.values(failedLedger.reservations)
+    .flatMap((entry) => Object.values(entry.kinds))
+    .reduce((sum, value) => sum + value, 0);
+  assert.equal(failedReserved > 0, true);
+  assert.equal(failedLedger.actualPrivateBytes + failedReserved <= failedLedger.usedBytes, true);
+  assert.equal(failedLedger.usedBytes <= failedLedger.maxBytes, true);
+
+  await fsp.rm(originalDirectory, { recursive: true });
+  await fsp.rename(movedDirectory, originalDirectory);
+  await store.close();
+  assert.deepEqual(await overlayFiles(operationRoot), []);
+  const cleanedLedger = JSON.parse(await fsp.readFile(path.join(operationRoot, '.scratch-quota.json'), 'utf8'));
+  const cleanedReserved = Object.values(cleanedLedger.reservations)
+    .flatMap((entry) => Object.values(entry.kinds))
+    .reduce((sum, value) => sum + value, 0);
+  assert.equal(cleanedReserved, 0);
+  scratchQuota.close();
+});
+
+test('a transient exact-artifact cleanup failure can be retried by close', async () => {
+  const operationRoot = await tempDir();
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 8 * 1024 * 1024,
+  });
+  let failCleanup = true;
+  const store = await createBoundedOverlayStore({
+    operationRoot,
+    scratchQuota,
+    maxMemoryBytes: 64,
+    _testHooks: {
+      async beforeArtifactRemove() {
+        if (!failCleanup) return;
+        failCleanup = false;
+        throw Object.assign(new Error('injected cleanup failure'), { code: 'EIO' });
+      },
+    },
+  });
+  await store.apply(node('cleanup', 'x'.repeat(1024)));
+  await assert.rejects(() => store.close(), /injected cleanup failure/);
+  assert.equal((await overlayFiles(operationRoot)).length > 0, true);
+  await store.close();
+  assert.deepEqual(await overlayFiles(operationRoot), []);
+  scratchQuota.close();
 });

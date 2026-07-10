@@ -209,7 +209,13 @@ test('recovers a bounded lock only after its recorded owner is proven dead', asy
     version: 1,
     operationRoot: canonicalRoot,
     maxBytes,
-    owner: { pid: 999999, processStartedAt: 1, handleId: '00000000-0000-0000-0000-000000000000' },
+    owner: {
+      pid: 999999,
+      processStartedAt: 1,
+      handleId: '00000000-0000-0000-0000-000000000000',
+      bootToken: 'test-boot',
+      processStartToken: 'test-start',
+    },
     acquiredAt: 1,
   })}\n`, { mode: 0o600 });
   let inspectedOwner = null;
@@ -257,4 +263,193 @@ test('fails closed if the exact operation root is replaced after handle creation
   quota.close();
   await fsp.rm(operationRoot);
   await fsp.rename(movedRoot, operationRoot);
+});
+
+test('counts orphan bytes and new reservations additively before permitting retry growth', async () => {
+  const operationRoot = await tempDir();
+  const orphanPath = path.join(operationRoot, 'orphaned-projection.bin');
+  const retryPath = path.join(operationRoot, 'retry-projection.bin');
+  await fsp.writeFile(orphanPath, Buffer.alloc(100 * 1024));
+  const quota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 130 * 1024,
+  });
+
+  let wroteRetry = false;
+  await assert.rejects(async () => {
+    await quota.claim(100 * 1024, 'projection-retry');
+    wroteRetry = true;
+    await fsp.writeFile(retryPath, Buffer.alloc(100 * 1024));
+  }, { code: 'result_too_large', status: 413, retryable: false });
+  assert.equal(wroteRetry, false);
+  assert.equal(await exists(retryPath), false);
+
+  const ledger = JSON.parse(await fsp.readFile(path.join(operationRoot, '.scratch-quota.json'), 'utf8'));
+  const reservations = Object.values(ledger.reservations)
+    .flatMap((entry) => Object.values(entry.kinds))
+    .reduce((sum, bytes) => sum + bytes, 0);
+  assert.equal(ledger.actualPrivateBytes >= 100 * 1024, true);
+  assert.equal(ledger.actualPrivateBytes + reservations <= ledger.usedBytes, true);
+  assert.equal(ledger.usedBytes <= ledger.maxBytes, true);
+  quota.close();
+});
+
+test('retries normal lock turnover under repeated high concurrency', async () => {
+  const operationRoot = await tempDir();
+  const maxBytes = 8 * 1024 * 1024;
+  for (let repetition = 0; repetition < 10; repetition += 1) {
+    const handles = await Promise.all(Array.from({ length: 8 }, () =>
+      createOperationScratchQuota({
+        operationRoot,
+        maxBytes,
+        lockRetryMs: 1,
+      })));
+    await Promise.all(handles.map((quota, index) => quota.claim(256, `r${repetition}-${index}`)));
+    await Promise.all(handles.map((quota, index) => quota.release(256, `r${repetition}-${index}`)));
+    handles.forEach((quota) => quota.close());
+  }
+  const observer = await createOperationScratchQuota({ operationRoot, maxBytes });
+  assert.equal(await observer.reconcile() <= maxBytes, true);
+  observer.close();
+});
+
+test('validates the complete lock owner before liveness and never reclaims malformed ownership', async () => {
+  const operationRoot = await tempDir();
+  const canonicalRoot = await fsp.realpath(operationRoot);
+  const maxBytes = 256 * 1024;
+  const lockPath = path.join(operationRoot, '.scratch-quota.lock');
+  await fsp.writeFile(lockPath, `${JSON.stringify({
+    version: 1,
+    operationRoot: canonicalRoot,
+    maxBytes,
+    owner: {
+      pid: process.pid,
+      processStartedAt: Date.now(),
+      handleId: '00000000-0000-0000-0000-000000000000',
+      // Intentionally missing bootToken and processStartToken.
+    },
+    acquiredAt: 1,
+  })}\n`, { mode: 0o600 });
+  let livenessCalls = 0;
+  await assert.rejects(() => createOperationScratchQuota({
+    operationRoot,
+    maxBytes,
+    isProcessAlive: async () => {
+      livenessCalls += 1;
+      return false;
+    },
+  }), { code: 'invalid_memory_source', retryable: false });
+  assert.equal(livenessCalls, 0);
+  assert.equal(await exists(lockPath), true);
+});
+
+test('reclaims stale ownership when a live reused PID has a different process token', async () => {
+  const operationRoot = await tempDir();
+  const maxBytes = 512 * 1024;
+  const ownerQuota = await createOperationScratchQuota({ operationRoot, maxBytes });
+  await ownerQuota.claim(1, 'identity-fixture');
+  ownerQuota.close();
+  const ledger = JSON.parse(await fsp.readFile(path.join(operationRoot, '.scratch-quota.json'), 'utf8'));
+  const owner = structuredClone(Object.values(ledger.reservations)[0].owner);
+  owner.processStartToken = `${owner.processStartToken}-reused`;
+  const lockPath = path.join(operationRoot, '.scratch-quota.lock');
+  await fsp.writeFile(lockPath, `${JSON.stringify({
+    version: 1,
+    operationRoot: await fsp.realpath(operationRoot),
+    maxBytes,
+    owner,
+    acquiredAt: 1,
+  })}\n`, { mode: 0o600 });
+
+  const contender = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes,
+    lockRetryMs: 1,
+    lockTimeoutMs: 10,
+  });
+  assert.equal(await exists(lockPath), false);
+  contender.close();
+});
+
+test('retains a valid lock when owner liveness cannot be proven', async () => {
+  const operationRoot = await tempDir();
+  const maxBytes = 512 * 1024;
+  const fixture = await createOperationScratchQuota({ operationRoot, maxBytes });
+  await fixture.claim(1, 'identity-fixture');
+  fixture.close();
+  const ledger = JSON.parse(await fsp.readFile(path.join(operationRoot, '.scratch-quota.json'), 'utf8'));
+  const owner = structuredClone(Object.values(ledger.reservations)[0].owner);
+  const lockPath = path.join(operationRoot, '.scratch-quota.lock');
+  await fsp.writeFile(lockPath, `${JSON.stringify({
+    version: 1,
+    operationRoot: await fsp.realpath(operationRoot),
+    maxBytes,
+    owner,
+    acquiredAt: 1,
+  })}\n`, { mode: 0o600 });
+
+  await assert.rejects(() => createOperationScratchQuota({
+    operationRoot,
+    maxBytes,
+    lockRetryMs: 1,
+    lockTimeoutMs: 5,
+    isProcessAlive: async () => {
+      throw new Error('identity inspection unavailable');
+    },
+  }), { code: 'source_busy', retryable: true });
+  assert.equal(await exists(lockPath), true);
+});
+
+test('metadata publishing and scans fail closed across deterministic operation-root replacement', async () => {
+  const operationRoot = await tempDir();
+  const maxBytes = 512 * 1024;
+  const movedRoot = `${operationRoot}-original`;
+  let swapOnLedgerPublish = false;
+  const quota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes,
+    _testHooks: {
+      async beforeLedgerPublish() {
+        if (!swapOnLedgerPublish) return;
+        swapOnLedgerPublish = false;
+        await fsp.rename(operationRoot, movedRoot);
+        await fsp.mkdir(operationRoot, { mode: 0o700 });
+        await fsp.writeFile(path.join(operationRoot, 'replacement-sentinel'), 'keep');
+      },
+    },
+  });
+
+  swapOnLedgerPublish = true;
+  await assert.rejects(() => quota.claim(1, 'swap'), { code: 'invalid_memory_source' });
+  assert.equal(await fsp.readFile(path.join(operationRoot, 'replacement-sentinel'), 'utf8'), 'keep');
+  assert.deepEqual(await fsp.readdir(operationRoot), ['replacement-sentinel']);
+
+  await fsp.rm(operationRoot, { recursive: true });
+  await fsp.rename(movedRoot, operationRoot);
+  quota.close();
+
+  const scanRoot = await tempDir();
+  const scanMoved = `${scanRoot}-original`;
+  let swapDuringScan = false;
+  let canonicalScanRoot = null;
+  const scanQuota = await createOperationScratchQuota({
+    operationRoot: scanRoot,
+    maxBytes,
+    _testHooks: {
+      async afterScanDirectoryRead(directory) {
+        if (!swapDuringScan || directory !== canonicalScanRoot) return;
+        swapDuringScan = false;
+        await fsp.rename(scanRoot, scanMoved);
+        await fsp.mkdir(scanRoot, { mode: 0o700 });
+        await fsp.writeFile(path.join(scanRoot, 'replacement-sentinel'), 'keep');
+      },
+    },
+  });
+  canonicalScanRoot = scanQuota.operationRoot;
+  swapDuringScan = true;
+  await assert.rejects(() => scanQuota.reconcile(), { code: 'invalid_memory_source' });
+  assert.equal(await fsp.readFile(path.join(scanRoot, 'replacement-sentinel'), 'utf8'), 'keep');
+  await fsp.rm(scanRoot, { recursive: true });
+  await fsp.rename(scanMoved, scanRoot);
+  scanQuota.close();
 });

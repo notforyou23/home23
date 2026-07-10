@@ -1,6 +1,7 @@
 'use strict';
 
-const fsp = require('node:fs').promises;
+const fs = require('node:fs');
+const fsp = fs.promises;
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const Database = require('better-sqlite3');
@@ -88,7 +89,25 @@ function normalizeEdgeRecord(record) {
 }
 
 function sortedKeys(mapOrSet) {
+  // In-memory overlay retention is hard-capped (8 MiB by default), so this
+  // compatibility array is bounded. Spill/import itself never allocates a
+  // second sorted key array, and new readers use the async iterators below.
   return [...mapOrSet.keys()].sort((left, right) => left.localeCompare(right));
+}
+
+function identityOf(stat) {
+  return Object.freeze({ dev: stat.dev, ino: stat.ino });
+}
+
+function sameIdentity(stat, identity) {
+  return Boolean(stat && identity && stat.dev === identity.dev && stat.ino === identity.ino);
+}
+
+async function lstatOptional(filePath) {
+  return fsp.lstat(filePath).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
 }
 
 async function createBoundedOverlayStore(options = {}) {
@@ -101,18 +120,31 @@ async function createBoundedOverlayStore(options = {}) {
   const removedEdges = new Set();
   let retainedBytes = 0;
   let closed = false;
-  let spillStarted = false;
   let spilled = false;
   let db = null;
+  let databaseAnchor = null;
   let statements = null;
   let diskActualBytes = 0;
   let diskReservedBytes = 0;
   let operationRoot = null;
+  let operationRootIdentity = null;
   let overlayRoot = null;
+  let overlayRootIdentity = null;
   let databasePath = null;
+  let databaseIdentity = null;
+  let cleanupFilesComplete = false;
+  let cleanupComplete = false;
+  let mutationTail = Promise.resolve();
   let scratchQuota = options.scratchQuota || null;
   let ownsScratchQuota = false;
   const quotaKind = `memory_overlay_${randomUUID()}`;
+  const privateDirectoryName = `.memory-overlay-${process.pid}-${randomUUID()}`;
+  const ownedArtifacts = new Map();
+  const hooks = options._testHooks || {};
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)
+      || Object.values(hooks).some((hook) => typeof hook !== 'function')) {
+    throw memorySourceError('invalid_request', 'invalid overlay test hooks');
+  }
 
   if (options.operationRoot) {
     if (scratchQuota) {
@@ -125,8 +157,15 @@ async function createBoundedOverlayStore(options = {}) {
       ownsScratchQuota = true;
       operationRoot = scratchQuota.operationRoot;
     }
-    overlayRoot = path.join(operationRoot, 'overlay');
-    databasePath = path.join(overlayRoot, `memory-overlay-${process.pid}-${randomUUID()}.sqlite`);
+    const rootStat = await fsp.lstat(operationRoot);
+    if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+      throw memorySourceError('invalid_memory_source', 'operation root is not a private directory', {
+        retryable: false,
+      });
+    }
+    operationRootIdentity = identityOf(rootStat);
+    overlayRoot = path.join(operationRoot, privateDirectoryName);
+    databasePath = path.join(overlayRoot, 'overlay.sqlite');
   }
 
   function assertOpen(signal) {
@@ -198,27 +237,98 @@ async function createBoundedOverlayStore(options = {}) {
     assertOpen(signal);
   }
 
-  async function diskArtifactBytes() {
-    let total = 0;
-    for (const filePath of [
+  function confinementError(message, cause) {
+    return memorySourceError('invalid_memory_source', message, {
+      retryable: false,
+      ...(cause ? { cause } : {}),
+    });
+  }
+
+  function artifactPaths() {
+    return [
       databasePath,
       `${databasePath}-journal`,
       `${databasePath}-wal`,
       `${databasePath}-shm`,
-    ]) {
-      const stat = await fsp.lstat(filePath).catch((error) => {
-        if (error.code === 'ENOENT') return null;
-        throw error;
-      });
-      if (stat === null) continue;
+    ];
+  }
+
+  async function assertOperationRootStable() {
+    if (!operationRoot) return;
+    await scratchQuota.assertOperationRoot(operationRoot);
+    const stat = await fsp.lstat(operationRoot).catch((error) => {
+      throw confinementError('operation root became unavailable', error);
+    });
+    if (stat.isSymbolicLink() || !stat.isDirectory()
+        || !sameIdentity(stat, operationRootIdentity)) {
+      throw confinementError('operation root identity changed');
+    }
+  }
+
+  async function assertOverlayRootStable() {
+    await assertOperationRootStable();
+    if (!overlayRootIdentity) throw confinementError('overlay directory is not owned');
+    const stat = await fsp.lstat(overlayRoot).catch((error) => {
+      throw confinementError('overlay directory became unavailable', error);
+    });
+    if (stat.isSymbolicLink() || !stat.isDirectory()
+        || !sameIdentity(stat, overlayRootIdentity)) {
+      throw confinementError('overlay directory identity changed');
+    }
+    const canonical = await fsp.realpath(overlayRoot).catch((error) => {
+      throw confinementError('overlay directory cannot be resolved', error);
+    });
+    if (canonical !== overlayRoot || path.dirname(canonical) !== operationRoot) {
+      throw confinementError('overlay directory escapes operation scratch');
+    }
+    await assertOperationRootStable();
+  }
+
+  async function assertDatabaseStable() {
+    await assertOverlayRootStable();
+    if (!databaseIdentity || !databaseAnchor) {
+      throw confinementError('overlay database is not owned');
+    }
+    const [pathStat, anchorStat] = await Promise.all([
+      fsp.lstat(databasePath).catch((error) => {
+        throw confinementError('overlay database became unavailable', error);
+      }),
+      databaseAnchor.stat().catch((error) => {
+        throw confinementError('overlay database anchor became unavailable', error);
+      }),
+    ]);
+    if (pathStat.isSymbolicLink() || !pathStat.isFile() || !anchorStat.isFile()
+        || !sameIdentity(pathStat, databaseIdentity)
+        || !sameIdentity(anchorStat, databaseIdentity)) {
+      throw confinementError('overlay database identity changed');
+    }
+    await assertOverlayRootStable();
+  }
+
+  async function inspectArtifacts({ adoptNew = false } = {}) {
+    await assertDatabaseStable();
+    let total = 0;
+    for (const filePath of artifactPaths()) {
+      const stat = await lstatOptional(filePath);
+      if (stat === null) {
+        if (filePath === databasePath) throw confinementError('overlay database disappeared');
+        continue;
+      }
       if (stat.isSymbolicLink() || !stat.isFile()) {
-        throw memorySourceError('invalid_memory_source', 'overlay database artifact is not a regular file', {
-          retryable: false,
-        });
+        throw confinementError('overlay database artifact is not a regular file');
+      }
+      const owned = ownedArtifacts.get(filePath);
+      if (owned && !sameIdentity(stat, owned)) {
+        throw confinementError('overlay database artifact identity changed');
+      }
+      if (!owned) {
+        if (!adoptNew) throw confinementError('unexpected overlay database artifact');
+        ownedArtifacts.set(filePath, identityOf(stat));
       }
       total += stat.size;
       if (!Number.isSafeInteger(total)) throw limitError('overlay disk accounting overflow');
     }
+    await assertDatabaseStable();
     return total;
   }
 
@@ -226,47 +336,57 @@ async function createBoundedOverlayStore(options = {}) {
     checkCancelled();
     const allowance = logicalBytes + rollbackBytes + SQLITE_MUTATION_HEADROOM;
     const required = diskActualBytes + allowance;
-    if (!Number.isSafeInteger(required) || required > maxDiskBytes) {
+    if (!Number.isSafeInteger(allowance) || !Number.isSafeInteger(required)
+        || required > maxDiskBytes) {
       throw limitError('overlay disk limit exceeded');
     }
-    if (required > diskReservedBytes) {
-      const claimBytes = required - diskReservedBytes;
-      await scratchQuota.claim(claimBytes, quotaKind);
-      diskReservedBytes += claimBytes;
-      checkCancelled();
-    }
+    const preflightBytes = allowance * 2;
+    if (!Number.isSafeInteger(preflightBytes)) throw limitError('overlay reservation overflow');
+    // A reservation and bytes that materialize under it are deliberately
+    // additive in the aggregate ledger. Preflight twice the maximum growth,
+    // then release half before mutation: at every point, including a crash
+    // between SQLite growth and settlement, actual + outstanding reservation
+    // remains below the already-proven peak.
+    await scratchQuota.claim(preflightBytes, quotaKind);
+    diskReservedBytes += preflightBytes;
+    if (!Number.isSafeInteger(diskReservedBytes)) throw limitError('overlay reservation overflow');
+    await scratchQuota.release(allowance, quotaKind);
+    diskReservedBytes -= allowance;
+    checkCancelled();
+    return allowance;
   }
 
-  async function refreshDiskAccounting() {
-    const actual = await diskArtifactBytes();
-    if (actual > maxDiskBytes || actual > diskReservedBytes) {
-      throw limitError('overlay database exceeded reserved disk bytes');
+  async function settleDiskReservation(bytes) {
+    if (bytes <= 0) return;
+    await scratchQuota.release(bytes, quotaKind);
+    diskReservedBytes -= bytes;
+  }
+
+  async function refreshDiskAccounting({ priorActual, allowance }) {
+    const actual = await inspectArtifacts({ adoptNew: true });
+    if (actual > maxDiskBytes || actual > priorActual + allowance) {
+      throw limitError('overlay database exceeded reserved disk growth');
     }
     diskActualBytes = actual;
   }
 
-  async function ensurePrivateOverlayDirectory() {
-    let stat = await fsp.lstat(overlayRoot).catch((error) => {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    });
-    if (stat === null) {
-      await fsp.mkdir(overlayRoot, { mode: 0o700 }).catch((error) => {
-        if (error.code !== 'EEXIST') throw error;
-      });
-      stat = await fsp.lstat(overlayRoot);
-    }
+  async function createPrivateOverlayDirectory() {
+    await assertOperationRootStable();
+    const existing = await lstatOptional(overlayRoot);
+    if (existing !== null) throw confinementError('overlay private directory already exists');
+    await fsp.mkdir(overlayRoot, { mode: 0o700 });
+    await assertOperationRootStable();
+    const stat = await fsp.lstat(overlayRoot);
     if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw memorySourceError('invalid_memory_source', 'overlay root is not a private directory', {
-        retryable: false,
-      });
+      throw confinementError('overlay root is not a private directory');
     }
+    overlayRootIdentity = identityOf(stat);
     const canonical = await fsp.realpath(overlayRoot);
     if (canonical !== overlayRoot || path.dirname(canonical) !== operationRoot) {
-      throw memorySourceError('invalid_memory_source', 'overlay root escapes operation scratch', {
-        retryable: false,
-      });
+      throw confinementError('overlay root escapes operation scratch');
     }
+    await hooks.afterPrivateDirectoryCreate?.({ operationRoot, overlayRoot });
+    await assertOverlayRootStable();
   }
 
   function prepareStatements() {
@@ -314,12 +434,16 @@ async function createBoundedOverlayStore(options = {}) {
 
   async function writeDiskState(normalized) {
     checkCancelled();
+    await inspectArtifacts();
     const recordJson = normalized.record === undefined ? null : jsonBytes(normalized.record).text;
     const logicalBytes = retainedEntryBytes(normalized.key, normalized.record);
     const prior = normalized.kind === 'node'
       ? statements.nodeStoredBytes.get(normalized.key)
       : statements.edgeStoredBytes.get(normalized.key);
-    await reserveDiskMutation(logicalBytes, Number(prior?.bytes || 0));
+    const priorActual = diskActualBytes;
+    const allowance = await reserveDiskMutation(logicalBytes, Number(prior?.bytes || 0));
+    await hooks.beforeDiskMutation?.({ overlayRoot, databasePath, normalized });
+    await inspectArtifacts();
     checkCancelled();
     if (normalized.kind === 'node') {
       if (normalized.tombstone) statements.removeNode.run(normalized.key);
@@ -335,18 +459,42 @@ async function createBoundedOverlayStore(options = {}) {
       );
     }
     checkCancelled();
-    await refreshDiskAccounting();
+    await refreshDiskAccounting({ priorActual, allowance });
+    await settleDiskReservation(allowance);
+    await assertDatabaseStable();
   }
 
   async function spillMemoryState() {
     if (spilled) return;
-    spillStarted = true;
-    await ensurePrivateOverlayDirectory();
-    await reserveDiskMutation(0);
+    await createPrivateOverlayDirectory();
+    const priorActual = diskActualBytes;
+    const allowance = await reserveDiskMutation(0);
+    await hooks.beforeDatabaseCreate?.({ operationRoot, overlayRoot, databasePath });
+    await assertOverlayRootStable();
     checkCancelled();
-    await ensurePrivateOverlayDirectory();
+    try {
+      databaseAnchor = await fsp.open(
+        databasePath,
+        fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_EXCL
+          | (fs.constants.O_NOFOLLOW || 0),
+        0o600,
+      );
+    } catch (error) {
+      if (error.code === 'EEXIST' || error.code === 'ELOOP') {
+        throw confinementError('overlay database basename is already occupied', error);
+      }
+      throw error;
+    }
+    const opened = await databaseAnchor.stat();
+    if (!opened.isFile()) throw confinementError('overlay database is not a regular file');
+    databaseIdentity = identityOf(opened);
+    ownedArtifacts.set(databasePath, databaseIdentity);
+    await databaseAnchor.sync();
+    await hooks.beforeDatabaseOpen?.({ operationRoot, overlayRoot, databasePath });
+    await assertDatabaseStable();
     checkCancelled();
-    db = new Database(databasePath);
+    db = new Database(databasePath, { fileMustExist: true });
+    await assertDatabaseStable();
     const journalMode = db.pragma('journal_mode = DELETE', { simple: true });
     if (String(journalMode).toLowerCase() !== 'delete') {
       throw memorySourceError('source_unavailable', 'SQLite DELETE journal mode unavailable', {
@@ -375,21 +523,23 @@ async function createBoundedOverlayStore(options = {}) {
       );
     `);
     prepareStatements();
-    await refreshDiskAccounting();
+    await refreshDiskAccounting({ priorActual, allowance });
+    await settleDiskReservation(allowance);
+    await assertDatabaseStable();
 
-    for (const key of sortedKeys(nodes)) {
+    for (const [key, record] of nodes) {
       checkCancelled();
-      await writeDiskState({ kind: 'node', key, record: nodes.get(key), tombstone: false });
+      await writeDiskState({ kind: 'node', key, record, tombstone: false });
     }
-    for (const key of sortedKeys(removedNodes)) {
+    for (const key of removedNodes) {
       checkCancelled();
       await writeDiskState({ kind: 'node', key, record: undefined, tombstone: true });
     }
-    for (const key of sortedKeys(edges)) {
+    for (const [key, record] of edges) {
       checkCancelled();
-      await writeDiskState({ kind: 'edge', key, record: edges.get(key), tombstone: false });
+      await writeDiskState({ kind: 'edge', key, record, tombstone: false });
     }
-    for (const key of sortedKeys(removedEdges)) {
+    for (const key of removedEdges) {
       checkCancelled();
       await writeDiskState({ kind: 'edge', key, record: undefined, tombstone: true });
     }
@@ -462,95 +612,132 @@ async function createBoundedOverlayStore(options = {}) {
     }
   }
 
+  async function removeExactOwnedArtifacts() {
+    if (cleanupFilesComplete) return;
+    if (!overlayRootIdentity) {
+      cleanupFilesComplete = true;
+      return;
+    }
+    await assertOverlayRootStable();
+    const expectedNames = new Set(artifactPaths().map((filePath) => path.basename(filePath)));
+    const entries = await fsp.readdir(overlayRoot);
+    await assertOverlayRootStable();
+    for (const name of entries.sort((left, right) => left.localeCompare(right))) {
+      if (!expectedNames.has(name)) {
+        throw confinementError('overlay directory contains an unowned artifact');
+      }
+      const filePath = path.join(overlayRoot, name);
+      const identity = ownedArtifacts.get(filePath);
+      const stat = await fsp.lstat(filePath);
+      if (!identity || stat.isSymbolicLink() || !stat.isFile() || !sameIdentity(stat, identity)) {
+        throw confinementError('overlay cleanup artifact identity changed');
+      }
+      await hooks.beforeArtifactRemove?.({ operationRoot, overlayRoot, filePath });
+      await assertOverlayRootStable();
+      const latest = await fsp.lstat(filePath);
+      if (latest.isSymbolicLink() || !latest.isFile() || !sameIdentity(latest, identity)) {
+        throw confinementError('overlay cleanup artifact changed before removal');
+      }
+      await fsp.unlink(filePath);
+      ownedArtifacts.delete(filePath);
+      await assertOverlayRootStable();
+    }
+    if ((await fsp.readdir(overlayRoot)).length !== 0) {
+      throw confinementError('overlay directory changed during cleanup');
+    }
+    await assertOverlayRootStable();
+    await fsp.rmdir(overlayRoot);
+    await assertOperationRootStable();
+    cleanupFilesComplete = true;
+  }
+
+  async function cleanupStore() {
+    if (cleanupComplete) return;
+    if (db?.open) db.close();
+    db = null;
+    statements = null;
+    if (databaseAnchor) await databaseAnchor.close();
+    databaseAnchor = null;
+
+    await removeExactOwnedArtifacts();
+    if (scratchQuota) {
+      if (diskReservedBytes > 0) {
+        const reserved = diskReservedBytes;
+        await scratchQuota.release(reserved, quotaKind);
+        diskReservedBytes = 0;
+      } else {
+        await scratchQuota.reconcile();
+      }
+    }
+    diskActualBytes = 0;
+    nodes.clear();
+    edges.clear();
+    removedNodes.clear();
+    removedEdges.clear();
+    retainedBytes = 0;
+    if (ownsScratchQuota) scratchQuota.close();
+    cleanupComplete = true;
+  }
+
   let closePromise = null;
   function closeStore() {
-    if (closePromise) return closePromise;
     closed = true;
+    if (cleanupComplete) return Promise.resolve();
+    if (closePromise) return closePromise;
     closePromise = (async () => {
-      let cleanupError = null;
       try {
-        if (db?.open) db.close();
-      } catch (error) {
-        cleanupError = error;
+        await mutationTail;
+        await cleanupStore();
+      } finally {
+        closePromise = null;
       }
-      db = null;
-      statements = null;
-      if (databasePath) {
-        const overlayStat = await fsp.lstat(overlayRoot).catch((error) => {
-          if (error.code === 'ENOENT') return null;
-          cleanupError ||= error;
-          return null;
-        });
-        if (overlayStat?.isSymbolicLink()) {
-          // Removing the operation-private link itself is safe; never resolve
-          // a database path through it during cleanup.
-          await fsp.rm(overlayRoot, { force: true }).catch((error) => { cleanupError ||= error; });
-        } else if (overlayStat?.isDirectory()) {
-          for (const filePath of [
-            databasePath,
-            `${databasePath}-journal`,
-            `${databasePath}-wal`,
-            `${databasePath}-shm`,
-          ]) {
-            try {
-              await fsp.rm(filePath, { force: true });
-            } catch (error) {
-              cleanupError ||= error;
-            }
-          }
-          await fsp.rmdir(overlayRoot).catch((error) => {
-            if (error.code !== 'ENOENT' && error.code !== 'ENOTEMPTY') cleanupError ||= error;
-          });
-        }
-      }
-      if (diskReservedBytes > 0 && scratchQuota) {
-        try {
-          await scratchQuota.release(diskReservedBytes, quotaKind);
-          diskReservedBytes = 0;
-          diskActualBytes = 0;
-        } catch (error) {
-          cleanupError ||= error;
-        }
-      }
-      if (ownsScratchQuota) scratchQuota.close();
-      nodes.clear();
-      edges.clear();
-      removedNodes.clear();
-      removedEdges.clear();
-      retainedBytes = 0;
-      if (cleanupError) throw cleanupError;
     })();
     return closePromise;
+  }
+
+  function enqueueMutation(work) {
+    const result = mutationTail.then(work);
+    mutationTail = result.catch(() => {});
+    return result;
+  }
+
+  async function failMutation(error) {
+    closed = true;
+    if (db && databaseAnchor) {
+      await inspectArtifacts({ adoptNew: true }).catch(() => {});
+    }
+    await cleanupStore().catch(() => {});
+    rethrowAbort(error, options.signal);
+    throw error;
   }
 
   const api = {
     async apply(entry) {
       assertOpen();
       const normalized = normalizeEntry(entry);
-      if (spilled) {
-        try {
-          await writeDiskState(normalized);
-          return;
-        } catch (error) {
-          await closeStore().catch(() => {});
-          rethrowAbort(error, options.signal);
-          throw error;
+      return enqueueMutation(async () => {
+        assertOpen();
+        if (spilled) {
+          try {
+            await writeDiskState(normalized);
+            return;
+          } catch (error) {
+            return failMutation(error);
+          }
         }
-      }
-      if (applyMemory(normalized)) return;
-      if (!options.operationRoot) {
-        throw memorySourceError('source_operation_required', 'operation root required for large overlay', {
-          retryable: false,
-        });
-      }
-      try {
-        await spillMemoryState();
-        await writeDiskState(normalized);
-      } catch (error) {
-        await closeStore().catch(() => {});
-        rethrowAbort(error, options.signal);
-        throw error;
-      }
+        if (applyMemory(normalized)) return;
+        if (!options.operationRoot) {
+          throw memorySourceError('source_operation_required', 'operation root required for large overlay', {
+            retryable: false,
+          });
+        }
+        try {
+          await spillMemoryState();
+          await writeDiskState(normalized);
+        } catch (error) {
+          return failMutation(error);
+        }
+      });
     },
     node(id) {
       assertOpen();
