@@ -8,12 +8,6 @@
  */
 
 const express = require('express');
-const { Server } = require('@modelcontextprotocol/sdk/server/index.js');
-const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
-const {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} = require('@modelcontextprotocol/sdk/types.js');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
@@ -27,6 +21,14 @@ const gunzip = promisify(zlib.gunzip);
 const webSearch = new FreeWebSearch(console);
 const readFile = promisify(fs.readFile);
 const readdir = promisify(fs.readdir);
+
+function loadMcpSdk() {
+  return {
+    Server: require('@modelcontextprotocol/sdk/server/index.js').Server,
+    StreamableHTTPServerTransport: require('@modelcontextprotocol/sdk/server/streamableHttp.js').StreamableHTTPServerTransport,
+    ...require('@modelcontextprotocol/sdk/types.js'),
+  };
+}
 
 // Configuration
 const COSMO_ROOT = path.join(__dirname, '..');
@@ -223,6 +225,11 @@ async function queryMemory(query, limit = 10) {
 
 // Create MCP server
 function createMCPServer() {
+  const {
+    Server,
+    CallToolRequestSchema,
+    ListToolsRequestSchema,
+  } = loadMcpSdk();
   const server = new Server(
     {
       name: 'cosmo-brain',
@@ -1273,8 +1280,7 @@ function createMCPServer() {
   return server;
 }
 
-// Start HTTP server - Stateless mode per SDK docs
-async function main() {
+function createMcpHttpApp() {
   const app = express();
   
   // CORS middleware - allow localhost on any port
@@ -1300,8 +1306,17 @@ async function main() {
   app.use(express.json({ limit: '10gb' }));
   app.use(express.urlencoded({ limit: '10gb', extended: true }));
 
+  app.get('/health', (_req, res) => {
+    res.json({
+      ok: true,
+      protocolVersion: '2025-03-26',
+      sourceHealth: 'healthy',
+    });
+  });
+
   // POST /mcp - handle all MCP requests (stateless)
   app.post('/mcp', async (req, res) => {
+    const { StreamableHTTPServerTransport } = loadMcpSdk();
     // Stateless: create new server + transport for each request
     const server = createMCPServer();
     const transport = new StreamableHTTPServerTransport({
@@ -1366,15 +1381,45 @@ async function main() {
       })
     );
   });
+  return app;
+}
 
-  const port = process.argv[2] || 3335;
-  app.listen(port, () => {
-    console.error(`✅ Cosmo MCP Server (Streamable HTTP) on http://localhost:${port}/mcp`);
-    console.error(`   Logs: ${LOGS_DIR}`);
+function assertLoopbackHost(host) {
+  if (host !== '127.0.0.1' && host !== '::1') {
+    throw Object.assign(new Error('MCP HTTP must bind to loopback'), {
+      code: 'invalid_mcp_host',
+    });
+  }
+}
+
+function startMcpHttpServer(options = {}) {
+  const host = options.host ?? process.env.MCP_HTTP_HOST ?? '127.0.0.1';
+  assertLoopbackHost(host);
+  const port = options.port ?? Number(process.env.MCP_HTTP_PORT || 3335);
+  const app = options.app || createMcpHttpApp();
+  const server = app.listen(port, host, () => {
+    if (options.log !== false) {
+      console.error(`✅ Cosmo MCP Server (Streamable HTTP) on http://${host}:${server.address().port}/mcp`);
+      console.error(`   Logs: ${LOGS_DIR}`);
+    }
+  });
+  return server;
+}
+
+// Start HTTP server - Stateless mode per SDK docs
+async function main() {
+  startMcpHttpServer({ port: process.argv[2] || undefined });
+}
+
+if (require.main === module) {
+  main().catch(error => {
+    console.error('Fatal error:', error);
+    process.exit(1);
   });
 }
 
-main().catch(error => {
-  console.error('Fatal error:', error);
-  process.exit(1);
-});
+module.exports = {
+  assertLoopbackHost,
+  createMcpHttpApp,
+  startMcpHttpServer,
+};

@@ -41,7 +41,7 @@ const {
   buildMcpUnavailableEnvelope,
   isMcpProxyAvailable,
   probeMcpAvailability,
-} = require('./mcp-proxy-availability.js');
+} = require('./mcp-availability.js');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
