@@ -9,6 +9,7 @@
 
 const REFRESH_MS = 30000;
 const GOOD_LIFE_API_TIMEOUT_MS = 12000;
+const AGENT_DISCOVERY_STARTUP_TIMEOUT_MS = 1500;
 let agents = [];
 // Back-compat variable name: this is the agent that owns the current dashboard.
 let primaryAgent = null;
@@ -19,6 +20,7 @@ let cosmo23Url = '';
 let evobrewUrl = '';
 let cosmo23Loaded = false;
 let cosmoOnline = false;
+let cosmoNavigationBound = false;
 const goodLifeSurfaceState = new Map();
 const goodLifeFleetState = new Map();
 let goodLifeOverlayState = {
@@ -46,6 +48,12 @@ const HOME_LAYOUT_MANAGED_SENSOR_IDS = new Set([
 ]);
 let homeTileLayoutControlsBound = false;
 let homeTileLayoutChannel = null;
+let vibeDetailGalleryState = {
+  items: [],
+  index: -1,
+  base: '',
+  unavailable: true,
+};
 const DASHBOARD_OVERLAY_IDS = [
   'problems-overlay',
   'goodlife-overlay',
@@ -199,6 +207,29 @@ const enginePulse = {
 // ── Init ──
 let dashboardInitStarted = false;
 
+function settleDashboardStartupDependency(promise, timeoutMs = AGENT_DISCOVERY_STARTUP_TIMEOUT_MS) {
+  let timeoutId = null;
+  const settled = Promise.resolve(promise).then(() => true, () => true);
+  const timedOut = new Promise((resolve) => {
+    timeoutId = setTimeout(() => resolve(false), timeoutMs);
+  });
+  return Promise.race([settled, timedOut]).finally(() => {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+  });
+}
+
+function refreshDashboardAfterLateAgentDiscovery() {
+  refreshDashboardIdentityUI();
+  refreshDashboardScopeUI();
+  if (currentTab === 'home' && primaryAgent) {
+    void loadVibeTile(primaryAgent, {
+      imageId: 'home-vibe-image',
+      captionId: 'home-vibe-caption',
+      galleryHrefId: 'home-vibe-gallery-link',
+    }).catch(() => {});
+  }
+}
+
 async function init() {
   if (dashboardInitStarted) return;
   dashboardInitStarted = true;
@@ -213,10 +244,17 @@ async function init() {
   setupDashboardOverlayAccessibility();
 
   const scopeRegistryPromise = Promise.resolve().then(() => loadDashboardScopeRegistry());
-  await Promise.allSettled([loadAgents()]);
+  const agentDiscoveryPromise = Promise.resolve().then(() => loadAgents());
+  const agentDiscoverySettled = await settleDashboardStartupDependency(agentDiscoveryPromise);
   connectEnginePulse();
   refreshDashboardScopeUI();
   refreshDashboardIdentityUI();
+  if (!agentDiscoverySettled) {
+    void agentDiscoveryPromise.then(
+      () => refreshDashboardAfterLateAgentDiscovery(),
+      () => refreshDashboardIdentityUI(),
+    ).catch(() => {});
+  }
   void scopeRegistryPromise.then(
     () => refreshDashboardScopeUI(),
     () => refreshDashboardScopeUI(),
@@ -504,13 +542,13 @@ function closeProblemsPanel() {
 async function renderProblemsList() {
   const list = document.getElementById('problems-list');
   if (!list) return;
-  list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Loading...</div>';
+  list.innerHTML = '<div class="h23-overlay-message">Loading problems…</div>';
   try {
     const r = await fetch(`${dashboardBaseUrl()}/api/live-problems`);
     const data = await r.json();
     _liveProblems = data;
     if (!data.available) {
-      list.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Live-problems not available (engine not running or not wired).</div>';
+      list.innerHTML = '<div class="h23-overlay-message unavailable">Live problems are unavailable. The engine route may be offline.</div>';
       return;
     }
     const problems = (data.problems || []).slice().sort((a, b) => {
@@ -518,7 +556,7 @@ async function renderProblemsList() {
       return (rank[a.state] ?? 9) - (rank[b.state] ?? 9);
     });
     if (problems.length === 0) {
-      list.innerHTML = '<div style="color:rgba(255,255,255,0.5);padding:20px;">No problems tracked. Add one below, or the engine will seed defaults on next start.</div>';
+      list.innerHTML = '<div class="h23-overlay-message">No invariants are tracked yet. Add one in Edit invariants.</div>';
       return;
     }
     const activeProblems = problems.filter((p) => p.state !== 'resolved');
@@ -528,7 +566,7 @@ async function renderProblemsList() {
       : '<div class="h23-problems-clear-note">No active live problems. Resolved verifier history is available below.</div>';
     list.innerHTML = `${renderProblemsOperatorSummary(data, problems)}${activeHtml}${renderProblemHistoryDrawer(resolvedProblems)}`;
   } catch (err) {
-    list.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
+    list.innerHTML = `<div class="h23-overlay-message error">Failed to load: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -623,9 +661,9 @@ function renderProblemsOperatorSummary(data, problems) {
 }
 
 function renderProblemCard(p) {
-  const stateColor = {
-    open: '#ffb347', chronic: '#ff6b6b', resolved: '#30d158', unverifiable: '#888',
-  }[p.state] || '#888';
+  const stateClass = ['open', 'chronic', 'resolved', 'unverifiable'].includes(p.state)
+    ? p.state
+    : 'unverifiable';
   const stateLabel = p.state.toUpperCase();
   const ageMin = p.openedAt ? Math.max(0, Math.round((Date.now() - Date.parse(p.openedAt)) / 60000)) : null;
   const last = p.lastResult ? `${p.lastResult.ok ? 'ok' : 'fail'}: ${escapeHtml(p.lastResult.detail || '')}` : 'not yet checked';
@@ -636,7 +674,7 @@ function renderProblemCard(p) {
   const currentLabel = p.state === 'resolved' ? 'Verifier result' : 'What broke';
   const repairLabel = p.state === 'resolved' ? 'Resolution' : 'What Home23 is doing';
   const originTag = p.seedOrigin && p.seedOrigin !== 'system'
-    ? ` <span style="color:rgba(255,255,255,0.4);font-size:10px;background:rgba(255,255,255,0.04);padding:1px 5px;border-radius:3px;text-transform:uppercase;letter-spacing:0.5px;">${escapeHtml(p.seedOrigin)}</span>`
+    ? ` <span class="h23-problem-origin">${escapeHtml(p.seedOrigin)}</span>`
     : '';
   // Active dispatch banner — Tier-2 agent is working on this right now.
   let dispatchBanner = '';
@@ -645,19 +683,19 @@ function renderProblemCard(p) {
     const budget = step?.args?.budgetHours ?? 12;
     const elapsed = (Date.now() - Date.parse(p.dispatchedAt)) / 3600000;
     const pct = Math.min(100, Math.round((elapsed / budget) * 100));
-    dispatchBanner = `<div style="background:rgba(90,200,250,0.08);border:1px solid rgba(90,200,250,0.2);border-radius:6px;padding:7px 10px;margin:6px 0;font-size:12px;color:#5ac8fa;display:flex;align-items:center;gap:10px;">
-      <span>Agent working</span>
-      <span style="color:rgba(255,255,255,0.65);">${elapsed.toFixed(1)}h / ${budget}h</span>
-      <div style="flex:1;height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;"><div style="width:${pct}%;height:100%;background:#5ac8fa;"></div></div>
-      ${p.dispatchedTurnId ? `<code style="font-size:10px;color:rgba(255,255,255,0.4);">${escapeHtml(p.dispatchedTurnId)}</code>` : ''}
+    dispatchBanner = `<div class="h23-problem-dispatch">
+      <strong>Agent working</strong>
+      <span>${elapsed.toFixed(1)}h / ${budget}h</span>
+      <div class="h23-problem-dispatch-track"><div class="h23-problem-dispatch-progress" style="width:${pct}%"></div></div>
+      ${p.dispatchedTurnId ? `<code>${escapeHtml(p.dispatchedTurnId)}</code>` : ''}
     </div>`;
   }
-  return `<div style="background:rgba(255,255,255,0.03);border:1px solid ${stateColor}33;border-left:3px solid ${stateColor};border-radius:8px;padding:12px 14px;margin-bottom:10px;">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
-      <span style="color:${stateColor};font-weight:600;font-size:12px;letter-spacing:0.5px;">${stateLabel}${ageMin !== null && p.state !== 'resolved' ? ' · ' + ageMin + 'm' : ''}</span>
-      <span style="color:#fff;font-size:14px;flex:1;">${escapeHtml(p.claim)}${originTag}</span>
+  return `<article class="h23-problem-card ${stateClass}">
+    <div class="h23-problem-card-head">
+      <span class="h23-problem-state">${stateLabel}${ageMin !== null && p.state !== 'resolved' ? ' · ' + ageMin + 'm' : ''}</span>
+      <strong class="h23-problem-claim">${escapeHtml(p.claim)}${originTag}</strong>
       ${needsUser ? '<span class="h23-goodlife-needs-user">needs you</span>' : ''}
-      <code style="background:rgba(255,255,255,0.05);padding:2px 6px;border-radius:4px;font-size:11px;color:rgba(255,255,255,0.5);">${escapeHtml(p.id)}</code>
+      <code class="h23-problem-id">${escapeHtml(p.id)}</code>
     </div>
     ${dispatchBanner}
     ${renderProblemUserAction(p)}
@@ -667,7 +705,7 @@ function renderProblemCard(p) {
       <div><label>Needed from you</label><span>${escapeHtml(problemUserText(p))}</span></div>
     </div>
     ${renderProblemEvidenceDrawer(p, { last, lastChecked, stepsLabel, recentRem })}
-  </div>`;
+  </article>`;
 }
 
 function renderProblemEvidenceDrawer(p, { last, lastChecked, stepsLabel, recentRem } = {}) {
@@ -748,9 +786,62 @@ async function recordProblemUserIntervention(id) {
   } catch (err) {
     const list = document.getElementById('problems-list');
     if (list) {
-      list.insertAdjacentHTML('afterbegin', `<div style="color:#ff6b6b;padding:8px 12px;">Failed to record intervention: ${escapeHtml(err.message)}</div>`);
+      list.insertAdjacentHTML('afterbegin', `<div class="h23-overlay-message error">Failed to record intervention: ${escapeHtml(err.message)}</div>`);
     }
   }
+}
+
+function problemVerifierRule(problem = {}) {
+  const verifier = problem.verifier || {};
+  const args = verifier.args || {};
+  if (verifier.type === 'http_ping') return `Check ${args.url || args.endpoint || 'the endpoint'} responds successfully`;
+  if (verifier.type === 'pm2_status') return `Confirm ${args.name || args.process || 'the process'} stays online`;
+  if (verifier.type === 'file_mtime') return `Confirm ${args.path || 'the source file'} was updated recently`;
+  if (verifier.type === 'file_exists') return `Confirm ${args.path || 'the required file'} exists`;
+  if (verifier.type === 'disk_free') return 'Confirm the configured disk keeps enough free space';
+  if (verifier.type === 'graph_not_empty') return 'Confirm the memory graph contains live nodes';
+  return `Verify ${problem.claim || problem.id || 'this invariant'}`;
+}
+
+function problemCadenceLabel(problem = {}) {
+  const args = problem.verifier?.args || {};
+  const cadenceMin = Number(
+    problem.cadenceMin
+    ?? problem.intervalMin
+    ?? problem.verifier?.cadenceMin
+    ?? problem.verifier?.intervalMin
+    ?? args.cadenceMin
+    ?? args.intervalMin,
+  );
+  return Number.isFinite(cadenceMin) && cadenceMin > 0
+    ? `Every ${cadenceMin} min`
+    : 'Every verifier cycle';
+}
+
+function renderProblemInvariantList() {
+  const list = document.getElementById('problem-invariant-list');
+  if (!list) return;
+  const problems = Array.isArray(_liveProblems?.problems) ? _liveProblems.problems : [];
+  if (!problems.length) {
+    list.innerHTML = '<div class="h23-overlay-message">No invariants are available yet.</div>';
+    return;
+  }
+  list.innerHTML = problems.map((problem) => `
+    <div class="h23-invariant-row">
+      <button class="h23-invariant-select" type="button" data-problem-invariant-id="${escapeAttr(problem.id)}" onclick="openProblemEditor('${escapeAttr(problem.id)}')">
+        <strong>${escapeHtml(problem.claim || problem.id)}</strong>
+        <span>${escapeHtml(problemVerifierRule(problem))}</span>
+        <small>${escapeHtml(problemCadenceLabel(problem))}</small>
+      </button>
+      <button class="h23-invariant-remove" type="button" data-problem-remove="${escapeAttr(problem.id)}" aria-label="Remove ${escapeAttr(problem.claim || problem.id)}" onclick="event.stopPropagation();removeProblemInvariant('${escapeAttr(problem.id)}')">Remove</button>
+    </div>
+  `).join('');
+}
+
+function openProblemEditorList() {
+  _problemEditingId = null;
+  renderProblemInvariantList();
+  openProblemEditor(null);
 }
 
 function openProblemEditor(id) {
@@ -762,25 +853,36 @@ function openProblemEditor(id) {
   const rem = document.getElementById('pe-remediation');
   const del = document.getElementById('pe-delete');
   const status = document.getElementById('pe-status');
-  if (status) status.textContent = '';
+  if (status) {
+    status.textContent = '';
+    status.classList.remove('success', 'error');
+  }
+  renderProblemInvariantList();
   if (id) {
     const p = (_liveProblems.problems || []).find(x => x.id === id);
     if (!p) return;
-    title.textContent = `Edit: ${p.id}`;
+    title.textContent = `Invariant editor · ${p.id}`;
     pid.value = p.id; pid.disabled = true;
     claim.value = p.claim || '';
     verifier.value = JSON.stringify(p.verifier || {}, null, 2);
     rem.value = JSON.stringify(p.remediation || [], null, 2);
-    del.style.display = '';
+    del.hidden = false;
   } else {
-    title.textContent = 'Add Problem';
+    title.textContent = 'Invariant editor · Add';
     pid.value = ''; pid.disabled = false;
     claim.value = '';
     verifier.value = '{\n  "type": "file_mtime",\n  "args": { "path": "~/.health_log.jsonl", "maxAgeMin": 360 }\n}';
     rem.value = '[\n  { "type": "notify_jtr", "args": { "text": "Something\'s wrong — check." }, "cooldownMin": 360 }\n]';
-    del.style.display = 'none';
+    del.hidden = true;
   }
   document.getElementById('problem-editor-overlay').style.display = 'flex';
+}
+
+function backToProblemsFromEditor() {
+  closeProblemEditor();
+  const problemsOverlay = document.getElementById('problems-overlay');
+  if (problemsOverlay) problemsOverlay.style.display = 'flex';
+  void renderProblemsList();
 }
 
 function closeProblemEditor() {
@@ -795,10 +897,11 @@ async function saveProblemEdit() {
   const verifierText = document.getElementById('pe-verifier').value.trim();
   const remText = document.getElementById('pe-remediation').value.trim();
   const status = document.getElementById('pe-status');
-  if (!pid || !claim) { status.textContent = 'id + claim required'; status.style.color = '#ff6b6b'; return; }
+  status.classList.remove('success', 'error');
+  if (!pid || !claim) { status.textContent = 'id + claim required'; status.classList.add('error'); return; }
   let verifier, remediation;
-  try { verifier = verifierText ? JSON.parse(verifierText) : null; } catch (e) { status.textContent = 'verifier JSON invalid: ' + e.message; status.style.color = '#ff6b6b'; return; }
-  try { remediation = remText ? JSON.parse(remText) : []; } catch (e) { status.textContent = 'remediation JSON invalid: ' + e.message; status.style.color = '#ff6b6b'; return; }
+  try { verifier = verifierText ? JSON.parse(verifierText) : null; } catch (e) { status.textContent = 'verifier JSON invalid: ' + e.message; status.classList.add('error'); return; }
+  try { remediation = remText ? JSON.parse(remText) : []; } catch (e) { status.textContent = 'remediation JSON invalid: ' + e.message; status.classList.add('error'); return; }
   try {
     const method = _problemEditingId ? 'PUT' : 'POST';
     const url = _problemEditingId
@@ -810,23 +913,39 @@ async function saveProblemEdit() {
       body: JSON.stringify({ id: pid, claim, verifier, remediation, seedOrigin: 'user' }),
     });
     const data = await res.json();
-    if (!res.ok) { status.textContent = data.error || `HTTP ${res.status}`; status.style.color = '#ff6b6b'; return; }
-    status.textContent = 'saved'; status.style.color = '#30d158';
+    if (!res.ok) { status.textContent = data.error || `HTTP ${res.status}`; status.classList.add('error'); return; }
+    status.textContent = 'saved'; status.classList.add('success');
     await renderProblemsList();
+    renderProblemInvariantList();
     setTimeout(closeProblemEditor, 600);
   } catch (err) {
-    status.textContent = 'save failed: ' + err.message; status.style.color = '#ff6b6b';
+    status.textContent = 'save failed: ' + err.message;
+    status.classList.add('error');
+  }
+}
+
+async function removeProblemInvariant(id) {
+  if (!id) return;
+  if (!confirm(`Delete invariant "${id}"? Seeded invariants return on the next engine start.`)) return;
+  try {
+    const response = await fetch(`${dashboardBaseUrl()}/api/live-problems/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (!response.ok) throw new Error(`delete failed (${response.status})`);
+    await renderProblemsList();
+    renderProblemInvariantList();
+    if (_problemEditingId === id) openProblemEditor(null);
+  } catch (err) {
+    const status = document.getElementById('pe-status');
+    if (status) {
+      status.textContent = err.message;
+      status.classList.remove('success');
+      status.classList.add('error');
+    }
   }
 }
 
 async function deleteProblemFromEditor() {
   if (!_problemEditingId) return;
-  if (!confirm(`Delete problem "${_problemEditingId}"? If it's a seeded invariant it will come back on next engine start.`)) return;
-  try {
-    await fetch(`${dashboardBaseUrl()}/api/live-problems/${encodeURIComponent(_problemEditingId)}`, { method: 'DELETE' });
-    await renderProblemsList();
-    closeProblemEditor();
-  } catch { /* silent */ }
+  await removeProblemInvariant(_problemEditingId);
 }
 
 // ── Brain Storage (disk vs memory truth) ──
@@ -927,7 +1046,7 @@ function closeBrainStoragePanel() {
 async function renderBrainStoragePanel() {
   const content = document.getElementById('brain-storage-content');
   if (!content) return;
-  content.innerHTML = '<div style="color:rgba(255,255,255,0.6);padding:20px;">Loading...</div>';
+  content.innerHTML = '<div class="h23-overlay-message">Loading storage truth…</div>';
   try {
     const r = await fetch(`${dashboardBaseUrl()}/api/brain/storage`);
     const data = await r.json();
@@ -947,40 +1066,40 @@ async function renderBrainStoragePanel() {
 
     content.innerHTML = `
       ${mismatchWarn}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
-        <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;">
-          <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">On disk (snapshot)</div>
-          <div style="font-size:22px;color:#fff;">${(snap?.nodeCount ?? '—').toLocaleString()} nodes</div>
-          <div style="font-size:13px;color:rgba(255,255,255,0.6);margin-top:2px;">${(snap?.edgeCount ?? '—').toLocaleString()} edges · cycle ${snap?.cycle ?? '—'}</div>
-          <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:6px;">saved ${ago(snap?.savedAt)} · source: ${snap?.memorySource || '—'}</div>
-        </div>
-        <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;">
-          <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">In memory (live)</div>
-          <div style="font-size:22px;color:#fff;">${live?.nodes != null ? live.nodes.toLocaleString() : '—'} nodes</div>
-          <div style="font-size:13px;color:rgba(255,255,255,0.6);margin-top:2px;">${live?.edges != null ? live.edges.toLocaleString() + ' edges' : 'live count unavailable'}</div>
-        </div>
+      <div class="h23-brain-storage-grid">
+        <section class="h23-brain-storage-card">
+          <div class="h23-brain-storage-label">On disk (snapshot)</div>
+          <strong class="h23-brain-storage-number">${(snap?.nodeCount ?? '—').toLocaleString()} nodes</strong>
+          <p>${(snap?.edgeCount ?? '—').toLocaleString()} edges · cycle ${snap?.cycle ?? '—'}</p>
+          <small>saved ${ago(snap?.savedAt)} · source: ${escapeHtml(snap?.memorySource || '—')}</small>
+        </section>
+        <section class="h23-brain-storage-card">
+          <div class="h23-brain-storage-label">In memory (live)</div>
+          <strong class="h23-brain-storage-number">${live?.nodes != null ? live.nodes.toLocaleString() : '—'} nodes</strong>
+          <p>${live?.edges != null ? live.edges.toLocaleString() + ' edges' : 'live count unavailable'}</p>
+        </section>
       </div>
-      <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;margin-bottom:14px;">
-        <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Files</div>
-        <div style="font-family:var(--font-mono,monospace);font-size:12px;color:rgba(255,255,255,0.75);line-height:1.6;">
-          <div>state.json.gz            · ${mb(files.state?.bytes)}</div>
-          <div>memory-nodes.jsonl.gz    · ${mb(files.nodesSidecar?.bytes)}</div>
-          <div>memory-edges.jsonl.gz    · ${mb(files.edgesSidecar?.bytes)}</div>
-          <div>brain-snapshot.json      · ${mb(files.snapshot?.bytes)}</div>
-        </div>
-      </div>
-      ${hw ? `<div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;margin-bottom:14px;">
-        <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">High-water mark</div>
-        <div style="font-size:14px;color:#fff;">${hw.maxNodeCount.toLocaleString()} nodes</div>
-        <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:4px;">last hit ${ago(hw.lastSeen)}. Drop-detector opens a live problem if current falls &gt;10% below.</div>
-      </div>` : ''}
-      <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;">
-        <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Rolling backups (${backups.length})</div>
-        ${backups.length === 0 ? '<div style="font-size:12px;color:rgba(255,255,255,0.45);">No backups yet — first one gets created after ~1 hour of successful saves.</div>' : `<div style="font-family:var(--font-mono,monospace);font-size:12px;color:rgba(255,255,255,0.7);line-height:1.5;">${backups.map(b => `<div>${b.name}</div>`).join('')}</div>`}
-      </div>
+      <section class="h23-brain-storage-card h23-brain-storage-files">
+        <div class="h23-brain-storage-label">Files</div>
+        <code>state.json.gz · ${mb(files.state?.bytes)}</code>
+        <code>memory-nodes.jsonl.gz · ${mb(files.nodesSidecar?.bytes)}</code>
+        <code>memory-edges.jsonl.gz · ${mb(files.edgesSidecar?.bytes)}</code>
+        <code>brain-snapshot.json · ${mb(files.snapshot?.bytes)}</code>
+      </section>
+      ${hw ? `<section class="h23-brain-storage-card">
+        <div class="h23-brain-storage-label">High-water mark</div>
+        <strong class="h23-brain-storage-number compact">${hw.maxNodeCount.toLocaleString()} nodes</strong>
+        <small>last hit ${ago(hw.lastSeen)}. Drop detector opens a live problem if current falls &gt;10% below.</small>
+      </section>` : ''}
+      <section class="h23-brain-storage-card h23-brain-storage-backups">
+        <div class="h23-brain-storage-label">Rolling backups (${backups.length})</div>
+        ${backups.length === 0
+          ? '<p>No backups yet. The first is created after successful saves.</p>'
+          : backups.map((backup) => `<code>${escapeHtml(backup.name)}</code>`).join('')}
+      </section>
     `;
   } catch (err) {
-    content.innerHTML = `<div style="color:#ff6b6b;padding:20px;">Failed to load: ${err.message}</div>`;
+    content.innerHTML = `<div class="h23-overlay-message error">Failed to load: ${escapeHtml(err.message)}</div>`;
   }
 }
 
@@ -1308,48 +1427,6 @@ async function loadAgents() {
     }
   } catch { /* config offline */ }
   configureCosmoOpenLink(document.getElementById('cosmo23-open-link'), cosmo23Url);
-
-  // Wire COSMO tab button
-  const cosmoBtn = document.getElementById('cosmo23-btn');
-  if (cosmoBtn) {
-    cosmoBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      // Deactivate all data-tab buttons
-      document.querySelectorAll('.h23-tab[data-tab]').forEach(t => t.classList.remove('active'));
-      cosmoBtn.classList.add('active');
-      currentTab = 'cosmo23';
-      if (window.location.hash !== '#cosmo23') {
-        window.history.replaceState(null, '', '#cosmo23');
-      }
-      refreshDashboardScopeUI();
-      syncOrganDrawerForTab();
-      setCosmoHomeDrawerOpen(false);
-      await updateCosmoIndicator();
-      showCosmoFrame();
-    });
-  }
-
-  // Wire COSMO indicator click -> switch to COSMO tab
-  const indicator = document.getElementById('cosmo23-indicator');
-  if (indicator) {
-    indicator.addEventListener('click', () => {
-      if (cosmoBtn) cosmoBtn.click();
-    });
-  }
-
-  // Wire COSMO iframe refresh button
-  const refreshBtn = document.getElementById('cosmo23-refresh-btn');
-  if (refreshBtn) {
-    refreshBtn.addEventListener('click', () => refreshCosmoFrame());
-  }
-
-  const homeToggleBtn = document.getElementById('cosmo23-home-toggle-btn');
-  if (homeToggleBtn) {
-    homeToggleBtn.addEventListener('click', () => {
-      setCosmoHomeDrawerOpen(!document.body.classList.contains('h23-external-drawer-open'));
-    });
-  }
-
 }
 
 // ── COSMO iframe ──
@@ -1523,9 +1600,53 @@ function selectDashboardTab(tabKey) {
   return true;
 }
 
+function syncDashboardTabSemantics(activeTabKey = currentTab) {
+  document.querySelectorAll('.h23-tab[role="tab"]').forEach((tab) => {
+    const tabKey = tab.dataset.tab || tab.dataset.scopeTab;
+    const selected = tabKey === activeTabKey;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.setAttribute('tabindex', selected ? '0' : '-1');
+  });
+  document.querySelectorAll('.h23-panel[role="tabpanel"]').forEach((panel) => {
+    panel.setAttribute('aria-hidden', String(panel.id !== `panel-${activeTabKey}`));
+  });
+  const cosmoPanel = document.getElementById('cosmo23-frame-wrap');
+  if (cosmoPanel) cosmoPanel.setAttribute('aria-hidden', String(activeTabKey !== 'cosmo23'));
+}
+
+function setupCosmoNavigation() {
+  if (cosmoNavigationBound) return;
+  const cosmoBtn = document.getElementById('cosmo23-btn');
+  if (!cosmoBtn) return;
+  cosmoNavigationBound = true;
+  cosmoBtn.addEventListener('click', async (event) => {
+    event.preventDefault();
+    document.querySelectorAll('.h23-tab[data-tab]').forEach((tab) => tab.classList.remove('active'));
+    cosmoBtn.classList.add('active');
+    currentTab = 'cosmo23';
+    syncDashboardTabSemantics('cosmo23');
+    if (window.location.hash !== '#cosmo23') {
+      window.history.replaceState(null, '', '#cosmo23');
+    }
+    refreshDashboardScopeUI();
+    syncOrganDrawerForTab();
+    setCosmoHomeDrawerOpen(false);
+    await updateCosmoIndicator();
+    showCosmoFrame();
+  });
+
+  document.getElementById('cosmo23-indicator')?.addEventListener('click', () => cosmoBtn.click());
+  document.getElementById('cosmo23-refresh-btn')?.addEventListener('click', () => refreshCosmoFrame());
+  document.getElementById('cosmo23-home-toggle-btn')?.addEventListener('click', () => {
+    setCosmoHomeDrawerOpen(!document.body.classList.contains('h23-external-drawer-open'));
+  });
+}
+
 function setupTabHandlers() {
   const settingsBtn = document.getElementById('settings-btn');
   if (settingsBtn) settingsBtn.dataset.tab = 'settings';
+  setupCosmoNavigation();
+  syncDashboardTabSemantics(currentTab);
   document.querySelectorAll('.h23-tab[data-tab]').forEach(tab => {
     tab.addEventListener('click', () => {
       // Deactivate all tabs (including cosmo button)
@@ -1541,6 +1662,7 @@ function setupTabHandlers() {
 
       tab.classList.add('active');
       currentTab = tab.dataset.tab;
+      syncDashboardTabSemantics(currentTab);
       if (currentTab && window.location.hash !== `#${currentTab}`) {
         window.history.replaceState(null, '', `#${currentTab}`);
       }
@@ -1582,76 +1704,84 @@ function setupTabHandlers() {
   });
 }
 
-function settingsOverviewResult(result) {
-  return result?.status === 'fulfilled' ? result.value : null;
-}
-
 function renderSettingsOverviewUnavailable(id, label) {
   setHtml(id, `<p class="h23-settings-overview-unavailable">${escapeHtml(label)} unavailable.</p>`);
 }
 
-async function loadSettingsOverview() {
-  const requests = [
-    apiFetch('/home23/api/settings/agents', { timeoutMs: 8000 }),
-    apiFetch('/home23/api/settings/feeder', { timeoutMs: 8000 }),
-    apiFetch(`${dashboardBaseUrl()}/api/notifications`, { timeoutMs: 8000 }),
-    apiFetch('/home23/api/settings/vibe', { timeoutMs: 8000 }),
-  ];
-  const [agentsResult, feederResult, notificationsResult, vibeResult] = await Promise.allSettled(requests);
+function settingsOverviewRow(label, value, detail = '', state = '') {
+  return `
+    <div class="h23-settings-overview-row${state ? ` ${escapeAttr(state)}` : ''}">
+      <div>
+        <span class="h23-settings-overview-row-label">${escapeHtml(label)}</span>
+        ${detail ? `<small>${escapeHtml(detail)}</small>` : ''}
+      </div>
+      <strong class="h23-settings-overview-row-value">${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
 
-  const agentsData = settingsOverviewResult(agentsResult);
-  if (agentsData) {
-    const agentRows = Array.isArray(agentsData.agents) ? agentsData.agents : [];
-    const running = agentRows.filter((agent) => agent.status === 'running').length;
-    const current = agentRows.find((agent) => agent.name === agentsData.currentAgent) || primaryAgent;
-    setHtml('settings-overview-agents', `
-      <p><strong>${escapeHtml(String(agentRows.length))}</strong> configured · ${escapeHtml(String(running))} running</p>
-      <p>Current: ${escapeHtml(current?.displayName || current?.name || 'unavailable')}</p>
-    `);
-  } else {
+function renderSettingsOverviewAgents(data) {
+  const rows = Array.isArray(data?.agents) ? data.agents : [];
+  if (!rows.length) {
     renderSettingsOverviewUnavailable('settings-overview-agents', 'Agent status');
+    return;
   }
+  setHtml('settings-overview-agents', rows.map((agent) => settingsOverviewRow(
+    agent.displayName || agent.name || 'Unnamed agent',
+    agent.status || 'unknown',
+    [agent.name, agent.model].filter(Boolean).join(' · '),
+    agent.status === 'running' ? 'healthy' : 'muted',
+  )).join(''));
+}
 
-  const feederData = settingsOverviewResult(feederResult);
-  if (feederData) {
-    const feeder = feederData.feeder || {};
-    const watchPaths = [
-      ...(Array.isArray(feeder.additionalWatchPaths) ? feeder.additionalWatchPaths : []),
-      ...(Array.isArray(feederData.autoWatchPaths) ? feederData.autoWatchPaths : []),
-    ];
-    setHtml('settings-overview-feeds', `
-      <p><strong>${escapeHtml(String(watchPaths.length))}</strong> watched source${watchPaths.length === 1 ? '' : 's'}</p>
-      <p>Feeder: ${feeder.enabled === false ? 'disabled' : feeder.enabled === true ? 'enabled' : 'unavailable'}</p>
-      <p>Compiler: ${feeder.compiler?.enabled === false ? 'disabled' : feeder.compiler?.enabled === true ? 'enabled' : 'unavailable'}</p>
-    `);
-  } else {
-    renderSettingsOverviewUnavailable('settings-overview-feeds', 'Data feed status');
-  }
+function renderSettingsOverviewFeeds(data) {
+  const feeder = data?.feeder || {};
+  const watchPaths = [
+    ...(Array.isArray(feeder.additionalWatchPaths) ? feeder.additionalWatchPaths : []),
+    ...(Array.isArray(data?.autoWatchPaths) ? data.autoWatchPaths : []),
+  ];
+  const rows = [
+    settingsOverviewRow('Feeder', feeder.enabled === true ? 'Enabled' : feeder.enabled === false ? 'Disabled' : 'Unknown', `${watchPaths.length} watched sources`, feeder.enabled === true ? 'healthy' : 'muted'),
+    settingsOverviewRow('Compiler', feeder.compiler?.enabled === true ? 'Enabled' : feeder.compiler?.enabled === false ? 'Disabled' : 'Unknown'),
+    ...watchPaths.slice(0, 4).map((watchPath, index) => settingsOverviewRow(`Source ${index + 1}`, watchPath)),
+  ];
+  setHtml('settings-overview-feeds', rows.join(''));
+}
 
-  const notificationsData = settingsOverviewResult(notificationsResult);
-  if (notificationsData) {
-    const pending = Number(notificationsData.pending || 0);
-    const recent = Number(notificationsData.length || 0);
-    const total = Number(notificationsData.total || recent);
-    setHtml('settings-overview-notifications', `
-      <p>${escapeHtml(String(pending))} pending</p>
-      <p>${escapeHtml(String(recent))} recent · ${escapeHtml(String(total))} total</p>
-    `);
-  } else {
-    renderSettingsOverviewUnavailable('settings-overview-notifications', 'Notification status');
-  }
+function renderSettingsOverviewNotifications(data) {
+  const recent = Number(data?.length || 0);
+  setHtml('settings-overview-notifications', [
+    settingsOverviewRow('Pending', String(Number(data?.pending || 0)), 'Needs review'),
+    settingsOverviewRow('Recent', String(recent), 'Current window'),
+    settingsOverviewRow('Total', String(Number(data?.total || recent)), 'Recorded notifications'),
+  ].join(''));
+}
 
-  const vibeData = settingsOverviewResult(vibeResult);
-  if (vibeData) {
-    const vibe = vibeData.vibe || {};
-    setHtml('settings-overview-house', `
-      <p>Vibe generation: ${vibe.autoGenerate === false ? 'manual' : vibe.autoGenerate === true ? 'automatic' : 'unavailable'}</p>
-      <p>Rotation: ${Number.isFinite(Number(vibe.rotationIntervalSeconds)) ? `${escapeHtml(String(vibe.rotationIntervalSeconds))} seconds` : 'unavailable'}</p>
-      <p>Gallery limit: ${Number.isFinite(Number(vibe.galleryLimit)) ? escapeHtml(String(vibe.galleryLimit)) : 'unavailable'}</p>
-    `);
-  } else {
-    renderSettingsOverviewUnavailable('settings-overview-house', 'House settings');
-  }
+function renderSettingsOverviewHouse(data) {
+  const vibe = data?.vibe || {};
+  setHtml('settings-overview-house', [
+    settingsOverviewRow('Vibe generation', vibe.autoGenerate === true ? 'Automatic' : vibe.autoGenerate === false ? 'Manual' : 'Unavailable'),
+    settingsOverviewRow('Rotation', Number.isFinite(Number(vibe.rotationIntervalSeconds)) ? `${vibe.rotationIntervalSeconds} seconds` : 'Unavailable'),
+    settingsOverviewRow('Gallery limit', Number.isFinite(Number(vibe.galleryLimit)) ? String(vibe.galleryLimit) : 'Unavailable'),
+  ].join(''));
+}
+
+async function loadSettingsOverview() {
+  const sections = [
+    apiFetch('/home23/api/settings/agents', { timeoutMs: 8000 })
+      .then((data) => data ? renderSettingsOverviewAgents(data) : renderSettingsOverviewUnavailable('settings-overview-agents', 'Agent status'))
+      .catch(() => renderSettingsOverviewUnavailable('settings-overview-agents', 'Agent status')),
+    apiFetch('/home23/api/settings/feeder', { timeoutMs: 8000 })
+      .then((data) => data ? renderSettingsOverviewFeeds(data) : renderSettingsOverviewUnavailable('settings-overview-feeds', 'Data feed status'))
+      .catch(() => renderSettingsOverviewUnavailable('settings-overview-feeds', 'Data feed status')),
+    apiFetch(`${dashboardBaseUrl()}/api/notifications`, { timeoutMs: 8000 })
+      .then((data) => data ? renderSettingsOverviewNotifications(data) : renderSettingsOverviewUnavailable('settings-overview-notifications', 'Notification status'))
+      .catch(() => renderSettingsOverviewUnavailable('settings-overview-notifications', 'Notification status')),
+    apiFetch('/home23/api/settings/vibe', { timeoutMs: 8000 })
+      .then((data) => data ? renderSettingsOverviewHouse(data) : renderSettingsOverviewUnavailable('settings-overview-house', 'House settings'))
+      .catch(() => renderSettingsOverviewUnavailable('settings-overview-house', 'House settings')),
+  ];
+  await Promise.allSettled(sections);
 }
 
 function selectInitialDashboardTabFromHash() {
@@ -1749,26 +1879,38 @@ function applyHomeTileLayout(state) {
     .filter((tileId) => HOME_LAYOUT_MANAGED_SENSOR_IDS.has(tileId)));
   const byId = new Map(layout
     .filter((item) => HOME_LAYOUT_MANAGED_SENSOR_IDS.has(item.tileId))
-    .map((item, index) => [item.tileId, { ...item, order: index }]));
+    .map((item) => [item.tileId, item]));
   const sensorLayout = document.querySelector('[data-home-sensor-layout="true"]');
+  const managedCards = Array.from(sensorLayout?.querySelectorAll('[data-home-tile-id]') || [])
+    .filter((card) => HOME_LAYOUT_MANAGED_SENSOR_IDS.has(card.dataset.homeTileId));
+  const persistedOrder = layout
+    .map((item) => item.tileId)
+    .filter((tileId, index, all) => HOME_LAYOUT_MANAGED_SENSOR_IDS.has(tileId) && all.indexOf(tileId) === index);
+  const managedOrder = [
+    ...persistedOrder,
+    ...managedCards.map((card) => card.dataset.homeTileId).filter((tileId) => !persistedOrder.includes(tileId)),
+  ];
 
-  sensorLayout?.querySelectorAll('[data-home-tile-id]').forEach((card) => {
+  managedCards.forEach((card) => {
     const tileId = card.dataset.homeTileId;
-    if (!HOME_LAYOUT_MANAGED_SENSOR_IDS.has(tileId)) return;
     const layoutItem = byId.get(tileId);
+    card.style.order = String(managedOrder.indexOf(tileId));
     if (hiddenIds.has(tileId)) {
       card.hidden = true;
       return;
     }
     card.hidden = false;
     if (layoutItem) {
-      card.style.order = String(layoutItem.order);
       card.dataset.homeTileSize = layoutItem.size || 'third';
     } else {
-      card.style.removeProperty('order');
       delete card.dataset.homeTileSize;
     }
     renderHomeTileInlineControls(card, layoutItem);
+  });
+
+  const visibleManagedCount = managedOrder.filter((tileId) => !hiddenIds.has(tileId)).length;
+  Array.from(sensorLayout?.querySelectorAll('[data-home-sensor-fixed]') || []).forEach((card, index) => {
+    card.style.order = String(visibleManagedCount + index);
   });
 }
 
@@ -1886,23 +2028,33 @@ async function loadHumanHomeSurface() {
     const latest = {};
     scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/outside-weather/data', { timeoutMs: 8000 }), (data) => {
       renderHumanSensor('weather', data, 'Weather', 'Outside sensor');
+    }, () => {
+      renderHumanSensor('weather', offlineTilePayload('outside-weather', 'Offline', '--', 'Weather unavailable'), 'Offline', 'Weather unavailable');
     });
-    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/sauna-control/data', { timeoutMs: 8000 }), renderHumanSauna);
-    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/pool-screenlogic/data', { timeoutMs: 8000 })
-      .then((data) => data || offlineTilePayload('pool-screenlogic', 'Offline', '—', 'ScreenLogic unavailable'))
-      .catch(() => offlineTilePayload('pool-screenlogic', 'Offline', '—', 'ScreenLogic unavailable')), (data) => {
+    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/sauna-control/data', { timeoutMs: 8000 }), renderHumanSauna, () => {
+      renderHumanSauna(offlineTilePayload('sauna-control', 'Offline', '--', 'Sauna unavailable'));
+    });
+    scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/pool-screenlogic/data', { timeoutMs: 8000 }), (data) => {
       renderHumanSensor('pool', data, 'Pool', 'ScreenLogic');
+    }, () => {
+      renderHumanSensor('pool', offlineTilePayload('pool-screenlogic', 'Offline', '—', 'ScreenLogic unavailable'), 'Offline', 'ScreenLogic unavailable');
     });
-    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/live-problems`, { timeoutMs: 8000 })
-      .then((data) => data || { available: false })
-      .catch(() => ({ available: false })), (data) => {
+    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/live-problems`, { timeoutMs: 8000 }), (data) => {
       latest.problems = data;
       renderHumanIssues(data);
+      renderLatestJerryVoice(latest);
+    }, () => {
+      latest.problems = { available: false };
+      renderHumanIssues(latest.problems);
       renderLatestJerryVoice(latest);
     });
     scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/good-life`, { timeoutMs: GOOD_LIFE_API_TIMEOUT_MS }), (data) => {
       latest.goodLife = data;
       renderHumanGoodLife(data);
+      renderLatestJerryVoice(latest);
+    }, () => {
+      latest.goodLife = null;
+      renderHumanGoodLifeUnavailable();
       renderLatestJerryVoice(latest);
     });
     scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/state`, { timeoutMs: 8000 }), (data) => {
@@ -1936,7 +2088,8 @@ async function loadHumanHomeSurface() {
 function scheduleHumanHomeFetch(tasks, promise, onValue, onError = null) {
   const task = promise
     .then((data) => {
-      if (data) onValue(data);
+      if (data !== null && data !== undefined) onValue(data);
+      else if (onError) onError(new Error('feed unavailable'));
     })
     .catch((err) => {
       if (onError) onError(err);
@@ -2025,8 +2178,11 @@ function applySaunaActionDefaults(action) {
 }
 
 function renderHumanSaunaActions(actions, state = {}) {
+  const compatibleActionIds = state.running
+    ? new Set(['stop'])
+    : new Set(['prestage', 'start']);
   const actionButtons = actions
-    .filter((action) => ['prestage', 'start', 'stop'].includes(action.id))
+    .filter((action) => compatibleActionIds.has(action.id))
     .map((action) => `
       <button class="h23-human-action ${action.id === 'stop' ? 'danger' : 'primary'}" type="button" data-sauna-action="${escapeHtml(action.id)}">
         ${escapeHtml(action.label || action.id)}
@@ -2137,6 +2293,12 @@ function renderHumanGoodLife(payload) {
   setText('human-goodlife-status', lanes.length ? 'watch' : 'steady');
   setText('human-goodlife-value', String(policy).toUpperCase());
   setText('human-goodlife-subtitle', lanes.length ? lanes.join(' · ') : 'Lanes in bounds');
+}
+
+function renderHumanGoodLifeUnavailable() {
+  setText('human-goodlife-status', 'unavailable');
+  setText('human-goodlife-value', '--');
+  setText('human-goodlife-subtitle', 'Good Life feed unavailable');
 }
 
 function renderLatestJerryVoice(latest) {
@@ -6049,6 +6211,56 @@ function formatVibeDate(iso) {
   });
 }
 
+function vibeItemsMatch(left, right) {
+  if (!left || !right) return false;
+  return Boolean(
+    (left.id && right.id && left.id === right.id)
+    || (left.sourceId && right.sourceId && left.sourceId === right.sourceId)
+    || (left.url && right.url && left.url === right.url),
+  );
+}
+
+function syncVibeDetailNavigation() {
+  const previous = document.getElementById('home-vibe-detail-previous');
+  const next = document.getElementById('home-vibe-detail-next');
+  const position = document.getElementById('home-vibe-detail-position');
+  const { items, index, unavailable } = vibeDetailGalleryState;
+  const hasGalleryPosition = !unavailable && items.length > 0 && index >= 0;
+  if (previous) previous.disabled = !hasGalleryPosition || index <= 0;
+  if (next) next.disabled = !hasGalleryPosition || index >= items.length - 1;
+  if (position) {
+    position.textContent = hasGalleryPosition
+      ? `${index + 1} of ${items.length}`
+      : unavailable
+        ? 'Gallery unavailable'
+        : 'Image not in gallery';
+  }
+}
+
+function setVibeDetailGallery(items, currentItem, base = '', options = {}) {
+  const galleryItems = Array.isArray(items) ? items.filter((item) => item?.url) : [];
+  const index = galleryItems.findIndex((item) => vibeItemsMatch(item, currentItem));
+  vibeDetailGalleryState = {
+    items: galleryItems,
+    index,
+    base,
+    unavailable: options.unavailable === true,
+  };
+  if (currentItem?.url) renderVibeImageDetail(currentItem, base);
+  syncVibeDetailNavigation();
+}
+
+function navigateVibeImageDetail(delta) {
+  const nextIndex = vibeDetailGalleryState.index + Number(delta || 0);
+  if (!Number.isInteger(nextIndex) || nextIndex < 0 || nextIndex >= vibeDetailGalleryState.items.length) {
+    syncVibeDetailNavigation();
+    return;
+  }
+  vibeDetailGalleryState.index = nextIndex;
+  renderVibeImageDetail(vibeDetailGalleryState.items[nextIndex], vibeDetailGalleryState.base);
+  syncVibeDetailNavigation();
+}
+
 function renderVibeImageDetail(item, base = '') {
   const detailModal = document.getElementById('home-vibe-detail-modal');
   const image = document.getElementById('home-vibe-detail-image');
@@ -6086,6 +6298,18 @@ function renderVibeImageDetail(item, base = '') {
   detailModal.setAttribute('aria-hidden', 'false');
 }
 
+async function loadVibeDetailGallery(currentItem, base = '') {
+  try {
+    const gallery = await apiFetch(`${base}/home23/api/vibe/gallery?limit=all`, { timeoutMs: 10000 });
+    if (!Array.isArray(gallery?.images)) throw new Error('gallery unavailable');
+    setVibeDetailGallery(gallery.images, currentItem, base, { unavailable: false });
+    return gallery.images;
+  } catch {
+    setVibeDetailGallery([], currentItem, base, { unavailable: true });
+    return [];
+  }
+}
+
 function closeVibeImageDetail() {
   const detailModal = document.getElementById('home-vibe-detail-modal');
   const image = document.getElementById('home-vibe-detail-image');
@@ -6097,17 +6321,25 @@ function closeVibeImageDetail() {
 
 async function openVibeImageDetail(item, base = '') {
   if (!item?.url) return;
-  renderVibeImageDetail(item, base);
-  if (!item.id) return;
-
-  try {
-    const detail = await apiFetch(`${base}/home23/api/vibe/gallery/items/${encodeURIComponent(item.id)}`, {
-      timeoutMs: 10000,
-    });
-    if (detail?.item) renderVibeImageDetail(detail.item, base);
-  } catch {
-    // The visible image is already open; metadata lookup is best-effort.
+  setVibeDetailGallery([], item, base, { unavailable: true });
+  const galleryPromise = loadVibeDetailGallery(item, base);
+  if (item.id) {
+    try {
+      const detail = await apiFetch(`${base}/home23/api/vibe/gallery/items/${encodeURIComponent(item.id)}`, {
+        timeoutMs: 10000,
+      });
+      if (detail?.item) {
+        const galleryItems = await galleryPromise;
+        const mergedItems = galleryItems.map((galleryItem) => (
+          vibeItemsMatch(galleryItem, detail.item) ? detail.item : galleryItem
+        ));
+        setVibeDetailGallery(mergedItems, detail.item, base, { unavailable: !galleryItems.length });
+      }
+    } catch {
+      // The visible image and gallery navigation remain available when detail lookup fails.
+    }
   }
+  await galleryPromise;
 }
 
 async function triggerVibeGeneration() {

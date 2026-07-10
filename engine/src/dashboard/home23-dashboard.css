@@ -7671,7 +7671,7 @@ body.h23-dashboard-page .h23-vibe-detail-panel {
   max-width: none;
   max-height: 82vh;
   overflow: hidden;
-  border: 1px solid #fff;
+  border: 1px solid var(--h23-glass-border);
   border-radius: var(--h23-radius-overlay);
   background: var(--h23-glass-overlay);
   color: var(--h23-text-body);
@@ -8162,5 +8162,431 @@ body.h23-dashboard-page :focus-visible {
   body.h23-dashboard-page .h23-log-overlay-panel,
   body.h23-dashboard-page .h23-vibe-detail-panel {
     background: rgba(255, 255, 255, 0.96);
+  }
+}
+
+/* Completion fix wave: active overlay, navigation, and overview contracts. */
+body.h23-dashboard-page .h23-linked-native-tabs {
+  display: contents;
+}
+
+body.h23-dashboard-page .h23-overlay-description {
+  margin: 4px 0 0;
+  color: var(--h23-text-secondary);
+  font: 500 11px/1.45 var(--h23-font-mono);
+}
+
+body.h23-dashboard-page .h23-log-overlay-close {
+  margin-left: auto;
+}
+
+body.h23-dashboard-page .h23-overlay-content,
+body.h23-dashboard-page .h23-problems-list,
+body.h23-dashboard-page .h23-problem-editor-form,
+body.h23-dashboard-page .h23-invariant-list-shell {
+  padding: 18px 22px;
+}
+
+body.h23-dashboard-page .h23-overlay-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--h23-hairline);
+}
+
+body.h23-dashboard-page .h23-overlay-action {
+  min-height: 40px;
+  padding: 8px 15px;
+  border: 1px solid var(--h23-input-border);
+  border-radius: 12px;
+  background: var(--h23-glass-input);
+  color: var(--h23-text-heading);
+  font: 600 13px/1 var(--h23-font-ui);
+  cursor: pointer;
+}
+
+body.h23-dashboard-page .h23-overlay-action:hover {
+  border-color: var(--h23-accent-tint-border);
+  background: var(--h23-hover-card);
+  color: var(--h23-accent);
+}
+
+body.h23-dashboard-page .h23-overlay-action.primary {
+  border-color: var(--h23-accent);
+  background: var(--h23-accent);
+  color: var(--h23-glass-overlay);
+  box-shadow: var(--h23-shadow-accent-btn);
+}
+
+body.h23-dashboard-page .h23-overlay-action.danger {
+  border-color: color-mix(in srgb, var(--h23-red) 32%, transparent);
+  background: color-mix(in srgb, var(--h23-red) 10%, transparent);
+  color: var(--h23-red-aa);
+}
+
+body.h23-dashboard-page .h23-overlay-message {
+  padding: 18px 20px;
+  border: 1px solid var(--h23-hairline);
+  border-radius: var(--h23-radius-input);
+  background: var(--h23-glass-card);
+  color: var(--h23-text-secondary);
+  line-height: 1.5;
+}
+
+body.h23-dashboard-page .h23-overlay-message.error {
+  color: var(--h23-red-aa);
+}
+
+body.h23-dashboard-page .h23-overlay-message.unavailable {
+  color: var(--h23-text-secondary);
+}
+
+body.h23-dashboard-page .h23-problem-card {
+  margin-bottom: 10px;
+  padding: 13px 14px;
+  border: 1px solid var(--h23-hairline);
+  border-left: 3px solid currentColor;
+  border-radius: var(--h23-radius-input);
+  background: var(--h23-glass-card);
+  color: var(--h23-text-secondary);
+}
+
+body.h23-dashboard-page .h23-problem-card.open {
+  color: var(--h23-amber-aa);
+}
+
+body.h23-dashboard-page .h23-problem-card.chronic {
+  color: var(--h23-red-aa);
+}
+
+body.h23-dashboard-page .h23-problem-card.resolved {
+  color: var(--h23-green-aa);
+}
+
+body.h23-dashboard-page .h23-problem-card.unverifiable {
+  color: var(--h23-text-secondary);
+}
+
+body.h23-dashboard-page .h23-problem-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+body.h23-dashboard-page .h23-problem-state {
+  flex: 0 0 auto;
+  font: 600 11px/1 var(--h23-font-mono);
+  letter-spacing: 0.06em;
+}
+
+body.h23-dashboard-page .h23-problem-claim {
+  flex: 1;
+  color: var(--h23-text-heading);
+  font-size: 14px;
+}
+
+body.h23-dashboard-page .h23-problem-origin,
+body.h23-dashboard-page .h23-problem-id {
+  border-radius: 6px;
+  background: var(--h23-hover-row);
+  color: var(--h23-text-muted-aa);
+  font: 500 10px/1.4 var(--h23-font-mono);
+}
+
+body.h23-dashboard-page .h23-problem-origin {
+  padding: 2px 5px;
+  text-transform: uppercase;
+}
+
+body.h23-dashboard-page .h23-problem-id {
+  padding: 3px 6px;
+}
+
+body.h23-dashboard-page .h23-problem-dispatch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--h23-accent-tint-border);
+  border-radius: 10px;
+  background: var(--h23-accent-tint);
+  color: var(--h23-accent);
+  font-size: 12px;
+}
+
+body.h23-dashboard-page .h23-problem-dispatch span,
+body.h23-dashboard-page .h23-problem-dispatch code {
+  color: var(--h23-text-secondary);
+}
+
+body.h23-dashboard-page .h23-problem-dispatch-track {
+  flex: 1;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--h23-radius-pill);
+  background: var(--h23-hairline);
+}
+
+body.h23-dashboard-page .h23-problem-dispatch-progress {
+  height: 100%;
+  background: var(--h23-accent);
+}
+
+body.h23-dashboard-page .h23-invariant-list-head,
+body.h23-dashboard-page .h23-invariant-row,
+body.h23-dashboard-page .h23-problem-editor-actions,
+body.h23-dashboard-page .h23-problem-editor-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+body.h23-dashboard-page .h23-invariant-list-head {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+body.h23-dashboard-page .h23-invariant-list-head h3,
+body.h23-dashboard-page .h23-problem-editor-form h3 {
+  margin: 0;
+  color: var(--h23-text-heading);
+  font-size: 15px;
+}
+
+body.h23-dashboard-page .h23-invariant-list-head p {
+  margin: 3px 0 0;
+  color: var(--h23-text-secondary);
+  font-size: 12px;
+}
+
+body.h23-dashboard-page .h23-invariant-list {
+  display: grid;
+  gap: 8px;
+}
+
+body.h23-dashboard-page .h23-invariant-row {
+  padding: 6px;
+  border: 1px solid var(--h23-hairline);
+  border-radius: 12px;
+  background: var(--h23-glass-card);
+}
+
+body.h23-dashboard-page .h23-invariant-select {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--h23-text-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+body.h23-dashboard-page .h23-invariant-select strong {
+  color: var(--h23-text-heading);
+}
+
+body.h23-dashboard-page .h23-invariant-select span {
+  color: var(--h23-text-secondary);
+  font-size: 12px;
+}
+
+body.h23-dashboard-page .h23-invariant-select small {
+  color: var(--h23-text-muted-aa);
+  font: 500 10px/1.4 var(--h23-font-mono);
+  text-transform: uppercase;
+}
+
+body.h23-dashboard-page .h23-invariant-remove {
+  min-width: 44px;
+  min-height: 38px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--h23-red-aa);
+  cursor: pointer;
+}
+
+body.h23-dashboard-page .h23-problem-editor-form {
+  display: grid;
+  gap: 11px;
+  border-top: 1px solid var(--h23-hairline);
+}
+
+body.h23-dashboard-page .h23-problem-editor-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--h23-text-secondary);
+  font-size: 12px;
+}
+
+body.h23-dashboard-page .h23-problem-editor-form input,
+body.h23-dashboard-page .h23-problem-editor-form textarea {
+  width: 100%;
+  padding: 9px 10px;
+  font-family: var(--h23-font-mono);
+}
+
+body.h23-dashboard-page .h23-problem-editor-help {
+  padding: 10px 12px;
+  border: 1px solid var(--h23-hairline);
+  border-radius: 10px;
+  background: var(--h23-glass-card);
+  color: var(--h23-text-secondary);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+body.h23-dashboard-page .h23-problem-editor-status {
+  color: var(--h23-text-secondary);
+  font: 500 11px/1.4 var(--h23-font-mono);
+}
+
+body.h23-dashboard-page .h23-problem-editor-status.success {
+  color: var(--h23-green-aa);
+}
+
+body.h23-dashboard-page .h23-problem-editor-status.error {
+  color: var(--h23-red-aa);
+}
+
+body.h23-dashboard-page .h23-problem-editor-nav {
+  justify-content: space-between;
+}
+
+body.h23-dashboard-page .h23-brain-storage-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+body.h23-dashboard-page .h23-brain-storage-card {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--h23-hairline);
+  border-radius: 12px;
+  background: var(--h23-glass-card);
+  color: var(--h23-text-body);
+}
+
+body.h23-dashboard-page .h23-brain-storage-label {
+  color: var(--h23-text-muted-aa);
+  font: 500 10px/1.4 var(--h23-font-mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+body.h23-dashboard-page .h23-brain-storage-number {
+  color: var(--h23-text-heading);
+  font-size: 22px;
+}
+
+body.h23-dashboard-page .h23-brain-storage-number.compact {
+  font-size: 16px;
+}
+
+body.h23-dashboard-page .h23-brain-storage-card p,
+body.h23-dashboard-page .h23-brain-storage-card small {
+  margin: 0;
+  color: var(--h23-text-secondary);
+}
+
+body.h23-dashboard-page .h23-brain-storage-files code,
+body.h23-dashboard-page .h23-brain-storage-backups code {
+  color: var(--h23-text-body);
+  font-family: var(--h23-font-mono);
+  font-size: 11px;
+}
+
+body.h23-dashboard-page .h23-settings-overview-panel > div {
+  display: grid;
+  gap: 8px;
+}
+
+body.h23-dashboard-page .h23-settings-overview-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--h23-hairline);
+}
+
+body.h23-dashboard-page .h23-settings-overview-row:last-child {
+  border-bottom: 0;
+}
+
+body.h23-dashboard-page .h23-settings-overview-row > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+body.h23-dashboard-page .h23-settings-overview-row-label {
+  color: var(--h23-text-body);
+  font-weight: 600;
+}
+
+body.h23-dashboard-page .h23-settings-overview-row small {
+  overflow: hidden;
+  color: var(--h23-text-muted-aa);
+  font: 500 10px/1.4 var(--h23-font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.h23-dashboard-page .h23-settings-overview-row-value {
+  flex: 0 0 auto;
+  color: var(--h23-text-heading);
+  font: 600 11px/1.4 var(--h23-font-mono);
+  text-align: right;
+  text-transform: capitalize;
+}
+
+body.h23-dashboard-page .h23-settings-overview-row.healthy .h23-settings-overview-row-value {
+  color: var(--h23-green-aa);
+}
+
+body.h23-dashboard-page .h23-vibe-detail-actions button {
+  min-height: 38px;
+  padding: 7px 12px;
+  border: 1px solid var(--h23-input-border);
+  border-radius: 10px;
+  background: var(--h23-glass-input);
+  color: var(--h23-text-heading);
+  font: 600 12px/1 var(--h23-font-ui);
+  cursor: pointer;
+}
+
+body.h23-dashboard-page .h23-vibe-detail-actions button:disabled {
+  color: var(--h23-text-muted-aa);
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+body.h23-dashboard-page #home-vibe-detail-position {
+  color: var(--h23-text-muted-aa);
+  font: 500 10px/1.4 var(--h23-font-mono);
+}
+
+@media (max-width: 640px) {
+  body.h23-dashboard-page .h23-brain-storage-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  body.h23-dashboard-page .h23-invariant-list-head,
+  body.h23-dashboard-page .h23-problem-card-head,
+  body.h23-dashboard-page .h23-problem-dispatch {
+    align-items: stretch;
+    flex-direction: column;
   }
 }

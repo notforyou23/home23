@@ -691,8 +691,17 @@ class RuntimeElement {
 
   matches(selector) {
     if (selector.startsWith('#')) return this.id === selector.slice(1);
+    if (selector.includes('[data-home-sensor-layout="true"]')) return this.dataset.homeSensorLayout === 'true';
     if (selector.includes('[data-sauna-preset]') && this.dataset.saunaPreset !== undefined) return true;
     if (selector.includes('[data-home-tile-id="sauna-control"]')) return this.dataset.homeTileId === 'sauna-control';
+    if (selector.includes('[data-home-tile-id]')) return this.dataset.homeTileId !== undefined;
+    if (selector.includes('[data-home-sensor-fixed]')) return this.dataset.homeSensorFixed !== undefined;
+    if (selector.includes('[role="tab"]')) {
+      return this.getAttribute('role') === 'tab' && (!selector.includes('.h23-tab') || this.classList.contains('h23-tab'));
+    }
+    if (selector.includes('[role="tabpanel"]')) {
+      return this.getAttribute('role') === 'tabpanel' && (!selector.includes('.h23-panel') || this.classList.contains('h23-panel'));
+    }
     if (selector.includes('[href]') && this.attributes.has('href')) return true;
     if (selector.includes('[tabindex]') && this.attributes.has('tabindex')) return this.attributes.get('tabindex') !== '-1';
     const tag = this.tagName.toLowerCase();
@@ -921,6 +930,92 @@ test('the approved redesign boundary excludes server, settings API, and runtime 
   ]) assert.doesNotMatch(expectedFiles, new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
 });
 
+test('Problems exposes a complete invariant list shell without replacing technical editing', () => {
+  const problemsOverlay = findById(htmlTree, 'problems-overlay');
+  const editorOverlay = findById(htmlTree, 'problem-editor-overlay');
+  assert.ok(problemsOverlay);
+  assert.ok(editorOverlay);
+  const problemsSource = sourceForNode(html, problemsOverlay);
+  const editorSource = sourceForNode(html, editorOverlay);
+
+  assert.match(problemsSource, /id="problems-edit-invariants"[^>]*onclick="openProblemEditorList\(\)"[^>]*>\s*Edit invariants/i);
+  for (const id of [
+    'problem-invariant-list', 'problem-invariant-add', 'problem-editor-form',
+    'problem-editor-back', 'problem-editor-done', 'pe-id', 'pe-claim',
+    'pe-verifier', 'pe-remediation', 'pe-delete', 'pe-status',
+  ]) assert.match(editorSource, new RegExp(`id="${id}"`), `missing invariant editor control #${id}`);
+  assert.match(editorSource, /Back to problems/i);
+  assert.match(editorSource, />Done</i);
+
+  const runtime = createDashboardRuntime();
+  for (const id of [
+    'problem-editor-overlay', 'problem-editor-title', 'problem-invariant-list',
+    'problem-editor-form', 'pe-id', 'pe-claim', 'pe-verifier',
+    'pe-remediation', 'pe-delete', 'pe-status',
+  ]) runtime.document.createElement(id, {
+    tagName: id.startsWith('pe-') && !['pe-delete', 'pe-status'].includes(id) ? 'INPUT' : 'DIV',
+  });
+  runtime.context.__invariants = [{
+    id: 'sauna-safe',
+    claim: 'Sauna is never left heating unattended',
+    verifier: { type: 'http_ping', args: { url: '/sauna/status', intervalMin: 5 } },
+    remediation: [{ type: 'notify_jtr' }],
+  }];
+  runtime.run(`
+    _liveProblems = { available: true, problems: globalThis.__invariants };
+    openProblemEditorList();
+  `);
+  const list = runtime.document.getElementById('problem-invariant-list').innerHTML;
+  assert.match(list, /Sauna is never left heating unattended/);
+  assert.match(list, /Check .*sauna\/status/i);
+  assert.match(list, /Every 5 min/i);
+  assert.match(list, /data-problem-invariant-id="sauna-safe"/);
+  assert.match(list, /data-problem-remove="sauna-safe"/);
+
+  runtime.run(`openProblemEditor('sauna-safe')`);
+  assert.equal(runtime.document.getElementById('pe-id').value, 'sauna-safe');
+  assert.equal(runtime.document.getElementById('pe-claim').value, 'Sauna is never left heating unattended');
+  assert.match(runtime.document.getElementById('pe-verifier').value, /http_ping/);
+  assert.match(runtime.document.getElementById('pe-remediation').value, /notify_jtr/);
+
+  const editorRuntime = functionClosure(js, [
+    'openProblemEditorList', 'renderProblemInvariantList', 'openProblemEditor',
+    'saveProblemEdit', 'deleteProblemFromEditor', 'removeProblemInvariant',
+  ]);
+  assert.match(editorRuntime, /\/api\/live-problems/);
+  assert.match(editorRuntime, /method\s*:\s*['"](?:POST|PUT)['"]/);
+  assert.match(editorRuntime, /method\s*:\s*['"]DELETE['"]/);
+});
+
+test('active Problems, Brain Storage, and invariant paths emit Glass Light classes and tokens', () => {
+  const activeHtml = [
+    sourceForNode(html, findById(htmlTree, 'problems-overlay')),
+    sourceForNode(html, findById(htmlTree, 'brain-storage-overlay')),
+    sourceForNode(html, findById(htmlTree, 'problem-editor-overlay')),
+  ].join('\n');
+  const activeJs = functionClosure(js, [
+    'renderProblemsList', 'renderProblemCard', 'recordProblemUserIntervention',
+    'saveProblemEdit', 'renderBrainStoragePanel', 'renderProblemInvariantList',
+  ]);
+  const forbiddenPaint = /#ffb347|#ff6b6b|#30d158|rgba\(0\s*,\s*122\s*,\s*255|(?:color|background)\s*:\s*#fff\b/i;
+  assert.doesNotMatch(activeHtml, forbiddenPaint);
+  assert.doesNotMatch(activeJs, forbiddenPaint);
+  assert.doesNotMatch(activeHtml, /style="[^"]*(?:color|background|border(?:-color)?):/i);
+
+  for (const [selector, token] of [
+    ['.h23-problem-card.open', '--h23-amber-aa'],
+    ['.h23-problem-card.chronic', '--h23-red-aa'],
+    ['.h23-problem-card.resolved', '--h23-green-aa'],
+    ['.h23-overlay-message.error', '--h23-red-aa'],
+    ['.h23-problem-editor-status.success', '--h23-green-aa'],
+    ['.h23-problem-editor-status.error', '--h23-red-aa'],
+    ['.h23-brain-storage-number', '--h23-text-heading'],
+  ]) {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    assert.match(css, new RegExp(`body\\.h23-dashboard-page ${escaped}[^\\{]*\\{[^}]*color:\\s*var\\(${token}\\)`));
+  }
+});
+
 test('Home layout persistence is scoped to environmental sensor cards', () => {
   const allowlist = js.match(/const\s+HOME_LAYOUT_MANAGED_SENSOR_IDS\s*=\s*new Set\(\s*\[([\s\S]*?)\]\s*\)/);
   assert.ok(allowlist, 'missing HOME_LAYOUT_MANAGED_SENSOR_IDS Set');
@@ -938,10 +1033,110 @@ test('Home layout persistence is scoped to environmental sensor cards', () => {
   }
 });
 
-test('runtime initialization resolves the dashboard agent before connecting and keeps native status current', () => {
+test('sensor layout always places managed cards before fixed Problems and Good Life cards', () => {
+  const runtime = createDashboardRuntime();
+  const strip = runtime.document.createElement('sensor-strip');
+  strip.dataset.homeSensorLayout = 'true';
+  const cards = new Map();
+  for (const id of ['outside-weather', 'sauna-control', 'pool-screenlogic']) {
+    const card = runtime.document.createElement(`card-${id}`);
+    card.dataset.homeTileId = id;
+    strip.appendChild(card);
+    cards.set(id, card);
+  }
+  const problems = runtime.document.createElement('human-issues-card', { tagName: 'BUTTON' });
+  problems.dataset.homeSensorFixed = 'problems';
+  strip.appendChild(problems);
+  const goodLife = runtime.document.createElement('human-goodlife-card', { tagName: 'BUTTON' });
+  goodLife.dataset.homeSensorFixed = 'good-life';
+  strip.appendChild(goodLife);
+  runtime.run('renderHomeTileInlineControls = () => {}');
+  runtime.context.__layout = {
+    layout: [
+      { tileId: 'pool-screenlogic', size: 'third' },
+      { tileId: 'outside-weather', size: 'half' },
+      { tileId: 'sauna-control', size: 'third' },
+    ],
+    hiddenTiles: [],
+  };
+  runtime.run('applyHomeTileLayout(globalThis.__layout)');
+  assert.deepEqual(
+    ['pool-screenlogic', 'outside-weather', 'sauna-control'].map((id) => cards.get(id).style.order),
+    ['0', '1', '2'],
+  );
+  assert.equal(problems.style.order, '3');
+  assert.equal(goodLife.style.order, '4');
+
+  const layoutSource = functionFragment(js, 'applyHomeTileLayout');
+  assert.match(layoutSource, /data-home-sensor-fixed/);
+  assert.ok(layoutSource.indexOf('data-home-sensor-fixed') > layoutSource.indexOf('HOME_LAYOUT_MANAGED_SENSOR_IDS'));
+});
+
+test('native dashboard tabs expose and synchronize tablist relationships', () => {
+  const primaryTabs = walk(htmlTree).find((node) => hasClass(node, 'h23-tabs-primary'));
+  assert.equal(primaryTabs?.attrs.get('role'), 'tablist');
+  for (const tabKey of ['home', 'agency', 'briefs', 'workers', 'query', 'brain-map', 'settings', 'cosmo23']) {
+    const tab = walk(htmlTree).find((node) => node.attrs.get('data-tab') === tabKey
+      || (tabKey === 'settings' && node.attrs.get('id') === 'settings-btn')
+      || (tabKey === 'cosmo23' && node.attrs.get('id') === 'cosmo23-btn'));
+    assert.equal(tab?.tag, 'button', `${tabKey} must stay a native button`);
+    assert.equal(tab?.attrs.get('role'), 'tab', `${tabKey} must expose role=tab`);
+    assert.equal(tab?.attrs.get('aria-controls'), tabKey === 'cosmo23' ? 'cosmo23-frame-wrap' : `panel-${tabKey}`);
+    assert.ok(['true', 'false'].includes(tab?.attrs.get('aria-selected')));
+  }
+  const panelLabels = new Map([
+    ['panel-home', 'dashboard-tab-home'],
+    ['panel-agency', 'dashboard-tab-agency'],
+    ['panel-briefs', 'dashboard-tab-briefs'],
+    ['panel-workers', 'dashboard-tab-workers'],
+    ['panel-query', 'dashboard-tab-query'],
+    ['panel-brain-map', 'dashboard-tab-brain-map'],
+    ['panel-settings', 'settings-btn'],
+  ]);
+  for (const [id, labelledBy] of panelLabels) {
+    const panel = findById(htmlTree, id);
+    assert.equal(panel?.attrs.get('role'), 'tabpanel', `${id} must expose role=tabpanel`);
+    assert.equal(panel?.attrs.get('aria-labelledby'), labelledBy);
+  }
+  const cosmoPanel = findById(htmlTree, 'cosmo23-frame-wrap');
+  assert.equal(cosmoPanel?.attrs.get('role'), 'tabpanel');
+  assert.equal(cosmoPanel?.attrs.get('aria-labelledby'), 'cosmo23-btn');
+  for (const scope of ['chat', 'evobrew']) {
+    const link = walk(htmlTree).find((node) => node.attrs.get('data-scope-tab') === scope);
+    assert.equal(link?.tag, 'a');
+    assert.notEqual(link?.attrs.get('role'), 'tab');
+  }
+
+  const runtime = createDashboardRuntime();
+  const homeTab = runtime.document.createElement('dashboard-tab-home', { tagName: 'BUTTON', classes: ['h23-tab'] });
+  homeTab.dataset.tab = 'home';
+  homeTab.setAttribute('role', 'tab');
+  const settingsTab = runtime.document.createElement('settings-btn', { tagName: 'BUTTON', classes: ['h23-tab'] });
+  settingsTab.dataset.tab = 'settings';
+  settingsTab.setAttribute('role', 'tab');
+  const homePanel = runtime.document.createElement('panel-home', { classes: ['h23-panel'] });
+  homePanel.setAttribute('role', 'tabpanel');
+  const settingsPanel = runtime.document.createElement('panel-settings', { classes: ['h23-panel'] });
+  settingsPanel.setAttribute('role', 'tabpanel');
+  runtime.run(`syncDashboardTabSemantics('settings')`);
+  assert.equal(homeTab.getAttribute('aria-selected'), 'false');
+  assert.equal(homeTab.getAttribute('tabindex'), '-1');
+  assert.equal(settingsTab.getAttribute('aria-selected'), 'true');
+  assert.equal(settingsTab.getAttribute('tabindex'), '0');
+  assert.equal(homePanel.getAttribute('aria-hidden'), 'true');
+  assert.equal(settingsPanel.getAttribute('aria-hidden'), 'false');
+
+  const tabRuntime = functionClosure(js, ['setupTabHandlers', 'selectDashboardTab', 'syncDashboardTabSemantics']);
+  assert.match(tabRuntime, /syncDashboardTabSemantics/);
+  assert.match(functionFragment(js, 'setupCosmoNavigation'), /syncDashboardTabSemantics\(['"]cosmo23['"]\)/);
+});
+
+test('runtime initialization bounds dashboard agent discovery and keeps native status current', () => {
   const init = functionFragment(js, 'init');
   assert.ok(init.indexOf('loadAgents()') < init.indexOf('connectEnginePulse()'), 'agent discovery must precede WebSocket connection');
-  assert.match(init, /await\s+Promise\.allSettled\(/);
+  assert.match(init, /await\s+settleDashboardStartupDependency\(agentDiscoveryPromise\)/);
+  assert.ok(init.indexOf('setupTabHandlers()') < init.indexOf('settleDashboardStartupDependency'));
+  assert.ok(init.indexOf('connectEnginePulse()') < init.indexOf('loadHumanHomeSurface()'));
   assert.match(init, /setInterval\(updateClocks,\s*1000\)/);
 
   const pulse = functionFragment(js, '_renderPulseNow');
@@ -985,7 +1180,15 @@ test('native Settings routing, sauna presets, hero metadata, and brain coherence
   assert.match(coherence, /snapshotEdges\s*===\s*memoryEdges/);
 });
 
-test('startup waits for agent identity but not a stalled scope registry', async () => {
+test('startup bounds stalled agent discovery and applies late identity without blocking Home', async () => {
+  const settleSource = functionFragment(js, 'settleDashboardStartupDependency');
+  const settle = vm.runInNewContext(`${settleSource}\nsettleDashboardStartupDependency`, {
+    setTimeout,
+    clearTimeout,
+  });
+  assert.equal(await settle(Promise.resolve('ready'), 30), true);
+  assert.equal(await settle(new Promise(() => {}), 5), false);
+
   const runtime = createDashboardRuntime();
   runtime.run(`
     globalThis.runtimeEvents = [];
@@ -1003,6 +1206,7 @@ test('startup waits for agent identity but not a stalled scope registry', async 
     startAutoRefresh = () => runtimeEvents.push('polling');
     loadHumanHomeSurface = () => { runtimeEvents.push('home'); return Promise.resolve(); };
     connectEnginePulse = () => runtimeEvents.push('socket');
+    settleDashboardStartupDependency = () => Promise.resolve(false);
     loadAgents = () => new Promise((resolve) => {
       globalThis.releaseAgentDiscovery = () => { runtimeEvents.push('agents'); resolve(); };
     });
@@ -1013,25 +1217,34 @@ test('startup waits for agent identity but not a stalled scope registry', async 
 
   const initialization = runtime.run('init()');
   await Promise.resolve();
-  assert.deepEqual([...runtime.context.runtimeEvents], [], 'socket and Home must wait for agent discovery');
-
-  runtime.run('releaseAgentDiscovery()');
-  const settledWithoutScope = await Promise.race([
-    initialization.then(() => true),
-    new Promise((resolve) => setTimeout(() => resolve(false), 50)),
-  ]);
-  assert.equal(settledWithoutScope, true, 'scope registry must not hold startup open');
+  await initialization;
   const startupEvents = [...runtime.context.runtimeEvents];
-  assert.ok(startupEvents.indexOf('agents') < startupEvents.indexOf('socket'));
-  assert.ok(startupEvents.indexOf('socket') < startupEvents.indexOf('home'));
+  assert.equal(startupEvents.includes('agents'), false, 'stalled roster must still be pending');
+  assert.ok(startupEvents.includes('socket'), 'pulse setup must not wait indefinitely for roster data');
+  assert.ok(startupEvents.includes('home'), 'Home data must not wait indefinitely for roster data');
   assert.ok(startupEvents.includes('polling'));
 
-  const refreshesBeforeScope = startupEvents.filter((event) => event === 'scope-ui').length;
+  const identityBeforeRoster = startupEvents.filter((event) => event === 'identity').length;
+  runtime.run('releaseAgentDiscovery()');
+  await Promise.resolve();
+  await Promise.resolve();
+  const identityAfterRoster = [...runtime.context.runtimeEvents].filter((event) => event === 'identity').length;
+  assert.equal(identityAfterRoster, identityBeforeRoster + 1, 'a late roster must refresh visible identity');
+
+  const refreshesBeforeScope = [...runtime.context.runtimeEvents].filter((event) => event === 'scope-ui').length;
   runtime.run('releaseScopeRegistry()');
   await Promise.resolve();
   await Promise.resolve();
   const refreshesAfterScope = [...runtime.context.runtimeEvents].filter((event) => event === 'scope-ui').length;
   assert.equal(refreshesAfterScope, refreshesBeforeScope + 1, 'settled scope data must refresh its UI independently');
+
+  const initSource = functionFragment(js, 'init');
+  assert.match(initSource, /settleDashboardStartupDependency\(/);
+  assert.match(initSource, /agentDiscoveryPromise\.then\(/);
+  const tabSetup = functionClosure(js, ['setupTabHandlers', 'setupCosmoNavigation']);
+  assert.match(tabSetup, /cosmo23-btn/);
+  assert.match(tabSetup, /addEventListener\(['"]click['"]/);
+  assert.doesNotMatch(functionFragment(js, 'loadAgents'), /cosmoBtn\.addEventListener/);
 });
 
 test('overlay focus, Tab, Escape, and scroll restoration follow actual paint order', () => {
@@ -1157,12 +1370,26 @@ test('Settings overview settles GET sections independently without mutation requ
     'settings-overview-notifications', 'settings-overview-house',
   ]) runtime.document.createElement(id);
   runtime.context.__settingsCalls = [];
+  runtime.context.__feederOffline = false;
   runtime.context.__settingsApiFetch = async (url, options = {}) => {
     runtime.context.__settingsCalls.push({ url, options });
-    if (url.includes('/settings/feeder')) throw new Error('feeder offline');
+    if (url.includes('/settings/feeder')) {
+      if (runtime.context.__feederOffline) throw new Error('feeder offline');
+      return {
+        feeder: {
+          enabled: true,
+          additionalWatchPaths: ['/Users/jtr/Documents/briefs'],
+          compiler: { enabled: true },
+        },
+        autoWatchPaths: ['/Users/jtr/Downloads'],
+      };
+    }
     if (url.includes('/settings/agents')) return {
       currentAgent: 'jerry',
-      agents: [{ name: 'jerry', displayName: 'Jerry', status: 'running' }],
+      agents: [
+        { name: 'jerry', displayName: 'Jerry', status: 'running', model: 'gpt-production' },
+        { name: 'forrest', displayName: 'Forrest', status: 'stopped', model: 'local-model' },
+      ],
     };
     if (url.includes('/api/notifications')) return { status: 'ok', pending: 2, length: 5, total: 8, items: [] };
     if (url.includes('/settings/vibe')) return { vibe: { autoGenerate: true, rotationIntervalSeconds: 45, galleryLimit: 60 } };
@@ -1176,11 +1403,37 @@ test('Settings overview settles GET sections independently without mutation requ
   await runtime.run('loadSettingsOverview()');
   assert.equal(runtime.context.__settingsCalls.length, 4);
   assert.ok(runtime.context.__settingsCalls.every(({ options }) => !options.method || options.method === 'GET'));
-  assert.match(runtime.document.getElementById('settings-overview-agents').innerHTML, /Jerry/);
+  const agentsOverview = runtime.document.getElementById('settings-overview-agents').innerHTML;
+  assert.match(agentsOverview, /h23-settings-overview-row/);
+  assert.match(agentsOverview, /Jerry/);
+  assert.match(agentsOverview, /Forrest/);
+  assert.match(agentsOverview, /gpt-production/);
+  assert.match(agentsOverview, /running/);
+  const feedsOverview = runtime.document.getElementById('settings-overview-feeds').innerHTML;
+  assert.match(feedsOverview, /h23-settings-overview-row/);
+  assert.match(feedsOverview, /Feeder/);
+  assert.match(feedsOverview, /Enabled/);
+  assert.match(feedsOverview, /Documents\/briefs/);
+  assert.match(feedsOverview, /Downloads/);
+  const notificationsOverview = runtime.document.getElementById('settings-overview-notifications').innerHTML;
+  assert.match(notificationsOverview, /h23-settings-overview-row/);
+  assert.match(notificationsOverview, />Pending</);
+  assert.match(notificationsOverview, />2</);
+  assert.match(notificationsOverview, />Recent</);
+  const houseOverview = runtime.document.getElementById('settings-overview-house').innerHTML;
+  assert.match(houseOverview, /h23-settings-overview-row/);
+  assert.match(houseOverview, /Vibe generation/);
+  assert.match(houseOverview, /Automatic/);
+
+  assert.match(css, /body\.h23-dashboard-page \.h23-settings-overview-row\s*\{/);
+  assert.match(css, /body\.h23-dashboard-page \.h23-settings-overview-row-value\s*\{[^}]*color:\s*var\(--h23-text-heading\)/);
+
+  runtime.context.__feederOffline = true;
+  await runtime.run('loadSettingsOverview()');
   assert.match(runtime.document.getElementById('settings-overview-feeds').innerHTML, /unavailable/i);
-  assert.match(runtime.document.getElementById('settings-overview-notifications').innerHTML, /2[^<]*pending/i);
-  assert.match(runtime.document.getElementById('settings-overview-notifications').innerHTML, /5[^<]*recent/i);
-  assert.match(runtime.document.getElementById('settings-overview-house').innerHTML, /automatic/);
+  assert.match(runtime.document.getElementById('settings-overview-agents').innerHTML, /Jerry/);
+  assert.match(runtime.document.getElementById('settings-overview-notifications').innerHTML, /Pending/);
+  assert.match(runtime.document.getElementById('settings-overview-house').innerHTML, /Vibe generation/);
 });
 
 test('Home Problems card executes clear, open, chronic, unverifiable, and unavailable severity semantics', () => {
@@ -1256,9 +1509,80 @@ test('failed Home Problems requests replace stale clear state with unavailable t
   }
 
   const loader = functionFragment(js, 'loadHumanHomeSurface');
-  assert.match(loader, /api\/live-problems[\s\S]{0,300}\.then\(\(data\) => data \|\| \{ available: false \}\)/);
-  assert.match(loader, /api\/live-problems[\s\S]{0,400}\.catch\(\(\) => \(\{ available: false \}\)\)/);
-  assert.match(loader, /api\/live-problems[\s\S]{0,900}renderHumanIssues\(data\)/);
+  assert.match(loader, /api\/live-problems[\s\S]{0,700}latest\.problems\s*=\s*\{ available: false \}/);
+  assert.match(loader, /api\/live-problems[\s\S]{0,900}renderHumanIssues\(latest\.problems\)/);
+  const scheduler = functionFragment(js, 'scheduleHumanHomeFetch');
+  assert.match(scheduler, /data !== null && data !== undefined/);
+  assert.match(scheduler, /else if \(onError\) onError/);
+});
+
+test('all six Home feeds fail closed while successful siblings render independently', async () => {
+  const runtime = createDashboardRuntime();
+  for (const id of [
+    'human-weather-status', 'human-weather-value', 'human-weather-subtitle', 'human-weather-metrics',
+    'human-sauna-status', 'human-sauna-value', 'human-sauna-subtitle', 'human-sauna-metrics', 'human-sauna-actions',
+    'human-pool-status', 'human-pool-value', 'human-pool-subtitle', 'human-pool-metrics',
+    'human-issues-status', 'human-issues-value', 'human-issues-subtitle',
+    'human-goodlife-status', 'human-goodlife-value', 'human-goodlife-subtitle',
+    'human-briefs-status', 'human-briefs-list',
+  ]) runtime.document.createElement(id);
+  runtime.document.createElement('human-issues-card', { tagName: 'BUTTON' });
+  const saunaCard = runtime.document.createElement('sauna-card');
+  saunaCard.dataset.homeTileId = 'sauna-control';
+  const target = runtime.document.createElement('human-sauna-target', { tagName: 'INPUT' });
+  target.value = '190';
+  const duration = runtime.document.createElement('human-sauna-duration', { tagName: 'INPUT' });
+  duration.value = '180';
+
+  runtime.context.__homeFetchMode = 'offline';
+  runtime.context.__homeApiFetch = (url) => {
+    if (/outside-weather|sauna-control|pool-screenlogic|live-problems|good-life|briefs/.test(url)) {
+      return runtime.context.__homeFetchMode === 'offline'
+        ? Promise.resolve(null)
+        : runtime.context.__homeFetchMode === 'slow-weather' && url.includes('outside-weather')
+          ? runtime.context.__weatherPromise
+          : url.includes('good-life')
+            ? Promise.resolve({ state: { policy: { mode: 'balanced' }, lanes: {} } })
+            : Promise.resolve(null);
+    }
+    return Promise.resolve({});
+  };
+  runtime.run(`
+    primaryAgent = null;
+    apiFetch = globalThis.__homeApiFetch;
+  `);
+
+  await runtime.run('loadHumanHomeSurface()');
+  for (const [id, expected] of [
+    ['human-weather-status', 'Offline'],
+    ['human-sauna-status', 'Offline'],
+    ['human-pool-status', 'Offline'],
+    ['human-issues-status', 'unavailable'],
+    ['human-goodlife-status', 'unavailable'],
+    ['human-briefs-status', 'offline'],
+  ]) assert.equal(runtime.document.getElementById(id).textContent, expected, `${id} retained stale/checking truth`);
+  assert.match(runtime.document.getElementById('human-sauna-actions').innerHTML, /unavailable/i);
+  assert.match(runtime.document.getElementById('human-briefs-list').innerHTML, /unavailable/i);
+
+  let releaseWeather;
+  runtime.context.__weatherPromise = new Promise((resolve) => { releaseWeather = resolve; });
+  runtime.context.__homeFetchMode = 'slow-weather';
+  const secondLoad = runtime.run('loadHumanHomeSurface()');
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(
+    runtime.document.getElementById('human-goodlife-value').textContent,
+    'BALANCED',
+    'a slow Weather feed must not block a successful Good Life sibling',
+  );
+  releaseWeather({ content: { status: 'Fresh', value: '72°F', subtitle: 'Clear', metrics: [] } });
+  await secondLoad;
+  assert.equal(runtime.document.getElementById('human-weather-value').textContent, '72°F');
+
+  const loader = functionFragment(js, 'loadHumanHomeSurface');
+  for (const feed of ['outside-weather', 'sauna-control', 'pool-screenlogic', 'live-problems', 'good-life', 'briefs']) {
+    assert.match(loader, new RegExp(`${feed}[\\s\\S]{0,900}(?:offlineTilePayload|renderHumanIssues|renderHumanGoodLife|Briefs unavailable)`));
+  }
 });
 
 test('sauna polling preserves user-edited request state and reflects live heating state', () => {
@@ -1303,6 +1627,24 @@ test('sauna polling preserves user-edited request state and reflects live heatin
   assert.equal(target.dataset.userEdited, 'true');
   assert.match(actions.innerHTML, /class="active"[^>]*data-target="180"/);
   assert.doesNotMatch(actions.innerHTML, /class="active"[^>]*data-target="170"/);
+});
+
+test('Sauna actions are mutually exclusive for idle and running states', () => {
+  const runtime = createDashboardRuntime();
+  runtime.context.__saunaActions = [
+    { id: 'prestage', label: 'Prestage' },
+    { id: 'start', label: 'Start' },
+    { id: 'stop', label: 'Stop' },
+  ];
+  const idle = runtime.run('renderHumanSaunaActions(globalThis.__saunaActions, { running: false, heating: false, targetTemperature: 190 })');
+  assert.match(idle, /data-sauna-action="prestage"/);
+  assert.match(idle, /data-sauna-action="start"/);
+  assert.doesNotMatch(idle, /data-sauna-action="stop"/);
+
+  const running = runtime.run('renderHumanSaunaActions(globalThis.__saunaActions, { running: true, heating: true, targetTemperature: 190 })');
+  assert.match(running, /data-sauna-action="stop"/);
+  assert.doesNotMatch(running, /data-sauna-action="(?:prestage|start)"/);
+  assert.match(running, />Heating</);
 });
 
 test('Brain Storage classification and color semantics execute for all states', async () => {
@@ -1726,6 +2068,13 @@ test('standalone Chat, Vibe gallery, and Welcome retain their production binding
   assert.match(welcomeHtml, /body\.h23-welcome-page \.welcome-card\s*\{[^}]*background:\s*var\(--h23-glass-overlay\)/);
 });
 
+test('Welcome contains no visible emoji iconography', () => {
+  const body = welcomeHtml.slice(welcomeHtml.indexOf('<body'));
+  assert.doesNotMatch(body, /&#(?:x[0-9a-f]+|\d+);/i);
+  assert.doesNotMatch(body, /\p{Extended_Pictographic}/u);
+  assert.match(body, /class="welcome-logo"[^>]*>\s*H23\s*</);
+});
+
 test('standalone Chat page scope wins shared important paint rules and exposes select focus', () => {
   const pageStyle = standaloneChatHtml.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
   const scoped = pageStyle.slice(pageStyle.indexOf('Glass Light standalone Chat surface'));
@@ -1753,16 +2102,15 @@ test('Settings compatibility colors preserve action contrast and follow real run
   assert.match(scoped, /\.h23s-onboarding-gate\.satisfied/);
 });
 
-test('Vibe gallery cards are keyboard reachable and Enter or Space opens the unchanged lightbox path', async () => {
+test('Vibe gallery image cards are native buttons wired to the unchanged lightbox path', async () => {
   const galleryScript = inlineScripts(vibeGalleryHtml).at(-1) || '';
-  assert.match(galleryScript, /<article class="h23-vg-card"[^>]*role="button"[^>]*tabindex="0"/);
+  assert.match(galleryScript, /<button class="h23-vg-card"[^>]*type="button"/);
+  assert.doesNotMatch(galleryScript, /class="h23-vg-card"[^>]*(?:role="button"|tabindex="0")/);
   const bindingStart = galleryScript.indexOf("grid.querySelectorAll('.h23-vg-card')");
   assert.notEqual(bindingStart, -1);
   const bindings = galleryScript.slice(bindingStart, galleryScript.indexOf('if (selectedId)', bindingStart));
-  assert.match(bindings, /addEventListener\(['"]keydown['"]/);
-  assert.match(bindings, /event\.key\s*===\s*['"]Enter['"]/);
-  assert.match(bindings, /event\.key\s*===\s*['"] ['"]/);
-  assert.match(bindings, /event\.preventDefault\(\)/);
+  assert.match(bindings, /addEventListener\(['"]click['"]/);
+  assert.doesNotMatch(bindings, /addEventListener\(['"]keydown['"]/);
   assert.match(bindings, /openLightbox\(item\)/);
 
   const makeElement = () => {
@@ -1817,13 +2165,8 @@ test('Vibe gallery cards are keyboard reachable and Enter or Space opens the unc
   });
   await vm.runInContext(galleryScript, galleryContext);
 
-  for (const key of ['Enter', ' ']) {
-    elements.get('lightbox').classes.delete('open');
-    let prevented = false;
-    card.handlers.keydown({ key, preventDefault: () => { prevented = true; } });
-    assert.equal(prevented, true, `${JSON.stringify(key)} must suppress native card scrolling`);
-    assert.equal(elements.get('lightbox').classes.has('open'), true, `${JSON.stringify(key)} must open the lightbox`);
-  }
+  card.handlers.click();
+  assert.equal(elements.get('lightbox').classes.has('open'), true, 'native button activation must open the lightbox');
 });
 
 test('reduced-motion preference causally prevents particle canvas initialization', () => {
@@ -1994,6 +2337,52 @@ test('Vibe image is a semantic overlay invoker with preserved open-path wiring',
   assert.equal(attrs.get('aria-disabled'), 'true');
   assert.equal(imageControl.onclick, null);
   assert.match(functionFragment(js, 'loadVibeTile'), /configureVibeImageControl/);
+});
+
+test('Home Vibe modal navigates the read-only gallery with honest boundaries and fallback', () => {
+  for (const id of [
+    'home-vibe-detail-previous', 'home-vibe-detail-next', 'home-vibe-detail-position',
+    'home-vibe-detail-open', 'home-vibe-detail-gallery',
+  ]) assert.match(html, new RegExp(`id="${id}"`), `missing Vibe modal navigation #${id}`);
+
+  const runtime = createDashboardRuntime();
+  for (const id of [
+    'home-vibe-detail-modal', 'home-vibe-detail-image', 'home-vibe-detail-source',
+    'home-vibe-detail-title', 'home-vibe-detail-caption', 'home-vibe-detail-prompt',
+    'home-vibe-detail-meta', 'home-vibe-detail-open', 'home-vibe-detail-gallery',
+    'home-vibe-detail-previous', 'home-vibe-detail-next', 'home-vibe-detail-position',
+  ]) runtime.document.createElement(id, {
+    tagName: id.includes('previous') || id.includes('next') ? 'BUTTON' : id.includes('open') || id.includes('gallery') ? 'A' : 'DIV',
+  });
+  runtime.context.__vibeItems = [
+    { id: 'one', url: '/one.jpg', caption: 'First image', prompt: 'First prompt' },
+    { id: 'two', url: '/two.jpg', caption: 'Second image', prompt: 'Second prompt' },
+  ];
+  runtime.run(`setVibeDetailGallery(globalThis.__vibeItems, globalThis.__vibeItems[0], '/jerry')`);
+  const previous = runtime.document.getElementById('home-vibe-detail-previous');
+  const next = runtime.document.getElementById('home-vibe-detail-next');
+  const position = runtime.document.getElementById('home-vibe-detail-position');
+  assert.equal(previous.disabled, true);
+  assert.equal(next.disabled, false);
+  assert.equal(position.textContent, '1 of 2');
+
+  runtime.run('navigateVibeImageDetail(1)');
+  assert.equal(runtime.document.getElementById('home-vibe-detail-caption').textContent, 'Second image');
+  assert.equal(previous.disabled, false);
+  assert.equal(next.disabled, true);
+  assert.equal(position.textContent, '2 of 2');
+  runtime.run('navigateVibeImageDetail(1)');
+  assert.equal(runtime.document.getElementById('home-vibe-detail-caption').textContent, 'Second image', 'boundary navigation must not blank the modal');
+
+  runtime.run(`setVibeDetailGallery([], globalThis.__vibeItems[1], '/jerry', { unavailable: true })`);
+  assert.equal(previous.disabled, true);
+  assert.equal(next.disabled, true);
+  assert.match(position.textContent, /Gallery unavailable/i);
+  assert.equal(runtime.document.getElementById('home-vibe-detail-caption').textContent, 'Second image');
+
+  const open = functionClosure(js, ['openVibeImageDetail', 'loadVibeDetailGallery']);
+  assert.match(open, /\/home23\/api\/vibe\/gallery\?limit=all/);
+  assert.match(open, /\/home23\/api\/vibe\/gallery\/items\//);
 });
 
 test('COSMO new-tab control receives the resolved runtime URL without a hash placeholder', () => {

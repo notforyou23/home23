@@ -345,9 +345,15 @@
     }
 
     body.h23-vibe-page .h23-vg-card {
+      width: 100%;
+      padding: 0;
       background: var(--h23-glass-card);
       border: 1px solid var(--h23-glass-border);
       border-radius: var(--h23-radius-card);
+      color: inherit;
+      font: inherit;
+      text-align: left;
+      appearance: none;
       box-shadow: var(--h23-shadow-card);
       backdrop-filter: blur(var(--h23-glass-blur-card));
       -webkit-backdrop-filter: blur(var(--h23-glass-blur-card));
@@ -605,14 +611,14 @@
         grid.innerHTML = data.images.map((item, index) => {
           const caption = escapeHtml(item.caption || item.prompt || '');
           return `
-          <article class="h23-vg-card" role="button" tabindex="0" aria-label="Open Vibe image ${index + 1}" data-index="${index}">
+          <button class="h23-vg-card" type="button" aria-label="Open Vibe image ${index + 1}" data-index="${index}">
             <img src="${item.url}" alt="Vibe image ${index + 1}" loading="lazy">
             <div class="h23-vg-card-body">
               <div class="h23-vg-source">${escapeHtml(sourceLabel(item))}</div>
               <div class="h23-vg-caption">${caption}</div>
               <div class="h23-vg-date">${formatDate(item.generatedAt)}</div>
             </div>
-          </article>`;
+          </button>`;
         }).join('');
 
         grid.querySelectorAll('.h23-vg-card').forEach((card) => {
@@ -621,12 +627,6 @@
             if (item) openLightbox(item);
           };
           card.addEventListener('click', openCard);
-          card.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              openCard();
-            }
-          });
         });
 
         if (selectedId) {
