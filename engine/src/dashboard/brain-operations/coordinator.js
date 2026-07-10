@@ -1410,6 +1410,7 @@ class BrainOperationCoordinator {
       const status = await this._authenticatedWorkerStatus(current, {
         minimumEventSequence: runtime.workerCursor,
       });
+      if (runtime.stopped || this.stopped || this.runtimes.get(operationId) !== runtime) return;
       if (TERMINAL_WORKER_STATES.has(status.state)) {
         await this._enqueue(operationId, () => this._finalizeFromWorkerLocked(operationId, status));
         return;
@@ -1419,6 +1420,7 @@ class BrainOperationCoordinator {
   }
 
   async _rearmProviderCallsLocked(record, rawCalls, runtime) {
+    if (runtime.stopped || this.stopped || this.runtimes.get(record.operationId) !== runtime) return;
     let calls;
     try {
       calls = validateActiveProviderCalls(rawCalls);
@@ -1429,6 +1431,7 @@ class BrainOperationCoordinator {
     for (const call of runtime.providerCalls.values()) this._clearProviderTimer(call);
     runtime.providerCalls.clear();
     for (const call of calls) {
+      if (runtime.stopped || this.stopped || this.runtimes.get(record.operationId) !== runtime) return;
       this._validateProviderCallId(record.operationType, call.providerCallId);
       const max = this.executionDeadlineMsByType[record.operationType];
       if (call.providerStallMs > max) throw coordinatorError('provider_contract_invalid');

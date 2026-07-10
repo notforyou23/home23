@@ -1219,6 +1219,40 @@ test('a stuck authenticated worker status is bounded without shortening executio
   await checking;
 });
 
+test('a delayed reconnect status cannot rearm provider timers after cancellation removed the runtime', async (t) => {
+  class DelayedReconnectWorker extends ControlledWorker {
+    constructor() {
+      super();
+      this.statusGate = deferred();
+    }
+
+    async *events(operationId, { afterSequence, signal }, capability) {
+      this.eventsCalls.push({ operationId, afterSequence, signal, capability });
+    }
+
+    async status(operationId, capability) {
+      this.statusCalls.push({ operationId, capability });
+      return this.statusGate.promise;
+    }
+  }
+  const worker = new DelayedReconnectWorker();
+  const fixture = makeFixture(t, { worker });
+  const operation = await fixture.coordinator.start(request({ requestId: 'delayed-reconnect' }));
+  await eventually(() => assert.equal(worker.statusCalls.length, 1));
+  const oldRuntime = fixture.coordinator.runtimes.get(operation.operationId);
+  const cancelled = await fixture.coordinator.cancel(operation.operationId);
+  assert.equal(cancelled.state, 'cancelled');
+  const snapshot = worker.publicRecord(worker.records.get(operation.operationId));
+  snapshot.activeProviderCalls = [{
+    providerCallId: 'query', providerStallMs: 5_000, idleMs: 100,
+  }];
+  worker.statusGate.resolve(snapshot);
+  await eventually(() => assert.equal(oldRuntime.pumpPromise, null));
+  assert.equal(oldRuntime.stopped, true);
+  assert.equal(oldRuntime.providerCalls.size, 0);
+  assert.equal(fixture.coordinator.runtimes.has(operation.operationId), false);
+});
+
 test('worker event gaps record evidence, authenticate status, and resume future events', async (t) => {
   const fixture = makeFixture(t);
   const operation = await fixture.coordinator.start(request());
