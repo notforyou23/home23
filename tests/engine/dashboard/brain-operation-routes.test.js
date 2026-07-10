@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import crypto from 'node:crypto';
+import fs, { readFileSync } from 'node:fs';
 import http from 'node:http';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
@@ -10,6 +13,15 @@ const {
   createBrainOperationsPlaceholderRouter,
   createBrainOperationsRouter,
 } = require('../../../engine/src/dashboard/brain-operations/router.js');
+const {
+  BrainOperationStore,
+} = require('../../../engine/src/dashboard/brain-operations/operation-store.js');
+const {
+  createBrainOperationStoreReader,
+} = require('../../../engine/src/dashboard/brain-operations/store-reader.js');
+const {
+  createBrainOperationExporter,
+} = require('../../../engine/src/dashboard/brain-operations/exporter.js');
 
 const OPERATION_ID = 'brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
 const RESULT_HANDLE = 'brres_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
@@ -103,6 +115,167 @@ function fakes(overrides = {}) {
       exportResult: async (input) => { calls.push(['export', input]); return { exportHandle: 'brexp_ok' }; },
     },
     ...overrides,
+  };
+}
+
+function realTarget(home23Root) {
+  const canonicalRoot = path.join(home23Root, 'instances', 'jerry', 'brain');
+  return {
+    domain: 'brain',
+    brainId: 'brain-jerry',
+    ownerAgent: 'jerry',
+    displayName: 'Jerry',
+    kind: 'resident',
+    lifecycle: 'resident',
+    catalogRevision: 'catalog-real-fixture',
+    route: '/api/brain/brain-jerry',
+    canonicalRoot,
+    accessMode: 'own',
+    mutationBoundaries: [
+      { kind: 'brain', path: canonicalRoot },
+      { kind: 'run', path: canonicalRoot },
+      { kind: 'pgs', path: path.join(canonicalRoot, 'pgs-sessions') },
+      { kind: 'session', path: path.join(canonicalRoot, 'sessions') },
+      { kind: 'cache', path: path.join(canonicalRoot, 'cache') },
+      { kind: 'export', path: path.join(canonicalRoot, 'exports') },
+      { kind: 'agency', path: path.join(canonicalRoot, 'agency') },
+    ],
+  };
+}
+
+async function makeRouteFixture(t) {
+  const home23Root = fs.realpathSync.native(fs.mkdtempSync(
+    path.join(tmpdir(), 'home23-brain-operation-routes-'),
+  ));
+  for (const relative of [
+    'instances/jerry/brain',
+    'instances/jerry/runtime',
+    'instances/jerry/workspace',
+  ]) fs.mkdirSync(path.join(home23Root, relative), { recursive: true });
+  const operationsRoot = path.join(home23Root, 'instances/jerry/runtime/brain-operations');
+  const store = new BrainOperationStore({ root: operationsRoot, requesterAgent: 'jerry' });
+  const reader = createBrainOperationStoreReader({
+    operationsRoot,
+    expectedRequester: 'jerry',
+    liveStore: store,
+  });
+  const exporter = createBrainOperationExporter({
+    home23Root,
+    requesterAgent: 'jerry',
+    reader,
+  });
+  const coordinator = {
+    async start(input) {
+      const created = await store.create({
+        requestId: input.requestId,
+        requesterAgent: 'jerry',
+        target: realTarget(home23Root),
+        operationType: input.operationType,
+        requestParameters: input.parameters,
+        parameters: input.parameters,
+        sourcePinDescriptor: null,
+        sourcePinDigest: null,
+        canonicalEvidence: true,
+      });
+      return created.record;
+    },
+    async cancel(operationId) {
+      const current = await store.get(operationId);
+      return store.transition(operationId, {
+        expectedVersion: current.recordVersion,
+        state: 'cancelled',
+        error: { code: 'cancelled', message: 'cancelled', retryable: false },
+      });
+    },
+    async detach(operationId) { return store.get(operationId); },
+    async attach() { throw Object.assign(new Error('attachment_not_available'), { code: 'operation_unavailable' }); },
+  };
+  const worker = {
+    async complete(operationId, envelope) {
+      let current = await store.get(operationId);
+      if (envelope.result !== null) {
+        current = await store.setResult(operationId, {
+          expectedVersion: current.recordVersion,
+          result: envelope.result,
+        });
+      }
+      return store.transition(operationId, {
+        expectedVersion: current.recordVersion,
+        state: envelope.state,
+        error: envelope.error,
+        sourceEvidence: envelope.sourceEvidence,
+      });
+    },
+    async completeArtifact(operationId, artifact) {
+      let current = await store.get(operationId);
+      current = await store.adoptResultArtifact(operationId, {
+        expectedVersion: current.recordVersion,
+        ...artifact,
+      });
+      return store.transition(operationId, {
+        expectedVersion: current.recordVersion,
+        state: 'complete',
+        error: null,
+        sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'matches' },
+      });
+    },
+  };
+  const app = express();
+  const placeholder = createBrainOperationsPlaceholderRouter();
+  app.use('/home23/api/brain-operations', placeholder.router);
+  app.use((req, res, next) => {
+    if (req.brainOperationBodyParsed === true) return next();
+    return express.json({ limit: '10gb' })(req, res, next);
+  });
+  placeholder.attach(createBrainOperationsRouter({
+    requesterAgent: 'jerry',
+    coordinator,
+    reader,
+    exporter,
+    buildCatalog: async () => ({ catalogRevision: 'catalog-real-fixture', brains: [] }),
+  }).router);
+  const server = http.createServer(app);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}/home23/api/brain-operations`;
+  t.after(async () => {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    fs.rmSync(home23Root, { recursive: true, force: true });
+  });
+  const getJson = async (pathname) => {
+    const response = await fetch(`${baseUrl}${pathname}`);
+    return { status: response.status, body: await response.json() };
+  };
+  const postJson = async (pathname, body) => {
+    const response = await fetch(`${baseUrl}${pathname}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.json() };
+  };
+  return {
+    home23Root,
+    store,
+    coordinator,
+    worker,
+    getJson,
+    postJson,
+    async writeOperationScratch(operationId, fileName, bytes) {
+      const scratch = await store.ensureScratchDirectory(operationId);
+      const filePath = path.join(scratch, fileName);
+      await fs.promises.writeFile(filePath, bytes);
+      return filePath;
+    },
+    async readExport(relativePath) {
+      return fs.promises.readFile(
+        path.join(home23Root, 'instances', 'jerry', relativePath),
+        'utf8',
+      );
+    },
+    async readExportBuffer(relativePath) {
+      return fs.promises.readFile(path.join(home23Root, 'instances', 'jerry', relativePath));
+    },
+    sha256(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); },
   };
 }
 
@@ -358,4 +531,79 @@ test('events authenticates the durable attachment before committing SSE headers'
     assert.match(response.headers.get('content-type'), /application\/json/);
     assert.equal((await response.json()).error.code, 'access_denied');
   });
+});
+
+test('large durable result reloads by operation route and canonical export rejects caller bytes', async (t) => {
+  const fixture = await makeRouteFixture(t);
+  const operation = await fixture.coordinator.start({
+    requestId: 'large-result-route', operationType: 'query',
+    parameters: { query: 'large result fixture' },
+  });
+  const answer = 'durable-result-byte\n'.repeat(80_000);
+  await fixture.worker.complete(operation.operationId, {
+    state: 'complete', result: { answer }, error: null,
+    sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'matches' },
+  });
+  const status = await fixture.store.get(operation.operationId);
+  assert.equal(typeof status.resultHandle, 'string');
+  assert.match(status.resultHandle, /^brres_[A-Za-z0-9_-]{32}$/);
+  assert.equal(status.resultHandle.includes(operation.operationId), false);
+  assert.doesNotMatch(status.resultHandle, /[\\/]/);
+  assert.equal(status.result, null);
+
+  const loaded = await fixture.getJson(`/${operation.operationId}/result`);
+  assert.equal(loaded.status, 200);
+  assert.equal(loaded.body.result.answer.length, answer.length);
+  assert.equal(loaded.body.resultHandle, status.resultHandle);
+
+  const exported = await fixture.postJson(`/${operation.operationId}/export`, {
+    format: 'markdown', resultHandle: status.resultHandle,
+  });
+  assert.equal(exported.status, 200);
+  const exportedText = await fixture.readExport(exported.body.relativePath);
+  assert.match(exportedText, /# Brain Operation Result/);
+  const fencedJson = exportedText.match(/```json\n([\s\S]+)\n```/);
+  assert.ok(fencedJson);
+  assert.equal(JSON.parse(fencedJson[1]).answer, answer);
+
+  const forged = await fixture.postJson(`/${operation.operationId}/export`, {
+    format: 'markdown', answer: 'forged caller bytes',
+  });
+  assert.equal(forged.status, 400);
+  assert.equal(forged.body.error.code, 'invalid_request');
+});
+
+test('graph artifact result route returns metadata and handle but never graph bytes', async (t) => {
+  const fixture = await makeRouteFixture(t);
+  const operation = await fixture.coordinator.start({
+    requestId: 'graph-artifact-route', operationType: 'graph_export',
+    parameters: { format: 'jsonl' },
+  });
+  const graphBytes = Buffer.from('{"node":{"id":"n1"}}\n'.repeat(100_000));
+  await fixture.worker.completeArtifact(operation.operationId, {
+    scratchPath: await fixture.writeOperationScratch(operation.operationId, 'graph.jsonl', graphBytes),
+    mediaType: 'application/x-ndjson', contentEncoding: 'identity',
+    bytes: graphBytes.length, sha256: fixture.sha256(graphBytes),
+  });
+  const status = await fixture.store.get(operation.operationId);
+  assert.equal(typeof status.resultHandle, 'string');
+  assert.match(status.resultHandle, /^brres_[A-Za-z0-9_-]{32}$/);
+  assert.equal(status.resultHandle.includes(operation.operationId), false);
+  assert.doesNotMatch(status.resultHandle, /[\\/]/);
+  assert.equal(status.resultArtifact.bytes, graphBytes.length);
+  assert.equal(status.resultArtifact.contentEncoding, 'identity');
+  assert.match(status.resultArtifact.sha256, /^[a-f0-9]{64}$/);
+
+  const loaded = await fixture.getJson(`/${operation.operationId}/result`);
+  assert.equal(loaded.status, 200);
+  assert.equal(loaded.body.result, null);
+  assert.equal(loaded.body.resultHandle, status.resultHandle);
+  assert.deepEqual(loaded.body.resultArtifact, status.resultArtifact);
+  assert.equal(JSON.stringify(loaded.body).includes('"node"'), false);
+
+  const exported = await fixture.postJson(`/${operation.operationId}/export`, { format: 'jsonl' });
+  assert.equal(exported.status, 200);
+  const copied = await fixture.readExportBuffer(exported.body.relativePath);
+  assert.equal(copied.length, graphBytes.length);
+  assert.equal(fixture.sha256(copied), status.resultArtifact.sha256);
 });

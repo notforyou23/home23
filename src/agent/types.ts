@@ -8,6 +8,8 @@ import type { MediaAttachment } from '../types.js';
 import type { CronScheduler } from '../scheduler/cron.js';
 import type { TTSService } from '../observability/tts.js';
 import type { BrowserController } from '../browser/cdp.js';
+import type { BrainOperationsClient } from './brain-operations/client.js';
+import type { OperationActivity } from './brain-operations/types.js';
 
 // ─── Tool Types ─────────────────────────────────────────────
 
@@ -22,6 +24,8 @@ export interface ToolResult {
   content: string;
   media?: MediaAttachment[];
   is_error?: boolean;
+  resultHandle?: string;
+  metadata?: Record<string, unknown>;
 }
 
 // ─── Tool Context ───────────────────────────────────────────
@@ -30,6 +34,14 @@ export interface SubAgentTracker {
   active: number;
   maxConcurrent: number;
   queue: Array<{ task: string; chatId: string; resolve: () => void }>;
+}
+
+export interface TurnRuntimeContext {
+  turnId: string;
+  abortController: AbortController;
+  signal: AbortSignal;
+  brainOperations: BrainOperationsClient;
+  onOperationActivity: (activity: OperationActivity) => void;
 }
 
 export interface ToolContext {
@@ -53,6 +65,9 @@ export interface ToolContext {
   onEvent?: AgentEventCallback;
   conversationHistory?: { append(chatId: string, records: unknown[]): void };
   abortSignal?: AbortSignal;
+  brainOperations: BrainOperationsClient;
+  onOperationActivity?: (activity: OperationActivity) => void;
+  turnRuntime: TurnRuntimeContext | null;
 }
 
 /** Minimal interface to avoid circular deps — implemented by ContextManager */

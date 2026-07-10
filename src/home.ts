@@ -39,6 +39,7 @@ import { ContextManager } from './agent/context.js';
 import { ConversationHistory } from './agent/history.js';
 import { createToolRegistry } from './agent/tools/index.js';
 import type { ToolContext, SubAgentTracker } from './agent/types.js';
+import { BrainOperationsClient } from './agent/brain-operations/client.js';
 import { resolveBrainRoute } from './agent/brain-route-resolver.js';
 import { TTSService } from './observability/tts.js';
 import { BrowserController } from './browser/cdp.js';
@@ -306,6 +307,11 @@ async function main(): Promise<void> {
     console.warn(`[home] brainRoute NOT resolved for ${agentName} — brain_query tools will return is_error. Check: curl ${cosmo23BaseUrl}/api/brains`);
   }
 
+  const brainOperations = new BrainOperationsClient({
+    baseUrl: `http://127.0.0.1:${DASHBOARD_PORT}`,
+    callerAgent: agentName,
+  });
+
   // ── Tool Context (pre-wired, agent loop + scheduler added below) ──
   const toolContext: ToolContext = {
     scheduler: null,
@@ -323,6 +329,8 @@ async function main(): Promise<void> {
     chatId: '',
     telegramAdapter: null,   // wired after adapter creation
     runAgentLoop: null,       // wired after agent creation
+    brainOperations,
+    turnRuntime: null,
   };
 
   // ── Model from config.yaml (single source of truth) ──
