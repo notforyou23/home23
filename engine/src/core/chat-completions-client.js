@@ -163,11 +163,8 @@ class ChatCompletionsClient {
                    process.env.OPENAI_API_KEY ||
                    'not-needed';
 
-    const OpenAI = loadOpenAI();
-    this.client = new OpenAI({
-      apiKey,
-      baseURL
-    });
+    this.client = config.client || null;
+    this.clientConfig = { apiKey, baseURL };
 
     // Model name mapping: GPT-5.5 names → local model names
     // Can be overridden via config
@@ -204,6 +201,14 @@ class ChatCompletionsClient {
       requestTimeoutMs: this.requestTimeoutMs,
       streamIdleTimeoutMs: this.streamIdleTimeoutMs
     });
+  }
+
+  getClient() {
+    if (!this.client) {
+      const OpenAI = loadOpenAI();
+      this.client = new OpenAI(this.clientConfig);
+    }
+    return this.client;
   }
 
   /**
@@ -435,7 +440,8 @@ class ChatCompletionsClient {
     // Disable thinking for local Ollama models (e.g. qwen3.5) — thinking
     // wastes tokens on internal reasoning that the COSMO framework already handles.
     // Ollama's OpenAI-compat API accepts 'options' for model-specific params.
-    if (this.client?.baseURL?.includes('11434')) {
+    const client = this.getClient();
+    if (client?.baseURL?.includes('11434')) {
       payload.options = { ...(payload.options || {}), think: false };
     }
 
@@ -464,7 +470,7 @@ class ChatCompletionsClient {
       this.logger?.error?.('Chat Completions API call failed', {
         error: error.message,
         model: mappedModel,
-        baseURL: this.client.baseURL
+        baseURL: client.baseURL
       });
       throw error;
     }
@@ -474,7 +480,8 @@ class ChatCompletionsClient {
    * Generate with streaming (preferred method)
    */
   async generateStreaming(payload, originalModel, timeoutMs = this.requestTimeoutMs) {
-    const stream = await createWithGateAndRetry(this.client, payload, this.logger, timeoutMs);
+    const client = this.getClient();
+    const stream = await createWithGateAndRetry(client, payload, this.logger, timeoutMs);
     const streamIdleTimeoutMs = this.streamIdleTimeoutMs || timeoutMs;
 
     let aggregatedText = '';
@@ -572,7 +579,8 @@ class ChatCompletionsClient {
   async generateNonStreaming(payload, originalModel, timeoutMs = this.requestTimeoutMs) {
     payload.stream = false;
 
-    const response = await createWithGateAndRetry(this.client, payload, this.logger, timeoutMs);
+    const client = this.getClient();
+    const response = await createWithGateAndRetry(client, payload, this.logger, timeoutMs);
 
     const choice = response.choices?.[0];
     const content = choice?.message?.content || '';
