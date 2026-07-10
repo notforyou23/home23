@@ -642,6 +642,7 @@ class RuntimeElement {
     this.tagName = tagName.toUpperCase();
     this.dataset = {};
     this.attributes = new Map();
+    this.listeners = new Map();
     this.children = [];
     this.parentElement = null;
     this.hidden = false;
@@ -683,6 +684,24 @@ class RuntimeElement {
 
   setAttribute(name, value) { this.attributes.set(name, String(value)); }
   getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
+  addEventListener(type, handler) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(handler);
+  }
+  dispatch(type, event = {}) {
+    const dispatched = {
+      key: '',
+      shiftKey: false,
+      target: this,
+      currentTarget: this,
+      defaultPrevented: false,
+      preventDefault() { this.defaultPrevented = true; },
+      stopPropagation() {},
+      ...event,
+    };
+    for (const handler of this.listeners.get(type) || []) handler(dispatched);
+    return dispatched;
+  }
   focus() { this.ownerDocument.activeElement = this; }
   contains(element) { return element === this || this.descendants().includes(element); }
   getClientRects() {
@@ -699,6 +718,7 @@ class RuntimeElement {
     if (selector.includes('[role="tab"]')) {
       return this.getAttribute('role') === 'tab' && (!selector.includes('.h23-tab') || this.classList.contains('h23-tab'));
     }
+    if (selector.includes('[role="tablist"]')) return this.getAttribute('role') === 'tablist';
     if (selector.includes('[role="tabpanel"]')) {
       return this.getAttribute('role') === 'tabpanel' && (!selector.includes('.h23-panel') || this.classList.contains('h23-panel'));
     }
@@ -728,6 +748,7 @@ class RuntimeElement {
   }
 
   click() {
+    this.dispatch('click');
     this.ownerDocument.dispatch('click', { target: this });
   }
 }
@@ -1108,19 +1129,25 @@ test('native dashboard tabs expose and synchronize tablist relationships', () =>
   }
 
   const runtime = createDashboardRuntime();
+  const primaryList = runtime.document.createElement('runtime-primary-tablist');
+  primaryList.setAttribute('role', 'tablist');
+  const toolList = runtime.document.createElement('runtime-tool-tablist');
+  toolList.setAttribute('role', 'tablist');
   const homeTab = runtime.document.createElement('dashboard-tab-home', { tagName: 'BUTTON', classes: ['h23-tab'] });
   homeTab.dataset.tab = 'home';
   homeTab.setAttribute('role', 'tab');
+  primaryList.appendChild(homeTab);
   const settingsTab = runtime.document.createElement('settings-btn', { tagName: 'BUTTON', classes: ['h23-tab'] });
   settingsTab.dataset.tab = 'settings';
   settingsTab.setAttribute('role', 'tab');
+  toolList.appendChild(settingsTab);
   const homePanel = runtime.document.createElement('panel-home', { classes: ['h23-panel'] });
   homePanel.setAttribute('role', 'tabpanel');
   const settingsPanel = runtime.document.createElement('panel-settings', { classes: ['h23-panel'] });
   settingsPanel.setAttribute('role', 'tabpanel');
   runtime.run(`syncDashboardTabSemantics('settings')`);
   assert.equal(homeTab.getAttribute('aria-selected'), 'false');
-  assert.equal(homeTab.getAttribute('tabindex'), '-1');
+  assert.equal(homeTab.getAttribute('tabindex'), '0', 'each tablist must retain a keyboard entry point');
   assert.equal(settingsTab.getAttribute('aria-selected'), 'true');
   assert.equal(settingsTab.getAttribute('tabindex'), '0');
   assert.equal(homePanel.getAttribute('aria-hidden'), 'true');
@@ -1129,6 +1156,56 @@ test('native dashboard tabs expose and synchronize tablist relationships', () =>
   const tabRuntime = functionClosure(js, ['setupTabHandlers', 'selectDashboardTab', 'syncDashboardTabSemantics']);
   assert.match(tabRuntime, /syncDashboardTabSemantics/);
   assert.match(functionFragment(js, 'setupCosmoNavigation'), /syncDashboardTabSemantics\(['"]cosmo23['"]\)/);
+});
+
+test('each internal tablist stays keyboard reachable and supports roving activation', () => {
+  const runtime = createDashboardRuntime();
+  const primaryList = runtime.document.createElement('primary-tablist');
+  primaryList.setAttribute('role', 'tablist');
+  const toolList = runtime.document.createElement('tool-tablist');
+  toolList.setAttribute('role', 'tablist');
+  const makeTab = (id, tabKey, scopeKey = '') => {
+    const tab = runtime.document.createElement(id, { tagName: 'BUTTON', classes: ['h23-tab'] });
+    tab.setAttribute('role', 'tab');
+    if (tabKey) tab.dataset.tab = tabKey;
+    if (scopeKey) tab.dataset.scopeTab = scopeKey;
+    return tab;
+  };
+  const home = primaryList.appendChild(makeTab('dashboard-tab-home', 'home'));
+  const brain = primaryList.appendChild(makeTab('dashboard-tab-brain-map', 'brain-map'));
+  const settings = toolList.appendChild(makeTab('settings-btn', '', 'settings'));
+  const cosmo = toolList.appendChild(makeTab('cosmo23-btn', '', 'cosmo23'));
+  for (const id of ['panel-home', 'panel-brain-map', 'panel-settings']) {
+    const panel = runtime.document.createElement(id, { classes: ['h23-panel'] });
+    panel.setAttribute('role', 'tabpanel');
+  }
+  runtime.document.createElement('cosmo23-frame-wrap').setAttribute('role', 'tabpanel');
+
+  runtime.run(`syncDashboardTabSemantics('home')`);
+  assert.equal(home.getAttribute('tabindex'), '0');
+  assert.equal(brain.getAttribute('tabindex'), '-1');
+  assert.equal(settings.getAttribute('tabindex'), '0', 'inactive Settings/COSMO tablist needs a keyboard entry point');
+  assert.equal(cosmo.getAttribute('tabindex'), '-1');
+
+  const activations = [];
+  for (const tab of [home, brain, settings, cosmo]) {
+    tab.addEventListener('click', () => activations.push(tab.id));
+  }
+  runtime.run('setupDashboardTabKeyboardNavigation()');
+
+  const nextEvent = toolList.dispatch('keydown', { key: 'ArrowRight', target: settings });
+  assert.equal(nextEvent.defaultPrevented, true);
+  assert.equal(runtime.document.activeElement, cosmo);
+  assert.equal(activations.at(-1), 'cosmo23-btn');
+
+  primaryList.dispatch('keydown', { key: 'ArrowLeft', target: home });
+  assert.equal(runtime.document.activeElement, brain, 'ArrowLeft must wrap within the primary tablist');
+  assert.equal(activations.at(-1), 'dashboard-tab-brain-map');
+
+  toolList.dispatch('keydown', { key: 'Home', target: cosmo });
+  assert.equal(runtime.document.activeElement, settings);
+  toolList.dispatch('keydown', { key: 'End', target: settings });
+  assert.equal(runtime.document.activeElement, cosmo);
 });
 
 test('runtime initialization bounds dashboard agent discovery and keeps native status current', () => {
@@ -1381,7 +1458,10 @@ test('Settings overview settles GET sections independently without mutation requ
           additionalWatchPaths: ['/Users/jtr/Documents/briefs'],
           compiler: { enabled: true },
         },
-        autoWatchPaths: ['/Users/jtr/Downloads'],
+        autoWatchPaths: [
+          { path: '/Users/jtr/Downloads', label: 'Incoming downloads', source: 'automatic' },
+          { path: '/Users/jtr/Documents/shared', source: 'house defaults' },
+        ],
       };
     }
     if (url.includes('/settings/agents')) return {
@@ -1415,6 +1495,10 @@ test('Settings overview settles GET sections independently without mutation requ
   assert.match(feedsOverview, /Enabled/);
   assert.match(feedsOverview, /Documents\/briefs/);
   assert.match(feedsOverview, /Downloads/);
+  assert.match(feedsOverview, /Incoming downloads/);
+  assert.match(feedsOverview, /automatic/);
+  assert.match(feedsOverview, /house defaults/);
+  assert.doesNotMatch(feedsOverview, /\[object Object\]/);
   const notificationsOverview = runtime.document.getElementById('settings-overview-notifications').innerHTML;
   assert.match(notificationsOverview, /h23-settings-overview-row/);
   assert.match(notificationsOverview, />Pending</);
@@ -1583,6 +1667,24 @@ test('all six Home feeds fail closed while successful siblings render independen
   for (const feed of ['outside-weather', 'sauna-control', 'pool-screenlogic', 'live-problems', 'good-life', 'briefs']) {
     assert.match(loader, new RegExp(`${feed}[\\s\\S]{0,900}(?:offlineTilePayload|renderHumanIssues|renderHumanGoodLife|Briefs unavailable)`));
   }
+});
+
+test('Good Life state:null payload fails closed instead of reporting steady', () => {
+  const runtime = createDashboardRuntime();
+  for (const id of [
+    'human-goodlife-status', 'human-goodlife-value', 'human-goodlife-subtitle',
+  ]) runtime.document.createElement(id);
+
+  runtime.context.__goodLifePayload = { state: { policy: { mode: 'balanced' }, lanes: {} } };
+  runtime.run('renderHumanGoodLife(globalThis.__goodLifePayload)');
+  assert.equal(runtime.document.getElementById('human-goodlife-status').textContent, 'steady');
+  assert.equal(runtime.document.getElementById('human-goodlife-value').textContent, 'BALANCED');
+
+  runtime.context.__goodLifePayload = { state: null };
+  runtime.run('renderHumanGoodLife(globalThis.__goodLifePayload)');
+  assert.equal(runtime.document.getElementById('human-goodlife-status').textContent, 'unavailable');
+  assert.equal(runtime.document.getElementById('human-goodlife-value').textContent, '--');
+  assert.match(runtime.document.getElementById('human-goodlife-subtitle').textContent, /unavailable/i);
 });
 
 test('sauna polling preserves user-edited request state and reflects live heating state', () => {
@@ -2358,7 +2460,11 @@ test('Home Vibe modal navigates the read-only gallery with honest boundaries and
     { id: 'one', url: '/one.jpg', caption: 'First image', prompt: 'First prompt' },
     { id: 'two', url: '/two.jpg', caption: 'Second image', prompt: 'Second prompt' },
   ];
-  runtime.run(`setVibeDetailGallery(globalThis.__vibeItems, globalThis.__vibeItems[0], '/jerry')`);
+  runtime.run(`
+    renderVibeImageDetail(globalThis.__vibeItems[0], '/jerry');
+    showVibeImageDetail();
+    setVibeDetailGallery(globalThis.__vibeItems, globalThis.__vibeItems[0], '/jerry');
+  `);
   const previous = runtime.document.getElementById('home-vibe-detail-previous');
   const next = runtime.document.getElementById('home-vibe-detail-next');
   const position = runtime.document.getElementById('home-vibe-detail-position');
@@ -2383,6 +2489,54 @@ test('Home Vibe modal navigates the read-only gallery with honest boundaries and
   const open = functionClosure(js, ['openVibeImageDetail', 'loadVibeDetailGallery']);
   assert.match(open, /\/home23\/api\/vibe\/gallery\?limit=all/);
   assert.match(open, /\/home23\/api\/vibe\/gallery\/items\//);
+});
+
+test('Vibe detail ignores stale or post-close async results and keeps visibility explicit', async () => {
+  const runtime = createDashboardRuntime();
+  for (const id of [
+    'home-vibe-detail-modal', 'home-vibe-detail-image', 'home-vibe-detail-source',
+    'home-vibe-detail-title', 'home-vibe-detail-caption', 'home-vibe-detail-prompt',
+    'home-vibe-detail-meta', 'home-vibe-detail-open', 'home-vibe-detail-gallery',
+    'home-vibe-detail-previous', 'home-vibe-detail-next', 'home-vibe-detail-position',
+  ]) runtime.document.createElement(id, {
+    tagName: id.includes('previous') || id.includes('next') ? 'BUTTON' : id.includes('open') || id.includes('gallery') ? 'A' : 'DIV',
+  });
+
+  const pending = new Map();
+  runtime.context.__vibeFetch = (url) => new Promise((resolve) => pending.set(url, resolve));
+  runtime.run('apiFetch = globalThis.__vibeFetch');
+
+  runtime.context.__oldVibe = { id: 'old', url: '/old.jpg', caption: 'Old image' };
+  runtime.context.__newVibe = { id: 'new', url: '/new.jpg', caption: 'New image' };
+  const oldOpen = runtime.run("openVibeImageDetail(globalThis.__oldVibe, '/old')");
+  const newOpen = runtime.run("openVibeImageDetail(globalThis.__newVibe, '/new')");
+
+  pending.get('/new/home23/api/vibe/gallery?limit=all')({ images: [runtime.context.__newVibe] });
+  pending.get('/new/home23/api/vibe/gallery/items/new')({ item: runtime.context.__newVibe });
+  await newOpen;
+  const modal = runtime.document.getElementById('home-vibe-detail-modal');
+  const caption = runtime.document.getElementById('home-vibe-detail-caption');
+  assert.equal(modal.classList.contains('open'), true);
+  assert.equal(caption.textContent, 'New image');
+
+  pending.get('/old/home23/api/vibe/gallery?limit=all')({ images: [runtime.context.__oldVibe] });
+  pending.get('/old/home23/api/vibe/gallery/items/old')({ item: runtime.context.__oldVibe });
+  await oldOpen;
+  assert.equal(caption.textContent, 'New image', 'an older request must not overwrite the newer interaction');
+
+  runtime.context.__closedVibe = { id: 'closed', url: '/closed.jpg', caption: 'Closed image' };
+  const closedOpen = runtime.run("openVibeImageDetail(globalThis.__closedVibe, '/closed')");
+  runtime.run('closeVibeImageDetail()');
+  pending.get('/closed/home23/api/vibe/gallery?limit=all')({ images: [runtime.context.__closedVibe] });
+  pending.get('/closed/home23/api/vibe/gallery/items/closed')({ item: runtime.context.__closedVibe });
+  await closedOpen;
+  assert.equal(modal.classList.contains('open'), false, 'post-close data must not reopen the modal');
+  assert.equal(modal.getAttribute('aria-hidden'), 'true');
+  assert.equal(runtime.document.getElementById('home-vibe-detail-image').src, '');
+
+  assert.doesNotMatch(functionFragment(js, 'renderVibeImageDetail'), /classList\.add\(['"]open['"]\)/);
+  assert.match(functionFragment(js, 'showVibeImageDetail'), /classList\.add\(['"]open['"]\)/);
+  assert.doesNotMatch(functionFragment(js, 'setVibeDetailGallery'), /renderVibeImageDetail/);
 });
 
 test('COSMO new-tab control receives the resolved runtime URL without a hash placeholder', () => {

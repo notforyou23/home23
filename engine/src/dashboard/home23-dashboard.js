@@ -54,6 +54,8 @@ let vibeDetailGalleryState = {
   base: '',
   unavailable: true,
 };
+let vibeDetailSessionSequence = 0;
+let activeVibeDetailSession = 0;
 const DASHBOARD_OVERLAY_IDS = [
   'problems-overlay',
   'goodlife-overlay',
@@ -1605,13 +1607,44 @@ function syncDashboardTabSemantics(activeTabKey = currentTab) {
     const tabKey = tab.dataset.tab || tab.dataset.scopeTab;
     const selected = tabKey === activeTabKey;
     tab.setAttribute('aria-selected', String(selected));
-    tab.setAttribute('tabindex', selected ? '0' : '-1');
+  });
+  document.querySelectorAll('[role="tablist"]').forEach((tablist) => {
+    const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+    if (!tabs.length) return;
+    const selected = tabs.find((tab) => tab.getAttribute('aria-selected') === 'true');
+    const previousEntry = tabs.find((tab) => tab.getAttribute('tabindex') === '0');
+    const keyboardEntry = selected || previousEntry || tabs[0];
+    tabs.forEach((tab) => tab.setAttribute('tabindex', tab === keyboardEntry ? '0' : '-1'));
   });
   document.querySelectorAll('.h23-panel[role="tabpanel"]').forEach((panel) => {
     panel.setAttribute('aria-hidden', String(panel.id !== `panel-${activeTabKey}`));
   });
   const cosmoPanel = document.getElementById('cosmo23-frame-wrap');
   if (cosmoPanel) cosmoPanel.setAttribute('aria-hidden', String(activeTabKey !== 'cosmo23'));
+}
+
+function setupDashboardTabKeyboardNavigation() {
+  document.querySelectorAll('[role="tablist"]').forEach((tablist) => {
+    if (tablist.dataset.dashboardKeyboardBound === 'true') return;
+    tablist.dataset.dashboardKeyboardBound = 'true';
+    tablist.addEventListener('keydown', (event) => {
+      const current = event.target.closest?.('[role="tab"]');
+      if (!current || !tablist.contains(current)) return;
+      const tabs = Array.from(tablist.querySelectorAll('[role="tab"]'));
+      const currentIndex = tabs.indexOf(current);
+      if (currentIndex < 0 || !tabs.length) return;
+      let nextIndex = null;
+      if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % tabs.length;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+      if (event.key === 'Home') nextIndex = 0;
+      if (event.key === 'End') nextIndex = tabs.length - 1;
+      if (nextIndex === null) return;
+      event.preventDefault();
+      tabs.forEach((tab, index) => tab.setAttribute('tabindex', index === nextIndex ? '0' : '-1'));
+      tabs[nextIndex].focus();
+      tabs[nextIndex].click();
+    });
+  });
 }
 
 function setupCosmoNavigation() {
@@ -1647,6 +1680,7 @@ function setupTabHandlers() {
   if (settingsBtn) settingsBtn.dataset.tab = 'settings';
   setupCosmoNavigation();
   syncDashboardTabSemantics(currentTab);
+  setupDashboardTabKeyboardNavigation();
   document.querySelectorAll('.h23-tab[data-tab]').forEach(tab => {
     tab.addEventListener('click', () => {
       // Deactivate all tabs (including cosmo button)
@@ -1739,11 +1773,27 @@ function renderSettingsOverviewFeeds(data) {
   const watchPaths = [
     ...(Array.isArray(feeder.additionalWatchPaths) ? feeder.additionalWatchPaths : []),
     ...(Array.isArray(data?.autoWatchPaths) ? data.autoWatchPaths : []),
-  ];
+  ].map((entry, index) => {
+    if (typeof entry === 'string') {
+      return { label: `Source ${index + 1}`, path: entry, source: '' };
+    }
+    if (!entry || typeof entry !== 'object' || typeof entry.path !== 'string' || !entry.path.trim()) {
+      return null;
+    }
+    return {
+      label: typeof entry.label === 'string' && entry.label.trim() ? entry.label : `Source ${index + 1}`,
+      path: entry.path,
+      source: typeof entry.source === 'string' ? entry.source : '',
+    };
+  }).filter(Boolean);
   const rows = [
     settingsOverviewRow('Feeder', feeder.enabled === true ? 'Enabled' : feeder.enabled === false ? 'Disabled' : 'Unknown', `${watchPaths.length} watched sources`, feeder.enabled === true ? 'healthy' : 'muted'),
     settingsOverviewRow('Compiler', feeder.compiler?.enabled === true ? 'Enabled' : feeder.compiler?.enabled === false ? 'Disabled' : 'Unknown'),
-    ...watchPaths.slice(0, 4).map((watchPath, index) => settingsOverviewRow(`Source ${index + 1}`, watchPath)),
+    ...watchPaths.slice(0, 4).map((watchPath) => settingsOverviewRow(
+      watchPath.label,
+      watchPath.path,
+      watchPath.source ? `Source: ${watchPath.source}` : '',
+    )),
   ];
   setHtml('settings-overview-feeds', rows.join(''));
 }
@@ -2284,7 +2334,14 @@ function renderHumanIssues(payload) {
 }
 
 function renderHumanGoodLife(payload) {
-  const state = payload?.state || payload || {};
+  const hasStateEnvelope = payload
+    && typeof payload === 'object'
+    && Object.prototype.hasOwnProperty.call(payload, 'state');
+  const state = hasStateEnvelope ? payload.state : payload;
+  if (!state || typeof state !== 'object') {
+    renderHumanGoodLifeUnavailable();
+    return;
+  }
   const policy = state.policy?.mode || state.policy || '--';
   const lanes = Object.entries(state.lanes || {})
     .filter(([, lane]) => lane?.status && lane.status !== 'healthy')
@@ -6246,7 +6303,6 @@ function setVibeDetailGallery(items, currentItem, base = '', options = {}) {
     base,
     unavailable: options.unavailable === true,
   };
-  if (currentItem?.url) renderVibeImageDetail(currentItem, base);
   syncVibeDetailNavigation();
 }
 
@@ -6293,18 +6349,36 @@ function renderVibeImageDetail(item, base = '') {
   if (meta) meta.textContent = metaParts.join(' · ');
   if (open) open.href = imageUrl;
   if (gallery) gallery.href = galleryUrl;
+}
 
+function showVibeImageDetail() {
+  const detailModal = document.getElementById('home-vibe-detail-modal');
+  if (!detailModal) return;
   detailModal.classList.add('open');
   detailModal.setAttribute('aria-hidden', 'false');
 }
 
-async function loadVibeDetailGallery(currentItem, base = '') {
+function beginVibeDetailSession() {
+  activeVibeDetailSession = ++vibeDetailSessionSequence;
+  return activeVibeDetailSession;
+}
+
+function vibeDetailSessionIsActive(sessionId) {
+  const detailModal = document.getElementById('home-vibe-detail-modal');
+  return sessionId === activeVibeDetailSession
+    && Boolean(detailModal?.classList.contains('open'))
+    && detailModal.getAttribute('aria-hidden') !== 'true';
+}
+
+async function loadVibeDetailGallery(currentItem, base = '', sessionId = activeVibeDetailSession) {
   try {
     const gallery = await apiFetch(`${base}/home23/api/vibe/gallery?limit=all`, { timeoutMs: 10000 });
+    if (!vibeDetailSessionIsActive(sessionId)) return [];
     if (!Array.isArray(gallery?.images)) throw new Error('gallery unavailable');
     setVibeDetailGallery(gallery.images, currentItem, base, { unavailable: false });
     return gallery.images;
   } catch {
+    if (!vibeDetailSessionIsActive(sessionId)) return [];
     setVibeDetailGallery([], currentItem, base, { unavailable: true });
     return [];
   }
@@ -6313,6 +6387,7 @@ async function loadVibeDetailGallery(currentItem, base = '') {
 function closeVibeImageDetail() {
   const detailModal = document.getElementById('home-vibe-detail-modal');
   const image = document.getElementById('home-vibe-detail-image');
+  activeVibeDetailSession = ++vibeDetailSessionSequence;
   if (!detailModal) return;
   detailModal.classList.remove('open');
   detailModal.setAttribute('aria-hidden', 'true');
@@ -6321,18 +6396,23 @@ function closeVibeImageDetail() {
 
 async function openVibeImageDetail(item, base = '') {
   if (!item?.url) return;
+  const sessionId = beginVibeDetailSession();
+  renderVibeImageDetail(item, base);
+  showVibeImageDetail();
   setVibeDetailGallery([], item, base, { unavailable: true });
-  const galleryPromise = loadVibeDetailGallery(item, base);
+  const galleryPromise = loadVibeDetailGallery(item, base, sessionId);
   if (item.id) {
     try {
       const detail = await apiFetch(`${base}/home23/api/vibe/gallery/items/${encodeURIComponent(item.id)}`, {
         timeoutMs: 10000,
       });
-      if (detail?.item) {
+      if (detail?.item && vibeDetailSessionIsActive(sessionId)) {
         const galleryItems = await galleryPromise;
+        if (!vibeDetailSessionIsActive(sessionId)) return;
         const mergedItems = galleryItems.map((galleryItem) => (
           vibeItemsMatch(galleryItem, detail.item) ? detail.item : galleryItem
         ));
+        renderVibeImageDetail(detail.item, base);
         setVibeDetailGallery(mergedItems, detail.item, base, { unavailable: !galleryItems.length });
       }
     } catch {
