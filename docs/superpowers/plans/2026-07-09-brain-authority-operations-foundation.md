@@ -991,8 +991,11 @@ Implement this exact public interface:
       list(): Promise<BrainOperationRecord[]>;
       findByIdempotencyKey(key): Promise<BrainOperationRecord | null>;
       appendEvent(operationId, event): Promise<BrainOperationRecord>;
+      readEvents(operationId, afterSequence): Promise<BrainOperationEvent[]>;
       transition(operationId, transition): Promise<BrainOperationRecord>;
       setWorker(operationId, { expectedVersion, worker }): Promise<BrainOperationRecord>;
+      getWorker(operationId): Promise<object | null>;
+      ensureScratchDirectory(operationId): Promise<string>;
       attachSourcePin(operationId, input: {
         expectedVersion, descriptor, digest
       }): Promise<BrainOperationRecord>;
@@ -1003,11 +1006,19 @@ Implement this exact public interface:
       openAttachment(operationId, attachmentId): Promise<object>;
       getAttachment(operationId, attachmentId): Promise<object>;
       detachAttachment(operationId, attachmentId, reason): Promise<object>;
+      closeAttachment(operationId, attachmentId, reason): Promise<object>;
       listNonterminal(): Promise<BrainOperationRecord[]>;
       listPinsPendingRelease(): Promise<BrainOperationRecord[]>;
       releaseSourcePinOnce(operationId, releasedAt, release): Promise<BrainOperationRecord>;
       collectGarbage(now?): Promise<object>;
     }
+
+`getWorker()`, `ensureScratchDirectory()`, `readEvents()`, and
+`closeAttachment()` are privileged coordinator/executor seams on the mutable
+store. They are never methods on `BrainOperationStoreReader`, never mounted as
+generic HTTP methods, and never expose worker records or absolute scratch paths
+through a public record. The public routes use their purpose-built coordinator
+methods and requester-bound reader facade only.
 
 Export one `buildBrainOperationIdempotencyKey(requesterAgent,requestId,operationType)` from `operation-contract.js`; both coordinator and store use it and validate nonempty bounded strings before hashing. The key is SHA-256(requesterAgent + NUL + requestId + NUL + operationType). The store generates operation IDs as `brop_` plus 24 cryptographically random bytes in canonical base64url; it never accepts an operation ID from input or derives one from the request ID. Store the idempotency mapping in `idempotency/index.json` under the requester runtime root together with `canonicalSha256({target:stableTargetIdentity,requestParameters})` from the one shared canonical-JSON module; reject non-JSON values before fingerprinting. Stable brain identity is exactly `{domain:'brain',brainId,canonicalRoot,accessMode}`, stable owned-run identity is exactly `{domain:'owned-run',runId,canonicalRoot,ownerAgent}`, and requester-domain identity is exactly `{domain:'requester',requesterAgent}`. Exclude display name, counts, modified time, lifecycle/run state, catalog revision, mutation-boundary copies, source revision, server-injected provider/model, and all other drift-prone evidence from this fingerprint. `requestParameters` stores normalized caller intent; `parameters` stores the trusted executor parameters and may additionally contain server-derived values such as the synthesis provider/model pair.
 
@@ -1019,13 +1030,21 @@ Export one `buildBrainOperationIdempotencyKey(requesterAgent,requestId,operation
 
 Define `INLINE_RESULT_LIMIT_BYTES = 64 * 1024`. `setWorker()` and `setResult()` hold the operation lock, compare `expectedVersion`, and reject terminal or already-result-bearing records before mutating anything. This prevents a late worker/result callback from changing a cancelled/failed operation. `setResult()` measures the complete UTF-8 JSON encoding. Values at or below the limit remain inline. Larger values are written by temp-file, file fsync, atomic rename to `result.json`, and parent-directory fsync before status may expose a handle. Their public status is always `result:null`, `resultArtifact:{mediaType:'application/json',contentEncoding:'identity',bytes,sha256}`, and an opaque handle; never use a truncation string as a result. Generate handles with `brres_` plus 24 random bytes encoded base64url; persist only `sha256(handle)` in the requester-scoped handle index.
 
-`adoptResultArtifact()` is the non-materializing result path. Under the operation lock it compares `expectedVersion`, requires a safe integer `0 <= bytes <= OPERATION_RESULT_ARTIFACT_MAX_BYTES`, verifies by lstat plus realpath that `scratchPath` is a regular nonsymlink file inside that same operation's canonical scratch root, verifies caller-supplied byte count and SHA-256 through a read stream, requires `contentEncoding:'identity'`, fsyncs it, renames it to a fixed private operation artifact name, fsyncs the directory, and only then commits `result:null`, `resultArtifact:{mediaType,contentEncoding,bytes,sha256}`, and a handle. `openResultArtifact()` repeats requester/handle authorization and returns a read stream; it never publishes a filesystem path. A graph executor cannot adopt a file from another operation or target tree.
+`adoptResultArtifact()` is the non-materializing result path. Under the operation lock it compares `expectedVersion`, requires a safe integer `0 <= bytes <= OPERATION_RESULT_ARTIFACT_MAX_BYTES`, verifies by lstat plus realpath that `scratchPath` is a regular nonsymlink file inside that same operation's canonical scratch root, requires a one-link source inode, and verifies caller-supplied byte count and SHA-256 through one stable open stream. It then streams those verified bytes into a new private one-link inode, fsyncs it, atomically renames that inode to the fixed private operation artifact name, fsyncs the directory, and only then commits `result:null`, `resultArtifact:{mediaType,contentEncoding,bytes,sha256}`, and a handle. Copying into a new inode is intentional: a retained writable descriptor or surviving hardlink to the worker scratch inode can never mutate published result bytes. A crash after private-artifact publication but before status publication is reconciled only from an exact byte/hash/media match; orphan handle indexes are removed before retry. The aggregate scratch quota introduced in Source Task 2 accounts for both source and destination bytes during this handoff, and production source-requiring graph export remains disabled until that quota is connected. `openResultArtifact()` repeats requester/handle authorization and returns a read stream; it never publishes a filesystem path. A graph executor cannot adopt a file from another operation or target tree.
 
 Neither result method starts retention while the operation remains nonterminal. The successful terminal transition atomically sets `completedAt`, `resultExpiresAt = completedAt + 7 days`, and `metadataExpiresAt = completedAt + 30 days` in the same record write. `getResult()` and `openResultArtifact()` require the dashboard-derived requester to match the record and a timing-safe handle-hash match for file-backed data.
 
 At seven days, `collectGarbage()` removes file-backed JSON/artifact results, handle indexes, and scratch; clears any inline result payload; sets `resultExpiredAt`; and leaves only an expired-result summary plus terminal state, error, sourceEvidence, and other metadata until day 30. Retrieval then returns typed `result_expired`. This GC-only payload retirement is allowed after terminalization but cannot change execution state/error/evidence. At day 30 it removes terminal metadata. It skips every nonterminal record regardless of age.
 
 `releaseSourcePinOnce()` holds the operation lock across record reload, the injected idempotent release callback, `sourcePinReleasedAt` update, and durable record write. Concurrent callers whose marker is already present return without invoking the callback. The callback must itself be idempotent by operation ID to cover a process crash after external release but before the marker write. Use proper-lockfile around all per-operation mutation. Write status/result/attachment JSON through temp file, fsync, rename, and parent-directory fsync. Append events under the same lock with strictly increasing eventSequence and increment recordVersion on each committed state mutation. Reject path traversal in operation, requester, and attachment identifiers.
+
+Lock acquisition is bounded but aligned with the operation protocol rather than
+a short HTTP wait: the default mutation-lock acquisition deadline is at least
+the maximum configured server execution deadline (eight hours by default), is
+explicitly configurable for deterministic tests, retains proper-lockfile stale
+owner heartbeats, and reports typed `operation_lock_timeout` only after that
+deadline. A legitimate multi-gigabyte artifact stream or idempotent pin-release
+callback must not fail because an unrelated five-second retry budget expired.
 
 - [ ] **Step 4: Verify GREEN and commit**
 
