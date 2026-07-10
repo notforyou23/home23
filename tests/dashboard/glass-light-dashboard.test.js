@@ -1324,6 +1324,94 @@ test('startup bounds stalled agent discovery and applies late identity without b
   assert.doesNotMatch(functionFragment(js, 'loadAgents'), /cosmoBtn\.addEventListener/);
 });
 
+test('late agent discovery transfers pulse ownership without duplicate sockets or stale reconnects', async () => {
+  const runtime = createDashboardRuntime();
+  const sockets = [];
+  const reconnectCallbacks = [];
+
+  class PulseSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+
+    constructor(url) {
+      this.url = url;
+      this.readyState = PulseSocket.CONNECTING;
+      this.closed = false;
+      sockets.push(this);
+    }
+
+    close() {
+      this.closed = true;
+      this.readyState = PulseSocket.CLOSED;
+      this.onclose?.();
+    }
+  }
+
+  runtime.context.WebSocket = PulseSocket;
+  runtime.context.setTimeout = (callback) => {
+    reconnectCallbacks.push(callback);
+    return reconnectCallbacks.length;
+  };
+  runtime.context.clearTimeout = (timerId) => {
+    reconnectCallbacks[timerId - 1] = null;
+  };
+  runtime.run(`
+    loadVibeTile = () => Promise.resolve();
+    primaryAgent = null;
+    connectEnginePulse();
+  `);
+
+  assert.equal(sockets.length, 1);
+  assert.equal(sockets[0].url, 'ws://localhost:5001');
+  const staleClose = sockets[0].onclose;
+
+  runtime.context.__lateAgent = {
+    name: 'forrest',
+    displayName: 'Forrest',
+    dashboardPort: 5012,
+    enginePort: 5011,
+  };
+  runtime.run(`
+    primaryAgent = globalThis.__lateAgent;
+    refreshDashboardAfterLateAgentDiscovery();
+  `);
+  await Promise.resolve();
+
+  assert.equal(sockets[0].closed, true, 'the provisional default socket must be closed');
+  assert.equal(sockets.length, 2);
+  assert.equal(sockets[1].url, 'ws://localhost:5011');
+  assert.equal(reconnectCallbacks.filter(Boolean).length, 0);
+
+  staleClose();
+  assert.equal(reconnectCallbacks.filter(Boolean).length, 0, 'a stale close must not schedule a default-port reconnect');
+  runtime.run('connectEnginePulse()');
+  assert.equal(sockets.length, 2, 'rechecking the selected agent must not duplicate its live socket');
+
+  const fastRuntime = createDashboardRuntime();
+  const fastSockets = [];
+  fastRuntime.context.WebSocket = class extends PulseSocket {
+    constructor(url) {
+      super(url);
+      fastSockets.push(this);
+    }
+  };
+  fastRuntime.context.__fastAgent = {
+    name: 'forrest',
+    displayName: 'Forrest',
+    dashboardPort: 5012,
+    enginePort: 5011,
+  };
+  fastRuntime.run(`
+    primaryAgent = globalThis.__fastAgent;
+    connectEnginePulse();
+    connectEnginePulse();
+  `);
+  assert.equal(fastSockets.length, 1);
+  assert.equal(fastSockets[0].url, 'ws://localhost:5011');
+});
+
 test('overlay focus, Tab, Escape, and scroll restoration follow actual paint order', () => {
   const runtime = createDashboardRuntime();
   const { document } = runtime;
@@ -1747,6 +1835,119 @@ test('Sauna actions are mutually exclusive for idle and running states', () => {
   assert.match(running, /data-sauna-action="stop"/);
   assert.doesNotMatch(running, /data-sauna-action="(?:prestage|start)"/);
   assert.match(running, />Heating</);
+});
+
+test('Sauna actions render optimistic state before settlement and roll back failed requests', async () => {
+  const runtime = createDashboardRuntime();
+  for (const id of [
+    'human-sauna-status', 'human-sauna-value', 'human-sauna-subtitle',
+    'human-sauna-metrics', 'human-sauna-actions', 'human-sauna-gauge',
+  ]) runtime.document.createElement(id);
+  const card = runtime.document.createElement('sauna-card');
+  card.dataset.homeTileId = 'sauna-control';
+  const target = runtime.document.createElement('human-sauna-target', { tagName: 'INPUT' });
+  target.value = '180';
+  target.dataset.userEdited = 'true';
+  const duration = runtime.document.createElement('human-sauna-duration', { tagName: 'INPUT' });
+  duration.value = '90';
+  duration.dataset.userEdited = 'true';
+  const button = runtime.document.createElement('sauna-action', { tagName: 'BUTTON' });
+  runtime.context.__saunaActions = [
+    { id: 'prestage', label: 'Pre-stage' },
+    { id: 'start', label: 'Start' },
+    { id: 'stop', label: 'Stop' },
+  ];
+  runtime.context.__idleSauna = {
+    content: {
+      status: 'Idle',
+      value: '72°F',
+      subtitle: 'Ready',
+      metrics: [
+        { label: 'Target', value: '170°F' },
+        { label: 'Duration', value: '0 min' },
+        { label: 'Heating', value: 'No' },
+      ],
+    },
+    actions: runtime.context.__saunaActions,
+  };
+  runtime.context.__runningSauna = {
+    content: {
+      status: 'Heating',
+      value: '145°F',
+      subtitle: 'Target 180°F',
+      metrics: [
+        { label: 'Target', value: '180°F' },
+        { label: 'Duration', value: '75 min' },
+        { label: 'Heating', value: 'Yes' },
+      ],
+    },
+    actions: runtime.context.__saunaActions,
+  };
+  runtime.context.__saunaCalls = [];
+  runtime.run('renderHumanSauna(globalThis.__idleSauna)');
+
+  let rejectStart;
+  runtime.context.__saunaRequest = new Promise((_resolve, reject) => { rejectStart = reject; });
+  runtime.context.__saunaApiFetch = (url, options) => {
+    runtime.context.__saunaCalls.push({ url, options });
+    return runtime.context.__saunaRequest;
+  };
+  runtime.run('apiFetch = globalThis.__saunaApiFetch');
+  const startRequest = runtime.run(`runHumanSaunaAction('start', document.getElementById('sauna-action'))`);
+  await Promise.resolve();
+
+  assert.equal(card.classList.contains('heating'), true);
+  assert.equal(card.classList.contains('running'), true);
+  assert.equal(runtime.document.getElementById('human-sauna-status').textContent, 'Heating');
+  assert.match(runtime.document.getElementById('human-sauna-actions').innerHTML, /data-sauna-action="stop"/);
+  assert.doesNotMatch(runtime.document.getElementById('human-sauna-actions').innerHTML, /data-sauna-action="(?:prestage|start)"/);
+  assert.equal(button.disabled, true);
+  assert.equal(target.value, '180');
+  assert.equal(duration.value, '90');
+  assert.equal(runtime.context.__saunaCalls[0].url, '/home23/api/tiles/sauna-control/actions/start');
+  assert.deepEqual(JSON.parse(runtime.context.__saunaCalls[0].options.body), {
+    targetTemperature: 180,
+    duration: 90,
+  });
+
+  runtime.run('renderHumanSauna(globalThis.__idleSauna)');
+  assert.equal(card.classList.contains('running'), true, 'an independent poll must not erase pending optimistic state');
+  rejectStart(new Error('sauna bridge unavailable'));
+  await assert.rejects(startRequest, /sauna bridge unavailable/);
+  assert.equal(card.classList.contains('heating'), false);
+  assert.equal(card.classList.contains('running'), false);
+  assert.equal(runtime.document.getElementById('human-sauna-status').textContent, 'action failed');
+  assert.match(runtime.document.getElementById('human-sauna-subtitle').textContent, /sauna bridge unavailable/);
+  assert.match(runtime.document.getElementById('human-sauna-actions').innerHTML, /data-sauna-action="start"/);
+  assert.doesNotMatch(runtime.document.getElementById('human-sauna-actions').innerHTML, /data-sauna-action="stop"/);
+  assert.equal(button.disabled, false);
+
+  runtime.run('renderHumanSauna(globalThis.__runningSauna)');
+  let resolveStop;
+  runtime.context.__saunaRequest = new Promise((resolve) => { resolveStop = resolve; });
+  const stopRequest = runtime.run(`runHumanSaunaAction('stop', document.getElementById('sauna-action'))`);
+  await Promise.resolve();
+
+  assert.equal(card.classList.contains('heating'), false);
+  assert.equal(card.classList.contains('running'), false);
+  assert.equal(runtime.document.getElementById('human-sauna-status').textContent, 'Idle');
+  assert.match(runtime.document.getElementById('human-sauna-actions').innerHTML, /data-sauna-action="start"/);
+  assert.doesNotMatch(runtime.document.getElementById('human-sauna-actions').innerHTML, /data-sauna-action="stop"/);
+  assert.equal(runtime.context.__saunaCalls[1].url, '/home23/api/tiles/sauna-control/actions/stop');
+  assert.deepEqual(JSON.parse(runtime.context.__saunaCalls[1].options.body), {});
+
+  runtime.run('renderHumanSauna(globalThis.__runningSauna)');
+  assert.equal(card.classList.contains('running'), false, 'polling must not erase an optimistic Stop');
+  resolveStop({ ok: false, error: 'HUUM rejected stop' });
+  await assert.rejects(stopRequest, /HUUM rejected stop/);
+  assert.equal(card.classList.contains('heating'), true);
+  assert.equal(card.classList.contains('running'), true);
+  assert.equal(runtime.document.getElementById('human-sauna-status').textContent, 'action failed');
+  assert.match(runtime.document.getElementById('human-sauna-subtitle').textContent, /HUUM rejected stop/);
+  assert.match(runtime.document.getElementById('human-sauna-actions').innerHTML, /data-sauna-action="stop"/);
+  assert.doesNotMatch(runtime.document.getElementById('human-sauna-actions').innerHTML, /data-sauna-action="(?:prestage|start)"/);
+  assert.equal(target.value, '180');
+  assert.equal(duration.value, '90');
 });
 
 test('Brain Storage classification and color semantics execute for all states', async () => {

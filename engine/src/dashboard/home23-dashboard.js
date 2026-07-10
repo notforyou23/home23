@@ -30,6 +30,9 @@ let goodLifeOverlayState = {
 };
 let residentHomeLatestState = null;
 let humanHomeRefreshPromise = null;
+let humanSaunaConfirmedPayload = null;
+let humanSaunaPendingAction = null;
+let humanSaunaActionRevision = 0;
 let briefsState = {
   items: [],
   selectedId: null,
@@ -206,6 +209,10 @@ const enginePulse = {
   lastEventTime: null, // Date of last engine event
   lastThought: null,   // timestamp of last thought
 };
+let enginePulseSocket = null;
+let enginePulseReconnectTimer = null;
+let enginePulsePort = null;
+let enginePulseConnectionRevision = 0;
 
 // ── Init ──
 let dashboardInitStarted = false;
@@ -224,6 +231,7 @@ function settleDashboardStartupDependency(promise, timeoutMs = AGENT_DISCOVERY_S
 function refreshDashboardAfterLateAgentDiscovery() {
   refreshDashboardIdentityUI();
   refreshDashboardScopeUI();
+  connectEnginePulse();
   if (currentTab === 'home' && primaryAgent) {
     void loadVibeTile(primaryAgent, {
       imageId: 'home-vibe-image',
@@ -1113,16 +1121,41 @@ function dashboardBaseUrl() {
 // ── Engine Pulse (Live Activity Indicator) ──
 
 function connectEnginePulse() {
-  // Connect directly to engine's WebSocket (port 5001) for real-time events
-  const enginePort = primaryAgent ? primaryAgent.enginePort || 5001 : 5001;
+  // Connect directly to the selected dashboard agent's engine WebSocket.
+  const enginePort = Number(primaryAgent?.enginePort) || 5001;
   const wsUrl = `ws://${window.location.hostname}:${enginePort}`;
-  let ws;
-  let reconnectTimer = null;
+  const closingState = WebSocket.CLOSING ?? 2;
+  const closedState = WebSocket.CLOSED ?? 3;
+  const currentSocketIsLive = Boolean(enginePulseSocket)
+    && enginePulseSocket.readyState !== closingState
+    && enginePulseSocket.readyState !== closedState;
+  if (enginePulsePort === enginePort && (currentSocketIsLive || enginePulseReconnectTimer !== null)) return;
+
+  const connectionRevision = ++enginePulseConnectionRevision;
+  enginePulsePort = enginePort;
+  if (enginePulseReconnectTimer !== null) {
+    clearTimeout(enginePulseReconnectTimer);
+    enginePulseReconnectTimer = null;
+  }
+  const previousSocket = enginePulseSocket;
+  enginePulseSocket = null;
+  if (previousSocket) {
+    previousSocket.onopen = null;
+    previousSocket.onmessage = null;
+    previousSocket.onclose = null;
+    previousSocket.onerror = null;
+    if (previousSocket.readyState !== closingState && previousSocket.readyState !== closedState) {
+      try { previousSocket.close(); } catch { /* already closing */ }
+    }
+  }
 
   function connect() {
-    ws = new WebSocket(wsUrl);
+    if (connectionRevision !== enginePulseConnectionRevision || enginePulsePort !== enginePort) return;
+    const ws = new WebSocket(wsUrl);
+    enginePulseSocket = ws;
 
     ws.onopen = () => {
+      if (connectionRevision !== enginePulseConnectionRevision || ws !== enginePulseSocket) return;
       const dot = document.getElementById('pulse-dot');
       if (dot && !dot.className.includes('awake') && !dot.className.includes('sleeping')) {
         dot.className = 'h23-pulse-dot awake';
@@ -1135,6 +1168,7 @@ function connectEnginePulse() {
     };
 
     ws.onmessage = (e) => {
+      if (connectionRevision !== enginePulseConnectionRevision || ws !== enginePulseSocket) return;
       try {
         const data = JSON.parse(e.data);
         if (data.type === 'connected') return; // welcome message
@@ -1145,15 +1179,18 @@ function connectEnginePulse() {
     };
 
     ws.onclose = () => {
+      if (connectionRevision !== enginePulseConnectionRevision || ws !== enginePulseSocket) return;
+      enginePulseSocket = null;
       const dot = document.getElementById('pulse-dot');
       if (dot) dot.className = 'h23-pulse-dot';
       enginePulse.state = 'offline';
       renderPulse();
       setEngineOfflineStatus();
       // Reconnect after 5 seconds
-      if (!reconnectTimer) {
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = null;
+      if (enginePulseReconnectTimer === null) {
+        enginePulseReconnectTimer = setTimeout(() => {
+          if (connectionRevision !== enginePulseConnectionRevision || enginePulsePort !== enginePort) return;
+          enginePulseReconnectTimer = null;
           connect();
         }, 5000);
       }
@@ -2083,7 +2120,7 @@ async function loadHumanHomeSurface() {
       renderHumanSensor('weather', offlineTilePayload('outside-weather', 'Offline', '--', 'Weather unavailable'), 'Offline', 'Weather unavailable');
     });
     scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/sauna-control/data', { timeoutMs: 8000 }), renderHumanSauna, () => {
-      renderHumanSauna(offlineTilePayload('sauna-control', 'Offline', '--', 'Sauna unavailable'));
+      renderHumanSauna(offlineTilePayload('sauna-control', 'Offline', '--', 'Sauna unavailable'), { confirmed: false });
     });
     scheduleHumanHomeFetch(tasks, apiFetch('/home23/api/tiles/pool-screenlogic/data', { timeoutMs: 8000 }), (data) => {
       renderHumanSensor('pool', data, 'Pool', 'ScreenLogic');
@@ -2177,7 +2214,9 @@ function offlineTilePayload(tileId, status, value, subtitle) {
   };
 }
 
-function renderHumanSauna(payload) {
+function renderHumanSauna(payload, options = {}) {
+  if (options.confirmed !== false) humanSaunaConfirmedPayload = payload;
+  if (humanSaunaPendingAction && options.allowDuringAction !== true) return;
   renderHumanSensor('sauna', payload, 'Sauna', 'Huum');
   const content = payload?.content || {};
   const metrics = Array.isArray(content.metrics) ? content.metrics : [];
@@ -2272,8 +2311,33 @@ function setSaunaPreset(targetTemperature, duration) {
   });
 }
 
+function optimisticHumanSaunaPayload(actionId, actionPayload, confirmedPayload) {
+  const starting = actionId !== 'stop';
+  const content = confirmedPayload?.content || {};
+  const metrics = Array.isArray(content.metrics)
+    ? content.metrics.filter((metric) => !['target', 'duration', 'heating'].includes(String(metric?.label || '').toLowerCase()))
+    : [];
+  metrics.push(
+    { label: 'Target', value: `${Number(actionPayload.targetTemperature || 190)}°F` },
+    { label: 'Duration', value: `${starting ? Number(actionPayload.duration || 180) : 0} min` },
+    { label: 'Heating', value: starting ? 'Yes' : 'No' },
+  );
+  return {
+    ...(confirmedPayload || {}),
+    content: {
+      ...content,
+      status: starting ? 'Heating' : 'Idle',
+      subtitle: starting
+        ? `Target ${Number(actionPayload.targetTemperature || 190)}°F · action pending`
+        : 'Stop requested · action pending',
+      metrics,
+    },
+    actions: Array.isArray(confirmedPayload?.actions) ? confirmedPayload.actions : [],
+  };
+}
+
 async function runHumanSaunaAction(actionId, button) {
-  if (!actionId) return;
+  if (!actionId || humanSaunaPendingAction) return;
   const payload = actionId === 'stop'
     ? {}
     : {
@@ -2285,16 +2349,44 @@ async function runHumanSaunaAction(actionId, button) {
     : `Start the sauna at ${payload.targetTemperature}°F for ${payload.duration} minutes?`;
   if (!window.confirm(confirmText)) return;
 
+  const actionRevision = ++humanSaunaActionRevision;
+  humanSaunaPendingAction = { actionId, actionRevision };
+  const optimisticPayload = optimisticHumanSaunaPayload(actionId, payload, humanSaunaConfirmedPayload);
   if (button) button.disabled = true;
-  setText('human-sauna-status', 'sending');
+  renderHumanSauna(optimisticPayload, { confirmed: false, allowDuringAction: true });
   try {
     const result = await apiFetch(`/home23/api/tiles/sauna-control/actions/${encodeURIComponent(actionId)}`, {
       method: 'POST',
       body: JSON.stringify(payload),
       timeoutMs: 15000,
     });
-    if (result?.data) renderHumanSauna(result.data);
-    else await loadHumanHomeSurface();
+    if (!result || result.ok === false) throw new Error(result?.error || 'Sauna action failed');
+    if (humanSaunaPendingAction?.actionRevision !== actionRevision) return;
+    if (result.data) {
+      humanSaunaPendingAction = null;
+      renderHumanSauna(result.data);
+      return;
+    }
+
+    const nextConfirmed = await apiFetch('/home23/api/tiles/sauna-control/data', { timeoutMs: 8000 });
+    if (humanSaunaPendingAction?.actionRevision !== actionRevision) return;
+    humanSaunaPendingAction = null;
+    if (nextConfirmed) renderHumanSauna(nextConfirmed);
+    else {
+      renderHumanSauna(optimisticPayload, { confirmed: false, allowDuringAction: true });
+      setText('human-sauna-status', 'refreshing');
+      setText('human-sauna-subtitle', 'Action accepted; live Sauna state unavailable');
+    }
+  } catch (err) {
+    if (humanSaunaPendingAction?.actionRevision === actionRevision) {
+      humanSaunaPendingAction = null;
+      if (humanSaunaConfirmedPayload) {
+        renderHumanSauna(humanSaunaConfirmedPayload, { confirmed: false, allowDuringAction: true });
+      }
+      setText('human-sauna-status', 'action failed');
+      setText('human-sauna-subtitle', err?.message || 'Sauna action failed');
+    }
+    throw err;
   } finally {
     if (button) button.disabled = false;
   }
