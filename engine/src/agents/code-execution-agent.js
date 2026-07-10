@@ -958,9 +958,11 @@ Execute the code and provide comprehensive test results with:
     }
 
     const savedFiles = [];
-    const outputDir = this.config.logsDir
-      ? path.join(this.config.logsDir, 'outputs', 'code-execution', this.agentId)
-      : path.join(process.cwd(), 'runtime', 'outputs', 'code-execution', this.agentId);
+    const { resolveAgentOutputsRoot } = require('../goals/deliverable-paths');
+    const outputDir = path.join(
+      resolveAgentOutputsRoot(this.config, 'code-execution'),
+      this.agentId
+    );
     
     try {
       await fs.mkdir(outputDir, { recursive: true });
@@ -1063,7 +1065,7 @@ Execute the code and provide comprehensive test results with:
             // ATOMIC WRITE: Use temp-file-then-rename to prevent partial files
             await this.writeFileAtomic(filePath, fileContent);
           
-          const relativePath = `runtime/outputs/code-execution/${this.agentId}/${filename}`;
+          const relativePath = path.join('outputs', 'code-execution', this.agentId, filename);
           
           const fileSize = Buffer.isBuffer(fileContent) ? fileContent.length : (fileContent.length || 0);
           

@@ -827,7 +827,13 @@ export class AgencyKernel {
     const attachment = this.applyReceiptAttachment(candidate);
     if (attachment) {
       const decision = { route: 'attach', reason: 'receipt_attached_to_existing_pursuit' };
-      this.store.appendInbox({ ...candidate, decision });
+      // Mechanical cron ok / explicit no-change attachments are receipts, not inbox events.
+      // Appending them recreated the cron_report flood (hundreds of "finished with status ok").
+      const mechanicalAttach = candidate.explicitNoChange === true
+        || isMechanicalCronNoChangePursuit({ ...candidate, kind: candidate.kind || 'cron_report' });
+      if (!mechanicalAttach) {
+        this.store.appendInbox({ ...candidate, decision });
+      }
       const receipt = this.store.appendReceipt({
         schema: 'home23.agency.receipt.v1',
         at: nowIso(),
@@ -854,6 +860,35 @@ export class AgencyKernel {
       });
       const state = this.ensureState();
       return { candidate, decision, pursuit: attachment.pursuit, receipt, state };
+    }
+    // Dead/missing bound pursuit + mechanical ok must not fall through into pursue.
+    // Bootcamp left most cron jobs bound to closed/discarded pursuits.
+    if (candidate.pursuitId && isMechanicalCronNoChangeCandidate(candidate)) {
+      const decision = { route: 'discard', reason: 'mechanical_cron_dead_binding_no_change' };
+      const receipt = this.store.appendReceipt({
+        schema: 'home23.agency.receipt.v1',
+        at: nowIso(),
+        event: 'discarded',
+        candidateId: candidate.candidateId,
+        pursuitId: candidate.pursuitId,
+        source: candidate.source,
+        route: decision.route,
+        outcome: 'dead_binding_mechanical_ok',
+        seen: candidate.seen,
+        reason: decision.reason,
+        mode: this.config.mode,
+      });
+      this.store.appendConsequence({
+        schema: 'home23.agency.consequence.v1',
+        at: nowIso(),
+        pursuitId: candidate.pursuitId,
+        status: 'discarded',
+        changeType: 'mechanical_cron_dead_binding_no_change',
+        summary: candidate.summary,
+        evidence: candidate.evidence,
+      });
+      const state = this.ensureState();
+      return { candidate: { ...candidate, decision }, decision, pursuit: null, receipt, state };
     }
     if (candidate.claim) {
       const claim = this.recordClaim({
@@ -2743,13 +2778,41 @@ function isRawObservationPursuit(pursuit = {}) {
     || source === 'work.heartbeat';
 }
 
+function isSyntheticCronBindingFuture(text = '') {
+  return /cron outcome updates (?:a bound )?resident pursuit/i.test(String(text || ''));
+}
+
+function isRealNonSyntheticDesiredFuture(candidate = {}) {
+  const desired = String(candidate.desiredChangedFuture || '').trim();
+  if (!desired) return false;
+  const summary = String(candidate.summary || '').trim();
+  // createPursuit often copies summary into desiredChangedFuture as a placeholder
+  if (desired === summary) return false;
+  if (isSyntheticCronBindingFuture(desired)) return false;
+  return true;
+}
+
+function isMechanicalCronNoChangeCandidate(candidate = {}) {
+  if (candidate.kind !== 'cron_report') return false;
+  if (candidate.stopCondition || candidate.changedFuture || candidate.consequence?.changed) return false;
+  const source = String(candidate.source || '');
+  const summary = String(candidate.summary || '');
+  if (!source.startsWith('cron.') || !/finished with status ok/i.test(summary)) return false;
+  if (isRealNonSyntheticDesiredFuture(candidate)) return false;
+  return true;
+}
+
 function isMechanicalCronNoChangePursuit(pursuit = {}) {
   if (pursuit.kind !== 'cron_report') return false;
-  if (pursuit.pursuitId || pursuit.consequence?.changed) return false;
+  if (pursuit.consequence?.changed) return false;
   if (hasMeaningfulPursuitOutcome(pursuit)) return false;
   const source = String(pursuit.source || '');
   const summary = String(pursuit.summary || '');
-  return source.startsWith('cron.') && /finished with status ok/i.test(summary);
+  if (!source.startsWith('cron.') || !/finished with status ok/i.test(summary)) return false;
+  // pursuitId alone / synthetic binding future / summary-placeholder desired future
+  // do not make mechanical ok attention-worthy
+  if (isRealNonSyntheticDesiredFuture(pursuit)) return false;
+  return true;
 }
 
 function isMisroutedBoundCronReceiptPursuit(pursuit = {}) {

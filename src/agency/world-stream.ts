@@ -259,24 +259,38 @@ export function buildCronResultPacket(job: CronJob, result: JobResult): AgencyWo
     reason: String(item.reason || 'discarded_by_report_intake'),
   })) || [];
   const payloadDeclaresAgencyChange = typeof payload.agencyChangedFuture === 'string' || typeof payload.agencyNextMove === 'string';
-  const unboundMechanicalNoChange = !pursuitId && !intakePacket && !payloadDeclaresAgencyChange && result.status === 'ok';
+  // Binding alone must NOT invent a changed future. Bootcamp bound most recurring
+  // jobs to pursuits that are now closed/discarded; every "ok" then flooded agency
+  // with synthetic "updates resident pursuit X" pursue/defer noise.
+  const mechanicalOkNoSignal = result.status === 'ok'
+    && !packetHasSignal
+    && !payloadDeclaresAgencyChange
+    && !intakePacket?.desiredChangedFuture
+    && result.semanticStatus !== 'satisfied'
+    && result.semanticStatus !== 'failed';
   const explicitNoChange = intakePacket
     ? Boolean(intakePacket.explicitNoChange || !packetHasSignal)
-    : (unboundMechanicalNoChange || (!pursuitId && (!response || result.status !== 'ok')));
+    : (mechanicalOkNoSignal || (!pursuitId && !payloadDeclaresAgencyChange && (!response || result.status !== 'ok')));
   const desiredChangedFuture = typeof payload.agencyChangedFuture === 'string'
     ? payload.agencyChangedFuture
     : intakePacket?.desiredChangedFuture
-      || (pursuitId ? `Cron outcome updates resident pursuit ${pursuitId} with latest scheduler evidence.` : undefined);
+      || (pursuitId && !mechanicalOkNoSignal
+        ? `Cron outcome updates resident pursuit ${pursuitId} with latest scheduler evidence.`
+        : undefined);
   const nextMove = typeof payload.agencyNextMove === 'string'
     ? payload.agencyNextMove
     : intakePacket?.nextMove
-      || (pursuitId
+      || (pursuitId && !mechanicalOkNoSignal
         ? 'attach scheduler outcome to the bound resident pursuit and continue/repair based on semantic status'
-        : (unboundMechanicalNoChange ? 'record no-change cron receipt; no resident pursuit or watch item created' : undefined));
+        : (mechanicalOkNoSignal
+          ? 'record no-change cron receipt; no resident pursuit or watch item created'
+          : undefined));
   const satisfiedStopCondition = Boolean(pursuitId && result.status === 'ok' && result.semanticStatus === 'satisfied');
-  const consequenceStatus = pursuitId
+  // Only mark consequence advancement when there is a real agency signal or stop condition.
+  // Bare mechanical ok (bound or not) is evidence-only, not an attention event.
+  const consequenceStatus = pursuitId && !mechanicalOkNoSignal
     ? (satisfiedStopCondition ? 'closed' : (result.status === 'ok' && result.semanticStatus !== 'failed' ? 'advanced' : 'failed'))
-    : undefined;
+    : (pursuitId && mechanicalOkNoSignal ? 'observed' : undefined);
   const changedFuture = satisfiedStopCondition
     ? `Cron ${job.id} satisfied the stop condition for resident pursuit ${pursuitId}.`
     : undefined;

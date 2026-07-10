@@ -434,8 +434,8 @@ function getQueryFallbackModelHtml() {
     <option value="openai/gpt-5.5" data-provider="openai">GPT-5.5 API</option>
     <option value="openai/gpt-5.5-pro" data-provider="openai">GPT-5.5 Pro API</option>
     <option value="minimax/MiniMax-M3" data-provider="minimax">MiniMax M3</option>
+    <option value="xai/grok-4.5" data-provider="xai">Grok 4.5</option>
     <option value="xai/grok-4.3" data-provider="xai">Grok 4.3</option>
-    <option value="xai/grok-4.20-0309-reasoning" data-provider="xai">Grok 4.20 Reasoning</option>
     <option value="ollama-cloud/kimi-k2.6" data-provider="ollama-cloud">Kimi K2.6</option>
     <option value="ollama-cloud/deepseek-v4-pro" data-provider="ollama-cloud">DeepSeek V4 Pro</option>
     <option value="ollama-cloud/nemotron-3-super" data-provider="ollama-cloud">Nemotron 3 Super</option>

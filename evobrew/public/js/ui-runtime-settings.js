@@ -2,14 +2,18 @@
   const STORAGE_KEY = 'evobrew.ui.runtime-prefs.v1';
   const DEFAULTS = {
     favorites: [
+      'openai-codex/gpt-5.6',
+      'openai-codex/gpt-5.6-sol',
+      'openai-codex/gpt-5.6-terra',
+      'openai-codex/gpt-5.6-luna',
       'openai-codex/gpt-5.5',
       'anthropic/claude-opus-4-8',
       'anthropic/claude-sonnet-4-7',
       'openai/gpt-5.5',
       'openai/gpt-5.5-pro',
       'minimax/MiniMax-M3',
+      'xai/grok-4.5',
       'xai/grok-4.3',
-      'xai/grok-4.20-0309-reasoning',
       'ollama-cloud/kimi-k2.6',
       'ollama-cloud/deepseek-v4-pro',
       'ollama-cloud/nemotron-3-super',
@@ -17,8 +21,8 @@
     ],
     recent: [],
     defaults: {
-      chat: 'openai-codex/gpt-5.5',
-      query: 'openai-codex/gpt-5.5',
+      chat: 'openai-codex/gpt-5.6',
+      query: 'openai-codex/gpt-5.6',
       pgsSweep: 'minimax/MiniMax-M3',
       pgsSynth: 'anthropic/claude-opus-4-8'
     }
@@ -33,7 +37,7 @@
     {
       title: 'OpenAI Codex',
       note: 'OAuth-backed Codex models from Home23.',
-      values: ['openai-codex/gpt-5.5', 'openai-codex/gpt-5.3-codex', 'openai-codex/gpt-5.3-codex-spark', 'openai-codex/gpt-5.4', 'openai-codex/gpt-5.4-mini']
+      values: ['openai-codex/gpt-5.6', 'openai-codex/gpt-5.6-sol', 'openai-codex/gpt-5.6-terra', 'openai-codex/gpt-5.6-luna', 'openai-codex/gpt-5.5', 'openai-codex/gpt-5.3-codex', 'openai-codex/gpt-5.3-codex-spark', 'openai-codex/gpt-5.4', 'openai-codex/gpt-5.4-mini']
     },
     {
       title: 'OpenAI API',
@@ -48,7 +52,7 @@
     {
       title: 'xAI',
       note: 'Grok models from the shared Home23 catalog.',
-      values: ['xai/grok-4.3', 'xai/grok-4.20-0309-reasoning', 'xai/grok-4.20-0309-non-reasoning', 'xai/grok-4.20-multi-agent-0309']
+      values: ['xai/grok-4.5', 'xai/grok-4.3']
     },
     {
       title: 'Ollama Cloud',

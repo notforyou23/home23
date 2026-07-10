@@ -11,7 +11,6 @@ import { ensureSystemHealth } from './system-health.js';
 import {
   SHARED_SERVICES,
   coordinateSharedServiceStartup,
-  isSharedServiceName,
   startEcosystemProcesses,
 } from './shared-service-start.js';
 
@@ -52,10 +51,6 @@ function allNonSharedAutostartProcessNames(home23Root) {
 export async function runStart(home23Root, agentName) {
   if (agentName && !/^[a-z0-9][a-z0-9-]*$/.test(agentName)) {
     console.error('Agent name must be lowercase alphanumeric with hyphens.');
-    process.exit(1);
-  }
-  if (agentName && isSharedServiceName(`home23-${agentName}`)) {
-    console.error(`Agent name "${agentName}" is reserved for a Home23 shared service.`);
     process.exit(1);
   }
 
@@ -156,10 +151,6 @@ export async function runStop(home23Root, agentName) {
   const ecosystemPath = join(home23Root, 'ecosystem.config.cjs');
 
   if (agentName) {
-    if (isSharedServiceName(`home23-${agentName}`)) {
-      console.error(`Agent name "${agentName}" is reserved for a Home23 shared service.`);
-      process.exit(1);
-    }
     const names = agentProcessNames(agentName);
     console.log(`Stopping ${agentName}...`);
     for (const name of names) {

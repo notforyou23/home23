@@ -128,6 +128,31 @@ test('buildCronResultPacket treats unbound mechanical cron success as explicit n
   assert.equal(packet.nextMove, 'record no-change cron receipt; no resident pursuit or watch item created');
 });
 
+test('buildCronResultPacket treats bound mechanical cron success as no-change (no synthetic desired future)', () => {
+  const packet = buildCronResultPacket({
+    id: 'sauna-tile-bridge',
+    name: 'Sauna Tile Bridge',
+    schedule: { type: 'interval', minutes: 5 },
+    payload: {
+      kind: 'exec',
+      command: 'true',
+    },
+    agency: { pursuitId: 'ap_closed_bootcamp_binding' },
+    state: { enabled: true },
+  } as any, {
+    status: 'ok',
+    response: 'sauna 111',
+    durationMs: 22,
+    semanticStatus: 'unknown',
+  });
+
+  assert.equal(packet.pursuitId, 'ap_closed_bootcamp_binding');
+  assert.equal(packet.explicitNoChange, true);
+  assert.equal(packet.desiredChangedFuture, undefined);
+  assert.equal(packet.consequenceStatus, 'observed');
+  assert.equal(packet.nextMove, 'record no-change cron receipt; no resident pursuit or watch item created');
+});
+
 test('buildCronResultPacket extracts machine-readable agency intake packets from reports', () => {
   const packet = buildCronResultPacket({
     id: 'x-timeline-evening',

@@ -23,11 +23,6 @@ const PM2_ENV_BLOCKLIST = [
   'COSMO_WORKSPACE_PATH',
 ];
 const PM2_ENV_UNSET_ARGS = PM2_ENV_BLOCKLIST.flatMap((key) => ['-u', key]);
-const SHARED_SERVICE_NAMES = new Set([
-  'home23-evobrew',
-  'home23-cosmo23',
-  'home23-screenlogic',
-]);
 
 function cleanCommandEnv(extra = {}) {
   const env = { ...process.env, ...extra };
@@ -340,17 +335,6 @@ function commandForPid(pid) {
 
 async function repairContract(expected, plan, options = {}) {
   const actions = [];
-
-  const sharedName = [...plan.deleteNames, ...plan.startNames]
-    .find((name) => SHARED_SERVICE_NAMES.has(name));
-  if (sharedName) {
-    actions.push({
-      action: 'pm2_repair_rejected',
-      names: plan.startNames,
-      error: `shared service requires coordinated startup: ${sharedName}`,
-    });
-    return actions;
-  }
 
   for (const pid of plan.killPids) {
     actions.push({ action: 'kill', pid });

@@ -34,10 +34,27 @@ class ExperimentalAgent extends BaseAgent {
     this.allowedDomains = exp.network?.allow || ['localhost'];
     this.requireApproval = exp.approval?.required !== false;
     
+    // Prefer brain/outputs over bare runtime/outputs (same contract as other creation agents)
+    let outputsRoot = path.resolve('runtime/outputs');
+    let exportsRoot = path.resolve('runtime/exports');
+    try {
+      const { resolveAgentOutputsRoot } = require('../goals/deliverable-paths');
+      outputsRoot = resolveAgentOutputsRoot(config, 'experimental') || outputsRoot;
+      if (config?.logsDir) {
+        exportsRoot = path.join(config.logsDir, 'exports');
+      }
+    } catch {
+      if (config?.logsDir) {
+        outputsRoot = path.join(config.logsDir, 'outputs');
+        exportsRoot = path.join(config.logsDir, 'exports');
+      }
+    }
     this.allowedDirs = [
+      outputsRoot,
+      exportsRoot,
       path.resolve('runtime/outputs'),
       path.resolve('runtime/exports'),
-      '/tmp'
+      '/tmp',
     ];
     
     this.executor = null;

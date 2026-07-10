@@ -68,30 +68,50 @@ function extractText(content) {
 }
 
 function compileJsonlToMarkdown(lines, chatId, source) {
-  const messages = [];
+  const entries = [];
   for (const line of lines) {
     if (!line.trim()) continue;
     let r;
     try { r = JSON.parse(line); } catch { continue; }
-    // Skip envelope/event/boundary records — they're not dialogue.
-    if (r && typeof r === 'object' && 'type' in r) {
-      if (r.type === 'turn' || r.type === 'event' || r.type === 'session_boundary') continue;
-    }
-    if (!r || !r.role) continue;
-    const text = extractText(r.content);
-    if (!text) continue;
-    messages.push({ role: r.role, text, ts: r.ts || null });
-  }
-  if (messages.length < 2) return null;
+    if (!r || typeof r !== 'object') continue;
 
-  const first = messages[0].ts;
-  const last = messages[messages.length - 1].ts;
+    if (r.role) {
+      const text = extractText(r.content);
+      if (text) entries.push({ kind: 'message', role: r.role, text, ts: r.ts || null });
+      continue;
+    }
+
+    // A session with only tool/event records was previously dropped on the
+    // floor. Preserve a compact operational receipt so every source JSONL has
+    // an ingestable artifact without dumping noisy raw tool-result payloads.
+    if (r.type === 'event' && r.kind) {
+      const data = r.data && typeof r.data === 'object' ? r.data : {};
+      const tool = data.tool ? ` — ${data.tool}` : '';
+      const outcome = data.success === false ? ' (failed)' : '';
+      entries.push({
+        kind: 'event',
+        text: `Operational event: ${r.kind}${tool}${outcome}`,
+        ts: r.ts || null,
+      });
+    } else if (r.type === 'turn') {
+      const status = r.status ? ` (${r.status})` : '';
+      entries.push({ kind: 'event', text: `Turn receipt${status}`, ts: r.ended_at || r.ts || null });
+    } else if (r.type === 'session_boundary') {
+      entries.push({ kind: 'event', text: `Session boundary${r.trigger ? ` — ${r.trigger}` : ''}`, ts: r.ts || null });
+    }
+  }
+  if (entries.length === 0) return null;
+
+  const first = entries.find(entry => entry.ts)?.ts;
+  const last = [...entries].reverse().find(entry => entry.ts)?.ts;
+  const dialogueCount = entries.filter(entry => entry.kind === 'message').length;
   const header = [
     '# Conversation Transcript (backfill)',
     '',
     `- **chatId:** ${chatId}`,
     `- **source:** ${source}`,
-    `- **messages:** ${messages.length}`,
+    `- **entries:** ${entries.length}`,
+    `- **dialogue messages:** ${dialogueCount}`,
     first ? `- **first:** ${first}` : null,
     last ? `- **last:** ${last}` : null,
     '',
@@ -99,13 +119,16 @@ function compileJsonlToMarkdown(lines, chatId, source) {
     '',
   ].filter(Boolean).join('\n');
 
-  const body = messages.map(m => {
-    const role = m.role === 'user' ? 'User' : 'Assistant';
-    const tsSuffix = m.ts ? ` *(${m.ts})*` : '';
-    return `## ${role}${tsSuffix}\n\n${m.text}\n`;
-  }).join('\n');
+  const body = entries.map(entry => {
+    const tsSuffix = entry.ts ? ` *(${entry.ts})*` : '';
+    if (entry.kind === 'message') {
+      const role = entry.role === 'user' ? 'User' : 'Assistant';
+      return `## ${role}${tsSuffix}\n\n${entry.text}\n`;
+    }
+    return `- ${entry.text}${tsSuffix}`;
+  }).join('\n\n');
 
-  return header + '\n' + body;
+  return header + '\n' + body + '\n';
 }
 
 async function processAgent(agentDir) {

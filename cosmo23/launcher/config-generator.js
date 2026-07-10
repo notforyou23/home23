@@ -43,6 +43,10 @@ function parsePositiveInt(value, fallback) {
 
 function buildModelMappingBlock(defaultModel, fastModel) {
   return [
+    `gpt-5.6: "${defaultModel}"`,
+    `gpt-5.6-sol: "${defaultModel}"`,
+    `gpt-5.6-terra: "${defaultModel}"`,
+    `gpt-5.6-luna: "${fastModel}"`,
     `gpt-5.5: "${defaultModel}"`,
     `gpt-5.5-pro: "${defaultModel}"`,
     `gpt-5.4: "${defaultModel}"`,
@@ -126,8 +130,8 @@ class ConfigGenerator {
       minimax_api_key = '',
       enable_openai = true,
       enable_xai = false,
-      xai_default_model = 'grok-4.3',
-      xai_strategic_model = 'grok-4.20-0309-reasoning',
+      xai_default_model = 'grok-4.5',
+      xai_strategic_model = 'grok-4.5',
       // OpenAI Codex (ChatGPT OAuth)
       enable_openai_codex = false,
       // Ollama Cloud settings
@@ -935,8 +939,8 @@ experimental:
       strategic_model = null,
       anthropic_default_model = 'claude-sonnet-4-7',
       anthropic_strategic_model = 'claude-opus-4-8',
-      xai_default_model = 'grok-4.3',
-      xai_strategic_model = 'grok-4.20-0309-reasoning',
+      xai_default_model = 'grok-4.5',
+      xai_strategic_model = 'grok-4.5',
       synthesis_commit_step = true,
       synthesis_spine_cap = 5
     } = settings || {};
@@ -1166,8 +1170,8 @@ experimental:
       strategic_model: defaults.launch.strategic,
       anthropic_default_model: 'claude-sonnet-4-7',
       anthropic_strategic_model: 'claude-opus-4-8',
-      xai_default_model: 'grok-4.3',
-      xai_strategic_model: 'grok-4.20-0309-reasoning'
+      xai_default_model: 'grok-4.5',
+      xai_strategic_model: 'grok-4.5'
     };
   }
 }

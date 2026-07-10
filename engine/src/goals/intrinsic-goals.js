@@ -1,3 +1,4 @@
+const path = require('path');
 const { UnifiedClient } = require('../core/unified-client');
 const { cosmoEvents } = require('../realtime/event-emitter');
 const { validateDoneWhen, applyLegacyFallback } = require('./done-when-gate');
@@ -383,6 +384,21 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
       return null;
     }
 
+    // Reject pure goal-about-goal / recovery_gate paper-pushing at spawn time.
+    try {
+      const { shouldRejectGoalAboutGoal } = require('./deliverable-paths');
+      if (shouldRejectGoalAboutGoal(goalData)) {
+        this.logger?.info?.('Skipped goal-about-goal / spec-theatre candidate', {
+          source: goalSourceLabel(goalData.source),
+          description: goalData.description.substring(0, 100)
+        });
+        this._rejectedGoalAboutGoalCount24h = (this._rejectedGoalAboutGoalCount24h || 0) + 1;
+        return null;
+      }
+    } catch (err) {
+      this.logger?.debug?.('goal-about-goal filter unavailable', { error: err.message });
+    }
+
     const existingGoal = this.findGoalByDescription(goalData.description);
     if (existingGoal) {
       this.logger?.warn('⚠️  Skipped duplicate goal description', {
@@ -401,6 +417,23 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
       this._legacyDoneWhenSynthesizedCount = (this._legacyDoneWhenSynthesizedCount || 0) + 1;
       this.logger?.debug?.('[closer] legacy-synthesized doneWhen', {
         description: (goalData?.description || '').slice(0, 80)
+      });
+    }
+    // Prefer machine file_exists when judged-only blocks already name concrete paths.
+    try {
+      const { enrichDoneWhenWithFileExists } = require('./deliverable-paths');
+      goalData = enrichDoneWhenWithFileExists(goalData);
+      if (goalData?._doneWhenEnrichedWithFileExists) {
+        this._doneWhenEnrichedFileExistsCount =
+          (this._doneWhenEnrichedFileExistsCount || 0) + 1;
+        this.logger?.info?.('[closer] enriched judged-only doneWhen with file_exists', {
+          description: (goalData?.description || '').slice(0, 80),
+          criteria: (goalData?.doneWhen?.criteria || []).map((c) => c.type),
+        });
+      }
+    } catch (err) {
+      this.logger?.debug?.('[closer] file_exists enrichment unavailable', {
+        error: err.message,
       });
     }
     const dwResult = validateDoneWhen(goalData?.doneWhen, dwCfg);
@@ -1748,6 +1781,31 @@ Format as JSON array: [{"description": "...", "reason": "...", "uncertainty": 0.
     
     // Get active goals only for rotation logic
     const activeGoals = goals.filter(g => g.status === 'active' || !g.status);
+
+    // Collapse write-path/recovery goal theatre before normal rotation.
+    try {
+      const {
+        pruneWritePathRecoverySwarm,
+      } = require('./deliverable-paths');
+      const outputsDir =
+        this.config?.outputsDir ||
+        (this.config?.runtimeRoot
+          ? path.join(this.config.runtimeRoot, 'outputs')
+          : null) ||
+        (this.config?.brainDir
+          ? path.join(this.config.brainDir, 'outputs')
+          : null);
+      const swarm = pruneWritePathRecoverySwarm(this, outputsDir, {
+        maxKeep: 1,
+        maxCluster: 3,
+      });
+      if (swarm.archived > 0) {
+        archived += swarm.archived;
+        this.logger?.info?.('Write-path/recovery swarm pruned during rotation', swarm);
+      }
+    } catch (err) {
+      this.logger?.debug?.('write-path swarm prune skipped', { error: err.message });
+    }
     
     const maxPursuits = rotationConfig.maxPursuitsPerGoal || 15;
     const satisfactionThreshold = rotationConfig.satisfactionThreshold || 0.7;

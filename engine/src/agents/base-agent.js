@@ -906,28 +906,60 @@ class BaseAgent extends EventEmitter {
    */
   assessAccomplishment(executeResult, results) {
     // Base implementation: check for substantive output
-    const hasFindings = results.filter(r => r.type === 'finding').length > 0;
-    const hasInsights = results.filter(r => r.type === 'insight').length > 0;
-    
+    const list = Array.isArray(results) ? results : [];
+    const findings = list.filter((r) => r && r.type === 'finding').length;
+    const insights = list.filter((r) => r && r.type === 'insight').length;
+    const deliverables = list.filter(
+      (r) =>
+        r &&
+        (r.type === 'deliverable' ||
+          r.type === 'document' ||
+          r.type === 'code' ||
+          (typeof r.path === 'string' && r.path.length > 0))
+    ).length;
+
     // Check execute result for domain-specific metrics
     const metadata = executeResult?.metadata || {};
-    const hasArtifacts = metadata.documentsAnalyzed > 0 
-                      || metadata.artifactsCreated > 0
-                      || metadata.filesCreated > 0
-                      || metadata.tasksCompleted > 0;
-    
-    const accomplished = hasFindings || hasInsights || hasArtifacts;
-    
+    const metaFiles =
+      Number(metadata.documentsAnalyzed || 0) +
+      Number(metadata.artifactsCreated || 0) +
+      Number(metadata.filesCreated || 0) +
+      Number(metadata.tasksCompleted || 0) +
+      Number(metadata.fileCount || 0);
+
+    // Creation-class agents that report success:true with zero files are hollow.
+    const agentType = String(
+      this.agentType || this.constructor?.name || ''
+    ).toLowerCase();
+    const isCreationClass =
+      /document.?creation|code.?creation|code.?execution/.test(agentType);
+    const claimedSuccess =
+      executeResult?.success === true || executeResult?.status === 'complete';
+    const hasArtifacts = metaFiles > 0 || deliverables > 0;
+    const hollowCreation = isCreationClass && claimedSuccess && !hasArtifacts;
+
+    const accomplished =
+      !hollowCreation && (findings > 0 || insights > 0 || hasArtifacts);
+
+    let reason = null;
+    if (!accomplished) {
+      reason = hollowCreation
+        ? 'Hollow creation success: claimed complete with 0 deliverable files'
+        : 'No substantive output produced (0 findings, 0 insights, 0 artifacts)';
+    }
+
     return {
       accomplished,
-      reason: accomplished ? null : 'No substantive output produced (0 findings, 0 insights, 0 artifacts)',
+      reason,
       metrics: {
-        findings: results.filter(r => r.type === 'finding').length,
-        insights: results.filter(r => r.type === 'insight').length,
+        findings,
+        insights,
+        deliverables,
         documentsAnalyzed: metadata.documentsAnalyzed || 0,
         artifactsCreated: metadata.artifactsCreated || 0,
-        filesCreated: metadata.filesCreated || 0
-      }
+        filesCreated: metadata.filesCreated || 0,
+        hollowCreation,
+      },
     };
   }
 

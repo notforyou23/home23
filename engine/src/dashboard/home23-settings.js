@@ -821,7 +821,7 @@ const WIZARD_MODEL_FALLBACKS = {
   anthropic: ['claude-sonnet-4-7', 'claude-opus-4-8'],
   openai: ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4-mini'],
   'openai-codex': ['gpt-5.5', 'gpt-5.5-pro', 'gpt-5.3-codex', 'gpt-5.3-codex-spark'],
-  xai: ['grok-4.3', 'grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning', 'grok-4.20-multi-agent-0309'],
+  xai: ['grok-4.5', 'grok-4.3'],
 };
 
 async function loadProviders() {
@@ -4198,7 +4198,7 @@ const SLOT_META = {
   'agents.research': {
     label: 'Research agent — primary',
     desc: 'Research sub-agents launched via the research_* tools. Initial investigation pass that produces findings.',
-    pick: 'Favor accuracy + grounding. Models with web search or strong knowledge (grok-4.3, claude-opus, gpt-5.5).',
+    pick: 'Favor accuracy + grounding. Models with web search or strong knowledge (grok-4.5, claude-opus, gpt-5.5).',
   },
   'agents.research-synthesis': {
     label: 'Research synthesis',

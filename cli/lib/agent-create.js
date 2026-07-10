@@ -12,7 +12,6 @@ import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
 import { askWithDefault, askSecret, closeRL } from './prompts.js';
 import { generateEcosystem } from './generate-ecosystem.js';
-import { isSharedServiceName } from './shared-service-start.js';
 
 const require = createRequire(import.meta.url);
 const { buildAgentConfig, buildFeederConfig } = require('./agent-config-builder.cjs');
@@ -203,12 +202,6 @@ function addBotTokenToSecrets(home23Root, agentName, botToken) {
 }
 
 export async function runAgentCreate(home23Root, name, options = {}) {
-  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
-    throw new Error('Agent name must be lowercase alphanumeric with hyphens');
-  }
-  if (isSharedServiceName(`home23-${name}`)) {
-    throw new Error(`Agent name "${name}" is reserved for a Home23 shared service`);
-  }
   const instanceDir = join(home23Root, 'instances', name);
   const home23Version = getHome23Version(home23Root);
   const prompt = options.prompt || {};

@@ -1984,26 +1984,24 @@ class DashboardServer {
                   ? fsSync.readdirSync(instancesDir).filter(name => fsSync.existsSync(path.join(instancesDir, name, 'config.yaml')))
                   : [];
                 const targets = agentNames.flatMap(name => [`home23-${name}`, `home23-${name}-harness`]).filter(name => online.has(name));
-                const sharedNames = new Set(['home23-evobrew', 'home23-cosmo23', 'home23-screenlogic']);
-                const safeTargets = targets.filter(name => !sharedNames.has(name));
-                if (safeTargets.length > 0) {
+                if (targets.length > 0) {
                   const ecosystemPath = path.join(home23RootForPoll, 'ecosystem.config.cjs');
                   try {
-                    execFileSync('pm2', ['restart', ecosystemPath, '--only', safeTargets.join(','), '--update-env', '--silent'], {
+                    execFileSync('pm2', ['restart', ecosystemPath, '--only', targets.join(','), '--update-env', '--silent'], {
                       cwd: home23RootForPoll,
                       env: cleanPm2Env(),
                       stdio: 'pipe',
                       timeout: 45_000,
                     });
                   } catch {
-                    execFileSync('pm2', ['start', ecosystemPath, '--only', safeTargets.join(','), '--update-env', '--silent'], {
+                    execFileSync('pm2', ['start', ecosystemPath, '--only', targets.join(','), '--update-env', '--silent'], {
                       cwd: home23RootForPoll,
                       env: cleanPm2Env(),
                       stdio: 'pipe',
                       timeout: 45_000,
                     });
                   }
-                  console.log(`[OAuth refresh] rotated ${provider} token, restarted ${safeTargets.join(', ')}`);
+                  console.log(`[OAuth refresh] rotated ${provider} token, restarted ${targets.join(', ')}`);
                 }
               } catch (err) {
                 console.warn(`[OAuth refresh] ${provider} token written but restart failed:`, err.message);

@@ -15,13 +15,17 @@
 
 const fs = require('fs');
 const path = require('path');
+const { normalizeOutputsRelativePath } = require('./deliverable-paths');
 
 const JUDGE_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_ARTIFACT_BYTES = 12_000;
 const MAX_ARTIFACT_CHARS = 8_000;
 
 function resolveSafe(baseDir, relPath) {
-  const full = path.resolve(baseDir, relPath);
+  // Goals often say "outputs/foo.json" while env.outputsDir is already .../outputs.
+  // Normalize first so file_exists checks hit the real top-level artifact.
+  const normalized = normalizeOutputsRelativePath(relPath) || relPath;
+  const full = path.resolve(baseDir, normalized);
   const rel = path.relative(baseDir, full);
   if (rel.startsWith('..') || path.isAbsolute(rel)) {
     return null;

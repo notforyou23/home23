@@ -104,10 +104,8 @@ class ProviderRegistry {
         providerId: 'xai',
         baseUrl: config.baseUrl || 'https://api.x.ai/v1',
         seedModels: [
-          'grok-4.3',
-          'grok-4.20-0309-reasoning',
-          'grok-4.20-0309-non-reasoning',
-          'grok-4.20-multi-agent-0309'
+          'grok-4.5',
+          'grok-4.3'
         ],
         modelFilter: (modelId) => String(modelId || '').toLowerCase().startsWith('grok')
       });

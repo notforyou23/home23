@@ -92,10 +92,10 @@ describe('brain_query', () => {
       return { ok: true, json: async () => ({ answer: 'ok' }) } as unknown as Response;
     };
     await brainQueryTool.execute(
-      { query: 'q', model: 'gpt-5.2', enablePGS: true, pgsSynthModel: 'grok-4.20-0309-reasoning' },
+      { query: 'q', model: 'gpt-5.2', enablePGS: true, pgsSynthModel: 'grok-4.5' },
       makeCtx(),
     );
-    assert.equal(capturedBody.model, 'grok-4.20-0309-reasoning');
+    assert.equal(capturedBody.model, 'grok-4.5');
   });
 
   it('returns timeout context instead of the raw abort message', async () => {
@@ -135,7 +135,7 @@ describe('brain_query', () => {
           answer: 'ok',
           exportedTo: '/fake/exports/query.md',
           metadata: {
-            model: 'grok-4.20-0309-reasoning',
+            model: 'grok-4.5',
             mode: 'pgs',
             sources: { memoryNodes: 44, thoughts: 0, edges: 88 },
             pgs: {
@@ -144,7 +144,7 @@ describe('brain_query', () => {
               failedSweeps: 3,
               totalPartitions: 82,
               sweepModel: 'claude-sonnet-4-6',
-              synthesisModel: 'grok-4.20-0309-reasoning',
+              synthesisModel: 'grok-4.5',
             },
           },
         }),

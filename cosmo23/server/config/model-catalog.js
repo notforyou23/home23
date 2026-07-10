@@ -73,15 +73,17 @@ const BUILTIN_MODEL_CATALOG = {
     xai: {
       label: 'xAI',
       models: [
-        { id: 'grok-4.3', label: 'Grok 4.3', kind: 'chat' },
-        { id: 'grok-4.20-0309-reasoning', label: 'Grok 4.20 Reasoning', kind: 'chat' },
-        { id: 'grok-4.20-0309-non-reasoning', label: 'Grok 4.20 Non-Reasoning', kind: 'chat' },
-        { id: 'grok-4.20-multi-agent-0309', label: 'Grok 4.20 Multi-Agent', kind: 'responses' }
+        { id: 'grok-4.5', label: 'Grok 4.5', kind: 'chat' },
+        { id: 'grok-4.3', label: 'Grok 4.3', kind: 'chat' }
       ]
     },
     'openai-codex': {
       label: 'OpenAI Codex',
       models: [
+        { id: 'gpt-5.6', label: 'GPT-5.6', kind: 'chat' },
+        { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', kind: 'chat' },
+        { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra', kind: 'chat' },
+        { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna', kind: 'chat' },
         { id: 'gpt-5.5', label: 'GPT-5.5', kind: 'chat' },
         { id: 'gpt-5.5-pro', label: 'GPT-5.5 Pro', kind: 'chat' },
         { id: 'gpt-5.3-codex', label: 'GPT-5.3 Codex', kind: 'chat' },

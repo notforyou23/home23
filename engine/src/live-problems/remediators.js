@@ -1,10 +1,9 @@
 /**
  * Remediator catalog — bounded autonomous fix attempts for live problems.
  *
- * Every remediator is allowlist-governed. `pm2_restart` targets Home23 agent
- * processes directly and routes shared services through the startup coordinator;
- * it can never touch jtr's other PM2 apps (cosmo23-*, jerry-api, jerry-tool,
- * etc.). `exec_command` takes a named
+ * Every remediator is allowlist-governed. `pm2_restart` only targets the
+ * agent's own home23-* processes; it can never touch jtr's other PM2 apps
+ * (cosmo23-*, jerry-api, jerry-tool, etc.). `exec_command` takes a named
  * snippet from a small internal catalog — no raw shell injection.
  *
  * Remediators return { outcome: 'success'|'rejected'|'failed', detail }.
@@ -16,13 +15,6 @@ const { execFileSync, execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { pathToFileURL } = require('url');
-
-const SHARED_PM2_PROCESS_NAMES = new Set([
-  'home23-evobrew',
-  'home23-cosmo23',
-  'home23-screenlogic',
-]);
 
 /**
  * PM2 processes we are willing to autonomously restart.
@@ -149,29 +141,9 @@ const remediators = {
    * secrets/env are loaded. Fire-and-forget — the verifier re-checks next tick.
    * args: { name }
    */
-  async pm2_restart({ name }, ctx = {}) {
+  pm2_restart({ name }) {
     if (!isRestartableProcess(name)) {
       return { outcome: 'rejected', detail: `not restartable: ${name}` };
-    }
-    if (SHARED_PM2_PROCESS_NAMES.has(name)) {
-      try {
-        const home23Root = ctx.home23Root || home23RootFromEnv();
-        const sharedStart = ctx.coordinateSharedServiceStartup
-          ? null
-          : await import(pathToFileURL(path.join(home23Root, 'cli', 'lib', 'shared-service-start.js')).href);
-        const coordinate = ctx.coordinateSharedServiceStartup
-          || sharedStart.coordinateSharedServiceStartup;
-        const services = ctx.sharedService
-          ? [ctx.sharedService]
-          : (ctx.sharedServices || sharedStart?.SHARED_SERVICES || []);
-        const service = services
-          .find((entry) => entry.name === name);
-        if (!service) return { outcome: 'rejected', detail: `unknown shared service: ${name}` };
-        await coordinate({ home23Root, services: [service], restartOnline: true });
-        return { outcome: 'success', detail: `coordinated restart for ${name}` };
-      } catch (err) {
-        return { outcome: 'failed', detail: `coordinated restart failed: ${err.message}` };
-      }
     }
     if (isSelfProcess(name)) {
       try {

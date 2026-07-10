@@ -119,22 +119,33 @@ function shouldRouteForceOutputDirectly(workState) {
 
 function buildForceOutputMissionSpec(goal, cycleCount) {
   if (!goal) return null;
+  // Lazy require keeps orchestrator boot light and avoids circular imports.
+  const {
+    extractFileDeliverablesFromGoal,
+    buildDeliverableSpecFromPath,
+    normalizeOutputsRelativePath,
+  } = require('../goals/deliverable-paths');
+
   const fileCriteria = Array.isArray(goal.doneWhen?.criteria)
     ? goal.doneWhen.criteria
         .filter(criterion => criterion?.type === 'file_exists' && criterion.path)
         .map(criterion => criterion.path)
     : [];
-  const target = fileCriteria[0] || 'requested digest file';
-  return {
-    goalId: goal.id,
-    agentType: 'document_creation',
-    description: goal.description || `Produce ${target}.`,
-    deliverable: {
+  const extracted = extractFileDeliverablesFromGoal(goal);
+  const rawTarget = fileCriteria[0] || extracted[0] || 'requested digest file';
+  const target = normalizeOutputsRelativePath(rawTarget) || rawTarget;
+  const deliverable =
+    buildDeliverableSpecFromPath(target) || {
       location: '@outputs/',
       filename: target,
       type: 'report',
       format: 'markdown',
-    },
+    };
+  return {
+    goalId: goal.id,
+    agentType: 'document_creation',
+    description: goal.description || `Produce ${target}.`,
+    deliverable,
     successCriteria: [
       `Create ${target} in the outputs directory`,
       'Synthesize the referenced memory findings into a concrete markdown deliverable',

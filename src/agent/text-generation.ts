@@ -115,7 +115,7 @@ function defaultModelForProvider(provider: string): string {
   if (provider === 'minimax') return 'MiniMax-M3';
   if (provider === 'openai') return 'gpt-5.4-mini';
   if (provider === 'openai-codex') return 'gpt-5.5';
-  if (provider === 'xai') return 'grok-4.3';
+  if (provider === 'xai') return 'grok-4.5';
   return 'kimi-k2.6';
 }
 

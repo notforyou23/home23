@@ -262,15 +262,21 @@ class CodeCreationAgent extends BaseAgent {
         this.logger.warn('PathResolver failed, using fallback', {
           error: error.message
         });
-        runOutputDir = this.config.logsDir 
-          ? path.join(this.config.logsDir, 'outputs', 'code-creation', this.agentId)
-          : path.join(process.cwd(), 'runtime', 'outputs', 'code-creation', this.agentId);
+        {
+          const { resolveAgentOutputsRoot } = require('../goals/deliverable-paths');
+          runOutputDir = path.join(
+            resolveAgentOutputsRoot(this.config, 'code-creation'),
+            this.agentId
+          );
+        }
       }
     } else {
-      // Legacy fallback
-      runOutputDir = this.config.logsDir 
-        ? path.join(this.config.logsDir, 'outputs', 'code-creation', this.agentId)
-        : path.join(process.cwd(), 'runtime', 'outputs', 'code-creation', this.agentId);
+      // Prefer brain/outputs over bare runtime/outputs
+      const { resolveAgentOutputsRoot } = require('../goals/deliverable-paths');
+      runOutputDir = path.join(
+        resolveAgentOutputsRoot(this.config, 'code-creation'),
+        this.agentId
+      );
     }
 
     return {
@@ -2555,9 +2561,11 @@ if __name__ == "__main__":
    * This matches the container flow: files created → tracked → copied to agent output dir → registered in memory
    */
   async downloadAndSaveGeneratedFilesLocal() {
-    const outputDir = this.config.logsDir
-      ? path.join(this.config.logsDir, 'outputs', 'code-creation', this.agentId)
-      : path.join(process.cwd(), 'runtime', 'outputs', 'code-creation', this.agentId);
+    const { resolveAgentOutputsRoot } = require('../goals/deliverable-paths');
+    const outputDir = path.join(
+      resolveAgentOutputsRoot(this.config, 'code-creation'),
+      this.agentId
+    );
     
     try {
       await fs.mkdir(outputDir, { recursive: true });
@@ -2777,9 +2785,11 @@ if __name__ == "__main__":
     const directSaved = [];
     const exportedSaved = [];
 
-    const outputDir = this.config.logsDir
-      ? path.join(this.config.logsDir, 'outputs', 'code-creation', this.agentId)
-      : path.join(process.cwd(), 'runtime', 'outputs', 'code-creation', this.agentId);
+    const { resolveAgentOutputsRoot } = require('../goals/deliverable-paths');
+    const outputDir = path.join(
+      resolveAgentOutputsRoot(this.config, 'code-creation'),
+      this.agentId
+    );
     
     try {
       await fs.mkdir(outputDir, { recursive: true });
@@ -3276,7 +3286,10 @@ if __name__ == "__main__":
    */
   async triggerCodeExecution(spec, generatedFiles) {
     try {
-      const outputDir = spec.outputDir || `runtime/outputs/code-creation/${this.agentId}`;
+      const { resolveAgentOutputsRoot } = require('../goals/deliverable-paths');
+      const outputDir =
+        spec.outputDir ||
+        path.join(resolveAgentOutputsRoot(this.config, 'code-creation'), this.agentId);
       
       // Send message to spawn CodeExecutionAgent with file references
       await this.sendMessage('meta_coordinator', 'spawn_code_execution_agent', {
@@ -3316,7 +3329,10 @@ if __name__ == "__main__":
    */
   async triggerQualityAssurance(spec, generatedFiles) {
     try {
-      const outputDir = spec.outputDir || `runtime/outputs/code-creation/${this.agentId}`;
+      const { resolveAgentOutputsRoot } = require('../goals/deliverable-paths');
+      const outputDir =
+        spec.outputDir ||
+        path.join(resolveAgentOutputsRoot(this.config, 'code-creation'), this.agentId);
       
       // Send message to spawn QA agent with artifact reference
       await this.sendMessage('meta_coordinator', 'spawn_qa_agent', {

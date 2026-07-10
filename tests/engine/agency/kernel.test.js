@@ -100,6 +100,8 @@ test('AgencyKernel merges repeated unbound world-stream cron receipts instead of
     config: { enabled: true, mode: 'dry_run' },
   });
 
+  // Synthetic bootcamp binding futures used to create/merge active pursuits on every ok
+  // tick. Mechanical ok with only a synthetic desired future must discard instead.
   const packet = {
     source: 'cron.agent-12d2d476-bb6f-435f-9058-62f99c336543',
     kind: 'cron_report',
@@ -118,15 +120,16 @@ test('AgencyKernel merges repeated unbound world-stream cron receipts instead of
   });
 
   const active = kernel.pursuits({ status: 'active', limit: 10 });
-  const pursuitRows = readJsonl(join(dir, 'agency', 'pursuits.jsonl'))
-    .filter(row => row.pursuit?.dedupeKey === first.pursuit.dedupeKey);
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
 
-  assert.equal(second.decision.reason, 'merged_with_existing_pursuit');
-  assert.equal(first.pursuit.id, second.pursuit.id);
-  assert.equal(active.length, 1);
-  assert.equal(active[0].seenCount, 2);
-  assert.equal(active[0].latestEvidence.at(-1).ref, 'agent-12d2d476-bb6f-435f-9058-62f99c336543:second');
-  assert.equal(pursuitRows.filter(row => row.type === 'created').length, 1);
+  assert.equal(first.decision.route, 'discard');
+  assert.equal(first.decision.reason, 'mechanical_cron_no_change_not_attention');
+  assert.equal(second.decision.route, 'discard');
+  assert.equal(second.decision.reason, 'mechanical_cron_no_change_not_attention');
+  assert.equal(first.pursuit, null);
+  assert.equal(second.pursuit, null);
+  assert.equal(active.length, 0);
+  assert.equal(receipts.filter(row => row.route === 'discard' && row.reason === 'mechanical_cron_no_change_not_attention').length >= 2, true);
 });
 
 test('AgencyKernel reconciles legacy duplicate active pursuits by dedupe key', async () => {
@@ -435,6 +438,38 @@ test('AgencyKernel discards legacy unbound mechanical cron watch rows during sta
   assert.equal(reconciled.status, 'discarded');
   assert.equal(state.attention.watchItems, 0);
   assert.equal(receipts.some(row => row.event === 'discarded' && row.reason === 'mechanical_cron_no_change_not_attention'), true);
+});
+
+test('AgencyKernel discards mechanical cron ok bound to a dead/missing pursuit instead of inventing a new pursuit', async () => {
+  const dir = brainDir();
+  const kernel = new AgencyKernel({
+    brainDir: dir,
+    agentName: 'jerry',
+    config: { enabled: true, mode: 'dry_run' },
+  });
+
+  const result = await kernel.intakeWorldStream({
+    source: 'cron.sauna-tile-bridge',
+    kind: 'cron_report',
+    pursuitId: 'ap_dead_bootcamp_binding',
+    explicitNoChange: true,
+    summary: 'Cron sauna-tile-bridge (exec) finished with status ok.',
+    desiredChangedFuture: 'Cron outcome updates resident pursuit ap_dead_bootcamp_binding with latest scheduler evidence.',
+    nextMove: 'attach scheduler outcome to the bound resident pursuit and continue/repair based on semantic status',
+    evidence: [{ type: 'cron_result', ref: 'sauna-tile-bridge' }],
+    tags: ['world-stream', 'cron'],
+  });
+
+  const inbox = readJsonl(join(dir, 'agency', 'inbox.jsonl'));
+  const pursuits = kernel.pursuits({ status: 'active', limit: 20 });
+  const receipts = readJsonl(join(dir, 'agency', 'receipts.jsonl'));
+
+  assert.equal(result.decision.route, 'discard');
+  assert.equal(result.decision.reason, 'mechanical_cron_dead_binding_no_change');
+  assert.equal(result.pursuit, null);
+  assert.equal(pursuits.length, 0);
+  assert.equal(inbox.length, 0);
+  assert.equal(receipts.some(row => row.event === 'discarded' && row.reason === 'mechanical_cron_dead_binding_no_change'), true);
 });
 
 test('AgencyKernel tracks live-problem observations by problem id and closes on resolved verifier state', async () => {

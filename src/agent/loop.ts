@@ -325,19 +325,15 @@ export class AgentLoop {
   }
 
   /**
-   * Write (or overwrite) workspace/sessions/active-<chatId>.md with the
-   * current conversation as a live recovery surface. The feeder ignores
-   * active-* snapshots to avoid recompiling every turn; durable session
-   * transcripts and daily backfills are the ingestion path.
+   * Write (or overwrite) workspace/sessions/session-live-<chatId>.md with the
+   * complete current conversation after every turn. This is both the recovery
+   * surface and the feeder's durable ingestion source: the final turn reaches
+   * the brain without waiting for a later message to create a session boundary.
    */
-  private activeSnapshotLastCount: Map<string, number> = new Map();
   private async updateActiveSnapshot(chatId: string): Promise<void> {
     const records = this.history.load(chatId);
     const messages = records.filter((r): r is StoredMessage => !('type' in r && r.type === 'session_boundary'));
     if (messages.length < 2) return;
-
-    const prev = this.activeSnapshotLastCount.get(chatId) ?? 0;
-    if (messages.length - prev < 6 && prev !== 0) return;   // not enough new content yet
 
     const lines: string[] = [];
     for (const msg of messages) {
@@ -355,13 +351,12 @@ export class AgentLoop {
     const sessionsDir = join(this.workspacePath, 'sessions');
     // Safe filename: replace any non-[A-Za-z0-9_-] with _
     const safeChatId = String(chatId).replace(/[^A-Za-z0-9_-]/g, '_');
-    const filename = `active-${safeChatId}.md`;
-    const body = `# Active Conversation (live snapshot)\n\n- **chatId:** ${chatId}\n- **messages:** ${messages.length}\n- **updated:** ${new Date().toISOString()}\n\n---\n\n${lines.join('\n\n')}\n`;
+    const filename = `session-live-${safeChatId}.md`;
+    const body = `# Conversation Session (live)\n\n- **chatId:** ${chatId}\n- **messages:** ${messages.length}\n- **updated:** ${new Date().toISOString()}\n\n---\n\n${lines.join('\n\n')}\n`;
 
     try {
       mkdirSync(sessionsDir, { recursive: true });
       writeFileSync(join(sessionsDir, filename), body);
-      this.activeSnapshotLastCount.set(chatId, messages.length);
     } catch (err) {
       console.warn(`[loop] Failed to write active snapshot for ${chatId}: ${err}`);
     }
@@ -697,11 +692,10 @@ export class AgentLoop {
             assistantText: result.text ?? '',
           }).catch(err => console.warn('[push] notifyTurnComplete failed:', err));
         }
-        // Active-conversation snapshot: write/overwrite a markdown file in
-        // workspace/sessions/active-<chatId>.md after each turn for live
-        // recovery/debugging. Durable session files and daily backfills are
-        // what the feeder ingests. Fire-and-forget; snapshot failure should not
-        // poison turn completion.
+        // Write/overwrite the durable live session after every completed turn.
+        // The feeder watches this non-volatile session file, so the brain sees
+        // the latest conversation even if no later message creates a boundary.
+        // Fire-and-forget; a write failure must not poison turn completion.
         this.updateActiveSnapshot(chatId).catch(err => {
           console.warn(`[loop] active snapshot failed for ${chatId}:`, err?.message || err);
         });

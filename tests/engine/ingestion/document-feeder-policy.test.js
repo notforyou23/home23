@@ -60,7 +60,7 @@ test('document feeder ignores volatile cron status snapshots by default', () => 
   );
 });
 
-test('document feeder ignores live active session snapshots but keeps durable transcripts', () => {
+test('document feeder ignores legacy volatile active snapshots but ingests live durable session transcripts', () => {
   const feeder = makeFeeder();
 
   assert.equal(
@@ -68,8 +68,8 @@ test('document feeder ignores live active session snapshots but keeps durable tr
     true
   );
   assert.equal(
-    feeder._shouldIgnorePath('/tmp/home23/instances/jerry/workspace/sessions/active-diagnose_thoughts_flowing.md'),
-    true
+    feeder._shouldIgnorePath('/tmp/home23/instances/jerry/workspace/sessions/session-live-dashboard-jerry-1778341794681.md'),
+    false
   );
   assert.equal(
     feeder._shouldIgnorePath('/tmp/home23/instances/jerry/workspace/sessions/session-2026-05-09T16-12-55.md'),

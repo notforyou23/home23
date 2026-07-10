@@ -100,8 +100,8 @@ test('current Claude family query models keep deep context instead of falling to
 
 test('current Grok family query models use the xAI context profile', () => {
   assert.equal(QueryEngine.resolveModelMaxNodes('grok-4.3'), 2800);
-  assert.equal(QueryEngine.resolveModelMaxNodes('grok-4.20-0309-reasoning'), 2800);
-  assert.equal(QueryEngine.resolveModelContextWindow('grok-4.20-multi-agent-0309'), 128000);
+  assert.equal(QueryEngine.resolveModelMaxNodes('grok-4.5'), 2800);
+  assert.equal(QueryEngine.resolveModelContextWindow('grok-4.5'), 128000);
 });
 
 test('large Anthropic query contexts are capped before provider streaming', () => {

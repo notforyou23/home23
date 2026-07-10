@@ -4,16 +4,17 @@
 const fs = require('fs');
 const path = require('path');
 
-const DEFAULT_STATE = path.join(
-  process.cwd(),
-  'instances',
-  'jerry',
-  'projects',
-  'from-the-inside',
-  'curriculum',
-  'autostudy',
-  'STATE.json',
-);
+const DEFAULT_STATE = process.env.FROM_THE_INSIDE_STATE
+  || path.join(
+    process.cwd(),
+    'instances',
+    'jerry',
+    'projects',
+    'from-the-inside',
+    'curriculum',
+    'autostudy',
+    'STATE.json',
+  );
 
 function slugifyTopic(value) {
   return String(value || '')
@@ -150,6 +151,11 @@ function parseArgs(argv) {
 function main(argv = process.argv.slice(2)) {
   const args = parseArgs(argv);
   const statePath = path.resolve(args.statePath);
+  if (!fs.existsSync(statePath)) {
+    console.error(`[from-the-inside-state] fail state file not found: ${statePath}`);
+    console.error(`[from-the-inside-state] canonical: ${DEFAULT_STATE}`);
+    return 1;
+  }
   const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
   const result = validateState(state);
   if (args.write) {

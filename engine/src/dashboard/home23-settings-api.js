@@ -22,18 +22,6 @@ const PM2_ENV_BLOCKLIST = [
   'COSMO_RUNTIME_DIR',
   'COSMO_WORKSPACE_PATH',
 ];
-const SHARED_PM2_PROCESS_NAMES = new Set([
-  'home23-evobrew',
-  'home23-cosmo23',
-  'home23-screenlogic',
-]);
-
-function assertNoSharedPm2Targets(targets) {
-  const sharedTarget = targets.find(name => SHARED_PM2_PROCESS_NAMES.has(name));
-  if (sharedTarget) {
-    throw new Error(`Refusing generic PM2 mutation for shared service: ${sharedTarget}`);
-  }
-}
 
 function cleanPm2Env(extra = {}) {
   const env = { ...process.env, ...extra };
@@ -189,7 +177,6 @@ function createSettingsRouter(home23Root, options = {}) {
   }
 
   function restartOnlineEcosystemProcesses(targets) {
-    assertNoSharedPm2Targets(targets);
     const { execFileSync } = require('child_process');
     const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
     const online = listOnlinePm2ProcessNames();
@@ -209,33 +196,6 @@ function createSettingsRouter(home23Root, options = {}) {
       }
     }
     return activeTargets;
-  }
-
-  async function restartOnlineProcessesWithSharedLock(targets) {
-    const online = listOnlinePm2ProcessNames();
-    const activeTargets = [...new Set(targets)].filter(name => online.has(name));
-    const nonSharedTargets = activeTargets.filter(name => !SHARED_PM2_PROCESS_NAMES.has(name));
-    const sharedTargetNames = new Set(
-      activeTargets.filter(name => SHARED_PM2_PROCESS_NAMES.has(name)),
-    );
-    const restartedTargets = restartOnlineEcosystemProcesses(nonSharedTargets);
-
-    if (sharedTargetNames.size > 0) {
-      const sharedStart = await import(pathToFileURL(
-        path.join(home23Root, 'cli', 'lib', 'shared-service-start.js')
-      ).href);
-      const sharedServices = sharedStart.SHARED_SERVICES.filter(
-        service => sharedTargetNames.has(service.name)
-      );
-      await sharedStart.coordinateSharedServiceStartup({
-        home23Root,
-        services: sharedServices,
-        restartOnline: true,
-      });
-      restartedTargets.push(...sharedServices.map(service => service.name));
-    }
-
-    return restartedTargets;
   }
 
   function recycleManagedProcess(name) {
@@ -742,7 +702,7 @@ function createSettingsRouter(home23Root, options = {}) {
     res.json({ providers: masked });
   });
 
-  router.put('/providers', async (req, res) => {
+  router.put('/providers', (req, res) => {
     const { providers } = req.body;
     if (!providers || typeof providers !== 'object') {
       return res.status(400).json({ error: 'providers object required' });
@@ -770,7 +730,7 @@ function createSettingsRouter(home23Root, options = {}) {
         'home23-evobrew',
         'home23-cosmo23',
       ];
-      const restartedTargets = await restartOnlineProcessesWithSharedLock(targets);
+      const restartedTargets = restartOnlineEcosystemProcesses(targets);
       res.json({ ok: true, restarted: restartedTargets.length > 0, targets: restartedTargets });
     } catch (err) {
       res.json({ ok: true, restarted: false, warn: err.message });
@@ -1047,9 +1007,6 @@ function createSettingsRouter(home23Root, options = {}) {
     if (!name || !/^[a-z0-9][a-z0-9-]*$/.test(name)) {
       return res.status(400).json({ error: 'Name must be lowercase alphanumeric with hyphens' });
     }
-    if (SHARED_PM2_PROCESS_NAMES.has(`home23-${name}`)) {
-      return res.status(400).json({ error: `Agent name "${name}" is reserved for a Home23 shared service` });
-    }
 
     const instanceDir = path.join(home23Root, 'instances', name);
     if (fs.existsSync(instanceDir)) {
@@ -1294,15 +1251,10 @@ function createSettingsRouter(home23Root, options = {}) {
     if (!fs.existsSync(instanceDir)) {
       return res.status(404).json({ error: `Agent "${agentName}" not found` });
     }
-    const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-harness`];
-    try {
-      assertNoSharedPm2Targets(names);
-    } catch (err) {
-      return res.status(400).json({ error: err.message });
-    }
 
     try {
       const { execSync } = require('child_process');
+      const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-harness`];
       for (const n of names) {
         try { execSync(`pm2 stop ${n}`, { env: cleanPm2Env(), stdio: 'pipe' }); } catch { /* not running */ }
         try { execSync(`pm2 delete ${n}`, { env: cleanPm2Env(), stdio: 'pipe' }); } catch { /* not in list */ }
@@ -1333,7 +1285,6 @@ function createSettingsRouter(home23Root, options = {}) {
       const { execSync } = require('child_process');
       const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
       const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-harness`];
-      assertNoSharedPm2Targets(names);
       execSync(`pm2 start ${ecosystemPath} --only ${names.join(',')} --update-env --silent`, { cwd: home23Root, env: cleanPm2Env(), stdio: 'pipe', timeout: 30000 });
       res.json({ ok: true, status: 'running' });
     } catch (err) {
@@ -1378,7 +1329,6 @@ function createSettingsRouter(home23Root, options = {}) {
       // parallel internally, so the engine's ~1.6s kill_timeout is paid once,
       // not four times in series. Sequential stops used to take 6-12s.
       const names = [`home23-${agentName}`, `home23-${agentName}-dash`, `home23-${agentName}-harness`];
-      assertNoSharedPm2Targets(names);
       try {
         execSync(`pm2 stop ${names.join(' ')}`, { env: cleanPm2Env(), stdio: 'pipe', timeout: 15000 });
       } catch { /* some processes may not be online — pm2 non-zero is fine */ }
@@ -2532,4 +2482,4 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
   return { router, loadYaml, saveYaml, discoverAgents };
 }
 
-module.exports = { assertNoSharedPm2Targets, createSettingsRouter };
+module.exports = { createSettingsRouter };

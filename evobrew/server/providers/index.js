@@ -180,10 +180,8 @@ async function createRegistry(options = {}) {
       baseUrl: 'https://api.x.ai/v1'
     });
     // Register Grok models explicitly
+    registry.registerModel('grok-4.5', 'xai');
     registry.registerModel('grok-4.3', 'xai');
-    registry.registerModel('grok-4.20-0309-reasoning', 'xai');
-    registry.registerModel('grok-4.20-0309-non-reasoning', 'xai');
-    registry.registerModel('grok-4.20-multi-agent-0309', 'xai');
     console.log('[Providers] ✅ xAI (Grok) registered');
   }
 

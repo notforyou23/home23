@@ -64,10 +64,22 @@ function isRawTelemetryObservation(candidate = {}) {
     || source === 'work.heartbeat';
 }
 
+function isSyntheticCronBindingFuture(text = '') {
+  return /cron outcome updates (?:a bound )?resident pursuit/i.test(String(text));
+}
+
 function isMechanicalCronNoChange(candidate = {}) {
   if (candidate.kind !== 'cron_report') return false;
-  if (candidate.pursuitId || candidate.desiredChangedFuture || candidate.stopCondition || candidate.changedFuture) return false;
+  if (candidate.stopCondition || candidate.changedFuture) return false;
   const source = String(candidate.source || '');
   const summary = String(candidate.summary || '');
-  return source.startsWith('cron.') && /finished with status ok/i.test(summary);
+  if (!source.startsWith('cron.') || !/finished with status ok/i.test(summary)) return false;
+  // Real intake/operator desired futures keep attention. Synthetic bootcamp binding
+  // futures ("Cron outcome updates resident pursuit ap_…") and summary-placeholder
+  // desired futures do not — pursuitId alone is not an actionable changed future.
+  const desired = String(candidate.desiredChangedFuture || '').trim();
+  if (desired && desired !== summary.trim() && !isSyntheticCronBindingFuture(desired)) {
+    return false;
+  }
+  return true;
 }

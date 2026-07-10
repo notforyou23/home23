@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-09
 
-**Status:** Implemented and live-verified
+**Status:** Written spec approved; ready for implementation
 
 **Scope:** Home23 startup entry points for the shared `home23-evobrew`, `home23-cosmo23`, and `home23-screenlogic` PM2 services, plus the bounded live COSMO recovery procedure.
 
@@ -42,7 +42,7 @@ The July 9 COSMO incident demonstrated the failure mode after reboot: PM2 resurr
 
 Add a focused module at `cli/lib/shared-service-start.js`. It owns cross-process coordination, PM2 state refresh, sequential shared-service starts, stale-lock recovery, and local receipts. `cli/lib/pm2-commands.js` remains the command orchestrator and calls the module once after the requested agent processes have been started.
 
-The implementation audit found additional ways to start COSMO that must share the same lock: the self-updater, the dashboard COSMO watchdog, settings restart endpoints (including provider updates), and the public `pm2:start`/`pm2:restart` scripts. The unfiltered `home23 start` ecosystem launch also included shared services before lock acquisition. Those entry points route through the coordinator, while non-shared process starts use exact PM2 names and a sanitized environment. The generic settings PM2 helper rejects all three shared-service names so a future caller cannot silently bypass coordination.
+The implementation audit found additional ways to start COSMO that must share the same lock: the self-updater, the dashboard COSMO watchdog, the settings COSMO endpoint, and the public `pm2:start`/`pm2:restart` scripts. The unfiltered `home23 start` ecosystem launch also included shared services before lock acquisition. Those entry points route through the coordinator, while non-shared process starts use exact PM2 names and a sanitized environment.
 
 The coordinator receives the three service definitions in deterministic order:
 
@@ -54,18 +54,24 @@ The coordinator acquires one lock for the entire shared-service pass. This preve
 
 ## Lock Contract
 
-The lock is local runtime state outside Git, under `${TMPDIR:-/tmp}/home23/shared-service-start.lock`.
+The lock is a local runtime file outside Git, under `${TMPDIR:-/tmp}/home23/shared-service-start.lock`.
 
-Acquisition uses an atomic `mkdir` claim on the lock directory plus an mtime heartbeat and bounded stale threshold. Contenders poll until the lock is released or their deadline expires. A stale lock is first atomically renamed to a unique quarantine path, then removed; a contender that lost the race cannot delete a replacement owner's lock.
+Acquisition uses atomic exclusive file creation. The file contains JSON with:
 
-Safe diagnostic metadata is written inside the owned lock directory as a token-specific `owner-<token>.json`. It contains only:
-
-- schema identifier and random ownership token;
-- owner PID and fixed source label;
+- schema identifier;
+- owner PID;
 - creation timestamp;
+- caller command arguments;
 - Home23 root.
 
-Command arguments and environment values are deliberately excluded because they can contain credentials. The owner refreshes the lock directory mtime while active, then removes only its token-specific metadata before releasing the directory in a `finally` block. A deadline exceeded while another owner remains fails without issuing PM2 mutations.
+If acquisition fails because the lock exists, the coordinator reads its metadata and checks the owner PID:
+
+- live owner: wait with bounded condition polling, then retry;
+- dead owner: remove the stale lock and retry;
+- unreadable or invalid metadata: treat the lock as stale only after the maximum lock age;
+- deadline exceeded while a live owner remains: fail without issuing PM2 mutations.
+
+The owner releases the lock in a `finally` block. Release removes the lock only when its recorded owner PID still matches the current process, preventing one caller from deleting another caller's lock.
 
 ## Startup Data Flow
 
@@ -89,13 +95,13 @@ Every coordinated pass appends one JSON object to the ignored local file `logs/s
 The receipt contains:
 
 - schema identifier and timestamp;
-- owner PID and a fixed caller source label;
+- owner PID and caller arguments;
 - lock wait and stale-lock recovery information;
 - per-service PM2 state before the decision;
 - action taken: `already-online`, `started`, or `failed`;
 - explicit settings restart action: `restarted`;
 - per-service PM2 state after the action;
-- bounded, credential-redacted command error text when a start fails;
+- command error text when a start fails;
 - overall success boolean.
 
 Receipt-writing failure must not turn a successful startup into a failure. The coordinator prints one concise warning and returns the real startup result.
@@ -107,9 +113,8 @@ Receipt-writing failure must not turn a successful startup into a failure. The c
 - Duplicate exact-name PM2 records: abort that service and the remaining pass; require explicit operator repair.
 - PM2 start failure: record the failure, release the lock, and return a nonzero CLI outcome.
 - Service never reaches online/nonzero-PID state: record timeout and fail.
-- Lock heartbeat older than the stale threshold: recover atomically, record recovery, and continue.
+- Stale lock owned by a dead PID: remove it, record recovery, and continue.
 - Receipt write failure: warn but preserve the coordinator's actual success or failure.
-- Self-updater restart failure: propagate a nonzero update outcome after printing exact recovery guidance.
 
 ## Live COSMO Repair
 
@@ -140,16 +145,13 @@ Required regression tests:
 - two concurrent coordinator calls start each missing shared service exactly once;
 - the waiting caller refreshes PM2 state after lock acquisition and performs no duplicate start;
 - an already-online service is a no-op;
-- an expired stale lock is recovered atomically;
-- two contenders recovering one stale lock still hold exclusive startup ownership;
+- a stale lock whose owner PID is dead is recovered;
 - a live lock owner is never displaced;
 - a start failure releases the lock;
 - duplicate PM2 records fail closed;
 - a startup timeout releases the lock and records failure;
-- receipt data includes safe caller identity and per-service before/action/after state;
-- command-line credentials and credential-bearing errors are absent or redacted in receipts;
+- receipt data includes caller identity and per-service before/action/after state;
 - receipt-writing failure does not hide a successful startup result.
-- the generic settings PM2 boundary rejects Evobrew, COSMO, and ScreenLogic.
 
 The test must be observed failing before the implementation is added. After the focused test is green, run the existing CLI/unit suite, then the repository's build and contract checks because startup behavior is part of the installation contract.
 

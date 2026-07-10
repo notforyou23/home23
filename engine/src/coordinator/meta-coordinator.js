@@ -9,6 +9,12 @@ const { InsightsParser } = require('./insights-parser');
 const { getAgentTimeout } = require('../config/agent-timeouts');
 const { parseWithFallback } = require('../core/json-repair');
 const { cosmoEvents } = require('../realtime/event-emitter');
+const {
+  extractFileDeliverablesFromGoal,
+  buildDeliverableSpecFromPath,
+  pruneWritePathRecoverySwarm,
+  isWritePathRecoveryTheme,
+} = require('../goals/deliverable-paths');
 
 const DEFAULT_AGENT_RESULTS_MAX_BYTES = 5 * 1024 * 1024;
 const DEFAULT_AGENT_RESULTS_MAX_RESULTS = 24;
@@ -2699,10 +2705,30 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
       ['code_creation', 'code_execution']
     );
 
+    let shouldRejectGoalAboutGoal = null;
+    try {
+      ({ shouldRejectGoalAboutGoal } = require('../goals/deliverable-paths'));
+    } catch {
+      shouldRejectGoalAboutGoal = null;
+    }
+
     const filteredSpecs = urgentGoalSpecs.filter(spec => {
       const agentType = (spec.agentType || '').toLowerCase().replace(/-/g, '_');
       if (blockedAgentTypes.includes(agentType)) {
         this.logger.debug('Filtered out blocked goal type (ambient brain)', { agentType, description: spec.description?.substring(0, 60) });
+        return false;
+      }
+      if (
+        shouldRejectGoalAboutGoal &&
+        shouldRejectGoalAboutGoal({
+          description: spec.description,
+          reason: spec.rationale,
+          metadata: { agentTypeHint: spec.agentType },
+        })
+      ) {
+        this.logger.debug('Filtered out goal-about-goal / recovery_gate theatre', {
+          description: spec.description?.substring(0, 80),
+        });
         return false;
       }
       return true;
@@ -3043,6 +3069,9 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
       return [];
     }
 
+    // Collapse write-path/recovery goal theatre before spawning more agents.
+    this.pruneWritePathRecoverySwarmIfNeeded();
+
     // NEW: Check for pending agent tiers from guided mode FIRST
     // This takes precedence over autonomous goal spawning
     const tierSpawned = await this.spawnPendingTierIfReady();
@@ -3354,7 +3383,7 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
       }
       
       // Create simple mission spec without asking GPT
-      return {
+      const directSpec = {
         goalId: goal.id,
         agentType: directAgentType,
         description: goal.description,
@@ -3372,8 +3401,11 @@ ${report.strategicDecisions.reasoning ? `\`\`\`\n${report.strategicDecisions.rea
         spawnCycle: reviewCycle,
         triggerSource: 'coordinator_review',
         spawningReason: 'direct_agent_match',
-        provenanceChain: []
+        provenanceChain: [],
+        metadata: goal.metadata || {},
       };
+      this.attachExactPathDeliverable(directSpec, goal);
+      return directSpec;
     }
     
     // NEW: Get agent type distribution for diversity guidance
@@ -3625,6 +3657,9 @@ Respond in JSON format:
         followUpTriggers: spec.followUpTriggers || []
       };
 
+      // Honor exact-path file contracts from doneWhen / goal text.
+      this.attachExactPathDeliverable(missionSpec, goal, spec);
+
       if (missionSpec.agentType === 'document_creation') {
         this.attachDocumentCreationIntake(missionSpec, goal, spec);
       }
@@ -3712,6 +3747,92 @@ Respond in JSON format:
   }
 
   /**
+   * Attach PathResolver deliverableSpec from goal doneWhen / exact output paths.
+   * Prevents document_creation from always landing under
+   * outputs/document-creation/{agentId}/ when the goal named a top-level file.
+   */
+  attachExactPathDeliverable(missionSpec, goal, spec = {}) {
+    if (!missionSpec) return missionSpec;
+    if (missionSpec.deliverable?.filename) return missionSpec;
+
+    const fromSpec =
+      spec?.deliverable ||
+      goal?.metadata?.deliverable ||
+      goal?.metadata?.deliverableSpec ||
+      null;
+    if (fromSpec?.filename) {
+      missionSpec.deliverable = buildDeliverableSpecFromPath(fromSpec.filename) || fromSpec;
+      return missionSpec;
+    }
+
+    const paths = extractFileDeliverablesFromGoal({
+      ...goal,
+      description: [goal?.description, spec?.description, missionSpec.description]
+        .filter(Boolean)
+        .join('\n'),
+    });
+    if (paths.length === 0) return missionSpec;
+
+    missionSpec.deliverable = buildDeliverableSpecFromPath(paths[0]);
+    if (paths.length > 1) {
+      missionSpec.metadata = {
+        ...(missionSpec.metadata || {}),
+        additionalDeliverables: paths.slice(1).map((p) => buildDeliverableSpecFromPath(p)).filter(Boolean),
+      };
+    }
+
+    // Exact-path JSON/MD recovery artifacts are document writes, not code stubs.
+    if (
+      missionSpec.agentType !== 'document_creation' &&
+      paths.some((p) => /recovery_(report|status|state)\.json$/i.test(p))
+    ) {
+      this.logger?.info?.('📄 Routing exact recovery artifact goal to document_creation', {
+        goalId: goal?.id,
+        previousType: missionSpec.agentType,
+        deliverable: paths[0],
+      });
+      missionSpec.agentType = 'document_creation';
+    }
+
+    return missionSpec;
+  }
+
+  resolveOutputsDir() {
+    if (this.pathResolver?.prefixes?.['@outputs']) {
+      return this.pathResolver.prefixes['@outputs'];
+    }
+    if (this.pathResolver?.runtimeRoot) {
+      return path.join(this.pathResolver.runtimeRoot, 'outputs');
+    }
+    if (this.fullConfig?.runtimeRoot) {
+      return path.join(this.fullConfig.runtimeRoot, 'outputs');
+    }
+    if (this.fullConfig?.brain?.path) {
+      return path.join(this.fullConfig.brain.path, 'outputs');
+    }
+    return path.join(process.cwd(), 'runtime', 'outputs');
+  }
+
+  pruneWritePathRecoverySwarmIfNeeded() {
+    const goalsSystem =
+      this.phase2bSubsystems?.goals ||
+      this.goals ||
+      null;
+    if (!goalsSystem) return null;
+
+    const result = pruneWritePathRecoverySwarm(
+      goalsSystem,
+      this.resolveOutputsDir(),
+      { maxKeep: 1, maxCluster: 3 }
+    );
+
+    if (result.archived > 0) {
+      this.logger?.info?.('🧹 Write-path/recovery swarm pruned', result);
+    }
+    return result;
+  }
+
+  /**
    * Record that agents were spawned for a review
    * Called by orchestrator after spawning
    */
@@ -3778,6 +3899,30 @@ Respond in JSON format:
     );
     if (overPursued.length > 0) {
       issues.push(`- ${overPursued.length} goals pursued >10x with <30% progress: ${overPursued.map(g => g?.id || 'unknown').join(', ')}`);
+    }
+
+    // Write-path / recovery / goal-about-goal theatre
+    const writePathCluster = safeGoals.filter(
+      (g) => g && isWritePathRecoveryTheme(g.description)
+    );
+    if (writePathCluster.length >= 3) {
+      issues.push(
+        `- ${writePathCluster.length} write_path/recovery goals swarming (likely deliverable-contract mismatch, not FS failure). Keep one; archive the rest. Do NOT invent brain/index.js exec-stub bugs without independent filesystem proof.`
+      );
+    }
+    let goalAboutGoalCluster = [];
+    try {
+      const { isGoalAboutGoalTheme } = require('../goals/deliverable-paths');
+      goalAboutGoalCluster = safeGoals.filter(
+        (g) => g && isGoalAboutGoalTheme(g.description)
+      );
+    } catch {
+      goalAboutGoalCluster = [];
+    }
+    if (goalAboutGoalCluster.length >= 2) {
+      issues.push(
+        `- ${goalAboutGoalCluster.length} goal-about-goal / recovery_gate spec-theatre goals (paste into goal_X, no external artifact). Archive; do not spawn more goal-editing goals.`
+      );
     }
     
     // Stale (pursued before but not recently)

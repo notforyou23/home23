@@ -15,7 +15,6 @@
  */
 
 import { resolve } from 'node:path';
-import { isSharedServiceName } from './lib/shared-service-start.js';
 
 const HOME23_ROOT = resolve(import.meta.dirname, '..');
 const args = process.argv.slice(2);
@@ -61,10 +60,6 @@ Commands:
     }
     if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
       console.error('Agent name must be lowercase alphanumeric with hyphens (e.g., "cosmo", "my-agent")');
-      process.exit(1);
-    }
-    if (isSharedServiceName(`home23-${name}`)) {
-      console.error(`Agent name "${name}" is reserved for a Home23 shared service.`);
       process.exit(1);
     }
     const { runAgentCreate } = await import('./lib/agent-create.js');

@@ -92,14 +92,55 @@ function validateDoneWhen(dw, opts = {}) {
 }
 
 /**
- * Legacy fallback: synthesize a minimal judged doneWhen from a goal's
- * description so pre-closer call sites keep working while we migrate them
- * one by one. Off switch: set goals.doneWhen.autoSynthesizeLegacy = false.
+ * Legacy fallback: synthesize a doneWhen from a goal's description so
+ * pre-closer call sites keep working while we migrate them one by one.
+ * Off switch: set goals.doneWhen.autoSynthesizeLegacy = false.
+ *
+ * Prefer machine-checkable file_exists when the description names concrete
+ * output paths. Fall back to judged only when no path is available.
  */
 function applyLegacyFallback(goalData, config = {}) {
   if (!goalData || goalData.doneWhen) return goalData;
   if (config.autoSynthesizeLegacy === false) return goalData;
   const desc = String(goalData.description || '').slice(0, 300);
+
+  let filePaths = [];
+  try {
+    const { extractFileDeliverablesFromGoal } = require('./deliverable-paths');
+    filePaths = extractFileDeliverablesFromGoal({
+      description: goalData.description,
+      reason: goalData.reason,
+      metadata: goalData.metadata,
+    });
+  } catch {
+    filePaths = [];
+  }
+
+  if (filePaths.length > 0) {
+    const criteria = filePaths.slice(0, 3).map((p) => ({
+      type: 'file_exists',
+      path: p.startsWith('outputs/') ? p : `outputs/${p}`,
+    }));
+    // Keep a judged criterion as secondary for multi-file / quality cases
+    criteria.push({
+      type: 'judged',
+      criterion: `The goal "${desc}" is satisfied when the named output file(s) exist under outputs/ and document a concrete resolution.`,
+      judgeModel: 'gpt-5.4-mini',
+      judgedAt: null,
+      judgedVerdict: null,
+    });
+    return {
+      ...goalData,
+      doneWhen: {
+        version: 1,
+        mode: 'all',
+        criteria,
+      },
+      _legacyDoneWhenSynthesized: true,
+      _legacyDoneWhenPreferredFileExists: true,
+    };
+  }
+
   return {
     ...goalData,
     doneWhen: {
