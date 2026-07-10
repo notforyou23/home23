@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const readline = require('readline');
+const { openCosmoMemorySource } = require('../../cosmo23/lib/memory-source-adapter');
 
 const NODES_FILE = 'memory-nodes.jsonl.gz';
 const EDGES_FILE = 'memory-edges.jsonl.gz';
@@ -80,7 +81,7 @@ async function hydrateStateMemory(brainDir, state, options = {}) {
   const inlineEdges = Array.isArray(hydratedState.memory.edges) ? hydratedState.memory.edges : [];
   const snapshot = readBrainSnapshot(brainDir);
 
-  if (!sidecarsExist(brainDir)) {
+  if (!sidecarsExist(brainDir) && !fs.existsSync(path.join(brainDir, 'memory-manifest.json'))) {
     return {
       state: hydratedState,
       hydrated: false,
@@ -104,15 +105,23 @@ async function hydrateStateMemory(brainDir, state, options = {}) {
 
   const nodes = inlineNodes.length > 0 ? inlineNodes : [];
   const edges = inlineEdges.length > 0 ? inlineEdges : [];
-
-  const sidecarCounts = await readMemorySidecars(brainDir, {
-    onNode: (rec) => {
-      if (inlineNodes.length === 0) nodes.push(rec);
-    },
-    onEdge: (rec) => {
-      if (inlineEdges.length === 0) edges.push(rec);
+  let sidecarCounts = { nodes: { count: 0, parseErrors: 0 }, edges: { count: 0, parseErrors: 0 } };
+  let source = null;
+  try {
+    source = await openCosmoMemorySource(brainDir, options);
+    if (inlineNodes.length === 0) {
+      for await (const rec of source.iterateNodes({ signal: options.signal })) nodes.push(rec);
     }
-  });
+    if (inlineEdges.length === 0) {
+      for await (const rec of source.iterateEdges({ signal: options.signal })) edges.push(rec);
+    }
+    sidecarCounts = {
+      nodes: { count: nodes.length, parseErrors: 0 },
+      edges: { count: edges.length, parseErrors: 0 },
+    };
+  } finally {
+    await source?.close?.().catch(() => {});
+  }
 
   hydratedState.memory.nodes = nodes;
   hydratedState.memory.edges = edges;
@@ -134,7 +143,7 @@ async function hydrateStateMemory(brainDir, state, options = {}) {
   return {
     state: hydratedState,
     hydrated: true,
-    source: 'sidecar',
+    source: fs.existsSync(path.join(brainDir, 'memory-manifest.json')) ? 'manifest' : 'sidecar',
     nodes: nodes.length,
     edges: edges.length,
     snapshot,

@@ -1,4 +1,5 @@
 const express = require('express');
+const { resolveCanonicalCatalogAlias } = require('./brain-registry');
 const {
   getBrainContinuationState,
   mergeContinuationPayload,
@@ -22,6 +23,7 @@ function createBrainsRouter(options) {
     getRunsOptions,
     getActiveContext,
     listBrains,
+    buildCanonicalCatalog,
     resolveBrainBySelector,
     launchResearch
   } = options;
@@ -31,6 +33,16 @@ function createBrainsRouter(options) {
   router.get('/api/brains', async (_req, res) => {
     try {
       const runsOptions = await getRunsOptions();
+      // HOME23 PATCH 47 — expose canonical identities additively so legacy
+      // route keys remain picker-compatible but never become authorization IDs.
+      if (buildCanonicalCatalog) {
+        const catalog = await buildCanonicalCatalog(runsOptions);
+        return res.json({
+          ...catalog,
+          count: catalog.brains.length,
+          activeContext: getActiveContext()
+        });
+      }
       const brains = await listBrains({
         ...runsOptions,
         includeStateSummary: false
@@ -51,7 +63,14 @@ function createBrainsRouter(options) {
   router.get('/api/brains/:brainId', async (req, res) => {
     try {
       const runsOptions = await getRunsOptions();
-      const brain = await resolveBrainBySelector(req.params.brainId, runsOptions);
+      const canonicalCatalog = buildCanonicalCatalog
+        ? await buildCanonicalCatalog(runsOptions)
+        : null;
+      const canonicalEntry = resolveCanonicalCatalogAlias(canonicalCatalog, req.params.brainId);
+      const brain = await resolveBrainBySelector(req.params.brainId, {
+        ...runsOptions,
+        canonicalCatalog
+      });
       if (!brain) {
         return res.status(404).json({
           success: false,
@@ -63,6 +82,7 @@ function createBrainsRouter(options) {
       res.json({
         brain: {
           ...brain,
+          ...(canonicalEntry || {}),
           snapshotCount: state.snapshotCount,
           lastSnapshotAt: state.lastSnapshotAt
         },
@@ -82,7 +102,13 @@ function createBrainsRouter(options) {
   router.post('/api/continue/:brainId', async (req, res) => {
     try {
       const runsOptions = await getRunsOptions();
-      const selectedBrain = await resolveBrainBySelector(req.params.brainId, runsOptions);
+      const canonicalCatalog = buildCanonicalCatalog
+        ? await buildCanonicalCatalog(runsOptions)
+        : null;
+      const selectedBrain = await resolveBrainBySelector(req.params.brainId, {
+        ...runsOptions,
+        canonicalCatalog
+      });
       if (!selectedBrain) {
         return res.status(404).json({
           success: false,

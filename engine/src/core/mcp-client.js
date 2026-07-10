@@ -1,7 +1,16 @@
-const fetch = require('node-fetch');
 const { spawn } = require('child_process');
 const readline = require('readline');
 const path = require('path');
+
+function loadFetch() {
+  if (typeof globalThis.fetch === 'function') return globalThis.fetch.bind(globalThis);
+  try {
+    return require('node-fetch');
+  } catch (error) {
+    error.message = `fetch implementation is unavailable: ${error.message}`;
+    throw error;
+  }
+}
 
 /**
  * MCP Client - Call remote MCP servers as tools
@@ -320,7 +329,7 @@ class MCPClient {
       }
 
       // Make request
-      const response = await fetch(url, {
+      const response = await loadFetch()(url, {
         method: 'POST',
         headers,
         body: JSON.stringify({
@@ -398,4 +407,3 @@ class MCPClient {
 }
 
 module.exports = { MCPClient };
-

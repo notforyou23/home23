@@ -6,10 +6,18 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const OpenAI = require('openai');
 const yaml = require('js-yaml');
 const { v4: uuidv4 } = require('uuid');
 const { getOpenAIClient } = require('./openai-client');
+
+function loadOpenAI() {
+  try {
+    return require('openai');
+  } catch (error) {
+    error.message = `OpenAI SDK is unavailable: ${error.message}`;
+    throw error;
+  }
+}
 
 // Config path relative to engine root
 const CONFIG_PATH = path.join(__dirname, '..', '..', 'config', 'image.json');
@@ -594,6 +602,7 @@ async function callOllama(model, messages, options = {}) {
 }
 
 async function callOpenAICompatibleChat({ apiKey, baseURL, model, messages }) {
+  const OpenAI = loadOpenAI();
   const client = new OpenAI({ apiKey, baseURL });
   const completion = await client.chat.completions.create({ model, messages });
   return completion.choices[0]?.message?.content ?? '';

@@ -2,7 +2,15 @@ const { GPT5Client } = require('./gpt5-client');
 const { MCPClient } = require('./mcp-client');
 const { ChatCompletionsClient } = require('./chat-completions-client');
 const { getOpenAICodexClient } = require('../services/openai-codex-oauth-engine');
-const OpenAI = require('openai');
+
+function loadOpenAI() {
+  try {
+    return require('openai');
+  } catch (error) {
+    error.message = `OpenAI SDK is unavailable: ${error.message}`;
+    throw error;
+  }
+}
 
 /**
  * Stealth headers required when authenticating to Anthropic via OAuth tokens
@@ -72,6 +80,7 @@ class UnifiedClient extends GPT5Client {
     if (this.config.providers?.xai?.enabled) {
       const apiKey = process.env.XAI_API_KEY || this.config.providers.xai.apiKey;
       if (apiKey) {
+        const OpenAI = loadOpenAI();
         this.xai = new OpenAI({
           apiKey: apiKey,
           baseURL: 'https://api.x.ai/v1'

@@ -22,6 +22,7 @@ const PM2_ENV_BLOCKLIST = [
   'MCP_HTTP_PORT',
   'COSMO_RUNTIME_DIR',
   'COSMO_WORKSPACE_PATH',
+  'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY',
 ];
 
 function cleanChildEnv(extra = {}) {

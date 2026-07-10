@@ -197,6 +197,18 @@ Each record contains:
 
 Canonical records live under instances/<requester>/runtime/brain-operations/<operationId>/, which is ignored installation state. Each directory holds an atomic status record, bounded event journal, result or result handle, worker references, and requester-owned scratch data. Records are written by temp-file plus rename under a per-operation lock and carry a monotonically increasing record version and event sequence.
 
+The operation store is a reliability and logical-authority boundary inside one
+local Home23 installation, not an operating-system sandbox against another
+process running as the same user. It rejects caller-selected paths, static or
+persisting symlinks, noncanonical ancestors, and identity changes observed
+during an operation. A deliberately malicious same-UID process that can rename
+an ancestor away, substitute another tree for one pathname lookup, restore the
+original ancestor, and directly edit ignored runtime state is outside the
+approved threat model; that process already has equivalent direct write access
+to every Home23 runtime file. Enforcing authority against such a process would
+require a separate OS identity or a native dirfd-relative filesystem service
+and is the external multi-tenant/privilege-separation work excluded above.
+
 Operation start requires a caller-scoped idempotency key derived from request ID plus operation type. Retrying a lost start response returns the same operation rather than launching duplicate provider work. Terminal-state transitions are compare-and-swap and immutable. If completion commits first, a later cancel reports the completed result; if cancellation commits first, later worker completion cannot overwrite it.
 
 On coordinator startup, every queued or running record is reconciled with its recorded worker:

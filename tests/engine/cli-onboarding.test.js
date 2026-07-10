@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import yaml from 'js-yaml';
@@ -9,6 +9,7 @@ import { generateEcosystem } from '../../cli/lib/generate-ecosystem.js';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
+const TEST_NODE_MODULES = dirname(dirname(require.resolve('js-yaml/package.json')));
 
 function makeHome23Root() {
   const root = mkdtempSync(join(tmpdir(), 'home23-cli-onboarding-'));
@@ -16,13 +17,17 @@ function makeHome23Root() {
   mkdirSync(join(root, 'cli', 'templates'), { recursive: true });
   mkdirSync(join(root, 'starter-project'), { recursive: true });
   mkdirSync(join(root, 'claude-export'), { recursive: true });
-  if (existsSync(join(process.cwd(), 'node_modules'))) {
-    symlinkSync(join(process.cwd(), 'node_modules'), join(root, 'node_modules'), 'dir');
+  if (existsSync(TEST_NODE_MODULES)) {
+    symlinkSync(TEST_NODE_MODULES, join(root, 'node_modules'), 'dir');
   }
 
   writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '1.0.0' }, null, 2), 'utf8');
   writeFileSync(join(root, 'config', 'home.yaml'), yaml.dump({ home: { name: 'home23', version: '1.0.0' } }), 'utf8');
-  writeFileSync(join(root, 'config', 'secrets.yaml'), yaml.dump({ providers: {}, cosmo23: { encryptionKey: 'test-key' } }), 'utf8');
+  writeFileSync(join(root, 'config', 'secrets.yaml'), yaml.dump({
+    providers: {},
+    cosmo23: { encryptionKey: 'test-key' },
+    brainOperations: { capabilityKey: 'e'.repeat(64) },
+  }), 'utf8');
   writeFileSync(join(root, 'cli', 'templates', 'MISSION.md'), '# Mission\n\n{{purpose}}\n', 'utf8');
   return root;
 }
@@ -90,6 +95,20 @@ test('agent create records fresh onboarding purpose, imports, and primary agent'
 
     assert.ok(existsSync(join(root, 'ecosystem.config.cjs')));
     assert.ok(existsSync(join(root, 'config', 'agents.json')));
+
+    const ecosystemPath = join(root, 'ecosystem.config.cjs');
+    delete require.cache[ecosystemPath];
+    const ecosystem = require(ecosystemPath);
+    const capabilityEnv = 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY';
+    const capabilityTargets = ecosystem.apps.filter((app) => app.env?.[capabilityEnv]);
+    assert.deepEqual(
+      capabilityTargets.map((app) => app.name).sort(),
+      ['home23-ada-dash', 'home23-cosmo23'],
+    );
+    assert.ok(capabilityTargets.every((app) => app.env[capabilityEnv] === 'e'.repeat(64)));
+    for (const app of ecosystem.apps.filter((entry) => !capabilityTargets.includes(entry))) {
+      assert.equal(app.env?.[capabilityEnv], undefined, app.name);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

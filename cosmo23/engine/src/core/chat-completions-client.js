@@ -18,7 +18,14 @@
  * 6. Graceful degradation for unsupported features
  */
 
-const OpenAI = require('openai');
+function loadOpenAI() {
+  try {
+    return require('openai');
+  } catch (error) {
+    error.message = `OpenAI SDK is unavailable: ${error.message}`;
+    throw error;
+  }
+}
 
 class ChatCompletionsClient {
   constructor(config = {}, logger = null) {
@@ -38,10 +45,8 @@ class ChatCompletionsClient {
                    process.env.OPENAI_API_KEY ||
                    'not-needed';
 
-    this.client = new OpenAI({
-      apiKey,
-      baseURL
-    });
+    this.client = config.client || null;
+    this.clientConfig = { apiKey, baseURL };
 
     // Model name mapping: GPT-5.2 names → local model names
     // Can be overridden via config
@@ -67,7 +72,7 @@ class ChatCompletionsClient {
     this.chat = {
       completions: {
         create: async (params) => {
-          return await this.client.chat.completions.create(params);
+          return await this.getClient().chat.completions.create(params);
         }
       }
     };
@@ -100,6 +105,14 @@ class ChatCompletionsClient {
       supportsTools: this.supportsTools,
       supportsStreaming: this.supportsStreaming
     });
+  }
+
+  getClient() {
+    if (!this.client) {
+      const OpenAI = loadOpenAI();
+      this.client = new OpenAI(this.clientConfig);
+    }
+    return this.client;
   }
 
   /**
@@ -345,7 +358,7 @@ class ChatCompletionsClient {
       this.logger?.error?.('Chat Completions API call failed', {
         error: error.message,
         model: mappedModel,
-        baseURL: this.client.baseURL
+        baseURL: this.getClient().baseURL
       });
       throw error;
     }
@@ -355,7 +368,7 @@ class ChatCompletionsClient {
    * Generate with streaming (preferred method)
    */
   async generateStreaming(payload, originalModel) {
-    const stream = await this.client.chat.completions.create(payload);
+    const stream = await this.getClient().chat.completions.create(payload);
 
     let aggregatedText = '';
     let aggregatedReasoning = '';
@@ -449,7 +462,7 @@ class ChatCompletionsClient {
   async generateNonStreaming(payload, originalModel) {
     payload.stream = false;
 
-    const response = await this.client.chat.completions.create(payload);
+    const response = await this.getClient().chat.completions.create(payload);
 
     const choice = response.choices?.[0];
     // Thinking models (e.g. qwen3.5:9b) return output in .reasoning, not .content

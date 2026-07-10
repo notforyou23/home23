@@ -1,15 +1,26 @@
-const OpenAI = require('openai');
 const path = require('path');
-const dotenv = require('dotenv');
 
 // Load environment variables from local .env file
-dotenv.config({ path: path.join(__dirname, '..', '..', '.env') });
+try {
+  require('dotenv').config({ path: path.join(__dirname, '..', '..', '.env') });
+} catch {
+  // dotenv is optional for tests and deployments that inject env directly.
+}
 
 let cachedClient;
 
 // OAuth state — only active when OPENAI_OAUTH_ENABLED=true
 let isOAuthMode = false;
 let credentialsFetchedAt = 0;
+
+function loadOpenAI() {
+  try {
+    return require('openai');
+  } catch (error) {
+    error.message = `OpenAI SDK is unavailable: ${error.message}`;
+    throw error;
+  }
+}
 
 /**
  * Self-contained OpenAI client for Phase 2B
@@ -29,6 +40,7 @@ function getOpenAIClient() {
       throw new Error('OPENAI_API_KEY environment variable is required');
     }
 
+    const OpenAI = loadOpenAI();
     cachedClient = new OpenAI({
       apiKey,
       baseURL,
@@ -53,6 +65,7 @@ async function initOpenAIClientOAuth() {
 
     isOAuthMode = credentials.isOAuth;
     credentialsFetchedAt = Date.now();
+    const OpenAI = loadOpenAI();
     cachedClient = new OpenAI({ apiKey: credentials.apiKey, baseURL });
 
     if (credentials.isOAuth) {

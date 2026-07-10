@@ -19,7 +19,18 @@ function makeBackupPath(filePath, options = {}) {
   return path.join(backupRoot, stamp, safeRelative);
 }
 
+function isHome23SecretsPath(filePath) {
+  const resolved = path.resolve(filePath);
+  return path.basename(resolved) === 'secrets.yaml'
+    && path.basename(path.dirname(resolved)) === 'config';
+}
+
 function writeYamlSafely(filePath, data, options = {}) {
+  if (isHome23SecretsPath(filePath)) {
+    const error = new Error('secrets_write_requires_coordination');
+    error.code = 'secrets_write_requires_coordination';
+    throw error;
+  }
   const yaml = options.yaml;
   if (!yaml || typeof yaml.dump !== 'function') {
     throw new Error('writeYamlSafely requires a yaml implementation with dump()');
@@ -54,6 +65,7 @@ function writeYamlSafely(filePath, data, options = {}) {
 
 module.exports = {
   countYamlCommentLines,
+  isHome23SecretsPath,
   makeBackupPath,
   writeYamlSafely,
 };

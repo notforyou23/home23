@@ -31,11 +31,10 @@ function loadPrismaClientModule() {
   throw lastError;
 }
 
-const { PrismaClient } = loadPrismaClientModule();
-
 let prisma = null;
 function getPrisma() {
   if (!prisma) {
+    const { PrismaClient } = loadPrismaClientModule();
     prisma = new PrismaClient();
   }
   return prisma;

@@ -5,22 +5,16 @@
  * Provider setup happens in the web dashboard, not here.
  */
 
-import { copyFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import yaml from 'js-yaml';
 import { seedCosmo23Config } from './cosmo23-config.js';
 import { generateEcosystem } from './generate-ecosystem.js';
-
-function loadYaml(filePath) {
-  if (!existsSync(filePath)) return {};
-  try {
-    return yaml.load(readFileSync(filePath, 'utf8')) || {};
-  } catch {
-    return {};
-  }
-}
+import {
+  ensureBrainOperationsCapabilityKey,
+  updateHome23Secrets,
+} from './brain-operations-capability.js';
 
 function seedLocalConfig(home23Root) {
   const seeds = [
@@ -104,26 +98,23 @@ export async function runInit(home23Root, options = {}) {
   console.log('Preparing local config files...');
   seedLocalConfig(home23Root);
 
+  const brainOperationsCapability = await ensureBrainOperationsCapabilityKey(home23Root);
+  console.log(`  Brain operations capability: configured${brainOperationsCapability.permissionsRepaired ? ' (permissions repaired)' : ''}`);
+
   // Merge secrets.yaml — never clobber existing provider keys or agent bot tokens
-  const secretsPath = join(home23Root, 'config', 'secrets.yaml');
   console.log('Preparing config/secrets.yaml...');
-
-  const secrets = loadYaml(secretsPath);
-
-  // Generate cosmo23 encryption key if missing
-  if (!secrets.cosmo23) secrets.cosmo23 = {};
-  let secretsChanged = false;
-  if (!secrets.cosmo23.encryptionKey) {
-    secrets.cosmo23.encryptionKey = randomBytes(32).toString('hex');
-    secretsChanged = true;
+  const encryptionUpdate = await updateHome23Secrets(home23Root, (secrets) => {
+    if (!secrets.cosmo23) secrets.cosmo23 = {};
+    if (!secrets.cosmo23.encryptionKey) {
+      secrets.cosmo23.encryptionKey = randomBytes(32).toString('hex');
+      return { changed: true, value: true };
+    }
+    return { changed: false, value: false };
+  });
+  if (encryptionUpdate.value) {
     console.log('  Generated cosmo23 encryption key');
   } else {
     console.log('  Encryption key exists');
-  }
-
-  if (secretsChanged) {
-    const header = '# Home23 secrets — API keys and tokens\n# This file is gitignored. Never commit it.\n\n';
-    writeFileSync(secretsPath, header + yaml.dump(secrets, { lineWidth: 120 }), 'utf8');
   }
   console.log('  done');
 
@@ -193,8 +184,9 @@ export async function runInit(home23Root, options = {}) {
   console.log('');
   console.log('Seeding COSMO 2.3 config...');
   try {
-    seedCosmo23Config(home23Root);
+    await seedCosmo23Config(home23Root);
   } catch (err) {
+    if (String(err?.code || '').startsWith('capability_') || err?.code === 'preparation_state_changed') throw err;
     console.log('  FAILED (non-fatal, COSMO will still work via env vars)');
     console.error(`  ${err.message?.split('\n')[0] || 'unknown error'}`);
   }

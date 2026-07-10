@@ -788,12 +788,21 @@ class NetworkMemory {
       .sort((a, b) => b.effectiveActivation - a.effectiveActivation)
       .slice(0, topK);
     
-    // Mark as accessed and boost weight
-    results.forEach(node => {
-      node.accessed = new Date();
-      node.accessCount++;
-      node.weight = Math.min(1.0, node.weight + 0.1);
-    });
+    // Mark as accessed and boost weight only for own-brain reads. Explicit
+    // read-only calls are used for cross-brain search and must not mutate the
+    // target brain.
+    if (options.markAccess !== false && options.accessMode !== 'read-only') {
+      results.forEach(node => {
+        const stored = this.nodes.get(node.id);
+        if (!stored) return;
+        stored.accessed = new Date();
+        stored.accessCount++;
+        stored.weight = Math.min(1.0, stored.weight + 0.1);
+        node.accessed = stored.accessed;
+        node.accessCount = stored.accessCount;
+        node.weight = stored.weight;
+      });
+    }
     
     return results;
   }

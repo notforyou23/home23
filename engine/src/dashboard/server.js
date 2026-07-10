@@ -20,15 +20,28 @@ const { MissionTracer } = require('../../scripts/TRACE_RESEARCH_MISSIONS');
 const { Home23VibeService } = require('./home23-vibe/service');
 const { Home23BriefsService } = require('./home23-briefs');
 const { Home23TileService } = require('./home23-tiles');
+const { updateDashboardOAuthTokenSecrets } = require('./home23-secrets');
+const { createMemorySearchService } = require('./memory-search');
 const {
-  classifyMemoryProvenance,
-  scoreMemorySalience,
-} = require('../memory/provenance-salience');
+  createBrainSourceRouter,
+  createBrainSourceService,
+} = require('./brain-source-api');
 const {
   buildGoodLifeOperatorModel,
   buildLiveProblemSnapshot,
   buildGoodLifeObligationSnapshot,
 } = require('./good-life-operator');
+const {
+  createBrainOperationsPlaceholderRouter,
+  createBrainOperationsRouter,
+} = require('./brain-operations/router.js');
+const { createSourceOperationExecutors } = require('./brain-operations/source-executors.js');
+const { createGraphExportExecutor } = require('./brain-operations/graph-export-executor.js');
+const {
+  buildMcpUnavailableEnvelope,
+  isMcpProxyAvailable,
+  probeMcpAvailability,
+} = require('./mcp-availability.js');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -39,8 +52,10 @@ const PM2_ENV_BLOCKLIST = [
   'COSMO_DASHBOARD_PORT',
   'REALTIME_PORT',
   'MCP_HTTP_PORT',
+  'HOME23_MCP_AVAILABLE',
   'COSMO_RUNTIME_DIR',
   'COSMO_WORKSPACE_PATH',
+  'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY',
 ];
 
 function cleanPm2Env(extra = {}) {
@@ -150,7 +165,11 @@ function readJsonlHeadLines(filePath, limit = 200, maxBytes = 256 * 1024) {
  * Real-time visualization of all Phase 2B features
  */
 class DashboardServer {
-  constructor(port = 3344, logsDir) {
+  constructor(port = 3344, logsDir, options = {}) {
+    if (!options || Array.isArray(options) || typeof options !== 'object') {
+      throw new TypeError('dashboard_options_invalid');
+    }
+    this._dashboardOptions = options;
     this.port = port;
     this.mcpPort = parseInt(process.env.MCP_HTTP_PORT || process.env.MCP_PORT || 3347);
     this.runsDir = process.env.COSMO_RUNS_DIR
@@ -181,10 +200,21 @@ class DashboardServer {
       }
     });
 
+    // Brain-operation requests must be bounded before the dashboard's legacy
+    // compatibility parser can retain them. The delegate is attached after
+    // requester-bound coordinator dependencies have been constructed.
+    this.brainOperationsPlaceholder = createBrainOperationsPlaceholderRouter();
+    this.app.use('/home23/api/brain-operations', this.brainOperationsPlaceholder.router);
+
     // COSMO is a local research system - no artificial limits on data ingestion
     // Set to 10GB to handle serious document collections, large queries, and AI analysis
     // This is a LOCAL system, not a public API - memory constraints come from OS, not app limits
-    this.app.use(express.json({ limit: '10gb' }));
+    const broadJsonParser = options.broadJsonParser || express.json({ limit: '10gb' });
+    if (typeof broadJsonParser !== 'function') throw new TypeError('dashboard_options_invalid');
+    this.app.use((req, res, next) => {
+      if (req.brainOperationBodyParsed === true) return next();
+      return broadJsonParser(req, res, next);
+    });
     this.app.use(express.urlencoded({ limit: '10gb', extended: true }));
     this.clients = new Set();
     this.insightAnalyzer = new InsightAnalyzer(this.logsDir, console);
@@ -231,8 +261,151 @@ class DashboardServer {
       loadState: () => this.loadState(),
       logger: this.logger,
     });
+
+    this.initializeBrainOperations(options.brainOperations);
+    this.brainSourceService = createBrainSourceService({
+      brainDir: this.logsDir,
+      home23Root: this.getHome23Root(),
+      requesterAgent: this.getHome23AgentName(),
+      resolveTargetContext: (selector) => this.brainOperationsCoordinator.resolveTargetContext(selector),
+    });
+    this.memorySearchService = createMemorySearchService({
+      brainDir: this.logsDir,
+      home23Root: this.getHome23Root(),
+      requesterAgent: this.getHome23AgentName(),
+      resolveTargetContext: (selector) => this.brainOperationsCoordinator.resolveTargetContext(selector),
+      logger: this.logger,
+    });
+    if (this.brainOperationsWorker?.registerLocalExecutor) {
+      for (const [operationType, executor] of createSourceOperationExecutors({
+        searchService: this.memorySearchService,
+        brainSourceService: this.brainSourceService,
+        graphExportExecutor: createGraphExportExecutor({ home23Root: this.getHome23Root() }),
+      })) {
+        if (!this.brainOperationsWorker.usesLocalExecutor?.(operationType)) {
+          this.brainOperationsWorker.registerLocalExecutor(operationType, executor);
+        }
+      }
+    }
     
     this.setupRoutes();
+  }
+
+  initializeBrainOperations(injectedDependencies) {
+    const requesterAgent = this.getHome23AgentName();
+    const dependencies = injectedDependencies || this.createDefaultBrainOperationsDependencies({
+      requesterAgent,
+    });
+    if (!dependencies || Array.isArray(dependencies) || typeof dependencies !== 'object') {
+      throw new TypeError('brain_operations_configuration_invalid');
+    }
+    const route = createBrainOperationsRouter({
+      requesterAgent,
+      coordinator: dependencies.coordinator,
+      reader: dependencies.reader,
+      exporter: dependencies.exporter,
+      buildCatalog: dependencies.buildCatalog,
+    });
+    this.brainOperationsPlaceholder.attach(route.router);
+    this.brainOperationsCoordinator = dependencies.coordinator;
+    this.brainOperationsWorker = dependencies.worker || null;
+    this.brainOperationsReader = dependencies.reader;
+    this.brainOperationsExporter = dependencies.exporter;
+  }
+
+  createDefaultBrainOperationsDependencies({ requesterAgent }) {
+    const fsSync = require('node:fs');
+    const {
+      buildCanonicalCatalog,
+      parseReferenceRunsPaths,
+      resolveCanonicalTarget,
+    } = require('../../../cosmo23/server/lib/brain-registry.js');
+    const { OPERATION_AUTHORITY, authorizeBrainOperation } =
+      require('../../../shared/brain-operations/authority.cjs');
+    const { BrainOperationStore } = require('./brain-operations/operation-store.js');
+    const { createBrainOperationStoreReader } = require('./brain-operations/store-reader.js');
+    const { createBrainOperationExporter } = require('./brain-operations/exporter.js');
+    const { BrainOperationCoordinator } = require('./brain-operations/coordinator.js');
+    const { BrainOperationWorkerAdapter } = require('./brain-operations/worker-adapter.js');
+    const { createMemorySourcePinProvider } = require('../../../shared/memory-source');
+    const { createOperationScratchQuota } = require('../../../shared/memory-source');
+    const home23Root = this.getHome23Root();
+    const operationRoot = path.join(
+      home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations',
+    );
+    const store = new BrainOperationStore({ root: operationRoot, requesterAgent });
+    const reader = createBrainOperationStoreReader({
+      operationsRoot: operationRoot,
+      expectedRequester: requesterAgent,
+      liveStore: store,
+    });
+    const exporter = createBrainOperationExporter({
+      home23Root,
+      requesterAgent,
+      reader,
+    });
+    const worker = new BrainOperationWorkerAdapter({
+      supportsSourceOperations: true,
+      sourceOperationTypes: ['search', 'status', 'graph', 'graph_export'],
+    });
+    worker.registerLocalExecutor('ad_hoc_export', async (context) => ({
+      state: 'complete',
+      result: await exporter.exportAdHoc({
+        requesterAgent,
+        operationId: context.operationId,
+        ...context.parameters,
+      }),
+      resultArtifact: null,
+      error: null,
+      sourceEvidence: null,
+    }));
+
+    const buildCatalog = async () => {
+      const agentsPath = path.join(home23Root, 'config', 'agents.json');
+      let manifest = [];
+      if (fsSync.existsSync(agentsPath)) manifest = JSON.parse(fsSync.readFileSync(agentsPath, 'utf8'));
+      if (!Array.isArray(manifest)) {
+        const error = new Error('catalog_configuration_invalid');
+        error.code = 'catalog_configuration_invalid';
+        throw error;
+      }
+      const configuredAgentNames = manifest.map((agent) => agent?.name);
+      const cosmoRoot = path.join(home23Root, 'cosmo23');
+      const localRunsPath = path.join(cosmoRoot, 'runs');
+      const referenceRunsPaths = parseReferenceRunsPaths(
+        process.env.COSMO_REFERENCE_RUNS_PATHS || process.env.COSMO_REFERENCE_RUNS_PATH || '',
+        cosmoRoot,
+        localRunsPath,
+      );
+      return buildCanonicalCatalog({
+        instancesRoot: path.join(home23Root, 'instances'),
+        localRunsPath,
+        referenceRunsPaths,
+        configuredAgentNames,
+        activeRunPath: path.join(cosmoRoot, 'runtime'),
+      });
+    };
+    const resolveOwnedRunTarget = async () => {
+      const error = new Error('owned_run_operations_unavailable');
+      error.code = 'operation_unavailable';
+      throw error;
+    };
+    const coordinator = new BrainOperationCoordinator({
+      requesterAgent,
+      store,
+      buildCanonicalCatalog: buildCatalog,
+      resolveCanonicalTarget,
+      resolveOwnedRunTarget,
+      operationAuthority: OPERATION_AUTHORITY,
+      authorizeBrainOperation,
+      worker,
+      sourcePins: createMemorySourcePinProvider({ home23Root, requesterAgent }),
+      scratchQuotaFactory: createOperationScratchQuota,
+      operationModelResolver: null,
+      capabilityKey: process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY || null,
+      exporter,
+    });
+    return { coordinator, worker, store, reader, exporter, buildCatalog };
   }
 
   /**
@@ -1911,7 +2084,6 @@ class DashboardServer {
     try {
       const home23RootForPoll = this.getHome23Root();
       const fsSync = require('fs');
-      const yaml = require('js-yaml');
       const cosmoPort = parseInt(process.env.COSMO23_PORT || '43210', 10);
       const cosmoBase = `http://localhost:${cosmoPort}`;
       const secretsPath = path.join(home23RootForPoll, 'config', 'secrets.yaml');
@@ -1943,16 +2115,12 @@ class DashboardServer {
               if (!newToken) continue;
 
               if (!fsSync.existsSync(secretsPath)) continue;
-              const secrets = yaml.load(fsSync.readFileSync(secretsPath, 'utf8')) || {};
-              const current = secrets.providers?.[provider]?.apiKey;
-              if (current === newToken) continue; // no rotation
-
-              // Rotate: write new token, regenerate ecosystem, restart
-              if (!secrets.providers) secrets.providers = {};
-              if (!secrets.providers[provider]) secrets.providers[provider] = {};
-              secrets.providers[provider].apiKey = newToken;
-              secrets.providers[provider].oauthManaged = true;
-              fsSync.writeFileSync(secretsPath, yaml.dump(secrets, { lineWidth: 120 }));
+              const tokenUpdate = await updateDashboardOAuthTokenSecrets(
+                home23RootForPoll,
+                provider,
+                newToken,
+              );
+              if (!tokenUpdate.changed) continue;
 
               try {
                 const { execSync } = require('child_process');
@@ -2396,162 +2564,9 @@ class DashboardServer {
       res.sendFile(resolved);
     });
 
-    // Brain graph data for 3D visualization
-    this.app.get('/home23/api/brain/graph', async (req, res) => {
-      try {
-        const fullGraph = req.query.full === '1' || req.query.full === 'true';
-        const requestedLimit = Number.parseInt(String(req.query.limit || ''), 10);
-        const maxNodes = fullGraph ? Number.POSITIVE_INFINITY : Math.min(
-          Math.max(Number.isFinite(requestedLimit) ? requestedLimit : 2500, 250),
-          8000
-        );
-        const requestedEdgeLimit = Number.parseInt(String(req.query.edgeLimit || ''), 10);
-        const maxEdges = fullGraph ? Number.POSITIVE_INFINITY : Math.min(
-          Math.max(Number.isFinite(requestedEdgeLimit) ? requestedEdgeLimit : maxNodes * 4, 1000),
-          32000
-        );
-        if (!fullGraph) {
-          const { readJsonlGz, nodesPath, edgesPath } = require('../core/memory-sidecar');
-          const nodeSidecar = nodesPath(this.logsDir);
-          const edgeSidecar = edgesPath(this.logsDir);
-          const fsSync = require('fs');
-          if (fsSync.existsSync(nodeSidecar) && fsSync.existsSync(edgeSidecar)) {
-            const snapshotPath = path.join(this.logsDir, 'brain-snapshot.json');
-            let snapshot = {};
-            try {
-              snapshot = JSON.parse(fsSync.readFileSync(snapshotPath, 'utf8'));
-            } catch { /* snapshot may not exist yet */ }
-            const state = await this.loadStateLean();
-            const memory = state.memory || {};
-            const selectedIds = new Set();
-            const selectedEdges = [];
-            await readJsonlGz(edgeSidecar, (rec) => {
-              const source = String(rec.source);
-              const target = String(rec.target);
-              if (!source || !target || source === target) return true;
-
-              const newIds = [source, target].filter(id => !selectedIds.has(id));
-              if (selectedIds.size + newIds.length <= maxNodes) {
-                newIds.forEach(id => selectedIds.add(id));
-                selectedEdges.push(rec);
-              }
-              return selectedEdges.length < maxEdges;
-            });
-            const selectedRawNodes = [];
-            await readJsonlGz(nodeSidecar, (rec) => {
-              if (selectedIds.has(String(rec.id))) {
-                selectedRawNodes.push(rec);
-              }
-              return selectedRawNodes.length < selectedIds.size;
-            });
-            if (selectedRawNodes.length < Math.min(maxNodes, 500)) {
-              await readJsonlGz(nodeSidecar, (rec) => {
-                const id = String(rec.id);
-                if (!selectedIds.has(id)) {
-                  selectedIds.add(id);
-                  selectedRawNodes.push(rec);
-                }
-                return selectedRawNodes.length < maxNodes;
-              });
-            }
-            const hydratedIds = new Set(selectedRawNodes.map(n => String(n.id)));
-            const visibleEdges = selectedEdges.filter(e =>
-              hydratedIds.has(String(e.source)) && hydratedIds.has(String(e.target))
-            );
-            const nodes = selectedRawNodes.map(n => ({
-              id: String(n.id),
-              concept: n.concept || '',
-              tag: n.tag || 'general',
-              weight: n.weight || 0,
-              activation: n.activation || 0,
-              cluster: n.cluster,
-              created: n.created,
-              accessed: n.accessed,
-              accessCount: n.accessCount || 0
-            }));
-            const edges = visibleEdges.map(e => ({
-              source: String(e.source),
-              target: String(e.target),
-              weight: e.weight || 0,
-              type: e.type || 'associative'
-            }));
-            const totalNodes = Number.isFinite(snapshot.nodeCount) ? snapshot.nodeCount : nodes.length;
-            const totalEdges = Number.isFinite(snapshot.edgeCount) ? snapshot.edgeCount : edges.length;
-            return res.json({
-              success: true,
-              nodes,
-              edges,
-              clusters: memory.clusters || [],
-              meta: {
-                nodeCount: totalNodes,
-                edgeCount: totalEdges,
-                displayedNodeCount: nodes.length,
-                displayedEdgeCount: edges.length,
-                limited: nodes.length < totalNodes,
-                clusterCount: (memory.clusters || []).length || memory.nextClusterId || snapshot.clusterCount || 0,
-                cycleCount: state.cycleCount || snapshot.cycle || 0
-              }
-            });
-          }
-        }
-
-        const state = await this.loadState();
-        const memory = state.memory || {};
-        const allNodes = Array.isArray(memory.nodes) ? memory.nodes : [];
-        const allEdges = Array.isArray(memory.edges) ? memory.edges : [];
-        const scoredNodes = allNodes.map((node, index) => {
-          const accessedMs = Date.parse(node.accessed || node.created || '') || 0;
-          const recency = accessedMs ? Math.min(accessedMs / 1e13, 2) : 0;
-          const score =
-            Number(node.activation || 0) * 3 +
-            Number(node.weight || 0) * 2 +
-            Math.log1p(Number(node.accessCount || 0)) +
-            recency;
-          return { node, index, score };
-        });
-        scoredNodes.sort((a, b) => b.score - a.score || a.index - b.index);
-        const selectedRawNodes = fullGraph ? allNodes : scoredNodes.slice(0, maxNodes).map(item => item.node);
-        const selectedIds = new Set(selectedRawNodes.map(n => String(n.id)));
-        const selectedEdges = allEdges
-          .filter(e => selectedIds.has(String(e.source)) && selectedIds.has(String(e.target)))
-          .sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0))
-          .slice(0, maxEdges);
-        const nodes = selectedRawNodes.map(n => ({
-          id: String(n.id),
-          concept: n.concept || '',
-          tag: n.tag || 'general',
-          weight: n.weight || 0,
-          activation: n.activation || 0,
-          cluster: n.cluster,
-          created: n.created,
-          accessed: n.accessed,
-          accessCount: n.accessCount || 0
-        }));
-        const edges = selectedEdges.map(e => ({
-          source: String(e.source),
-          target: String(e.target),
-          weight: e.weight || 0,
-          type: e.type || 'associative'
-        }));
-        res.json({
-          success: true,
-          nodes,
-          edges,
-          clusters: memory.clusters || [],
-          meta: {
-            nodeCount: allNodes.length,
-            edgeCount: allEdges.length,
-            displayedNodeCount: nodes.length,
-            displayedEdgeCount: edges.length,
-            limited: !fullGraph && nodes.length < allNodes.length,
-            clusterCount: (memory.clusters || []).length || memory.nextClusterId || 0,
-            cycleCount: state.cycleCount || 0
-          }
-        });
-      } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
-      }
-    });
+    this.app.use('/home23/api/brain', createBrainSourceRouter({
+      service: this.brainSourceService,
+    }));
 
     // NEW: Serve curated insights reports (from coordinator directory)
     this.app.use('/reports', express.static(path.join(this.logsDir, 'coordinator')));
@@ -3685,17 +3700,13 @@ class DashboardServer {
           // No orchestrator running
         }
 
-        // Check MCP servers
-        try {
-          const mcpPorts = [];
-          const lsofOutput = execSync('lsof -iTCP -sTCP:LISTEN -n -P').toString();
-          if (lsofOutput.includes(':3346')) mcpPorts.push(3346);
-          if (lsofOutput.includes(':3347')) mcpPorts.push(3347);
-          status.mcp.running = mcpPorts.length > 0;
-          status.mcp.ports = mcpPorts;
-        } catch (e) {
-          // MCP not running
-        }
+        const mcp = await probeMcpAvailability({
+          enabled: isMcpProxyAvailable(),
+          port: this.mcpPort,
+        });
+        status.mcp.running = mcp.available;
+        status.mcp.ports = mcp.available ? [this.mcpPort] : [];
+        status.mcp.reason = mcp.reason;
 
         // Check cluster status from config
         const configPath = path.join(__dirname, '..', 'config.yaml');
@@ -6939,370 +6950,43 @@ Be specific, actionable, and maintain research continuity.`;
       }
     });
 
-    // Lazy-loaded persistent HNSW ANN index (built by engine/src/merge/build-ann-index.js).
-    // Turns brain_search from a ~69s linear scan over the 1.67GB sidecar into a ~1ms searchKnn.
-    // Cached and auto-reloaded when the .meta.json mtime changes (rebuild). Falls back to the
-    // full sidecar scan if the index is missing/stale/unloadable — search never breaks.
-    const loadAnnIndex = () => {
-      try {
-        const fsSync = require('fs');
-        const metaPath = path.join(this.logsDir, 'memory-ann.meta.json');
-        const indexPath = path.join(this.logsDir, 'memory-ann.index');
-        if (!fsSync.existsSync(metaPath) || !fsSync.existsSync(indexPath)) return null;
-        const mtime = fsSync.statSync(metaPath).mtimeMs;
-        if (this._annCache && this._annCache.mtime === mtime) return this._annCache;
-        const hnswlib = require('hnswlib-node');
-        const meta = JSON.parse(fsSync.readFileSync(metaPath, 'utf8'));
-        const index = new hnswlib.HierarchicalNSW('cosine', meta.dim);
-        index.readIndexSync(indexPath);
-        index.setEf(Math.max(100, meta.efConstruction || 100));
-        this._annCache = { mtime, index, labels: meta.labels, dim: meta.dim, count: meta.count };
-        console.log(`[/api/memory/search] ANN index loaded: ${meta.count} nodes (built ${meta.builtAt})`);
-        return this._annCache;
-      } catch (err) {
-        console.error('[/api/memory/search] ANN load failed, falling back to scan:', err.message);
-        return null;
-      }
-    };
-
-    const extractMemorySearchWords = (queryText) => String(queryText || '')
-      .toLowerCase()
-      .split(/[^a-z0-9_:-]+/)
-      .filter((word) => word.length >= 3);
-
-    const scoreKeywordMemoryNode = (node, queryText, queryWords) => {
-      if (!node) return 0;
-      const concept = String(node.concept || node.content || node.summary || '').toLowerCase();
-      const tagText = String(node.tag || '').toLowerCase();
-      const tagsText = Array.isArray(node.tags) ? node.tags.join(' ').toLowerCase() : '';
-      const metadataText = node.metadata && typeof node.metadata === 'object'
-        ? Object.values(node.metadata).filter((value) => typeof value === 'string').join(' ').toLowerCase()
-        : '';
-      const haystack = `${concept} ${tagText} ${tagsText} ${metadataText}`;
-      const phrase = String(queryText || '').trim().toLowerCase();
-      let score = phrase && concept.includes(phrase) ? 0.45 : 0;
-      let matched = 0;
-      for (const word of queryWords) {
-        if (haystack.includes(word)) {
-          matched += 1;
-          score += concept.includes(word) ? 0.16 : 0.08;
-        }
-      }
-      if (matched === 0) return 0;
-      score += Math.min(0.2, matched / queryWords.length * 0.2);
-      return Math.min(1, score);
-    };
-
-    const runKeywordMemorySearch = async ({ query, topK, tag = null, sourceNote = 'keyword fallback' }) => {
-      const resultLimit = Math.max(1, Math.min(100, parseInt(topK, 10) || 10));
-      const queryWords = extractMemorySearchWords(query);
-      const topCandidates = [];
-      let totalSearched = 0;
-      let totalMatched = 0;
-      let source = 'state';
-
-      const scoreNode = (node) => {
-        if (!node) return;
-        if (tag && node.tag !== tag) return;
-        totalSearched += 1;
-        const keywordScore = scoreKeywordMemoryNode(node, query, queryWords);
-        if (keywordScore <= 0) return;
-        totalMatched += 1;
-        const provenance = classifyMemoryProvenance(node);
-        const retrievalScore = scoreMemorySalience(node, keywordScore);
-        topCandidates.push({
-          retrievalScore,
-          result: {
-            id: node.id,
-            concept: node.concept || node.content || node.summary || '',
-            tag: node.tag,
-            similarity: Math.round(keywordScore * 10000) / 10000,
-            retrievalScore: Math.round(retrievalScore * 10000) / 10000,
-            retrievalMode: 'keyword',
-            sourceClass: provenance.sourceClass,
-            salienceWeight: provenance.salienceWeight,
-            weight: node.weight,
-            activation: node.activation,
-            cluster: node.cluster,
-            created: node.created,
-            accessed: node.accessed,
-            accessCount: node.accessCount,
-          },
-        });
-        topCandidates.sort((a, b) => b.retrievalScore - a.retrievalScore);
-        if (topCandidates.length > resultLimit) topCandidates.length = resultLimit;
-      };
-
-      try {
-        const { sidecarsExist, readJsonlGz, nodesPath } = require('../core/memory-sidecar');
-        if (sidecarsExist(this.logsDir)) {
-          source = 'memory-sidecar';
-          await readJsonlGz(nodesPath(this.logsDir), scoreNode);
-        } else {
-          let state = { memory: { nodes: [] } };
-          try {
-            state = await this.loadState();
-          } catch {
-            state = { memory: { nodes: [] } };
-          }
-          let nodes = state.memory?.nodes || [];
-          if (!Array.isArray(nodes)) nodes = Object.values(nodes);
-          for (const node of nodes) scoreNode(node);
-        }
-      } catch (error) {
-        console.error('[/api/memory/search] Keyword fallback failed:', error.message);
-        return { query, results: [], stats: { totalSearched, totalMatched: 0, source, retrievalMode: 'keyword', note: error.message } };
-      }
-
-      return {
-        query,
-        results: topCandidates.map((candidate) => candidate.result),
-        stats: {
-          totalSearched,
-          totalMatched,
-          source: `${source}-keyword`,
-          retrievalMode: 'keyword',
-          note: sourceNote,
-        },
-      };
-    };
-
-    // Semantic search over memory nodes via embedding cosine similarity
+    // Semantic/keyword memory search over the canonical logical memory source.
+    const pickSearchParameters = (input = {}) => ({
+      query: input.query || input.search || input.q,
+      topK: input.topK ?? input.limit ?? 10,
+      minSimilarity: input.minSimilarity ?? 0.4,
+      noiseFloor: input.noiseFloor ?? 0.55,
+      tag: input.tag || null,
+    });
     const handleMemorySearch = async (req, res) => {
+      const controller = new AbortController();
+      req.once('close', () => controller.abort(Object.assign(new Error('client disconnected'), {
+        name: 'AbortError',
+        code: 'cancelled',
+      })));
       try {
-        const { query, topK = 10, minSimilarity = 0.4, noiseFloor = 0.55, tag = null } = req.body;
-        if (!query || typeof query !== 'string') {
-          return res.status(400).json({ error: 'query string is required' });
-        }
-
-        // Embed the query using the same client/model as the engine
-        const { getEmbeddingClient } = require('../core/openai-client');
-        const client = getEmbeddingClient();
-
-        const embeddingModel = process.env.EMBEDDING_MODEL || 'nomic-embed-text';
-        const isOllama = (process.env.EMBEDDING_BASE_URL || '').includes('11434');
-
-        // Truncate query for embedding (same safety limits as NetworkMemory)
-        let queryText = query;
-        if (queryText.length > 2000) {
-          queryText = queryText.substring(0, 2000);
-        }
-
-        const createParams = { model: embeddingModel, input: queryText };
-        if (!isOllama) {
-          createParams.encoding_format = 'float';
-        }
-
-        let embResponse;
-        try {
-          embResponse = await client.embeddings.create(createParams);
-        } catch (embeddingError) {
-          console.warn('[/api/memory/search] Query embedding failed; using keyword fallback:', embeddingError.message);
-          return res.json(await runKeywordMemorySearch({
-            query,
-            topK,
-            tag,
-            sourceNote: 'query embedding unavailable; used keyword fallback',
-          }));
-        }
-        const queryEmbedding = embResponse?.data?.[0]?.embedding;
-
-        if (!queryEmbedding || !Array.isArray(queryEmbedding)) {
-          return res.json(await runKeywordMemorySearch({
-            query,
-            topK,
-            tag,
-            sourceNote: 'query embedding response was empty; used keyword fallback',
-          }));
-        }
-
-        const resultLimit = Math.max(1, Math.min(100, parseInt(topK, 10) || 10));
-        const similarityThreshold = Number.isFinite(Number(minSimilarity)) ? Number(minSimilarity) : 0.4;
-
-        // ── ANN fast path ──────────────────────────────────────────────
-        // If the persistent HNSW index is available, query it in ms instead of
-        // scanning the full sidecar. Pull a wide candidate pool so salience can
-        // rescue low-volume conversation/identity nodes from high-volume chatter.
-        const ann = loadAnnIndex();
-        if (ann && ann.index) {
-          try {
-            const k = Math.min(ann.count, Math.max(resultLimit * 100, 1000));
-            const knn = ann.index.searchKnn(queryEmbedding, k);
-            const annResults = [];
-            for (let i = 0; i < knn.neighbors.length; i++) {
-              const label = ann.labels[knn.neighbors[i]];
-              if (!label) continue;
-              if (tag && label.tag !== tag) continue;
-              const similarity = 1 - knn.distances[i]; // cosine space distance -> similarity
-              if (similarity < similarityThreshold) continue;
-              const provenance = classifyMemoryProvenance(label);
-              const retrievalScore = scoreMemorySalience(label, similarity);
-              annResults.push({
-                id: label.id,
-                concept: label.concept,
-                tag: label.tag,
-                similarity: Math.round(similarity * 10000) / 10000,
-                retrievalScore: Math.round(retrievalScore * 10000) / 10000,
-                sourceClass: provenance.sourceClass,
-                salienceWeight: provenance.salienceWeight,
-                weight: label.weight,
-                activation: label.activation,
-                cluster: label.cluster,
-                created: label.created,
-              });
-            }
-            annResults.sort((a, b) => (b.retrievalScore ?? b.similarity) - (a.retrievalScore ?? a.similarity));
-            const results = annResults.slice(0, resultLimit);
-            return res.json({
-              query,
-              results,
-              stats: {
-                totalSearched: ann.count,
-                totalMatched: annResults.length,
-                topSimilarity: results.length ? Math.max(...results.map((r) => r.similarity || 0)) : 0,
-                topRetrievalScore: results.length ? results[0].retrievalScore : 0,
-                source: 'ann-hnsw',
-                salienceWeighted: true,
-                noiseFiltered: false,
-              },
-            });
-          } catch (annErr) {
-            console.error('[/api/memory/search] ANN query failed, falling back to scan:', annErr.message);
-            // fall through to the full scan below
-          }
-        }
-        // ───────────────────────────────────────────────────────────────
-
-        // Cosine similarity (inlined from NetworkMemory)
-        function cosineSimilarity(a, b) {
-          if (!a || !b || a.length !== b.length) return 0;
-          let dot = 0, nA = 0, nB = 0;
-          for (let i = 0; i < a.length; i++) {
-            dot += a[i] * b[i];
-            nA += a[i] * a[i];
-            nB += b[i] * b[i];
-          }
-          if (nA === 0 || nB === 0) return 0;
-          return dot / (Math.sqrt(nA) * Math.sqrt(nB));
-        }
-
-        // Score searchable nodes without materializing the full sidecar graph in
-        // dashboard heap. The live Jerry sidecar is hundreds of MB compressed.
-        let totalSearched = 0;
-        let totalMatched = 0;
-        let popMean = 0;
-        let popM2 = 0;
-        let topScore = 0;
-        const topCandidates = [];
-        let source = 'state';
-
-        const scoreNode = (node) => {
-          if (!node?.embedding || !Array.isArray(node.embedding) || node.embedding.length === 0) return;
-          if (tag && node.tag !== tag) return;
-          const similarity = cosineSimilarity(queryEmbedding, node.embedding);
-          totalSearched += 1;
-          const delta = similarity - popMean;
-          popMean += delta / totalSearched;
-          popM2 += delta * (similarity - popMean);
-          if (similarity > topScore) topScore = similarity;
-
-          if (similarity >= similarityThreshold) {
-            totalMatched += 1;
-            const provenance = classifyMemoryProvenance(node);
-            const retrievalScore = scoreMemorySalience(node, similarity);
-            topCandidates.push({
-              rawSimilarity: similarity,
-              retrievalScore,
-              result: {
-                id: node.id,
-                concept: node.concept,
-                tag: node.tag,
-                similarity: Math.round(similarity * 10000) / 10000,
-                retrievalScore: Math.round(retrievalScore * 10000) / 10000,
-                sourceClass: provenance.sourceClass,
-                salienceWeight: provenance.salienceWeight,
-                weight: node.weight,
-                activation: node.activation,
-                cluster: node.cluster,
-                created: node.created,
-                accessed: node.accessed,
-                accessCount: node.accessCount,
-              },
-            });
-            topCandidates.sort((a, b) => b.retrievalScore - a.retrievalScore);
-            if (topCandidates.length > resultLimit) topCandidates.length = resultLimit;
-          }
-        };
-
-        try {
-          const { sidecarsExist, readJsonlGz, nodesPath } = require('../core/memory-sidecar');
-          if (sidecarsExist(this.logsDir)) {
-            source = 'memory-sidecar';
-            await readJsonlGz(nodesPath(this.logsDir), scoreNode);
-          } else {
-            let state = { memory: { nodes: [] } };
-            try {
-              state = await this.loadState();
-            } catch {
-              return res.json({ query, results: [], stats: { totalSearched: 0, totalMatched: 0 } });
-            }
-
-            let nodes = state.memory?.nodes || [];
-            if (!Array.isArray(nodes)) {
-              nodes = Object.values(nodes);
-            }
-            for (const node of nodes) scoreNode(node);
-          }
-        } catch (error) {
-          console.error('[/api/memory/search] Sidecar search failed:', error.message);
-          return res.status(500).json({ error: error.message });
-        }
-
-        if (totalSearched === 0) {
-          return res.json(await runKeywordMemorySearch({
-            query,
-            topK,
-            tag,
-            sourceNote: 'no nodes with embeddings; used keyword fallback',
-          }));
-        }
-
-        // Population standard deviation for z-score
-        const popStdDev = totalSearched > 0 ? Math.sqrt(popM2 / totalSearched) : 0;
-
-        // Z-score: how many standard deviations is the top result above the mean?
-        // Real semantic matches: z > 2.5 (top result is a clear outlier)
-        // Noise/generic matches: z < 2.0 (top result is within the normal distribution)
-        const zScore = popStdDev > 0 ? (topScore - popMean) / popStdDev : 0;
-
-        // Adaptive threshold: stricter for large brains (noise), lenient for small ones
-        // Also accept results above absolute similarity threshold (0.45) regardless of z-score
-        const minZScore = totalSearched < 50 ? 1.0 : totalSearched < 500 ? 2.0 : 3.0;
-        const minAbsSimilarity = 0.45;
-
-        const candidateResults = topCandidates.map(c => c.result);
-        const hasSignal = candidateResults.length > 0 && (zScore >= minZScore || topScore >= minAbsSimilarity);
-        const results = hasSignal ? candidateResults : [];
-
-        res.json({
-          query,
-          results,
-          stats: {
-            totalSearched,
-            totalMatched: hasSignal ? totalMatched : 0,
-            topSimilarity: Math.round(topScore * 10000) / 10000,
-            topRetrievalScore: candidateResults.length ? candidateResults[0].retrievalScore : 0,
-            populationMean: Math.round(popMean * 10000) / 10000,
-            populationStdDev: Math.round(popStdDev * 10000) / 10000,
-            zScore: Math.round(zScore * 100) / 100,
-            noiseFiltered: !hasSignal,
-            source,
-            salienceWeighted: true,
-          }
+        const result = await this.memorySearchService.search({
+          ...pickSearchParameters(req.body),
+          signal: controller.signal,
         });
+        if (result.evidence?.sourceHealth === 'unavailable') {
+          return res.status(503).json({
+            ok: false,
+            error: { code: 'source_unavailable' },
+            ...result,
+          });
+        }
+        return res.json(result);
       } catch (error) {
-        console.error('[/api/memory/search] Error:', error.message);
-        res.status(500).json({ error: error.message });
+        if (error?.name === 'AbortError' || error?.code === 'cancelled') {
+          return res.status(499).json({ ok: false, error: { code: 'cancelled' } });
+        }
+        const status = Number(error?.status) || (error?.code === 'invalid_request' ? 400 : 500);
+        if (status >= 500) console.error('[/api/memory/search] Error:', error.message);
+        return res.status(status).json({
+          ok: false,
+          error: { code: error?.code || 'memory_search_failed', message: error.message },
+        });
       }
     };
     this.app.post('/api/memory/search', handleMemorySearch);
@@ -8606,6 +8290,14 @@ You are empowered to explore and understand. The user trusts you to discover the
     // This enables intelligence view to work regardless of MCP port
     this.app.post('/api/mcp', async (req, res) => {
       try {
+        const availability = await probeMcpAvailability({
+          enabled: isMcpProxyAvailable(),
+          port: this.mcpPort,
+        });
+        if (!availability.available) {
+          return res.status(503).json(buildMcpUnavailableEnvelope(this.mcpPort, availability));
+        }
+
         const http = require('http');
         const mcpUrl = `http://localhost:${this.mcpPort}/mcp`;
         
@@ -10935,6 +10627,20 @@ You are empowered to explore and understand. The user trusts you to discover the
   }
 
   async getFastMemoryGraphSummary() {
+    try {
+      const status = await this.brainSourceService.status();
+      if (Number.isFinite(status?.summary?.nodes)) {
+        return {
+          nodes: status.summary.nodes,
+          edges: Number.isFinite(status.summary.edges) ? status.summary.edges : 0,
+          clusters: Number.isFinite(status.summary.clusters) ? status.summary.clusters : 0,
+          source: 'brain-source',
+        };
+      }
+    } catch {
+      // Fall through to advisory compatibility sources for bootstrapping.
+    }
+
     const snapshotPath = path.join(this.logsDir, 'brain-snapshot.json');
     try {
       const snapshot = JSON.parse(await fs.readFile(snapshotPath, 'utf8'));
@@ -12129,4 +11835,4 @@ if (require.main === module) {
   server.start();
 }
 
-module.exports = { DashboardServer, readJsonlTail };
+module.exports = { DashboardServer, readJsonlTail, updateDashboardOAuthTokenSecrets };

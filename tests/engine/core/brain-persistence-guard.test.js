@@ -33,7 +33,7 @@ test('resolveKnownGoodNodeCount counts memory sidecar before empty small-shape s
   });
 
   assert.equal(result.count, 125);
-  assert.equal(result.source, 'memory-sidecar');
+  assert.equal(result.source, 'memory-manifest');
 });
 
 test('resolveKnownGoodNodeCount applies sidecar deltas when snapshot is missing', async () => {
@@ -54,7 +54,7 @@ test('resolveKnownGoodNodeCount applies sidecar deltas when snapshot is missing'
   });
 
   assert.equal(result.count, 3);
-  assert.equal(result.source, 'memory-sidecar');
+  assert.equal(result.source, 'memory-manifest');
 });
 
 test('resolveKnownGoodNodeCount falls back to inline state when no snapshot or sidecars exist', async () => {

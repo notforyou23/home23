@@ -5,6 +5,10 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 const yaml = require('js-yaml');
 const { Home23TileService } = require('./home23-tiles');
+const {
+  updateDashboardOAuthTokenSecrets,
+  updateSettingsSecrets,
+} = require('./home23-secrets');
 const { writeYamlSafely } = require('./yaml-write-safety');
 const { StateCompression } = require('../core/state-compression');
 const { readJsonlGz, sidecarsExist, nodesPath } = require('../core/memory-sidecar');
@@ -21,7 +25,21 @@ const PM2_ENV_BLOCKLIST = [
   'MCP_HTTP_PORT',
   'COSMO_RUNTIME_DIR',
   'COSMO_WORKSPACE_PATH',
+  'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY',
 ];
+
+const SHARED_PM2_PROCESS_NAMES = new Set([
+  'home23-cosmo23',
+  'home23-evobrew',
+  'home23-screenlogic',
+]);
+
+function assertNoSharedPm2Targets(targets) {
+  const sharedTarget = targets.find(name => SHARED_PM2_PROCESS_NAMES.has(name));
+  if (sharedTarget) {
+    throw new Error(`Refusing generic PM2 mutation for shared service: ${sharedTarget}`);
+  }
+}
 
 function cleanPm2Env(extra = {}) {
   const env = { ...process.env, ...extra };
@@ -60,15 +78,11 @@ function createSettingsRouter(home23Root, options = {}) {
   }
 
   function seedCosmo23Config() {
-    try {
-      const { execSync } = require('child_process');
-      execSync(`node --input-type=module -e "
-        import { seedCosmo23Config } from './cli/lib/cosmo23-config.js';
-        seedCosmo23Config('.');
-      "`, { cwd: home23Root, stdio: 'pipe', timeout: 10000 });
-    } catch (err) {
-      console.warn('[Settings] cosmo23 config seed error:', err.message);
-    }
+    const { execSync } = require('child_process');
+    execSync(`node --input-type=module -e "
+      import { seedCosmo23Config } from './cli/lib/cosmo23-config.js';
+      await seedCosmo23Config('.');
+    "`, { cwd: home23Root, stdio: 'pipe', timeout: 10000 });
   }
 
   function discoverAgents() {
@@ -177,6 +191,7 @@ function createSettingsRouter(home23Root, options = {}) {
   }
 
   function restartOnlineEcosystemProcesses(targets) {
+    assertNoSharedPm2Targets(targets);
     const { execFileSync } = require('child_process');
     const ecosystemPath = path.join(home23Root, 'ecosystem.config.cjs');
     const online = listOnlinePm2ProcessNames();
@@ -196,6 +211,38 @@ function createSettingsRouter(home23Root, options = {}) {
       }
     }
     return activeTargets;
+  }
+
+  async function restartOnlineProcessesWithSharedLock(targets) {
+    const online = listOnlinePm2ProcessNames();
+    const activeTargets = [...new Set(targets)].filter(name => online.has(name));
+    const nonSharedTargets = activeTargets.filter(name => !SHARED_PM2_PROCESS_NAMES.has(name));
+    const sharedTargets = activeTargets.filter(name => SHARED_PM2_PROCESS_NAMES.has(name));
+    const restarted = [];
+
+    if (nonSharedTargets.length > 0) {
+      restarted.push(...restartOnlineEcosystemProcesses(nonSharedTargets));
+    }
+
+    if (sharedTargets.length > 0) {
+      const sharedStart = await import(pathToFileURL(
+        path.join(home23Root, 'cli', 'lib', 'shared-service-start.js')
+      ).href);
+      for (const name of sharedTargets) {
+        const service = sharedStart.SHARED_SERVICES.find(candidate => candidate.name === name);
+        if (!service) throw new Error(`Shared-service definition is missing for ${name}`);
+        await sharedStart.coordinateSharedServiceStartup({
+          repoRoot: home23Root,
+          service,
+          logger: console,
+          reason: 'settings-runtime-update',
+          waitMs: 10000,
+        });
+        restarted.push(name);
+      }
+    }
+
+    return restarted;
   }
 
   function recycleManagedProcess(name) {
@@ -702,38 +749,48 @@ function createSettingsRouter(home23Root, options = {}) {
     res.json({ providers: masked });
   });
 
-  router.put('/providers', (req, res) => {
+  router.put('/providers', async (req, res) => {
     const { providers } = req.body;
     if (!providers || typeof providers !== 'object') {
       return res.status(400).json({ error: 'providers object required' });
     }
 
-    const secretsPath = path.join(home23Root, 'config', 'secrets.yaml');
-    const secrets = loadSecrets();
-    if (!secrets.providers) secrets.providers = {};
-
-    for (const [name, config] of Object.entries(providers)) {
-      if (config.apiKey && config.apiKey.trim()) {
-        if (!secrets.providers[name]) secrets.providers[name] = {};
-        secrets.providers[name].apiKey = config.apiKey.trim();
-      }
-    }
-
-    saveYaml(secretsPath, secrets);
-    regenerateEcosystem();
-    regenerateEvobrewConfig();
-    seedCosmo23Config();
-
+    let targets;
     try {
-      const targets = [
+      await updateSettingsSecrets(home23Root, (secrets) => {
+        if (!secrets.providers || typeof secrets.providers !== 'object') secrets.providers = {};
+        let changed = false;
+        for (const [name, config] of Object.entries(providers)) {
+          if (config.apiKey && config.apiKey.trim()) {
+            if (!secrets.providers[name] || typeof secrets.providers[name] !== 'object') {
+              secrets.providers[name] = {};
+            }
+            const nextKey = config.apiKey.trim();
+            if (secrets.providers[name].apiKey !== nextKey) {
+              secrets.providers[name].apiKey = nextKey;
+              changed = true;
+            }
+          }
+        }
+        return { changed };
+      });
+      seedCosmo23Config();
+      regenerateEcosystem();
+      regenerateEvobrewConfig();
+      targets = [
         ...discoverAgents().flatMap(name => [`home23-${name}`, `home23-${name}-harness`]),
         'home23-evobrew',
         'home23-cosmo23',
       ];
-      const restartedTargets = restartOnlineEcosystemProcesses(targets);
-      res.json({ ok: true, restarted: restartedTargets.length > 0, targets: restartedTargets });
     } catch (err) {
-      res.json({ ok: true, restarted: false, warn: err.message });
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+
+    try {
+      const restartedTargets = await restartOnlineProcessesWithSharedLock(targets);
+      return res.json({ ok: true, restarted: restartedTargets.length > 0, targets: restartedTargets });
+    } catch (err) {
+      return res.json({ ok: true, restarted: false, warn: err.message });
     }
   });
 
@@ -966,30 +1023,22 @@ function createSettingsRouter(home23Root, options = {}) {
   }
 
   function regenerateEcosystem() {
-    try {
-      const { execSync } = require('child_process');
-      execSync(`node --input-type=module -e "
-        import { generateEcosystem } from './cli/lib/generate-ecosystem.js';
-        generateEcosystem('.');
-      "`, { cwd: home23Root, stdio: 'pipe', timeout: 10000 });
-    } catch (err) {
-      console.warn('[Settings] Ecosystem regeneration error:', err.message);
-    }
+    const { execSync } = require('child_process');
+    execSync(`node --input-type=module -e "
+      import { generateEcosystem } from './cli/lib/generate-ecosystem.js';
+      generateEcosystem('.');
+    "`, { cwd: home23Root, stdio: 'pipe', timeout: 10000 });
   }
 
   function regenerateEvobrewConfig() {
-    try {
-      const { execSync } = require('child_process');
-      execSync(`node --input-type=module -e "
-        import { writeEvobrewConfig } from './cli/lib/evobrew-config.js';
-        writeEvobrewConfig('.');
-      "`, { cwd: home23Root, stdio: 'pipe', timeout: 10000 });
-    } catch (err) {
-      console.warn('[Settings] Evobrew config regeneration error:', err.message);
-    }
+    const { execSync } = require('child_process');
+    execSync(`node --input-type=module -e "
+      import { writeEvobrewConfig } from './cli/lib/evobrew-config.js';
+      writeEvobrewConfig('.');
+    "`, { cwd: home23Root, stdio: 'pipe', timeout: 10000 });
   }
 
-  router.post('/agents', (req, res) => {
+  router.post('/agents', async (req, res) => {
     const {
       name,
       displayName,
@@ -1085,11 +1134,21 @@ function createSettingsRouter(home23Root, options = {}) {
 
     // Save bot token to secrets if provided
     if (botToken) {
-      const secretsPath = path.join(home23Root, 'config', 'secrets.yaml');
-      const secrets = loadYaml(secretsPath);
-      if (!secrets.agents) secrets.agents = {};
-      secrets.agents[name] = { telegram: { botToken } };
-      saveYaml(secretsPath, secrets);
+      try {
+        await updateSettingsSecrets(home23Root, (secrets) => {
+          if (!secrets.agents || typeof secrets.agents !== 'object') secrets.agents = {};
+          if (!secrets.agents[name] || typeof secrets.agents[name] !== 'object') secrets.agents[name] = {};
+          const previous = secrets.agents[name].telegram?.botToken || '';
+          if (previous === botToken) return { changed: false };
+          secrets.agents[name].telegram = {
+            ...(secrets.agents[name].telegram || {}),
+            botToken,
+          };
+          return { changed: true };
+        });
+      } catch (err) {
+        return res.status(500).json({ ok: false, error: err.message });
+      }
     }
 
     // Set as primary agent if first
@@ -1113,7 +1172,7 @@ function createSettingsRouter(home23Root, options = {}) {
     });
   });
 
-  router.put('/agents/:name', (req, res) => {
+  router.put('/agents/:name', async (req, res) => {
     const agentName = req.params.name;
     const configPath = path.join(home23Root, 'instances', agentName, 'config.yaml');
     if (!fs.existsSync(configPath)) {
@@ -1158,15 +1217,6 @@ function createSettingsRouter(home23Root, options = {}) {
           config.channels.telegram.ackReaction = true;
         }
       }
-      // Save bot token to secrets
-      if (telegram.botToken) {
-        const secretsPath = path.join(home23Root, 'config', 'secrets.yaml');
-        const secrets = loadYaml(secretsPath);
-        if (!secrets.agents) secrets.agents = {};
-        if (!secrets.agents[agentName]) secrets.agents[agentName] = {};
-        secrets.agents[agentName].telegram = { botToken: telegram.botToken };
-        saveYaml(secretsPath, secrets);
-      }
     }
     if (discord !== undefined) {
       if (!config.channels) config.channels = {};
@@ -1184,13 +1234,31 @@ function createSettingsRouter(home23Root, options = {}) {
       } else if (!config.channels.discord.guilds) {
         config.channels.discord.guilds = {};
       }
-      if (discord.token) {
-        const secretsPath = path.join(home23Root, 'config', 'secrets.yaml');
-        const secrets = loadYaml(secretsPath);
-        if (!secrets.agents) secrets.agents = {};
-        if (!secrets.agents[agentName]) secrets.agents[agentName] = {};
-        secrets.agents[agentName].discord = { token: discord.token };
-        saveYaml(secretsPath, secrets);
+    }
+
+    const telegramToken = telegram?.botToken;
+    const discordToken = discord?.token;
+    if (telegramToken || discordToken) {
+      try {
+        await updateSettingsSecrets(home23Root, (secrets) => {
+          if (!secrets.agents || typeof secrets.agents !== 'object') secrets.agents = {};
+          if (!secrets.agents[agentName] || typeof secrets.agents[agentName] !== 'object') {
+            secrets.agents[agentName] = {};
+          }
+          const agentSecrets = secrets.agents[agentName];
+          let changed = false;
+          if (telegramToken && agentSecrets.telegram?.botToken !== telegramToken) {
+            agentSecrets.telegram = { ...(agentSecrets.telegram || {}), botToken: telegramToken };
+            changed = true;
+          }
+          if (discordToken && agentSecrets.discord?.token !== discordToken) {
+            agentSecrets.discord = { ...(agentSecrets.discord || {}), token: discordToken };
+            changed = true;
+          }
+          return { changed };
+        });
+      } catch (err) {
+        return res.status(500).json({ ok: false, error: err.message });
       }
     }
 
@@ -1242,7 +1310,7 @@ function createSettingsRouter(home23Root, options = {}) {
     res.json({ ok: true, primaryAgent: agentName });
   });
 
-  router.delete('/agents/:name', (req, res) => {
+  router.delete('/agents/:name', async (req, res) => {
     const agentName = req.params.name;
     if (agentName === getPrimaryAgent()) {
       return res.status(403).json({ error: 'Cannot delete the primary agent' });
@@ -1263,11 +1331,14 @@ function createSettingsRouter(home23Root, options = {}) {
 
     fs.rmSync(instanceDir, { recursive: true, force: true });
 
-    const secretsPath = path.join(home23Root, 'config', 'secrets.yaml');
-    const secrets = loadYaml(secretsPath);
-    if (secrets.agents?.[agentName]) {
-      delete secrets.agents[agentName];
-      saveYaml(secretsPath, secrets);
+    try {
+      await updateSettingsSecrets(home23Root, (secrets) => {
+        if (!secrets.agents?.[agentName]) return { changed: false };
+        delete secrets.agents[agentName];
+        return { changed: true };
+      });
+    } catch (err) {
+      return res.status(500).json({ ok: false, error: err.message });
     }
 
     regenerateEcosystem();
@@ -1355,10 +1426,8 @@ function createSettingsRouter(home23Root, options = {}) {
   router.post('/cosmo23/restart', async (req, res) => {
     try {
       // Seed config before starting
-      try {
-        const { seedCosmo23Config } = await import(path.join(home23Root, 'cli', 'lib', 'cosmo23-config.js'));
-        seedCosmo23Config(home23Root);
-      } catch { /* config seeding optional */ }
+      const { seedCosmo23Config } = await import(path.join(home23Root, 'cli', 'lib', 'cosmo23-config.js'));
+      await seedCosmo23Config(home23Root);
       const { pathToFileURL } = require('url');
       const sharedStart = await import(pathToFileURL(
         path.join(home23Root, 'cli', 'lib', 'shared-service-start.js')
@@ -1374,7 +1443,7 @@ function createSettingsRouter(home23Root, options = {}) {
       });
       res.json({ ok: true, status: 'started' });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      res.status(500).json({ ok: false, error: err.message });
     }
   });
 
@@ -1931,21 +2000,19 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     }
   });
 
-  router.put('/skills', (req, res) => {
+  router.put('/skills', async (req, res) => {
     const updates = req.body?.skills;
     if (!updates || typeof updates !== 'object') {
       return res.status(400).json({ ok: false, error: 'skills object required' });
     }
 
     const homeConfigPath = getHomeConfigPath();
-    const secretsPath = getSecretsPath();
     const homeConfig = loadHomeConfig();
-    const secrets = loadSecrets();
 
     if (!homeConfig.skills || typeof homeConfig.skills !== 'object') homeConfig.skills = {};
-    if (!secrets.skills || typeof secrets.skills !== 'object') secrets.skills = {};
 
     const applied = [];
+    let xResearchSecretUpdate = null;
 
     if (updates['x-research'] && typeof updates['x-research'] === 'object') {
       const incoming = updates['x-research'];
@@ -1959,21 +2026,37 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
       };
       applied.push('skills.x-research.defaults');
 
-      if (!secrets.skills['x-research'] || typeof secrets.skills['x-research'] !== 'object') {
-        secrets.skills['x-research'] = {};
-      }
-
       if (typeof incoming.bearerToken === 'string' && incoming.bearerToken.trim()) {
-        secrets.skills['x-research'].bearerToken = incoming.bearerToken.trim();
+        xResearchSecretUpdate = { bearerToken: incoming.bearerToken.trim(), clear: false };
         applied.push('skills.x-research.bearerToken');
       } else if (incoming.clearBearerToken === true) {
-        delete secrets.skills['x-research'].bearerToken;
+        xResearchSecretUpdate = { bearerToken: '', clear: true };
         applied.push('skills.x-research.bearerToken:cleared');
       }
     }
 
     saveYaml(homeConfigPath, homeConfig);
-    saveYaml(secretsPath, secrets);
+    if (xResearchSecretUpdate) {
+      try {
+        await updateSettingsSecrets(home23Root, (secrets) => {
+          if (!secrets.skills || typeof secrets.skills !== 'object') secrets.skills = {};
+          if (!secrets.skills['x-research'] || typeof secrets.skills['x-research'] !== 'object') {
+            secrets.skills['x-research'] = {};
+          }
+          const skillSecrets = secrets.skills['x-research'];
+          if (xResearchSecretUpdate.clear) {
+            if (!Object.hasOwn(skillSecrets, 'bearerToken')) return { changed: false };
+            delete skillSecrets.bearerToken;
+            return { changed: true };
+          }
+          if (skillSecrets.bearerToken === xResearchSecretUpdate.bearerToken) return { changed: false };
+          skillSecrets.bearerToken = xResearchSecretUpdate.bearerToken;
+          return { changed: true };
+        });
+      } catch (err) {
+        return res.status(500).json({ ok: false, error: err.message });
+      }
+    }
 
     res.json({
       ok: true,
@@ -2047,14 +2130,7 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     if (status !== 200 || !body?.ok || !body?.token) {
       return { ok: false, error: body?.error || `cosmo23 returned ${status}` };
     }
-    const secretsPath = path.join(home23Root, 'config', 'secrets.yaml');
-    const secrets = loadYaml(secretsPath);
-    if (!secrets.providers) secrets.providers = {};
-    if (!secrets.providers[provider]) secrets.providers[provider] = {};
-    const prev = secrets.providers[provider].apiKey || '';
-    secrets.providers[provider].apiKey = body.token;
-    secrets.providers[provider].oauthManaged = true;
-    saveYaml(secretsPath, secrets);
+    const tokenUpdate = await updateDashboardOAuthTokenSecrets(home23Root, provider, body.token);
 
     // Regenerate ecosystem so new env vars land in PM2
     regenerateEcosystem();
@@ -2065,21 +2141,22 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
       return {
         ok: true,
         restarted: restartedTargets.length > 0,
-        rotated: prev !== body.token,
+        rotated: tokenUpdate.value.rotated,
         targets: restartedTargets,
       };
     } catch (err) {
-      return { ok: true, restarted: false, rotated: prev !== body.token, warn: `token written, restart failed: ${err.message}` };
+      return { ok: true, restarted: false, rotated: tokenUpdate.value.rotated, warn: `token written, restart failed: ${err.message}` };
     }
   }
 
   async function clearOAuthTokenFromSecrets(provider) {
-    const secretsPath = path.join(home23Root, 'config', 'secrets.yaml');
-    const secrets = loadYaml(secretsPath);
-    if (secrets.providers?.[provider]?.oauthManaged) {
+    const cleared = await updateSettingsSecrets(home23Root, (secrets) => {
+      if (!secrets.providers?.[provider]?.oauthManaged) return { changed: false };
       delete secrets.providers[provider].apiKey;
       delete secrets.providers[provider].oauthManaged;
-      saveYaml(secretsPath, secrets);
+      return { changed: true };
+    });
+    if (cleared.changed) {
       regenerateEcosystem();
       try {
         restartOnlineEcosystemProcesses(discoverAgents().flatMap(name => [`home23-${name}`, `home23-${name}-harness`]));
@@ -2459,14 +2536,14 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
     }
   });
 
-  router.put('/tile-connections', (req, res) => {
+  router.put('/tile-connections', async (req, res) => {
     try {
       const { connections: input } = req.body || {};
       if (!input || !Array.isArray(input.connections)) {
         return res.status(400).json({ ok: false, error: 'connections.connections array required' });
       }
 
-      const saved = tileService.saveConnectionsSettings(input);
+      const saved = await tileService.saveConnectionsSettings(input);
       res.json({
         ok: true,
         connections: tileService.getSettingsConnectionsPayload().connections,
@@ -2482,4 +2559,8 @@ NEVER restate raw brain state as a list. Have a take. React. Comment. If everyth
   return { router, loadYaml, saveYaml, discoverAgents };
 }
 
-module.exports = { createSettingsRouter };
+module.exports = {
+  assertNoSharedPm2Targets,
+  createSettingsRouter,
+  updateSettingsSecrets,
+};

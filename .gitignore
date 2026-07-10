@@ -6,6 +6,8 @@ dist/
 
 # Secrets
 config/secrets.yaml
+config/secrets.yaml.*.tmp
+config/.brain-operations-capability.lock
 
 # Runtime — per-agent (entire instances dir is runtime/personal data)
 instances/
@@ -26,6 +28,7 @@ config/targets.yaml
 
 # PM2 (auto-generated)
 ecosystem.config.cjs
+ecosystem.config.cjs.*.tmp
 
 # macOS
 .DS_Store

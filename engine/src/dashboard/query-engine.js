@@ -9,7 +9,6 @@ const fsSync = require('fs');
 const zlib = require('zlib');
 const { promisify } = require('util');
 const gunzip = promisify(zlib.gunzip);
-const OpenAI = require('openai');
 const { UnifiedClient } = require('../core/unified-client');
 const { createClusterAdapter } = require('../../lib/ask/cluster-adapter');
 const { EvidenceAnalyzer } = require('./evidence-analyzer');
@@ -17,6 +16,15 @@ const { InsightSynthesizer } = require('./insight-synthesizer');
 const { CoordinatorIndexer } = require('./coordinator-indexer');
 const { QuerySuggester } = require('./query-suggestions');
 const { ContextTracker } = require('../../lib/ask/context-tracker');
+
+function loadOpenAI() {
+  try {
+    return require('openai');
+  } catch (error) {
+    error.message = `OpenAI SDK is unavailable: ${error.message}`;
+    throw error;
+  }
+}
 
 const CLUSTER_SNAPSHOT_DEFAULT_TTL = Number.parseInt(
   process.env.COSMO_CLUSTER_SNAPSHOT_TTL || '4000',
@@ -90,7 +98,7 @@ class QueryEngine {
     this.embeddingsCache = path.join(runtimeDir, 'embeddings-cache.json');
     this.exportsDir = path.join(runtimeDir, 'exports');
     
-    this.openai = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
+    this.openai = openaiKey ? new (loadOpenAI())({ apiKey: openaiKey }) : null;
     this.gpt5Client = new UnifiedClient(this.config, console); // Use UnifiedClient for queries (supports local LLM)
     
     // In-memory cache for frequent queries

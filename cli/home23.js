@@ -36,6 +36,10 @@ Commands:
   worker list             List reusable workers
   worker run <name> "..." Run a reusable worker through the bridge connector
   trust explain <claim>   Explain whether a claim is safe to inherit
+  brain-operations prepare [--dry-run]
+                          Prepare the signed internal brain-operation boundary
+  brain-operations list --state nonterminal --all-requesters
+                          Read-only preflight of durable active operations
   update                  Update to latest release
   update --check          Check for updates
   agent create <name>     Create a new agent instance
@@ -70,6 +74,10 @@ Commands:
   } else if (command === 'trust') {
     const { handleTrustCommand } = await import('./lib/trust-commands.js');
     await handleTrustCommand(args.slice(1), HOME23_ROOT);
+  } else if (command === 'brain-operations') {
+    const { runBrainOperationsCommand } = await import('./lib/brain-operations-command.js');
+    const receipt = await runBrainOperationsCommand(HOME23_ROOT, args.slice(1));
+    console.log(JSON.stringify(receipt, null, 2));
   } else if (command === 'start') {
     const { runStart } = await import('./lib/pm2-commands.js');
     await runStart(HOME23_ROOT, args[1]);

@@ -15,6 +15,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { ensureSystemHealth } from './system-health.js';
+import { ensureBrainOperationsCapabilityKey } from './brain-operations-capability.js';
 import {
   SHARED_SERVICES,
   coordinateSharedServiceStartup,
@@ -495,6 +496,7 @@ export async function runUpdate(home23Root, checkOnly = false) {
   }
 
   // Step 11: System health
+  await ensureBrainOperationsCapabilityKey(home23Root);
   await ensureSystemHealth(home23Root);
 
   // Step 12: Migrations

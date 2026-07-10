@@ -2066,6 +2066,108 @@ completed run artifacts.
 
 ---
 
+## Patch 47 — Canonical brain catalog phase
+
+**Files touched:**
+- `cosmo23/server/lib/brain-registry.js`
+- `cosmo23/server/lib/brains-router.js`
+- `cosmo23/server/index.js`
+- `contracts/schemas/brain-operations.schema.json`
+- canonical catalog contract tests
+
+**Problem:** The legacy Brains picker used scan-path-derived identifiers and
+display names. Symlink spellings could represent the same brain more than once,
+empty configured residents disappeared instead of remaining known unavailable
+targets, and route input did not have a single server-derived identity or
+mutation-boundary contract.
+
+**Fix:** The Home23-managed server now builds a SHA-256-revisioned catalog from
+real roots, exact ignored `config/agents.json` agent names, canonical resident
+and research lifecycle metadata, and exactly seven server-derived mutation
+boundaries. Resident ownership comes only from exact configured
+`instances/<agent>/brain` roots. Research completion requires canonical
+`plans/plan:main.json` status `COMPLETED` plus numeric `completedAt`; active,
+unavailable, ambiguous, mismatched, malformed, and unknown selectors remain
+distinct fail-closed outcomes. Canonical IDs resolve through the existing
+detail and query surfaces, while legacy picker fields and route keys remain
+additive compatibility aliases rather than authorization identities.
+
+Catalog inspection bounds state-summary input and decompression; corrupt or
+oversized state is reported as an unknown summary instead of a false zero.
+Boundary realpaths must remain within their own catalog entry, preventing a
+resident subtree symlink from escaping into another configured brain.
+
+**Phase boundary:** This is Patch 47's canonical-catalog phase. Its
+capability-protected COSMO worker phase lands in Task 5 of the brain authority
+and operations foundation plan. Patch 48 remains reserved for source truth and
+Patch 49 remains reserved for provider execution; this phase does not allocate
+either number.
+
+---
+
+## Patch 48 — Source-truth bounded brain routes
+
+**Files touched:**
+- `cosmo23/server/lib/brain-source-router.js`
+- `cosmo23/server/index.js`
+- `tests/cosmo23/brain-source-router.test.cjs`
+
+**Problem:** The legacy COSMO graph route resolved a selected brain and then
+called the QueryEngine `loadBrainState()` compatibility loader before mapping
+arrays into a response. That reintroduced the exact unbounded materialization
+path the Home23 source-truth work is removing, and it let graph read behavior
+drift away from the shared memory-source limits and evidence contract.
+
+**Fix:** COSMO now mounts a Home23 brain-source router before the legacy graph
+handler. The router derives identity only from the canonical catalog and server
+runtime, rejects caller-supplied source roots/requesters/operation paths, opens a
+requester-owned ephemeral source outside the target brain, and serves
+`/api/brain/:name/status` plus bounded `/api/brain/:name/graph` through
+`shared/memory-source` sampling and evidence. The old inline graph route remains
+only as a compatibility fallback for non-mounted contexts and is not reached by
+the Home23-managed COSMO server.
+
+**Verification:** Focused Task 6 route/source tests passed:
+`node --test --test-concurrency=1 tests/cosmo23/brain-source-router.test.cjs
+tests/shared/memory-source-graph.test.js
+tests/engine/dashboard/brain-source-executors.test.js
+tests/engine/dashboard/brain-source-api.test.js`. The COSMO route test mounts a
+trap legacy handler that would throw if `loadBrainState()` were invoked and
+proves the bounded router handles the request first.
+
+---
+
+## Patch 49 — Provider client import-time isolation
+
+**Files touched:**
+- `cosmo23/engine/src/core/openai-client.js`
+- `cosmo23/engine/src/core/gpt5-client.js`
+- `cosmo23/engine/src/core/unified-client.js`
+- `cosmo23/engine/src/core/chat-completions-client.js`
+- `cosmo23/engine/src/core/mcp-client.js`
+- `cosmo23/engine/src/services/codex-oauth-engine.js`
+
+**Problem:** Provider and OAuth support modules imported optional runtime
+packages such as `openai`, `dotenv`, `node-fetch`, and Prisma during module
+load. In Home23's isolated verification worktree that prevented unrelated
+Codex/provider tests from importing COSMO clients even when the tested route
+used env-backed Codex credentials and never needed those optional packages.
+
+**Fix:** COSMO provider clients now lazy-load optional packages only on the code
+paths that need them. GPT/OpenAI construction is deferred until actual
+OpenAI-path calls, xAI construction loads the OpenAI SDK only when xAI is
+enabled, Anthropic/MiniMax load their adapter only when selected, HTTP MCP uses
+global `fetch` before `node-fetch`, and the Codex OAuth engine defers Prisma
+until database credentials are required. Env-backed Codex credentials remain
+usable without a generated Prisma client.
+
+**Verification:** Focused provider import/routing tests passed:
+`node --test --test-concurrency=1 tests/engine/core/gpt5-client-complete.test.cjs
+tests/engine/core/unified-client-codex-oauth.test.cjs
+tests/cosmo23/codex-unified-client-request.test.cjs`.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.

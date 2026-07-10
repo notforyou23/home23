@@ -2,6 +2,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const yaml = require('js-yaml');
+const { updateSettingsSecrets } = require('./home23-secrets');
 const { writeYamlSafely } = require('./yaml-write-safety');
 
 // Sensor registry — optional. We lazy-load to keep tiles decoupled from the
@@ -510,6 +511,33 @@ function normalizeTileConnectionsConfig(stored = {}) {
     seen.add(normalized.id);
   }
   return { connections };
+}
+
+async function updateTileConnectionSecrets(home23Root, input) {
+  const rawConnections = Array.isArray(input) ? input : (Array.isArray(input?.connections) ? input.connections : []);
+  return updateSettingsSecrets(home23Root, (secrets) => {
+    const currentState = normalizeTileConnectionsConfig(secrets.dashboard?.tileConnections || {});
+    const existingMap = new Map(currentState.connections.map((connection) => [connection.id, connection]));
+    const nextConnections = [];
+    const seenIds = new Set();
+
+    for (const rawConnection of rawConnections) {
+      const existing = rawConnection?.id ? existingMap.get(rawConnection.id) : null;
+      const normalized = normalizeConnection(rawConnection, existing);
+      if (seenIds.has(normalized.id)) continue;
+      nextConnections.push(normalized);
+      seenIds.add(normalized.id);
+    }
+
+    const nextState = { connections: nextConnections };
+    const changed = !secrets.dashboard?.tileConnections
+      || JSON.stringify(currentState) !== JSON.stringify(nextState);
+    if (changed) {
+      if (!secrets.dashboard || typeof secrets.dashboard !== 'object') secrets.dashboard = {};
+      secrets.dashboard.tileConnections = nextState;
+    }
+    return { changed, value: nextState };
+  });
 }
 
 function materializeHomeLayout(tilesState) {
@@ -1028,10 +1056,6 @@ class Home23TileService {
     saveYaml(this.getHomeConfigPath(), config);
   }
 
-  writeSecrets(config) {
-    saveYaml(this.getSecretsPath(), config);
-  }
-
   getTilesState() {
     const homeConfig = this.readHomeConfig();
     return normalizeDashboardTilesConfig(homeConfig.dashboard?.tiles || {});
@@ -1090,28 +1114,11 @@ class Home23TileService {
     };
   }
 
-  saveConnectionsSettings(input) {
-    const currentState = this.getConnectionsState();
-    const existingMap = new Map(currentState.connections.map((connection) => [connection.id, connection]));
-    const rawConnections = Array.isArray(input?.connections) ? input.connections : [];
-    const nextConnections = [];
-    const seenIds = new Set();
-
-    for (const rawConnection of rawConnections) {
-      const existing = rawConnection?.id ? existingMap.get(rawConnection.id) : null;
-      const normalized = normalizeConnection(rawConnection, existing);
-      if (seenIds.has(normalized.id)) continue;
-      nextConnections.push(normalized);
-      seenIds.add(normalized.id);
-    }
-
-    const secrets = this.readSecrets();
-    if (!secrets.dashboard) secrets.dashboard = {};
-    secrets.dashboard.tileConnections = { connections: nextConnections };
-    this.writeSecrets(secrets);
+  async saveConnectionsSettings(input) {
+    const updated = await updateTileConnectionSecrets(this.home23Root, input);
     this.invalidateTileCache();
     this.startBackgroundRefresh();
-    return { connections: nextConnections };
+    return updated.value;
   }
 
   getRuntimeConfig() {
@@ -1419,6 +1426,7 @@ module.exports = {
   saveYaml,
   normalizeDashboardTilesConfig,
   normalizeTileConnectionsConfig,
+  updateTileConnectionSecrets,
   materializeHomeLayout,
   materializeHomeLayoutForContext,
   buildHomeTileContext,
