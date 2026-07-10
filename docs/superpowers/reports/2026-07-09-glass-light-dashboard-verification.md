@@ -278,7 +278,7 @@ The branch remains inside the approved dashboard/page/test/spec/plan/report boun
 
 Before integration, live `main` was at `eb3188d`, ahead of `origin/main` by three commits, with 53 staged, unstaged, deleted, or untracked paths. The dashboard branch changed 16 different paths; both committed-since-base overlap and live dirty-path overlap were zero, and a three-way merge preview contained no conflict markers.
 
-The merge commit was created and verified in `.worktrees/glass-light-dashboard-integration`, outside the dirty checkout. Live `main` was then fast-forwarded to `82ed08e`. The unrelated status, index patch, worktree patch, and untracked-file content hashes were identical before and after integration, leaving the same 53 user-owned paths in place. After the durable live-receipt commit, `main` is ahead of `origin/main` by 47 commits because it contains the preserved feature history, merge commit, and receipt. No user-owned path was staged, unstaged, deleted, restored, or included in the dashboard merge or receipt commit.
+The merge commit was created and verified in `.worktrees/glass-light-dashboard-integration`, outside the dirty checkout. Live `main` was then fast-forwarded to `82ed08e`. The unrelated status, index patch, worktree patch, and untracked-file content hashes were identical before and after integration, leaving the same 53 user-owned paths in place. At the merge, `main` was ahead of `origin/main` by 46 commits; the later evidence-only receipt commits advance that count without changing the integrated dashboard or user-owned work. No user-owned path was staged, unstaged, deleted, restored, or included in the dashboard merge or receipt commits.
 
 ## Acceptance-criterion audit
 
