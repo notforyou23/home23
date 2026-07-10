@@ -4,11 +4,52 @@ const { getConfigDir } = require('../../lib/config-loader-sync');
 
 const MODEL_CATALOG_FILE_NAME = 'model-catalog.json';
 
+const BUILTIN_EXECUTION_DEFAULTS = Object.freeze({
+  openai: Object.freeze({
+    maxOutputTokens: 32768,
+    providerStallMs: 900000,
+    transport: 'responses',
+  }),
+  'openai-codex': Object.freeze({
+    maxOutputTokens: 32768,
+    providerStallMs: 900000,
+    transport: 'codex-responses',
+  }),
+  anthropic: Object.freeze({
+    maxOutputTokens: 8192,
+    providerStallMs: 900000,
+    transport: 'anthropic-messages',
+  }),
+  minimax: Object.freeze({
+    maxOutputTokens: 32768,
+    providerStallMs: 900000,
+    transport: 'anthropic-messages',
+  }),
+  xai: Object.freeze({
+    maxOutputTokens: 8192,
+    providerStallMs: 900000,
+    transport: 'chat-completions',
+  }),
+  'ollama-cloud': Object.freeze({
+    maxOutputTokens: 8192,
+    providerStallMs: 900000,
+    transport: 'chat-completions',
+  }),
+});
+
+const EXECUTION_TRANSPORTS = new Set([
+  'responses',
+  'chat-completions',
+  'anthropic-messages',
+  'codex-responses',
+]);
+
 const BUILTIN_MODEL_CATALOG = {
   version: 1,
   providers: {
     openai: {
       label: 'OpenAI',
+      executionDefaults: BUILTIN_EXECUTION_DEFAULTS.openai,
       models: [
         { id: 'gpt-5.5', label: 'GPT-5.5', kind: 'chat' },
         { id: 'gpt-5.5-pro', label: 'GPT-5.5 Pro', kind: 'chat' },
@@ -20,6 +61,7 @@ const BUILTIN_MODEL_CATALOG = {
     },
     'ollama-cloud': {
       label: 'Ollama Cloud',
+      executionDefaults: BUILTIN_EXECUTION_DEFAULTS['ollama-cloud'],
       models: [
         { id: 'gpt-oss:120b', label: 'GPT OSS 120B', kind: 'chat' },
         { id: 'gpt-oss:20b', label: 'GPT OSS 20B', kind: 'chat' },
@@ -58,6 +100,7 @@ const BUILTIN_MODEL_CATALOG = {
     },
     anthropic: {
       label: 'Anthropic',
+      executionDefaults: BUILTIN_EXECUTION_DEFAULTS.anthropic,
       models: [
         { id: 'claude-sonnet-4-7', label: 'Claude Sonnet 4.7', kind: 'chat' },
         { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', kind: 'chat' },
@@ -66,12 +109,14 @@ const BUILTIN_MODEL_CATALOG = {
     },
     minimax: {
       label: 'MiniMax',
+      executionDefaults: BUILTIN_EXECUTION_DEFAULTS.minimax,
       models: [
         { id: 'MiniMax-M3', label: 'MiniMax M3', kind: 'chat' }
       ]
     },
     xai: {
       label: 'xAI',
+      executionDefaults: BUILTIN_EXECUTION_DEFAULTS.xai,
       models: [
         { id: 'grok-4.5', label: 'Grok 4.5', kind: 'chat' },
         { id: 'grok-4.3', label: 'Grok 4.3', kind: 'chat' }
@@ -79,6 +124,7 @@ const BUILTIN_MODEL_CATALOG = {
     },
     'openai-codex': {
       label: 'OpenAI Codex',
+      executionDefaults: BUILTIN_EXECUTION_DEFAULTS['openai-codex'],
       models: [
         { id: 'gpt-5.6', label: 'GPT-5.6', kind: 'chat' },
         { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol', kind: 'chat' },
@@ -166,6 +212,7 @@ function normalizeModelEntry(entry, providerId) {
   }
 
   return {
+    ...entry,
     id,
     label: String(entry.label || id).trim(),
     kind: inferModelKind(id, entry.kind),
@@ -184,14 +231,65 @@ function dedupeModels(models) {
   });
 }
 
+function positiveSafeInteger(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function capabilityError(providerId, modelId, field) {
+  return Object.assign(new Error(`Invalid ${field} for ${providerId}/${modelId}`), {
+    code: 'model_capability_invalid',
+    retryable: false,
+  });
+}
+
 function normalizeProviderConfig(providerId, providerConfig = {}, fallbackConfig = {}) {
-  const normalizedModels = Array.isArray(providerConfig.models)
-    ? providerConfig.models.map(model => normalizeModelEntry(model, providerId)).filter(Boolean)
-    : fallbackConfig.models.map(model => normalizeModelEntry(model, providerId)).filter(Boolean);
+  const provider = providerConfig && typeof providerConfig === 'object'
+    && !Array.isArray(providerConfig) ? providerConfig : {};
+  const fallback = fallbackConfig && typeof fallbackConfig === 'object'
+    && !Array.isArray(fallbackConfig) ? fallbackConfig : {};
+  const sourceModels = Array.isArray(provider.models)
+    ? provider.models
+    : (Array.isArray(fallback.models) ? fallback.models : []);
+  const executionDefaults = {
+    ...(fallback.executionDefaults || {}),
+    ...(provider.executionDefaults || {}),
+  };
+  const normalizedModels = sourceModels
+    .map(model => normalizeModelEntry(model, providerId))
+    .filter(Boolean)
+    .map(model => {
+      if (model.kind !== 'chat') return model;
+      const maxOutputTokens = positiveSafeInteger(
+        model.maxOutputTokens ?? executionDefaults.maxOutputTokens,
+      );
+      const providerStallMs = positiveSafeInteger(
+        model.providerStallMs ?? executionDefaults.providerStallMs,
+      );
+      const transport = model.transport ?? executionDefaults.transport;
+      if (!maxOutputTokens) {
+        throw capabilityError(providerId, model.id, 'maxOutputTokens');
+      }
+      if (!providerStallMs) {
+        throw capabilityError(providerId, model.id, 'providerStallMs');
+      }
+      if (!EXECUTION_TRANSPORTS.has(transport)) {
+        throw capabilityError(providerId, model.id, 'transport');
+      }
+      return {
+        ...model,
+        maxOutputTokens,
+        providerStallMs,
+        transport,
+      };
+    });
 
   return {
-    label: String(providerConfig.label || fallbackConfig.label || providerId),
-    models: dedupeModels(normalizedModels)
+    ...fallback,
+    ...provider,
+    label: String(provider.label || fallback.label || providerId),
+    ...(Object.keys(executionDefaults).length > 0 ? { executionDefaults } : {}),
+    models: dedupeModels(normalizedModels),
   };
 }
 
@@ -221,6 +319,48 @@ function flattenCatalogModels(source, options = {}) {
   }
 
   return models;
+}
+
+function validateSelectableModelCapabilities(catalog) {
+  for (const model of flattenCatalogModels(catalog).filter(entry => entry.kind === 'chat')) {
+    if (!positiveSafeInteger(model.maxOutputTokens)) {
+      throw capabilityError(model.provider, model.id, 'maxOutputTokens');
+    }
+    if (!positiveSafeInteger(model.providerStallMs)) {
+      throw capabilityError(model.provider, model.id, 'providerStallMs');
+    }
+    if (!EXECUTION_TRANSPORTS.has(model.transport)) {
+      throw capabilityError(model.provider, model.id, 'transport');
+    }
+  }
+  return catalog;
+}
+
+function getModelCapabilities(catalog, providerId, modelId) {
+  const models = flattenCatalogModels(catalog || loadModelCatalogSync())
+    .filter(entry => entry.id === modelId && entry.kind === 'chat');
+  if (!providerId && models.length > 1) {
+    throw Object.assign(new Error(`Model ${modelId} is ambiguous`), {
+      code: 'model_ambiguous',
+      retryable: false,
+    });
+  }
+  const model = models.find(entry => !providerId || entry.provider === providerId);
+  if (!model) {
+    throw Object.assign(new Error(`Unknown model ${providerId || '?'}/${modelId}`), {
+      code: 'model_not_found',
+      retryable: false,
+    });
+  }
+  const maxOutputTokens = positiveSafeInteger(model.maxOutputTokens);
+  const providerStallMs = positiveSafeInteger(model.providerStallMs);
+  if (!maxOutputTokens || !providerStallMs || !EXECUTION_TRANSPORTS.has(model.transport)) {
+    throw capabilityError(model.provider, model.id, 'execution capabilities');
+  }
+  return {
+    maxOutputTokens,
+    providerStallMs,
+  };
 }
 
 function resolveDefaultModel(requestedId, fallbackId, catalog, kind = 'chat') {
@@ -267,11 +407,15 @@ function normalizeModelCatalog(input = null) {
     }
   };
 
-  for (const providerId of Object.keys(base.providers)) {
+  const providerIds = new Set([
+    ...Object.keys(base.providers),
+    ...Object.keys(source.providers || {}),
+  ]);
+  for (const providerId of [...providerIds].sort((left, right) => left.localeCompare(right))) {
     catalog.providers[providerId] = normalizeProviderConfig(
       providerId,
       source.providers?.[providerId],
-      base.providers[providerId]
+      base.providers[providerId],
     );
   }
 
@@ -313,29 +457,76 @@ function normalizeModelCatalog(input = null) {
     'chat'
   );
 
-  return catalog;
+  return validateSelectableModelCapabilities(catalog);
 }
 
 function loadModelCatalogSync() {
   const catalogPath = getModelCatalogPath();
-  try {
-    if (!fs.existsSync(catalogPath)) {
-      return normalizeModelCatalog();
-    }
-
-    const raw = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
-    return normalizeModelCatalog(raw);
-  } catch (error) {
-    console.warn('[ModelCatalog] Failed to load catalog, using built-ins:', error.message);
+  if (!fs.existsSync(catalogPath)) {
     return normalizeModelCatalog();
+  }
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+  } catch (error) {
+    throw Object.assign(new Error(`Invalid model catalog at ${catalogPath}: ${error.message}`), {
+      code: 'model_catalog_invalid',
+      retryable: false,
+      cause: error,
+    });
+  }
+  return normalizeModelCatalog(raw);
+}
+
+function fsyncDirectorySync(directory) {
+  const directoryFd = fs.openSync(directory, 'r');
+  try {
+    fs.fsyncSync(directoryFd);
+  } finally {
+    fs.closeSync(directoryFd);
   }
 }
 
-function saveModelCatalogSync(input) {
+function injectedCatalogCrash(point) {
+  throw Object.assign(new Error(`injected model catalog crash at ${point}`), {
+    code: 'model_catalog_write_interrupted',
+    retryable: true,
+  });
+}
+
+function saveModelCatalogSync(input, options = {}) {
   const catalogPath = getModelCatalogPath();
   const normalized = normalizeModelCatalog(input);
-  fs.mkdirSync(path.dirname(catalogPath), { recursive: true });
-  fs.writeFileSync(catalogPath, JSON.stringify(normalized, null, 2), 'utf8');
+  const directory = path.dirname(catalogPath);
+  const serialized = `${JSON.stringify(normalized, null, 2)}\n`;
+  fs.mkdirSync(directory, { recursive: true });
+  const tempPath = path.join(
+    directory,
+    `.${path.basename(catalogPath)}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+  let tempFd = null;
+  let renamed = false;
+  try {
+    tempFd = fs.openSync(tempPath, 'wx', 0o600);
+    fs.writeFileSync(tempFd, serialized, 'utf8');
+    fs.fsyncSync(tempFd);
+    fs.closeSync(tempFd);
+    tempFd = null;
+    if (options?._testCrashAt === 'before-rename') injectedCatalogCrash('before-rename');
+    fs.renameSync(tempPath, catalogPath);
+    renamed = true;
+    fsyncDirectorySync(directory);
+    if (options?._testCrashAt === 'after-rename') injectedCatalogCrash('after-rename');
+  } finally {
+    if (tempFd !== null) fs.closeSync(tempFd);
+    if (!renamed) {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+    }
+  }
   return normalized;
 }
 
@@ -412,12 +603,18 @@ function getEmbeddingConfig(catalog = null) {
 }
 
 module.exports = {
+  BUILTIN_EXECUTION_DEFAULTS,
   BUILTIN_MODEL_CATALOG,
+  EXECUTION_TRANSPORTS,
   getModelCatalogPath,
   inferModelKind,
+  normalizeProviderConfig,
   normalizeModelCatalog,
   loadModelCatalogSync,
   saveModelCatalogSync,
+  validateSelectableModelCapabilities,
+  getModelCapabilities,
+  flattenCatalogModels,
   listCatalogModels,
   inferProviderFromModel,
   getCatalogDefaults,
