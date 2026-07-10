@@ -1162,7 +1162,7 @@ function _renderPulseNow() {
   if (_pulseEls.state) _pulseEls.state.textContent = runtimeAlert
     ? `${runtimeState} alert`
     : runtimeState || 'connecting';
-  if (_pulseEls.energy) _pulseEls.energy.textContent = `⚡ ${Math.round((enginePulse.energy || 0) * 100)}%`;
+  if (_pulseEls.energy) _pulseEls.energy.textContent = `Energy ${Math.round((enginePulse.energy || 0) * 100)}%`;
   if (_pulseEls.cycle) _pulseEls.cycle.textContent = `cycle ${enginePulse.cycle || '—'}`;
 }
 
@@ -1893,7 +1893,8 @@ async function loadHumanHomeSurface() {
       .catch(() => offlineTilePayload('pool-screenlogic', 'Offline', '—', 'ScreenLogic unavailable')), (data) => {
       renderHumanSensor('pool', data, 'Pool', 'ScreenLogic');
     });
-    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/live-problems`, { timeoutMs: 8000 }), (data) => {
+    scheduleHumanHomeFetch(tasks, apiFetch(`${dashboardBaseUrl()}/api/live-problems`, { timeoutMs: 8000 })
+      .then((data) => data || { available: false }), (data) => {
       latest.problems = data;
       renderHumanIssues(data);
       renderLatestJerryVoice(latest);
@@ -5946,7 +5947,7 @@ function updateOverviewMetrics(state, summary = null) {
   const activeGoalCount = extractActiveGoalCount(state) ?? extractActiveGoalCount(summary);
   const energy = state?.cognitiveState?.energy;
   if (typeof energy === 'number') {
-    setText('pulse-energy', `⚡ ${Math.round(energy * 100)}%`);
+    setText('pulse-energy', `Energy ${Math.round(energy * 100)}%`);
   }
   setText('pulse-node-count', formatCompactNumber(nodeCount));
   setText('pulse-active-goals', activeGoalCount != null ? String(activeGoalCount) : '—');

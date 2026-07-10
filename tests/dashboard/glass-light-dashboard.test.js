@@ -1220,6 +1220,38 @@ test('Home Problems card executes clear, open, chronic, unverifiable, and unavai
   }
 });
 
+test('failed Home Problems requests replace stale clear state with unavailable truth', async () => {
+  const runtime = createDashboardRuntime();
+  const card = runtime.document.createElement('human-issues-card', { tagName: 'BUTTON' });
+  const status = runtime.document.createElement('human-issues-status');
+  const value = runtime.document.createElement('human-issues-value');
+  const subtitle = runtime.document.createElement('human-issues-subtitle');
+  card.appendChild(status);
+  card.appendChild(value);
+  card.appendChild(subtitle);
+
+  runtime.context.__issuesPayload = {
+    available: true,
+    snapshot: { counts: { open: 0, chronic: 0, unverifiable: 0 } },
+  };
+  runtime.run('renderHumanIssues(globalThis.__issuesPayload)');
+  assert.equal(card.dataset.problemSeverity, 'clear');
+
+  await runtime.run(`(async () => {
+    const tasks = [];
+    const problemsRequest = Promise.resolve(null).then((data) => data || { available: false });
+    scheduleHumanHomeFetch(tasks, problemsRequest, (data) => renderHumanIssues(data));
+    await Promise.all(tasks);
+  })()`);
+  assert.equal(card.dataset.problemSeverity, 'unavailable');
+  assert.equal(status.textContent, 'unavailable');
+  assert.equal(value.textContent, '--');
+
+  const loader = functionFragment(js, 'loadHumanHomeSurface');
+  assert.match(loader, /api\/live-problems[\s\S]{0,300}\.then\(\(data\) => data \|\| \{ available: false \}\)/);
+  assert.match(loader, /api\/live-problems[\s\S]{0,900}renderHumanIssues\(data\)/);
+});
+
 test('sauna polling preserves user-edited request state and reflects live heating state', () => {
   const runtime = createDashboardRuntime();
   const target = runtime.document.createElement('human-sauna-target', { tagName: 'INPUT' });
@@ -1371,7 +1403,7 @@ test('dashboard and Chat UI copy contain no emoji iconography', () => {
     ['standalone Chat HTML', standaloneChatHtml],
     ['Chat JavaScript', chatJs],
   ]) {
-    assert.doesNotMatch(source, /[\u{1F300}-\u{1FAFF}]/u, `${name} contains emoji UI copy`);
+    assert.doesNotMatch(source, /\p{Emoji_Presentation}/u, `${name} contains emoji UI copy`);
     assert.doesNotMatch(source, /&#(?:x1F[0-9A-F]+|128\d+);/i, `${name} contains encoded emoji UI copy`);
   }
 });
