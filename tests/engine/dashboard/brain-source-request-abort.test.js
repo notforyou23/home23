@@ -205,4 +205,58 @@ for (const [label, makeController] of implementations) {
       await server.close();
     }
   });
+
+  test(`${label} request cancellation observes a response that closed before listener attachment`, async () => {
+    const app = express();
+    const requestComplete = deferred();
+    const observed = deferred();
+
+    app.post('/probe', (req, res) => {
+      req.once('close', () => {
+        res.once('close', () => {
+          const controller = makeController(req, res);
+          observed.resolve({
+            requestComplete: req.complete,
+            requestAborted: req.aborted,
+            responseDestroyed: res.destroyed,
+            responseEnded: res.writableEnded,
+            signalAborted: controller.signal.aborted,
+            code: controller.signal.reason?.code,
+          });
+        });
+        requestComplete.resolve();
+      });
+      req.resume();
+    });
+
+    const server = await startApp(app);
+    let request;
+    try {
+      request = http.request({
+        host: '127.0.0.1',
+        port: server.port,
+        path: '/probe',
+        method: 'POST',
+        headers: { 'content-length': '0' },
+      });
+      request.on('error', () => {});
+      request.end();
+      await withDeadline(requestComplete.promise, `${label} late attachment request close`);
+      request.destroy();
+      assert.deepEqual(
+        await withDeadline(observed.promise, `${label} late response-close observation`),
+        {
+          requestComplete: true,
+          requestAborted: false,
+          responseDestroyed: true,
+          responseEnded: false,
+          signalAborted: true,
+          code: 'cancelled',
+        },
+      );
+    } finally {
+      request?.destroy();
+      await server.close();
+    }
+  });
 }

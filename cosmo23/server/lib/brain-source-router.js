@@ -36,6 +36,7 @@ function requestAbortController(req, res) {
   res?.once('close', onResponseClose);
   res?.once('finish', cleanup);
   if (req.aborted || (req.destroyed && req.complete !== true)) onRequestAborted();
+  else if (res?.destroyed && res.writableEnded !== true) onResponseClose();
   return controller;
 }
 

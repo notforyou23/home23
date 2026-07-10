@@ -2144,7 +2144,7 @@ fully received request. The dashboard and vendored COSMO helpers now cancel only
 for an aborted/incomplete request or when the response closes before
 `res.writableEnded`. Real HTTP/socket regressions cover a completed POST,
 incomplete request body, and premature response close for both implementations.
-Focused verification passed with 35 tests across the lifecycle regression,
+Focused verification passed with 37 tests across the lifecycle regression,
 dashboard source/search compatibility, and COSMO bounded source route suites.
 
 ---
