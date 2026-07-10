@@ -2111,6 +2111,7 @@ either number.
 - `cosmo23/server/lib/brain-source-router.js`
 - `cosmo23/server/index.js`
 - `tests/cosmo23/brain-source-router.test.cjs`
+- `tests/engine/dashboard/brain-source-request-abort.test.js`
 
 **Problem:** The legacy COSMO graph route resolved a selected brain and then
 called the QueryEngine `loadBrainState()` compatibility loader before mapping
@@ -2134,6 +2135,17 @@ tests/engine/dashboard/brain-source-executors.test.js
 tests/engine/dashboard/brain-source-api.test.js`. The COSMO route test mounts a
 trap legacy handler that would throw if `loadBrainState()` were invoked and
 proves the bounded router handles the request first.
+
+**2026-07-10 disconnect follow-up:** The shared source-route cancellation helper
+previously treated every Node `IncomingMessage` `close` event as a client
+disconnect. A normally parsed request also closes with `req.complete === true`,
+so delayed source reads could be cancelled and surfaced as HTTP 499 after a
+fully received request. The dashboard and vendored COSMO helpers now cancel only
+for an aborted/incomplete request or when the response closes before
+`res.writableEnded`. Real HTTP/socket regressions cover a completed POST,
+incomplete request body, and premature response close for both implementations.
+Focused verification passed with 35 tests across the lifecycle regression,
+dashboard source/search compatibility, and COSMO bounded source route suites.
 
 ---
 

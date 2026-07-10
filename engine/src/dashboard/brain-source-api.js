@@ -10,12 +10,34 @@ const {
   memorySourceError,
 } = require('../../../shared/memory-source');
 
-function requestAbortController(req) {
+function requestAbortController(req, res) {
   const controller = new AbortController();
-  req.once('close', () => controller.abort(Object.assign(new Error('request closed'), {
-    name: 'AbortError',
-    code: 'cancelled',
-  })));
+  const cleanup = () => {
+    req.off('aborted', onRequestAborted);
+    req.off('close', onRequestClose);
+    res?.off('close', onResponseClose);
+    res?.off('finish', cleanup);
+  };
+  const abort = (message) => {
+    if (controller.signal.aborted) return;
+    cleanup();
+    controller.abort(Object.assign(new Error(message), {
+      name: 'AbortError',
+      code: 'cancelled',
+    }));
+  };
+  const onRequestAborted = () => abort('request aborted');
+  const onRequestClose = () => {
+    if (req.aborted || req.complete !== true) abort('request closed before completion');
+  };
+  const onResponseClose = () => {
+    if (res.writableEnded !== true) abort('response closed before completion');
+  };
+  req.once('aborted', onRequestAborted);
+  req.once('close', onRequestClose);
+  res?.once('close', onResponseClose);
+  res?.once('finish', cleanup);
+  if (req.aborted || (req.destroyed && req.complete !== true)) onRequestAborted();
   return controller;
 }
 
@@ -151,7 +173,7 @@ function sendBrainSourceError(res, error) {
 
 function registerResidentBrainSourceRoutes(app, service) {
   app.get('/home23/api/brain/status', async (req, res) => {
-    const controller = requestAbortController(req);
+    const controller = requestAbortController(req, res);
     try {
       rejectCallerIdentity(req.query || {});
       const result = await service.status({ signal: controller.signal });
@@ -162,7 +184,7 @@ function registerResidentBrainSourceRoutes(app, service) {
   });
 
   app.get('/home23/api/brain/graph', async (req, res) => {
-    const controller = requestAbortController(req);
+    const controller = requestAbortController(req, res);
     try {
       rejectCallerIdentity(req.query || {});
       const result = await service.graph({
@@ -179,7 +201,7 @@ function registerResidentBrainSourceRoutes(app, service) {
 function createBrainSourceRouter({ service } = {}) {
   const router = express.Router();
   router.get('/status', async (req, res) => {
-    const controller = requestAbortController(req);
+    const controller = requestAbortController(req, res);
     try {
       rejectCallerIdentity(req.query || {});
       const result = await service.status({ signal: controller.signal });
@@ -189,7 +211,7 @@ function createBrainSourceRouter({ service } = {}) {
     }
   });
   router.get('/graph', async (req, res) => {
-    const controller = requestAbortController(req);
+    const controller = requestAbortController(req, res);
     try {
       rejectCallerIdentity(req.query || {});
       const result = await service.graph({

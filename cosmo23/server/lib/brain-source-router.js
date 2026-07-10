@@ -8,12 +8,34 @@ const {
   withEphemeralMemorySource
 } = require('../../../shared/memory-source');
 
-function requestAbortController(req) {
+function requestAbortController(req, res) {
   const controller = new AbortController();
-  req.once('close', () => controller.abort(Object.assign(new Error('request closed'), {
-    name: 'AbortError',
-    code: 'cancelled'
-  })));
+  const cleanup = () => {
+    req.off('aborted', onRequestAborted);
+    req.off('close', onRequestClose);
+    res?.off('close', onResponseClose);
+    res?.off('finish', cleanup);
+  };
+  const abort = (message) => {
+    if (controller.signal.aborted) return;
+    cleanup();
+    controller.abort(Object.assign(new Error(message), {
+      name: 'AbortError',
+      code: 'cancelled'
+    }));
+  };
+  const onRequestAborted = () => abort('request aborted');
+  const onRequestClose = () => {
+    if (req.aborted || req.complete !== true) abort('request closed before completion');
+  };
+  const onResponseClose = () => {
+    if (res.writableEnded !== true) abort('response closed before completion');
+  };
+  req.once('aborted', onRequestAborted);
+  req.once('close', onRequestClose);
+  res?.once('close', onResponseClose);
+  res?.once('finish', cleanup);
+  if (req.aborted || (req.destroyed && req.complete !== true)) onRequestAborted();
   return controller;
 }
 
@@ -98,7 +120,7 @@ function createBrainSourceRouter({
 
   const router = express.Router();
 
-  async function openBrainSource(req, callback) {
+  async function openBrainSource(req, res, callback) {
     rejectCallerIdentity(req.query || {});
     const brain = await resolveBrainBySelector(req.params.name);
     if (!brain) {
@@ -107,7 +129,7 @@ function createBrainSourceRouter({
     if (!brain.path) {
       throw memorySourceError('source_unavailable', 'Brain path unavailable', { retryable: true });
     }
-    const controller = requestAbortController(req);
+    const controller = requestAbortController(req, res);
     const canonicalRoot = await fsp.realpath(brain.path);
     const canonicalBrain = { ...brain, canonicalRoot };
     return withSource({
@@ -135,7 +157,7 @@ function createBrainSourceRouter({
 
   router.get('/api/brain/:name/status', async (req, res) => {
     try {
-      const result = await openBrainSource(req, async ({ source, signal, identity }) => {
+      const result = await openBrainSource(req, res, async ({ source, signal, identity }) => {
         throwIfAborted(signal);
         const summary = await source.summarize({ signal });
         const evidence = enrichEvidenceIdentity(source.getEvidence({
@@ -153,7 +175,7 @@ function createBrainSourceRouter({
 
   router.get('/api/brain/:name/graph', async (req, res) => {
     try {
-      const result = await openBrainSource(req, async ({ source, signal, identity }) => {
+      const result = await openBrainSource(req, res, async ({ source, signal, identity }) => {
         const sampled = await sampleMemoryGraph(source, { ...pickGraphParameters(req.query), signal });
         sampled.evidence = enrichEvidenceIdentity(sampled.evidence, identity);
         return {

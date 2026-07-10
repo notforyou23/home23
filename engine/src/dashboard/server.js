@@ -25,6 +25,7 @@ const { createMemorySearchService } = require('./memory-search');
 const {
   createBrainSourceRouter,
   createBrainSourceService,
+  requestAbortController,
 } = require('./brain-source-api');
 const {
   buildGoodLifeOperatorModel,
@@ -6959,11 +6960,7 @@ Be specific, actionable, and maintain research continuity.`;
       tag: input.tag || null,
     });
     const handleMemorySearch = async (req, res) => {
-      const controller = new AbortController();
-      req.once('close', () => controller.abort(Object.assign(new Error('client disconnected'), {
-        name: 'AbortError',
-        code: 'cancelled',
-      })));
+      const controller = requestAbortController(req, res);
       try {
         const result = await this.memorySearchService.search({
           ...pickSearchParameters(req.body),
