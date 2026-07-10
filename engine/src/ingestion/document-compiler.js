@@ -3,13 +3,21 @@
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
-const OpenAI = require('openai');
 const { getOpenAICodexClient } = require('../services/openai-codex-oauth-engine');
 let Anthropic;
 try { Anthropic = require('@anthropic-ai/sdk'); } catch { Anthropic = null; }
 
 // Providers that use the Anthropic messages API (not OpenAI chat/completions)
 const ANTHROPIC_COMPAT_PROVIDERS = new Set(['minimax', 'anthropic']);
+
+function loadOpenAI() {
+  try {
+    return require('openai');
+  } catch (error) {
+    error.message = `OpenAI SDK is unavailable: ${error.message}`;
+    throw error;
+  }
+}
 
 const DEFAULT_INDEX_SECTIONS = [
   'Decisions',
@@ -92,6 +100,7 @@ class DocumentCompiler {
     } else {
       baseURL = baseURL || 'https://ollama.com/v1';
       apiKey = apiKey || process.env.OLLAMA_CLOUD_API_KEY || 'ollama';
+      const OpenAI = loadOpenAI();
       this.client = new OpenAI({ apiKey, baseURL });
       this.clientType = 'openai';
     }

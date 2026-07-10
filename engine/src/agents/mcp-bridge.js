@@ -2,11 +2,26 @@ const fs = require('fs').promises;
 const path = require('path');
 const zlib = require('zlib');
 const { promisify } = require('util');
-const lockfile = require('lockfile');
 
 const gunzip = promisify(zlib.gunzip);
-const lock = promisify(lockfile.lock);
-const unlock = promisify(lockfile.unlock);
+
+function loadLockfile() {
+  try {
+    return require('lockfile');
+  } catch (error) {
+    error.message = `lockfile dependency is unavailable: ${error.message}`;
+    error.code = error.code || 'lockfile_unavailable';
+    throw error;
+  }
+}
+
+async function lock(file, options) {
+  return promisify(loadLockfile().lock)(file, options);
+}
+
+async function unlock(file) {
+  return promisify(loadLockfile().unlock)(file);
+}
 
 function nodeTimeMs(node) {
   const value = node?.asserted_at || node?.metadata?.asserted_at || node?.created;

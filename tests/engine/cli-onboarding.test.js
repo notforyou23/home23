@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import yaml from 'js-yaml';
@@ -9,6 +9,7 @@ import { generateEcosystem } from '../../cli/lib/generate-ecosystem.js';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
+const TEST_NODE_MODULES = dirname(dirname(require.resolve('js-yaml/package.json')));
 
 function makeHome23Root() {
   const root = mkdtempSync(join(tmpdir(), 'home23-cli-onboarding-'));
@@ -16,8 +17,8 @@ function makeHome23Root() {
   mkdirSync(join(root, 'cli', 'templates'), { recursive: true });
   mkdirSync(join(root, 'starter-project'), { recursive: true });
   mkdirSync(join(root, 'claude-export'), { recursive: true });
-  if (existsSync(join(process.cwd(), 'node_modules'))) {
-    symlinkSync(join(process.cwd(), 'node_modules'), join(root, 'node_modules'), 'dir');
+  if (existsSync(TEST_NODE_MODULES)) {
+    symlinkSync(TEST_NODE_MODULES, join(root, 'node_modules'), 'dir');
   }
 
   writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '1.0.0' }, null, 2), 'utf8');
