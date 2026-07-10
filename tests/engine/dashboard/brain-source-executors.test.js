@@ -59,6 +59,7 @@ function sourcePin(canonicalRoot = '/tmp/brain') {
 async function baseContext() {
   const canonicalRoot = await tempDir('home23-source-executor-brain-');
   const scratchDir = await tempDir('home23-source-executor-scratch-');
+  let claimed = 0;
   return {
     operationId: 'op-1',
     operationType: 'graph',
@@ -74,9 +75,26 @@ async function baseContext() {
     },
     parameters: {},
     scratchDir,
-    scratchQuota: { claimed: 0, async claim(bytes) { this.claimed += bytes; } },
+    scratchQuota: {
+      get claimed() { return claimed; },
+      async claim(bytes) { claimed += bytes; return claimed; },
+      async release(bytes) { claimed -= bytes; return claimed; },
+    },
     sourcePin: sourcePin(canonicalRoot),
   };
+}
+
+async function operationScratchContext() {
+  const home23Root = await tempDir('home23-export-root-');
+  const canonicalRoot = path.join(home23Root, 'instances', 'ada', 'brain');
+  await fsp.mkdir(canonicalRoot, { recursive: true });
+  const scratchDir = path.join(home23Root, 'instances', 'ada', 'runtime', 'brain-operations', 'op-1', 'scratch');
+  await fsp.mkdir(scratchDir, { recursive: true });
+  const context = await baseContext();
+  context.target.canonicalRoot = canonicalRoot;
+  context.scratchDir = scratchDir;
+  context.sourcePin = sourcePin(canonicalRoot);
+  return { home23Root, context };
 }
 
 test('canonical identity is derived only from operation context and source pin', async () => {
@@ -161,4 +179,79 @@ test('graph export streams NDJSON artifact and rejects caller-controlled destina
     () => executor({ ...context, parameters: { outputPath: '/tmp/x' }, identity: canonicalIdentity(context) }),
     { code: 'invalid_request' },
   );
+});
+
+test('graph export enforces requester operation scratch when home root is configured', async () => {
+  const { home23Root, context } = await operationScratchContext();
+  const executor = createGraphExportExecutor({ home23Root });
+  const exported = await executor({ ...context, parameters: { format: 'jsonl' }, identity: canonicalIdentity(context) });
+  assert.equal(exported.resultArtifact.scratchPath.startsWith(await fsp.realpath(context.scratchDir)), true);
+
+  const outside = await tempDir('home23-forged-scratch-');
+  await assert.rejects(
+    () => executor({
+      ...context,
+      scratchDir: outside,
+      parameters: { format: 'jsonl' },
+      identity: canonicalIdentity(context),
+    }),
+    { code: 'invalid_request' },
+  );
+});
+
+test('graph export removes partial output and releases quota on abort', async () => {
+  const context = await baseContext();
+  const controller = new AbortController();
+  const pin = sourcePin(context.target.canonicalRoot);
+  let yielded = 0;
+  pin.iterateNodes = async function* iterateNodes() {
+    yield { id: 'a', concept: 'alpha' };
+    yielded += 1;
+    controller.abort(Object.assign(new Error('cancelled'), { name: 'AbortError' }));
+    yield { id: 'b', concept: 'beta' };
+  };
+  const executor = createGraphExportExecutor();
+  await assert.rejects(
+    () => executor({
+      ...context,
+      sourcePin: pin,
+      signal: controller.signal,
+      parameters: { format: 'jsonl' },
+      identity: canonicalIdentity({ ...context, sourcePin: pin }),
+    }),
+    error => error.name === 'AbortError',
+  );
+  assert.equal(yielded, 1);
+  assert.equal(context.scratchQuota.claimed, 0);
+  const resultsDir = path.join(context.scratchDir, 'results');
+  const entries = await fsp.readdir(resultsDir).catch(() => []);
+  assert.deepEqual(entries, []);
+});
+
+test('graph export fails typed and cleans up when scratch quota is exceeded', async () => {
+  const context = await baseContext();
+  let claimed = 0;
+  context.scratchQuota = {
+    get claimed() { return claimed; },
+    async claim(bytes) {
+      if (claimed + bytes > 20) {
+        const error = new Error('quota exceeded');
+        error.code = 'result_too_large';
+        error.status = 413;
+        throw error;
+      }
+      claimed += bytes;
+      return claimed;
+    },
+    async release(bytes) { claimed -= bytes; return claimed; },
+  };
+  const executor = createGraphExportExecutor();
+  await assert.rejects(
+    () => executor({ ...context, parameters: { format: 'jsonl' }, identity: canonicalIdentity(context) }),
+    { code: 'result_too_large' },
+  );
+  assert.equal(context.scratchQuota.claimed, 0);
+  const resultsDir = path.join(context.scratchDir, 'results');
+  const entries = await fsp.readdir(resultsDir).catch(() => []);
+  assert.deepEqual(entries, []);
 });

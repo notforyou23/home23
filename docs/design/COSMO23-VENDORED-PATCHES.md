@@ -2105,6 +2105,38 @@ either number.
 
 ---
 
+## Patch 48 — Source-truth bounded brain routes
+
+**Files touched:**
+- `cosmo23/server/lib/brain-source-router.js`
+- `cosmo23/server/index.js`
+- `tests/cosmo23/brain-source-router.test.cjs`
+
+**Problem:** The legacy COSMO graph route resolved a selected brain and then
+called the QueryEngine `loadBrainState()` compatibility loader before mapping
+arrays into a response. That reintroduced the exact unbounded materialization
+path the Home23 source-truth work is removing, and it let graph read behavior
+drift away from the shared memory-source limits and evidence contract.
+
+**Fix:** COSMO now mounts a Home23 brain-source router before the legacy graph
+handler. The router derives identity only from the canonical catalog and server
+runtime, rejects caller-supplied source roots/requesters/operation paths, opens a
+requester-owned ephemeral source outside the target brain, and serves
+`/api/brain/:name/status` plus bounded `/api/brain/:name/graph` through
+`shared/memory-source` sampling and evidence. The old inline graph route remains
+only as a compatibility fallback for non-mounted contexts and is not reached by
+the Home23-managed COSMO server.
+
+**Verification:** Focused Task 6 route/source tests passed:
+`node --test --test-concurrency=1 tests/cosmo23/brain-source-router.test.cjs
+tests/shared/memory-source-graph.test.js
+tests/engine/dashboard/brain-source-executors.test.js
+tests/engine/dashboard/brain-source-api.test.js`. The COSMO route test mounts a
+trap legacy handler that would throw if `loadBrainState()` were invoked and
+proves the bounded router handles the request first.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.

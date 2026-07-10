@@ -56,3 +56,43 @@ test('keeps legacy inline memory when no sidecars exist', async () => {
   assert.equal(result.nodes, 1);
   assert.equal(state.memory.nodes[0].id, 'legacy');
 });
+
+test('hydrates legacy sidecars through numeric-v1 projection without mutating target', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cosmo23-sidecar-projection-'));
+  const nodes = [
+    { id: 101, concept: 'projected node', tag: 'legacy', cluster: 7, embedding: [1, 2, 3] },
+    { id: 'n-two', concept: 'second projected node', tag: 'legacy', cluster: '7' }
+  ];
+  const edges = [{ from: 101, to: 'n-two', weight: 0.8, type: 'link' }];
+
+  writeJsonlGz(path.join(dir, 'memory-nodes.jsonl.gz'), nodes);
+  writeJsonlGz(path.join(dir, 'memory-edges.jsonl.gz'), edges);
+  const before = fs.readdirSync(dir).sort();
+  const beforeStats = Object.fromEntries(before.map((name) => {
+    const stat = fs.statSync(path.join(dir, name));
+    return [name, { size: stat.size, mtimeMs: stat.mtimeMs }];
+  }));
+
+  const originalReadFile = fs.promises.readFile;
+  fs.promises.readFile = async () => {
+    throw new Error('whole-file read forbidden');
+  };
+  try {
+    const state = { memory: { nodes: [], edges: [] } };
+    const result = await hydrateStateMemory(dir, state, { logger: { warn() {} } });
+
+    assert.equal(result.source, 'sidecar');
+    assert.equal(result.hydrated, true);
+    assert.deepEqual(state.memory.nodes.map((node) => node.id), ['101', 'n-two']);
+    assert.deepEqual(state.memory.edges.map((edge) => [edge.source, edge.target]), [['101', 'n-two']]);
+  } finally {
+    fs.promises.readFile = originalReadFile;
+  }
+
+  assert.deepEqual(fs.readdirSync(dir).sort(), before);
+  for (const name of before) {
+    const after = fs.statSync(path.join(dir, name));
+    assert.equal(after.size, beforeStats[name].size);
+    assert.equal(after.mtimeMs, beforeStats[name].mtimeMs);
+  }
+});

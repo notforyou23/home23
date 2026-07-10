@@ -274,7 +274,7 @@ class DashboardServer {
       for (const [operationType, executor] of createSourceOperationExecutors({
         searchService: this.memorySearchService,
         brainSourceService: this.brainSourceService,
-        graphExportExecutor: createGraphExportExecutor(),
+        graphExportExecutor: createGraphExportExecutor({ home23Root: this.getHome23Root() }),
       })) {
         if (!this.brainOperationsWorker.usesLocalExecutor?.(operationType)) {
           this.brainOperationsWorker.registerLocalExecutor(operationType, executor);

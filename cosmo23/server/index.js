@@ -52,6 +52,9 @@ const {
 const {
   createBrainsRouter
 } = require('./lib/brains-router');
+const {
+  createBrainSourceRouter
+} = require('./lib/brain-source-router');
 const { buildStatusContract } = require('./lib/status-contract');
 const {
   buildInteractiveLiveStatus,
@@ -1678,6 +1681,12 @@ app.use(createBrainsRouter({
   buildCanonicalCatalog,
   resolveBrainBySelector,
   launchResearch
+}));
+
+app.use(createBrainSourceRouter({
+  resolveBrainBySelector: resolveCatalogBrainBySelector,
+  home23Root: HOME23_ROOT,
+  requesterAgent: process.env.HOME23_AGENT || 'cosmo23'
 }));
 
 app.post('/api/launch', async (req, res) => {
