@@ -185,6 +185,30 @@ test('engine load materializes the exact logical revision', async () => {
   assert.equal(loaded.evidence.sourceHealth, 'healthy');
 });
 
+test('engine load supports legacy resident sidecars before manifest migration', async () => {
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'home23-legacy-sidecar-load-'));
+  await writeJsonlGzAtomic(path.join(dir, 'memory-nodes.jsonl.gz'), [
+    { id: 1, concept: 'base node', cluster: 'c1' },
+    { id: 2, concept: 'removed node', cluster: 'c1' },
+  ]);
+  await writeJsonlGzAtomic(path.join(dir, 'memory-edges.jsonl.gz'), [
+    { source: 1, target: 2, weight: 0.2, type: 'associative' },
+  ]);
+  await fsp.writeFile(path.join(dir, 'memory-delta.jsonl'), [
+    JSON.stringify({ op: 'remove_node', id: 2 }),
+    JSON.stringify({ op: 'upsert_node', record: { id: 3, concept: 'delta node', cluster: 'c2' } }),
+    JSON.stringify({ op: 'upsert_edge', record: { source: 1, target: 3, weight: 0.4, type: 'associative' } }),
+    '',
+  ].join('\n'));
+
+  const loaded = await loadMemoryRevision(dir);
+  assert.deepEqual(loaded.nodes.map((node) => node.id).sort(), [1, 3]);
+  assert.deepEqual(loaded.edges.map((edge) => [edge.source, edge.target]), [[1, 3]]);
+  assert.equal(loaded.evidence.route, 'legacy-resident-sidecars');
+  assert.equal(loaded.evidence.sourceHealth, 'healthy');
+  assert.equal(loaded.evidence.deltaWatermark.appliedRecords, 3);
+});
+
 test('a successful full rewrite schedules production retirement with global pin discovery', async () => {
   const scheduled = [];
   const calls = [];
