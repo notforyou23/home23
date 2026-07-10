@@ -160,6 +160,11 @@ async function currentProcessIdentity(handleId) {
   });
 }
 
+function hasUnverifiableProcessIdentity(owner) {
+  return [owner.bootToken, owner.processStartToken].some((token) =>
+    token.startsWith('unverifiable-') || token.startsWith('unverifiable:'));
+}
+
 async function defaultIsProcessAlive(owner) {
   validateProcessOwner(owner);
   try {
@@ -168,6 +173,11 @@ async function defaultIsProcessAlive(owner) {
     if (error.code === 'ESRCH') return false;
     if (error.code !== 'EPERM') return null;
   }
+  // A fallback token records that the owner could not establish an exact
+  // process identity. A later exact observation is therefore not comparable
+  // evidence of PID reuse. Only the independent PID-absence check above may
+  // reclaim fallback ownership.
+  if (hasUnverifiableProcessIdentity(owner)) return null;
   const exact = owner.pid === process.pid
     ? await inspectCurrentProcessIdentity()
     : await inspectProcessIdentity(owner.pid);
@@ -550,6 +560,26 @@ async function createOperationScratchQuota({
     throwIfAborted(signal);
   }
 
+  async function inspectOwnerLiveness(candidateOwner) {
+    let alive = null;
+    try {
+      const inspected = await isProcessAlive(candidateOwner);
+      if (inspected === true || inspected === false) alive = inspected;
+    } catch {
+      alive = null;
+    }
+    if (alive !== false || !hasUnverifiableProcessIdentity(candidateOwner)) return alive;
+    // Test hooks and platform-specific probes may report an identity mismatch,
+    // but an unverifiable owner has no exact identity to compare. Reclaim it
+    // only when a separate OS PID-existence check proves absence.
+    try {
+      process.kill(candidateOwner.pid, 0);
+      return null;
+    } catch (error) {
+      return error.code === 'ESRCH' ? false : null;
+    }
+  }
+
   async function assertStableOperationRoot() {
     const stat = await fsp.lstat(root).catch((error) => {
       throw memorySourceError('invalid_memory_source', 'operation root became unavailable', {
@@ -635,6 +665,19 @@ async function createOperationScratchQuota({
 
   async function acquireLock() {
     const startedAt = clock.now();
+    let recoveredStaleLock = false;
+    async function waitForRetry() {
+      const elapsedMs = clock.now() - startedAt;
+      if (elapsedMs >= lockTimeoutMs) {
+        throw memorySourceError('source_busy', 'scratch quota lock is busy', { retryable: true });
+      }
+      await hooks.beforeLockRetry?.({
+        operationRoot: root,
+        delayMs: lockRetryMs,
+        elapsedMs,
+      });
+      await abortableDelay(lockRetryMs, signal);
+    }
     const record = `${JSON.stringify({
       version: 1,
       operationRoot: root,
@@ -725,7 +768,10 @@ async function createOperationScratchQuota({
           if (readError.code === 'ENOENT' || readError[LOCK_TURNOVER]) return null;
           throw readError;
         });
-        if (current === null) continue;
+        if (current === null) {
+          await waitForRetry();
+          continue;
+        }
         let lockRecord;
         try {
           lockRecord = JSON.parse(current.text);
@@ -743,20 +789,17 @@ async function createOperationScratchQuota({
           });
         }
         validateProcessOwner(lockRecord.owner);
-        let ownerAlive = null;
-        try {
-          const inspected = await isProcessAlive(lockRecord.owner);
-          if (inspected === true || inspected === false) ownerAlive = inspected;
-        } catch {
-          ownerAlive = null;
-        }
+        const ownerAlive = await inspectOwnerLiveness(lockRecord.owner);
         if (ownerAlive === false) {
           await assertStableOperationRoot();
           const latest = await fsp.lstat(lockPath).catch((statError) => {
             if (statError.code === 'ENOENT') return null;
             throw statError;
           });
-          if (latest === null) continue;
+          if (latest === null) {
+            await waitForRetry();
+            continue;
+          }
           if (latest.isSymbolicLink() || !latest.isFile()) {
             throw memorySourceError('invalid_memory_source', 'scratch lock changed type', {
               retryable: false,
@@ -765,17 +808,26 @@ async function createOperationScratchQuota({
           // The old owner was proven dead, but it is still possible that a
           // different contender replaced the path after our read. Remove only
           // the exact inode whose owner record was inspected.
-          if (latest.dev !== current.dev || latest.ino !== current.ino) continue;
+          if (latest.dev !== current.dev || latest.ino !== current.ino) {
+            await waitForRetry();
+            continue;
+          }
           await fsp.unlink(lockPath);
           await assertStableOperationRoot();
           await fsyncDirectory(root);
           await assertStableOperationRoot();
+          if (!recoveredStaleLock) {
+            // A single exact stale owner recovery preserves the historical
+            // immediate acquisition path. Seeing another owner before the next
+            // atomic link is sustained turnover and must use the normal
+            // timeout/delay budget below.
+            recoveredStaleLock = true;
+            continue;
+          }
+          await waitForRetry();
           continue;
         }
-        if (clock.now() - startedAt >= lockTimeoutMs) {
-          throw memorySourceError('source_busy', 'scratch quota lock is busy', { retryable: true });
-        }
-        await abortableDelay(lockRetryMs, signal);
+        await waitForRetry();
       }
     }
   }
@@ -817,16 +869,10 @@ async function createOperationScratchQuota({
           hooks,
         });
         for (const [reservationHandleId, reservation] of Object.entries(next.reservations)) {
-          let alive = null;
-          try {
-            const inspected = await isProcessAlive(reservation.owner);
-            if (inspected === true || inspected === false) alive = inspected;
-          } catch {
-            // Failure to prove death is not authority to reclaim accounting.
-            // This also stays conservative for a reused PID whose start
-            // identity cannot be inspected by the platform.
-            alive = null;
-          }
+          // Failure to prove death is not authority to reclaim accounting.
+          // This also stays conservative for a reused PID whose start
+          // identity cannot be inspected by the platform.
+          const alive = await inspectOwnerLiveness(reservation.owner);
           if (alive === false) delete next.reservations[reservationHandleId];
         }
         next.claimedSinceReconcile = 0;

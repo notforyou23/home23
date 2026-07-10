@@ -58,6 +58,23 @@ function retainedEntryBytes(key, record) {
   return keyBytes + (record === undefined ? 0 : jsonBytes(record).bytes) + ENTRY_OVERHEAD_BYTES;
 }
 
+function deepFreezeJson(value) {
+  if (value === null || typeof value !== 'object') return value;
+  const pending = [value];
+  const seen = new Set();
+  while (pending.length > 0) {
+    const candidate = pending.pop();
+    if (seen.has(candidate)) continue;
+    seen.add(candidate);
+    for (const key of Reflect.ownKeys(candidate)) {
+      const nested = candidate[key];
+      if (nested !== null && typeof nested === 'object') pending.push(nested);
+    }
+    Object.freeze(candidate);
+  }
+  return value;
+}
+
 function normalizeEdgeKey(value) {
   if (typeof value === 'string') {
     if (!value || Buffer.byteLength(value, 'utf8') > 16 * 1024) {
@@ -76,7 +93,7 @@ function normalizeEdgeKey(value) {
 function normalizeNodeRecord(record) {
   const id = normalizeId(record?.id);
   if (!id) throw memorySourceError('source_unavailable', 'invalid node delta', { retryable: true });
-  return Object.freeze({ ...record, id });
+  return deepFreezeJson({ ...record, id });
 }
 
 function normalizeEdgeRecord(record) {
@@ -85,7 +102,7 @@ function normalizeEdgeRecord(record) {
   if (!source || !target) {
     throw memorySourceError('source_unavailable', 'invalid edge delta', { retryable: true });
   }
-  return Object.freeze({ ...record, source, target });
+  return deepFreezeJson({ ...record, source, target });
 }
 
 function sortedKeys(mapOrSet) {
@@ -135,6 +152,7 @@ async function createBoundedOverlayStore(options = {}) {
   let cleanupFilesComplete = false;
   let cleanupComplete = false;
   let mutationTail = Promise.resolve();
+  let pendingAdmissionBytes = 0;
   let scratchQuota = options.scratchQuota || null;
   let ownsScratchQuota = false;
   const quotaKind = `memory_overlay_${randomUUID()}`;
@@ -205,11 +223,22 @@ async function createBoundedOverlayStore(options = {}) {
     return true;
   }
 
-  function normalizeEntry(entry) {
+  function admitEntry(entry) {
     const encoded = jsonBytes(entry, 'delta record');
     if (encoded.bytes > maxRecordBytes) throw limitError('overlay record limit exceeded');
+    const projected = pendingAdmissionBytes + encoded.bytes;
+    if (!Number.isSafeInteger(projected) || projected > maxRecordBytes) {
+      throw limitError('overlay pending admission limit exceeded');
+    }
+    pendingAdmissionBytes = projected;
+    return encoded;
+  }
+
+  function normalizeEntry(encoded) {
     // Parse the bounded serialization so Maps/SQLite never retain caller-owned
-    // nested objects or a raw delta record after this call returns.
+    // nested objects. Parsing happens only after aggregate serialized admission
+    // joins the mutation queue, so concurrent callers cannot retain an
+    // unbounded number of detached graphs while an earlier mutation is slow.
     const detached = JSON.parse(encoded.text);
     if (detached?.op === 'upsert_node') {
       const record = normalizeNodeRecord(detached.record);
@@ -562,7 +591,7 @@ async function createBoundedOverlayStore(options = {}) {
   }
 
   function parseStoredRecord(row) {
-    return row?.record == null ? undefined : Object.freeze(JSON.parse(row.record));
+    return row?.record == null ? undefined : deepFreezeJson(JSON.parse(row.record));
   }
 
   function diskNode(id) {
@@ -711,12 +740,11 @@ async function createBoundedOverlayStore(options = {}) {
     throw error;
   }
 
-  const api = {
-    async apply(entry) {
-      assertOpen();
-      const normalized = normalizeEntry(entry);
-      return enqueueMutation(async () => {
+  async function applyAdmitted(encoded) {
+    try {
+      return await enqueueMutation(async () => {
         assertOpen();
+        const normalized = normalizeEntry(encoded);
         if (spilled) {
           try {
             await writeDiskState(normalized);
@@ -738,7 +766,25 @@ async function createBoundedOverlayStore(options = {}) {
           return failMutation(error);
         }
       });
-    },
+    } finally {
+      pendingAdmissionBytes -= encoded.bytes;
+    }
+  }
+
+  function applyEntry(entry) {
+    try {
+      assertOpen();
+      // The caller-owned graph is not captured by an async frame or mutation
+      // closure. Only its bounded serialized form crosses this synchronous
+      // admission boundary.
+      return applyAdmitted(admitEntry(entry));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  const api = {
+    apply: applyEntry,
     node(id) {
       assertOpen();
       return spilled ? diskNode(id) : memoryNode(id);

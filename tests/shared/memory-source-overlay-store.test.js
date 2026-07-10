@@ -119,6 +119,73 @@ test('detaches retained state from the caller delta record', async () => {
   await store.close();
 });
 
+test('deep-freezes in-memory lookup and iterator records without corrupting accounting', async () => {
+  const store = await createBoundedOverlayStore({ maxMemoryBytes: 1024 * 1024 });
+  await store.apply({
+    op: 'upsert_node',
+    record: {
+      id: 'memory-frozen',
+      concept: 'before',
+      metadata: { provenance: { source: 'original' }, tags: ['one'] },
+    },
+  });
+  const beforeBytes = store.retainedBytes;
+  const lookup = store.node('memory-frozen');
+  const [iterated] = await collect(store.iterateNodeUpserts());
+
+  assert.equal(Object.isFrozen(lookup.metadata.provenance), true);
+  assert.equal(Object.isFrozen(iterated.metadata.tags), true);
+  assert.throws(() => { lookup.metadata.provenance.source = 'mutated'; }, TypeError);
+  assert.throws(() => { iterated.metadata.tags.push('two'); }, TypeError);
+  assert.deepEqual(store.node('memory-frozen').metadata, {
+    provenance: { source: 'original' },
+    tags: ['one'],
+  });
+  assert.equal(store.retainedBytes, beforeBytes);
+  assert.equal(store.retainedBytes >= 0, true);
+  await store.close();
+});
+
+test('deep-freezes SQLite lookup and iterator records without corrupting spill accounting', async () => {
+  const operationRoot = await tempDir();
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 4 * 1024 * 1024,
+  });
+  const store = await createBoundedOverlayStore({
+    operationRoot,
+    scratchQuota,
+    maxMemoryBytes: 0,
+    maxDiskBytes: 2 * 1024 * 1024,
+  });
+  await store.apply({
+    op: 'upsert_node',
+    record: {
+      id: 'disk-frozen',
+      concept: 'before',
+      metadata: { provenance: { source: 'original' }, tags: ['one'] },
+    },
+  });
+  const beforeDiskBytes = store.diskBytes;
+  const lookup = store.node('disk-frozen');
+  const [iterated] = await collect(store.iterateNodeUpserts());
+
+  assert.equal(Object.isFrozen(lookup.metadata.provenance), true);
+  assert.equal(Object.isFrozen(iterated.metadata.tags), true);
+  assert.throws(() => { lookup.metadata.provenance.source = 'mutated'; }, TypeError);
+  assert.throws(() => { iterated.metadata.tags.push('two'); }, TypeError);
+  assert.deepEqual(store.node('disk-frozen').metadata, {
+    provenance: { source: 'original' },
+    tags: ['one'],
+  });
+  assert.equal(store.diskBytes, beforeDiskBytes);
+  assert.equal(store.retainedBytes >= 0, true);
+  assert.equal(store.diskBytes >= 0, true);
+  assert.equal(store.diskBytes <= store.maxDiskBytes, true);
+  await store.close();
+  scratchQuota.close();
+});
+
 test('spills exact ordered state into private SQLite and removes every database artifact', async () => {
   const operationRoot = await tempDir();
   const scratchQuota = await createOperationScratchQuota({
@@ -315,6 +382,62 @@ test('serializes concurrent threshold-crossing apply calls and spills exactly on
     assert.equal(store.node(`node-${index}`).concept, `value-${index + 16}`);
   }
   assert.equal((await overlayFiles(operationRoot)).filter((name) => name.endsWith('.sqlite')).length, 1);
+  await store.close();
+  scratchQuota.close();
+});
+
+test('bounds pending serialized admission while the first near-max mutation is blocked', async () => {
+  const operationRoot = await tempDir();
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 4 * 1024 * 1024,
+  });
+  let releaseFirst;
+  let markFirstBlocked;
+  const firstBlocked = new Promise((resolve) => { markFirstBlocked = resolve; });
+  const blocker = new Promise((resolve) => { releaseFirst = resolve; });
+  const store = await createBoundedOverlayStore({
+    operationRoot,
+    scratchQuota,
+    maxMemoryBytes: 0,
+    maxDiskBytes: 2 * 1024 * 1024,
+    maxRecordBytes: 2048,
+    _testHooks: {
+      async beforeDiskMutation({ normalized }) {
+        if (normalized.key !== 'first-near-max') return;
+        markFirstBlocked();
+        await blocker;
+      },
+    },
+  });
+  const first = store.apply(node('first-near-max', 'x'.repeat(1300)));
+  await firstBlocked;
+  const second = store.apply(node('second-near-max', 'y'.repeat(1300))).then(
+    () => ({ ok: true }),
+    (error) => ({ ok: false, error }),
+  );
+  let outcome;
+  try {
+    outcome = await Promise.race([
+      second,
+      new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), 50)),
+    ]);
+    assert.equal(outcome.timedOut, undefined);
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.error.code, 'result_too_large');
+    assert.equal(outcome.error.status, 413);
+    assert.equal(outcome.error.retryable, false);
+  } finally {
+    releaseFirst();
+    await first;
+    await second;
+  }
+
+  assert.equal(store.node('first-near-max').concept.length, 1300);
+  assert.equal(store.node('second-near-max'), undefined);
+  assert.equal(store.retainedBytes >= 0, true);
+  assert.equal(store.diskBytes >= 0, true);
+  assert.equal(store.diskBytes <= store.maxDiskBytes, true);
   await store.close();
   scratchQuota.close();
 });

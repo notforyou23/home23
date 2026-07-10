@@ -167,6 +167,164 @@ test('reconcile reclaims only proven-dead reservations and retains live-handle a
   observer.close();
 });
 
+test('retains fallback ownership when a later exact observer sees the same live PID', async () => {
+  const operationRoot = await tempDir();
+  const maxBytes = 512 * 1024;
+  const ownerQuota = await createOperationScratchQuota({ operationRoot, maxBytes });
+  await ownerQuota.claim(4096, 'fallback-live');
+  ownerQuota.close();
+
+  const ledgerPath = path.join(operationRoot, '.scratch-quota.json');
+  const ledger = JSON.parse(await fsp.readFile(ledgerPath, 'utf8'));
+  const reservation = Object.values(ledger.reservations)[0];
+  reservation.owner.bootToken = 'unverifiable-boot:transient-owner-inspection';
+  reservation.owner.processStartToken = 'unverifiable-start:transient-owner-inspection';
+  // Preserve a conservative upper bound after making the fixture tokens longer.
+  ledger.usedBytes += 4096;
+  await fsp.writeFile(ledgerPath, `${JSON.stringify(ledger)}\n`, { mode: 0o600 });
+
+  const observer = await createOperationScratchQuota({ operationRoot, maxBytes });
+  const observed = JSON.parse(await fsp.readFile(ledgerPath, 'utf8'));
+  assert.equal(Object.keys(observed.reservations).length, 1);
+  assert.equal(Object.values(observed.reservations)[0].kinds['fallback-live'], 4096);
+  observer.close();
+});
+
+test('retains a fallback-owned lock when a later exact observer sees the same live PID', async () => {
+  const operationRoot = await tempDir();
+  const maxBytes = 512 * 1024;
+  const fixture = await createOperationScratchQuota({ operationRoot, maxBytes });
+  await fixture.claim(1, 'fallback-lock-fixture');
+  fixture.close();
+  const ledger = JSON.parse(await fsp.readFile(path.join(operationRoot, '.scratch-quota.json'), 'utf8'));
+  const owner = structuredClone(Object.values(ledger.reservations)[0].owner);
+  owner.bootToken = 'unverifiable-boot:transient-owner-inspection';
+  owner.processStartToken = 'unverifiable-start:transient-owner-inspection';
+  const lockPath = path.join(operationRoot, '.scratch-quota.lock');
+  await fsp.writeFile(lockPath, `${JSON.stringify({
+    version: 1,
+    operationRoot: await fsp.realpath(operationRoot),
+    maxBytes,
+    owner,
+    acquiredAt: 1,
+  })}\n`, { mode: 0o600 });
+
+  await assert.rejects(() => createOperationScratchQuota({
+    operationRoot,
+    maxBytes,
+    lockRetryMs: 1,
+    lockTimeoutMs: 5,
+  }), { code: 'source_busy', retryable: true });
+  assert.equal(await exists(lockPath), true);
+});
+
+test('a custom liveness probe cannot reclaim fallback ownership for an existing PID', async () => {
+  const operationRoot = await tempDir();
+  const maxBytes = 512 * 1024;
+  const lockPath = path.join(operationRoot, '.scratch-quota.lock');
+  await fsp.writeFile(lockPath, `${JSON.stringify({
+    version: 1,
+    operationRoot: await fsp.realpath(operationRoot),
+    maxBytes,
+    owner: {
+      pid: process.pid,
+      processStartedAt: 1,
+      handleId: '00000000-0000-0000-0000-000000000000',
+      bootToken: 'unverifiable-boot:custom-probe',
+      processStartToken: 'unverifiable-start:custom-probe',
+    },
+    acquiredAt: 1,
+  })}\n`, { mode: 0o600 });
+
+  await assert.rejects(() => createOperationScratchQuota({
+    operationRoot,
+    maxBytes,
+    lockRetryMs: 1,
+    lockTimeoutMs: 5,
+    isProcessAlive: async () => false,
+  }), { code: 'source_busy', retryable: true });
+  assert.equal(await exists(lockPath), true);
+});
+
+test('a cached false self-inspection cannot reclaim its own fallback reservation', {
+  skip: !['darwin', 'linux'].includes(process.platform),
+}, async () => {
+  const operationRoot = await tempDir();
+  const modulePath = path.resolve('shared/memory-source/scratch-quota.cjs');
+  const childScript = String.raw`
+    const fs = require('node:fs');
+    const childProcess = require('node:child_process');
+    const originalReadFile = fs.promises.readFile;
+    const originalExecFile = childProcess.execFile;
+    if (process.platform === 'linux') {
+      fs.promises.readFile = async function (filePath, ...args) {
+        if (String(filePath) === '/proc/' + process.pid + '/stat') {
+          const error = new Error('transient proc lookup failure');
+          error.code = 'ENOENT';
+          throw error;
+        }
+        return originalReadFile.call(this, filePath, ...args);
+      };
+    } else if (process.platform === 'darwin') {
+      childProcess.execFile = function (file, args, options, callback) {
+        if (file === '/bin/ps') {
+          const error = new Error('transient ps lookup failure');
+          error.code = 1;
+          queueMicrotask(() => callback(error, '', ''));
+          return { once() {}, kill() {} };
+        }
+        return originalExecFile.call(this, file, args, options, callback);
+      };
+    }
+    const { createOperationScratchQuota } = require(process.argv[1]);
+    (async () => {
+      const quota = await createOperationScratchQuota({
+        operationRoot: process.argv[2],
+        maxBytes: 512 * 1024,
+      });
+      fs.promises.readFile = originalReadFile;
+      childProcess.execFile = originalExecFile;
+      await quota.claim(4096, 'fallback-self');
+      const ledger = JSON.parse(await originalReadFile(
+        require('node:path').join(process.argv[2], '.scratch-quota.json'),
+        'utf8',
+      ));
+      process.stdout.write(JSON.stringify({
+        reservationCount: Object.keys(ledger.reservations).length,
+        fallbackBytes: Object.values(ledger.reservations)[0]?.kinds?.['fallback-self'] || 0,
+      }));
+      quota.close();
+    })().catch((error) => { console.error(error); process.exitCode = 1; });
+  `;
+  const child = await runChild(childScript, [modulePath, operationRoot]);
+  assert.equal(child.code, 0, child.stderr);
+  assert.deepEqual(JSON.parse(child.stdout), { reservationCount: 1, fallbackBytes: 4096 });
+});
+
+test('independently absent fallback PID ownership is reclaimable', async () => {
+  const operationRoot = await tempDir();
+  const canonicalRoot = await fsp.realpath(operationRoot);
+  const maxBytes = 256 * 1024;
+  const lockPath = path.join(operationRoot, '.scratch-quota.lock');
+  await fsp.writeFile(lockPath, `${JSON.stringify({
+    version: 1,
+    operationRoot: canonicalRoot,
+    maxBytes,
+    owner: {
+      pid: 2_147_483_647,
+      processStartedAt: 1,
+      handleId: '00000000-0000-0000-0000-000000000000',
+      bootToken: 'unverifiable-boot:absent-owner',
+      processStartToken: 'unverifiable-start:absent-owner',
+    },
+    acquiredAt: 1,
+  })}\n`, { mode: 0o600 });
+
+  const quota = await createOperationScratchQuota({ operationRoot, maxBytes });
+  assert.equal(await exists(lockPath), false);
+  quota.close();
+});
+
 test('reconcile accounts private files without following symlinks', async () => {
   const operationRoot = await tempDir();
   const quota = await createOperationScratchQuota({ operationRoot, maxBytes: 512 * 1024 });
@@ -311,6 +469,60 @@ test('retries normal lock turnover under repeated high concurrency', async () =>
   const observer = await createOperationScratchQuota({ operationRoot, maxBytes });
   assert.equal(await observer.reconcile() <= maxBytes, true);
   observer.close();
+});
+
+test('sustained stale-lock turnover observes retry delay and timeout', async () => {
+  const operationRoot = await tempDir();
+  const canonicalRoot = await fsp.realpath(operationRoot);
+  const maxBytes = 512 * 1024;
+  const lockPath = path.join(operationRoot, '.scratch-quota.lock');
+  const staleLock = `${JSON.stringify({
+    version: 1,
+    operationRoot: canonicalRoot,
+    maxBytes,
+    owner: {
+      pid: 999999,
+      processStartedAt: 1,
+      handleId: '00000000-0000-0000-0000-000000000000',
+      bootToken: 'test-boot',
+      processStartToken: 'test-start',
+    },
+    acquiredAt: 1,
+  })}\n`;
+  await fsp.writeFile(lockPath, staleLock, { mode: 0o600 });
+  const controller = new AbortController();
+  let fakeNow = 0;
+  let turnoverAttempts = 0;
+  let retryCalls = 0;
+  const startedAt = Date.now();
+
+  await assert.rejects(() => createOperationScratchQuota({
+    operationRoot,
+    maxBytes,
+    signal: controller.signal,
+    lockRetryMs: 15,
+    lockTimeoutMs: 10,
+    clock: { now: () => fakeNow },
+    isProcessAlive: async () => false,
+    _testHooks: {
+      async afterLockCandidateSynced() {
+        turnoverAttempts += 1;
+        fakeNow += 4;
+        if (!await exists(lockPath)) await fsp.writeFile(lockPath, staleLock, { mode: 0o600 });
+        if (turnoverAttempts >= 8) {
+          controller.abort(Object.assign(new Error('turnover guard'), { name: 'AbortError' }));
+        }
+      },
+      async beforeLockRetry({ delayMs }) {
+        assert.equal(delayMs, 15);
+        retryCalls += 1;
+      },
+    },
+  }), { code: 'source_busy', retryable: true });
+
+  assert.equal(turnoverAttempts, 3);
+  assert.equal(retryCalls, 1);
+  assert.equal(Date.now() - startedAt >= 10, true);
 });
 
 test('validates the complete lock owner before liveness and never reclaims malformed ownership', async () => {
