@@ -498,7 +498,6 @@ export class BrainOperationsClient {
       : deadlineController.signal;
     let after = options.initial.eventSequence || 0;
     let last = options.initial;
-    let activityState = last.state;
 
     const detachLast = async (reason: string): Promise<BrainOperationResult> => {
       await this.detach(operationId, attachmentId, reason).catch(() => undefined);
@@ -519,12 +518,11 @@ export class BrainOperationsClient {
         : event.type === 'provider_activity' && event.at
           ? event.at
           : status.lastProviderActivityAt;
-      activityState = event.state ?? activityState ?? status.state;
       this.options.onActivity?.({
         source: 'brain_operation',
         operationId,
         sequence: event.eventSequence,
-        state: activityState,
+        state: event.state ?? status.state,
         phase: eventPhase,
         updatedAt: eventUpdatedAt,
         lastProviderActivityAt: providerActivity,
