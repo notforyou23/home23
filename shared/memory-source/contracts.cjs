@@ -25,6 +25,7 @@ const TYPED_MEMORY_SOURCE_CODES = new Set([
   'source_unavailable',
   'source_changed',
   'source_busy',
+  'source_pin_conflict',
   'source_stale',
   'result_too_large',
   'source_operation_required',

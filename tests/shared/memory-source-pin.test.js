@@ -104,19 +104,66 @@ test('openPinnedSource rejects digest, root, and revision mismatch before readin
   const operationId = 'brop_test_reject';
   const pinned = await provider.pin(brain, operationId);
   const operationRoot = path.join(home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId);
-  await createOperationScratchQuota({ operationRoot });
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
   await assert.rejects(() => openPinnedSource(pinned.descriptor, {
     expectedDigest: pinned.digest.replace(/.$/, '0'),
     operationRoot,
+    scratchQuota,
   }), { code: 'source_changed' });
   await assert.rejects(() => openPinnedSource(pinned.descriptor, {
     expectedDigest: pinned.digest,
     expectedCanonicalRoot: path.join(home23Root, 'other'),
     operationRoot,
+    scratchQuota,
   }), { code: 'source_changed' });
   await assert.rejects(() => openPinnedSource(pinned.descriptor, {
     expectedDigest: pinned.digest,
     expectedRevision: pinned.descriptor.cutoffRevision + 1,
     operationRoot,
+    scratchQuota,
   }), { code: 'source_changed' });
+  await assert.rejects(() => openPinnedSource(pinned.descriptor, {
+    expectedDigest: pinned.digest,
+    operationRoot,
+  }), { code: 'invalid_request' });
+  scratchQuota.close();
+});
+
+test('pin discovery, stale process prune, and terminal release are exact to operation roots', async () => {
+  const home23Root = await tempDir('home23-memory-source-pin-home-');
+  const brain = await writeManifestBrain();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_test_discovery';
+  const pinned = await provider.pin(brain, operationId);
+  const operationRoot = path.join(home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId);
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const {
+    discoverOperationPinFiles,
+    pruneStalePins,
+    releaseOperationSource,
+  } = require('../../shared/memory-source');
+  const source = await openPinnedSource(pinned.descriptor, {
+    expectedDigest: pinned.digest,
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    operationId,
+    operationRoot,
+    scratchQuota,
+  });
+  let discovered = await discoverOperationPinFiles(home23Root);
+  assert.deepEqual(discovered.map((entry) => entry.kind).sort(), ['coordinator', 'process']);
+  assert.equal((await pruneStalePins(home23Root, {
+    getOperationState: async () => 'running',
+    isProcessAlive: async () => false,
+  })).length, 0);
+  assert.equal((await pruneStalePins(home23Root, {
+    getOperationState: async () => 'interrupted',
+    isProcessAlive: async () => false,
+  })).length, 1);
+  discovered = await discoverOperationPinFiles(home23Root);
+  assert.deepEqual(discovered.map((entry) => entry.kind), ['coordinator']);
+  await releaseOperationSource({ home23Root, requesterAgent: 'jerry', operationId });
+  assert.deepEqual(await discoverOperationPinFiles(home23Root), []);
+  await source.close();
+  scratchQuota.close();
 });

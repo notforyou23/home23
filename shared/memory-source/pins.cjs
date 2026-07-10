@@ -88,6 +88,9 @@ async function openPinnedSource(descriptor, expectations = {}) {
     throw memorySourceError('invalid_request', 'numeric v1 descriptor required');
   }
   const operationRoot = await assertOperationRoot(expectations.operationRoot);
+  if (!expectations.scratchQuota || expectations.scratchQuota.operationRoot !== operationRoot) {
+    throw memorySourceError('invalid_request', 'scratch quota for exact operation root required');
+  }
   const expectedDigest = expectations.expectedDigest || sourceDescriptorDigest(descriptor);
   if (expectedDigest !== sourceDescriptorDigest(descriptor)) {
     throw memorySourceError('source_changed', 'descriptor digest mismatch', { retryable: true });
@@ -140,6 +143,97 @@ async function openPinnedSource(descriptor, expectations = {}) {
   });
 }
 
+async function withMemorySourceLock(canonicalRoot, { lockRoot } = {}, callback) {
+  const canonical = await fsp.realpath(canonicalRoot);
+  const root = await assertOperationRoot(lockRoot);
+  const relative = path.relative(canonical, root);
+  if (!relative || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+    throw memorySourceError('invalid_request', 'lock root must be outside target');
+  }
+  const lockDir = path.join(root, canonicalRootHash(canonical));
+  await fsp.mkdir(lockDir, { mode: 0o700 }).catch((error) => {
+    if (error.code === 'EEXIST') throw memorySourceError('source_busy', 'source lock busy', { retryable: true });
+    throw error;
+  });
+  try {
+    await fsp.writeFile(path.join(lockDir, 'owner.json'), `${JSON.stringify({
+      pid: process.pid,
+      canonicalRoot: canonical,
+      createdAt: new Date().toISOString(),
+    })}\n`, { mode: 0o600 });
+    return await callback();
+  } finally {
+    await fsp.rm(lockDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function discoverOperationPinFiles(home23Root) {
+  const root = await fsp.realpath(home23Root);
+  const instances = path.join(root, 'instances');
+  const results = [];
+  const agents = await fsp.readdir(instances, { withFileTypes: true }).catch(() => []);
+  for (const agent of agents) {
+    if (!agent.isDirectory()) continue;
+    const operationsRoot = path.join(instances, agent.name, 'runtime', 'brain-operations');
+    const operations = await fsp.readdir(operationsRoot, { withFileTypes: true }).catch(() => []);
+    for (const operation of operations) {
+      if (!operation.isDirectory() || !/^[A-Za-z0-9_.-]+$/.test(operation.name)) continue;
+      const operationRoot = path.join(operationsRoot, operation.name);
+      const coordinator = path.join(operationRoot, 'coordinator-source-pin.json');
+      if (await fsp.access(coordinator).then(() => true).catch(() => false)) {
+        results.push({ kind: 'coordinator', requesterAgent: agent.name, operationId: operation.name, path: coordinator });
+      }
+      const pinsRoot = path.join(operationRoot, 'pins');
+      const processes = await fsp.readdir(pinsRoot, { withFileTypes: true }).catch(() => []);
+      for (const processDir of processes) {
+        if (!processDir.isDirectory()) continue;
+        const files = await fsp.readdir(path.join(pinsRoot, processDir.name), { withFileTypes: true }).catch(() => []);
+        for (const file of files) {
+          if (file.isFile() && /^[a-f0-9]{64}\.json$/.test(file.name)) {
+            results.push({
+              kind: 'process',
+              requesterAgent: agent.name,
+              operationId: operation.name,
+              processIdentity: processDir.name,
+              path: path.join(pinsRoot, processDir.name, file.name),
+            });
+          }
+        }
+      }
+    }
+  }
+  return results.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function pruneStalePins(home23Root, {
+  getOperationState = async () => null,
+  isProcessAlive = async () => true,
+} = {}) {
+  const discovered = await discoverOperationPinFiles(home23Root);
+  const removed = [];
+  for (const file of discovered) {
+    if (file.kind !== 'process') continue;
+    const record = JSON.parse(await fsp.readFile(file.path, 'utf8').catch(() => '{}'));
+    const alive = await isProcessAlive(record);
+    const state = await getOperationState(file.operationId);
+    const terminal = state === null || ['complete', 'failed', 'cancelled', 'interrupted'].includes(state);
+    if (!alive && terminal) {
+      await fsp.rm(file.path, { force: true });
+      await fsp.rmdir(path.dirname(file.path)).catch(() => {});
+      removed.push(file.path);
+    }
+  }
+  return removed;
+}
+
+async function releaseOperationSource({ home23Root, requesterAgent, operationId }) {
+  validateOperationId(operationId);
+  const operationRoot = path.join(home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations', operationId);
+  await fsp.rm(coordinatorPinPath(operationRoot), { force: true }).catch(() => {});
+  await fsp.rm(path.join(operationRoot, 'pins'), { recursive: true, force: true }).catch(() => {});
+  await fsp.rm(path.join(operationRoot, 'source-projections'), { recursive: true, force: true }).catch(() => {});
+}
+
 function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
   if (typeof home23Root !== 'string' || !path.isAbsolute(home23Root)) {
     throw memorySourceError('invalid_request', 'trusted home23 root required');
@@ -162,7 +256,11 @@ function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
 module.exports = {
   validateOperationId,
   coordinatorPinPath,
+  withMemorySourceLock,
   pinOperationSource,
   openPinnedSource,
   createMemorySourcePinProvider,
+  discoverOperationPinFiles,
+  pruneStalePins,
+  releaseOperationSource,
 };

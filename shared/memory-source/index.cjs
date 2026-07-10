@@ -9,4 +9,6 @@ module.exports = {
   ...require('./scratch-quota.cjs'),
   ...require('./reader.cjs'),
   ...require('./pins.cjs'),
+  ...require('./operation-context.cjs'),
+  ...require('./legacy-projection.cjs'),
 };
