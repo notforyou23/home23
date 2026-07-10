@@ -30,6 +30,13 @@ const readline = require('readline');
 const { pipeline, Readable, Transform } = require('stream');
 const { promisify } = require('util');
 const pipelineAsync = promisify(pipeline);
+const {
+  appendMemoryRevision,
+  openMemorySource,
+  readJsonl,
+  readManifest,
+  rewriteMemoryBase,
+} = require('../../../shared/memory-source');
 
 const NODES_FILE = 'memory-nodes.jsonl.gz';
 const EDGES_FILE = 'memory-edges.jsonl.gz';
@@ -147,16 +154,43 @@ async function readJsonlGz(inPath, onRecord) {
  * brain-snapshot record.
  */
 async function writeMemorySidecars(brainDir, memory, options = {}) {
-  const nodesResult = await writeJsonlGz(nodesPath(brainDir), iterateNodes(memory), options);
-  const edgesResult = await writeJsonlGz(edgesPath(brainDir), iterateEdges(memory), options);
+  const snapshot = memory?.capturePersistenceSnapshot?.();
+  const view = snapshot ? {
+    nodes: snapshot.fullView.nodes,
+    edges: snapshot.fullView.edges,
+    summary: snapshot.summary,
+  } : captureCompatibilityView(memory);
+  const result = await rewriteMemoryBase(brainDir, view, {
+    ...options,
+    lockRoot: options.lockRoot || defaultSidecarLockRoot(brainDir),
+  });
   try { fs.rmSync(memoryDeltaPath(brainDir), { force: true }); } catch {}
   return {
-    nodes: { file: NODES_FILE, count: nodesResult.count, bytes: nodesResult.bytes },
-    edges: { file: EDGES_FILE, count: edgesResult.count, bytes: edgesResult.bytes },
+    mode: 'full',
+    revision: result.manifest.currentRevision,
+    manifest: result.manifest,
+    nodes: {
+      file: result.manifest.activeBase.nodes.file,
+      count: result.manifest.activeBase.nodes.count,
+      bytes: result.manifest.activeBase.nodes.bytes,
+    },
+    edges: {
+      file: result.manifest.activeBase.edges.file,
+      count: result.manifest.activeBase.edges.count,
+      bytes: result.manifest.activeBase.edges.bytes,
+    },
   };
 }
 
 async function appendMemoryDelta(brainDir, changes = {}) {
+  const manifest = await readManifest(brainDir).catch(() => null);
+  if (manifest) {
+    const result = await appendMemoryRevision(brainDir, normalizeCompatibilityChanges(changes), {
+      lockRoot: defaultSidecarLockRoot(brainDir),
+      summary: changes.summary || manifest.summary,
+    });
+    return { count: result.count, bytes: result.bytes, manifest: result.manifest };
+  }
   const p = memoryDeltaPath(brainDir);
   const hasChanges = Boolean(
     (changes.nodes || []).length ||
@@ -207,6 +241,27 @@ async function appendMemoryDelta(brainDir, changes = {}) {
 }
 
 async function readMemoryDeltas(brainDir, handlers = {}) {
+  const manifest = await readManifest(brainDir).catch(() => null);
+  if (manifest) {
+    let count = 0;
+    let parseErrors = 0;
+    try {
+      for await (const entry of readJsonl(path.join(brainDir, manifest.activeDelta.file), {
+        confinedRoot: brainDir,
+        byteLimit: manifest.activeDelta.committedBytes,
+        requireCompletePrefix: true,
+      })) {
+        if (entry.op === 'upsert_node') handlers.onNode?.(entry.record);
+        else if (entry.op === 'upsert_edge') handlers.onEdge?.(entry.record);
+        else if (entry.op === 'remove_node') handlers.onRemoveNode?.(entry.id);
+        else if (entry.op === 'remove_edge') handlers.onRemoveEdge?.(entry.key);
+        count++;
+      }
+    } catch {
+      parseErrors++;
+    }
+    return { count, parseErrors };
+  }
   const p = memoryDeltaPath(brainDir);
   if (!fs.existsSync(p)) {
     return { count: 0, parseErrors: 0 };
@@ -245,6 +300,29 @@ async function readMemoryDeltas(brainDir, handlers = {}) {
  * structures; this module just yields the raw records.
  */
 async function readMemorySidecars(brainDir, { onNode, onEdge }) {
+  const manifest = await readManifest(brainDir).catch(() => null);
+  if (manifest) {
+    const source = await openMemorySource(brainDir);
+    let nodeCount = 0;
+    let edgeCount = 0;
+    try {
+      for await (const node of source.iterateNodes()) {
+        onNode(node, nodeCount);
+        nodeCount++;
+      }
+      for await (const edge of source.iterateEdges()) {
+        onEdge(edge, edgeCount);
+        edgeCount++;
+      }
+      return {
+        nodes: { count: nodeCount, parseErrors: 0 },
+        edges: { count: edgeCount, parseErrors: 0 },
+        manifest,
+      };
+    } finally {
+      await source.close();
+    }
+  }
   const nodes = await readJsonlGz(nodesPath(brainDir), (rec, i) => onNode(rec, i));
   const edges = await readJsonlGz(edgesPath(brainDir), (rec, i) => onEdge(rec, i));
   return { nodes, edges };
@@ -280,7 +358,44 @@ function* iterateEdges(memory) {
 }
 
 function sidecarsExist(brainDir) {
-  return fs.existsSync(nodesPath(brainDir)) && fs.existsSync(edgesPath(brainDir));
+  return fs.existsSync(path.join(brainDir, 'memory-manifest.json'))
+    || (fs.existsSync(nodesPath(brainDir)) && fs.existsSync(edgesPath(brainDir)));
+}
+
+function summarizeCompatibilityView(nodes, edges) {
+  const clusters = new Set(nodes
+    .map((node) => node?.cluster)
+    .filter((cluster) => cluster !== null && cluster !== undefined));
+  return {
+    nodeCount: nodes.length,
+    edgeCount: edges.length,
+    clusterCount: clusters.size,
+  };
+}
+
+function captureCompatibilityView(memory) {
+  const nodes = Array.from(iterateNodes(memory), (node) =>
+    JSON.parse(JSON.stringify(serializeNodeRecord(node))));
+  const edges = Array.from(iterateEdges(memory), (edge) =>
+    JSON.parse(JSON.stringify(edge)));
+  return {
+    nodes,
+    edges,
+    summary: summarizeCompatibilityView(nodes, edges),
+  };
+}
+
+function normalizeCompatibilityChanges(changes = {}) {
+  return {
+    nodes: (changes.nodes || []).map(serializeNodeRecord),
+    edges: changes.edges || [],
+    removedNodeIds: changes.removedNodeIds || [],
+    removedEdgeKeys: changes.removedEdgeKeys || [],
+  };
+}
+
+function defaultSidecarLockRoot(brainDir) {
+  return path.join(path.dirname(path.resolve(brainDir)), '.home23-memory-source-locks');
 }
 
 module.exports = {
@@ -303,4 +418,6 @@ module.exports = {
   appendMemoryDelta,
   readMemoryDeltas,
   serializeNodeRecord,
+  captureCompatibilityView,
+  defaultSidecarLockRoot,
 };

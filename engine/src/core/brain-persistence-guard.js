@@ -1,21 +1,16 @@
+const fs = require('node:fs');
+const path = require('node:path');
 const { readSnapshot } = require('./brain-snapshot');
-const { readJsonlGz, readMemoryDeltas, nodesPath, sidecarsExist } = require('./memory-sidecar');
+const { readMemorySidecars, sidecarsExist } = require('./memory-sidecar');
 const { StateCompression } = require('./state-compression');
 
 async function countSidecarNodes(brainDir) {
   const nodeIds = new Set();
   let anonymousCount = 0;
-  await readJsonlGz(nodesPath(brainDir), (node) => {
+  await readMemorySidecars(brainDir, {
+    onNode: (node) => {
     if (node?.id !== undefined) nodeIds.add(node.id);
     else anonymousCount += 1;
-  });
-  await readMemoryDeltas(brainDir, {
-    onNode: (node) => {
-      if (node?.id !== undefined) nodeIds.add(node.id);
-      else anonymousCount += 1;
-    },
-    onRemoveNode: (id) => {
-      nodeIds.delete(id);
     },
   });
   return nodeIds.size + anonymousCount;
@@ -26,6 +21,14 @@ async function resolveKnownGoodNodeCount(brainDir, statePath, options = {}) {
   const stateLoader = options.loadCompressed || StateCompression.loadCompressed;
   const sidecarCounter = options.countSidecarNodes || countSidecarNodes;
   const sidecarExists = options.sidecarsExist || sidecarsExist;
+  const hasManifest = fs.existsSync(path.join(brainDir, 'memory-manifest.json'));
+
+  if (hasManifest && sidecarExists(brainDir)) {
+    const sidecarCount = await sidecarCounter(brainDir);
+    if (Number.isFinite(sidecarCount) && sidecarCount > 0) {
+      return { count: sidecarCount, source: 'memory-manifest' };
+    }
+  }
 
   const sidecar = snapshotReader(brainDir);
   if (Number.isFinite(sidecar?.nodeCount)) {
