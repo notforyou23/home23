@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import test from 'node:test';
 import yaml from 'js-yaml';
 
@@ -36,15 +36,14 @@ import * as capabilitySecretModule from '../../cli/lib/brain-operations-capabili
 
 const require = createRequire(import.meta.url);
 const CAPABILITY_ENV = 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY';
+const TEST_NODE_MODULES = dirname(dirname(require.resolve('js-yaml/package.json')));
 
 function makeInstall({ key, mode = 0o600 } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'home23-brain-operations-'));
   mkdirSync(join(root, 'config'), { recursive: true });
   mkdirSync(join(root, 'instances', 'jerry'), { recursive: true });
   mkdirSync(join(root, 'instances', 'forrest'), { recursive: true });
-  if (existsSync(join(process.cwd(), 'node_modules'))) {
-    symlinkSync(join(process.cwd(), 'node_modules'), join(root, 'node_modules'), 'dir');
-  }
+  symlinkSync(TEST_NODE_MODULES, join(root, 'node_modules'), 'dir');
   writeFileSync(join(root, 'config', 'home.yaml'), yaml.dump({
     home: { primaryAgent: 'jerry' },
     providers: { 'ollama-local': { baseUrl: 'http://127.0.0.1:11434' } },
