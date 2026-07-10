@@ -144,6 +144,38 @@ async function readManifest(brainDir) {
   }
 }
 
+async function fsyncDirectory(dir) {
+  const handle = await fsp.open(dir, 'r');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeManifestAtomic(brainDir, manifest) {
+  validateManifest(manifest);
+  const encoded = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
+  if (encoded.length > MAX_MANIFEST_BYTES) {
+    throw memorySourceError('result_too_large', 'memory manifest limit exceeded', {
+      status: 413,
+      retryable: false,
+    });
+  }
+  const destination = manifestPath(brainDir);
+  const tmp = `${destination}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  const handle = await fsp.open(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+  try {
+    await handle.writeFile(encoded);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await fsp.rename(tmp, destination);
+  await fsyncDirectory(brainDir);
+  return validateManifest(manifest);
+}
+
 async function optionalConfinedFile(root, filePath) {
   const opened = await openConfinedRegularFile(root, filePath, {
     flags: fs.constants.O_RDONLY,
@@ -238,6 +270,8 @@ module.exports = {
   manifestPath,
   validateManifest,
   readManifest,
+  fsyncDirectory,
+  writeManifestAtomic,
   findLegacyResidentSidecars,
   resolveMemorySourceSelection,
 };
