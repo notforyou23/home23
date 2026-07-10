@@ -2,9 +2,10 @@
 
 ## Result
 
-- Browser result: PASS, with two explicit in-app Browser tool limitations documented below
+- Browser result: PARTIAL against the complete Task 7 checklist; all executed checks passed, but 200% zoom, reduced-motion emulation, and final Vibe gallery/Welcome/Setup browser rendering remain unexecuted because the in-app Browser session closed and the replacement session could not reopen the local QA URL
 - Tested branch: `codex/glass-light-dashboard`
 - Browser baseline commit: `ef7e534a2f261dfa623662e2c583e79e5c3e4cd3`
+- Final automated commit: `0a5274df156ff9522a95b64229e1ac6a58025137`
 - Comparison base: `c2b19654b7d784b43cdbdf231257adeba3b0675e`
 - Verification date: 2026-07-09 America/New_York
 
@@ -19,24 +20,28 @@
 
 ## Isolated verification servers
 
-No live PM2 process was stopped, restarted, replaced, or rebound. The implementation was served from the isolated worktree through a GET/HEAD-only proxy. The source handoff was served on a second safe port. A third GET/HEAD-only proxy exposed one production-shaped synthetic open invariant only after the live read-only Problems response proved there were zero open items.
+No live PM2 process was stopped, restarted, replaced, or rebound. The implementation was served from the isolated worktree through a same-origin GET/HEAD-only proxy. The source handoff was served on a second safe port. A third same-origin GET/HEAD-only proxy exposed one production-shaped synthetic open invariant only after the live Problems response proved there were zero open items.
 
-| Purpose | Exact command | URL | PID |
+| Purpose | Durable reproduction command | URL | Historical QA PID |
 |---|---|---|---:|
-| Worktree implementation with read-only upstream access | `QA_PORT=51923 QA_UPSTREAM=http://127.0.0.1:5002 node .superpowers/sdd/qa-readonly-server.js` | `http://127.0.0.1:51923/home23` | 58538 |
+| Worktree implementation with same-origin write blocking | `QA_PORT=51923 QA_UPSTREAM=http://127.0.0.1:5002 node tests/dashboard/fixtures/qa-readonly-server.mjs` | `http://127.0.0.1:51923/home23` | 58538 |
 | Approved source prototype | `python3 -m http.server 51924 --bind 127.0.0.1 --directory /Users/jtr/Downloads/design_handoff_glass_dashboard` | `http://127.0.0.1:51924/Home23%20Dashboard.dc.html` | 79909 |
-| Synthetic open-invariant presentation fixture | `QA_PORT=51925 QA_UPSTREAM=http://127.0.0.1:5002 QA_FIXTURE=open-invariant node .superpowers/sdd/qa-readonly-server.js` | `http://127.0.0.1:51925/home23` | 15086 |
+| Synthetic open-invariant presentation fixture | `QA_PORT=51925 QA_UPSTREAM=http://127.0.0.1:5002 QA_FIXTURE=open-invariant node tests/dashboard/fixtures/qa-readonly-server.mjs` | `http://127.0.0.1:51925/home23` | 15086 |
 
 The implementation proxy initially ran as PID 79793. It was stopped by exact PID and restarted as PID 58538 only to correct the QA server's `.mjs` MIME type; the live dashboard was not involved.
 
-Both proxies return HTTP 405 with `qa_server_is_read_only` for non-GET/HEAD methods. The fixture server overrides only GETs to `/api/live-problems` and `/home23/api/live-problems`, uses the production `buildLiveProblemSnapshot` shape, marks provenance as `qaFixture.synthetic=true`, and blocks all writes. It is evidence for the invariant-editor UI path, not evidence about live health.
+The historical PIDs above ran the ignored development copy at `.superpowers/sdd/qa-readonly-server.js`. Review identified that as non-portable, so the same harness was committed at `tests/dashboard/fixtures/qa-readonly-server.mjs`. The committed path was revalidated on port 51926: Home returned HTTP 200 and a representative Query POST returned HTTP 405 with `qa_server_is_read_only`; that validation process was then stopped by its exact PID.
+
+Both proxies return HTTP 405 with `qa_server_is_read_only` for non-GET/HEAD requests addressed to the proxy origins. The fixture server overrides only GETs to `/api/live-problems` and `/home23/api/live-problems`, uses the production `buildLiveProblemSnapshot` shape, marks provenance as `qaFixture.synthetic=true`, and blocks same-origin writes. It is evidence for the invariant-editor UI path, not evidence about live health.
+
+This is not a complete network-isolation boundary: production code can resolve per-agent dashboard bases and the Chat bridge to other live localhost ports. Those absolute/direct routes do not pass through ports 51923/51925. QA therefore combined proxy-level 405 checks with a strict interaction rule: no action, send, save, device, lifecycle, or other write control was exercised anywhere in the browser.
 
 ### Read-only proof
 
 - Home, standalone Chat, full Settings, Setup/Welcome, Vibe gallery, dashboard CSS, and JavaScript returned HTTP 200 from port 51923.
 - Source prototype and `support.js` returned HTTP 200 from port 51924.
 - Scope, Settings status, Home summary, weather, Sauna, pool, Problems, Good Life, and Briefs GETs returned HTTP 200.
-- Representative Settings, Sauna action, and Query POSTs returned HTTP 405; a final Query POST read back `{"ok":false,"error":"qa_server_is_read_only"}`.
+- Representative same-origin Settings, Sauna action, and Query POSTs returned HTTP 405; a final Query POST read back `{"ok":false,"error":"qa_server_is_read_only"}`. This proves the proxy behavior only, not direct agent/bridge routes.
 - All three isolated servers and live `http://127.0.0.1:5002/home23` read back HTTP 200 after Browser QA.
 
 ## Automated verification after Browser repairs
@@ -108,8 +113,8 @@ Original and intermediate captures remain in the asset directory as failure-and-
 | 768 × 900 | Navigation/hero adapt | Three-column sensors; one-column main | PASS; no overflow |
 | 390 × 844 | Full-row wrapped, horizontally scrollable nav | One-column hero/sensors/main; mobile overlays | PASS; no overflow |
 | 320 × 800 | Same narrow-safe navigation contract | One-column readable cards | PASS; no overflow |
-| 200% zoom | In-app Browser native pipe closed before emulation | 720/768/390/320 reflow provides adjacent responsive evidence | TOOL-LIMITED; no app defect observed |
-| Reduced motion | Native pipe closed before media emulation | Executable CSS/JS contracts and standalone Chat reduced-motion test pass | TOOL-LIMITED; no app defect observed |
+| 200% zoom | In-app Browser session closed before emulation | 720/768/390/320 reflow provides adjacent evidence only | NOT EXECUTED IN BROWSER |
+| Reduced motion | Session closed before media emulation | Executable CSS/JS contracts and standalone Chat reduced-motion test pass, but do not replace emulation | NOT EXECUTED IN BROWSER |
 
 No viewport override persisted after the in-app Browser process closed.
 
@@ -128,7 +133,7 @@ No viewport override persisted after the in-app Browser process closed.
 | COSMO lazy preservation | Home→COSMO keeps frameCount=1/src unchanged; wrapper none→block | PASS |
 | Standalone Chat | Light page, Jerry/gpt-5.5, 37 model options, attach control and file input | PASS, no send/file action |
 | Full Settings | Complete light control surface; final description contrast verified | PASS, no write |
-| Vibe gallery / Welcome / Setup | Page-scope production contracts pass; Browser recapture interrupted by native pipe close | PASS by executable contracts; screenshot tool-limited |
+| Vibe gallery / Welcome / Setup | Page-scope production contracts pass; final Browser rendering/recapture was interrupted when the session closed | NOT EXECUTED IN FINAL BROWSER PASS; contracts only |
 | Hash deep links + refresh + back/forward | Native hashes survive direct load/refresh; back returns prior hash; forward returns `#cosmo23` | PASS |
 | Sensor-only layout controls | Half/full/reset scoped to environment cards; phone states one column | PASS |
 | Chat state preservation | Unsent draft, agent/model, and singleton DOM preserved tile→overlay→tile; draft cleared | PASS |
@@ -158,7 +163,7 @@ The fixture was needed solely because the live response had zero open problems. 
 - The in-app Browser keyboard backend focused the native Vibe button but did not synthesize the browser default Enter/Space activation. Native-button semantics plus the focused executable contract cover this default action; redundant custom key handlers were intentionally not added.
 - Home console warnings/errors were `[]` at 1440 and remained clean through checked native surfaces. No redesign-caused console error was observed before the Browser backend closed.
 - Full Settings muted text computes to `rgb(90, 100, 116)` on the light hero after repair.
-- 200% zoom and reduced-motion emulation are the two explicit Browser tool limitations described in the viewport matrix. Responsive evidence and executable tests cover the same layout/motion contracts.
+- 200% zoom and reduced-motion emulation were not executed. Responsive evidence and executable tests are adjacent evidence, not substitutes for those Browser checks.
 
 ## Intentionally unexercised live writes
 
@@ -222,6 +227,7 @@ engine/src/dashboard/home23-dashboard.html
 engine/src/dashboard/home23-dashboard.js
 engine/src/dashboard/home23-settings.css
 tests/dashboard/glass-light-dashboard.test.js
+tests/dashboard/fixtures/qa-readonly-server.mjs
 design-qa.md
 docs/superpowers/reports/2026-07-09-glass-light-dashboard-verification.md
 docs/superpowers/reports/assets/glass-light-dashboard/*.png
@@ -231,4 +237,4 @@ The branch remains inside the approved dashboard/page/test/spec/plan/report boun
 
 ## Caveats
 
-Only the in-app Browser native-pipe limitations above remain: it did not synthesize native-button default key activation and closed before 200% zoom/reduced-motion emulation plus final Vibe/Welcome/Setup recaptures. Each affected behavior has semantic/executable contract coverage and adjacent responsive/browser evidence. These are evidence-tool limitations, not open P0/P1/P2 product findings.
+The in-app Browser did not synthesize native-button default key activation and closed before 200% zoom/reduced-motion emulation plus final Vibe gallery/Welcome/Setup rendering. A replacement browser session could not reopen the local QA URL, so those checklist items remain unexecuted. Semantic/executable contracts and adjacent responsive evidence reduce risk but do not prove the missing Browser behaviors. Separately, 20 of the 26 capture files have `.png` names but JPEG/JFIF payloads from the in-app screenshot encoder; the six final combined comparison files are true PNGs and all images render, but payload normalization remains a portability follow-up.
