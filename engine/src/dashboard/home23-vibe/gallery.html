@@ -443,6 +443,10 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
+      body.h23-vibe-page #particles-js {
+        display: none;
+      }
+
       body.h23-vibe-page *,
       body.h23-vibe-page *::before,
       body.h23-vibe-page *::after {
@@ -487,7 +491,8 @@
 
   <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
   <script>
-    if (typeof particlesJS !== 'undefined') {
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (!reduceMotion && typeof particlesJS !== 'undefined') {
       particlesJS('particles-js', {
         particles: {
           number: { value: 40, density: { enable: true, value_area: 1000 } },
@@ -600,7 +605,7 @@
         grid.innerHTML = data.images.map((item, index) => {
           const caption = escapeHtml(item.caption || item.prompt || '');
           return `
-          <article class="h23-vg-card" data-index="${index}">
+          <article class="h23-vg-card" role="button" tabindex="0" aria-label="Open Vibe image ${index + 1}" data-index="${index}">
             <img src="${item.url}" alt="Vibe image ${index + 1}" loading="lazy">
             <div class="h23-vg-card-body">
               <div class="h23-vg-source">${escapeHtml(sourceLabel(item))}</div>
@@ -611,9 +616,16 @@
         }).join('');
 
         grid.querySelectorAll('.h23-vg-card').forEach((card) => {
-          card.addEventListener('click', () => {
+          const openCard = () => {
             const item = data.images[Number(card.dataset.index)];
             if (item) openLightbox(item);
+          };
+          card.addEventListener('click', openCard);
+          card.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              openCard();
+            }
           });
         });
 

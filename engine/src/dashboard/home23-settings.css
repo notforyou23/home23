@@ -2315,9 +2315,9 @@ body.h23-settings-page .h23s-onboarding-step.active .h23s-onboarding-step-label 
   color: var(--h23-accent);
 }
 
-body.h23-settings-page .h23s-ob-check.complete,
-body.h23-settings-page .h23s-onboarding-gate.ready,
-body.h23-settings-page .h23s-onboarding-launch-status.success {
+body.h23-settings-page .h23s-onboarding-step.done .h23s-onboarding-step-label,
+body.h23-settings-page .h23s-ob-check.done,
+body.h23-settings-page .h23s-onboarding-gate.satisfied {
   color: var(--h23-green-aa);
 }
 
@@ -2439,15 +2439,19 @@ body.h23-settings-page :is(.h23s-worker-item, .h23s-worker-run) :is(span, time, 
   color: var(--h23-text-secondary);
 }
 
-body.h23-settings-page .h23s-status-dot.ok,
-body.h23-settings-page .h23s-oauth-connected,
-body.h23-settings-page .h23s-save-status.success {
+body.h23-settings-page .h23s-status-dot.ok {
+  background: var(--h23-green-aa);
+}
+
+body.h23-settings-page .h23s-status-dot.fail {
+  background: var(--h23-red-aa);
+}
+
+body.h23-settings-page .h23s-oauth-connected {
   color: var(--h23-green-aa);
 }
 
-body.h23-settings-page .h23s-status-dot.fail,
-body.h23-settings-page .h23s-oauth-expired,
-body.h23-settings-page .h23s-save-status.error {
+body.h23-settings-page .h23s-oauth-expired {
   color: var(--h23-red-aa);
 }
 
@@ -2464,8 +2468,8 @@ body.h23-settings-page [style*="background: rgba(0, 0, 0"] {
   background: rgba(255, 255, 255, 0.48) !important;
 }
 
-body.h23-settings-page [style*="color:#fff"],
-body.h23-settings-page [style*="color: #fff"] {
+body.h23-settings-page [style*="color:#fff"]:not(button),
+body.h23-settings-page [style*="color: #fff"]:not(button) {
   color: var(--h23-text-heading) !important;
 }
 
@@ -2529,6 +2533,10 @@ body.h23-settings-page [style*="color: #fff"] {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  body.h23-settings-page #particles-js {
+    display: none;
+  }
+
   body.h23-settings-page *,
   body.h23-settings-page *::before,
   body.h23-settings-page *::after {

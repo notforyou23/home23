@@ -180,6 +180,10 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
+      body.h23-welcome-page #particles-js {
+        display: none;
+      }
+
       body.h23-welcome-page *,
       body.h23-welcome-page *::before,
       body.h23-welcome-page *::after {
@@ -220,7 +224,8 @@
       }
     })();
 
-    if (typeof particlesJS !== 'undefined') {
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (!reduceMotion && typeof particlesJS !== 'undefined') {
       particlesJS('particles-js', {
         particles: {
           number: { value: 40, density: { enable: true, value_area: 1000 } },

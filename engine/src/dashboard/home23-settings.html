@@ -1174,7 +1174,8 @@
   <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
   <script src="/home23-settings.js?v=20260526-settings-routing"></script>
   <script>
-    if (typeof particlesJS !== 'undefined') {
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (!reduceMotion && typeof particlesJS !== 'undefined') {
       particlesJS('particles-js', {
         particles: {
           number: { value: 40, density: { enable: true, value_area: 1000 } },

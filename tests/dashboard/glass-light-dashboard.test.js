@@ -14,6 +14,7 @@ const css = read('engine/src/dashboard/home23-dashboard.css');
 const chatCss = read('engine/src/dashboard/home23-chat.css');
 const settingsHtml = read('engine/src/dashboard/home23-settings.html');
 const settingsCss = read('engine/src/dashboard/home23-settings.css');
+const settingsJs = read('engine/src/dashboard/home23-settings.js');
 const standaloneChatHtml = read('engine/src/dashboard/home23-chat.html');
 const vibeGalleryHtml = read('engine/src/dashboard/home23-vibe/gallery.html');
 const welcomeHtml = read('engine/src/dashboard/home23-welcome.html');
@@ -90,6 +91,12 @@ function findDescendant(node, predicate) {
 
 function sourceForNode(source, node) {
   return source.slice(node.start, node.end);
+}
+
+function inlineScripts(source) {
+  return [...source.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)]
+    .map((match) => match[1])
+    .filter((script) => script.trim());
 }
 
 function functionFragment(source, name) {
@@ -1587,6 +1594,121 @@ test('standalone Chat, Vibe gallery, and Welcome retain their production binding
   assert.match(standaloneChatHtml, /body\.h23-chat-page \.sh-shell\s*\{[^}]*background:\s*var\(--h23-glass-card\)/);
   assert.match(vibeGalleryHtml, /body\.h23-vibe-page \.h23-vg-card\s*\{[^}]*background:\s*var\(--h23-glass-card\)/);
   assert.match(welcomeHtml, /body\.h23-welcome-page \.welcome-card\s*\{[^}]*background:\s*var\(--h23-glass-overlay\)/);
+});
+
+test('standalone Chat page scope wins shared important paint rules and exposes select focus', () => {
+  const pageStyle = standaloneChatHtml.match(/<style>([\s\S]*?)<\/style>/)?.[1] || '';
+  const scoped = pageStyle.slice(pageStyle.indexOf('Glass Light standalone Chat surface'));
+
+  assert.match(scoped, /body\.h23-chat-page\s*\{[^}]*background:\s*var\(--h23-bg-wash-1\),\s*var\(--h23-bg-wash-2\),\s*var\(--h23-bg\)\s*!important/);
+  assert.match(scoped, /body\.h23-chat-page #particles-js\s*\{[^}]*display:\s*block\s*!important[^}]*opacity:\s*0\.1\s*!important/);
+  assert.match(
+    scoped,
+    /body\.h23-chat-page :is\(\.sh-drawer, \.sh-sheet\)\s*\{[^}]*background:\s*var\(--h23-glass-overlay\)\s*!important/,
+  );
+  assert.match(
+    scoped,
+    /body\.h23-chat-page :is\(\.h23-chat-agent-select, \.h23-chat-model-select\):focus-visible\s*\{[^}]*outline:/,
+  );
+});
+
+test('Settings compatibility colors preserve action contrast and follow real runtime states', () => {
+  const scoped = settingsCss.slice(settingsCss.indexOf('Glass Light settings surface'));
+  assert.match(settingsJs, /color:#fff[\s\S]{0,200}Restart to apply/);
+  assert.match(scoped, /\[style\*="color:#fff"\]:not\(button\)/);
+  assert.match(scoped, /\[style\*="color: #fff"\]:not\(button\)/);
+  assert.doesNotMatch(scoped, /\.h23s-ob-check\.complete|\.h23s-onboarding-gate\.ready|\.h23s-(?:onboarding-launch-status|save-status)\.success|\.h23s-save-status\.error/);
+  assert.match(scoped, /\.h23s-onboarding-step\.done \.h23s-onboarding-step-label/);
+  assert.match(scoped, /\.h23s-ob-check\.done/);
+  assert.match(scoped, /\.h23s-onboarding-gate\.satisfied/);
+});
+
+test('Vibe gallery cards are keyboard reachable and Enter or Space opens the unchanged lightbox path', async () => {
+  const galleryScript = inlineScripts(vibeGalleryHtml).at(-1) || '';
+  assert.match(galleryScript, /<article class="h23-vg-card"[^>]*role="button"[^>]*tabindex="0"/);
+  const bindingStart = galleryScript.indexOf("grid.querySelectorAll('.h23-vg-card')");
+  assert.notEqual(bindingStart, -1);
+  const bindings = galleryScript.slice(bindingStart, galleryScript.indexOf('if (selectedId)', bindingStart));
+  assert.match(bindings, /addEventListener\(['"]keydown['"]/);
+  assert.match(bindings, /event\.key\s*===\s*['"]Enter['"]/);
+  assert.match(bindings, /event\.key\s*===\s*['"] ['"]/);
+  assert.match(bindings, /event\.preventDefault\(\)/);
+  assert.match(bindings, /openLightbox\(item\)/);
+
+  const makeElement = () => {
+    const classes = new Set();
+    const handlers = {};
+    return {
+      classes,
+      handlers,
+      classList: {
+        add: (...names) => names.forEach((name) => classes.add(name)),
+        remove: (...names) => names.forEach((name) => classes.delete(name)),
+      },
+      addEventListener: (type, handler) => { handlers[type] = handler; },
+      textContent: '',
+      src: '',
+    };
+  };
+  const card = { ...makeElement(), dataset: { index: '0' } };
+  const elements = new Map([
+    ['gallery-grid', makeElement()],
+    ['meta-bar', makeElement()],
+    ['lightbox', makeElement()],
+    ['lightbox-close', makeElement()],
+    ['lightbox-image', makeElement()],
+    ['lightbox-caption', makeElement()],
+    ['lightbox-seed', makeElement()],
+    ['lightbox-prompt', makeElement()],
+    ['lightbox-meta', makeElement()],
+  ]);
+  elements.get('gallery-grid').querySelectorAll = () => [card];
+
+  const galleryContext = vm.createContext({
+    document: { getElementById: (id) => elements.get(id) },
+    window: {
+      location: { href: 'http://home23.test/home23/vibe', search: '' },
+      history: { replaceState() {} },
+      matchMedia: () => ({ matches: true }),
+    },
+    fetch: async () => ({
+      json: async () => ({
+        total: 1,
+        storedTotal: 1,
+        externalTotal: 0,
+        images: [{ url: '/image.jpg', caption: 'Calm house', generatedAt: '2026-07-09T12:00:00Z' }],
+      }),
+    }),
+    AbortSignal,
+    URL,
+    URLSearchParams,
+    Date,
+    Number,
+  });
+  await vm.runInContext(galleryScript, galleryContext);
+
+  for (const key of ['Enter', ' ']) {
+    elements.get('lightbox').classes.delete('open');
+    let prevented = false;
+    card.handlers.keydown({ key, preventDefault: () => { prevented = true; } });
+    assert.equal(prevented, true, `${JSON.stringify(key)} must suppress native card scrolling`);
+    assert.equal(elements.get('lightbox').classes.has('open'), true, `${JSON.stringify(key)} must open the lightbox`);
+  }
+});
+
+test('reduced-motion preference causally prevents particle canvas initialization', () => {
+  for (const [page, label] of [
+    [settingsHtml, 'Settings'],
+    [vibeGalleryHtml, 'Vibe gallery'],
+    [welcomeHtml, 'Welcome'],
+  ]) {
+    const script = inlineScripts(page).at(-1) || '';
+    const callIndex = script.indexOf("particlesJS('particles-js'");
+    assert.notEqual(callIndex, -1, `${label} particle call is missing`);
+    const beforeCall = script.slice(0, callIndex);
+    assert.match(beforeCall, /matchMedia\?\.\(['"]\(prefers-reduced-motion: reduce\)['"]\)\.matches/);
+    assert.match(beforeCall, /if\s*\(\s*!reduceMotion\s*&&\s*typeof particlesJS !== ['"]undefined['"]\s*\)/);
+  }
 });
 
 test('active navigation, sensor hover, and Vibe overlay match approved details', () => {

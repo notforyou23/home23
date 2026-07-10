@@ -468,7 +468,7 @@
       --shadow-glass: var(--h23-shadow-panel);
       color: var(--h23-text-body);
       font-family: var(--h23-font-ui);
-      background: var(--h23-bg-wash-1), var(--h23-bg-wash-2), var(--h23-bg);
+      background: var(--h23-bg-wash-1), var(--h23-bg-wash-2), var(--h23-bg) !important;
     }
 
     body.h23-chat-page::before {
@@ -476,7 +476,8 @@
     }
 
     body.h23-chat-page #particles-js {
-      opacity: 0.1;
+      display: block !important;
+      opacity: 0.1 !important;
       pointer-events: none;
     }
 
@@ -545,8 +546,8 @@
 
     body.h23-chat-page :is(.sh-drawer, .sh-sheet) {
       color: var(--h23-text-body);
-      border-color: var(--h23-glass-border);
-      background: var(--h23-glass-overlay);
+      border-color: var(--h23-glass-border) !important;
+      background: var(--h23-glass-overlay) !important;
       box-shadow: var(--h23-shadow-overlay);
       backdrop-filter: blur(var(--h23-glass-blur-overlay));
       -webkit-backdrop-filter: blur(var(--h23-glass-blur-overlay));
@@ -571,6 +572,11 @@
       border-color: var(--h23-input-border);
       background: var(--h23-glass-input);
       font-family: var(--h23-font-ui);
+    }
+
+    body.h23-chat-page :is(.h23-chat-agent-select, .h23-chat-model-select):focus-visible {
+      outline: 3px solid var(--h23-accent-tint-border);
+      outline-offset: 2px;
     }
 
     body.h23-chat-page :is(.h23-chat-thinking, .h23-chat-tool-args, .h23-chat-tool-result, pre, code) {
