@@ -6752,10 +6752,41 @@ body.h23-dashboard-page .h23-human-value {
   letter-spacing: -0.02em;
 }
 
-body.h23-dashboard-page .h23-human-card-button:first-of-type .h23-human-value,
 body.h23-dashboard-page .h23-human-value.healthy,
 body.h23-dashboard-page .h23-human-value.clear {
   color: var(--h23-green-aa);
+}
+
+body.h23-dashboard-page .h23-human-card-button[data-problem-severity="clear"] .h23-human-value {
+  color: var(--h23-green-aa);
+}
+
+body.h23-dashboard-page .h23-human-card-button[data-problem-severity="open"] .h23-human-value {
+  color: var(--h23-amber-aa);
+}
+
+body.h23-dashboard-page .h23-human-card-button[data-problem-severity="chronic"] .h23-human-value {
+  color: var(--h23-red-aa);
+}
+
+body.h23-dashboard-page .h23-human-card-button[data-problem-severity="unverifiable"] .h23-human-value,
+body.h23-dashboard-page .h23-human-card-button[data-problem-severity="unavailable"] .h23-human-value {
+  color: var(--h23-text-secondary);
+}
+
+body.h23-dashboard-page .h23-human-card-button[data-problem-severity="open"] {
+  border-color: rgba(217, 118, 43, 0.34);
+  background: rgba(255, 247, 235, 0.78);
+}
+
+body.h23-dashboard-page .h23-human-card-button[data-problem-severity="chronic"] {
+  border-color: rgba(201, 79, 79, 0.36);
+  background: rgba(255, 241, 241, 0.8);
+}
+
+body.h23-dashboard-page .h23-human-card-button[data-problem-severity="unverifiable"] {
+  border-color: rgba(90, 100, 116, 0.34);
+  background: rgba(244, 246, 250, 0.82);
 }
 
 body.h23-dashboard-page .h23-human-subtitle {
@@ -7556,6 +7587,70 @@ body.h23-dashboard-page .h23-cosmo-indicator-dot.error {
   background: var(--h23-red);
 }
 
+body.h23-dashboard-page .h23-cosmo-offline-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 32px;
+  background: var(--h23-glass-overlay);
+  color: var(--h23-text-primary);
+  text-align: center;
+  -webkit-backdrop-filter: blur(var(--h23-glass-blur-overlay));
+  backdrop-filter: blur(var(--h23-glass-blur-overlay));
+}
+
+body.h23-dashboard-page .h23-cosmo-offline-kicker {
+  color: var(--h23-accent);
+  font-family: var(--h23-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+body.h23-dashboard-page .h23-cosmo-offline-title {
+  color: var(--h23-text-heading);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+body.h23-dashboard-page .h23-cosmo-offline-detail {
+  max-width: 420px;
+  color: var(--h23-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+body.h23-dashboard-page .h23-cosmo-offline-overlay #cosmo23-restart-btn {
+  min-height: 42px;
+  margin-top: 4px;
+  padding: 9px 20px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--h23-accent);
+  color: #fff;
+  font: 600 13px/1 var(--h23-font-ui);
+  box-shadow: var(--h23-shadow-accent-btn);
+  cursor: pointer;
+}
+
+body.h23-dashboard-page .h23-cosmo-offline-overlay #cosmo23-restart-btn:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+body.h23-dashboard-page .h23-cosmo-offline-status {
+  min-height: 18px;
+  color: var(--h23-text-secondary);
+  font-family: var(--h23-font-mono);
+  font-size: 11px;
+}
+
 /* Unified modal recipe */
 body.h23-dashboard-page .h23-log-overlay,
 body.h23-dashboard-page .h23-vibe-detail-modal {
@@ -7676,12 +7771,6 @@ body.h23-dashboard-page .h23-brain-storage-status.in-sync {
   border-color: rgba(30, 158, 111, 0.28);
   background: rgba(30, 158, 111, 0.1);
   color: var(--h23-green-aa);
-}
-
-body.h23-dashboard-page .h23-brain-storage-status.pending {
-  border-color: rgba(217, 118, 43, 0.3);
-  background: rgba(217, 118, 43, 0.1);
-  color: var(--h23-amber-aa);
 }
 
 body.h23-dashboard-page .h23-brain-storage-status.mismatch {

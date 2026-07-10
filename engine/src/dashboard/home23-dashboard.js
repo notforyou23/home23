@@ -480,11 +480,11 @@ async function updateProblemsBadge() {
     el.style.display = '';
     if (sep) sep.style.display = '';
     if (s.counts.chronic > 0) {
-      badge.textContent = `🩺 ${openCount} (${s.counts.chronic} chronic)`;
-      badge.style.color = '#ff6b6b';
+      badge.textContent = `${openCount} problems · ${s.counts.chronic} chronic`;
+      badge.style.color = 'var(--h23-red-aa)';
     } else {
-      badge.textContent = `🩺 ${openCount}`;
-      badge.style.color = '#ffb347';
+      badge.textContent = `${openCount} problem${openCount === 1 ? '' : 's'}`;
+      badge.style.color = 'var(--h23-amber-aa)';
     }
   } catch { /* silent */ }
 }
@@ -646,7 +646,7 @@ function renderProblemCard(p) {
     const elapsed = (Date.now() - Date.parse(p.dispatchedAt)) / 3600000;
     const pct = Math.min(100, Math.round((elapsed / budget) * 100));
     dispatchBanner = `<div style="background:rgba(90,200,250,0.08);border:1px solid rgba(90,200,250,0.2);border-radius:6px;padding:7px 10px;margin:6px 0;font-size:12px;color:#5ac8fa;display:flex;align-items:center;gap:10px;">
-      <span>🔍 Agent working</span>
+      <span>Agent working</span>
       <span style="color:rgba(255,255,255,0.65);">${elapsed.toFixed(1)}h / ${budget}h</span>
       <div style="flex:1;height:3px;background:rgba(255,255,255,0.08);border-radius:2px;overflow:hidden;"><div style="width:${pct}%;height:100%;background:#5ac8fa;"></div></div>
       ${p.dispatchedTurnId ? `<code style="font-size:10px;color:rgba(255,255,255,0.4);">${escapeHtml(p.dispatchedTurnId)}</code>` : ''}
@@ -833,16 +833,7 @@ async function deleteProblemFromEditor() {
 let _brainStorage = null;
 
 function brainStorageStatus(data = {}) {
-  const authoritative = String(
-    data.coherenceStatus
-      || data.storageStatus
-      || data.coherence?.status
-      || data.coherence?.state
-      || data.state
-      || data.status
-      || '',
-  ).trim().toLowerCase();
-  if (['in-sync', 'pending', 'mismatch'].includes(authoritative)) return authoritative;
+  if (data.mismatch === true) return 'mismatch';
 
   const finiteCount = (value) => (
     value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))
@@ -854,13 +845,11 @@ function brainStorageStatus(data = {}) {
   const snapshotEdges = finiteCount(data.snapshot?.edgeCount);
   const memoryEdges = finiteCount(data.inMemory?.edges);
   if ([snapshotNodes, memoryNodes, snapshotEdges, memoryEdges].every((value) => value !== null)) {
-    const nodeDelta = memoryNodes - snapshotNodes;
-    const edgeDelta = memoryEdges - snapshotEdges;
-    if (nodeDelta === 0 && edgeDelta === 0) return 'in-sync';
-    if (nodeDelta >= 0 && edgeDelta >= 0 && (nodeDelta > 0 || edgeDelta > 0)) return 'pending';
-    return 'mismatch';
+    return snapshotNodes === memoryNodes && snapshotEdges === memoryEdges
+      ? 'in-sync'
+      : 'mismatch';
   }
-  return data.mismatch === true ? 'mismatch' : 'unavailable';
+  return 'unavailable';
 }
 
 function brainStorageStatusPresentation(data = {}) {
@@ -872,11 +861,6 @@ function brainStorageStatusPresentation(data = {}) {
       state: 'in-sync',
       color: 'var(--h23-green-aa)',
       text: 'Disk snapshot and live memory are in sync.',
-    },
-    pending: {
-      state: 'pending',
-      color: 'var(--h23-amber-aa)',
-      text: `Live memory is ahead of disk (${memoryNodes} vs ${snapNodes} nodes); the next successful snapshot should close this expected working delta.`,
     },
     mismatch: {
       state: 'mismatch',
@@ -921,11 +905,9 @@ async function updateBrainStorageBadge() {
     badge.style.color = presentation.color;
 
     if (coherence === 'mismatch') {
-      badge.textContent = `🧠 ${snapNodes} ⚠️ mismatch`;
-    } else if (coherence === 'pending') {
-      badge.textContent = `🧠 ${snapNodes.toLocaleString()} · pending snapshot`;
+      badge.textContent = `Brain ${snapNodes} · mismatch`;
     } else {
-      badge.textContent = `🧠 ${snapNodes.toLocaleString()} · saved ${ageStr} ago`;
+      badge.textContent = `Brain ${snapNodes.toLocaleString()} · saved ${ageStr} ago`;
     }
   } catch { /* silent */ }
 }
@@ -952,6 +934,7 @@ async function renderBrainStoragePanel() {
     _brainStorage = data;
 
     const snap = data.snapshot;
+    const live = data.inMemory;
     const hw = data.highWater;
     const files = data.files || {};
     const backups = data.backups || [];
@@ -972,9 +955,9 @@ async function renderBrainStoragePanel() {
           <div style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:6px;">saved ${ago(snap?.savedAt)} · source: ${snap?.memorySource || '—'}</div>
         </div>
         <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;">
-          <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Last verified (engine)</div>
-          <div style="font-size:22px;color:#fff;">${snap?.nodeCount != null ? snap.nodeCount.toLocaleString() : '—'} nodes</div>
-          <div style="font-size:13px;color:rgba(255,255,255,0.6);margin-top:2px;">${snap?.edgeCount != null ? snap.edgeCount.toLocaleString() + ' edges' : ''}</div>
+          <div style="font-size:11px;color:rgba(255,255,255,0.5);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">In memory (live)</div>
+          <div style="font-size:22px;color:#fff;">${live?.nodes != null ? live.nodes.toLocaleString() : '—'} nodes</div>
+          <div style="font-size:13px;color:rgba(255,255,255,0.6);margin-top:2px;">${live?.edges != null ? live.edges.toLocaleString() + ' edges' : 'live count unavailable'}</div>
         </div>
       </div>
       <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:12px 14px;margin-bottom:14px;">
@@ -1420,13 +1403,13 @@ function showCosmoOfflineOverlay() {
   if (!overlay) {
     overlay = document.createElement('div');
     overlay.id = 'cosmo23-offline-overlay';
-    overlay.style.cssText = 'position:absolute; inset:0; z-index:5; display:flex; flex-direction:column; align-items:center; justify-content:center; background:rgba(10,10,18,0.95); gap:16px;';
+    overlay.className = 'h23-cosmo-offline-overlay';
     overlay.innerHTML = `
-      <div style="font-size:36px; opacity:0.4;">&#x1F52C;</div>
-      <div style="font-size:16px; color:#ccc; font-weight:500;">COSMO 2.3 is offline</div>
-      <div id="cosmo23-offline-detail" style="font-size:13px; color:#888; max-width:400px; text-align:center;">The research engine process is not running.</div>
-      <button id="cosmo23-restart-btn" style="margin-top:8px; padding:8px 24px; background:rgba(99,102,241,0.25); border:1px solid rgba(99,102,241,0.5); color:#a5b4fc; border-radius:8px; font-size:14px; cursor:pointer; transition:all 0.15s;">Start COSMO 2.3</button>
-      <div id="cosmo23-restart-status" style="font-size:12px; color:#888; min-height:18px;"></div>
+      <div class="h23-cosmo-offline-kicker">Research engine</div>
+      <div class="h23-cosmo-offline-title">COSMO 2.3 is offline</div>
+      <div class="h23-cosmo-offline-detail" id="cosmo23-offline-detail">The research engine process is not running.</div>
+      <button class="h23-cosmo-offline-action" id="cosmo23-restart-btn" type="button">Start COSMO 2.3</button>
+      <div class="h23-cosmo-offline-status" id="cosmo23-restart-status" role="status" aria-live="polite"></div>
     `;
     const wrap = document.getElementById('cosmo23-frame-wrap');
     if (wrap) wrap.appendChild(overlay);
@@ -1611,10 +1594,10 @@ async function loadSettingsOverview() {
   const requests = [
     apiFetch('/home23/api/settings/agents', { timeoutMs: 8000 }),
     apiFetch('/home23/api/settings/feeder', { timeoutMs: 8000 }),
-    apiFetch(`${dashboardBaseUrl()}/api/state`, { timeoutMs: 8000 }),
+    apiFetch(`${dashboardBaseUrl()}/api/notifications`, { timeoutMs: 8000 }),
     apiFetch('/home23/api/settings/vibe', { timeoutMs: 8000 }),
   ];
-  const [agentsResult, feederResult, operationsResult, vibeResult] = await Promise.allSettled(requests);
+  const [agentsResult, feederResult, notificationsResult, vibeResult] = await Promise.allSettled(requests);
 
   const agentsData = settingsOverviewResult(agentsResult);
   if (agentsData) {
@@ -1645,17 +1628,17 @@ async function loadSettingsOverview() {
     renderSettingsOverviewUnavailable('settings-overview-feeds', 'Data feed status');
   }
 
-  const operationsData = settingsOverviewResult(operationsResult);
-  if (operationsData) {
-    const operationCycle = operationsData.cycleCount ?? enginePulse.cycle;
-    const operationState = operationsData.temporalState || operationsData.cognitiveState?.mode || enginePulse.state;
-    setHtml('settings-overview-operations', `
-      <p>Engine: ${escapeHtml(operationState || 'status unavailable')}</p>
-      <p>Cycle: ${escapeHtml(operationCycle != null ? formatCompactNumber(operationCycle) : 'unavailable')}</p>
-      <p>Model: ${escapeHtml(primaryAgent?.model || 'unavailable')}</p>
+  const notificationsData = settingsOverviewResult(notificationsResult);
+  if (notificationsData) {
+    const pending = Number(notificationsData.pending || 0);
+    const recent = Number(notificationsData.length || 0);
+    const total = Number(notificationsData.total || recent);
+    setHtml('settings-overview-notifications', `
+      <p>${escapeHtml(String(pending))} pending</p>
+      <p>${escapeHtml(String(recent))} recent · ${escapeHtml(String(total))} total</p>
     `);
   } else {
-    renderSettingsOverviewUnavailable('settings-overview-operations', 'Operations status');
+    renderSettingsOverviewUnavailable('settings-overview-notifications', 'Notification status');
   }
 
   const vibeData = settingsOverviewResult(vibeResult);
@@ -2109,17 +2092,37 @@ async function runHumanSaunaAction(actionId, button) {
 }
 
 function renderHumanIssues(payload) {
+  const card = document.getElementById('human-issues-card');
   if (!payload?.available) {
-    setText('human-issues-status', 'offline');
+    if (card) {
+      card.dataset.problemSeverity = 'unavailable';
+      card.setAttribute('aria-label', 'Problems: unavailable. Live problem route unavailable.');
+    }
+    setText('human-issues-status', 'unavailable');
     setText('human-issues-value', '--');
     setText('human-issues-subtitle', 'Live problem route unavailable');
     return;
   }
   const counts = payload.snapshot?.counts || {};
-  const open = Number(counts.open || 0) + Number(counts.chronic || 0);
-  setText('human-issues-status', open > 0 ? 'needs attention' : 'clear');
-  setText('human-issues-value', open > 0 ? String(open) : 'Clear');
-  setText('human-issues-subtitle', open > 0 ? `${open} open live problem${open === 1 ? '' : 's'}` : 'No open live problems');
+  const open = Number(counts.open || 0);
+  const chronic = Number(counts.chronic || 0);
+  const unverifiable = Number(counts.unverifiable || 0);
+  const attention = open + chronic + unverifiable;
+  const severity = chronic > 0 ? 'chronic' : open > 0 ? 'open' : unverifiable > 0 ? 'unverifiable' : 'clear';
+  const detail = attention > 0
+    ? [
+        open > 0 ? `${open} open` : null,
+        chronic > 0 ? `${chronic} chronic` : null,
+        unverifiable > 0 ? `${unverifiable} unverifiable` : null,
+      ].filter(Boolean).join(' · ')
+    : 'No open or unverifiable live problems';
+  if (card) {
+    card.dataset.problemSeverity = severity;
+    card.setAttribute('aria-label', `Problems: ${severity}. ${detail}.`);
+  }
+  setText('human-issues-status', severity);
+  setText('human-issues-value', attention > 0 ? String(attention) : 'Clear');
+  setText('human-issues-subtitle', detail);
 }
 
 function renderHumanGoodLife(payload) {

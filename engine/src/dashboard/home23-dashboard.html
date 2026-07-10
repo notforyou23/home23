@@ -188,8 +188,8 @@
             <div class="h23-human-metrics" id="human-pool-metrics"></div>
           </section>
 
-          <button class="h23-human-card h23-human-card-button" type="button" onclick="openProblemsPanel()">
-            <div class="h23-human-card-head"><span>Problems</span><small id="human-issues-status">checking</small></div>
+          <button class="h23-human-card h23-human-card-button" id="human-issues-card" data-problem-severity="unavailable" type="button" onclick="openProblemsPanel()" aria-label="Problems: unavailable">
+            <div class="h23-human-card-head"><span>Problems</span><small id="human-issues-status" role="status" aria-live="polite">checking</small></div>
             <div class="h23-human-value" id="human-issues-value">--</div>
             <div class="h23-human-subtitle" id="human-issues-subtitle">Live problems</div>
           </button>
@@ -296,15 +296,14 @@
           <a href="/home23/settings#agents">Open agents settings ›</a>
         </section>
         <section class="h23-settings-overview-panel" aria-labelledby="settings-overview-feeds-title">
-          <h3 id="settings-overview-feeds-title">Data feeds</h3>
+          <h3 id="settings-overview-feeds-title">Data Feeds</h3>
           <div id="settings-overview-feeds"></div>
           <a href="/home23/settings#feeder">Open data feeds ›</a>
         </section>
-        <section class="h23-settings-overview-panel" aria-labelledby="settings-overview-operations-title">
-          <h3 id="settings-overview-operations-title">Operations</h3>
-          <div id="settings-overview-operations"></div>
-          <a href="/home23/settings#models">Open model settings ›</a>
-          <a href="/home23/settings#agency">Open agency settings ›</a>
+        <section class="h23-settings-overview-panel" aria-labelledby="settings-overview-notifications-title">
+          <h3 id="settings-overview-notifications-title">Notifications</h3>
+          <div id="settings-overview-notifications"></div>
+          <a href="/home23/settings">Open full settings ›</a>
         </section>
         <section class="h23-settings-overview-panel" aria-labelledby="settings-overview-house-title">
           <h3 id="settings-overview-house-title">House</h3>
@@ -602,7 +601,7 @@
       <div class="h23-chat-input-area" id="chat-input-area">
         <div class="h23-chat-attach-tray" id="chat-attach-tray" hidden></div>
         <div class="h23-chat-input-row">
-          <button class="h23-chat-attach-btn" id="chat-attach-btn" type="button" aria-label="Attach image" title="Attach image"><span class="h23-chat-attach-icon" aria-hidden="true">&#x1F4CE;&#xFE0E;</span></button>
+          <button class="h23-chat-attach-btn" id="chat-attach-btn" type="button" aria-label="Attach image" title="Attach image"><span class="h23-chat-attach-icon" aria-hidden="true">Attach</span></button>
           <input type="file" id="chat-attach-input" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden />
           <textarea class="h23-chat-input" id="chat-input" placeholder="Message your agent..." rows="1"></textarea>
           <button class="h23-chat-send-btn" id="chat-send-btn" type="button">&#9654;</button>

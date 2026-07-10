@@ -11,6 +11,7 @@ const read = (relativePath) => fs.readFileSync(path.join(HOME23_ROOT, relativePa
 const html = read('engine/src/dashboard/home23-dashboard.html');
 const js = read('engine/src/dashboard/home23-dashboard.js');
 const css = read('engine/src/dashboard/home23-dashboard.css');
+const chatJs = read('engine/src/dashboard/home23-chat.js');
 const chatCss = read('engine/src/dashboard/home23-chat.css');
 const settingsHtml = read('engine/src/dashboard/home23-settings.html');
 const settingsCss = read('engine/src/dashboard/home23-settings.css');
@@ -894,10 +895,16 @@ test('the redesign preserves production chat, operator, COSMO, and Brain Map hoo
   ]) assert.match(js, new RegExp(`function ${fn}\\b`));
 
   assert.match(html, /class="h23-cosmo-heading"[\s\S]*?<h2>COSMO 2\.3<\/h2>/);
-  assert.match(
-    html,
-    /id="chat-attach-btn"[^>]*aria-label="Attach image"[^>]*>[\s\S]*?&#x1F4CE;&#xFE0E;[\s\S]*?<\/button>/i,
-  );
+  for (const page of [html, standaloneChatHtml]) {
+    assert.match(page, /id="chat-attach-btn"[^>]*aria-label="Attach image"[^>]*>[\s\S]*?<span class="h23-chat-attach-icon"[^>]*>Attach<\/span>[\s\S]*?<\/button>/i);
+    assert.match(page, /<input(?=[^>]*id="chat-attach-input")(?=[^>]*type="file")(?=[^>]*accept="image\/png,image\/jpeg,image\/webp,image\/gif")(?=[^>]*multiple)[^>]*>/i);
+    assert.doesNotMatch(page, /(?:&#x1F4CE;|&#128206;|📎)/i);
+  }
+  const attachmentBindings = functionFragment(chatJs, 'bindInput');
+  for (const eventName of ['paste', 'change', 'dragenter', 'dragover', 'dragleave', 'drop']) {
+    assert.match(attachmentBindings, new RegExp(`addEventListener\\(['"]${eventName}['"]`));
+  }
+  assert.match(attachmentBindings, /attachBtn\.addEventListener\(['"]click['"],\s*\(\)\s*=>\s*attachInput\.click\(\)\)/);
 });
 
 test('the approved redesign boundary excludes server, settings API, and runtime state', () => {
@@ -971,9 +978,11 @@ test('native Settings routing, sauna presets, hero metadata, and brain coherence
   assert.doesNotMatch(hero, /api\/brain\/storage/);
 
   const coherence = functionClosure(js, ['brainStorageStatus', 'renderBrainStoragePanel']);
-  for (const status of ['in-sync', 'pending', 'mismatch']) assert.match(coherence, new RegExp(status));
-  assert.match(coherence, /nodeDelta\s*>?=\s*0/);
-  assert.match(coherence, /edgeDelta\s*>?=\s*0/);
+  for (const status of ['in-sync', 'mismatch']) assert.match(coherence, new RegExp(status));
+  assert.doesNotMatch(coherence, /\bpending\b/);
+  assert.match(coherence, /data\.mismatch\s*===\s*true/);
+  assert.match(coherence, /snapshotNodes\s*===\s*memoryNodes/);
+  assert.match(coherence, /snapshotEdges\s*===\s*memoryEdges/);
 });
 
 test('startup waits for agent identity but not a stalled scope registry', async () => {
@@ -1145,7 +1154,7 @@ test('Settings overview settles GET sections independently without mutation requ
   const runtime = createDashboardRuntime();
   for (const id of [
     'settings-overview-agents', 'settings-overview-feeds',
-    'settings-overview-operations', 'settings-overview-house',
+    'settings-overview-notifications', 'settings-overview-house',
   ]) runtime.document.createElement(id);
   runtime.context.__settingsCalls = [];
   runtime.context.__settingsApiFetch = async (url, options = {}) => {
@@ -1155,7 +1164,7 @@ test('Settings overview settles GET sections independently without mutation requ
       currentAgent: 'jerry',
       agents: [{ name: 'jerry', displayName: 'Jerry', status: 'running' }],
     };
-    if (url.includes('/api/state')) return { temporalState: 'awake', cycleCount: 42 };
+    if (url.includes('/api/notifications')) return { status: 'ok', pending: 2, length: 5, total: 8, items: [] };
     if (url.includes('/settings/vibe')) return { vibe: { autoGenerate: true, rotationIntervalSeconds: 45, galleryLimit: 60 } };
     throw new Error(`unexpected ${url}`);
   };
@@ -1169,8 +1178,46 @@ test('Settings overview settles GET sections independently without mutation requ
   assert.ok(runtime.context.__settingsCalls.every(({ options }) => !options.method || options.method === 'GET'));
   assert.match(runtime.document.getElementById('settings-overview-agents').innerHTML, /Jerry/);
   assert.match(runtime.document.getElementById('settings-overview-feeds').innerHTML, /unavailable/i);
-  assert.match(runtime.document.getElementById('settings-overview-operations').innerHTML, /42/);
+  assert.match(runtime.document.getElementById('settings-overview-notifications').innerHTML, /2[^<]*pending/i);
+  assert.match(runtime.document.getElementById('settings-overview-notifications').innerHTML, /5[^<]*recent/i);
   assert.match(runtime.document.getElementById('settings-overview-house').innerHTML, /automatic/);
+});
+
+test('Home Problems card executes clear, open, chronic, unverifiable, and unavailable severity semantics', () => {
+  const runtime = createDashboardRuntime();
+  const card = runtime.document.createElement('human-issues-card', { tagName: 'BUTTON' });
+  const status = runtime.document.createElement('human-issues-status');
+  const value = runtime.document.createElement('human-issues-value');
+  const subtitle = runtime.document.createElement('human-issues-subtitle');
+  card.appendChild(status);
+  card.appendChild(value);
+  card.appendChild(subtitle);
+
+  const cases = [
+    [{ available: false }, 'unavailable', '--'],
+    [{ available: true, snapshot: { counts: { open: 0, chronic: 0, unverifiable: 0 } } }, 'clear', 'Clear'],
+    [{ available: true, snapshot: { counts: { open: 2, chronic: 0, unverifiable: 0 } } }, 'open', '2'],
+    [{ available: true, snapshot: { counts: { open: 1, chronic: 2, unverifiable: 0 } } }, 'chronic', '3'],
+    [{ available: true, snapshot: { counts: { open: 0, chronic: 0, unverifiable: 4 } } }, 'unverifiable', '4'],
+  ];
+  for (const [payload, severity, expectedValue] of cases) {
+    runtime.context.__issuesPayload = payload;
+    runtime.run('renderHumanIssues(globalThis.__issuesPayload)');
+    assert.equal(card.dataset.problemSeverity, severity);
+    assert.equal(status.textContent, severity);
+    assert.equal(value.textContent, expectedValue);
+    assert.match(card.getAttribute('aria-label'), new RegExp(`Problems: ${severity}`, 'i'));
+  }
+
+  assert.doesNotMatch(css, /h23-human-card-button:first-of-type\s+\.h23-human-value/);
+  for (const [severity, token] of [
+    ['clear', '--h23-green-aa'],
+    ['open', '--h23-amber-aa'],
+    ['chronic', '--h23-red-aa'],
+    ['unverifiable', '--h23-text-secondary'],
+  ]) {
+    assert.match(css, new RegExp(`data-problem-severity=["']${severity}["'][\\s\\S]{0,500}var\\(${token}\\)`));
+  }
 });
 
 test('sauna polling preserves user-edited request state and reflects live heating state', () => {
@@ -1220,10 +1267,11 @@ test('sauna polling preserves user-edited request state and reflects live heatin
 test('Brain Storage classification and color semantics execute for all states', async () => {
   const runtime = createDashboardRuntime();
   const cases = [
-    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: { nodes: 10, edges: 20 } }, 'in-sync', '--h23-green-aa'],
-    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: { nodes: 12, edges: 22 } }, 'pending', '--h23-amber-aa'],
-    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: { nodes: 9, edges: 22 } }, 'mismatch', '--h23-red-aa'],
-    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: null }, 'unavailable', '--h23-text-secondary'],
+    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: { nodes: 10, edges: 20 }, mismatch: false }, 'in-sync', '--h23-green-aa'],
+    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: { nodes: 12, edges: 22 }, mismatch: true }, 'mismatch', '--h23-red-aa'],
+    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: { nodes: 10, edges: 20 }, mismatch: true }, 'mismatch', '--h23-red-aa'],
+    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: { nodes: 9, edges: 22 }, mismatch: false }, 'mismatch', '--h23-red-aa'],
+    [{ snapshot: { nodeCount: 10, edgeCount: 20 }, inMemory: null, mismatch: false }, 'unavailable', '--h23-text-secondary'],
   ];
   for (const [data, state, colorToken] of cases) {
     runtime.context.__brainCase = data;
@@ -1233,15 +1281,16 @@ test('Brain Storage classification and color semantics execute for all states', 
   }
 
   const content = runtime.document.createElement('brain-storage-content');
-  runtime.context.__brainCase = cases[2][0];
+  runtime.context.__brainCase = cases[1][0];
   runtime.context.fetch = async () => ({ ok: true, json: async () => runtime.context.__brainCase });
   await runtime.run('renderBrainStoragePanel()');
   assert.match(content.innerHTML, /h23-brain-storage-status mismatch/);
   assert.match(content.innerHTML, /Investigate before restarting/i);
+  assert.match(content.innerHTML, /In memory \(live\)[\s\S]*?12 nodes[\s\S]*?22 edges/i);
+  assert.doesNotMatch(content.innerHTML, /Last verified \(engine\)/i);
 
   for (const [state, token] of [
     ['in-sync', '--h23-green-aa'],
-    ['pending', '--h23-amber-aa'],
     ['mismatch', '--h23-red-aa'],
     ['unavailable', '--h23-text-secondary'],
   ]) {
@@ -1254,9 +1303,16 @@ test('dashboard Settings is a read-only overview linked to the full control surf
   assert.match(js, /loadSettingsOverview/);
 
   const settingsPanel = fragmentFromId(html, 'panel-settings', '<div class="h23-panel"');
-  for (const hash of ['agents', 'feeder', 'models', 'vibe']) {
+  for (const hash of ['agents', 'feeder', 'vibe']) {
     assert.match(settingsPanel, new RegExp(`href="/home23/settings#${hash}"`));
   }
+  for (const [id, label] of [
+    ['settings-overview-agents-title', 'Agents'],
+    ['settings-overview-feeds-title', 'Data Feeds'],
+    ['settings-overview-notifications-title', 'Notifications'],
+    ['settings-overview-house-title', 'House'],
+  ]) assert.match(settingsPanel, new RegExp(`id="${id}"[^>]*>${label}<`));
+  assert.doesNotMatch(settingsPanel, />Operations</);
   assert.doesNotMatch(settingsPanel, /<button\b[^>]*>\s*(?:Save|Start|Stop|Delete)\b/i);
 });
 
@@ -1285,6 +1341,39 @@ test('dashboard Settings overview contains no write surface or mutation route', 
   const loader = functionClosure(js, ['loadSettingsOverview']);
   assert.doesNotMatch(loader, /\bmethod\s*:\s*['"](?:POST|PUT|PATCH|DELETE)['"]/i);
   assert.doesNotMatch(loader, /\/(?:save|start|stop|restart|delete|install|build)\b/i);
+});
+
+test('COSMO offline treatment uses Glass Light classes without inline dark paint or emoji', () => {
+  const offline = functionFragment(js, 'showCosmoOfflineOverlay');
+  assert.match(offline, /h23-cosmo-offline-overlay/);
+  assert.match(offline, /h23-cosmo-offline-kicker/);
+  assert.match(offline, /id="cosmo23-offline-detail"/);
+  assert.match(offline, /id="cosmo23-restart-btn"/);
+  assert.match(offline, /id="cosmo23-restart-status"/);
+  assert.match(offline, /Start COSMO 2\.3/);
+  assert.doesNotMatch(offline, /style\.cssText|style="/);
+  assert.doesNotMatch(offline, /(?:&#x1F52C;|🔬)/i);
+
+  const restart = functionFragment(js, 'restartCosmo23');
+  assert.match(restart, /cosmo23-restart-status/);
+  assert.match(restart, /btn\.textContent\s*=\s*'Retry'/);
+  assert.match(restart, /\/home23\/api\/settings\/cosmo23\/restart/);
+  assert.match(restart, /method:\s*'POST'/);
+
+  assert.match(css, /\.h23-cosmo-offline-overlay\s*\{[\s\S]*?background:\s*var\(--h23-glass-overlay\)/);
+  assert.match(css, /\.h23-cosmo-offline-overlay #cosmo23-restart-btn\s*\{[\s\S]*?background:\s*var\(--h23-accent\)/);
+});
+
+test('dashboard and Chat UI copy contain no emoji iconography', () => {
+  for (const [name, source] of [
+    ['dashboard HTML', html],
+    ['dashboard JavaScript', js],
+    ['standalone Chat HTML', standaloneChatHtml],
+    ['Chat JavaScript', chatJs],
+  ]) {
+    assert.doesNotMatch(source, /[\u{1F300}-\u{1FAFF}]/u, `${name} contains emoji UI copy`);
+    assert.doesNotMatch(source, /&#(?:x1F[0-9A-F]+|128\d+);/i, `${name} contains encoded emoji UI copy`);
+  }
 });
 
 test('all six dashboard overlays expose dialog semantics and unified keyboard lifecycle', () => {

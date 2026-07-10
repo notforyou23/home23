@@ -5,7 +5,8 @@
 - Browser result: PARTIAL against the complete Task 7 checklist; all executed checks passed, but 200% zoom, reduced-motion emulation, and final Vibe gallery/Welcome/Setup browser rendering remain unexecuted because the in-app Browser session closed and the replacement session could not reopen the local QA URL
 - Tested branch: `codex/glass-light-dashboard`
 - Browser baseline commit: `ef7e534a2f261dfa623662e2c583e79e5c3e4cd3`
-- Final automated commit: `b38364a34f4ac11f0ccd40880a117c7330b96b3a`
+- Prior broad automated commit: `b38364a34f4ac11f0ccd40880a117c7330b96b3a`
+- Post-review safety gate: PASS on the focused repair recorded by this report update
 - Comparison base: `c2b19654b7d784b43cdbdf231257adeba3b0675e`
 - Verification date: 2026-07-09 America/New_York
 
@@ -46,11 +47,13 @@ This is not a complete network-isolation boundary: production code can resolve p
 
 ## Automated verification after Browser repairs
 
+The broad build, test, contract, and live-contract rows below remain the recorded gate from `b38364a`. Syntax, glass, combined focused, and ChatState checks were rerun on the post-review safety repair.
+
 | Command | Result |
 |---|---|
 | `node --check engine/src/dashboard/home23-dashboard.js` | PASS |
 | `node --check engine/src/dashboard/home23-chat.js` | PASS |
-| `node --test --test-concurrency=1 tests/dashboard/glass-light-dashboard.test.js tests/dashboard/operator-ui.test.js tests/dashboard/briefs.test.js tests/dashboard/forrest-feel-route.test.js` | PASS — 56/56 |
+| `node --test --test-concurrency=1 tests/dashboard/glass-light-dashboard.test.js tests/dashboard/operator-ui.test.js tests/dashboard/briefs.test.js tests/dashboard/forrest-feel-route.test.js` | PASS — 59/59 |
 | `node --import tsx --test --test-concurrency=1 tests/dashboard/chat-state.test.ts` | PASS — 6/6 |
 | `node --test --test-concurrency=1 tests/scripts/read-only-dashboard-qa-server.test.mjs` | PASS — 4/4 |
 | `npm run build` | PASS |
@@ -64,7 +67,7 @@ The broad-test caveats are unchanged: one local-agent identity test skips becaus
 
 ### Browser repair TDD receipts
 
-Every production repair was preceded by a focused failing contract. The final glass test is 46/46 and combined focused run is 56/56. The standalone Chat geometry contract was also checked against the preceding committed HTML and produced the expected red result before passing against the repair.
+Every production repair was preceded by a focused failing contract. The post-review safety wave first ran 41 pass / 7 fail across 48 glass tests, then passed 48/48 after the repairs. A final no-emoji contract produced the expected red result against the remaining dashboard/Chat copy and passed after repair, bringing the glass suite to 49/49 and the combined focused run to 59/59. The standalone Chat geometry contract was also checked against the preceding committed HTML and produced the expected red result before passing against the repair.
 
 - Top bar stretching and horizontal navigation.
 - Sensor-strip legacy span resets, phone span collapse, and hidden Sauna fields.
@@ -74,6 +77,12 @@ Every production repair was preceded by a focused failing contract. The final gl
 - Semantic Vibe overlay invoker and existing modal path.
 - Resolved COSMO new-tab URL without a hash placeholder.
 - Full Settings description override with the light-theme dark muted text token.
+- Brain Storage fail-closed mismatch classification and real disk/live counts, with no unsupported pending state.
+- Clear/open/chronic/unverifiable Home Problems semantics and non-green attention states.
+- Glass Light COSMO offline presentation while retaining Start/Retry/status behavior.
+- Native Settings Agents, Data Feeds, Notifications, and House read-only sections.
+- Non-emoji accessible attachment controls with file-picker, paste, and drop bindings preserved.
+- Removal of remaining emoji iconography from dashboard/Chat status and conversation copy.
 
 The Full Settings contrast test first ran 44 pass/1 fail, then 45/45 after repair. Root cause was the legacy ID selector `#settings-surface-desc`, which outranked the earlier light-theme class selector. The final computed color is `rgb(90, 100, 116)` over the translucent white hero.
 
@@ -221,36 +230,42 @@ Initial/intermediate history:
 
 ## Changed-file scope
 
-Task 7 changed only:
+The complete branch changes only:
 
 ```text
+engine/src/dashboard/home23-chat.css
+engine/src/dashboard/home23-chat.html
+engine/src/dashboard/home23-chat.js
 engine/src/dashboard/home23-dashboard.css
 engine/src/dashboard/home23-dashboard.html
 engine/src/dashboard/home23-dashboard.js
 engine/src/dashboard/home23-settings.css
+engine/src/dashboard/home23-settings.html
+engine/src/dashboard/home23-vibe/gallery.html
+engine/src/dashboard/home23-welcome.html
 tests/dashboard/glass-light-dashboard.test.js
+tests/dashboard/operator-ui.test.js
 scripts/read-only-dashboard-qa-server.mjs
 tests/scripts/read-only-dashboard-qa-server.test.mjs
 design-qa.md
 docs/superpowers/reports/2026-07-09-glass-light-dashboard-verification.md
-docs/superpowers/reports/assets/glass-light-dashboard/*.png
 ```
 
-The branch remains inside the approved dashboard/page/test/spec/plan/report boundary. No server implementation, Settings API, instance, config, secret, PM2 state, runtime data, or operator handoff file changed.
+The branch remains inside the approved dashboard/page/test/spec/plan/report boundary. The 26 QA captures remain on disk beneath the ignored `docs/superpowers/reports/assets/glass-light-dashboard/` path and are intentionally local-only under the repository's public-vs-local policy; they are not part of the committed branch diff. No server implementation, Settings API, instance, config, secret, PM2 state, runtime data, or operator handoff file changed.
 
 ## Acceptance-criterion audit
 
 | Design-spec criterion | Exact evidence | Status |
 |---|---|---|
 | 1. Match the supplied light-glass handoff at the primary laptop target | Matched 1440 × 1000 DPR 1 source/implementation captures; `comparison-home-1440-final.png`, `comparison-header-1440-final.png`, and `comparison-main-1440-final.png`; measured geometry in “Matched visual comparison” | PASS |
-| 2. Apply the new design language to all documented dashboard surfaces and six overlays | Branch HTML/CSS in `engine/src/dashboard/`; 45 glass contracts inside the 55-test focused run; surface and overlay matrices; Home, Brain Map, Full Settings, standalone Chat, Problems, and responsive captures | PASS for inspected surfaces; the final related-page Browser recapture gap is recorded under criterion 7 |
+| 2. Apply the new design language to all documented dashboard surfaces and six overlays | Branch HTML/CSS in `engine/src/dashboard/`; 49 glass contracts inside the 59-test focused run; surface and overlay matrices; Home, Brain Map, Full Settings, standalone Chat, Problems, and responsive captures | PASS for inspected surfaces; the final related-page Browser recapture gap is recorded under criterion 7 |
 | 3. Keep every existing functional route, data source, action, and production-only detail reachable | Preservation contracts in `tests/dashboard/glass-light-dashboard.test.js` and `tests/dashboard/operator-ui.test.js`; ChatState 6/6; browser surface/overlay matrices; all write controls deliberately left intact but unissued | PASS |
 | 4. Leave stored runtime/config/instance data untouched | `git diff --name-only c2b19654b7d784b43cdbdf231257adeba3b0675e..HEAD` contains only dashboard/page/test/spec/plan/report files; no `instances/`, local config, secrets, PM2 dump, or generated runtime data | PASS |
-| 5. Pass focused and broad automated checks | Final-gate syntax 3/3; focused 56/56; ChatState 6/6; QA harness 4/4; `npm run build`; `npm test` 692 pass/0 fail/1 intentional skip; `npm run test:contracts` 12 pass/1 expected skip | PASS at `b38364a` |
+| 5. Pass focused and broad automated checks | Post-review syntax 2/2, glass 49/49, focused 59/59, and ChatState 6/6; prior `b38364a` gate: QA harness 4/4, `npm run build`, `npm test` 692 pass/0 fail/1 intentional skip, and `npm run test:contracts` 12 pass/1 expected skip | PASS for the focused repair; prior broad gate remains recorded at `b38364a` |
 | 6. Pass read-only live contracts | `npm run test:contracts:live`: 13 GET/read-only routes checked, 21 action/stream/fixture contracts skipped, action opt-in unset | PASS |
 | 7. Prove navigation, live rendering, responsive behavior, accessibility basics, Chat state preservation, and clean console output in Browser | Executed evidence covers native hashes/surfaces, real Home data, six overlays, Chat singleton/draft state, 1440/1200/1024/768/390/320 layouts, focus/Escape/scroll lock, and clean checked-surface console. 200% zoom, reduced-motion emulation, final Vibe gallery/Welcome/Setup rendering, and the post-repair standalone Chat recapture remain unexecuted | PARTIAL — criterion not fully proven |
-| 8. Record exact commands, results, screenshots, and intentionally unexercised live writes | This committed report, tracked QA harness, screenshot inventory, automated command table, server/read-only boundary disclosure, and “Intentionally unexercised live writes” section | PASS, with screenshot payload caveat recorded below |
+| 8. Record exact commands, results, screenshots, and intentionally unexercised live writes | This committed report, tracked QA harness, local ignored screenshot inventory, automated command table, server/read-only boundary disclosure, and “Intentionally unexercised live writes” section | PASS for this installation, with screenshot portability caveat recorded below |
 
 ## Caveats
 
-The in-app Browser did not synthesize native-button default key activation and closed before 200% zoom/reduced-motion emulation plus final Vibe gallery/Welcome/Setup rendering and the standalone Chat repair recapture. A replacement browser session could not reopen the local QA URL, so those checklist items remain unexecuted. Semantic/executable contracts and adjacent responsive evidence reduce risk but do not prove the missing Browser behaviors. Separately, 20 of the 26 capture files have `.png` names but JPEG/JFIF payloads from the in-app screenshot encoder; the six final combined comparison files are true PNGs and all images render, but payload normalization remains a portability follow-up.
+The in-app Browser did not synthesize native-button default key activation and closed before 200% zoom/reduced-motion emulation plus final Vibe gallery/Welcome/Setup rendering and the standalone Chat repair recapture. A replacement browser session could not reopen the local QA URL, so those checklist items remain unexecuted. Semantic/executable contracts and adjacent responsive evidence reduce risk but do not prove the missing Browser behaviors. Separately, the 26 capture files are intentionally ignored local artifacts; 20 have `.png` names but JPEG/JFIF payloads from the in-app screenshot encoder, while the six final combined comparison files are true PNGs. All render locally, but the captures are not portable branch artifacts.
