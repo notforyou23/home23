@@ -95,6 +95,7 @@ async function* readJsonl(filePath, options = {}) {
   let recordCount = 0;
   let decodedBytes = 0;
   let pending = '';
+  let completed = false;
   const decoder = new StringDecoder('utf8');
   const parseLine = (line) => {
     lineNumber += 1;
@@ -164,6 +165,7 @@ async function* readJsonl(filePath, options = {}) {
       });
     }
     await assertStableOpenedFile(opened);
+    completed = true;
   } catch (error) {
     rethrowAbort(error, options.signal);
     if (isTypedMemorySourceError(error)) throw error;
@@ -173,9 +175,13 @@ async function* readJsonl(filePath, options = {}) {
     });
   } finally {
     options.signal?.removeEventListener('abort', abort);
-    decoded.destroy();
-    input.destroy();
-    await opened.handle.close().catch(() => {});
+    if (!completed) {
+      decoded.destroy();
+      input.destroy();
+    }
+    await opened.handle.close().catch((error) => {
+      if (error?.code !== 'EBADF') throw error;
+    });
   }
 }
 
