@@ -1,0 +1,141 @@
+'use strict';
+
+const fs = require('node:fs');
+const fsp = fs.promises;
+const path = require('node:path');
+const { memorySourceError, throwIfAborted } = require('./contracts.cjs');
+
+function sameIdentity(left, right) {
+  return left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeNs === right.mtimeNs
+    && left.ctimeNs === right.ctimeNs;
+}
+
+function fileIdentity(stat) {
+  return {
+    dev: stat.dev,
+    ino: stat.ino,
+    size: stat.size,
+    mtimeNs: stat.mtimeNs,
+    ctimeNs: stat.ctimeNs,
+  };
+}
+
+function ensureNoFollowAvailable() {
+  if (!Number.isInteger(fs.constants.O_NOFOLLOW)) {
+    throw memorySourceError('invalid_memory_source', 'O_NOFOLLOW unavailable', {
+      retryable: false,
+    });
+  }
+}
+
+function isInside(root, filePath) {
+  const relative = path.relative(root, filePath);
+  return relative && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+async function realpathCanonical(candidate, code) {
+  try {
+    return await fsp.realpath(candidate);
+  } catch (error) {
+    throw memorySourceError(code, code, { cause: error, retryable: code === 'source_unavailable' });
+  }
+}
+
+async function openConfinedRegularFile(root, filePath, options = {}) {
+  throwIfAborted(options.signal);
+  ensureNoFollowAvailable();
+  if (typeof root !== 'string' || typeof filePath !== 'string'
+      || !path.isAbsolute(root) || !path.isAbsolute(filePath)
+      || root.includes('\0') || filePath.includes('\0')) {
+    throw memorySourceError('invalid_request');
+  }
+  let rootStat;
+  let pathStat;
+  try {
+    rootStat = await fsp.lstat(root, { bigint: true });
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      throw memorySourceError('invalid_memory_source', 'root is not canonical', { retryable: false });
+    }
+    pathStat = await fsp.lstat(filePath, { bigint: true });
+  } catch (error) {
+    if (options.optional && error?.code === 'ENOENT') return null;
+    if (error?.code === 'invalid_memory_source') throw error;
+    throw memorySourceError('source_unavailable', 'source unavailable', {
+      cause: error,
+      retryable: true,
+    });
+  }
+  if (!pathStat.isFile() || pathStat.isSymbolicLink()) {
+    throw memorySourceError('invalid_memory_source', 'source is not a regular file', {
+      retryable: false,
+    });
+  }
+  if (options.maxBytes !== undefined
+      && (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 0
+        || Number(pathStat.size) > options.maxBytes)) {
+    throw memorySourceError('result_too_large', 'file limit exceeded', {
+      status: 413,
+      retryable: false,
+      limitKind: 'input',
+      limit: options.maxBytes,
+    });
+  }
+  const rootReal = await realpathCanonical(root, 'invalid_memory_source');
+  const fileReal = await realpathCanonical(filePath, 'source_unavailable');
+  if (!isInside(rootReal, fileReal)) {
+    throw memorySourceError('invalid_memory_source', 'source escapes root', { retryable: false });
+  }
+  const flags = options.flags ?? fs.constants.O_RDONLY;
+  let handle;
+  try {
+    handle = await fsp.open(filePath, flags | fs.constants.O_NOFOLLOW);
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || !sameIdentity(fileIdentity(pathStat), fileIdentity(opened))) {
+      throw memorySourceError('invalid_memory_source', 'source changed while opening', {
+        retryable: false,
+      });
+    }
+    return {
+      handle,
+      path: filePath,
+      realpath: fileReal,
+      stat: opened,
+      identity: fileIdentity(opened),
+    };
+  } catch (error) {
+    if (handle) await handle.close().catch(() => {});
+    if (error?.code === 'invalid_memory_source' || error?.code === 'result_too_large') throw error;
+    throw memorySourceError('source_unavailable', 'source unavailable', {
+      cause: error,
+      retryable: true,
+    });
+  }
+}
+
+async function assertStableOpenedFile(opened) {
+  const current = await opened.handle.stat({ bigint: true });
+  if (!current.isFile() || !sameIdentity(opened.identity, fileIdentity(current))) {
+    throw memorySourceError('source_changed', 'source changed while reading', { retryable: true });
+  }
+}
+
+async function readConfinedFile(root, filePath, options = {}) {
+  const opened = await openConfinedRegularFile(root, filePath, options);
+  if (opened === null) return null;
+  try {
+    const bytes = await opened.handle.readFile();
+    await assertStableOpenedFile(opened);
+    return bytes;
+  } finally {
+    await opened.handle.close().catch(() => {});
+  }
+}
+
+module.exports = {
+  openConfinedRegularFile,
+  assertStableOpenedFile,
+  readConfinedFile,
+};
