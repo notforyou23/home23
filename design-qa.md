@@ -11,9 +11,11 @@
 - Viewport: 1440 × 1000 CSS pixels at DPR 1
 - State: Home, light glass theme, stable read-only production data
 
-## Final findings
+## Last captured findings
 
-No open P0, P1, or P2 design finding remains. The final implementation reproduces the source hierarchy: floating horizontal top bar, full-gutter Jerry hero, five-card sensor strip, Chat-first two-column main area, restrained glass surfaces, blue accent pills, and a light page canvas without legacy dark-shell remnants.
+No open P0, P1, or P2 design finding remained in the matched Browser baseline at `ef7e534`. That captured implementation reproduces the source hierarchy: floating horizontal top bar, full-gutter Jerry hero, five-card sensor strip, Chat-first two-column main area, restrained glass surfaces, blue accent pills, and a light page canvas without legacy dark-shell remnants.
+
+The final code at `77673f4` includes later completion-audit repairs to the invariant shell, Problems/Brain Storage styling, Settings rows, all-feed offline states, sensor order, tab keyboard semantics, Sauna actions, Vibe navigation/lifecycle, Welcome, and gallery controls. These changes pass source/executable contracts and independent spec/code-quality review, but they have not been rendered or recaptured in Browser. The absence of an open finding in the baseline therefore is not a pass claim for the current code.
 
 The live implementation intentionally contains production content instead of the handoff's sample copy. Jerry's live remark is longer; only one real clock was configured; Sauna retains Start/Stop and preset controls; Vibe, Briefs, Good Life, Problems, and Chat show current data. Those content-driven differences preserve functionality and do not change the approved visual system.
 
@@ -57,8 +59,8 @@ Initial comparison captures are retained beside the final images to preserve the
 
 - [x] Matched source and implementation captured at the same viewport and state.
 - [x] Full-view and focused-region comparison inputs created.
-- [x] All P0/P1/P2 visual findings repaired and recaptured.
-- [ ] Full related-page Browser rendering, the post-repair standalone Chat recapture, 200% zoom, and reduced-motion emulation remain unexecuted; all other dashboard, responsive, and dialog surfaces were inspected.
+- [x] All P0/P1/P2 findings from the captured baseline were repaired and recaptured.
+- [ ] Final-current-code recapture remains unexecuted for the completion-wave surfaces, related pages, standalone Chat, 200% zoom, and reduced-motion emulation.
 - [x] Existing production functionality and data hooks retained.
 - [x] Final console and interaction readback consolidated; zoom/motion tool limitations recorded against passing executable and responsive evidence.
 
@@ -66,4 +68,4 @@ Initial comparison captures are retained beside the final images to preserve the
 
 None required for fidelity. Dynamic live copy and device-control density are accepted production-content differences, not design defects.
 
-final result: partial — visual fidelity passed; full browser acceptance remains incomplete
+final result: blocked — the Codex in-app Browser enterprise network policy blocks `http://127.0.0.1:51923`, so current-code readback cannot yet verify the invariant shell, Problems/Brain Storage states, Settings rows, six-feed offline states, sensor order, Sauna action states, Vibe navigation and lifecycle, tab keyboard behavior, Welcome/gallery semantics, standalone Chat geometry, 200% zoom, reduced-motion emulation, or final console state
