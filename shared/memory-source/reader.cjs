@@ -199,7 +199,6 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
   let sourceHealth = legacyProjection ? SOURCE_HEALTH.DEGRADED : SOURCE_HEALTH.HEALTHY;
   const markUnavailable = () => { sourceHealth = SOURCE_HEALTH.UNAVAILABLE; };
   const iterateBaseNodes = async function* iterateBaseNodes() {
-    const yielded = new Set();
     try {
       for await (const record of readJsonl(path.join(canonicalRoot, manifest.activeBase.nodes.file), {
         gzip: true,
@@ -211,12 +210,11 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         throwIfAborted(options.signal);
         const id = normalizeId(record.id);
         if (!id || overlay.hasRemovedNode(id)) continue;
-        const projected = overlay.node(id) || Object.freeze({ ...record, id });
-        yielded.add(id);
-        yield projected;
+        if (overlay.hasNodeUpsert(id)) continue;
+        yield Object.freeze({ ...record, id });
       }
-      for (const record of overlay.upsertedNodes()) {
-        if (!yielded.has(normalizeId(record.id))) yield record;
+      for await (const record of overlay.iterateNodeUpserts({ signal: options.signal })) {
+        yield record;
       }
     } catch (error) {
       markUnavailable();
@@ -226,8 +224,6 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         cause: error,
         retryable: true,
       });
-    } finally {
-      yielded.clear();
     }
   };
   const iterateBaseEdges = async function* iterateBaseEdges() {

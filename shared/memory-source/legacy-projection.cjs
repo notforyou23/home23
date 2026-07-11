@@ -32,7 +32,39 @@ const {
 
 const MAX_ATTEMPTS = 3;
 const MAX_CLUSTER_KEYS = 1_000_000;
+const MAX_CLUSTER_BYTES = 16 * 1024 * 1024;
+const CLUSTER_ENTRY_OVERHEAD_BYTES = 32;
 const METADATA_GROWTH_BYTES = 1024 * 1024;
+
+function createBoundedClusterCounter({
+  maxKeys = MAX_CLUSTER_KEYS,
+  maxBytes = MAX_CLUSTER_BYTES,
+} = {}) {
+  if (!Number.isSafeInteger(maxKeys) || maxKeys < 0
+      || !Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw memorySourceError('invalid_request', 'invalid cluster counter budget');
+  }
+  const values = new Set();
+  let retainedBytes = 0;
+  return Object.freeze({
+    add(value) {
+      const key = normalizeId(value);
+      if (values.has(key)) return false;
+      const nextBytes = retainedBytes + Buffer.byteLength(key, 'utf8') + CLUSTER_ENTRY_OVERHEAD_BYTES;
+      if (values.size >= maxKeys || nextBytes > maxBytes) {
+        throw memorySourceError('result_too_large', 'legacy cluster count exceeds budget', {
+          status: 413,
+          retryable: false,
+        });
+      }
+      values.add(key);
+      retainedBytes = nextBytes;
+      return true;
+    },
+    get size() { return values.size; },
+    get retainedBytes() { return retainedBytes; },
+  });
+}
 
 function safeRevisionFromDigest(digest) {
   return Number.parseInt(digest.slice(0, 13), 16);
@@ -355,13 +387,7 @@ function logicalNodeRecords({ targetRoot, fingerprint, overlay, signal, clusters
       if (overlay.hasNodeUpsert(id)) continue;
       const projected = Object.freeze({ ...record, id });
       if (projected.cluster !== undefined && projected.cluster !== null) {
-        clusters.add(normalizeId(projected.cluster));
-        if (clusters.size > MAX_CLUSTER_KEYS) {
-          throw memorySourceError('result_too_large', 'legacy cluster count exceeds limit', {
-            status: 413,
-            retryable: false,
-          });
-        }
+        clusters.add(projected.cluster);
       }
       yield projected;
     }
@@ -369,13 +395,7 @@ function logicalNodeRecords({ targetRoot, fingerprint, overlay, signal, clusters
       const id = normalizeId(record.id);
       if (overlay.hasRemovedNode(id)) continue;
       if (record.cluster !== undefined && record.cluster !== null) {
-        clusters.add(normalizeId(record.cluster));
-        if (clusters.size > MAX_CLUSTER_KEYS) {
-          throw memorySourceError('result_too_large', 'legacy cluster count exceeds limit', {
-            status: 413,
-            retryable: false,
-          });
-        }
+        clusters.add(record.cluster);
       }
       yield Object.freeze({ ...record, id });
     }
@@ -548,7 +568,7 @@ async function projectLegacyResidentSidecars({
       let edgesWriter = null;
       try {
         await loadLegacyDelta({ targetRoot, fingerprint: before, overlay, signal });
-        const clusters = new Set();
+        const clusters = createBoundedClusterCounter();
         nodesWriter = await createQuotaBackpressuredJsonlGzipWriter(
           path.join(attemptRoot, 'memory-nodes.base.jsonl.gz'),
           { operationRoot: quota.operationRoot, scratchQuota: quota, signal },
@@ -630,6 +650,9 @@ async function projectLegacyResidentSidecars({
 }
 
 module.exports = {
+  MAX_CLUSTER_BYTES,
+  MAX_CLUSTER_KEYS,
+  createBoundedClusterCounter,
   fingerprintLegacyResident,
   projectLegacyResidentSidecars,
   verifyLegacySourceFingerprint,

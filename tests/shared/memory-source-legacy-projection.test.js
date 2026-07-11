@@ -12,6 +12,9 @@ const {
   createQuotaBackpressuredJsonlGzipWriter,
   readJsonl,
 } = require('../../shared/memory-source');
+const {
+  createBoundedClusterCounter,
+} = require('../../shared/memory-source/legacy-projection.cjs');
 
 async function tempDir() {
   return fsp.mkdtemp(path.join(os.tmpdir(), 'home23-legacy-projection-writer-'));
@@ -42,6 +45,19 @@ async function collect(filePath) {
   })) records.push(record);
   return records;
 }
+
+test('legacy cluster cardinality is bounded by both keys and retained bytes', () => {
+  const byKeys = createBoundedClusterCounter({ maxKeys: 2, maxBytes: 1024 });
+  assert.equal(byKeys.add('alpha'), true);
+  assert.equal(byKeys.add('alpha'), false);
+  assert.equal(byKeys.add('beta'), true);
+  assert.throws(() => byKeys.add('gamma'), { code: 'result_too_large', status: 413 });
+
+  const byBytes = createBoundedClusterCounter({ maxKeys: 100, maxBytes: 70 });
+  byBytes.add('a');
+  assert.equal(byBytes.retainedBytes, 33);
+  assert.throws(() => byBytes.add('123456'), { code: 'result_too_large', status: 413 });
+});
 
 async function sha256File(filePath) {
   const bytes = await fsp.readFile(filePath);
