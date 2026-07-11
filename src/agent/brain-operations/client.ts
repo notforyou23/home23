@@ -17,6 +17,7 @@ import type {
   BrainOperationEvent,
   BrainOperationEventGap,
   BrainOperationNotification,
+  BrainNonterminalOperation,
   BrainOperationRecord,
   BrainOperationResult,
   BrainOperationResultEnvelope,
@@ -104,15 +105,11 @@ function validatePresent<T>(
 
 function validateCallerParameters(operationType: string, parameters: Record<string, unknown>): void {
   if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) throw invalid();
+  const allowed = PARAMETER_FIELDS[operationType];
+  if (!allowed) throw invalid();
+  assertExactKeys(parameters, allowed, 'parameters');
   for (const key of Reflect.ownKeys(parameters)) {
     if (typeof key !== 'string' || parameters[key] === undefined) throw invalid(`${String(key)}_invalid`);
-  }
-  const allowed = PARAMETER_FIELDS[operationType];
-  if (allowed) {
-    const set = new Set(allowed);
-    if (Reflect.ownKeys(parameters).some((key) => typeof key !== 'string' || !set.has(key))) {
-      throw invalid();
-    }
   }
   for (const forbidden of ['model', 'provider', 'pgsSweepModel', 'pgsSweepProvider',
     'pgsSynthModel', 'pgsSynthProvider']) {
@@ -129,6 +126,7 @@ function validateCallerParameters(operationType: string, parameters: Record<stri
   if (operationType === 'synthesis' && (modelSelection || pgsSweep || pgsSynth)) throw invalid();
 
   if (['query', 'pgs', 'search'].includes(operationType)) {
+    if (!hasOwn(parameters, 'query')) throw invalid('query_invalid');
     requiredBoundedText(parameters.query, 'query', 12_000);
   } else if (hasOwn(parameters, 'query')) {
     requiredBoundedText(parameters.query, 'query', 12_000);
@@ -232,8 +230,8 @@ export class BrainOperationsClient {
     this.catalogCachedAt = 0;
   }
 
-  async listNonterminal(signal?: AbortSignal): Promise<BrainOperationRecord[]> {
-    const value = await this.requestJson<{ operations: BrainOperationRecord[] }>(
+  async listNonterminal(signal?: AbortSignal): Promise<BrainNonterminalOperation[]> {
+    const value = await this.requestJson<{ operations: BrainNonterminalOperation[] }>(
       '/home23/api/brain-operations?state=nonterminal', {},
       { code: 'status_timeout', timeoutMs: this.options.statusReadMs ?? 10_000, signal },
     );
@@ -443,9 +441,13 @@ export class BrainOperationsClient {
       throw new Error('authoritative_fields_forbidden');
     }
     validateCallerParameters(operationType, parameters);
-    const requestId = typeof parameters.requestId === 'string' ? parameters.requestId : randomUUID();
+    const requestId = hasOwn(parameters, 'requestId')
+      ? parameters.requestId as string
+      : randomUUID();
     const targetPresent = hasOwn(parameters, 'target');
-    const target = parameters.target as BrainTargetSelector | { runId: string } | undefined;
+    const target = targetPresent
+      ? parameters.target as BrainTargetSelector | { runId: string }
+      : undefined;
     const ownedRun = OWNED_RUN_OPERATION_TYPES.has(operationType);
     if (ownedRun) {
       const keys = target && typeof target === 'object' && !Array.isArray(target)

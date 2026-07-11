@@ -504,7 +504,9 @@ test('brain_status result fails malformed partial envelopes closed', async () =>
   }, makeCtx({ brainOperations: {
     inspectOperation: async () => ({
       operationId: 'brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      operationType: 'query',
       state: 'partial',
+      attachmentState: 'closed',
       result: { answer: '   ' },
       resultHandle: null,
       resultArtifact: null,
@@ -515,6 +517,25 @@ test('brain_status result fails malformed partial envelopes closed', async () =>
   assert.equal(result.is_error, true);
   assert.equal(result.metadata?.classification, 'invalid_partial_result');
   assert.match(result.content, /invalid_partial_result/);
+});
+
+test('brain_status status reports terminal partial and directs protected result inspection', async () => {
+  const operation = completeOperation(
+    'brop_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+    'useful partial answer',
+  );
+  operation.operationType = 'query';
+  operation.state = 'partial';
+  operation.error = { code: 'provider_incomplete', message: 'ended early', retryable: true };
+  const { attachmentState: _attachmentState, ...status } = operation;
+  const result = await brainStatusTool.execute({
+    operationId: operation.operationId, action: 'status',
+  }, makeCtx({ brainOperations: { inspectOperation: async () => status } }));
+  assert.equal(result.is_error, undefined);
+  assert.equal(result.metadata?.classification, 'partial_status');
+  assert.match(result.content, /state=partial/);
+  assert.match(result.content, /action:\"result\"/);
+  assert.doesNotMatch(result.content, /invalid_partial_result|useful partial answer/);
 });
 
 test('brain_status renders authoritative summary totals without graph arrays', async () => {
@@ -566,6 +587,35 @@ test('strict schemas and executors reject coercion, null, extras, and legacy mod
   assert.equal(graph.is_error, true);
   const jsonGraph = await brainMemoryGraphTool.execute({ exportFull: true, format: 'json' }, makeCtx());
   assert.equal(jsonGraph.is_error, true);
+});
+
+test('brain_query requires query as an own data property', async () => {
+  let calls = 0;
+  let getterReads = 0;
+  const accessorInput: Record<string, unknown> = {};
+  Object.defineProperty(accessorInput, 'query', {
+    enumerable: true,
+    get() {
+      getterReads += 1;
+      return 'accessor query';
+    },
+  });
+  const inputs = [
+    Object.create({ query: 'inherited query' }) as Record<string, unknown>,
+    accessorInput,
+    new Proxy({ query: 'proxied query' }, {}),
+  ];
+  const ctx = makeCtx({ brainOperations: {
+    query: async () => {
+      calls += 1;
+      return completeOperation('op-prototype-query', 'queried');
+    },
+  } });
+  const results = [];
+  for (const input of inputs) results.push(await brainQueryTool.execute(input, ctx));
+  assert.equal(calls, 0);
+  assert.equal(getterReads, 0);
+  assert.equal(results.every((result) => result.is_error === true), true);
 });
 
 test('ad-hoc export metadata rejects cycles, nonfinite leaves, and oversized JSON', async () => {

@@ -185,6 +185,32 @@ test('research_search_all_brains reports one outcome per target and never hides 
   });
 });
 
+test('research_search_all_brains reports detached running work as in_progress', async () => {
+  const ctx = makeCtx({ brainOperations: {
+    getCatalog: async () => ({ catalogRevision: 'c-running', brains: [
+      canonicalResearch('brain-a', 'A'), canonicalResearch('brain-b', 'B'),
+    ] }),
+    query: async (request: Record<string, unknown>) => {
+      const brainId = (request.target as { brainId: string }).brainId;
+      const operation = completeOperation(`op-${brainId}`, '');
+      operation.state = 'running';
+      operation.attachmentState = 'detached';
+      operation.result = null;
+      operation.resultHandle = null;
+      operation.resultArtifact = null;
+      return operation;
+    },
+  } });
+  const result = await searchAllBrainsTool.execute({ query: 'evidence', topN: 2 }, ctx);
+  assert.equal(result.is_error, undefined);
+  assert.equal(result.metadata?.aggregate, 'in_progress');
+  assert.match(result.content, /^in_progress/m);
+  assert.doesNotMatch(result.content, /all_failed/);
+  const outcomes = result.metadata?.outcomes as Array<Record<string, unknown>>;
+  assert.equal(outcomes.every((outcome) => outcome.state === 'running'), true);
+  assert.equal(outcomes.every((outcome) => outcome.operationId), true);
+});
+
 test('research query reuses the shared direct-query partial classifier', async () => {
   const valid = completeOperation('op-research-partial', 'useful research answer');
   valid.operationType = 'query';
@@ -393,6 +419,35 @@ test('research launch and continue preserve every approved option and reject aut
   }
 });
 
+test('research launch requires topic as an own data property', async () => {
+  let calls = 0;
+  let getterReads = 0;
+  const accessorInput: Record<string, unknown> = {};
+  Object.defineProperty(accessorInput, 'topic', {
+    enumerable: true,
+    get() {
+      getterReads += 1;
+      return 'accessor topic';
+    },
+  });
+  const inputs = [
+    Object.create({ topic: 'inherited topic' }) as Record<string, unknown>,
+    accessorInput,
+    new Proxy({ topic: 'proxied topic' }, {}),
+  ];
+  const ctx = makeCtx({ brainOperations: {
+    launchResearch: async () => {
+      calls += 1;
+      return completeOperation('op-prototype-launch', 'launched');
+    },
+  } });
+  const results = [];
+  for (const input of inputs) results.push(await launchTool.execute(input, ctx));
+  assert.equal(calls, 0);
+  assert.equal(getterReads, 0);
+  assert.equal(results.every((result) => result.is_error === true), true);
+});
+
 test('continue stop and watch reject noncanonical run selectors before any client call', async () => {
   let calls = 0;
   const ctx = makeCtx({ brainOperations: {
@@ -520,22 +575,24 @@ test('summary is a bounded read and preserves exact include selection', async ()
   assert.match(result.content, /summary/);
 });
 
-test('active-run awareness uses requester durable operations and exact turn signal', async () => {
+test('active-run awareness consumes only the bounded nonterminal projection', async () => {
   let signalSeen: AbortSignal | undefined;
   const ctx = makeCtx({ brainOperations: { listNonterminal: async (signal: AbortSignal) => {
     signalSeen = signal;
-    return [makeBrainOperationRecord({
-      operationId: 'brop_ACTIVEACTIVEACTIVEACTIVEACTIVE12',
+    return [{
+      operationId: 'brop_ACTIVEACTIVEACTIVEACTIVEACTIVE12', requestId: 'request-active',
       operationType: 'research_launch',
-      requestParameters: { topic: 'durable topic' },
-      parameters: { topic: 'durable topic' },
+      requesterAgent: 'jerry', target: { domain: 'requester', requesterAgent: 'jerry' },
       state: 'running',
+      phase: 'executing', recordVersion: 2, eventSequence: 7,
       startedAt: '2026-07-10T12:00:00.000Z',
-    })];
+      updatedAt: '2026-07-10T12:01:00.000Z',
+      lastProviderActivityAt: null, lastProgressAt: null,
+    }];
   } } });
   const active = await checkCosmoActiveRun(ctx);
   assert.equal(active?.runName, 'research-brop_ACTIVEACTIVEACTIVEACTIVEACTIVE12');
-  assert.equal(active?.topic, 'durable topic');
+  assert.equal(active?.topic, '');
   assert.equal(signalSeen, ctx.turnRuntime?.signal);
   assert.equal(await checkCosmoActiveRun(), null);
 });

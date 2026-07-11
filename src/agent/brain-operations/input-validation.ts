@@ -1,3 +1,5 @@
+import { types as utilTypes } from 'node:util';
+
 function invalid(field: string, message = `${field}_invalid`): Error {
   return Object.assign(new Error(message), { code: 'invalid_request' });
 }
@@ -12,10 +14,19 @@ export function assertExactKeys(
   field: string,
   options: { requireAll?: boolean; requireAny?: boolean } = {},
 ): asserts value is Record<string, unknown> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid(field);
-  const keys = Reflect.ownKeys(value);
+  if (!value || typeof value !== 'object' || Array.isArray(value) || utilTypes.isProxy(value)) {
+    throw invalid(field);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw invalid(field);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const keys = Reflect.ownKeys(descriptors);
   const allowed = new Set(allowedKeys);
   if (keys.some((key) => typeof key !== 'string' || !allowed.has(key))) throw invalid(field);
+  if (keys.some((key) => {
+    const descriptor = descriptors[key as string];
+    return !descriptor || !('value' in descriptor);
+  })) throw invalid(field);
   if (options.requireAll && (keys.length !== allowedKeys.length
       || allowedKeys.some((key) => !hasOwn(value, key)))) {
     throw invalid(field);
@@ -122,7 +133,8 @@ export function optionalJsonObject(
       if (!Number.isFinite(candidate)) throw invalid(field);
       return candidate;
     }
-    if (!candidate || typeof candidate !== 'object' || depth > maxDepth) throw invalid(field);
+    if (!candidate || typeof candidate !== 'object' || depth > maxDepth
+        || utilTypes.isProxy(candidate)) throw invalid(field);
     if (seen.has(candidate)) throw invalid(field);
     seen.add(candidate);
     try {

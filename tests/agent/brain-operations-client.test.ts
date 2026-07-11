@@ -1215,6 +1215,40 @@ test('present-null, extra target fields, nonfinite limits, and partial provider 
   assert.equal(fetches, 0);
 });
 
+test('operation starts require query as an own data property', async () => {
+  let fetches = 0;
+  let getterReads = 0;
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture',
+    callerAgent: 'jerry',
+    fetchImpl: async () => {
+      fetches += 1;
+      throw new Error('fetch forbidden');
+    },
+  });
+  const accessorParameters: Record<string, unknown> = {};
+  Object.defineProperty(accessorParameters, 'query', {
+    enumerable: true,
+    get() {
+      getterReads += 1;
+      return 'accessor query';
+    },
+  });
+  const parameters = [
+    Object.create({ query: 'inherited query' }) as Record<string, unknown>,
+    accessorParameters,
+    new Proxy({ query: 'proxied query' }, {}),
+  ];
+  for (const value of parameters) {
+    await assert.rejects(
+      client.start('query', value),
+      (error: unknown) => (error as { code?: string }).code === 'invalid_request',
+    );
+  }
+  assert.equal(fetches, 0);
+  assert.equal(getterReads, 0);
+});
+
 test('lost start response retries once with the identical requestId and body', async () => {
   const bodies: string[] = [];
   const calls: string[] = [];

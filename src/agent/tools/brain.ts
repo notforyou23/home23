@@ -48,9 +48,16 @@ function invalidRequest(message = 'invalid_request'): Error {
 }
 
 function assertToolKeys(input: Record<string, unknown>, allowed: readonly string[]): void {
-  const keys = Reflect.ownKeys(input);
-  const allow = new Set(allowed);
-  if (keys.some((key) => typeof key !== 'string' || !allow.has(key))) throw invalidRequest();
+  assertExactKeys(input, allowed, 'input');
+}
+
+function requiredToolText(
+  input: Record<string, unknown>,
+  key: string,
+  max: number,
+): string {
+  if (!hasOwn(input, key)) throw invalidRequest(`${key}_invalid`);
+  return requiredBoundedText(input[key], key, max);
 }
 
 function parsedWhenPresent<T>(
@@ -149,15 +156,15 @@ function operationControlResult(
 ): ToolResult {
   if (value.state === 'partial') {
     return {
-      content: `invalid_partial_result: operation result lacks the canonical operation type\n`
-        + `operation=${value.operationId} state=${value.state}`,
-      is_error: true,
+      content: `operation=${value.operationId} state=${value.state}\n`
+        + 'Terminal partial status recorded. Read and classify the protected result with '
+        + `brain_status {action:"result",operationId:"${value.operationId}"}.`,
       resultHandle: value.resultHandle || undefined,
       metadata: {
         action,
         operationId: value.operationId,
         state: value.state,
-        classification: 'invalid_partial_result',
+        classification: 'partial_status',
         error: value.error,
         sourceEvidence: value.sourceEvidence,
         resultArtifact: value.resultArtifact,
@@ -211,7 +218,7 @@ async function executeBrainSearch(
       optionalBoundedText(value, 'tag', 256));
     const value = await turn.brainOperations.search({
       ...(target ? { target } : {}),
-      query: requiredBoundedText(input.query, 'query', 12_000),
+      query: requiredToolText(input, 'query', 12_000),
       topK,
       ...(tag !== undefined ? { tag } : {}),
     }, turn.signal);
@@ -252,7 +259,7 @@ async function executeBrainQuery(
     const modelSelection = exactPairWhenPresent(input, 'modelSelection');
     const operation = await turn.brainOperations.query({
       ...(target ? { target } : {}),
-      query: requiredBoundedText(input.query, 'query', 12_000),
+      query: requiredToolText(input, 'query', 12_000),
       mode,
       ...(priorContext !== undefined ? { priorContext } : {}),
       ...(enablePGS ? {
@@ -314,14 +321,14 @@ async function executeBrainExport(
       optionalBoundedText(value, 'resultHandle', 256));
     const value = canonical
       ? await turn.brainOperations.exportResult({
-        operationId: requiredBoundedText(input.operationId, 'operationId', 256),
+        operationId: requiredToolText(input, 'operationId', 256),
         ...(resultHandle !== undefined ? { resultHandle } : {}),
         format,
         ...(metadata ? { metadata } : {}),
       }, turn.signal)
       : await turn.brainOperations.exportAdHocResult({
-        query: requiredBoundedText(input.query, 'query', 12_000),
-        answer: requiredBoundedText(input.answer, 'answer', 2_000_000),
+        query: requiredToolText(input, 'query', 12_000),
+        answer: requiredToolText(input, 'answer', 2_000_000),
         format,
         metadata: { ...(metadata || {}), canonicalEvidence: false },
       }, turn.signal);
@@ -413,7 +420,7 @@ async function executeBrainSynthesis(
       if (hasOwn(input, 'generationMarker') || hasOwn(input, 'trigger') || hasOwn(input, 'reason')) {
         throw invalidRequest();
       }
-      const operationId = requiredBoundedText(input.operationId, 'operationId', 256);
+      const operationId = requiredToolText(input, 'operationId', 256);
       return synthesisResult(await turn.brainOperations.reattachSynthesis(
         operationId, turn.signal,
       ));
@@ -441,7 +448,7 @@ async function executeBrainStatus(
     const turn = runtime(ctx);
     if (hasOwn(input, 'operationId')) {
       if (hasOwn(input, 'target')) throw invalidRequest();
-      const operationId = requiredBoundedText(input.operationId, 'operationId', 256);
+      const operationId = requiredToolText(input, 'operationId', 256);
       const action = parsedWhenPresent(input, 'action', (value) =>
         optionalEnum(value, 'action', ['status', 'result', 'wait', 'cancel'] as const)) ?? 'status';
       const value = action === 'wait'

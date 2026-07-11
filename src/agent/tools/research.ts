@@ -6,6 +6,7 @@
  */
 
 import {
+  assertExactKeys,
   exactProviderModelPair,
   hasOwn,
   optionalBoolean,
@@ -39,11 +40,16 @@ function invalidRequest(message = 'invalid_request'): Error {
 }
 
 function assertToolKeys(input: Record<string, unknown>, allowed: readonly string[]): void {
-  const keys = Reflect.ownKeys(input);
-  const allowedSet = new Set(allowed);
-  if (keys.some((key) => typeof key !== 'string' || !allowedSet.has(key))) {
-    throw invalidRequest();
-  }
+  assertExactKeys(input, allowed, 'input');
+}
+
+function requiredToolText(
+  input: Record<string, unknown>,
+  key: string,
+  max: number,
+): string {
+  if (!hasOwn(input, key)) throw invalidRequest(`${key}_invalid`);
+  return requiredBoundedText(input[key], key, max);
 }
 
 function parsedWhenPresent<T>(
@@ -133,7 +139,7 @@ function researchQueryParameters(input: Record<string, unknown>): Omit<BrainQuer
   const enablePGS = parsedWhenPresent(input, 'enablePGS', (value) =>
     optionalBoolean(value, 'enablePGS')) ?? false;
   const request: Omit<BrainQueryRequest, 'target'> = {
-    query: requiredBoundedText(input.query, 'query', 12_000),
+    query: requiredToolText(input, 'query', 12_000),
     mode: parsedWhenPresent(input, 'mode', (value) =>
       optionalEnum(value, 'mode', ['quick', 'full', 'expert', 'dive'] as const)) ?? 'quick',
     enablePGS,
@@ -179,7 +185,7 @@ function approvedLaunchOptions(input: Record<string, unknown>): Record<string, u
     'strategicModel', 'strategicProvider',
   ]);
   const output: Record<string, unknown> = {
-    topic: requiredBoundedText(input.topic, 'topic', 12_000),
+    topic: requiredToolText(input, 'topic', 12_000),
   };
   const context = parsedWhenPresent(input, 'context', (value) =>
     optionalBoundedText(value, 'context', 20_000));
@@ -253,15 +259,10 @@ export async function checkCosmoActiveRun(
     if (!active) return null;
     const runName = active.target.domain === 'owned-run'
       ? active.target.runId
-      : typeof active.result?.runId === 'string'
-        ? active.result.runId
-        : `research-${active.operationId}`;
-    const topic = typeof active.requestParameters.topic === 'string'
-      ? active.requestParameters.topic
-      : '';
+      : `research-${active.operationId}`;
     return {
       runName,
-      topic,
+      topic: '',
       startedAt: active.startedAt || '',
       processCount: null,
     };
@@ -305,7 +306,7 @@ async function executeQueryBrain(
       'pgsConfig', 'pgsSweep', 'pgsSynth',
     ]);
     const turn = runtime(ctx);
-    const brainId = requiredBoundedText(input.brainId, 'brainId', 128);
+    const brainId = requiredToolText(input, 'brainId', 128);
     return operationToolResult(await turn.brainOperations.query({
       target: { brainId },
       ...researchQueryParameters(input),
@@ -394,10 +395,12 @@ async function executeSearchAll(
       }
     });
     const usefulCount = outcomes.filter((item) => item.useful).length;
+    const hasNonterminal = outcomes.some((item) => item.state === 'queued' || item.state === 'running');
     const aggregate = usefulCount === outcomes.length
       && outcomes.every((item) => item.state === 'complete')
       ? 'complete'
-      : usefulCount > 0 ? 'partial' : 'all_failed';
+      : hasNonterminal ? 'in_progress'
+        : usefulCount > 0 ? 'partial' : 'all_failed';
     return {
       content: `${aggregate}\n${outcomes.map((item) =>
         `${item.brainId}: ${item.state}: ${item.excerpt || item.error?.code || 'no answer'}`,
@@ -486,7 +489,7 @@ async function executeSummary(input: Record<string, unknown>, ctx: ToolContext):
       ? exactInclude(input.include)
       : ['executive', 'goals', 'trajectory'];
     const value = await turn.brainOperations.readIntelligence({
-      target: { brainId: requiredBoundedText(input.brainId, 'brainId', 128) },
+      target: { brainId: requiredToolText(input, 'brainId', 128) },
       include,
     }, turn.signal);
     return { content: JSON.stringify(value, null, 2), metadata: { sourceEvidence: value.sourceEvidence } };
@@ -506,7 +509,7 @@ async function executeGraph(input: Record<string, unknown>, ctx: ToolContext): P
     const minWeight = parsedWhenPresent(input, 'minWeight', (value) =>
       optionalFiniteNumber(value, 'minWeight', 0, 1));
     const value = await turn.brainOperations.graph({
-      target: { brainId: requiredBoundedText(input.brainId, 'brainId', 128) },
+      target: { brainId: requiredToolText(input, 'brainId', 128) },
       nodeLimit,
       edgeLimit: Math.min(8_000, nodeLimit * 2),
       ...(clusterId !== undefined ? { clusterId } : {}),
@@ -525,7 +528,7 @@ async function executeCompileBrain(input: Record<string, unknown>, ctx: ToolCont
     const focus = parsedWhenPresent(input, 'focus', (value) =>
       optionalBoundedText(value, 'focus', 12_000));
     return operationToolResult(await turn.brainOperations.compile({
-      target: { brainId: requiredBoundedText(input.brainId, 'brainId', 128) },
+      target: { brainId: requiredToolText(input, 'brainId', 128) },
       kind: 'brain',
       ...(focus !== undefined ? { focus } : {}),
     }, turn.signal));
@@ -544,10 +547,10 @@ async function executeCompileSection(input: Record<string, unknown>, ctx: ToolCo
       optionalEnum(value, 'section', ['goal', 'insight', 'agent'] as const));
     if (section === undefined) throw invalidRequest();
     return operationToolResult(await turn.brainOperations.compile({
-      target: { brainId: requiredBoundedText(input.brainId, 'brainId', 128) },
+      target: { brainId: requiredToolText(input, 'brainId', 128) },
       kind: 'section',
       section,
-      sectionId: requiredBoundedText(input.sectionId, 'sectionId', 256),
+      sectionId: requiredToolText(input, 'sectionId', 256),
       ...(focus !== undefined ? { focus } : {}),
     }, turn.signal));
   } catch (error) {

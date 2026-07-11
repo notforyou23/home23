@@ -94,6 +94,13 @@ export interface BrainOperationRecord {
   metadataExpiresAt: string | null;
 }
 
+export type BrainNonterminalOperation = Pick<BrainOperationRecord,
+  | 'operationId' | 'requestId' | 'operationType' | 'requesterAgent' | 'target'
+  | 'phase' | 'recordVersion' | 'eventSequence' | 'startedAt' | 'updatedAt'
+  | 'lastProviderActivityAt' | 'lastProgressAt'> & {
+    state: 'queued' | 'running';
+  };
+
 export interface BrainOperationEventGap {
   type: 'event_gap';
   operationId: string;
