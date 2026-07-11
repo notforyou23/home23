@@ -2070,14 +2070,16 @@ completed run artifacts.
 
 ---
 
-## Patch 47 — Canonical brain catalog phase
+## Patch 47 — Canonical brain catalog and protected worker boundary
 
 **Files touched:**
 - `cosmo23/server/lib/brain-registry.js`
 - `cosmo23/server/lib/brains-router.js`
+- `cosmo23/server/lib/brain-operation-worker.js`
+- `cosmo23/server/lib/brain-operation-routes.js`
 - `cosmo23/server/index.js`
 - `contracts/schemas/brain-operations.schema.json`
-- canonical catalog contract tests
+- canonical catalog and protected worker contract tests
 
 **Problem:** The legacy Brains picker used scan-path-derived identifiers and
 display names. Symlink spellings could represent the same brain more than once,
@@ -2101,11 +2103,34 @@ oversized state is reported as an unknown summary instead of a false zero.
 Boundary realpaths must remain within their own catalog entry, preventing a
 resident subtree symlink from escaping into another configured brain.
 
-**Phase boundary:** This is Patch 47's canonical-catalog phase. Its
-capability-protected COSMO worker phase lands in Task 5 of the brain authority
-and operations foundation plan. Patch 48 remains reserved for source truth and
-Patch 49 remains reserved for provider execution; this phase does not allocate
-either number.
+The internal worker boundary now verifies a fresh signed one-use capability on
+every start, status, events, result, and cancel call; re-resolves and authorizes
+the complete canonical target before first execution; and dispatches only an
+exact operation-type executor. Equivalent concurrent/lost-response starts share
+one process-local worker and source pin, while a different canonical fingerprint
+fails closed. Source operations accept only digest-bound numeric-v1 descriptors
+and reopen through the shared requester-owned pin provider; source-free run and
+requester operations cannot open a pin. Worker cancellation is per operation,
+provider activity retains validated call correlation, events are count/byte
+bounded with explicit authenticated gaps, graph artifacts are scratch-confined
+identity NDJSON, and terminal cleanup shares one cached pin-release promise.
+Observed and unread terminal workers have bounded retry retention; the dashboard
+durable store remains authoritative and canonical stored-result export stays
+dashboard-local. `server/index.js` exposes only an injectable route-registration
+seam here—the exact provider and research executor rollout is intentionally not
+constructed by this patch.
+
+**Verification:** `tests/cosmo23/brain-operation-worker.test.cjs` covers
+capability binding/replay, 32-way idempotent start, authority/source matrices,
+real native and legacy source pins, event/provider bounds, artifacts, GC,
+release-once cleanup, and all five internal route handlers. The existing brains
+router and shared capability/authority/source suites remain part of the patch
+acceptance command.
+
+**Phase boundary:** Patch 47 now contains both its canonical-catalog authority
+and capability-protected worker phases. Patch 48 remains source-truth authority,
+Patch 49 remains provider execution, and Patch 50 remains agent/research tool
+integration; this entry does not claim those later rollouts are complete.
 
 ---
 
@@ -2510,6 +2535,14 @@ resolution, and deterministic concurrent mutation conflicts.
   of `home23-cosmo23`, and the completed-run query now reports two extracted
   Archive records, nine forum/blog candidates, Legion of Mary present, and zero
   invalid JSON files.
+- **2026-07-10** — Patch 47 completed its two-part authority boundary: the
+  canonical catalog supplies server-derived identity/lifecycle/mutation truth,
+  and the internal COSMO worker now enforces fresh one-use capabilities, exact
+  executor dispatch, digest-bound process-local source pins, per-operation
+  cancellation, bounded resumable events, validated provider correlation,
+  terminal result retention, and release-once cleanup. Canonical stored-result
+  export remains dashboard-owned; this does not claim the later source,
+  provider, or agent-tool rollouts are complete.
 - **2026-07-10** — Patch 50 foundation added the concrete durable
   research-run adapter and extracted one prepared-run launcher from
   `server/index.js`. Owner/run paths and lifecycle transitions are now

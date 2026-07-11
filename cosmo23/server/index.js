@@ -55,6 +55,9 @@ const {
 const {
   createBrainSourceRouter
 } = require('./lib/brain-source-router');
+const {
+  createBrainOperationRoutes
+} = require('./lib/brain-operation-routes');
 const { buildStatusContract } = require('./lib/status-contract');
 const {
   buildInteractiveLiveStatus,
@@ -134,6 +137,18 @@ const configGenerator = new ConfigGenerator(ROOT, console);
 const processManager = new ProcessManager(ENGINE_DIR, console);
 const queryEngineCache = new Map();
 const oauthPkceStateStore = new Map();
+
+// HOME23 PATCH 47 — injectable protected-worker route seam. The exact
+// provider/research executor registry is assembled by its owning rollout; the
+// general COSMO server must not invent fallback executors during module load.
+function registerBrainOperationWorkerRoutes(worker, targetApp = app) {
+  if (!targetApp || typeof targetApp.use !== 'function') {
+    throw new TypeError('Express app with use() is required');
+  }
+  const router = createBrainOperationRoutes({ worker });
+  targetApp.use(router);
+  return router;
+}
 
 let activeContext = null;
 let isLaunching = false;
@@ -2478,5 +2493,6 @@ if (require.main === module) {
 
 module.exports = {
   launchPreparedResearch,
+  registerBrainOperationWorkerRoutes,
   startServer,
 };
