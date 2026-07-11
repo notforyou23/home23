@@ -21,11 +21,12 @@ function response() {
   };
 }
 
-test('loopback runtime metric is request-time V8 heap evidence bound to the executing PID', () => {
+test('loopback runtime metric distinguishes request samples from process RSS high-water evidence', () => {
   const handler = createRuntimeMetricsHandler({
     role: 'dashboard',
     pid: () => 4242,
-    memoryUsage: () => ({ heapUsed: 123_456_789 }),
+    memoryUsage: () => ({ heapUsed: 123_456_789, rss: 234_567_890 }),
+    resourceUsage: () => ({ maxRSS: 345_679 }),
     now: () => Date.parse('2026-07-11T12:00:00.000Z'),
   });
   const res = response();
@@ -33,12 +34,32 @@ test('loopback runtime metric is request-time V8 heap evidence bound to the exec
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers['cache-control'], 'no-store');
   assert.deepEqual(res.body, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     role: 'dashboard',
     pid: 4242,
-    heapUsedBytes: 123_456_789,
+    v8HeapUsedBytes: 123_456_789,
+    rssBytes: 234_567_890,
+    processMaxRssBytes: 345_679 * 1024,
+    semantics: {
+      v8HeapUsedBytes: 'request-time-sample',
+      rssBytes: 'request-time-sample',
+      processMaxRssBytes: 'process-lifetime-high-water',
+    },
     sampledAt: '2026-07-11T12:00:00.000Z',
   });
+});
+
+test('runtime metric fails closed when RSS high-water evidence is inconsistent', () => {
+  const handler = createRuntimeMetricsHandler({
+    role: 'dashboard',
+    pid: () => 4242,
+    memoryUsage: () => ({ heapUsed: 10, rss: 10 * 1024 * 1024 }),
+    resourceUsage: () => ({ maxRSS: 1 }),
+  });
+  const res = response();
+  handler({ method: 'GET', socket: { remoteAddress: '127.0.0.1' } }, res);
+  assert.equal(res.statusCode, 503);
+  assert.equal(res.body.error.code, 'runtime_metrics_unavailable');
 });
 
 test('runtime metric route rejects non-loopback and non-GET requests', () => {

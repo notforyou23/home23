@@ -9,41 +9,59 @@ const targets = [
 function set(timestamp, dashboard = {}, cosmo = {}) {
   return [
     {
-      name: 'dashboard', pid: 101, restartCount: 3, heapUsedMiB: 100,
+      name: 'dashboard', pid: 101, restartCount: 3,
+      v8HeapUsedMiB: 100, rssMiB: 200, processMaxRssMiB: 220,
       metricUpdatedAt: timestamp, metricTimestampAuthoritative: true,
       observedAt: timestamp + 5, ...dashboard,
     },
     {
-      name: 'cosmo', pid: 202, restartCount: 1, heapUsedMiB: 40,
+      name: 'cosmo', pid: 202, restartCount: 1,
+      v8HeapUsedMiB: 40, rssMiB: 80, processMaxRssMiB: 90,
       metricUpdatedAt: timestamp, metricTimestampAuthoritative: true,
       observedAt: timestamp + 5, ...cosmo,
     },
   ];
 }
 
-test('computes per-target peak V8 heap from two fresh advancing samples', async () => {
+test('reports sampled V8/RSS maxima separately from process RSS high-water', async () => {
   const { summarizeSamples } = await import('../../scripts/sample-process-memory.mjs');
   const summaries = summarizeSamples({
     targets,
     baseline: set(900),
     samples: [
-      set(1_100, { heapUsedMiB: 180 }, { heapUsedMiB: 60 }),
-      set(1_200, { heapUsedMiB: 140 }, { heapUsedMiB: 80 }),
+      set(1_100,
+        { v8HeapUsedMiB: 180, rssMiB: 240, processMaxRssMiB: 250 },
+        { v8HeapUsedMiB: 60, rssMiB: 100, processMaxRssMiB: 110 }),
+      set(1_200,
+        { v8HeapUsedMiB: 140, rssMiB: 220, processMaxRssMiB: 250 },
+        { v8HeapUsedMiB: 80, rssMiB: 120, processMaxRssMiB: 130 }),
     ],
     commandStartedAt: 1_000,
     maxMetricAgeMs: 100,
     maxHeapGrowthMiB: 256,
+    maxRssGrowthMiB: 256,
   });
   assert.deepEqual(summaries.map((row) => ({
     name: row.name,
-    peak: row.peakHeapMiB,
-    growth: row.heapGrowthMiB,
+    maxSampledV8: row.maxSampledV8HeapUsedMiB,
+    sampledV8Growth: row.maxSampledV8HeapGrowthMiB,
+    maxSampledRss: row.maxSampledRssMiB,
+    sampledRssGrowth: row.maxSampledRssGrowthMiB,
+    processMaxRssGrowth: row.processMaxRssGrowthMiB,
     fresh: row.metricFresh,
     restartDelta: row.restartDelta,
     pidChanged: row.pidChanged,
   })), [
-    { name: 'dashboard', peak: 180, growth: 80, fresh: true, restartDelta: 0, pidChanged: false },
-    { name: 'cosmo', peak: 80, growth: 40, fresh: true, restartDelta: 0, pidChanged: false },
+    {
+      name: 'dashboard', maxSampledV8: 180, sampledV8Growth: 80,
+      maxSampledRss: 240, sampledRssGrowth: 40, processMaxRssGrowth: 30,
+      fresh: true, restartDelta: 0, pidChanged: false,
+    },
+    {
+      name: 'cosmo', maxSampledV8: 80, sampledV8Growth: 40,
+      maxSampledRss: 120, sampledRssGrowth: 40, processMaxRssGrowth: 40,
+      fresh: true, restartDelta: 0, pidChanged: false,
+    },
   ]);
 });
 
@@ -53,7 +71,7 @@ test('fails closed for stale metrics, PID replacement, restart, and heap growth'
     targets, baseline: set(900), commandStartedAt: 1_000,
     maxMetricAgeMs: 100, maxHeapGrowthMiB: 256,
   };
-  for (const [code, samples, limit = 256] of [
+  for (const [code, samples, heapLimit = 256, rssLimit = 256] of [
     ['metric_stale', [set(900), set(900)]],
     ['pid_replaced', [set(1_100, { pid: 999 }), set(1_200, { pid: 999 })]],
     ['process_restarted', [set(1_100, { restartCount: 4 }), set(1_200, { restartCount: 4 })]],
@@ -62,10 +80,26 @@ test('fails closed for stale metrics, PID replacement, restart, and heap growth'
       set(1_100, { metricTimestampAuthoritative: false }),
       set(1_200, { metricTimestampAuthoritative: false }),
     ]],
-    ['heap_growth_exceeded', [set(1_100, { heapUsedMiB: 130 }), set(1_200, { heapUsedMiB: 130 })], 20],
+    ['sampled_v8_heap_growth_exceeded', [
+      set(1_100, { v8HeapUsedMiB: 130 }), set(1_200, { v8HeapUsedMiB: 130 }),
+    ], 20],
+    ['sampled_rss_growth_exceeded', [
+      set(1_100, { rssMiB: 230, processMaxRssMiB: 250 }),
+      set(1_200, { rssMiB: 230, processMaxRssMiB: 250 }),
+    ], 256, 20],
+    ['rss_high_water_growth_exceeded', [
+      set(1_100, { processMaxRssMiB: 500 }),
+      set(1_200, { processMaxRssMiB: 500 }),
+    ], 256, 256],
+    ['rss_high_water_regressed', [
+      set(1_100, { processMaxRssMiB: 250 }),
+      set(1_200, { processMaxRssMiB: 240 }),
+    ]],
   ]) {
     assert.throws(
-      () => summarizeSamples({ ...base, samples, maxHeapGrowthMiB: limit }),
+      () => summarizeSamples({
+        ...base, samples, maxHeapGrowthMiB: heapLimit, maxRssGrowthMiB: rssLimit,
+      }),
       (error) => error.code === code,
       code,
     );
@@ -88,7 +122,15 @@ test('samples both execution processes around the exact command', async () => {
       sampleCalls += 1;
       const timestamp = 1_010 + sampleCalls * 10;
       if (sampleCalls >= 3) running = false;
-      return set(timestamp, { heapUsedMiB: 100 + sampleCalls }, { heapUsedMiB: 40 + sampleCalls });
+      return set(timestamp, {
+        v8HeapUsedMiB: 100 + sampleCalls,
+        rssMiB: 200 + sampleCalls,
+        processMaxRssMiB: 220 + sampleCalls,
+      }, {
+        v8HeapUsedMiB: 40 + sampleCalls,
+        rssMiB: 80 + sampleCalls,
+        processMaxRssMiB: 90 + sampleCalls,
+      });
     },
     commandLauncher: (command) => ({
       isRunning: () => running,
@@ -99,6 +141,8 @@ test('samples both execution processes around the exact command', async () => {
   assert.deepEqual(result.command, ['node', 'acceptance-command.mjs']);
   assert.equal(result.targets.length, 2);
   assert.ok(result.targets.every((target) => target.metricFresh));
+  assert.equal(result.metric, 'runtime-memory-evidence-v2');
+  assert.match(result.semantics.sampledV8Heap, /not a continuous heap high-water/);
   assert.equal(sampleCalls, 4);
   assert.equal(result.targets.every((target) => target.samples.at(-1).postCommand === true), true);
 });
@@ -131,10 +175,17 @@ test('PM2 targets use loopback request-time runtime metrics instead of synthetic
       requests.push(String(url));
       const dashboard = String(url).includes(':5002/');
       return new Response(JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         role: dashboard ? 'dashboard' : 'cosmo',
         pid: dashboard ? 101 : 202,
-        heapUsedBytes: (dashboard ? 100 : 40) * 1024 * 1024,
+        v8HeapUsedBytes: (dashboard ? 100 : 40) * 1024 * 1024,
+        rssBytes: (dashboard ? 200 : 80) * 1024 * 1024,
+        processMaxRssBytes: (dashboard ? 220 : 90) * 1024 * 1024,
+        semantics: {
+          v8HeapUsedBytes: 'request-time-sample',
+          rssBytes: 'request-time-sample',
+          processMaxRssBytes: 'process-lifetime-high-water',
+        },
         sampledAt,
       }));
     },
@@ -146,11 +197,19 @@ test('PM2 targets use loopback request-time runtime metrics instead of synthetic
   ]);
   assert.deepEqual(rows.map((row) => ({
     name: row.name,
-    heapUsedMiB: row.heapUsedMiB,
+    v8HeapUsedMiB: row.v8HeapUsedMiB,
+    rssMiB: row.rssMiB,
+    processMaxRssMiB: row.processMaxRssMiB,
     timestamp: row.metricUpdatedAt,
     authoritative: row.metricTimestampAuthoritative,
   })), [
-    { name: 'dashboard', heapUsedMiB: 100, timestamp: Date.parse(sampledAt), authoritative: true },
-    { name: 'cosmo', heapUsedMiB: 40, timestamp: Date.parse(sampledAt), authoritative: true },
+    {
+      name: 'dashboard', v8HeapUsedMiB: 100, rssMiB: 200,
+      processMaxRssMiB: 220, timestamp: Date.parse(sampledAt), authoritative: true,
+    },
+    {
+      name: 'cosmo', v8HeapUsedMiB: 40, rssMiB: 80,
+      processMaxRssMiB: 90, timestamp: Date.parse(sampledAt), authoritative: true,
+    },
   ]);
 });
