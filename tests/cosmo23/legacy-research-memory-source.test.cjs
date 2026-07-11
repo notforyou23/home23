@@ -220,6 +220,109 @@ test('32 concurrent legacy research projections reuse one immutable no-overwrite
   }
 });
 
+test('legacy research metadata growth cannot invalidate concurrent zero-growth publication', {
+  timeout: 15_000,
+}, async (t) => {
+  const { dir, file } = await writeFixture({ gzip: true });
+  const operationRoot = await tempDir('home23-legacy-snapshot-metadata-race-');
+  const quota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 16 * 1024 * 1024,
+  });
+  t.after(async () => {
+    await quota.close();
+    await fsp.rm(operationRoot, { recursive: true, force: true });
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+  function gate() {
+    let resolve;
+    const promise = new Promise((resolvePromise) => { resolve = resolvePromise; });
+    return { promise, resolve };
+  }
+  const secondReady = gate();
+  const firstPublicationLocked = gate();
+  const secondRelevantGrowth = gate();
+  let observedSecondGrowth = null;
+
+  function quotaProxy(withPhysicalGrowth) {
+    return {
+      operationRoot: quota.operationRoot,
+      maxBytes: quota.maxBytes,
+      assertOperationRoot: (...args) => quota.assertOperationRoot(...args),
+      claim: (...args) => quota.claim(...args),
+      release: (...args) => quota.release(...args),
+      reconcile: (...args) => quota.reconcile(...args),
+      withPhysicalGrowth,
+    };
+  }
+
+  const firstQuota = quotaProxy((maxGrowthBytes, kind, materializer) => {
+    if (!kind.startsWith('legacy_research_publication_')) {
+      return quota.withPhysicalGrowth(maxGrowthBytes, kind, materializer);
+    }
+    return quota.withPhysicalGrowth(maxGrowthBytes, kind, async (context) => {
+      // The real quota has captured its baseline and owns the operation-root lock.
+      firstPublicationLocked.resolve();
+      await secondRelevantGrowth.promise;
+      return materializer(context);
+    });
+  });
+  const secondQuota = quotaProxy((maxGrowthBytes, kind, materializer) => {
+    if (observedSecondGrowth === null
+        && (kind.startsWith('legacy_research_metadata_')
+          || kind.startsWith('legacy_research_publication_'))) {
+      observedSecondGrowth = { maxGrowthBytes, kind };
+      // Fixed metadata waits behind A; buggy unprotected metadata has already grown.
+      secondRelevantGrowth.resolve();
+    }
+    return quota.withPhysicalGrowth(maxGrowthBytes, kind, materializer);
+  });
+
+  const second = projectLegacyResearchSnapshot({
+    canonicalRoot: dir,
+    stateFile: file,
+    operationRoot,
+    operationId: 'op-legacy-metadata-race-second',
+    requesterAgent: 'jerry',
+    scratchQuota: secondQuota,
+    _testHooks: {
+      async beforeSourceRecheck() {
+        secondReady.resolve();
+        await firstPublicationLocked.promise;
+      },
+    },
+  });
+  await secondReady.promise;
+  const first = projectLegacyResearchSnapshot({
+    canonicalRoot: dir,
+    stateFile: file,
+    operationRoot,
+    operationId: 'op-legacy-metadata-race-first',
+    requesterAgent: 'jerry',
+    scratchQuota: firstQuota,
+  });
+
+  const outcomes = await Promise.allSettled([first, second]);
+  assert.deepEqual(
+    outcomes.map(({ status }) => status),
+    ['fulfilled', 'fulfilled'],
+    outcomes.map((outcome) => outcome.status === 'rejected'
+      ? `${outcome.reason?.code}: ${outcome.reason?.message}` : 'fulfilled').join('\n'),
+  );
+  const [firstResult, secondResult] = outcomes.map(({ value }) => value);
+  assert.equal(observedSecondGrowth.kind.startsWith('legacy_research_metadata_'), true);
+  assert.equal(
+    observedSecondGrowth.maxGrowthBytes,
+    Buffer.byteLength(`${JSON.stringify(secondResult.manifest, null, 2)}\n`, 'utf8'),
+  );
+  assert.equal(firstResult.projectionRoot, secondResult.projectionRoot);
+  assert.deepEqual(firstResult.manifest, secondResult.manifest);
+  assert.deepEqual(
+    await fsp.readdir(path.join(operationRoot, 'source-projections')),
+    [path.basename(firstResult.projectionRoot)],
+  );
+});
+
 test('abort from the final research source-recheck hook publishes no projection', async (t) => {
   const { dir, file } = await writeFixture({ gzip: false });
   const operationRoot = await tempDir('home23-legacy-snapshot-final-abort-');

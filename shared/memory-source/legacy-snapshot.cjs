@@ -5,8 +5,8 @@ const fsp = fs.promises;
 const path = require('node:path');
 const zlib = require('node:zlib');
 const crypto = require('node:crypto');
-const { once } = require('node:events');
 const { StringDecoder } = require('node:string_decoder');
+const { createQuotaBackpressuredJsonlGzipWriter } = require('./jsonl.cjs');
 const { createOperationScratchQuota } = require('./scratch-quota.cjs');
 const { readManifest, writeManifestAtomic, fsyncDirectory } = require('./manifest.cjs');
 const {
@@ -21,6 +21,10 @@ const {
   rethrowAbort,
   throwIfAborted,
 } = require('./contracts.cjs');
+
+const MAX_CLUSTER_KEYS = 1_000_000;
+const MAX_CLUSTER_BYTES = 16 * 1024 * 1024;
+const CLUSTER_ENTRY_OVERHEAD_BYTES = 32;
 
 function fingerprint(stat) {
   return {
@@ -161,37 +165,28 @@ function createArrayExtractor({ maxRecordBytes, signal, onRecord }) {
   return { push, end };
 }
 
-function createGzipJsonlWriter(filePath, { scratchQuota, signal } = {}) {
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
-  const gzip = zlib.createGzip({ level: zlib.constants.Z_BEST_SPEED });
-  const output = fs.createWriteStream(tmpPath, { flags: 'wx', mode: 0o600 });
-  gzip.pipe(output);
-  let count = 0;
-  async function write(record) {
-    throwIfAborted(signal);
-    const line = `${JSON.stringify(record)}\n`;
-    await scratchQuota?.claim?.(Buffer.byteLength(line, 'utf8'), 'legacy_projection');
-    if (!gzip.write(line)) await once(gzip, 'drain');
-    count += 1;
-  }
-  async function finish() {
-    gzip.end();
-    await once(output, 'close');
-    const handle = await fsp.open(tmpPath, 'r');
-    try {
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await fsp.rename(tmpPath, filePath);
-    return { count, bytes: (await fsp.stat(filePath)).size };
-  }
-  async function cleanup() {
-    gzip.destroy();
-    output.destroy();
-    await fsp.rm(tmpPath, { force: true }).catch(() => {});
-  }
-  return { write, finish, cleanup };
+function createBoundedClusterCounter() {
+  const values = new Set();
+  let retainedBytes = 0;
+  return Object.freeze({
+    add(value) {
+      const key = String(value);
+      if (values.has(key)) return false;
+      const nextBytes = retainedBytes
+        + Buffer.byteLength(key, 'utf8')
+        + CLUSTER_ENTRY_OVERHEAD_BYTES;
+      if (values.size >= MAX_CLUSTER_KEYS || nextBytes > MAX_CLUSTER_BYTES) {
+        throw memorySourceError('result_too_large', 'legacy cluster count exceeds budget', {
+          status: 413,
+          retryable: false,
+        });
+      }
+      values.add(key);
+      retainedBytes = nextBytes;
+      return true;
+    },
+    get size() { return values.size; },
+  });
 }
 
 async function streamSnapshot({
@@ -430,30 +425,36 @@ async function projectLegacyResearchSnapshot({
           ino: String(attemptStat.ino),
         });
         throwIfAborted(signal);
-      const nodesPath = path.join(attemptRoot, 'memory-nodes.tmp.jsonl.gz');
-      const edgesPath = path.join(attemptRoot, 'memory-edges.tmp.jsonl.gz');
-      nodes = createGzipJsonlWriter(nodesPath, { scratchQuota: quota, signal });
-      edges = createGzipJsonlWriter(edgesPath, { scratchQuota: quota, signal });
-      let nodeCount = 0;
-      let edgeCount = 0;
-      const clusters = new Set();
-      const streamed = await streamSnapshot({
-        stateFile: sourceFile,
-        openedFile: openedSource,
-        signal,
-        maxDecompressedBytes,
-        maxRecordBytes,
-        onRecord: async (kind, record) => {
-          if (kind === 'nodes') {
-            nodeCount += 1;
-            if (record?.cluster !== undefined && clusters.size < 100000) clusters.add(String(record.cluster));
-            await nodes.write(record);
-          } else {
-            edgeCount += 1;
-            await edges.write(record);
-          }
-        },
-      });
+        const nodesPath = path.join(attemptRoot, 'memory-nodes.tmp.jsonl.gz');
+        const edgesPath = path.join(attemptRoot, 'memory-edges.tmp.jsonl.gz');
+        nodes = await createQuotaBackpressuredJsonlGzipWriter(nodesPath, {
+          operationRoot: root,
+          scratchQuota: quota,
+          signal,
+          maxRecordBytes,
+        });
+        edges = await createQuotaBackpressuredJsonlGzipWriter(edgesPath, {
+          operationRoot: root,
+          scratchQuota: quota,
+          signal,
+          maxRecordBytes,
+        });
+        const clusters = createBoundedClusterCounter();
+        const streamed = await streamSnapshot({
+          stateFile: sourceFile,
+          openedFile: openedSource,
+          signal,
+          maxDecompressedBytes,
+          maxRecordBytes,
+          onRecord: async (kind, record) => {
+            if (kind === 'nodes') {
+              if (record?.cluster !== undefined) clusters.add(record.cluster);
+              await nodes.write(record);
+            } else {
+              await edges.write(record);
+            }
+          },
+        });
         const nodeFile = await nodes.finish();
         throwIfAborted(signal);
         const edgeFile = await edges.finish();
@@ -479,37 +480,54 @@ async function projectLegacyResearchSnapshot({
         throwIfAborted(signal);
         await fsp.rename(edgesPath, path.join(attemptRoot, edgeBase));
         throwIfAborted(signal);
-        const deltaHandle = await fsp.open(path.join(attemptRoot, deltaFile), 'wx', 0o600);
-        try {
-          await deltaHandle.sync();
-        } finally {
-          await deltaHandle.close();
-        }
-        throwIfAborted(signal);
         const manifest = {
-        formatVersion: 1,
-        generation,
-        baseRevision: revision,
-        currentRevision: revision,
-        activeDeltaEpoch: `e-${revision}`,
-        activeBase: {
-          nodes: { file: nodeBase, count: nodeCount, bytes: nodeFile.bytes },
-          edges: { file: edgeBase, count: edgeCount, bytes: edgeFile.bytes },
-        },
-        activeDelta: {
-          epoch: `e-${revision}`,
-          file: deltaFile,
-          fromRevision: revision + 1,
-          toRevision: revision,
-          count: 0,
-          committedBytes: 0,
-        },
-        ann: { indexFile: null, metaFile: null, builtFromRevision: revision },
-        summary: { nodeCount, edgeCount, clusterCount: clusters.size },
+          formatVersion: 1,
+          generation,
+          baseRevision: revision,
+          currentRevision: revision,
+          activeDeltaEpoch: `e-${revision}`,
+          activeBase: {
+            nodes: { file: nodeBase, count: nodeFile.count, bytes: nodeFile.bytes },
+            edges: { file: edgeBase, count: edgeFile.count, bytes: edgeFile.bytes },
+          },
+          activeDelta: {
+            epoch: `e-${revision}`,
+            file: deltaFile,
+            fromRevision: revision + 1,
+            toRevision: revision,
+            count: 0,
+            committedBytes: 0,
+          },
+          ann: { indexFile: null, metaFile: null, builtFromRevision: revision },
+          summary: {
+            nodeCount: nodeFile.count,
+            edgeCount: edgeFile.count,
+            clusterCount: clusters.size,
+          },
         };
-        await writeManifestAtomic(attemptRoot, manifest);
-        throwIfAborted(signal);
-        await fsyncDirectory(attemptRoot);
+        const manifestBytes = Buffer.byteLength(
+          `${JSON.stringify(manifest, null, 2)}\n`,
+          'utf8',
+        );
+        await quota.withPhysicalGrowth(
+          manifestBytes,
+          `legacy_research_metadata_${crypto.randomUUID()}`,
+          async ({ checkpoint }) => {
+            throwIfAborted(signal);
+            const deltaHandle = await fsp.open(path.join(attemptRoot, deltaFile), 'wx', 0o600);
+            try {
+              await deltaHandle.sync();
+            } finally {
+              await deltaHandle.close();
+            }
+            throwIfAborted(signal);
+            await writeManifestAtomic(attemptRoot, manifest);
+            throwIfAborted(signal);
+            await fsyncDirectory(attemptRoot);
+            throwIfAborted(signal);
+            await checkpoint();
+          },
+        );
         throwIfAborted(signal);
         await assertStableOpenedFile(openedSource);
         throwIfAborted(signal);
