@@ -16,6 +16,7 @@ import {
   canonicalBrainTarget,
   makeBrainOperationRecord,
 } from '../../helpers/brain-operation-record.js';
+import { CORE_RUNTIME_PROMPT } from '../../../src/agents/system-prompt.js';
 
 type BrainClientStub = Record<string, (...args: any[]) => any>;
 type ContextOverrides = Omit<Partial<ToolContext>, 'brainOperations' | 'turnRuntime'> & {
@@ -718,4 +719,14 @@ test('JSON metadata validation preserves dangerous keys without prototype mutati
   assert.equal((validated.__proto__ as { polluted: boolean }).polluted, true);
   assert.equal(({} as { polluted?: boolean }).polluted, undefined);
   assert.equal(JSON.stringify(validated), '{"__proto__":{"polluted":true},"safe":1}');
+});
+
+test('runtime prompt teaches durable brain waits without obsolete short latency promises', () => {
+  assert.match(CORE_RUNTIME_PROMPT, /ordinary (?:query )?attachment(?:s)? wait for up to 90 minutes/i);
+  assert.match(CORE_RUNTIME_PROMPT, /PGS and synthesis attachment(?:s)? wait for up to six hours/i);
+  assert.match(CORE_RUNTIME_PROMPT, /brain_status \{action:"wait",operationId:/i);
+  assert.match(CORE_RUNTIME_PROMPT, /verified operation (?:progress|events).*renew.*turn activity lease/i);
+  assert.doesNotMatch(CORE_RUNTIME_PROMPT, /brain_search[^\n]*~500ms/i);
+  assert.doesNotMatch(CORE_RUNTIME_PROMPT, /brain_query[^\n]*1-6 min/i);
+  assert.doesNotMatch(CORE_RUNTIME_PROMPT, /PGS[^\n]*5-10\+ min/i);
 });

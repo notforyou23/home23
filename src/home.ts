@@ -41,6 +41,10 @@ import { ConversationHistory } from './agent/history.js';
 import { createToolRegistry } from './agent/tools/index.js';
 import type { ToolContext, SubAgentTracker } from './agent/types.js';
 import { BrainOperationsClient } from './agent/brain-operations/client.js';
+import {
+  preserveCronBrainQueryDeliveryFailure,
+  runCronBrainQueryJob,
+} from './agent/cron-brain-query.js';
 import { TTSService } from './observability/tts.js';
 import { BrowserController } from './browser/cdp.js';
 import type { HomeConfig } from './types.js';
@@ -759,19 +763,27 @@ async function main(): Promise<void> {
         }
 
         if (job.payload.kind === 'query') {
-          const timeoutMs = (job.payload.timeoutSeconds ?? 120) * 1000;
-          const result = await queryEngine(job.payload.message, job.payload.mode ?? 'normal', {
-            model: job.payload.model,
-            timeoutMs,
-          });
+          const outcome = await runCronBrainQueryJob(
+            brainOperations,
+            job.payload,
+            MODEL_ALIASES,
+          );
           const durationMs = Date.now() - startMs;
 
-          const jobResult: JobResult = { status: 'ok', response: result.answer, durationMs };
+          const jobResult: JobResult = {
+            ...outcome,
+            durationMs,
+          };
           delivery.lastDeliveryError = null;
           await delivery.deliver(job, jobResult);
           if (delivery.lastDeliveryError) {
-            jobResult.status = 'error';
-            jobResult.error = `Delivery failed: ${delivery.lastDeliveryError}`;
+            const deliveryFailure = preserveCronBrainQueryDeliveryFailure(
+              outcome,
+              delivery.lastDeliveryError,
+            );
+            jobResult.status = deliveryFailure.status;
+            jobResult.error = deliveryFailure.error;
+            jobResult.semanticStatus = deliveryFailure.semanticStatus;
           }
           await assimilateCronResult(job, jobResult);
           return jobResult;
