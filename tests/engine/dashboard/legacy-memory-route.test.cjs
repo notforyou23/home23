@@ -42,7 +42,7 @@ test('legacy /api/memory is a bounded canonical-source projection', async () => 
   const server = await listen(app);
   try {
     const response = await fetch(
-      `http://127.0.0.1:${server.address().port}/api/memory?nodeLimit=25&edgeLimit=50`,
+      `http://127.0.0.1:${server.address().port}/api/memory?topN=25&edgeLimit=50`,
     );
     const body = await response.json();
     assert.equal(response.status, 200);

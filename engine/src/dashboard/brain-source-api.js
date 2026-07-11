@@ -44,7 +44,7 @@ function requestAbortController(req, res) {
 
 function pickGraphParameters(query = {}) {
   return {
-    nodeLimit: query.nodeLimit ?? query.limit,
+    nodeLimit: query.nodeLimit ?? query.limit ?? query.topN,
     edgeLimit: query.edgeLimit,
     clusterId: query.clusterId,
     tag: query.tag,
