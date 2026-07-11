@@ -30,7 +30,8 @@ export function exactProviderModelPair(
   if (value === undefined) return undefined;
   assertExactKeys(value, ['provider', 'model'], field, { requireAll: true });
   if (typeof value.provider !== 'string' || !value.provider.trim()
-      || typeof value.model !== 'string' || !value.model.trim()) {
+      || typeof value.model !== 'string' || !value.model.trim()
+      || value.provider.length > 256 || value.model.length > 256) {
     throw invalid(field, `${field}_requires_exact_provider_model`);
   }
   return { provider: value.provider, model: value.model };

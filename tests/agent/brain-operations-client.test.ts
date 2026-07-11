@@ -1174,15 +1174,29 @@ test('present-null, extra target fields, nonfinite limits, and partial provider 
     { target: { brainId: '*' }, query: 'x' }, { target: { brainId: null }, query: 'x' },
     { target: { agent: 'forrest', brainId: false }, query: 'x' },
     { query: 'x', modelSelection: null }, { query: 'x', modelSelection: { provider: 'openai' } },
+    { query: 'x', modelSelection: undefined },
+    { query: 'x', modelSelection: { provider: 'x'.repeat(257), model: 'gpt' } },
+    { query: 'x', modelSelection: { provider: 'openai', model: 'x'.repeat(257) } },
     { query: 'x', modelSelection: { provider: 'openai', model: 'gpt', extra: true } },
     { query: 'x', provider: 'openai' }, { query: 'x', pgsSweepModel: 'gpt' },
     { query: 'x'.repeat(12_001) },
     { query: 'x', priorContext: { query: 'q', answer: 'a'.repeat(20_001) } },
   ];
-  for (const value of invalid) await assert.rejects(client.start('query', value as never), /invalid/i);
+  for (const value of invalid) {
+    await assert.rejects(
+      client.start('query', value as never),
+      (error: unknown) => (error as { code?: string }).code === 'invalid_request',
+    );
+  }
   for (const topK of [null, '10', false, NaN, Infinity, -1, 0, 1.5, 101]) {
     await assert.rejects(client.start('search', { query: 'x', topK } as never), /invalid/i);
   }
+  await assert.rejects(
+    client.start('search', { query: 'x', topK: undefined } as never), /invalid/i,
+  );
+  await assert.rejects(
+    client.start('search', { query: 'x', tag: undefined } as never), /invalid/i,
+  );
   for (const [field, value] of [
     ['nodeLimit', null], ['nodeLimit', '25'], ['nodeLimit', NaN], ['nodeLimit', Infinity],
     ['nodeLimit', 1.5], ['nodeLimit', 0], ['nodeLimit', 2_001],

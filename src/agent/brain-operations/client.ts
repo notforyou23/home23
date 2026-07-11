@@ -91,8 +91,22 @@ function validateTargetSelector(value: unknown): BrainTargetSelector {
   return value as BrainTargetSelector;
 }
 
+function validatePresent<T>(
+  parameters: Record<string, unknown>,
+  field: string,
+  parse: (value: unknown) => T | undefined,
+): T | undefined {
+  if (!hasOwn(parameters, field)) return undefined;
+  const parsed = parse(parameters[field]);
+  if (parsed === undefined) throw invalid(`${field}_invalid`);
+  return parsed;
+}
+
 function validateCallerParameters(operationType: string, parameters: Record<string, unknown>): void {
   if (!parameters || typeof parameters !== 'object' || Array.isArray(parameters)) throw invalid();
+  for (const key of Reflect.ownKeys(parameters)) {
+    if (typeof key !== 'string' || parameters[key] === undefined) throw invalid(`${String(key)}_invalid`);
+  }
   const allowed = PARAMETER_FIELDS[operationType];
   if (allowed) {
     const set = new Set(allowed);
@@ -104,37 +118,47 @@ function validateCallerParameters(operationType: string, parameters: Record<stri
     'pgsSynthModel', 'pgsSynthProvider']) {
     if (hasOwn(parameters, forbidden)) throw invalid(`${forbidden}_invalid`);
   }
-  const modelSelection = exactProviderModelPair(parameters.modelSelection, 'modelSelection');
-  const pgsSweep = exactProviderModelPair(parameters.pgsSweep, 'pgsSweep');
-  const pgsSynth = exactProviderModelPair(parameters.pgsSynth, 'pgsSynth');
+  const modelSelection = validatePresent(parameters, 'modelSelection', (value) =>
+    exactProviderModelPair(value, 'modelSelection'));
+  const pgsSweep = validatePresent(parameters, 'pgsSweep', (value) =>
+    exactProviderModelPair(value, 'pgsSweep'));
+  const pgsSynth = validatePresent(parameters, 'pgsSynth', (value) =>
+    exactProviderModelPair(value, 'pgsSynth'));
   if (operationType === 'query' && (pgsSweep || pgsSynth)) throw invalid();
   if (operationType === 'pgs' && modelSelection) throw invalid();
   if (operationType === 'synthesis' && (modelSelection || pgsSweep || pgsSynth)) throw invalid();
 
   if (['query', 'pgs', 'search'].includes(operationType)) {
     requiredBoundedText(parameters.query, 'query', 12_000);
-  } else if (parameters.query !== undefined) {
+  } else if (hasOwn(parameters, 'query')) {
     requiredBoundedText(parameters.query, 'query', 12_000);
   }
-  optionalFiniteInteger(parameters.topK, 'topK', 1, 100);
-  optionalFiniteInteger(parameters.nodeLimit, 'nodeLimit', 1, 2_000);
-  optionalFiniteInteger(parameters.edgeLimit, 'edgeLimit', 1, 8_000);
-  optionalFiniteNumber(parameters.minWeight, 'minWeight', 0, 1);
-  optionalFiniteInteger(parameters.after, 'after', 0, Number.MAX_SAFE_INTEGER);
-  optionalFiniteInteger(parameters.limit, 'limit', 1, 500);
-  optionalFiniteInteger(parameters.cycles, 'cycles', 1, 10_000);
-  optionalFiniteInteger(parameters.maxConcurrent, 'maxConcurrent', 1, 128);
-  optionalEnum(parameters.mode, 'mode', [
+  validatePresent(parameters, 'topK', (value) => optionalFiniteInteger(value, 'topK', 1, 100));
+  validatePresent(parameters, 'nodeLimit', (value) =>
+    optionalFiniteInteger(value, 'nodeLimit', 1, 2_000));
+  validatePresent(parameters, 'edgeLimit', (value) =>
+    optionalFiniteInteger(value, 'edgeLimit', 1, 8_000));
+  validatePresent(parameters, 'minWeight', (value) =>
+    optionalFiniteNumber(value, 'minWeight', 0, 1));
+  validatePresent(parameters, 'after', (value) =>
+    optionalFiniteInteger(value, 'after', 0, Number.MAX_SAFE_INTEGER));
+  validatePresent(parameters, 'limit', (value) => optionalFiniteInteger(value, 'limit', 1, 500));
+  validatePresent(parameters, 'cycles', (value) =>
+    optionalFiniteInteger(value, 'cycles', 1, 10_000));
+  validatePresent(parameters, 'maxConcurrent', (value) =>
+    optionalFiniteInteger(value, 'maxConcurrent', 1, 128));
+  validatePresent(parameters, 'mode', (value) => optionalEnum(value, 'mode', [
     'quick', 'full', 'expert', 'dive', 'fast', 'normal', 'deep', 'executive',
     'raw', 'report', 'innovation', 'consulting', 'grounded',
-  ] as const);
-  if (parameters.pgsMode !== undefined && parameters.pgsMode !== 'full') throw invalid('pgsMode_invalid');
+  ] as const));
+  validatePresent(parameters, 'pgsMode', (value) =>
+    optionalEnum(value, 'pgsMode', ['full'] as const));
   for (const field of ['enablePGS', 'enableSynthesis', 'includeOutputs', 'includeThoughts',
     'includeCoordinatorInsights', 'allowActions']) {
-    optionalBoolean(parameters[field], field);
+    validatePresent(parameters, field, (value) => optionalBoolean(value, field));
   }
 
-  if (parameters.priorContext !== undefined && parameters.priorContext !== null) {
+  if (hasOwn(parameters, 'priorContext')) {
     assertExactKeys(parameters.priorContext, ['query', 'answer'], 'priorContext', { requireAll: true });
     if (typeof parameters.priorContext.query !== 'string'
         || typeof parameters.priorContext.answer !== 'string'
@@ -142,17 +166,12 @@ function validateCallerParameters(operationType: string, parameters: Record<stri
       throw invalid('priorContext_invalid');
     }
   }
-  if (parameters.pgsConfig !== undefined) {
+  if (hasOwn(parameters, 'pgsConfig')) {
     assertExactKeys(parameters.pgsConfig, ['sweepFraction'], 'pgsConfig');
-    optionalFiniteNumber(
-      parameters.pgsConfig.sweepFraction,
-      'sweepFraction',
-      0,
-      1,
-      { exclusiveMin: true },
-    );
+    validatePresent(parameters.pgsConfig, 'sweepFraction', (value) =>
+      optionalFiniteNumber(value, 'sweepFraction', 0, 1, { exclusiveMin: true }));
   }
-  if (parameters.requestId !== undefined
+  if (hasOwn(parameters, 'requestId')
       && (typeof parameters.requestId !== 'string'
         || !/^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/.test(parameters.requestId))) {
     throw invalid('requestId_invalid');
@@ -761,12 +780,18 @@ export class BrainOperationsClient {
     operationId: string,
     action: 'status' | 'result' | 'cancel',
     signal?: AbortSignal,
-  ): Promise<BrainOperationRecord | BrainOperationResultEnvelope> {
+  ): Promise<BrainOperationRecord | BrainOperationResult> {
     if (!OPERATION_ID.test(operationId)) throw new Error('operation_id_invalid');
     if (action === 'status') return this.getOperation(operationId, signal);
-    if (action === 'result') return this.getResult(operationId, signal);
+    if (action === 'result') {
+      const status = await this.getOperation(operationId, signal);
+      const payload = await this.getResult(operationId, signal);
+      return { ...status, ...payload, attachmentState: 'closed' };
+    }
     const cancelled = await this.cancel(operationId, signal);
-    return TERMINAL.has(cancelled.state) ? this.getResult(operationId, signal) : cancelled;
+    if (!TERMINAL.has(cancelled.state)) return cancelled;
+    const payload = await this.getResult(operationId, signal);
+    return { ...cancelled, ...payload, attachmentState: 'closed' };
   }
 
   async detach(

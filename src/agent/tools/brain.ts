@@ -28,8 +28,8 @@ const targetSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    agent: { type: 'string', minLength: 1 },
-    brainId: { type: 'string', minLength: 1 },
+    agent: { type: 'string', minLength: 1, maxLength: 256 },
+    brainId: { type: 'string', minLength: 1, maxLength: 256 },
   },
 } as const;
 
@@ -37,8 +37,8 @@ const providerModelSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    provider: { type: 'string', minLength: 1 },
-    model: { type: 'string', minLength: 1 },
+    provider: { type: 'string', minLength: 1, maxLength: 256 },
+    model: { type: 'string', minLength: 1, maxLength: 256 },
   },
   required: ['provider', 'model'],
 } as const;
@@ -147,6 +147,23 @@ function operationControlResult(
   action: string,
   value: BrainOperationRecord | BrainOperationResultEnvelope,
 ): ToolResult {
+  if (value.state === 'partial') {
+    return {
+      content: `invalid_partial_result: operation result lacks the canonical operation type\n`
+        + `operation=${value.operationId} state=${value.state}`,
+      is_error: true,
+      resultHandle: value.resultHandle || undefined,
+      metadata: {
+        action,
+        operationId: value.operationId,
+        state: value.state,
+        classification: 'invalid_partial_result',
+        error: value.error,
+        sourceEvidence: value.sourceEvidence,
+        resultArtifact: value.resultArtifact,
+      },
+    };
+  }
   const failed = ['failed', 'cancelled', 'interrupted'].includes(value.state);
   const running = value.state === 'queued' || value.state === 'running';
   return {
@@ -332,7 +349,18 @@ async function executeBrainGraph(
           optionalEnum(value, 'format', ['jsonl'] as const)) ?? 'jsonl',
       }, turn.signal);
       const rendered = operationToolResult(operation);
-      rendered.content += '\nFull graph stored in requester-owned operation result storage.';
+      if (operation.state === 'complete') {
+        if (!operation.resultHandle || !operation.resultArtifact) {
+          return {
+            ...rendered,
+            content: 'invalid_graph_export_result: completed export lacks its durable handle or artifact\n'
+              + `operation=${operation.operationId} state=${operation.state}`,
+            is_error: true,
+            metadata: { ...rendered.metadata, classification: 'invalid_graph_export_result' },
+          };
+        }
+        rendered.content += '\nFull graph stored in requester-owned operation result storage.';
+      }
       return rendered;
     }
     if (hasOwn(input, 'format')) throw invalidRequest();

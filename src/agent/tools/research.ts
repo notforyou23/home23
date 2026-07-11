@@ -28,8 +28,8 @@ const providerModelSchema = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    provider: { type: 'string', minLength: 1 },
-    model: { type: 'string', minLength: 1 },
+    provider: { type: 'string', minLength: 1, maxLength: 256 },
+    model: { type: 'string', minLength: 1, maxLength: 256 },
   },
   required: ['provider', 'model'],
 } as const;

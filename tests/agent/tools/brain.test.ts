@@ -171,6 +171,34 @@ test('brain_memory_graph full export is a durable requester-owned graph_export o
   assert.match(result.content, /requester-owned/i);
 });
 
+test('brain_memory_graph never claims a failed or detached export was stored', async () => {
+  const failed = failedOperation('op-graph-failed', 'source_unavailable');
+  failed.operationType = 'graph_export';
+  const detached = completeOperation('op-graph-detached', '');
+  detached.operationType = 'graph_export';
+  detached.state = 'running';
+  detached.attachmentState = 'detached';
+  detached.result = null;
+  detached.resultHandle = null;
+  detached.resultArtifact = null;
+  const missingArtifact = completeOperation('op-graph-missing-artifact', '');
+  missingArtifact.operationType = 'graph_export';
+  missingArtifact.result = null;
+  missingArtifact.resultArtifact = null;
+
+  for (const [operation, shouldError] of [
+    [failed, true],
+    [detached, false],
+    [missingArtifact, true],
+  ] as const) {
+    const result = await brainMemoryGraphTool.execute({ exportFull: true }, makeCtx({
+      brainOperations: { graphExport: async () => operation },
+    }));
+    assert.equal(result.is_error === true, shouldError, operation.operationId);
+    assert.doesNotMatch(result.content, /full graph stored/i, operation.operationId);
+  }
+});
+
 test('brain_synthesize rejects a cross-brain target before starting an operation', async () => {
   const result = await brainSynthesizeTool.execute({
     action: 'run', target: { agent: 'forrest' },
@@ -470,6 +498,25 @@ test('brain_status exposes status, result, wait, and exact cancel by operation I
     .filter((key) => ['operationType', 'waitMs'].includes(key)), []);
 });
 
+test('brain_status result fails malformed partial envelopes closed', async () => {
+  const result = await brainStatusTool.execute({
+    operationId: 'brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA', action: 'result',
+  }, makeCtx({ brainOperations: {
+    inspectOperation: async () => ({
+      operationId: 'brop_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      state: 'partial',
+      result: { answer: '   ' },
+      resultHandle: null,
+      resultArtifact: null,
+      error: null,
+      sourceEvidence: null,
+    }),
+  } }));
+  assert.equal(result.is_error, true);
+  assert.equal(result.metadata?.classification, 'invalid_partial_result');
+  assert.match(result.content, /invalid_partial_result/);
+});
+
 test('brain_status renders authoritative summary totals without graph arrays', async () => {
   const result = await brainStatusTool.execute({}, makeCtx({ brainOperations: {
     status: async () => ({ memory: { nodeCount: 139000, edgeCount: 455000 },
@@ -498,10 +545,15 @@ test('strict schemas and executors reject coercion, null, extras, and legacy mod
   }
   const invalidQueries = [
     { query: 'x', limit: '10' },
+    { query: 'x', limit: undefined },
+    { query: 'x', tag: undefined },
     { query: 'x', target: null },
     { query: 'x', target: { agent: 'forrest', extra: true } },
     { query: 'x', model: 'legacy-flat-model' },
     { query: 'x', modelSelection: { provider: 'openai' } },
+    { query: 'x', modelSelection: undefined },
+    { query: 'x', modelSelection: { provider: 'x'.repeat(257), model: 'gpt' } },
+    { query: 'x', modelSelection: { provider: 'openai', model: 'x'.repeat(257) } },
     { query: 'x', enablePGS: true, modelSelection: { provider: 'openai', model: 'gpt' } },
     { query: 'x', enablePGS: false, pgsMode: 'full' },
   ];
