@@ -287,3 +287,82 @@ test('fresh client learns authenticated operation type from status before result
   assert.equal(status.operationType, 'pgs');
   assert.equal((await restarted.result(OPERATION_ID, CAPABILITY)).result.answer, 'after restart');
 });
+
+test('result recovers an evicted type through a distinct status capability and deletes terminal cache state', async () => {
+  const operationIds = ['b', 'c', 'd'].map(character => `brop_${character.repeat(32)}`);
+  const operationTypes = new Map(operationIds.map(operationId => [operationId, 'query']));
+  const actions = [];
+  const client = createCosmoBrainOperationWorkerClient({
+    maxOperationTypeEntries: 2,
+    fetchImpl: async (rawUrl, options) => {
+      const url = new URL(rawUrl);
+      const action = url.pathname.split('/').at(-1);
+      const operationId = url.pathname.split('/').at(-2);
+      actions.push({ action, operationId, authorization: options.headers.authorization });
+      if (action === 'start') {
+        return jsonResponse({ operationId, operationType: operationTypes.get(operationId) });
+      }
+      if (action === 'status') {
+        const operationType = operationTypes.get(operationId);
+        return jsonResponse({
+          reference: {
+            version: 1, workerId: `cosmo-${operationId}`, workerType: 'cosmo', operationType,
+          },
+          operationId,
+          operationType,
+          state: 'complete',
+          phase: 'terminal',
+          eventSequence: 1,
+          activeProviderCalls: [],
+        });
+      }
+      if (action === 'result') {
+        return jsonResponse({
+          state: 'complete', result: { answer: operationId },
+          resultArtifact: null, error: null, sourceEvidence: {},
+        });
+      }
+      throw new Error(`unexpected action ${action}`);
+    },
+  });
+  for (const operationId of operationIds) {
+    await client.start({ operationId, operationType: 'query' }, `start-${operationId}`);
+  }
+
+  const first = operationIds[0];
+  await client.result(first, 'result-first', 'status-first');
+  await client.result(first, 'result-second', 'status-second');
+  const recovery = actions.filter(row => row.operationId === first && row.action !== 'start');
+  assert.deepEqual(recovery.map(row => row.action), ['status', 'result', 'status', 'result']);
+  assert.deepEqual(recovery.map(row => row.authorization), [
+    'Bearer status-first', 'Bearer result-first',
+    'Bearer status-second', 'Bearer result-second',
+  ]);
+});
+
+test('custom control limits preserve envelope headroom at exact Query and PGS result ceilings', async () => {
+  const MiB = 1024 * 1024;
+  for (const [character, operationType, resultBytes] of [
+    ['e', 'query', 8 * MiB],
+    ['f', 'pgs', 24 * MiB],
+  ]) {
+    const operationId = `brop_${character.repeat(32)}`;
+    const result = exactJsonPayload(resultBytes);
+    const client = createCosmoBrainOperationWorkerClient({
+      maxJsonBytes: 1024,
+      fetchImpl: async (url) => {
+        if (url.endsWith('/start')) return jsonResponse({ operationId, operationType });
+        if (url.endsWith('/result')) {
+          return jsonResponse({
+            state: 'complete', result, resultArtifact: null, error: null,
+            sourceEvidence: { receipt: 'x'.repeat(32 * 1024) },
+          });
+        }
+        throw new Error(`unexpected URL ${url}`);
+      },
+    });
+    await client.start({ operationId, operationType }, CAPABILITY);
+    const envelope = await client.result(operationId, CAPABILITY, 'unused-status-capability');
+    assert.equal(Buffer.byteLength(JSON.stringify(envelope.result), 'utf8'), resultBytes);
+  }
+});

@@ -8,6 +8,11 @@ const {
 
 const DEFAULT_MAX_JSON_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_EVENT_BYTES = 512 * 1024;
+const DEFAULT_MAX_OPERATION_TYPE_ENTRIES = 4096;
+const RESULT_CONTROL_HEADROOM_BYTES = 256 * 1024;
+const TERMINAL_RESULT_STATES = new Set([
+  'complete', 'partial', 'failed', 'cancelled', 'interrupted',
+]);
 const DEFAULT_SOURCE_OPERATION_TYPES = Object.freeze([
   'query',
   'pgs',
@@ -125,18 +130,39 @@ function createCosmoBrainOperationWorkerClient({
   fetchImpl = globalThis.fetch,
   maxJsonBytes = DEFAULT_MAX_JSON_BYTES,
   maxEventBytes = DEFAULT_MAX_EVENT_BYTES,
+  maxOperationTypeEntries = DEFAULT_MAX_OPERATION_TYPE_ENTRIES,
   sourceOperationTypes = DEFAULT_SOURCE_OPERATION_TYPES,
 } = {}) {
   const origin = normalizeLoopbackBaseUrl(baseUrl);
   if (typeof fetchImpl !== 'function'
       || !Number.isSafeInteger(maxJsonBytes) || maxJsonBytes < 1024
       || !Number.isSafeInteger(maxEventBytes) || maxEventBytes < 1024
+      || !Number.isSafeInteger(maxOperationTypeEntries) || maxOperationTypeEntries < 1
       || !Array.isArray(sourceOperationTypes)
       || sourceOperationTypes.some((value) => typeof value !== 'string' || !value)) {
     throw clientError('worker_configuration_invalid');
   }
   const supportedSourceOperations = new Set(sourceOperationTypes);
   const operationTypes = new Map();
+
+  function rememberOperationType(operationId, operationType) {
+    if (typeof operationType !== 'string' || !supportedSourceOperations.has(operationType)) {
+      throw clientError('worker_transport_invalid', 'COSMO worker operation type is invalid', {
+        retryable: true,
+      });
+    }
+    const known = operationTypes.get(operationId);
+    if (known !== undefined && known !== operationType) {
+      throw clientError('worker_transport_invalid', 'COSMO worker operation type changed', {
+        retryable: true,
+      });
+    }
+    operationTypes.delete(operationId);
+    operationTypes.set(operationId, operationType);
+    while (operationTypes.size > maxOperationTypeEntries) {
+      operationTypes.delete(operationTypes.keys().next().value);
+    }
+  }
 
   function rememberStatusOperationType(operationId, result) {
     const reference = result?.reference;
@@ -155,13 +181,7 @@ function createCosmoBrainOperationWorkerClient({
         retryable: true,
       });
     }
-    const known = operationTypes.get(operationId);
-    if (known !== undefined && known !== operationType) {
-      throw clientError('worker_transport_invalid', 'COSMO worker operation type changed', {
-        retryable: true,
-      });
-    }
-    operationTypes.set(operationId, operationType);
+    rememberOperationType(operationId, operationType);
   }
 
   function endpoint(operationId, action, query = '') {
@@ -200,6 +220,12 @@ function createCosmoBrainOperationWorkerClient({
     return envelope;
   }
 
+  async function status(operationId, capability) {
+    const result = await requestJson(operationId, 'status', capability);
+    rememberStatusOperationType(operationId, result);
+    return result;
+  }
+
   return Object.freeze({
     supportsSourceOperations: true,
     supportsSourceOperation(operationType) {
@@ -216,14 +242,13 @@ function createCosmoBrainOperationWorkerClient({
       if (result?.operationType !== undefined && result.operationType !== context.operationType) {
         throw clientError('worker_transport_invalid');
       }
-      operationTypes.set(context.operationId, context.operationType);
+      rememberOperationType(context.operationId, context.operationType);
+      if (result?.reference !== undefined && result?.reference !== null) {
+        rememberStatusOperationType(context.operationId, result);
+      }
       return result;
     },
-    async status(operationId, capability) {
-      const result = await requestJson(operationId, 'status', capability);
-      rememberStatusOperationType(operationId, result);
-      return result;
-    },
+    status,
     async *events(operationId, { afterSequence, signal }, capability) {
       if (!Number.isSafeInteger(afterSequence) || afterSequence < 0
           || !(signal instanceof AbortSignal)) {
@@ -298,16 +323,15 @@ function createCosmoBrainOperationWorkerClient({
         });
       }
     },
-    async result(operationId, capability) {
+    async result(operationId, capability, statusCapability) {
       let operationType = operationTypes.get(operationId);
       if (!operationType) {
-        throw clientError('worker_transport_invalid', 'COSMO worker operation type is unknown', {
-          retryable: true,
-        });
+        await status(operationId, statusCapability);
+        operationType = operationTypes.get(operationId);
       }
       const resultLimit = resultLimitForOperation(operationType);
       const envelope = await requestJson(operationId, 'result', capability, {
-        responseMaxBytes: resultLimit + maxJsonBytes,
+        responseMaxBytes: resultLimit + Math.max(maxJsonBytes, RESULT_CONTROL_HEADROOM_BYTES),
       });
       if (envelope?.result !== null && envelope?.result !== undefined) {
         let resultBytes;
@@ -320,6 +344,7 @@ function createCosmoBrainOperationWorkerClient({
           throw clientError('worker_response_too_large', 'COSMO worker result exceeded its limit');
         }
       }
+      if (TERMINAL_RESULT_STATES.has(envelope?.state)) operationTypes.delete(operationId);
       return envelope;
     },
     cancel(operationId, capability) {

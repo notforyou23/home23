@@ -1550,6 +1550,7 @@ class BrainOperationCoordinator {
         await this._boundedWorkerControl(() => this.worker.result(
           operationId,
           this._issueCapability(record, 'result'),
+          this._issueCapability(record, 'result_status'),
         )),
       );
       if (workerRecord && envelope.state !== workerRecord.state) {

@@ -704,7 +704,7 @@ class BrainOperationWorkerAdapter {
     }
   }
 
-  async result(operationId, capability) {
+  async result(operationId, capability, statusCapability) {
     assertOperationId(operationId);
     this._gcLocalRecords();
     this._assertNotEvicted(operationId);
@@ -715,7 +715,11 @@ class BrainOperationWorkerAdapter {
       return clone(local.result, 'worker_result_invalid');
     }
     if (!this.remoteWorker?.result) throw workerError('worker_not_found');
-    return validateResultEnvelope(await this.remoteWorker.result(operationId, capability));
+    return validateResultEnvelope(await this.remoteWorker.result(
+      operationId,
+      capability,
+      statusCapability,
+    ));
   }
 
   async cancel(operationId, capability) {

@@ -468,8 +468,8 @@ class ControlledWorker {
     else this._notify(operationId);
   }
 
-  async result(operationId, capability) {
-    this.resultCalls.push({ operationId, capability });
+  async result(operationId, capability, statusCapability) {
+    this.resultCalls.push({ operationId, capability, statusCapability });
     const record = this.records.get(operationId);
     if (!record?.result) {
       const error = new Error('worker_result_unavailable');
@@ -2818,6 +2818,27 @@ test('every worker call receives a fresh capability token', async (t) => {
   assert.equal(fixture.counters.capabilities.some(({ purpose }) => purpose === 'cancel'), true);
 });
 
+test('terminal result reads receive distinct result and status-recovery capabilities', async (t) => {
+  const fixture = makeFixture(t);
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'result-recovery-capability',
+  }));
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete', result: { answer: 'done' }, resultArtifact: null,
+    error: null, sourceEvidence: {},
+  });
+  await waitForState(fixture, operation.operationId, 'complete');
+
+  assert.equal(fixture.worker.resultCalls.length, 1);
+  const [call] = fixture.worker.resultCalls;
+  assert.equal(typeof call.capability, 'string');
+  assert.equal(typeof call.statusCapability, 'string');
+  assert.notEqual(call.capability, call.statusCapability);
+  const issued = fixture.counters.capabilities.filter(row =>
+    [call.capability, call.statusCapability].includes(row.token));
+  assert.deepEqual(issued.map(row => row.purpose).sort(), ['result', 'result_status']);
+});
+
 test('coordinator export rejects identity overrides and preserves its requester binding', async (t) => {
   const calls = [];
   const fixture = makeFixture(t, {
@@ -3061,9 +3082,11 @@ test('worker adapter rejects malformed remote events before yielding them', asyn
 
 test('worker adapter accepts an interrupted remote result envelope', async () => {
   const operationId = `brop_${'7'.repeat(32)}`;
+  let received;
   const adapter = new BrainOperationWorkerAdapter({
     remoteWorker: {
-      async result() {
+      async result(...args) {
+        received = args;
         return {
           state: 'interrupted', result: null, resultArtifact: null,
           error: { code: 'worker_interrupted', message: 'restarted', retryable: true },
@@ -3072,7 +3095,8 @@ test('worker adapter accepts an interrupted remote result envelope', async () =>
       },
     },
   });
-  assert.equal((await adapter.result(operationId, 'cap-result')).state, 'interrupted');
+  assert.equal((await adapter.result(operationId, 'cap-result', 'cap-status')).state, 'interrupted');
+  assert.deepEqual(received, [operationId, 'cap-result', 'cap-status']);
 });
 
 test('worker adapter cancellation aborts the exact local executor and event snapshots are monotonic', async (t) => {
