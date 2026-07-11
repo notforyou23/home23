@@ -17,6 +17,7 @@ const {
   openConfinedRegularFile,
   assertStableOpenedFile,
 } = require('./confined-file.cjs');
+const { getOperationScratchQuotaCleanup } = require('./scratch-quota.cjs');
 
 function limitError(limitKind, limit) {
   return memorySourceError('result_too_large', `memory source ${limitKind} limit exceeded`, {
@@ -37,6 +38,8 @@ const DEFAULT_GZIP_RESERVATION_WINDOW_BYTES = 8 * 1024 * 1024;
 const MAX_GZIP_RESERVATION_WINDOW_BYTES = 64 * 1024 * 1024;
 const DEFAULT_GZIP_CHUNK_BYTES = 64 * 1024;
 const MAX_GZIP_CHUNK_BYTES = 1024 * 1024;
+const DEFAULT_MAX_PENDING_WRITES = 64;
+const DEFAULT_MAX_PENDING_BYTES = 32 * 1024 * 1024;
 
 function identityOf(stat) {
   return Object.freeze({ dev: stat.dev, ino: stat.ino });
@@ -77,6 +80,15 @@ function sourceWriteError(message, cause) {
   });
 }
 
+function pendingWriteError(limitKind, limit) {
+  return memorySourceError('source_busy', `gzip writer ${limitKind} limit exceeded`, {
+    status: 409,
+    retryable: true,
+    limitKind,
+    limit,
+  });
+}
+
 async function syncDirectory(directory) {
   const handle = await fsp.open(directory, fs.constants.O_RDONLY);
   try {
@@ -91,10 +103,14 @@ function validateGzipWriterOptions(options) {
   const reservationWindowBytes = options.reservationWindowBytes
     ?? DEFAULT_GZIP_RESERVATION_WINDOW_BYTES;
   const gzipChunkBytes = options.gzipChunkBytes ?? DEFAULT_GZIP_CHUNK_BYTES;
+  const maxPendingWrites = options.maxPendingWrites ?? DEFAULT_MAX_PENDING_WRITES;
+  const maxPendingBytes = options.maxPendingBytes ?? DEFAULT_MAX_PENDING_BYTES;
   const level = options.level ?? zlib.constants.Z_BEST_SPEED;
   validatePositiveLimit(maxRecordBytes, 'record limit');
   validatePositiveLimit(reservationWindowBytes, 'reservation window');
   validatePositiveLimit(gzipChunkBytes, 'gzip chunk size');
+  validatePositiveLimit(maxPendingWrites, 'pending write count');
+  validatePositiveLimit(maxPendingBytes, 'pending write bytes');
   if (reservationWindowBytes > MAX_GZIP_RESERVATION_WINDOW_BYTES
       || reservationWindowBytes * 2 > Number.MAX_SAFE_INTEGER) {
     throw memorySourceError('invalid_request', 'invalid reservation window');
@@ -112,7 +128,15 @@ function validateGzipWriterOptions(options) {
       || Object.values(hooks).some((hook) => typeof hook !== 'function')) {
     throw memorySourceError('invalid_request', 'invalid gzip writer test hooks');
   }
-  return { maxRecordBytes, reservationWindowBytes, gzipChunkBytes, level, hooks };
+  return {
+    maxRecordBytes,
+    reservationWindowBytes,
+    gzipChunkBytes,
+    maxPendingWrites,
+    maxPendingBytes,
+    level,
+    hooks,
+  };
 }
 
 /**
@@ -120,10 +144,9 @@ function validateGzipWriterOptions(options) {
  * root. Compressed bytes are written through an inode-anchored file handle;
  * the pathname is used only after its exact identity has been revalidated.
  *
- * Quota reservations deliberately use a two-phase window. Before any window
- * can grow the file, 2x its maximum growth is claimed and half is released.
- * Thus physical bytes plus the remaining reservation never exceed the peak
- * already accepted by the aggregate scratch ledger, including across a crash.
+ * Compressed growth is materialized while the aggregate quota owns its exact
+ * root lock. That makes physical growth and quota reconciliation one serialized
+ * boundary across concurrent writers instead of exposing a release/write gap.
  */
 async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
   throwIfAborted(options.signal);
@@ -139,13 +162,16 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
       || typeof options.scratchQuota.assertOperationRoot !== 'function'
       || typeof options.scratchQuota.claim !== 'function'
       || typeof options.scratchQuota.release !== 'function'
-      || typeof options.scratchQuota.reconcile !== 'function') {
+      || typeof options.scratchQuota.reconcile !== 'function'
+      || typeof options.scratchQuota.withPhysicalGrowth !== 'function') {
     throw memorySourceError('source_operation_required', 'operation scratch quota required');
   }
   const {
     maxRecordBytes,
     reservationWindowBytes,
     gzipChunkBytes,
+    maxPendingWrites,
+    maxPendingBytes,
     level,
     hooks,
   } = validateGzipWriterOptions(options);
@@ -177,6 +203,14 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
   }
 
   const scratchQuota = options.scratchQuota;
+  let cleanupQuota = scratchQuota;
+  try {
+    cleanupQuota = getOperationScratchQuotaCleanup(scratchQuota);
+  } catch (error) {
+    // Compatibility/test wrappers still use the normal authority. Exact
+    // operation-quota handles receive the abort-independent cleanup capability.
+    if (error?.code !== 'invalid_request') throw error;
+  }
   const quotaKind = `memory_projection_gzip_${crypto.randomUUID()}`;
   const tempPath = path.join(
     parentPath,
@@ -192,18 +226,17 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
   let outputFailure = null;
   let compressedBytes = 0;
   let recordCount = 0;
-  let reservedBytes = 0;
-  let windowRemaining = 0;
-  let quotaUncertain = false;
   let digest = null;
   let cleanupComplete = false;
   let cleanupPromise = null;
   let finishPromise = null;
   let mutationTail = Promise.resolve();
+  let pendingWrites = 0;
+  let pendingBytes = 0;
   const hash = crypto.createHash('sha256');
 
-  async function assertParentStable() {
-    await scratchQuota.assertOperationRoot(operationRoot);
+  async function assertParentStable(quotaAuthority = scratchQuota) {
+    await quotaAuthority.assertOperationRoot(operationRoot);
     let stat;
     let canonical;
     try {
@@ -218,10 +251,13 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
         || !sameIdentity(stat, parentIdentity) || canonical !== parentPath) {
       throw confinementError('projection output directory identity changed');
     }
-    await scratchQuota.assertOperationRoot(operationRoot);
+    await quotaAuthority.assertOperationRoot(operationRoot);
   }
 
-  async function assertOwnedPathStable(candidatePath, { requireHandle = false } = {}) {
+  async function assertOwnedPathStable(candidatePath, {
+    requireHandle = false,
+    expectedLinks = 1,
+  } = {}) {
     await assertParentStable();
     let stat;
     try {
@@ -229,7 +265,8 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
     } catch (error) {
       throw confinementError('projection output artifact became unavailable', error);
     }
-    if (stat.isSymbolicLink() || !stat.isFile() || !sameIdentity(stat, tempIdentity)) {
+    if (stat.isSymbolicLink() || !stat.isFile() || !sameIdentity(stat, tempIdentity)
+        || stat.nlink !== expectedLinks) {
       throw confinementError('projection output artifact identity changed');
     }
     if (requireHandle) {
@@ -239,7 +276,8 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
       } catch (error) {
         throw confinementError('projection output anchor became unavailable', error);
       }
-      if (!anchored.isFile() || !sameIdentity(anchored, tempIdentity)) {
+      if (!anchored.isFile() || !sameIdentity(anchored, tempIdentity)
+          || anchored.nlink !== expectedLinks) {
         throw confinementError('projection output anchor identity changed');
       }
     }
@@ -262,41 +300,8 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
     return failure;
   }
 
-  async function beginReservationWindow() {
-    if (windowRemaining > 0) return;
-    if (reservedBytes > 0) {
-      const settling = reservedBytes;
-      try {
-        await scratchQuota.release(settling, quotaKind);
-      } catch (error) {
-        quotaUncertain = true;
-        throw error;
-      }
-      reservedBytes = 0;
-    }
-    const preflightBytes = reservationWindowBytes * 2;
-    try {
-      await scratchQuota.claim(preflightBytes, quotaKind);
-    } catch (error) {
-      if (error?.code !== 'result_too_large') quotaUncertain = true;
-      throw error;
-    }
-    reservedBytes = preflightBytes;
-    try {
-      await scratchQuota.release(reservationWindowBytes, quotaKind);
-    } catch (error) {
-      quotaUncertain = true;
-      throw error;
-    }
-    reservedBytes -= reservationWindowBytes;
-    windowRemaining = reservationWindowBytes;
-    throwIfAborted(options.signal);
-  }
-
-  async function writeCompressedSlice(buffer) {
-    await beginReservationWindow();
-    const sliceLength = Math.min(buffer.length, windowRemaining);
-    const slice = buffer.subarray(0, sliceLength);
+  async function writeCompressedSliceBody(slice, checkpoint) {
+    const sliceLength = slice.length;
     await hooks.beforeCompressedWrite?.({
       filePath,
       tempPath,
@@ -328,8 +333,7 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
       hash.update(slice.subarray(offset, offset + written));
       offset += written;
       compressedBytes += written;
-      windowRemaining -= written;
-      if (!Number.isSafeInteger(compressedBytes) || windowRemaining < 0) {
+      if (!Number.isSafeInteger(compressedBytes)) {
         throw limitError('compressed', Number.MAX_SAFE_INTEGER);
       }
     }
@@ -337,6 +341,7 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
     if (Number(after.size) !== compressedBytes) {
       throw confinementError('projection output size changed after write');
     }
+    await checkpoint?.();
     await hooks.afterCompressedWrite?.({
       filePath,
       tempPath,
@@ -346,27 +351,73 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
     return sliceLength;
   }
 
+  async function writeCompressedSlice(buffer) {
+    const requestedBytes = Math.min(buffer.length, reservationWindowBytes);
+    const slice = buffer.subarray(0, requestedBytes);
+    return scratchQuota.withPhysicalGrowth(
+      slice.length,
+      quotaKind,
+      ({ checkpoint }) => writeCompressedSliceBody(slice, checkpoint),
+    );
+  }
+
   async function consumeCompressedOutput() {
+    let pendingChunks = [];
+    let pendingBytes = 0;
+
+    function takePending(bytes) {
+      const joined = pendingChunks.length === 1
+        ? pendingChunks[0]
+        : Buffer.concat(pendingChunks, pendingBytes);
+      const ready = joined.subarray(0, bytes);
+      const remainder = joined.subarray(bytes);
+      pendingChunks = remainder.length > 0 ? [remainder] : [];
+      pendingBytes -= ready.length;
+      return ready;
+    }
+
+    async function flushPending(bytes) {
+      const ready = takePending(bytes);
+      let offset = 0;
+      while (offset < ready.length) {
+        try {
+          offset += await writeCompressedSlice(ready.subarray(offset));
+        } catch (error) {
+          // Node's Readable async iterator can replace an error thrown by the
+          // loop body with its own teardown AbortError. Capture the
+          // authoritative failure before iterator return/destroy runs.
+          outputFailure = isTypedMemorySourceError(error)
+            ? error
+            : sourceWriteError('compressed projection stream failed', error);
+          throw error;
+        }
+      }
+    }
+
     try {
       for await (const chunk of gzip) {
         throwIfAborted(options.signal);
-        let offset = 0;
-        while (offset < chunk.length) {
-          offset += await writeCompressedSlice(chunk.subarray(offset));
+        pendingChunks.push(chunk);
+        pendingBytes += chunk.length;
+        if (!Number.isSafeInteger(pendingBytes)
+            || pendingBytes > reservationWindowBytes + gzipChunkBytes) {
+          throw limitError('compressed_pending', reservationWindowBytes + gzipChunkBytes);
+        }
+        while (pendingBytes >= reservationWindowBytes) {
+          await flushPending(reservationWindowBytes);
         }
       }
+      if (pendingBytes > 0) await flushPending(pendingBytes);
       throwIfAborted(options.signal);
     } catch (error) {
-      try {
-        rethrowAbort(error, options.signal);
-      } catch (abortError) {
-        outputFailure = abortError;
-        rememberFailure(abortError);
-        throw abortError;
+      if (options.signal?.aborted) {
+        const reason = abortReason();
+        outputFailure = reason;
+        rememberFailure(reason);
+        throw reason;
       }
-      outputFailure = isTypedMemorySourceError(error)
-        ? error
-        : sourceWriteError('compressed projection stream failed', error);
+      outputFailure ||= isTypedMemorySourceError(error)
+        ? error : sourceWriteError('compressed projection stream failed', error);
       rememberFailure(outputFailure);
       throw outputFailure;
     }
@@ -398,9 +449,7 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
     });
   }
 
-  async function writeOne(record) {
-    if (failure) throw failure;
-    throwIfAborted(options.signal);
+  function serializeRecord(record) {
     let serialized;
     try {
       serialized = JSON.stringify(record);
@@ -413,12 +462,18 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
     if (Buffer.byteLength(serialized, 'utf8') > maxRecordBytes) {
       throw limitError('record', maxRecordBytes);
     }
+    return Buffer.from(`${serialized}\n`, 'utf8');
+  }
+
+  async function writeOne(line) {
+    if (failure) throw failure;
     throwIfAborted(options.signal);
-    if (!gzip.write(`${serialized}\n`, 'utf8')) await waitForDrain();
+    if (!gzip.write(line)) await waitForDrain();
     if (outputFailure) throw outputFailure;
     throwIfAborted(options.signal);
     recordCount += 1;
-    await hooks.afterRecordAccepted?.({ count: recordCount, record });
+    await hooks.afterRecordAccepted?.({ count: recordCount });
+    throwIfAborted(options.signal);
     return recordCount;
   }
 
@@ -426,45 +481,56 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
     if (state !== 'open') {
       return Promise.reject(failure || memorySourceError('invalid_request', 'gzip writer is not open'));
     }
-    const result = mutationTail.then(() => writeOne(record)).catch((error) => {
-      try {
-        rethrowAbort(error, options.signal);
-      } catch (abortError) {
-        rememberFailure(abortError);
-        throw abortError;
-      }
+    if (pendingWrites >= maxPendingWrites) {
+      return Promise.reject(pendingWriteError('pending_writes', maxPendingWrites));
+    }
+    let line;
+    try {
+      line = serializeRecord(record);
+    } catch (error) {
       const normalized = isTypedMemorySourceError(error)
-        ? error
-        : sourceWriteError('projection record write failed', error);
+        ? error : sourceWriteError('projection record write failed', error);
+      rememberFailure(normalized);
+      return Promise.reject(normalized);
+    }
+    const nextPendingBytes = pendingBytes + line.length;
+    if (!Number.isSafeInteger(nextPendingBytes) || nextPendingBytes > maxPendingBytes) {
+      return Promise.reject(pendingWriteError('pending_bytes', maxPendingBytes));
+    }
+    pendingWrites += 1;
+    pendingBytes = nextPendingBytes;
+    const result = mutationTail.then(() => writeOne(line)).catch((error) => {
+      if (options.signal?.aborted) {
+        const reason = abortReason();
+        rememberFailure(reason);
+        throw reason;
+      }
+      const primary = outputFailure || error;
+      const normalized = isTypedMemorySourceError(primary)
+        ? primary : sourceWriteError('projection record write failed', primary);
       rememberFailure(normalized);
       throw normalized;
+    }).finally(() => {
+      pendingWrites -= 1;
+      pendingBytes -= line.length;
     });
     mutationTail = result.catch(() => {});
     return result;
   }
 
-  async function settleFinalReservation() {
-    if (reservedBytes <= 0) return;
-    const settling = reservedBytes;
-    try {
-      await scratchQuota.release(settling, quotaKind);
-    } catch (error) {
-      quotaUncertain = true;
-      throw error;
-    }
-    reservedBytes = 0;
-    windowRemaining = 0;
-  }
-
-  async function removeExactOwnedPath(candidatePath, alreadyRemoved) {
+  async function removeExactOwnedPath(
+    candidatePath,
+    alreadyRemoved,
+    quotaAuthority = scratchQuota,
+  ) {
     if (alreadyRemoved) return true;
-    await assertParentStable();
+    await assertParentStable(quotaAuthority);
     const stat = await lstatOptional(candidatePath);
     if (stat === null || stat.isSymbolicLink() || !stat.isFile()
         || !sameIdentity(stat, tempIdentity)) {
       throw confinementError('projection cleanup artifact identity changed');
     }
-    await assertParentStable();
+    await assertParentStable(quotaAuthority);
     const latest = await fsp.lstat(candidatePath).catch((error) => {
       throw confinementError('projection cleanup artifact became unavailable', error);
     });
@@ -472,7 +538,12 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
       throw confinementError('projection cleanup artifact changed before removal');
     }
     await fsp.unlink(candidatePath);
-    await assertParentStable();
+    // The owned directory entry is gone even if the post-unlink confinement
+    // check fails. Remember that irreversible fact so a retry does not treat
+    // the expected ENOENT as identity uncertainty and strand quota forever.
+    if (candidatePath === tempPath) tempRemoved = true;
+    if (candidatePath === filePath) finalRemoved = true;
+    await assertParentStable(quotaAuthority);
     return true;
   }
 
@@ -490,29 +561,14 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
       tempHandle = null;
     }
     if (finalLinked && !finalRemoved) {
-      finalRemoved = await removeExactOwnedPath(filePath, finalRemoved);
+      finalRemoved = await removeExactOwnedPath(filePath, finalRemoved, cleanupQuota);
     }
     if (!tempRemoved) {
-      tempRemoved = await removeExactOwnedPath(tempPath, tempRemoved);
+      tempRemoved = await removeExactOwnedPath(tempPath, tempRemoved, cleanupQuota);
     }
     await syncDirectory(parentPath);
-    await assertParentStable();
-    if (quotaUncertain) {
-      throw confinementError('projection quota accounting is uncertain');
-    }
-    if (reservedBytes > 0) {
-      const releasing = reservedBytes;
-      try {
-        await scratchQuota.release(releasing, quotaKind);
-      } catch (error) {
-        quotaUncertain = true;
-        throw error;
-      }
-      reservedBytes = 0;
-      windowRemaining = 0;
-    } else {
-      await scratchQuota.reconcile();
-    }
+    await assertParentStable(cleanupQuota);
+    await cleanupQuota.reconcile();
     cleanupComplete = true;
     state = 'cleaned';
     options.signal?.removeEventListener('abort', abort);
@@ -531,6 +587,32 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
     return cleanupPromise;
   }
 
+  async function linkFinalPath(checkpoint) {
+    await assertParentStable();
+    if (await lstatOptional(filePath) !== null) {
+      throw confinementError('projection output appeared before publication');
+    }
+    try {
+      await fsp.link(tempPath, filePath);
+    } catch (error) {
+      if (error.code === 'EEXIST') {
+        throw confinementError('projection output appeared during publication', error);
+      }
+      throw sourceWriteError('projection output publication failed', error);
+    }
+    finalLinked = true;
+    await assertOwnedPathStable(filePath, { expectedLinks: 2 });
+    await checkpoint?.();
+  }
+
+  async function completeFinalPublication() {
+    await hooks.afterFinalLinked?.({ filePath, tempPath, bytes: compressedBytes });
+    throwIfAborted(options.signal);
+    tempRemoved = await removeExactOwnedPath(tempPath, tempRemoved);
+    await syncDirectory(parentPath);
+    await assertOwnedPathStable(filePath);
+  }
+
   async function finishInternal() {
     try {
       await mutationTail;
@@ -540,49 +622,34 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
       await outputPromise;
       if (outputFailure) throw outputFailure;
       throwIfAborted(options.signal);
-      await settleFinalReservation();
       await assertOwnedPathStable(tempPath, { requireHandle: true });
       await tempHandle.sync();
       const finalStat = await tempHandle.stat();
       if (!finalStat.isFile() || !sameIdentity(finalStat, tempIdentity)
-          || Number(finalStat.size) !== compressedBytes) {
+          || Number(finalStat.size) !== compressedBytes || finalStat.nlink !== 1) {
         throw confinementError('projection output changed before publication');
       }
       await tempHandle.close();
       tempHandle = null;
-      await assertParentStable();
-      if (await lstatOptional(filePath) !== null) {
-        throw confinementError('projection output appeared before publication');
-      }
-      try {
-        await fsp.link(tempPath, filePath);
-      } catch (error) {
-        if (error.code === 'EEXIST') {
-          throw confinementError('projection output appeared during publication', error);
-        }
-        throw sourceWriteError('projection output publication failed', error);
-      }
-      finalLinked = true;
-      await assertOwnedPathStable(filePath);
-      throwIfAborted(options.signal);
-      tempRemoved = await removeExactOwnedPath(tempPath, tempRemoved);
-      await syncDirectory(parentPath);
-      await assertOwnedPathStable(filePath);
+      await scratchQuota.withPhysicalGrowth(
+        compressedBytes,
+        quotaKind,
+        async ({ checkpoint }) => {
+          await linkFinalPath(checkpoint);
+          await completeFinalPublication();
+        },
+      );
       throwIfAborted(options.signal);
       digest = hash.digest('hex');
       state = 'finished';
       options.signal?.removeEventListener('abort', abort);
       return Object.freeze({ count: recordCount, bytes: compressedBytes, sha256: digest });
     } catch (error) {
-      let normalized;
-      try {
-        rethrowAbort(error, options.signal);
-        normalized = isTypedMemorySourceError(error)
-          ? error
-          : sourceWriteError('projection output finalization failed', error);
-      } catch (abortError) {
-        normalized = abortError;
-      }
+      const primary = outputFailure || error;
+      const normalized = options.signal?.aborted
+        ? abortReason()
+        : (isTypedMemorySourceError(primary)
+          ? primary : sourceWriteError('projection output finalization failed', primary));
       rememberFailure(normalized);
       await cleanup().catch(() => {});
       throw normalized;
@@ -610,15 +677,11 @@ async function createQuotaBackpressuredJsonlGzipWriter(filePath, options = {}) {
       for await (const record of records) await enqueueWrite(record);
       return await finish();
     } catch (error) {
-      let normalized;
-      try {
-        rethrowAbort(error, options.signal);
-        normalized = isTypedMemorySourceError(error)
-          ? error
-          : sourceWriteError('projection record stream failed', error);
-      } catch (abortError) {
-        normalized = abortError;
-      }
+      const primary = outputFailure || error;
+      const normalized = options.signal?.aborted
+        ? abortReason()
+        : (isTypedMemorySourceError(primary)
+          ? primary : sourceWriteError('projection record stream failed', primary));
       rememberFailure(normalized);
       await cleanup().catch(() => {});
       throw normalized;

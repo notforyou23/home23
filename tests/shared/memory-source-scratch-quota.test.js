@@ -843,3 +843,85 @@ test('metadata publishing and scans fail closed across deterministic operation-r
   await fsp.rename(scanMoved, scanRoot);
   scanQuota.close();
 });
+
+test('withPhysicalGrowth serializes bounded growth across concurrent quota handles', async () => {
+  const operationRoot = await tempDir();
+  const dataRoot = path.join(operationRoot, 'projection');
+  await fsp.mkdir(dataRoot, { mode: 0o700 });
+  const maxBytes = 320 * 1024;
+  const first = await createOperationScratchQuota({
+    operationRoot, maxBytes, lockRetryMs: 1,
+  });
+  const second = await createOperationScratchQuota({
+    operationRoot, maxBytes, lockRetryMs: 1,
+  });
+  let releaseFirst;
+  let firstEntered;
+  const firstBlocked = new Promise((resolve) => { releaseFirst = resolve; });
+  const entered = new Promise((resolve) => { firstEntered = resolve; });
+  let secondEntered = false;
+
+  const firstWrite = first.withPhysicalGrowth(96 * 1024, 'first-growth', async ({ checkpoint }) => {
+    await fsp.writeFile(path.join(dataRoot, 'first.bin'), Buffer.alloc(96 * 1024));
+    await checkpoint();
+    firstEntered();
+    await firstBlocked;
+  });
+  await entered;
+  const secondWrite = second.withPhysicalGrowth(96 * 1024, 'second-growth', async ({ checkpoint }) => {
+    secondEntered = true;
+    await fsp.writeFile(path.join(dataRoot, 'second.bin'), Buffer.alloc(96 * 1024));
+    await checkpoint();
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(secondEntered, false);
+  releaseFirst();
+  await Promise.all([firstWrite, secondWrite]);
+
+  assert.equal(secondEntered, true);
+  assert.equal(await first.reconcile() <= maxBytes, true);
+  const ledger = JSON.parse(await fsp.readFile(path.join(operationRoot, '.scratch-quota.json'), 'utf8'));
+  assert.equal(ledger.actualPrivateBytes >= 192 * 1024, true);
+  assert.deepEqual(ledger.reservations, {});
+  first.close();
+  second.close();
+});
+
+test('withPhysicalGrowth rejects aggregate growth before invoking the filesystem callback', async () => {
+  const operationRoot = await tempDir();
+  await fsp.writeFile(path.join(operationRoot, 'existing.bin'), Buffer.alloc(100 * 1024));
+  const quota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 160 * 1024,
+  });
+  let invoked = false;
+
+  await assert.rejects(
+    () => quota.withPhysicalGrowth(100 * 1024, 'rejected-growth', async () => { invoked = true; }),
+    { code: 'result_too_large', status: 413, retryable: false },
+  );
+  assert.equal(invoked, false);
+  assert.equal((await fsp.stat(path.join(operationRoot, 'existing.bin'))).size, 100 * 1024);
+  quota.close();
+});
+
+test('withPhysicalGrowth checkpoint rejects growth beyond its exact authorization', async () => {
+  const operationRoot = await tempDir();
+  const outputPath = path.join(operationRoot, 'oversized.bin');
+  const quota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 256 * 1024,
+  });
+
+  await assert.rejects(
+    () => quota.withPhysicalGrowth(1024, 'bounded-growth', async ({ checkpoint }) => {
+      await fsp.writeFile(outputPath, Buffer.alloc(1025));
+      await checkpoint();
+    }),
+    { code: 'result_too_large', status: 413, retryable: false },
+  );
+  assert.equal((await fsp.stat(outputPath)).size, 1025);
+  await fsp.unlink(outputPath);
+  await quota.reconcile();
+  quota.close();
+});

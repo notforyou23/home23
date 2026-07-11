@@ -1089,6 +1089,144 @@ async function createOperationScratchQuota({
     return transact(async (ledger) => ledger, { reconcile: true, cleanup });
   }
 
+  async function withPhysicalGrowth(maxGrowthBytes, kind, materializer) {
+    assertOpen();
+    validateBytes(maxGrowthBytes, 'materialization limit');
+    validateKind(kind);
+    if (typeof materializer !== 'function') {
+      throw memorySourceError('invalid_request', 'scratch materializer callback required');
+    }
+    const releaseLock = await acquireLock();
+    try {
+      assertOpen();
+      const prior = await readLedger();
+      const next = {
+        ...prior,
+        reservations: structuredClone(prior.reservations),
+      };
+      const baselineBytes = await scanPrivateBytes(root, {
+        signal,
+        rootIdentity,
+        assertStableOperationRoot,
+        hooks,
+      });
+      next.actualPrivateBytes = baselineBytes;
+      for (const [reservationHandleId, reservation] of Object.entries(next.reservations)) {
+        const alive = await inspectOwnerLiveness(reservation.owner);
+        if (alive === false) delete next.reservations[reservationHandleId];
+      }
+      next.claimedSinceReconcile = 0;
+      // Reconciliation, including proven-dead reservation reclamation, must be
+      // durable before it can reduce the growth preflight. Otherwise the live
+      // filesystem could grow against a smaller in-memory total while the old
+      // larger reservation set remains authoritative after a crash.
+      const baseline = serializeLedger({
+        operationRoot: root,
+        maxBytes,
+        actualPrivateBytes: next.actualPrivateBytes,
+        claimedSinceReconcile: 0,
+        reservations: next.reservations,
+        updatedAt: clock.now(),
+      });
+      const baselineLedgerBytes = Buffer.byteLength(baseline.text, 'utf8');
+      const baselinePeak = checkedTotal([
+        next.actualPrivateBytes,
+        Math.max(
+          reservationTotal(prior.reservations),
+          reservationTotal(next.reservations),
+        ),
+        prior.ledgerBytes,
+        baselineLedgerBytes,
+        MAX_LOCK_BYTES,
+      ], 'scratch materialization reconciliation overflow');
+      if (baseline.usedBytes > maxBytes || baselinePeak > maxBytes) {
+        throw quotaExceeded('aggregate operation scratch quota exceeded');
+      }
+      await writeLedgerAtomic(baseline.text);
+      localUsedBytes = baseline.usedBytes;
+      const authorizedPeakBytes = checkedTotal([
+        next.actualPrivateBytes,
+        maxGrowthBytes,
+      ], 'scratch materialization limit overflow');
+      const projected = serializeLedger({
+        operationRoot: root,
+        maxBytes,
+        actualPrivateBytes: authorizedPeakBytes,
+        claimedSinceReconcile: 0,
+        reservations: next.reservations,
+        updatedAt: clock.now(),
+      });
+      const projectedLedgerBytes = Buffer.byteLength(projected.text, 'utf8');
+      const preflightPeak = checkedTotal([
+        authorizedPeakBytes,
+        reservationTotal(next.reservations),
+        baselineLedgerBytes,
+        projectedLedgerBytes,
+        MAX_LOCK_BYTES,
+      ], 'scratch materialization accounting overflow');
+      if (projected.usedBytes > maxBytes || preflightPeak > maxBytes) {
+        throw quotaExceeded('aggregate operation scratch quota exceeded');
+      }
+
+      async function checkpoint() {
+        await assertStableOperationRoot();
+        const actualPrivateBytes = await scanPrivateBytes(root, {
+          signal: undefined,
+          rootIdentity,
+          assertStableOperationRoot,
+          hooks,
+        });
+        if (actualPrivateBytes > authorizedPeakBytes) {
+          throw quotaExceeded('scratch materialization growth exceeded authorization');
+        }
+        return Object.freeze({
+          actualPrivateBytes,
+          growthBytes: Math.max(0, actualPrivateBytes - baselineBytes),
+        });
+      }
+
+      let result;
+      let materializerError = null;
+      try {
+        result = await materializer(Object.freeze({
+          maxGrowthBytes,
+          checkpoint,
+        }));
+        throwIfAborted(signal);
+      } catch (error) {
+        materializerError = error;
+      }
+
+      const finalCheckpoint = await checkpoint();
+      next.actualPrivateBytes = finalCheckpoint.actualPrivateBytes;
+      const serialized = serializeLedger({
+        operationRoot: root,
+        maxBytes,
+        actualPrivateBytes: next.actualPrivateBytes,
+        claimedSinceReconcile: 0,
+        reservations: next.reservations,
+        updatedAt: clock.now(),
+      });
+      const ledgerBytes = Buffer.byteLength(serialized.text, 'utf8');
+      const maintenancePeak = checkedTotal([
+        next.actualPrivateBytes,
+        reservationTotal(next.reservations),
+        baselineLedgerBytes,
+        ledgerBytes,
+        MAX_LOCK_BYTES,
+      ], 'scratch materialization accounting overflow');
+      if (serialized.usedBytes > maxBytes || maintenancePeak > maxBytes) {
+        throw quotaExceeded('aggregate operation scratch quota exceeded');
+      }
+      await writeLedgerAtomic(serialized.text);
+      localUsedBytes = serialized.usedBytes;
+      if (materializerError) throw materializerError;
+      return result;
+    } finally {
+      await releaseLock();
+    }
+  }
+
   const api = {
     operationRoot: root,
     maxBytes,
@@ -1118,6 +1256,9 @@ async function createOperationScratchQuota({
     },
     async reconcile() {
       return reconcileUsage();
+    },
+    async withPhysicalGrowth(maxGrowthBytes, kind, materializer) {
+      return withPhysicalGrowth(maxGrowthBytes, kind, materializer);
     },
     get usedBytes() { return localUsedBytes; },
     close() { closed = true; },
