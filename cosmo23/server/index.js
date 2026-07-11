@@ -88,17 +88,19 @@ const {
   createResearchOperationExecutors,
 } = require('./lib/research-operation-executors');
 const {
+  buildLegacyQueryResponse,
   createLegacyQueryOperationAdapter,
 } = require('./lib/legacy-query-operation-adapter');
 const {
   buildResearchRunTarget,
 } = require('../../shared/brain-operations/research-run-target.cjs');
 const {
-  isLoopback,
   registerRuntimeMetricsRoute,
 } = require('../../shared/runtime-metrics-route.cjs');
 const {
+  createProviderProbeHandler,
   probeExactProviderPair,
+  resolveConfiguredProviderPairs,
 } = require('./lib/provider-pair-probe');
 const { buildStatusContract } = require('./lib/status-contract');
 const {
@@ -188,6 +190,9 @@ const oauthPkceStateStore = new Map();
 const legacyQueryOperationAdapter = createLegacyQueryOperationAdapter({
   dashboardOrigin: `http://127.0.0.1:${process.env.HOME23_DASHBOARD_PORT || 5002}`,
   catalogProvider: () => loadModelCatalogSync(),
+  requesterAgentProvider: () => readYamlRegularFile(
+    path.join(HOME23_ROOT, 'config', 'home.yaml'),
+  )?.home?.primaryAgent,
 });
 
 // HOME23 PATCH 47 — injectable protected-worker route seam. The exact
@@ -221,6 +226,9 @@ function initializeProtectedBrainOperations({
   researchRunAdapterFactory = createResearchRunOperationAdapter,
   researchCompileAdapterFactory = createResearchCompileProviderAdapter,
   researchExecutorsFactory = createResearchOperationExecutors,
+  queryDefaultsProvider = () => readYamlRegularFile(
+    path.join(home23Root, 'config', 'home.yaml'),
+  )?.query,
   clock,
 } = {}) {
   if (typeof capabilityKey !== 'string' || capabilityKey.length === 0) return null;
@@ -309,7 +317,23 @@ function initializeProtectedBrainOperations({
     clock,
   });
   registerBrainOperationWorkerRoutes(runtime.worker, targetApp);
-  return runtime;
+  return Object.freeze({
+    ...runtime,
+    async probeConfiguredProviderPair({ purpose, signal = null } = {}) {
+      const configuredPairs = resolveConfiguredProviderPairs({
+        catalog,
+        queryDefaults: queryDefaultsProvider(),
+      });
+      return probeExactProviderPair({
+        registry: providerRuntime.providerRegistry,
+        catalog,
+        configuredPairs,
+        purpose,
+        pair: configuredPairs[purpose],
+        signal,
+      });
+    },
+  });
 }
 
 processManager.on('cosmo-exit', ({ code, signal }) => {
@@ -329,6 +353,12 @@ if (process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY) {
     console.error(`[brain-operations] protected worker unavailable (${code})`);
   }
 }
+
+app.post(
+  '/api/providers/probe',
+  express.json({ limit: '4kb', strict: true }),
+  createProviderProbeHandler({ getRuntime: () => brainOperationRuntime }),
+);
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -1166,32 +1196,6 @@ app.get('/api/providers/status', async (_req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.post('/api/providers/probe', async (req, res) => {
-  try {
-    if (!isLoopback(req.socket?.remoteAddress)) {
-      return res.status(403).json({ error: { code: 'access_denied' } });
-    }
-    if (!req.body || Array.isArray(req.body) || typeof req.body !== 'object'
-        || Object.keys(req.body).sort().join(',') !== 'pair,purpose') {
-      return res.status(400).json({ error: { code: 'invalid_request' } });
-    }
-    const registry = await getDefaultRegistry();
-    return res.json(await probeExactProviderPair({ registry, ...req.body }));
-  } catch (error) {
-    const code = error?.code || 'provider_probe_failed';
-    const status = code === 'invalid_request' ? 400
-      : code === 'provider_unavailable' ? 503
-        : code === 'provider_incomplete' ? 502 : 500;
-    return res.status(status).json({
-      error: {
-        code,
-        message: String(error?.message || code).slice(0, 1024),
-        retryable: error?.retryable === true,
-      },
-    });
   }
 });
 
@@ -2073,14 +2077,15 @@ app.post('/api/brain/:name/query', async (req, res) => {
     }
 
     const artifactInventory = summarizeRunArtifacts(brain.path);
-    const result = await legacyQueryOperationAdapter.execute({
+    const durableResult = await legacyQueryOperationAdapter.execute({
       brainId: brain.id || brain.routeKey,
       body: req.body,
       signal: controller.signal,
     });
-
-    result.query = req.body.query;
-    result.artifactInventory = artifactInventory;
+    const result = buildLegacyQueryResponse(durableResult, {
+      query: req.body.query,
+      artifactInventory,
+    });
     responseFinished = true;
     res.json(result);
   } catch (error) {
@@ -2123,7 +2128,7 @@ app.post('/api/brain/:name/query/stream', async (req, res) => {
     res.flushHeaders();
 
     const artifactInventory = summarizeRunArtifacts(brain.path);
-    const result = await legacyQueryOperationAdapter.execute({
+    const durableResult = await legacyQueryOperationAdapter.execute({
       brainId: brain.id || brain.routeKey,
       body: req.body,
       signal: controller.signal,
@@ -2133,7 +2138,10 @@ app.post('/api/brain/:name/query/stream', async (req, res) => {
         }
       },
     });
-    result.artifactInventory = artifactInventory;
+    const result = buildLegacyQueryResponse(durableResult, {
+      query: req.body.query,
+      artifactInventory,
+    });
     if (!res.writableEnded && !res.destroyed) {
       res.write(`data: ${JSON.stringify({ type: 'complete', result })}\n\n`);
     }

@@ -38,8 +38,28 @@ test('COSMO leaves protected routes disabled when no generated capability is pre
 test('COSMO composes and mounts the exact protected query runtime before broad middleware', () => {
   const mounted = [];
   const calls = {};
-  const catalog = { providers: { alpha: { models: [] } } };
-  const providerRegistry = { identity: 'exact-registry' };
+  const catalog = { providers: { alpha: { models: [{
+    id: 'model', kind: 'chat', transport: 'responses',
+    maxOutputTokens: 128, providerStallMs: 30_000,
+  }] } } };
+  const providerClient = {
+    providerId: 'alpha',
+    async generate(request) {
+      calls.probeRequest = request;
+      return {
+        provider: 'alpha', model: 'model', content: 'OK',
+        terminalReceived: true, finishReason: 'completed', hadError: false,
+      };
+    },
+  };
+  const providerRegistry = {
+    identity: 'exact-registry',
+    getExact(provider, model) {
+      assert.equal(provider, 'alpha');
+      assert.equal(model, 'model');
+      return providerClient;
+    },
+  };
   const queryEngine = { identity: 'operation-query-engine' };
   const worker = fakeWorker();
   const runtime = { worker };
@@ -77,6 +97,11 @@ test('COSMO composes and mounts the exact protected query runtime before broad m
     configuredAgents: {
       'agents.research-synthesis': { provider: 'alpha', model: 'model' },
     },
+    queryDefaultsProvider: () => ({
+      defaultProvider: 'alpha', defaultModel: 'model',
+      pgsSweepProvider: 'alpha', pgsSweepModel: 'model',
+      pgsSynthProvider: 'alpha', pgsSynthModel: 'model',
+    }),
     researchRunAdapterFactory(options) {
       calls.researchRun = options;
       return researchRunAdapter;
@@ -91,7 +116,8 @@ test('COSMO composes and mounts the exact protected query runtime before broad m
     },
   });
 
-  assert.equal(result, runtime);
+  assert.equal(result.worker, runtime.worker);
+  assert.equal(typeof result.probeConfiguredProviderPair, 'function');
   assert.equal(mounted.length, 1);
   assert.equal(calls.provider.catalog, catalog);
   assert.equal(calls.query.providerRegistry, providerRegistry);
@@ -109,4 +135,57 @@ test('COSMO composes and mounts the exact protected query runtime before broad m
   assert.equal(typeof calls.researchExecutors.readPinnedIntelligence, 'function');
   assert.equal(typeof calls.researchExecutors.createRequesterOutputWriter, 'function');
   assert.equal(typeof calls.researchExecutors.compileSectionWithProvider, 'function');
+});
+
+test('protected provider probe uses the same exact production registry and persisted pair', async () => {
+  const mounted = [];
+  const requestLog = [];
+  const catalog = { providers: { alpha: { models: [{
+    id: 'model', kind: 'chat', transport: 'responses',
+    maxOutputTokens: 128, providerStallMs: 30_000,
+  }] } } };
+  const providerRegistry = {
+    getExact() {
+      return {
+        providerId: 'alpha',
+        async generate(request) {
+          requestLog.push(request);
+          return {
+            provider: 'alpha', model: 'model', content: 'OK',
+            terminalReceived: true, finishReason: 'completed', hadError: false,
+          };
+        },
+      };
+    },
+  };
+  const researchRunAdapter = {
+    async resolveOwnedRun() {},
+  };
+  const result = initializeProtectedBrainOperations({
+    capabilityKey: 'b'.repeat(64),
+    targetApp: { use(router) { mounted.push(router); } },
+    home23Root: '/tmp/home23', modelCatalog: catalog,
+    providerRuntimeFactory: () => ({ providerRegistry }),
+    queryEngineFactory: () => ({}),
+    runtimeFactory: () => ({ worker: fakeWorker() }),
+    buildCatalog: async () => ({ catalogRevision: 'c', brains: [] }),
+    canonicalTargetResolver() {},
+    configuredAgents: {
+      'agents.research-synthesis': { provider: 'alpha', model: 'model' },
+    },
+    queryDefaultsProvider: () => ({
+      defaultProvider: 'alpha', defaultModel: 'model',
+      pgsSweepProvider: 'alpha', pgsSweepModel: 'model',
+      pgsSynthProvider: 'alpha', pgsSynthModel: 'model',
+    }),
+    researchRunAdapterFactory: () => researchRunAdapter,
+    researchCompileAdapterFactory: () => async () => {},
+    researchExecutorsFactory: () => new Map(),
+  });
+  const probed = await result.probeConfiguredProviderPair({ purpose: 'direct-query' });
+  assert.equal(probed.healthy, true);
+  assert.deepEqual(probed.requestedPair, { provider: 'alpha', model: 'model' });
+  assert.deepEqual(probed.observedPair, { provider: 'alpha', model: 'model' });
+  assert.equal(requestLog.length, 1);
+  assert.equal(requestLog[0].signal instanceof AbortSignal, true);
 });

@@ -63,11 +63,34 @@ function boundedJsonStringify(value, {
     append('"');
   }
 
-  function appendValue(input, arrayElement = false) {
+  function prepareValue(input, key) {
     let current = input;
-    if (current && typeof current === 'object' && typeof current.toJSON === 'function') {
-      current = current.toJSON();
+    if ((current !== null && typeof current === 'object') || typeof current === 'bigint') {
+      const toJSON = current.toJSON;
+      if (typeof toJSON === 'function') {
+        current = Reflect.apply(toJSON, current, [key]);
+      }
     }
+    if (current !== null && typeof current === 'object') {
+      for (const valueOf of [
+        Number.prototype.valueOf,
+        String.prototype.valueOf,
+        Boolean.prototype.valueOf,
+        BigInt.prototype.valueOf,
+      ]) {
+        try {
+          return Reflect.apply(valueOf, current, []);
+        } catch {}
+      }
+    }
+    return current;
+  }
+
+  function isOmitted(current) {
+    return current === undefined || typeof current === 'function' || typeof current === 'symbol';
+  }
+
+  function appendPrepared(current, arrayElement = false) {
     if (current === null) {
       append('null');
       return true;
@@ -102,7 +125,7 @@ function boundedJsonStringify(value, {
         append('[');
         for (let index = 0; index < current.length; index += 1) {
           if (index) append(',');
-          appendValue(current[index], true);
+          appendValue(current[index], true, String(index));
         }
         append(']');
         return true;
@@ -110,12 +133,12 @@ function boundedJsonStringify(value, {
       append('{');
       let emitted = 0;
       for (const key of Object.keys(current)) {
-        const child = current[key];
-        if (child === undefined || typeof child === 'function' || typeof child === 'symbol') continue;
+        const child = prepareValue(current[key], key);
+        if (isOmitted(child)) continue;
         if (emitted) append(',');
         appendString(key);
         append(':');
-        appendValue(child, false);
+        appendPrepared(child, false);
         emitted += 1;
       }
       append('}');
@@ -125,7 +148,13 @@ function boundedJsonStringify(value, {
     }
   }
 
-  if (!appendValue(value, false)) return { json: undefined, jsonBytes: 0, totalBytes: reserved };
+  function appendValue(input, arrayElement = false, key = '') {
+    return appendPrepared(prepareValue(input, key), arrayElement);
+  }
+
+  if (!appendValue(value, false, '')) {
+    return { json: undefined, jsonBytes: 0, totalBytes: reserved };
+  }
   return Object.freeze({
     json: pieces.join(''),
     jsonBytes,

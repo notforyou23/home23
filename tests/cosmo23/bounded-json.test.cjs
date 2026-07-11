@@ -51,3 +51,31 @@ test('bounded JSON honors the exact UTF-8 boundary', () => {
     error => error.code === 'result_too_large',
   );
 });
+
+test('bounded JSON matches native toJSON key and omission semantics', () => {
+  const value = {
+    kept: { toJSON(key) { return `value:${key}`; } },
+    omitted: { toJSON() { return undefined; } },
+    array: [{ toJSON(key) { return `index:${key}`; } }, { toJSON() { return undefined; } }],
+  };
+  const expected = JSON.stringify(value);
+  const result = boundedJsonStringify(value, { maxBytes: 4096 });
+  assert.equal(result.json, expected);
+  assert.doesNotThrow(() => JSON.parse(result.json));
+});
+
+test('bounded JSON matches native boxed primitive and boxed BigInt behavior', () => {
+  const value = {
+    text: new String('ab'),
+    number: new Number(7),
+    boolean: new Boolean(true),
+  };
+  assert.equal(
+    boundedJsonStringify(value, { maxBytes: 4096 }).json,
+    JSON.stringify(value),
+  );
+  assert.throws(
+    () => boundedJsonStringify({ value: Object(1n) }, { maxBytes: 4096 }),
+    error => error instanceof TypeError,
+  );
+});

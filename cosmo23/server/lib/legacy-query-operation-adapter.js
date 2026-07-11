@@ -13,6 +13,7 @@ const SUCCESS_STATES = new Set(['complete', 'partial']);
 const CONTROL_RESPONSE_BYTES = 2 * 1024 * 1024;
 const RESPONSE_OVERHEAD_BYTES = 256 * 1024;
 const MAX_EVENT_BUFFER_BYTES = 2 * 1024 * 1024;
+const DEFAULT_CLEANUP_TIMEOUT_MS = 5_000;
 const ALLOWED_BODY_KEYS = new Set([
   'query', 'model', 'provider', 'mode', 'includeEvidenceMetrics',
   'enableSynthesis', 'includeCoordinatorInsights', 'includeOutputs', 'includeThoughts',
@@ -189,10 +190,13 @@ function errorFromResponse(status, payload) {
   );
 }
 
-function validateStarted(started, operationType) {
+function validateStarted(started, { operationType, brainId, requesterAgent }) {
   if (!started || typeof started !== 'object' || Array.isArray(started)
       || !OPERATION_ID_PATTERN.test(started.operationId || '')
       || started.operationType !== operationType
+      || started.requesterAgent !== requesterAgent
+      || started.target?.domain !== 'brain'
+      || started.target?.brainId !== brainId
       || !['queued', 'running'].includes(started.state)) {
     throw typed('operation_contract_invalid', 'Durable operation did not start correctly', true);
   }
@@ -232,8 +236,10 @@ function validateTerminal(payload, { operationId, operationType, selected }) {
     throw typed('operation_contract_invalid', 'Complete operation has no validated answer', true);
   }
   if (payload.state === 'partial' && (!payload.error
-      || typeof payload.error.code !== 'string' || payload.error.retryable !== true)) {
-    throw typed('operation_contract_invalid', 'Partial operation has no retryable typed error', true);
+      || typeof payload.error.code !== 'string'
+      || typeof payload.error.message !== 'string'
+      || typeof payload.error.retryable !== 'boolean')) {
+    throw typed('operation_contract_invalid', 'Partial operation has no typed error', true);
   }
   if (operationType === 'query') {
     if (payload.result.metadata?.provider !== selected.provider
@@ -241,7 +247,7 @@ function validateTerminal(payload, { operationId, operationType, selected }) {
       throw typed('provider_model_mismatch', 'Terminal query identity changed');
     }
   } else {
-    if (!Array.isArray(payload.result.sweepOutputs)
+    if (!Array.isArray(payload.result.sweepOutputs) || payload.result.sweepOutputs.length === 0
         || payload.result.sweepOutputs.some(row => row?.provider !== selected.sweep.provider
           || row?.model !== selected.sweep.model)) {
       throw typed('provider_model_mismatch', 'Terminal PGS sweep identity changed');
@@ -258,16 +264,42 @@ function validateTerminal(payload, { operationId, operationType, selected }) {
   });
 }
 
+function buildLegacyQueryResponse(result, { query, artifactInventory } = {}) {
+  if (!result || typeof result !== 'object' || Array.isArray(result)
+      || typeof query !== 'string' || !query.trim()
+      || !artifactInventory || typeof artifactInventory !== 'object'
+      || Array.isArray(artifactInventory)) {
+    throw typed('operation_contract_invalid', 'Legacy query response is invalid');
+  }
+  return {
+    ...result,
+    query,
+    artifactInventory,
+  };
+}
+
 function createLegacyQueryOperationAdapter({
   dashboardOrigin = `http://127.0.0.1:${process.env.HOME23_DASHBOARD_PORT || 5002}`,
   fetchImpl = globalThis.fetch,
   catalogProvider,
+  requesterAgent = null,
+  requesterAgentProvider = null,
   randomUUID = crypto.randomUUID,
+  cleanupTimeoutMs,
+  detachTimeoutMs,
 } = {}) {
   const origin = String(dashboardOrigin || '').replace(/\/$/, '');
+  const effectiveCleanupTimeoutMs = cleanupTimeoutMs ?? detachTimeoutMs
+    ?? DEFAULT_CLEANUP_TIMEOUT_MS;
   if (!/^http:\/\/127\.0\.0\.1:\d{1,5}$/.test(origin)
       || typeof fetchImpl !== 'function' || typeof catalogProvider !== 'function'
-      || typeof randomUUID !== 'function') {
+      || typeof randomUUID !== 'function'
+      || (requesterAgent !== null && (typeof requesterAgent !== 'string'
+        || !IDENTIFIER_PATTERN.test(requesterAgent)))
+      || (requesterAgentProvider !== null && typeof requesterAgentProvider !== 'function')
+      || (requesterAgent === null && requesterAgentProvider === null)
+      || !Number.isSafeInteger(effectiveCleanupTimeoutMs)
+      || effectiveCleanupTimeoutMs < 1 || effectiveCleanupTimeoutMs > 60_000) {
     throw typed('operation_adapter_unavailable', 'Legacy durable query adapter is unavailable', true);
   }
 
@@ -334,13 +366,31 @@ function createLegacyQueryOperationAdapter({
   }
 
   async function detach(operationId, attachmentId) {
-    try {
-      await fetchJson(`/home23/api/brain-operations/${encodeURIComponent(operationId)}/detach`, {
+    const controller = new AbortController();
+    let timer;
+    const deadline = new Promise(resolve => {
+      timer = setTimeout(() => {
+        controller.abort(typed(
+          'attachment_detach_timeout',
+          'Legacy operation detach exceeded its cleanup deadline',
+          true,
+        ));
+        resolve();
+      }, effectiveCleanupTimeoutMs);
+    });
+    const cleanup = Promise.resolve().then(() => fetchJson(
+      `/home23/api/brain-operations/${encodeURIComponent(operationId)}/detach`,
+      {
         method: 'POST',
         body: { attachmentId, reason: 'caller_disconnected' },
-        signal: new AbortController().signal,
-      });
-    } catch {}
+        signal: controller.signal,
+      },
+    )).catch(() => undefined);
+    try {
+      await Promise.race([cleanup, deadline]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   return Object.freeze({
@@ -349,6 +399,14 @@ function createLegacyQueryOperationAdapter({
           || !(signal instanceof AbortSignal)
           || (onEvent !== undefined && typeof onEvent !== 'function')) {
         throw typed('invalid_request', 'Legacy durable query request is invalid');
+      }
+      const expectedRequesterAgent = requesterAgent ?? await requesterAgentProvider();
+      if (typeof expectedRequesterAgent !== 'string'
+          || !IDENTIFIER_PATTERN.test(expectedRequesterAgent)) {
+        throw typed(
+          'provider_configuration_invalid',
+          'Legacy durable query requester identity is unavailable',
+        );
       }
       const catalog = await catalogProvider();
       const normalized = normalizeLegacyQueryRequest(body, { catalog });
@@ -362,7 +420,11 @@ function createLegacyQueryOperationAdapter({
           parameters: normalized.parameters,
         },
         signal,
-      }), normalized.operationType);
+      }), {
+        operationType: normalized.operationType,
+        brainId,
+        requesterAgent: expectedRequesterAgent,
+      });
       const selected = validateSelectedPair(started, normalized.operationType);
       const attachmentId = `legacy-attachment-${randomUUID()}`;
       try {
@@ -388,6 +450,7 @@ function createLegacyQueryOperationAdapter({
 }
 
 module.exports = {
+  buildLegacyQueryResponse,
   createLegacyQueryOperationAdapter,
   normalizeLegacyQueryRequest,
 };
