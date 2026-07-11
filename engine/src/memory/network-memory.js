@@ -14,6 +14,77 @@ function isVectorLike(value) {
   return Array.isArray(value) || (ArrayBuffer.isView(value) && typeof value.length === 'number');
 }
 
+function deepCloneJsonRecord(value, seen = new Set(), arrayElement = false) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'bigint') throw new TypeError('persistence_record_bigint_not_allowed');
+  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') {
+    return arrayElement ? null : undefined;
+  }
+  if (value instanceof Date) return Date.prototype.toISOString.call(value);
+  if (ArrayBuffer.isView(value)) return Array.from(value, (item) => deepCloneJsonRecord(item, seen, true));
+  if (seen.has(value)) throw new TypeError('persistence_record_cycle_not_allowed');
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => deepCloneJsonRecord(item, seen, true));
+    }
+    const clone = {};
+    for (const key of Object.keys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || descriptor.get || descriptor.set) {
+        throw new TypeError('persistence_record_accessor_not_allowed');
+      }
+      const child = deepCloneJsonRecord(descriptor.value, seen, false);
+      if (child !== undefined) clone[key] = child;
+    }
+    return clone;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function deepFreezeJson(value) {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreezeJson(child);
+  return Object.freeze(value);
+}
+
+function summarizePersistenceView(nodes, edges) {
+  const clusters = new Set(
+    nodes
+      .map((node) => node.cluster)
+      .filter((cluster) => cluster !== null && cluster !== undefined),
+  );
+  return {
+    nodeCount: nodes.length,
+    edgeCount: edges.length,
+    clusterCount: clusters.size,
+  };
+}
+
+function serializeNodePersistenceRecord(node) {
+  return deepCloneJsonRecord(node);
+}
+
+function serializeEdgePersistenceRecord(key, edge) {
+  let source = edge.source;
+  let target = edge.target;
+  if (source === undefined || target === undefined) {
+    const parts = key.split('->');
+    source = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
+    target = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
+  }
+  return {
+    source,
+    target,
+    weight: edge.weight,
+    type: edge.type,
+    created: edge.created,
+    accessed: edge.accessed,
+  };
+}
+
 /**
  * Network Memory Graph
  * Implements spreading activation, Hebbian learning, and small-world topology
@@ -256,14 +327,27 @@ class NetworkMemory {
     // Use batch generation (all same dimensions)
     const embeddings = await this.embedBatch(concepts);
     
-    // Assign back to nodes
-    let successCount = 0;
-    nodesToEmbed.forEach((node, i) => {
-      if (embeddings[i]) {
-        node.embedding = this.normalizeEmbedding(embeddings[i]);
-        successCount++;
-      }
-    });
+    // Normalize provider data before entering the synchronous mutation barrier.
+    const accepted = nodesToEmbed
+      .map((node, index) => ({
+        node,
+        embedding: embeddings[index]
+          ? this.normalizeEmbedding(embeddings[index])
+          : null,
+      }))
+      .filter(({ embedding }) => Boolean(embedding));
+
+    if (accepted.length > 0) {
+      this.withPersistenceBarrier(() => {
+        for (const { node, embedding } of accepted) {
+          if (this.nodes.get(node.id) !== node) continue;
+          node.embedding = embedding;
+          node.embedding_status = 'embedded';
+          this._markNodeDirtyUnsafe(node.id);
+        }
+      });
+    }
+    const successCount = accepted.filter(({ node }) => this.nodes.get(node.id) === node).length;
     
     this.logger?.info?.('Missing embeddings regenerated', {
       attempted: nodesToEmbed.length,
@@ -324,15 +408,7 @@ class NetworkMemory {
       }
     }
 
-    // CRITICAL FIX: Generate ID in same format as existing nodes (string vs numeric)
-    let nodeId;
-    if (inputNode?.id !== undefined && inputNode?.id !== null && !this.nodes.has(inputNode.id)) {
-      nodeId = inputNode.id;
-    } else if (this.nodeIdFormat === 'string' && this.nodeIdPrefix) {
-      nodeId = `${this.nodeIdPrefix}_${this.nextNodeId++}`;
-    } else {
-      nodeId = this.nextNodeId++;
-    }
+    const requestedNodeId = inputNode?.id;
     
     const provenance = classifyMemoryProvenance({
       ...inputNode,
@@ -349,7 +425,7 @@ class NetworkMemory {
         };
 
     const node = {
-      id: nodeId,
+      id: null,
       concept: conceptText,
       summary,      // Compressed version for prompts
       keyPhrase,    // Ultra-compressed for quick reference
@@ -375,21 +451,37 @@ class NetworkMemory {
       status: inputNode?.status || inputNode?.metadata?.status || null
     };
 
-    this.nodes.set(node.id, node);
+    // Similarity and provenance work may call provider/logger code, so prepare
+    // it before the no-yield mutation boundary. The graph is then published as
+    // one synchronous accepted mutation: node, initial edges, cluster indexes,
+    // dirty/tombstone state, and every corresponding generation advance.
+    const initialConnections = this.findInitialConnections(node);
+    const edgeTimestamp = new Date();
+    this.withPersistenceBarrier(() => {
+      if (requestedNodeId !== undefined && requestedNodeId !== null && !this.nodes.has(requestedNodeId)) {
+        node.id = requestedNodeId;
+      } else if (this.nodeIdFormat === 'string' && this.nodeIdPrefix) {
+        node.id = `${this.nodeIdPrefix}_${this.nextNodeId++}`;
+      } else {
+        node.id = this.nextNodeId++;
+      }
 
-    // Auto-form connections with similar nodes (Hebbian-like)
-    await this.formInitialConnections(node.id);
-    
-    // Assign to cluster
-    this.assignToCluster(node.id);
+      this.nodes.set(node.id, node);
+      this._markNodeDirtyUnsafe(node.id);
+      for (const { id, similarity } of initialConnections) {
+        this._upsertEdgeUnsafe(node.id, id, similarity * 0.5, 'associative', {
+          enforceBridgeCap: false,
+          timestamp: edgeTimestamp,
+        });
+      }
+      this._assignToClusterUnsafe(node.id);
+    });
     
     this.logger?.debug('Node added to network', { 
       id: node.id, 
       concept: conceptText.substring(0, 50),
       cluster: node.cluster 
     });
-    this.markNodeDirty(node.id);
-    
     return node;
   }
 
@@ -399,32 +491,38 @@ class NetworkMemory {
    */
   removeNode(nodeId) {
     if (!this.nodes.has(nodeId)) return false;
-    this.nodes.delete(nodeId);
-    this.deletedNodeIds.add(nodeId);
-    this.dirtyNodeIds.delete(nodeId);
-    // Remove edges referencing this node
-    for (const [key, edge] of this.edges) {
-      if (edge.from === nodeId || edge.to === nodeId || edge.source === nodeId || edge.target === nodeId) {
-        this.edges.delete(key);
-        this.deletedEdgeKeys.add(key);
-        this.dirtyEdgeKeys.delete(key);
+    return this.withPersistenceBarrier(() => {
+      if (!this.nodes.has(nodeId)) return false;
+      this.nodes.delete(nodeId);
+      this.dirtyNodeIds.delete(nodeId);
+      this.deletedNodeIds.add(nodeId);
+      this._advancePersistenceGenerationUnsafe();
+
+      // Node removal and every cascading edge deletion share the same outer
+      // barrier, but each accepted record deletion advances the generation.
+      for (const [key, edge] of this.edges) {
+        if (edge.from === nodeId || edge.to === nodeId || edge.source === nodeId || edge.target === nodeId) {
+          this._deleteEdgeKeyUnsafe(key);
+        }
       }
-    }
-    this.persistenceRevision += 1;
-    this.persistenceGeneration += 1;
-    return true;
+      for (const [clusterId, members] of this.clusters) {
+        members.delete(nodeId);
+        if (members.size === 0) this.clusters.delete(clusterId);
+      }
+      return true;
+    });
   }
 
   /**
    * Form initial connections based on similarity
    */
-  async formInitialConnections(nodeId) {
-    const node = this.nodes.get(nodeId);
+  findInitialConnections(node, excludedNodeId = null) {
+    if (!node) return [];
     const similarities = [];
     
     // Find similar nodes
     for (const [id, otherNode] of this.nodes) {
-      if (id === nodeId) continue;
+      if (id === excludedNodeId) continue;
 
       // Skip nodes with null embeddings
       if (!node.embedding || !otherNode.embedding) {
@@ -442,12 +540,14 @@ class NetworkMemory {
       }
     }
     
-    // Connect to top 3 most similar
-    similarities.sort((a, b) => b.similarity - a.similarity)
-      .slice(0, 3)
-      .forEach(({ id, similarity }) => {
-        this.addEdge(nodeId, id, similarity * 0.5);
-      });
+    return similarities.sort((a, b) => b.similarity - a.similarity).slice(0, 3);
+  }
+
+  async formInitialConnections(nodeId) {
+    const node = this.nodes.get(nodeId);
+    for (const { id, similarity } of this.findInitialConnections(node, nodeId)) {
+      this.addEdge(nodeId, id, similarity * 0.5);
+    }
   }
 
   /**
@@ -460,37 +560,134 @@ class NetworkMemory {
       this.logger?.debug?.('Skipping self-loop edge', { nodeId: nodeA });
       return;
     }
-    
-    // CRITICAL FIX: Use string comparison for sorting (works with both numeric and string IDs)
-    const sortedPair = [nodeA, nodeB].sort((a, b) => {
-      const strA = String(a);
-      const strB = String(b);
-      return strA.localeCompare(strB);
+
+    const enforceBridgeCap = options?.enforceBridgeCap !== false;
+    const bridgeCap = this.config.smallWorld?.maxBridgesPerNode ?? 40;
+    const timestamp = new Date();
+    const result = this.withPersistenceBarrier(() => this._upsertEdgeUnsafe(
+      nodeA,
+      nodeB,
+      weight,
+      type,
+      { enforceBridgeCap, bridgeCap, timestamp },
+    ));
+    for (const eviction of result.evictions) {
+      this.logger?.debug?.('Bridge cap enforced', eviction);
+    }
+  }
+
+  markNodeDirty(nodeId) {
+    if (!this.nodes.has(nodeId)) return false;
+    return this.withPersistenceBarrier(() => {
+      if (!this.nodes.has(nodeId)) return false;
+      this._markNodeDirtyUnsafe(nodeId);
+      return true;
     });
+  }
+
+  recordNodeAccess(nodeIds, { weightBoost = 0.05 } = {}) {
+    const ids = Array.from(nodeIds || []);
+    if (!ids.some((id) => this.nodes.has(id))) return;
+    const accessedAt = new Date();
+    this.withPersistenceBarrier(() => {
+      for (const id of ids) {
+        const stored = this.nodes.get(id);
+        if (!stored) continue;
+        stored.accessed = accessedAt;
+        stored.accessCount = Number(stored.accessCount || 0) + 1;
+        stored.weight = Math.min(1, Number(stored.weight || 0) + weightBoost);
+        this._markNodeDirtyUnsafe(id);
+      }
+    });
+  }
+
+  markEdgeDirty(edgeKey) {
+    if (!this.edges.has(edgeKey)) return false;
+    return this.withPersistenceBarrier(() => {
+      if (!this.edges.has(edgeKey)) return false;
+      this._markEdgeDirtyUnsafe(edgeKey);
+      return true;
+    });
+  }
+
+  _requirePersistenceBarrierUnsafe() {
+    if (!this.persistenceBarrierActive) {
+      throw new Error('persistence_barrier_required');
+    }
+  }
+
+  _advancePersistenceGenerationUnsafe() {
+    this._requirePersistenceBarrierUnsafe();
+    this.persistenceRevision += 1;
+    this.persistenceGeneration += 1;
+  }
+
+  _markNodeDirtyUnsafe(nodeId) {
+    this._requirePersistenceBarrierUnsafe();
+    this.dirtyNodeIds.add(nodeId);
+    this.deletedNodeIds.delete(nodeId);
+    this._advancePersistenceGenerationUnsafe();
+  }
+
+  _markEdgeDirtyUnsafe(edgeKey) {
+    this._requirePersistenceBarrierUnsafe();
+    this.dirtyEdgeKeys.add(edgeKey);
+    this.deletedEdgeKeys.delete(edgeKey);
+    this._advancePersistenceGenerationUnsafe();
+  }
+
+  _deleteEdgeKeyUnsafe(edgeKey) {
+    this._requirePersistenceBarrierUnsafe();
+    if (!this.edges.delete(edgeKey)) return false;
+    this.dirtyEdgeKeys.delete(edgeKey);
+    this.deletedEdgeKeys.add(edgeKey);
+    this._advancePersistenceGenerationUnsafe();
+    return true;
+  }
+
+  _enforceBridgeCapUnsafe(nodeId, cap) {
+    this._requirePersistenceBarrierUnsafe();
+    if (!cap || cap <= 0) return null;
+    const nodeStr = String(nodeId);
+    const bridges = [];
+    for (const [key, edge] of this.edges) {
+      if (edge.type !== 'bridge') continue;
+      if (String(edge.source) === nodeStr || String(edge.target) === nodeStr) {
+        bridges.push([key, edge]);
+      }
+    }
+    if (bridges.length < cap) return null;
+    bridges.sort((a, b) => a[1].weight - b[1].weight);
+    const toEvict = bridges.length - (cap - 1);
+    let evicted = 0;
+    for (let index = 0; index < toEvict; index += 1) {
+      if (this._deleteEdgeKeyUnsafe(bridges[index][0])) evicted += 1;
+    }
+    return evicted > 0 ? { node: nodeId, evicted, cap } : null;
+  }
+
+  _upsertEdgeUnsafe(nodeA, nodeB, weight, type, options = {}) {
+    this._requirePersistenceBarrierUnsafe();
+    const sortedPair = [nodeA, nodeB].sort((a, b) => String(a).localeCompare(String(b)));
     const edgeKey = sortedPair.join('->');
     const existing = this.edges.get(edgeKey);
-    
+    const timestamp = options.timestamp || new Date();
+    const evictions = [];
     if (existing) {
-      // Reinforce: "neurons that fire together, wire together"
       existing.weight = Math.min(1.0, existing.weight + weight);
-      existing.accessed = new Date();
-      // Update type if explicitly specified and different
-      if (type !== 'associative' && existing.type !== type) {
-        existing.type = type;
-      }
-      this.markEdgeDirty(edgeKey);
-      return;
+      existing.accessed = timestamp;
+      if (type !== 'associative' && existing.type !== type) existing.type = type;
+      this._markEdgeDirtyUnsafe(edgeKey);
+      return { edgeKey, evictions, inserted: false };
     }
 
-    // Fan-out cap for bridges: Watts-Strogatz rewiring picks random targets,
-    // so without a cap a handful of nodes win the lottery repeatedly and
-    // become super-attractors (observed: 235 bridges on a single node).
-    // Preserves dream creativity — the new bridge still lands — but evicts
-    // the weakest existing bridge on a saturated endpoint first.
+    // Fan-out cap eviction is part of the same atomic mutation as the bridge
+    // insertion, including tombstones and one generation per deleted edge.
     if (type === 'bridge' && options.enforceBridgeCap !== false) {
-      const cap = this.config.smallWorld?.maxBridgesPerNode ?? 40;
-      this.enforceBridgeCap(sortedPair[0], cap);
-      this.enforceBridgeCap(sortedPair[1], cap);
+      for (const endpoint of sortedPair) {
+        const eviction = this._enforceBridgeCapUnsafe(endpoint, options.bridgeCap);
+        if (eviction) evictions.push(eviction);
+      }
     }
 
     this.edges.set(edgeKey, {
@@ -498,35 +695,11 @@ class NetworkMemory {
       target: sortedPair[1],
       weight,
       type,
-      created: new Date(),
-      accessed: new Date()
+      created: timestamp,
+      accessed: timestamp,
     });
-    this.markEdgeDirty(edgeKey);
-  }
-
-  markNodeDirty(nodeId) {
-    this.dirtyNodeIds.add(nodeId);
-    this.deletedNodeIds.delete(nodeId);
-    this.persistenceRevision += 1;
-    this.persistenceGeneration += 1;
-  }
-
-  recordNodeAccess(nodeIds, { weightBoost = 0.05 } = {}) {
-    for (const id of nodeIds) {
-      const stored = this.nodes.get(id);
-      if (!stored) continue;
-      stored.accessed = new Date();
-      stored.accessCount = Number(stored.accessCount || 0) + 1;
-      stored.weight = Math.min(1, Number(stored.weight || 0) + weightBoost);
-      this.markNodeDirty(id);
-    }
-  }
-
-  markEdgeDirty(edgeKey) {
-    this.dirtyEdgeKeys.add(edgeKey);
-    this.deletedEdgeKeys.delete(edgeKey);
-    this.persistenceRevision += 1;
-    this.persistenceGeneration += 1;
+    this._markEdgeDirtyUnsafe(edgeKey);
+    return { edgeKey, evictions, inserted: true };
   }
 
   withPersistenceBarrier(callback) {
@@ -553,11 +726,15 @@ class NetworkMemory {
   }
 
   getPersistenceChanges() {
+    return this._getPersistenceChangesUnsafe();
+  }
+
+  _getPersistenceChangesUnsafe() {
     const serializeNode = (node) => ({
       id: node.id,
       concept: node.concept,
       tag: node.tag,
-      embedding: this.serializeEmbedding(node.embedding),
+      embedding: isVectorLike(node.embedding) ? Array.from(node.embedding) : node.embedding,
       embedding_status: node.embedding_status,
       weight: node.weight,
       activation: node.activation,
@@ -578,24 +755,6 @@ class NetworkMemory {
       status: node.status,
       consolidatedAt: node.consolidatedAt
     });
-    const serializeEdge = ([key, edge]) => {
-      let source = edge.source;
-      let target = edge.target;
-      if (source === undefined || target === undefined) {
-        const parts = key.split('->');
-        source = isNaN(parts[0]) ? parts[0] : Number(parts[0]);
-        target = isNaN(parts[1]) ? parts[1] : Number(parts[1]);
-      }
-      return {
-        source,
-        target,
-        weight: edge.weight,
-        type: edge.type,
-        created: edge.created,
-        accessed: edge.accessed
-      };
-    };
-
     const nodes = Array.from(this.dirtyNodeIds)
       .map((id) => this.nodes.get(id))
       .filter(Boolean)
@@ -603,7 +762,7 @@ class NetworkMemory {
     const edges = Array.from(this.dirtyEdgeKeys)
       .map((key) => {
         const edge = this.edges.get(key);
-        return edge ? serializeEdge([key, edge]) : null;
+        return edge ? serializeEdgePersistenceRecord(key, edge) : null;
       })
       .filter(Boolean);
     const changes = {
@@ -617,12 +776,19 @@ class NetworkMemory {
   }
 
   consumePersistenceChanges() {
-    const changes = this.getPersistenceChanges();
-    this.markPersistenceClean();
-    return changes;
+    return this.withPersistenceBarrier(() => {
+      const changes = this._getPersistenceChangesUnsafe();
+      this._markPersistenceCleanUnsafe();
+      return changes;
+    });
   }
 
   markPersistenceClean() {
+    return this.withPersistenceBarrier(() => this._markPersistenceCleanUnsafe());
+  }
+
+  _markPersistenceCleanUnsafe() {
+    this._requirePersistenceBarrierUnsafe();
     this.dirtyNodeIds.clear();
     this.dirtyEdgeKeys.clear();
     this.deletedNodeIds.clear();
@@ -631,55 +797,41 @@ class NetworkMemory {
 
   capturePersistenceSnapshot() {
     return this.withPersistenceBarrier(() => {
-      const deepClone = (value) => JSON.parse(JSON.stringify(value));
-      const deepFreeze = (value) => {
-        if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
-        for (const child of Object.values(value)) deepFreeze(child);
-        return Object.freeze(value);
-      };
-      const nodes = Array.from(this.nodes.values()).map((node) => deepClone(this.serializeNodeRecord(node)));
-      const edges = Array.from(this.edges.entries()).map(([key, edge]) => {
-        let source = edge.source;
-        let target = edge.target;
-        if (source === undefined || target === undefined) {
-          const parts = key.split('->');
-          source = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
-          target = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
-        }
-        return deepClone({ ...edge, source, target });
-      });
-      const changes = deepClone(this.getPersistenceChanges());
-      const clusters = new Set(nodes.map((node) => node.cluster).filter((cluster) => cluster !== null && cluster !== undefined));
-      return deepFreeze({
+      const nodes = Array.from(this.nodes.values())
+        .map((node) => serializeNodePersistenceRecord(node));
+      const edges = Array.from(this.edges.entries())
+        .map(([key, edge]) => serializeEdgePersistenceRecord(key, deepCloneJsonRecord(edge)));
+      const changes = deepCloneJsonRecord(this._getPersistenceChangesUnsafe());
+      return deepFreezeJson({
         generation: this.persistenceGeneration,
         changes,
         fullView: { nodes, edges },
-        summary: {
-          nodeCount: nodes.length,
-          edgeCount: edges.length,
-          clusterCount: clusters.size,
-        },
+        summary: summarizePersistenceView(nodes, edges),
       });
     });
   }
 
   capturePersistenceChangesSnapshot() {
     return this.withPersistenceBarrier(() => {
-      const deepClone = (value) => JSON.parse(JSON.stringify(value));
-      const changes = deepClone(this.getPersistenceChanges());
-      return Object.freeze({
+      const changes = deepCloneJsonRecord(this._getPersistenceChangesUnsafe());
+      const clusterCount = new Set(
+        Array.from(this.nodes.values())
+          .map((node) => node.cluster)
+          .filter((cluster) => cluster !== null && cluster !== undefined),
+      ).size;
+      return deepFreezeJson({
         generation: this.persistenceGeneration,
-        changes: Object.freeze({
-          nodes: Object.freeze(changes.nodes || []),
-          edges: Object.freeze(changes.edges || []),
-          removedNodeIds: Object.freeze(changes.removedNodeIds || []),
-          removedEdgeKeys: Object.freeze(changes.removedEdgeKeys || []),
-        }),
-        summary: Object.freeze({
+        changes: {
+          nodes: changes.nodes || [],
+          edges: changes.edges || [],
+          removedNodeIds: changes.removedNodeIds || [],
+          removedEdgeKeys: changes.removedEdgeKeys || [],
+        },
+        summary: {
           nodeCount: this.nodes?.size || 0,
           edgeCount: this.edges?.size || 0,
-          clusterCount: this.clusters?.size || 0,
-        }),
+          clusterCount,
+        },
       });
     });
   }
@@ -689,7 +841,7 @@ class NetworkMemory {
       if (!Number.isSafeInteger(expectedGeneration) || this.persistenceGeneration !== expectedGeneration) {
         return false;
       }
-      this.markPersistenceClean();
+      this._markPersistenceCleanUnsafe();
       return true;
     });
   }
@@ -700,33 +852,18 @@ class NetworkMemory {
    * which happens during sleep/dream — not on the hot path.
    */
   enforceBridgeCap(nodeId, cap) {
-    if (!cap || cap <= 0) return;
-    const nodeStr = String(nodeId);
-    const bridges = [];
-    for (const [key, edge] of this.edges) {
-      if (edge.type !== 'bridge') continue;
-      if (String(edge.source) === nodeStr || String(edge.target) === nodeStr) {
-        bridges.push([key, edge]);
-      }
-    }
-    if (bridges.length < cap) return;
-    bridges.sort((a, b) => a[1].weight - b[1].weight);
-    const toEvict = bridges.length - (cap - 1);
-    for (let i = 0; i < toEvict; i++) {
-      this.edges.delete(bridges[i][0]);
-    }
-    this.logger?.debug?.('Bridge cap enforced', {
-      node: nodeId,
-      evicted: toEvict,
-      cap
-    });
+    if (!cap || cap <= 0) return 0;
+    const result = this.withPersistenceBarrier(() => this._enforceBridgeCapUnsafe(nodeId, cap));
+    if (!result) return 0;
+    this.logger?.debug?.('Bridge cap enforced', result);
+    return result.evicted;
   }
 
   /**
    * Spreading activation from seed node
    * From: "Spreading Activation and Associative Recall" section
    */
-  async spreadActivation(seedNodeId, maxDepth = null) {
+  async spreadActivation(seedNodeId, maxDepth = null, options = {}) {
     const depth = maxDepth || this.config.spreading.maxDepth;
     const threshold = this.config.spreading.activationThreshold;
     const decay = this.config.spreading.decayFactor;
@@ -774,10 +911,22 @@ class NetworkMemory {
       }
     }
     
-    // Update activation levels
-    for (const [nodeId, level] of activated) {
-      const node = this.nodes.get(nodeId);
-      if (node) node.activation = level;
+    // Cross-brain/read-only queries consume the returned activation map and
+    // never mutate the source graph. Mutable own-brain callers retain the
+    // historical live activation update, now covered by the persistence CAS.
+    if (options.mutate !== false) {
+      const updates = Array.from(activated.entries())
+        .map(([nodeId, level]) => ({ nodeId, level, node: this.nodes.get(nodeId) }))
+        .filter(({ node, level }) => node && !Object.is(node.activation, level));
+      if (updates.length > 0) {
+        this.withPersistenceBarrier(() => {
+          for (const { nodeId, level, node } of updates) {
+            if (this.nodes.get(nodeId) !== node || Object.is(node.activation, level)) continue;
+            node.activation = level;
+            this._markNodeDirtyUnsafe(nodeId);
+          }
+        });
+      }
     }
     
     this.logger?.debug('Spreading activation', {
@@ -867,15 +1016,8 @@ class NetworkMemory {
       const strB = String(b);
       return strA.localeCompare(strB);
     }).join('->');
-    const existed = this.edges.has(edgeKey);
-    this.edges.delete(edgeKey);
-    if (existed) {
-      this.deletedEdgeKeys.add(edgeKey);
-      this.dirtyEdgeKeys.delete(edgeKey);
-      this.persistenceRevision += 1;
-      this.persistenceGeneration += 1;
-    }
-    return existed;
+    if (!this.edges.has(edgeKey)) return false;
+    return this.withPersistenceBarrier(() => this._deleteEdgeKeyUnsafe(edgeKey));
   }
 
   /**
@@ -923,7 +1065,8 @@ class NetworkMemory {
     if (!bestMatch) return this.queryByKeyword(queryText, topK, options);
     
     // Spread activation from best match
-    const activated = await this.spreadActivation(bestMatch);
+    const mutableAccess = options.markAccess !== false && options.accessMode !== 'read-only';
+    const activated = await this.spreadActivation(bestMatch, null, { mutate: mutableAccess });
     
     const queryWords = this.extractQueryWords(queryText);
     const snapshotCandidates = this.findRelevantStateSnapshots(queryEmbedding, queryWords, bestSimilarity);
@@ -957,7 +1100,7 @@ class NetworkMemory {
       .slice(0, topK);
     
     // Mark as accessed and boost weight
-    if (options.markAccess !== false && options.accessMode !== 'read-only') {
+    if (mutableAccess) {
       this.recordNodeAccess(results.map(node => node.id), { weightBoost: 0.1 });
       for (const node of results) {
         const stored = this.nodes.get(node.id);
@@ -1169,16 +1312,41 @@ class NetworkMemory {
    * Assign node to cluster (small-world property)
    */
   assignToCluster(nodeId) {
+    if (!this.nodes.has(nodeId)) return null;
+    const assignment = this.withPersistenceBarrier(() => {
+      if (!this.nodes.has(nodeId)) return null;
+      const result = this._assignToClusterUnsafe(nodeId);
+      if (result?.changed) this._markNodeDirtyUnsafe(nodeId);
+      return result;
+    });
+    if (assignment?.createdMissingCluster) {
+      this.logger?.warn?.('Creating missing cluster during assignment', {
+        clusterId: assignment.clusterId,
+      });
+    }
+    return assignment?.clusterId ?? null;
+  }
+
+  _assignToClusterUnsafe(nodeId) {
+    this._requirePersistenceBarrierUnsafe();
     const node = this.nodes.get(nodeId);
-    
-    // Find most connected cluster
+    if (!node) return null;
     const clusterScores = new Map();
-    
     const bridgeVote = this.config.spreading.bridgeTraversalFactor ?? 0.2;
-    for (const neighborId of this.getNeighbors(nodeId)) {
+    for (const [edgeKey, edge] of this.edges) {
+      let source = edge.source;
+      let target = edge.target;
+      if (source === undefined || target === undefined) {
+        const parts = edgeKey.split('->');
+        source = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
+        target = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
+      }
+      let neighborId = null;
+      if (source == nodeId) neighborId = target;
+      else if (target == nodeId) neighborId = source;
+      if (neighborId === null || !this.nodes.has(neighborId)) continue;
       const neighbor = this.nodes.get(neighborId);
       if (neighbor && neighbor.cluster !== null) {
-        const edge = this.getEdge(nodeId, neighborId);
         // Associative edges are full-weight evidence of cluster belonging.
         // Bridges are random long-range shortcuts — count them fractionally
         // so they don't overpower semantic signal in cluster assignment.
@@ -1189,27 +1357,33 @@ class NetworkMemory {
         );
       }
     }
-    
+
+    const previousCluster = node.cluster;
+    let clusterId;
+    let createdMissingCluster = false;
     if (clusterScores.size > 0) {
-      // Join most connected cluster
-      const bestCluster = Array.from(clusterScores.entries())
+      clusterId = Array.from(clusterScores.entries())
         .sort((a, b) => b[1] - a[1])[0][0];
-
-      node.cluster = bestCluster;
-
-      // Ensure cluster exists in clusters Map (it might not if state was corrupted)
-      if (!this.clusters.has(bestCluster)) {
-        this.logger?.warn?.('Creating missing cluster during assignment', { clusterId: bestCluster });
-        this.clusters.set(bestCluster, new Set());
+      if (!this.clusters.has(clusterId)) {
+        createdMissingCluster = true;
+        this.clusters.set(clusterId, new Set());
       }
-
-      this.clusters.get(bestCluster).add(nodeId);
     } else {
-      // Create new cluster
-      const clusterId = this.nextClusterId++;
-      node.cluster = clusterId;
+      clusterId = this.nextClusterId++;
       this.clusters.set(clusterId, new Set([nodeId]));
     }
+    if (previousCluster !== null && previousCluster !== undefined && previousCluster !== clusterId) {
+      const previousMembers = this.clusters.get(previousCluster);
+      previousMembers?.delete(nodeId);
+      if (previousMembers?.size === 0) this.clusters.delete(previousCluster);
+    }
+    node.cluster = clusterId;
+    this.clusters.get(clusterId).add(nodeId);
+    return {
+      changed: previousCluster !== clusterId,
+      clusterId,
+      createdMissingCluster,
+    };
   }
 
   /**
@@ -1250,8 +1424,7 @@ class NetworkMemory {
     const yieldEvery = Number(this.config.smallWorld?.rewireYieldEvery) || 1000;
     for (const [edgeKey, edge] of this.edges) {
       if (edge.weight < 0.1) {
-        this.edges.delete(edgeKey);
-        pruned++;
+        if (this._removeEdgeKey(edgeKey)) pruned++;
       }
       scanned++;
       if (yieldEvery > 0 && scanned % yieldEvery === 0) {
@@ -1293,6 +1466,11 @@ class NetworkMemory {
         clusters: this.clusters.size
       });
     }
+  }
+
+  _removeEdgeKey(edgeKey) {
+    if (!this.edges.has(edgeKey)) return false;
+    return this.withPersistenceBarrier(() => this._deleteEdgeKeyUnsafe(edgeKey));
   }
 
   /**
@@ -1433,6 +1611,7 @@ class NetworkMemory {
     const decayInterval = this.config.decay.decayInterval || 300;
     const exemptTags = this.config.decay.exemptTags || [];
     
+    const nodeUpdates = [];
     for (const [id, node] of this.nodes) {
       // Skip decay for protected tags
       if (exemptTags.includes(node.tag)) {
@@ -1442,7 +1621,8 @@ class NetworkMemory {
       const age = (now - node.accessed) / 1000; // seconds
       
       if (age > decayInterval) {
-        node.weight *= factor;
+        const weight = node.weight * factor;
+        if (!Object.is(weight, node.weight)) nodeUpdates.push({ id, node, weight });
       }
     }
     
@@ -1450,6 +1630,7 @@ class NetworkMemory {
     // shorter window than semantic/associative edges so they drain naturally
     // instead of accumulating indefinitely. Associative edges keep the
     // original slower decay so real semantic structure survives.
+    const edgeUpdates = [];
     if (this.config.hebbian.enabled) {
       const assocAgeThreshold = decayInterval * 2;
       const bridgeAgeThreshold = this.config.decay.bridgeDecayInterval ?? decayInterval;
@@ -1457,10 +1638,24 @@ class NetworkMemory {
         const age = (now - edge.accessed) / 1000;
         const threshold = edge.type === 'bridge' ? bridgeAgeThreshold : assocAgeThreshold;
         if (age > threshold) {
-          edge.weight *= this.config.hebbian.weakenFactor;
+          const weight = edge.weight * this.config.hebbian.weakenFactor;
+          if (!Object.is(weight, edge.weight)) edgeUpdates.push({ key, edge, weight });
         }
       }
     }
+    if (nodeUpdates.length === 0 && edgeUpdates.length === 0) return;
+    this.withPersistenceBarrier(() => {
+      for (const { id, node, weight } of nodeUpdates) {
+        if (this.nodes.get(id) !== node) continue;
+        node.weight = weight;
+        this._markNodeDirtyUnsafe(id);
+      }
+      for (const { key, edge, weight } of edgeUpdates) {
+        if (this.edges.get(key) !== edge) continue;
+        edge.weight = weight;
+        this._markEdgeDirtyUnsafe(key);
+      }
+    });
   }
 
   /**
