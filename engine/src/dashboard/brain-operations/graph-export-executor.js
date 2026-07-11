@@ -8,6 +8,9 @@ const { once } = require('node:events');
 const {
   OPERATION_RESULT_ARTIFACT_MAX_BYTES,
 } = require('./operation-contract.js');
+
+const PROGRESS_RECORD_INTERVAL = 10_000;
+const PROGRESS_BYTE_INTERVAL = 8 * 1024 * 1024;
 const {
   durableBrainOperationRoot,
   enrichEvidenceIdentity,
@@ -290,6 +293,24 @@ function createGraphExportExecutor({ home23Root } = {}) {
     let finalLinked = false;
     let temporaryRemoved = false;
     let completed = false;
+    let nextProgressRecords = PROGRESS_RECORD_INTERVAL;
+    let nextProgressBytes = PROGRESS_BYTE_INTERVAL;
+    const reportStreamingProgress = () => {
+      if (typeof context.reportEvent !== 'function') return;
+      const completedRecords = nodeCount + edgeCount;
+      if (completedRecords < nextProgressRecords && bytes < nextProgressBytes) return;
+      context.reportEvent(Object.freeze({
+        type: 'progress',
+        phase: 'graph_export',
+        stage: 'graph_streaming',
+        completedRecords,
+        completedBytes: bytes,
+      }));
+      while (nextProgressRecords <= completedRecords) {
+        nextProgressRecords += PROGRESS_RECORD_INTERVAL;
+      }
+      while (nextProgressBytes <= bytes) nextProgressBytes += PROGRESS_BYTE_INTERVAL;
+    };
     try {
       if (!Number.isInteger(fs.constants.O_NOFOLLOW)) {
         throw graphPathError('graph export requires no-follow file creation');
@@ -317,6 +338,7 @@ function createGraphExportExecutor({ home23Root } = {}) {
         hash.update(line);
         bytes += size;
         nodeCount += 1;
+        reportStreamingProgress();
       }
       for await (const record of context.sourcePin.iterateEdges({ signal: context.signal })) {
         const line = `${JSON.stringify({ type: 'edge', record })}\n`;
@@ -326,6 +348,7 @@ function createGraphExportExecutor({ home23Root } = {}) {
         hash.update(line);
         bytes += size;
         edgeCount += 1;
+        reportStreamingProgress();
       }
       const finished = once(stream, 'finish');
       stream.end();

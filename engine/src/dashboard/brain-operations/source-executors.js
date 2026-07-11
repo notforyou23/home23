@@ -45,10 +45,25 @@ function failureEnvelope(error, context) {
   };
 }
 
+function reportProgress(context, stage) {
+  if (typeof context.reportEvent !== 'function') return;
+  throwIfAborted(context.signal);
+  context.reportEvent(Object.freeze({
+    type: 'progress',
+    phase: context.operationType,
+    stage,
+    sourceRevision: context.sourcePin.revision,
+  }));
+}
+
 async function execute(context, fn) {
   try {
     throwIfAborted(context.signal);
-    return await fn(canonicalIdentity(context));
+    const identity = canonicalIdentity(context);
+    reportProgress(context, 'source_pin_verified');
+    const result = await fn(identity);
+    reportProgress(context, 'source_operation_finished');
+    return result;
   } catch (error) {
     return failureEnvelope(error, context);
   }

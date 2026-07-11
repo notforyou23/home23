@@ -120,6 +120,8 @@ test('canonical identity is derived only from operation context and source pin',
 
 test('registerable source executors return standard envelopes', async () => {
   const context = await baseContext();
+  const events = [];
+  context.reportEvent = event => events.push(event);
   const executors = createSourceOperationExecutors({
     searchService: {
       async search(request) {
@@ -160,6 +162,14 @@ test('registerable source executors return standard envelopes', async () => {
   assert.deepEqual(Object.keys(exported.resultArtifact).sort(), [
     'bytes', 'contentEncoding', 'mediaType', 'scratchPath', 'sha256',
   ].sort());
+  for (const operationType of ['search', 'status', 'graph', 'graph_export']) {
+    assert.equal(events.some(event => event.type === 'progress'
+      && event.phase === operationType
+      && event.stage === 'source_pin_verified'), true);
+    assert.equal(events.some(event => event.type === 'progress'
+      && event.phase === operationType
+      && event.stage === 'source_operation_finished'), true);
+  }
 });
 
 test('graph export streams NDJSON artifact and rejects caller-controlled destinations', async () => {
@@ -181,6 +191,36 @@ test('graph export streams NDJSON artifact and rejects caller-controlled destina
     () => executor({ ...context, parameters: { outputPath: '/tmp/x' }, identity: canonicalIdentity(context) }),
     { code: 'invalid_request' },
   );
+});
+
+test('graph export reports bounded progress while a large source is still streaming', async t => {
+  const context = await baseContext();
+  t.after(() => Promise.all([
+    fsp.rm(context.target.canonicalRoot, { recursive: true, force: true }),
+    fsp.rm(context.scratchDir, { recursive: true, force: true }),
+  ]));
+  const pin = sourcePin(context.target.canonicalRoot);
+  pin.iterateNodes = async function* iterateNodes() {
+    for (let index = 0; index < 10_001; index += 1) {
+      yield { id: `node-${index}`, concept: `concept ${index}` };
+    }
+  };
+  pin.iterateEdges = async function* iterateEdges() {};
+  const events = [];
+
+  await createGraphExportExecutor()({
+    ...context,
+    sourcePin: pin,
+    reportEvent: event => events.push(event),
+    parameters: { format: 'jsonl' },
+    identity: canonicalIdentity({ ...context, sourcePin: pin }),
+  });
+
+  assert.equal(events.some(event => event.type === 'progress'
+    && event.phase === 'graph_export'
+    && event.stage === 'graph_streaming'
+    && event.completedRecords >= 10_000), true);
+  assert.equal(events.length <= 2, true);
 });
 
 test('graph export enforces requester operation scratch when home root is configured', async () => {
