@@ -142,7 +142,7 @@ function validateLoaded({ loaded, inventory, snapshot }) {
   };
 }
 
-export async function verifyReadOnlyPersistence({
+async function captureReadOnlyPersistence({
   home23Root,
   agent,
   brainDir,
@@ -167,7 +167,7 @@ export async function verifyReadOnlyPersistence({
   if (inventoryComparable(before) !== inventoryComparable(after)) {
     throw typedError('source_changed_concurrently');
   }
-  return {
+  const proof = {
     ok: true,
     mode: 'read-only',
     sourceBrainDir: brain.path,
@@ -181,6 +181,11 @@ export async function verifyReadOnlyPersistence({
     after: after.records,
     unchanged: true,
   };
+  return { proof, inventory: before };
+}
+
+export async function verifyReadOnlyPersistence(options = {}) {
+  return (await captureReadOnlyPersistence(options)).proof;
 }
 
 async function discoverLiveBrains(home23Root) {
@@ -277,6 +282,25 @@ async function guardedRemoveClone(clone, tempRoot) {
   await fsp.rm(clone.path, { recursive: true, force: false });
 }
 
+async function assertDirectoryIdentity(directory, label) {
+  const stat = await fsp.lstat(directory.path, { bigint: true }).catch((error) => {
+    throw typedError('clone_identity_changed', `${label} is unavailable`, { cause: error });
+  });
+  if (!stat.isDirectory() || stat.isSymbolicLink()
+      || stat.dev.toString() !== directory.dev || stat.ino.toString() !== directory.ino
+      || await fsp.realpath(directory.path) !== directory.path) {
+    throw typedError('clone_identity_changed', `${label} identity changed`);
+  }
+}
+
+async function assertInventoryUnchanged(brainDir, expected) {
+  const current = await selectionInventory(brainDir);
+  if (inventoryComparable(expected) !== inventoryComparable(current)) {
+    throw typedError('source_changed_concurrently');
+  }
+  return current;
+}
+
 async function pruneGeneratedEmptyRuntime(tempRoot) {
   const candidates = [
     path.join(tempRoot, 'instances', 'persistence-clone', 'runtime', 'brain-operations'),
@@ -306,8 +330,11 @@ export async function verifyTempSaveClone({
   tempRoot,
   loader = loadMemoryRevision,
   persister = persistMemoryRevision,
+  afterReadOnlyProof,
+  removeClone = guardedRemoveClone,
 } = {}) {
-  const liveProof = await verifyReadOnlyPersistence({ home23Root, agent, brainDir, loader });
+  const captured = await captureReadOnlyPersistence({ home23Root, agent, brainDir, loader });
+  const liveProof = captured.proof;
   const home = await canonicalDirectory(home23Root, 'Home23 root');
   const temporary = await canonicalDirectory(tempRoot, 'temporary clone root');
   if (isInsideOrEqual(home.path, temporary.path) || isInsideOrEqual(temporary.path, home.path)) {
@@ -319,7 +346,9 @@ export async function verifyTempSaveClone({
       throw typedError('temp_root_overlaps_live_brain');
     }
   }
-  const sourceBefore = await selectionInventory(liveProof.sourceBrainDir);
+  await afterReadOnlyProof?.({ proof: liveProof, inventory: captured.inventory });
+  const sourceBefore = captured.inventory;
+  await assertInventoryUnchanged(liveProof.sourceBrainDir, sourceBefore);
   const clonePath = await fsp.mkdtemp(path.join(temporary.path, 'brain-save-clone-'));
   const clone = await canonicalDirectory(clonePath, 'generated clone');
   let cloneProof = null;
@@ -327,16 +356,21 @@ export async function verifyTempSaveClone({
   let operationError = null;
   try {
     await copyPinnedSelection(liveProof.sourceBrainDir, clone.path, sourceBefore);
+    await assertDirectoryIdentity(clone, 'generated clone');
+    const cloneSourceBefore = await selectionInventory(clone.path);
     const cloneLoaded = await loader(clone.path, {
       home23Root: temporary.path,
       requesterAgent: 'persistence-clone',
       operationId: `clone-load-${process.pid}-${Date.now()}`,
     });
-    validateLoaded({
+    const cloneLoadedValidated = validateLoaded({
       loaded: cloneLoaded,
-      inventory: await selectionInventory(clone.path),
+      inventory: cloneSourceBefore,
       snapshot: (await optionalSnapshot(clone.path)).value,
     });
+    await assertDirectoryIdentity(clone, 'generated clone');
+    await assertInventoryUnchanged(clone.path, cloneSourceBefore);
+    await assertInventoryUnchanged(liveProof.sourceBrainDir, sourceBefore);
     const scheduled = [];
     const persisted = await persister({
       brainDir: clone.path,
@@ -353,9 +387,38 @@ export async function verifyTempSaveClone({
     if (reloaded.nodes.length !== cloneLoaded.nodes.length || reloaded.edges.length !== cloneLoaded.edges.length) {
       throw typedError('clone_reload_mismatch');
     }
+    await assertDirectoryIdentity(clone, 'generated clone');
+    const cloneSourceAfter = await selectionInventory(clone.path);
+    const cloneSnapshotAfter = (await optionalSnapshot(clone.path)).value;
+    const postSnapshot = snapshotTotals(cloneSnapshotAfter);
+    const postSummary = cloneSourceAfter.manifest?.summary;
+    if (!postSnapshot
+        || postSnapshot.nodes !== reloaded.nodes.length
+        || postSnapshot.edges !== reloaded.edges.length
+        || postSummary?.nodeCount !== reloaded.nodes.length
+        || postSummary?.edgeCount !== reloaded.edges.length) {
+      throw typedError('clone_reload_mismatch');
+    }
+    const persistedRevision = persisted.manifest?.currentRevision;
+    const manifestGeneration = cloneSourceAfter.manifest?.generation;
+    if (!Number.isSafeInteger(persistedRevision)
+        || reloaded.revision !== persistedRevision
+        || cloneSourceAfter.manifest?.currentRevision !== persistedRevision
+        || !manifestGeneration
+        || cloneLoadedValidated.loaded.nodes !== reloaded.nodes.length
+        || cloneLoadedValidated.loaded.edges !== reloaded.edges.length) {
+      throw typedError('clone_reload_mismatch');
+    }
     cloneProof = {
       persistedMode: persisted.mode,
-      persistedRevision: persisted.manifest?.currentRevision ?? null,
+      persistedRevision,
+      reloadedRevision: reloaded.revision,
+      manifestRevision: cloneSourceAfter.manifest.currentRevision,
+      snapshotRevision: postSnapshot.revision,
+      manifestGeneration,
+      snapshotGeneration: postSnapshot.generation,
+      snapshotMatchesManifest: postSnapshot.revision === persistedRevision
+        && postSnapshot.generation === manifestGeneration,
       loaded: { nodes: reloaded.nodes.length, edges: reloaded.edges.length, revision: reloaded.revision },
       retirementDeferred: scheduled.length,
     };
@@ -363,7 +426,8 @@ export async function verifyTempSaveClone({
     operationError = error;
   } finally {
     try {
-      await guardedRemoveClone(clone, temporary.path);
+      await assertDirectoryIdentity(clone, 'generated clone');
+      await removeClone(clone, temporary.path);
     } catch (error) {
       cleanupError = error;
     }
