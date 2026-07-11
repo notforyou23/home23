@@ -134,6 +134,95 @@ test('read-only proof supports the production-selected legacy sidecar generation
   assert.deepEqual(await fs.readdir(state.tempRoot), []);
 });
 
+test('legacy resident proof treats streamed base plus later delta as authoritative when snapshot lags', async (t) => {
+  const { verifyReadOnlyPersistence } = await import('../../scripts/verify-brain-persistence.mjs');
+  const state = await legacyFixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  await fs.appendFile(path.join(state.brainDir, 'memory-delta.jsonl'), `${JSON.stringify({
+    op: 'upsert_node',
+    record: { id: 'legacy-n3', concept: 'later committed evidence', cluster: 'legacy' },
+  })}\n`);
+
+  const result = await verifyReadOnlyPersistence({
+    home23Root: state.home23Root, agent: 'jerry', brainDir: state.brainDir,
+    tempRoot: state.tempRoot,
+  });
+
+  assert.equal(result.selectedAuthority, 'legacy-resident-sidecars');
+  assert.deepEqual(result.expected, { nodes: 3, edges: 1 });
+  assert.equal(result.expectedAuthority, 'streamed-logical-source');
+  assert.equal(result.streamed.nodes, 3);
+  assert.equal(result.streamed.edges, 1);
+  assert.equal(result.snapshot.status, 'valid');
+  assert.equal(result.snapshot.nodes, 2);
+  assert.equal(result.snapshot.edges, 1);
+  assert.equal(result.snapshot.matchesStreamed, false);
+  assert.equal(result.snapshot.requiredForAcceptance, false);
+  assert.equal(
+    result.snapshot.notRequiredReason,
+    'legacy-resident-sidecars-stream-includes-committed-delta',
+  );
+  assert.deepEqual(result.before, result.after);
+  assert.deepEqual(await fs.readdir(state.tempRoot), []);
+});
+
+test('legacy resident proof records missing or invalid advisory snapshots without rejecting authority', async (t) => {
+  const { verifyReadOnlyPersistence } = await import('../../scripts/verify-brain-persistence.mjs');
+  for (const [label, mutate, status] of [
+    ['missing', (snapshotPath) => fs.rm(snapshotPath), 'missing'],
+    ['invalid', (snapshotPath) => fs.writeFile(snapshotPath, '{not-json\n'), 'invalid'],
+  ]) {
+    await t.test(label, async (st) => {
+      const state = await legacyFixture();
+      st.after(() => fs.rm(state.root, { recursive: true, force: true }));
+      await mutate(path.join(state.brainDir, 'brain-snapshot.json'));
+      const result = await verifyReadOnlyPersistence({
+        home23Root: state.home23Root, agent: 'jerry', brainDir: state.brainDir,
+        tempRoot: state.tempRoot,
+      });
+      assert.deepEqual(result.expected, { nodes: 2, edges: 1 });
+      assert.equal(result.expectedAuthority, 'streamed-logical-source');
+      assert.equal(result.snapshot.status, status);
+      assert.equal(result.snapshot.nodes, null);
+      assert.equal(result.snapshot.edges, null);
+      assert.equal(result.snapshot.matchesStreamed, null);
+      assert.equal(result.snapshot.requiredForAcceptance, false);
+      assert.equal(
+        result.snapshot.notRequiredReason,
+        'legacy-resident-sidecars-stream-includes-committed-delta',
+      );
+      assert.deepEqual(result.before, result.after);
+      assert.deepEqual(await fs.readdir(state.tempRoot), []);
+    });
+  }
+});
+
+test('temp-save clone accepts a stale legacy advisory snapshot and proves the later delta', async (t) => {
+  const { verifyTempSaveClone } = await import('../../scripts/verify-brain-persistence.mjs');
+  const state = await legacyFixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  await fs.appendFile(path.join(state.brainDir, 'memory-delta.jsonl'), `${JSON.stringify({
+    op: 'upsert_node',
+    record: { id: 'legacy-n3', concept: 'later committed evidence', cluster: 'legacy' },
+  })}\n`);
+
+  const result = await verifyTempSaveClone({
+    home23Root: state.home23Root, agent: 'jerry', brainDir: state.brainDir,
+    tempRoot: state.tempRoot,
+  });
+
+  assert.equal(result.mode, 'temp-save-clone-safe');
+  assert.deepEqual(result.expected, { nodes: 3, edges: 1 });
+  assert.equal(result.expectedAuthority, 'streamed-logical-source');
+  assert.equal(result.snapshot.matchesStreamed, false);
+  assert.equal(result.snapshot.requiredForAcceptance, false);
+  assert.equal(result.clone.loaded.nodes, 4);
+  assert.equal(result.clone.loaded.edges, 1);
+  assert.equal(result.clone.canaryMatches, 1);
+  assert.equal(result.cloneRemoved, true);
+  assert.deepEqual(await fs.readdir(state.tempRoot), []);
+});
+
 test('missing, stale, zero, or disagreeing snapshot evidence fails closed', async (t) => {
   const { verifyReadOnlyPersistence } = await import('../../scripts/verify-brain-persistence.mjs');
   for (const [label, snapshot, code] of [
