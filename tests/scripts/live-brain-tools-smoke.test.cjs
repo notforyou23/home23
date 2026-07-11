@@ -894,6 +894,105 @@ test('isolated metric sampler proves advancing recovery and rejects frozen or ma
       (error) => error.code === 'isolated_fixture_metric_invalid',
     );
   });
+
+  await t.test('final proof rejects a fresh metric read that crosses its monotonic deadline', async (t) => {
+    const { fixtureState, writePair } = await setupMetricFixture('metric-read-deadline');
+    t.after(() => fs.rm(fixtureState.root, { recursive: true, force: true }));
+    let monotonicMs = 0;
+    let finalRead = false;
+    let injectedReads = 0;
+    const sampler = startIsolatedMetricSampler(fixtureState, {
+      intervalMs: 1_000,
+      initialFreshWaitMs: 500,
+      finalFreshWaitMs: 10,
+      monotonicNow: () => monotonicMs,
+      readMetricFile: async (file) => {
+        injectedReads += 1;
+        const metric = JSON.parse(await fs.readFile(file, 'utf8'));
+        if (finalRead) monotonicMs = 11;
+        return metric;
+      },
+      deadlineWait: async (_milliseconds, signal) => new Promise((resolve, reject) => {
+        const abort = () => {
+          signal.removeEventListener('abort', abort);
+          reject(signal.reason);
+        };
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+      }),
+    });
+    await sampler.ready;
+    await writePair(new Date(Date.now() + 1).toISOString());
+    finalRead = true;
+    await assert.rejects(
+      sampler.stop(),
+      (error) => error.code === 'isolated_fixture_metric_stale',
+    );
+    assert.ok(injectedReads > 0);
+  });
+
+  await t.test('final proof clamps waits to its remaining monotonic budget', async (t) => {
+    const { fixtureState } = await setupMetricFixture('metric-wait-deadline');
+    t.after(() => fs.rm(fixtureState.root, { recursive: true, force: true }));
+    let monotonicMs = 0;
+    let sequence = 0;
+    let finalRead = false;
+    const waits = [];
+    const sampler = startIsolatedMetricSampler(fixtureState, {
+      intervalMs: 1_000,
+      initialFreshWaitMs: 500,
+      finalFreshWaitMs: 10,
+      monotonicNow: () => monotonicMs,
+      readMetricFile: async (file) => {
+        const metric = JSON.parse(await fs.readFile(file, 'utf8'));
+        if (finalRead) {
+          sequence += 1;
+          metric.updatedAt = new Date(Date.now() + sequence).toISOString();
+        }
+        return metric;
+      },
+      wait: async (milliseconds, signal) => {
+        if (signal?.aborted) throw signal.reason;
+        waits.push(milliseconds);
+        monotonicMs += milliseconds;
+      },
+      deadlineWait: async (_milliseconds, signal) => new Promise((resolve, reject) => {
+        const abort = () => {
+          signal.removeEventListener('abort', abort);
+          reject(signal.reason);
+        };
+        signal.addEventListener('abort', abort, { once: true });
+        if (signal.aborted) abort();
+      }),
+    });
+    await sampler.ready;
+    waits.length = 0;
+    finalRead = true;
+    await assert.rejects(
+      sampler.stop(),
+      (error) => error.code === 'isolated_fixture_metric_stale',
+    );
+    assert.ok(waits.length > 0);
+    assert.ok(waits.every((milliseconds) => milliseconds <= 10));
+  });
+
+  await t.test('operator abort preempts final metric collection', async (t) => {
+    const { fixtureState } = await setupMetricFixture('metric-final-abort');
+    t.after(() => fs.rm(fixtureState.root, { recursive: true, force: true }));
+    const controller = new AbortController();
+    const reason = Object.assign(new Error('operator_stop'), { code: 'operator_stop' });
+    const sampler = startIsolatedMetricSampler(fixtureState, {
+      intervalMs: 5,
+      initialFreshWaitMs: 500,
+      finalFreshWaitMs: 100,
+      signal: controller.signal,
+    });
+    await sampler.ready;
+    const stopping = sampler.stop();
+    setTimeout(() => controller.abort(reason), 10);
+    await assert.rejects(stopping, (error) => error === reason);
+    assert.equal(require('node:events').getEventListeners(controller.signal, 'abort').length, 0);
+  });
 });
 
 test('surviving attachment proof waits only for the exact durable terminal transition', async (t) => {

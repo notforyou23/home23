@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import fsp from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import {
   appendJsonlReceipt,
@@ -3024,10 +3025,20 @@ export function startIsolatedMetricSampler(fixture, {
   intervalMs = 100,
   initialFreshWaitMs = 10_000,
   finalFreshWaitMs = 30_000,
+  signal = null,
+  monotonicNow = () => performance.now(),
+  wallNow = Date.now,
+  wait = sleep,
+  deadlineWait = sleep,
+  readMetricFile = (file) => readJson(file, { maxBytes: 1024 * 1024 }),
 } = {}) {
   if (!Number.isSafeInteger(intervalMs) || intervalMs < 1
       || !Number.isSafeInteger(initialFreshWaitMs) || initialFreshWaitMs < 1
-      || !Number.isSafeInteger(finalFreshWaitMs) || finalFreshWaitMs < 1) {
+      || !Number.isSafeInteger(finalFreshWaitMs) || finalFreshWaitMs < 1
+      || (signal !== null && !(signal instanceof AbortSignal))
+      || typeof monotonicNow !== 'function' || typeof wallNow !== 'function'
+      || typeof wait !== 'function' || typeof deadlineWait !== 'function'
+      || typeof readMetricFile !== 'function') {
     throw typedError('isolated_fixture_metric_sampler_invalid');
   }
   const roles = ['dashboard', 'cosmo'];
@@ -3050,11 +3061,11 @@ export function startIsolatedMetricSampler(fixture, {
     let lastError = null;
     for (let attempt = 0; attempt < 8; attempt += 1) {
       try {
-        return await readJson(fixture.metrics[role], { maxBytes: 1024 * 1024 });
+        return await readMetricFile(fixture.metrics[role]);
       } catch (error) {
         lastError = error;
         if (error?.code !== 'json_file_invalid' || attempt === 7) break;
-        await sleep(5, retrySignal);
+        await wait(5, retrySignal);
       }
     }
     throw lastError;
@@ -3063,20 +3074,30 @@ export function startIsolatedMetricSampler(fixture, {
   async function capture({
     forceRetain = false,
     waitForFreshMs = 0,
-    deadlineMs = Date.now() + waitForFreshMs,
+    deadlineMs = waitForFreshMs > 0 ? monotonicNow() + waitForFreshMs : null,
     requireAdvance = false,
+    bounded = (promise) => promise,
   } = {}) {
     const captured = new Map();
+    const captureSignal = forceRetain ? signal : samplerController.signal;
+    const throwIfUnavailable = (role) => {
+      if (signal?.aborted) throw signal.reason || typedError('acceptance_interrupted');
+      if (!forceRetain && samplerController.signal.aborted) {
+        throw samplerController.signal.reason || typedError('metric_sampler_stopped');
+      }
+      if (deadlineMs !== null && monotonicNow() >= deadlineMs) {
+        throw typedError('isolated_fixture_metric_stale', role);
+      }
+    };
     for (const role of roles) {
       let metric;
       let capturedAtMs;
       let updatedAtMs;
       while (true) {
-        metric = await readMetric(
-          role,
-          forceRetain ? null : samplerController.signal,
-        );
-        capturedAtMs = Date.now();
+        throwIfUnavailable(role);
+        metric = await bounded(readMetric(role, captureSignal));
+        throwIfUnavailable(role);
+        capturedAtMs = wallNow();
         updatedAtMs = Date.parse(metric.updatedAt);
         if (metric.schemaVersion !== 2 || metric.role !== role
             || metric.pid !== fixture.pids[role]
@@ -3090,10 +3111,11 @@ export function startIsolatedMetricSampler(fixture, {
         const advancing = updatedAtMs > lastAcceptedUpdatedAtMs.get(role);
         if (fresh && (!requireAdvance || advancing)) break;
         staleCaptureCount += 1;
-        if (Date.now() >= deadlineMs) {
+        const remainingMs = deadlineMs === null ? 50 : deadlineMs - monotonicNow();
+        if (remainingMs <= 0) {
           throw typedError('isolated_fixture_metric_stale', role);
         }
-        await sleep(50, forceRetain ? null : samplerController.signal);
+        await bounded(wait(Math.min(50, remainingMs), captureSignal));
       }
       const added = accumulators.get(role).add({
         role,
@@ -3125,7 +3147,7 @@ export function startIsolatedMetricSampler(fixture, {
     }
     while (!samplerController.signal.aborted) {
       try {
-        await sleep(intervalMs, samplerController.signal);
+        await wait(intervalMs, samplerController.signal);
         await capture();
       } catch (error) {
         if (samplerController.signal.aborted) break;
@@ -3142,23 +3164,53 @@ export function startIsolatedMetricSampler(fixture, {
       samplerController.abort(typedError('metric_sampler_stopped'));
       await task;
       if (failure) throw failure;
-      const finalDeadlineMs = Date.now() + finalFreshWaitMs;
+      if (signal?.aborted) throw signal.reason || typedError('acceptance_interrupted');
+      const finalDeadlineMs = monotonicNow() + finalFreshWaitMs;
+      const deadlineController = new AbortController();
+      const releasedDeadline = typedError('isolated_fixture_metric_deadline_released');
+      const never = new Promise(() => {});
+      let removeCallerAbort = () => {};
+      const callerAbort = signal ? new Promise((resolve, reject) => {
+        const abort = () => reject(signal.reason || typedError('acceptance_interrupted'));
+        signal.addEventListener('abort', abort, { once: true });
+        removeCallerAbort = () => signal.removeEventListener('abort', abort);
+        if (signal.aborted) abort();
+      }) : never;
+      const timeout = Promise.resolve()
+        .then(() => deadlineWait(finalFreshWaitMs, deadlineController.signal))
+        .then(() => {
+          throw typedError('isolated_fixture_metric_stale', 'final');
+        })
+        .catch((error) => {
+          if (deadlineController.signal.aborted
+              && error === deadlineController.signal.reason) return never;
+          throw error;
+        });
+      timeout.catch(() => {});
+      const bounded = (promise) => Promise.race([callerAbort, timeout, promise]);
       const finalSamples = Object.fromEntries(roles.map((role) => [role, []]));
-      for (let index = 0; index < 3; index += 1) {
-        try {
+      try {
+        for (let index = 0; index < 3; index += 1) {
           const captured = await capture({
             forceRetain: true,
             deadlineMs: finalDeadlineMs,
             requireAdvance: true,
+            bounded,
           });
           for (const role of roles) {
             finalSamples[role].push(captured.get(role).updatedAt);
           }
-        } catch (error) {
-          failure ||= error;
-          break;
+          if (index < 2) {
+            const remainingMs = finalDeadlineMs - monotonicNow();
+            if (remainingMs <= 0) throw typedError('isolated_fixture_metric_stale', 'final');
+            await bounded(wait(Math.min(Math.max(50, intervalMs), remainingMs), signal));
+          }
         }
-        if (index < 2) await sleep(Math.max(50, intervalMs), null);
+      } catch (error) {
+        failure ||= error;
+      } finally {
+        removeCallerAbort();
+        deadlineController.abort(releasedDeadline);
       }
       if (failure) throw failure;
       const targets = roles.map((role) => accumulators.get(role).summary());
@@ -3679,7 +3731,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       baseUrl = fixture.baseUrl;
       sourceIntegrityOptions = { fixture };
       if (one(values, 'heap-output')) {
-        metricSampler = startIsolatedMetricSampler(fixture);
+        metricSampler = startIsolatedMetricSampler(fixture, { signal: controller.signal });
         await metricSampler.ready;
       }
     } else if (context.authority === 'isolated-controlled'
