@@ -1579,6 +1579,15 @@ STYLE:
     if (typeof query !== 'string' || !query.trim()) {
       throw operationError('invalid_request', 'Query is required');
     }
+    const mutationPolicy = options.mutationPolicy
+      ?? (options.accessMode === 'own' ? 'own' : 'read-only');
+    if (!['own', 'read-only'].includes(mutationPolicy)) {
+      throw operationError('access_denied', 'Pinned Query mutation policy is not allowed');
+    }
+    if ((options.accessMode === 'read-only' && mutationPolicy !== 'read-only')
+        || (mutationPolicy === 'read-only' && options.allowActions === true)) {
+      throw operationError('access_denied', 'Read-only Query cannot execute actions');
+    }
     const sourcePin = options.sourcePin;
     if (!sourcePin) {
       throw operationError('source_pin_required', 'Pinned source is required');

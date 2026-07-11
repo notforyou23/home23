@@ -154,7 +154,7 @@ function options(pin, scratch, extra = {}) {
     pgsSynth: { provider: 'synth', model: 'shared-model' },
     signal: new AbortController().signal,
     reportEvent: extra.reportEvent,
-    pgsConfig: extra.pgsConfig || { sweepFraction: 1, maxConcurrentSweeps: 2 },
+    pgsConfig: extra.pgsConfig || { sweepFraction: 1 },
     limits,
   };
 }
@@ -276,6 +276,18 @@ test('pinned PGS removes only its exact receipt temporary on cancellation', asyn
   assert.deepEqual(await fs.readdir(path.join(scratch.scratchDir, 'pgs-receipts')), []);
 });
 
+test('PGS receipt publication uses an atomic no-replace filesystem primitive', async () => {
+  const source = await fs.readFile(
+    path.resolve(__dirname, '../../cosmo23/pgs-engine/src/pinned-operation.js'),
+    'utf8',
+  );
+  const start = source.indexOf('async function writeSuccessReceipt');
+  const end = source.indexOf('async function runPinnedOperation', start);
+  const writer = source.slice(start, end);
+  assert.match(writer, /await fsp\.link\(temporary, destination\)/);
+  assert.doesNotMatch(writer, /fsp\.rename\(temporary, destination\)/);
+});
+
 test('empty pinned source fails honestly without provider work', async t => {
   const scratch = await scratchFixture(t);
   const pin = sourcePin({ nodeCount: 0 });
@@ -355,12 +367,31 @@ test('PGS requires exact client and completion provider identities', async t => 
   }
 });
 
+test('pinned PGS rejects caller-controlled concurrency before store or provider work', async t => {
+  const scratch = await scratchFixture(t);
+  const fixture = makeEngine();
+  let storeCalls = 0;
+  fixture.engine.openPinnedPGSStore = async () => {
+    storeCalls += 1;
+    return singleWorkStore();
+  };
+
+  await assert.rejects(
+    fixture.engine.runPinnedOperation(options(sourcePin({ nodeCount: 1 }), scratch, {
+      pgsConfig: { sweepFraction: 1, maxConcurrentSweeps: 4 },
+    })),
+    error => error.code === 'invalid_request',
+  );
+  assert.equal(storeCalls, 0);
+  assert.equal(fixture.calls.length, 0);
+});
+
 test('fractional run is honestly partial and a retry executes only pending work', async t => {
   const scratch = await scratchFixture(t);
   const pin = sourcePin();
   const first = makeEngine();
   const partial = await first.engine.runPinnedOperation(options(pin, scratch, {
-    pgsConfig: { sweepFraction: 0.5, maxConcurrentSweeps: 2 },
+    pgsConfig: { sweepFraction: 0.5 },
   }));
   assert.equal(partial.state, 'partial');
   assert.equal(partial.error.code, 'pgs_partitions_incomplete');

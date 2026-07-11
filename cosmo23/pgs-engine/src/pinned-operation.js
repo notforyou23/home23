@@ -20,6 +20,8 @@ const {
 } = require('../../lib/provider-completion');
 const { getModelCapabilities } = require('../../server/config/model-catalog');
 
+const PINNED_SWEEP_CONCURRENCY = 2;
+
 function typed(code, message, retryable = false) {
   return Object.assign(new Error(message), { code, retryable });
 }
@@ -182,7 +184,8 @@ async function writeSuccessReceipt({
   })}\n`, 'utf8');
   let handle = null;
   let temporaryIdentity = null;
-  let renamed = false;
+  let temporaryPresent = false;
+  let destinationPublished = false;
   try {
     await verifyScratchBoundary(receiptBoundary);
     if (await optionalLstat(destination) !== null) {
@@ -197,6 +200,7 @@ async function writeSuccessReceipt({
         | fs.constants.O_NOFOLLOW,
       0o600,
     );
+    temporaryPresent = true;
     const opened = await handle.stat({ bigint: true });
     if (!opened.isFile() || opened.nlink !== 1n) {
       throw receiptPathError('PGS receipt temporary is not a private regular file');
@@ -214,16 +218,22 @@ async function writeSuccessReceipt({
     }
     await handle.close();
     handle = null;
-    await fsp.rename(temporary, destination);
-    renamed = true;
+    await fsp.link(temporary, destination);
+    destinationPublished = true;
+    await fsp.unlink(temporary);
+    temporaryPresent = false;
     await assertExactReceiptFile(destination, temporaryIdentity, receiptBoundary, { size: bytes.length });
     fs.fsyncSync(directory.fd);
     await verifyReceiptReadback(destination, temporaryIdentity, bytes, receiptBoundary);
   } catch (error) {
     await handle?.close().catch(() => {});
     if (temporaryIdentity) {
-      const cleanupPath = renamed ? destination : temporary;
-      await removeExactReceiptFile(cleanupPath, temporaryIdentity, receiptBoundary).catch(() => {});
+      if (destinationPublished) {
+        await removeExactReceiptFile(destination, temporaryIdentity, receiptBoundary).catch(() => {});
+      }
+      if (temporaryPresent) {
+        await removeExactReceiptFile(temporary, temporaryIdentity, receiptBoundary).catch(() => {});
+      }
       try { fs.fsyncSync(directory.fd); } catch {}
       await scratchQuota.reconcile().catch(() => {});
     }
@@ -252,7 +262,7 @@ async function runPinnedOperation(engine, options = {}) {
     throw typed('access_denied', 'PGS operation is read-only');
   }
   if (!pgsConfig || typeof pgsConfig !== 'object' || Array.isArray(pgsConfig)
-      || Object.keys(pgsConfig).some(key => !['maxConcurrentSweeps', 'sweepFraction'].includes(key))) {
+      || Object.keys(pgsConfig).some(key => key !== 'sweepFraction')) {
     throw typed('invalid_request', 'PGS configuration is invalid');
   }
   const sweepFraction = pgsConfig.sweepFraction === undefined ? 1 : pgsConfig.sweepFraction;
@@ -260,12 +270,7 @@ async function runPinnedOperation(engine, options = {}) {
       || sweepFraction <= 0 || sweepFraction > 1) {
     throw typed('invalid_request', 'PGS sweepFraction must be in (0,1]');
   }
-  const concurrency = pgsConfig.maxConcurrentSweeps === undefined
-    ? 2
-    : pgsConfig.maxConcurrentSweeps;
-  if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 4) {
-    throw typed('invalid_request', 'PGS concurrency must be between 1 and 4');
-  }
+  const concurrency = PINNED_SWEEP_CONCURRENCY;
   const limits = lowerLimits(options.limits || {});
   const sweepPair = exactPair(options.pgsSweep, 'pgsSweep');
   const synthPair = exactPair(options.pgsSynth, 'pgsSynth');

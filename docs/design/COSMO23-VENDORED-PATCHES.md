@@ -2124,10 +2124,33 @@ arms the caller's long hard deadline itself, so a lost dashboard coordinator
 cannot leave a provider operation running forever. Research executors remain an
 explicit later Patch 50 registration and are never substituted by query.
 
+The protected worker derives its requester-owned scratch and shared quota from
+the exact BrainOperationStore durable directory
+`instances/<requester>/runtime/brain-operations/operations/<operationId>/`.
+This keeps COSMO query/PGS process pins, projections, scratch accounting, and
+dashboard status/result authority inside one operation root; the older flat
+layout remains discovery-compatible only for standalone or legacy contexts.
+
+Scratch descendants are fail-closed as well. Graph exports require an exact
+nonsymlink `scratch/results` directory and publish only an owned private inode;
+an existing destination or extra hard link is rejected without replacement.
+Pinned PGS holds no-follow identities for the operation root, `scratch`,
+`scratch/pgs`, the revision directory, and its SQLite file. A new projection is
+built under a private temporary database inode, fsynced, renamed, reopened, and
+identity-checked before use. Successful PGS receipts apply the same rule to
+`scratch/pgs-receipts` and verify a bounded streaming readback. Pre-existing
+symlinked `results`, `pgs`, revision, or `pgs-receipts` paths fail as
+`invalid_request` before they can create or replace a file outside scratch.
+
 **Verification:** `tests/cosmo23/brain-operation-worker.test.cjs` covers
 capability binding/replay, 32-way idempotent start, authority/source matrices,
 real native and legacy source pins, event/provider bounds, artifacts, GC,
-release-once cleanup, and all five internal route handlers. The existing brains
+release-once cleanup, exact durable operation-root alignment, and all five
+internal route handlers. `tests/engine/dashboard/brain-source-executors.test.js`,
+`tests/cosmo23/pinned-pgs-store.test.cjs`, and
+`tests/cosmo23/pgs-source-pin.test.cjs` cover redirected child paths,
+no-replace publication, exact inode cleanup, SQLite reuse, cancellation, and
+receipt readback. The existing brains
 router and shared capability/authority/source suites remain part of the patch
 acceptance command.
 
@@ -2196,7 +2219,7 @@ tests.
 
 ---
 
-## Patch 49 — Provider client import-time isolation
+## Patch 49 — Durable provider execution and import-time isolation
 
 **Files touched:**
 - `cosmo23/engine/src/core/openai-client.js`
@@ -2205,6 +2228,14 @@ tests.
 - `cosmo23/engine/src/core/chat-completions-client.js`
 - `cosmo23/engine/src/core/mcp-client.js`
 - `cosmo23/engine/src/services/codex-oauth-engine.js`
+- `cosmo23/lib/bounded-json.js`
+- `cosmo23/lib/brain-provider-client-registry.js`
+- `cosmo23/lib/provider-completion.js`
+- `cosmo23/lib/query-engine.js`
+- `cosmo23/pgs-engine/src/pinned-operation.js`
+- `cosmo23/pgs-engine/src/pinned-store.js`
+- `cosmo23/server/lib/legacy-query-operation-adapter.js`
+- `cosmo23/server/index.js`
 
 **Problem:** Provider and OAuth support modules imported optional runtime
 packages such as `openai`, `dotenv`, `node-fetch`, and Prisma during module
@@ -2224,6 +2255,43 @@ usable without a generated Prisma client.
 `node --test --test-concurrency=1 tests/engine/core/gpt5-client-complete.test.cjs
 tests/engine/core/unified-client-codex-oauth.test.cjs
 tests/cosmo23/codex-unified-client-request.test.cjs`.
+
+**2026-07-11 durable-execution follow-up:** Operation-mode Query and PGS now
+resolve only an exact catalog provider/model pair through the injected registry.
+Provider clients expose an immutable `providerId`, every terminal completion is
+checked against the selected provider and model, and Query prompt/result
+serialization is bounded before the provider or durable-result boundary. The
+live legacy `/api/brain/:name/query` and streaming routes are compatibility
+adapters over the canonical dashboard operation protocol; they validate the
+requester, target brain, selected pair, terminal state, and result identity.
+They copy frozen durable results before adding legacy response fields and bound
+best-effort detach cleanup. All other live COSMO `QueryEngine` callers are
+audited non-provider utilities (`loadBrainState`, suggestions, and explicit
+result export).
+
+Pinned PGS retries remain bound to one immutable source descriptor, exact sweep
+pair, requester operation scratch, and trusted `{sweepFraction}`. Concurrency is
+an internal fixed bound rather than a caller override. Failed and cancelled work
+stays pending; validated successes are reused on the next attempt. SQLite retry
+and success listings stream through explicit scalar/result caps, and every
+successful-sweep commit counts canonical `{output}` JSON bytes together with
+all prior durable rows before the transaction can cross the 16 MiB aggregate
+ceiling. Receipt publication uses a private no-follow temporary inode plus an
+atomic no-replace hard link, fsync, identity check, and bounded readback. Query
+and PGS read-only runs were exercised against resident and completed-research
+target trees containing unknown files, nested directories, and symlinks; only
+requester scratch changed.
+
+**Verification:** The focused Home23 matrix passed 59/59 across exact provider
+identity, legacy adaptation, retry state, cancellation, canonical byte ceilings,
+receipt publication, Query mutation boundaries, and cross-brain read-only
+tests. The four required exact-path suites report 3 tests in
+`cross-brain-readonly.test.cjs`, 3 in `pgs-cancellation.test.cjs`, 3 in
+`pgs-retry-state.test.cjs`, and 2 in
+`query-engine-mutation-boundary.test.cjs`. The standalone package's fixture-free
+unit command passed 84/84; its historical integration file still requires the
+untracked `examples/data/physics2.json.gz` fixture and is not claimed by that
+receipt.
 
 ---
 

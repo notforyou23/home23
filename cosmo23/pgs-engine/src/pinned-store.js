@@ -6,7 +6,10 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { PGS_OPERATION_LIMITS } = require('../../lib/brain-operation-limits');
-const { sourceDescriptorDigest } = require('../../../shared/memory-source/contracts.cjs');
+const {
+  canonicalJson,
+  sourceDescriptorDigest,
+} = require('../../../shared/memory-source/contracts.cjs');
 const {
   getOperationScratchQuotaCleanup,
 } = require('../../../shared/memory-source/scratch-quota.cjs');
@@ -948,6 +951,9 @@ async function openPinnedPGSStore({
     async commitSuccessfulSweeps(outputs) {
       assertOpen();
       if (!Array.isArray(outputs)) throw typed('invalid_request', 'PGS sweep outputs must be an array');
+      if (outputs.length > limits.maxSelectedWorkUnits) {
+        throw typed('result_too_large', 'PGS sweep commit exceeds the selected-work limit');
+      }
       const normalizedByWorkUnit = new Map();
       for (const row of outputs) {
         if (!row || typeof row !== 'object' || Array.isArray(row)) {
@@ -963,8 +969,12 @@ async function openPinnedPGSStore({
           throw typed('pgs_state_conflict', 'PGS sweep output conflicts within the commit');
         }
         if (!prior) {
+          const outputJson = canonicalJson({ output });
           normalizedByWorkUnit.set(row.workUnitId, {
-            ...row, output, outputBytes: bytes, outputJson: JSON.stringify({ output }),
+            ...row,
+            output,
+            outputJson,
+            outputJsonBytes: Buffer.byteLength(outputJson, 'utf8'),
           });
         }
       }
@@ -1014,7 +1024,7 @@ async function openPinnedPGSStore({
           if (outputBytes > limits.maxSweepOutputBytes) {
             throw typed('pgs_projection_invalid', 'Stored PGS sweep output exceeds its byte limit');
           }
-          durableOutputBytes += outputBytes;
+          durableOutputBytes += existing.output_json_bytes;
           if (durableOutputBytes > limits.maxTotalSweepOutputBytes) {
             throw typed('result_too_large', 'PGS sweep outputs exceed the aggregate byte limit');
           }
@@ -1039,7 +1049,7 @@ async function openPinnedPGSStore({
           if (unit.state !== 'pending') {
             throw typed('pgs_state_conflict', 'PGS work unit is not pending');
           }
-          durableOutputBytes += row.outputBytes;
+          durableOutputBytes += row.outputJsonBytes;
           if (durableOutputBytes > limits.maxTotalSweepOutputBytes) {
             throw typed('result_too_large', 'PGS sweep outputs exceed the aggregate byte limit');
           }
@@ -1117,7 +1127,7 @@ async function openPinnedPGSStore({
             || Buffer.byteLength(parsed.output, 'utf8') > limits.maxSweepOutputBytes) {
           throw typed('pgs_projection_invalid', 'PGS sweep output is invalid');
         }
-        totalOutputBytes += Buffer.byteLength(parsed.output, 'utf8');
+        totalOutputBytes += row.output_json_bytes;
         if (totalOutputBytes > limits.maxTotalSweepOutputBytes) {
           throw typed('result_too_large', 'PGS sweep outputs exceed the aggregate byte limit');
         }

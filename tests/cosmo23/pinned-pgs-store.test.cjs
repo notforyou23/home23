@@ -11,6 +11,7 @@ const {
   createOperationScratchQuota,
 } = require('../../shared/memory-source/scratch-quota.cjs');
 const {
+  canonicalJson,
   sourceDescriptorDigest,
 } = require('../../shared/memory-source/contracts.cjs');
 const {
@@ -215,6 +216,7 @@ test('caps cumulative durable sweep output before every retry commit', async t =
     limits: {
       ...limits,
       maxNodesPerWorkUnit: 1,
+      maxSelectedWorkUnits: 16,
       maxSweepOutputBytes: 64,
       maxTotalSweepOutputBytes: 64,
     },
@@ -234,20 +236,29 @@ test('caps cumulative durable sweep output before every retry commit', async t =
   }
   const escapedOutput = '"\n'.repeat(20);
   assert.equal(Buffer.byteLength(escapedOutput, 'utf8'), 40);
-  assert.equal(Buffer.byteLength(JSON.stringify({ output: escapedOutput }), 'utf8') > 64, true);
-  await store.commitSuccessfulSweeps([{ workUnitId: first, output: escapedOutput }]);
-  await store.commitSuccessfulSweeps([
-    { workUnitId: first, output: escapedOutput },
-    { workUnitId: first, output: escapedOutput },
-  ]);
+  assert.equal(Buffer.byteLength(canonicalJson({ output: escapedOutput }), 'utf8') > 64, true);
   await assert.rejects(
-    store.commitSuccessfulSweeps([{ workUnitId: second, output: 'y'.repeat(40) }]),
+    store.commitSuccessfulSweeps([{ workUnitId: first, output: escapedOutput }]),
+    error => error.code === 'result_too_large',
+  );
+  const exactOutput = 'x'.repeat(51);
+  assert.equal(Buffer.byteLength(canonicalJson({ output: exactOutput }), 'utf8'), 64);
+  await assert.rejects(
+    store.commitSuccessfulSweeps(Array.from({ length: 17 }, () => ({
+      workUnitId: first,
+      output: exactOutput,
+    }))),
+    error => error.code === 'result_too_large',
+  );
+  await store.commitSuccessfulSweeps([{ workUnitId: first, output: exactOutput }]);
+  await assert.rejects(
+    store.commitSuccessfulSweeps([{ workUnitId: second, output: 'y' }]),
     error => error.code === 'result_too_large',
   );
   assert.deepEqual(store.listSuccessfulSweeps().map(row => ({
     workUnitId: row.workUnitId,
     output: row.output,
-  })), [{ workUnitId: first, output: escapedOutput }]);
+  })), [{ workUnitId: first, output: exactOutput }]);
   assert.equal(store.countPendingWorkUnits(), 1);
 });
 
