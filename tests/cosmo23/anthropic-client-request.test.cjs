@@ -18,6 +18,18 @@ function makeLogger() {
   };
 }
 
+async function* controlledEvents(events, terminalError = null) {
+  for (const event of events) yield event;
+  if (terminalError) throw terminalError;
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 async function captureGenerateParams(Client, options) {
   let captured = null;
   const client = new Client({ useExtendedThinking: true }, makeLogger());
@@ -39,6 +51,7 @@ async function captureGenerateParams(Client, options) {
   await client.generate({
     instructions: 'system',
     input: 'hello',
+    maxOutputTokens: 256,
     ...options
   });
 
@@ -66,6 +79,7 @@ async function captureWebSearchParams(Client, options) {
   await client.generateWithWebSearch({
     instructions: 'system',
     input: 'hello',
+    maxOutputTokens: 256,
     ...options
   });
 
@@ -138,6 +152,7 @@ test('cosmo23 engine Anthropic client falls back to an available Sonnet wire mod
   await client.generate({
     instructions: 'system',
     input: 'hello',
+    maxOutputTokens: 256,
     model: 'claude-sonnet-4-7'
   });
 
@@ -174,6 +189,7 @@ for (const [name, Client] of clients) {
     await client.generate({
       instructions: 'system',
       input: 'hello',
+      maxOutputTokens: 256,
       model: 'claude-sonnet-4-7'
     });
 
@@ -217,11 +233,12 @@ for (const [name, Client] of clients) {
     };
 
     try {
-      await client.generate({
-        instructions: 'system',
-        input: 'hello',
-        model: 'claude-sonnet-4-7'
-      });
+    await client.generate({
+      instructions: 'system',
+      input: 'hello',
+      maxOutputTokens: 256,
+      model: 'claude-sonnet-4-7'
+    });
     } finally {
       global.fetch = previousFetch;
     }
@@ -271,4 +288,195 @@ test('cosmo23/lib Anthropic stream does not call finalMessage after message_stop
   assert.equal(response.usage.output_tokens, 3);
   assert.equal(finalMessageCalled, false);
   assert.deepEqual(warnings, []);
+});
+
+const anthropicCases = [
+  { name: 'normal completion', events: [
+    { type: 'content_block_delta', delta: { type: 'text_delta', text: 'answer' } },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } },
+    { type: 'message_stop' },
+  ], expected: { status: 'complete', terminalReceived: true } },
+  { name: 'terminal token limit', events: [
+    { type: 'content_block_delta', delta: { type: 'text_delta', text: 'partial' } },
+    { type: 'message_delta', delta: { stop_reason: 'max_tokens' }, usage: { output_tokens: 1 } },
+    { type: 'message_stop' },
+  ], expected: { status: 'partial', terminalReceived: true, code: 'provider_incomplete' } },
+  { name: 'premature EOF', events: [
+    { type: 'content_block_delta', delta: { type: 'text_delta', text: 'partial' } },
+  ], expected: { status: 'partial', terminalReceived: false, code: 'provider_incomplete' } },
+  { name: 'partial text then stream error', events: [
+    { type: 'content_block_delta', delta: { type: 'text_delta', text: 'partial' } },
+  ], terminalError: new Error('socket reset'),
+  expected: { status: 'partial', terminalReceived: false, code: 'provider_failed' } },
+];
+
+for (const row of anthropicCases) {
+  test(`Anthropic: ${row.name}`, async () => {
+    const activity = [];
+    const client = Object.create(CosmoAnthropicClient.prototype);
+    client.logger = makeLogger();
+    client.providerId = 'minimax';
+    client._getModelFromOptions = () => 'MiniMax-M3';
+    const result = await client._streamResponseWithWebSearch(
+      controlledEvents(row.events, row.terminalError),
+      { model: 'MiniMax-M3', onProviderActivity: event => activity.push(event.type) },
+    );
+    assert.equal(result.provider, 'minimax');
+    assert.equal(result.status, row.expected.status);
+    assert.equal(result.terminalReceived, row.expected.terminalReceived);
+    if (row.expected.code) assert.equal(result.error.code, row.expected.code);
+    assert.deepEqual(activity, row.events.map(event => event.type));
+  });
+}
+
+test('Anthropic passes exact max tokens and shared signal to messages.stream', async () => {
+  const controller = new AbortController();
+  let capturedParams = null;
+  let capturedOptions = null;
+  const client = new CosmoAnthropicClient({
+    providerId: 'anthropic', maxOutputTokens: 999,
+  }, makeLogger());
+  client.isOAuth = false;
+  client._initClient = async () => {};
+  client._resolveWireModel = async model => model;
+  client._streamResponse = async () => ({
+    status: 'complete', content: 'answer', terminalReceived: true,
+    finishReason: 'end_turn', hadError: false,
+  });
+  client.anthropic = { messages: { stream: async (params, requestOptions) => {
+    capturedParams = params;
+    capturedOptions = requestOptions;
+    return {};
+  } } };
+
+  await client.generate({
+    model: 'claude-sonnet-4-6', input: 'hello', maxOutputTokens: 256,
+    signal: controller.signal,
+  });
+  assert.equal(capturedParams.max_tokens, 256);
+  assert.equal(capturedOptions.signal, controller.signal);
+});
+
+test('Anthropic validates max token capability before credentials or provider work', async () => {
+  for (const maxOutputTokens of [undefined, 0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    let credentialCalls = 0;
+    let providerCalls = 0;
+    const client = new CosmoAnthropicClient({ providerId: 'anthropic' }, makeLogger());
+    client._initClient = async () => { credentialCalls += 1; };
+    client._resolveWireModel = async model => model;
+    client.anthropic = { messages: { stream: async () => {
+      providerCalls += 1;
+      return controlledEvents([]);
+    } } };
+    await assert.rejects(
+      () => client.generate({ input: 'hello', maxOutputTokens }),
+      error => error.code === 'model_capability_invalid',
+    );
+    assert.equal(credentialCalls, 0);
+    assert.equal(providerCalls, 0);
+  }
+});
+
+test('Anthropic stream rethrows exact cancellation instead of building an error response', async () => {
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('operator cancelled'), { code: 'cancelled' });
+  const started = deferred();
+  const gate = deferred();
+  const stream = {
+    [Symbol.asyncIterator]() { return this; },
+    next() { started.resolve(); return gate.promise; },
+    return() { return Promise.resolve({ done: true }); },
+  };
+  const client = Object.create(CosmoAnthropicClient.prototype);
+  client.logger = makeLogger();
+  client.providerId = 'anthropic';
+  client._getModelFromOptions = () => 'claude-sonnet-4-6';
+  const pending = client._streamResponseWithWebSearch(stream, {
+    model: 'claude-sonnet-4-6', signal: controller.signal,
+  });
+  await started.promise;
+  controller.abort(reason);
+  gate.reject(new Error('ordinary reader failure after abort'));
+  await assert.rejects(pending, error => error === reason);
+});
+
+test('Anthropic outer generate converts an init race to the exact cancellation reason', async () => {
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('operator cancelled'), { code: 'cancelled' });
+  const started = deferred();
+  const gate = deferred();
+  const client = new CosmoAnthropicClient({ providerId: 'anthropic' }, makeLogger());
+  client._initClient = async () => { started.resolve(); return gate.promise; };
+  const pending = client.generate({
+    model: 'claude-sonnet-4-6', input: 'hello', maxOutputTokens: 256,
+    signal: controller.signal,
+  });
+  await started.promise;
+  controller.abort(reason);
+  gate.reject(new Error('ordinary credential failure after abort'));
+  await assert.rejects(pending, error => error === reason);
+});
+
+test('Anthropic web-search fallback never runs after exact cancellation', async () => {
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('operator cancelled'), { code: 'cancelled' });
+  let fallbackCalls = 0;
+  const client = new CosmoAnthropicClient({ providerId: 'anthropic' }, makeLogger());
+  client.isOAuth = false;
+  client._initClient = async () => {};
+  client._resolveWireModel = async model => model;
+  client._performWebSearch = async () => { fallbackCalls += 1; return 'unexpected'; };
+  client.generateWithRetry = async () => { fallbackCalls += 1; return {}; };
+  client.anthropic = { messages: { stream: async () => {
+    controller.abort(reason);
+    throw new Error('ordinary provider failure after abort');
+  } } };
+
+  await assert.rejects(
+    () => client.generateWithWebSearch({
+      model: 'claude-sonnet-4-6', input: 'hello', maxOutputTokens: 256,
+      signal: controller.signal,
+    }),
+    error => error === reason,
+  );
+  assert.equal(fallbackCalls, 0);
+});
+
+test('Anthropic retry honors pre-abort and aborts during backoff by exact identity', async () => {
+  const preController = new AbortController();
+  const preReason = Object.assign(new Error('pre-cancelled'), { code: 'cancelled' });
+  preController.abort(preReason);
+  let preCalls = 0;
+  const preClient = Object.create(CosmoAnthropicClient.prototype);
+  preClient.logger = makeLogger();
+  preClient.generate = async () => { preCalls += 1; return {}; };
+  await assert.rejects(
+    () => preClient.generateWithRetry({ signal: preController.signal }),
+    error => error === preReason,
+  );
+  assert.equal(preCalls, 0);
+
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('operator cancelled'), { code: 'cancelled' });
+  const enteredBackoff = deferred();
+  let calls = 0;
+  const client = Object.create(CosmoAnthropicClient.prototype);
+  client.logger = {
+    ...makeLogger(),
+    warn(message) {
+      if (String(message).includes('Retry')) enteredBackoff.resolve();
+    },
+  };
+  client.generate = async () => {
+    calls += 1;
+    return {
+      status: 'partial', content: 'partial', terminalReceived: false,
+      hadError: true, error: { code: 'provider_incomplete', retryable: true },
+    };
+  };
+  const pending = client.generateWithRetry({ signal: controller.signal }, 3);
+  await enteredBackoff.promise;
+  controller.abort(reason);
+  await assert.rejects(pending, error => error === reason);
+  assert.equal(calls, 1);
 });

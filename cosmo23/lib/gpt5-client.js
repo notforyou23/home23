@@ -1,20 +1,41 @@
 const OpenAI = require('openai');
 const { getOpenAIClient } = require('./openai-client');
+const { normalizeProviderCompletion } = require('./provider-completion');
+const {
+  abortableDelay,
+  awaitWithCancellation,
+  reportProviderActivity,
+  requireMaxOutputTokens,
+  rethrowCancellation,
+  throwIfAborted,
+} = require('./provider-execution');
+
+function requireProviderId(value) {
+  const providerId = typeof value === 'string' ? value.trim() : '';
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(providerId)) {
+    throw Object.assign(new Error('Canonical providerId is required'), {
+      code: 'provider_model_mismatch', retryable: false,
+    });
+  }
+  return providerId;
+}
 
 /**
  * GPT-5.2 Responses API Client Wrapper
  * Uses OpenAI's new Responses API with GPT-5.2 models and tool support
  */
 class GPT5Client {
-  constructor(logger) {
+  constructor(logger, { providerId = 'openai', clientOptions = null } = {}) {
     this._client = null;  // Lazy-loaded
     this._clientChecked = false;
     this.logger = logger;
+    this.providerId = requireProviderId(providerId);
+    this.clientOptions = clientOptions;
   }
 
   get client() {
     if (!this._clientChecked) {
-      this._client = getOpenAIClient();
+      this._client = this.clientOptions ? new OpenAI(this.clientOptions) : getOpenAIClient();
       this._clientChecked = true;
     }
     return this._client;
@@ -34,18 +55,12 @@ class GPT5Client {
    * Proper implementation matching Cosmo's pattern
    */
   async generate(options = {}) {
-    if (!this.available) {
-      throw new Error('GPT5Client not available - no OPENAI_API_KEY configured');
-    }
-
     const {
       model = process.env.OPENAI_DEFAULT_MODEL || 'gpt-5.4-mini',
       instructions = '',
       messages = [],
       input = null,
-      max_output_tokens,
       maxOutputTokens,
-      maxTokens,
       tools = [],
       toolChoice,
       tool_choice,
@@ -58,13 +73,25 @@ class GPT5Client {
       previousResponseId = null,
       include = [],
       systemPrompt = null,
-      onChunk = null  // NEW (2026-01-21): Optional streaming callback for real-time chunks
+      onChunk = null,
+      onProviderActivity = null,
+      signal = null,
     } = options;
+
+    const outputTokens = requireMaxOutputTokens(
+      maxOutputTokens, this.providerId, model,
+    );
+    throwIfAborted(signal);
+    if (!this.available) {
+      throw new Error('GPT5Client not available - no OPENAI_API_KEY configured');
+    }
+    throwIfAborted(signal);
 
     // Build payload in Responses API format
     const payload = {
       model,
-      stream: true // Use streaming for GPT-5.2 Responses API
+      stream: true,
+      max_output_tokens: outputTokens,
     };
 
     // NEW: Support both input string (preferred for web search) and messages array
@@ -90,11 +117,6 @@ class GPT5Client {
       payload.instructions = systemPrompt.trim();
     } else if (instructions && instructions.trim().length > 0) {
       payload.instructions = instructions.trim();
-    }
-
-    const effectiveMaxTokens = max_output_tokens ?? maxOutputTokens ?? maxTokens ?? 2000;
-    if (effectiveMaxTokens) {
-      payload.max_output_tokens = effectiveMaxTokens;
     }
 
     // NEW: Add include parameter for sources
@@ -135,30 +157,42 @@ class GPT5Client {
 
     // Call streaming API
     try {
-      const stream = await this.client.responses.stream(payload);
+      const stream = await awaitWithCancellation(
+        () => this.client.responses.stream(payload, signal ? { signal } : undefined),
+        signal,
+      );
 
       let aggregatedText = '';
       let reasoningSummary = '';
       let finalResponse = null;
+      let terminalReceived = false;
+      let finishReason = null;
       let hadError = false;
-      let errorType = null;
+      let streamError = null;
       let webSearchSources = [];
       let citations = [];
 
       // Process streaming events
+      const iterator = stream[Symbol.asyncIterator]();
       try {
-        for await (const event of stream) {
+        while (true) {
+          const next = await awaitWithCancellation(() => iterator.next(), signal);
+          if (next.done) break;
+          const event = next.value;
+          reportProviderActivity(onProviderActivity, event);
           switch (event.type) {
             case 'response.created':
               finalResponse = event.response || finalResponse;
               break;
 
             case 'response.completed':
-              finalResponse = event.response;
+              terminalReceived = true;
+              finishReason = 'completed';
+              finalResponse = event.response || finalResponse;
               if (!aggregatedText || aggregatedText.length === 0) {
-                aggregatedText = this.extractTextFromResponse(event.response);
+                aggregatedText = this.extractTextFromResponse(finalResponse);
               }
-              const extracted = this.extractWebSearchData(event.response);
+              const extracted = this.extractWebSearchData(finalResponse);
               webSearchSources = extracted.sources;
               citations = extracted.citations;
               break;
@@ -190,83 +224,50 @@ class GPT5Client {
             case 'response.failed':
             case 'response.cancelled':
             case 'response.incomplete':
+              terminalReceived = true;
+              finishReason = event.type;
               this.logger?.warn?.('Response terminated abnormally', {
                 type: event.type,
                 error: event.error,
                 responseId: event.response?.id,
                 hasText: aggregatedText.length > 0
               });
-              hadError = true;
-              errorType = event.type;
+              hadError = event.type !== 'response.incomplete';
+              streamError = event.error || event.response?.error || null;
               if (event.response) {
                 finalResponse = event.response;
               }
               break;
           }
         }
-      } catch (streamError) {
+      } catch (error) {
+        rethrowCancellation(error, signal);
         this.logger?.error?.('Error during stream processing', { 
-          error: streamError.message,
+          error: error.message,
           hasPartialText: aggregatedText.length > 0
         });
+        hadError = true;
+        streamError = error;
       }
 
-      // Final fallback: if we still have no text, try extracting from response
-      if ((!aggregatedText || aggregatedText.length === 0) && finalResponse) {
-        this.logger?.warn?.('Using fallback text extraction', {
-          responseId: finalResponse.id
-        });
-        aggregatedText = this.extractTextFromResponse(finalResponse);
-      }
-
-      // CRITICAL FIX: If no text but we have reasoning, USE the reasoning as content
-      if ((!aggregatedText || aggregatedText.length === 0) && reasoningSummary && reasoningSummary.length > 0) {
-        this.logger?.info?.('Using reasoning as content (response.incomplete workaround)', {
-          responseId: finalResponse?.id,
-          reasoningLength: reasoningSummary.length
-        });
-        aggregatedText = reasoningSummary;
-        // Clear the reasoning field since we're using it as content
-        reasoningSummary = '';
-      }
-
-      // If we STILL have no content after all fallbacks, that's a real problem
-      if (!aggregatedText || aggregatedText.length === 0) {
-        const errorMsg = `No content received from ${model} (${errorType || 'unknown reason'})`;
-        this.logger?.error?.(errorMsg, {
-          model,
-          hadError,
-          errorType,
-          responseId: finalResponse?.id,
-          hadReasoning: Boolean(reasoningSummary)
-        });
-        // Return a meaningful error message instead of empty string
-        return {
-          content: `[Error: ${errorMsg}]`,
-          reasoning: reasoningSummary,
-          responseId: finalResponse?.id,
-          conversationId: finalResponse?.conversation?.id,
-          model: finalResponse?.model || model,
-          usage: finalResponse?.usage,
-          hadError: true,
-          errorType
-        };
-      }
-
-      return {
+      throwIfAborted(signal);
+      return normalizeProviderCompletion({
         content: aggregatedText,
         reasoning: reasoningSummary,
+        terminalReceived,
+        finishReason,
+        hadError,
+        error: streamError,
         responseId: finalResponse?.id,
-        conversationId: finalResponse?.conversation?.id,
+        provider: this.providerId,
         model: finalResponse?.model || model,
         usage: finalResponse?.usage,
-        hadError,
-        errorType: hadError ? errorType : null,
-        webSearchSources, // NEW: Return web search sources
-        citations, // NEW: Return URL citations
-        output: finalResponse?.output // CRITICAL: Pass through for code_interpreter file annotations
-      };
+        webSearchSources,
+        citations,
+        output: finalResponse?.output,
+      });
     } catch (error) {
+      rethrowCancellation(error, signal);
       this.logger?.error?.('GPT-5.2 API call failed', { 
         error: error.message,
         stack: error.stack 
@@ -281,38 +282,38 @@ class GPT5Client {
    */
   async generateWithRetry(options = {}, maxRetries = 3) {
     let lastError = null;
+    let lastResult = null;
     
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      rethrowCancellation(null, options.signal);
       try {
         const result = await this.generate(options);
-        
-        // If got valid content, success!
-        if (result.content && result.content.length > 10 && !result.content.includes('[Error:')) {
+        rethrowCancellation(null, options.signal);
+        lastResult = result;
+
+        if (result.status === 'complete') {
           if (attempt > 0) {
             this.logger?.info?.('Retry successful', { attempt: attempt + 1 });
           }
           return result;
         }
 
-        // If incomplete or error but we have retries left
-        if (result.hadError && attempt < maxRetries - 1) {
-          // For response.incomplete, use longer backoff since it might be a rate limit or overload issue
-          const baseBackoff = result.errorType === 'response.incomplete' ? 3000 : 1000;
+        if (attempt < maxRetries - 1) {
+          const baseBackoff = result.finishReason === 'response.incomplete' ? 3000 : 1000;
           const backoff = Math.pow(2, attempt) * baseBackoff;
           this.logger?.warn?.(`Response incomplete, retrying after ${backoff}ms (attempt ${attempt + 1}/${maxRetries})`, {
-            errorType: result.errorType,
+            errorType: result.error?.code,
             contentLength: result.content?.length || 0,
-            isIncomplete: result.errorType === 'response.incomplete'
+            isIncomplete: result.finishReason === 'response.incomplete'
           });
-
-          await new Promise(resolve => setTimeout(resolve, backoff));
+          await abortableDelay(backoff, options.signal);
+          rethrowCancellation(null, options.signal);
           continue;
         }
-        
-        // Last attempt or got some content
         return result;
         
       } catch (error) {
+        rethrowCancellation(error, options.signal);
         lastError = error;
 
         if (attempt < maxRetries - 1) {
@@ -324,12 +325,13 @@ class GPT5Client {
             isIncomplete: error.message?.includes('response.incomplete')
           });
 
-          await new Promise(resolve => setTimeout(resolve, backoff));
+          await abortableDelay(backoff, options.signal);
+          rethrowCancellation(null, options.signal);
         }
       }
     }
-    
-    // All retries exhausted
+
+    if (lastResult) return lastResult;
     this.logger?.error?.(`All ${maxRetries} retry attempts failed`);
     throw lastError || new Error('GPT-5.2 call failed after all retries');
   }
@@ -345,8 +347,6 @@ class GPT5Client {
     }
 
     const textParts = [];
-    const reasoningParts = [];
-    
     for (const item of response.output) {
       // Handle 'content' type (main text output)
       if (item.type === 'content' && Array.isArray(item.content)) {
@@ -363,14 +363,6 @@ class GPT5Client {
         } else if (Array.isArray(item.content)) {
           for (const part of item.content) {
             if (part.text) textParts.push(part.text);
-          }
-        }
-      }
-      // Handle 'reasoning' type separately
-      else if (item.type === 'reasoning' && Array.isArray(item.content)) {
-        for (const part of item.content) {
-          if (part.type === 'reasoning_text' && part.text) {
-            reasoningParts.push(part.text);
           }
         }
       }
@@ -404,17 +396,8 @@ class GPT5Client {
       return textParts.join('\n');
     }
     
-    // If no text but we have reasoning, use reasoning directly (don't wrap it)
-    // This handles response.incomplete where only reasoning was generated
-    if (reasoningParts.length > 0) {
-      this.logger?.debug?.('Using reasoning as text (no output_text received)', {
-        reasoningLength: reasoningParts.join('\n').length
-      });
-      return reasoningParts.join('\n');
-    }
-
     // Truly empty
-    if (textParts.length === 0 && reasoningParts.length === 0) {
+    if (textParts.length === 0) {
       this.logger?.warn?.('Empty text extraction', {
         outputItems: response.output?.length,
         outputTypes: response.output?.map(o => o.type)
@@ -532,7 +515,6 @@ class GPT5Client {
         ...(options.tools || [])
       ],
       reasoningEffort: 'low', // Efficient default - container operations benefit from speed
-      max_output_tokens: options.max_output_tokens || options.maxOutputTokens || options.maxTokens || 4000,
       include: ['web_search_call.action.sources']
     }, 3);
   }
@@ -545,7 +527,6 @@ class GPT5Client {
       ...options,
       reasoningEffort: 'medium', // Reduced from 'high' to prevent incomplete responses
       verbosity: 'medium',
-      max_output_tokens: options.max_output_tokens || options.maxOutputTokens || options.maxTokens || 6000
     }, 3);
   }
 
@@ -557,7 +538,6 @@ class GPT5Client {
       ...options,
       model: options.model || 'gpt-5.4-mini',
       reasoningEffort: 'low',
-      max_output_tokens: options.max_output_tokens || options.maxOutputTokens || options.maxTokens || 1000
     }, 3);
   }
 
@@ -713,9 +693,7 @@ class GPT5Client {
       code = '',
       messages = [],
       files = [],
-      max_output_tokens,
       maxOutputTokens,
-      maxTokens,
       reasoning,
       reasoningEffort,
       tools = [],
@@ -728,6 +706,12 @@ class GPT5Client {
     if (!containerId) {
       throw new Error('containerId is required for executeInContainer');
     }
+    const outputTokens = requireMaxOutputTokens(
+      maxOutputTokens,
+      this.providerId,
+      rest.model || process.env.OPENAI_DEFAULT_MODEL || 'gpt-5.4-mini',
+    );
+    throwIfAborted(options.signal);
 
     try {
       for (const file of files) {
@@ -770,10 +754,7 @@ class GPT5Client {
         requestPayload.parallel_tool_calls = parallel_tool_calls;
       }
 
-      const effectiveMaxTokens = max_output_tokens ?? maxOutputTokens ?? maxTokens;
-      if (effectiveMaxTokens) {
-        requestPayload.max_output_tokens = effectiveMaxTokens;
-      }
+      requestPayload.maxOutputTokens = outputTokens;
 
       const reasoningConfig = reasoning ?? (reasoningEffort ? { effort: reasoningEffort } : undefined);
       if (reasoningConfig) {
@@ -896,7 +877,6 @@ class GPT5Client {
         ...(options.tools || [])
       ],
       reasoningEffort: options.reasoningEffort || 'medium',
-      maxTokens: options.maxTokens || 6000
       // Note: code_interpreter results appear in response.output automatically
     }, 3);
   }

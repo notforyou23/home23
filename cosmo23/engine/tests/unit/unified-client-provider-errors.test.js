@@ -24,4 +24,16 @@ describe('UnifiedClient provider error notifications', () => {
       unsubscribe();
     }
   });
+
+  it('constructs every Chat Completions backend with an exact fixed provider id', () => {
+    const client = new UnifiedClient({
+      providers: {
+        local: { enabled: true },
+        'ollama-cloud': { enabled: true, apiKey: 'test-cloud-key' }
+      }
+    }, { info() {}, warn() {}, error() {}, debug() {} });
+
+    expect(client.localClient.config.providerId).to.equal('local');
+    expect(client.ollamaCloudClient.config.providerId).to.equal('ollama-cloud');
+  });
 });

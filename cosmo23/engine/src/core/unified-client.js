@@ -115,6 +115,7 @@ class UnifiedClient extends GPT5Client {
     if (this.config.providers?.local?.enabled || process.env.LLM_BACKEND === 'local') {
       const localConfig = this.config.providers?.local || {};
       this.localClient = new ChatCompletionsClient({
+        providerId: 'local',
         baseURL: localConfig.baseURL || process.env.LOCAL_LLM_BASE_URL,
         apiKey: localConfig.apiKey || process.env.LOCAL_LLM_API_KEY,
         modelMapping: localConfig.modelMapping,
@@ -130,6 +131,7 @@ class UnifiedClient extends GPT5Client {
     if (this.config.providers?.['ollama-cloud']?.enabled) {
       const cloudConfig = this.config.providers['ollama-cloud'];
       this.ollamaCloudClient = new ChatCompletionsClient({
+        providerId: 'ollama-cloud',
         baseURL: cloudConfig.baseURL || 'https://ollama.com/v1',
         apiKey: cloudConfig.apiKey || process.env.OLLAMA_CLOUD_API_KEY || 'ollama',
         defaultModel: cloudConfig.defaultModel || 'nemotron-3-super',

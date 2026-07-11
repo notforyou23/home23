@@ -27,10 +27,46 @@ function loadOpenAI() {
   }
 }
 
+const { normalizeProviderCompletion } = require('../../../lib/provider-completion');
+const {
+  abortableDelay,
+  awaitWithCancellation,
+  reportProviderActivity,
+  requireMaxOutputTokens,
+  rethrowCancellation,
+  throwIfAborted,
+} = require('../../../lib/provider-execution');
+
+function requireProviderId(value) {
+  const providerId = typeof value === 'string' ? value.trim() : '';
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(providerId)) {
+    throw Object.assign(new Error('Canonical providerId is required'), {
+      code: 'provider_model_mismatch', retryable: false,
+    });
+  }
+  return providerId;
+}
+
+function mergeToolCallDeltas(toolCalls, deltas) {
+  for (const delta of deltas) {
+    const index = Number.isInteger(delta.index) ? delta.index : 0;
+    if (!toolCalls[index]) {
+      toolCalls[index] = {
+        id: delta.id || `call_${index}`,
+        name: delta.function?.name || '',
+        arguments: '',
+      };
+    }
+    if (delta.id) toolCalls[index].id = delta.id;
+    if (delta.function?.name) toolCalls[index].name = delta.function.name;
+    if (delta.function?.arguments) toolCalls[index].arguments += delta.function.arguments;
+  }
+}
+
 class ChatCompletionsClient {
   constructor(config = {}, logger = null) {
     this.logger = logger;
-    this.config = config;
+    this.config = { ...config, providerId: requireProviderId(config.providerId) };
 
     // Get base URL from config or environment
     // Default to Ollama's OpenAI-compatible endpoint
@@ -89,8 +125,7 @@ class ChatCompletionsClient {
           tools: params.tools || [],
           tool_choice: params.tool_choice,
           temperature: params.temperature,
-          max_output_tokens: params.max_output_tokens,
-          maxTokens: params.max_output_tokens
+          maxOutputTokens: params.max_output_tokens,
         };
 
         // Use our generate method which returns GPT5Client-compatible format
@@ -276,9 +311,7 @@ class ChatCompletionsClient {
   async generate(options = {}) {
     const {
       model = 'gpt-5.5',
-      max_output_tokens,
       maxOutputTokens,
-      maxTokens,
       tools = [],
       toolChoice,
       tool_choice,
@@ -294,6 +327,9 @@ class ChatCompletionsClient {
       conversationId,
       include
     } = options;
+
+    requireMaxOutputTokens(maxOutputTokens, this.config.providerId, model);
+    throwIfAborted(options.signal);
 
     // Log unsupported options for debugging
     if (reasoning || reasoningEffort) {
@@ -316,12 +352,6 @@ class ChatCompletionsClient {
       stream: this.supportsStreaming
     };
 
-    // Add max_tokens
-    const effectiveMaxTokens = max_output_tokens ?? maxOutputTokens ?? maxTokens ?? 2000;
-    if (effectiveMaxTokens) {
-      payload.max_tokens = effectiveMaxTokens;
-    }
-
     // Add optional parameters
     if (temperature !== undefined) {
       payload.temperature = temperature;
@@ -343,22 +373,22 @@ class ChatCompletionsClient {
       model: mappedModel,
       originalModel: model,
       messageCount: messages.length,
-      maxTokens: effectiveMaxTokens,
+      maxTokens: maxOutputTokens,
       hasTools: transformedTools.length > 0,
       streaming: this.supportsStreaming
     });
 
     try {
-      if (this.supportsStreaming) {
-        return await this.generateStreaming(payload, model);
-      } else {
-        return await this.generateNonStreaming(payload, model);
-      }
+      throwIfAborted(options.signal);
+      return this.supportsStreaming
+        ? await this.generateStreaming(payload, model, options)
+        : await this.generateNonStreaming(payload, model, options);
     } catch (error) {
+      rethrowCancellation(error, options.signal);
       this.logger?.error?.('Chat Completions API call failed', {
         error: error.message,
         model: mappedModel,
-        baseURL: this.getClient().baseURL
+        baseURL: this.clientConfig.baseURL
       });
       throw error;
     }
@@ -367,122 +397,118 @@ class ChatCompletionsClient {
   /**
    * Generate with streaming (preferred method)
    */
-  async generateStreaming(payload, originalModel) {
-    const stream = await this.getClient().chat.completions.create(payload);
+  async generateStreaming(payload, originalModel, options = {}) {
+    const {
+      signal = null, onChunk = null, onProviderActivity = null,
+      maxOutputTokens = null,
+    } = options;
+    const requestPayload = {
+      ...payload,
+      max_tokens: requireMaxOutputTokens(
+        maxOutputTokens, this.config.providerId, originalModel,
+      ),
+    };
+    throwIfAborted(signal);
+    const stream = await awaitWithCancellation(
+      () => this.getClient().chat.completions.create(
+        requestPayload, signal ? { signal } : undefined,
+      ),
+      signal,
+    );
 
-    let aggregatedText = '';
-    let aggregatedReasoning = '';
-    let finalResponse = null;
+    let content = '';
+    let reasoning = '';
+    let terminalReceived = false;
+    let finishReason = null;
     let hadError = false;
-    let errorType = null;
-    let toolCalls = [];
+    let streamError = null;
+    const toolCalls = [];
+    let responseId = null;
+    let responseModel = requestPayload.model;
+    let usage = null;
 
+    const iterator = stream[Symbol.asyncIterator]();
     try {
-      for await (const chunk of stream) {
-        const delta = chunk.choices?.[0]?.delta;
-
-        if (delta?.content) {
-          aggregatedText += delta.content;
+      while (true) {
+        const next = await awaitWithCancellation(() => iterator.next(), signal);
+        if (next.done) break;
+        const chunk = next.value;
+        reportProviderActivity(onProviderActivity, { type: 'chat.completion.chunk' });
+        responseId = chunk.id || responseId;
+        responseModel = chunk.model || responseModel;
+        usage = chunk.usage || usage;
+        const choice = chunk.choices?.[0];
+        if (choice?.delta?.content) {
+          content += choice.delta.content;
+          onChunk?.({ type: 'chunk', text: choice.delta.content });
         }
-
-        // Thinking models (e.g. qwen3.5:9b) put output in delta.reasoning
-        // Accumulate as fallback — used if content stays empty
-        if (delta?.reasoning) {
-          aggregatedReasoning += delta.reasoning;
-        }
-
-        // Handle streaming tool calls
-        if (delta?.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            const idx = tc.index || 0;
-            if (!toolCalls[idx]) {
-              toolCalls[idx] = {
-                id: tc.id || `call_${idx}`,
-                name: tc.function?.name || '',
-                arguments: ''
-              };
-            }
-            if (tc.function?.name) {
-              toolCalls[idx].name = tc.function.name;
-            }
-            if (tc.function?.arguments) {
-              toolCalls[idx].arguments += tc.function.arguments;
-            }
-          }
-        }
-
-        // Check for finish reason
-        if (chunk.choices?.[0]?.finish_reason) {
-          finalResponse = {
-            id: chunk.id,
-            model: chunk.model,
-            usage: chunk.usage,
-            finishReason: chunk.choices[0].finish_reason
-          };
+        if (choice?.delta?.reasoning) reasoning += choice.delta.reasoning;
+        mergeToolCallDeltas(toolCalls, choice?.delta?.tool_calls || []);
+        if (choice?.finish_reason) {
+          terminalReceived = true;
+          finishReason = choice.finish_reason;
         }
       }
-    } catch (streamError) {
+    } catch (error) {
+      rethrowCancellation(error, signal);
       this.logger?.error?.('Error during stream processing', {
-        error: streamError.message,
-        hasPartialText: aggregatedText.length > 0
+        error: error.message,
+        hasPartialText: content.length > 0,
       });
       hadError = true;
-      errorType = 'stream_error';
+      streamError = error;
     }
 
-    // Thinking model fallback: if content is empty but reasoning has output, use reasoning
-    if (!aggregatedText && aggregatedReasoning) {
-      this.logger?.info?.('Using reasoning as content (thinking model — e.g. qwen3.5:9b)');
-      aggregatedText = aggregatedReasoning;
-    }
-
-    // Handle no content case
-    if (!aggregatedText && toolCalls.length === 0) {
-      this.logger?.warn?.('No content received from Chat Completions');
-      hadError = true;
-      errorType = 'no_content';
-    }
-
-    return this.formatResponse({
-      content: aggregatedText,
-      toolCalls,
-      responseId: finalResponse?.id,
-      model: finalResponse?.model || payload.model,
-      originalModel,
-      usage: finalResponse?.usage,
-      finishReason: finalResponse?.finishReason,
-      hadError,
-      errorType
+    if (!content && reasoning) content = reasoning;
+    throwIfAborted(signal);
+    return normalizeProviderCompletion({
+      content, terminalReceived, finishReason, hadError, error: streamError,
+      responseId, model: responseModel, provider: this.config.providerId,
+      usage: usage ? {
+        input_tokens: usage.prompt_tokens,
+        output_tokens: usage.completion_tokens,
+        total_tokens: usage.total_tokens,
+      } : null,
+      output: toolCalls.length ? toolCalls.map(toolCall => ({
+        type: 'function_call', id: toolCall.id,
+        name: toolCall.name, arguments: toolCall.arguments,
+      })) : null,
     });
   }
 
   /**
    * Generate without streaming (fallback)
    */
-  async generateNonStreaming(payload, originalModel) {
-    payload.stream = false;
-
-    const response = await this.getClient().chat.completions.create(payload);
+  async generateNonStreaming(payload, originalModel, options = {}) {
+    const requestPayload = {
+      ...payload,
+      stream: false,
+      max_tokens: requireMaxOutputTokens(
+        options.maxOutputTokens, this.config.providerId, originalModel,
+      ),
+    };
+    throwIfAborted(options.signal);
+    const response = await awaitWithCancellation(
+      () => this.getClient().chat.completions.create(
+        requestPayload, options.signal ? { signal: options.signal } : undefined,
+      ),
+      options.signal,
+    );
+    reportProviderActivity(options.onProviderActivity, { type: 'chat.completion' });
 
     const choice = response.choices?.[0];
     // Thinking models (e.g. qwen3.5:9b) return output in .reasoning, not .content
     const content = choice?.message?.content || choice?.message?.reasoning || '';
-    const toolCalls = choice?.message?.tool_calls?.map(tc => ({
-      id: tc.id,
-      name: tc.function?.name,
-      arguments: tc.function?.arguments
-    })) || [];
-
-    return this.formatResponse({
+    return normalizeProviderCompletion({
       content,
-      toolCalls,
-      responseId: response.id,
-      model: response.model,
-      originalModel,
-      usage: response.usage,
-      finishReason: choice?.finish_reason,
+      terminalReceived: Boolean(choice?.finish_reason),
+      finishReason: choice?.finish_reason || null,
       hadError: false,
-      errorType: null
+      responseId: response.id,
+      model: response.model || originalModel,
+      provider: this.config.providerId,
+      usage: response.usage,
+      output: choice?.message?.tool_calls || null,
     });
   }
 
@@ -541,34 +567,37 @@ class ChatCompletionsClient {
    */
   async generateWithRetry(options = {}, maxRetries = 3) {
     let lastError = null;
+    let lastResult = null;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      rethrowCancellation(null, options.signal);
       try {
         const result = await this.generate(options);
+        rethrowCancellation(null, options.signal);
+        lastResult = result;
 
-        // Success: got text content OR tool calls (tool-only responses are valid)
-        const hasContent = result.content && result.content.length > 10 && !result.content.includes('[Error:');
-        const hasToolCalls = result.output && result.output.length > 0;
-        if (hasContent || hasToolCalls) {
+        if (result.status === 'complete') {
           if (attempt > 0) {
             this.logger?.info?.('Retry successful', { attempt: attempt + 1 });
           }
           return result;
         }
 
-        if (result.hadError && attempt < maxRetries - 1) {
+        if (attempt < maxRetries - 1) {
           const backoff = Math.pow(2, attempt) * 1000;
           this.logger?.warn?.(`Response incomplete, retrying after ${backoff}ms`, {
             attempt: attempt + 1,
             maxRetries,
-            errorType: result.errorType
+            errorType: result.error?.code,
           });
-          await new Promise(resolve => setTimeout(resolve, backoff));
+          await abortableDelay(backoff, options.signal);
+          rethrowCancellation(null, options.signal);
           continue;
         }
 
         return result;
       } catch (error) {
+        rethrowCancellation(error, options.signal);
         lastError = error;
 
         if (attempt < maxRetries - 1) {
@@ -577,11 +606,13 @@ class ChatCompletionsClient {
             error: error.message,
             attempt: attempt + 1
           });
-          await new Promise(resolve => setTimeout(resolve, backoff));
+          await abortableDelay(backoff, options.signal);
+          rethrowCancellation(null, options.signal);
         }
       }
     }
 
+    if (lastResult) return lastResult;
     this.logger?.error?.(`All ${maxRetries} retry attempts failed`);
     throw lastError || new Error('Chat Completions call failed after all retries');
   }
@@ -594,7 +625,6 @@ class ChatCompletionsClient {
     return this.generateWithRetry({
       ...options,
       model,
-      maxTokens: options.maxTokens || 1000
     }, 3);
   }
 
@@ -606,7 +636,6 @@ class ChatCompletionsClient {
     this.logger?.debug?.('generateWithReasoning called - local LLMs use standard generation');
     return this.generateWithRetry({
       ...options,
-      maxTokens: options.maxTokens || 6000
     }, 3);
   }
 

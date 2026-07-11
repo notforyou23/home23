@@ -14,6 +14,25 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { getAnthropicApiKey, prepareSystemPrompt, isOAuthToken, getStealthHeaders } = require('../server/services/anthropic-oauth');
+const { normalizeProviderCompletion } = require('./provider-completion');
+const {
+  abortableDelay,
+  awaitWithCancellation,
+  reportProviderActivity,
+  requireMaxOutputTokens,
+  rethrowCancellation,
+  throwIfAborted,
+} = require('./provider-execution');
+
+function requireProviderId(value) {
+  const providerId = typeof value === 'string' ? value.trim() : '';
+  if (!/^[a-z0-9][a-z0-9._-]*$/.test(providerId)) {
+    throw Object.assign(new Error('Canonical providerId is required'), {
+      code: 'provider_model_mismatch', retryable: false,
+    });
+  }
+  return providerId;
+}
 
 // HOME23 PATCH — Claude Opus 4.8 rejects legacy sampling params such as
 // temperature and uses adaptive thinking instead of the older budgeted shape.
@@ -31,7 +50,9 @@ class AnthropicClient {
     this.logger = logger;
     this.config = config;
     this.anthropic = null;  // Lazy initialization
-    this.providerId = String(config.providerId || 'anthropic');
+    this.providerId = requireProviderId(config.providerId === undefined
+      ? 'anthropic'
+      : config.providerId);
     this.useOAuthService = this.providerId === 'anthropic' && config.useOAuthService !== false;
     this.isOAuth = Boolean(config.authToken && isOAuthToken(config.authToken));
     this._credentialsFetchedAt = 0;  // Track when credentials were obtained
@@ -172,9 +193,14 @@ class AnthropicClient {
    * @returns {Object} - GPT5Client-compatible response
    */
   async generate(options = {}) {
-    await this._initClient();
-
+    const signal = options.signal || null;
+    const model = this._getModelFromOptions(options);
+    const maxOutputTokens = requireMaxOutputTokens(
+      options.maxOutputTokens, this.providerId, model,
+    );
+    throwIfAborted(signal);
     try {
+      await awaitWithCancellation(() => this._initClient(), signal);
       // Extract system prompt from messages array if present (coordinators use this pattern)
       let systemPrompt = options.instructions;
       let messagesToUse = options.input || options.messages;
@@ -202,8 +228,9 @@ class AnthropicClient {
       const tools = options.tools ? this._transformTools(options.tools) : undefined;
 
       // Get model (with mapping)
-      const model = this._getModelFromOptions(options);
-      const wireModel = await this._resolveWireModel(model);
+      const wireModel = await awaitWithCancellation(
+        () => this._resolveWireModel(model), signal,
+      );
       const usesAdaptiveThinking = isAnthropicSamplingDeprecatedModel(wireModel);
 
       // Determine if extended thinking should be used
@@ -220,11 +247,9 @@ class AnthropicClient {
       }
 
       // Build API request
-      const requestedMaxTokens = options.max_output_tokens || options.maxOutputTokens || options.maxTokens;
-      const maxTokens = Math.min(requestedMaxTokens || this.defaultMaxTokens, this._getMaxTokensForModel(wireModel));
       const requestParams = {
         model: wireModel,
-        max_tokens: maxTokens,
+        max_tokens: maxOutputTokens,
         system: systemPrompt,
         messages,
         stream: true
@@ -267,8 +292,8 @@ class AnthropicClient {
         wireModel,
         temperature: usesAdaptiveThinking ? null : temperature,
         samplingParamsOmitted: usesAdaptiveThinking,
-        requestedMaxTokens: requestedMaxTokens || null,
-        maxTokens,
+        requestedMaxTokens: maxOutputTokens,
+        maxTokens: maxOutputTokens,
         hasTools: !!tools,
         toolCount: tools?.length || 0,
         messageCount: messages.length,
@@ -283,12 +308,19 @@ class AnthropicClient {
       }
 
       // Stream the response
-      const stream = await this.anthropic.messages.stream(requestParams);
+      throwIfAborted(signal);
+      const stream = await awaitWithCancellation(
+        () => this.anthropic.messages.stream(
+          requestParams, signal ? { signal } : undefined,
+        ),
+        signal,
+      );
 
       // Process streaming response
-      return await this._streamResponse(stream, options);
+      return await this._streamResponse(stream, { ...options, model });
 
     } catch (error) {
+      rethrowCancellation(error, signal);
       this.logger?.error?.('[AnthropicClient] Generation failed:', error.message);
       return this._buildErrorResponse(error);
     }
@@ -302,14 +334,13 @@ class AnthropicClient {
     let lastError = null;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
+      rethrowCancellation(null, options.signal);
       try {
         const result = await this.generate(options);
+        rethrowCancellation(null, options.signal);
         lastResult = result;
 
-        // Success: non-empty content without error, OR tool calls present
-        const hasContent = result.content && result.content.trim().length > 0 && !result.hadError;
-        const hasToolCalls = result.output && result.output.length > 0;
-        if (hasContent || hasToolCalls) {
+        if (result.status === 'complete') {
           if (attempt > 0) {
             this.logger?.info?.('[AnthropicClient] Retry successful', { attempt: attempt + 1 });
           }
@@ -326,7 +357,9 @@ class AnthropicClient {
             contentLength: result.content?.length || 0,
             errorType: result.errorType
           });
-          await new Promise(resolve => setTimeout(resolve, backoff));
+          rethrowCancellation(null, options.signal);
+          await abortableDelay(backoff, options.signal);
+          rethrowCancellation(null, options.signal);
           continue;
         }
 
@@ -341,6 +374,7 @@ class AnthropicClient {
         return result;
 
       } catch (error) {
+        rethrowCancellation(error, options.signal);
         lastError = error;
         this.logger?.error?.('[AnthropicClient] Exception during generation', {
           component: options.component,
@@ -353,7 +387,8 @@ class AnthropicClient {
           throw error;
         }
         const backoff = Math.pow(2, attempt) * 1000;
-        await new Promise(resolve => setTimeout(resolve, backoff));
+        await abortableDelay(backoff, options.signal);
+        rethrowCancellation(null, options.signal);
       }
     }
 
@@ -381,7 +416,6 @@ class AnthropicClient {
     return await this.generateWithRetry({
       ...options,
       reasoningEffort: 'none',  // Disable extended thinking
-      max_output_tokens: options.max_output_tokens || 1000
     }, 3);
   }
 
@@ -391,9 +425,14 @@ class AnthropicClient {
    * Falls back to DuckDuckGo if native search not available
    */
   async generateWithWebSearch(options = {}) {
-    await this._initClient();
-
+    const signal = options.signal || null;
+    const model = this._getModelFromOptions(options);
+    const maxOutputTokens = requireMaxOutputTokens(
+      options.maxOutputTokens, this.providerId, model,
+    );
+    throwIfAborted(signal);
     try {
+      await awaitWithCancellation(() => this._initClient(), signal);
       // Extract search query from input or messages (support both patterns)
       const inputOrMessages = options.input || options.messages;
       const query = options.query || (typeof inputOrMessages === 'string'
@@ -406,14 +445,15 @@ class AnthropicClient {
       const messages = this._transformInputToMessages(inputOrMessages || [{ role: 'user', content: query }]);
 
       // Get model
-      const model = this._getModelFromOptions(options);
-      const wireModel = await this._resolveWireModel(model);
+      const wireModel = await awaitWithCancellation(
+        () => this._resolveWireModel(model), signal,
+      );
       const samplingParamsOmitted = isAnthropicSamplingDeprecatedModel(wireModel);
 
       // Use Anthropic's native web_search tool
       const requestParams = {
         model: wireModel,
-        max_tokens: options.maxTokens || options.max_output_tokens || this.defaultMaxTokens,
+        max_tokens: maxOutputTokens,
         system: prepareSystemPrompt(options.instructions, this.isOAuth),
         messages,
         tools: [{
@@ -431,12 +471,18 @@ class AnthropicClient {
       this.logger?.info?.('[AnthropicClient] Using native web_search tool', { model, wireModel, query, samplingParamsOmitted });
 
       // Stream the response
-      const stream = await this.anthropic.messages.stream(requestParams);
+      const stream = await awaitWithCancellation(
+        () => this.anthropic.messages.stream(
+          requestParams, signal ? { signal } : undefined,
+        ),
+        signal,
+      );
 
       // Process streaming response (handles web_search_tool_result blocks)
-      return await this._streamResponseWithWebSearch(stream, options);
+      return await this._streamResponseWithWebSearch(stream, { ...options, model });
 
     } catch (error) {
+      rethrowCancellation(error, signal);
       this.logger?.error?.('[AnthropicClient] Native web search failed, trying DuckDuckGo fallback:', error.message);
 
       // Fallback to DuckDuckGo
@@ -447,7 +493,9 @@ class AnthropicClient {
           ? inputOrMessages
           : inputOrMessages?.[0]?.content || inputOrMessages?.[inputOrMessages.length - 1]?.content || '';
 
-        const searchResults = await this._performWebSearch(query);
+        const searchResults = await awaitWithCancellation(
+          () => this._performWebSearch(query), signal,
+        );
         const enhancedInstructions = options.instructions
           ? `${options.instructions}\n\nWeb Search Results:\n${searchResults}`
           : `Web Search Results:\n${searchResults}`;
@@ -457,6 +505,7 @@ class AnthropicClient {
           instructions: enhancedInstructions
         }, 3);
       } catch (fallbackError) {
+        rethrowCancellation(fallbackError, signal);
         this.logger?.error?.('[AnthropicClient] All web search methods failed:', fallbackError.message);
         return await this.generateWithRetry(options, 3);
       }
@@ -665,9 +714,20 @@ class AnthropicClient {
     let outputTokens = 0;
     let responseId = null;
     let model = null;
+    let terminalReceived = false;
+    let finishReason = null;
+    let hadError = false;
+    let streamError = null;
 
+    const iterator = stream[Symbol.asyncIterator]();
     try {
-      for await (const event of stream) {
+      while (true) {
+        const next = await awaitWithCancellation(
+          () => iterator.next(), options.signal,
+        );
+        if (next.done) break;
+        const event = next.value;
+        reportProviderActivity(options.onProviderActivity, event);
         // Message start - capture metadata
         if (event.type === 'message_start') {
           responseId = event.message?.id;
@@ -758,10 +818,12 @@ class AnthropicClient {
         // Message delta - update token counts
         else if (event.type === 'message_delta') {
           outputTokens += event.usage?.output_tokens || 0;
+          finishReason = event.delta?.stop_reason || finishReason;
         }
 
         // Message stop - completion
         else if (event.type === 'message_stop') {
+          terminalReceived = true;
           this.logger?.debug?.('[AnthropicClient] Stream complete');
         }
 
@@ -772,38 +834,28 @@ class AnthropicClient {
         }
       }
 
-      // Build GPT5Client-compatible response with web search data
-      const response = {
-        content: textContent,
-        reasoning: thinkingContent || null,
-        responseId,
-        model: model || this._getModelFromOptions(options),
-        usage: {
-          input_tokens: inputTokens,
-          output_tokens: outputTokens
-        },
-        output: toolCalls.length > 0 ? toolCalls : null,
-        hadError: false,
-        errorType: null
-      };
-
-      // Add web search data if present (matches OpenAI format)
-      if (webSearchSources.length > 0) {
-        response.webSearchSources = webSearchSources;
-        this.logger?.info?.('[AnthropicClient] Web search sources extracted:', webSearchSources.length);
-      }
-
-      if (citations.length > 0) {
-        response.citations = citations;
-        this.logger?.info?.('[AnthropicClient] Citations extracted:', citations.length);
-      }
-
-      return response;
-
     } catch (error) {
+      rethrowCancellation(error, options.signal);
       this.logger?.error?.('[AnthropicClient] Stream processing error:', error.message);
-      return this._buildErrorResponse(error);
+      hadError = true;
+      streamError = error;
     }
+
+    return normalizeProviderCompletion({
+      content: textContent,
+      reasoning: thinkingContent || null,
+      terminalReceived,
+      finishReason,
+      hadError,
+      error: streamError,
+      responseId,
+      model: model || this._getModelFromOptions(options),
+      provider: this.providerId,
+      usage: { input_tokens: inputTokens, output_tokens: outputTokens },
+      output: toolCalls.length ? toolCalls : null,
+      webSearchSources,
+      citations,
+    });
   }
 
   /**
@@ -978,27 +1030,19 @@ class AnthropicClient {
   }
 
   _getMaxTokensForModel(model) {
-    if (model.includes('haiku')) return 8192;
-    if (model.startsWith('claude-opus-4')) return 32000;
-    if (model.startsWith('claude-sonnet-4')) return 64000;
-    if (model.startsWith('claude-3-7-sonnet')) return 64000;
-    return 8192;
+    return requireMaxOutputTokens(
+      Number(this.config?.maxOutputTokens), this.providerId, model,
+    );
   }
 
   /**
    * Build error response (matches GPT5Client format)
    */
   _buildErrorResponse(error) {
-    return {
-      content: `[Error: ${error.message}]`,
-      reasoning: null,
-      responseId: null,
-      model: null,
-      usage: { input_tokens: 0, output_tokens: 0 },
-      output: null,
-      hadError: true,
-      errorType: error.type || 'unknown_error'
-    };
+    return normalizeProviderCompletion({
+      content: '', terminalReceived: false, hadError: true, error,
+      provider: this.providerId,
+    });
   }
 
   /**
