@@ -12,9 +12,21 @@ const {
 } = require('../../../shared/memory-source/scratch-quota.cjs');
 
 const SCHEMA_VERSION = 1;
+const MAX_METADATA_VALUE_BYTES = 128 * 1024;
+const METADATA_KEYS = Object.freeze([
+  'completeProjection',
+  'descriptorDigest',
+  'edgeCount',
+  'limits',
+  'nodeCount',
+  'pgsSweepModel',
+  'pgsSweepProvider',
+  'schemaVersion',
+  'sourceRevision',
+]);
 
-function typed(code, message, retryable = false) {
-  return Object.assign(new Error(message), { code, retryable });
+function typed(code, message, retryable = false, details = {}) {
+  return Object.assign(new Error(message), { code, retryable, ...details });
 }
 
 function throwIfAborted(signal) {
@@ -117,28 +129,229 @@ function requireDatabase() {
   }
 }
 
-async function assertConfinedScratch(scratchDir, scratchQuota) {
+function pathBoundaryError(message, cause) {
+  const error = typed('invalid_request', message);
+  if (cause) error.cause = cause;
+  return error;
+}
+
+function identityOf(stat) {
+  return Object.freeze({ dev: stat.dev, ino: stat.ino });
+}
+
+function sameIdentity(stat, expected) {
+  return Boolean(stat && expected && stat.dev === expected.dev && stat.ino === expected.ino);
+}
+
+function assertNoFollowSupport() {
+  if (!Number.isInteger(fs.constants.O_NOFOLLOW)
+      || !Number.isInteger(fs.constants.O_DIRECTORY)) {
+    throw pathBoundaryError('PGS requires no-follow filesystem operations');
+  }
+}
+
+async function lstatOptional(filePath) {
+  return fsp.lstat(filePath, { bigint: true }).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+}
+
+async function captureExactDirectory(directoryPath) {
+  let fd = null;
+  try {
+    const [stat, canonical] = await Promise.all([
+      fsp.lstat(directoryPath, { bigint: true }),
+      fsp.realpath(directoryPath),
+    ]);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || canonical !== directoryPath) {
+      throw pathBoundaryError('PGS scratch child is not an exact nonsymlink directory');
+    }
+    fd = fs.openSync(
+      directoryPath,
+      fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
+    );
+    const opened = fs.fstatSync(fd, { bigint: true });
+    if (!opened.isDirectory() || !sameIdentity(opened, identityOf(stat))) {
+      throw pathBoundaryError('PGS scratch child changed while opening');
+    }
+    return { path: directoryPath, identity: identityOf(stat), fd };
+  } catch (error) {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+    if (error?.code === 'invalid_request') throw error;
+    throw pathBoundaryError('PGS scratch child cannot be opened safely', error);
+  }
+}
+
+function verifyScratchBoundarySync(boundary) {
+  for (const capture of boundary.directories) {
+    let stat;
+    let opened;
+    let canonical;
+    try {
+      stat = fs.lstatSync(capture.path, { bigint: true });
+      opened = fs.fstatSync(capture.fd, { bigint: true });
+      canonical = fs.realpathSync(capture.path);
+    } catch (error) {
+      throw pathBoundaryError('PGS scratch directory identity changed', error);
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink() || canonical !== capture.path
+        || !opened.isDirectory() || !sameIdentity(stat, capture.identity)
+        || !sameIdentity(opened, capture.identity)) {
+      throw pathBoundaryError('PGS scratch directory identity changed');
+    }
+  }
+}
+
+async function verifyScratchBoundary(boundary, { cleanup = false } = {}) {
+  const authority = cleanup ? boundary.cleanupQuota : boundary.scratchQuota;
+  if (!authority || typeof authority.assertOperationRoot !== 'function') {
+    throw pathBoundaryError('PGS cleanup scratch authority is unavailable');
+  }
+  await authority.assertOperationRoot(boundary.operationRoot);
+  verifyScratchBoundarySync(boundary);
+  await authority.assertOperationRoot(boundary.operationRoot);
+}
+
+function closeScratchBoundary(boundary) {
+  if (!boundary || boundary.closed) return;
+  boundary.closed = true;
+  for (const capture of [...boundary.directories].reverse()) {
+    if (capture.fd === null) continue;
+    try { fs.closeSync(capture.fd); } catch {}
+    capture.fd = null;
+  }
+}
+
+async function captureOperationScratchBoundary(scratchDir, scratchQuota) {
+  assertNoFollowSupport();
   if (!scratchQuota || typeof scratchQuota !== 'object'
       || typeof scratchQuota.reconcile !== 'function'
+      || typeof scratchQuota.assertOperationRoot !== 'function'
       || typeof scratchQuota.operationRoot !== 'string') {
     throw typed('invalid_request', 'PGS requires the operation scratch quota');
   }
-  const operationRoot = await fsp.realpath(scratchQuota.operationRoot);
-  await fsp.mkdir(scratchDir, { recursive: true, mode: 0o700 });
-  const scratch = await fsp.realpath(scratchDir);
-  const relative = path.relative(operationRoot, scratch);
-  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw typed('invalid_request', 'PGS scratch directory must be beneath the operation root');
+  let operationRoot;
+  try {
+    operationRoot = await fsp.realpath(scratchQuota.operationRoot);
+  } catch (error) {
+    throw pathBoundaryError('PGS operation root is unavailable', error);
   }
-  let cursor = operationRoot;
-  for (const component of relative.split(path.sep)) {
-    cursor = path.join(cursor, component);
-    const stat = await fsp.lstat(cursor);
-    if (stat.isSymbolicLink() || !stat.isDirectory()) {
-      throw typed('invalid_request', 'PGS scratch path is not a stable directory');
+  await scratchQuota.assertOperationRoot(operationRoot);
+  const expectedScratch = path.join(operationRoot, 'scratch');
+  let canonicalScratch;
+  try {
+    canonicalScratch = await fsp.realpath(scratchDir);
+  } catch (error) {
+    throw pathBoundaryError('PGS scratch directory is unavailable', error);
+  }
+  if (canonicalScratch !== expectedScratch || path.normalize(scratchDir) !== scratchDir) {
+    throw pathBoundaryError('PGS scratch directory must be the exact operation scratch root');
+  }
+  const boundary = {
+    operationRoot,
+    scratch: expectedScratch,
+    scratchQuota,
+    cleanupQuota: null,
+    directories: [],
+    closed: false,
+  };
+  try {
+    try {
+      boundary.cleanupQuota = getOperationScratchQuotaCleanup(scratchQuota);
+    } catch {}
+    boundary.directories.push(await captureExactDirectory(operationRoot));
+    boundary.directories.push(await captureExactDirectory(expectedScratch));
+    await verifyScratchBoundary(boundary);
+    return boundary;
+  } catch (error) {
+    closeScratchBoundary(boundary);
+    throw error;
+  }
+}
+
+async function ensureExactScratchChild(boundary, parentCapture, basename, { create = true } = {}) {
+  if (!boundary || !parentCapture || typeof basename !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(basename)) {
+    throw pathBoundaryError('PGS scratch child name is invalid');
+  }
+  await verifyScratchBoundary(boundary);
+  const childPath = path.join(parentCapture.path, basename);
+  let stat = await lstatOptional(childPath);
+  let created = false;
+  if (stat === null) {
+    if (!create) return null;
+    try {
+      await fsp.mkdir(childPath, { recursive: false, mode: 0o700 });
+      fs.fsyncSync(parentCapture.fd);
+      created = true;
+    } catch (error) {
+      if (error.code !== 'EEXIST') {
+        throw pathBoundaryError('PGS scratch child cannot be created safely', error);
+      }
     }
+    stat = await lstatOptional(childPath);
   }
-  return { operationRoot, scratch };
+  if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw pathBoundaryError('PGS scratch child is not an exact nonsymlink directory');
+  }
+  const capture = await captureExactDirectory(childPath);
+  capture.created = created;
+  boundary.directories.push(capture);
+  await verifyScratchBoundary(boundary);
+  return capture;
+}
+
+function captureExactRegularFileSync(filePath, { create = false } = {}) {
+  let fd = null;
+  try {
+    const flags = create
+      ? fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW
+      : fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW;
+    fd = fs.openSync(filePath, flags, 0o600);
+    const opened = fs.fstatSync(fd, { bigint: true });
+    const stat = fs.lstatSync(filePath, { bigint: true });
+    if (!opened.isFile() || !stat.isFile() || stat.isSymbolicLink()
+        || opened.nlink !== 1n || stat.nlink !== 1n
+        || !sameIdentity(opened, identityOf(stat))
+        || fs.realpathSync(filePath) !== filePath) {
+      throw pathBoundaryError('PGS database is not an exact private regular file');
+    }
+    return { path: filePath, identity: identityOf(opened), fd };
+  } catch (error) {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+    if (error?.code === 'invalid_request') throw error;
+    throw pathBoundaryError('PGS database cannot be opened safely', error);
+  }
+}
+
+function verifyExactRegularFileSync(capture) {
+  let stat;
+  let opened;
+  let canonical;
+  try {
+    stat = fs.lstatSync(capture.path, { bigint: true });
+    opened = fs.fstatSync(capture.fd, { bigint: true });
+    canonical = fs.realpathSync(capture.path);
+  } catch (error) {
+    throw pathBoundaryError('PGS database identity changed', error);
+  }
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n
+      || !opened.isFile() || opened.nlink !== 1n || canonical !== capture.path
+      || !sameIdentity(stat, capture.identity) || !sameIdentity(opened, capture.identity)) {
+    throw pathBoundaryError('PGS database identity changed');
+  }
+  return stat;
+}
+
+function closeRegularFileCapture(capture) {
+  if (!capture || capture.fd === null) return;
+  try { fs.closeSync(capture.fd); } catch {}
+  capture.fd = null;
 }
 
 async function assertFreeSpace(directory, minimum, statfsImpl) {
@@ -194,9 +407,40 @@ function createSchema(db) {
 }
 
 function metadataObject(db) {
+  let rows;
+  try {
+    rows = db.prepare(`
+      SELECT
+        substr(CAST(key AS BLOB), 1, 257) AS key_prefix,
+        length(CAST(key AS BLOB)) AS key_bytes,
+        substr(CAST(value AS BLOB), 1, ?) AS value_prefix,
+        length(CAST(value AS BLOB)) AS value_bytes
+      FROM metadata LIMIT ?
+    `).all(MAX_METADATA_VALUE_BYTES + 1, METADATA_KEYS.length + 1);
+  } catch (cause) {
+    throw typed('pgs_projection_invalid', 'PGS projection metadata is unreadable', false, { cause });
+  }
+  if (rows.length !== METADATA_KEYS.length) {
+    throw typed('pgs_projection_invalid', 'PGS projection metadata shape is invalid');
+  }
   const result = {};
-  for (const row of db.prepare('SELECT key, value FROM metadata').all()) {
-    result[row.key] = JSON.parse(row.value);
+  try {
+    for (const row of rows) {
+      if (!Number.isSafeInteger(row.key_bytes) || row.key_bytes < 1 || row.key_bytes > 256
+          || !Number.isSafeInteger(row.value_bytes) || row.value_bytes < 1
+          || row.value_bytes > MAX_METADATA_VALUE_BYTES
+          || !Buffer.isBuffer(row.key_prefix) || !Buffer.isBuffer(row.value_prefix)) {
+        throw new Error('metadata field exceeds its bound');
+      }
+      const key = row.key_prefix.toString('utf8');
+      if (Object.hasOwn(result, key)) throw new Error('duplicate metadata key');
+      result[key] = JSON.parse(row.value_prefix.toString('utf8'));
+    }
+  } catch (cause) {
+    throw typed('pgs_projection_invalid', 'PGS projection metadata is invalid', false, { cause });
+  }
+  if (Object.keys(result).sort().join('\0') !== METADATA_KEYS.join('\0')) {
+    throw typed('pgs_projection_invalid', 'PGS projection metadata keys are invalid');
   }
   return result;
 }
@@ -220,24 +464,9 @@ function sameBinding(actual, expected) {
   ]) {
     if (actual[key] !== expected[key]) return false;
   }
+  if (!Number.isSafeInteger(actual.nodeCount) || actual.nodeCount < 0
+      || !Number.isSafeInteger(actual.edgeCount) || actual.edgeCount < 0) return false;
   return JSON.stringify(actual.limits) === JSON.stringify(expected.limits);
-}
-
-async function treeBytes(root) {
-  let total = 0;
-  async function visit(directory) {
-    for (const entry of await fsp.readdir(directory, { withFileTypes: true }).catch(() => [])) {
-      const target = path.join(directory, entry.name);
-      const stat = await fsp.lstat(target);
-      if (stat.isSymbolicLink()) throw typed('invalid_request', 'PGS scratch contains a symbolic link');
-      if (stat.isDirectory()) await visit(target);
-      else if (stat.isFile()) total += stat.size;
-      else throw typed('invalid_request', 'PGS scratch contains an unsupported entry');
-      if (!Number.isSafeInteger(total)) throw typed('result_too_large', 'PGS scratch size overflow');
-    }
-  }
-  await visit(root);
-  return total;
 }
 
 async function openPinnedPGSStore({
@@ -262,77 +491,199 @@ async function openPinnedPGSStore({
   const sweepPair = exactPair(pgsSweep, 'pgsSweep');
   const limits = lowerLimits(limitOverrides);
   throwIfAborted(signal);
-  const { scratch } = await assertConfinedScratch(scratchDir, scratchQuota);
-  await assertFreeSpace(scratch, limits.minFreeScratchBytes, statfsImpl);
-  throwIfAborted(signal);
-
   const descriptorDigest = sourceDescriptorDigest(sourcePin.descriptor);
   const component = `${descriptorDigest}-r${sourceRevision}`;
-  const projectionRoot = path.join(scratch, 'pgs', component);
+  const boundary = await captureOperationScratchBoundary(scratchDir, scratchQuota);
+  const { scratch } = boundary;
+  const scratchAnchor = boundary.directories.at(-1);
+  let pgsAnchor;
+  let projectionAnchor;
+  try {
+    await assertFreeSpace(scratch, limits.minFreeScratchBytes, statfsImpl);
+    throwIfAborted(signal);
+    pgsAnchor = await ensureExactScratchChild(boundary, scratchAnchor, 'pgs');
+    projectionAnchor = await ensureExactScratchChild(boundary, pgsAnchor, component);
+  } catch (error) {
+    closeScratchBoundary(boundary);
+    throw error;
+  }
+  const pgsRoot = pgsAnchor.path;
+  const projectionRoot = projectionAnchor.path;
   const databasePath = path.join(projectionRoot, 'projection.sqlite');
   const Database = requireDatabase();
   const expectedBinding = bindingMetadata({ sourceRevision, descriptorDigest, limits, sweepPair });
   const scratchQuotaCleanup = getOperationScratchQuotaCleanup(scratchQuota);
   let db = null;
+  let databaseAnchor = null;
   let abortListener = null;
   let reused = false;
+  let projectionMayClean = projectionAnchor.created === true;
   let buildStats = { maxTransactionRecords: 0, maxTransactionBytes: 0, maxRetainedRecords: 0 };
 
-  async function closeDb() {
+  function closeDb({ closeAnchor = false } = {}) {
     if (abortListener) signal?.removeEventListener('abort', abortListener);
     abortListener = null;
     if (db?.open) db.close();
     db = null;
+    if (closeAnchor) {
+      closeRegularFileCapture(databaseAnchor);
+      databaseAnchor = null;
+    }
   }
 
-  async function removeProjection() {
-    await closeDb();
-    await fsp.rm(projectionRoot, { recursive: true, force: true });
+  function configureDb() {
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = FULL');
+    db.pragma('temp_store = MEMORY');
+    db.pragma('foreign_keys = ON');
+    db.pragma('busy_timeout = 5000');
+    abortListener = () => { try { db?.interrupt(); } catch {} };
+    signal?.addEventListener('abort', abortListener, { once: true });
+  }
+
+  async function removeExactCapturedDirectory(capture, parentCapture) {
+    await verifyScratchBoundary(boundary, { cleanup: true });
+    const entries = await fsp.readdir(capture.path);
+    for (const name of entries.sort()) {
+      const target = path.join(capture.path, name);
+      let fd = null;
+      try {
+        const before = await fsp.lstat(target, { bigint: true });
+        if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
+          throw pathBoundaryError('PGS cleanup found an unowned projection entry');
+        }
+        fd = fs.openSync(target, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        const opened = fs.fstatSync(fd, { bigint: true });
+        if (!opened.isFile() || opened.nlink !== 1n
+            || !sameIdentity(opened, identityOf(before))) {
+          throw pathBoundaryError('PGS cleanup projection entry changed while opening');
+        }
+        const latest = await fsp.lstat(target, { bigint: true });
+        if (!latest.isFile() || latest.isSymbolicLink() || latest.nlink !== 1n
+            || !sameIdentity(latest, identityOf(before))) {
+          throw pathBoundaryError('PGS cleanup projection entry identity changed');
+        }
+        await fsp.unlink(target);
+      } finally {
+        if (fd !== null) {
+          try { fs.closeSync(fd); } catch {}
+        }
+      }
+    }
+    fs.fsyncSync(capture.fd);
+    await verifyScratchBoundary(boundary, { cleanup: true });
+    const index = boundary.directories.indexOf(capture);
+    await fsp.rmdir(capture.path);
+    closeRegularFileCapture(capture);
+    if (index >= 0) boundary.directories.splice(index, 1);
+    fs.fsyncSync(parentCapture.fd);
+    await verifyScratchBoundary(boundary, { cleanup: true });
+  }
+
+  async function removeProjection({ recreate = false } = {}) {
+    closeDb({ closeAnchor: true });
+    await verifyScratchBoundary(boundary, { cleanup: true });
+    if (projectionAnchor && !projectionAnchor.removed) {
+      const quarantine = path.join(pgsRoot, `.remove-${component}-${crypto.randomUUID()}`);
+      if (await lstatOptional(quarantine) !== null) {
+        throw pathBoundaryError('PGS cleanup quarantine already exists');
+      }
+      await fsp.rename(projectionAnchor.path, quarantine);
+      projectionAnchor.path = quarantine;
+      await verifyScratchBoundary(boundary, { cleanup: true });
+      await removeExactCapturedDirectory(projectionAnchor, pgsAnchor);
+      projectionAnchor.removed = true;
+    }
+    if (recreate) {
+      projectionAnchor = await ensureExactScratchChild(boundary, pgsAnchor, component);
+      projectionMayClean = true;
+    }
   }
 
   async function checkpoint({ cleanup = false } = {}) {
     if (!cleanup) throwIfAborted(signal);
+    await verifyScratchBoundary(boundary, { cleanup });
+    verifyExactRegularFileSync(databaseAnchor);
     db.pragma('wal_checkpoint(PASSIVE)');
-    await (cleanup ? scratchQuotaCleanup.reconcile() : scratchQuota.reconcile());
-    const bytes = await treeBytes(scratch);
-    if (bytes > limits.maxScratchBytes) {
+    const bytes = await (cleanup ? scratchQuotaCleanup.reconcile() : scratchQuota.reconcile());
+    await verifyScratchBoundary(boundary, { cleanup });
+    verifyExactRegularFileSync(databaseAnchor);
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > limits.maxScratchBytes) {
       throw typed('result_too_large', 'PGS scratch quota exceeded');
     }
     await assertFreeSpace(scratch, limits.minFreeScratchBytes, statfsImpl);
     if (!cleanup) throwIfAborted(signal);
   }
 
-  try {
-    const existingStat = await fsp.lstat(databasePath).catch((error) => {
-      if (error.code === 'ENOENT') return null;
-      throw error;
-    });
-    if (existingStat) {
-      if (existingStat.isSymbolicLink() || !existingStat.isFile()) {
-        throw typed('invalid_request', 'PGS database is not a regular file');
+  async function openAnchoredDatabase() {
+    await verifyScratchBoundary(boundary);
+    verifyExactRegularFileSync(databaseAnchor);
+    db = new Database(databaseAnchor.path, { fileMustExist: true });
+    verifyExactRegularFileSync(databaseAnchor);
+    await verifyScratchBoundary(boundary);
+  }
+
+  async function publishNewDatabase() {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+    closeDb();
+    await verifyScratchBoundary(boundary);
+    verifyExactRegularFileSync(databaseAnchor);
+    if (await lstatOptional(databasePath) !== null) {
+      throw pathBoundaryError('PGS database appeared before publication');
+    }
+    await fsp.rename(databaseAnchor.path, databasePath);
+    databaseAnchor.path = databasePath;
+    verifyExactRegularFileSync(databaseAnchor);
+    fs.fsyncSync(projectionAnchor.fd);
+    const readback = captureExactRegularFileSync(databasePath);
+    try {
+      if (!sameIdentity(
+        { dev: readback.identity.dev, ino: readback.identity.ino },
+        databaseAnchor.identity,
+      )) {
+        throw pathBoundaryError('PGS database readback identity changed');
       }
-      db = new Database(databasePath, { fileMustExist: true });
-      const actual = metadataObject(db);
-      if (sameBinding(actual, expectedBinding)) {
+      verifyExactRegularFileSync(readback);
+    } finally {
+      closeRegularFileCapture(readback);
+    }
+    await openAnchoredDatabase();
+    configureDb();
+    await checkpoint();
+  }
+
+  try {
+    const existingStat = await lstatOptional(databasePath);
+    if (existingStat) {
+      databaseAnchor = captureExactRegularFileSync(databasePath);
+      projectionMayClean = true;
+      let bindingMatches = false;
+      try {
+        await openAnchoredDatabase();
+        bindingMatches = sameBinding(metadataObject(db), expectedBinding);
+      } catch (error) {
+        if (error?.code === 'invalid_request') throw error;
+      }
+      if (bindingMatches) {
         reused = true;
+        projectionMayClean = false;
       } else {
-        await removeProjection();
+        await removeProjection({ recreate: true });
       }
     }
 
     if (!reused) {
-      await fsp.mkdir(projectionRoot, { recursive: true, mode: 0o700 });
-      db = new Database(databasePath);
-      db.pragma('journal_mode = WAL');
-      db.pragma('synchronous = FULL');
-      db.pragma('temp_store = MEMORY');
-      db.pragma('foreign_keys = ON');
-      db.pragma('busy_timeout = 5000');
+      projectionMayClean = true;
+      const workingDatabasePath = path.join(
+        projectionRoot,
+        `.projection.sqlite.${process.pid}.${crypto.randomUUID()}.tmp`,
+      );
+      databaseAnchor = captureExactRegularFileSync(workingDatabasePath, { create: true });
+      await openAnchoredDatabase();
+      configureDb();
       const pageSize = db.pragma('page_size', { simple: true });
       db.pragma(`max_page_count = ${Math.max(1, Math.floor(limits.maxScratchBytes / pageSize))}`);
       createSchema(db);
-      abortListener = () => { try { db?.interrupt(); } catch {} };
-      signal?.addEventListener('abort', abortListener, { once: true });
 
       const insertNode = db.prepare(
         'INSERT INTO nodes(id, partition_id, ordinal, json) VALUES (?, ?, ?, ?)',
@@ -479,19 +830,16 @@ async function openPinnedPGSStore({
         upsertMetadata.run('completeProjection', JSON.stringify(true));
       })();
       await checkpoint();
+      await publishNewDatabase();
     } else {
-      db.pragma('journal_mode = WAL');
-      db.pragma('synchronous = FULL');
-      db.pragma('temp_store = MEMORY');
-      db.pragma('foreign_keys = ON');
-      db.pragma('busy_timeout = 5000');
-      abortListener = () => { try { db?.interrupt(); } catch {} };
-      signal?.addEventListener('abort', abortListener, { once: true });
+      configureDb();
       await checkpoint();
     }
   } catch (error) {
     const cancellation = signal?.aborted ? signal.reason : null;
-    await removeProjection().catch(() => {});
+    if (projectionMayClean) await removeProjection().catch(() => {});
+    else closeDb({ closeAnchor: true });
+    closeScratchBoundary(boundary);
     if (cancellation) throw cancellation;
     throw error;
   }
@@ -500,6 +848,8 @@ async function openPinnedPGSStore({
   let closed = false;
   function assertOpen() {
     if (closed || !db?.open) throw typed('pgs_store_closed', 'PGS store is closed');
+    verifyScratchBoundarySync(boundary);
+    verifyExactRegularFileSync(databaseAnchor);
   }
 
   function validateAttemptId(value) {
@@ -704,13 +1054,21 @@ async function openPinnedPGSStore({
       abortListener = null;
       if (db?.open) db.close();
       db = null;
+      closeRegularFileCapture(databaseAnchor);
+      databaseAnchor = null;
+      closeScratchBoundary(boundary);
     },
   };
   return Object.freeze(api);
 }
 
 module.exports = {
+  captureOperationScratchBoundary,
+  closeScratchBoundary,
+  ensureExactScratchChild,
   lowerLimits,
   openPinnedPGSStore,
   partitionIdForNode,
+  verifyScratchBoundary,
+  verifyScratchBoundarySync,
 };

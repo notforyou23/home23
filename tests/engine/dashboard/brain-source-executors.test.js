@@ -201,6 +201,110 @@ test('graph export enforces requester operation scratch when home root is config
   );
 });
 
+test('graph export rejects a symlinked results directory without writing outside scratch', async t => {
+  const { home23Root, context } = await operationScratchContext();
+  const outside = await tempDir('home23-forged-results-');
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(outside, { recursive: true, force: true }),
+  ]));
+  await fsp.symlink(outside, path.join(context.scratchDir, 'results'));
+
+  await assert.rejects(
+    () => createGraphExportExecutor({ home23Root })({
+      ...context,
+      parameters: { format: 'jsonl' },
+      identity: canonicalIdentity(context),
+    }),
+    { code: 'invalid_request' },
+  );
+  assert.deepEqual(await fsp.readdir(outside), []);
+});
+
+test('graph export refuses to replace a pre-existing operation artifact', async t => {
+  const { home23Root, context } = await operationScratchContext();
+  t.after(() => fsp.rm(home23Root, { recursive: true, force: true }));
+  const resultsDir = path.join(context.scratchDir, 'results');
+  const destination = path.join(resultsDir, `graph-${context.operationId}.jsonl`);
+  await fsp.mkdir(resultsDir, { recursive: false });
+  await fsp.writeFile(destination, 'pre-existing artifact\n');
+
+  await assert.rejects(
+    () => createGraphExportExecutor({ home23Root })({
+      ...context,
+      parameters: { format: 'jsonl' },
+      identity: canonicalIdentity(context),
+    }),
+    { code: 'invalid_request' },
+  );
+  assert.equal(await fsp.readFile(destination, 'utf8'), 'pre-existing artifact\n');
+});
+
+test('graph export rejects a temporary artifact with an outside hard link', async t => {
+  const { home23Root, context } = await operationScratchContext();
+  const outside = await tempDir('home23-export-hardlink-');
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(outside, { recursive: true, force: true }),
+  ]));
+  const pin = sourcePin(context.target.canonicalRoot);
+  pin.iterateNodes = async function* iterateNodes() {
+    const resultsDir = path.join(context.scratchDir, 'results');
+    const [temporary] = (await fsp.readdir(resultsDir)).filter(name => name.endsWith('.tmp'));
+    assert.ok(temporary);
+    await fsp.link(path.join(resultsDir, temporary), path.join(outside, 'linked-artifact'));
+    yield { id: 'a', concept: 'alpha' };
+  };
+
+  await assert.rejects(
+    () => createGraphExportExecutor({ home23Root })({
+      ...context,
+      sourcePin: pin,
+      parameters: { format: 'jsonl' },
+      identity: canonicalIdentity({ ...context, sourcePin: pin }),
+    }),
+    { code: 'invalid_request' },
+  );
+  assert.deepEqual(await fsp.readdir(path.join(context.scratchDir, 'results')), []);
+  assert.equal((await fsp.lstat(path.join(outside, 'linked-artifact'))).isFile(), true);
+});
+
+test('graph export retains its quota claim when cleanup cannot prove artifact removal', async t => {
+  const { home23Root, context } = await operationScratchContext();
+  t.after(() => fsp.rm(home23Root, { recursive: true, force: true }));
+  const originalUnlink = fsp.unlink;
+  let injectedReplacement = false;
+  fsp.unlink = async target => {
+    await originalUnlink(target);
+    if (!injectedReplacement && target.endsWith('.tmp')) {
+      injectedReplacement = true;
+      const destination = target.slice(0, -4);
+      await originalUnlink(destination);
+      await fsp.writeFile(destination, 'replacement artifact\n');
+    }
+  };
+
+  try {
+    await assert.rejects(
+      () => createGraphExportExecutor({ home23Root })({
+        ...context,
+        parameters: { format: 'jsonl' },
+        identity: canonicalIdentity(context),
+      }),
+      { code: 'invalid_request' },
+    );
+  } finally {
+    fsp.unlink = originalUnlink;
+  }
+
+  assert.equal(injectedReplacement, true);
+  assert.equal(context.scratchQuota.claimed > 0, true);
+  const destination = path.join(
+    context.scratchDir, 'results', `graph-${context.operationId}.jsonl`,
+  );
+  assert.equal(await fsp.readFile(destination, 'utf8'), 'replacement artifact\n');
+});
+
 test('graph export removes partial output and releases quota on abort', async () => {
   const context = await baseContext();
   const controller = new AbortController();

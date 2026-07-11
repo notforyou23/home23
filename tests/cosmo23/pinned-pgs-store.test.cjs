@@ -5,10 +5,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const Database = require('better-sqlite3');
 
 const {
   createOperationScratchQuota,
 } = require('../../shared/memory-source/scratch-quota.cjs');
+const {
+  sourceDescriptorDigest,
+} = require('../../shared/memory-source/contracts.cjs');
 const {
   openPinnedPGSStore,
 } = require('../../cosmo23/pgs-engine/src/pinned-store');
@@ -114,6 +118,60 @@ test('streams a revision-bound projection and creates deterministic bounded work
   assert.match(unit.workUnitId, /^p-c-cluster-[0-2]-u\d{4}$/);
 });
 
+test('rejects a symlinked PGS directory without touching its outside target', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'home23-pgs-store-outside-'));
+  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+  const sourcePin = syntheticSource({ nodeCount: 1, edgeCount: 0 });
+  const component = `${sourceDescriptorDigest(sourcePin.descriptor)}-r${sourcePin.revision}`;
+  const outsideComponent = path.join(outside, component);
+  const canary = path.join(outsideComponent, 'keep.txt');
+  await fs.mkdir(outsideComponent, { recursive: true });
+  await fs.writeFile(canary, 'outside content must survive\n');
+  await fs.symlink(outside, path.join(scratchDir, 'pgs'));
+
+  await assert.rejects(
+    () => openPinnedPGSStore({
+      sourcePin,
+      scratchDir,
+      scratchQuota: quota,
+      pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+      signal: new AbortController().signal,
+      limits,
+    }),
+    { code: 'invalid_request' },
+  );
+  assert.equal(await fs.readFile(canary, 'utf8'), 'outside content must survive\n');
+  assert.deepEqual(await fs.readdir(outsideComponent), ['keep.txt']);
+});
+
+test('rejects a symlinked revision directory without touching its outside target', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'home23-pgs-revision-outside-'));
+  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+  const sourcePin = syntheticSource({ nodeCount: 1, edgeCount: 0 });
+  const component = `${sourceDescriptorDigest(sourcePin.descriptor)}-r${sourcePin.revision}`;
+  const pgsRoot = path.join(scratchDir, 'pgs');
+  const canary = path.join(outside, 'keep.txt');
+  await fs.mkdir(pgsRoot);
+  await fs.writeFile(canary, 'outside content must survive\n');
+  await fs.symlink(outside, path.join(pgsRoot, component));
+
+  await assert.rejects(
+    () => openPinnedPGSStore({
+      sourcePin,
+      scratchDir,
+      scratchQuota: quota,
+      pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+      signal: new AbortController().signal,
+      limits,
+    }),
+    { code: 'invalid_request' },
+  );
+  assert.equal(await fs.readFile(canary, 'utf8'), 'outside content must survive\n');
+  assert.deepEqual(await fs.readdir(outside), ['keep.txt']);
+});
+
 test('persists successful work idempotently and leaves failed work pending', async t => {
   const { scratchDir, quota } = await fixture(t);
   const store = await openPinnedPGSStore({
@@ -169,6 +227,36 @@ test('reuses only an exact source revision, limits, and sweep pair', async t => 
   });
   assert.equal(changed.reused, false);
   changed.close();
+});
+
+test('rebuilds boundedly when durable projection metadata has an unexpected oversized field', async t => {
+  const { scratchDir, quota } = await fixture(t);
+  const options = {
+    sourcePin: syntheticSource({ nodeCount: 20, edgeCount: 19 }),
+    scratchDir,
+    scratchQuota: quota,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    signal: new AbortController().signal,
+    limits,
+  };
+  const first = await openPinnedPGSStore(options);
+  const { databasePath } = first;
+  first.close();
+  const database = new Database(databasePath);
+  database.prepare('INSERT INTO metadata(key, value) VALUES (?, ?)').run(
+    'unexpected', JSON.stringify('x'.repeat(512 * 1024)),
+  );
+  database.close();
+
+  const rebuilt = await openPinnedPGSStore(options);
+  assert.equal(rebuilt.reused, false);
+  rebuilt.close();
+  const readback = new Database(databasePath, { readonly: true });
+  assert.equal(
+    readback.prepare("SELECT COUNT(*) AS count FROM metadata WHERE key = 'unexpected'").get().count,
+    0,
+  );
+  readback.close();
 });
 
 test('oversized records and cancellation remove an incomplete projection', async t => {
