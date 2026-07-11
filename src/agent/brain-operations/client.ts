@@ -685,11 +685,15 @@ export class BrainOperationsClient {
         }
 
         if (recoveryEvent) {
+          let bodyCloseFailed = false;
           try {
             await response.body?.cancel(
               operationEventIsGap(recoveryEvent) ? 'event_gap_reconnect' : 'terminal_status_refresh',
             );
           } catch {
+            bodyCloseFailed = true;
+          }
+          if (bodyCloseFailed && operationEventIsGap(recoveryEvent)) {
             return detachLast('event_body_close_failed');
           }
           if (operationEventIsGap(recoveryEvent)) {

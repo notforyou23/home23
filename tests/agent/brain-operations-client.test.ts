@@ -1005,6 +1005,63 @@ test('SSE connect/header deadline detaches only when the bounded status read als
   assert.equal(detachCalls, 1);
 });
 
+test('terminal status remains authoritative when closing the completed SSE body fails', async () => {
+  let streamController!: ReadableStreamDefaultController<Uint8Array>;
+  let cancelCalls = 0;
+  let detachCalls = 0;
+  const streamOpened = deferred<void>();
+  const complete = record('op-terminal-close-failure', 1, 'complete', {
+    answer: 'terminal survives transport cleanup',
+  });
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) { streamController = controller; },
+    cancel() {
+      cancelCalls += 1;
+      throw Object.assign(new Error('stream cleanup failed'), { code: 'stream_cleanup_failed' });
+    },
+  });
+  const fetchImpl: typeof fetch = async (url, init) => {
+    const parsed = new URL(String(url));
+    if (init?.method === 'POST' && parsed.pathname.endsWith('/detach')) {
+      detachCalls += 1;
+      return new Response(JSON.stringify(complete), { status: 200 });
+    }
+    if (init?.method === 'POST') {
+      return new Response(JSON.stringify(record('op-terminal-close-failure', 0, 'queued')), {
+        status: 200,
+      });
+    }
+    if (parsed.pathname.endsWith('/events')) {
+      streamOpened.resolve(undefined);
+      return new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }
+    if (parsed.pathname.endsWith('/result')) {
+      return new Response(JSON.stringify(resultEnvelope(complete)), { status: 200 });
+    }
+    if (parsed.pathname.endsWith('/op-terminal-close-failure')) {
+      return new Response(JSON.stringify(complete), { status: 200 });
+    }
+    return new Response('', { status: 404 });
+  };
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture', callerAgent: 'jerry', fetchImpl,
+  });
+  const pending = client.query({ query: 'terminal cleanup failure' });
+  await streamOpened.promise;
+  streamController.enqueue(new TextEncoder().encode(
+    `data: ${JSON.stringify(notificationFromRecord(complete))}\n\n`,
+  ));
+
+  const result = await pending;
+  assert.equal(result.state, 'complete');
+  assert.equal(result.result?.answer, 'terminal survives transport cleanup');
+  assert.equal(cancelCalls, 1);
+  assert.equal(detachCalls, 0);
+});
+
 test('status body-read deadline detaches instead of waiting forever after SSE silence', async () => {
   const clock = new ManualClock();
   const sse = controlledStream();
