@@ -64,8 +64,8 @@ const MAX_ARTIFACT_FILES = 50_000;
 const MAX_IDENTITY_OPERATIONS = 10_000;
 const MAX_RESULT_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024;
 const MAX_ACTIVITY_EVENTS = 100_000;
-const MAX_ACTIVITY_EVENT_BYTES = 256 * 1024;
-const MAX_ACTIVITY_RETAINED_BYTES = 64 * 1024 * 1024;
+const MAX_ACTIVITY_EVENT_BYTES = 64 * 1024;
+const MAX_ACTIVITY_RETAINED_BYTES = 32 * 1024 * 1024;
 const MAX_METRIC_SAMPLES_PER_ROLE = 256;
 const MAX_SOURCE_FILES_PER_BRAIN = 10_000;
 const MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024 * 1024;
@@ -77,6 +77,7 @@ const METRIC_SEMANTICS = Object.freeze({
   processMaxRssBytes: 'process-lifetime-high-water',
 });
 const require = createRequire(import.meta.url);
+const { canonicalJson } = require('../shared/brain-operations/canonical-json.cjs');
 
 export async function loadProductionModules() {
   try {
@@ -239,23 +240,22 @@ function activityEventSequence(activity) {
   return Number.isSafeInteger(value) ? value : null;
 }
 
-function activityConflictFields(activity) {
-  const {
-    observedAttachments: _observedAttachments,
-    eventSequence: _eventSequence,
-    sequence: _sequence,
-    ...payload
-  } = activity || {};
-  return { ...payload, eventSequence: activityEventSequence(activity) };
-}
-
-function activityByteLength(activity) {
+function canonicalActivityPayload(activity) {
   try {
-    const encoded = JSON.stringify(activity);
-    if (typeof encoded !== 'string') throw new Error('activity is not serializable');
-    return Buffer.byteLength(encoded, 'utf8');
+    const descriptors = Object.getOwnPropertyDescriptors(activity);
+    delete descriptors.observedAttachments;
+    const payload = Object.create(Object.getPrototypeOf(activity));
+    Object.defineProperties(payload, descriptors);
+    const encoded = canonicalJson(payload);
+    return {
+      bytes: Buffer.byteLength(encoded, 'utf8'),
+      encoded,
+      value: JSON.parse(encoded),
+    };
   } catch (error) {
-    throw typedError('operation_event_invalid', undefined, { cause: error });
+    throw typedError('operation_event_invalid', 'operation activity is not canonical JSON', {
+      cause: error,
+    });
   }
 }
 
@@ -271,6 +271,7 @@ export function createActivityCollector({
   }
   const events = [];
   const byIdentity = new Map();
+  const canonicalPayloads = new Map();
   const observationsByAttachment = new Map();
   const duplicateDeliveriesByOperation = new Map();
   let duplicateDeliveries = 0;
@@ -283,17 +284,22 @@ export function createActivityCollector({
         || sequence === null || !ACTIVITY_TYPES.has(activity.type)) {
       throw typedError('operation_event_invalid');
     }
-    const eventBytes = activityByteLength(activity);
-    if (eventBytes > maxEventBytes) {
+    const identity = `${activity.operationId}\0${sequence}`;
+    if (Number.isSafeInteger(activity.eventSequence)
+        && Number.isSafeInteger(activity.sequence)
+        && activity.eventSequence !== activity.sequence) {
+      throw typedError(
+        byIdentity.has(identity) ? 'operation_event_identity_conflict' : 'operation_event_invalid',
+        identity,
+      );
+    }
+    const payload = canonicalActivityPayload(activity);
+    if (payload.bytes > maxEventBytes) {
       throw typedError('operation_activity_event_too_large');
     }
-    const identity = `${activity.operationId}\0${sequence}`;
     const existing = byIdentity.get(identity);
     if (existing) {
-      if (!isDeepStrictEqual(
-        activityConflictFields(existing),
-        activityConflictFields(activity),
-      )) {
+      if (canonicalPayloads.get(identity) !== payload.encoded) {
         throw typedError('operation_event_identity_conflict', identity);
       }
       duplicateDeliveries += 1;
@@ -307,17 +313,18 @@ export function createActivityCollector({
       }
     } else {
       if (events.length >= maxEvents) throw typedError('operation_activity_limit_exceeded');
-      if (retainedBytes + eventBytes > maxRetainedBytes) {
+      if (retainedBytes + payload.bytes > maxRetainedBytes) {
         throw typedError('operation_activity_bytes_exceeded');
       }
       const captured = {
-        ...activity,
+        ...payload.value,
         eventSequence: sequence,
         observedAttachments: [attachment],
       };
       byIdentity.set(identity, captured);
+      canonicalPayloads.set(identity, payload.encoded);
       events.push(captured);
-      retainedBytes += eventBytes;
+      retainedBytes += payload.bytes;
     }
     const attachmentObservations = observationsByAttachment.get(attachment) || new Map();
     attachmentObservations.set(

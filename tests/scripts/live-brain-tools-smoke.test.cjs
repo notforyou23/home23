@@ -318,12 +318,22 @@ test('SSE receipts preserve production event type and monotonic eventSequence', 
     }),
     (error) => error.code === 'operation_event_identity_conflict',
   );
+  const sequenceReplay = {
+    ...replay,
+    eventSequence: 3,
+    sequence: 3,
+  };
+  collector.listener('primary')(sequenceReplay);
+  assert.throws(
+    () => collector.listener('survivor')({ ...sequenceReplay, sequence: 99 }),
+    (error) => error.code === 'operation_event_identity_conflict',
+  );
   collector.listener('other-operation')({
     ...replay,
     operationId: 'op_other_attachment',
   });
   assert.deepEqual(collector.summary('op_attachment_replay').attachments, [
-    { attachment: 'primary', observations: 2 },
+    { attachment: 'primary', observations: 3 },
     { attachment: 'survivor', observations: 1 },
   ]);
 
@@ -406,6 +416,18 @@ test('HTTP, receipt, and memory evidence readers remain bounded before parse', a
     (error) => error.code === 'bounded_http_test',
   );
   assert.equal(advertisedBodyCancelled, true);
+  let synchronousBodyCancelled = false;
+  await assert.rejects(
+    readResponseJsonBounded({
+      headers: { get: () => '5' },
+      body: {
+        cancel() { synchronousBodyCancelled = true; },
+        getReader() { throw new Error('oversized body must not be opened'); },
+      },
+    }, { maxBytes: 4, errorCode: 'bounded_http_test' }),
+    (error) => error.code === 'bounded_http_test',
+  );
+  assert.equal(synchronousBodyCancelled, true);
   await assert.rejects(
     readResponseJsonBounded({ headers: { get: () => null }, body: {} }, {
       maxBytes: 4,
