@@ -26,6 +26,10 @@ const {
   resolveSynthesisCommitConfig,
   writeSynthesisCommitReceipt
 } = require('./synthesis-commit');
+const {
+  assertProviderResultIdentity,
+  requireCompleteProviderResult,
+} = require('./provider-completion');
 
 function readIntEnv(name, fallback) {
   const raw = process.env[name];
@@ -64,6 +68,24 @@ class PGSEngine {
   }
 
   /**
+   * Resolve a provider only from explicit input or an exact persisted role
+   * assignment. Model-name inference is intentionally forbidden.
+   */
+  resolveExactProvider(model, explicitProvider, assignmentKey) {
+    const selected = typeof explicitProvider === 'string' ? explicitProvider.trim() : '';
+    if (selected) return selected;
+
+    const assignment = this.qe?.runConfig?.modelAssignments?.[assignmentKey];
+    const assignedProvider = typeof assignment?.provider === 'string'
+      ? assignment.provider.trim()
+      : '';
+    const assignedModel = typeof assignment?.model === 'string'
+      ? assignment.model.trim()
+      : '';
+    return assignedProvider && assignedModel === model ? assignedProvider : null;
+  }
+
+  /**
    * Resolve config: PGS_DEFAULTS ← options.pgsConfig overrides
    */
   resolveConfig(options = {}) {
@@ -98,6 +120,8 @@ class PGSEngine {
   async execute(query, options = {}) {
     const {
       model = 'claude-opus-4-8',
+      explicitProvider = null,
+      pgsSweepProvider: sweepProviderOverride = null,
       mode: legacyMode = 'full',
       pgsMode,
       pgsSessionId = DEFAULT_SESSION_ID,
@@ -108,6 +132,11 @@ class PGSEngine {
       includeCoordinatorInsights
     } = options;
     const mode = pgsMode || legacyMode || 'full';
+    const synthesisProvider = this.resolveExactProvider(
+      model,
+      explicitProvider || options.provider || options.modelSelection?.provider,
+      'synthesis'
+    );
     const config = this.resolveConfig(options);
     const startTime = Date.now();
     const emit = (event) => { if (onChunk) onChunk(event); };
@@ -241,10 +270,31 @@ class PGSEngine {
 
     // Sweep model: per-query override > catalog default > synthesis model
     const sweepModel = sweepModelOverride || this.qe.modelDefaults?.pgsSweepModel || model;
+    const configuredSweepProvider = this.resolveExactProvider(
+      sweepModel,
+      null,
+      'coordinator'
+    );
+    const sweepProvider = this.resolveExactProvider(
+      sweepModel,
+      sweepProviderOverride || configuredSweepProvider
+        || (sweepModel === model ? synthesisProvider : null),
+      'coordinator'
+    );
     if (model !== sweepModel) {
       emit({ type: 'progress', message: `Sweeping with ${sweepModel} (synthesis will use ${model})` });
     }
-    const sweepResults = await this.sweepPartitions(query, partitionsToSweep, nodeMap, edges, partitions, onChunk, sweepModel, config);
+    const sweepResults = await this.sweepPartitions(
+      query,
+      partitionsToSweep,
+      nodeMap,
+      edges,
+      partitions,
+      onChunk,
+      sweepModel,
+      config,
+      sweepProvider
+    );
 
     const successfulSweeps = sweepResults.filter(r => r.status === 'fulfilled' && r.value).map(r => r.value);
     const failedSweeps = partitionsToSweep.length - successfulSweeps.length;
@@ -297,7 +347,9 @@ class PGSEngine {
             sweptPartitions: partitionsToSweep.length,
             successfulSweeps: successfulSweeps.length,
             failedSweeps,
+            sweepProvider,
             sweepModel,
+            synthesisProvider: null,
             synthesisModel: null,
             synthesisSkipped: true,
             singlePartition: true,
@@ -328,6 +380,7 @@ class PGSEngine {
       totalPartitions: partitions.length,
       selectedPartitions: partitionsToSweep.length,
       config,
+      provider: synthesisProvider,
       synthesis: options.synthesis
     });
     const synthesisAnswer = typeof synthesisResult === 'string' ? synthesisResult : synthesisResult.answer;
@@ -350,7 +403,9 @@ class PGSEngine {
           sweptPartitions: partitionsToSweep.length,
           successfulSweeps: successfulSweeps.length,
           failedSweeps,
-          sweepModel: sweepModel,
+          sweepProvider,
+          sweepModel,
+          synthesisProvider,
           synthesisModel: model,
           elapsed: `${elapsed}s`,
           sessionMode: mode,
@@ -1062,7 +1117,7 @@ class PGSEngine {
   /**
    * Sweep all selected partitions with concurrency control
    */
-  async sweepPartitions(query, selectedPartitions, nodeMap, edges, allPartitions, onChunk, model, config) {
+  async sweepPartitions(query, selectedPartitions, nodeMap, edges, allPartitions, onChunk, model, config, provider = null) {
     const { maxConcurrentSweeps } = config;
     const results = [];
     const batches = [];
@@ -1097,7 +1152,16 @@ class PGSEngine {
             message: `Sweeping: ${summary} (${partition.nodeCount} nodes)`
           });
 
-          const result = await this.sweepPartition(query, partition, nodeMap, edges, allPartitions, model, config);
+          const result = await this.sweepPartition(
+            query,
+            partition,
+            nodeMap,
+            edges,
+            allPartitions,
+            model,
+            config,
+            provider
+          );
           completedCount++;
 
           emit({
@@ -1144,7 +1208,7 @@ class PGSEngine {
   /**
    * Sweep a single partition at full fidelity
    */
-  async sweepPartition(query, partition, nodeMap, edges, allPartitions, model, config) {
+  async sweepPartition(query, partition, nodeMap, edges, allPartitions, model, config, provider = null) {
     const { sweepMaxTokens } = config;
 
     // Build full-fidelity context for this partition
@@ -1204,18 +1268,22 @@ Explicitly state what was searched for and NOT found in this partition. "This pa
     const input = `${nodeContext}\n${adjacentContext}\n\nQuery: ${query}`;
 
     // Route to correct provider based on model
-    const runtime = this.qe.resolveQueryRuntime(model);
+    const runtime = this.qe.resolveQueryRuntime(model, provider);
 
     const response = await runtime.client.generate({
+      provider: runtime.providerId,
       model: runtime.effectiveModel,
       instructions: sweepPrompt,
       input,
       maxTokens: sweepMaxTokens,
       max_output_tokens: sweepMaxTokens,
+      maxOutputTokens: Math.min(sweepMaxTokens, runtime.capabilities.maxOutputTokens),
       reasoningEffort: 'medium'
     });
 
-    const content = response.content || response.message?.content || '';
+    const complete = requireCompleteProviderResult(response);
+    assertProviderResultIdentity(complete, runtime.providerId, runtime.effectiveModel);
+    const content = complete.content;
     const trimmedContent = String(content || '').trim();
     const modelHadError = response.hadError || /^\[Error:/i.test(trimmedContent);
     if (modelHadError || trimmedContent.length === 0) {
@@ -1240,7 +1308,16 @@ Explicitly state what was searched for and NOT found in this partition. "This pa
    * Synthesize all sweep outputs into a unified answer
    */
   async synthesize(query, sweepResults, options = {}) {
-    const { model = 'claude-opus-4-8', onChunk, totalNodes, totalEdges, totalPartitions, selectedPartitions, config: cfg } = options;
+    const {
+      model = 'claude-opus-4-8',
+      provider = null,
+      onChunk,
+      totalNodes,
+      totalEdges,
+      totalPartitions,
+      selectedPartitions,
+      config: cfg
+    } = options;
     const synthesisMaxTokens = cfg?.synthesisMaxTokens || PGS_DEFAULTS.synthesisMaxTokens;
     const synthesisConfig = resolveSynthesisCommitConfig(
       options.synthesis || cfg?.synthesis || this.qe.runConfig?.synthesis || this.qe.runMetadata?.synthesis,
@@ -1276,19 +1353,23 @@ Structure your response clearly with sections. Cite partition IDs and node IDs w
     const commitBlock = buildSynthesisCommitBlock(synthesisConfig);
     if (commitBlock) synthesisPrompt += `\n\n${commitBlock}`;
 
-    const runtime = this.qe.resolveQueryRuntime(model);
+    const runtime = this.qe.resolveQueryRuntime(model, provider);
 
     const response = await runtime.client.generate({
+      provider: runtime.providerId,
       model: runtime.effectiveModel,
       instructions: synthesisPrompt,
       input: `${synthesisContext}\n\nOriginal Query: ${query}`,
       maxTokens: synthesisMaxTokens,
       max_output_tokens: synthesisMaxTokens,
+      maxOutputTokens: Math.min(synthesisMaxTokens, runtime.capabilities.maxOutputTokens),
       reasoningEffort: 'high',
       onChunk
     });
 
-    const answer = response.content || response.message?.content || '';
+    const complete = requireCompleteProviderResult(response);
+    assertProviderResultIdentity(complete, runtime.providerId, runtime.effectiveModel);
+    const answer = complete.content;
     const synthesisCommit = parseSynthesisCommitReceipt(answer, synthesisConfig);
     await writeSynthesisCommitReceipt(this.qe.runtimeDir, {
       query,

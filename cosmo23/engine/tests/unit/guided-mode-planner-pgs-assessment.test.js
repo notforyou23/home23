@@ -2,8 +2,11 @@ const { expect } = require('chai');
 const path = require('path');
 const fs = require('fs').promises;
 const os = require('os');
+const sinon = require('sinon');
 
 const { GuidedModePlanner } = require('../../src/core/guided-mode-planner');
+const { PGSEngine } = require('../../../lib/pgs-engine');
+const { loadModelCatalogSync } = require('../../../server/config/model-catalog');
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -319,6 +322,152 @@ describe('GuidedModePlanner.assessKnowledgeState()', () => {
       // fast is undefined, method will use: this.config.models?.fast || this.config.models?.primary
       expect(planner.config.models.fast).to.be.undefined;
       expect(planner.config.models.primary).to.equal('gpt-4o');
+    });
+
+    it('does not infer a provider from a model-only configuration', () => {
+      const planner = createPlanner({
+        models: {
+          primary: 'MiniMax-M3',
+          fast: 'MiniMax-M3',
+          strategicModel: 'MiniMax-M3'
+        },
+        modelAssignments: {}
+      });
+
+      expect(() => planner.resolveKnowledgeAssessmentPair('sweep'))
+        .to.throw(/Exact sweep provider and model are required/)
+        .with.property('code', 'provider_model_mismatch');
+      expect(() => planner.resolveKnowledgeAssessmentPair('synthesis'))
+        .to.throw(/Exact synthesis provider and model are required/)
+        .with.property('code', 'provider_model_mismatch');
+    });
+
+    it('rejects partial persisted or run-metadata pairs instead of combining sources', () => {
+      const partialAssignment = createPlanner({
+        modelAssignments: {
+          coordinator: { provider: 'openai' },
+          synthesis: { model: 'claude-opus-4-8' }
+        }
+      });
+      expect(() => partialAssignment.resolveKnowledgeAssessmentPair('sweep'))
+        .to.throw(/Incomplete sweep assignment/)
+        .with.property('code', 'provider_model_mismatch');
+      expect(() => partialAssignment.resolveKnowledgeAssessmentPair('synthesis'))
+        .to.throw(/Incomplete synthesis assignment/)
+        .with.property('code', 'provider_model_mismatch');
+
+      const metadataPlanner = createPlanner({ modelAssignments: {} });
+      expect(() => metadataPlanner.resolveKnowledgeAssessmentPair('sweep', {
+        fastProvider: 'openai'
+      })).to.throw(/Incomplete sweep run metadata/)
+        .with.property('code', 'provider_model_mismatch');
+      expect(() => metadataPlanner.resolveKnowledgeAssessmentPair('synthesis', {
+        strategicModel: 'claude-opus-4-8'
+      })).to.throw(/Incomplete synthesis run metadata/)
+        .with.property('code', 'provider_model_mismatch');
+    });
+
+    it('accepts a legacy default assignment only for the exact same model', () => {
+      const planner = createPlanner({
+        models: {
+          primary: 'gpt-5.4-mini',
+          fast: 'gpt-5.4-mini',
+          strategicModel: 'claude-opus-4-8'
+        },
+        modelAssignments: {
+          default: { provider: 'openai', model: 'gpt-5.4-mini' }
+        }
+      });
+
+      expect(planner.resolveKnowledgeAssessmentPair('sweep')).to.deep.equal({
+        provider: 'openai',
+        model: 'gpt-5.4-mini'
+      });
+      expect(() => planner.resolveKnowledgeAssessmentPair('synthesis'))
+        .to.throw(/Exact synthesis provider and model are required/)
+        .with.property('code', 'provider_model_mismatch');
+    });
+
+    it('accepts exact provider/model pairs persisted in legacy run metadata', () => {
+      const planner = createPlanner({
+        models: {
+          primary: 'gpt-5.4-mini',
+          fast: 'gpt-5.4-mini',
+          strategicModel: 'claude-opus-4-8'
+        },
+        modelAssignments: {}
+      });
+      const runMetadata = {
+        fastProvider: 'openai',
+        fastModel: 'gpt-5.4-mini',
+        strategicProvider: 'anthropic',
+        strategicModel: 'claude-opus-4-8'
+      };
+
+      expect(planner.resolveKnowledgeAssessmentPair('sweep', runMetadata)).to.deep.equal({
+        provider: 'openai',
+        model: 'gpt-5.4-mini'
+      });
+      expect(planner.resolveKnowledgeAssessmentPair('synthesis', runMetadata)).to.deep.equal({
+        provider: 'anthropic',
+        model: 'claude-opus-4-8'
+      });
+    });
+
+    it('passes distinct exact sweep and synthesis pairs through the real compatibility wiring', async () => {
+      const tmpDir = await createTempDir();
+      const modelCatalog = loadModelCatalogSync();
+      const providerRegistry = { get: () => { throw new Error('provider call should be stubbed'); } };
+      let captured = null;
+      const executeStub = sinon.stub(PGSEngine.prototype, 'execute').callsFake(async function(query, options) {
+        captured = {
+          query,
+          options,
+          providerRegistry: this.qe.providerRegistry,
+          modelCatalog: this.qe.modelCatalog
+        };
+        return {
+          answer: 'Exact provider assessment',
+          metadata: { totalNodes: 42, partitionsSwept: 2 },
+          sweepResults: []
+        };
+      });
+
+      try {
+        const planner = createPlanner({
+          models: {
+            primary: 'gpt-5.4-mini',
+            fast: 'gpt-5.4-mini',
+            strategicModel: 'claude-opus-4-8'
+          },
+          modelAssignments: {
+            coordinator: { provider: 'openai', model: 'gpt-5.4-mini' },
+            synthesis: { provider: 'anthropic', model: 'claude-opus-4-8' }
+          }
+        }, {
+          modelCatalog,
+          providerRegistry
+        });
+
+        const result = await planner.assessKnowledgeState(
+          { domain: 'Exact Pair Test', context: 'Keep the route explicit' },
+          tmpDir
+        );
+
+        expect(result).to.not.equal(null);
+        expect(captured.options).to.include({
+          model: 'claude-opus-4-8',
+          explicitProvider: 'anthropic',
+          pgsSweepModel: 'gpt-5.4-mini',
+          pgsSweepProvider: 'openai'
+        });
+        expect(captured.providerRegistry).to.equal(providerRegistry);
+        expect(captured.modelCatalog).to.equal(modelCatalog);
+        expect(captured.query).to.include('Exact Pair Test');
+      } finally {
+        executeStub.restore();
+        await cleanupTempDir(tmpDir);
+      }
     });
   });
 

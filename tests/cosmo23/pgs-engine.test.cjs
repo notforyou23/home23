@@ -48,8 +48,23 @@ test('routes at least maxSweepPartitions when similarities fall below threshold'
   assert.equal(routed.length, 15);
 });
 
+test('resolves providers only from explicit input or an exact persisted assignment', () => {
+  const engine = makeEngine();
+  engine.qe.runConfig = {
+    modelAssignments: {
+      coordinator: { provider: 'minimax', model: 'MiniMax-M3' },
+    },
+  };
+
+  assert.equal(engine.resolveExactProvider('MiniMax-M3', null, 'coordinator'), 'minimax');
+  assert.equal(engine.resolveExactProvider('gpt-5.4-mini', null, 'coordinator'), null);
+  assert.equal(engine.resolveExactProvider('gpt-5.4-mini', 'openai', 'coordinator'), 'openai');
+  assert.equal(engine.resolveExactProvider('MiniMax-M3', null, 'synthesis'), null);
+});
+
 test('rejects model error strings as failed partition sweeps', async () => {
   const engine = makeEngine();
+  let resolvedPair = null;
   const client = {
     generate: async () => ({
       content: '[Error: No content received from GPT-5.2 (response.incomplete)]',
@@ -58,7 +73,15 @@ test('rejects model error strings as failed partition sweeps', async () => {
     })
   };
   engine.qe = {
-    resolveQueryRuntime: () => ({ client, effectiveModel: 'claude-sonnet-4-6' })
+    resolveQueryRuntime: (model, provider) => {
+      resolvedPair = { model, provider };
+      return {
+        client,
+        providerId: 'anthropic',
+        effectiveModel: 'claude-sonnet-4-6',
+        capabilities: { maxOutputTokens: 8192 },
+      };
+    }
   };
 
   const nodeMap = new Map([
@@ -73,14 +96,20 @@ test('rejects model error strings as failed partition sweeps', async () => {
       [],
       [],
       'claude-sonnet-4-6',
-      { sweepMaxTokens: 1000 }
+      { sweepMaxTokens: 1000 },
+      'anthropic'
     ),
-    /no usable content/
+    error => error.code === 'provider_failed'
   );
+  assert.deepEqual(resolvedPair, {
+    model: 'claude-sonnet-4-6',
+    provider: 'anthropic',
+  });
 });
 
 test('counts failed partition sweeps instead of passing them to synthesis', async () => {
   const engine = makeEngine();
+  const seenProviders = { sweep: [], synthesis: null };
   engine.qe = {
     loadBrainState: async () => ({
       memory: {
@@ -95,13 +124,14 @@ test('counts failed partition sweeps instead of passing them to synthesis', asyn
     executeQuery: async () => {
       throw new Error('standard fallback should not run');
     },
-    modelDefaults: { pgsSweepModel: 'claude-sonnet-4-6' }
+    modelDefaults: { pgsSweepModel: 'MiniMax-M3' }
   };
   engine.getOrCreatePartitions = async () => [
     { id: 1, nodeIds: ['n1'], summary: 'ok', nodeCount: 1 },
     { id: 2, nodeIds: ['n2'], summary: 'bad', nodeCount: 1 }
   ];
-  engine.sweepPartition = async (_query, partition) => {
+  engine.sweepPartition = async (_query, partition, _nodeMap, _edges, _partitions, _model, _config, provider) => {
+    seenProviders.sweep.push(provider);
     if (partition.id === 2) return null;
     return {
       partitionId: 1,
@@ -113,13 +143,16 @@ test('counts failed partition sweeps instead of passing them to synthesis', asyn
       sweepOutput: 'finding from real evidence'
     };
   };
-  engine.synthesize = async (_query, sweeps) => {
+  engine.synthesize = async (_query, sweeps, options) => {
     assert.equal(sweeps.length, 1);
+    seenProviders.synthesis = options.provider;
     return 'synthesis from one good sweep';
   };
 
   const result = await engine.execute('query', {
-    model: 'claude-opus-4-5',
+    model: 'claude-opus-4-8',
+    explicitProvider: 'anthropic',
+    pgsSweepProvider: 'minimax',
     pgsFullSweep: true,
     pgsSessionId: 'test',
     pgsConfig: { directQueryMaxNodes: 0 }
@@ -128,22 +161,31 @@ test('counts failed partition sweeps instead of passing them to synthesis', asyn
   assert.equal(result.answer, 'synthesis from one good sweep');
   assert.equal(result.metadata.pgs.successfulSweeps, 1);
   assert.equal(result.metadata.pgs.failedSweeps, 1);
+  assert.deepEqual(seenProviders.sweep, ['minimax', 'minimax']);
+  assert.equal(seenProviders.synthesis, 'anthropic');
+  assert.equal(result.metadata.pgs.sweepProvider, 'minimax');
+  assert.equal(result.metadata.pgs.synthesisProvider, 'anthropic');
 });
 
 test('PGS synthesis applies commit step and records receipt metadata', async () => {
   const engine = makeEngine();
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'home23-pgs-commit-'));
   let instructions = '';
+  let resolvedPair = null;
 
   engine.qe = {
     runtimeDir: tmpDir,
-    resolveQueryRuntime: () => ({
-      effectiveModel: 'claude-opus-4-8',
-      client: {
-        generate: async (params) => {
-          instructions = params.instructions;
-          return {
-            content: `# Committed PGS Verdict
+    resolveQueryRuntime: (model, provider) => {
+      resolvedPair = { model, provider };
+      return {
+        providerId: 'anthropic',
+        effectiveModel: 'claude-opus-4-8',
+        capabilities: { maxOutputTokens: 8192 },
+        client: {
+          generate: async (params) => {
+            instructions = params.instructions;
+            return {
+              content: `# Committed PGS Verdict
 
 ## SPINE
 1. retrieve_and_fill - primary commitment.
@@ -159,11 +201,17 @@ test('PGS synthesis applies commit step and records receipt metadata', async () 
 1. ablate retrieval heads
    Moves: retrieve_and_fill stays spine vs splits
    Cost-to-information: high info, moderate cost
-`
-          };
+`,
+              provider: 'anthropic',
+              model: 'claude-opus-4-8',
+              terminalReceived: true,
+              finishReason: 'end_turn',
+              hadError: false,
+            };
+          }
         }
-      }
-    })
+      };
+    }
   };
 
   const result = await engine.synthesize('query', [{
@@ -174,6 +222,7 @@ test('PGS synthesis applies commit step and records receipt metadata', async () 
     sweepOutput: 'retrieve_and_fill and projection are candidate operations.'
   }], {
     model: 'claude-opus-4-8',
+    provider: 'anthropic',
     totalNodes: 400,
     totalEdges: 800,
     totalPartitions: 4,
@@ -191,6 +240,10 @@ test('PGS synthesis applies commit step and records receipt metadata', async () 
   assert.equal(result.synthesisCommit.spine_count, 2);
   assert.equal(result.synthesisCommit.facet_count, 1);
   assert.equal(result.synthesisCommit.artifact_count, 1);
+  assert.deepEqual(resolvedPair, {
+    model: 'claude-opus-4-8',
+    provider: 'anthropic',
+  });
 
   const receipts = await fs.readFile(path.join(tmpDir, 'synthesis-commit-receipts.jsonl'), 'utf8');
   const parsed = JSON.parse(receipts.trim());
@@ -207,11 +260,20 @@ test('PGS synthesis records disabled commit receipt without prompt block', async
   engine.qe = {
     runtimeDir: tmpDir,
     resolveQueryRuntime: () => ({
+      providerId: 'anthropic',
       effectiveModel: 'claude-opus-4-8',
+      capabilities: { maxOutputTokens: 8192 },
       client: {
         generate: async (params) => {
           instructions = params.instructions;
-          return { content: '# Enumerated synthesis\n\n- candidate one\n- candidate two' };
+          return {
+            content: '# Enumerated synthesis\n\n- candidate one\n- candidate two',
+            provider: 'anthropic',
+            model: 'claude-opus-4-8',
+            terminalReceived: true,
+            finishReason: 'end_turn',
+            hadError: false,
+          };
         }
       }
     })
@@ -225,6 +287,7 @@ test('PGS synthesis records disabled commit receipt without prompt block', async
     sweepOutput: 'candidate one'
   }], {
     model: 'claude-opus-4-8',
+    provider: 'anthropic',
     totalNodes: 400,
     totalEdges: 800,
     totalPartitions: 4,

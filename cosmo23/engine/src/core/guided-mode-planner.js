@@ -31,11 +31,29 @@ const { CampaignMemory } = require('../execution/campaign-memory');
 const { CapabilityManifest } = require('../execution/capability-manifest');
 const { PGSEngine } = require('../../../lib/pgs-engine');
 const { QueryEngine } = require('../../../lib/query-engine');
+const {
+  createBrainProviderClientRegistry
+} = require('../../../lib/brain-provider-client-registry');
+const {
+  getModelCapabilities,
+  loadModelCatalogSync
+} = require('../../../server/config/model-catalog');
 const { deriveResearchContract } = require('./research-contract');
 
 function normalizeList(value) {
   if (!value) return [];
   return Array.isArray(value) ? value : [value];
+}
+
+function nonEmptyString(value) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function providerPairError(message) {
+  return Object.assign(new Error(message), {
+    code: 'provider_model_mismatch',
+    retryable: false
+  });
 }
 
 class GuidedModePlanner {
@@ -44,6 +62,87 @@ class GuidedModePlanner {
     this.subsystems = subsystems;
     this.logger = logger;
     this.client = subsystems.client; // UnifiedClient with MCP access
+  }
+
+  /**
+   * Resolve an exact provider/model pair for the legacy planning assessment.
+   * Generated COSMO configs persist the authoritative fast and strategic pairs
+   * under modelAssignments. Older explicit provider fields remain accepted,
+   * but a provider is never inferred from a model name.
+   */
+  resolveKnowledgeAssessmentPair(role, runMetadata = null) {
+    const assignments = this.config?.modelAssignments || {};
+    const models = this.config?.models || {};
+    const isSweep = role === 'sweep';
+    const assignment = isSweep ? assignments.coordinator : assignments.synthesis;
+    const metadata = runMetadata && typeof runMetadata === 'object' ? runMetadata : {};
+    const candidate = (providerValue, modelValue, label) => {
+      const provider = nonEmptyString(providerValue);
+      const model = nonEmptyString(modelValue);
+      if (!provider && !model) return null;
+      if (!provider || !model) {
+        throw providerPairError(`Incomplete ${label} provider/model pair for PGS assessment`);
+      }
+      return Object.freeze({ provider, model });
+    };
+
+    const persisted = candidate(assignment?.provider, assignment?.model, `${role} assignment`);
+    if (persisted) return persisted;
+
+    const metadataPair = candidate(
+      isSweep ? metadata.fastProvider : metadata.strategicProvider,
+      isSweep ? metadata.fastModel : metadata.strategicModel,
+      `${role} run metadata`
+    );
+    if (metadataPair) return metadataPair;
+
+    const legacyModel = nonEmptyString(
+      isSweep ? models.fast : models.strategicModel
+    ) || nonEmptyString(models.primary);
+    const legacyProvider = nonEmptyString(
+      isSweep ? models.fastProvider : models.strategicProvider
+    ) || nonEmptyString(
+      isSweep ? this.config?.fastProvider : this.config?.strategicProvider
+    );
+    if (legacyProvider) {
+      return candidate(legacyProvider, legacyModel, `${role} legacy configuration`);
+    }
+
+    const defaultAssignment = candidate(
+      assignments.default?.provider,
+      assignments.default?.model,
+      'default assignment'
+    );
+    if (defaultAssignment && (!legacyModel || defaultAssignment.model === legacyModel)) {
+      return defaultAssignment;
+    }
+    throw providerPairError(`Exact ${role} provider and model are required for PGS assessment`);
+  }
+
+  createKnowledgeAssessmentProviderRuntime() {
+    const modelCatalog = this.subsystems?.modelCatalog || loadModelCatalogSync();
+    const providerRegistry = this.subsystems?.providerRegistry
+      || createBrainProviderClientRegistry({
+        catalog: modelCatalog,
+        providerConfig: this.config?.providers || {},
+        credentialsProviders: {
+          'openai-codex': (options = {}) => {
+            const { getCodexCredentials } = require('../services/codex-oauth-engine');
+            return getCodexCredentials(options);
+          }
+        },
+        logger: this.logger || console
+      });
+    return { modelCatalog, providerRegistry };
+  }
+
+  async loadKnowledgeAssessmentRunMetadata(runPath) {
+    try {
+      const parsed = JSON.parse(await fs.readFile(path.join(runPath, 'run-metadata.json'), 'utf8'));
+      return parsed && !Array.isArray(parsed) && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
   }
 
   /**
@@ -666,23 +765,30 @@ class GuidedModePlanner {
         `What deliverables (databases, reports, files) exist? ` +
         (contextSummary ? `Research context: ${contextSummary}` : '');
 
-      // Instantiate PGS engine
-      const openaiKey = process.env.OPENAI_API_KEY || null;
-      const queryEngine = new QueryEngine(runPath, openaiKey);
+      // Instantiate the compatibility PGS engine with the same canonical,
+      // exact-pair provider registry used by durable brain operations.
+      const runMetadata = await this.loadKnowledgeAssessmentRunMetadata(runPath);
+      const sweepPair = this.resolveKnowledgeAssessmentPair('sweep', runMetadata);
+      const synthesisPair = this.resolveKnowledgeAssessmentPair('synthesis', runMetadata);
+      const { modelCatalog, providerRegistry } = this.createKnowledgeAssessmentProviderRuntime();
+      getModelCapabilities(modelCatalog, sweepPair.provider, sweepPair.model);
+      getModelCapabilities(modelCatalog, synthesisPair.provider, synthesisPair.model);
+      const queryEngine = new QueryEngine(runPath, null, {
+        modelCatalog,
+        providerRegistry
+      });
       const pgsEngine = new PGSEngine(queryEngine);
-
-      // Configure for routed sweep (relevance-filtered, not full coverage)
-      const sweepModel = this.config.models?.fast || this.config.models?.primary;
-      const synthesisModel = this.config.models?.strategicModel || this.config.models?.primary;
 
       // Execute PGS sweep — routed partitions only (not full sweep)
       // Full sweep on large brains (100+ partitions) can take 15+ minutes.
       // Routed sweep covers the most relevant partitions, which is sufficient
       // for delta planning (identifying what's known vs. what's missing).
       const assessment = await pgsEngine.execute(query, {
-        model: synthesisModel,
+        model: synthesisPair.model,
+        explicitProvider: synthesisPair.provider,
         pgsFullSweep: false,
-        pgsSweepModel: sweepModel,
+        pgsSweepModel: sweepPair.model,
+        pgsSweepProvider: sweepPair.provider,
         enableSynthesis: true,
         includeCoordinatorInsights: true,
         onChunk: (event) => {
@@ -752,7 +858,8 @@ class GuidedModePlanner {
       };
     } catch (err) {
       this.logger?.warn('⚠️ PGS knowledge assessment failed (will plan without it)', {
-        error: err.message
+        error: err.message,
+        code: err.code || null
       });
       return null;
     }
