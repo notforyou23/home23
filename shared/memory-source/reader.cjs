@@ -6,6 +6,10 @@ const { readJsonl } = require('./jsonl.cjs');
 const { createBoundedOverlayStore } = require('./overlay-store.cjs');
 const { readManifest, resolveMemorySourceSelection } = require('./manifest.cjs');
 const {
+  projectLegacyResidentSidecars,
+  verifyLegacySourceFingerprint,
+} = require('./legacy-projection.cjs');
+const {
   SOURCE_HEALTH,
   MATCH_OUTCOME,
   normalizeId,
@@ -152,11 +156,14 @@ async function loadOverlay(canonicalRoot, manifest, options) {
 }
 
 async function openManifestSource(canonicalRoot, manifest, options = {}) {
-  const descriptor = createDescriptor(canonicalRoot, manifest);
+  const physicalRoot = canonicalRoot;
+  const logicalRoot = options.logicalCanonicalRoot || canonicalRoot;
+  const legacyProjection = options.legacySourceFingerprint || null;
+  const descriptor = createDescriptor(logicalRoot, manifest);
   const { overlay, appliedRecords } = await loadOverlay(canonicalRoot, manifest, options);
   const evidenceBase = {
-    implementation: 'manifest-v1',
-    identity: { canonicalRoot, operationId: options.operationId || null },
+    implementation: legacyProjection ? 'legacy-resident-sidecar-projection' : 'manifest-v1',
+    identity: { canonicalRoot: logicalRoot, operationId: options.operationId || null },
     baseRevision: manifest.baseRevision,
     baseFile: manifest.activeBase.nodes.file,
     deltaRevision: manifest.currentRevision,
@@ -168,11 +175,11 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
       nodes: manifest.summary.nodeCount,
       edges: manifest.summary.edgeCount,
     },
-    sourceHealth: SOURCE_HEALTH.HEALTHY,
+    sourceHealth: legacyProjection ? SOURCE_HEALTH.DEGRADED : SOURCE_HEALTH.HEALTHY,
     matchOutcome: MATCH_OUTCOME.UNKNOWN,
-    mutationBoundaries: enumerateMemoryMutationBoundaries(canonicalRoot),
+    mutationBoundaries: enumerateMemoryMutationBoundaries(logicalRoot),
   };
-  let sourceHealth = SOURCE_HEALTH.HEALTHY;
+  let sourceHealth = legacyProjection ? SOURCE_HEALTH.DEGRADED : SOURCE_HEALTH.HEALTHY;
   const markUnavailable = () => { sourceHealth = SOURCE_HEALTH.UNAVAILABLE; };
   const iterateBaseNodes = async function* iterateBaseNodes() {
     const yielded = new Set();
@@ -244,9 +251,9 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
     descriptor,
     revision: manifest.currentRevision,
     manifest,
-    physicalFiles: activeFiles(manifest).map((file) => path.join(canonicalRoot, file)),
+    physicalFiles: activeFiles(manifest).map((file) => path.join(physicalRoot, file)),
     maxBreakdownKeys: 0,
-    getMutationBoundaries() { return enumerateMemoryMutationBoundaries(canonicalRoot); },
+    getMutationBoundaries() { return enumerateMemoryMutationBoundaries(logicalRoot); },
     getEvidence(input = {}) {
       return createEvidence({
         ...evidenceBase,
@@ -305,7 +312,11 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         }),
       };
     },
-    isCurrent() { return true; },
+    isCurrent() {
+      return legacyProjection
+        ? verifyLegacySourceFingerprint(logicalRoot, legacyProjection)
+        : true;
+    },
     async compareAndSwap() { throw memorySourceError('invalid_request', 'writer not available'); },
     async release() { await this.close(); },
     async close() { await overlay.close(); },
@@ -318,9 +329,32 @@ async function openMemorySource(brainDir, options = {}) {
   throwIfAborted(options.signal);
   const canonicalRoot = await fsp.realpath(brainDir);
   const manifest = await readManifest(canonicalRoot);
-  if (!manifest) return unavailableSource(canonicalRoot, ['source_missing']);
   try {
-    return await openManifestSource(canonicalRoot, manifest, options);
+    if (manifest) return await openManifestSource(canonicalRoot, manifest, options);
+    const selection = await resolveMemorySourceSelection(canonicalRoot);
+    if (selection.authority === 'legacy-resident-sidecars') {
+      if (!options.operationRoot || !options.scratchQuota) {
+        throw memorySourceError(
+          'source_operation_required',
+          'legacy source projection requires operation scratch',
+          { retryable: false },
+        );
+      }
+      const projected = await projectLegacyResidentSidecars({
+        canonicalRoot,
+        operationRoot: options.operationRoot,
+        scratchQuota: options.scratchQuota,
+        signal: options.signal,
+        maxOverlayMemoryBytes: options.maxOverlayMemoryBytes,
+        maxOverlayDiskBytes: options.maxOverlayDiskBytes,
+      });
+      return await openManifestSource(projected.projectionRoot, projected.manifest, {
+        ...options,
+        logicalCanonicalRoot: canonicalRoot,
+        legacySourceFingerprint: projected.sourceFingerprint,
+      });
+    }
+    return unavailableSource(canonicalRoot, ['source_missing']);
   } catch (error) {
     rethrowAbort(error, options.signal);
     if (isTypedMemorySourceError(error)) {

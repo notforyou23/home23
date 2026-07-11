@@ -5,11 +5,12 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { readManifest } = require('./manifest.cjs');
 const { createDescriptor, openMemorySource } = require('./reader.cjs');
+const { projectLegacyResidentSidecars } = require('./legacy-projection.cjs');
 const {
   sourceDescriptorDigest,
   memorySourceError,
 } = require('./contracts.cjs');
-const { assertOperationRoot } = require('./scratch-quota.cjs');
+const { assertOperationRoot, createOperationScratchQuota } = require('./scratch-quota.cjs');
 
 function validateOperationId(operationId) {
   if (typeof operationId !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(operationId)) {
@@ -37,7 +38,14 @@ async function readCoordinatorRecord(operationRoot) {
   return JSON.parse(await fsp.readFile(coordinatorPinPath(operationRoot), 'utf8'));
 }
 
-async function pinOperationSource({ canonicalRoot, operationRoot, operationId, requesterAgent }) {
+async function pinOperationSource({
+  canonicalRoot,
+  operationRoot,
+  operationId,
+  requesterAgent,
+  scratchQuota,
+  signal,
+}) {
   validateOperationId(operationId);
   const canonical = await fsp.realpath(canonicalRoot);
   const root = await assertOperationRoot(operationRoot);
@@ -54,9 +62,31 @@ async function pinOperationSource({ canonicalRoot, operationRoot, operationId, r
     }
     return Object.freeze({ descriptor: record.descriptor, digest: record.digest });
   }
-  const manifest = await readManifest(canonical);
-  if (!manifest) throw memorySourceError('source_unavailable', 'source unavailable', { retryable: true });
-  const descriptor = createDescriptor(canonical, manifest);
+  let manifest = await readManifest(canonical);
+  let descriptor;
+  let physicalRoot = canonical;
+  let sourceFingerprint = null;
+  if (manifest) {
+    descriptor = createDescriptor(canonical, manifest);
+  } else {
+    if (!scratchQuota || scratchQuota.operationRoot !== root) {
+      throw memorySourceError(
+        'source_operation_required',
+        'legacy source pin requires operation scratch quota',
+        { retryable: false },
+      );
+    }
+    const projected = await projectLegacyResidentSidecars({
+      canonicalRoot: canonical,
+      operationRoot: root,
+      scratchQuota,
+      signal,
+    });
+    manifest = projected.manifest;
+    descriptor = projected.descriptor;
+    physicalRoot = projected.projectionRoot;
+    sourceFingerprint = projected.sourceFingerprint;
+  }
   const digest = sourceDescriptorDigest(descriptor);
   const record = {
     version: 1,
@@ -73,7 +103,8 @@ async function pinOperationSource({ canonicalRoot, operationRoot, operationId, r
       manifest.ann.metaFile,
     ].filter(Boolean),
     committedBytes: manifest.activeDelta.committedBytes,
-    physicalRoot: canonical,
+    physicalRoot,
+    sourceFingerprint,
   };
   await writeAtomicJson(coordinatorPinPath(root), record);
   return Object.freeze({ descriptor, digest });
@@ -127,7 +158,11 @@ async function openPinnedSource(descriptor, expectations = {}) {
   }).catch(async (error) => {
     if (error.code !== 'EEXIST') throw error;
   });
-  const source = await openMemorySource(record.physicalRoot, expectations);
+  const source = await openMemorySource(record.physicalRoot, {
+    ...expectations,
+    logicalCanonicalRoot: descriptor.canonicalRoot,
+    legacySourceFingerprint: record.sourceFingerprint || null,
+  });
   const closeSource = source.close.bind(source);
   const release = async () => {
     await fsp.rm(pinFile, { force: true }).catch(() => {});
@@ -245,7 +280,18 @@ function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
     async pin(canonicalRoot, operationId) {
       validateOperationId(operationId);
       const operationRoot = path.join(home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations', operationId);
-      return pinOperationSource({ canonicalRoot, operationRoot, operationId, requesterAgent });
+      const scratchQuota = await createOperationScratchQuota({ operationRoot });
+      try {
+        return await pinOperationSource({
+          canonicalRoot,
+          operationRoot,
+          operationId,
+          requesterAgent,
+          scratchQuota,
+        });
+      } finally {
+        await scratchQuota.close();
+      }
     },
     async openPinnedSource(descriptor, expectations) {
       return openPinnedSource(descriptor, expectations);
