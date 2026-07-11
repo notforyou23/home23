@@ -1241,15 +1241,40 @@ test('process-pin release rejects an operation-root swap without deleting the re
   const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
   const operationId = 'brop_process_release_swap';
   const pinned = await provider.pin(brain, operationId);
+  const canonicalBrain = await fsp.realpath(brain);
   const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
-  const source = await provider.openPinnedSource(pinned.descriptor, {
-    operationId,
-    scratchQuota,
-    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
-    expectedRevision: pinned.descriptor.cutoffRevision,
-    expectedDigest: pinned.digest,
-  });
+  const originalOpen = fsp.open;
+  const closedProtectedFiles = new Set();
+  fsp.open = async (filePath, ...args) => {
+    const handle = await originalOpen.call(fsp, filePath, ...args);
+    const candidate = String(filePath);
+    if (!candidate.startsWith(`${canonicalBrain}${path.sep}`)) return handle;
+    return new Proxy(handle, {
+      get(target, property) {
+        if (property === 'close') {
+          return async () => {
+            closedProtectedFiles.add(path.basename(candidate));
+            return target.close();
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  };
+  let source;
+  try {
+    source = await provider.openPinnedSource(pinned.descriptor, {
+      operationId,
+      scratchQuota,
+      expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+      expectedRevision: pinned.descriptor.cutoffRevision,
+      expectedDigest: pinned.digest,
+    });
+  } finally {
+    fsp.open = originalOpen;
+  }
   const processIdentity = (await fsp.readdir(path.join(operationRoot, 'pins')))[0];
   const pinName = (await fsp.readdir(path.join(operationRoot, 'pins', processIdentity)))[0];
   const outsidePin = path.join(outside, 'pins', processIdentity, pinName);
@@ -1261,6 +1286,14 @@ test('process-pin release rejects an operation-root swap without deleting the re
 
   await assert.rejects(source.release(), { code: 'invalid_memory_source' });
   assert.equal(await fsp.readFile(outsidePin, 'utf8'), 'outside process pin must survive\n');
+  assert.deepEqual([...closedProtectedFiles].sort(), [
+    'ann.index',
+    'ann.meta.json',
+    'delta.jsonl',
+    'edges.gz',
+    'memory-manifest.json',
+    'nodes.gz',
+  ]);
   try {
     await scratchQuota.close();
   } catch {}

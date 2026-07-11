@@ -422,8 +422,18 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
     async compareAndSwap() { throw memorySourceError('invalid_request', 'writer not available'); },
     async release() { await this.close(); },
     async close() {
-      await overlay.close();
-      await closeOpenedFiles(openedFiles);
+      let overlayError = null;
+      try {
+        await overlay.close();
+      } catch (error) {
+        overlayError = error;
+      }
+      try {
+        await closeOpenedFiles(openedFiles);
+      } catch (error) {
+        if (overlayError === null) throw error;
+      }
+      if (overlayError !== null) throw overlayError;
     },
   };
   Object.defineProperty(source, 'evidence', { get() { return source.getEvidence(); } });
