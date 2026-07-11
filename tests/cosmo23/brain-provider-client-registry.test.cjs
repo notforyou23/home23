@@ -118,6 +118,35 @@ test('registry constructs each exact pair once and never probes a provider', () 
   assert.equal(registry.get('alpha', 'shared'), one);
 });
 
+test('registry rejects missing provider identity and freezes an exact identity', () => {
+  const missing = createBrainProviderClientRegistry({
+    catalog: catalog(),
+    pairFactories: {
+      [pairKey('alpha', 'shared')]: () => ({ generate() {} }),
+    },
+  });
+  assert.deepEqual(missing.availability('alpha', 'shared'), {
+    available: false,
+    reason: 'provider client identity mismatch',
+  });
+  assert.throws(
+    () => missing.get('alpha', 'shared'),
+    error => error.code === 'provider_unavailable',
+  );
+
+  const client = { providerId: 'alpha', generate() {} };
+  const exact = createBrainProviderClientRegistry({
+    catalog: catalog(),
+    pairFactories: {
+      [pairKey('alpha', 'shared')]: () => client,
+    },
+  });
+  assert.equal(exact.get('alpha', 'shared'), client);
+  assert.equal(Object.getOwnPropertyDescriptor(client, 'providerId').writable, false);
+  assert.throws(() => { client.providerId = 'beta'; }, TypeError);
+  assert.equal(client.providerId, 'alpha');
+});
+
 test('pair keys reject partial or empty identities', () => {
   for (const pair of [[null, 'm'], ['p', null], ['', 'm'], ['p', ' ']]) {
     assert.throws(() => pairKey(pair[0], pair[1]), (error) =>

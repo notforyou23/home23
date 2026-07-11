@@ -99,8 +99,24 @@ function requireCompleteProviderResult(input) {
   return result;
 }
 
+function assertProviderResultIdentity(result, provider, model) {
+  const expectedProvider = typeof provider === 'string' ? provider.trim() : '';
+  const expectedModel = typeof model === 'string' ? model.trim() : '';
+  if (!expectedProvider || !expectedModel
+      || result?.provider !== expectedProvider
+      || result?.model !== expectedModel) {
+    throw new ProviderCompletionError(
+      'provider_model_mismatch',
+      'Provider completion identity does not match the selected provider/model pair',
+      { retryable: false, status: 'failed', result: result || null },
+    );
+  }
+  return result;
+}
+
 module.exports = {
   ProviderCompletionError,
+  assertProviderResultIdentity,
   normalizeProviderCompletion,
   requireCompleteProviderResult,
 };

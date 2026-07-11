@@ -15,6 +15,7 @@ function createStubQueryEngine(runtimeDir, answer, capture) {
     queryCache: new Map(),
     maxCacheSize: 50,
     coordinatorIndexer: null,
+    requireCompleteProviderResult: value => value,
     performanceMetrics: {
       cacheHits: 0,
       cacheMisses: 0,
@@ -37,11 +38,19 @@ function createStubQueryEngine(runtimeDir, answer, capture) {
     client: {
       generate: async (request) => {
         capture.instructions = request.instructions;
-        capture.maxTokens = request.maxTokens;
+        capture.maxOutputTokens = request.maxOutputTokens;
         capture.reasoningEffort = request.reasoningEffort;
-        return { content: answer };
+        return {
+          content: answer,
+          terminalReceived: true,
+          finishReason: 'completed',
+          hadError: false,
+          provider: 'openai',
+          model: 'gpt-5.5',
+        };
       }
     },
+    capabilities: { maxOutputTokens: 25000, providerStallMs: 900000 },
     providerId: 'openai',
     providerLabel: 'OpenAI',
     effectiveModel: 'gpt-5.5',
@@ -172,7 +181,7 @@ test('full query mode uses the deep answer contract', async () => {
   });
 
   assert.match(capture.instructions, /COMPLETE DEEP ACCESS/);
-  assert.equal(capture.maxTokens, 25000);
+  assert.equal(capture.maxOutputTokens, 25000);
   assert.equal(capture.reasoningEffort, 'high');
 });
 

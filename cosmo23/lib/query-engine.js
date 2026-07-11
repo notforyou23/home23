@@ -11,15 +11,12 @@ const yaml = require('js-yaml');
 const crypto = require('crypto');
 const { promisify } = require('util');
 const gunzip = promisify(zlib.gunzip);
-const OpenAI = require('openai');
-const { GPT5Client } = require('./gpt5-client');
 const { createClusterAdapter } = require('./cluster-adapter');
 const { EvidenceAnalyzer } = require('./evidence-analyzer');
 const { InsightSynthesizer } = require('./insight-synthesizer');
 const { CoordinatorIndexer } = require('./coordinator-indexer');
 const { QuerySuggester } = require('./query-suggestions');
 const { ContextTracker } = require('./context-tracker');
-const AnthropicClient = require('./anthropic-client');
 const { PGSEngine } = require('./pgs-engine');
 const { hydrateStateMemory } = require('./memory-sidecar');
 const {
@@ -28,15 +25,16 @@ const {
   resolveSynthesisCommitConfig,
   writeSynthesisCommitReceipt
 } = require('./synthesis-commit');
-const { ChatCompletionsClient } = require('../engine/src/core/chat-completions-client');
 const {
   loadModelCatalogSync,
-  getCatalogDefaults,
   getEmbeddingConfig,
   getModelCapabilities,
-  inferProviderFromModel
 } = require('../server/config/model-catalog');
-const { requireCompleteProviderResult } = require('./provider-completion');
+const {
+  assertProviderResultIdentity,
+  requireCompleteProviderResult,
+} = require('./provider-completion');
+const { boundedJsonStringify } = require('./bounded-json');
 const { projectPinnedQuery } = require('./pinned-query-projection');
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
 
@@ -45,61 +43,10 @@ const CLUSTER_SNAPSHOT_DEFAULT_TTL = Number.parseInt(
   10
 );
 
-function readJsonFileIfExists(filePath) {
-  if (!filePath) return null;
-  try {
-    if (!fsSync.existsSync(filePath)) return null;
-    return JSON.parse(fsSync.readFileSync(filePath, 'utf-8'));
-  } catch {
-    return null;
-  }
-}
-
-function getCosmoConfigCandidates() {
-  return [
-    process.env.COSMO23_CONFIG_PATH,
-    path.join(__dirname, '..', '.cosmo23-config', 'config.json'),
-    path.join(require('os').homedir(), '.cosmo2.3', 'config.json')
-  ].filter(Boolean);
-}
-
-function getPlainProviderSecret(providerId, envName) {
-  const envValue = process.env[envName];
-  if (envValue && String(envValue).trim()) return String(envValue).trim();
-
-  for (const configPath of getCosmoConfigCandidates()) {
-    const config = readJsonFileIfExists(configPath);
-    const value = config?.providers?.[providerId]?.api_key;
-    if (typeof value === 'string' && value.trim() && !value.startsWith('encrypted:')) {
-      return value.trim();
-    }
-  }
-
-  return '';
-}
-
-function getProviderBaseUrl(providerId, envName, fallback) {
-  const envValue = process.env[envName];
-  if (envValue && String(envValue).trim()) return String(envValue).trim();
-
-  for (const configPath of getCosmoConfigCandidates()) {
-    const config = readJsonFileIfExists(configPath);
-    const value = config?.providers?.[providerId]?.base_url || config?.providers?.[providerId]?.baseUrl;
-    if (typeof value === 'string' && value.trim()) return value.trim();
-  }
-
-  return fallback;
-}
-
 function isTruthyFlag(value) {
   if (!value) return false;
   const normalized = value.toString().trim().toLowerCase();
   return ['1', 'true', 'yes', 'on'].includes(normalized);
-}
-
-function isXaiResponsesModelId(model) {
-  const normalized = String(model || '').trim().toLowerCase();
-  return normalized === 'grok-4.20-multi-agent' || normalized === 'grok-4.20-multi-agent-0309';
 }
 
 function parseProfileString(raw) {
@@ -263,124 +210,12 @@ class QueryEngine {
     
     this.runMetadata = this.loadRunMetadataSync();
     this.runConfig = this.loadRunConfigSync();
-    this.modelCatalog = loadModelCatalogSync();
-    this.modelDefaults = getCatalogDefaults(this.modelCatalog);
-    this.embeddingConfig = getEmbeddingConfig(this.modelCatalog);
-
-    // OpenAI is optional - only needed for semantic search embeddings
-    this.openai = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
-    if (!this.openai) {
-      console.log('[QueryEngine] No OpenAI key - semantic search disabled, keyword search available');
-    }
-    this.gpt5Client = new GPT5Client(console); // Use GPT5Client for queries
-    this.anthropicClient = new AnthropicClient({}, console); // Anthropic client (lazy init, OAuth-aware)
-    // HOME23 PATCH — Query defaults can be MiniMax. MiniMax speaks Anthropic's
-    // Messages API shape, but must use its own endpoint and API key.
-    const minimaxKey = getPlainProviderSecret('minimax', 'MINIMAX_API_KEY');
-    this.minimaxQueryClient = minimaxKey
-      ? new AnthropicClient(
-          {
-            providerId: 'minimax',
-            useOAuthService: false,
-            apiKey: minimaxKey,
-            baseURL: getProviderBaseUrl('minimax', 'MINIMAX_BASE_URL', 'https://api.minimax.io/anthropic'),
-            modelMapping: {}
-          },
-          console
-        )
-      : null;
-
-    // Codex OAuth client (lazy — initialized on first use)
-    this._codexQueryClient = null;
-    this._codexLastToken = null;
-
-    const localDefaultModel =
-      this.runMetadata?.localLlmDefaultModel ||
-      process.env.LOCAL_LLM_MODEL ||
-      'qwen3.5:4b';
-    const localFastModel =
-      this.runMetadata?.localLlmFastModel ||
-      process.env.LOCAL_LLM_FAST_MODEL ||
-      localDefaultModel;
-    const localBaseUrl =
-      this.runMetadata?.localLlmBaseUrl ||
-      process.env.LOCAL_LLM_BASE_URL ||
-      'http://localhost:11434/v1';
-
-    this.localQueryClient = new ChatCompletionsClient(
-      {
-        baseURL: localBaseUrl,
-        defaultModel: localDefaultModel,
-        modelMapping: {
-          'gpt-5.2': localDefaultModel,
-          'gpt-5': localDefaultModel,
-          'gpt-5.1': localDefaultModel,
-          'gpt-5-mini': localFastModel,
-          'gpt-5.1-codex-max': localDefaultModel
-        },
-        supportsTools: true,
-        supportsStreaming: true
-      },
-      console
-    );
-
-    const xaiDefaultModel = this.modelCatalog.providers?.xai?.models?.[0]?.id || 'grok-4-1-fast-reasoning';
-    this.xaiQueryClient = process.env.XAI_API_KEY
-      ? new ChatCompletionsClient(
-          {
-            apiKey: process.env.XAI_API_KEY,
-            baseURL: process.env.XAI_BASE_URL || 'https://api.x.ai/v1',
-            defaultModel: xaiDefaultModel,
-            supportsTools: false,
-            supportsStreaming: true
-          },
-          console
-        )
-      : null;
-
-    // xAI Responses API client for models that require it (e.g. grok-4.20-multi-agent)
-    this.xaiResponsesClient = process.env.XAI_API_KEY
-      ? (() => {
-          const client = new GPT5Client(console);
-          client.client = new OpenAI({
-            apiKey: process.env.XAI_API_KEY,
-            baseURL: process.env.XAI_BASE_URL || 'https://api.x.ai/v1'
-          });
-          return client;
-        })()
-      : null;
-
-    // Ollama Cloud client (ollama.com/v1)
-    let ollamaCloudKey = process.env.OLLAMA_CLOUD_API_KEY;
-    if (!ollamaCloudKey) {
-      try {
-        const cosmoConfigPath = path.join(require('os').homedir(), '.cosmo2.3', 'config.json');
-        const cosmoConfig = JSON.parse(fsSync.readFileSync(cosmoConfigPath, 'utf-8'));
-        let rawKey = cosmoConfig?.providers?.['ollama-cloud']?.api_key || '';
-        // Decrypt if encrypted
-        if (rawKey.startsWith('encrypted:')) {
-          try {
-            const { decryptConfigSecrets } = require('./encryption');
-            const decrypted = decryptConfigSecrets(cosmoConfig);
-            rawKey = decrypted?.providers?.['ollama-cloud']?.api_key || '';
-          } catch { /* decryption failed, use raw */ }
-        }
-        ollamaCloudKey = rawKey;
-      } catch { /* no config file */ }
-    }
-    this.ollamaCloudClient = ollamaCloudKey
-      ? new ChatCompletionsClient(
-          {
-            baseURL: 'https://ollama.com/v1',
-            apiKey: ollamaCloudKey,
-            defaultModel: 'nemotron-3-super',
-            modelMapping: {},
-            supportsTools: true,
-            supportsStreaming: true
-          },
-          console
-        )
-      : null;
+    this.modelCatalog = deps.modelCatalog || loadModelCatalogSync();
+    this.embeddingConfig = deps.embeddingConfig || getEmbeddingConfig(this.modelCatalog);
+    this.providerRegistry = deps.providerRegistry || null;
+    this.requireCompleteProviderResult = deps.requireCompleteProviderResult
+      || requireCompleteProviderResult;
+    this.openai = deps.embeddingClient || null;
 
     this.pgsEngine = null;
     
@@ -710,12 +545,12 @@ STYLE:
 - Do NOT include any raw markdown headings beyond the numbered section titles above.
 `.trim();
 
-    const response = await this.gpt5Client.generate({
-      model: 'gpt-5.2',
+    const response = await this._generateExactCompletion({
+      provider: safeMetadata.provider,
+      model: safeMetadata.model,
       instructions,
       input,
       reasoningEffort: 'medium',
-      maxTokens: 6000,
       verbosity: 'medium'
     });
 
@@ -1670,65 +1505,43 @@ STYLE:
     return Math.min(nodeCount || baseLimit, baseLimit, MAX_NODES);
   }
 
-  async _getCodexCredentials() {
-    const codexOAuthEngine = require('../engine/src/services/codex-oauth-engine');
-    const creds = await codexOAuthEngine.getCodexCredentials();
-    if (!creds || !creds.accessToken) {
-      throw new Error('No Codex OAuth credentials available');
-    }
-    return creds;
-  }
-
   resolveQueryRuntime(requestedModel, explicitProvider = null) {
-    let effectiveModel = requestedModel || this.modelDefaults.queryModel || 'gpt-5.2';
-    let providerId = explicitProvider || inferProviderFromModel(effectiveModel, this.modelCatalog) || 'openai';
+    const effectiveModel = typeof requestedModel === 'string' ? requestedModel.trim() : '';
+    const providerId = typeof explicitProvider === 'string' ? explicitProvider.trim() : '';
+    if (!providerId || !effectiveModel) {
+      throw operationError(
+        'provider_model_mismatch',
+        'Exact provider and model are required',
+      );
+    }
+    if (!this.modelCatalog?.providers || !this.providerRegistry
+        || typeof this.providerRegistry.get !== 'function') {
+      throw operationError('provider_unavailable', 'Provider registry is unavailable', true);
+    }
+    const capabilities = getModelCapabilities(this.modelCatalog, providerId, effectiveModel);
+    const client = this.providerRegistry.get(providerId, effectiveModel);
+    if (!client || typeof client.generate !== 'function') {
+      throw operationError(
+        'provider_unavailable',
+        `Provider unavailable: ${providerId}/${effectiveModel}`,
+        true,
+      );
+    }
+    if (client.providerId !== providerId) {
+      throw operationError('provider_model_mismatch', 'Provider client identity mismatch');
+    }
 
     const isCodex = providerId === 'openai-codex';
-
-    if (!isCodex && providerId === 'openai' && !this.gpt5Client.available && this.localQueryClient) {
-      const fallbackModel = this.runMetadata?.localLlmDefaultModel || this.localQueryClient.defaultModel;
-      console.log(`[QUERY ENGINE] Falling back from ${effectiveModel} to local model ${fallbackModel}`);
-      effectiveModel = fallbackModel;
-      providerId = inferProviderFromModel(effectiveModel, this.modelCatalog) || 'ollama';
-    }
-
     const isClaudeModel = providerId === 'anthropic';
     const isMiniMaxModel = providerId === 'minimax';
     const isLocalModel = providerId === 'ollama' || providerId === 'lmstudio' || providerId === 'local';
     const isXaiModel = providerId === 'xai';
-    const isOllamaCloud = providerId === 'ollama-cloud';
-    const isXaiResponsesModel = isXaiResponsesModelId(effectiveModel) || (isXaiModel && effectiveModel.includes('multi-agent'));
-
-    // Codex uses async client init — return a sentinel and let executeQuery handle it
-    const client = isCodex
-      ? null // resolved async via _ensureCodexQueryClient()
-      : (isClaudeModel
-        ? this.anthropicClient
-        : isMiniMaxModel
-          ? this.minimaxQueryClient
-          : isOllamaCloud
-            ? this.ollamaCloudClient
-            : (isXaiResponsesModel ? (this.xaiResponsesClient || this.xaiQueryClient)
-              : (isXaiModel ? this.xaiQueryClient : (isLocalModel ? this.localQueryClient : this.gpt5Client))));
-
-    if (!isCodex && !client) {
-      throw new Error(`Model ${effectiveModel} is not available because ${providerId} is not configured.`);
-    }
-
-    const providerLabel = isCodex
-      ? 'OpenAI Codex'
-      : (isClaudeModel
-        ? 'Anthropic'
-        : isMiniMaxModel
-          ? 'MiniMax'
-          : isOllamaCloud
-            ? 'Ollama Cloud'
-            : (isXaiModel ? 'xAI' : (isLocalModel ? 'Local LLM' : 'OpenAI')));
 
     return {
       client,
+      capabilities,
       providerId,
-      providerLabel,
+      providerLabel: providerId,
       effectiveModel,
       isClaudeModel,
       isMiniMaxModel,
@@ -1737,6 +1550,22 @@ STYLE:
       isCodex,
       requestedModel
     };
+  }
+
+  async _generateExactCompletion({ provider, model, signal = null, ...request }) {
+    operationThrowIfAborted(signal);
+    const runtime = this.resolveQueryRuntime(model, provider);
+    const raw = await runtime.client.generate({
+      ...request,
+      provider: runtime.providerId,
+      model: runtime.effectiveModel,
+      maxOutputTokens: runtime.capabilities.maxOutputTokens,
+      signal,
+    });
+    operationThrowIfAborted(signal);
+    const complete = this.requireCompleteProviderResult(raw);
+    assertProviderResultIdentity(complete, runtime.providerId, runtime.effectiveModel);
+    return complete;
   }
 
   _emitOperationEvent(event, options) {
@@ -1769,7 +1598,7 @@ STYLE:
     if (!client || typeof client.generate !== 'function') {
       throw operationError('provider_unavailable', `Provider unavailable: ${provider}/${model}`, true);
     }
-    if (client.providerId && client.providerId !== provider) {
+    if (client.providerId !== provider) {
       throw operationError('provider_model_mismatch', 'Provider client identity mismatch');
     }
 
@@ -1801,22 +1630,32 @@ STYLE:
         edges: projection.edges,
       },
     };
-    const input = JSON.stringify(promptPayload);
     const instructions = [
       'Answer from the pinned Home23 brain evidence supplied in the input.',
       'Distinguish evidence from inference and do not claim coverage beyond the pinned source.',
       'Return a direct, useful answer to the query.',
     ].join(' ');
-    const promptBytes = utf8Bytes(instructions) + utf8Bytes(input);
     const maxPromptBytes = Number.isSafeInteger((options.limits || {}).maxPromptBytes)
       ? options.limits.maxPromptBytes
       : QUERY_OPERATION_LIMITS.maxPromptBytes;
     if (maxPromptBytes <= 0 || maxPromptBytes > QUERY_OPERATION_LIMITS.maxPromptBytes) {
       throw operationError('invalid_request', 'Invalid query prompt limit');
     }
-    if (promptBytes > maxPromptBytes) {
-      throw operationError('result_too_large', 'Query prompt exceeds the byte limit');
-    }
+    const serializedPrompt = boundedJsonStringify(promptPayload, {
+      maxBytes: maxPromptBytes,
+      reservedBytes: utf8Bytes(instructions),
+      label: 'Query prompt',
+    });
+    const input = serializedPrompt.json;
+    const promptBytes = serializedPrompt.totalBytes;
+
+    this._emitOperationEvent({
+      type: 'progress',
+      phase: 'query',
+      stage: 'projection_complete',
+      selectedNodes: projection.stats?.selectedNodes ?? projection.nodes.length,
+      selectedEdges: projection.stats?.selectedEdges ?? projection.edges.length,
+    }, options);
 
     const baseEvent = {
       phase: 'query',
@@ -1851,6 +1690,7 @@ STYLE:
       });
       operationThrowIfAborted(signal);
       const complete = this.requireCompleteProviderResult(response);
+      assertProviderResultIdentity(complete, provider, model);
       operationThrowIfAborted(signal);
       const answer = String(complete.content || '').trim();
       if (!answer) {
@@ -1974,22 +1814,19 @@ STYLE:
       explicitProvider = null, // NEW: Explicit provider override (e.g. 'openai-codex')
       artifactContext = null, // HOME23 PATCH — authoritative artifact inventory
       artifactFingerprint = null,
-      synthesis = null
+      synthesis = null,
+      signal = null,
     } = options;
 
     const {
       client: resolvedClient,
+      capabilities,
       providerId,
       providerLabel,
       effectiveModel,
-      isClaudeModel,
-      isLocalModel,
-      isXaiModel,
-      isCodex
     } = this.resolveQueryRuntime(requestedModel, explicitProvider);
 
-    // Codex uses raw fetch (not OpenAI SDK) — client stays null, handled inline
-    const client = isCodex ? null : resolvedClient;
+    const client = resolvedClient;
     const model = effectiveModel;
     const synthesisCommitConfig = mode === 'dive'
       ? resolveSynthesisCommitConfig(synthesis || this.runConfig?.synthesis || this.runMetadata?.synthesis, 'dive')
@@ -2275,84 +2112,33 @@ STYLE:
       instructions = followUpPrefix + instructions;
     }
     
-    // Generate answer using appropriate model client (GPT-5 or Claude)
+    // Every provider, including Codex, executes through the exact registry adapter.
     let response;
     try {
-      if (isCodex) {
-        // Codex uses chatgpt.com/backend-api/codex/responses (raw fetch, not OpenAI SDK)
-        const os = require('os');
-        const creds = await this._getCodexCredentials();
-        const body = {
-          model: model,
-          store: false,
-          stream: true,
-          instructions: instructions,
-          input: QueryEngine.buildCodexInputItems(`${context}\n\nQuestion: ${query}`),
-        };
-
-        const fetchResp = await fetch('https://chatgpt.com/backend-api/codex/responses', {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${creds.accessToken}`,
-            'Content-Type': 'application/json',
-            'chatgpt-account-id': creds.accountId || '',
-            'OpenAI-Beta': 'responses=experimental',
-            'originator': 'cosmo',
-            'oai-language': 'en-US',
-            'User-Agent': `cosmo (${os.platform()} ${os.release()}; ${os.arch()})`,
-            'accept': 'text/event-stream',
-          },
-          body: JSON.stringify(body),
-        });
-
-        if (!fetchResp.ok) {
-          const errText = await fetchResp.text();
-          throw new Error(`Codex ${fetchResp.status}: ${errText.substring(0, 200)}`);
-        }
-
-        let fullText = '';
-        const reader = fetchResp.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          let idx = buf.indexOf('\n\n');
-          while (idx !== -1) {
-            const chunk = buf.slice(0, idx);
-            buf = buf.slice(idx + 2);
-            const dataLines = chunk.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).trim());
-            for (const data of dataLines) {
-              if (!data || data === '[DONE]') continue;
-              try {
-                const evt = JSON.parse(data);
-                if (evt.type === 'response.output_text.delta' && evt.delta) {
-                  fullText += evt.delta;
-                  if (onChunk) onChunk({ type: 'chunk', content: evt.delta });
-                }
-              } catch {}
-            }
-            idx = buf.indexOf('\n\n');
-          }
-        }
-        response = { content: fullText };
-      } else {
-        response = await client.generate({
-          model: model,
-          instructions: instructions,
-          input: `${context}\n\nQuestion: ${query}`,
-          reasoningEffort: config.reasoningEffort,
-          maxTokens: config.maxTokens,
-          verbosity: config.verbosity,
-          onChunk: onChunk  // NEW (2026-01-21): Pass through streaming callback
-        });
-      }
+      const raw = await client.generate({
+        provider: providerId,
+        model,
+        instructions,
+        input: `${context}\n\nQuestion: ${query}`,
+        reasoningEffort: config.reasoningEffort,
+        maxOutputTokens: capabilities.maxOutputTokens,
+        verbosity: config.verbosity,
+        signal,
+        onChunk,
+      });
+      response = this.requireCompleteProviderResult(raw);
+      assertProviderResultIdentity(response, providerId, model);
     } catch (error) {
+      if (signal?.aborted) throw signal.reason;
       console.error(`[QUERY ENGINE] ${providerLabel} API call failed:`, error);
       console.error('[QUERY ENGINE] Context length:', context.length, 'chars');
       console.error('[QUERY ENGINE] Instructions length:', instructions.length, 'chars');
-      throw new Error(`${providerLabel} API error: ${error.message || 'Unknown error'}`);
+      if (error?.code) throw error;
+      throw operationError(
+        'provider_failed',
+        `${providerLabel} API error: ${error.message || 'Unknown error'}`,
+        true,
+      );
     }
 
     const answer = response.content || response.message?.content || '';
@@ -2371,7 +2157,7 @@ STYLE:
       metadata: {
         model,
         requestedModel,
-        provider: providerId || (isClaudeModel ? 'anthropic' : (isXaiModel ? 'xai' : (isLocalModel ? 'local' : 'openai'))),
+        provider: providerId,
         mode,
         reasoningEffort: config.reasoningEffort,
         sources: {
@@ -3421,7 +3207,12 @@ SECTION E: Prioritize immediate next actions (design partners, pilots, validatio
    * This ensures executives get compressed views that are 100% faithful to the original answer
    */
   async executeExecutiveCompression(query, baseAnswer, options = {}) {
-    const { model = 'gpt-5.2', baseMetadata = {} } = options;
+    const pair = options.modelSelection || {
+      provider: options.provider ?? options.explicitProvider,
+      model: options.model,
+    };
+    const { provider, model } = exactProviderPair({ modelSelection: pair }, this.modelCatalog);
+    const { baseMetadata = {}, signal = null } = options;
     
     // SMART DETECTION: Determine query type to add contextual emphasis
     const queryType = this.detectQueryType(query, baseAnswer);
@@ -3442,13 +3233,14 @@ SECTION E: Prioritize immediate next actions (design partners, pilots, validatio
     input += `${baseAnswer}`;
     
     // Call GPT-5.1 with compression-only prompt
-    const response = await this.gpt5Client.generate({
-      model: model,
+    const response = await this._generateExactCompletion({
+      provider,
+      model,
       instructions: instructions,
       input: input,
       reasoningEffort: 'low',
-      maxTokens: 8000,
-      verbosity: 'low'
+      verbosity: 'low',
+      signal,
     });
     
     let answer = response.content || response.message?.content || '';

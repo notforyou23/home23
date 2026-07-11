@@ -213,6 +213,67 @@ test('empty pinned source fails honestly without provider work', async t => {
   assert.equal(pin.releaseCount(), 0);
 });
 
+test('PGS requires exact client and completion provider identities', async t => {
+  for (const [name, sweepClient, expectedCalls] of [
+    ['missing client provider', {
+      async generate() { throw new Error('unreachable'); },
+    }, 0],
+    ['mismatched client provider', {
+      providerId: 'synth', async generate() { throw new Error('unreachable'); },
+    }, 0],
+    ['missing completion provider', {
+      providerId: 'sweep', async generate() {
+        return {
+          content: 'finding', terminalReceived: true, finishReason: 'completed',
+          hadError: false, provider: null, model: 'shared-model',
+        };
+      },
+    }, 1],
+    ['mismatched completion model', {
+      providerId: 'sweep', async generate() {
+        return {
+          content: 'finding', terminalReceived: true, finishReason: 'completed',
+          hadError: false, provider: 'sweep', model: 'wrong-model',
+        };
+      },
+    }, 1],
+  ]) {
+    const scratch = await scratchFixture(t);
+    let calls = 0;
+    const wrappedSweep = {
+      ...sweepClient,
+      async generate(options) {
+        calls += 1;
+        return sweepClient.generate(options);
+      },
+    };
+    const engine = new PGSEngine({
+      modelCatalog: catalog(),
+      providerRegistry: {
+        get(provider) {
+          if (provider === 'sweep') return wrappedSweep;
+          return {
+            providerId: 'synth',
+            async generate() {
+              return {
+                content: 'synthesis', terminalReceived: true, finishReason: 'completed',
+                hadError: false, provider: 'synth', model: 'shared-model',
+              };
+            },
+          };
+        },
+      },
+    });
+    await assert.rejects(
+      engine.runPinnedOperation(options(sourcePin({ nodeCount: 2 }), scratch)),
+      error => error.code === 'provider_model_mismatch',
+      name,
+    );
+    if (expectedCalls === 0) assert.equal(calls, 0, name);
+    else assert.equal(calls > 0, true, name);
+  }
+});
+
 test('fractional run is honestly partial and a retry executes only pending work', async t => {
   const scratch = await scratchFixture(t);
   const pin = sourcePin();

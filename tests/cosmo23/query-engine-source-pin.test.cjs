@@ -129,6 +129,10 @@ test('operation query uses only the pinned iterator and exact provider pair', as
   assert.equal(calls[0].signal, options.signal);
   assert.deepEqual(events, [
     {
+      type: 'progress', phase: 'query', stage: 'projection_complete',
+      selectedNodes: 2, selectedEdges: 1,
+    },
+    {
       type: 'provider_selected', phase: 'query', provider: 'alpha',
       model: 'answer-model', providerStallMs: 900000, providerCallId: 'query',
     },
@@ -152,7 +156,7 @@ test('operation query reports provider lifecycle through the canonical reportEve
     reportEvent: event => operationEvents.push(event),
   }));
   assert.deepEqual(operationEvents.map(event => event.type), [
-    'provider_selected', 'provider_activity', 'provider_call_terminal',
+    'progress', 'provider_selected', 'provider_activity', 'provider_call_terminal',
   ]);
   assert.deepEqual(fallbackEvents, []);
 });
@@ -235,6 +239,28 @@ test('prompt and provider result byte limits fail at the correct boundary', asyn
   assert.equal(result.events.at(-1).outcome, 'failed');
 });
 
+test('operation query bounds prompt construction before serializing a huge projection', async () => {
+  const item = fixture();
+  item.engine.projectPinnedQuery = async () => ({
+    sourceRevision: 11,
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 0 },
+    nodes: [{ id: 'huge', content: 'x'.repeat(32 * 1024 * 1024) }],
+    edges: [],
+    stats: { selectedNodes: 1, selectedEdges: 0 },
+    sourceEvidence: { sourceHealth: 'healthy' },
+  });
+  const maximum = 64 * 1024;
+  await assert.rejects(
+    item.engine.executeQuery('bounded prompt', operationOptions(sourcePin(), {
+      limits: { maxPromptBytes: maximum },
+    })),
+    error => error.code === 'result_too_large'
+      && error.bytesExamined <= maximum + (16 * 1024),
+  );
+  assert.equal(item.calls.length, 0);
+  assert.deepEqual(item.events, []);
+});
+
 test('provider cancellation preserves the exact operation reason and terminal event', async () => {
   const controller = new AbortController();
   const reason = Object.assign(new Error('operator cancelled'), { code: 'cancelled' });
@@ -277,6 +303,40 @@ test('incomplete provider output is never promoted to success', async () => {
     error => error.code === 'provider_incomplete',
   );
   assert.equal(item.events.at(-1).outcome, 'failed');
+});
+
+test('operation query requires exact client and completion provider identities', async () => {
+  for (const [name, client, expectedCalls] of [
+    ['missing client provider', { async generate() { throw new Error('unreachable'); } }, 0],
+    ['mismatched client provider', {
+      providerId: 'beta', async generate() { throw new Error('unreachable'); },
+    }, 0],
+    ['missing completion provider', {
+      providerId: 'alpha', async generate() { return { ...complete(), provider: null }; },
+    }, 1],
+    ['mismatched completion provider', {
+      providerId: 'alpha', async generate() { return { ...complete(), provider: 'beta' }; },
+    }, 1],
+    ['mismatched completion model', {
+      providerId: 'alpha', async generate() { return { ...complete(), model: 'other-model' }; },
+    }, 1],
+  ]) {
+    let calls = 0;
+    const counted = {
+      ...client,
+      async generate(options) {
+        calls += 1;
+        return client.generate(options);
+      },
+    };
+    const item = fixture({ client: counted });
+    await assert.rejects(
+      item.engine.executeQuery('identity canary', operationOptions(sourcePin())),
+      error => error.code === 'provider_model_mismatch',
+      name,
+    );
+    assert.equal(calls, expectedCalls, name);
+  }
 });
 
 test('operation PGS selection delegates only to the pinned package path', async () => {

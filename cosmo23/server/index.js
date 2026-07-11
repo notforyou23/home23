@@ -88,6 +88,9 @@ const {
   createResearchOperationExecutors,
 } = require('./lib/research-operation-executors');
 const {
+  createLegacyQueryOperationAdapter,
+} = require('./lib/legacy-query-operation-adapter');
+const {
   buildResearchRunTarget,
 } = require('../../shared/brain-operations/research-run-target.cjs');
 const {
@@ -182,6 +185,10 @@ const configGenerator = new ConfigGenerator(ROOT, console);
 const processManager = new ProcessManager(ENGINE_DIR, console);
 const queryEngineCache = new Map();
 const oauthPkceStateStore = new Map();
+const legacyQueryOperationAdapter = createLegacyQueryOperationAdapter({
+  dashboardOrigin: `http://127.0.0.1:${process.env.HOME23_DASHBOARD_PORT || 5002}`,
+  catalogProvider: () => loadModelCatalogSync(),
+});
 
 // HOME23 PATCH 47 — injectable protected-worker route seam. The exact
 // provider/research executor registry is assembled by its owning rollout; the
@@ -2047,6 +2054,17 @@ app.get('/api/watch/logs', async (req, res) => {
 });
 
 app.post('/api/brain/:name/query', async (req, res) => {
+  let responseFinished = false;
+  const controller = new AbortController();
+  const abortCaller = () => {
+    if (!responseFinished && !controller.signal.aborted) {
+      controller.abort(Object.assign(new Error('query caller disconnected'), {
+        code: 'caller_disconnected', retryable: true,
+      }));
+    }
+  };
+  req.once('aborted', abortCaller);
+  res.once('close', abortCaller);
   try {
     const brain = await resolveCatalogBrainBySelector(req.params.name);
 
@@ -2055,45 +2073,43 @@ app.post('/api/brain/:name/query', async (req, res) => {
     }
 
     const artifactInventory = summarizeRunArtifacts(brain.path);
-    const artifactContext = buildArtifactFirstContext(artifactInventory);
-    const queryEngine = await getQueryEngine(brain.path);
-    const queryDefaults = getCatalogDefaults();
-    const result = await queryEngine.executeEnhancedQuery(req.body.query, {
-      model: req.body.model || queryDefaults.queryModel || 'gpt-5.2',
-      mode: req.body.mode || 'normal',
-      includeEvidenceMetrics: parseBoolean(req.body.includeEvidenceMetrics, false),
-      enableSynthesis: parseBoolean(req.body.enableSynthesis, true),
-      includeCoordinatorInsights: parseBoolean(req.body.includeCoordinatorInsights, true),
-      includeFiles: parseBoolean(req.body.includeOutputs, true),
-      includeThoughts: parseBoolean(req.body.includeThoughts, true),
-      priorContext: req.body.priorContext || null,
-      exportFormat: req.body.exportFormat || null,
-      allowActions: parseBoolean(req.body.allowActions, false),
-      enablePGS: parseBoolean(req.body.enablePGS, false),
-      pgsMode: req.body.pgsMode || null,
-      pgsSessionId: req.body.pgsSessionId || null,
-      pgsFullSweep: parseBoolean(req.body.pgsFullSweep, false),
-      pgsConfig: req.body.pgsConfig || null,
-      pgsSweepModel: req.body.pgsSweepModel || null,
-      synthesis: req.body.synthesis || null,
-      explicitProvider: req.body.provider || null,
-      artifactContext,
-      artifactFingerprint: artifactInventory.fingerprint || null
+    const result = await legacyQueryOperationAdapter.execute({
+      brainId: brain.id || brain.routeKey,
+      body: req.body,
+      signal: controller.signal,
     });
 
     result.query = req.body.query;
     result.artifactInventory = artifactInventory;
+    responseFinished = true;
     res.json(result);
   } catch (error) {
-    res.status(500).json({
+    responseFinished = true;
+    const status = error?.code === 'caller_disconnected' ? 499
+      : ['invalid_request', 'provider_model_mismatch', 'model_ambiguous', 'model_not_found']
+        .includes(error?.code) ? 400
+        : error?.retryable === true ? 503 : 500;
+    res.status(status).json({
       error: 'Query failed',
       message: error.message,
-      response: `Query failed: ${error.message}`
+      response: `Query failed: ${error.message}`,
+      code: error?.code || 'query_failed',
     });
   }
 });
 
 app.post('/api/brain/:name/query/stream', async (req, res) => {
+  let responseFinished = false;
+  const controller = new AbortController();
+  const abortCaller = () => {
+    if (!responseFinished && !controller.signal.aborted) {
+      controller.abort(Object.assign(new Error('query stream caller disconnected'), {
+        code: 'caller_disconnected', retryable: true,
+      }));
+    }
+  };
+  req.once('aborted', abortCaller);
+  res.once('close', abortCaller);
   try {
     const brain = await resolveCatalogBrainBySelector(req.params.name);
 
@@ -2107,44 +2123,33 @@ app.post('/api/brain/:name/query/stream', async (req, res) => {
     res.flushHeaders();
 
     const artifactInventory = summarizeRunArtifacts(brain.path);
-    const artifactContext = buildArtifactFirstContext(artifactInventory);
-    const queryEngine = await getQueryEngine(brain.path);
-    const queryDefaults = getCatalogDefaults();
-    await queryEngine.executeEnhancedQuery(req.body.query, {
-      model: req.body.model || queryDefaults.queryModel || 'gpt-5.2',
-      mode: req.body.mode || 'normal',
-      includeEvidenceMetrics: parseBoolean(req.body.includeEvidenceMetrics, false),
-      enableSynthesis: parseBoolean(req.body.enableSynthesis, true),
-      includeCoordinatorInsights: parseBoolean(req.body.includeCoordinatorInsights, true),
-      includeFiles: parseBoolean(req.body.includeOutputs, true),
-      includeThoughts: parseBoolean(req.body.includeThoughts, true),
-      priorContext: req.body.priorContext || null,
-      exportFormat: req.body.exportFormat || null,
-      allowActions: parseBoolean(req.body.allowActions, false),
-      enablePGS: parseBoolean(req.body.enablePGS, false),
-      pgsMode: req.body.pgsMode || null,
-      pgsSessionId: req.body.pgsSessionId || null,
-      pgsFullSweep: parseBoolean(req.body.pgsFullSweep, false),
-      pgsConfig: req.body.pgsConfig || null,
-      pgsSweepModel: req.body.pgsSweepModel || null,
-      synthesis: req.body.synthesis || null,
-      explicitProvider: req.body.provider || null,
-      artifactContext,
-      artifactFingerprint: artifactInventory.fingerprint || null,
-      onChunk: (event) => {
-        res.write(`data: ${JSON.stringify(event)}\n\n`);
-      }
-    }).then(result => {
-      result.artifactInventory = artifactInventory;
-      res.write(`data: ${JSON.stringify({ type: 'complete', result })}\n\n`);
-      res.end();
-    }).catch(error => {
-      res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
-      res.end();
+    const result = await legacyQueryOperationAdapter.execute({
+      brainId: brain.id || brain.routeKey,
+      body: req.body,
+      signal: controller.signal,
+      onEvent: (event) => {
+        if (!res.writableEnded && !res.destroyed) {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+      },
     });
+    result.artifactInventory = artifactInventory;
+    if (!res.writableEnded && !res.destroyed) {
+      res.write(`data: ${JSON.stringify({ type: 'complete', result })}\n\n`);
+    }
+    responseFinished = true;
+    res.end();
   } catch (error) {
+    responseFinished = true;
     if (!res.headersSent) {
-      res.status(500).json({ error: error.message });
+      const status = ['invalid_request', 'provider_model_mismatch', 'model_ambiguous', 'model_not_found']
+        .includes(error?.code) ? 400 : error?.retryable === true ? 503 : 500;
+      res.status(status).json({ error: error.message, code: error?.code || 'query_failed' });
+    } else if (!res.writableEnded && !res.destroyed) {
+      res.write(`data: ${JSON.stringify({
+        type: 'error', error: error.message, code: error?.code || 'query_failed',
+      })}\n\n`);
+      res.end();
     }
   }
 });

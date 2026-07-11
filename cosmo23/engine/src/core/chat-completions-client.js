@@ -67,6 +67,12 @@ class ChatCompletionsClient {
   constructor(config = {}, logger = null) {
     this.logger = logger;
     this.config = { ...config, providerId: requireProviderId(config.providerId) };
+    Object.defineProperty(this, 'providerId', {
+      value: this.config.providerId,
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    });
 
     // Get base URL from config or environment
     // Default to Ollama's OpenAI-compatible endpoint

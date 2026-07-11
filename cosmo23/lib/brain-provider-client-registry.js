@@ -201,10 +201,16 @@ function createBrainProviderClientRegistry({
           unavailable.set(key, 'provider client is unavailable');
           continue;
         }
-        if (client.providerId && client.providerId !== provider) {
+        if (client.providerId !== provider) {
           unavailable.set(key, 'provider client identity mismatch');
           continue;
         }
+        Object.defineProperty(client, 'providerId', {
+          value: provider,
+          enumerable: true,
+          configurable: false,
+          writable: false,
+        });
         clients.set(key, client);
       } catch (error) {
         unavailable.set(key, error?.message || 'provider client is unavailable');

@@ -8,6 +8,7 @@ const { randomUUID } = require('node:crypto');
 const { openPinnedPGSStore, lowerLimits } = require('./pinned-store');
 const {
   ProviderCompletionError,
+  assertProviderResultIdentity,
   requireCompleteProviderResult,
 } = require('../../lib/provider-completion');
 const { getModelCapabilities } = require('../../server/config/model-catalog');
@@ -162,7 +163,7 @@ async function runPinnedOperation(engine, options = {}) {
     if (typeof client?.generate !== 'function') {
       throw typed('provider_unavailable', `PGS ${label} provider is unavailable`, true);
     }
-    if (client.providerId && client.providerId !== pair.provider) {
+    if (client.providerId !== pair.provider) {
       throw typed('provider_model_mismatch', `PGS ${label} provider identity mismatch`);
     }
   }
@@ -211,6 +212,7 @@ async function runPinnedOperation(engine, options = {}) {
       });
       throwIfAborted(signal);
       const complete = validateCompletion(raw);
+      assertProviderResultIdentity(complete, pair.provider, pair.model);
       throwIfAborted(signal);
       outcome = 'complete';
       return complete;
@@ -260,6 +262,8 @@ async function runPinnedOperation(engine, options = {}) {
       }
       if (uncommitted.length) await store.commitSuccessfulSweeps(uncommitted);
       uncommitted.length = 0;
+      const fatal = settled.find(row => row.status === 'rejected' && row.reason?.retryable === false);
+      if (fatal) throw fatal.reason;
       settled.forEach((row, index) => {
         if (row.status === 'rejected') store.recordRetryableFailure(ids[index], row.reason);
       });
