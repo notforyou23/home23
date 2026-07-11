@@ -283,6 +283,68 @@ test('legacy resident sidecar save uses changes-only snapshot when available', a
   assert.deepEqual(events, ['changes-only', 'clean-if:7']);
 });
 
+test('manifest delta and reuse saves never materialize the full resident graph', async () => {
+  for (const hasChanges of [true, false]) {
+    const events = [];
+    const changes = Object.freeze({
+      nodes: Object.freeze(hasChanges ? [{ id: 'delta', concept: 'bounded delta' }] : []),
+      edges: Object.freeze([]),
+      removedNodeIds: Object.freeze([]),
+      removedEdgeKeys: Object.freeze([]),
+    });
+    const memory = {
+      capturePersistenceSnapshot() {
+        throw new Error('full resident graph materializer invoked');
+      },
+      capturePersistenceChangesSnapshot() {
+        events.push('changes-only');
+        return Object.freeze({
+          generation: 13,
+          changes,
+          summary: Object.freeze({ nodeCount: 139000, edgeCount: 455000, clusterCount: 37 }),
+        });
+      },
+      markPersistenceCleanIfGeneration(expected) {
+        events.push(`clean-if:${expected}`);
+        return expected === 13;
+      },
+    };
+    let appended = null;
+    const result = await persistMemoryRevision({
+      brainDir: '/unused',
+      memory,
+      writer: {
+        readManifest: async () => ({
+          currentRevision: 17,
+          baseWrittenAt: new Date().toISOString(),
+          summary: { nodeCount: 139000, edgeCount: 455000, clusterCount: 37 },
+        }),
+        appendMemoryRevision: async (_brainDir, capturedChanges, options) => {
+          events.push('committed');
+          appended = { capturedChanges, summary: options.summary };
+          return { manifest: { currentRevision: 18 }, count: 1 };
+        },
+        rewriteMemoryBase: async () => { throw new Error('full rewrite not expected'); },
+      },
+    });
+
+    assert.equal(result.mode, hasChanges ? 'delta' : 'reused');
+    assert.deepEqual(events, hasChanges
+      ? ['changes-only', 'committed', 'clean-if:13']
+      : ['changes-only']);
+    if (hasChanges) {
+      assert.equal(appended.capturedChanges, changes);
+      assert.deepEqual(appended.summary, {
+        nodeCount: 139000,
+        edgeCount: 455000,
+        clusterCount: 37,
+      });
+    } else {
+      assert.equal(appended, null);
+    }
+  }
+});
+
 test('a successful full rewrite schedules production retirement with global pin discovery', async () => {
   const scheduled = [];
   const calls = [];

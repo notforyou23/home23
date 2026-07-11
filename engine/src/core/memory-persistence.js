@@ -165,9 +165,17 @@ async function persistMemoryRevision({
       persistedChanges: snapshot.changes,
     };
   }
-  const snapshot = memory.capturePersistenceSnapshot();
   const rewrite = forceFull || !manifest
     || (manifest.baseWrittenAt && Date.now() - Date.parse(manifest.baseWrittenAt) >= fullRewriteIntervalMs);
+  // A manifest-backed delta/reuse save must not clone the complete resident
+  // graph merely to discover that only its dirty generation is needed. At
+  // Jerry scale that redundant full materialization can exhaust the engine
+  // heap before appendMemoryRevision is reached. Full views remain mandatory
+  // for initial/forced/periodic base rewrites; ordinary saves capture the same
+  // immutable generation through the bounded changes-only surface.
+  const snapshot = !rewrite && typeof memory.capturePersistenceChangesSnapshot === 'function'
+    ? memory.capturePersistenceChangesSnapshot()
+    : memory.capturePersistenceSnapshot();
   let result;
   if (rewrite) {
     result = await writer.rewriteMemoryBase(brainDir, {
