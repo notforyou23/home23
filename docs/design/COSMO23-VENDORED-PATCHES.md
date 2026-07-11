@@ -2555,10 +2555,27 @@ closing an owned handle and leaves borrowed handles to their owner.
 - Shared base/delta/source-reader coverage, including owned and borrowed early
   iterator return, passed 11/11.
 
-These are isolated-worktree and focused-suite receipts through branch commit
-`b6a44f7`. They do not claim deployment, process restart, live Jerry/Forrest
-acceptance, MCP runtime availability, or completion of the full Brain
-Operations Reliability rollout.
+**2026-07-11 canonical retrieval-evidence follow-up:** Protected Direct Query
+and PGS now derive `returnedTotals`, `completeCoverage`, and filtering facts
+only after the bounded pinned projection or PGS store has opened and completed
+its source scan. A provider/child result can no longer supply authoritative
+brain identity, health, freshness, watermarks, match outcome, or coerced totals.
+The worker reloads those claims through the authenticated pinned source,
+requires safe nonnegative exact node/edge counts, binds requester/brain/route,
+and rejects disagreement between terminal-level and result-level evidence.
+Positive legacy coverage can therefore report the exact degraded
+`freshness: unknown` match without turning a degraded zero result into a
+`no_match` or `corpus_empty` claim. Failed null-result operations retain an
+honest unknown canonical baseline, while any non-null result must carry
+consistent retrieval facts. Focused pinned Query projection, Query worker, and
+PGS source-pin verification passed 33/33 at commit `8d917ca`; the wider PGS
+source/retry/cancellation/store slice passed 36/36. This remains offline proof,
+not live rollout acceptance.
+
+The original Patch 53 receipts run through branch commit `b6a44f7`; the
+canonical retrieval-evidence follow-up is verified at `8d917ca`. They do not
+claim deployment, process restart, live Jerry/Forrest acceptance, MCP runtime
+availability, or completion of the full Brain Operations Reliability rollout.
 
 ---
 
@@ -2966,8 +2983,10 @@ restart or Jerry/Forrest acceptance; those remain guarded rollout work.
   provider streams and every operation caller enforce typed byte ceilings,
   protected probes and guided PGS preserve exact configured pairs, research
   saves publish recoverable manifest generations, and early source iteration
-  quiesces before an owned file handle closes. This records offline focused
-  verification only; live rollout acceptance remains pending.
+  quiesces before an owned file handle closes. Its follow-up binds Direct Query
+  and PGS retrieval totals and match outcomes to the opened pinned source rather
+  than child/provider assertions. This records offline focused verification
+  only; live rollout acceptance remains pending.
 - **2026-07-11** — Patch 54 put root and vendored memory mutation, cluster
   merge, consolidation, and legacy save/load paths behind the same atomic
   persistence contract. Exact typed identities, extensions, tombstones,
