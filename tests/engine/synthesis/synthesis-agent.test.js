@@ -168,9 +168,18 @@ test('runOperation emits correlated provider events and commits a verifiable mar
   });
 
   assert.deepEqual(events.map((event) => event.type), [
-    'provider_selected', 'provider_activity', 'provider_call_terminal',
+    'progress', 'provider_selected', 'provider_activity', 'provider_call_terminal',
   ]);
   assert.deepEqual(events[0], {
+    type: 'progress',
+    phase: 'synthesis',
+    stage: 'source_projection_complete',
+    sourceRevision: 51,
+    nodes: 2,
+    edges: 1,
+    clusters: 1,
+  });
+  assert.deepEqual(events[1], {
     type: 'provider_selected',
     phase: 'synthesis',
     provider: 'minimax',
@@ -179,9 +188,9 @@ test('runOperation emits correlated provider events and commits a verifiable mar
     providerCallId: 'synthesis',
     sourceRevision: 51,
   });
-  assert.equal(events[1].providerCallId, 'synthesis');
-  assert.equal(events[1].childEventType, 'content_delta');
-  assert.equal(events[2].outcome, 'complete');
+  assert.equal(events[2].providerCallId, 'synthesis');
+  assert.equal(events[2].childEventType, 'content_delta');
+  assert.equal(events[3].outcome, 'complete');
   assert.equal(fx.providerCalls.length, 1);
   assert.match(fx.providerCalls[0].input, /Pinned brain stats: 2 nodes, 1 edges, 1 clusters/);
   assert.equal(fx.compareCalls, 1);

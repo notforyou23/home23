@@ -553,6 +553,15 @@ class SynthesisAgent {
       if (typeof onEvent === 'function') await onEvent(Object.freeze(event));
     };
     await emit({
+      type: 'progress',
+      phase: 'synthesis',
+      stage: 'source_projection_complete',
+      sourceRevision: sourcePin.revision,
+      nodes: summary.nodes,
+      edges: summary.edges,
+      clusters: summary.clusters,
+    });
+    await emit({
       type: 'provider_selected',
       phase: 'synthesis',
       provider,
