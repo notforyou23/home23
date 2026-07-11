@@ -80,6 +80,11 @@ async function openCosmoMemorySource(brainDir, options = {}) {
       ...options,
       operationRoot,
       scratchQuota,
+      pinnedManifest: projection.manifest,
+      logicalCanonicalRoot: canonicalRoot,
+      ...(selection.authority === 'legacy-resident-sidecars'
+        ? { legacySourceFingerprint: projection.sourceFingerprint }
+        : {}),
       identity: {
         ...(options.identity || {}),
         canonicalRoot,

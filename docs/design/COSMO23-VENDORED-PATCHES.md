@@ -2142,8 +2142,11 @@ research rollout is complete.
 ## Patch 48 — Source-truth bounded brain routes
 
 **Files touched:**
+- `cosmo23/lib/memory-source-adapter.js`
 - `cosmo23/server/lib/brain-source-router.js`
 - `cosmo23/server/index.js`
+- `tests/cosmo23/memory-sidecar.test.cjs`
+- `tests/evobrew/memory-sidecar.test.cjs`
 - `tests/cosmo23/brain-source-router.test.cjs`
 - `tests/engine/dashboard/brain-source-request-abort.test.js`
 
@@ -2180,6 +2183,16 @@ for an aborted/incomplete request or when the response closes before
 incomplete request body, and premature response close for both implementations.
 Focused verification passed with 37 tests across the lifecycle regression,
 dashboard source/search compatibility, and COSMO bounded source route suites.
+
+**2026-07-10 exact-root follow-up:** After source projections began enforcing
+their logical evidence root, the COSMO/Evobrew compatibility adapter reopened
+the scratch projection as though its physical scratch directory were the target
+brain. The supplied target identity then failed closed with
+`source evidence root mismatch`, breaking legacy sidecar hydration. The adapter
+now binds the validated projected manifest to the original canonical brain root
+and retains the legacy resident fingerprint used by `isCurrent()`. Focused
+COSMO, Evobrew, and legacy-research projection verification passed with 10
+tests.
 
 ---
 
