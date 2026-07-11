@@ -651,6 +651,11 @@ export class BrainOperationsClient {
             continue;
           }
           const typed = error as { code?: string; httpStatus?: number };
+          if (typed.code === 'operation_terminal') {
+            const terminalOrDetached = await statusOrDetach('operation_terminal');
+            if (terminalOrDetached) return terminalOrDetached;
+            continue;
+          }
           const recoverable = !typed.httpStatus || typed.httpStatus >= 500
             || ['operation_connect_timeout', 'source_unavailable'].includes(typed.code || '');
           if (!recoverable) return detachLast(typed.code || 'event_transport_error');

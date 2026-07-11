@@ -1243,6 +1243,116 @@ test('event_gap reloads canonical status and resumes from its sequence without r
     'only requester-authenticated status selects the reconnect cursor');
 });
 
+test('operation_terminal from the events route refreshes authenticated status and result', async () => {
+  const operationId = 'op-terminal-before-attach';
+  const running = makeBrainOperationRecord({
+    ...record(operationId, 3, 'running'),
+    operationType: 'search',
+  });
+  const terminal = makeBrainOperationRecord({
+    ...record(operationId, 6, 'complete', { results: [{ id: 'canary' }] }),
+    operationType: 'search',
+    sourceEvidence: { sourceHealth: 'healthy' },
+  });
+  let statusReads = 0;
+  let resultReads = 0;
+  let detachCalls = 0;
+  const fetchImpl: typeof fetch = async (url, init) => {
+    const parsed = new URL(String(url));
+    if (init?.method === 'POST' && parsed.pathname.endsWith('/detach')) {
+      detachCalls += 1;
+      return new Response(JSON.stringify({ error: { code: 'operation_terminal' } }), {
+        status: 409,
+      });
+    }
+    if (init?.method === 'POST') return new Response(JSON.stringify(running), { status: 202 });
+    if (parsed.pathname.endsWith('/events')) {
+      return new Response(JSON.stringify({
+        error: {
+          code: 'operation_terminal',
+          message: 'operation is already terminal',
+          retryable: false,
+        },
+      }), { status: 409 });
+    }
+    if (parsed.pathname.endsWith('/result')) {
+      resultReads += 1;
+      return new Response(JSON.stringify(resultEnvelope(terminal)));
+    }
+    if (parsed.pathname.endsWith(`/${operationId}`)) {
+      statusReads += 1;
+      return new Response(JSON.stringify(terminal));
+    }
+    return new Response('', { status: 404 });
+  };
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture',
+    callerAgent: 'jerry',
+    fetchImpl,
+  });
+
+  const result = await client.search({ query: 'terminal before attachment' });
+  assert.equal(result.state, 'complete');
+  assert.deepEqual(result.results, [{ id: 'canary' }]);
+  assert.equal((result.sourceEvidence as { sourceHealth?: string }).sourceHealth, 'healthy');
+  assert.equal(statusReads, 1);
+  assert.equal(resultReads, 1);
+  assert.equal(detachCalls, 0);
+});
+
+test('late terminal journal replay preserves provider-terminal activity before protected result', async () => {
+  const operationId = 'op-terminal-journal-replay';
+  const running = makeBrainOperationRecord({
+    ...record(operationId, 3, 'running'),
+    operationType: 'query',
+  });
+  const terminal = makeBrainOperationRecord({
+    ...record(operationId, 6, 'complete', { answer: 'replayed terminal' }),
+    operationType: 'query',
+  });
+  const activities: string[] = [];
+  let detachCalls = 0;
+  const frames = [
+    { type: 'progress', operationId, eventSequence: 4, stage: 'provider_running' },
+    { type: 'provider_call_terminal', operationId, eventSequence: 5, providerCallId: 'query' },
+    { type: 'terminal', operationId, eventSequence: 6, state: 'complete' },
+  ];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    const parsed = new URL(String(url));
+    if (init?.method === 'POST' && parsed.pathname.endsWith('/detach')) {
+      detachCalls += 1;
+      return new Response(JSON.stringify({ error: { code: 'operation_terminal' } }), {
+        status: 409,
+      });
+    }
+    if (init?.method === 'POST') return new Response(JSON.stringify(running), { status: 202 });
+    if (parsed.pathname.endsWith('/events')) {
+      return new Response(`${frames.map((event) => `data: ${JSON.stringify(event)}\n\n`).join('')}`, {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }
+    if (parsed.pathname.endsWith('/result')) {
+      return new Response(JSON.stringify(resultEnvelope(terminal)));
+    }
+    if (parsed.pathname.endsWith(`/${operationId}`)) {
+      return new Response(JSON.stringify(terminal));
+    }
+    return new Response('', { status: 404 });
+  };
+  const client = new BrainOperationsClient({
+    baseUrl: 'http://fixture',
+    callerAgent: 'jerry',
+    fetchImpl,
+    onActivity: (activity) => activities.push(activity.type),
+  });
+
+  const result = await client.query({ query: 'late terminal replay' });
+  assert.equal(result.state, 'complete');
+  assert.equal(result.result?.answer, 'replayed terminal');
+  assert.equal(activities.includes('provider_call_terminal'), true);
+  assert.equal(detachCalls, 0);
+});
+
 test('malformed or regressive event_gap detaches instead of fabricating continuity', async () => {
   for (const mutate of [
     (gap: BrainOperationEventGap) => { gap.operationId = 'wrong'; },
