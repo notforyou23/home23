@@ -81,6 +81,47 @@ test('dashboard stop closes runtime handles used by PM2 restarts', async () => {
   }
 });
 
+test('dashboard concurrent stop callers share the in-flight brain cleanup', async () => {
+  const server = Object.create(DashboardServer.prototype);
+  let releaseCleanup;
+  let coordinatorStops = 0;
+  let workerStops = 0;
+  server._shutdownStarted = false;
+  server._shutdownPromise = null;
+  server._synthesisAgent = null;
+  server._logWatchInterval = null;
+  server.logStreamClients = new Set();
+  server._serverSockets = new Set();
+  server.server = null;
+  server.brainOperationsCoordinator = {
+    async stop() {
+      coordinatorStops += 1;
+      await new Promise((resolve) => { releaseCleanup = resolve; });
+    },
+  };
+  server.brainOperationsWorker = {
+    async stop() { workerStops += 1; },
+  };
+
+  const first = server.stop('first-signal');
+  await new Promise((resolve) => setImmediate(resolve));
+  const second = server.stop('second-signal');
+  let secondResolved = false;
+  second.then(() => { secondResolved = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  try {
+    assert.equal(first, second);
+    assert.equal(secondResolved, false);
+    assert.equal(coordinatorStops, 1);
+    assert.equal(workerStops, 0);
+  } finally {
+    releaseCleanup();
+  }
+  await Promise.all([first, second]);
+  assert.equal(workerStops, 1);
+});
+
 test('dashboard stop force-closes tracked sockets when active connections block close', async () => {
   const server = Object.create(DashboardServer.prototype);
   let closeCalled = false;

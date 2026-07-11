@@ -258,6 +258,7 @@ class DashboardServer {
     this.orchestrator = null;
     this.server = null;
     this._shutdownStarted = false;
+    this._shutdownPromise = null;
     this._shutdownHandlersRegistered = false;
     this._logWatchInterval = null;
     this._serverSockets = new Set();
@@ -11437,9 +11438,14 @@ You are empowered to explore and understand. The user trusts you to discover the
     );
   }
 
-  async stop(reason = 'manual') {
-    if (this._shutdownStarted) return;
+  stop(reason = 'manual') {
+    if (this._shutdownPromise) return this._shutdownPromise;
     this._shutdownStarted = true;
+    this._shutdownPromise = this._stop(reason);
+    return this._shutdownPromise;
+  }
+
+  async _stop(reason) {
     console.log(`[DashboardServer] shutting down (${reason})`);
 
     if (this._synthesisAgent?.stopSchedule) {
