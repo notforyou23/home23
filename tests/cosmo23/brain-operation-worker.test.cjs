@@ -1673,3 +1673,63 @@ test('internal events route honors response backpressure before pulling another 
   assert.equal(pulls, 2);
   assert.equal(response.ended, true);
 });
+
+test('internal events route keeps draining after a normally completed request closes', async () => {
+  const releaseTerminal = deferred();
+  let workerSignal;
+  const worker = {
+    async start() {},
+    async status() {},
+    async *events(id, _capability, input) {
+      workerSignal = input.signal;
+      yield {
+        type: 'provider_selected', operationId: id, eventSequence: 1,
+        providerCallId: 'query', providerStallMs: 60_000,
+      };
+      await releaseTerminal.promise;
+      if (input.signal.aborted) return;
+      yield {
+        type: 'provider_call_terminal', operationId: id, eventSequence: 2,
+        providerCallId: 'query', outcome: 'complete',
+      };
+    },
+    async result() {},
+    async cancel() {},
+  };
+  const handlers = createBrainOperationRouteHandlers({ worker });
+  const id = operationId('o');
+  const request = new EventEmitter();
+  Object.assign(request, {
+    complete: true,
+    params: { id },
+    query: { afterSequence: '0' },
+    headers: { authorization: 'Bearer cap-normal-request-close' },
+    socket: { remoteAddress: '127.0.0.1' },
+    get(name) { return this.headers[name.toLowerCase()]; },
+  });
+  const response = new EventEmitter();
+  Object.assign(response, {
+    statusCode: 200,
+    headers: {},
+    chunks: [],
+    ended: false,
+    set(name, value) { this.headers[String(name).toLowerCase()] = value; return this; },
+    write(value) { this.chunks.push(String(value)); return true; },
+    end(value = '') {
+      if (value) this.chunks.push(String(value));
+      this.ended = true;
+    },
+  });
+
+  const streaming = handlers.events(request, response);
+  await eventually(() => assert.equal(response.chunks.length, 1));
+  request.emit('close');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(workerSignal.aborted, false);
+  releaseTerminal.resolve();
+  await streaming;
+
+  assert.equal(response.chunks.length, 2);
+  assert.match(response.chunks[1], /provider_call_terminal/);
+  assert.equal(response.ended, true);
+});

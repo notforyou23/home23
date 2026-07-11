@@ -135,8 +135,8 @@ function createBrainOperationRouteHandlers({ worker } = {}) {
         if (!controller.signal.aborted) controller.abort(routeError('worker_event_disconnected'));
       };
       req.on?.('aborted', abort);
-      req.on?.('close', abort);
       res.on?.('close', abort);
+      if (req.aborted === true || res.destroyed === true || res.closed === true) abort();
       try {
         assertLoopbackRequest(req);
         const capability = bearerCapability(req);
@@ -155,6 +155,9 @@ function createBrainOperationRouteHandlers({ worker } = {}) {
         if (!res.ended) res.end();
       } catch (error) {
         sendError(res, error);
+      } finally {
+        req.off?.('aborted', abort);
+        res.off?.('close', abort);
       }
     },
 
