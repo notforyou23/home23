@@ -1099,6 +1099,8 @@ export class AgentLoop {
             brainDir: join(this.workspacePath, '..', 'brain'),
             enginePort: this.toolContext.enginePort,
             sessionId: chatId,
+            brainOperations: runContext.turnRuntime!.brainOperations,
+            signal: runContext.turnRuntime!.signal,
             triggerIndex: this.triggerIndex,
           },
           this.eventLedger,
@@ -1110,7 +1112,11 @@ export class AgentLoop {
 
         // Log assembly result
         if (assembly.degraded) {
-          console.warn('[agent] Situational awareness: DEGRADED — brain unreachable');
+          console.warn(
+            `[agent] Situational awareness: DEGRADED — source=${assembly.sourceHealth}`
+            + ` match=${assembly.matchOutcome}`
+            + `${assembly.retrievalError ? ` error=${assembly.retrievalError}` : ''}`,
+          );
         } else if (assembly.brainCueCount > 0 || assembly.surfacesLoaded.length > 0) {
           console.log(`[agent] Situational awareness: ${assembly.brainCueCount} brain cues, ${assembly.surfacesLoaded.length} surfaces (${assembly.surfacesLoaded.join(', ')})`);
         }

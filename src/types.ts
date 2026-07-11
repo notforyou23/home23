@@ -493,4 +493,7 @@ export interface AssemblyResult {
   triggerCount: number;
   surfacesLoaded: string[];
   events: EventEnvelope[];
+  sourceHealth: string;
+  matchOutcome: string;
+  retrievalError: string | null;
 }

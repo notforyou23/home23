@@ -43,12 +43,6 @@ test('assembleContext emits a memory activation posture when brain search return
   mkdirSync(brainDir, { recursive: true });
   writeFileSync(path.join(workspacePath, 'RECENT.md'), 'Current verified surface.');
 
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response(JSON.stringify({ results: [] }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  })) as typeof fetch;
-
   const emitted: EventEnvelope[] = [];
   const ledger = {
     emit(events: EventEnvelope | EventEnvelope[]) {
@@ -56,8 +50,7 @@ test('assembleContext emits a memory activation posture when brain search return
     },
   };
 
-  try {
-    const result = await assembleContext(
+  const result = await assembleContext(
       'what port was the dashboard using last time?',
       'chat-activation',
       [{ role: 'user', content: 'we discussed dashboard ports yesterday' }],
@@ -66,6 +59,13 @@ test('assembleContext emits a memory activation posture when brain search return
         brainDir,
         enginePort: 59999,
         sessionId: 'chat-activation',
+        brainOperations: {
+          search: async () => ({
+            results: [],
+            sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'no_match' },
+          }),
+        } as never,
+        signal: new AbortController().signal,
       },
       ledger as never,
     );
@@ -74,14 +74,11 @@ test('assembleContext emits a memory activation posture when brain search return
     assert.ok(posture, 'expected MemoryActivationPosture event');
     assert.equal(posture.payload.schema, 'home23.memory-activation-posture.v1');
     assert.deepEqual(posture.payload.sourceIssues, [69]);
-    assert.equal(posture.payload.activationStatus, 'empty');
+    assert.equal(posture.payload.activationStatus, 'no_match');
     assert.equal(posture.payload.searchAttempted, true);
     assert.equal(posture.payload.brainCueCount, 0);
     assert.equal(posture.payload.triggerCount, 0);
     assert.match(String(posture.payload.queryPreview), /dashboard/);
     assert.equal(result.brainCueCount, 0);
     assert.ok(emitted.some(event => event.event_type === 'MemoryActivationPosture'));
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
 });

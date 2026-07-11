@@ -13,16 +13,12 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import yaml from 'js-yaml';
 import type { AssemblyResult, EventEnvelope } from '../types.js';
+import type { BrainOperationsClient } from './brain-operations/client.js';
 import type { EventLedger } from './event-ledger.js';
 import type { TriggerIndex } from './trigger-index.js';
 
 // ─── Constants ──────────────────────────────────────────
 const CONTEXT_BUDGET = 6000;
-const BRAIN_SEARCH_TIMEOUT_MS = 20000;  // 26k+ nodes; during coordinator review (heavy LLM activity)
-                                         // searches can easily exceed 5s. Timing out here falsely
-                                         // flags the brain DEGRADED in the system prompt, which the
-                                         // chat agent then reports as "brain not connected" even
-                                         // though it's just temporarily busy.
 const BRAIN_SEARCH_LIMIT = 8;
 const STALENESS_HOURS = 24;
 
@@ -31,7 +27,7 @@ interface BrainSearchResult {
   concept: string;     // brain returns 'concept', not 'content'
   similarity: number;  // brain returns 'similarity', not 'score'
   tag?: string;
-  id?: number;
+  id?: string | number;
 }
 
 interface AssemblyConfig {
@@ -39,6 +35,8 @@ interface AssemblyConfig {
   brainDir: string;
   enginePort: number;
   sessionId: string;
+  brainOperations: Pick<BrainOperationsClient, 'search'>;
+  signal: AbortSignal;
   triggerIndex?: TriggerIndex;
 }
 
@@ -50,28 +48,6 @@ const DOMAIN_SURFACES = [
   { name: 'DOCTRINE', file: 'DOCTRINE.md', budget: 2500, alwaysBoost: false, isFact: false },
   { name: 'RECENT',   file: 'RECENT.md',   budget: 3000, alwaysBoost: true,  isFact: false },
 ] as const;
-
-// ─── Brain Search ───────────────────────────────────────
-
-async function searchBrain(
-  query: string,
-  enginePort: number,
-): Promise<BrainSearchResult[]> {
-  const url = `http://localhost:${enginePort}/api/memory/search`;
-  const ac = AbortSignal.timeout(BRAIN_SEARCH_TIMEOUT_MS);
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, limit: BRAIN_SEARCH_LIMIT }),
-    signal: ac,
-  });
-
-  if (!res.ok) throw new Error(`Brain search HTTP ${res.status}`);
-
-  const data = await res.json() as { results?: BrainSearchResult[] };
-  return data.results ?? [];
-}
 
 // ─── Surface Loading ────────────────────────────────────
 
@@ -312,6 +288,9 @@ export async function assembleContext(
   let brainCues: BrainSearchResult[] = [];
   let degraded = false;
   let searchQuery = '';
+  let sourceHealth = 'unknown';
+  let matchOutcome = 'unknown';
+  let retrievalError: string | null = null;
 
   try {
     const contextSnippet = recentTurns
@@ -320,9 +299,32 @@ export async function assembleContext(
       .join(' ');
     searchQuery = `${userText} ${contextSnippet}`.trim().slice(0, 500);
 
-    brainCues = await searchBrain(searchQuery, config.enginePort);
+    const retrieval = await config.brainOperations.search(
+      { query: searchQuery, topK: BRAIN_SEARCH_LIMIT },
+      config.signal,
+    );
+    brainCues = Array.isArray(retrieval.results)
+      ? retrieval.results as BrainSearchResult[]
+      : [];
+    const evidence = retrieval.sourceEvidence && typeof retrieval.sourceEvidence === 'object'
+      ? retrieval.sourceEvidence as Record<string, unknown>
+      : {};
+    sourceHealth = typeof evidence.sourceHealth === 'string'
+      ? evidence.sourceHealth
+      : 'unknown';
+    matchOutcome = typeof evidence.matchOutcome === 'string'
+      ? evidence.matchOutcome
+      : 'unknown';
+    degraded = sourceHealth !== 'healthy';
   } catch (err) {
     degraded = true;
+    sourceHealth = 'unavailable';
+    matchOutcome = 'unknown';
+    const code = typeof err === 'object' && err && 'code' in err
+      ? String((err as { code: unknown }).code)
+      : 'brain_search_failed';
+    const message = err instanceof Error ? err.message : String(err);
+    retrievalError = `${code}: ${message}`;
     events.push({
       event_id: randomUUID(),
       event_type: 'RetrievalDegraded',
@@ -330,8 +332,22 @@ export async function assembleContext(
       timestamp: new Date().toISOString(),
       actor: 'assembly',
       payload: {
-        reason: err instanceof Error ? err.message : String(err),
-        what_unavailable: 'brain_search',
+        reason: retrievalError,
+        what_unavailable: 'requester_dashboard_brain_search',
+      },
+    });
+  }
+  if (degraded && !events.some((event) => event.event_type === 'RetrievalDegraded')) {
+    retrievalError = retrievalError || `source reported ${sourceHealth}`;
+    events.push({
+      event_id: randomUUID(),
+      event_type: 'RetrievalDegraded',
+      session_id: config.sessionId,
+      timestamp: new Date().toISOString(),
+      actor: 'assembly',
+      payload: {
+        reason: retrievalError,
+        what_unavailable: 'requester_dashboard_brain_search',
       },
     });
   }
@@ -355,7 +371,11 @@ export async function assembleContext(
 
   const activationStatus = degraded
     ? 'degraded'
-    : (brainCues.length > 0 || triggerMatches.length > 0 ? 'active' : 'empty');
+    : brainCues.length > 0 || triggerMatches.length > 0
+      ? 'active'
+      : ['no_match', 'filtered', 'corpus_empty'].includes(matchOutcome)
+        ? matchOutcome
+        : 'unknown';
   events.push({
     event_id: randomUUID(),
     event_type: 'MemoryActivationPosture',
@@ -371,6 +391,9 @@ export async function assembleContext(
       brainCueCount: brainCues.length,
       triggerCount: triggerMatches.length,
       degraded,
+      sourceHealth,
+      matchOutcome,
+      retrievalError,
     },
   });
 
@@ -396,7 +419,8 @@ export async function assembleContext(
   }
 
   for (const surface of DOMAIN_SURFACES) {
-    const shouldLoad = surface.alwaysBoost || isFirstTurn || brainCues.length > 0;
+    const shouldLoad = surface.alwaysBoost || isFirstTurn || brainCues.length > 0
+      || triggerMatches.length > 0 || degraded;
     if (!shouldLoad) continue;
 
     const content = loadSurface(config.workspacePath, surface.file, surface.budget);
@@ -447,55 +471,36 @@ export async function assembleContext(
       brain_cue_count: brainCues.length,
       surfaces_loaded: surfacesLoaded,
       degraded,
+      sourceHealth,
+      matchOutcome,
+      retrievalError,
     },
   });
 
   // ── Step 3: Assemble with salience ranking ──
-  // If the brain probe timed out, DON'T tell the agent the brain is offline —
-  // that's false and causes the LLM to report "brain not connected" to the user.
-  // Instead: note the probe was skipped, surface the loaded surfaces normally,
-  // and remind the agent it can call brain_status / brain_search / brain_query
-  // directly if it needs brain data for this turn.
   if (degraded) {
     if (ledger) { ledger.emit(events); }
-
-    // Try to still load domain surfaces — they're cheap local file reads.
-    // Only the brain probe timed out; surfaces are unaffected.
-    const degradedSurfacePieces: string[] = [];
-    const degradedSurfacesLoaded: string[] = [];
-    for (const surface of DOMAIN_SURFACES) {
-      const content = loadSurface(config.workspacePath, surface.file, surface.budget);
-      if (content) {
-        degradedSurfacePieces.push(`\nRelevant context (${surface.name}):\n${content}`);
-        degradedSurfacesLoaded.push(surface.name);
-      }
-    }
-
+    const localEvidence = rankBySalience(salienceItems, CONTEXT_BUDGET - 700);
     const pieces: string[] = [
-      '[SITUATIONAL AWARENESS: brain probe skipped this turn (engine busy). ' +
-      'Domain surfaces below are current. If you need brain memory for this answer, ' +
-      'call brain_status / brain_search / brain_query directly — they have longer ' +
-      'per-call timeouts and will succeed.]',
+      '[SITUATIONAL AWARENESS: brain retrieval degraded]',
+      `sourceHealth=${sourceHealth} matchOutcome=${matchOutcome}`,
+      `route=requester_dashboard_brain_search error=${retrievalError || `source reported ${sourceHealth}`}`,
+      'Returned cues (if any), local trigger matches, and domain surfaces below remain available. ' +
+        'Retry the operation or inspect brain_status; success is not yet established.',
     ];
-    if (degradedSurfacePieces.length > 0) {
-      pieces.push(degradedSurfacePieces.join('\n\n'));
-    }
-    const workerSection = buildWorkerContextSection(
-      projectRootFromWorkspace(config.workspacePath),
-      agentNameFromWorkspace(config.workspacePath),
-    );
-    if (workerSection) {
-      pieces.push(`\nRelevant context (WORKERS):\n${workerSection}`);
-      degradedSurfacesLoaded.push('WORKERS');
-    }
+    if (localEvidence.length > 0) pieces.push(localEvidence.join('\n'));
+    pieces.push('[/SITUATIONAL AWARENESS]');
 
     return {
-      block: pieces.join('\n'),
+      block: pieces.join('\n').slice(0, CONTEXT_BUDGET),
       degraded: true,
-      brainCueCount: 0,
+      brainCueCount: brainCues.length,
       triggerCount: triggerMatches.length,
-      surfacesLoaded: degradedSurfacesLoaded,
+      surfacesLoaded,
       events,
+      sourceHealth,
+      matchOutcome,
+      retrievalError,
     };
   }
 
@@ -510,6 +515,9 @@ export async function assembleContext(
       triggerCount: triggerMatches.length,
       surfacesLoaded,
       events,
+      sourceHealth,
+      matchOutcome,
+      retrievalError,
     };
   }
 
@@ -531,5 +539,8 @@ export async function assembleContext(
     triggerCount: triggerMatches.length,
     surfacesLoaded,
     events,
+    sourceHealth,
+    matchOutcome,
+    retrievalError,
   };
 }
