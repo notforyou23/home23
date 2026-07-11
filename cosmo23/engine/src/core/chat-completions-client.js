@@ -31,11 +31,19 @@ const { normalizeProviderCompletion } = require('../../../lib/provider-completio
 const {
   abortableDelay,
   awaitWithCancellation,
+  boundedOutputJson,
+  cancelAsyncProviderStream,
+  createUtf8OutputBudget,
   reportProviderActivity,
+  requireMaxOutputBytes,
   requireMaxOutputTokens,
   rethrowCancellation,
+  rethrowNonRetryable,
+  resultTooLarge,
   throwIfAborted,
 } = require('../../../lib/provider-execution');
+
+const MAX_STREAM_TOOL_CALLS = 4096;
 
 function requireProviderId(value) {
   const providerId = typeof value === 'string' ? value.trim() : '';
@@ -47,19 +55,42 @@ function requireProviderId(value) {
   return providerId;
 }
 
-function mergeToolCallDeltas(toolCalls, deltas) {
+function mergeToolCallDeltas(toolCalls, deltas, outputBudget) {
   for (const delta of deltas) {
     const index = Number.isInteger(delta.index) ? delta.index : 0;
+    if (index < 0 || index >= MAX_STREAM_TOOL_CALLS) {
+      throw resultTooLarge('Provider tool call', outputBudget.maxBytes);
+    }
     if (!toolCalls[index]) {
+      const initialId = delta.id || `call_${index}`;
+      const initialName = delta.function?.name || '';
+      outputBudget.reserve(`tool-${index}-structure`, 64, 'Provider tool call');
       toolCalls[index] = {
-        id: delta.id || `call_${index}`,
-        name: delta.function?.name || '',
+        id: outputBudget.set(
+          `tool-${index}-id`, initialId, 'Provider tool call',
+        ),
+        name: outputBudget.set(
+          `tool-${index}-name`, initialName, 'Provider tool call',
+        ),
         arguments: '',
       };
     }
-    if (delta.id) toolCalls[index].id = delta.id;
-    if (delta.function?.name) toolCalls[index].name = delta.function.name;
-    if (delta.function?.arguments) toolCalls[index].arguments += delta.function.arguments;
+    if (delta.id) {
+      toolCalls[index].id = outputBudget.set(
+        `tool-${index}-id`, delta.id, 'Provider tool call',
+      );
+    }
+    if (delta.function?.name) {
+      toolCalls[index].name = outputBudget.set(
+        `tool-${index}-name`, delta.function.name, 'Provider tool call',
+      );
+    }
+    if (delta.function?.arguments) {
+      toolCalls[index].arguments = outputBudget.append(
+        `tool-${index}-arguments`, toolCalls[index].arguments,
+        delta.function.arguments, 'Provider tool call',
+      );
+    }
   }
 }
 
@@ -335,6 +366,7 @@ class ChatCompletionsClient {
     } = options;
 
     requireMaxOutputTokens(maxOutputTokens, this.config.providerId, model);
+    requireMaxOutputBytes(options.maxOutputBytes, this.config.providerId, model);
     throwIfAborted(options.signal);
 
     // Log unsupported options for debugging
@@ -406,7 +438,7 @@ class ChatCompletionsClient {
   async generateStreaming(payload, originalModel, options = {}) {
     const {
       signal = null, onChunk = null, onProviderActivity = null,
-      maxOutputTokens = null,
+      maxOutputTokens = null, maxOutputBytes = null,
     } = options;
     const requestPayload = {
       ...payload,
@@ -432,8 +464,13 @@ class ChatCompletionsClient {
     let responseId = null;
     let responseModel = requestPayload.model;
     let usage = null;
+    const outputBudget = createUtf8OutputBudget(
+      requireMaxOutputBytes(maxOutputBytes, this.config.providerId, originalModel),
+      'Provider output',
+    );
 
     const iterator = stream[Symbol.asyncIterator]();
+    let streamExitReason = null;
     try {
       while (true) {
         const next = await awaitWithCancellation(() => iterator.next(), signal);
@@ -445,31 +482,46 @@ class ChatCompletionsClient {
         usage = chunk.usage || usage;
         const choice = chunk.choices?.[0];
         if (choice?.delta?.content) {
-          content += choice.delta.content;
+          content = outputBudget.append(
+            'content', content, choice.delta.content, 'Provider content',
+          );
           onChunk?.({ type: 'chunk', text: choice.delta.content });
         }
-        if (choice?.delta?.reasoning) reasoning += choice.delta.reasoning;
-        mergeToolCallDeltas(toolCalls, choice?.delta?.tool_calls || []);
+        if (choice?.delta?.reasoning) {
+          reasoning = outputBudget.append(
+            'reasoning', reasoning, choice.delta.reasoning, 'Provider reasoning',
+          );
+        }
+        mergeToolCallDeltas(
+          toolCalls, choice?.delta?.tool_calls || [], outputBudget,
+        );
         if (choice?.finish_reason) {
           terminalReceived = true;
           finishReason = choice.finish_reason;
         }
       }
     } catch (error) {
+      streamExitReason = signal?.aborted ? signal.reason : error;
       rethrowCancellation(error, signal);
+      rethrowNonRetryable(error);
       this.logger?.error?.('Error during stream processing', {
         error: error.message,
         hasPartialText: content.length > 0,
       });
       hadError = true;
       streamError = error;
+    } finally {
+      if (streamExitReason) {
+        cancelAsyncProviderStream(stream, iterator, streamExitReason);
+      }
     }
 
     if (!content && reasoning) content = reasoning;
     throwIfAborted(signal);
     return normalizeProviderCompletion({
       content, terminalReceived, finishReason, hadError, error: streamError,
-      responseId, model: responseModel, provider: this.config.providerId,
+      responseId, model: originalModel, observedModel: responseModel,
+      provider: this.config.providerId,
       usage: usage ? {
         input_tokens: usage.prompt_tokens,
         output_tokens: usage.completion_tokens,
@@ -504,14 +556,31 @@ class ChatCompletionsClient {
 
     const choice = response.choices?.[0];
     // Thinking models (e.g. qwen3.5:9b) return output in .reasoning, not .content
-    const content = choice?.message?.content || choice?.message?.reasoning || '';
+    const outputBudget = createUtf8OutputBudget(
+      requireMaxOutputBytes(
+        options.maxOutputBytes, this.config.providerId, originalModel,
+      ),
+      'Provider output',
+    );
+    const content = outputBudget.set(
+      'content', choice?.message?.content || choice?.message?.reasoning || '',
+      'Provider content',
+    );
+    if (choice?.message?.tool_calls) {
+      outputBudget.set(
+        'tool-calls', boundedOutputJson(
+          choice.message.tool_calls, outputBudget.maxBytes, 'Provider tool call',
+        ), 'Provider tool call',
+      );
+    }
     return normalizeProviderCompletion({
       content,
       terminalReceived: Boolean(choice?.finish_reason),
       finishReason: choice?.finish_reason || null,
       hadError: false,
       responseId: response.id,
-      model: response.model || originalModel,
+      model: originalModel,
+      observedModel: response.model || requestPayload.model,
       provider: this.config.providerId,
       usage: response.usage,
       output: choice?.message?.tool_calls || null,
@@ -589,6 +658,8 @@ class ChatCompletionsClient {
           return result;
         }
 
+        if (result.error?.retryable === false) return result;
+
         if (attempt < maxRetries - 1) {
           const backoff = Math.pow(2, attempt) * 1000;
           this.logger?.warn?.(`Response incomplete, retrying after ${backoff}ms`, {
@@ -604,6 +675,7 @@ class ChatCompletionsClient {
         return result;
       } catch (error) {
         rethrowCancellation(error, options.signal);
+        rethrowNonRetryable(error);
         lastError = error;
 
         if (attempt < maxRetries - 1) {

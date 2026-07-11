@@ -15,6 +15,7 @@ const ABNORMAL_FINISH_REASONS = new Set([
   'cancelled',
   'failed',
 ]);
+const MAX_OBSERVED_MODEL_BYTES = 512;
 
 class ProviderCompletionError extends Error {
   constructor(code, message, options = {}) {
@@ -29,6 +30,14 @@ class ProviderCompletionError extends Error {
 
 function isErrorPayload(content) {
   return /^\s*\[Error:/i.test(String(content || ''));
+}
+
+function normalizeObservedModel(value) {
+  if (typeof value !== 'string') return null;
+  const observed = value.trim();
+  if (!observed || Buffer.byteLength(observed, 'utf8') > MAX_OBSERVED_MODEL_BYTES
+      || /[\u0000-\u001f\u007f]/.test(observed)) return null;
+  return observed;
 }
 
 function normalizeProviderCompletion(input = {}) {
@@ -75,6 +84,7 @@ function normalizeProviderCompletion(input = {}) {
     usage: source.usage || null,
     provider: source.provider || null,
     model: source.model || null,
+    observedModel: normalizeObservedModel(source.observedModel ?? source.wireModel),
     responseId: source.responseId || null,
     reasoning: source.reasoning || null,
     output: source.output || null,

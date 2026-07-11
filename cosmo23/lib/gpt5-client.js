@@ -4,11 +4,19 @@ const { normalizeProviderCompletion } = require('./provider-completion');
 const {
   abortableDelay,
   awaitWithCancellation,
+  boundedOutputJson,
+  cancelAsyncProviderStream,
+  createUtf8OutputBudget,
   reportProviderActivity,
+  requireMaxOutputBytes,
   requireMaxOutputTokens,
   rethrowCancellation,
+  rethrowNonRetryable,
+  resultTooLarge,
   throwIfAborted,
 } = require('./provider-execution');
+
+const MAX_PROVIDER_OUTPUT_ITEMS = 4096;
 
 function requireProviderId(value) {
   const providerId = typeof value === 'string' ? value.trim() : '';
@@ -61,6 +69,7 @@ class GPT5Client {
       messages = [],
       input = null,
       maxOutputTokens,
+      maxOutputBytes,
       tools = [],
       toolChoice,
       tool_choice,
@@ -80,6 +89,9 @@ class GPT5Client {
 
     const outputTokens = requireMaxOutputTokens(
       maxOutputTokens, this.providerId, model,
+    );
+    const outputBytes = requireMaxOutputBytes(
+      maxOutputBytes, this.providerId, model,
     );
     throwIfAborted(signal);
     if (!this.available) {
@@ -171,9 +183,11 @@ class GPT5Client {
       let streamError = null;
       let webSearchSources = [];
       let citations = [];
+      const outputBudget = createUtf8OutputBudget(outputBytes, 'Provider output');
 
       // Process streaming events
       const iterator = stream[Symbol.asyncIterator]();
+      let streamExitReason = null;
       try {
         while (true) {
           const next = await awaitWithCancellation(() => iterator.next(), signal);
@@ -190,15 +204,43 @@ class GPT5Client {
               finishReason = 'completed';
               finalResponse = event.response || finalResponse;
               if (!aggregatedText || aggregatedText.length === 0) {
-                aggregatedText = this.extractTextFromResponse(finalResponse);
+                aggregatedText = outputBudget.set(
+                  'content', this.extractTextFromResponse(finalResponse, outputBudget),
+                  'Provider content',
+                );
               }
-              const extracted = this.extractWebSearchData(finalResponse);
+              const extracted = this.extractWebSearchData(finalResponse, {
+                maxItems: MAX_PROVIDER_OUTPUT_ITEMS,
+                maxBytes: outputBytes,
+              });
+              if ((extracted.sources?.length || 0) > MAX_PROVIDER_OUTPUT_ITEMS
+                  || (extracted.citations?.length || 0) > MAX_PROVIDER_OUTPUT_ITEMS) {
+                throw resultTooLarge('Provider web-search metadata', outputBytes);
+              }
+              if (extracted.sources?.length) {
+                outputBudget.set(
+                  'web-search-sources', boundedOutputJson(
+                    extracted.sources, outputBytes, 'Provider web-search sources',
+                  ),
+                  'Provider web-search sources',
+                );
+              }
+              if (extracted.citations?.length) {
+                outputBudget.set(
+                  'citations', boundedOutputJson(
+                    extracted.citations, outputBytes, 'Provider citations',
+                  ),
+                  'Provider citations',
+                );
+              }
               webSearchSources = extracted.sources;
               citations = extracted.citations;
               break;
 
             case 'response.output_text.delta':
-              aggregatedText += event.delta || '';
+              aggregatedText = outputBudget.append(
+                'content', aggregatedText, event.delta || '', 'Provider content',
+              );
               // NEW (2026-01-21): Emit chunk for real-time streaming
               if (onChunk && event.delta) {
                 onChunk({ type: 'chunk', text: event.delta });
@@ -207,17 +249,23 @@ class GPT5Client {
 
             case 'response.output_text.done':
               if (event.text) {
-                aggregatedText = event.text;
+                aggregatedText = outputBudget.set(
+                  'content', event.text, 'Provider content',
+                );
               }
               break;
 
             case 'response.reasoning_summary_text.delta':
-              reasoningSummary += event.delta || '';
+              reasoningSummary = outputBudget.append(
+                'reasoning', reasoningSummary, event.delta || '', 'Provider reasoning',
+              );
               break;
 
             case 'response.reasoning_summary_text.done':
               if (event.text) {
-                reasoningSummary = event.text;
+                reasoningSummary = outputBudget.set(
+                  'reasoning', event.text, 'Provider reasoning',
+                );
               }
               break;
 
@@ -241,16 +289,33 @@ class GPT5Client {
           }
         }
       } catch (error) {
+        streamExitReason = signal?.aborted ? signal.reason : error;
         rethrowCancellation(error, signal);
+        rethrowNonRetryable(error);
         this.logger?.error?.('Error during stream processing', { 
           error: error.message,
           hasPartialText: aggregatedText.length > 0
         });
         hadError = true;
         streamError = error;
+      } finally {
+        if (streamExitReason) {
+          cancelAsyncProviderStream(stream, iterator, streamExitReason);
+        }
       }
 
       throwIfAborted(signal);
+      if (finalResponse?.output) {
+        if (!Array.isArray(finalResponse.output)
+            || finalResponse.output.length > MAX_PROVIDER_OUTPUT_ITEMS) {
+          throw resultTooLarge('Provider tool output', outputBytes);
+        }
+        outputBudget.set(
+          'provider-output', boundedOutputJson(
+            finalResponse.output, outputBytes, 'Provider tool output',
+          ), 'Provider tool output',
+        );
+      }
       return normalizeProviderCompletion({
         content: aggregatedText,
         reasoning: reasoningSummary,
@@ -260,7 +325,8 @@ class GPT5Client {
         error: streamError,
         responseId: finalResponse?.id,
         provider: this.providerId,
-        model: finalResponse?.model || model,
+        model,
+        observedModel: finalResponse?.model || model,
         usage: finalResponse?.usage,
         webSearchSources,
         citations,
@@ -298,6 +364,8 @@ class GPT5Client {
           return result;
         }
 
+        if (result.error?.retryable === false) return result;
+
         if (attempt < maxRetries - 1) {
           const baseBackoff = result.finishReason === 'response.incomplete' ? 3000 : 1000;
           const backoff = Math.pow(2, attempt) * baseBackoff;
@@ -314,6 +382,7 @@ class GPT5Client {
         
       } catch (error) {
         rethrowCancellation(error, options.signal);
+        rethrowNonRetryable(error);
         lastError = error;
 
         if (attempt < maxRetries - 1) {
@@ -340,29 +409,46 @@ class GPT5Client {
    * Extract text content from Responses API output
    * Based on actual Cosmo implementation - handles reasoning and text outputs
    */
-  extractTextFromResponse(response) {
+  extractTextFromResponse(response, outputBudget = null) {
     if (!response?.output) {
       this.logger?.warn?.('No response.output');
       return '';
     }
 
     const textParts = [];
+    let boundedText = '';
+    const appendText = (value) => {
+      const text = String(value || '');
+      if (!text) return;
+      if (outputBudget) {
+        if (boundedText) {
+          boundedText = outputBudget.append(
+            'content', boundedText, '\n', 'Provider content',
+          );
+        }
+        boundedText = outputBudget.append(
+          'content', boundedText, text, 'Provider content',
+        );
+      } else {
+        textParts.push(text);
+      }
+    };
     for (const item of response.output) {
       // Handle 'content' type (main text output)
       if (item.type === 'content' && Array.isArray(item.content)) {
         for (const part of item.content) {
           if (part.type === 'output_text' && part.text) {
-            textParts.push(part.text);
+            appendText(part.text);
           }
         }
       }
       // Handle 'message' type (alternative format)
       else if (item.type === 'message' && item.content) {
         if (typeof item.content === 'string') {
-          textParts.push(item.content);
+          appendText(item.content);
         } else if (Array.isArray(item.content)) {
           for (const part of item.content) {
-            if (part.text) textParts.push(part.text);
+            if (part.text) appendText(part.text);
           }
         }
       }
@@ -373,27 +459,31 @@ class GPT5Client {
         if (item.output) {
           // item.output can be string or object with text property
           if (typeof item.output === 'string') {
-            textParts.push(item.output);
+            appendText(item.output);
           } else if (item.output.text) {
-            textParts.push(item.output.text);
+            appendText(item.output.text);
           } else if (typeof item.output === 'object') {
             // Some outputs are structured - convert to readable text
-            textParts.push(JSON.stringify(item.output, null, 2));
+            appendText(outputBudget
+              ? boundedOutputJson(
+                item.output, outputBudget.maxBytes, 'Provider code-interpreter output',
+              )
+              : JSON.stringify(item.output, null, 2));
           }
         }
         // Also capture logs if present
         if (item.logs && Array.isArray(item.logs)) {
           const logText = item.logs.join('\n');
           if (logText.trim()) {
-            textParts.push('Execution logs:\n' + logText);
+            appendText('Execution logs:\n' + logText);
           }
         }
       }
     }
 
     // If we have text, use it
-    if (textParts.length > 0) {
-      return textParts.join('\n');
+    if ((outputBudget && boundedText) || (!outputBudget && textParts.length > 0)) {
+      return outputBudget ? boundedText : textParts.join('\n');
     }
     
     // Truly empty
@@ -454,7 +544,10 @@ class GPT5Client {
    * Extract web search sources and citations from response
    * NEW: Based on official OpenAI documentation
    */
-  extractWebSearchData(response) {
+  extractWebSearchData(response, {
+    maxItems = Number.POSITIVE_INFINITY,
+    maxBytes = Number.MAX_SAFE_INTEGER,
+  } = {}) {
     const sources = [];
     const citations = [];
 
@@ -465,7 +558,12 @@ class GPT5Client {
     for (const item of response.output) {
       // Extract sources from web_search_call
       if (item.type === 'web_search_call' && item.action?.sources) {
-        sources.push(...item.action.sources);
+        for (const source of item.action.sources) {
+          if (sources.length >= maxItems) {
+            throw resultTooLarge('Provider web-search metadata', maxBytes);
+          }
+          sources.push(source);
+        }
       }
 
       // Extract citations from message annotations
@@ -474,6 +572,9 @@ class GPT5Client {
           if (contentItem.type === 'output_text' && contentItem.annotations) {
             for (const annotation of contentItem.annotations) {
               if (annotation.type === 'url_citation') {
+                if (citations.length >= maxItems) {
+                  throw resultTooLarge('Provider web-search metadata', maxBytes);
+                }
                 citations.push({
                   url: annotation.url,
                   title: annotation.title || '',

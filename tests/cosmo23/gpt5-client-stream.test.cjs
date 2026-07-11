@@ -95,6 +95,22 @@ test('GPT Responses validates fixed identity and token capability before provide
     );
     assert.equal(providerCalls, 0);
   }
+
+  for (const maxOutputBytes of [0, 1.5, 64 * 1024 * 1024 + 1]) {
+    let providerCalls = 0;
+    const client = new GPT5Client();
+    client.client = { responses: { stream: async () => {
+      providerCalls += 1;
+      return controlledEvents([]);
+    } } };
+    await assert.rejects(
+      () => client.generate({
+        input: 'question', maxOutputTokens: 16, maxOutputBytes,
+      }),
+      error => error.code === 'model_capability_invalid' && error.retryable === false,
+    );
+    assert.equal(providerCalls, 0);
+  }
 });
 
 test('GPT Responses never promotes reasoning-only output to successful content', async () => {
@@ -188,6 +204,113 @@ test('GPT Responses retry backoff is abortable and partial is never success', as
   controller.abort(reason);
   await assert.rejects(pending, error => error === reason);
   assert.equal(calls, 1);
+});
+
+test('GPT Responses bounds split multibyte output and keeps wire aliases as metadata', async () => {
+  const client = new GPT5Client();
+  client.client = { responses: { stream: async () => controlledEvents([
+    { type: 'response.output_text.delta', delta: '\uD83D' },
+    { type: 'response.output_text.delta', delta: '\uDE00' },
+    {
+      type: 'response.completed',
+      response: { id: 'aliased', model: 'gpt-5.4-mini-2026-06-01' },
+    },
+  ]) } };
+
+  const result = await client.generate({
+    model: 'gpt-5.4-mini', input: 'question', maxOutputTokens: 16,
+    maxOutputBytes: 4,
+  });
+
+  assert.equal(result.status, 'complete');
+  assert.equal(result.content, '😀');
+  assert.equal(result.model, 'gpt-5.4-mini');
+  assert.equal(result.observedModel, 'gpt-5.4-mini-2026-06-01');
+});
+
+test('GPT Responses cancels once on overflow and retries cannot turn it into success', async () => {
+  let providerCalls = 0;
+  let returnCalls = 0;
+  const client = new GPT5Client();
+  client.client = { responses: { stream: async () => {
+    providerCalls += 1;
+    let index = 0;
+    const events = [
+      { type: 'response.output_text.delta', delta: '😀' },
+      { type: 'response.output_text.delta', delta: 'x' },
+    ];
+    return {
+      [Symbol.asyncIterator]() { return this; },
+      async next() {
+        return index < events.length
+          ? { done: false, value: events[index++] }
+          : { done: true };
+      },
+      return() { returnCalls += 1; return Promise.resolve({ done: true }); },
+    };
+  } } };
+
+  await assert.rejects(
+    () => client.generateWithRetry({
+      model: 'gpt-5.4-mini', input: 'question', maxOutputTokens: 16,
+      maxOutputBytes: 4,
+    }, 3),
+    error => error.code === 'result_too_large' && error.retryable === false,
+  );
+  assert.equal(providerCalls, 1);
+  assert.equal(returnCalls, 1);
+});
+
+test('GPT Responses shares one byte ceiling across content and reasoning', async () => {
+  const client = new GPT5Client();
+  client.client = { responses: { stream: async () => controlledEvents([
+    { type: 'response.output_text.delta', delta: 'x' },
+    { type: 'response.reasoning_summary_text.delta', delta: '😀' },
+  ]) } };
+
+  await assert.rejects(
+    () => client.generate({
+      model: 'gpt-5.4-mini', input: 'question', maxOutputTokens: 16,
+      maxOutputBytes: 4,
+    }),
+    error => error.code === 'result_too_large' && error.retryable === false,
+  );
+});
+
+test('GPT Responses bounds structured code output before JSON serialization can amplify it', async () => {
+  let returnCalls = 0;
+  const events = [{
+    type: 'response.completed',
+    response: {
+      id: 'structured-overflow',
+      model: 'gpt-5.4-mini',
+      output: [{
+        type: 'code_interpreter_call',
+        output: { nested: 'x'.repeat(4096) },
+      }],
+    },
+  }];
+  const stream = {
+    index: 0,
+    [Symbol.asyncIterator]() { return this; },
+    async next() {
+      return this.index < events.length
+        ? { done: false, value: events[this.index++] }
+        : { done: true };
+    },
+    return() { returnCalls += 1; return Promise.resolve({ done: true }); },
+  };
+  const client = new GPT5Client();
+  client.client = { responses: { stream: async () => stream } };
+
+  await assert.rejects(
+    () => client.generate({
+      model: 'gpt-5.4-mini', input: 'question', maxOutputTokens: 16,
+      maxOutputBytes: 64,
+    }),
+    error => error.code === 'result_too_large' && error.retryable === false,
+  );
+  assert.equal(returnCalls, 1);
 });
 
 test('GPT code-interpreter helper preserves the canonical token capability field', async () => {

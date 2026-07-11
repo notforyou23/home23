@@ -18,11 +18,19 @@ const { normalizeProviderCompletion } = require('./provider-completion');
 const {
   abortableDelay,
   awaitWithCancellation,
+  boundedOutputJson,
+  cancelAsyncProviderStream,
+  createUtf8OutputBudget,
   reportProviderActivity,
+  requireMaxOutputBytes,
   requireMaxOutputTokens,
   rethrowCancellation,
+  rethrowNonRetryable,
+  resultTooLarge,
   throwIfAborted,
 } = require('./provider-execution');
+
+const MAX_STREAM_TOOL_CALLS = 4096;
 
 function requireProviderId(value) {
   const providerId = typeof value === 'string' ? value.trim() : '';
@@ -198,6 +206,9 @@ class AnthropicClient {
     const maxOutputTokens = requireMaxOutputTokens(
       options.maxOutputTokens, this.providerId, model,
     );
+    const maxOutputBytes = requireMaxOutputBytes(
+      options.maxOutputBytes, this.providerId, model,
+    );
     throwIfAborted(signal);
     try {
       await awaitWithCancellation(() => this._initClient(), signal);
@@ -317,10 +328,13 @@ class AnthropicClient {
       );
 
       // Process streaming response
-      return await this._streamResponse(stream, { ...options, model });
+      return await this._streamResponse(stream, {
+        ...options, model, wireModel, maxOutputBytes,
+      });
 
     } catch (error) {
       rethrowCancellation(error, signal);
+      rethrowNonRetryable(error);
       this.logger?.error?.('[AnthropicClient] Generation failed:', error.message);
       return this._buildErrorResponse(error);
     }
@@ -346,6 +360,8 @@ class AnthropicClient {
           }
           return result;
         }
+
+        if (result.error?.retryable === false) return result;
 
         // If we have an error and retries left, wait and retry
         if (attempt < maxRetries - 1) {
@@ -375,6 +391,7 @@ class AnthropicClient {
 
       } catch (error) {
         rethrowCancellation(error, options.signal);
+        rethrowNonRetryable(error);
         lastError = error;
         this.logger?.error?.('[AnthropicClient] Exception during generation', {
           component: options.component,
@@ -430,6 +447,9 @@ class AnthropicClient {
     const maxOutputTokens = requireMaxOutputTokens(
       options.maxOutputTokens, this.providerId, model,
     );
+    const maxOutputBytes = requireMaxOutputBytes(
+      options.maxOutputBytes, this.providerId, model,
+    );
     throwIfAborted(signal);
     try {
       await awaitWithCancellation(() => this._initClient(), signal);
@@ -479,10 +499,13 @@ class AnthropicClient {
       );
 
       // Process streaming response (handles web_search_tool_result blocks)
-      return await this._streamResponseWithWebSearch(stream, { ...options, model });
+      return await this._streamResponseWithWebSearch(stream, {
+        ...options, model, wireModel, maxOutputBytes,
+      });
 
     } catch (error) {
       rethrowCancellation(error, signal);
+      rethrowNonRetryable(error);
       this.logger?.error?.('[AnthropicClient] Native web search failed, trying DuckDuckGo fallback:', error.message);
 
       // Fallback to DuckDuckGo
@@ -506,6 +529,7 @@ class AnthropicClient {
         }, 3);
       } catch (fallbackError) {
         rethrowCancellation(fallbackError, signal);
+        rethrowNonRetryable(fallbackError);
         this.logger?.error?.('[AnthropicClient] All web search methods failed:', fallbackError.message);
         return await this.generateWithRetry(options, 3);
       }
@@ -704,6 +728,10 @@ class AnthropicClient {
    * Process streaming response from Anthropic with web search support
    */
   async _streamResponseWithWebSearch(stream, options) {
+    const maxOutputBytes = requireMaxOutputBytes(
+      options.maxOutputBytes, this.providerId, options.model,
+    );
+    const outputBudget = createUtf8OutputBudget(maxOutputBytes, 'Provider output');
     let textContent = '';
     let thinkingContent = '';
     const toolCalls = [];
@@ -718,8 +746,12 @@ class AnthropicClient {
     let finishReason = null;
     let hadError = false;
     let streamError = null;
+    let sourceBytes = 0;
+    let citationBytes = 0;
+    let toolSequence = 0;
 
     const iterator = stream[Symbol.asyncIterator]();
+    let streamExitReason = null;
     try {
       while (true) {
         const next = await awaitWithCancellation(
@@ -738,11 +770,25 @@ class AnthropicClient {
         // Content block start - detect tool use, thinking, or web search results
         else if (event.type === 'content_block_start') {
           if (event.content_block?.type === 'tool_use') {
+            if (toolSequence >= MAX_STREAM_TOOL_CALLS) {
+              throw resultTooLarge('Provider tool call', maxOutputBytes);
+            }
+            const budgetKey = `tool-${toolSequence++}`;
             currentToolUse = {
               id: event.content_block.id,
               name: event.content_block.name,
-              input: ''
+              input: '',
+              budgetKey,
             };
+            outputBudget.reserve(
+              `${budgetKey}-structure`, 64, 'Provider tool call',
+            );
+            outputBudget.set(
+              `${budgetKey}-id`, currentToolUse.id || '', 'Provider tool call',
+            );
+            outputBudget.set(
+              `${budgetKey}-name`, currentToolUse.name || '', 'Provider tool call',
+            );
           } else if (event.content_block?.type === 'thinking') {
             // Extended thinking block
             this.logger?.debug?.('[AnthropicClient] Thinking block started');
@@ -751,11 +797,19 @@ class AnthropicClient {
             const results = event.content_block?.content || [];
             for (const result of results) {
               if (result.type === 'web_search_result') {
-                webSearchSources.push({
+                const source = {
                   url: result.url,
                   title: result.title,
                   pageAge: result.page_age
-                });
+                };
+                sourceBytes += Math.max(64, Buffer.byteLength(
+                  boundedOutputJson(source, maxOutputBytes, 'Provider web-search source'),
+                  'utf8',
+                ));
+                outputBudget.reserve(
+                  'web-search-sources', sourceBytes, 'Provider web-search sources',
+                );
+                webSearchSources.push(source);
                 this.logger?.debug?.('[AnthropicClient] Web search source:', result.url);
               }
             }
@@ -767,7 +821,9 @@ class AnthropicClient {
           if (event.delta?.type === 'text_delta') {
             // Check for citations in text content
             const text = event.delta.text;
-            textContent += text;
+            textContent = outputBudget.append(
+              'content', textContent, text || '', 'Provider content',
+            );
 
             // Emit chunk for real-time streaming (matches GPT5Client onChunk pattern)
             if (options.onChunk && text) {
@@ -778,19 +834,35 @@ class AnthropicClient {
             if (event.delta.citations && event.delta.citations.length > 0) {
               for (const citation of event.delta.citations) {
                 if (citation.type === 'web_search_result_location') {
-                  citations.push({
+                  const normalizedCitation = {
                     url: citation.url,
                     title: citation.title,
                     citedText: citation.cited_text
-                  });
+                  };
+                  citationBytes += Math.max(64, Buffer.byteLength(
+                    boundedOutputJson(
+                      normalizedCitation, maxOutputBytes, 'Provider citation',
+                    ),
+                    'utf8',
+                  ));
+                  outputBudget.reserve(
+                    'citations', citationBytes, 'Provider citations',
+                  );
+                  citations.push(normalizedCitation);
                 }
               }
             }
           } else if (event.delta?.type === 'input_json_delta' && currentToolUse) {
             // Accumulate tool input JSON
-            currentToolUse.input += event.delta.partial_json;
+            currentToolUse.input = outputBudget.append(
+              `${currentToolUse.budgetKey}-input`, currentToolUse.input,
+              event.delta.partial_json || '', 'Provider tool call',
+            );
           } else if (event.delta?.type === 'thinking_delta') {
-            thinkingContent += event.delta.thinking || '';
+            thinkingContent = outputBudget.append(
+              'reasoning', thinkingContent, event.delta.thinking || '',
+              'Provider reasoning',
+            );
           }
         }
 
@@ -800,15 +872,23 @@ class AnthropicClient {
             // Parse accumulated JSON and store in OpenAI format
             try {
               const parsedInput = JSON.parse(currentToolUse.input);
+              const normalizedArguments = boundedOutputJson(
+                parsedInput, maxOutputBytes, 'Provider tool call',
+              );
+              outputBudget.set(
+                `${currentToolUse.budgetKey}-input`, normalizedArguments,
+                'Provider tool call',
+              );
               toolCalls.push({
                 id: currentToolUse.id,
                 type: 'function',
                 function: {
                   name: currentToolUse.name,
-                  arguments: JSON.stringify(parsedInput)  // OpenAI expects string
+                  arguments: normalizedArguments  // OpenAI expects string
                 }
               });
             } catch (e) {
+              rethrowNonRetryable(e);
               this.logger?.warn?.('[AnthropicClient] Failed to parse tool input:', e.message);
             }
             currentToolUse = null;
@@ -835,10 +915,16 @@ class AnthropicClient {
       }
 
     } catch (error) {
+      streamExitReason = options.signal?.aborted ? options.signal.reason : error;
       rethrowCancellation(error, options.signal);
+      rethrowNonRetryable(error);
       this.logger?.error?.('[AnthropicClient] Stream processing error:', error.message);
       hadError = true;
       streamError = error;
+    } finally {
+      if (streamExitReason) {
+        cancelAsyncProviderStream(stream, iterator, streamExitReason);
+      }
     }
 
     return normalizeProviderCompletion({
@@ -849,7 +935,8 @@ class AnthropicClient {
       hadError,
       error: streamError,
       responseId,
-      model: model || this._getModelFromOptions(options),
+      model: this._getModelFromOptions(options),
+      observedModel: model || options.wireModel || this._getModelFromOptions(options),
       provider: this.providerId,
       usage: { input_tokens: inputTokens, output_tokens: outputTokens },
       output: toolCalls.length ? toolCalls : null,

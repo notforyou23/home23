@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   ProviderCompletionError,
+  assertProviderResultIdentity,
   normalizeProviderCompletion,
   requireCompleteProviderResult,
 } = require('../../cosmo23/lib/provider-completion');
@@ -105,5 +106,31 @@ test('null provider results fail through the typed completion boundary', () => {
     error => error instanceof ProviderCompletionError
       && error.code === 'provider_incomplete'
       && error.status === 'failed',
+  );
+});
+
+test('wire aliases are bounded metadata and never replace canonical identity', () => {
+  const result = normalizeProviderCompletion({
+    ...base,
+    observedModel: 'gpt-5.4-mini-20260701',
+  });
+  assert.equal(result.model, 'gpt-5.4-mini');
+  assert.equal(result.observedModel, 'gpt-5.4-mini-20260701');
+  assert.equal(assertProviderResultIdentity(result, 'openai', 'gpt-5.4-mini'), result);
+
+  const oversized = normalizeProviderCompletion({
+    ...base,
+    observedModel: 'm'.repeat(513),
+  });
+  assert.equal(oversized.model, 'gpt-5.4-mini');
+  assert.equal(oversized.observedModel, null);
+
+  assert.throws(
+    () => assertProviderResultIdentity({
+      ...result,
+      model: 'arbitrary-wire-model',
+      observedModel: 'gpt-5.4-mini',
+    }, 'openai', 'gpt-5.4-mini'),
+    error => error.code === 'provider_model_mismatch' && error.retryable === false,
   );
 });

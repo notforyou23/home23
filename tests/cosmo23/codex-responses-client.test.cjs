@@ -17,6 +17,15 @@ function streamFrom(text, { fail = null } = {}) {
   });
 }
 
+function streamFromChunks(chunks) {
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+}
+
 function makeClient({ body, signal, status = 200, counters = {}, credentialsProvider, fetchImpl }) {
   return new CodexResponsesClient({
     credentialsProvider: credentialsProvider || (async (options) => {
@@ -107,6 +116,9 @@ test('Codex validates capability, provider, model, and pre-abort before credenti
     { maxOutputTokens: 0 },
     { maxOutputTokens: 1.5 },
     { maxOutputTokens: Number.MAX_SAFE_INTEGER + 1 },
+    { maxOutputBytes: 0 },
+    { maxOutputBytes: 1.5 },
+    { maxOutputBytes: 64 * 1024 * 1024 + 1 },
     { provider: 'openai' },
     { model: ' ' },
   ]) {
@@ -182,4 +194,92 @@ test('Codex preserves exact cancellation when abort races credentials, fetch, bo
     gate.reject(new Error(`ordinary ${boundary} failure`));
     await assert.rejects(pending, (error) => error === reason, boundary);
   }
+});
+
+test('Codex decodes split UTF-8 bytes and keeps wire aliases as bounded metadata', async () => {
+  const controller = new AbortController();
+  const encoded = new TextEncoder().encode(
+    'data: {"type":"response.output_text.delta","delta":"😀"}\n\n'
+      + 'data: {"type":"response.completed","response":{"id":"alias","model":"gpt-5.6-terra-20260701"}}\n\n',
+  );
+  const emojiStart = encoded.findIndex((value, index) =>
+    value === 0xF0 && encoded[index + 1] === 0x9F);
+  const body = streamFromChunks([
+    encoded.subarray(0, emojiStart + 2),
+    encoded.subarray(emojiStart + 2, emojiStart + 3),
+    encoded.subarray(emojiStart + 3),
+  ]);
+
+  const result = await generate(
+    makeClient({ body, signal: controller.signal }), controller.signal,
+    { maxOutputBytes: 4 },
+  );
+
+  assert.equal(result.status, 'complete');
+  assert.equal(result.content, '😀');
+  assert.equal(result.model, 'gpt-5.6-terra');
+  assert.equal(result.observedModel, 'gpt-5.6-terra-20260701');
+});
+
+test('Codex tool-call overflow cancels and releases its reader', async () => {
+  const controller = new AbortController();
+  const counters = { cancel: 0, release: 0, reads: 0 };
+  const bytes = new TextEncoder().encode(
+    'data: {"type":"response.function_call_arguments.delta","item_id":"i","call_id":"c","name":"f","delta":"{"}\n\n',
+  );
+  const reader = {
+    async read() {
+      counters.reads += 1;
+      return counters.reads === 1
+        ? { done: false, value: bytes }
+        : { done: true };
+    },
+    cancel() { counters.cancel += 1; return Promise.resolve(); },
+    releaseLock() { counters.release += 1; },
+  };
+  const client = new CodexResponsesClient({
+    credentialsProvider: async () => ({ accessToken: 'test', accountId: 'acct' }),
+    fetchImpl: async () => ({
+      ok: true,
+      body: { getReader: () => reader },
+    }),
+  });
+
+  await assert.rejects(
+    () => generate(client, controller.signal, { maxOutputBytes: 66 }),
+    error => error.code === 'result_too_large' && error.retryable === false,
+  );
+  assert.equal(counters.cancel, 1);
+  assert.equal(counters.release, 1);
+});
+
+test('Codex rejects an oversized unterminated SSE frame without concatenating forever', async () => {
+  const controller = new AbortController();
+  const counters = { cancel: 0, release: 0, reads: 0 };
+  const chunk = new TextEncoder().encode('x'.repeat(1024 * 1024));
+  const reader = {
+    async read() {
+      counters.reads += 1;
+      return counters.reads <= 3
+        ? { done: false, value: chunk }
+        : { done: true };
+    },
+    cancel() { counters.cancel += 1; return Promise.resolve(); },
+    releaseLock() { counters.release += 1; },
+  };
+  const client = new CodexResponsesClient({
+    credentialsProvider: async () => ({ accessToken: 'test', accountId: 'acct' }),
+    fetchImpl: async () => ({
+      ok: true,
+      body: { getReader: () => reader },
+    }),
+  });
+
+  await assert.rejects(
+    () => generate(client, controller.signal),
+    error => error.code === 'result_too_large' && error.retryable === false,
+  );
+  assert.equal(counters.reads, 3);
+  assert.equal(counters.cancel, 1);
+  assert.equal(counters.release, 1);
 });

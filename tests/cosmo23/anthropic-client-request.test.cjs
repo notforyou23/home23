@@ -375,6 +375,19 @@ test('Anthropic validates max token capability before credentials or provider wo
     assert.equal(credentialCalls, 0);
     assert.equal(providerCalls, 0);
   }
+
+  for (const maxOutputBytes of [0, 1.5, 64 * 1024 * 1024 + 1]) {
+    let credentialCalls = 0;
+    const client = new CosmoAnthropicClient({ providerId: 'anthropic' }, makeLogger());
+    client._initClient = async () => { credentialCalls += 1; };
+    await assert.rejects(
+      () => client.generate({
+        input: 'hello', maxOutputTokens: 16, maxOutputBytes,
+      }),
+      error => error.code === 'model_capability_invalid' && error.retryable === false,
+    );
+    assert.equal(credentialCalls, 0);
+  }
 });
 
 test('Anthropic stream rethrows exact cancellation instead of building an error response', async () => {
@@ -479,4 +492,102 @@ test('Anthropic retry honors pre-abort and aborts during backoff by exact identi
   controller.abort(reason);
   await assert.rejects(pending, error => error === reason);
   assert.equal(calls, 1);
+});
+
+test('Anthropic bounds split multibyte output and keeps wire aliases as metadata', async () => {
+  const client = Object.create(CosmoAnthropicClient.prototype);
+  client.logger = makeLogger();
+  client.providerId = 'anthropic';
+  client._getModelFromOptions = options => options.model;
+
+  const result = await client._streamResponseWithWebSearch(controlledEvents([
+    {
+      type: 'message_start',
+      message: { id: 'm-alias', model: 'claude-sonnet-4-6-20260701' },
+    },
+    { type: 'content_block_delta', delta: { type: 'text_delta', text: '\uD83D' } },
+    { type: 'content_block_delta', delta: { type: 'text_delta', text: '\uDE00' } },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' } },
+    { type: 'message_stop' },
+  ]), {
+    model: 'claude-sonnet-4-6', wireModel: 'claude-sonnet-4-6',
+    maxOutputBytes: 4,
+  });
+
+  assert.equal(result.status, 'complete');
+  assert.equal(result.content, '😀');
+  assert.equal(result.model, 'claude-sonnet-4-6');
+  assert.equal(result.observedModel, 'claude-sonnet-4-6-20260701');
+});
+
+test('Anthropic tool JSON overflow cancels the stream and is nonretryable', async () => {
+  let returnCalls = 0;
+  let index = 0;
+  const events = [
+    {
+      type: 'content_block_start',
+      content_block: { type: 'tool_use', id: 'i', name: 'f' },
+    },
+    {
+      type: 'content_block_delta',
+      delta: { type: 'input_json_delta', partial_json: '{"x":' },
+    },
+  ];
+  const stream = {
+    [Symbol.asyncIterator]() { return this; },
+    async next() {
+      return index < events.length
+        ? { done: false, value: events[index++] }
+        : { done: true };
+    },
+    return() { returnCalls += 1; return Promise.resolve({ done: true }); },
+  };
+  const client = Object.create(CosmoAnthropicClient.prototype);
+  client.logger = makeLogger();
+  client.providerId = 'anthropic';
+  client._getModelFromOptions = options => options.model;
+
+  await assert.rejects(
+    () => client._streamResponseWithWebSearch(stream, {
+      model: 'claude-sonnet-4-6', maxOutputBytes: 70,
+    }),
+    error => error.code === 'result_too_large' && error.retryable === false,
+  );
+  assert.equal(returnCalls, 1);
+});
+
+test('Anthropic retries and web-search fallback never recover an overflow', async () => {
+  let calls = 0;
+  const retryClient = Object.create(CosmoAnthropicClient.prototype);
+  retryClient.logger = makeLogger();
+  retryClient.generate = async () => {
+    calls += 1;
+    throw Object.assign(new Error('too large'), {
+      code: 'result_too_large', retryable: false,
+    });
+  };
+  await assert.rejects(
+    () => retryClient.generateWithRetry({}, 3),
+    error => error.code === 'result_too_large',
+  );
+  assert.equal(calls, 1);
+
+  let fallbackCalls = 0;
+  const webClient = new CosmoAnthropicClient({ providerId: 'anthropic' }, makeLogger());
+  webClient.isOAuth = false;
+  webClient._initClient = async () => {};
+  webClient._resolveWireModel = async model => model;
+  webClient._performWebSearch = async () => { fallbackCalls += 1; return 'unexpected'; };
+  webClient.generateWithRetry = async () => { fallbackCalls += 1; return {}; };
+  webClient.anthropic = { messages: { stream: async () => controlledEvents([
+    { type: 'content_block_delta', delta: { type: 'text_delta', text: '😀x' } },
+  ]) } };
+  await assert.rejects(
+    () => webClient.generateWithWebSearch({
+      model: 'claude-sonnet-4-6', input: 'question', maxOutputTokens: 16,
+      maxOutputBytes: 4,
+    }),
+    error => error.code === 'result_too_large',
+  );
+  assert.equal(fallbackCalls, 0);
 });

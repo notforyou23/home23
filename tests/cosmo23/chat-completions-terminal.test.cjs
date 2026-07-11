@@ -100,6 +100,24 @@ test('Chat Completions validates token capability before provider work', async (
     error => error.code === 'model_capability_invalid',
   );
   assert.equal(clientAccesses, 0);
+
+  for (const maxOutputBytes of [0, 1.5, 64 * 1024 * 1024 + 1]) {
+    let providerCalls = 0;
+    const boundedClient = new ChatCompletionsClient({
+      providerId: 'local',
+      client: { chat: { completions: { create: async () => {
+        providerCalls += 1;
+        return controlledEvents([]);
+      } } } },
+    });
+    await assert.rejects(
+      () => boundedClient.generate({
+        input: 'question', maxOutputTokens: 16, maxOutputBytes,
+      }),
+      error => error.code === 'model_capability_invalid' && error.retryable === false,
+    );
+    assert.equal(providerCalls, 0);
+  }
 });
 
 test('Chat Completions non-streaming uses exact signal, tokens, and terminal envelope', async () => {
@@ -185,4 +203,77 @@ test('Chat Completions retry delay is abortable and partial is never success', a
   controller.abort(reason);
   await assert.rejects(pending, error => error === reason);
   assert.equal(calls, 1);
+});
+
+test('Chat Completions bounds split multibyte output and keeps wire aliases as metadata', async () => {
+  const client = new ChatCompletionsClient({
+    providerId: 'local',
+    modelMapping: { canonical: 'wire-model' },
+    client: { chat: { completions: { create: async () => controlledEvents([
+      {
+        id: 'c-alias', model: 'wire-model-q8',
+        choices: [{ delta: { content: '\uD83D' }, finish_reason: null }],
+      },
+      {
+        id: 'c-alias', model: 'wire-model-q8',
+        choices: [{ delta: { content: '\uDE00' }, finish_reason: null }],
+      },
+      {
+        id: 'c-alias', model: 'wire-model-q8',
+        choices: [{ delta: {}, finish_reason: 'stop' }],
+      },
+    ]) } } },
+  });
+
+  const result = await client.generate({
+    model: 'canonical', input: 'question', maxOutputTokens: 16,
+    maxOutputBytes: 4,
+  });
+
+  assert.equal(result.status, 'complete');
+  assert.equal(result.content, '😀');
+  assert.equal(result.model, 'canonical');
+  assert.equal(result.observedModel, 'wire-model-q8');
+});
+
+test('Chat Completions cancels tool-call overflow and retries cannot recover it', async () => {
+  let providerCalls = 0;
+  let returnCalls = 0;
+  const client = new ChatCompletionsClient({ providerId: 'local' });
+  client.client = { chat: { completions: { create: async () => {
+    providerCalls += 1;
+    let emitted = false;
+    return {
+      [Symbol.asyncIterator]() { return this; },
+      async next() {
+        if (emitted) return { done: true };
+        emitted = true;
+        return {
+          done: false,
+          value: {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0, id: 'i',
+                  function: { name: 'f', arguments: '{' },
+                }],
+              },
+              finish_reason: null,
+            }],
+          },
+        };
+      },
+      return() { returnCalls += 1; return Promise.resolve({ done: true }); },
+    };
+  } } } };
+
+  await assert.rejects(
+    () => client.generateWithRetry({
+      model: 'canonical', input: 'question', maxOutputTokens: 16,
+      maxOutputBytes: 66,
+    }, 3),
+    error => error.code === 'result_too_large' && error.retryable === false,
+  );
+  assert.equal(providerCalls, 1);
+  assert.equal(returnCalls, 1);
 });
