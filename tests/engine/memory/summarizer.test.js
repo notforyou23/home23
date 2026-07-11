@@ -121,6 +121,10 @@ test('consolidateMemories limits cluster work per run and records deferral', asy
 
   const result = await summarizer.consolidateMemories(memoryNetwork);
 
+  for (const candidate of result) {
+    assert.equal(summarizer.commitConsolidationSources(memoryNetwork, candidate).committed, true);
+  }
+
   assert.equal(result.length, 2);
   assert.deepEqual(attempted, ['cluster-0-node-0', 'cluster-1-node-0']);
   assert.ok(nodes.slice(0, 6).every((node) => node.consolidatedAt));
@@ -166,6 +170,10 @@ test('consolidateMemories dry-runs source compost without deleting sources', asy
   const result = await summarizer.consolidateMemories(memoryNetwork, 0.75, {
     compostSources: 'dry-run',
   });
+
+  for (const candidate of result) {
+    assert.equal(summarizer.commitConsolidationSources(memoryNetwork, candidate).committed, true);
+  }
 
   assert.equal(result.length, 2);
   assert.equal(result[0].compost.mode, 'dry-run');
@@ -243,6 +251,37 @@ test('consolidateMemories discards provider output when a source identity change
   assert.ok(cluster.every((node) => !node.consolidatedAt));
   assert.equal(summarizer.consolidationHistory.at(-1).consolidations, 0);
   assert.ok(logger.entries.some((entry) => entry.message === 'Memory consolidation discarded after source changed'));
+});
+
+test('consolidation source markers are deferred until a stored summary is ready', async () => {
+  process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'test-key';
+  const logger = makeLogger();
+  const summarizer = new MemorySummarizer({}, logger, {});
+  const nodes = Array.from({ length: 10 }, (_, index) => ({
+    id: `deferred-source-${index}`,
+    concept: `deferred durable source ${index}`,
+    weight: index,
+  }));
+  const cluster = nodes.slice(0, 3);
+  const memoryNetwork = attachMutationApi({ nodes: new Map(nodes.map((node) => [node.id, node])) });
+  summarizer.clusterSimilarMemories = async () => [cluster];
+  summarizer.createConsolidatedMemoryGPT5 = async () => ({
+    content: 'deferred durable consolidation',
+    reasoning: null,
+    model: 'test-model',
+  });
+
+  const [candidate] = await summarizer.consolidateMemories(memoryNetwork);
+
+  assert.ok(candidate);
+  assert.equal(memoryNetwork.mutationCalls.patchNodes, 0);
+  assert.ok(cluster.every((node) => !node.consolidatedAt));
+
+  const committed = summarizer.commitConsolidationSources(memoryNetwork, candidate);
+
+  assert.equal(committed.committed, true);
+  assert.equal(memoryNetwork.mutationCalls.patchNodes, 1);
+  assert.ok(cluster.every((node) => typeof node.consolidatedAt === 'string'));
 });
 
 test('compost provenance records only source nodes actually removed and preserves numeric IDs', () => {

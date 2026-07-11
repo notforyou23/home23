@@ -12,6 +12,76 @@
  */
 
 const { CRDTMerger } = require('./backends/crdt-merger');
+const { types: { isProxy } } = require('node:util');
+
+function cloneMemoryDiffValue(value, seen = new Set(), arrayElement = false) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'bigint') throw new TypeError('memory_diff_bigint_not_allowed');
+  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') {
+    return arrayElement ? null : undefined;
+  }
+  if (isProxy(value)) throw new TypeError('memory_diff_proxy_not_allowed');
+  if (value instanceof Date) {
+    const timestamp = Date.prototype.getTime.call(value);
+    if (!Number.isFinite(timestamp)) throw new TypeError('memory_diff_plain_json_required');
+    return new Date(timestamp).toISOString();
+  }
+  if (ArrayBuffer.isView(value)) {
+    if (!Number.isSafeInteger(value.length) || value.length < 0) {
+      throw new TypeError('memory_diff_plain_json_required');
+    }
+    return Array.from(value, (entry) => cloneMemoryDiffValue(entry, seen, true));
+  }
+  if (seen.has(value)) throw new TypeError('memory_diff_cycle_not_allowed');
+  const prototype = Object.getPrototypeOf(value);
+  if (Array.isArray(value)) {
+    if (prototype !== Array.prototype) throw new TypeError('memory_diff_plain_json_required');
+  } else if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError('memory_diff_plain_json_required');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (typeof key === 'symbol') {
+      if (descriptor.enumerable) throw new TypeError('memory_diff_symbol_key_not_allowed');
+      continue;
+    }
+    if (descriptor.get || descriptor.set) {
+      throw new TypeError('memory_diff_accessor_not_allowed');
+    }
+  }
+
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const clone = new Array(value.length);
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor) continue;
+        clone[index] = cloneMemoryDiffValue(descriptor.value, seen, true);
+      }
+      return clone;
+    }
+    const clone = {};
+    for (const key of Reflect.ownKeys(descriptors)) {
+      const descriptor = descriptors[key];
+      if (typeof key === 'symbol' || !descriptor.enumerable) continue;
+      const child = cloneMemoryDiffValue(descriptor.value, seen, false);
+      if (child !== undefined) {
+        Object.defineProperty(clone, key, {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: child,
+        });
+      }
+    }
+    return clone;
+  } finally {
+    seen.delete(value);
+  }
+}
 
 function parseLegacyGraphIdentity(rawValue) {
   const value = String(rawValue);
@@ -45,7 +115,8 @@ function validateIdentity(value, kind) {
 
 function resolveOperationIdentity(operation, kind, explicitKey, rawSuffix) {
   const explicit = readOwnIdentity(operation, explicitKey);
-  const valueIdentity = readOwnIdentity(operation?.value, 'id');
+  const operationValue = readOwnIdentity(operation, 'value');
+  const valueIdentity = readOwnIdentity(operationValue.value, 'id');
   if (explicit.present) validateIdentity(explicit.value, kind);
   if (valueIdentity.present) validateIdentity(valueIdentity.value, kind);
   if (explicit.present && valueIdentity.present && !Object.is(explicit.value, valueIdentity.value)) {
@@ -93,23 +164,36 @@ class MemoryDiffMerger {
    * @param {string} instanceId - originating instance
    */
   applyDiff(diff, instanceId) {
-    if (!diff || !diff.fields) {
+    if (!diff) {
       return;
     }
 
-    const timestamp = diff.timestamp || Date.now();
-    const diffId = diff.diff_id || `${timestamp}_${instanceId}`;
+    const safeDiff = cloneMemoryDiffValue(diff);
+    const fieldsProperty = readOwnIdentity(safeDiff, 'fields');
+    if (!fieldsProperty.present || !fieldsProperty.value || typeof fieldsProperty.value !== 'object') return;
+    const fields = fieldsProperty.value;
 
-    for (const [field, operation] of Object.entries(diff.fields)) {
-      if (!operation || !operation.op) {
+    const diffTimestamp = readOwnIdentity(safeDiff, 'timestamp');
+    const timestamp = diffTimestamp.value || Date.now();
+    const diffIdProperty = readOwnIdentity(safeDiff, 'diff_id');
+    const diffId = diffIdProperty.value || `${timestamp}_${instanceId}`;
+    const diffVersionVector = readOwnIdentity(safeDiff, 'versionVector');
+
+    for (const [field, operation] of Object.entries(fields)) {
+      const operationType = readOwnIdentity(operation, 'op');
+      if (!operation || !operationType.present || !operationType.value) {
         continue;
       }
 
+      const operationValue = readOwnIdentity(operation, 'value');
+      const operationVersionVector = readOwnIdentity(operation, 'versionVector');
+      const operationTimestamp = readOwnIdentity(operation, 'timestamp');
+
       const entry = {
-        op: operation.op,
-        value: operation.value || null,
-        versionVector: operation.versionVector || diff.versionVector || {},
-        timestamp: operation.timestamp || timestamp,
+        op: operationType.value,
+        value: operationValue.value || null,
+        versionVector: operationVersionVector.value || diffVersionVector.value || {},
+        timestamp: operationTimestamp.value || timestamp,
         instanceId,
         diffId
       };

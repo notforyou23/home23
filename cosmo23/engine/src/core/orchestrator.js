@@ -3527,10 +3527,11 @@ class Orchestrator {
         // Robust validation for consolidation
         const consolidationValidation = validateAndClean(`[CONSOLIDATED] ${cons.consolidated}`);
         if (consolidationValidation.valid) {
-          await this.memory.addNode(
+          const publication = await this._publishConsolidationSummary(
+            cons,
             consolidationValidation.content,
-            'consolidated'
           );
+          if (!publication.published) continue;
           
           this.logger.info('✓ Consolidated (GPT-5.2)', {
             sourceNodes: cons.sourceNodes.length,
@@ -3848,6 +3849,59 @@ class Orchestrator {
     }
   }
 
+  async _publishConsolidationSummary(consolidation, content) {
+    let summaryNode;
+    try {
+      summaryNode = await this.memory.addNode(content, 'consolidated');
+    } catch (error) {
+      this.logger?.warn?.('Memory consolidation summary creation failed', {
+        reason: 'summary_node_creation_failed',
+        error: error?.message || String(error),
+        sourceNodes: consolidation?.sourceNodes?.length || 0,
+      });
+      return { published: false, mode: 'blocked', reason: 'summary_node_creation_failed' };
+    }
+    if (!summaryNode) {
+      this.logger?.warn?.('Memory consolidation summary creation failed', {
+        reason: 'summary_node_creation_failed',
+        sourceNodes: consolidation?.sourceNodes?.length || 0,
+      });
+      return { published: false, mode: 'blocked', reason: 'summary_node_creation_failed' };
+    }
+
+    if (typeof this.summarizer.commitConsolidationSources !== 'function') {
+      throw new Error('memory_consolidation_source_commit_api_required');
+    }
+    const sourceCommit = this.summarizer.commitConsolidationSources(
+      this.memory,
+      consolidation,
+    );
+    if (!sourceCommit?.committed) {
+      const reason = sourceCommit?.reason || 'source_marker_commit_failed';
+      this.logger?.warn?.('Memory consolidation source commit failed', {
+        mode: sourceCommit?.mode || 'blocked',
+        reason,
+        summaryNodeId: summaryNode.id,
+        updatedSourceNodes: Number(sourceCommit?.updatedSourceNodes || 0),
+        skippedSourceNodes: Number(sourceCommit?.skippedSourceNodes || 0),
+      });
+      return {
+        published: false,
+        mode: sourceCommit?.mode || 'blocked',
+        reason,
+        summaryNodeId: summaryNode.id,
+        sourceCommit,
+      };
+    }
+
+    return {
+      published: true,
+      mode: 'apply',
+      summaryNodeId: summaryNode.id,
+      sourceCommit,
+    };
+  }
+
   async performMemoryConsolidation() {
     this.logger.info('🔗 Consolidating (GPT-5.2 deep reasoning)...');
 
@@ -3858,11 +3912,11 @@ class Orchestrator {
       // Robust validation for consolidation
       const consolidationValidation = validateAndClean(`[CONSOLIDATED] ${cons.consolidated}`);
       if (consolidationValidation.valid) {
-        await this.memory.addNode(
+        const publication = await this._publishConsolidationSummary(
+          cons,
           consolidationValidation.content,
-          'consolidated'
         );
-        validCount++;
+        if (publication.published) validCount++;
       } else {
         this.logger.warn('⚠️  Skipped invalid consolidation', {
           sourceNodes: cons.sourceNodes?.length || 0,
@@ -3880,6 +3934,10 @@ class Orchestrator {
         skipped: consolidations.length - validCount
       });
     }
+    return {
+      created: validCount,
+      skipped: consolidations.length - validCount,
+    };
   }
 
   async performReflection() {

@@ -120,18 +120,15 @@ Preserve specific facts. Be information-dense. Every sentence should teach somet
 
     const clusters = await this.clusterSimilarMemories(nodes, similarityThreshold);
     const consolidations = [];
-    const consolidationTimestamp = new Date().toISOString();
 
     for (const cluster of clusters) {
       if (cluster.length >= 3) {
         const consolidated = await this.createConsolidatedMemoryGPT5(cluster);
         
         if (consolidated) {
-          if (typeof memoryNetwork.patchNodes !== 'function') {
-            throw new Error('memory_node_patch_api_required');
-          }
-          // Provider work yields. Publish only when every exact source identity
-          // is still current; the check and batch mutation below are synchronous.
+          // Provider work yields. Require exact source identities before
+          // preparing a candidate, but defer consolidatedAt markers until the
+          // orchestrator has actually stored the summary node.
           const sourceStillCurrent = cluster.every((node) => memoryNetwork.nodes.get(node.id) === node);
           if (!sourceStillCurrent) {
             this.logger?.warn?.('Memory consolidation discarded after source changed', {
@@ -139,27 +136,27 @@ Preserve specific facts. Be information-dense. Every sentence should teach somet
             });
             continue;
           }
-          const patched = memoryNetwork.patchNodes(cluster.map((node) => ({
-            nodeId: node.id,
-            expectedNode: node,
-            patch: { consolidatedAt: consolidationTimestamp },
-          })));
-          if (Number(patched?.updated || 0) !== cluster.length) {
-            this.logger?.warn?.('Memory consolidation discarded after incomplete source commit', {
-              sourceCount: cluster.length,
-              updated: Number(patched?.updated || 0),
-            });
-            continue;
-          }
-
-          consolidations.push({
+          const consolidationRecord = {
             consolidated: consolidated.content,
             reasoning: consolidated.reasoning,
             sourceNodes: cluster.map(n => n.id),
             model: consolidated.model
+          };
+          Object.defineProperty(consolidationRecord, 'sourceIdentityTokens', {
+            configurable: false,
+            enumerable: false,
+            writable: false,
+            value: new Map(cluster.map((node) => [node.id, node])),
           });
+          Object.defineProperty(consolidationRecord, 'consolidationTimestamp', {
+            configurable: false,
+            enumerable: false,
+            writable: false,
+            value: new Date().toISOString(),
+          });
+          consolidations.push(consolidationRecord);
 
-          this.logger?.info('Memories consolidated (GPT-5.2)', {
+          this.logger?.info('Memory consolidation candidate prepared (GPT-5.2)', {
             sourceCount: cluster.length,
             hasReasoning: Boolean(consolidated.reasoning),
             topics: cluster.map(n => n.tag)
@@ -175,6 +172,73 @@ Preserve specific facts. Be information-dense. Every sentence should teach somet
     });
 
     return consolidations;
+  }
+
+  commitConsolidationSources(memoryNetwork, consolidation) {
+    const sourceNodes = Array.from(new Set(
+      Array.isArray(consolidation?.sourceNodes)
+        ? consolidation.sourceNodes.filter((id) => id !== undefined && id !== null)
+        : [],
+    ));
+    const sourceIdentityTokens = consolidation?.sourceIdentityTokens instanceof Map
+      ? consolidation.sourceIdentityTokens
+      : null;
+    if (!sourceNodes.length || !sourceIdentityTokens) {
+      return {
+        committed: false,
+        mode: 'blocked',
+        reason: sourceNodes.length
+          ? 'source_identity_tokens_missing'
+          : 'source_nodes_missing',
+        updatedSourceNodes: 0,
+        skippedSourceNodes: sourceNodes.length,
+      };
+    }
+
+    const identityChangedSourceNodes = sourceNodes.filter((sourceNodeId) => (
+      !sourceIdentityTokens.has(sourceNodeId)
+      || memoryNetwork?.nodes?.get?.(sourceNodeId) !== sourceIdentityTokens.get(sourceNodeId)
+    ));
+    if (identityChangedSourceNodes.length > 0) {
+      return {
+        committed: false,
+        mode: 'partial',
+        reason: 'source_identity_changed',
+        updatedSourceNodes: 0,
+        skippedSourceNodes: sourceNodes.length,
+        identityChangedSourceNodes,
+      };
+    }
+    if (typeof memoryNetwork.patchNodes !== 'function') {
+      throw new Error('memory_node_patch_api_required');
+    }
+
+    const consolidationTimestamp = typeof consolidation?.consolidationTimestamp === 'string'
+      && !Number.isNaN(new Date(consolidation.consolidationTimestamp).getTime())
+      ? consolidation.consolidationTimestamp
+      : new Date().toISOString();
+    const patched = memoryNetwork.patchNodes(sourceNodes.map((sourceNodeId) => ({
+      nodeId: sourceNodeId,
+      expectedNode: sourceIdentityTokens.get(sourceNodeId),
+      patch: { consolidatedAt: consolidationTimestamp },
+    })));
+    const updatedSourceNodes = Number(patched?.updated || 0);
+    if (updatedSourceNodes !== sourceNodes.length) {
+      return {
+        committed: false,
+        mode: 'partial',
+        reason: 'source_marker_commit_incomplete',
+        updatedSourceNodes,
+        skippedSourceNodes: sourceNodes.length - updatedSourceNodes,
+      };
+    }
+    return {
+      committed: true,
+      mode: 'apply',
+      updatedSourceNodes,
+      skippedSourceNodes: 0,
+      consolidatedAt: consolidationTimestamp,
+    };
   }
 
   /**

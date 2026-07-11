@@ -112,7 +112,8 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
 
   /**
    * Consolidate memories using GPT-5.5 with web search for validation
-   * OPTIMIZATION: Marks source nodes with consolidatedAt to prevent re-processing
+   * Produces candidates without mutating source markers. The caller commits
+   * those markers only after the summary node is durably present.
    */
   async consolidateMemories(memoryNetwork, similarityThreshold = 0.75, options = {}) {
     const nodes = Array.from(memoryNetwork.nodes.values());
@@ -123,7 +124,6 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
 
     const clusters = await this.clusterSimilarMemories(nodes, similarityThreshold);
     const consolidations = [];
-    const consolidationTimestamp = new Date().toISOString();
     const maxClustersPerRun = Math.max(
       1,
       Number.isFinite(options.maxClustersPerRun)
@@ -142,13 +142,9 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
         const consolidated = await this.createConsolidatedMemoryGPT5(cluster);
         
         if (consolidated) {
-          if (typeof memoryNetwork.patchNodes !== 'function') {
-            throw new Error('memory_node_patch_api_required');
-          }
           // Provider work yields. Require the exact source identities to remain
-          // current before publishing either the consolidated marker or result.
-          // The following check and patch are synchronous, so no other turn can
-          // replace a node between them.
+          // current before publishing a candidate, but defer consolidatedAt
+          // markers until the summary node has actually been stored.
           const sourceStillCurrent = cluster.every((node) => memoryNetwork.nodes.get(node.id) === node);
           if (!sourceStillCurrent) {
             this.logger?.warn?.('Memory consolidation discarded after source changed', {
@@ -156,19 +152,6 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
             });
             continue;
           }
-          const patched = memoryNetwork.patchNodes(cluster.map((node) => ({
-            nodeId: node.id,
-            expectedNode: node,
-            patch: { consolidatedAt: consolidationTimestamp },
-          })));
-          if (Number(patched?.updated || 0) !== cluster.length) {
-            this.logger?.warn?.('Memory consolidation discarded after incomplete source commit', {
-              sourceCount: cluster.length,
-              updated: Number(patched?.updated || 0),
-            });
-            continue;
-          }
-
           const compost = this.buildCompostPlan(cluster, compostMode);
           if (compost.mode === 'dry-run') {
             compostDryRun.wouldRemoveSourceNodes += compost.wouldRemoveSourceNodes;
@@ -193,9 +176,15 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
             writable: false,
             value: new Map(cluster.map((node) => [node.id, node])),
           });
+          Object.defineProperty(consolidationRecord, 'consolidationTimestamp', {
+            configurable: false,
+            enumerable: false,
+            writable: false,
+            value: new Date().toISOString(),
+          });
           consolidations.push(consolidationRecord);
 
-          this.logger?.info('Memories consolidated (GPT-5.5)', {
+          this.logger?.info('Memory consolidation candidate prepared (GPT-5.5)', {
             sourceCount: cluster.length,
             hasReasoning: Boolean(consolidated.reasoning),
             topics: cluster.map(n => n.tag),
@@ -252,6 +241,73 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
       mode: activeMode,
       sourceNodes,
       wouldRemoveSourceNodes: sourceNodes.length
+    };
+  }
+
+  commitConsolidationSources(memoryNetwork, consolidation) {
+    const sourceNodes = Array.from(new Set(
+      Array.isArray(consolidation?.sourceNodes)
+        ? consolidation.sourceNodes.filter((id) => id !== undefined && id !== null)
+        : [],
+    ));
+    const sourceIdentityTokens = consolidation?.sourceIdentityTokens instanceof Map
+      ? consolidation.sourceIdentityTokens
+      : null;
+    if (!sourceNodes.length || !sourceIdentityTokens) {
+      return {
+        committed: false,
+        mode: 'blocked',
+        reason: sourceNodes.length
+          ? 'source_identity_tokens_missing'
+          : 'source_nodes_missing',
+        updatedSourceNodes: 0,
+        skippedSourceNodes: sourceNodes.length,
+      };
+    }
+
+    const identityChangedSourceNodes = sourceNodes.filter((sourceNodeId) => (
+      !sourceIdentityTokens.has(sourceNodeId)
+      || memoryNetwork?.nodes?.get?.(sourceNodeId) !== sourceIdentityTokens.get(sourceNodeId)
+    ));
+    if (identityChangedSourceNodes.length > 0) {
+      return {
+        committed: false,
+        mode: 'partial',
+        reason: 'source_identity_changed',
+        updatedSourceNodes: 0,
+        skippedSourceNodes: sourceNodes.length,
+        identityChangedSourceNodes,
+      };
+    }
+    if (typeof memoryNetwork.patchNodes !== 'function') {
+      throw new Error('memory_node_patch_api_required');
+    }
+
+    const consolidationTimestamp = typeof consolidation?.consolidationTimestamp === 'string'
+      && !Number.isNaN(new Date(consolidation.consolidationTimestamp).getTime())
+      ? consolidation.consolidationTimestamp
+      : new Date().toISOString();
+    const patched = memoryNetwork.patchNodes(sourceNodes.map((sourceNodeId) => ({
+      nodeId: sourceNodeId,
+      expectedNode: sourceIdentityTokens.get(sourceNodeId),
+      patch: { consolidatedAt: consolidationTimestamp },
+    })));
+    const updatedSourceNodes = Number(patched?.updated || 0);
+    if (updatedSourceNodes !== sourceNodes.length) {
+      return {
+        committed: false,
+        mode: 'partial',
+        reason: 'source_marker_commit_incomplete',
+        updatedSourceNodes,
+        skippedSourceNodes: sourceNodes.length - updatedSourceNodes,
+      };
+    }
+    return {
+      committed: true,
+      mode: 'apply',
+      updatedSourceNodes,
+      skippedSourceNodes: 0,
+      consolidatedAt: consolidationTimestamp,
     };
   }
 

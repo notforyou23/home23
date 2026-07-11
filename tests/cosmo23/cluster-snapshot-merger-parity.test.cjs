@@ -153,4 +153,46 @@ for (const implementation of IMPLEMENTATIONS) {
     );
     assert.equal(getterCalls, 0);
   });
+
+  test(`${implementation.name} merger rejects accessor-backed diff structure without invoking getters`, () => {
+    const assertRejected = (buildDiff) => {
+      let getterCalls = 0;
+      const diff = buildDiff(() => {
+        getterCalls += 1;
+        return {};
+      });
+      assert.throws(
+        () => new implementation.MemoryDiffMerger().applyDiff(diff, 'accessor-instance'),
+        /memory_diff_accessor_not_allowed/,
+      );
+      assert.equal(getterCalls, 0);
+    };
+
+    assertRejected((getter) => {
+      const diff = {};
+      Object.defineProperty(diff, 'fields', { enumerable: true, get: getter });
+      return diff;
+    });
+    assertRejected((getter) => {
+      const fields = {};
+      Object.defineProperty(fields, 'memory.node.safe', { enumerable: true, get: getter });
+      return { fields };
+    });
+    for (const property of ['op', 'value']) {
+      assertRejected((getter) => {
+        const operation = {};
+        Object.defineProperty(operation, property, { enumerable: true, get: getter });
+        return { fields: { 'memory.node.safe': operation } };
+      });
+    }
+    assertRejected((getter) => {
+      const value = { id: 'safe' };
+      Object.defineProperty(value, 'metadata', { enumerable: true, get: getter });
+      return {
+        fields: {
+          'memory.node.safe': { op: 'set', nodeId: 'safe', value },
+        },
+      };
+    });
+  });
 }
