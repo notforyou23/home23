@@ -14,10 +14,13 @@ test('default package test authority registers each new lightweight COSMO suite 
   assert.equal(typeof command, 'string');
   for (const file of [
     'tests/cosmo23/bounded-json.test.cjs',
+    'tests/cosmo23/cluster-aware-memory-persistence.test.cjs',
+    'tests/cosmo23/cluster-snapshot-merger-parity.test.cjs',
     'tests/cosmo23/cross-brain-readonly.test.cjs',
     'tests/cosmo23/legacy-query-operation-adapter.test.cjs',
     'tests/cosmo23/mcp-http-loopback.test.cjs',
     'tests/cosmo23/mcp-memory-tools.test.cjs',
+    'tests/cosmo23/network-memory-embedding-batch.test.cjs',
     'tests/cosmo23/pgs-cancellation.test.cjs',
     'tests/cosmo23/pgs-retry-state.test.cjs',
     'tests/cosmo23/query-engine-provider-ownership.test.cjs',
