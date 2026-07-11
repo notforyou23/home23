@@ -113,8 +113,10 @@ test('projects base plus ordered delta upserts and tombstones at one pinned revi
   const edges = await collect(source.iterateEdges());
   assert.deepEqual(nodes.map((node) => [String(node.id), node.concept]), [['1', 'updated'], ['3', 'new canary']]);
   assert.deepEqual(edges, []);
-  assert.equal(source.getEvidence().sourceHealth, 'healthy');
-  assert.equal(source.getEvidence().deltaWatermark.appliedRecords, 3);
+  const evidence = source.getEvidence();
+  assert.equal(evidence.sourceHealth, 'healthy');
+  assert.equal(evidence.freshness, 'known');
+  assert.equal(evidence.deltaWatermark.appliedRecords, 3);
   assert.equal(source.descriptor.digest, undefined);
   await source.close();
 });

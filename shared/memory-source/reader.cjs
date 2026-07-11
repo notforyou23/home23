@@ -340,6 +340,7 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         ...evidenceBase,
         ...input,
         sourceHealth,
+        freshness: legacyProjection ? 'unknown' : 'known',
         matchOutcome: input.matchOutcome || classifyMatchOutcome({
           sourceHealth,
           authoritativeTotal: manifest.summary.nodeCount,

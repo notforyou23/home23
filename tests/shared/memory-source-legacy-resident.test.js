@@ -61,6 +61,13 @@ async function makeLegacyFixture() {
   return targetRoot;
 }
 
+async function makeEmptyLegacyFixture() {
+  const targetRoot = await tempDir('home23-legacy-resident-empty-target-');
+  await writeJsonlGzAtomic(path.join(targetRoot, 'memory-nodes.jsonl.gz'), []);
+  await writeJsonlGzAtomic(path.join(targetRoot, 'memory-edges.jsonl.gz'), []);
+  return targetRoot;
+}
+
 test('legacy resident projection streams base plus delta into an immutable logical base', async () => {
   const targetRoot = await makeLegacyFixture();
   const operationRoot = await tempDir('home23-legacy-resident-operation-');
@@ -83,6 +90,8 @@ test('legacy resident projection streams base plus delta into an immutable logic
       path.join(quota.operationRoot, 'source-projections'),
     ), true);
     assert.equal(await verifyLegacySourceFingerprint(targetRoot, projected.sourceFingerprint), true);
+    assert.equal(projected.evidence.sourceHealth, 'degraded');
+    assert.equal(projected.evidence.freshness, 'unknown');
 
     const source = await openMemorySource(targetRoot, {
       operationId: 'legacy-open',
@@ -100,9 +109,43 @@ test('legacy resident projection streams base plus delta into an immutable logic
     ]);
     assert.deepEqual(edges.map((edge) => [edge.source, edge.target]), [['n1', 'n3']]);
     assert.equal(source.descriptor.canonicalRoot, await fsp.realpath(targetRoot));
-    assert.equal(source.getEvidence().sourceHealth, 'degraded');
+    const evidence = source.getEvidence();
+    assert.equal(evidence.sourceHealth, 'degraded');
+    assert.equal(evidence.freshness, 'unknown');
+    const noMatch = await source.searchKeyword({ query: 'definitely absent', topK: 100 });
+    assert.deepEqual(noMatch.results, []);
+    assert.equal(noMatch.evidence.sourceHealth, 'degraded');
+    assert.equal(noMatch.evidence.freshness, 'unknown');
+    assert.equal(noMatch.evidence.completeCoverage, true);
+    assert.equal(noMatch.evidence.matchOutcome, 'unknown');
     await source.close();
     assert.deepEqual(await hashTree(targetRoot), before);
+  } finally {
+    await quota.close();
+    await fsp.rm(operationRoot, { recursive: true, force: true });
+    await fsp.rm(targetRoot, { recursive: true, force: true });
+  }
+});
+
+test('empty legacy resident projection cannot claim corpus empty from degraded coverage', async () => {
+  const targetRoot = await makeEmptyLegacyFixture();
+  const operationRoot = await tempDir('home23-legacy-resident-empty-operation-');
+  const quota = await createOperationScratchQuota({ operationRoot, maxBytes: 64 * 1024 * 1024 });
+  try {
+    const source = await openMemorySource(targetRoot, {
+      operationId: 'legacy-empty-open',
+      requesterAgent: 'jerry',
+      operationRoot,
+      scratchQuota: quota,
+    });
+    const result = await source.searchKeyword({ query: 'anything', topK: 100 });
+    assert.deepEqual(result.results, []);
+    assert.deepEqual(result.evidence.authoritativeTotals, { nodes: 0, edges: 0 });
+    assert.equal(result.evidence.sourceHealth, 'degraded');
+    assert.equal(result.evidence.freshness, 'unknown');
+    assert.equal(result.evidence.completeCoverage, true);
+    assert.equal(result.evidence.matchOutcome, 'unknown');
+    await source.close();
   } finally {
     await quota.close();
     await fsp.rm(operationRoot, { recursive: true, force: true });
