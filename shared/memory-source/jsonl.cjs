@@ -44,6 +44,44 @@ const MAX_GZIP_CHUNK_BYTES = 1024 * 1024;
 const DEFAULT_MAX_PENDING_WRITES = 64;
 const DEFAULT_MAX_PENDING_BYTES = 32 * 1024 * 1024;
 
+// ReadStream.destroy() closes a supplied numeric fd even when autoClose is
+// false. The memory-source reader owns (or borrows) the FileHandle separately,
+// so let stream teardown wait for pending reads without closing that fd behind
+// the FileHandle's back. This keeps one explicit owner for descriptor closure.
+const NON_CLOSING_READ_STREAM_FS = Object.freeze({
+  read(fd, buffer, offset, length, position, callback) {
+    fs.read(fd, buffer, offset, length, position, callback);
+  },
+  close(_fd, callback) {
+    queueMicrotask(() => callback(null));
+  },
+});
+
+function waitForStreamClose(stream) {
+  if (stream.closed) return Promise.resolve();
+  return new Promise((resolve) => {
+    // A stream error is still observed by its async iterator. Keep this
+    // listener until close so teardown errors cannot escape after an early
+    // iterator return, and do not close the FileHandle before I/O quiesces.
+    const onError = () => {};
+    const onClose = () => {
+      stream.removeListener('error', onError);
+      resolve();
+    };
+    stream.on('error', onError);
+    stream.once('close', onClose);
+  });
+}
+
+function stopReadStreams(input, decoded) {
+  const streams = decoded === input ? [input] : [decoded, input];
+  const closed = streams.map(waitForStreamClose);
+  for (const stream of streams) {
+    if (!stream.destroyed) stream.destroy();
+  }
+  return Promise.all(closed);
+}
+
 function identityOf(stat) {
   return Object.freeze({ dev: stat.dev, ino: stat.ino });
 }
@@ -826,20 +864,27 @@ async function* readJsonl(filePath, options = {}) {
   const input = fs.createReadStream(null, {
     fd: opened.handle.fd,
     autoClose: false,
+    fs: NON_CLOSING_READ_STREAM_FS,
     start: 0,
     end: inputBytes - 1,
   });
   const decoded = options.gzip ? input.pipe(zlib.createGunzip()) : input;
+  let stopPromise = null;
+  const stop = () => {
+    stopPromise ||= stopReadStreams(input, decoded);
+    // Abort listeners cannot await; attach a handler immediately and let the
+    // generator's finally block await the same teardown boundary.
+    stopPromise.catch(() => {});
+    return stopPromise;
+  };
   const abort = () => {
-    decoded.destroy();
-    input.destroy();
+    stop();
   };
   options.signal?.addEventListener('abort', abort, { once: true });
   let lineNumber = 0;
   let recordCount = 0;
   let decodedBytes = 0;
   let pending = '';
-  let completed = false;
   const decoder = new StringDecoder('utf8');
   const parseLine = (line) => {
     lineNumber += 1;
@@ -919,7 +964,6 @@ async function* readJsonl(filePath, options = {}) {
     } else {
       await assertStableOpenedFile(opened);
     }
-    completed = true;
   } catch (error) {
     rethrowAbort(error, options.signal);
     if (isTypedMemorySourceError(error)) throw error;
@@ -929,14 +973,9 @@ async function* readJsonl(filePath, options = {}) {
     });
   } finally {
     options.signal?.removeEventListener('abort', abort);
-    if (!completed) {
-      decoded.destroy();
-      input.destroy();
-    }
+    await stop();
     if (!borrowed) {
-      await opened.handle.close().catch((error) => {
-        if (error?.code !== 'EBADF') throw error;
-      });
+      await opened.handle.close();
     }
   }
 }

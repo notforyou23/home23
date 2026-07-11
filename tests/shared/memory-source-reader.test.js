@@ -11,6 +11,8 @@ const {
   readJsonl,
   writeJsonlGzAtomic,
 } = require('../../shared/memory-source');
+const { openConfinedRegularFile } = require('../../shared/memory-source/confined-file.cjs');
+const { OPENED_JSONL_FILE } = require('../../shared/memory-source/private-capabilities.cjs');
 
 async function tempDir() {
   return fsp.mkdtemp(path.join(os.tmpdir(), 'home23-memory-source-reader-'));
@@ -65,6 +67,32 @@ async function collect(iterator) {
   const rows = [];
   for await (const row of iterator) rows.push(row);
   return rows;
+}
+
+async function* records(count, createRecord) {
+  for (let index = 0; index < count; index += 1) {
+    yield createRecord(index);
+  }
+}
+
+async function countOpenDescriptorsFor(filePath) {
+  const descriptorRoot = process.platform === 'darwin' ? '/dev/fd' : '/proc/self/fd';
+  if (process.platform !== 'darwin' && process.platform !== 'linux') return null;
+  const target = await fsp.stat(filePath, { bigint: true });
+  const descriptors = await fsp.readdir(descriptorRoot);
+  const matches = await Promise.all(descriptors.map(async (descriptor) => {
+    try {
+      const candidate = await fsp.stat(path.join(descriptorRoot, descriptor), { bigint: true });
+      const sameFile = process.platform === 'darwin'
+        ? candidate.ino === target.ino && candidate.size === target.size
+        : candidate.dev === target.dev && candidate.ino === target.ino;
+      return sameFile ? 1 : 0;
+    } catch (error) {
+      if (error?.code === 'EBADF' || error?.code === 'ENOENT') return 0;
+      throw error;
+    }
+  }));
+  return matches.reduce((total, match) => total + match, 0);
 }
 
 test('projects base plus ordered delta upserts and tombstones at one pinned revision', async () => {
@@ -203,6 +231,81 @@ test('committed JSONL reader rejects an in-place change to its pinned prefix', a
       // Complete the pinned iterator so its final prefix validation runs.
     }
   }, { code: 'source_changed' });
+});
+
+test('early iterator return quiesces large JSONL streams before closing their handles', async () => {
+  const dir = await tempDir();
+  const nodesPath = path.join(dir, 'memory-nodes.base-2.jsonl.gz');
+  const edgesPath = path.join(dir, 'memory-edges.base-2.jsonl.gz');
+  const deltaPath = path.join(dir, 'memory-delta.e0.jsonl');
+  const nodeCount = 100_000;
+  const edgeCount = 300_000;
+  const nodes = await writeJsonlGzAtomic(nodesPath, records(nodeCount, (id) => ({
+    id,
+    concept: `large-source-node-${id}`,
+  })));
+  const edges = await writeJsonlGzAtomic(edgesPath, records(edgeCount, (id) => ({
+    source: id % nodeCount,
+    target: (id + 1) % nodeCount,
+    weight: 0.5,
+  })));
+  await fsp.writeFile(deltaPath, '');
+  await fsp.writeFile(path.join(dir, 'memory-manifest.json'), `${JSON.stringify({
+    formatVersion: 1,
+    generation: 'large-source-g1',
+    baseRevision: 2,
+    currentRevision: 2,
+    activeDeltaEpoch: 'e0',
+    activeBase: {
+      nodes: { file: path.basename(nodesPath), count: nodeCount, bytes: nodes.bytes },
+      edges: { file: path.basename(edgesPath), count: edgeCount, bytes: edges.bytes },
+    },
+    activeDelta: {
+      epoch: 'e0',
+      file: path.basename(deltaPath),
+      fromRevision: 3,
+      toRevision: 2,
+      count: 0,
+      committedBytes: 0,
+    },
+    ann: { indexFile: null, metaFile: null, builtFromRevision: 2 },
+    summary: { nodeCount, edgeCount, clusterCount: 1 },
+  }, null, 2)}\n`);
+
+  const source = await openMemorySource(dir);
+  try {
+    for (const [iterator, filePath] of [
+      [source.iterateNodes(), nodesPath],
+      [source.iterateEdges(), edgesPath],
+    ]) {
+      assert.equal((await iterator.next()).done, false);
+      await iterator.return();
+      const afterReturn = await countOpenDescriptorsFor(filePath);
+      if (afterReturn !== null) assert.equal(afterReturn, 0);
+    }
+  } finally {
+    await source.close();
+  }
+});
+
+test('early iterator return leaves a borrowed source handle open for its owner', async () => {
+  const dir = await tempDir();
+  const filePath = path.join(dir, 'borrowed.jsonl');
+  await writeJsonl(filePath, [{ id: 1 }, { id: 2 }]);
+  const opened = await openConfinedRegularFile(dir, filePath);
+  try {
+    const iterator = readJsonl(filePath, {
+      confinedRoot: dir,
+      [OPENED_JSONL_FILE]: opened,
+    });
+    assert.deepEqual((await iterator.next()).value, { id: 1 });
+    await iterator.return();
+    assert.equal((await opened.handle.stat()).isFile(), true);
+  } finally {
+    await opened.handle.close().catch((error) => {
+      if (error?.code !== 'EBADF') throw error;
+    });
+  }
 });
 
 test('summary stays scalar and optional breakdowns are byte and key bounded', async () => {
