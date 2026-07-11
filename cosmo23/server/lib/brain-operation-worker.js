@@ -22,6 +22,11 @@ const {
   sourceDescriptorDigest,
 } = require('../../../shared/memory-source');
 const { CapabilityNonceStore } = require('./capability-nonce-store');
+const { boundedJsonStringify } = require('../../lib/bounded-json');
+const {
+  PGS_OPERATION_LIMITS,
+  QUERY_OPERATION_LIMITS,
+} = require('../../lib/brain-operation-limits');
 
 const WORKER_EVENT_MAX_COUNT = 4096;
 const WORKER_EVENT_MAX_BYTES = 8 * 1024 * 1024;
@@ -30,7 +35,7 @@ const OBSERVED_TERMINAL_RETENTION_MS = 10 * 60 * 1000;
 const UNREAD_TERMINAL_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_ACTIVE_PROVIDER_CALLS = 4096;
 const MAX_PARAMETERS_BYTES = 64 * 1024;
-const MAX_RESULT_BYTES = 64 * 1024;
+const MAX_CONTROL_OBJECT_BYTES = 64 * 1024;
 const MAX_TOMBSTONES = 100_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const CAPABILITY_FIELDS = Object.freeze([
@@ -78,6 +83,12 @@ function workerError(code, message = code, options = {}) {
   if (options.retryable !== undefined) error.retryable = options.retryable === true;
   if (options.statusCode) error.statusCode = options.statusCode;
   return error;
+}
+
+function resultLimitForOperation(operationType) {
+  if (operationType === 'query') return QUERY_OPERATION_LIMITS.maxResultBytes;
+  if (operationType === 'pgs') return PGS_OPERATION_LIMITS.maxResultBytes;
+  return MAX_CONTROL_OBJECT_BYTES;
 }
 
 function clone(value, code = 'invalid_request') {
@@ -581,6 +592,7 @@ class BrainOperationWorker {
     return Object.freeze({
       reference: record.reference,
       operationId: record.operationId,
+      operationType: record.operationType,
       state: record.state,
       phase: record.phase,
       eventSequence: record.eventSequence,
@@ -727,7 +739,17 @@ class BrainOperationWorker {
   }
 
   async _validateResult(record, rawEnvelope) {
-    const envelope = clone(rawEnvelope, 'worker_result_invalid');
+    const resultLimit = resultLimitForOperation(record.operationType);
+    let envelope;
+    try {
+      const encoded = boundedJsonStringify(rawEnvelope, {
+        maxBytes: resultLimit + (3 * MAX_CONTROL_OBJECT_BYTES),
+        label: 'Worker result envelope',
+      }).json;
+      envelope = JSON.parse(encoded);
+    } catch (error) {
+      throw workerError('worker_result_invalid', 'worker_result_invalid', { cause: error });
+    }
     if (!Object.hasOwn(envelope, 'resultArtifact')) envelope.resultArtifact = null;
     exactKeys(envelope, ['state', 'result', 'resultArtifact', 'error', 'sourceEvidence'],
       'worker_result_invalid');
@@ -740,8 +762,9 @@ class BrainOperationWorker {
       if (value !== null && (!value || Array.isArray(value) || typeof value !== 'object')) {
         throw workerError('worker_result_invalid');
       }
+      const maximum = field === 'result' ? resultLimit : MAX_CONTROL_OBJECT_BYTES;
       if (value !== null
-          && Buffer.byteLength(canonicalJson(value), 'utf8') > MAX_RESULT_BYTES) {
+          && Buffer.byteLength(canonicalJson(value), 'utf8') > maximum) {
         throw workerError('worker_result_invalid');
       }
       if (field === 'error' && value !== null) {
@@ -825,12 +848,28 @@ class BrainOperationWorker {
       }
     }
     record.activeProviderCalls.clear();
+    record.phase = 'cleanup';
+    record.clearDeadline?.();
+    record.clearDeadline = null;
+    try {
+      await this._releaseOnce(record);
+    } catch {
+      envelope = Object.freeze({
+        state: 'interrupted',
+        result: null,
+        resultArtifact: null,
+        error: Object.freeze({
+          code: 'source_cleanup_failed',
+          message: 'Source cleanup failed before terminal publication',
+          retryable: true,
+        }),
+        sourceEvidence: null,
+      });
+    }
     record.result = envelope;
     record.state = envelope.state;
     record.phase = 'terminal';
     record.terminalAt = this.now();
-    record.clearDeadline?.();
-    record.clearDeadline = null;
     record.eventSequence += 1;
     this._pushEvent(record, Object.freeze({
       type: 'terminal',
@@ -840,7 +879,6 @@ class BrainOperationWorker {
       at: new Date(this.now()).toISOString(),
     }));
     this._notify(record);
-    await this._releaseOnce(record).catch(() => {});
     record.context = null;
   }
 

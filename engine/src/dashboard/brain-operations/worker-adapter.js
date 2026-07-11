@@ -106,7 +106,8 @@ function validateWorkerRecord(rawRecord, expected = {}) {
   const code = 'worker_contract_invalid';
   const record = clone(rawRecord, code);
   exactKeys(record, [
-    'reference', 'operationId', 'state', 'phase', 'eventSequence', 'activeProviderCalls',
+    'reference', 'operationId', 'operationType', 'state', 'phase', 'eventSequence',
+    'activeProviderCalls',
   ], code);
   assertOperationId(record.operationId);
   if (expected.operationId && record.operationId !== expected.operationId) throw workerError(code);
@@ -116,10 +117,16 @@ function validateWorkerRecord(rawRecord, expected = {}) {
     throw workerError(code);
   }
   const reference = validateWorkerReference(record.reference, expected);
+  assertIdentifier(record.operationType, 'operationType');
+  if (record.operationType !== reference.operationType
+      || (expected.operationType && record.operationType !== expected.operationType)) {
+    throw workerError(code);
+  }
   const activeProviderCalls = validateActiveProviderCalls(record.activeProviderCalls);
   return Object.freeze({
     reference,
     operationId: record.operationId,
+    operationType: record.operationType,
     state: record.state,
     phase: record.phase,
     eventSequence: record.eventSequence,
@@ -383,6 +390,7 @@ class BrainOperationWorkerAdapter {
     return validateWorkerRecord({
       reference: record.reference,
       operationId: record.operationId,
+      operationType: record.operationType,
       state: record.state,
       phase: record.phase,
       eventSequence: record.eventSequence,

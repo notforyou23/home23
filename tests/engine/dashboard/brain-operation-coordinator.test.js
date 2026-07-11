@@ -27,6 +27,9 @@ const {
   BrainOperationWorkerAdapter,
 } = require('../../../engine/src/dashboard/brain-operations/worker-adapter.js');
 const {
+  createCosmoBrainOperationWorkerClient,
+} = require('../../../engine/src/dashboard/brain-operations/cosmo-worker-client.js');
+const {
   OPERATION_AUTHORITY: REAL_OPERATION_AUTHORITY,
   authorizeBrainOperation: authorizeRealBrainOperation,
 } = require('../../../shared/brain-operations/authority.cjs');
@@ -376,6 +379,7 @@ class ControlledWorker {
     return structuredClone({
       reference: record.reference,
       operationId: record.operationId,
+      operationType: record.reference.operationType,
       state: record.state,
       phase: record.phase,
       eventSequence: record.eventSequence,
@@ -1024,6 +1028,33 @@ test('terminal state is broadcast to a surviving attachment before durable closu
   assert.equal(closed.reason, 'operation_terminal');
 });
 
+test('authenticated Query progress survives terminal finalization as lastProgressAt', async (t) => {
+  const fixture = makeFixture(t);
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'query-progress-terminal-roundtrip',
+  }));
+  fixture.worker.emit(operation.operationId, {
+    type: 'progress', phase: 'query', stage: 'projection_complete',
+    selectedNodes: 12, selectedEdges: 10,
+  });
+  await eventually(async () => {
+    assert.match((await fixture.coordinator.status(operation.operationId)).lastProgressAt,
+      /^\d{4}-\d{2}-\d{2}T/);
+  });
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: { answer: 'progress-preserving result' },
+    error: null,
+    sourceEvidence: null,
+  });
+  const terminal = await eventually(async () => {
+    const current = await fixture.coordinator.status(operation.operationId);
+    assert.equal(current.state, 'complete');
+    return current;
+  });
+  assert.match(terminal.lastProgressAt, /^\d{4}-\d{2}-\d{2}T/);
+});
+
 test('requester-bound cancel and detach reject a foreign durable record before mutation', async () => {
   const calls = { getWorker: 0, transition: 0, detach: 0 };
   const foreign = {
@@ -1382,6 +1413,94 @@ test('worker event gaps record evidence, authenticate status, and resume future 
   });
   assert.equal(fixture.worker.statusCalls.length >= statusCalls, true);
   assert.equal((await fixture.store.get(operation.operationId)).state, 'running');
+});
+
+test('COSMO client and worker adapter preserve compacted Query gaps through terminal recovery', async (t) => {
+  let operationId;
+  let eventStreamCalls = 0;
+  let statusCalls = 0;
+  const record = (state = 'complete') => ({
+    reference: {
+      version: 1,
+      workerId: `cosmo-${operationId}`,
+      workerType: 'cosmo',
+      operationType: 'query',
+    },
+    operationId,
+    operationType: 'query',
+    state,
+    phase: state === 'running' ? 'executing' : 'terminal',
+    eventSequence: state === 'running' ? 0 : 7,
+    activeProviderCalls: [],
+  });
+  const jsonResponse = (value) => new Response(JSON.stringify(value), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+  const remoteWorker = createCosmoBrainOperationWorkerClient({
+    fetchImpl: async (rawUrl, options) => {
+      const url = new URL(rawUrl);
+      const action = url.pathname.split('/').at(-1);
+      if (action === 'start') {
+        const context = JSON.parse(options.body);
+        operationId = context.operationId;
+        return jsonResponse(record('running'));
+      }
+      if (action === 'status') {
+        statusCalls += 1;
+        return jsonResponse(record());
+      }
+      if (action === 'result') {
+        return jsonResponse({
+          state: 'complete',
+          result: { answer: 'gap-safe' },
+          resultArtifact: null,
+          error: null,
+          sourceEvidence: { fixture: 'cosmo-client-gap' },
+        });
+      }
+      if (action === 'events') {
+        eventStreamCalls += 1;
+        const terminal = record();
+        const frames = [
+          { type: 'phase', phase: 'projecting', operationId, eventSequence: 1 },
+          { type: 'progress', completed: 1, operationId, eventSequence: 2 },
+          {
+            type: 'provider_selected', providerCallId: 'query', providerStallMs: 5_000,
+            operationId, eventSequence: 3,
+          },
+          {
+            type: 'event_gap', oldestSequence: 5, latestSequence: 5,
+            currentStatus: terminal, operationId, eventSequence: 5,
+          },
+          {
+            type: 'provider_call_terminal', providerCallId: 'query',
+            operationId, eventSequence: 6,
+          },
+          { type: 'terminal', state: 'complete', operationId, eventSequence: 7 },
+        ];
+        return new Response(`${frames.map((frame) => JSON.stringify(frame)).join('\n')}\n`, {
+          status: 200,
+          headers: { 'content-type': 'application/x-ndjson' },
+        });
+      }
+      throw new Error(`unexpected COSMO action: ${action}`);
+    },
+  });
+  const worker = new BrainOperationWorkerAdapter({ remoteWorker });
+  t.after(() => worker.stop?.());
+  const fixture = makeFixture(t, { worker });
+  const operation = await fixture.coordinator.start(request({ requestId: 'real-cosmo-gap' }));
+  const completed = await waitForState(fixture, operation.operationId, 'complete');
+
+  assert.equal(completed.result.answer, 'gap-safe');
+  assert.equal(eventStreamCalls, 1);
+  assert.equal(statusCalls >= 2, true);
+  const events = await fixture.store.readEvents(operation.operationId, 0);
+  assert.equal(events.some((event) => event.type === 'event_gap'
+    && event.workerEventSequence === 7), true);
+  assert.equal(events.some((event) => event.type === 'provider_call_terminal'
+    && event.workerEventSequence === 6), true);
 });
 
 test('worker events reject forged terminal state, identity fields, and invalid gap bounds before persistence', async (t) => {
@@ -2781,6 +2900,7 @@ test('worker adapter dispatches exact local executor, strips control metadata, a
     sourcePin: { descriptor: validDescriptor(), async release() { sourceReleases += 1; } },
   }, 'cap-start');
   assert.equal(workerRecord.reference.workerType, 'local');
+  assert.equal(workerRecord.operationType, 'research_compile');
   await eventually(async () => {
     const status = await adapter.status(operationId, 'cap-status');
     assert.equal(status.state, 'complete');
@@ -2890,6 +3010,7 @@ test('worker adapter remote start omits caller-supplied scratch paths and closes
             operationType: 'research_watch',
           },
           operationId,
+          operationType: 'research_watch',
           state: 'running',
           phase: 'watching',
           eventSequence: 0,

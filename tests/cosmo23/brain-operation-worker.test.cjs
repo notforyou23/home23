@@ -264,6 +264,14 @@ function typed(code) {
   return (error) => error?.code === code;
 }
 
+function exactJsonPayload(bytes) {
+  const overhead = Buffer.byteLength(canonicalJson({ payload: '' }), 'utf8');
+  assert.equal(bytes >= overhead, true);
+  const value = { payload: 'x'.repeat(bytes - overhead) };
+  assert.equal(Buffer.byteLength(canonicalJson(value), 'utf8'), bytes);
+  return value;
+}
+
 async function makeFixture(t, overrides = {}) {
   const home23Root = overrides.home23Root || await tempDir('home23-protected-worker-');
   const clock = overrides.clock || makeClock();
@@ -424,6 +432,7 @@ test('32 equivalent starts create one worker, one process pin, and one executor'
     fixture.worker.start(request.operationId, fixture.token(request), structuredClone(request))));
   assert.equal(new Set(records.map((record) => record.reference.workerId)).size, 1);
   assert.equal(records.every((record) => record.reference.workerType === 'cosmo'), true);
+  assert.equal(records.every((record) => record.operationType === 'query'), true);
   assert.equal(fixture.counters.open, 1);
   await eventually(() => assert.equal(calls, 1));
   assert.equal(received.requesterAgent, 'jerry');
@@ -1234,6 +1243,98 @@ test('all terminal paths share one cached process-pin release promise', async (t
   assert.equal(releases.has(missing.operationId), false);
 });
 
+test('Query and PGS results use their exact operation-specific byte ceilings', async (t) => {
+  const MiB = 1024 * 1024;
+  const executors = new Map([
+    ['query', async ({ parameters }) => ({
+      state: 'complete', result: exactJsonPayload(parameters.resultBytes),
+      resultArtifact: null, error: null, sourceEvidence: {},
+    })],
+    ['pgs', async ({ parameters }) => ({
+      state: 'complete', result: exactJsonPayload(parameters.resultBytes),
+      resultArtifact: null, error: null, sourceEvidence: {},
+    })],
+  ]);
+  const fixture = await makeFixture(t, { executors });
+  const cases = [
+    ['query', 64 * 1024 + 1, 's', true],
+    ['query', 8 * MiB, 'v', true],
+    ['query', 8 * MiB + 1, 'w', false],
+    ['pgs', 2 * MiB + 1, 'x', true],
+    ['pgs', 24 * MiB, 'y', true],
+    ['pgs', 24 * MiB + 1, 'z', false],
+  ];
+  for (const [type, resultBytes, character, succeeds] of cases) {
+    const request = requestFor({
+      id: operationId(character), type, parameters: { resultBytes },
+    });
+    await fixture.worker.start(request.operationId, fixture.token(request), request);
+    const terminal = await terminalStatus(fixture, request);
+    const envelope = await fixture.worker.result(request.operationId, fixture.token(request));
+    if (succeeds) {
+      assert.equal(terminal.state, 'complete', `${type} ${resultBytes}`);
+      assert.equal(Buffer.byteLength(canonicalJson(envelope.result), 'utf8'), resultBytes);
+    } else {
+      assert.equal(terminal.state, 'failed', `${type} ${resultBytes}`);
+      assert.equal(envelope.error.code, 'worker_result_invalid');
+    }
+  }
+});
+
+test('cleanup settles before terminal visibility and one rejecting release promise serves 32 callers', async (t) => {
+  const releaseGate = deferred();
+  const executorDone = deferred();
+  const cleanupFailure = new Error('reader close failed');
+  let releases = 0;
+  const sourcePins = {
+    async openPinnedSource(descriptor) {
+      return {
+        descriptor,
+        revision: descriptor.cutoffRevision,
+        getEvidence() { return {}; },
+        async release() {
+          releases += 1;
+          return releaseGate.promise;
+        },
+      };
+    },
+  };
+  const fixture = await makeFixture(t, {
+    sourcePins,
+    executors: new Map([['query', async () => {
+      executorDone.resolve();
+      return {
+        state: 'complete', result: { answer: 'must not become visible' },
+        resultArtifact: null, error: null, sourceEvidence: {},
+      };
+    }]]),
+  });
+  const request = requestFor({ id: operationId('k') });
+  await fixture.worker.start(request.operationId, fixture.token(request), request);
+  await executorDone.promise;
+  const record = fixture.worker.records.get(request.operationId);
+  await eventually(() => assert.ok(record.releasePromise));
+  const shared = Array.from({ length: 32 }, () => fixture.worker._releaseOnce(record));
+  assert.equal(shared.every(promise => promise === record.releasePromise), true);
+  assert.equal((await fixture.worker.status(request.operationId, fixture.token(request))).state, 'running');
+  assert.equal(record.events.some(event => event.type === 'terminal'), false);
+
+  releaseGate.reject(cleanupFailure);
+  const settled = await Promise.allSettled(shared);
+  assert.equal(settled.every(row => row.status === 'rejected' && row.reason === cleanupFailure), true);
+  const terminal = await terminalStatus(fixture, request);
+  assert.equal(terminal.state, 'interrupted');
+  const envelope = await fixture.worker.result(request.operationId, fixture.token(request));
+  assert.equal(envelope.state, 'interrupted');
+  assert.deepEqual(envelope.error, {
+    code: 'source_cleanup_failed',
+    message: 'Source cleanup failed before terminal publication',
+    retryable: true,
+  });
+  assert.equal(releases, 1);
+  assert.equal(fixture.counters.quotaClose, 1);
+});
+
 async function writeLegacyResident(root) {
   await fsp.mkdir(root, { recursive: true });
   await writeJsonlGzAtomic(path.join(root, 'memory-nodes.jsonl.gz'), [
@@ -1424,11 +1525,8 @@ test('real native, legacy-resident, and legacy-research sources expose only nume
     assert.equal(await fsp.access(path.join(targetRoot, '.memory-source.lock'))
       .then(() => true).catch(() => false), false);
     gates.get(id).resolve();
-    await eventually(async () => {
-      const status = await worker.status(id, token());
-      assert.equal(status.state, 'complete');
-    });
     await worker.records.get(id).runPromise;
+    assert.equal((await worker.status(id, token())).state, 'complete');
     await eventually(async () => {
       const discovered = await discoverOperationPinFiles(home23Root);
       assert.equal(

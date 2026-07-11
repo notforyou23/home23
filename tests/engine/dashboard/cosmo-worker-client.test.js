@@ -11,6 +11,13 @@ const {
 const OPERATION_ID = `brop_${'a'.repeat(32)}`;
 const CAPABILITY = 'header.payload.signature';
 
+function exactJsonPayload(bytes) {
+  const overhead = Buffer.byteLength(JSON.stringify({ payload: '' }), 'utf8');
+  const value = { payload: 'x'.repeat(bytes - overhead) };
+  assert.equal(Buffer.byteLength(JSON.stringify(value), 'utf8'), bytes);
+  return value;
+}
+
 function jsonResponse(value, init = {}) {
   return new Response(JSON.stringify(value), {
     status: init.status || 200,
@@ -130,9 +137,153 @@ test('events reject unterminated frames and error envelopes while JSON reads are
 
   const oversized = createCosmoBrainOperationWorkerClient({
     maxJsonBytes: 1024,
-    fetchImpl: async () => new Response(JSON.stringify({ value: 'x'.repeat(2000) })),
+    fetchImpl: async (url) => url.endsWith('/start')
+      ? jsonResponse({ operationId: OPERATION_ID, operationType: 'query', state: 'running' })
+      : new Response(JSON.stringify({ value: 'x'.repeat(10 * 1024 * 1024) })),
   });
+  await oversized.start({ operationId: OPERATION_ID, operationType: 'query' }, CAPABILITY);
   await assert.rejects(() => oversized.result(OPERATION_ID, CAPABILITY), {
     code: 'worker_response_too_large',
   });
+});
+
+test('result transport keeps small control limits but accepts exact Query and PGS ceilings', async () => {
+  const MiB = 1024 * 1024;
+  for (const [operationType, bytes, succeeds] of [
+    ['query', 64 * 1024 + 1, true],
+    ['query', 2 * MiB + 1, true],
+    ['query', 8 * MiB, true],
+    ['query', 8 * MiB + 1, false],
+    ['pgs', 2 * MiB + 1, true],
+    ['pgs', 24 * MiB, true],
+    ['pgs', 24 * MiB + 1, false],
+  ]) {
+    const result = exactJsonPayload(bytes);
+    const client = createCosmoBrainOperationWorkerClient({
+      fetchImpl: async (url) => {
+        if (url.endsWith('/start')) {
+          return jsonResponse({ operationId: OPERATION_ID, operationType, state: 'running' });
+        }
+        if (url.endsWith('/result')) {
+          return jsonResponse({
+            state: 'complete', result, resultArtifact: null, error: null, sourceEvidence: {},
+          });
+        }
+        throw new Error(`unexpected URL ${url}`);
+      },
+    });
+    await client.start({ operationId: OPERATION_ID, operationType }, CAPABILITY);
+    if (succeeds) {
+      const envelope = await client.result(OPERATION_ID, CAPABILITY);
+      assert.equal(Buffer.byteLength(JSON.stringify(envelope.result), 'utf8'), bytes);
+    } else {
+      await assert.rejects(
+        () => client.result(OPERATION_ID, CAPABILITY),
+        error => error.code === 'worker_response_too_large',
+      );
+    }
+  }
+
+  const smallControl = createCosmoBrainOperationWorkerClient({
+    fetchImpl: async () => jsonResponse({ value: 'x'.repeat(2 * MiB + 1) }),
+  });
+  await assert.rejects(
+    () => smallControl.status(OPERATION_ID, CAPABILITY),
+    error => error.code === 'worker_response_too_large',
+  );
+});
+
+test('status rehydrates operation type from the durable COSMO worker reference after dashboard restart', async () => {
+  const calls = [];
+  const client = createCosmoBrainOperationWorkerClient({
+    fetchImpl: async (url) => {
+      calls.push(url);
+      if (url.endsWith('/status')) {
+        return jsonResponse({
+          reference: {
+            version: 1,
+            workerId: 'cosmo-worker-restart-fixture',
+            workerType: 'cosmo',
+            operationType: 'query',
+          },
+          operationId: OPERATION_ID,
+          state: 'complete',
+          phase: 'terminal',
+          eventSequence: 4,
+          activeProviderCalls: [],
+        });
+      }
+      if (url.endsWith('/result')) {
+        return jsonResponse({
+          state: 'complete',
+          result: { answer: 'recovered result' },
+          resultArtifact: null,
+          error: null,
+          sourceEvidence: {},
+        });
+      }
+      throw new Error(`unexpected URL ${url}`);
+    },
+  });
+
+  await client.status(OPERATION_ID, CAPABILITY);
+  const result = await client.result(OPERATION_ID, CAPABILITY);
+
+  assert.equal(result.result.answer, 'recovered result');
+  assert.deepEqual(calls.map((url) => url.slice(url.lastIndexOf('/') + 1)), [
+    'status',
+    'result',
+  ]);
+
+  const unsupported = createCosmoBrainOperationWorkerClient({
+    fetchImpl: async () => jsonResponse({
+      reference: {
+        version: 1,
+        workerId: 'cosmo-worker-invalid-type',
+        workerType: 'cosmo',
+        operationType: 'synthesis',
+      },
+      operationId: OPERATION_ID,
+      state: 'running',
+      phase: 'executing',
+      eventSequence: 1,
+      activeProviderCalls: [],
+    }),
+  });
+  await assert.rejects(
+    () => unsupported.status(OPERATION_ID, CAPABILITY),
+    (error) => error.code === 'worker_transport_invalid',
+  );
+});
+
+test('fresh client learns authenticated operation type from status before result after restart', async () => {
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/start') || url.endsWith('/status')) {
+      return jsonResponse({
+        reference: {
+          version: 1, workerId: 'cosmo-restart', workerType: 'cosmo', operationType: 'pgs',
+        },
+        operationId: OPERATION_ID,
+        operationType: 'pgs',
+        state: 'complete',
+        phase: 'terminal',
+        eventSequence: 1,
+        activeProviderCalls: [],
+      });
+    }
+    if (url.endsWith('/result')) {
+      return jsonResponse({
+        state: 'complete', result: { answer: 'after restart', sweepOutputs: [] },
+        resultArtifact: null, error: null, sourceEvidence: {},
+      });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+  const original = createCosmoBrainOperationWorkerClient({ fetchImpl });
+  await original.start({ operationId: OPERATION_ID, operationType: 'pgs' }, CAPABILITY);
+
+  const restarted = createCosmoBrainOperationWorkerClient({ fetchImpl });
+  const status = await restarted.status(OPERATION_ID, CAPABILITY);
+  assert.equal(status.operationType, 'pgs');
+  assert.equal((await restarted.result(OPERATION_ID, CAPABILITY)).result.answer, 'after restart');
 });

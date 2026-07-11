@@ -1364,8 +1364,10 @@ class BrainOperationCoordinator {
       });
       await this._broadcastNewEvents(runtime, before);
       await this._rearmProviderCallsLocked(record, workerRecord.activeProviderCalls, runtime);
-      runtime.workerCursor = workerRecord.eventSequence;
-      runtime.providerSnapshotThrough = null;
+      runtime.workerCursor = rawEvent.eventSequence;
+      runtime.providerSnapshotThrough = workerRecord.eventSequence > runtime.workerCursor
+        ? workerRecord.eventSequence
+        : null;
       return runtime.workerCursor;
     }
     const isHistoricalSnapshotEvent = Number.isSafeInteger(runtime.providerSnapshotThrough)

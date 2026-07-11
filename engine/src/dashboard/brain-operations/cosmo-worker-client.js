@@ -1,6 +1,10 @@
 'use strict';
 
 const { TextDecoder } = require('node:util');
+const {
+  PGS_OPERATION_LIMITS,
+  QUERY_OPERATION_LIMITS,
+} = require('../../../../cosmo23/lib/brain-operation-limits');
 
 const DEFAULT_MAX_JSON_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_EVENT_BYTES = 512 * 1024;
@@ -54,6 +58,12 @@ function assertOperationId(value) {
     throw clientError('operation_id_invalid');
   }
   return value;
+}
+
+function resultLimitForOperation(operationType) {
+  if (operationType === 'query') return QUERY_OPERATION_LIMITS.maxResultBytes;
+  if (operationType === 'pgs') return PGS_OPERATION_LIMITS.maxResultBytes;
+  return DEFAULT_MAX_JSON_BYTES;
 }
 
 async function *responseChunks(body) {
@@ -126,6 +136,33 @@ function createCosmoBrainOperationWorkerClient({
     throw clientError('worker_configuration_invalid');
   }
   const supportedSourceOperations = new Set(sourceOperationTypes);
+  const operationTypes = new Map();
+
+  function rememberStatusOperationType(operationId, result) {
+    const reference = result?.reference;
+    if (reference === undefined || reference === null) return;
+    const operationType = reference?.operationType;
+    if (!reference || Array.isArray(reference) || typeof reference !== 'object'
+        || result?.operationId !== operationId
+        || reference.version !== 1
+        || reference.workerType !== 'cosmo'
+        || typeof reference.workerId !== 'string'
+        || !/^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/.test(reference.workerId)
+        || typeof operationType !== 'string'
+        || !supportedSourceOperations.has(operationType)
+        || (result.operationType !== undefined && result.operationType !== operationType)) {
+      throw clientError('worker_transport_invalid', 'COSMO worker status identity is invalid', {
+        retryable: true,
+      });
+    }
+    const known = operationTypes.get(operationId);
+    if (known !== undefined && known !== operationType) {
+      throw clientError('worker_transport_invalid', 'COSMO worker operation type changed', {
+        retryable: true,
+      });
+    }
+    operationTypes.set(operationId, operationType);
+  }
 
   function endpoint(operationId, action, query = '') {
     return `${origin}/api/internal/brain-operations/${assertOperationId(operationId)}/${action}${query}`;
@@ -134,6 +171,7 @@ function createCosmoBrainOperationWorkerClient({
   async function requestJson(operationId, action, capability, {
     method = 'GET',
     body,
+    responseMaxBytes = maxJsonBytes,
   } = {}) {
     const headers = {
       accept: 'application/json',
@@ -157,7 +195,7 @@ function createCosmoBrainOperationWorkerClient({
         cause: error,
       });
     }
-    const envelope = await readBoundedJson(response, maxJsonBytes);
+    const envelope = await readBoundedJson(response, responseMaxBytes);
     if (!response.ok) throw remoteError(response, envelope);
     return envelope;
   }
@@ -167,14 +205,24 @@ function createCosmoBrainOperationWorkerClient({
     supportsSourceOperation(operationType) {
       return supportedSourceOperations.has(operationType);
     },
-    start(context, capability) {
-      return requestJson(context?.operationId, 'start', capability, {
+    async start(context, capability) {
+      const result = await requestJson(context?.operationId, 'start', capability, {
         method: 'POST',
         body: context,
       });
+      if (typeof context?.operationType !== 'string' || !context.operationType) {
+        throw clientError('worker_transport_invalid');
+      }
+      if (result?.operationType !== undefined && result.operationType !== context.operationType) {
+        throw clientError('worker_transport_invalid');
+      }
+      operationTypes.set(context.operationId, context.operationType);
+      return result;
     },
-    status(operationId, capability) {
-      return requestJson(operationId, 'status', capability);
+    async status(operationId, capability) {
+      const result = await requestJson(operationId, 'status', capability);
+      rememberStatusOperationType(operationId, result);
+      return result;
     },
     async *events(operationId, { afterSequence, signal }, capability) {
       if (!Number.isSafeInteger(afterSequence) || afterSequence < 0
@@ -250,8 +298,29 @@ function createCosmoBrainOperationWorkerClient({
         });
       }
     },
-    result(operationId, capability) {
-      return requestJson(operationId, 'result', capability);
+    async result(operationId, capability) {
+      let operationType = operationTypes.get(operationId);
+      if (!operationType) {
+        throw clientError('worker_transport_invalid', 'COSMO worker operation type is unknown', {
+          retryable: true,
+        });
+      }
+      const resultLimit = resultLimitForOperation(operationType);
+      const envelope = await requestJson(operationId, 'result', capability, {
+        responseMaxBytes: resultLimit + maxJsonBytes,
+      });
+      if (envelope?.result !== null && envelope?.result !== undefined) {
+        let resultBytes;
+        try { resultBytes = Buffer.byteLength(JSON.stringify(envelope.result), 'utf8'); } catch (error) {
+          throw clientError('worker_transport_invalid', 'COSMO worker result is invalid', {
+            retryable: true, cause: error,
+          });
+        }
+        if (resultBytes > resultLimit) {
+          throw clientError('worker_response_too_large', 'COSMO worker result exceeded its limit');
+        }
+      }
+      return envelope;
     },
     cancel(operationId, capability) {
       return requestJson(operationId, 'cancel', capability, { method: 'POST', body: {} });
