@@ -42,7 +42,50 @@ test('model catalog preserves declared provider execution capabilities', t => {
   const catalog = loadModelCatalogSync();
   const capabilities = getModelCapabilities(catalog, 'minimax', 'MiniMax-M3');
   assert.equal(capabilities.maxOutputTokens, 32768);
+  assert.equal(capabilities.contextWindowTokens, 128000);
   assert.equal(capabilities.providerStallMs, 900000);
+  assert.equal(
+    getModelCapabilities(catalog, 'openai-codex', 'gpt-5.5').contextWindowTokens,
+    272000,
+  );
+});
+
+test('input context capability lookup is bound to the exact provider and model pair', () => {
+  const catalog = { version: 1, providers: {
+    alpha: { models: [{
+      id: 'shared-model', kind: 'chat', maxOutputTokens: 8192,
+      contextWindowTokens: 128000, providerStallMs: 120000, transport: 'responses',
+    }] },
+    beta: { models: [{
+      id: 'shared-model', kind: 'chat', maxOutputTokens: 8192,
+      contextWindowTokens: 200000, providerStallMs: 120000, transport: 'responses',
+    }] },
+  } };
+
+  assert.equal(
+    getModelCapabilities(catalog, 'alpha', 'shared-model').contextWindowTokens,
+    128000,
+  );
+  assert.equal(
+    getModelCapabilities(catalog, 'beta', 'shared-model').contextWindowTokens,
+    200000,
+  );
+});
+
+test('legacy-shaped built-in declarations retain the reviewed exact model context window', () => {
+  const catalog = normalizeModelCatalog({
+    version: 1,
+    providers: {
+      'openai-codex': {
+        models: [{ id: 'gpt-5.5', label: 'GPT-5.5', kind: 'chat' }],
+      },
+    },
+  });
+
+  assert.equal(
+    getModelCapabilities(catalog, 'openai-codex', 'gpt-5.5').contextWindowTokens,
+    272000,
+  );
 });
 
 test('capability lookup uses provider plus model rather than model alone', () => {
@@ -91,6 +134,7 @@ test('custom models under built-in providers require source-declared capabilitie
     openai: {
       executionDefaults: {
         maxOutputTokens: 4096,
+        contextWindowTokens: 128000,
         providerStallMs: 120000,
         transport: 'responses',
       },
@@ -99,7 +143,7 @@ test('custom models under built-in providers require source-declared capabilitie
   }));
   assert.deepEqual(
     getModelCapabilities(explicit, 'openai', 'custom-openai-model'),
-    { maxOutputTokens: 4096, providerStallMs: 120000 },
+    { maxOutputTokens: 4096, providerStallMs: 120000, contextWindowTokens: 128000 },
   );
 
   const modelDeclared = normalizeModelCatalog(catalog({
@@ -107,6 +151,7 @@ test('custom models under built-in providers require source-declared capabilitie
       models: [{
         ...customModel,
         maxOutputTokens: 2048,
+        contextWindowTokens: 64000,
         providerStallMs: 60000,
         transport: 'responses',
       }, embeddingModel],
@@ -114,7 +159,7 @@ test('custom models under built-in providers require source-declared capabilitie
   }));
   assert.deepEqual(
     getModelCapabilities(modelDeclared, 'openai', 'custom-openai-model'),
-    { maxOutputTokens: 2048, providerStallMs: 60000 },
+    { maxOutputTokens: 2048, providerStallMs: 60000, contextWindowTokens: 64000 },
   );
 
   const legacy = normalizeModelCatalog(catalog({
@@ -122,7 +167,7 @@ test('custom models under built-in providers require source-declared capabilitie
   }));
   assert.deepEqual(
     getModelCapabilities(legacy, 'openai', 'gpt-5.4-mini'),
-    { maxOutputTokens: 32768, providerStallMs: 900000 },
+    { maxOutputTokens: 32768, providerStallMs: 900000, contextWindowTokens: 128000 },
   );
 });
 
@@ -139,7 +184,7 @@ test('reviewed legacy Home23 xAI models receive only the xAI built-in defaults',
     } });
     assert.deepEqual(
       getModelCapabilities(catalog, 'xai', modelId),
-      { maxOutputTokens: 8192, providerStallMs: 900000 },
+      { maxOutputTokens: 8192, providerStallMs: 900000, contextWindowTokens: 128000 },
     );
     assert.equal(catalog.providers.xai.models[0].transport, transport);
   }
@@ -160,6 +205,8 @@ test('every selectable built-in chat model has valid execution capabilities', t 
     const capabilities = getModelCapabilities(catalog, model.provider, model.id);
     assert.equal(Number.isSafeInteger(capabilities.maxOutputTokens), true);
     assert.equal(capabilities.maxOutputTokens > 0, true);
+    assert.equal(Number.isSafeInteger(capabilities.contextWindowTokens), true);
+    assert.equal(capabilities.contextWindowTokens > capabilities.maxOutputTokens, true);
     assert.equal(Number.isSafeInteger(capabilities.providerStallMs), true);
     assert.equal(capabilities.providerStallMs > 0, true);
     assert.equal(new Set([
@@ -212,6 +259,7 @@ test('provider IDs are safe and duplicate exact provider/model pairs fail closed
     id: 'shared-model',
     kind: 'chat',
     maxOutputTokens: 4096,
+    contextWindowTokens: 128000,
     providerStallMs: 120000,
     transport: 'chat-completions',
   };
@@ -253,6 +301,7 @@ test('valid custom providers survive an atomic save and reload', t => {
       label: 'Acme',
       executionDefaults: {
         maxOutputTokens: 4096,
+        contextWindowTokens: 128000,
         providerStallMs: 120000,
         transport: 'chat-completions',
       },
@@ -315,6 +364,7 @@ test('generated built-in execution defaults stay non-declared across save and re
         id: 'custom-openai-explicit',
         kind: 'chat',
         maxOutputTokens: 2048,
+        contextWindowTokens: 128000,
         providerStallMs: 60000,
         transport: 'responses',
       }, { id: 'text-embedding-3-small', kind: 'embedding' }],
@@ -339,6 +389,7 @@ test('structurally invalid saves fail closed and preserve the prior catalog byte
     acme: {
       executionDefaults: {
         maxOutputTokens: 4096,
+        contextWindowTokens: 128000,
         providerStallMs: 120000,
         transport: 'chat-completions',
       },
@@ -601,6 +652,7 @@ test('atomic catalog save leaves a complete old or new file across injected cras
     label,
     executionDefaults: {
       maxOutputTokens,
+      contextWindowTokens: 128000,
       providerStallMs: 120000,
       transport: 'chat-completions',
     },

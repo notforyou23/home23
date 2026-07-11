@@ -91,7 +91,7 @@ test('large direct query scans portable iterators once and retains bounded recor
   assert.equal(projection.nodes.some(node => String(node.content).includes('bounded canary')), true);
 });
 
-test('oversized records and aggregate retained bytes fail closed', async () => {
+test('oversized records fail closed while aggregate pressure retains a bounded subset', async () => {
   const oversized = createSyntheticPinnedSource({
     nodeCount: 1,
     edgeCount: 0,
@@ -108,12 +108,247 @@ test('oversized records and aggregate retained bytes fail closed', async () => {
     edgeCount: 0,
     nodeFactory: index => ({ id: `n${index}`, content: `x${'y'.repeat(64 * 1024)}` }),
   });
-  await assert.rejects(projectPinnedQuery({
+  const projection = await projectPinnedQuery({
     sourcePin: aggregate,
     query: 'x',
     signal: new AbortController().signal,
     limits: { maxProjectionBytes: 2 * 1024 * 1024 },
+  });
+  assert.equal(projection.nodes.length > 0, true);
+  assert.equal(projection.nodes.length < 300, true);
+  assert.equal(projection.stats.nodesScanned, 300);
+  assert.equal(projection.stats.maxRetainedBytes <= 2 * 1024 * 1024, true);
+  assert.equal(projection.stats.retainedBytes <= 2 * 1024 * 1024, true);
+});
+
+test('Jerry-shaped large records retain a deterministic score-ranked subset within byte budget', async () => {
+  async function project() {
+    const sourcePin = createSyntheticPinnedSource({
+      nodeCount: 5_000,
+      edgeCount: 20_000,
+      nodeFactory: index => ({
+        id: `n${index}`,
+        content: `jerry canary ${index} ${'x'.repeat(20 * 1024)}`,
+        salience: (index % 100) / 100,
+      }),
+      edgeFactory: index => ({
+        source: `n${index % 5_000}`,
+        target: `n${(index + 1) % 5_000}`,
+        type: 'jerry-shaped-edge',
+      }),
+    });
+    const projection = await projectPinnedQuery({
+      sourcePin,
+      query: 'jerry canary',
+      signal: new AbortController().signal,
+      limits: { maxProjectionBytes: 8 * 1024 * 1024 },
+    });
+    return { projection, sourcePin };
+  }
+
+  const first = await project();
+  const second = await project();
+  assert.equal(first.projection.nodes.length > 0, true);
+  assert.equal(first.projection.nodes.length < 4_000, true);
+  assert.equal(first.projection.stats.maxRetainedBytes <= 8 * 1024 * 1024, true);
+  assert.equal(first.projection.stats.retainedBytes <= 8 * 1024 * 1024, true);
+  assert.equal(first.projection.stats.nodesScanned, 5_000);
+  assert.equal(first.projection.stats.edgesScanned, 20_000);
+  assert.equal(first.sourcePin.stats().recordsConsumed, 25_000);
+  assert.deepEqual(
+    first.projection.nodes.map(node => node.id),
+    second.projection.nodes.map(node => node.id),
+  );
+});
+
+test('known numeric vector payload fields are omitted without mutating evidence records', async () => {
+  const node = {
+    id: 'n0',
+    content: 'projection density canary evidence',
+    salience: 0.95,
+    embedding: [0.1, 0.2],
+    embeddings: [[0.3, 0.4]],
+    vector: [0.5, 0.6],
+    vectors: [[0.7, 0.8]],
+    embeddingModel: 'keep-this-model-metadata',
+    vectorEvidence: 'keep-this-evidence-field',
+    metadata: {
+      source: 'jerry',
+      embedding: [0.9, 1],
+      nested: {
+        vectors: [[1.1, 1.2]],
+        vector: 'textual evidence using the field name vector',
+        note: 'keep nested metadata',
+      },
+    },
+  };
+  const edge = {
+    source: 'n0',
+    target: 'n0',
+    type: 'supports',
+    evidence: 'keep edge evidence',
+    embedding: [0.1],
+    vector: [0.2],
+    metadata: { provenance: 'brain', embeddings: [[0.3]], keep: true },
+  };
+  const sourceBefore = JSON.parse(JSON.stringify({ node, edge }));
+  const sourcePin = createSyntheticPinnedSource({
+    nodeCount: 1,
+    edgeCount: 1,
+    nodeFactory: () => node,
+    edgeFactory: () => edge,
+  });
+
+  const projection = await projectPinnedQuery({
+    sourcePin,
+    query: 'projection density canary',
+    signal: new AbortController().signal,
+  });
+
+  assert.deepEqual(projection.nodes, [{
+    id: 'n0',
+    content: 'projection density canary evidence',
+    salience: 0.95,
+    embeddingModel: 'keep-this-model-metadata',
+    vectorEvidence: 'keep-this-evidence-field',
+    metadata: {
+      source: 'jerry',
+      nested: {
+        vector: 'textual evidence using the field name vector',
+        note: 'keep nested metadata',
+      },
+    },
+  }]);
+  assert.deepEqual(projection.edges, [{
+    source: 'n0',
+    target: 'n0',
+    type: 'supports',
+    evidence: 'keep edge evidence',
+    metadata: { provenance: 'brain', keep: true },
+  }]);
+  assert.deepEqual({ node, edge }, sourceBefore);
+});
+
+test('safe projection applies record and aggregate limits after removing vector payloads', async () => {
+  const nodeCount = 80;
+  const vector = new Array(1_024).fill(0.123456);
+  const sampleRaw = {
+    id: 'n0', content: 'density canary evidence 0', salience: 1,
+    metadata: { source: 'jerry' }, embedding: vector,
+  };
+  const maxProjectionBytes = 16 * 1024;
+  const rawRecordBytes = Buffer.byteLength(JSON.stringify(sampleRaw), 'utf8');
+  const rawCapacity = Math.floor(maxProjectionBytes / rawRecordBytes);
+  assert.equal(rawRecordBytes > 8 * 1024, true);
+  assert.equal(rawCapacity, 1);
+  const sourcePin = createSyntheticPinnedSource({
+    nodeCount,
+    edgeCount: 0,
+    nodeFactory: index => ({
+      id: `n${index}`,
+      content: `density canary evidence ${index}`,
+      salience: 1,
+      metadata: { source: 'jerry' },
+      embedding: vector,
+    }),
+  });
+
+  const projection = await projectPinnedQuery({
+    sourcePin,
+    query: 'density canary',
+    signal: new AbortController().signal,
+    limits: { maxNodes: nodeCount, maxRecordBytes: 512, maxProjectionBytes },
+  });
+
+  assert.equal(projection.nodes.length, nodeCount);
+  assert.equal(projection.nodes.length >= rawCapacity * 40, true);
+  assert.equal(projection.nodes.every(node => !Object.hasOwn(node, 'embedding')), true);
+  assert.equal(projection.stats.retainedBytes <= maxProjectionBytes, true);
+  assert.equal(projection.stats.maxRetainedBytes <= maxProjectionBytes, true);
+});
+
+test('safe projection keeps UTF-8 byte accounting and rejects oversized remaining evidence', async () => {
+  const keptNode = {
+    id: 'unicode-kept',
+    content: `unicode ${'🧠'.repeat(20)}`,
+    embedding: new Array(2_000).fill(0.25),
+  };
+  const kept = await projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: 1, edgeCount: 0, nodeFactory: () => keptNode,
+    }),
+    query: 'unicode',
+    signal: new AbortController().signal,
+    limits: { maxRecordBytes: 256, maxProjectionBytes: 512 },
+  });
+  const expectedBytes = Buffer.byteLength(JSON.stringify({
+    id: keptNode.id, content: keptNode.content,
+  }), 'utf8');
+  assert.equal(kept.stats.retainedBytes, expectedBytes);
+  assert.equal(kept.nodes[0].content, keptNode.content);
+
+  await assert.rejects(projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: 1,
+      edgeCount: 0,
+      nodeFactory: () => ({
+        id: 'unicode-too-large',
+        content: `unicode ${'🧠'.repeat(100)}`,
+        embedding: new Array(2_000).fill(0.25),
+      }),
+    }),
+    query: 'unicode',
+    signal: new AbortController().signal,
+    limits: { maxRecordBytes: 256, maxProjectionBytes: 512 },
   }), error => error.code === 'result_too_large');
+});
+
+test('vector sanitization does not bypass dangerous accessors or nonserializable evidence', async () => {
+  let getterCalls = 0;
+  const accessorNode = { id: 'accessor', content: 'canary' };
+  Object.defineProperty(accessorNode, 'embedding', {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error('dangerous embedding getter');
+    },
+  });
+  await assert.rejects(projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: 1, edgeCount: 0, nodeFactory: () => accessorNode,
+    }),
+    query: 'canary',
+    signal: new AbortController().signal,
+  }), error => error.code === 'source_invalid');
+  assert.equal(getterCalls, 1);
+
+  const circularEmbedding = [];
+  circularEmbedding.push(circularEmbedding);
+  await assert.rejects(projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: 1,
+      edgeCount: 0,
+      nodeFactory: () => ({
+        id: 'circular-embedding', content: 'canary', embedding: circularEmbedding,
+      }),
+    }),
+    query: 'canary',
+    signal: new AbortController().signal,
+  }), error => error.code === 'source_invalid');
+
+  const circularMetadata = { provenance: 'brain' };
+  circularMetadata.self = circularMetadata;
+  await assert.rejects(projectPinnedQuery({
+    sourcePin: createSyntheticPinnedSource({
+      nodeCount: 1,
+      edgeCount: 0,
+      nodeFactory: () => ({
+        id: 'circular', content: 'canary', embedding: [0.1], metadata: circularMetadata,
+      }),
+    }),
+    query: 'canary',
+    signal: new AbortController().signal,
+  }), error => error.code === 'source_invalid');
 });
 
 test('projection cancellation preserves the exact caller reason', async () => {
@@ -185,4 +420,30 @@ test('edge records are retained only when both endpoints are selected', async ()
 
   assert.deepEqual(projection.nodes.map(node => node.id).sort(), ['n0', 'n1']);
   assert.deepEqual(projection.edges, [{ source: 'n0', target: 'n1', type: 'kept' }]);
+});
+
+test('edge byte pressure skips later edges while completing the full source scan', async () => {
+  const sourcePin = createSyntheticPinnedSource({
+    nodeCount: 2,
+    edgeCount: 20,
+    nodeFactory: index => ({ id: `n${index}`, content: `canary ${index}` }),
+    edgeFactory: index => ({
+      source: 'n0',
+      target: 'n1',
+      type: `edge-${index}`,
+      evidence: 'x'.repeat(400),
+    }),
+  });
+  const projection = await projectPinnedQuery({
+    sourcePin,
+    query: 'canary',
+    signal: new AbortController().signal,
+    limits: { maxProjectionBytes: 2 * 1024 },
+  });
+
+  assert.equal(projection.edges.length > 0, true);
+  assert.equal(projection.edges.length < 20, true);
+  assert.equal(projection.stats.edgesScanned, 20);
+  assert.equal(sourcePin.stats().recordsConsumed, 22);
+  assert.equal(projection.stats.retainedBytes <= 2 * 1024, true);
 });

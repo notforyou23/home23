@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import { performance } from 'node:perf_hooks';
 import { isDeepStrictEqual } from 'node:util';
 import {
   appendJsonlReceipt,
+  assertReceiptContextDirectoryIdentity,
   booleanFlag,
   canonicalDirectory,
   canonicalReceiptRow,
@@ -74,12 +76,14 @@ const MAX_RECEIPT_BYTES = 32 * 1024 * 1024;
 const MAX_RECEIPT_ROWS = 100_000;
 const MAX_ARTIFACT_MANIFEST_BYTES = 32 * 1024 * 1024;
 const MAX_ARTIFACT_FILES = 50_000;
+const MAX_ARTIFACT_SNIFF_BYTES = 64 * 1024;
 const MAX_IDENTITY_OPERATIONS = 10_000;
 const MAX_RESULT_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024;
 const MAX_ACTIVITY_EVENTS = 100_000;
 const MAX_ACTIVITY_EVENT_BYTES = 64 * 1024;
 const MAX_ACTIVITY_RETAINED_BYTES = 32 * 1024 * 1024;
 const MAX_METRIC_SAMPLES_PER_ROLE = 256;
+const MAX_ISOLATED_DELAY_ACTIONS_PER_ROLE = 512;
 const MAX_SOURCE_FILES_PER_BRAIN = 10_000;
 const MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024 * 1024;
 const MAX_SOURCE_TOTAL_BYTES = 16 * 1024 * 1024 * 1024;
@@ -177,18 +181,40 @@ function parseToolJson(result, label) {
 }
 
 function evidenceRevision(evidence) {
-  const candidates = [
-    evidence?.revision,
-    evidence?.sourceRevision,
-    evidence?.deltaWatermark?.revision,
-    evidence?.baseWatermark?.revision,
-    evidence?.identity?.revision,
-  ];
-  const selected = candidates.find((value) => Number.isSafeInteger(Number(value)));
-  return selected === undefined ? null : Number(selected);
+  const revision = evidence?.deltaWatermark?.revision;
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : null;
 }
 
-function resultProjection(result) {
+function currentEvidenceRevision(evidence, errorCode = 'source_revision_unproven') {
+  const revision = evidence?.deltaWatermark?.revision;
+  if (!Number.isSafeInteger(revision) || revision < 0) throw typedError(errorCode);
+  for (const value of [evidence?.sourceRevision, evidence?.revision, evidence?.identity?.revision]) {
+    if (value !== undefined && value !== null
+        && (!Number.isSafeInteger(value) || value < 0 || value !== revision)) {
+      throw typedError(errorCode);
+    }
+  }
+  const baseRevision = evidence?.baseWatermark?.revision;
+  if (baseRevision !== undefined && baseRevision !== null
+      && (!Number.isSafeInteger(baseRevision) || baseRevision < 0 || baseRevision > revision)) {
+    throw typedError(errorCode);
+  }
+  return revision;
+}
+
+function boundedCanonicalDigest(value, label, maxBytes = MAX_RECEIPT_BYTES) {
+  let encoded;
+  try { encoded = canonicalJson(value); }
+  catch (error) { throw typedError('protected_result_invalid', label, { cause: error }); }
+  const bytes = Buffer.byteLength(encoded, 'utf8');
+  if (bytes > maxBytes) throw typedError('protected_result_too_large', label);
+  return {
+    bytes,
+    sha256: sha256Bytes(Buffer.from(encoded)),
+  };
+}
+
+export function projectProtectedResult(result) {
   const answer = typeof result?.answer === 'string' ? result.answer : null;
   const sweepOutputs = Array.isArray(result?.sweepOutputs) ? result.sweepOutputs : null;
   if (sweepOutputs && sweepOutputs.length > SWEEP_RECEIPT_MAX_COUNT) {
@@ -222,6 +248,37 @@ function resultProjection(result) {
       },
     }
     : null;
+  const search = Array.isArray(result?.results)
+    ? {
+        resultCount: result.results.length,
+        ...Object.fromEntries(Object.entries(
+          boundedCanonicalDigest(result.results, 'search results'),
+        ).map(([key, value]) => [`results${key[0].toUpperCase()}${key.slice(1)}`, value])),
+      }
+    : null;
+  const graph = Array.isArray(result?.nodes) && Array.isArray(result?.edges)
+    ? {
+        nodeCount: result.nodes.length,
+        edgeCount: result.edges.length,
+        ...Object.fromEntries(Object.entries(
+          boundedCanonicalDigest(result.nodes, 'graph nodes'),
+        ).map(([key, value]) => [`nodes${key[0].toUpperCase()}${key.slice(1)}`, value])),
+        ...Object.fromEntries(Object.entries(
+          boundedCanonicalDigest(result.edges, 'graph edges'),
+        ).map(([key, value]) => [`edges${key[0].toUpperCase()}${key.slice(1)}`, value])),
+      }
+    : null;
+  const researchCompile = result && typeof result === 'object' && !Array.isArray(result)
+      && typeof result.relativePath === 'string'
+    ? {
+        relativePath: result.relativePath,
+        outputBytes: Number.isSafeInteger(result.bytes) ? result.bytes : null,
+        ...boundedCanonicalDigest(result, 'research compile result'),
+      }
+    : null;
+  const canonicalResult = result !== null && result !== undefined && !sweepOutputs
+    ? boundedCanonicalDigest(result, 'protected result')
+    : null;
   return {
     answerPresent: Boolean(answer && answer.trim()),
     answerBytes: answer ? Buffer.byteLength(answer, 'utf8') : 0,
@@ -229,8 +286,14 @@ function resultProjection(result) {
     sweepOutputCount: sweepOutputs?.length ?? null,
     sweepOutputs: projectedSweeps,
     metadata,
+    search,
+    graph,
+    researchCompile,
+    canonicalResult,
   };
 }
+
+const resultProjection = projectProtectedResult;
 
 async function protectedTerminal(client, operationId, signal) {
   const status = await client.inspectOperation(operationId, 'status', signal);
@@ -581,13 +644,17 @@ function terminalReceipt({
     resultArtifact: terminal.resultArtifact,
     sourcePinDescriptor: terminal.sourcePinDescriptor ?? null,
     sourcePinDigest: terminal.sourcePinDigest ?? null,
+    startedAt: terminal.startedAt,
+    completedAt: terminal.completedAt,
     sourceEvidence: terminal.sourceEvidence,
     sourceHealth: terminal.sourceEvidence?.sourceHealth ?? null,
     matchOutcome: terminal.sourceEvidence?.matchOutcome ?? null,
     sourceRevision: evidenceRevision(terminal.sourceEvidence),
     authoritativeNodeCount: Number.isSafeInteger(
-      Number(terminal.sourceEvidence?.authoritativeTotals?.nodes),
-    ) ? Number(terminal.sourceEvidence.authoritativeTotals.nodes) : null,
+      terminal.sourceEvidence?.authoritativeTotals?.nodes,
+    ) && terminal.sourceEvidence.authoritativeTotals.nodes >= 0
+      ? terminal.sourceEvidence.authoritativeTotals.nodes
+      : null,
     providerTerminalValidated,
     providerTerminalEvidenceSource: PROVIDER_OPERATION_TYPES.has(terminal.operationType)
       ? providerProof.source
@@ -597,6 +664,53 @@ function terminalReceipt({
     result: resultProjection(terminal.result),
     ...extras,
   };
+}
+
+function attachOperationReceipts(primary, receipts) {
+  if (!primary || !Array.isArray(receipts) || receipts.length === 0
+      || receipts.at(-1) !== primary) {
+    throw typedError('operation_receipt_set_invalid');
+  }
+  const operationIds = receipts.map((row) => row?.operationId);
+  if (operationIds.some((operationId) => typeof operationId !== 'string' || !operationId)
+      || new Set(operationIds).size !== operationIds.length
+      || receipts.some((row) => row.receiptKind !== 'operation-terminal'
+        || row.protectedResultRead !== true)) {
+    throw typedError('operation_receipt_set_invalid');
+  }
+  Object.defineProperty(primary, 'operationReceipts', {
+    value: Object.freeze([...receipts]),
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return primary;
+}
+
+function operationReceipts(row) {
+  return Array.isArray(row?.operationReceipts) ? row.operationReceipts : [row];
+}
+
+export function assertCanonicalReceiptContext(row, context, expectedAuthority = context.authority) {
+  if (!row || typeof row !== 'object' || Array.isArray(row)
+      || !context || typeof context !== 'object') {
+    throw typedError('receipt_authority_mismatch');
+  }
+  if (row.implementationCommit !== context.implementationCommit) {
+    throw typedError('receipt_implementation_commit_mismatch');
+  }
+  if (row.receiptRunId !== context.receiptRunId
+      || row.authority !== expectedAuthority
+      || row.hostname !== context.hostname
+      || row.receiptRunStartedAt !== context.startedAt
+      || !strictIsoTimestamp(row.receiptRunStartedAt)
+      || !strictIsoTimestamp(row.startedAt)
+      || !strictIsoTimestamp(row.completedAt)
+      || Date.parse(row.completedAt) < Date.parse(row.startedAt)
+      || !['live', 'isolated-controlled'].includes(row.authority)) {
+    throw typedError('receipt_authority_mismatch');
+  }
+  return row;
 }
 
 async function ensureFreshOutput(file) {
@@ -654,7 +768,11 @@ export async function readReceiptRows(file, { verifyArtifact = true } = {}) {
     errorCode: 'receipt_invalid',
     requireSingleLink: true,
   });
-  return parseReceiptDocument(text).map((row) => {
+  return validateReceiptRows(parseReceiptDocument(text), verifyArtifact);
+}
+
+function validateReceiptRows(rows, verifyArtifact = true) {
+  return rows.map((row) => {
     if (verifyArtifact) {
       const { artifactSha256, ...core } = row;
       if (typeof artifactSha256 !== 'string'
@@ -666,19 +784,103 @@ export async function readReceiptRows(file, { verifyArtifact = true } = {}) {
   });
 }
 
+const RECEIPT_IDENTITY_FIELDS = Object.freeze([
+  'receiptRunId', 'authority', 'implementationCommit', 'hostname',
+  'receiptRunStartedAt', 'startedAt',
+  'requesterAgent', 'authorizedEndpoint', 'isolatedStore',
+]);
+
+export function validateCanonicalReceiptSet(rows, context, {
+  expectedAuthority = context.authority,
+  expectedScenario = null,
+  expectedRequester = null,
+  requireTerminalPerOperation = false,
+  allRowsTerminal = false,
+  selectedLast = false,
+} = {}) {
+  if (!Array.isArray(rows) || rows.length === 0) throw typedError('receipt_invalid');
+  const operations = new Map();
+  for (const row of rows) {
+    assertCanonicalReceiptContext(row, context, expectedAuthority);
+    if (expectedScenario !== null && row.scenario !== expectedScenario) {
+      throw typedError('receipt_identity_conflict');
+    }
+    if (expectedRequester !== null && row.requesterAgent !== expectedRequester) {
+      throw typedError('receipt_identity_conflict');
+    }
+    if (allRowsTerminal && row.receiptKind !== 'operation-terminal') {
+      throw typedError('operation_receipt_invalid');
+    }
+    if (row.operationId === undefined || row.operationId === null) continue;
+    if (typeof row.operationId !== 'string' || !row.operationId) {
+      throw typedError('operation_receipt_invalid');
+    }
+    const current = operations.get(row.operationId) || {
+      rows: [], terminalCount: 0, identity: Object.create(null),
+    };
+    for (const field of RECEIPT_IDENTITY_FIELDS) {
+      if (!Object.hasOwn(row, field)) continue;
+      if (Object.hasOwn(current.identity, field)
+          && !isDeepStrictEqual(current.identity[field], row[field])) {
+        throw typedError('receipt_identity_conflict', `${row.operationId}:${field}`);
+      }
+      current.identity[field] = row[field];
+    }
+    if (row.receiptKind === 'operation-terminal') {
+      current.terminalCount += 1;
+      if (current.terminalCount > 1) throw typedError('receipt_terminal_duplicate');
+      if (!TERMINAL.has(row.state) || row.protectedResultRead !== true
+          || typeof row.requesterAgent !== 'string' || !row.requesterAgent) {
+        throw typedError('operation_receipt_invalid');
+      }
+    }
+    current.rows.push(row);
+    operations.set(row.operationId, current);
+  }
+  if (requireTerminalPerOperation) {
+    if (operations.size === 0) throw typedError('operation_receipt_invalid');
+    for (const item of operations.values()) {
+      if (item.terminalCount !== 1) throw typedError('receipt_terminal_duplicate');
+    }
+  }
+  if (selectedLast && rows.at(-1)?.receiptKind !== 'operation-terminal') {
+    throw typedError('operation_receipt_invalid');
+  }
+  return Object.freeze({ rows, operations, selected: rows.at(-1) });
+}
+
 async function canaryFromReceipt(values, context, callerAgent) {
   const file = one(values, 'canary-receipt', { required: true });
-  const receipt = await readLastReceipt(path.resolve(file));
+  const validated = validateCanonicalReceiptSet(
+    await readReceiptRows(path.resolve(file)),
+    context,
+    {
+      expectedScenario: 'discover-canary',
+      expectedRequester: callerAgent,
+      requireTerminalPerOperation: true,
+      allRowsTerminal: true,
+      selectedLast: true,
+    },
+  );
+  const receipt = validated.selected;
   if (!receipt.query || !receipt.nodeId || !Number.isSafeInteger(receipt.sourceRevision)
       || !['healthy', 'degraded'].includes(receipt.sourceHealth)
       || receipt.scenario !== 'discover-canary'
       || typeof receipt.selectedBrain !== 'string' || !receipt.selectedBrain
-      || receipt.receiptRunId !== context.receiptRunId
-      || receipt.authority !== context.authority
+      || receipt.state !== 'complete'
+      || receipt.protectedResultRead !== true
       || receipt.requesterAgent !== callerAgent) {
     throw typedError('canary_receipt_invalid');
   }
-  try { assertPositiveSourceEvidence(receipt.sourceEvidence); }
+  try {
+    assertPositiveSourceEvidence(receipt.sourceEvidence);
+    if (currentEvidenceRevision(receipt.sourceEvidence, 'canary_receipt_invalid')
+          !== receipt.sourceRevision
+        || receipt.sourceEvidence?.selectedBrain !== receipt.selectedBrain
+        || receipt.sourceEvidence?.sourceHealth !== receipt.sourceHealth) {
+      throw typedError('canary_receipt_invalid');
+    }
+  }
   catch { throw typedError('canary_receipt_invalid'); }
   return receipt;
 }
@@ -692,7 +894,8 @@ function assertPositiveSourceEvidence(evidence) {
     && returnedNodes <= authoritativeNodes;
   if (exactPositive && evidence?.sourceHealth === 'healthy') return;
   if (exactPositive && evidence?.sourceHealth === 'degraded'
-      && evidence.freshness === 'unknown') {
+      && evidence.freshness === 'unknown'
+      && evidence.implementation === 'legacy-resident-sidecar-projection') {
     return;
   }
   throw typedError('source_evidence_not_useful');
@@ -725,7 +928,10 @@ function assertCompleteTerminal(terminal, {
 }
 
 function assertCanaryEvidence(terminal, canary) {
-  const revision = evidenceRevision(terminal?.sourceEvidence);
+  const revision = currentEvidenceRevision(
+    terminal?.sourceEvidence,
+    'canary_source_revision_mismatch',
+  );
   if (revision !== canary.sourceRevision) {
     throw typedError('canary_source_revision_mismatch');
   }
@@ -761,7 +967,10 @@ function usefulProtectedResult(terminal) {
 }
 
 function assertCanaryBoundUsefulResult(terminal, canary) {
-  const revision = evidenceRevision(terminal?.sourceEvidence);
+  const revision = currentEvidenceRevision(
+    terminal?.sourceEvidence,
+    'canary_source_revision_mismatch',
+  );
   assertTerminalBrainIdentity(terminal, canary?.selectedBrain, 'canary_target_mismatch');
   if (revision !== canary.sourceRevision) throw typedError('canary_source_revision_mismatch');
   assertPositiveSourceEvidence(terminal?.sourceEvidence);
@@ -793,50 +1002,83 @@ function deriveCanaryQuery(node) {
 }
 
 async function awaitShortResult(client, initial, signal) {
-  if (!initial?.operationId || !['queued', 'running'].includes(initial.state)) return initial;
-  await client.resumeOperation(initial.operationId, signal);
+  if (!initial?.operationId) throw typedError('operation_id_missing');
+  if (['queued', 'running'].includes(initial.state)) {
+    await client.resumeOperation(initial.operationId, signal);
+  }
   const terminal = await protectedTerminal(client, initial.operationId, signal);
-  if (!['complete', 'partial'].includes(terminal.state) || !terminal.result) {
+  if (terminal.state !== 'complete' || !terminal.result) {
     throw typedError(terminal.error?.code || 'brain_operation_failed');
   }
   return {
-    ...terminal.result,
-    operationId: terminal.operationId,
-    state: terminal.state,
-    attachmentState: terminal.attachmentState,
-    resultHandle: terminal.resultHandle,
-    resultArtifact: terminal.resultArtifact,
-    sourceEvidence: terminal.sourceEvidence,
+    value: {
+      ...terminal.result,
+      operationId: terminal.operationId,
+      state: terminal.state,
+      attachmentState: terminal.attachmentState,
+      resultHandle: terminal.resultHandle,
+      resultArtifact: terminal.resultArtifact,
+      sourceEvidence: terminal.sourceEvidence,
+    },
+    terminal,
   };
 }
 
 async function discoverCanary({ client, selector, signal }) {
   const target = await client.resolveTarget(selector);
-  if (typeof target?.id !== 'string' || !target.id
-      || typeof target?.ownerAgent !== 'string' || !target.ownerAgent) {
+  const validResident = target?.kind === 'resident'
+    && target.lifecycle === 'resident'
+    && typeof target.ownerAgent === 'string'
+    && Boolean(target.ownerAgent.trim());
+  const validResearchOwner = target?.ownerAgent === null
+    || (typeof target?.ownerAgent === 'string' && Boolean(target.ownerAgent.trim()));
+  const validResearch = target?.kind === 'research'
+    && target.lifecycle === 'completed'
+    && validResearchOwner;
+  if (typeof target?.id !== 'string' || !target.id || (!validResident && !validResearch)) {
     throw typedError('canary_target_invalid');
   }
-  const graph = await awaitShortResult(
+  const graphOutcome = await awaitShortResult(
     client,
     await client.graph({
       ...(selector ? { target: selector } : {}), nodeLimit: 100, edgeLimit: 1,
     }, signal),
     signal,
   );
+  const graph = graphOutcome.value;
+  assertCompleteTerminal(graphOutcome.terminal, {
+    expectedBrain: target.id,
+    targetErrorCode: 'canary_target_mismatch',
+  });
+  const operationTerminals = [graphOutcome.terminal];
   const candidates = nodesFromGraph(graph).filter((node) => node?.id != null);
   for (const node of candidates) {
     const query = deriveCanaryQuery(node);
-    const search = await awaitShortResult(
+    const searchOutcome = await awaitShortResult(
       client,
       await client.search({ ...(selector ? { target: selector } : {}), query, topK: 20 }, signal),
       signal,
     );
+    operationTerminals.push(searchOutcome.terminal);
+    assertTerminalBrainIdentity(
+      searchOutcome.terminal,
+      target.id,
+      'canary_target_mismatch',
+    );
+    const search = searchOutcome.value;
     const match = resultsFromSearch(search).find((result) => String(result.id) === String(node.id));
-    const revision = evidenceRevision(search.sourceEvidence);
+    let revision = null;
+    try {
+      revision = currentEvidenceRevision(search.sourceEvidence, 'canary_source_revision_mismatch');
+    } catch { /* try another exact positive canary */ }
     if (match && Number.isSafeInteger(revision)) {
       try {
         assertPositiveSourceEvidence(search.sourceEvidence);
-        return { target, graph, search, query, nodeId: String(node.id), sourceRevision: revision };
+        return {
+          target, graph, search, query, nodeId: String(node.id), sourceRevision: revision,
+          selectedTerminal: searchOutcome.terminal,
+          operationTerminals,
+        };
       } catch { /* try another exact positive canary */ }
     }
   }
@@ -1032,8 +1274,15 @@ async function verifyMcpParity({ client, baseUrl, canary, signal, fetchImpl = fe
   const dashboardIds = new Set(resultsFromSearch(dashboard).map((result) => String(result.id)));
   const mcpIds = new Set(resultsFromSearch(mcp).map((result) => String(result.id)));
   if (!dashboardIds.has(canary.nodeId) || !mcpIds.has(canary.nodeId)) throw typedError('mcp_canary_mismatch');
-  const dashboardRevision = evidenceRevision(dashboard.sourceEvidence);
-  const mcpRevision = evidenceRevision(mcpEvidence);
+  let dashboardRevision;
+  let mcpRevision;
+  try {
+    dashboardRevision = currentEvidenceRevision(
+      dashboard.sourceEvidence,
+      'mcp_source_revision_mismatch',
+    );
+    mcpRevision = currentEvidenceRevision(mcpEvidence, 'mcp_source_revision_mismatch');
+  } catch { throw typedError('mcp_source_revision_mismatch'); }
   if (dashboardRevision !== canary.sourceRevision || mcpRevision !== canary.sourceRevision) {
     throw typedError('mcp_source_revision_mismatch');
   }
@@ -1121,10 +1370,23 @@ export async function flushActivity(context, output, activities, callerAgent, sc
 
 async function canonicalExportScenario({ modules, client, values, context, callerAgent, signal }) {
   const receiptPath = path.resolve(one(values, 'operation-receipt', { required: true }));
-  const rows = await readReceiptRows(receiptPath);
+  const validated = validateCanonicalReceiptSet(
+    await readReceiptRows(receiptPath),
+    context,
+    {
+      expectedRequester: callerAgent,
+      requireTerminalPerOperation: true,
+      allRowsTerminal: true,
+      selectedLast: true,
+    },
+  );
+  const rows = validated.rows;
   const terminals = rows.filter((row) => row.receiptKind === 'operation-terminal');
-  if (terminals.length !== 1) throw typedError('operation_receipt_invalid');
+  if (terminals.length !== 1 || validated.operations.size !== 1) {
+    throw typedError('operation_receipt_invalid');
+  }
   const source = terminals[0];
+  assertCanonicalReceiptContext(source, context);
   if (!source.operationId || source.receiptRunId !== context.receiptRunId
       || source.authority !== context.authority || source.requesterAgent !== callerAgent
       || source.protectedResultRead !== true) throw typedError('operation_receipt_invalid');
@@ -1501,10 +1763,10 @@ function strictIsoTimestamp(value) {
   return Number.isFinite(milliseconds) && new Date(milliseconds).toISOString() === value;
 }
 
-function assertProtectedReadback(terminal, receipt, result) {
+export function assertProtectedReadback(terminal, receipt, result) {
   const fields = [
     'operationId', 'operationType', 'state', 'target', 'resultHandle', 'resultArtifact',
-    'sourcePinDescriptor', 'sourcePinDigest', 'sourceEvidence', 'error',
+    'sourcePinDescriptor', 'sourcePinDigest', 'sourceEvidence', 'lastProgressAt', 'error',
   ];
   for (const field of fields) {
     const actual = Object.hasOwn(terminal, field) ? terminal[field] : null;
@@ -1547,16 +1809,47 @@ function wrongRequesterFor(requesterAgent) {
   return requesterAgent === 'wrong-requester' ? 'other-requester' : 'wrong-requester';
 }
 
-async function collectReceiptOperationInventory(root, excluded) {
+function isCanonicalReceiptCandidate(row) {
+  return Boolean(row && typeof row === 'object' && !Array.isArray(row)
+    && (Object.hasOwn(row, 'artifactSha256')
+      || Object.hasOwn(row, 'receiptKind')
+      || (Object.hasOwn(row, 'receiptRunId')
+        && Object.hasOwn(row, 'implementationCommit')
+        && Object.hasOwn(row, 'authority')
+        && Object.hasOwn(row, 'helper'))));
+}
+
+function classifyCanonicalReceiptRows(rows, relativePath) {
+  const looksCanonical = rows.some((row) => Object.hasOwn(row, 'artifactSha256'));
+  const hasCandidate = rows.some(isCanonicalReceiptCandidate);
+  if (hasCandidate && !looksCanonical) {
+    const guardedPm2 = rows.some((row) => typeof row?.receiptKind === 'string'
+      && row.receiptKind.startsWith('guarded-pm2-save-'));
+    throw typedError(
+      guardedPm2 ? 'guarded_pm2_transaction_invalid' : 'artifact_receipt_invalid',
+      relativePath,
+    );
+  }
+  if (looksCanonical && rows.some((row) => !Object.hasOwn(row, 'artifactSha256'))) {
+    throw typedError('artifact_receipt_mixed', relativePath);
+  }
+  return looksCanonical;
+}
+
+async function collectReceiptOperationInventory(root, excluded, context) {
   const operations = new Map();
   for (const file of await collectArtifactFiles(root, excluded)) {
-    const rows = await artifactRows(file.absolute);
-    const canonical = rows.some((row) => Object.hasOwn(row, 'artifactSha256'));
+    const extension = path.extname(file.absolute).toLowerCase();
+    const rows = (await readJsonArtifactSnapshot(
+      file.absolute,
+      readBoundedFile,
+      'artifact_changed_concurrently',
+      { requireJson: ['.json', '.jsonl', '.ndjson'].includes(extension) },
+    )).rows;
+    const canonical = classifyCanonicalReceiptRows(rows, file.relative);
     if (!canonical) continue;
-    if (rows.some((row) => !Object.hasOwn(row, 'artifactSha256'))) {
-      throw typedError('artifact_receipt_mixed', file.relative);
-    }
-    for (const row of await readReceiptRows(file.absolute)) {
+    for (const row of validateReceiptRows(rows)) {
+      assertCanonicalReceiptContext(row, context, row.authority);
       if (typeof row.operationId !== 'string' || !row.operationId) continue;
       const current = operations.get(row.operationId) || {
         terminalCount: 0,
@@ -1658,7 +1951,14 @@ export async function verifyReceiptManifest({
   storeReaderFactory = null,
   fetchImpl = fetch,
 }) {
-  const manifest = exactIdentityKeys(await readJson(manifestPath), IDENTITY_MANIFEST_KEYS);
+  await assertReceiptContextDirectoryIdentity(context);
+  const manifestSnapshot = await readJsonArtifactSnapshot(
+    manifestPath,
+    readBoundedFile,
+    'identity_manifest_changed_concurrently',
+  );
+  if (manifestSnapshot.rows.length !== 1) throw typedError('identity_manifest_invalid');
+  const manifest = exactIdentityKeys(manifestSnapshot.rows[0], IDENTITY_MANIFEST_KEYS);
   const manifestRealPath = await fsp.realpath(manifestPath);
   if (manifest.schemaVersion !== 1
       || manifest.receiptRunId !== context.receiptRunId
@@ -1736,12 +2036,11 @@ export async function verifyReceiptManifest({
       const rows = await readReceiptRows(receiptPath);
       const terminals = rows.filter((row) => row.operationId === entry.operationId
         && row.receiptKind === 'operation-terminal');
-      if (terminals.length !== 1
-          || rows.some((row) => row.receiptKind === 'operation-terminal'
-            && row.operationId !== entry.operationId)) {
+      if (terminals.length !== 1) {
         throw typedError('receipt_terminal_duplicate');
       }
       const receipt = terminals[0];
+      assertCanonicalReceiptContext(receipt, context, entry.authority);
       if (!TERMINAL.has(receipt.state)
           || receipt.protectedResultRead !== true
           || receipt.receiptRunId !== context.receiptRunId
@@ -1751,6 +2050,7 @@ export async function verifyReceiptManifest({
         throw typedError('identity_manifest_mismatch');
       }
       for (const row of rows.filter((candidate) => candidate.operationId === entry.operationId)) {
+        assertCanonicalReceiptContext(row, context, entry.authority);
         if (row.receiptRunId !== receipt.receiptRunId
             || row.authority !== receipt.authority
             || row.requesterAgent !== receipt.requesterAgent
@@ -1847,8 +2147,7 @@ export async function verifyReceiptManifest({
   }
 
   const inventory = await collectReceiptOperationInventory(
-    context.receiptRunDir,
-    new Set([manifestRealPath]),
+    context.receiptRunDir, new Set([manifestRealPath]), context,
   );
   for (const [operationId, item] of inventory) {
     if (!seenOperations.has(operationId)) {
@@ -1886,6 +2185,16 @@ export async function verifyReceiptManifest({
     signal,
     fetchImpl,
   });
+  const finalManifestSnapshot = await readJsonArtifactSnapshot(
+    manifestPath,
+    readBoundedFile,
+    'identity_manifest_changed_concurrently',
+  );
+  if (!finalManifestSnapshot.bytes.equals(manifestSnapshot.bytes)
+      || !isDeepStrictEqual(finalManifestSnapshot.hashed, manifestSnapshot.hashed)) {
+    throw typedError('identity_manifest_changed_concurrently');
+  }
+  await assertReceiptContextDirectoryIdentity(context);
   return {
     ok: true,
     observed,
@@ -1902,18 +2211,571 @@ function artifactAuthority(relativePath, context) {
   return context.authority;
 }
 
-async function artifactRows(file) {
-  const extension = path.extname(file).toLowerCase();
-  if (!['.json', '.jsonl', '.ndjson'].includes(extension)) return [];
-  const text = await readBoundedFile(file, {
-    maxBytes: MAX_RECEIPT_BYTES,
-    encoding: 'utf8',
-    errorCode: 'artifact_json_invalid',
-    requireSingleLink: true,
+function parseArtifactRows(file, text, { requireJson = false } = {}) {
+  const trimmed = text.trim();
+  if (!trimmed) {
+    if (requireJson) {
+      throw typedError('artifact_json_invalid', `empty JSON artifact: ${file}`);
+    }
+    return [];
+  }
+  try {
+    const document = JSON.parse(trimmed);
+    if (document && typeof document === 'object' && !Array.isArray(document)) {
+      return [document];
+    }
+    return [];
+  } catch (jsonError) {
+    try { return parseReceiptDocument(text); }
+    catch (error) {
+      if (requireJson || /^[\s]*[\[{]/.test(text)) {
+        throw typedError('artifact_json_invalid', `invalid JSON artifact: ${file}`, {
+          cause: error?.code === 'receipt_invalid' ? jsonError : error,
+        });
+      }
+      return [];
+    }
+  }
+}
+
+function artifactFileIdentity(stat) {
+  return {
+    dev: stat.dev.toString(),
+    ino: stat.ino.toString(),
+    nlink: stat.nlink.toString(),
+    mode: stat.mode.toString(),
+    uid: stat.uid.toString(),
+    size: stat.size.toString(),
+    mtimeNs: stat.mtimeNs.toString(),
+    ctimeNs: stat.ctimeNs.toString(),
+  };
+}
+
+async function readLargeRawArtifactSnapshot(file, before, errorCode) {
+  const beforeIdentity = artifactFileIdentity(before);
+  const prefixSize = Math.min(Number(before.size), MAX_ARTIFACT_SNIFF_BYTES);
+  const prefix = Buffer.alloc(prefixSize);
+  let handle;
+  try {
+    handle = await fsp.open(
+      file,
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0),
+    );
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || !isDeepStrictEqual(artifactFileIdentity(opened), beforeIdentity)) {
+      throw typedError(errorCode, file);
+    }
+    let offset = 0;
+    while (offset < prefix.length) {
+      const { bytesRead } = await handle.read(prefix, offset, prefix.length - offset, offset);
+      if (bytesRead === 0) throw typedError(errorCode, file);
+      offset += bytesRead;
+    }
+    const after = await handle.stat({ bigint: true });
+    if (!isDeepStrictEqual(artifactFileIdentity(after), beforeIdentity)) {
+      throw typedError(errorCode, file);
+    }
+  } catch (error) {
+    if (error?.code === errorCode) throw error;
+    throw typedError(errorCode, file, { cause: error });
+  } finally {
+    await handle?.close();
+  }
+  const named = await fsp.lstat(file, { bigint: true }).catch((error) => {
+    throw typedError(errorCode, file, { cause: error });
   });
-  try { return parseReceiptDocument(text); }
-  catch (error) {
-    throw typedError('artifact_json_invalid', `invalid JSON artifact: ${file}`, { cause: error });
+  if (!isDeepStrictEqual(artifactFileIdentity(named), beforeIdentity)) {
+    throw typedError(errorCode, file);
+  }
+  const firstNonWhitespace = /\S/.exec(prefix.toString('utf8'))?.[0] || null;
+  if (firstNonWhitespace === null || ['{', '['].includes(firstNonWhitespace)) {
+    throw typedError('artifact_json_invalid', `oversized JSON-like artifact: ${file}`);
+  }
+  let hashed;
+  try { hashed = await hashFile(file); }
+  catch (error) { throw typedError(errorCode, file, { cause: error }); }
+  if (hashed.dev !== beforeIdentity.dev || hashed.ino !== beforeIdentity.ino
+      || hashed.physicalSize !== Number(before.size)
+      || hashed.mtimeNs !== beforeIdentity.mtimeNs
+      || hashed.ctimeNs !== beforeIdentity.ctimeNs) {
+    throw typedError(errorCode, file);
+  }
+  return {
+    bytes: null,
+    rows: [],
+    hashed,
+    nlink: Number(before.nlink),
+  };
+}
+
+async function readJsonArtifactSnapshot(
+  file,
+  readBoundedFileImpl = readBoundedFile,
+  errorCode = 'artifact_changed_concurrently',
+  { requireJson = false } = {},
+) {
+  let before;
+  try { before = await fsp.lstat(file, { bigint: true }); }
+  catch (error) { throw typedError(errorCode, file, { cause: error }); }
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
+    throw typedError(errorCode, file);
+  }
+  if (before.size > BigInt(MAX_RECEIPT_BYTES)) {
+    if (requireJson) {
+      throw typedError('artifact_json_invalid', `oversized JSON artifact: ${file}`);
+    }
+    return readLargeRawArtifactSnapshot(file, before, errorCode);
+  }
+  const beforeIdentity = artifactFileIdentity(before);
+  let value;
+  try {
+    value = await readBoundedFileImpl(file, {
+      maxBytes: MAX_RECEIPT_BYTES,
+      errorCode,
+      requireSingleLink: true,
+    });
+  } catch (error) {
+    if (error?.code === errorCode) throw error;
+    throw typedError(errorCode, file, { cause: error });
+  }
+  if (!(value instanceof Uint8Array)) throw typedError(errorCode, file);
+  const bytes = Buffer.from(value);
+  let after;
+  try { after = await fsp.lstat(file, { bigint: true }); }
+  catch (error) { throw typedError(errorCode, file, { cause: error }); }
+  if (!after.isFile() || after.isSymbolicLink() || after.nlink !== 1n
+      || !isDeepStrictEqual(artifactFileIdentity(after), beforeIdentity)
+      || bytes.length !== Number(before.size)) {
+    throw typedError(errorCode, file);
+  }
+  return {
+    bytes,
+    rows: parseArtifactRows(file, bytes.toString('utf8'), { requireJson }),
+    hashed: {
+      sha256: sha256Bytes(bytes),
+      physicalSize: bytes.length,
+      dev: beforeIdentity.dev,
+      ino: beforeIdentity.ino,
+      mtimeNs: beforeIdentity.mtimeNs,
+      ctimeNs: beforeIdentity.ctimeNs,
+    },
+    nlink: Number(before.nlink),
+  };
+}
+
+function mergeOperationInventory(inventory, validated, relativePath) {
+  for (const [operationId, item] of validated.operations) {
+    const current = inventory.get(operationId) || {
+      terminalCount: 0,
+      terminal: null,
+      terminalPath: null,
+      identity: Object.create(null),
+      paths: new Set(),
+    };
+    for (const [field, value] of Object.entries(item.identity)) {
+      if (Object.hasOwn(current.identity, field)
+          && !isDeepStrictEqual(current.identity[field], value)) {
+        throw typedError('receipt_identity_conflict', `${operationId}:${field}`);
+      }
+      current.identity[field] = value;
+    }
+    const terminal = item.rows.find((row) => row.receiptKind === 'operation-terminal') || null;
+    current.terminalCount += item.terminalCount;
+    if (current.terminalCount > 1) throw typedError('receipt_terminal_duplicate', operationId);
+    if (terminal) {
+      current.terminal = terminal;
+      current.terminalPath = relativePath;
+    }
+    current.paths.add(relativePath);
+    inventory.set(operationId, current);
+  }
+}
+
+const OPERATION_IDENTITY_MANIFEST = 'operation-identity-manifest.json';
+
+function assertCompleteOperationIdentityManifest(rows, inventory, context, root) {
+  if (!Array.isArray(rows) || rows.length !== 1) {
+    throw typedError('identity_manifest_invalid');
+  }
+  const manifest = exactIdentityKeys(rows[0], IDENTITY_MANIFEST_KEYS);
+  if (manifest.schemaVersion !== 1
+      || manifest.receiptRunId !== context.receiptRunId
+      || !Array.isArray(manifest.authorities)
+      || manifest.authorities.length !== 2
+      || [...manifest.authorities].sort().join(',') !== 'isolated-controlled,live'
+      || manifest.auditRoot !== root
+      || !strictIsoTimestamp(manifest.createdAt)) {
+    throw typedError('identity_manifest_invalid');
+  }
+  exactIdentityKeys(manifest.groups, IDENTITY_GROUP_NAMES);
+  if (IDENTITY_GROUP_NAMES.some(
+    (groupName) => !Array.isArray(manifest.groups[groupName])
+      || manifest.groups[groupName].length === 0,
+  )) {
+    throw typedError('identity_manifest_invalid');
+  }
+  const seen = new Set();
+  const authorityCounts = new Map();
+  let entryCount = 0;
+  for (const groupName of IDENTITY_GROUP_NAMES) {
+    for (const rawEntry of manifest.groups[groupName]) {
+      entryCount += 1;
+      if (entryCount > MAX_IDENTITY_OPERATIONS) throw typedError('identity_manifest_invalid');
+      const entry = exactIdentityKeys(rawEntry, IDENTITY_ENTRY_KEYS);
+      if (!/^brop_[A-Za-z0-9_-]{32}$/.test(entry.operationId || '')
+          || seen.has(entry.operationId)
+          || typeof entry.requesterAgent !== 'string' || !entry.requesterAgent
+          || typeof entry.receipt !== 'string' || !entry.receipt
+          || path.isAbsolute(entry.receipt)
+          || path.normalize(entry.receipt) !== entry.receipt) {
+        throw typedError('identity_manifest_invalid');
+      }
+      const receiptPath = path.resolve(root, entry.receipt);
+      if (!isInsideOrEqual(root, receiptPath)) throw typedError('identity_manifest_invalid');
+      const item = inventory.get(entry.operationId);
+      if (!item || item.terminalCount !== 1 || !item.terminal || !item.terminalPath) {
+        throw typedError('identity_manifest_mismatch', entry.operationId);
+      }
+      const terminal = item.terminal;
+      const expectedGroup = terminal.authority === 'isolated-controlled'
+        ? 'isolatedControlled'
+        : terminal.authority === 'live' && terminal.requesterAgent === 'jerry'
+          ? 'jerryLive'
+          : terminal.authority === 'live' && terminal.requesterAgent === 'forrest'
+            ? 'forrestLive' : null;
+      const liveGroup = groupName === 'jerryLive' || groupName === 'forrestLive';
+      if (expectedGroup !== groupName
+          || entry.receipt !== item.terminalPath
+          || entry.authority !== terminal.authority
+          || entry.requesterAgent !== terminal.requesterAgent
+          || !isDeepStrictEqual(entry.authorizedEndpoint, terminal.authorizedEndpoint ?? null)
+          || !isDeepStrictEqual(entry.isolatedStore, terminal.isolatedStore ?? null)
+          || (liveGroup && (typeof entry.authorizedEndpoint !== 'string'
+            || !entry.authorizedEndpoint || entry.isolatedStore !== null))
+          || (!liveGroup && (entry.authorizedEndpoint !== null
+            || !normalizedAbsolute(entry.isolatedStore)))) {
+        throw typedError('identity_manifest_mismatch', entry.operationId);
+      }
+      authorityCounts.set(entry.authority, (authorityCounts.get(entry.authority) || 0) + 1);
+      seen.add(entry.operationId);
+    }
+  }
+  if (seen.size !== inventory.size
+      || (authorityCounts.get('live') || 0) < 1
+      || (authorityCounts.get('isolated-controlled') || 0) < 1) {
+    for (const operationId of inventory.keys()) {
+      if (!seen.has(operationId)) {
+        throw typedError('identity_manifest_unlisted_operation', operationId);
+      }
+    }
+    throw typedError('identity_manifest_invalid');
+  }
+  for (const operationId of seen) {
+    if (!inventory.has(operationId)) throw typedError('identity_manifest_mismatch', operationId);
+  }
+  return manifest;
+}
+
+const GUARDED_PM2_STATES = new Set([
+  'reserved', 'committed', 'failed-nonmutating',
+  'failed-restored', 'failed-restore-unverified',
+]);
+const GUARDED_PM2_PAIR_FIELDS = Object.freeze([
+  'receiptRunId', 'authority', 'implementationCommit', 'hostname',
+  'receiptRunStartedAt', 'transactionId', 'transactionState', 'mode',
+  'dumpPath', 'outputPath', 'ok', 'pm2SaveInvoked', 'restored',
+  'restorationVerified', 'errorCode', 'backupBasename',
+]);
+const REQUIRED_GUARDED_PM2_RESULTS = Object.freeze(new Map([
+  ['dry-run', path.join('live', 'guarded-pm2-save-dry-run.json')],
+  ['apply', path.join('live', 'guarded-pm2-save-apply.json')],
+]));
+
+function guardedPm2Candidate(row) {
+  return row?.helper === 'guarded-pm2-save'
+    || ['guarded-pm2-save-result', 'guarded-pm2-save-intent'].includes(row?.receiptKind)
+    || ['result', 'intent'].includes(row?.transactionRole)
+    || Object.hasOwn(row || {}, 'transactionIntentBasename')
+    || Object.hasOwn(row || {}, 'outputArtifactSha256')
+    || (Object.hasOwn(row || {}, 'transactionId')
+      && Object.hasOwn(row || {}, 'pm2SaveInvoked'));
+}
+
+function normalizedAbsolute(value) {
+  return typeof value === 'string' && path.isAbsolute(value) && path.normalize(value) === value;
+}
+
+function collectGuardedPm2Transactions(inventory, rows, relativePath, root) {
+  const actualPath = path.join(root, relativePath);
+  for (const row of rows) {
+    if (!guardedPm2Candidate(row)) continue;
+    const role = row.transactionRole;
+    const expectedKind = role === 'result'
+      ? 'guarded-pm2-save-result'
+      : role === 'intent' ? 'guarded-pm2-save-intent' : null;
+    if (row.helper !== 'guarded-pm2-save'
+        || expectedKind === null || row.receiptKind !== expectedKind
+        || typeof row.transactionId !== 'string'
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          row.transactionId,
+        )
+        || !GUARDED_PM2_STATES.has(row.transactionState)
+        || !['dry-run', 'apply'].includes(row.mode)
+        || !normalizedAbsolute(row.dumpPath)
+        || !normalizedAbsolute(row.outputPath)
+        || typeof row.ok !== 'boolean'
+        || typeof row.pm2SaveInvoked !== 'boolean'
+        || typeof row.restored !== 'boolean'
+        || typeof row.restorationVerified !== 'boolean') {
+      throw typedError('guarded_pm2_transaction_invalid', relativePath);
+    }
+    const intentBasename = `.${path.basename(row.outputPath)}.${row.transactionId}.guarded-pm2-intent.json`;
+    const expectedIntentPath = path.join(path.dirname(row.outputPath), intentBasename);
+    if ((role === 'result' && (actualPath !== row.outputPath
+        || row.transactionIntentBasename !== intentBasename))
+        || (role === 'intent' && (actualPath !== expectedIntentPath
+          || typeof row.outputArtifactSha256 !== 'string'
+          || !/^[a-f0-9]{64}$/.test(row.outputArtifactSha256)))) {
+      throw typedError('guarded_pm2_transaction_invalid', relativePath);
+    }
+    const transaction = inventory.get(row.transactionId) || { result: null, intent: null };
+    if (transaction[role] !== null) {
+      throw typedError('guarded_pm2_transaction_invalid', row.transactionId);
+    }
+    transaction[role] = { row, relativePath };
+    inventory.set(row.transactionId, transaction);
+  }
+}
+
+function assertGuardedPm2State(row) {
+  if (row.transactionState === 'committed') {
+    return row.ok === true
+      && row.receiptPublicationVerified === true
+      && row.restored === false && row.restorationVerified === false
+      && (row.mode === 'apply'
+        ? row.pm2SaveInvoked === true && row.applied === true
+        : row.pm2SaveInvoked === false && row.applied === false);
+  }
+  if (row.transactionState === 'failed-nonmutating') {
+    return row.ok === false && row.pm2SaveInvoked === false
+      && row.restored === false && row.restorationVerified === false
+      && row.receiptPublicationVerified === false;
+  }
+  if (row.transactionState === 'failed-restored') {
+    return row.ok === false && row.pm2SaveInvoked === true
+      && row.restored === true && row.restorationVerified === true
+      && row.receiptPublicationVerified === false;
+  }
+  return false;
+}
+
+function validNamedRows(rows, { nonempty = false } = {}) {
+  if (!Array.isArray(rows) || (nonempty && rows.length === 0)) return false;
+  const names = rows.map((row) => row?.name);
+  return names.every((name) => typeof name === 'string' && Boolean(name))
+    && new Set(names).size === names.length;
+}
+
+function validSortedStrings(values, { nonempty = false } = {}) {
+  return Array.isArray(values)
+    && (!nonempty || values.length > 0)
+    && values.every((value) => typeof value === 'string' && Boolean(value))
+    && new Set(values).size === values.length
+    && isDeepStrictEqual(values, [...values].sort());
+}
+
+function tablesMatchDumpPostcondition(liveRows, dumpRows) {
+  if (!validNamedRows(liveRows, { nonempty: true })
+      || !validNamedRows(dumpRows, { nonempty: true })
+      || liveRows.length !== dumpRows.length) return false;
+  const liveByName = new Map(liveRows.map((row) => [row.name, row]));
+  for (const dumpRow of dumpRows) {
+    const liveRow = liveByName.get(dumpRow.name);
+    if (!liveRow) return false;
+    const comparableLive = dumpRow.pid === null ? { ...liveRow, pid: null } : liveRow;
+    if (!isDeepStrictEqual(comparableLive, dumpRow)) return false;
+  }
+  return true;
+}
+
+function validRecordedFileIdentity(identity, file, { expectedMode = null } = {}) {
+  return Boolean(identity && typeof identity === 'object' && !Array.isArray(identity)
+    && identity.path === file
+    && /^\d+$/.test(identity.dev || '')
+    && /^\d+$/.test(identity.ino || '')
+    && identity.nlink === '1'
+    && Number.isSafeInteger(identity.uid) && identity.uid >= 0
+    && Number.isSafeInteger(identity.mode) && identity.mode >= 0 && identity.mode <= 0o777
+    && (expectedMode === null || identity.mode === expectedMode)
+    && /^\d+$/.test(identity.size || '')
+    && /^\d+$/.test(identity.mtimeNs || '')
+    && /^\d+$/.test(identity.ctimeNs || ''));
+}
+
+async function assertRetainedGuardedBackup(result, root, artifacts) {
+  const backupParent = path.join(root, 'backups');
+  if (!normalizedAbsolute(result.backupPath)
+      || path.dirname(result.backupPath) !== backupParent
+      || path.basename(result.backupPath) !== result.backupBasename
+      || result.backupMode !== '0600'
+      || result.backupCreatedExclusively !== true
+      || !/^[a-f0-9]{64}$/.test(result.backupSha256 || '')
+      || result.backupSha256 !== result.originalSha256
+      || !validRecordedFileIdentity(result.backupIdentity, result.backupPath, {
+        expectedMode: 0o600,
+      })) {
+    throw typedError('guarded_pm2_transaction_invalid', result.transactionId);
+  }
+  const relative = path.relative(root, result.backupPath);
+  const artifact = artifacts.find((entry) => entry.path === relative);
+  let stat;
+  let canonical;
+  try {
+    [stat, canonical] = await Promise.all([
+      fsp.lstat(result.backupPath, { bigint: true }),
+      fsp.realpath(result.backupPath),
+    ]);
+  } catch (error) {
+    throw typedError('guarded_pm2_transaction_invalid', result.transactionId, { cause: error });
+  }
+  const identity = result.backupIdentity;
+  const requiredUid = typeof process.getuid === 'function' ? process.getuid() : null;
+  if (!artifact || artifact.kind !== 'raw' || artifact.authority !== 'live'
+      || artifact.sha256 !== result.backupSha256
+      || canonical !== result.backupPath
+      || !stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n
+      || Number(stat.mode & 0o777n) !== 0o600
+      || (requiredUid !== null && Number(stat.uid) !== requiredUid)
+      || stat.dev.toString() !== identity.dev || stat.ino.toString() !== identity.ino
+      || stat.nlink.toString() !== identity.nlink || Number(stat.uid) !== identity.uid
+      || Number(stat.mode & 0o777n) !== identity.mode
+      || stat.size.toString() !== identity.size
+      || stat.mtimeNs.toString() !== identity.mtimeNs
+      || stat.ctimeNs.toString() !== identity.ctimeNs
+      || artifact.dev !== identity.dev || artifact.ino !== identity.ino
+      || artifact.size !== Number(stat.size)
+      || artifact.mtimeNs !== identity.mtimeNs || artifact.ctimeNs !== identity.ctimeNs) {
+    throw typedError('guarded_pm2_transaction_invalid', result.transactionId);
+  }
+}
+
+function assertComprehensiveGuardedResult(result) {
+  const originalMode = typeof result.originalMode === 'string'
+    && /^0[0-7]{3}$/.test(result.originalMode)
+    ? Number.parseInt(result.originalMode, 8) : null;
+  const expectedNames = new Set(result.expectedConfigured || []);
+  const ecosystemNames = new Set((result.ecosystemIdentity || []).map((row) => row?.name));
+  const liveNames = new Set((result.liveTable || []).map((row) => row?.name));
+  const commonValid = originalMode !== null
+    && /^[a-f0-9]{64}$/.test(result.originalSha256 || '')
+    && validRecordedFileIdentity(result.originalIdentity, result.dumpPath, {
+      expectedMode: originalMode,
+    })
+    && validSortedStrings(result.allowChanged)
+    && validSortedStrings(result.expectedConfigured, { nonempty: true })
+    && validNamedRows(result.ecosystemIdentity, { nonempty: true })
+    && validNamedRows(result.liveTable, { nonempty: true })
+    && validNamedRows(result.liveModules)
+    && validNamedRows(result.dumpTableBefore, { nonempty: true })
+    && Array.isArray(result.restartBaseline)
+    && Array.isArray(result.unrelatedRestartBaselines)
+    && [...expectedNames].every((name) => ecosystemNames.has(name) && liveNames.has(name))
+    && result.moduleRowsExcluded === true
+    && result.moduleRowsFrozen === true
+    && result.unrelatedRestartBaselineMonotonic === true
+    && result.unrelatedRowsFrozen === true;
+  if (!commonValid) return false;
+  if (result.mode === 'dry-run') {
+    return result.dumpTableAfter === null
+      && result.pm2SaveInvoked === false && result.applied === false;
+  }
+  return result.ecosystemAuthorityReloaded === true
+    && result.immediatePreSaveTableRevalidated === true
+    && validNamedRows(result.dumpTableAfter, { nonempty: true })
+    && tablesMatchDumpPostcondition(result.liveTable, result.dumpTableAfter)
+    && /^[a-f0-9]{64}$/.test(result.dumpSha256After || '')
+    && result.pm2SaveInvoked === true && result.applied === true;
+}
+
+async function assertGuardedPm2TransactionPairs(inventory, root, artifacts) {
+  if (inventory.size !== REQUIRED_GUARDED_PM2_RESULTS.size) {
+    throw typedError('guarded_pm2_transaction_invalid', 'required dry-run/apply pairs missing');
+  }
+  const transactionsByMode = new Map();
+  for (const [transactionId, transaction] of inventory) {
+    const result = transaction.result?.row;
+    const intent = transaction.intent?.row;
+    const expectedResultPath = REQUIRED_GUARDED_PM2_RESULTS.get(result?.mode);
+    const expectedIntentPath = expectedResultPath && path.join(
+      path.dirname(expectedResultPath),
+      `.${path.basename(expectedResultPath)}.${transactionId}.guarded-pm2-intent.json`,
+    );
+    if (!result || !intent
+        || GUARDED_PM2_PAIR_FIELDS.some(
+          (field) => !isDeepStrictEqual(result[field], intent[field]),
+        )
+        || intent.outputArtifactSha256 !== result.artifactSha256
+        || !assertGuardedPm2State(result)
+        || result.transactionState !== 'committed'
+        || !expectedResultPath
+        || transaction.result.relativePath !== expectedResultPath
+        || transaction.intent.relativePath !== expectedIntentPath
+        || result.outputPath !== path.join(root, expectedResultPath)
+        || typeof result.backupBasename !== 'string' || result.backupBasename.length === 0
+        || !assertComprehensiveGuardedResult(result)
+        || transactionsByMode.has(result.mode)) {
+      throw typedError('guarded_pm2_transaction_invalid', transactionId);
+    }
+    await assertRetainedGuardedBackup(result, root, artifacts);
+    transactionsByMode.set(result.mode, result);
+  }
+  const dryRun = transactionsByMode.get('dry-run');
+  const apply = transactionsByMode.get('apply');
+  if (!dryRun || !apply
+      || dryRun.transactionId === apply.transactionId
+      || dryRun.dumpPath !== apply.dumpPath
+      || dryRun.backupBasename === apply.backupBasename
+      || dryRun.backupPath === apply.backupPath
+      || typeof dryRun.originalSha256 !== 'string'
+      || dryRun.originalSha256 !== apply.originalSha256
+      || !/^[a-f0-9]{64}$/.test(dryRun.originalSha256)) {
+    throw typedError('guarded_pm2_transaction_invalid', 'dry-run/apply evidence mismatch');
+  }
+  return inventory;
+}
+
+function assertCompleteOperationInventory(inventory) {
+  let terminalOperations = 0;
+  for (const [operationId, item] of inventory) {
+    if (item.terminalCount !== 1) throw typedError('receipt_terminal_duplicate', operationId);
+    terminalOperations += 1;
+  }
+  if (terminalOperations === 0) throw typedError('operation_inventory_empty');
+  return terminalOperations;
+}
+
+async function revalidateArtifactEntries(root, entries, errorCode) {
+  for (const entry of entries) {
+    const absolute = path.join(root, entry.path);
+    if (!isInsideOrEqual(root, absolute)) throw typedError(errorCode, entry.path);
+    let hashed;
+    let stat;
+    try {
+      hashed = await hashFile(absolute);
+      stat = await fsp.lstat(absolute, { bigint: true });
+    } catch (error) {
+      throw typedError(errorCode, entry.path, { cause: error });
+    }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n
+        || hashed.sha256 !== entry.sha256 || hashed.physicalSize !== entry.size
+        || hashed.dev !== entry.dev || hashed.ino !== entry.ino
+        || hashed.mtimeNs !== entry.mtimeNs || hashed.ctimeNs !== entry.ctimeNs
+        || stat.dev.toString() !== entry.dev || stat.ino.toString() !== entry.ino
+        || stat.size !== BigInt(entry.size)
+        || stat.mtimeNs.toString() !== entry.mtimeNs
+        || stat.ctimeNs.toString() !== entry.ctimeNs) {
+      throw typedError(errorCode, entry.path);
+    }
   }
 }
 
@@ -1957,7 +2819,13 @@ async function collectArtifactFiles(root, excluded) {
   return files.sort((left, right) => left.relative.localeCompare(right.relative));
 }
 
-export async function buildArtifactManifest({ smokeRoot, output, context } = {}) {
+export async function buildArtifactManifest({
+  smokeRoot,
+  output,
+  context,
+  readBoundedFileImpl = readBoundedFile,
+} = {}) {
+  await assertReceiptContextDirectoryIdentity(context);
   const root = await canonicalDirectory(smokeRoot, 'smoke root');
   if (root.path !== context.receiptRunDir) throw typedError('smoke_root_mismatch');
   const manifestPath = path.resolve(output);
@@ -1971,24 +2839,36 @@ export async function buildArtifactManifest({ smokeRoot, output, context } = {})
   await ensureFreshOutput(manifestPath);
   await ensureFreshOutput(digestPath);
   const artifacts = [];
-  let terminalOperations = 0;
-  for (const file of await collectArtifactFiles(root.path, new Set([manifestPath, digestPath]))) {
+  const operationInventory = new Map();
+  const guardedPm2Transactions = new Map();
+  let identityManifestRows = null;
+  const excluded = new Set([manifestPath, digestPath]);
+  const artifactFiles = await collectArtifactFiles(root.path, excluded);
+  for (const file of artifactFiles) {
     const authority = artifactAuthority(file.relative, context);
-    const rows = await artifactRows(file.absolute);
-    const looksCanonical = rows.some((row) => Object.hasOwn(row, 'artifactSha256'));
-    if (looksCanonical && rows.some((row) => !Object.hasOwn(row, 'artifactSha256'))) {
-      throw typedError('artifact_receipt_mixed', file.relative);
-    }
+    const extension = path.extname(file.absolute).toLowerCase();
+    const isJsonArtifact = ['.json', '.jsonl', '.ndjson'].includes(extension);
+    const snapshot = await readJsonArtifactSnapshot(
+      file.absolute,
+      readBoundedFileImpl,
+      'artifact_changed_concurrently',
+      { requireJson: isJsonArtifact },
+    );
+    const rows = snapshot.rows;
+    if (file.relative === OPERATION_IDENTITY_MANIFEST) identityManifestRows = rows;
+    const looksCanonical = classifyCanonicalReceiptRows(rows, file.relative);
     if (looksCanonical) {
-      const canonicalRows = await readReceiptRows(file.absolute);
-      if (canonicalRows.some((row) => row.receiptRunId !== context.receiptRunId
-          || row.authority !== authority)) {
-        throw typedError('artifact_authority_mismatch', file.relative);
-      }
-      terminalOperations += canonicalRows.filter((row) => row.receiptKind === 'operation-terminal'
-        && typeof row.operationId === 'string' && row.operationId).length;
+      const canonicalRows = validateReceiptRows(rows);
+      const validated = validateCanonicalReceiptSet(canonicalRows, context, {
+        expectedAuthority: authority,
+      });
+      mergeOperationInventory(operationInventory, validated, file.relative);
     } else {
       for (const row of rows) {
+        if (Object.hasOwn(row, 'implementationCommit')
+            && row.implementationCommit !== context.implementationCommit) {
+          throw typedError('receipt_implementation_commit_mismatch');
+        }
         if (Object.hasOwn(row, 'receiptRunId') && row.receiptRunId !== context.receiptRunId) {
           throw typedError('artifact_run_id_mismatch', file.relative);
         }
@@ -1997,7 +2877,18 @@ export async function buildArtifactManifest({ smokeRoot, output, context } = {})
         }
       }
     }
-    const hashed = await hashFile(file.absolute);
+    collectGuardedPm2Transactions(
+      guardedPm2Transactions, rows, file.relative, root.path,
+    );
+    const hashed = snapshot.hashed;
+    const stat = await fsp.lstat(file.absolute, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n
+        || stat.dev.toString() !== hashed.dev || stat.ino.toString() !== hashed.ino
+        || stat.size !== BigInt(hashed.physicalSize)
+        || stat.mtimeNs.toString() !== hashed.mtimeNs
+        || stat.ctimeNs.toString() !== hashed.ctimeNs) {
+      throw typedError('artifact_changed_concurrently', file.relative);
+    }
     artifacts.push({
       path: file.relative,
       kind: looksCanonical ? 'receipt' : 'raw',
@@ -2007,19 +2898,35 @@ export async function buildArtifactManifest({ smokeRoot, output, context } = {})
       sha256: hashed.sha256,
       dev: hashed.dev,
       ino: hashed.ino,
-      nlink: Number((await fsp.lstat(file.absolute, { bigint: true })).nlink),
+      nlink: Number(stat.nlink),
       mtimeNs: hashed.mtimeNs,
       ctimeNs: hashed.ctimeNs,
     });
   }
-  if (terminalOperations === 0) throw typedError('operation_inventory_empty');
+  assertCompleteOperationInventory(operationInventory);
+  assertCompleteOperationIdentityManifest(
+    identityManifestRows, operationInventory, context, root.path,
+  );
+  await assertGuardedPm2TransactionPairs(guardedPm2Transactions, root.path, artifacts);
+  const authorities = [...new Set(artifacts.map((entry) => entry.authority))].sort();
+  if (!isDeepStrictEqual(authorities, ['isolated-controlled', 'live'])) {
+    throw typedError('identity_manifest_invalid');
+  }
+  const finalPaths = (await collectArtifactFiles(root.path, excluded))
+    .map((entry) => entry.relative);
+  if (JSON.stringify(finalPaths) !== JSON.stringify(
+    artifactFiles.map((entry) => entry.relative),
+  )) {
+    throw typedError('artifact_tree_changed_concurrently');
+  }
+  await revalidateArtifactEntries(root.path, artifacts, 'artifact_changed_concurrently');
   const row = await writeJsonReceipt(context, manifestPath, {
     helper: 'live-brain-tools-smoke',
     scenario: 'verify-receipts',
     receiptKind: 'artifact-manifest',
     schemaVersion: 1,
     auditRoot: root.path,
-    authorities: [...new Set(artifacts.map((entry) => entry.authority))].sort(),
+    authorities,
     artifacts,
   });
   const manifestHash = await hashFile(manifestPath, { maxBytes: MAX_ARTIFACT_MANIFEST_BYTES });
@@ -2036,10 +2943,38 @@ export async function buildArtifactManifest({ smokeRoot, output, context } = {})
   } finally {
     await fsp.rm(temporary, { force: true }).catch(() => {});
   }
+  await revalidateArtifactEntries(root.path, artifacts, 'artifact_changed_concurrently');
+  const [manifestReadback, digestReadback] = await Promise.all([
+    readBoundedFile(manifestPath, {
+      maxBytes: MAX_ARTIFACT_MANIFEST_BYTES,
+      errorCode: 'artifact_manifest_changed_concurrently',
+      requireSingleLink: true,
+      requiredMode: 0o600,
+      requiredUid: typeof process.getuid === 'function' ? process.getuid() : null,
+    }),
+    readBoundedFile(digestPath, {
+      maxBytes: 1024,
+      errorCode: 'artifact_manifest_changed_concurrently',
+      requireSingleLink: true,
+      requiredMode: 0o600,
+      requiredUid: typeof process.getuid === 'function' ? process.getuid() : null,
+    }),
+  ]);
+  if (sha256Bytes(manifestReadback) !== digest
+      || digestReadback.toString('utf8') !== `${digest}  ${path.basename(manifestPath)}\n`) {
+    throw typedError('artifact_manifest_changed_concurrently');
+  }
+  await assertReceiptContextDirectoryIdentity(context);
   return row;
 }
 
-export async function verifyArtifactManifest({ manifestPath, context } = {}) {
+export async function verifyArtifactManifest({
+  manifestPath,
+  context,
+  readBoundedFileImpl = readBoundedFile,
+} = {}) {
+  await assertReceiptContextDirectoryIdentity(context);
+  const requiredUid = typeof process.getuid === 'function' ? process.getuid() : null;
   const manifestFile = path.resolve(manifestPath);
   if (!isInsideOrEqual(context.receiptRunDir, manifestFile)) {
     throw typedError('artifact_manifest_invalid');
@@ -2048,16 +2983,28 @@ export async function verifyArtifactManifest({ manifestPath, context } = {}) {
     path.dirname(manifestFile),
     `${path.basename(manifestFile, path.extname(manifestFile))}.sha256`,
   );
+  const [initialManifestStat, initialDigestStat] = await Promise.all([
+    fsp.lstat(manifestFile, { bigint: true }),
+    fsp.lstat(digestPath, { bigint: true }),
+  ]).catch((error) => {
+    throw typedError('artifact_manifest_invalid', undefined, { cause: error });
+  });
+  const initialManifestIdentity = artifactFileIdentity(initialManifestStat);
+  const initialDigestIdentity = artifactFileIdentity(initialDigestStat);
   const [manifestBytes, digestBytes] = await Promise.all([
-    readBoundedFile(manifestFile, {
+    readBoundedFileImpl(manifestFile, {
       maxBytes: MAX_ARTIFACT_MANIFEST_BYTES,
       errorCode: 'artifact_manifest_invalid',
       requireSingleLink: true,
+      requiredMode: 0o600,
+      requiredUid,
     }),
-    readBoundedFile(digestPath, {
+    readBoundedFileImpl(digestPath, {
       maxBytes: 1024,
       errorCode: 'artifact_manifest_invalid',
       requireSingleLink: true,
+      requiredMode: 0o600,
+      requiredUid,
     }),
   ]).catch((error) => {
     throw typedError('artifact_manifest_invalid', 'artifact manifest unavailable', { cause: error });
@@ -2067,13 +3014,17 @@ export async function verifyArtifactManifest({ manifestPath, context } = {}) {
       || digestMatch[1] !== sha256Bytes(manifestBytes)) {
     throw typedError('artifact_manifest_digest_mismatch');
   }
-  const manifestRows = await readReceiptRows(manifestFile);
+  const manifestRows = validateReceiptRows(
+    parseReceiptDocument(manifestBytes.toString('utf8')),
+  );
   if (manifestRows.length !== 1) throw typedError('artifact_manifest_invalid');
   const manifest = manifestRows[0];
+  assertCanonicalReceiptContext(manifest, context);
   if (manifest.receiptKind !== 'artifact-manifest'
       || manifest.receiptRunId !== context.receiptRunId
       || manifest.authority !== context.authority
       || manifest.auditRoot !== context.receiptRunDir
+      || !isDeepStrictEqual(manifest.authorities, ['isolated-controlled', 'live'])
       || !Array.isArray(manifest.artifacts) || manifest.artifacts.length === 0) {
     throw typedError('artifact_manifest_invalid');
   }
@@ -2085,7 +3036,9 @@ export async function verifyArtifactManifest({ manifestPath, context } = {}) {
       || JSON.stringify(actualPaths) !== JSON.stringify([...expectedPaths].sort())) {
     throw typedError('artifact_path_set_mismatch');
   }
-  let terminalOperations = 0;
+  const operationInventory = new Map();
+  const guardedPm2Transactions = new Map();
+  let identityManifestRows = null;
   for (const entry of manifest.artifacts) {
     if (!entry || typeof entry.path !== 'string'
         || entry.receiptRunId !== context.receiptRunId
@@ -2098,37 +3051,114 @@ export async function verifyArtifactManifest({ manifestPath, context } = {}) {
     }
     const absolute = path.join(context.receiptRunDir, entry.path);
     if (!isInsideOrEqual(context.receiptRunDir, absolute)) throw typedError('artifact_manifest_invalid');
-    const hashed = await hashFile(absolute);
+    const extension = path.extname(absolute).toLowerCase();
+    const isJsonArtifact = ['.json', '.jsonl', '.ndjson'].includes(extension);
+    const snapshot = await readJsonArtifactSnapshot(
+      absolute,
+      readBoundedFileImpl,
+      'artifact_identity_mismatch',
+      { requireJson: isJsonArtifact },
+    );
+    const rows = snapshot.rows;
+    if (entry.path === OPERATION_IDENTITY_MANIFEST) identityManifestRows = rows;
+    const hashed = snapshot.hashed;
     const stat = await fsp.lstat(absolute, { bigint: true });
     if (hashed.sha256 !== entry.sha256 || hashed.physicalSize !== entry.size
         || hashed.dev !== entry.dev || hashed.ino !== entry.ino
         || hashed.mtimeNs !== entry.mtimeNs || hashed.ctimeNs !== entry.ctimeNs
+        || !stat.isFile() || stat.isSymbolicLink()
+        || stat.dev.toString() !== hashed.dev || stat.ino.toString() !== hashed.ino
+        || stat.size !== BigInt(hashed.physicalSize)
+        || stat.mtimeNs.toString() !== hashed.mtimeNs
+        || stat.ctimeNs.toString() !== hashed.ctimeNs
         || Number(stat.nlink) !== entry.nlink) {
       throw typedError('artifact_identity_mismatch', entry.path);
     }
     const expectedAuthority = artifactAuthority(entry.path, context);
     if (entry.authority !== expectedAuthority) throw typedError('artifact_authority_mismatch');
-    const rows = await artifactRows(absolute);
-    const looksCanonical = rows.some((row) => Object.hasOwn(row, 'artifactSha256'));
+    const looksCanonical = classifyCanonicalReceiptRows(rows, entry.path);
     if ((entry.kind === 'receipt') !== looksCanonical) throw typedError('artifact_manifest_invalid');
     if (looksCanonical) {
-      const canonicalRows = await readReceiptRows(absolute);
-      if (canonicalRows.some((row) => row.receiptRunId !== context.receiptRunId
-          || row.authority !== entry.authority)) {
-        throw typedError('artifact_authority_mismatch');
-      }
-      terminalOperations += canonicalRows.filter((row) => row.receiptKind === 'operation-terminal'
-        && typeof row.operationId === 'string' && row.operationId).length;
+      const canonicalRows = validateReceiptRows(rows);
+      const validated = validateCanonicalReceiptSet(canonicalRows, context, {
+        expectedAuthority: entry.authority,
+      });
+      mergeOperationInventory(operationInventory, validated, entry.path);
     } else {
       for (const row of rows) {
+        if (Object.hasOwn(row, 'implementationCommit')
+            && row.implementationCommit !== context.implementationCommit) {
+          throw typedError('receipt_implementation_commit_mismatch');
+        }
         if ((Object.hasOwn(row, 'receiptRunId') && row.receiptRunId !== context.receiptRunId)
             || (Object.hasOwn(row, 'authority') && row.authority !== entry.authority)) {
           throw typedError('artifact_authority_mismatch');
         }
       }
     }
+    collectGuardedPm2Transactions(
+      guardedPm2Transactions, rows, entry.path, context.receiptRunDir,
+    );
   }
-  if (terminalOperations === 0) throw typedError('operation_inventory_empty');
+  const terminalOperations = assertCompleteOperationInventory(operationInventory);
+  assertCompleteOperationIdentityManifest(
+    identityManifestRows, operationInventory, context, context.receiptRunDir,
+  );
+  await assertGuardedPm2TransactionPairs(
+    guardedPm2Transactions, context.receiptRunDir, manifest.artifacts,
+  );
+  const artifactAuthorities = [
+    ...new Set(manifest.artifacts.map((entry) => entry.authority)),
+  ].sort();
+  if (!isDeepStrictEqual(artifactAuthorities, manifest.authorities)) {
+    throw typedError('artifact_manifest_invalid');
+  }
+  const finalPaths = (await collectArtifactFiles(context.receiptRunDir, excluded))
+    .map((entry) => entry.relative);
+  if (JSON.stringify(finalPaths) !== JSON.stringify(actualPaths)) {
+    throw typedError('artifact_tree_changed_concurrently');
+  }
+  await revalidateArtifactEntries(
+    context.receiptRunDir,
+    manifest.artifacts,
+    'artifact_identity_mismatch',
+  );
+  let finalManifestBytes;
+  let finalDigestBytes;
+  try {
+    [finalManifestBytes, finalDigestBytes] = await Promise.all([
+      readBoundedFileImpl(manifestFile, {
+        maxBytes: MAX_ARTIFACT_MANIFEST_BYTES,
+        errorCode: 'artifact_manifest_changed_concurrently',
+        requireSingleLink: true,
+        requiredMode: 0o600,
+        requiredUid,
+      }),
+      readBoundedFileImpl(digestPath, {
+        maxBytes: 1024,
+        errorCode: 'artifact_manifest_changed_concurrently',
+        requireSingleLink: true,
+        requiredMode: 0o600,
+        requiredUid,
+      }),
+    ]);
+  } catch (error) {
+    if (error?.code === 'artifact_manifest_changed_concurrently') throw error;
+    throw typedError('artifact_manifest_changed_concurrently', undefined, { cause: error });
+  }
+  if (!Buffer.from(finalManifestBytes).equals(Buffer.from(manifestBytes))
+      || !Buffer.from(finalDigestBytes).equals(Buffer.from(digestBytes))) {
+    throw typedError('artifact_manifest_changed_concurrently');
+  }
+  const [finalManifestStat, finalDigestStat] = await Promise.all([
+    fsp.lstat(manifestFile, { bigint: true }),
+    fsp.lstat(digestPath, { bigint: true }),
+  ]);
+  if (!isDeepStrictEqual(artifactFileIdentity(finalManifestStat), initialManifestIdentity)
+      || !isDeepStrictEqual(artifactFileIdentity(finalDigestStat), initialDigestIdentity)) {
+    throw typedError('artifact_manifest_changed_concurrently');
+  }
+  await assertReceiptContextDirectoryIdentity(context);
   return {
     ok: true,
     artifactCount: manifest.artifacts.length,
@@ -2154,25 +3184,31 @@ export async function executeScenario({
   const selector = targetSelector(values);
   if (scenario === 'discover-canary') {
     const discovered = await discoverCanary({ client, selector, signal });
-    const terminal = await protectedTerminal(client, discovered.search.operationId, signal);
+    const terminal = discovered.selectedTerminal;
     assertCompleteTerminal(terminal, {
       expectedBrain: discovered.target?.id,
       targetErrorCode: 'canary_target_mismatch',
     });
-    if (evidenceRevision(terminal.sourceEvidence) !== discovered.sourceRevision) {
+    if (currentEvidenceRevision(
+      terminal.sourceEvidence,
+      'canary_source_revision_mismatch',
+    ) !== discovered.sourceRevision) {
       throw typedError('canary_source_revision_mismatch');
     }
-    return terminalReceipt({
-      context, values, baseUrl, callerAgent, scenario, terminal, activityLog,
-      extras: {
-        query: discovered.query,
-        nodeId: discovered.nodeId,
-        sourceRevision: discovered.sourceRevision,
-        sourceHealth: terminal.sourceEvidence.sourceHealth,
-        selectedBrain: discovered.target.id,
-        selectedAgent: discovered.target.ownerAgent,
-      },
-    });
+    const receipts = discovered.operationTerminals.map((operationTerminal) =>
+      terminalReceipt({
+        context, values, baseUrl, callerAgent, scenario,
+        terminal: operationTerminal, activityLog,
+        extras: operationTerminal.operationId === terminal.operationId ? {
+          query: discovered.query,
+          nodeId: discovered.nodeId,
+          sourceRevision: discovered.sourceRevision,
+          sourceHealth: terminal.sourceEvidence.sourceHealth,
+          selectedBrain: discovered.target.id,
+          selectedAgent: discovered.target.ownerAgent,
+        } : {},
+      }));
+    return attachOperationReceipts(receipts.at(-1), receipts);
   }
   if (scenario === 'canonical-export') {
     return canonicalExportScenario({ modules, client, values, context, callerAgent, signal });
@@ -2201,18 +3237,127 @@ export async function executeScenario({
   }
   if (scenario === 'zero-result') {
     const query = one(values, 'query', { required: true });
-    const search = await client.search({ query, topK: 100 }, signal);
+    if (Object.hasOwn(values, 'expect-unprovable-degraded')) {
+      throw typedError('invalid_argument', 'use --zero-policy');
+    }
+    const zeroPolicy = one(values, 'zero-policy', { defaultValue: 'healthy-no-match' });
+    if (!['healthy-no-match', 'degraded-unprovable'].includes(zeroPolicy)) {
+      throw typedError('invalid_argument', '--zero-policy is invalid');
+    }
+    const rawTag = one(values, 'tag');
+    const tag = rawTag === undefined ? null : String(rawTag);
+    if (rawTag !== undefined && (typeof rawTag !== 'string' || !tag.trim()
+        || Buffer.byteLength(tag, 'utf8') > 256)) {
+      throw typedError('invalid_argument', '--tag is invalid');
+    }
+    const search = await client.search({
+      query, topK: 100, ...(tag !== null ? { tag } : {}),
+    }, signal);
     const terminal = await protectedTerminal(client, search.operationId, signal);
+    if (zeroPolicy === 'degraded-unprovable') {
+      const selectedBrain = assertCompleteTerminal(terminal, {
+        targetErrorCode: 'absence_unprovable_not_proven',
+        sourcePolicy: 'identity-only',
+      });
+      const evidence = terminal.sourceEvidence || {};
+      const searchEvidence = search.sourceEvidence || {};
+      let sourceRevision;
+      let searchSourceRevision;
+      try {
+        sourceRevision = currentEvidenceRevision(evidence, 'absence_unprovable_not_proven');
+        searchSourceRevision = currentEvidenceRevision(
+          searchEvidence,
+          'absence_unprovable_not_proven',
+        );
+      } catch { throw typedError('absence_unprovable_not_proven'); }
+      const returnedTotal = evidence.returnedTotals?.nodes;
+      const searchReturnedTotal = searchEvidence.returnedTotals?.nodes;
+      const authoritativeTotal = evidence.authoritativeTotals?.nodes
+        ?? evidence.authoritativeTotal;
+      const exactOwnTarget = terminal.target?.domain === 'brain'
+        && terminal.target?.brainId === selectedBrain
+        && terminal.target?.kind === 'resident'
+        && terminal.target?.lifecycle === 'resident'
+        && terminal.target?.accessMode === 'own'
+        && terminal.target?.ownerAgent === callerAgent;
+      const exactFilter = isDeepStrictEqual(evidence.filters, { tag })
+        && isDeepStrictEqual(evidence.limits, { topK: 100 })
+        && isDeepStrictEqual(searchEvidence.filters, evidence.filters)
+        && isDeepStrictEqual(searchEvidence.limits, evidence.limits);
+      const exactSource = searchEvidence.selectedBrain === selectedBrain
+        && Number.isSafeInteger(sourceRevision)
+        && searchSourceRevision === sourceRevision
+        && returnedTotal === 0
+        && searchReturnedTotal === 0;
+      if (!Array.isArray(search.results) || search.results.length !== 0
+          || !Array.isArray(terminal.result?.results) || terminal.result.results.length !== 0
+          || !isDeepStrictEqual(search.results, terminal.result.results)
+          || !isDeepStrictEqual(searchEvidence, evidence)
+          || evidence.sourceHealth !== 'degraded'
+          || evidence.freshness !== 'unknown'
+          || evidence.matchOutcome !== 'unknown'
+          || evidence.completeCoverage !== true
+          || evidence.implementation !== 'legacy-resident-sidecar-projection'
+          || !Number.isSafeInteger(authoritativeTotal) || authoritativeTotal <= 0
+          || !exactOwnTarget || !exactFilter || !exactSource) {
+        throw typedError('absence_unprovable_not_proven');
+      }
+      return terminalReceipt({
+        context, values, baseUrl, callerAgent, scenario, terminal, activityLog,
+        extras: {
+          sourceHealth: evidence.sourceHealth,
+          matchOutcome: evidence.matchOutcome,
+          completeCoverage: evidence.completeCoverage,
+          authoritativeTotal,
+          absenceProven: false,
+          emptyBrainClaimAllowed: false,
+          classification: 'absence_unprovable',
+        },
+      });
+    }
     const selectedBrain = assertCompleteTerminal(terminal, {
       targetErrorCode: 'zero_result_target_mismatch',
       sourcePolicy: 'healthy',
     });
     const evidence = terminal.sourceEvidence || {};
+    const searchEvidence = search.sourceEvidence || {};
+    let sourceRevision;
+    let searchSourceRevision;
+    try {
+      sourceRevision = currentEvidenceRevision(evidence, 'zero_result_not_proven');
+      searchSourceRevision = currentEvidenceRevision(searchEvidence, 'zero_result_not_proven');
+    } catch { throw typedError('zero_result_not_proven'); }
+    const returnedTotal = evidence.returnedTotals?.nodes;
+    const searchReturnedTotal = searchEvidence.returnedTotals?.nodes;
+    const authoritativeTotal = evidence.authoritativeTotals?.nodes
+      ?? evidence.authoritativeTotal;
+    const exactOwnTarget = terminal.target?.domain === 'brain'
+      && terminal.target?.brainId === selectedBrain
+      && terminal.target?.kind === 'resident'
+      && terminal.target?.lifecycle === 'resident'
+      && terminal.target?.accessMode === 'own'
+      && terminal.target?.ownerAgent === callerAgent;
+    const exactFilter = isDeepStrictEqual(evidence.filters, { tag })
+      && isDeepStrictEqual(evidence.limits, { topK: 100 })
+      && isDeepStrictEqual(searchEvidence.filters, evidence.filters)
+      && isDeepStrictEqual(searchEvidence.limits, evidence.limits);
+    const exactSource = searchEvidence.selectedBrain === selectedBrain
+      && Number.isSafeInteger(sourceRevision)
+      && searchSourceRevision === sourceRevision
+      && returnedTotal === 0
+      && searchReturnedTotal === 0;
     if (search.sourceEvidence?.selectedBrain !== selectedBrain
-        || resultsFromSearch(search).length !== 0 || evidence.sourceHealth !== 'healthy'
+        || !Array.isArray(search.results) || search.results.length !== 0
+        || !Array.isArray(terminal.result?.results) || terminal.result.results.length !== 0
+        || !isDeepStrictEqual(search.results, terminal.result.results)
+        || !isDeepStrictEqual(searchEvidence, evidence)
+        || evidence.sourceHealth !== 'healthy'
+        || evidence.freshness !== 'known'
         || evidence.matchOutcome !== 'no_match'
         || evidence.completeCoverage !== true
-        || Number(evidence.authoritativeTotals?.nodes ?? evidence.authoritativeTotal) <= 0) {
+        || evidence.implementation !== 'manifest-v1'
+        || !Number.isSafeInteger(authoritativeTotal) || authoritativeTotal <= 0
+        || !exactOwnTarget || !exactFilter || !exactSource) {
       throw typedError('zero_result_not_proven', JSON.stringify({
         resultCount: resultsFromSearch(search).length,
         selectedBrain,
@@ -2229,7 +3374,7 @@ export async function executeScenario({
       sourceHealth: evidence.sourceHealth,
       matchOutcome: evidence.matchOutcome,
       completeCoverage: evidence.completeCoverage,
-      authoritativeTotal: evidence.authoritativeTotals?.nodes ?? evidence.authoritativeTotal,
+      authoritativeTotal,
     } });
   }
   if (scenario === 'graph') {
@@ -2412,9 +3557,41 @@ export async function executeScenario({
       }),
     };
     if (scenario === 'own') {
-      await runTool(modules.brainSearchTool, { query: canary.query, limit: 20 }, client, callerAgent, signal);
-      await runTool(modules.brainStatusTool, {}, client, callerAgent, signal);
-      await runTool(modules.brainMemoryGraphTool, { topN: 25 }, client, callerAgent, signal);
+      const toolCalls = [
+        [modules.brainSearchTool, { query: canary.query, limit: 20 }],
+        [modules.brainStatusTool, {}],
+        [modules.brainMemoryGraphTool, { topN: 25 }],
+        [modules.brainQueryTool, queryInput],
+      ];
+      const terminals = [];
+      for (const [tool, input] of toolCalls) {
+        const toolResult = await runTool(tool, input, client, callerAgent, signal);
+        const operationId = toolResult.metadata?.operationId;
+        if (!operationId) throw typedError('operation_id_missing');
+        const operationTerminal = await protectedTerminal(client, operationId, signal);
+        terminals.push(operationTerminal);
+      }
+      if (new Set(terminals.map((value) => value.operationId)).size !== terminals.length) {
+        throw typedError('operation_receipt_set_invalid');
+      }
+      assertCanaryEvidence(terminals[0], canary);
+      for (const operationTerminal of terminals.slice(1, 3)) {
+        assertCompleteTerminal(operationTerminal, {
+          expectedBrain: canary.selectedBrain,
+          targetErrorCode: 'canary_target_mismatch',
+          sourcePolicy: 'identity-only',
+        });
+      }
+      assertCanaryBoundUsefulResult(terminals[3], canary);
+      const receipts = terminals.map((operationTerminal) => terminalReceipt({
+        context, values, baseUrl, callerAgent, scenario,
+        terminal: operationTerminal, activityLog,
+        extras: {
+          canaryNodeId: canary.nodeId,
+          canarySourceRevision: canary.sourceRevision,
+        },
+      }));
+      return attachOperationReceipts(receipts.at(-1), receipts);
     }
     const toolResult = await runTool(modules.brainQueryTool, queryInput, client, callerAgent, signal);
     const operationId = toolResult.metadata?.operationId;
@@ -2422,24 +3599,28 @@ export async function executeScenario({
     const terminal = await protectedTerminal(client, operationId, signal);
     assertCanaryBoundUsefulResult(terminal, canary, activityLog);
     const requiredNodes = integer(values, 'require-authoritative-nodes', { min: 1 });
-    const authoritativeNodes = Number(terminal.sourceEvidence?.authoritativeTotals?.nodes);
+    const authoritativeNodes = terminal.sourceEvidence?.authoritativeTotals?.nodes;
+    if (!Number.isSafeInteger(authoritativeNodes) || authoritativeNodes < 0) {
+      throw typedError('authoritative_size_gate_failed');
+    }
     if (scenario === 'pgs' && (requiredNodes === undefined
         || requiredNodes < PGS_LARGE_MIN_NODES || authoritativeNodes < PGS_LARGE_MIN_NODES)) {
       throw typedError('authoritative_size_gate_failed');
     }
     if (requiredNodes !== undefined && authoritativeNodes < requiredNodes) throw typedError('authoritative_size_gate_failed');
     if (scenario === 'large-pgs-isolated') {
-      const authoritativeEdges = Number(terminal.sourceEvidence?.authoritativeTotals?.edges);
+      const authoritativeEdges = terminal.sourceEvidence?.authoritativeTotals?.edges;
       const syntheticNodes = integer(values, 'synthetic-nodes', { required: true, min: PGS_LARGE_MIN_NODES });
       const syntheticEdges = integer(values, 'synthetic-edges', { required: true, min: syntheticNodes });
-      if (authoritativeNodes !== syntheticNodes || authoritativeEdges !== syntheticEdges) {
+      if (!Number.isSafeInteger(authoritativeEdges) || authoritativeEdges < 0
+          || authoritativeNodes !== syntheticNodes || authoritativeEdges !== syntheticEdges) {
         throw typedError('synthetic_source_mismatch');
       }
     }
     return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog, extras: {
       canaryNodeId: canary.nodeId,
       canarySourceRevision: canary.sourceRevision,
-      authoritativeNodes: Number.isFinite(authoritativeNodes) ? authoritativeNodes : null,
+      authoritativeNodes,
       liveProviderLargePgsGatePassed: scenario === 'pgs' && authoritativeNodes >= PGS_LARGE_MIN_NODES,
       controlledProvider: booleanFlag(values, 'controlled-provider', false),
     } });
@@ -2456,6 +3637,7 @@ const ISOLATED_LIFECYCLE_SCENARIOS = new Set([
 const ISOLATED_AUTO_LAUNCH_SCENARIOS = new Set([
   ...ISOLATED_LIFECYCLE_SCENARIOS,
   'large-pgs-isolated',
+  'zero-result',
 ]);
 
 async function waitForOperationState(client, operationId, expected, signal, timeoutMs = 10_000) {
@@ -2712,6 +3894,31 @@ async function readRetainedProviderTerminalEvidence(fixture, operationId) {
   };
 }
 
+async function readIsolatedDelayOperationEvents(fixture, acceptedRows) {
+  if (!fixture || !Array.isArray(acceptedRows) || acceptedRows.length === 0) {
+    throw typedError('isolated_fixture_delay_unproven');
+  }
+  const { BrainOperationStore } = require(
+    '../engine/src/dashboard/brain-operations/operation-store.js'
+  );
+  const store = new BrainOperationStore({
+    root: fixture.operationsRoot,
+    requesterAgent: fixture.agent,
+  });
+  const events = [];
+  const seen = new Set();
+  for (const row of acceptedRows) {
+    if (typeof row?.operationId !== 'string' || seen.has(row.operationId)) {
+      throw typedError('isolated_fixture_delay_unproven');
+    }
+    seen.add(row.operationId);
+    const retained = await store.readEvents(row.operationId, 0);
+    if (!Array.isArray(retained)) throw typedError('isolated_fixture_delay_unproven');
+    events.push(...retained);
+  }
+  return events;
+}
+
 async function readIsolatedOperationDiagnostics(fixture) {
   const { BrainOperationStore } = require(
     '../engine/src/dashboard/brain-operations/operation-store.js'
@@ -2891,15 +4098,604 @@ export async function verifyFixtureSourceIntegrity(before, options = {}) {
   };
 }
 
-function isolatedFixtureReceipt(fixture, stopped, sourceIntegrity) {
-  const stoppedPids = [stopped?.dashboard?.pid, stopped?.cosmo?.pid, stopped?.mcp?.pid]
-    .filter((pid) => Number.isSafeInteger(pid) && pid > 0);
-  if (stopped?.dashboard?.exited !== true || stopped?.cosmo?.exited !== true
-      || stopped?.mcp?.exited !== true
-      || stoppedPids.length !== 3 || new Set(stoppedPids).size !== 3
+function validDelayRoleCounters(role) {
+  const counters = [
+    role?.providerStarts,
+    role?.providerAborts,
+    role?.providerDelayStarts,
+    role?.providerDelayCompletions,
+  ];
+  return counters.every((value) => Number.isSafeInteger(value) && value >= 0)
+    && role.providerDelayStarts === role.providerStarts
+    && role.providerDelayCompletions <= role.providerDelayStarts
+    && role.providerAborts <= role.providerStarts
+    && Array.isArray(role.actions)
+    && role.actions.length <= MAX_ISOLATED_DELAY_ACTIONS_PER_ROLE;
+}
+
+function isolatedOperationRole(operationType) {
+  if (operationType === 'synthesis') return 'dashboard';
+  if (['query', 'pgs', 'research_compile', 'research_intelligence'].includes(operationType)) {
+    return 'cosmo';
+  }
+  return null;
+}
+
+function controlledDelayActivityType(event) {
+  const providerType = event?.providerEventType;
+  const childType = event?.childEventType;
+  if (providerType !== undefined && childType !== undefined && providerType !== childType) {
+    return null;
+  }
+  return providerType ?? childType ?? null;
+}
+
+function failIsolatedDelayProof(reason) {
+  throw typedError(
+    'isolated_fixture_delay_unproven',
+    `isolated_fixture_delay_unproven:${reason}`,
+    { proofReason: reason },
+  );
+}
+
+function validRawDelayAction(action, {
+  role,
+  configuredDelayMs,
+  effectiveDelayMs,
+  testOnlyDelay,
+} = {}) {
+  const keys = [
+    'operationId', 'phase', 'providerCallId', 'provider', 'model', 'configuredDelayMs',
+    'effectiveDelayMs', 'testOnlyDelay', 'startedAt', 'completedAt',
+    'elapsedMs', 'actionProven', 'outcome',
+  ];
+  return action && typeof action === 'object' && !Array.isArray(action)
+    && Object.keys(action).length === keys.length
+    && keys.every((key) => Object.hasOwn(action, key))
+    && typeof action.operationId === 'string'
+    && /^brop_[A-Za-z0-9_-]{32}$/.test(action.operationId)
+    && typeof action.phase === 'string' && Boolean(action.phase)
+    && typeof action.providerCallId === 'string' && Boolean(action.providerCallId)
+    && action.provider === 'controlled'
+    && typeof action.model === 'string' && Boolean(action.model)
+    && action.configuredDelayMs === configuredDelayMs
+    && action.effectiveDelayMs === effectiveDelayMs
+    && action.testOnlyDelay === testOnlyDelay
+    && strictIsoTimestamp(action.startedAt)
+    && strictIsoTimestamp(action.completedAt)
+    && Number.isFinite(action.elapsedMs) && action.elapsedMs >= 0
+    && typeof action.actionProven === 'boolean'
+    && ['complete', 'aborted'].includes(action.outcome)
+    && ((role === 'dashboard' && action.phase === 'synthesis')
+      || (role === 'cosmo' && action.phase !== 'synthesis'));
+}
+
+function exactDelayActionProof({
+  operation,
+  terminalEvent,
+  operationEvents,
+  telemetryAction,
+  role,
+  configuredDelayMs,
+  effectiveDelayMs,
+  testOnlyDelay,
+}) {
+  const sequence = activityEventSequence(terminalEvent);
+  if (terminalEvent?.type !== 'provider_call_terminal'
+      || terminalEvent.operationId !== operation.operationId
+      || terminalEvent.provider !== 'controlled'
+      || typeof terminalEvent.model !== 'string' || !terminalEvent.model
+      || typeof terminalEvent.phase !== 'string' || !terminalEvent.phase
+      || typeof terminalEvent.providerCallId !== 'string' || !terminalEvent.providerCallId
+      || !PROVIDER_TERMINAL_OUTCOMES.has(terminalEvent.outcome)
+      || sequence === null || !strictIsoTimestamp(terminalEvent.at)
+      || Date.parse(terminalEvent.at) > Date.parse(operation.completedAt)) {
+    throw typedError('isolated_fixture_delay_unproven');
+  }
+  const sameCallActivity = operationEvents.filter((event) =>
+    event?.type === 'provider_activity'
+      && event.provider === terminalEvent.provider
+      && event.model === terminalEvent.model
+      && event.phase === terminalEvent.phase
+      && event.providerCallId === terminalEvent.providerCallId);
+  const started = sameCallActivity.filter((event) =>
+    controlledDelayActivityType(event) === 'controlled_provider_started');
+  const completed = sameCallActivity.filter((event) =>
+    controlledDelayActivityType(event) === 'controlled_provider_progress');
+  const selected = operationEvents.filter((event) =>
+    event?.type === 'provider_selected'
+      && event.provider === terminalEvent.provider
+      && event.model === terminalEvent.model
+      && event.phase === terminalEvent.phase
+      && event.providerCallId === terminalEvent.providerCallId);
+  const aborted = ['cancelled', 'aborted'].includes(terminalEvent.outcome);
+  if (!validRawDelayAction(telemetryAction, {
+    role, configuredDelayMs, effectiveDelayMs, testOnlyDelay,
+  })) failIsolatedDelayProof('raw_action_invalid');
+  if (telemetryAction.phase !== terminalEvent.phase
+      || telemetryAction.providerCallId !== terminalEvent.providerCallId
+      || telemetryAction.provider !== terminalEvent.provider
+      || telemetryAction.model !== terminalEvent.model) {
+    failIsolatedDelayProof('action_identity_mismatch');
+  }
+  if (selected.length !== 1) failIsolatedDelayProof('provider_selected_count');
+  if (aborted) {
+    if (telemetryAction.outcome !== 'aborted'
+        || telemetryAction.actionProven !== false) {
+      failIsolatedDelayProof('abort_action_invalid');
+    }
+    if (started.length !== 1 || completed.length !== 0) {
+      failIsolatedDelayProof('abort_activity_count');
+    }
+  } else {
+    if (telemetryAction.outcome !== 'complete') {
+      failIsolatedDelayProof('complete_action_outcome');
+    }
+    if (telemetryAction.actionProven !== true) {
+      failIsolatedDelayProof('complete_action_elapsed');
+    }
+    if (started.length > 1 || completed.length !== 1) {
+      failIsolatedDelayProof('complete_activity_count');
+    }
+  }
+  const selectedSequence = activityEventSequence(selected[0]);
+  const startedAt = telemetryAction.startedAt;
+  if (selectedSequence === null || selectedSequence >= sequence
+      || !strictIsoTimestamp(selected[0].at)
+      || Date.parse(selected[0].at) > Date.parse(terminalEvent.at)
+      || Date.parse(startedAt) > Date.parse(operation.completedAt)
+      || Date.parse(telemetryAction.completedAt) > Date.parse(operation.completedAt)) {
+    failIsolatedDelayProof('terminal_order_or_time');
+  }
+  let completionSequence = null;
+  let completedAt = null;
+  if (aborted) {
+    const start = started[0];
+    const startSequence = activityEventSequence(start);
+    if (startSequence === null || startSequence <= selectedSequence || startSequence >= sequence
+        || !strictIsoTimestamp(start.providerEventAt)
+        || start.providerEventAt !== telemetryAction.startedAt
+        || !strictIsoTimestamp(start.at)
+        || Date.parse(start.at) > Date.parse(terminalEvent.at)) {
+      failIsolatedDelayProof('abort_event_order_or_time');
+    }
+  } else {
+    const completion = completed[0];
+    completionSequence = activityEventSequence(completion);
+    completedAt = completion.providerEventAt;
+    const wallClockElapsedMs = Date.parse(completedAt) - Date.parse(startedAt);
+    if (completionSequence === null || completionSequence <= selectedSequence
+        || completionSequence >= sequence
+        || !strictIsoTimestamp(completion.providerEventAt)
+        || completion.providerEventAt !== telemetryAction.completedAt
+        || !strictIsoTimestamp(completion.at)
+        || Date.parse(completion.at) > Date.parse(terminalEvent.at)
+        || Date.parse(completedAt) > Date.parse(operation.completedAt)
+        || !Number.isSafeInteger(wallClockElapsedMs) || wallClockElapsedMs < effectiveDelayMs
+        || telemetryAction.elapsedMs < effectiveDelayMs) {
+      failIsolatedDelayProof('complete_event_order_or_time');
+    }
+  }
+  return {
+    operationId: operation.operationId,
+    role,
+    phase: terminalEvent.phase,
+    provider: terminalEvent.provider,
+    model: terminalEvent.model,
+    providerCallId: terminalEvent.providerCallId,
+    outcome: terminalEvent.outcome,
+    configuredDelayMs,
+    effectiveDelayMs,
+    selectedEventSequence: selectedSequence,
+    startedAt,
+    completedEventSequence: completionSequence,
+    completedAt,
+    providerTerminalEventSequence: sequence,
+    providerTerminalAt: terminalEvent.at,
+    elapsedMs: telemetryAction.elapsedMs,
+    actionBeforeTerminalProven: true,
+  };
+}
+
+function exactCancelledDelayActionProof({
+  operation,
+  operationEvents,
+  telemetryAction,
+  role,
+  configuredDelayMs,
+  effectiveDelayMs,
+  testOnlyDelay,
+}) {
+  if (!validRawDelayAction(telemetryAction, {
+    role, configuredDelayMs, effectiveDelayMs, testOnlyDelay,
+  })
+      || telemetryAction.operationId !== operation.operationId
+      || telemetryAction.phase !== 'query'
+      || telemetryAction.providerCallId !== 'query'
+      || telemetryAction.outcome !== 'aborted'
+      || telemetryAction.actionProven !== false
+      || Date.parse(telemetryAction.startedAt) > Date.parse(operation.completedAt)
+      || Date.parse(telemetryAction.completedAt) < Date.parse(telemetryAction.startedAt)) {
+    throw typedError('isolated_fixture_delay_unproven');
+  }
+  const controlledEvents = operationEvents.filter((event) =>
+    ['provider_selected', 'provider_activity', 'provider_call_terminal'].includes(event?.type)
+      && event?.provider === 'controlled');
+  if (controlledEvents.some((event) =>
+    event.operationId !== operation.operationId
+      || event.providerCallId !== telemetryAction.providerCallId
+      || event.phase !== telemetryAction.phase
+      || event.model !== telemetryAction.model)) {
+    throw typedError('isolated_fixture_delay_unproven');
+  }
+  return {
+    operationId: operation.operationId,
+    role,
+    phase: telemetryAction.phase,
+    provider: telemetryAction.provider,
+    model: telemetryAction.model,
+    providerCallId: telemetryAction.providerCallId,
+    outcome: telemetryAction.outcome,
+    configuredDelayMs,
+    effectiveDelayMs,
+    selectedEventSequence: null,
+    startedAt: telemetryAction.startedAt,
+    completedEventSequence: null,
+    completedAt: null,
+    providerTerminalEventSequence: null,
+    providerTerminalAt: null,
+    providerAbortObservedAt: telemetryAction.completedAt,
+    elapsedMs: telemetryAction.elapsedMs,
+    actionBeforeTerminalProven: true,
+  };
+}
+
+function expectedIsolatedOperation(scenario) {
+  if (scenario === 'zero-result') return { operationType: 'search', state: 'complete' };
+  if (scenario === 'large-pgs-isolated') return { operationType: 'pgs', state: 'partial' };
+  if (scenario === 'cancel') return { operationType: 'query', state: 'cancelled' };
+  if (scenario === 'synthesis-reconnect') return { operationType: 'synthesis', state: 'complete' };
+  return { operationType: 'query', state: 'complete' };
+}
+
+function validatedOperationDelayEvidence(fixture, scenario, {
+  acceptedRows,
+  operationEvents,
+} = {}) {
+  const configuredDelayMs = fixture?.configuredOperationDelayMs;
+  const effectiveDelayMs = fixture?.effectiveOperationDelayMs;
+  const testOnlyDelay = fixture?.testOnlyOperationDelay;
+  const evidence = fixture?.operationDelayEvidence;
+  const requireAction = scenario !== 'zero-result';
+  if (!Number.isSafeInteger(configuredDelayMs) || configuredDelayMs < 1
+      || !Number.isSafeInteger(effectiveDelayMs) || effectiveDelayMs < 0
+      || typeof testOnlyDelay !== 'boolean'
+      || !evidence || typeof evidence !== 'object' || Array.isArray(evidence)
+      || evidence.schemaVersion !== 2
+      || evidence.configuredDelayMs !== configuredDelayMs
+      || evidence.effectiveDelayMs !== effectiveDelayMs
+      || evidence.testOnlyDelay !== testOnlyDelay
+      || evidence.capturedBeforeStop !== true
+      || !evidence.roles || typeof evidence.roles !== 'object'
+      || !validDelayRoleCounters(evidence.roles.cosmo)
+      || !validDelayRoleCounters(evidence.roles.dashboard)
+      || !Array.isArray(acceptedRows) || acceptedRows.length === 0
+      || !Array.isArray(operationEvents)) {
+    throw typedError('isolated_fixture_delay_unproven');
+  }
+  const expected = expectedIsolatedOperation(scenario);
+  const seenOperations = new Set();
+  const acceptedOperations = [];
+  const actionCounts = {
+    cosmo: { starts: 0, completions: 0, aborts: 0 },
+    dashboard: { starts: 0, completions: 0, aborts: 0 },
+  };
+  const remainingActions = {
+    cosmo: evidence.roles.cosmo.actions.map((action) => ({ action })),
+    dashboard: evidence.roles.dashboard.actions.map((action) => ({ action })),
+  };
+  for (const operation of acceptedRows) {
+    if (!operation || typeof operation !== 'object' || Array.isArray(operation)
+        || operation.receiptKind !== 'operation-terminal'
+        || operation.protectedResultRead !== true
+        || typeof operation.operationId !== 'string'
+        || !/^brop_[A-Za-z0-9_-]{32}$/.test(operation.operationId)
+        || seenOperations.has(operation.operationId)
+        || operation.operationType !== expected.operationType
+        || operation.state !== expected.state
+        || !strictIsoTimestamp(operation.completedAt)) {
+      throw typedError('isolated_fixture_delay_unproven');
+    }
+    seenOperations.add(operation.operationId);
+    const role = isolatedOperationRole(operation.operationType);
+    const selectedOperationEvents = operationEvents.filter((event) =>
+      event?.operationId === operation.operationId);
+    const terminalEvents = selectedOperationEvents.filter((event) =>
+      event?.type === 'provider_call_terminal');
+    const actionRequired = requireAction;
+    if ((!actionRequired && (role !== null || terminalEvents.length !== 0))
+        || (actionRequired && role === null)
+        || (actionRequired && scenario !== 'cancel' && terminalEvents.length === 0)) {
+      throw typedError('isolated_fixture_delay_unproven');
+    }
+    const actions = scenario === 'cancel' ? (() => {
+      const matches = remainingActions[role].filter(({ action }) =>
+        action?.operationId === operation.operationId);
+      if (matches.length !== 1) throw typedError('isolated_fixture_delay_unproven');
+      remainingActions[role].splice(remainingActions[role].indexOf(matches[0]), 1);
+      return [exactCancelledDelayActionProof({
+        operation,
+        operationEvents: selectedOperationEvents,
+        telemetryAction: matches[0].action,
+        role,
+        configuredDelayMs,
+        effectiveDelayMs,
+        testOnlyDelay,
+      })];
+    })() : terminalEvents.map((terminalEvent) => {
+      const matches = remainingActions[role].filter(({ action }) =>
+        action?.operationId === operation.operationId
+          && action?.phase === terminalEvent.phase
+          && action?.providerCallId === terminalEvent.providerCallId
+          && action?.provider === terminalEvent.provider
+          && action?.model === terminalEvent.model);
+      if (matches.length !== 1) throw typedError('isolated_fixture_delay_unproven');
+      remainingActions[role].splice(remainingActions[role].indexOf(matches[0]), 1);
+      return exactDelayActionProof({
+        operation,
+        terminalEvent,
+        operationEvents: selectedOperationEvents,
+        telemetryAction: matches[0].action,
+        role,
+        configuredDelayMs,
+        effectiveDelayMs,
+        testOnlyDelay,
+      });
+    });
+    if (new Set(actions.map((action) => action.providerCallId)).size !== actions.length) {
+      throw typedError('isolated_fixture_delay_unproven');
+    }
+    for (const action of actions) {
+      actionCounts[role].starts += 1;
+      if (action.completedAt !== null) actionCounts[role].completions += 1;
+      if (['cancelled', 'aborted'].includes(action.outcome)) actionCounts[role].aborts += 1;
+    }
+    acceptedOperations.push({
+      operationId: operation.operationId,
+      operationType: operation.operationType,
+      role,
+      terminalState: operation.state,
+      terminalCompletedAt: operation.completedAt,
+      actionRequired,
+      actionBeforeTerminalProven: actionRequired,
+      actions,
+    });
+  }
+  const controlledProviderEvents = operationEvents.filter((event) =>
+    ['provider_selected', 'provider_activity', 'provider_call_terminal'].includes(event?.type)
+      && event?.provider === 'controlled');
+  if (controlledProviderEvents.some((event) => !seenOperations.has(event.operationId))) {
+    throw typedError('isolated_fixture_delay_unproven');
+  }
+  for (const role of ['cosmo', 'dashboard']) {
+    const counters = evidence.roles[role];
+    const expectedCounts = actionCounts[role];
+    if (counters.providerStarts !== expectedCounts.starts
+        || counters.providerDelayStarts !== expectedCounts.starts
+        || counters.providerDelayCompletions !== expectedCounts.completions
+        || counters.providerAborts !== expectedCounts.aborts
+        || remainingActions[role].length !== 0) {
+      throw typedError('isolated_fixture_delay_unproven');
+    }
+  }
+  if ((requireAction && acceptedOperations.some((operation) =>
+    operation.actionBeforeTerminalProven !== true || operation.actions.length === 0))
+      || (!requireAction && (controlledProviderEvents.length !== 0
+        || acceptedOperations.some((operation) => operation.actions.length !== 0)))) {
+    throw typedError('isolated_fixture_delay_unproven');
+  }
+  return {
+    schemaVersion: 2,
+    configuredDelayMs,
+    effectiveDelayMs,
+    testOnlyDelay,
+    capturedBeforeStop: true,
+    actionBeforeTerminalProven: requireAction,
+    roles: {
+      cosmo: {
+        providerStarts: evidence.roles.cosmo.providerStarts,
+        providerAborts: evidence.roles.cosmo.providerAborts,
+        providerDelayStarts: evidence.roles.cosmo.providerDelayStarts,
+        providerDelayCompletions: evidence.roles.cosmo.providerDelayCompletions,
+      },
+      dashboard: {
+        providerStarts: evidence.roles.dashboard.providerStarts,
+        providerAborts: evidence.roles.dashboard.providerAborts,
+        providerDelayStarts: evidence.roles.dashboard.providerDelayStarts,
+        providerDelayCompletions: evidence.roles.dashboard.providerDelayCompletions,
+      },
+    },
+    acceptedOperations,
+  };
+}
+
+const ISOLATED_RECEIPT_ROLES = Object.freeze(['dashboard', 'cosmo', 'mcp']);
+const ISOLATED_CHILD_INHERITED_ENV_KEYS = new Set([
+  'LANG', 'LC_ALL', 'LC_CTYPE', 'PATH', 'TEMP', 'TMP', 'TMPDIR', 'TZ',
+  '__CF_USER_TEXT_ENCODING',
+]);
+const ISOLATED_CHILD_REQUIRED_ENV_KEYS = Object.freeze([
+  'HOME23_ISOLATED_FIXTURE_CHILD',
+  'HOME23_ISOLATED_FIXTURE_CONFIG',
+  'HOME23_ISOLATED_FIXTURE_CONFIG_DEV',
+  'HOME23_ISOLATED_FIXTURE_CONFIG_INO',
+  'HOME23_ISOLATED_FIXTURE_CONFIG_SHA256',
+  'HOME23_ISOLATED_FIXTURE_KEY_DEV',
+  'HOME23_ISOLATED_FIXTURE_KEY_INO',
+  'HOME23_ISOLATED_FIXTURE_KEY_SHA256',
+  'HOME23_ISOLATED_FIXTURE_LAUNCHER_PID',
+  'HOME23_ISOLATED_FIXTURE_OWNER_DEV',
+  'HOME23_ISOLATED_FIXTURE_OWNER_INO',
+  'HOME23_ISOLATED_FIXTURE_OWNER_SHA256',
+  'HOME23_ISOLATED_FIXTURE_ROOT',
+  'HOME23_ISOLATED_FIXTURE_ROOT_DEV',
+  'HOME23_ISOLATED_FIXTURE_ROOT_INO',
+  'HOME23_ISOLATED_FIXTURE_START_TOKEN',
+  'NODE_PATH',
+]);
+
+function exactIsolatedRoleMap(value) {
+  return value && !Array.isArray(value) && typeof value === 'object'
+    && Object.keys(value).sort().join(',') === [...ISOLATED_RECEIPT_ROLES].sort().join(',');
+}
+
+function validIsolatedIdentity(binding, fixtureRoot) {
+  return binding && !Array.isArray(binding) && typeof binding === 'object'
+    && Object.keys(binding).sort().join(',')
+      === ['dev', 'ino', 'mode', 'nlink', 'path', 'sha256', 'size', 'uid'].sort().join(',')
+    && typeof binding.path === 'string' && path.isAbsolute(binding.path)
+    && path.normalize(binding.path) === binding.path
+    && isInsideOrEqual(fixtureRoot, binding.path) && binding.path !== fixtureRoot
+    && ['dev', 'ino', 'size', 'uid', 'nlink'].every((key) =>
+      typeof binding[key] === 'string' && /^(?:0|[1-9][0-9]*)$/.test(binding[key]))
+    && binding.mode === 0o600 && binding.nlink === '1'
+    && typeof binding.sha256 === 'string' && /^[a-f0-9]{64}$/.test(binding.sha256);
+}
+
+function validatedIsolatedSecurityEvidence(fixture, stopped) {
+  const fail = () => { throw typedError('isolated_fixture_security_unproven'); };
+  const provenance = fixture?.receiptProvenance;
+  const owner = fixture?.owner;
+  const bindings = fixture?.securityBindings;
+  const environmentKeys = fixture?.childEnvironmentKeys;
+  if (typeof fixture?.fixtureRoot !== 'string' || !path.isAbsolute(fixture.fixtureRoot)
+      || path.normalize(fixture.fixtureRoot) !== fixture.fixtureRoot
+      || !owner || Array.isArray(owner) || typeof owner !== 'object'
+      || Object.keys(owner).sort().join(',') !== [
+        'schemaVersion', 'receiptRunId', 'authority', 'implementationCommit', 'hostname',
+        'receiptStartedAt', 'canonicalRoot', 'basename', 'dev', 'ino', 'createdAt',
+        'provenanceSeal',
+      ].sort().join(',')
+      || owner.schemaVersion !== 2 || owner.canonicalRoot !== fixture.fixtureRoot
+      || owner.basename !== path.basename(fixture.fixtureRoot)
+      || !['dev', 'ino'].every((key) =>
+        typeof owner[key] === 'string' && /^(?:0|[1-9][0-9]*)$/.test(owner[key]))
+      || typeof owner.createdAt !== 'string' || !Number.isFinite(Date.parse(owner.createdAt))
+      || typeof owner.provenanceSeal !== 'string'
+      || !/^sha256:[a-f0-9]{64}$/.test(owner.provenanceSeal)
+      || !provenance || Array.isArray(provenance) || typeof provenance !== 'object'
+      || Object.keys(provenance).sort().join(',') !== [
+        'receiptRunDir', 'receiptRunId', 'authority', 'implementationCommit', 'hostname', 'startedAt',
+      ].sort().join(',')
+      || provenance.authority !== 'isolated-controlled'
+      || typeof provenance.receiptRunDir !== 'string'
+      || !path.isAbsolute(provenance.receiptRunDir)
+      || path.normalize(provenance.receiptRunDir) !== provenance.receiptRunDir
+      || typeof provenance.receiptRunId !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(provenance.receiptRunId)
+      || typeof provenance.implementationCommit !== 'string'
+      || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(provenance.implementationCommit)
+      || typeof provenance.hostname !== 'string' || !provenance.hostname.trim()
+      || Buffer.byteLength(provenance.hostname, 'utf8') > 255
+      || typeof provenance.startedAt !== 'string'
+      || !Number.isFinite(Date.parse(provenance.startedAt))
+      || owner.receiptRunId !== provenance.receiptRunId
+      || owner.authority !== provenance.authority
+      || owner.implementationCommit !== provenance.implementationCommit
+      || owner.hostname !== provenance.hostname
+      || owner.receiptStartedAt !== provenance.startedAt
+      || !Number.isSafeInteger(fixture.launcherPid) || fixture.launcherPid < 1
+      || typeof fixture.startToken !== 'string'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+        .test(fixture.startToken)) fail();
+  const ownerPayload = { ...owner };
+  delete ownerPayload.provenanceSeal;
+  const expectedOwnerSeal = `sha256:${createHash('sha256')
+    .update(canonicalJson(ownerPayload), 'utf8').digest('hex')}`;
+  if (owner.provenanceSeal !== expectedOwnerSeal
+      || !bindings || Array.isArray(bindings) || typeof bindings !== 'object'
+      || Object.keys(bindings).sort().join(',')
+        !== ['fixtureRoot', 'owner', 'capabilityKey', 'configs', 'ready'].sort().join(',')
+      || !bindings.fixtureRoot || Object.keys(bindings.fixtureRoot).sort().join(',') !== 'dev,ino,path'
+      || bindings.fixtureRoot.path !== fixture.fixtureRoot
+      || bindings.fixtureRoot.dev !== owner.dev || bindings.fixtureRoot.ino !== owner.ino
+      || !validIsolatedIdentity(bindings.owner, fixture.fixtureRoot)
+      || bindings.owner.path !== path.join(fixture.fixtureRoot, 'fixture-owner.json')
+      || !validIsolatedIdentity(bindings.capabilityKey, fixture.fixtureRoot)
+      || !exactIsolatedRoleMap(bindings.configs) || !exactIsolatedRoleMap(bindings.ready)
+      || ISOLATED_RECEIPT_ROLES.some((role) =>
+        !validIsolatedIdentity(bindings.configs[role], fixture.fixtureRoot)
+        || !validIsolatedIdentity(bindings.ready[role], fixture.fixtureRoot))
+      || !exactIsolatedRoleMap(environmentKeys)) fail();
+  const identityBindings = [
+    bindings.owner,
+    bindings.capabilityKey,
+    ...ISOLATED_RECEIPT_ROLES.map((role) => bindings.configs[role]),
+    ...ISOLATED_RECEIPT_ROLES.map((role) => bindings.ready[role]),
+  ];
+  if (new Set(identityBindings.map((binding) => binding.path)).size !== identityBindings.length
+      || new Set(identityBindings.map((binding) => `${binding.dev}:${binding.ino}`)).size
+        !== identityBindings.length) fail();
+  const requiredEnvironmentKeys = new Set(ISOLATED_CHILD_REQUIRED_ENV_KEYS);
+  for (const role of ISOLATED_RECEIPT_ROLES) {
+    const keys = environmentKeys[role];
+    if (!Array.isArray(keys) || keys.length !== new Set(keys).size
+        || canonicalJson(keys) !== canonicalJson([...keys].sort())
+        || ISOLATED_CHILD_REQUIRED_ENV_KEYS.some((key) => !keys.includes(key))
+        || keys.some((key) => typeof key !== 'string'
+          || (!requiredEnvironmentKeys.has(key)
+            && !ISOLATED_CHILD_INHERITED_ENV_KEYS.has(key)))) fail();
+  }
+  const securityEvidence = stopped?.securityEvidence;
+  const expectedEvidence = {
+    ownerProvenance: owner,
+    receiptProvenance: provenance,
+    launcherPid: fixture.launcherPid,
+    startToken: fixture.startToken,
+    securityBindings: {
+      fixtureRoot: bindings.fixtureRoot,
+      owner: bindings.owner,
+      capabilityKey: bindings.capabilityKey,
+      configs: bindings.configs,
+      ready: bindings.ready,
+    },
+    childEnvironmentKeys: environmentKeys,
+  };
+  if (!securityEvidence || canonicalJson(securityEvidence) !== canonicalJson(expectedEvidence)) fail();
+  return JSON.parse(canonicalJson(expectedEvidence));
+}
+
+export function isolatedFixtureReceipt(
+  fixture,
+  stopped,
+  sourceIntegrity,
+  scenario,
+  proof = {},
+) {
+  const shutdown = Object.fromEntries(ISOLATED_RECEIPT_ROLES.map((role) => [
+    role,
+    stopped?.[role],
+  ]));
+  const stoppedPids = ISOLATED_RECEIPT_ROLES.map((role) => shutdown[role]?.pid);
+  if (ISOLATED_RECEIPT_ROLES.some((role) => {
+    const evidence = shutdown[role];
+    const expectedPid = fixture?.pids?.[role];
+    return !evidence || evidence.role !== role || evidence.pid !== expectedPid
+      || evidence.expectedPid !== expectedPid || evidence.exited !== true
+      || evidence.cleanExit !== true || evidence.forcedKill !== false
+      || evidence.terminationRequested !== true
+      || evidence.signalDeliveryObserved !== true
+      || evidence.outcome !== 'clean-exit' || evidence.code !== 0 || evidence.signal !== null;
+  }) || stoppedPids.some((pid) => !Number.isSafeInteger(pid) || pid < 1)
+      || new Set(stoppedPids).size !== 3
       || stopped?.retainedStore !== fixture.operationsRoot) {
     throw typedError('isolated_fixture_shutdown_unproven');
   }
+  const securityEvidence = validatedIsolatedSecurityEvidence(fixture, stopped);
+  if (!ISOLATED_AUTO_LAUNCH_SCENARIOS.has(scenario)) {
+    throw typedError('isolated_fixture_delay_unproven');
+  }
+  const operationDelayEvidence = validatedOperationDelayEvidence(fixture, scenario, proof);
   return {
     root: fixture.fixtureRoot,
     basename: fixture.owner.basename,
@@ -2908,9 +4704,18 @@ function isolatedFixtureReceipt(fixture, stopped, sourceIntegrity) {
     pids: { ...fixture.pids },
     ports: { ...fixture.ports },
     stoppedPids,
+    shutdown: Object.fromEntries(ISOLATED_RECEIPT_ROLES.map((role) => [
+      role,
+      { ...shutdown[role] },
+    ])),
     retainedStore: stopped.retainedStore,
     sourceHashes: { ...fixture.source.sourceHashes },
     sourceIntegrity,
+    configuredOperationDelayMs: fixture.configuredOperationDelayMs,
+    effectiveOperationDelayMs: fixture.effectiveOperationDelayMs,
+    testOnlyOperationDelay: fixture.testOnlyOperationDelay,
+    operationDelayEvidence,
+    ...securityEvidence,
   };
 }
 
@@ -3616,8 +5421,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   const scenario = one(values, 'scenario', { required: true });
   if (!SCENARIOS.includes(scenario)) throw typedError('scenario_invalid');
-  if (baseUrl && booleanFlag(values, 'controlled-provider', false)
-      && ISOLATED_LIFECYCLE_SCENARIOS.has(scenario)) {
+  if (baseUrl && context.authority === 'isolated-controlled') {
     throw typedError('isolated_fixture_endpoint_override_refused');
   }
   const buildArtifactManifestRequested = scenario === 'verify-receipts'
@@ -3715,7 +5519,7 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
             })
           : 1,
         operationDelayMs: integer(values, 'fixture-operation-delay-ms', {
-          defaultValue: 100, min: 0, max: 60_000,
+          defaultValue: 3_000, min: 0, max: 60_000,
         }),
       });
       cleanupOwner = createBoundedFixtureCleanup({
@@ -3793,16 +5597,33 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       throw finalizationError;
     }
   }
-  row = {
-    ...row,
-    activityAttachments: activityCollector.summary(row?.operationId || null),
-    ...(sourceIntegrity ? { isolatedSourceIntegrity: sourceIntegrity } : {}),
-  };
+  const finalizedOperationRows = operationReceipts(row).map((operationRow, index, rows) => ({
+    ...operationRow,
+    activityAttachments: activityCollector.summary(operationRow?.operationId || null),
+    ...(index === rows.length - 1 && sourceIntegrity
+      ? { isolatedSourceIntegrity: sourceIntegrity }
+      : {}),
+  }));
+  row = finalizedOperationRows.at(-1);
   if (fixture) {
+    const delayOperationEvents = await readIsolatedDelayOperationEvents(
+      fixture,
+      finalizedOperationRows,
+    );
     row = {
       ...row,
-      isolatedFixture: isolatedFixtureReceipt(fixture, stopped, sourceIntegrity),
+      isolatedFixture: isolatedFixtureReceipt(
+        fixture,
+        stopped,
+        sourceIntegrity,
+        scenario,
+        { acceptedRows: finalizedOperationRows, operationEvents: delayOperationEvents },
+      ),
     };
+  }
+  finalizedOperationRows[finalizedOperationRows.length - 1] = row;
+  if (finalizedOperationRows.length > 1) {
+    row = attachOperationReceipts(row, finalizedOperationRows);
   }
   const heapOutputRaw = one(values, 'heap-output');
   if (heapOutputRaw) {
@@ -3825,8 +5646,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   );
   const output = path.resolve(one(values, 'output', { required: true }));
   await ensureFreshOutput(output);
-  if (scenario === 'discover-canary') return writeJsonReceipt(context, output, row);
-  return appendJsonlReceipt(context, output, row);
+  let written;
+  for (const receiptRow of operationReceipts(row)) {
+    written = await appendJsonlReceipt(context, output, receiptRow);
+  }
+  return written;
 }
 
 if (isMain(import.meta.url)) main().catch(failCli);

@@ -10,6 +10,10 @@ const {
   createCosmoBrainOperationRuntime,
   createSharedWorkerSourcePins,
 } = require('../../cosmo23/server/lib/brain-operation-runtime');
+const {
+  createDurableOperationLockCapability,
+  readDurableOperationLockCapability,
+} = require('../../shared/memory-source/durable-lock-authority.cjs');
 
 const root = '/tmp/home23-runtime-fixture';
 const boundaries = (canonicalRoot) => [
@@ -18,19 +22,36 @@ const boundaries = (canonicalRoot) => [
 
 test('shared worker source pins derive one provider only from the verified requester', async () => {
   const calls = [];
+  const forwardedControls = [];
   const sourcePins = createSharedWorkerSourcePins({
     home23Root: root,
     providerFactory(options) {
       calls.push(options);
-      return { async openPinnedSource(descriptor, expectations) { return { descriptor, expectations }; } };
+      return {
+        async openPinnedSource(descriptor, expectations, capability) {
+          forwardedControls.push(readDurableOperationLockCapability(capability));
+          return { descriptor, expectations };
+        },
+      };
     },
   });
   await sourcePins.openPinnedSource({ version: 1 }, { requesterAgent: 'jerry' });
-  await sourcePins.openPinnedSource({ version: 1 }, { requesterAgent: 'forrest' });
+  const control = {
+    hardDeadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    signal: null,
+    cleanupSignal: null,
+  };
+  await sourcePins.openPinnedSource(
+    { version: 1 },
+    { requesterAgent: 'forrest' },
+    createDurableOperationLockCapability(control),
+  );
   assert.deepEqual(calls, [
     { home23Root: root, requesterAgent: 'jerry' },
     { home23Root: root, requesterAgent: 'forrest' },
   ]);
+  assert.equal(forwardedControls[0], null);
+  assert.deepEqual(forwardedControls[1], control);
   await assert.rejects(
     async () => sourcePins.openPinnedSource({}, { requesterAgent: '../escape' }),
     { code: 'invalid_request' },

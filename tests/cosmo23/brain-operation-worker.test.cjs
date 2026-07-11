@@ -28,8 +28,12 @@ const {
   projectLegacyResearchSnapshot,
   rewriteMemoryBase,
   sourceDescriptorDigest,
+  withMemorySourceLock,
   writeJsonlGzAtomic,
 } = require('../../shared/memory-source');
+const {
+  readDurableOperationLockCapability,
+} = require('../../shared/memory-source/durable-lock-authority.cjs');
 const {
   BrainOperationWorker,
   OBSERVED_TERMINAL_RETENTION_MS,
@@ -284,9 +288,9 @@ async function makeFixture(t, overrides = {}) {
     quotaClose: 0,
   };
   const sourcePins = overrides.sourcePins || {
-    async openPinnedSource(descriptor, expectations) {
+    async openPinnedSource(descriptor, expectations, operationLockControl) {
       counters.open += 1;
-      overrides.onOpen?.(descriptor, expectations);
+      overrides.onOpen?.(descriptor, expectations, operationLockControl);
       return {
         descriptor,
         revision: descriptor.cutoffRevision,
@@ -403,11 +407,215 @@ test('worker hard deadline aborts a live executor and reports a typed failed res
   assert.equal(fixture.counters.quotaClose, 1);
 });
 
+test('worker hard deadline aborts a durable process-pin lock wait before executor dispatch', async (t) => {
+  const clock = makeClock();
+  const timers = makeTimers(clock);
+  let lockControl = null;
+  let executorCalls = 0;
+  const sourcePins = {
+    async openPinnedSource(_descriptor, _expectations, capability) {
+      lockControl = readDurableOperationLockCapability(capability);
+      await new Promise((resolve, reject) => {
+        if (lockControl.signal.aborted) reject(lockControl.signal.reason);
+        else lockControl.signal.addEventListener('abort', () => reject(lockControl.signal.reason), {
+          once: true,
+        });
+      });
+    },
+  };
+  const fixture = await makeFixture(t, {
+    clock,
+    timers,
+    sourcePins,
+    executors: new Map([['query', async () => {
+      executorCalls += 1;
+      throw new Error('executor must not run after process-pin wait deadline');
+    }]]),
+  });
+  const request = requestFor({ id: operationId('v'), now: clock.wall });
+  request.operationControl.hardDeadlineAt = new Date(clock.wall + 1_000).toISOString();
+  const starting = fixture.worker.start(request.operationId, fixture.token(request), request);
+  await eventually(() => assert.ok(lockControl));
+  assert.equal(lockControl.hardDeadlineAt, request.operationControl.hardDeadlineAt);
+  assert.equal(lockControl.signal instanceof AbortSignal, true);
+  assert.equal(lockControl.cleanupSignal instanceof AbortSignal, true);
+  assert.notEqual(lockControl.signal, lockControl.cleanupSignal);
+  assert.equal(timers.size, 1);
+
+  timers.advance(1_001);
+  await assert.rejects(starting, typed('operation_timeout'));
+  assert.equal(lockControl.signal.aborted, true);
+  assert.equal(lockControl.cleanupSignal.aborted, false);
+  assert.equal(executorCalls, 0);
+  assert.equal(fixture.counters.quotaClose, 1);
+  assert.equal(timers.size, 0);
+});
+
+test('hard-deadline cleanup waits past 30 seconds on a separate bounded lock authority', async (t) => {
+  const home23Root = await tempDir('home23-worker-hard-deadline-cleanup-');
+  const brain = path.join(home23Root, 'targets', 'native');
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  await fsp.mkdir(brain, { recursive: true });
+  await rewriteMemoryBase(brain, {
+    nodes: [{ id: 'n1', concept: 'deadline cleanup canary' }],
+    edges: [],
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot });
+  const clock = makeClock();
+  const timers = makeTimers(clock);
+  let phaseStartedAt = clock.wall;
+  let releaseHolder = null;
+  const provider = createMemorySourcePinProvider({
+    home23Root,
+    requesterAgent: 'jerry',
+    _durableLockClock: { now: () => clock.wall },
+    _durableLockRetryMs: 1,
+    _durableLockJitterMs: 0,
+    _durableLockTestHooks: {
+      beforeLockRetry() {
+        clock.wall += 20_000;
+        if (clock.wall - phaseStartedAt > 30_000) releaseHolder?.();
+      },
+    },
+  });
+  const id = operationId('h');
+  const pinned = await provider.pin(brain, id);
+  const executorEntered = deferred();
+  const worker = new BrainOperationWorker({
+    home23Root,
+    capabilityKey: KEY,
+    resolveTarget: async ({ target }) => structuredClone(target),
+    sourcePins: {
+      openPinnedSource(descriptor, expectations, capability) {
+        return provider.openPinnedSource(descriptor, expectations, capability);
+      },
+    },
+    scratchQuotaFactory: createOperationScratchQuota,
+    executors: new Map([['query', async ({ signal }) => {
+      executorEntered.resolve();
+      await new Promise((resolve) => signal.addEventListener('abort', resolve, { once: true }));
+      throw signal.reason;
+    }]]),
+    clock,
+    timers,
+    processStartIdentity: 'cleanup-deadline-provider-fixture',
+  });
+  t.after(async () => {
+    releaseHolder?.();
+    await worker.stop().catch(() => {});
+    await fsp.rm(home23Root, { recursive: true, force: true });
+  });
+  const target = brainTarget(await fsp.realpath(brain));
+  const request = requestFor({
+    id,
+    target,
+    descriptor: pinned.descriptor,
+    digest: pinned.digest,
+    now: clock.wall,
+  });
+  request.operationControl.hardDeadlineAt = new Date(clock.wall + 100).toISOString();
+  let nonce = 0;
+  const token = () => issueCapability(KEY, capabilityClaims(
+    request,
+    `cleanup-deadline-${++nonce}`,
+    {},
+    clock.wall,
+  ));
+  await worker.start(id, token(), request);
+  await executorEntered.promise;
+
+  const holderEntered = deferred();
+  const holderReleased = deferred();
+  releaseHolder = holderReleased.resolve;
+  const held = withMemorySourceLock(brain, { lockRoot }, async () => {
+    holderEntered.resolve();
+    await holderReleased.promise;
+  });
+  await holderEntered.promise;
+  phaseStartedAt = clock.wall;
+
+  timers.advance(101);
+  await worker.records.get(id).runPromise;
+  await held;
+  const terminal = await worker.status(id, token());
+  assert.equal(terminal.state, 'failed');
+  assert.equal((await worker.result(id, token())).error.code, 'operation_timeout');
+  assert.equal(clock.wall - phaseStartedAt > 30_000, true);
+  assert.equal(
+    (await discoverOperationPinFiles(home23Root))
+      .some((entry) => entry.kind === 'process' && entry.operationId === id),
+    false,
+  );
+});
+
+test('worker accepts independent catalog revisions for one canonical brain and rejects target drift', async (t) => {
+  const executed = [];
+  const executor = async (context) => {
+    executed.push({
+      operationType: context.operationType,
+      catalogRevision: context.target.catalogRevision,
+    });
+    return {
+      state: 'complete', result: { answer: 'ok' }, resultArtifact: null,
+      error: null, sourceEvidence: {},
+    };
+  };
+  const fixture = await makeFixture(t, {
+    resolveTarget: async ({ target }) => {
+      const resolved = structuredClone(target);
+      resolved.catalogRevision = 'cosmo-catalog-274-brains';
+      if (resolved.brainId === 'brain-drift') {
+        resolved.route = '/api/brain/brain-drift-moved';
+      }
+      return resolved;
+    },
+    executors: new Map([
+      ['query', executor],
+      ['pgs', executor],
+    ]),
+  });
+
+  for (const [operationType, id] of [['query', operationId('1')], ['pgs', operationId('2')]]) {
+    const request = requestFor({
+      id,
+      type: operationType,
+      target: brainTarget('/brains/jerry', {
+        catalogRevision: 'dashboard-catalog-46-brains',
+      }),
+    });
+    await fixture.worker.start(request.operationId, fixture.token(request), request);
+    assert.equal((await terminalStatus(fixture, request)).state, 'complete');
+    assert.equal(
+      fixture.worker.records.get(request.operationId).request.target.catalogRevision,
+      'dashboard-catalog-46-brains',
+    );
+  }
+  assert.deepEqual(executed, [
+    { operationType: 'query', catalogRevision: 'dashboard-catalog-46-brains' },
+    { operationType: 'pgs', catalogRevision: 'dashboard-catalog-46-brains' },
+  ]);
+
+  const drift = requestFor({
+    id: operationId('3'),
+    target: brainTarget('/brains/jerry', {
+      brainId: 'brain-drift',
+      route: '/api/brain/brain-drift',
+      catalogRevision: 'dashboard-catalog-46-brains',
+    }),
+  });
+  await assert.rejects(
+    () => fixture.worker.start(drift.operationId, fixture.token(drift), drift),
+    typed('access_denied'),
+  );
+  assert.equal(fixture.counters.open, 2, 'target drift is rejected before opening another source pin');
+});
+
 test('32 equivalent starts create one worker, one process pin, and one executor', async (t) => {
   const gate = deferred();
   let calls = 0;
   let received;
   let openExpectations;
+  let openLockControl;
   const executors = new Map([['query', async (context) => {
     calls += 1;
     received = context;
@@ -426,7 +634,10 @@ test('32 equivalent starts create one worker, one process pin, and one executor'
   }]]);
   const fixture = await makeFixture(t, {
     executors,
-    onOpen(_descriptor, expectations) { openExpectations = expectations; },
+    onOpen(_descriptor, expectations, operationLockControl) {
+      openExpectations = expectations;
+      openLockControl = readDurableOperationLockCapability(operationLockControl);
+    },
   });
   const request = requestFor();
   const records = await Promise.all(Array.from({ length: 32 }, () =>
@@ -453,6 +664,10 @@ test('32 equivalent starts create one worker, one process pin, and one executor'
     await fsp.realpath(fixture.home23Root), 'runtime', 'brain-source-locks',
   ));
   assert.match(openExpectations.processIdentity, /^cosmo-\d+-[a-f0-9]{20}$/);
+  assert.equal(openLockControl.hardDeadlineAt, request.operationControl.hardDeadlineAt);
+  assert.equal(openLockControl.signal, received.signal);
+  assert.equal(openLockControl.cleanupSignal instanceof AbortSignal, true);
+  assert.notEqual(openLockControl.cleanupSignal, openLockControl.signal);
 
   const retry = await fixture.worker.start(request.operationId, fixture.token(request), structuredClone(request));
   assert.equal(retry.reference.workerId, records[0].reference.workerId);
@@ -1208,6 +1423,332 @@ test('stop wins against an in-flight source open and cannot publish a later work
   assert.equal(releases, 1);
 });
 
+test('cancel authenticates and aborts one pending long source open shared by equivalent starts', async (t) => {
+  const openStarted = deferred();
+  let openCalls = 0;
+  let executions = 0;
+  let openControl = null;
+  const sourcePins = {
+    async openPinnedSource(_descriptor, _expectations, capability) {
+      openCalls += 1;
+      openControl = readDurableOperationLockCapability(capability);
+      openStarted.resolve();
+      await new Promise((resolve, reject) => {
+        if (openControl.signal.aborted) reject(openControl.signal.reason);
+        else openControl.signal.addEventListener('abort', () => reject(openControl.signal.reason), {
+          once: true,
+        });
+      });
+    },
+  };
+  const fixture = await makeFixture(t, {
+    sourcePins,
+    executors: new Map([['query', async () => {
+      executions += 1;
+      throw new Error('cancelled pending open must not dispatch');
+    }]]),
+  });
+  const request = requestFor({ id: operationId('i') });
+  const starts = Array.from({ length: 32 }, () =>
+    fixture.worker.start(request.operationId, fixture.token(request), structuredClone(request)));
+  await openStarted.promise;
+
+  const cancelled = await fixture.worker.cancel(request.operationId, fixture.token(request));
+  assert.equal(cancelled.state, 'cancelled');
+  assert.equal(cancelled.phase, 'terminal');
+  assert.equal(openControl.signal.aborted, true);
+  assert.equal(openControl.signal.reason.code, 'operation_cancelled');
+  assert.equal(openControl.cleanupSignal.aborted, false);
+  const settled = await Promise.all(starts);
+  assert.equal(settled.every((record) => record.state === 'cancelled'), true);
+  assert.equal(new Set(settled.map((record) => record.reference.workerId)).size, 1);
+  assert.equal(openCalls, 1);
+  assert.equal(executions, 0);
+  assert.equal(fixture.counters.quotaClose, 1);
+});
+
+test('cancel wins during a non-abortable resolver and all equivalent starts share terminal truth', async (t) => {
+  const resolverEntered = deferred();
+  const resolverGate = deferred();
+  let opens = 0;
+  let executions = 0;
+  const fixture = await makeFixture(t, {
+    resolveTarget: async ({ target }) => {
+      resolverEntered.resolve();
+      await resolverGate.promise;
+      return structuredClone(target);
+    },
+    sourcePins: {
+      async openPinnedSource() {
+        opens += 1;
+        throw new Error('cancelled resolver must never reach source open');
+      },
+    },
+    executors: new Map([['query', async () => {
+      executions += 1;
+      throw new Error('cancelled resolver must never dispatch');
+    }]]),
+  });
+  const request = requestFor({ id: operationId('m') });
+  const starts = Array.from({ length: 32 }, () =>
+    fixture.worker.start(request.operationId, fixture.token(request), structuredClone(request)));
+  await resolverEntered.promise;
+  try {
+    const cancelled = await fixture.worker.cancel(request.operationId, fixture.token(request));
+    assert.equal(cancelled.state, 'cancelled');
+    const settled = await Promise.all(starts);
+    assert.equal(settled.every((record) => record.state === 'cancelled'), true);
+    assert.equal(new Set(settled.map((record) => record.reference.workerId)).size, 1);
+  } finally {
+    resolverGate.resolve();
+    await Promise.allSettled(starts);
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(opens, 0);
+  assert.equal(executions, 0);
+});
+
+test('cancel aborts an authenticated prestart waiting behind the per-operation start lock', async (t) => {
+  const lockGate = deferred();
+  let opens = 0;
+  let executions = 0;
+  const fixture = await makeFixture(t, {
+    sourcePins: {
+      async openPinnedSource() {
+        opens += 1;
+        throw new Error('cancelled start-lock waiter must never open a source');
+      },
+    },
+    executors: new Map([['query', async () => {
+      executions += 1;
+      throw new Error('cancelled start-lock waiter must never dispatch');
+    }]]),
+  });
+  const request = requestFor({ id: operationId('n') });
+  const occupied = fixture.worker._withStartLock(request.operationId, () => lockGate.promise);
+  const starting = fixture.worker.start(request.operationId, fixture.token(request), request);
+  try {
+    await eventually(() => assert.ok(fixture.worker.pendingStarts.get(request.operationId)));
+    const cancelled = await fixture.worker.cancel(request.operationId, fixture.token(request));
+    assert.equal(cancelled.state, 'cancelled');
+    assert.equal((await starting).state, 'cancelled');
+  } finally {
+    lockGate.resolve();
+    await Promise.allSettled([occupied, starting]);
+  }
+  assert.equal(opens, 0);
+  assert.equal(executions, 0);
+});
+
+test('stop aborts and awaits a pending long source open before its hard deadline', async (t) => {
+  const openStarted = deferred();
+  let executions = 0;
+  let releases = 0;
+  let openControl = null;
+  const sourcePins = {
+    async openPinnedSource(descriptor, _expectations, capability) {
+      openControl = readDurableOperationLockCapability(capability);
+      openStarted.resolve();
+      await new Promise((resolve) => {
+        if (openControl.signal.aborted) resolve();
+        else openControl.signal.addEventListener('abort', resolve, {
+          once: true,
+        });
+      });
+      return {
+        descriptor,
+        revision: descriptor.cutoffRevision,
+        async release() {
+          releases += 1;
+        },
+      };
+    },
+  };
+  const fixture = await makeFixture(t, {
+    sourcePins,
+    executors: new Map([['query', async () => {
+      executions += 1;
+      throw new Error('stopped pending open must not dispatch');
+    }]]),
+  });
+  const request = requestFor({ id: operationId('j') });
+  const starting = fixture.worker.start(request.operationId, fixture.token(request), request);
+  await openStarted.promise;
+  let stopTimeout = null;
+  try {
+    await Promise.race([
+      fixture.worker.stop(),
+      new Promise((_, reject) => {
+        stopTimeout = setTimeout(
+          () => reject(new Error('worker stop did not settle pending rollback promptly')),
+          1_000,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(stopTimeout);
+  }
+  await assert.rejects(starting, typed('worker_stopped'));
+  assert.equal(openControl.signal.aborted, true);
+  assert.equal(openControl.signal.reason.code, 'worker_stopped');
+  assert.equal(openControl.cleanupSignal.aborted, false);
+  assert.equal(releases, 1);
+  assert.equal(executions, 0);
+  assert.equal(fixture.counters.quotaClose, 1);
+});
+
+test('stop rolls back a real unpublished process pin before settling', async (t) => {
+  const home23Root = await tempDir('home23-worker-stop-real-pending-pin-');
+  const brain = path.join(home23Root, 'targets', 'native');
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  await fsp.mkdir(brain, { recursive: true });
+  await rewriteMemoryBase(brain, {
+    nodes: [{ id: 'n1', concept: 'stop rollback canary' }],
+    edges: [],
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  }, { lockRoot });
+  const id = operationId('q');
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const pinned = await provider.pin(brain, id);
+  const sourceOpened = deferred();
+  let executions = 0;
+  const clock = makeClock();
+  const worker = new BrainOperationWorker({
+    home23Root,
+    capabilityKey: KEY,
+    resolveTarget: async ({ target }) => structuredClone(target),
+    sourcePins: {
+      async openPinnedSource(descriptor, expectations, capability) {
+        const control = readDurableOperationLockCapability(capability);
+        const source = await provider.openPinnedSource(descriptor, expectations, capability);
+        sourceOpened.resolve();
+        await new Promise((resolve) => {
+          if (control.signal.aborted) resolve();
+          else control.signal.addEventListener('abort', resolve, { once: true });
+        });
+        return source;
+      },
+    },
+    scratchQuotaFactory: createOperationScratchQuota,
+    executors: new Map([['query', async () => {
+      executions += 1;
+      throw new Error('stopped unpublished source must never dispatch');
+    }]]),
+    clock,
+    processStartIdentity: 'stop-real-pending-pin-fixture',
+  });
+  t.after(async () => {
+    await worker.stop().catch(() => {});
+    await provider.releaseOperationPins(id).catch(() => {});
+    await fsp.rm(home23Root, { recursive: true, force: true });
+  });
+  const target = brainTarget(await fsp.realpath(brain));
+  const request = requestFor({
+    id,
+    target,
+    descriptor: pinned.descriptor,
+    digest: pinned.digest,
+    now: clock.wall,
+  });
+  let nonce = 0;
+  const token = () => issueCapability(KEY, capabilityClaims(
+    request,
+    `stop-real-pin-${++nonce}`,
+    {},
+    clock.wall,
+  ));
+  const starting = worker.start(id, token(), request);
+  await sourceOpened.promise;
+  await eventually(async () => {
+    assert.equal((await discoverOperationPinFiles(home23Root))
+      .some((entry) => entry.kind === 'process' && entry.operationId === id), true);
+  });
+
+  await worker.stop();
+  await assert.rejects(starting, typed('worker_stopped'));
+  assert.equal((await discoverOperationPinFiles(home23Root))
+    .some((entry) => entry.kind === 'process' && entry.operationId === id), false);
+  assert.equal(executions, 0);
+});
+
+test('stop reports an unpublished cleanup failure instead of claiming success', async (t) => {
+  const sourceOpened = deferred();
+  const cleanupFailure = Object.assign(new Error('process pin rollback failed'), { code: 'EIO' });
+  let openControl = null;
+  const sourcePins = {
+    async openPinnedSource(descriptor, _expectations, capability) {
+      openControl = readDurableOperationLockCapability(capability);
+      sourceOpened.resolve();
+      await new Promise((resolve) => {
+        if (openControl.signal.aborted) resolve();
+        else openControl.signal.addEventListener('abort', resolve, { once: true });
+      });
+      return {
+        descriptor,
+        revision: descriptor.cutoffRevision,
+        async release() { throw cleanupFailure; },
+      };
+    },
+  };
+  const fixture = await makeFixture(t, {
+    sourcePins,
+    executors: new Map([['query', async () => {
+      throw new Error('cleanup failure path must never dispatch');
+    }]]),
+  });
+  const request = requestFor({ id: operationId('r') });
+  const starting = fixture.worker.start(request.operationId, fixture.token(request), request);
+  await sourceOpened.promise;
+
+  await assert.rejects(fixture.worker.stop(), typed('source_cleanup_failed'));
+  await assert.rejects(starting, typed('source_cleanup_failed'));
+  assert.equal(openControl.cleanupSignal.aborted, false);
+});
+
+test('stop settles promptly during a non-abortable resolver and ignores its late success', async (t) => {
+  const resolverEntered = deferred();
+  const resolverGate = deferred();
+  let opens = 0;
+  let executions = 0;
+  const fixture = await makeFixture(t, {
+    resolveTarget: async ({ target }) => {
+      resolverEntered.resolve();
+      await resolverGate.promise;
+      return structuredClone(target);
+    },
+    sourcePins: {
+      async openPinnedSource() {
+        opens += 1;
+        throw new Error('late resolver must never open a source after stop');
+      },
+    },
+    executors: new Map([['query', async () => {
+      executions += 1;
+      throw new Error('late resolver must never dispatch after stop');
+    }]]),
+  });
+  const request = requestFor({ id: operationId('o') });
+  const starting = fixture.worker.start(request.operationId, fixture.token(request), request);
+  await resolverEntered.promise;
+  let timeout = null;
+  try {
+    await Promise.race([
+      fixture.worker.stop(),
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('stop waited on non-abortable resolver')), 1_000);
+      }),
+    ]);
+    await assert.rejects(starting, typed('worker_stopped'));
+  } finally {
+    clearTimeout(timeout);
+    resolverGate.resolve();
+    await Promise.allSettled([starting]);
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(opens, 0);
+  assert.equal(executions, 0);
+});
+
 test('all terminal paths share one cached process-pin release promise', async (t) => {
   const releases = new Map();
   const sourcePins = {
@@ -1470,12 +2011,12 @@ test('real native, legacy-resident, and legacy-research sources expose only nume
     capabilityKey: KEY,
     resolveTarget: async ({ target }) => structuredClone(target),
     sourcePins: {
-      async openPinnedSource(descriptor, expectations) {
+      async openPinnedSource(descriptor, expectations, capability) {
         const provider = createMemorySourcePinProvider({
           home23Root,
           requesterAgent: expectations.requesterAgent,
         });
-        return provider.openPinnedSource(descriptor, expectations);
+        return provider.openPinnedSource(descriptor, expectations, capability);
       },
     },
     scratchQuotaFactory: createOperationScratchQuota,

@@ -1,6 +1,7 @@
 'use strict';
 
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
+const { serializeProviderRecord } = require('./provider-record-sanitizer');
 
 const COOPERATIVE_YIELD_EVERY = 1_000;
 
@@ -41,23 +42,10 @@ function boundedLimits(overrides = {}) {
 }
 
 function serializeRecord(record, maxRecordBytes, kind) {
-  if (!record || typeof record !== 'object' || Array.isArray(record)) {
-    throw typed('source_invalid', `Pinned ${kind} record must be an object`);
-  }
-  let json;
-  try {
-    json = JSON.stringify(record);
-  } catch (error) {
-    throw typed('source_invalid', `Pinned ${kind} record is not serializable`);
-  }
-  if (typeof json !== 'string') {
-    throw typed('source_invalid', `Pinned ${kind} record is not serializable`);
-  }
-  const bytes = Buffer.byteLength(json, 'utf8');
-  if (bytes > maxRecordBytes) {
-    throw typed('result_too_large', `Pinned ${kind} record exceeds the byte limit`);
-  }
-  return { value: JSON.parse(json), json, bytes };
+  return serializeProviderRecord(record, {
+    maxBytes: maxRecordBytes,
+    label: `Pinned ${kind} record`,
+  });
 }
 
 function nodeId(node) {
@@ -160,6 +148,17 @@ class BoundedMinHeap {
     return { added: candidate, removed };
   }
 
+  removeMinimum() {
+    if (this.rows.length === 0) return null;
+    const removed = this.rows[0];
+    const last = this.rows.pop();
+    if (this.rows.length > 0) {
+      this.rows[0] = last;
+      this._down(0);
+    }
+    return removed;
+  }
+
   valuesBestFirst() {
     return [...this.rows].sort((left, right) => {
       const comparison = compareCandidate(right, left);
@@ -173,6 +172,7 @@ async function projectPinnedQuery({
   query,
   signal,
   limits = {},
+  sourceSummary,
   onNodeScanned = null,
   onEdgeScanned = null,
 } = {}) {
@@ -206,11 +206,15 @@ async function projectPinnedQuery({
       });
       if (change.added) retainedNodeBytes += change.added.bytes;
       if (change.removed) retainedNodeBytes -= change.removed.bytes;
+      while (retainedNodeBytes > selectedLimits.maxProjectionBytes) {
+        const removed = heap.removeMinimum();
+        if (!removed) {
+          throw typed('result_too_large', 'Pinned query record cannot fit the projection budget');
+        }
+        retainedNodeBytes -= removed.bytes;
+      }
       maxRetainedNodes = Math.max(maxRetainedNodes, heap.rows.length);
       maxRetainedBytes = Math.max(maxRetainedBytes, retainedNodeBytes);
-      if (retainedNodeBytes > selectedLimits.maxProjectionBytes) {
-        throw typed('result_too_large', 'Pinned query projection exceeds the byte limit');
-      }
     }
     if (typeof onNodeScanned === 'function') onNodeScanned(nodesScanned);
     await yieldForCancellation(nodesScanned, signal);
@@ -231,21 +235,22 @@ async function projectPinnedQuery({
         && source !== null && target !== null
         && retainedIds.has(source) && retainedIds.has(target)) {
       if (retainedNodeBytes + edgeBytes + serialized.bytes
-          > selectedLimits.maxProjectionBytes) {
-        throw typed('result_too_large', 'Pinned query projection exceeds the byte limit');
+          <= selectedLimits.maxProjectionBytes) {
+        edges.push(serialized.value);
+        edgeBytes += serialized.bytes;
+        maxRetainedBytes = Math.max(maxRetainedBytes, retainedNodeBytes + edgeBytes);
       }
-      edges.push(serialized.value);
-      edgeBytes += serialized.bytes;
-      maxRetainedBytes = Math.max(maxRetainedBytes, retainedNodeBytes + edgeBytes);
     }
     if (typeof onEdgeScanned === 'function') onEdgeScanned(edgesScanned);
     await yieldForCancellation(edgesScanned, signal);
   }
   throwIfAborted(signal);
 
-  const summary = typeof sourcePin.summarize === 'function'
-    ? await sourcePin.summarize({ signal })
-    : sourcePin.descriptor?.summary || null;
+  const summary = sourceSummary !== undefined
+    ? sourceSummary
+    : typeof sourcePin.summarize === 'function'
+      ? await sourcePin.summarize({ signal })
+      : sourcePin.descriptor?.summary || null;
   throwIfAborted(signal);
   const evidence = typeof sourcePin.getEvidence === 'function'
     ? sourcePin.getEvidence({

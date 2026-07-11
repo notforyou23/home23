@@ -18,14 +18,14 @@ function createSharedWorkerSourcePins({ home23Root, providerFactory = createMemo
     throw runtimeError('worker_configuration_invalid');
   }
   return Object.freeze({
-    openPinnedSource(descriptor, expectations = {}) {
+    openPinnedSource(descriptor, expectations = {}, operationLockCapability = null) {
       const requesterAgent = expectations.requesterAgent;
       if (typeof requesterAgent !== 'string'
           || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(requesterAgent)) {
         throw runtimeError('invalid_request', 'Trusted requester identity is required');
       }
       return providerFactory({ home23Root, requesterAgent })
-        .openPinnedSource(descriptor, expectations);
+        .openPinnedSource(descriptor, expectations, operationLockCapability);
     },
   });
 }

@@ -234,7 +234,10 @@ async function runSourceOperation(fixture, label, entry, operationType) {
     }), true, 'per-process pins may exist only in the requester operation');
 
     const scratchDir = path.join(operationRoot, 'scratch');
-    if (operationType === 'graph_export') await fsp.mkdir(scratchDir, { recursive: false });
+    const scratchStat = await fsp.lstat(scratchDir);
+    assert.equal(scratchStat.isDirectory(), true,
+      'source pinning creates only requester-owned operation scratch');
+    assert.equal(scratchStat.isSymbolicLink(), false);
     const target = operationTarget(
       fixture,
       entry,
@@ -293,8 +296,8 @@ async function runSourceOperation(fixture, label, entry, operationType) {
         fixture.home23Root, 'instances', 'jerry', 'workspace', 'brain-exports',
       )), false, 'regular graph export is retained only in operation result storage');
     } else {
-      assert.equal(fs.existsSync(scratchDir), false,
-        `${operationType} must not create requester scratch`);
+      assert.deepEqual(await fsp.readdir(scratchDir), [],
+        `${operationType} may use the requester scratch boundary but must not retain artifacts`);
     }
   } finally {
     await source?.release?.().catch(() => {});

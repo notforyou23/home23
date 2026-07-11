@@ -34,6 +34,9 @@ const {
   OPERATION_AUTHORITY: REAL_OPERATION_AUTHORITY,
   authorizeBrainOperation: authorizeRealBrainOperation,
 } = require('../../../shared/brain-operations/authority.cjs');
+const {
+  readDurableOperationLockCapability,
+} = require('../../../shared/memory-source/durable-lock-authority.cjs');
 
 const INITIAL_NOW = Date.parse('2026-07-10T16:00:00.000Z');
 const TERMINAL = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
@@ -767,7 +770,7 @@ test('thirty-two concurrent starts create, pin, issue, and start exactly once', 
   assert.equal((await fixture.store.list()).length, 1);
 });
 
-test('slow pin and worker start stay serialized against queued heartbeat and cancel CAS writes', async (t) => {
+test('slow pin publication stays serialized while queued cancellation prevents worker dispatch', async (t) => {
   const pinEntered = deferred();
   const pinGate = deferred();
   const sourcePins = {
@@ -792,9 +795,148 @@ test('slow pin and worker start stay serialized against queued heartbeat and can
   const [operation, , cancelled] = await Promise.all([starting, heartbeat, cancelling]);
   assert.equal(cancelled.state, 'cancelled');
   assert.equal((await fixture.store.get(operation.operationId)).state, 'cancelled');
-  assert.equal(fixture.worker.startCalls.length, 1);
+  assert.equal(fixture.worker.startCalls.length, 0);
   assert.equal((await fixture.store.readEvents(operation.operationId, 0))
     .some(({ type }) => type === 'heartbeat'), true);
+});
+
+test('queued cancellation aborts a trusted long source-pin wait without worker dispatch', async (t) => {
+  const pinEntered = deferred();
+  let pinControl = null;
+  const sourcePins = {
+    async pin(_canonicalRoot, _operationId, capability) {
+      pinControl = readDurableOperationLockCapability(capability);
+      pinEntered.resolve();
+      await new Promise((resolve, reject) => {
+        if (pinControl.signal.aborted) reject(pinControl.signal.reason);
+        else pinControl.signal.addEventListener('abort', () => reject(pinControl.signal.reason), {
+          once: true,
+        });
+      });
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {},
+  };
+  const fixture = makeFixture(t, { sourcePins });
+  const starting = fixture.coordinator.start(request({ requestId: 'cancel-long-pin-wait' }));
+  await pinEntered.promise;
+  const queued = (await fixture.store.listNonterminal())[0];
+  const cancelled = await fixture.coordinator.cancel(queued.operationId);
+  assert.equal(cancelled.state, 'cancelled');
+  await assert.rejects(starting, typedCode('operation_cancelled'));
+  assert.equal(pinControl.signal.aborted, true);
+  assert.equal(pinControl.cleanupSignal, null);
+  assert.equal(fixture.worker.startCalls.length, 0);
+});
+
+test('hard execution deadline aborts a trusted long source-pin wait', async (t) => {
+  const pinEntered = deferred();
+  let pinControl = null;
+  const sourcePins = {
+    async pin(_canonicalRoot, _operationId, capability) {
+      pinControl = readDurableOperationLockCapability(capability);
+      pinEntered.resolve();
+      await new Promise((resolve, reject) => {
+        if (pinControl.signal.aborted) reject(pinControl.signal.reason);
+        else pinControl.signal.addEventListener('abort', () => reject(pinControl.signal.reason), {
+          once: true,
+        });
+      });
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {},
+  };
+  const fixture = makeFixture(t, {
+    sourcePins,
+    executionDeadlineMsByType: { query: 100 },
+  });
+  const starting = fixture.coordinator.start(request({ requestId: 'deadline-long-pin-wait' }));
+  await pinEntered.promise;
+  const queued = (await fixture.store.listNonterminal())[0];
+  await fixture.timers.advance(100);
+  await assert.rejects(starting, typedCode('operation_timeout'));
+  const failed = await waitForState(fixture, queued.operationId, 'failed');
+  assert.equal(failed.error.code, 'operation_timeout');
+  assert.equal(pinControl.signal.aborted, true);
+  assert.equal(pinControl.cleanupSignal, null);
+  assert.equal(fixture.worker.startCalls.length, 0);
+});
+
+test('slow source pin leaves queued status attachments and heartbeats available', async (t) => {
+  const pinEntered = deferred();
+  const pinGate = deferred();
+  const sourcePins = {
+    async pin(canonicalRoot) {
+      pinEntered.resolve();
+      await pinGate.promise;
+      const descriptor = validDescriptor(canonicalRoot);
+      return { descriptor, digest: descriptorDigest(descriptor) };
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {},
+  };
+  const fixture = makeFixture(t, { sourcePins });
+  const starting = fixture.coordinator.start(request({ requestId: 'slow-pin-readable' }));
+  await pinEntered.promise;
+  const queued = (await fixture.store.listNonterminal())[0];
+  assert.ok(queued);
+
+  let statusSettled = false;
+  let attachmentSettled = false;
+  const status = fixture.coordinator.status(queued.operationId).then((value) => {
+    statusSettled = true;
+    return value;
+  });
+  const attachment = fixture.coordinator.attach(queued.operationId, {
+    attachmentId: 'slow-pin-reader',
+    afterSequence: queued.eventSequence,
+  }).then((value) => {
+    attachmentSettled = true;
+    return value;
+  });
+  const heartbeat = fixture.timers.advance(10_000);
+
+  try {
+    await eventually(async () => {
+      assert.equal(statusSettled, true, 'queued status must not wait for source projection');
+      assert.equal(attachmentSettled, true, 'SSE attachment setup must not wait for source projection');
+      assert.equal((await fixture.store.readEvents(queued.operationId, 0))
+        .some(({ type }) => type === 'heartbeat'), true,
+        'queued heartbeat must not wait for source projection');
+    });
+    assert.equal((await status).state, 'queued');
+    const event = await (await attachment).nextEvent();
+    assert.equal(event.type, 'heartbeat');
+    assert.equal(event.state, 'queued');
+  } finally {
+    pinGate.resolve();
+    await Promise.allSettled([starting, status, attachment, heartbeat]);
+  }
+});
+
+test('coordinator stop during slow pin leaves queued recovery truth without dispatching a worker', async (t) => {
+  const pinEntered = deferred();
+  const pinGate = deferred();
+  const sourcePins = {
+    async pin(canonicalRoot) {
+      pinEntered.resolve();
+      await pinGate.promise;
+      const descriptor = validDescriptor(canonicalRoot);
+      return { descriptor, digest: descriptorDigest(descriptor) };
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {},
+  };
+  const fixture = makeFixture(t, { sourcePins });
+  const starting = fixture.coordinator.start(request({ requestId: 'slow-pin-stop-recovery' }));
+  await pinEntered.promise;
+  await fixture.coordinator.stop();
+  pinGate.resolve();
+
+  const operation = await starting;
+  assert.equal(operation.state, 'queued');
+  assert.equal(operation.sourcePinDigest, descriptorDigest(validDescriptor(operation.target.canonicalRoot)));
+  assert.equal(fixture.worker.startCalls.length, 0);
 });
 
 test('lost worker-start response proves and publishes the live worker instead of releasing its pin', async (t) => {
@@ -2623,6 +2765,43 @@ test('reconciliation releases a pre-existing terminal pin marker exactly once', 
   assert.equal(typeof released.sourcePinReleasedAt, 'string');
   assert.equal(fixture.counters.releaseCalls, 1);
   assert.equal(fixture.counters.releaseVisible.size, 1);
+});
+
+test('reconciliation releases an expired terminal pin with fresh cleanup authority', async (t) => {
+  let releaseControl = null;
+  const sourcePins = {
+    async pin() { throw new Error('terminal reconciliation must not repin'); },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins(_operationId, capability) {
+      releaseControl = readDurableOperationLockCapability(capability);
+    },
+  };
+  const fixture = makeFixture(t, { sourcePins });
+  const hardDeadlineAt = new Date(fixture.timers.now - 1).toISOString();
+  const created = await directQueuedRecord(fixture, {
+    requestId: 'expired-terminal-pin-pending',
+    parameters: { query: 'canary', operationControl: { hardDeadlineAt } },
+  });
+  const descriptor = validDescriptor('/brains/jerry');
+  let record = await fixture.store.attachSourcePin(created.record.operationId, {
+    expectedVersion: created.record.recordVersion,
+    descriptor,
+    digest: descriptorDigest(descriptor),
+  });
+  record = await fixture.store.transition(record.operationId, {
+    expectedVersion: record.recordVersion,
+    state: 'failed',
+    phase: 'terminal',
+    error: { code: 'operation_timeout', message: 'expired', retryable: true },
+    sourceEvidence: null,
+  });
+
+  await fixture.coordinator.reconcile();
+  const released = await fixture.store.get(record.operationId);
+  assert.equal(typeof released.sourcePinReleasedAt, 'string');
+  assert.equal(releaseControl.hardDeadlineAt, hardDeadlineAt);
+  assert.equal(releaseControl.signal, null);
+  assert.equal(releaseControl.cleanupSignal, null);
 });
 
 test('queued record without durable operationControl deadline is interrupted before worker work', async (t) => {

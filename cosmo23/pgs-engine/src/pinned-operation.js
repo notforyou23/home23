@@ -18,9 +18,16 @@ const {
   assertProviderResultIdentity,
   requireCompleteProviderResult,
 } = require('../../lib/provider-completion');
+const {
+  assertProviderInputWithinBudget,
+  resolveProviderInputBudget,
+} = require('../../lib/provider-input-budget');
 const { getModelCapabilities } = require('../../server/config/model-catalog');
 
 const PINNED_SWEEP_CONCURRENCY = 2;
+const MAX_GENERATED_WORK_UNIT_ID_BYTES = 256;
+const SWEEP_INSTRUCTIONS = 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences.';
+const SYNTHESIS_INSTRUCTIONS = 'Synthesize the pinned PGS findings into a direct answer. Preserve absences and cite work-unit IDs.';
 
 function typed(code, message, retryable = false) {
   return Object.assign(new Error(message), { code, retryable });
@@ -61,19 +68,63 @@ function providerEventAt(value) {
   return typeof value === 'string' && value.length <= 128 ? value : null;
 }
 
-function buildWorkInput(query, work, maximumChars) {
+function buildWorkInput(query, work, maximumBytes) {
   const parts = [`Query: ${query}\n\nPinned work unit ${work.workUnitId}:\n`];
-  let chars = parts[0].length;
-  const append = (prefix, record) => {
-    const text = `${prefix}${JSON.stringify(record)}\n`;
-    if (chars + text.length > maximumChars) return false;
+  let bytes = utf8Bytes(parts[0]);
+  if (bytes > maximumBytes) {
+    throw typed('result_too_large', 'PGS sweep scaffold exceeds the provider input byte limit');
+  }
+  const append = (prefix, record, required) => {
+    let json;
+    try { json = JSON.stringify(record); } catch { json = null; }
+    if (typeof json !== 'string') {
+      throw typed('source_invalid', 'PGS work-unit record is not serializable');
+    }
+    const text = `${prefix}${json}\n`;
+    const textBytes = utf8Bytes(text);
+    if (bytes + textBytes > maximumBytes) {
+      if (required) {
+        throw typed('result_too_large', 'PGS work unit exceeds the provider input byte limit');
+      }
+      return false;
+    }
     parts.push(text);
-    chars += text.length;
+    bytes += textBytes;
     return true;
   };
-  for (const node of work.nodes) if (!append('NODE ', node)) break;
-  for (const edge of work.edges) if (!append('EDGE ', edge)) break;
+  for (const node of work.nodes) append('NODE ', node, true);
+  for (const edge of work.edges) if (!append('EDGE ', edge, false)) break;
   return parts.join('');
+}
+
+function buildSynthesisInput(query, sweepOutputs, maximumBytes) {
+  const parts = [`Original query: ${query}\n\nPinned PGS sweep outputs:\n`];
+  let bytes = utf8Bytes(parts[0]);
+  if (bytes > maximumBytes) {
+    throw typed('result_too_large', 'PGS synthesis scaffold exceeds the provider input byte limit');
+  }
+  for (const row of sweepOutputs) {
+    let json;
+    try { json = JSON.stringify(row); } catch { json = null; }
+    if (typeof json !== 'string') {
+      throw typed('pgs_projection_invalid', 'PGS synthesis row is not serializable');
+    }
+    const text = `${json}\n`;
+    bytes += utf8Bytes(text);
+    if (bytes > maximumBytes) {
+      throw typed('result_too_large', 'PGS synthesis input exceeds the provider input byte limit');
+    }
+    parts.push(text);
+  }
+  return parts.join('');
+}
+
+function canReturnUsefulSynthesisPartial(error) {
+  if (error instanceof ProviderCompletionError) return true;
+  if (!error?.code) return true;
+  return error.code === 'result_too_large'
+    || error.code === 'model_capability_invalid'
+    || String(error.code).startsWith('provider_');
 }
 
 function normalizeFailure(error) {
@@ -281,6 +332,34 @@ async function runPinnedOperation(engine, options = {}) {
   }
   const sweepCapabilities = getModelCapabilities(catalog, sweepPair.provider, sweepPair.model);
   const synthCapabilities = getModelCapabilities(catalog, synthPair.provider, synthPair.model);
+  const sweepInputBudget = resolveProviderInputBudget(sweepCapabilities, {
+    maxInputBytes: limits.maxContextCharsPerWorkUnit,
+    label: 'PGS sweep input',
+  });
+  const synthInputBudget = resolveProviderInputBudget(synthCapabilities, {
+    maxInputBytes: limits.maxSynthesisInputBytes,
+    label: 'PGS synthesis input',
+  });
+  const maximumWorkUnitScaffold = `Query: ${query}\n\nPinned work unit ${
+    'w'.repeat(MAX_GENERATED_WORK_UNIT_ID_BYTES)
+  }:\n`;
+  const sweepRecordBudget = sweepInputBudget.inputBudgetBytes
+    - utf8Bytes(SWEEP_INSTRUCTIONS)
+    - utf8Bytes(maximumWorkUnitScaffold)
+    - (limits.maxNodesPerWorkUnit * utf8Bytes('NODE \n'));
+  if (!Number.isSafeInteger(sweepRecordBudget) || sweepRecordBudget <= 0) {
+    throw typed('result_too_large', 'PGS sweep input leaves no work-unit record budget');
+  }
+  const storeLimits = Object.freeze({
+    ...limits,
+    // The store groups exact serialized node bytes. Lowering this boundary
+    // ensures every persisted unit leaves room for instructions, the current
+    // query, the longest generated work-unit ID, and every NODE separator.
+    maxContextCharsPerWorkUnit: Math.min(
+      limits.maxContextCharsPerWorkUnit,
+      sweepRecordBudget,
+    ),
+  });
   const sweepClient = registry.get(sweepPair.provider, sweepPair.model);
   const synthClient = registry.get(synthPair.provider, synthPair.model);
   for (const [pair, client, label] of [
@@ -308,7 +387,7 @@ async function runPinnedOperation(engine, options = {}) {
       { create: false },
     );
     store = await (engine.openPinnedPGSStore || openPinnedPGSStore)({
-      sourcePin, scratchDir, scratchQuota, pgsSweep: sweepPair, signal, limits,
+      sourcePin, scratchDir, scratchQuota, pgsSweep: sweepPair, signal, limits: storeLimits,
       statfsImpl: options.statfsImpl, clock: engine.operationClock,
     });
     const returnedTotals = {
@@ -350,12 +429,23 @@ async function runPinnedOperation(engine, options = {}) {
     work,
     instructions,
     input,
+    maxInputBytes,
     maxOutputBytes,
   }) {
     const context = work ? { workUnitId: work.workUnitId, partitionId: work.partitionId } : {};
+    const inputMeasurement = assertProviderInputWithinBudget({
+      capabilities,
+      maxInputBytes,
+      instructions,
+      input,
+      label: phase === 'pgs_synthesis' ? 'PGS synthesis input' : 'PGS sweep input',
+    });
     emit({
       type: 'provider_selected', phase, provider: pair.provider, model: pair.model,
-      providerStallMs: capabilities.providerStallMs, providerCallId: id, ...context,
+      providerStallMs: capabilities.providerStallMs, providerCallId: id,
+      providerInputBytes: inputMeasurement.totalInputBytes,
+      providerInputBudgetBytes: inputMeasurement.inputBudgetBytes,
+      ...context,
     });
     let outcome = 'failed';
     try {
@@ -408,8 +498,13 @@ async function runPinnedOperation(engine, options = {}) {
     const completion = await providerCall({
       phase: 'pgs_sweep', pair: sweepPair, capabilities: sweepCapabilities,
       client: sweepClient, id: `pgs:${workUnitId}`, work,
-      instructions: 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences.',
-      input: buildWorkInput(query, work, limits.maxContextCharsPerWorkUnit),
+      instructions: SWEEP_INSTRUCTIONS,
+      input: buildWorkInput(
+        query,
+        work,
+        sweepInputBudget.inputBudgetBytes - utf8Bytes(SWEEP_INSTRUCTIONS),
+      ),
+      maxInputBytes: limits.maxContextCharsPerWorkUnit,
       maxOutputBytes: limits.maxSweepOutputBytes,
     });
     const output = String(completion.content || '').trim();
@@ -488,56 +583,53 @@ async function runPinnedOperation(engine, options = {}) {
       };
     }
 
-    const inputParts = [`Original query: ${query}\n\nPinned PGS sweep outputs:\n`];
-    let inputBytes = utf8Bytes(inputParts[0]);
-    for (const row of sweepOutputs) {
-      const text = `${JSON.stringify(row)}\n`;
-      inputBytes += utf8Bytes(text);
-      if (inputBytes > limits.maxSynthesisInputBytes) {
-        throw typed('result_too_large', 'PGS synthesis input exceeds the byte limit');
-      }
-      inputParts.push(text);
-    }
+    let answer;
     try {
+      const synthesisInput = buildSynthesisInput(
+        query,
+        sweepOutputs,
+        synthInputBudget.inputBudgetBytes - utf8Bytes(SYNTHESIS_INSTRUCTIONS),
+      );
       const completion = await providerCall({
         phase: 'pgs_synthesis', pair: synthPair, capabilities: synthCapabilities,
         client: synthClient, id: 'pgs:synthesis', work: null,
-        instructions: 'Synthesize the pinned PGS findings into a direct answer. Preserve absences and cite work-unit IDs.',
-        input: inputParts.join(''),
+        instructions: SYNTHESIS_INSTRUCTIONS,
+        input: synthesisInput,
+        maxInputBytes: limits.maxSynthesisInputBytes,
         maxOutputBytes: limits.maxSynthesisOutputBytes,
       });
-      const answer = String(completion.content || '').trim();
+      answer = String(completion.content || '').trim();
+      if (!answer) throw typed('provider_incomplete', 'PGS synthesis returned no content', true);
       assertBytes(answer, limits.maxSynthesisOutputBytes, 'PGS synthesis output');
-      const partial = pendingWorkUnits > 0;
-      const result = { ...baseResult, answer };
-      assertBytes(result, limits.maxResultBytes, 'PGS result');
-      if (!partial) {
-        await writeSuccessReceipt({
-          engine, attemptId, result, signal, scratchQuota,
-          receiptBoundary, receiptDirectory,
-        });
-      }
-      return {
-        state: partial ? 'partial' : 'complete',
-        result,
-        error: partial ? {
-          code: 'pgs_partitions_incomplete',
-          message: 'Some PGS work remains pending and retryable',
-          retryable: true,
-        } : null,
-        resultArtifact: null,
-        sourceEvidence,
-      };
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
-      if (!(error instanceof ProviderCompletionError)) throw error;
-      if (!sweepOutputs.length) throw error;
+      if (!sweepOutputs.length || !canReturnUsefulSynthesisPartial(error)) throw error;
       assertBytes(baseResult, limits.maxResultBytes, 'PGS result');
       return {
         state: 'partial', result: baseResult, error: normalizeFailure(error),
         resultArtifact: null, sourceEvidence,
       };
     }
+    const partial = pendingWorkUnits > 0;
+    const result = { ...baseResult, answer };
+    assertBytes(result, limits.maxResultBytes, 'PGS result');
+    if (!partial) {
+      await writeSuccessReceipt({
+        engine, attemptId, result, signal, scratchQuota,
+        receiptBoundary, receiptDirectory,
+      });
+    }
+    return {
+      state: partial ? 'partial' : 'complete',
+      result,
+      error: partial ? {
+        code: 'pgs_partitions_incomplete',
+        message: 'Some PGS work remains pending and retryable',
+        retryable: true,
+      } : null,
+      resultArtifact: null,
+      sourceEvidence,
+    };
   } catch (error) {
     if (signal?.aborted || error === signal?.reason) {
       if (uncommitted.length) await store.commitSuccessfulSweeps(uncommitted);

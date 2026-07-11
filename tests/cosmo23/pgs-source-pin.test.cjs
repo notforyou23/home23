@@ -7,12 +7,13 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { PGSEngine } = require('../../cosmo23/pgs-engine/src');
+const { openPinnedPGSStore } = require('../../cosmo23/pgs-engine/src/pinned-store');
 const { createOperationScratchQuota } = require('../../shared/memory-source/scratch-quota.cjs');
 
 function catalog() {
   const row = id => ({
     id, kind: 'chat', maxOutputTokens: 512, providerStallMs: 900_000,
-    transport: 'responses',
+    contextWindowTokens: 128_000, transport: 'responses',
   });
   return {
     version: 1,
@@ -21,6 +22,86 @@ function catalog() {
       synth: { models: [row('shared-model')] },
     },
     defaults: {},
+  };
+}
+
+function codexBudgetCatalog({
+  sweepContextWindowTokens = 272_000,
+  synthContextWindowTokens = 272_000,
+  maxOutputTokens = 32_768,
+} = {}) {
+  const row = (id, contextWindowTokens) => ({
+    id,
+    kind: 'chat',
+    maxOutputTokens,
+    contextWindowTokens,
+    providerStallMs: 900_000,
+    transport: 'codex-responses',
+  });
+  return {
+    version: 1,
+    providers: {
+      'openai-codex': {
+        models: [
+          row('gpt-5.4-mini', sweepContextWindowTokens),
+          row('gpt-5.5', synthContextWindowTokens),
+        ],
+      },
+    },
+    defaults: {},
+  };
+}
+
+function makeCodexBudgetEngine(catalogOptions = {}) {
+  const calls = [];
+  const client = {
+    providerId: 'openai-codex',
+    async generate(request) {
+      calls.push(request);
+      return {
+        content: request.model === 'gpt-5.4-mini' ? 'bounded sweep' : 'bounded synthesis',
+        terminalReceived: true,
+        finishReason: 'completed',
+        hadError: false,
+        provider: 'openai-codex',
+        model: request.model,
+      };
+    },
+  };
+  const engine = new PGSEngine({
+    modelCatalog: codexBudgetCatalog(catalogOptions),
+    providerRegistry: {
+      get(provider, model) {
+        assert.equal(provider, 'openai-codex');
+        assert.equal(['gpt-5.4-mini', 'gpt-5.5'].includes(model), true);
+        return client;
+      },
+    },
+  });
+  return { engine, calls };
+}
+
+function codexBudgetOptions(pin, scratch, overrides = {}) {
+  return {
+    sourcePin: pin,
+    scratchDir: scratch.scratchDir,
+    scratchQuota: scratch.quota,
+    query: 'What does the pinned evidence show?',
+    pgsSweep: { provider: 'openai-codex', model: 'gpt-5.4-mini' },
+    pgsSynth: { provider: 'openai-codex', model: 'gpt-5.5' },
+    signal: new AbortController().signal,
+    pgsConfig: { sweepFraction: 1 },
+    limits: {
+      ...limits,
+      maxScratchBytes: 64 * 1024 * 1024,
+      maxContextCharsPerWorkUnit: 128_000,
+      maxSweepOutputBytes: 256 * 1024,
+      maxTotalSweepOutputBytes: 16 * 1024 * 1024,
+      maxSynthesisInputBytes: 16 * 1024 * 1024,
+      maxSynthesisOutputBytes: 2 * 1024 * 1024,
+      maxResultBytes: 24 * 1024 * 1024,
+    },
+    ...overrides,
   };
 }
 
@@ -266,6 +347,167 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
   assert.equal(receipt.result.answer, 'final pinned synthesis');
 });
 
+test('PGS bounds exact gpt-5.4-mini and gpt-5.5 inputs by decoded UTF-8 bytes', async t => {
+  const scratch = await scratchFixture(t);
+  const fixture = makeCodexBudgetEngine();
+  const node = {
+    id: 'n0',
+    clusterId: 'cluster-0',
+    content: `escaped Unicode evidence ${'🧠"\\\n'.repeat(4_000)}`,
+  };
+  const pin = sourcePin({ nodeCount: 1 });
+  pin.iterateNodes = async function* iterateNodes() { yield node; };
+  pin.iterateEdges = async function* iterateEdges() {};
+
+  const envelope = await fixture.engine.runPinnedOperation(codexBudgetOptions(pin, scratch, {
+    query: `Unicode question ${'🧠"\\\n'.repeat(1_000)}`,
+  }));
+
+  assert.equal(envelope.state, 'complete');
+  assert.equal(fixture.calls.length, 2);
+  const expectedModelBudget = Math.floor(272_000 * 0.95) - 32_768 - 8_192;
+  const sweep = fixture.calls.find(call => call.model === 'gpt-5.4-mini');
+  const synth = fixture.calls.find(call => call.model === 'gpt-5.5');
+  assert.equal(sweep.provider, 'openai-codex');
+  assert.equal(synth.provider, 'openai-codex');
+  assert.equal(
+    Buffer.byteLength(sweep.instructions, 'utf8') + Buffer.byteLength(sweep.input, 'utf8')
+      <= Math.min(128_000, expectedModelBudget),
+    true,
+  );
+  assert.equal(
+    Buffer.byteLength(synth.instructions, 'utf8') + Buffer.byteLength(synth.input, 'utf8')
+      <= expectedModelBudget,
+    true,
+  );
+  assert.match(sweep.input, /escaped Unicode evidence/);
+});
+
+test('PGS partitions work units against the exact provider input budget before persistence', async t => {
+  const sweepInstructions = 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences.';
+  for (const scenario of [
+    {
+      name: 'model-effective-32k',
+      contextWindowTokens: 50_000,
+      maxOutputTokens: 8_000,
+      callerLimit: 128_000,
+      contentChars: 15_400,
+    },
+    {
+      name: 'lower-caller-limit',
+      contextWindowTokens: 50_000,
+      maxOutputTokens: 8_000,
+      callerLimit: 24_000,
+      contentChars: 11_800,
+    },
+  ]) {
+    const scratch = await scratchFixture(t);
+    const fixture = makeCodexBudgetEngine({
+      sweepContextWindowTokens: scenario.contextWindowTokens,
+      maxOutputTokens: scenario.maxOutputTokens,
+    });
+    let openedContextLimit = null;
+    fixture.engine.openPinnedPGSStore = async input => {
+      openedContextLimit = input.limits.maxContextCharsPerWorkUnit;
+      return openPinnedPGSStore(input);
+    };
+    const pin = sourcePin({ nodeCount: 2 });
+    pin.iterateNodes = async function* iterateNodes() {
+      for (let index = 0; index < 2; index += 1) {
+        yield {
+          id: `n${index}`,
+          clusterId: 'same-partition',
+          content: `${scenario.name}-${index}-${'x'.repeat(scenario.contentChars)}`,
+        };
+      }
+    };
+    pin.iterateEdges = async function* iterateEdges() {};
+    const query = 'budget canary';
+    const runLimits = {
+      ...codexBudgetOptions(pin, scratch).limits,
+      maxContextCharsPerWorkUnit: scenario.callerLimit,
+    };
+
+    const envelope = await fixture.engine.runPinnedOperation(codexBudgetOptions(pin, scratch, {
+      query,
+      limits: runLimits,
+    }));
+
+    const modelBudget = Math.floor(scenario.contextWindowTokens * 0.95)
+      - scenario.maxOutputTokens - 8_192;
+    const totalBudget = Math.min(scenario.callerLimit, modelBudget);
+    const framingBytes = Buffer.byteLength(
+      `Query: ${query}\n\nPinned work unit ${'w'.repeat(256)}:\n`,
+      'utf8',
+    );
+    const expectedStoreLimit = totalBudget
+      - Buffer.byteLength(sweepInstructions, 'utf8')
+      - framingBytes
+      - (runLimits.maxNodesPerWorkUnit * Buffer.byteLength('NODE \n', 'utf8'));
+    assert.equal(openedContextLimit, expectedStoreLimit, scenario.name);
+    assert.equal(openedContextLimit < scenario.callerLimit, true, scenario.name);
+    assert.equal(openedContextLimit < modelBudget, true, scenario.name);
+    assert.equal(envelope.state, 'complete', scenario.name);
+    assert.equal(
+      fixture.calls.filter(call => call.model === 'gpt-5.4-mini').length,
+      2,
+      `${scenario.name} must split the two same-partition nodes`,
+    );
+  }
+});
+
+test('PGS rejects an oversized Unicode sweep prompt before either provider runs', async t => {
+  const scratch = await scratchFixture(t);
+  const fixture = makeCodexBudgetEngine();
+
+  await assert.rejects(
+    fixture.engine.runPinnedOperation(codexBudgetOptions(sourcePin({ nodeCount: 1 }), scratch, {
+      query: '🧠'.repeat(40_000),
+    })),
+    { code: 'result_too_large', retryable: false },
+  );
+  assert.equal(fixture.calls.length, 0);
+});
+
+test('PGS returns useful partial sweeps when the 16 MiB synthesis cap exceeds gpt-5.5 context', async t => {
+  const scratch = await scratchFixture(t);
+  const fixture = makeCodexBudgetEngine();
+  let closed = false;
+  fixture.engine.openPinnedPGSStore = async () => ({
+    stats: { nodeCount: 1, edgeCount: 0, workUnitCount: 1 },
+    snapshotPendingWorkUnits() { return []; },
+    beginWorkUnitAttempt() { throw new Error('no pending work'); },
+    loadWorkUnit() { throw new Error('no pending work'); },
+    async commitSuccessfulSweeps() {},
+    listSuccessfulSweeps() {
+      return [{
+        workUnitId: 'p-c-one-u0000',
+        partitionId: 'c-one',
+        provider: 'openai-codex',
+        model: 'gpt-5.4-mini',
+        output: 's'.repeat(250 * 1024),
+      }];
+    },
+    listRetryablePartitions() { return []; },
+    countPendingWorkUnits() { return 0; },
+    recordRetryableFailure() {},
+    close() { closed = true; },
+  });
+
+  const envelope = await fixture.engine.runPinnedOperation(codexBudgetOptions(
+    sourcePin({ nodeCount: 1 }),
+    scratch,
+  ));
+
+  assert.equal(envelope.state, 'partial');
+  assert.equal(envelope.result.answer, null);
+  assert.equal(envelope.result.sweepOutputs.length, 1);
+  assert.equal(envelope.error.code, 'result_too_large');
+  assert.equal(envelope.error.retryable, false);
+  assert.equal(fixture.calls.length, 0, 'synthesis must be rejected before provider use');
+  assert.equal(closed, true);
+});
+
 test('pinned PGS derives complete source evidence from the opened projection store', async t => {
   const scratch = await scratchFixture(t);
   const pin = sourcePin({ nodeCount: 1 });
@@ -351,7 +593,19 @@ test('pinned PGS enforces lowered sweep and synthesis byte ceilings inside provi
     });
 
     if (over) {
-      await assert.rejects(run, { code: 'result_too_large', retryable: false });
+      if (phase === 'synthesis') {
+        const partial = await run;
+        assert.equal(partial.state, 'partial');
+        assert.equal(partial.result.answer, null);
+        assert.equal(partial.result.sweepOutputs.length, 1);
+        assert.deepEqual(partial.error, {
+          code: 'result_too_large',
+          message: 'bounded synthesis adapter rejected output',
+          retryable: false,
+        });
+      } else {
+        await assert.rejects(run, { code: 'result_too_large', retryable: false });
+      }
       const callPhase = phase === 'synthesis' ? 'synth' : phase;
       assert.equal(
         fixture.calls.filter(call => call.phase === callPhase).length,

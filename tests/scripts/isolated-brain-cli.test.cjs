@@ -10,22 +10,47 @@ async function makeState(t, name, { autoCleanup = true } = {}) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), `home23-${name}-`)));
   const receiptRunDir = path.join(root, 'receipts');
   const fixtureRoot = path.join(root, 'fixture');
+  const receiptRunId = `isolated-cli-${name}`;
+  const implementationCommit = 'a'.repeat(40);
+  const liveTree = 'b'.repeat(40);
   await Promise.all([
-    fs.mkdir(receiptRunDir),
-    fs.mkdir(fixtureRoot),
+    fs.mkdir(receiptRunDir, { mode: 0o700 }),
+    fs.mkdir(fixtureRoot, { mode: 0o700 }),
   ]);
+  await fs.writeFile(path.join(receiptRunDir, 'run-authority.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    receiptRunId,
+    authority: 'live',
+    implementationCommit,
+    expectedLiveTree: liveTree,
+    actualLiveTree: liveTree,
+    hostname: 'fixture-host',
+    startedAt: '2026-07-10T00:00:00.000Z',
+  }, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+  const { receiptContext } = await import('../../scripts/lib/brain-acceptance-common.mjs');
+  const env = {
+    ...process.env,
+    HOME23_RECEIPT_RUN_DIR: receiptRunDir,
+    HOME23_RECEIPT_RUN_ID: receiptRunId,
+    HOME23_RECEIPT_AUTHORITY: 'isolated-controlled',
+    HOME23_RECEIPT_IMPLEMENTATION_COMMIT: implementationCommit,
+  };
+  const context = await receiptContext(Object.create(null), env);
   if (autoCleanup) t.after(() => fs.rm(root, { recursive: true, force: true }));
   return {
     root,
     receiptRunDir,
     fixtureRoot,
-    env: {
-      ...process.env,
-      HOME23_RECEIPT_RUN_DIR: receiptRunDir,
-      HOME23_RECEIPT_RUN_ID: `isolated-cli-${name}`,
-      HOME23_RECEIPT_AUTHORITY: 'isolated-controlled',
-    },
+    context,
+    env,
   };
+}
+
+async function fixtureTestDelay(operationDelayMs = 5) {
+  const {
+    createIsolatedFixtureTestDelaySeam,
+  } = await import('../../scripts/lib/isolated-brain-fixture.mjs');
+  return createIsolatedFixtureTestDelaySeam({ operationDelayMs });
 }
 
 async function readRows(file) {
@@ -73,6 +98,44 @@ function assertIsolatedTerminal(row, state) {
   assert.notEqual(row.isolatedFixture.pids.dashboard, row.isolatedFixture.pids.cosmo);
   assert.notEqual(row.isolatedFixture.pids.dashboard, row.isolatedFixture.pids.mcp);
   assert.notEqual(row.isolatedFixture.pids.cosmo, row.isolatedFixture.pids.mcp);
+  assert.equal(row.isolatedFixture.configuredOperationDelayMs, 3000);
+  assert.equal(row.isolatedFixture.effectiveOperationDelayMs, 3000);
+  assert.equal(row.isolatedFixture.testOnlyOperationDelay, false);
+  assert.equal(row.isolatedFixture.operationDelayEvidence.configuredDelayMs, 3000);
+  assert.equal(row.isolatedFixture.operationDelayEvidence.effectiveDelayMs, 3000);
+  assert.equal(row.isolatedFixture.operationDelayEvidence.testOnlyDelay, false);
+  assert.equal(row.isolatedFixture.operationDelayEvidence.capturedBeforeStop, true);
+  assert.equal(row.isolatedFixture.operationDelayEvidence.schemaVersion, 2);
+  assert.equal(Object.hasOwn(
+    row.isolatedFixture.operationDelayEvidence.roles.cosmo,
+    'lastProviderDelay',
+  ), false);
+  assert.equal(row.isolatedFixture.operationDelayEvidence.acceptedOperations.length, 1);
+  const [acceptedOperation] = row.isolatedFixture.operationDelayEvidence.acceptedOperations;
+  assert.equal(acceptedOperation.operationId, row.operationId);
+  assert.equal(acceptedOperation.operationType, row.operationType);
+  assert.equal(acceptedOperation.terminalState, row.state);
+  assert.equal(acceptedOperation.terminalCompletedAt, row.completedAt);
+  if (['detach-reattach', 'cancel', 'restart-reconcile', 'synthesis-reconnect',
+    'large-pgs-isolated'].includes(row.scenario)) {
+    assert.equal(row.isolatedFixture.operationDelayEvidence.actionBeforeTerminalProven, true);
+    assert.equal(acceptedOperation.actionBeforeTerminalProven, true);
+    assert.ok(acceptedOperation.actions.length >= 1);
+    assert.ok(acceptedOperation.actions.every((action) =>
+      action.operationId === row.operationId
+        && action.actionBeforeTerminalProven === true
+        && Date.parse(action.startedAt) <= Date.parse(row.completedAt)
+        && (row.scenario === 'cancel'
+          ? action.selectedEventSequence === null
+            && action.providerTerminalEventSequence === null
+            && Number.isFinite(Date.parse(action.providerAbortObservedAt))
+          : action.selectedEventSequence < action.providerTerminalEventSequence
+            && Date.parse(action.providerTerminalAt) <= Date.parse(row.completedAt))));
+  } else {
+    assert.equal(row.isolatedFixture.operationDelayEvidence.actionBeforeTerminalProven, false);
+    assert.equal(acceptedOperation.actionBeforeTerminalProven, false);
+    assert.deepEqual(acceptedOperation.actions, []);
+  }
   assert.deepEqual([...row.isolatedFixture.stoppedPids].sort((a, b) => a - b),
     [
       row.isolatedFixture.pids.cosmo,
@@ -94,7 +157,43 @@ test('controlled lifecycle CLI refuses a supplied endpoint instead of risking a 
   ], state.env), (error) => error.code === 'isolated_fixture_endpoint_override_refused');
 });
 
-test('isolated CLI proves real dashboard-to-MCP parity and a healthy exhaustive zero result', async (t) => {
+test('controlled lifecycle CLI cannot use the non-CLI short-delay test seam', async (t) => {
+  const { main } = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const state = await makeState(t, 'production-delay-refusal');
+  await assert.rejects(main([
+    '--scenario', 'detach-reattach',
+    '--isolated-fixture', state.fixtureRoot,
+    '--controlled-provider',
+    '--fixture-operation-delay-ms', '5',
+    '--output', path.join(state.receiptRunDir, 'must-not-exist.jsonl'),
+  ], state.env), (error) => error.code === 'isolated_fixture_production_delay_required');
+  await assert.rejects(fs.stat(path.join(state.fixtureRoot, 'fixture-owner.json')), {
+    code: 'ENOENT',
+  });
+});
+
+test('strict zero-result CLI auto-launches an isolated healthy manifest fixture', async (t) => {
+  const { main } = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const state = await makeState(t, 'zero-auto-launch');
+  const output = path.join(state.receiptRunDir, 'zero-auto.jsonl');
+  await main([
+    '--scenario', 'zero-result',
+    '--isolated-fixture', state.fixtureRoot,
+    '--controlled-provider',
+    '--query', 'unique zero route token',
+    '--tag', 'unique-zero-tag',
+    '--zero-policy', 'healthy-no-match',
+    '--output', output,
+  ], state.env);
+  const terminal = (await readRows(output)).at(-1);
+  assertIsolatedTerminal(terminal, 'complete');
+  assert.equal(terminal.sourceHealth, 'healthy');
+  assert.equal(terminal.matchOutcome, 'no_match');
+  assert.equal(terminal.completeCoverage, true);
+  assert.ok(terminal.authoritativeTotal > 0);
+});
+
+test('isolated-controlled CLI refuses even launcher-owned manual fixture endpoints', async (t) => {
   const { main } = await import('../../scripts/live-brain-tools-smoke.mjs');
   const {
     startIsolatedFixture,
@@ -103,187 +202,27 @@ test('isolated CLI proves real dashboard-to-MCP parity and a healthy exhaustive 
   const state = await makeState(t, 'mcp-parity', { autoCleanup: false });
   let launched = await startIsolatedFixture({
     fixtureRoot: state.fixtureRoot,
-    context: {
-      receiptRunDir: state.receiptRunDir,
-      receiptRunId: state.env.HOME23_RECEIPT_RUN_ID,
-      authority: 'isolated-controlled',
-    },
+    context: state.context,
     agent: 'mcp-fixture',
     nodeCount: 20,
     edgeCount: 19,
-    operationDelayMs: 5,
+    testDelaySeam: await fixtureTestDelay(),
   });
   t.after(async () => {
     if (launched) await stopIsolatedFixture(launched).catch(() => {});
     await fs.rm(state.root, { recursive: true, force: true });
   });
-  const shared = [
-    '--base-url', launched.baseUrl,
-    '--caller-agent', launched.agent,
-    '--isolated-fixture', state.fixtureRoot,
-    '--isolated-store', launched.operationsRoot,
-    '--controlled-provider',
-  ];
-
-  const canaryFile = path.join(state.receiptRunDir, 'mcp-canary.json');
-  await main([
-    '--scenario', 'discover-canary', ...shared,
-    '--output', canaryFile,
-  ], state.env);
-  const [canary] = await readRows(canaryFile);
-  assert.equal(canary.sourceHealth, 'healthy');
-  assert.equal(canary.selectedBrain, launched.brainId);
-
-  const parityFile = path.join(state.receiptRunDir, 'mcp-parity.jsonl');
-  await main([
-    '--scenario', 'mcp-parity', ...shared,
-    '--canary-receipt', canaryFile,
-    '--output', parityFile,
-  ], state.env);
-  const [parity] = await readRows(parityFile);
-  assertSourceIntegrity(parity);
-  assert.equal(parity.mcpParity, true);
-  assert.equal(parity.nodeId, canary.nodeId);
-  assert.equal(parity.sourceRevision, canary.sourceRevision);
-
-  const zeroFile = path.join(state.receiptRunDir, 'zero.jsonl');
-  await main([
-    '--scenario', 'zero-result', ...shared,
-    '--query', 'fixture-guaranteed-absent-7edc38031ed44e6ba66f',
-    '--output', zeroFile,
-  ], state.env);
-  const [zero] = await readRows(zeroFile);
-  assert.equal(zero.sourceHealth, 'healthy');
-  assert.equal(zero.matchOutcome, 'no_match');
-  assert.equal(zero.completeCoverage, true);
-  assert.equal(zero.authoritativeTotal, 20);
-
-  const stopped = await stopIsolatedFixture(launched);
-  for (const role of ['dashboard', 'cosmo', 'mcp']) {
-    assert.equal(stopped[role].exited, true);
-    assertStopped(stopped[role].pid);
+  for (const scenario of ['discover-canary', 'mcp-parity', 'sibling', 'completed-research']) {
+    await assert.rejects(main([
+      '--scenario', scenario,
+      '--base-url', launched.baseUrl,
+      '--caller-agent', launched.agent,
+      '--isolated-fixture', state.fixtureRoot,
+      '--isolated-store', launched.operationsRoot,
+      '--controlled-provider',
+      '--output', path.join(state.receiptRunDir, `${scenario}.jsonl`),
+    ], state.env), (error) => error.code === 'isolated_fixture_endpoint_override_refused');
   }
-  launched = null;
-});
-
-test('isolated CLI reads sibling and completed-research brains and exports requester-owned results', async (t) => {
-  const { main } = await import('../../scripts/live-brain-tools-smoke.mjs');
-  const {
-    startIsolatedFixture,
-    stopIsolatedFixture,
-  } = await import('../../scripts/lib/isolated-brain-fixture.mjs');
-  const state = await makeState(t, 'cross-brain', { autoCleanup: false });
-  let launched = await startIsolatedFixture({
-    fixtureRoot: state.fixtureRoot,
-    context: {
-      receiptRunDir: state.receiptRunDir,
-      receiptRunId: state.env.HOME23_RECEIPT_RUN_ID,
-      authority: 'isolated-controlled',
-    },
-    agent: 'cross-fixture',
-    nodeCount: 20,
-    edgeCount: 19,
-    operationDelayMs: 5,
-  });
-  t.after(async () => {
-    if (launched) await stopIsolatedFixture(launched).catch(() => {});
-    await fs.rm(state.root, { recursive: true, force: true });
-  });
-  const shared = [
-    '--base-url', launched.baseUrl,
-    '--caller-agent', launched.agent,
-    '--isolated-fixture', state.fixtureRoot,
-    '--isolated-store', launched.operationsRoot,
-    '--controlled-provider',
-    '--query-wait-ms', '10000',
-  ];
-  const siblingAgent = `${launched.agent}-sibling`;
-  const researchBrain = `${launched.brainId}-research-completed`;
-
-  const siblingCanaryFile = path.join(state.receiptRunDir, 'sibling-canary.json');
-  await main([
-    '--scenario', 'discover-canary', ...shared,
-    '--target-agent', siblingAgent,
-    '--output', siblingCanaryFile,
-  ], state.env);
-  const [siblingCanary] = await readRows(siblingCanaryFile);
-  assert.equal(siblingCanary.selectedAgent, siblingAgent);
-  assert.equal(siblingCanary.sourceHealth, 'healthy');
-
-  const siblingFile = path.join(state.receiptRunDir, 'sibling.jsonl');
-  try {
-    await main([
-      '--scenario', 'sibling', ...shared,
-      '--target-agent', siblingAgent,
-      '--canary-receipt', siblingCanaryFile,
-      '--output', siblingFile,
-    ], state.env);
-  } catch (error) {
-    const operationId = /brop_[A-Za-z0-9_-]{32}/.exec(error.message)?.[0];
-    if (operationId) {
-      error.message = `${error.message} worker=${JSON.stringify(
-        await launched.operationTelemetry(operationId),
-      )}`;
-    }
-    throw error;
-  }
-  const [sibling] = await readRows(siblingFile);
-  assertSourceIntegrity(sibling);
-  assert.equal(sibling.state, 'complete', JSON.stringify(sibling));
-  assert.equal(sibling.target.brainId, `${launched.brainId}-sibling`);
-  assert.equal(sibling.target.accessMode, 'read-only');
-
-  const researchCanaryFile = path.join(state.receiptRunDir, 'research-canary.json');
-  await main([
-    '--scenario', 'discover-canary', ...shared,
-    '--target-brain', researchBrain,
-    '--output', researchCanaryFile,
-  ], state.env);
-  const [researchCanary] = await readRows(researchCanaryFile);
-  assert.equal(researchCanary.selectedBrain, researchBrain);
-  assert.equal(researchCanary.sourceHealth, 'healthy');
-
-  const researchFile = path.join(state.receiptRunDir, 'research.jsonl');
-  await main([
-    '--scenario', 'completed-research', ...shared,
-    '--target-brain', researchBrain,
-    '--canary-receipt', researchCanaryFile,
-    '--output', researchFile,
-  ], state.env);
-  const [research] = await readRows(researchFile);
-  assertSourceIntegrity(research);
-  assert.equal(research.state, 'complete', JSON.stringify(research));
-  assert.equal(research.target.brainId, researchBrain);
-  assert.equal(research.target.accessMode, 'read-only');
-
-  const exportFile = path.join(state.receiptRunDir, 'research-export.jsonl');
-  await main([
-    '--scenario', 'canonical-export', ...shared,
-    '--operation-receipt', researchFile,
-    '--format', 'markdown',
-    '--output', exportFile,
-  ], state.env);
-  const [exported] = await readRows(exportFile);
-  assert.equal(exported.receiptKind, 'export');
-  assert.equal(exported.operationId, research.operationId);
-  assert.equal(typeof exported.exportResult?.relativePath, 'string', JSON.stringify(exported));
-  assert.match(
-    exported.exportResult.relativePath,
-    /^workspace\/brain-exports\//,
-    JSON.stringify(exported),
-  );
-
-  const compileFile = path.join(state.receiptRunDir, 'research-compile.jsonl');
-  await main([
-    '--scenario', 'completed-research-compile', ...shared,
-    '--target-brain', researchBrain,
-    '--canary-receipt', researchCanaryFile,
-    '--output', compileFile,
-  ], state.env);
-  const [compiled] = await readRows(compileFile);
-  assertSourceIntegrity(compiled);
-  assert.equal(compiled.state, 'complete', JSON.stringify(compiled));
-  assert.equal(compiled.target.accessMode, 'read-only');
 
   const stopped = await stopIsolatedFixture(launched);
   for (const role of ['dashboard', 'cosmo', 'mcp']) {
@@ -305,7 +244,7 @@ test('large PGS CLI auto-launches a 100k/300k isolated source and retains durabl
     '--synthetic-nodes', '100000',
     '--synthetic-edges', '300000',
     '--controlled-provider',
-    '--fixture-operation-delay-ms', '1',
+    '--fixture-operation-delay-ms', '3000',
     '--sweep-fraction', '0.10',
     '--pgs-wait-ms', '300000',
     '--sse-output', eventsFile,
@@ -363,7 +302,7 @@ test('exact lifecycle CLIs auto-launch isolated production processes and retain 
   const shared = [
     '--isolated-fixture', state.fixtureRoot,
     '--controlled-provider',
-    '--fixture-operation-delay-ms', '5',
+    '--fixture-operation-delay-ms', '3000',
   ];
 
   const detachFile = path.join(state.receiptRunDir, 'detach.jsonl');

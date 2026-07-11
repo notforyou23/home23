@@ -7,14 +7,19 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { QueryEngine } = require('../../cosmo23/lib/query-engine');
+const {
+  createSyntheticPinnedSource,
+} = require('./helpers/brain-operation-fixtures.cjs');
 
-function model(provider, id) {
+function model(provider, id, overrides = {}) {
   return {
     id,
     kind: 'chat',
     maxOutputTokens: 256,
+    contextWindowTokens: 128_000,
     providerStallMs: 900_000,
     transport: 'responses',
+    ...overrides,
   };
 }
 
@@ -148,6 +153,159 @@ test('operation query uses only the pinned iterator and exact provider pair', as
       model: 'answer-model', providerCallId: 'query', outcome: 'complete',
     },
   ]);
+});
+
+test('operation query never forwards vector payloads and leaves pinned evidence untouched', async () => {
+  const node = {
+    id: 'n1',
+    content: 'alpha vector sanitization canary',
+    salience: 1,
+    embedding: Buffer.from([1, 2, 3, 4]),
+    vector: [0.3, 0.4],
+    metadata: {
+      source: 'jerry',
+      embeddings: Object.assign(new Array(3), { 2: 0.6 }),
+      nested: { vectors: [[0.7, 0.8]], evidence: 'preserved' },
+    },
+  };
+  const edge = {
+    source: 'n1', target: 'n1', type: 'supports', evidence: 'preserved edge',
+    embedding: [0.9], vector: [1],
+  };
+  const before = JSON.stringify({ node, edge });
+  const pin = {
+    revision: 12,
+    descriptor: { cutoffRevision: 12 },
+    async *iterateNodes() { yield node; },
+    async *iterateEdges() { yield edge; },
+    async summarize() { return { nodeCount: 1, edgeCount: 1, clusterCount: 0 }; },
+    getEvidence(extra) {
+      return { sourceHealth: 'healthy', deltaWatermark: { revision: 12 }, ...extra };
+    },
+  };
+  const { engine, calls } = fixture();
+
+  await engine.executeQuery('alpha sanitization', operationOptions(pin));
+
+  assert.equal(calls.length, 1);
+  const providerInput = JSON.parse(calls[0].input);
+  function assertNoVectorFields(value) {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, child] of Object.entries(value)) {
+      assert.equal(['embedding', 'embeddings', 'vector', 'vectors'].includes(key), false);
+      assertNoVectorFields(child);
+    }
+  }
+  assertNoVectorFields(providerInput.source.nodes);
+  assertNoVectorFields(providerInput.source.edges);
+  assert.equal(providerInput.source.nodes[0].metadata.source, 'jerry');
+  assert.equal(providerInput.source.nodes[0].metadata.nested.evidence, 'preserved');
+  assert.equal(providerInput.source.edges[0].evidence, 'preserved edge');
+  assert.equal(JSON.stringify({ node, edge }), before);
+});
+
+test('Jerry-shaped projection is trimmed to the prompt budget and reaches the provider', async () => {
+  const pin = createSyntheticPinnedSource({
+    nodeCount: 2_000,
+    edgeCount: 4_000,
+    nodeFactory: index => ({
+      id: `n${index}`,
+      content: `jerry canary ${index} ${'x'.repeat(8 * 1024)}`,
+      salience: (index % 100) / 100,
+    }),
+  });
+  const { engine, calls } = fixture();
+
+  const result = await engine.executeQuery('jerry canary', operationOptions(pin));
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.answer, 'pinned answer');
+  assert.equal(result.metadata.promptBytes <= 8 * 1024 * 1024, true);
+  assert.equal(result.metadata.projection.nodesRetained > 0, true);
+  assert.equal(result.metadata.projection.nodesRetained < 2_000, true);
+  assert.equal(result.metadata.projection.retainedBytes < 8 * 1024 * 1024, true);
+  assert.equal(pin.stats().recordsConsumed, 6_000);
+});
+
+test('gpt-5.5 large-brain projection stays below its conservative model context budget', async () => {
+  const contextWindowTokens = 272_000;
+  const maxOutputTokens = 32_768;
+  const expectedPromptByteLimit = Math.floor(contextWindowTokens * 0.95)
+    - maxOutputTokens
+    - 8_192;
+  const captured = [];
+  const pin = createSyntheticPinnedSource({
+    nodeCount: 2_000,
+    edgeCount: 4_000,
+    nodeFactory: index => ({
+      id: `n${index}`,
+      content: `jerry canary ${index} ${'x'.repeat(8 * 1024)}`,
+      salience: (index % 100) / 100,
+    }),
+  });
+  const constrainedCatalog = {
+    version: 1,
+    providers: {
+      alpha: {
+        models: [model('alpha', 'answer-model', {
+          contextWindowTokens,
+          maxOutputTokens,
+        })],
+      },
+    },
+    defaults: {},
+  };
+  const client = {
+    providerId: 'alpha',
+    async generate(options) {
+      captured.push(options);
+      const providerInputBytes = Buffer.byteLength(options.instructions, 'utf8')
+        + Buffer.byteLength(options.input, 'utf8');
+      if (providerInputBytes > expectedPromptByteLimit) {
+        throw Object.assign(
+          new Error('Your input exceeds the context window of this model.'),
+          { code: 'provider_failed', retryable: false },
+        );
+      }
+      return complete();
+    },
+  };
+  const { engine } = fixture({ catalog: constrainedCatalog, client });
+
+  const result = await engine.executeQuery('jerry canary', operationOptions(pin));
+
+  assert.equal(result.answer, 'pinned answer');
+  assert.equal(captured.length, 1);
+  assert.equal(result.metadata.promptBudgetBytes, expectedPromptByteLimit);
+  assert.equal(result.metadata.inputBudgetTokens, expectedPromptByteLimit);
+  assert.equal(result.metadata.promptBytes <= expectedPromptByteLimit, true);
+  assert.equal(result.metadata.projection.nodesRetained > 0, true);
+  assert.equal(result.metadata.projection.nodesRetained < 2_000, true);
+  assert.equal(pin.stats().recordsConsumed, 6_000);
+});
+
+test('model budget counts Unicode and escaped JSON scaffold overhead before provider work', async () => {
+  const constrainedCatalog = {
+    version: 1,
+    providers: {
+      alpha: {
+        models: [model('alpha', 'answer-model', {
+          contextWindowTokens: 128_000,
+          maxOutputTokens: 32_768,
+        })],
+      },
+    },
+    defaults: {},
+  };
+  const item = fixture({ catalog: constrainedCatalog });
+  const hugeUnicodeQuery = '🧠"\\\n'.repeat(40_000);
+
+  await assert.rejects(
+    item.engine.executeQuery(hugeUnicodeQuery, operationOptions(sourcePin())),
+    error => error.code === 'result_too_large',
+  );
+  assert.equal(item.calls.length, 0);
+  assert.deepEqual(item.events, []);
 });
 
 test('operation query reports provider lifecycle through the canonical reportEvent seam', async () => {

@@ -11,6 +11,9 @@ const {
   issueCapability,
 } = require('../../../../shared/brain-operations/capability.cjs');
 const {
+  createDurableOperationLockCapability,
+} = require('../../../../shared/memory-source/durable-lock-authority.cjs');
+const {
   OPERATION_RESULT_ARTIFACT_MAX_BYTES,
   TERMINAL_STATES,
   assertIdentifier,
@@ -712,6 +715,7 @@ class BrainOperationCoordinator {
         providerSnapshotThrough: null,
         providerCalls: new Map(),
         attachments: new Map(),
+        sourceLockController: new AbortController(),
         stopped: false,
       };
       this.runtimes.set(record.operationId, runtime);
@@ -768,12 +772,25 @@ class BrainOperationCoordinator {
     return validateIsoDeadline(control.hardDeadlineAt);
   }
 
+  _sourceLockControl(record) {
+    const hardDeadlineAt = this._hardDeadline(record);
+    const runtime = this.runtimes.get(record.operationId);
+    return createDurableOperationLockCapability({
+      hardDeadlineAt: new Date(hardDeadlineAt).toISOString(),
+      signal: runtime?.sourceLockController?.signal || null,
+      cleanupSignal: null,
+    });
+  }
+
   _armHardDeadline(record, runtime) {
     if (runtime.hardDeadlineTimer || runtime.stopped || TERMINAL_STATES.has(record.state) || this.stopped) return;
     const deadlineAt = this._hardDeadline(record);
     const delay = Math.max(0, deadlineAt - this.now());
     runtime.hardDeadlineTimer = this.setTimeout(async () => {
       runtime.hardDeadlineTimer = null;
+      if (!runtime.sourceLockController.signal.aborted) {
+        runtime.sourceLockController.abort(coordinatorError('operation_timeout'));
+      }
       try {
         await this._enqueue(record.operationId, async () => {
           if (runtime.stopped || this.stopped || this.runtimes.get(record.operationId) !== runtime) return;
@@ -791,20 +808,52 @@ class BrainOperationCoordinator {
     }, delay);
   }
 
-  async _pinRecord(record) {
+  async _pinRecord(record, options = {}) {
     if (record.sourcePinDescriptor !== null || record.sourcePinDigest !== null) return record;
-    const pinned = await this.sourcePins.pin(record.target.canonicalRoot, record.operationId);
+    const pinned = await this.sourcePins.pin(
+      record.target.canonicalRoot,
+      record.operationId,
+      this._sourceLockControl(record),
+    );
     const descriptor = validateSourcePin(
       pinned?.descriptor,
       pinned?.digest,
       record.target.canonicalRoot,
     );
-    try {
-      return await this.store.attachSourcePin(record.operationId, {
-        expectedVersion: record.recordVersion,
+
+    let releaseUnpublished = false;
+    const publish = async () => {
+      const current = await this.store.get(record.operationId);
+      if (TERMINAL_STATES.has(current.state)) {
+        releaseUnpublished = true;
+        return current;
+      }
+      if (current.sourcePinDescriptor !== null || current.sourcePinDigest !== null) {
+        if (current.sourcePinDigest === pinned.digest
+            && sameJson(current.sourcePinDescriptor, descriptor)) return current;
+        throw coordinatorError('source_pin_conflict');
+      }
+      const attached = await this.store.attachSourcePin(record.operationId, {
+        expectedVersion: current.recordVersion,
         descriptor,
         digest: pinned.digest,
       });
+      const runtime = this.runtimes.get(record.operationId);
+      if (runtime) await this._broadcastNewEvents(runtime, current.eventSequence);
+      return attached;
+    };
+
+    try {
+      const published = options.alreadyLocked === true
+        ? await publish()
+        : await this._enqueue(record.operationId, publish);
+      if (releaseUnpublished) {
+        await this.sourcePins.releaseOperationPins(
+          record.operationId,
+          this._sourceLockControl(record),
+        );
+      }
+      return published;
     } catch (error) {
       const published = await this.store.get(record.operationId).catch(() => null);
       if (published
@@ -812,7 +861,10 @@ class BrainOperationCoordinator {
           && sameJson(published.sourcePinDescriptor, descriptor)) {
         return published;
       }
-      await this.sourcePins.releaseOperationPins(record.operationId).catch(() => {});
+      await this.sourcePins.releaseOperationPins(
+        record.operationId,
+        this._sourceLockControl(record),
+      ).catch(() => {});
       throw error;
     }
   }
@@ -846,7 +898,7 @@ class BrainOperationCoordinator {
             expectedCanonicalRoot: record.target.canonicalRoot,
             expectedDigest: record.sourcePinDigest,
             expectedRevision: record.sourcePinDescriptor.cutoffRevision,
-          });
+          }, this._sourceLockControl(record));
         validatePinnedSourceHandle(sourcePin, record);
       }
       const parameters = clone(record.parameters, 'operation_corrupt');
@@ -991,11 +1043,7 @@ class BrainOperationCoordinator {
     let record = created.record;
     this._ensureRuntime(record);
     try {
-      record = await this._enqueue(record.operationId, async () => {
-        const current = await this.store.get(record.operationId);
-        if (TERMINAL_STATES.has(current.state)) return current;
-        return policy.requiresSourcePin ? this._pinRecord(current) : current;
-      });
+      if (policy.requiresSourcePin) record = await this._pinRecord(record);
     } catch (error) {
       await this._enqueue(record.operationId, async () => {
         const current = await this.store.get(record.operationId);
@@ -1011,6 +1059,7 @@ class BrainOperationCoordinator {
       throw error;
     }
     if (TERMINAL_STATES.has(record.state)) return record;
+    if (this.stopped) return record;
 
     let workerRecord;
     try {
@@ -1901,6 +1950,12 @@ class BrainOperationCoordinator {
   async _failLocked(operationId, options) {
     let record = await this.store.get(operationId);
     if (TERMINAL_STATES.has(record.state)) return record;
+    const runtime = this.runtimes.get(operationId);
+    if (runtime?.sourceLockController && !runtime.sourceLockController.signal.aborted) {
+      runtime.sourceLockController.abort(coordinatorError(
+        sanitizeErrorCode(options.code, 'operation_failed'),
+      ));
+    }
     if (!options.skipClaimReconcile) {
       const claimed = await this._reconcileClaimedSynthesisLocked(record, { preserveMissing: true });
       if (claimed !== null) return claimed;
@@ -1955,7 +2010,10 @@ class BrainOperationCoordinator {
     return this.store.releaseSourcePinOnce(
       record.operationId,
       new Date(this.now()).toISOString(),
-      async () => this.sourcePins.releaseOperationPins(record.operationId),
+      async () => this.sourcePins.releaseOperationPins(
+        record.operationId,
+        this._sourceLockControl(record),
+      ),
     );
   }
 
@@ -2006,6 +2064,9 @@ class BrainOperationCoordinator {
     for (const call of runtime.providerCalls.values()) this._clearProviderTimer(call);
     runtime.providerCalls.clear();
     runtime.streamController?.abort(coordinatorError('coordinator_stopped'));
+    if (!runtime.sourceLockController.signal.aborted) {
+      runtime.sourceLockController.abort(coordinatorError('coordinator_stopped'));
+    }
     for (const subscriber of runtime.attachments.values()) {
       if (subscriber.signal && subscriber.signalHandler) {
         subscriber.signal.removeEventListener('abort', subscriber.signalHandler);
@@ -2108,9 +2169,16 @@ class BrainOperationCoordinator {
           });
         }
         try {
-          current = await this._pinRecord(current);
+          // Recovery pinning runs inside the operation queue, so arm the runtime
+          // first: its hard-deadline callback can abort the trusted lock wait
+          // immediately even while the queued terminal transition waits its turn.
+          this._ensureRuntime(current);
+          current = await this._pinRecord(current, { alreadyLocked: true });
         } catch (error) {
-          await this.sourcePins.releaseOperationPins(current.operationId).catch(() => {});
+          await this.sourcePins.releaseOperationPins(
+            current.operationId,
+            this._sourceLockControl(current),
+          ).catch(() => {});
           return this._failLocked(current.operationId, {
             state: 'interrupted',
             code: 'source_pin_unavailable',

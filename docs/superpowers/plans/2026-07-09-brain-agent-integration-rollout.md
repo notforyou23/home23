@@ -225,13 +225,17 @@ The coordinator derives requester identity from its configured dashboard instanc
 - `tests/agent/context-brain-retrieval.test.ts` — topK, source-state, and local-trigger preservation regressions.
 - `tests/contracts/query-facade-route.test.cjs` — compatibility request limits, target mismatch, and HTTP-200 error rejection.
 - `scripts/live-brain-tools-smoke.mjs` — imports the built agent client and real brain-tool executors, starts/attaches through the requester dashboard, records SSE activity, and waits with the production 90-minute/six-hour policy.
+- `scripts/lib/brain-acceptance-common.mjs` — creates opaque run-authority-bound receipt contexts, validates canonical output ancestry, and publishes create-new JSON/full-readback JSONL artifacts.
+- `scripts/lib/isolated-brain-fixture.mjs` — launches production coordinator/COSMO/MCP code in an externally owned controlled fixture with minimal child environments and exact root/owner/config/key/launcher bindings.
+- `scripts/list-brain-operations.mjs` — reads every requester-owned durable store through the production operator command and emits canonical nonterminal-operation evidence.
 - `scripts/hash-brain-boundaries.mjs` — inventories every regular file under the named target mutation boundaries while excluding only requester-owned operation pins/scratch.
 - `scripts/sample-process-memory.mjs` — samples fresh V8 heap/PID/restart metrics for every named dashboard/COSMO target during graph, Direct Query, and PGS canaries.
-- `scripts/guarded-pm2-save.mjs` — creates unique dry-run/apply `dump.pm2` backups, freezes and excludes PM2 modules from application-dump equality, enforces a monotonic unrelated restart baseline, saves, verifies, and restores the apply backup on a failed postcondition.
+- `scripts/guarded-pm2-save.mjs` — reserves a branded single-use result/intent transaction, retains an open verified backup capability, freezes/excludes PM2 modules, enforces a monotonic unrelated restart baseline, saves only after immediate revalidation, and rolls back both dump and receipt state on failure.
 - `scripts/cleanup-orphan-brain-projections.mjs` — performs manifest-driven, operator-approved cleanup of exact orphan dashboard projection roots while preserving brain and nonselected operation-boundary hashes.
 - `scripts/verify-live-deployment-tree.mjs` — builds/seals an external three-way expected tree and compares live working bytes without touching the live index.
 - `scripts/verify-brain-persistence.mjs` — streams the complete logical source through the production source reader against a named live brain under explicit heap/RSS bounds, proves authoritative manifest or legacy base-plus-committed-delta count/hash agreement while treating snapshots as advisory, exercises only the change-only production save path against an exact external byte clone, and confines full-rewrite load/write/reload proof to a bounded representative clone.
 - `tests/scripts/live-brain-tools-smoke.test.cjs`, `tests/scripts/hash-brain-boundaries.test.cjs`, `tests/scripts/sample-process-memory.test.cjs`, `tests/scripts/verify-brain-persistence.test.cjs`, `tests/scripts/guarded-pm2-save.test.cjs`, `tests/scripts/cleanup-orphan-brain-projections.test.cjs`, `tests/scripts/verify-live-deployment-tree.test.cjs` — controlled fixtures for terminal waits, boundary completeness, revision-change detection, fresh multi-process heap thresholds, live-load immutability, temp-clone-only saves, safe PM2 resurrection-state updates, manifest-bound orphan cleanup, and external expected-tree proof.
+- `tests/scripts/brain-acceptance-common.test.cjs`, `tests/scripts/live-brain-tools-authority.test.cjs`, `tests/scripts/isolated-brain-fixture.test.cjs`, `tests/scripts/isolated-brain-cli.test.cjs`, `tests/scripts/list-brain-operations.test.cjs` — opaque receipt authority, full canonical-set/artifact verification, isolated-child provenance/environment, production-delay CLI, endpoint-refusal, and nonterminal-store regressions.
 - `shared/memory-source/operation-context.cjs` — admits only one compatibility source projection per canonical brain across processes before UUID/scratch allocation and identity-binds cleanup quarantine.
 - `tests/shared/memory-source-operation-context.test.js`, `tests/engine/dashboard/brain-source-api.test.js`, `tests/engine/dashboard/memory-search.test.js`, `tests/cosmo23/brain-source-router.test.cjs` — compatibility admission concurrency/abort/path-turnover and retryable HTTP-503 boundary regressions.
 - `src/agents/system-prompt.ts`, `engine/src/dashboard/home23-query.js` — durable 90-minute/six-hour wait and reattachment guidance without fixed PGS estimates.
@@ -5328,7 +5332,8 @@ Run:
 
 ```bash
 node <<'NODE'
-const script = require('./package.json').scripts.test;
+const scripts = require('./package.json').scripts;
+const script = scripts.test;
 for (const file of [
   'tests/agent/brain-operations-client.test.ts',
   'tests/agent/turn-activity-lease.test.ts',
@@ -5445,6 +5450,9 @@ git commit --only package.json docs/design/COSMO23-VENDORED-PATCHES.md -m "docs:
 
 **Files:**
 - Create: `scripts/live-brain-tools-smoke.mjs`
+- Create: `scripts/lib/brain-acceptance-common.mjs`
+- Create: `scripts/lib/isolated-brain-fixture.mjs`
+- Create: `scripts/list-brain-operations.mjs`
 - Create: `scripts/hash-brain-boundaries.mjs`
 - Create: `scripts/sample-process-memory.mjs`
 - Create: `scripts/verify-brain-persistence.mjs`
@@ -5452,6 +5460,11 @@ git commit --only package.json docs/design/COSMO23-VENDORED-PATCHES.md -m "docs:
 - Create: `scripts/cleanup-orphan-brain-projections.mjs`
 - Create: `scripts/verify-live-deployment-tree.mjs`
 - Create: `tests/scripts/live-brain-tools-smoke.test.cjs`
+- Create: `tests/scripts/brain-acceptance-common.test.cjs`
+- Create: `tests/scripts/live-brain-tools-authority.test.cjs`
+- Create: `tests/scripts/isolated-brain-fixture.test.cjs`
+- Create: `tests/scripts/isolated-brain-cli.test.cjs`
+- Create: `tests/scripts/list-brain-operations.test.cjs`
 - Create: `tests/scripts/hash-brain-boundaries.test.cjs`
 - Create: `tests/scripts/sample-process-memory.test.cjs`
 - Create: `tests/scripts/verify-brain-persistence.test.cjs`
@@ -5489,7 +5502,7 @@ git commit --only package.json docs/design/COSMO23-VENDORED-PATCHES.md -m "docs:
 
 - [ ] **Step 0: Build the live-verification helpers under deterministic tests**
 
-Write the seven helper fixture tests before the scripts. `live-brain-tools-smoke.test.cjs` launches a controlled coordinator, imports the built `BrainOperationsClient` plus the real brain-tool executors, advances controlled SSE operations through delayed progress, reconnect, complete, partial, and typed failure, and proves the 90-minute/six-hour production policies are selected without sleeping. It also covers authoritative multi-operation canary/own JSONL with selected-last validation, a large pinned PGS transcript with canonical null-answer/sweepOutputs partials, a wholly isolated controlled-provider fixture, exact 3000-ms lifecycle delay, isolated synthesis disconnect/reconnect, MCP source-revision parity, typed MCP-disabled/unreachable outcomes, and dual zero policy: degraded legacy `absence_unprovable` plus strict healthy manifest `no_match`, with distinct durable operation IDs. `hash-brain-boundaries.test.cjs` proves every nested regular file, including unknown extensions, extensionless files, and files added after the fixture starts, is recursively inventoried; symlinks are recorded but not followed; all seven required named boundaries (`brain`, `run`, `pgs`, `session`, `cache`, `export`, `agency`) are present exactly once even when a root is absent; duplicate physical paths retain separate named records; a resident fixture maps both `brain` and `run` to its canonical brain root rather than the parent agent instance; a research fixture maps `run` to its canonical run root; requester-owned external pin/scratch paths are outside the target inventory; and a revision/stat/file-set change during a sibling run produces `target_changed_concurrently` rather than a false no-write pass. `sample-process-memory.test.cjs` proves per-target peak V8 used-heap, metric freshness, restart delta, and PID replacement calculations from injected dashboard/COSMO samples. `verify-brain-persistence.test.cjs` uses temporary manifest and legacy-sidecar fixtures plus injected filesystem/persistence seams to prove all of the following:
+Write the seven primary helper fixture tests plus the five shared-authority/isolated-runtime/list-helper suites before the scripts. `live-brain-tools-smoke.test.cjs` launches a controlled coordinator, imports the built `BrainOperationsClient` plus the real brain-tool executors, advances controlled SSE operations through delayed progress, reconnect, complete, partial, and typed failure, and proves the 90-minute/six-hour production policies are selected without sleeping. It also covers authoritative multi-operation canary/own JSONL with full-set-then-selected-last validation, a large pinned PGS transcript with canonical null-answer/sweepOutputs partials, a wholly isolated controlled-provider fixture, configured/effective 3000-ms lifecycle evidence, isolated synthesis disconnect/reconnect, MCP source-revision parity, typed MCP-disabled/unreachable outcomes, and dual zero policy: degraded legacy `absence_unprovable` plus strict healthy manifest `no_match`, with distinct durable operation IDs. `hash-brain-boundaries.test.cjs` proves every nested regular file, including unknown extensions, extensionless files, and files added after the fixture starts, is recursively inventoried; symlinks are recorded but not followed; all seven required named boundaries (`brain`, `run`, `pgs`, `session`, `cache`, `export`, `agency`) are present exactly once even when a root is absent; duplicate physical paths retain separate named records; a resident fixture maps both `brain` and `run` to its canonical brain root rather than the parent agent instance; a research fixture maps `run` to its canonical run root; requester-owned external pin/scratch paths are outside the target inventory; and a revision/stat/file-set change during a sibling run produces `target_changed_concurrently` rather than a false no-write pass. `sample-process-memory.test.cjs` proves per-target peak V8 used-heap, metric freshness, restart delta, and PID replacement calculations from injected dashboard/COSMO samples. `verify-brain-persistence.test.cjs` uses temporary manifest and legacy-sidecar fixtures plus injected filesystem/persistence seams to prove all of the following:
 
 - read-only mode resolves exactly `path.join(home23Root, 'instances', agent, 'brain')`, streams every logical node and edge through production `openMemorySource()` with external requester-owned scratch, hashes the complete logical streams, retains only the largest single representative record of each kind, and accepts counts that equal the authoritative format-v1 manifest summary or, for a legacy source, the production stream assembled from its selected base plus committed delta prefix;
 - a format-v1 manifest and its selected generation are strict source authority. `brain-snapshot.json` is advisory for **both** formats: missing, invalid, stale, zero, or disagreeing snapshot counts are recorded as typed snapshot status/gap evidence but never fail an otherwise valid legacy or manifest stream solely because the snapshot differs. A legacy stream has degraded health and unknown freshness, and no snapshot may replace its base-plus-committed-delta authority;
@@ -5499,7 +5512,15 @@ Write the seven helper fixture tests before the scripts. `live-brain-tools-smoke
 - the receipt states explicitly that full-live `forceFull` was not attempted because duplicating a multi-gigabyte resident graph on this host is unsafe; the real full-scale load proof is the later scoped engine boot and readiness check; and
 - guarded cleanup can remove only the exact generated clone, while the original source inventory and hashes remain byte-identical even when clone persistence or cleanup fails.
 
-`guarded-pm2-save.test.cjs` uses fixture `jlist`, PM2 module rows, and `dump.pm2` documents plus an injected `pm2 save` runner. It proves a distinct mode-0600 `wx` byte backup is made for every dry-run and apply attempt before mutation; PM2 module rows are classified, excluded from the application dump comparison, and frozen across the operation; all remaining live and dump entries (including non-Home23 apps) are normalized and compared; duplicate names, stopped/errored entries, or unrelated identity/config/status/PID/uptime drift refuse the save; an unrelated restart baseline is monotonic and may not decrease or advance after the immediate pre-save freeze; only the exact allowlisted brain processes may show the already-proved refresh transition; post-save dump equals the captured frozen application table; and any postcondition failure atomically restores the apply attempt's own backup and exits nonzero.
+`brain-acceptance-common.test.cjs` proves `receiptContext()` is a frozen opaque capability backed by a module-private binding to the exact canonical run directory and exact named `run-authority.json` inode/bytes. A handcrafted or spread context fails `receipt_context_invalid`; authority turnover fails `receipt_run_authority_changed`; hostname and canonical `startedAt` come only from run authority and appear as `hostname`/`receiptRunStartedAt` independently from operation start/completion. JSON/JSONL writers create each missing output-parent component as a canonical nonsymlink directory, reject inside/outside symlink ancestry, create mode-0600 single-link files without adopting an existing path, and revalidate directory/run-authority identity throughout. Every JSONL append rereads and compares the **entire** previously owned byte sequence before append, reads the entire resulting file after append and again after parent fsync, and refuses modified or externally appended bytes; it never validates only the last line.
+
+`live-brain-tools-authority.test.cjs` and `live-brain-tools-smoke.test.cjs` prove every receipt consumer reads the complete bounded JSON/JSONL document, validates artifact hashes and canonical context for every row, groups every unique `operationId`, rejects identity conflicts/duplicate terminals, requires exactly one terminal for every operation, and only then selects `.at(-1)` where the scenario contract says selected-last. Identity-manifest verification inventories every canonical operation receipt below the run root and rejects both unlisted terminals and listed operations without receipts. Artifact build/verify parses each JSON-like file from one identity-bound byte snapshot used for both semantics and hash, classifies valid JSON arrays/primitives as `kind:'raw'`, rejects mixed canonical/noncanonical rows, and revalidates the path set plus **every** earlier artifact after all later semantic reads. Manifest and detached digest receive their own final byte/identity readback.
+
+`isolated-brain-fixture.test.cjs` and `isolated-brain-cli.test.cjs` prove the controlled launcher owns a canonical external root carrying `fixture-owner.json` schema v2 plus `provenanceSeal`; binds `fixtureRootIdentity`, `fixtureOwnerIdentity`, each `configIdentity`, `capabilityKeyIdentity`, `receiptProvenance`, launcher PID, and random start token; and rejects any live/repository/receipt-root overlap. Children receive only the small inherited locale/path/temp allowlist plus exact binding keys and `NODE_PATH`, never parent provider/API-key/secrets environment. Each child rereads bounded mode-0600 config/key/owner files by dev/inode/hash, requires its launcher to be `ppid`, echoes the same bindings in its ready record, and refuses direct/forged invocation. Controlled auto-launch scenarios refuse every caller-supplied endpoint before loading production runtime code.
+
+`guarded-pm2-save.test.cjs` uses fixture `jlist`, PM2 module rows, and `dump.pm2` documents plus an injected `pm2 save` runner. It proves CLI mode is exactly `--mode dry-run|apply` with a normalized absolute create-new output beneath the bound receipt run. `prepareGuardedPm2ReceiptTransaction()` returns a module-private WeakMap-branded context/mode/dump-bound, single-use capability; direct apply without it fails before listing, backup, or save, and concurrent/replayed/cross-context/cross-dump use is refused. The reservation creates a mode-0600 result plus hidden same-parent intent with one UUID-v4 transaction ID. Their transaction state/path/mode/booleans must agree and `intent.outputArtifactSha256` must equal `result.artifactSha256`.
+
+Every attempt creates a distinct mode-0600 exclusive backup and retains its open verified file capability through terminal publication. Immediately before `pm2 save`, it revalidates transaction output+intent, dump identity/bytes/mode and parent, backup capability, PM2/module freeze, restart baseline, and run authority. Restore reads only the retained backup descriptor—even if its pathname was displaced—then fsyncs/chmods/renames/fsyncs and rereads exact original dump bytes/mode; there is no in-memory restore fallback. A receipt-publication failure after save triggers dump restore and rewrites both files as a cross-linked `failed-restored` pair. Artifact sealing rejects a missing, duplicate, reserved, one-sided, state-mismatched, or hash-mismatched result/intent pair.
 
 `cleanup-orphan-brain-projections.test.cjs` proves dry-run selects only immediate `dashboard-source-<uuid>` roots beneath the explicit Jerry/Forrest operation roots; requires one canonical nonsymlink Home23 root, an explicit safe agent set, all four exact engine/dashboard PM2 rows stopped with PID zero, and explicit monitored ports that equal the union of those stopped rows' `REALTIME_PORT`, `DASHBOARD_PORT`, and `MCP_HTTP_PORT` environment authority. Protected listener ports must be disjoint and their exact port/PID/command/boot/process-start inventory is identity-bound across approval, each mutation, and final readback; any monitored listener, unaccounted listener, PM2/env disagreement, unknown/open FD state, or live/unknown owner blocks selection. It excludes rather than deletes malformed, external-root, symlink, hardlink, cross-device, wrong-owner/mode, live-owner, unknown-owner, and open-FD candidates; writes a mode-0600 full-manifest receipt outside `instances`; records per-candidate logical bytes and `st_blocks*512` allocated bytes plus filesystem available bytes; and requires a separate SHA-256 approval-scope token plus bounded explicit approval actor/text and canonical UTC approval timestamp no earlier than the checksum-bound dry-run `createdAt`. That approval scope binds the canonical home, brain, and operations-root identities; exact eligible and excluded classifications, root identities, candidate trees/bytes/owners, immediate nonselected names/root identities, PM2 rows/port bindings, and protected-listener identities. Apply integrity-checks the complete captured manifest and mandatory approval-scope digest/token, runs a fresh full preflight, and refuses any approval-scope difference before mutation; only protected brain and ordinary nonselected **content bytes** plus filesystem telemetry may legitimately differ before apply, while the fresh full snapshots become the apply-start boundary baseline. Receipt/manifest inputs and final readback are identity-bound and capped at 64 MiB. Apply writes a per-candidate `pending` intent before mutation, then routes candidate/quarantine `mkdir`, `rename`, `rm`, and `rmdir` only through scope-checked wrappers that record an intent and exactly one completed/failed/unknown outcome; separately identity-bound receipt publication is never represented as part of that candidate audit. It creates a random same-parent mode-0700 exclusive quarantine container, refuses any pre-existing/raced child destination, renames only the still identity-matching candidate, rechecks owner/listener/FD authority immediately before rename **and again before removal**, rehashes quarantine, and retains changed quarantine as `partial`. Post-removal uncertainty is reported only as `removed_postcondition_failed` or `removal_state_unknown`. Its terminal receipt includes both full preflight digests plus the approval-scope digest, selected/removed byte totals, pre/post `statfs` and available-byte delta, explicit apply-start/after brain and every nonselected-root hashes, protected membership/root-identity proof, the candidate/quarantine mutation audit, separate receipt-publication evidence, and final PM2/listener/open-FD gates. Content-only changes by the required online protected writers are reported truthfully as `concurrentContentDrift` and do not make cleanup partial because every candidate/quarantine mutation is path-disjoint and eligible trees exclude symlinks/hardlinks; missing, replaced, unreadable, or membership-changed protected roots, mutation-scope violations, or runtime-gate drift remain partial/failing evidence.
 
@@ -5513,16 +5534,31 @@ Run and confirm RED because the scripts do not exist:
 
 ```bash
 node --test --test-concurrency=1 tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs tests/scripts/guarded-pm2-save.test.cjs tests/scripts/cleanup-orphan-brain-projections.test.cjs tests/scripts/verify-live-deployment-tree.test.cjs
+node --test --test-concurrency=1 tests/scripts/brain-acceptance-common.test.cjs tests/scripts/live-brain-tools-authority.test.cjs tests/scripts/isolated-brain-fixture.test.cjs tests/scripts/isolated-brain-cli.test.cjs tests/scripts/list-brain-operations.test.cjs
 node --test --test-concurrency=1 tests/shared/memory-source-operation-context.test.js tests/engine/dashboard/brain-source-api.test.js tests/engine/dashboard/memory-search.test.js tests/cosmo23/brain-source-router.test.cjs
 node --import tsx --test --test-concurrency=1 tests/agent/tools/brain.test.ts tests/agent/tools/cron.test.ts tests/agent/turn-entrypoint-callers.test.ts
 node --test --test-concurrency=1 tests/dashboard/operator-ui.test.js
 ```
 
-Implement the receipt-producing acceptance helpers as importable modules with small CLI wrappers. Except for the separately authorized pre-acceptance orphan cleaner described below, every helper requires `--receipt-run-dir`, `--receipt-run-id`, and `--authority live|isolated-controlled`; it realpaths a nonsymlink dedicated run directory, reads the immutable mode-0600 `run-authority.json` from that exact root, writes only beneath it, and includes the exact run ID, authority, implementation commit, hostname, started/completed timestamps, and artifact SHA-256 in every JSON/JSONL row. `run-authority.json` is the **sole** run/commit/tree/hostname authority. CLI/environment values are only redundant assertions: if `HOME23_RECEIPT_IMPLEMENTATION_COMMIT` or any equivalent flag is present, it must byte-equal `run-authority.json.implementationCommit` or the helper fails with `receipt_implementation_commit_mismatch`. Missing authority, conflicting run ID/authority, invalid tree/commit OIDs, or any helper-local competing commit/tree truth is a hard failure.
+Implement the receipt-producing acceptance helpers as importable modules with small CLI wrappers. Except for the separately authorized pre-acceptance orphan cleaner described below, every helper requires `--receipt-run-dir`, `--receipt-run-id`, and `--authority live|isolated-controlled` and obtains its context only through `receiptContext()`. That function canonicalizes one nonsymlink run directory; boundedly opens the exact mode-0600 single-link `run-authority.json`; validates run ID, live authority, equal expected/actual tree OIDs, implementation commit, nonempty hostname, and canonical UTC run `startedAt`; freezes the public fields; and stores the directory plus authority inode/hash/bytes in a module-private `WeakMap`. Writers accept only that exact opaque object and call `assertReceiptContextDirectoryIdentity()` before/during/after output, so a handcrafted object, spread copy, field change, run-directory turnover, or same-byte authority-file replacement fails closed.
 
-Every helper test builds a canonical `run-authority.json`, proves its commit/tree fields propagate unchanged to all output rows, and separately supplies a conflicting environment/CLI commit to require `receipt_implementation_commit_mismatch` before any output or runtime action. Isolated-controlled fixtures reuse the same run-authority commit/tree identity and vary only row authority.
+`run-authority.json` is the **sole** run/commit/tree/hostname/**run-start** authority. CLI/environment values are only redundant assertions: if `HOME23_RECEIPT_IMPLEMENTATION_COMMIT` or an equivalent flag is present, it must byte-equal `run-authority.json.implementationCommit` or fail `receipt_implementation_commit_mismatch`. Canonical rows carry the exact `hostname` and `receiptRunStartedAt`; operation `startedAt`/`completedAt` remain separately ordered operation timing. Isolated-controlled fixtures reuse the same run-authority commit/tree/hostname/run-start identity and vary only row authority.
 
-The smoke script must use production client/tool code, wait through SSE rather than shell polling, support `--query-wait-ms 5400000` and `--pgs-wait-ms 21600000`, emit one JSONL row per operation, and offer `--controlled-provider` only inside a separately launched isolated fixture. Receipt authority may be supplied by the three exact CLI flags or the equivalent `HOME23_RECEIPT_RUN_DIR`, `HOME23_RECEIPT_RUN_ID`, and `HOME23_RECEIPT_AUTHORITY` environment variables; missing/conflicting values fail, and implementation identity still comes only from `run-authority.json`. Its scenario enum is exactly `discover-canary`, `own`, `direct-query`, `sibling`, `completed-research`, `completed-research-compile`, `canonical-export`, `pgs`, `large-pgs-isolated`, `graph`, `negative-targets`, `detach-reattach`, `cancel`, `restart-reconcile`, `zero-result`, `synthesis-reconnect`, `mcp-parity`, `mcp-unavailable`, and `verify-receipts`; every query/compile scenario requires `--canary-receipt` and reuses its exact query/source revision. `discover-canary` and `own` deliberately create multiple durable operations, so their output contains one canonical terminal row for **each** operation and the selected scenario summary is the last row. Every consumer parses and validates all rows (including uniqueness and exactly one terminal per operation) before selecting `.at(-1)`; `JSON.parse(file)` or `find(...)` is forbidden for multi-operation receipts. `canonical-export` requires an existing operation receipt and calls the protected export route without resubmitting answer bytes. The negative/lifecycle scenarios use controlled or provider-free operations and still pass through the production coordinator/client/store. The isolated lifecycle fixture delays completion by exactly `3000` milliseconds under fake/controlled providers so detach, cancellation, and restart happen before terminal state without a long real wait. `--list-healthy-models --base-url <cosmo>` emits one JSON object containing explicitly probed Direct Query `modelSelection`, PGS `pgsSweep`, and PGS `pgsSynth` exact pairs or exits with typed `no_healthy_provider`.
+`writeJsonReceipt()` and `appendJsonlReceipt()` accept only normalized absolute outputs strictly below the run root. They walk/create every missing parent component one at a time as a canonical mode-0700 nonsymlink directory while retaining/rechecking dev/inode authority. JSON uses create-new publication and exact final byte readback. JSONL owns the single mode-0600 inode in-process, caps the file at 32 MiB, fully rereads and compares all prior bytes before every append, fully rereads the new bytes before close and again after parent fsync, and rejects pre-existing, replaced, modified, hardlinked, or externally extended output. `readReceiptRows()` boundedly reads the complete document and never treats `tail -1`, `JSON.parse(file)` on JSONL, or one favorable line as authority.
+
+The smoke script must use production client/tool code, wait through SSE rather than shell polling, support `--query-wait-ms 5400000` and `--pgs-wait-ms 21600000`, emit one JSONL terminal row per operation, and offer `--controlled-provider` only inside its own launcher-owned isolated fixture. Receipt authority may be supplied by the three exact CLI flags or equivalent `HOME23_RECEIPT_RUN_DIR`, `HOME23_RECEIPT_RUN_ID`, and `HOME23_RECEIPT_AUTHORITY`; missing/conflicting values fail, and implementation/hostname/run-start identity still comes only from `run-authority.json`. Its scenario enum is exactly `discover-canary`, `own`, `direct-query`, `sibling`, `completed-research`, `completed-research-compile`, `canonical-export`, `pgs`, `large-pgs-isolated`, `graph`, `negative-targets`, `detach-reattach`, `cancel`, `restart-reconcile`, `zero-result`, `synthesis-reconnect`, `mcp-parity`, `mcp-unavailable`, and `verify-receipts`; every query/compile scenario requires `--canary-receipt` and reuses its exact query/current source revision.
+
+`discover-canary` and `own` deliberately create multiple durable operations. `operationReceipts()` retains their complete canonical terminal set; `appendJsonlReceipt()` writes every row; and every consumer uses `readReceiptRows()` plus `validateCanonicalReceiptSet()` to validate canonical context, consistent identity fields, uniqueness, and exactly one terminal for every operation before `.at(-1)` can select the scenario summary. Identity-manifest verification independently inventories all canonical operation receipts beneath the run root and requires exact set equality with its grouped entries, so no terminal can be hand-selected away. `canonical-export` requires an existing canonical operation receipt and calls the protected export route without resubmitting answer bytes.
+
+For `zero-result`, healthy absence requires literal safe-integer current `deltaWatermark.revision`, equal literal safe-integer source/identity revisions when present, known freshness, healthy manifest-v1, complete coverage, exact filters/limits/target, positive safe-integer authority totals, and literal numeric zero returned totals/results in both initial and protected terminal evidence. Base-only watermarks, numeric strings, coercion, missing delta, contradictory totals, legacy implementation, or evidence inequality fail `zero_result_not_proven`. Degraded legacy evidence separately requires current delta revision but yields only `absence_unprovable`.
+
+`zero-result` and `large-pgs-isolated` auto-launch only when no `--base-url` is supplied. Any caller-supplied endpoint with `authority:'isolated-controlled'` fails `isolated_fixture_endpoint_override_refused` **before** production modules load, even when the caller previously launched that fixture. The launcher allocates and returns its own loopback dashboard/COSMO/MCP endpoints; isolated operation receipts retain only the production store and `authorizedEndpoint:null`.
+
+Production isolated CLI runs require the literal `--fixture-operation-delay-ms 3000`; `startIsolatedFixture()` rejects any other configured value as `isolated_fixture_production_delay_required`. The receipt records `configuredOperationDelayMs:3000`, actual `effectiveOperationDelayMs`, `testOnlyOperationDelay`, and `operationDelayEvidence` containing the same configured/effective/test-only triple, `capturedBeforeStop:true`, role counters/timestamps/outcomes, and `actionBeforeTerminalProven:true` for lifecycle scenarios. Only unit tests can hold the opaque WeakMap-bound `createIsolatedFixtureTestDelaySeam()` capability to shorten effective delay while still reporting configured 3000 and `testOnlyOperationDelay:true`; CLI cannot request that seam. Detach/cancel/restart actions must occur after provider-delay start and before terminal completion/abort, rather than being inferred from a configured number alone. `--list-healthy-models --base-url <cosmo>` emits one canonical JSON object containing explicitly probed Direct Query `modelSelection`, PGS `pgsSweep`, and PGS `pgsSynth` pairs or exits with typed `no_healthy_provider`.
+
+`startIsolatedFixture()` accepts only the opaque authority context and a canonical operator-owned external root disjoint from repository, live Home23, and receipt roots. The root must be empty on first ownership; the launcher creates bounded mode-0600 `fixture-owner.json` schema v2 whose `provenanceSeal` binds receipt run ID/authority/implementation/hostname/run-start plus canonical root basename/dev/inode. Per-role config files, capability-key file, and ready files are separately mode-0600, single-link, bounded, dev/inode/size/mode/uid/hash-bound capabilities; config carries only the key path/identity, never key material. Public `securityBindings`, config, and ready snapshots are frozen while restart authority remains closure-private. The three child processes are launcher-owned by PID/role/random start token and their ready files must echo exact root/owner/config/key/receipt provenance, launcher PID, configured/effective delay, test-only flag, and exact environment-key set. After the initial three-child handshake and again after a dashboard replacement handshake, the launcher revalidates every owner/config/key/ready identity and exact byte hash before accepting the fixture.
+
+Child `env` starts empty, inherits only the bounded locale/path/temp allowlist, and adds only fixture binding keys plus the dependency `NODE_PATH`; OpenAI/Anthropic/provider keys, Home23 secrets/config, and all other parent environment entries are absent. On entry, each child requires the launcher PID to equal `ppid`, validates every configured path remains a canonical fixture descendant, reconstructs an opaque run-authority context from `receiptProvenance`, rereads exact owner/config/key capabilities, and rejects a direct/forged invocation or later config/ready turnover. Restart repeats those checks before stop, spawn, and final readiness.
 
 Each durable operation emits exactly one canonical final row with
 `receiptKind:'operation-terminal'`, terminal `state`,
@@ -5541,7 +5577,7 @@ requested `pgsSynth` pair carried through the scenario. A missing pair, a
 nonempty but different provider/model, or a phase/call-ID mismatch is
 `provider_terminal_unproven`; provider prose cannot substitute for that proof.
 
-For live PGS, require a catalog/source receipt proving at least `PGS_LARGE_MIN_NODES=100000` authoritative nodes and run the configured provider on that pinned source; a 10% fraction without the size gate is not a large acceptance. If either the size gate or healthy external provider is unavailable, do **not** point a controlled provider at any live brain. Generate a 100,000-node/300,000-edge numeric-v1 source under an external `mktemp -d`, start a separate temp Home23 root with isolated requester dashboard and COSMO processes on allocated loopback ports, use isolated secrets/runtime/scratch, run `large-pgs-isolated`, capture both isolated PIDs, then guardedly stop its processes while retaining the proved fixture root and durable operation store through Step 11 protected readback. Record basename, device/inode, authority, requester, store root, and stopped PIDs; guarded removal is permitted only after every fixture operation rereads successfully. Its authority is `isolated-controlled` and the final receipt must say the live-provider large-PGS gate did not pass.
+For live PGS, require a catalog/source receipt proving at least `PGS_LARGE_MIN_NODES=100000` authoritative nodes and run the configured provider on that pinned source; a 10% fraction without the size gate is not a large acceptance. If either the size gate or healthy external provider is unavailable, do **not** point a controlled provider at any live brain. Generate a 100,000-node/300,000-edge numeric-v1 source under an external `mktemp -d`; auto-launch the isolated requester dashboard, COSMO, and MCP children on launcher-allocated loopback ports with the minimal no-provider-secret environment above; run `large-pgs-isolated`; capture all three owned PIDs plus their ready/security bindings; then guardedly stop all three while retaining the proved fixture root and durable operation store through Step 11 protected readback. Record basename, device/inode, authority, requester, store root, source hashes, configured/effective delay evidence, and all three stopped PIDs; guarded removal is permitted only after every fixture operation rereads successfully. Its authority is `isolated-controlled` and the final receipt must say the live-provider large-PGS gate did not pass.
 
 The isolated large-PGS launcher injects its exact controlled
 `{provider:'controlled',model:'controlled-pgs'}` sweep and synthesis pairs into
@@ -5556,7 +5592,13 @@ The persistence verifier accepts `--mode read-only|temp-save-clone`, `--home23-r
 
 Temp-save mode first performs the same live streaming proof, then creates its own unpredictable clone beneath the supplied external temp root, copies the full physical bytes of every selected source file plus the advisory snapshot, and checks source/clone identities and SHA-256 values before importing `persistMemoryRevision`. It supplies a change-only memory facade whose full materializer throws, appends one clone-only canary without a periodic rewrite, stream-reads the committed clone, and proves exactly one new node and no target mutation. It then force-rewrites and production-reloads only a bounded two-node/one-edge representative clone derived from the largest real live records. It refuses any writer path inside `home23Root`, records `sourceBrainDir`, `writeBrainDir`, copy hashes, canary evidence, bounded-force-full evidence, and the explicit full-live prohibition, and uses prefix/device/inode checks for guarded cleanup. It never passes a live path to `persistMemoryRevision` and leaves the external temp root empty.
 
-`guarded-pm2-save.mjs` accepts `--dump ~/.pm2/dump.pm2`, `--allow-changed <exact comma-list>`, `--ecosystem <absolute ecosystem.config.cjs>`, `--expected-configured <exact comma-list>`, `--restart-baseline <Step-3 after-stability.json>`, `--mode dry-run|apply`, and the receipt-run authority arguments. The expected list must equal every required/optional allowlisted ecosystem row that exists exactly once. It captures `pm2 jlist` immediately before each attempt, classifies PM2 modules separately, requires their identity/status/PID/restart projection to remain frozen, excludes them from the application dump equality set, and requires every expected application exactly once and online. It normalizes each application entry's name/cardinality/status/PID/restart/uptime/script/cwd/namespace/exec mode/instances/args/interpreter/node args and environment **key names only**. For unrelated applications, restart counters must be greater than or equal to the earlier rollout baseline and frozen between the attempt's immediate pre/post samples; identity/config/status/PID/uptime may not drift. Any missing expected row, unrelated difference, duplicate, stopped/errored entry, module movement, counter regression, table change between frozen pre/post snapshots, or missing dump blocks `pm2 save`. A new allowlisted row absent from the old dump is accepted only when its script/cwd/namespace/exec mode/instances/args/interpreter/node args exactly match normalized ecosystem authority. Every dry-run and apply attempt creates its own unpredictable mode-0600 `wx` backup path and refuses reuse; dry-run proves all preconditions without invoking `pm2 save`, while apply invokes exactly `pm2 save`, validates the new dump against the frozen live application table and module freeze, and atomically restores only that apply attempt's backup on any failed postcondition. It never prints environment values.
+`guarded-pm2-save.mjs` accepts `--dump ~/.pm2/dump.pm2`, `--allow-changed <exact comma-list>`, `--ecosystem <absolute ecosystem.config.cjs>`, `--expected-configured <exact comma-list>`, `--restart-baseline <Step-3 after-stability.json>`, exact `--mode dry-run|apply`, normalized absolute create-new `--output` below the receipt run, and receipt authority arguments. It rejects legacy/conflicting mode flags, positional commands, unknown options, relative/outside/symlink outputs, and apply without the opaque transaction returned by `prepareGuardedPm2ReceiptTransaction()` before listing, backup, or save.
+
+Reservation creates and keeps open a mode-0600 result file plus hidden same-parent intent file. The module-private WeakMap brand binds one UUID-v4 transaction to the exact context object, mode, dump path, output/intent paths and parent identities; it is single-use across concurrent calls and replay. Result is `receiptKind:'guarded-pm2-save-result',transactionRole:'result'`; intent is `receiptKind:'guarded-pm2-save-intent',transactionRole:'intent'`; both carry matching run/host/run-start, transaction ID/state, mode, dump/output paths, `ok`, `pm2SaveInvoked`, `restored`, `restorationVerified`, error/backup fields, and intent's `outputArtifactSha256` equals the result hash. Publication rewrites the owned inodes in place, fsyncs and fully rereads the named descriptors; it never rename-overwrites another file.
+
+The expected list must equal every required/optional allowlisted ecosystem row that exists exactly once. The helper captures `pm2 jlist`, classifies PM2 modules separately, requires their identity/status/PID/restart projection frozen, excludes them from application-dump equality, and requires every expected application exactly once and online. It normalizes name/cardinality/status/PID/restart/uptime/script/cwd/namespace/exec mode/instances/args/interpreter/node args plus environment **key names only**. For unrelated applications, restart counters must be at least the delayed baseline and freeze during the transaction; identity/config/status/PID/uptime may not drift. Any missing expected row, unrelated difference, duplicate/offline row, module movement, counter regression, or table change blocks save. A new allowlisted row absent from old dump is accepted only when its normalized ecosystem identity matches.
+
+Every dry-run/apply creates a distinct unpredictable mode-0600 exclusive backup beneath the receipt run and retains its open, identity/bytes/hash-verified file capability through terminal transaction publication. Immediately before apply invokes exactly `pm2 save`, it revalidates run authority/context, result+intent capabilities, dump named identity/bytes/mode and parent, backup capability, restart baseline, live/application/module freeze, and ecosystem authority. Post-save dump must equal the frozen live table. Any postcondition or receipt-publication failure reads restore bytes **only** from the retained backup descriptor (a displaced pathname is allowed but a changed descriptor is not), writes/fsyncs/chmods a restore temp, renames/fsyncs the dump parent, and rereads exact original bytes/mode. Publication failure after a successful save must roll the dump back and rewrite both receipts to one cross-linked `failed-restored` state; inability to retain both failure sides is `receipt_failure_evidence_unavailable`. It never prints environment values.
 
 `withEphemeralMemorySource()` must acquire an immediate, nonwaiting cross-process admission lock keyed by the exact canonical brain under `<home23Root>/runtime/brain-source-compatibility-admission-locks` **before** calling the UUID factory, creating an operation root/quota, classifying manifest versus legacy format, or opening/projecting the source. All dashboard-source, MCP, and COSMO compatibility opens share that canonical-source lock, including sources that presently appear manifest-v1 so a format transition cannot race admission. A contender returns `source_busy` with `retryable:true`; the dashboard brain-source route, dashboard memory-search boundary, and COSMO brain-source router preserve that error as HTTP 503. The admitted call returns its exact abort/callback error and releases the lock in `finally`; different canonical brain roots remain independent.
 
@@ -5570,7 +5612,7 @@ The portable runtime prompt must say ordinary query attachments wait up to 90 mi
 
 `verify-live-deployment-tree.mjs` has `prepare`, `seal`, and `verify` modes, accepts explicit base/feature/live/audit paths, uses only an external expected directory and external `GIT_INDEX_FILE`, and emits the expected/actual tree OIDs plus index/untracked hashes. It never writes the live checkout or live index.
 
-Rerun all four focused commands above; expected: all PASS. Add all seven helper test paths to `npm test` and prove each path appears exactly once in the script string. The admission, HTTP-503, runtime-prompt, durable-cron, entrypoint-caller, and dashboard-copy paths also remain explicit focused commands even when a broader test glob covers them.
+Rerun all five focused commands above; expected: all PASS. Add all seven primary helper test paths exactly once to `scripts.test`; register `brain-acceptance-common.test.cjs` exactly once in `pretest`; and register the authority/fixture/CLI trio exactly once in the one `test:brain-acceptance-runtime` command invoked exactly once by `pretest`. `list-brain-operations.test.cjs` remains exactly once in `scripts.test`. The admission, HTTP-503, runtime-prompt, durable-cron, entrypoint-caller, and dashboard-copy paths also remain explicit focused commands even when a broader test glob covers them.
 
 ```bash
 node - <<'NODE'
@@ -5583,11 +5625,24 @@ for (const file of [
   'tests/scripts/guarded-pm2-save.test.cjs',
   'tests/scripts/cleanup-orphan-brain-projections.test.cjs',
   'tests/scripts/verify-live-deployment-tree.test.cjs',
+  'tests/scripts/list-brain-operations.test.cjs',
   'tests/agent/tools/cron.test.ts',
   'tests/agent/turn-entrypoint-callers.test.ts',
 ]) {
   const count = script.split(file).length - 1;
   if (count !== 1) throw new Error(`${file} registered ${count} times`);
+}
+if ((scripts.pretest.split('tests/scripts/brain-acceptance-common.test.cjs').length - 1) !== 1
+    || (scripts.pretest.split('npm run test:brain-acceptance-runtime').length - 1) !== 1) {
+  throw new Error('brain acceptance pretest registration invalid');
+}
+for (const file of [
+  'tests/scripts/live-brain-tools-authority.test.cjs',
+  'tests/scripts/isolated-brain-fixture.test.cjs',
+  'tests/scripts/isolated-brain-cli.test.cjs',
+]) {
+  const count = scripts['test:brain-acceptance-runtime'].split(file).length - 1;
+  if (count !== 1) throw new Error(`${file} runtime registration ${count}`);
 }
 NODE
 ```
@@ -5630,6 +5685,7 @@ B_TESTS=(
 )
 C_TESTS=(
   tests/cosmo23/anthropic-client-request.test.cjs tests/cosmo23/brain-operation-worker.test.cjs
+  tests/cosmo23/brain-provider-client-registry.test.cjs
   tests/cosmo23/chat-completions-terminal.test.cjs tests/cosmo23/codex-responses-client.test.cjs
   tests/cosmo23/cross-brain-readonly.test.cjs tests/cosmo23/gpt5-client-stream.test.cjs
   tests/cosmo23/pgs-cancellation.test.cjs tests/cosmo23/pgs-engine.test.cjs
@@ -5638,23 +5694,50 @@ C_TESTS=(
   tests/cosmo23/provider-completion.test.cjs tests/cosmo23/query-engine-context.test.cjs
   tests/cosmo23/query-engine-mutation-boundary.test.cjs tests/cosmo23/query-engine-runtime.test.cjs
   tests/cosmo23/query-engine-source-pin.test.cjs tests/cosmo23/query-operation-worker.test.cjs
+  tests/dashboard/yaml-write-safety.test.js
+  tests/engine/dashboard/yaml-settings-store.test.js
+  tests/engine/dashboard/brain-operation-model-resolver.test.js
+  tests/engine/dashboard/brain-operation-coordinator.test.js
   tests/engine/dashboard/brain-synthesis-operation.test.js tests/engine/dashboard/runtime-health.test.js
   tests/engine/synthesis/synthesis-agent.test.js
   tests/engine/synthesis/synthesis-provider-registry.test.js
 )
+SCALE_PROBES=(
+  tests/engine/dashboard/memory-search-heap-probe.cjs
+  tests/shared/memory-source-graph-heap-probe.cjs
+  tests/cosmo23/query-engine-heap-probe.cjs
+  tests/cosmo23/pgs-heap-probe.cjs
+)
+PLAN_C_REQUIRED_FILES=(
+  tests/cosmo23/helpers/brain-operation-fixtures.cjs
+  tests/cosmo23/query-engine-heap-probe.cjs
+  tests/cosmo23/pgs-heap-probe.cjs
+)
+for required in "${SCALE_PROBES[@]}" "${PLAN_C_REQUIRED_FILES[@]}"; do
+  test -f "$required" || {
+    echo "Plan prerequisite missing; implement before acceptance: $required" >&2
+    exit 1
+  }
+done
 node --test --test-concurrency=1 \
   tests/scripts/cleanup-orphan-brain-projections.test.cjs \
   tests/shared/memory-source-operation-context.test.js \
   tests/engine/dashboard/brain-source-api.test.js \
   tests/engine/dashboard/memory-search.test.js \
   tests/cosmo23/brain-source-router.test.cjs
+node --test --test-concurrency=1 \
+  tests/scripts/brain-acceptance-common.test.cjs \
+  tests/scripts/live-brain-tools-authority.test.cjs \
+  tests/scripts/isolated-brain-fixture.test.cjs \
+  tests/scripts/isolated-brain-cli.test.cjs \
+  tests/scripts/list-brain-operations.test.cjs
 node --import tsx --test --test-concurrency=1 \
   tests/agent/tools/brain.test.ts tests/agent/tools/cron.test.ts \
   tests/agent/turn-entrypoint-callers.test.ts
 node --test --test-concurrency=1 tests/dashboard/operator-ui.test.js
 ```
 
-An absent path, skipped unexpected test, or nonzero focused result blocks the remediation commit. This is the sole disk-pressure exception to the normal pre-commit full matrix: Step 0D must run A-C, all seven helper tests, build, aggregate test, contracts, and portability on both the isolated commit and final combined live bytes after cleanup and before any prepare/restart.
+An absent path, skipped unexpected test, or nonzero focused result blocks the remediation commit. At this plan audit, `tests/cosmo23/helpers/brain-operation-fixtures.cjs`, `tests/cosmo23/query-engine-heap-probe.cjs`, and `tests/cosmo23/pgs-heap-probe.cjs` are missing required Plan C deliverables; they must be implemented and reviewed in source before this gate can pass, never skipped or reclassified as an external limitation. The approved query/PGS commands specify `--expose-gc` but do not specify the otherwise-required small V8 heap size; do not invent a `--max-old-space-size` value in execution evidence—resolve that design inconsistency through reviewed source/authority work before claiming the Plan C scale gate. This is the sole disk-pressure exception to the normal pre-commit full matrix: Step 0D must run A-C, all seven primary helper tests, all five authority/isolated/list-helper tests, all four standalone scale probes, build, aggregate test, contracts, and portability on both the isolated commit and final combined live bytes after cleanup and before any prepare/restart.
 
 ```bash
 git diff --cached --quiet
@@ -5665,11 +5748,18 @@ IMPLEMENTATION_PATHS=(
   cosmo23/server/lib/brain-source-router.js
   src/agent/cron-brain-query.ts src/home.ts src/agent/tools/cron.ts
   src/agents/system-prompt.ts engine/src/dashboard/home23-query.js
-  scripts/live-brain-tools-smoke.mjs scripts/hash-brain-boundaries.mjs
+  scripts/lib/brain-acceptance-common.mjs scripts/lib/isolated-brain-fixture.mjs
+  scripts/list-brain-operations.mjs scripts/live-brain-tools-smoke.mjs
+  scripts/hash-brain-boundaries.mjs
   scripts/sample-process-memory.mjs scripts/verify-brain-persistence.mjs
   scripts/guarded-pm2-save.mjs scripts/cleanup-orphan-brain-projections.mjs
   scripts/verify-live-deployment-tree.mjs
   tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs
+  tests/scripts/brain-acceptance-common.test.cjs tests/scripts/live-brain-tools-authority.test.cjs
+  tests/scripts/isolated-brain-fixture.test.cjs tests/scripts/isolated-brain-cli.test.cjs
+  tests/scripts/list-brain-operations.test.cjs
+  tests/cosmo23/helpers/brain-operation-fixtures.cjs
+  tests/cosmo23/query-engine-heap-probe.cjs tests/cosmo23/pgs-heap-probe.cjs
   tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs
   tests/scripts/verify-brain-persistence-heap-probe.cjs tests/scripts/guarded-pm2-save.test.cjs
   tests/scripts/cleanup-orphan-brain-projections.test.cjs
@@ -5698,15 +5788,107 @@ ISOLATED_ROOT=$(pwd -P)
 LIVE_ROOT=/Users/jtr/_JTR23_/release/home23
 SYSTEM_TMPDIR=$(cd "${TMPDIR:-/tmp}" && pwd -P)
 DEPLOY_AUDIT=$(mktemp -d "$SYSTEM_TMPDIR/home23-brain-deploy-$(date +%Y%m%dT%H%M%S).XXXXXX")
+DEPLOY_TREE_AUDIT="$DEPLOY_AUDIT/deployment-tree"
+test ! -e "$DEPLOY_TREE_AUDIT"
 git -C "$LIVE_ROOT" status --short --branch > "$DEPLOY_AUDIT/status-before.txt"
 git -C "$LIVE_ROOT" ls-files -s > "$DEPLOY_AUDIT/index-before.txt"
 git -C "$LIVE_ROOT" diff --cached --binary > "$DEPLOY_AUDIT/cached-before.patch"
 git -C "$LIVE_ROOT" diff --binary > "$DEPLOY_AUDIT/working-before.patch"
 git -C "$LIVE_ROOT" ls-files --others --exclude-standard > "$DEPLOY_AUDIT/untracked-before.txt"
-git -C "$LIVE_ROOT" ls-files --others --exclude-standard -z | xargs -0 -I{} sh -c \
-  'test ! -f "$1" || shasum -a 256 "$1"' _ "$LIVE_ROOT/{}" > "$DEPLOY_AUDIT/untracked-hashes-before.txt"
-LIVE_BASE=$(git -C "$LIVE_ROOT" merge-base HEAD "$IMPLEMENTATION_PUSH_COMMIT")
-git -C "$ISOLATED_ROOT" diff --name-only "$LIVE_BASE" "$IMPLEMENTATION_PUSH_COMMIT" | sort -u > "$DEPLOY_AUDIT/feature-paths.txt"
+PRIOR_TREE_AUDIT=/private/var/folders/3v/3831944110vfs7jncrj3f8g40000gn/T/home23-brain-deploy-20260711T093547.R7MpaG/tree
+read -r DEPLOYED_BASE_COMMIT PRIOR_EXPECTED_LIVE_TREE <<EOF
+$(node - "$PRIOR_TREE_AUDIT" "$LIVE_ROOT" <<'NODE'
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const [auditArg, liveArg] = process.argv.slice(2);
+const stable = (value) => Array.isArray(value)
+  ? `[${value.map(stable).join(',')}]`
+  : value && typeof value === 'object'
+    ? `{${Object.keys(value).sort().map(
+      (key) => `${JSON.stringify(key)}:${stable(value[key])}`,
+    ).join(',')}}`
+    : JSON.stringify(value);
+function verify(key, value, label) {
+  if (!value || Array.isArray(value) || typeof value !== 'object'
+      || !/^[a-f0-9]{64}$/.test(value.auditMac || '')) throw new Error(`${label}_shape`);
+  const { auditMac, ...payload } = value;
+  if (auditMac !== crypto.createHmac('sha256', key).update(stable(payload)).digest('hex')) {
+    throw new Error(`${label}_mac`);
+  }
+  return payload;
+}
+const audit = fs.realpathSync(auditArg);
+const live = fs.realpathSync(liveArg);
+if (audit !== auditArg || live !== liveArg) throw new Error('canonical_path_mismatch');
+const auditStat = fs.lstatSync(audit, { bigint: true });
+const liveStat = fs.lstatSync(live, { bigint: true });
+const keyPath = path.join(audit, 'audit-key');
+const keyStat = fs.lstatSync(keyPath, { bigint: true });
+if (!auditStat.isDirectory() || auditStat.isSymbolicLink()
+    || !liveStat.isDirectory() || liveStat.isSymbolicLink()
+    || !keyStat.isFile() || keyStat.isSymbolicLink()
+    || Number(keyStat.mode & 0o777n) !== 0o600 || keyStat.nlink !== 1n) {
+  throw new Error('identity_invalid');
+}
+const key = fs.readFileSync(keyPath);
+if (key.length !== 32) throw new Error('key_invalid');
+const authority = verify(key, JSON.parse(fs.readFileSync(
+  path.join(audit, 'audit-authority.json'), 'utf8',
+)), 'authority');
+const state = verify(key, JSON.parse(fs.readFileSync(
+  path.join(audit, 'deployment-state.verified.json'), 'utf8',
+)), 'state');
+const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+if (authority.audit?.path !== audit || authority.audit.dev !== String(auditStat.dev)
+    || authority.audit.ino !== String(auditStat.ino)
+    || authority.live?.path !== live || authority.live.dev !== String(liveStat.dev)
+    || authority.live.ino !== String(liveStat.ino)
+    || authority.keySha256 !== crypto.createHash('sha256').update(key).digest('hex')
+    || state.helper !== 'verify-live-deployment-tree' || state.artifact !== 'state'
+    || state.phase !== 'verified' || state.auditId !== authority.auditId
+    || state.auditDir !== audit || state.liveRoot !== live
+    || state.base !== authority.base || state.feature !== authority.feature
+    || !oid.test(state.feature || '') || !oid.test(state.expectedTree || '')
+    || state.expectedTree !== state.actualTree
+    || !Array.isArray(state.unrelatedUntracked) || state.unrelatedUntracked.length !== 0) {
+  throw new Error('prior_deployment_authority_invalid');
+}
+process.stdout.write(`${state.feature} ${state.expectedTree}\n`);
+NODE
+)
+EOF
+test "$DEPLOYED_BASE_COMMIT" = 07070114640b48256ffd264a24b222c8cfa53534
+test "$PRIOR_EXPECTED_LIVE_TREE" = 662f4101b82ca5874286c4d51e6c96576daf1042
+git -C "$ISOLATED_ROOT" merge-base --is-ancestor \
+  "$DEPLOYED_BASE_COMMIT" "$IMPLEMENTATION_PUSH_COMMIT"
+git -C "$ISOLATED_ROOT" diff --quiet \
+  "$DEPLOYED_BASE_COMMIT" "$IMPLEMENTATION_PUSH_COMMIT" -- \
+  engine/src/circulatory/sweeper.js
+BASELINE_TREE_AUDIT="$DEPLOY_AUDIT/deployed-baseline"
+test ! -e "$BASELINE_TREE_AUDIT"
+node "$ISOLATED_ROOT/scripts/verify-live-deployment-tree.mjs" prepare \
+  --base "$DEPLOYED_BASE_COMMIT" --feature "$DEPLOYED_BASE_COMMIT" \
+  --live-root "$LIVE_ROOT" --audit-dir "$BASELINE_TREE_AUDIT"
+node "$ISOLATED_ROOT/scripts/verify-live-deployment-tree.mjs" seal \
+  --audit-dir "$BASELINE_TREE_AUDIT"
+test "$(node -p 'require(process.argv[1]).expectedTree' \
+  "$BASELINE_TREE_AUDIT/deployment-tree.json")" = "$PRIOR_EXPECTED_LIVE_TREE"
+node "$ISOLATED_ROOT/scripts/verify-live-deployment-tree.mjs" verify \
+  --audit-dir "$BASELINE_TREE_AUDIT"
+node - "$BASELINE_TREE_AUDIT/deployment-tree.json" \
+  "$PRIOR_EXPECTED_LIVE_TREE" <<'NODE'
+const document = require(process.argv[2]);
+const expected = process.argv[3];
+if (document.phase !== 'verified' || document.expectedTree !== expected
+    || document.actualTree !== expected || document.indexUnchanged !== true
+    || document.unrelatedUntrackedUnchanged !== true
+    || !Array.isArray(document.unrelatedUntracked)
+    || document.unrelatedUntracked.length !== 0) process.exit(1);
+NODE
+git -C "$ISOLATED_ROOT" diff --name-only \
+  "$DEPLOYED_BASE_COMMIT" "$IMPLEMENTATION_PUSH_COMMIT" \
+  | sort -u > "$DEPLOY_AUDIT/feature-paths.txt"
 { git -C "$LIVE_ROOT" diff --name-only; git -C "$LIVE_ROOT" diff --cached --name-only; git -C "$LIVE_ROOT" ls-files --others --exclude-standard; } | sort -u > "$DEPLOY_AUDIT/pending-paths.txt"
 comm -12 "$DEPLOY_AUDIT/feature-paths.txt" "$DEPLOY_AUDIT/pending-paths.txt" > "$DEPLOY_AUDIT/overlap-paths.txt"
 ```
@@ -5726,9 +5908,6 @@ if git -C "$LIVE_ROOT" diff --quiet \
   git -C "$LIVE_ROOT" diff --quiet
   git -C "$LIVE_ROOT" diff --cached --quiet
   git -C "$LIVE_ROOT" ls-files -s > "$DEPLOY_AUDIT/index-after.txt"
-  git -C "$LIVE_ROOT" ls-files --others --exclude-standard -z | xargs -0 -I{} sh -c \
-    'test ! -f "$1" || shasum -a 256 "$1"' _ "$LIVE_ROOT/{}" > "$DEPLOY_AUDIT/untracked-hashes-after.txt"
-  cmp "$DEPLOY_AUDIT/untracked-hashes-before.txt" "$DEPLOY_AUDIT/untracked-hashes-after.txt"
   export DEPLOYMENT_MODE IMPLEMENTATION_PUSH_COMMIT EXPECTED_LIVE_TREE ACTUAL_LIVE_TREE
   node - "$DEPLOY_AUDIT/clean-fast-forward.json" <<'NODE'
 const fs = require('node:fs');
@@ -5750,12 +5929,21 @@ If `DEPLOYMENT_MODE=combined`, preserve pending work without stashing, resetting
 ```bash
 if test "$DEPLOYMENT_MODE" = combined; then
   node "$ISOLATED_ROOT/scripts/verify-live-deployment-tree.mjs" prepare \
-    --base "$LIVE_BASE" --feature "$IMPLEMENTATION_PUSH_COMMIT" \
-    --live-root "$LIVE_ROOT" --audit-dir "$DEPLOY_AUDIT"
+    --base "$DEPLOYED_BASE_COMMIT" --feature "$IMPLEMENTATION_PUSH_COMMIT" \
+    --live-root "$LIVE_ROOT" --audit-dir "$DEPLOY_TREE_AUDIT"
   node "$ISOLATED_ROOT/scripts/verify-live-deployment-tree.mjs" seal \
-    --base "$LIVE_BASE" --feature "$IMPLEMENTATION_PUSH_COMMIT" \
-    --live-root "$LIVE_ROOT" --audit-dir "$DEPLOY_AUDIT"
-  EXPECTED_LIVE_TREE=$(node -p "require(process.argv[1]).expectedTree" "$DEPLOY_AUDIT/deployment-tree.json")
+    --audit-dir "$DEPLOY_TREE_AUDIT"
+  EXPECTED_LIVE_TREE=$(node -p "require(process.argv[1]).expectedTree" "$DEPLOY_TREE_AUDIT/deployment-tree.json")
+  node - "$DEPLOY_TREE_AUDIT/three-way.jsonl" <<'NODE'
+const fs = require('node:fs');
+const rows = fs.readFileSync(process.argv[2], 'utf8').trim().split('\n').map(JSON.parse);
+const liveRows = rows.filter((row) => row.resolution === 'live');
+const featureRows = rows.filter((row) => row.resolution === 'feature');
+if (liveRows.length !== 1
+    || liveRows[0].path !== 'engine/src/circulatory/sweeper.js'
+    || featureRows.length !== rows.length - 1
+    || rows.some((row) => !['live', 'feature'].includes(row.resolution))) process.exit(1);
+NODE
 fi
 ```
 
@@ -5768,14 +5956,17 @@ if test "$DEPLOYMENT_MODE" = combined; then
   cmp "$DEPLOY_AUDIT/index-before.txt" "$DEPLOY_AUDIT/index-after.txt"
   cmp "$DEPLOY_AUDIT/cached-before.patch" "$DEPLOY_AUDIT/cached-after.patch"
   node "$ISOLATED_ROOT/scripts/verify-live-deployment-tree.mjs" verify \
-    --base "$LIVE_BASE" --feature "$IMPLEMENTATION_PUSH_COMMIT" \
-    --live-root "$LIVE_ROOT" --audit-dir "$DEPLOY_AUDIT"
-  ACTUAL_LIVE_TREE=$(node -p "require(process.argv[1]).actualTree" "$DEPLOY_AUDIT/deployment-tree.json")
+    --audit-dir "$DEPLOY_TREE_AUDIT"
+  ACTUAL_LIVE_TREE=$(node -p "require(process.argv[1]).actualTree" "$DEPLOY_TREE_AUDIT/deployment-tree.json")
   test "$EXPECTED_LIVE_TREE" = "$ACTUAL_LIVE_TREE"
+  node - "$DEPLOY_TREE_AUDIT/deployment-tree.json" <<'NODE'
+const document = require(process.argv[2]);
+if (document.phase !== 'verified'
+    || document.expectedTree !== document.actualTree
+    || document.indexUnchanged !== true
+    || document.unrelatedUntrackedUnchanged !== true) process.exit(1);
+NODE
 fi
-git -C "$LIVE_ROOT" ls-files --others --exclude-standard -z | xargs -0 -I{} sh -c \
-  'test ! -f "$1" || shasum -a 256 "$1"' _ "$LIVE_ROOT/{}" > "$DEPLOY_AUDIT/untracked-hashes-after.txt"
-cmp "$DEPLOY_AUDIT/untracked-hashes-before.txt" "$DEPLOY_AUDIT/untracked-hashes-after.txt"
 cd "$LIVE_ROOT"
 git diff --check
 ```
@@ -5812,7 +6003,7 @@ const path = require('node:path');
 const [rootArgument, output] = process.argv.slice(2);
 const root = fs.realpathSync(rootArgument);
 const stat = fs.lstatSync(rootArgument);
-const oid = /^[a-f0-9]{40}$/;
+const oid = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 if (stat.isSymbolicLink() || !stat.isDirectory() || root !== rootArgument
     || output !== path.join(root, 'run-authority.json')
     || !oid.test(process.env.IMPLEMENTATION_PUSH_COMMIT || '')
@@ -5850,9 +6041,11 @@ if (!written.isFile() || written.isSymbolicLink() || (written.mode & 0o777) !== 
 NODE
 ```
 
-`run-authority.json` is created once and is the strict, immutable, sole authority for receipt run ID, implementation commit, expected/actual live tree, and hostname. All helper invocations inherit the exact assertions above or pass equivalent run-directory/run-ID/authority flags, but every helper must reread the file and derive `implementationCommit` from it. An asserted commit mismatch is `receipt_implementation_commit_mismatch`; helpers never fall back to `HEAD`, an environment value, or their own tree observation. This applies equally when `HOME23_RECEIPT_AUTHORITY=isolated-controlled`: isolated operation authority changes, but run/commit/tree identity does not. Every helper-produced JSON/JSONL row must match the file's run ID and implementation commit, and every terminal operation row must carry both.
+`run-authority.json` is created once and is the strict, immutable, sole authority for receipt run ID, implementation commit, expected/actual live tree, hostname, and canonical run `startedAt`. All helper invocations call `receiptContext()`; redundant CLI/environment assertions may only equal that file. The returned frozen object is opaque—its public shape is insufficient without the module-private binding to exact run-directory identity and exact authority inode/hash/bytes. A spread/copy/handcrafted context fails `receipt_context_invalid`; authority replacement fails `receipt_run_authority_changed`; commit mismatch fails `receipt_implementation_commit_mismatch`. Isolated operation authority changes only the row authority: run/commit/tree/hostname/`receiptRunStartedAt` stay identical. Operation start/completion remain separate row fields and may not overwrite run start.
 
-Raw PM2/curl/TAP output is named directly under `$LIVE_RECEIPT_DIR`; disposable external clones use `$SYSTEM_TMPDIR` explicitly. Isolated commands set `HOME23_RECEIPT_AUTHORITY=isolated-controlled` and name outputs directly under `$ISOLATED_RECEIPT_DIR`. Raw third-party captures that cannot embed fields are classified `kind:'raw'` in the final artifact manifest and receive run ID/authority/implementation commit on that entry through their directory plus `run-authority.json`. Build exactly one immutable `artifact-manifest.json` only in Step 15, after fixture cleanup, guarded PM2 save, all final TAP/readback artifacts, and status-push evidence already exist. Its builder recursively hashes every regular file without following symlinks, excluding only the manifest and detached digest while constructing them, validates every machine receipt against `run-authority.json`, then writes `artifact-manifest.json` atomically and `artifact-manifest.sha256` over its final bytes. The separate `--verify-artifact-manifest` mode is read-only and must not write an output inside the run root. No acceptance artifact may be added after that final path-set seal. A reused path, pre-existing file, outside realpath, symlink, mixed run ID, mismatched implementation commit, or missing authority stops acceptance.
+Raw PM2/curl/TAP output is named directly under `$LIVE_RECEIPT_DIR`; disposable external clones use `$SYSTEM_TMPDIR` explicitly. Isolated commands set `HOME23_RECEIPT_AUTHORITY=isolated-controlled` and name canonical outputs directly under `$ISOLATED_RECEIPT_DIR`. All helper-written JSON/JSONL uses component-wise canonical nonsymlink ancestry and create-new/full-readback publication. Raw third-party captures that cannot embed canonical fields are `kind:'raw'` in the final artifact manifest and receive run/authority/commit tags on their artifact entry. A valid JSON array or primitive remains raw evidence—it is never misparsed as receipt rows—while malformed `.json`/`.jsonl` is a hard `artifact_json_invalid` failure.
+
+Build exactly one immutable `artifact-manifest.json` only in Step 15, after isolated shutdown/readback/cleanup evidence, guarded PM2 output+intent pairs, all final TAP/readback artifacts, and status-push evidence exist. The builder captures the sorted path set; for each JSON-like file performs one bounded identity-stable byte snapshot used for parsing **and** hashing; validates every canonical row and the complete global one-terminal-per-operation inventory; validates every guarded PM2 transaction has exactly one mutually consistent result/intent pair; classifies noncanonical arrays/primitives raw; hashes non-JSON files; then requires the path set unchanged and revalidates every artifact's hash/dev/inode/size/mtime/ctime before manifest publication and again after detached-digest publication. `--verify-artifact-manifest` is read-only, repeats semantic/pair/global-operation validation from one snapshot per JSON artifact, then revalidates all artifacts after later reads and finally rereads identical manifest/digest bytes and identities. No artifact may be added after sealing. A reused path, outside/symlink/hardlinked artifact, mixed canonical/raw row set, unlisted operation, incomplete transaction pair, concurrent change, mixed run ID/authority/commit, or missing authority stops acceptance.
 
 - [ ] **Step 0D: Clean the proved projection storm under explicit approval, correct live guidance, then run deferred full gates**
 
@@ -6182,12 +6375,28 @@ cd "$ISOLATED_ROOT"
 node --test --test-concurrency=1 "${A_TESTS[@]}" | tee "$LIVE_RECEIPT_DIR/isolated-plan-a.tap"
 node --test --test-concurrency=1 "${B_TESTS[@]}" | tee "$LIVE_RECEIPT_DIR/isolated-plan-b.tap"
 node --test --test-concurrency=1 "${C_TESTS[@]}" | tee "$LIVE_RECEIPT_DIR/isolated-plan-c.tap"
+node --expose-gc tests/engine/dashboard/memory-search-heap-probe.cjs \
+  | tee "$LIVE_RECEIPT_DIR/isolated-memory-search-heap-probe.tap"
+node --max-old-space-size=192 --expose-gc \
+  tests/shared/memory-source-graph-heap-probe.cjs \
+  | tee "$LIVE_RECEIPT_DIR/isolated-memory-graph-heap-probe.tap"
+node --expose-gc tests/cosmo23/query-engine-heap-probe.cjs \
+  | tee "$LIVE_RECEIPT_DIR/isolated-query-engine-heap-probe.tap"
+node --expose-gc tests/cosmo23/pgs-heap-probe.cjs \
+  | tee "$LIVE_RECEIPT_DIR/isolated-pgs-heap-probe.tap"
 node --test --test-concurrency=1 \
   tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs \
   tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs \
   tests/scripts/guarded-pm2-save.test.cjs tests/scripts/cleanup-orphan-brain-projections.test.cjs \
   tests/scripts/verify-live-deployment-tree.test.cjs \
   | tee "$LIVE_RECEIPT_DIR/isolated-plan-d-helpers.tap"
+node --test --test-concurrency=1 \
+  tests/scripts/brain-acceptance-common.test.cjs \
+  tests/scripts/live-brain-tools-authority.test.cjs \
+  tests/scripts/isolated-brain-fixture.test.cjs \
+  tests/scripts/isolated-brain-cli.test.cjs \
+  tests/scripts/list-brain-operations.test.cjs \
+  | tee "$LIVE_RECEIPT_DIR/isolated-plan-d-authority-fixture.tap"
 node --import tsx --test --test-concurrency=1 \
   tests/agent/tools/brain.test.ts tests/agent/tools/cron.test.ts \
   tests/agent/turn-entrypoint-callers.test.ts \
@@ -6200,15 +6409,39 @@ npm run test:contracts | tee "$LIVE_RECEIPT_DIR/isolated-contracts.tap"
 git diff --check
 
 cd "$LIVE_ROOT"
+git rev-parse HEAD > "$DEPLOY_AUDIT/live-head-before-gates.txt"
+git ls-files -s > "$DEPLOY_AUDIT/live-index-before-gates.txt"
+git diff --cached --binary > "$DEPLOY_AUDIT/live-cached-before-gates.patch"
+git diff --binary > "$DEPLOY_AUDIT/live-working-before-gates.patch"
+git status --short --branch > "$DEPLOY_AUDIT/live-status-before-gates.txt"
+git ls-files --others --exclude-standard -z | while IFS= read -r -d '' file; do
+  test ! -f "$file" || shasum -a 256 "$file"
+done > "$DEPLOY_AUDIT/live-untracked-before-gates.sha256"
 node --test --test-concurrency=1 "${A_TESTS[@]}" | tee "$LIVE_RECEIPT_DIR/live-plan-a.tap"
 node --test --test-concurrency=1 "${B_TESTS[@]}" | tee "$LIVE_RECEIPT_DIR/live-plan-b.tap"
 node --test --test-concurrency=1 "${C_TESTS[@]}" | tee "$LIVE_RECEIPT_DIR/live-plan-c.tap"
+node --expose-gc tests/engine/dashboard/memory-search-heap-probe.cjs \
+  | tee "$LIVE_RECEIPT_DIR/live-memory-search-heap-probe.tap"
+node --max-old-space-size=192 --expose-gc \
+  tests/shared/memory-source-graph-heap-probe.cjs \
+  | tee "$LIVE_RECEIPT_DIR/live-memory-graph-heap-probe.tap"
+node --expose-gc tests/cosmo23/query-engine-heap-probe.cjs \
+  | tee "$LIVE_RECEIPT_DIR/live-query-engine-heap-probe.tap"
+node --expose-gc tests/cosmo23/pgs-heap-probe.cjs \
+  | tee "$LIVE_RECEIPT_DIR/live-pgs-heap-probe.tap"
 node --test --test-concurrency=1 \
   tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs \
   tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs \
   tests/scripts/guarded-pm2-save.test.cjs tests/scripts/cleanup-orphan-brain-projections.test.cjs \
   tests/scripts/verify-live-deployment-tree.test.cjs \
   | tee "$LIVE_RECEIPT_DIR/live-plan-d-helpers.tap"
+node --test --test-concurrency=1 \
+  tests/scripts/brain-acceptance-common.test.cjs \
+  tests/scripts/live-brain-tools-authority.test.cjs \
+  tests/scripts/isolated-brain-fixture.test.cjs \
+  tests/scripts/isolated-brain-cli.test.cjs \
+  tests/scripts/list-brain-operations.test.cjs \
+  | tee "$LIVE_RECEIPT_DIR/live-plan-d-authority-fixture.tap"
 node --import tsx --test --test-concurrency=1 \
   tests/agent/tools/brain.test.ts tests/agent/tools/cron.test.ts \
   tests/agent/turn-entrypoint-callers.test.ts \
@@ -6219,6 +6452,21 @@ npm run build | tee "$LIVE_RECEIPT_DIR/live-build.txt"
 npm test | tee "$LIVE_RECEIPT_DIR/live-npm-test.tap"
 npm run test:contracts | tee "$LIVE_RECEIPT_DIR/live-contracts.tap"
 git diff --check
+git rev-parse HEAD > "$DEPLOY_AUDIT/live-head-after-gates.txt"
+git ls-files -s > "$DEPLOY_AUDIT/live-index-after-gates.txt"
+git diff --cached --binary > "$DEPLOY_AUDIT/live-cached-after-gates.patch"
+git diff --binary > "$DEPLOY_AUDIT/live-working-after-gates.patch"
+git status --short --branch > "$DEPLOY_AUDIT/live-status-after-gates.txt"
+git ls-files --others --exclude-standard -z | while IFS= read -r -d '' file; do
+  test ! -f "$file" || shasum -a 256 "$file"
+done > "$DEPLOY_AUDIT/live-untracked-after-gates.sha256"
+cmp "$DEPLOY_AUDIT/live-head-before-gates.txt" "$DEPLOY_AUDIT/live-head-after-gates.txt"
+cmp "$DEPLOY_AUDIT/live-index-before-gates.txt" "$DEPLOY_AUDIT/live-index-after-gates.txt"
+cmp "$DEPLOY_AUDIT/live-cached-before-gates.patch" "$DEPLOY_AUDIT/live-cached-after-gates.patch"
+cmp "$DEPLOY_AUDIT/live-working-before-gates.patch" "$DEPLOY_AUDIT/live-working-after-gates.patch"
+cmp "$DEPLOY_AUDIT/live-status-before-gates.txt" "$DEPLOY_AUDIT/live-status-after-gates.txt"
+cmp "$DEPLOY_AUDIT/live-untracked-before-gates.sha256" \
+  "$DEPLOY_AUDIT/live-untracked-after-gates.sha256"
 ```
 
 Expected: the reviewed live preflight selects 248 roots and excludes seven, cleanup reclaims approximately 38.67 decimal GB of selected allocation, and every excluded root—including all six hardlink-pair crash-window roots and the zero candidate—retains its approved identity and protected membership. Zero structural scope drift is mandatory: Home23/brain/operations/nonselected root identities and immediate protected membership stay intact. Identity-stable brain/nonselected content written by required online protected writers may advance; every such before/after digest difference must reconcile exactly to `concurrentContentDrift`, and no unreported content difference is accepted. Selected/removed byte aggregates agree; all candidate/quarantine mutation attempts have intent plus completed outcomes; separately named receipt-publication evidence passes; `statfs` records positive recovered capacity; final PM2/protected-listener/open-FD gates pass; adequate disk/memory headroom is restored; and all deferred gates pass before any prepare or start. Any different live classification, structural drift, partial/removal-unknown state, or mutation-audit failure stops for review. The external guidance backups remain retained for operator recovery through final acceptance; do not copy their contents or absolute paths into Git.
@@ -6824,50 +7072,62 @@ node scripts/live-brain-tools-smoke.mjs \
   --scenario discover-canary \
   --output "$LIVE_RECEIPT_DIR/brain-own-canary.jsonl"
 node - "$LIVE_RECEIPT_DIR/brain-own-canary.jsonl" "$RECEIPT_RUN_DIR/run-authority.json" <<'NODE'
-const fs = require('node:fs');
+const path = require('node:path');
 const [canaryFile, authorityFile] = process.argv.slice(2);
-const authority = JSON.parse(fs.readFileSync(authorityFile, 'utf8'));
-const rows = fs.readFileSync(canaryFile, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-if (rows.length < 2) throw new Error('discover-canary did not emit every operation terminal');
-const operationIds = new Set();
-for (const row of rows) {
-  if (row.receiptKind !== 'operation-terminal' || row.scenario !== 'discover-canary'
-      || row.protectedResultRead !== true || !row.operationId || operationIds.has(row.operationId)
-      || row.receiptRunId !== authority.receiptRunId || row.authority !== 'live'
-      || row.implementationCommit !== authority.implementationCommit) {
-    throw new Error('discover-canary operation receipt set invalid');
+(async () => {
+  const common = await import('./scripts/lib/brain-acceptance-common.mjs');
+  const smoke = await import('./scripts/live-brain-tools-smoke.mjs');
+  const context = await common.receiptContext({
+    'receipt-run-dir': path.dirname(authorityFile),
+    'receipt-run-id': process.env.RECEIPT_RUN_ID,
+    authority: 'live',
+  }, process.env);
+  const validated = smoke.validateCanonicalReceiptSet(
+    await smoke.readReceiptRows(canaryFile), context, {
+      expectedAuthority: 'live', expectedScenario: 'discover-canary',
+      expectedRequester: 'jerry', requireTerminalPerOperation: true,
+      allRowsTerminal: true, selectedLast: true,
+    },
+  );
+  if (validated.rows.length < 2 || validated.operations.size < 2) {
+    throw new Error('discover-canary did not emit every operation terminal');
   }
-  operationIds.add(row.operationId);
-}
-const canary = rows.at(-1);
-if (!canary.query || !canary.nodeId || !Number.isSafeInteger(canary.sourceRevision)) process.exit(1);
-const evidence = canary.sourceEvidence;
-const authoritativeNodes = evidence?.authoritativeTotals?.nodes;
-const returnedNodes = evidence?.returnedTotals?.nodes;
-const exactPositive = evidence?.matchOutcome === 'matches'
-  && Number.isSafeInteger(authoritativeNodes) && authoritativeNodes > 0
-  && Number.isSafeInteger(returnedNodes) && returnedNodes > 0
-  && returnedNodes <= authoritativeNodes;
-const healthy = canary.sourceHealth === 'healthy'
-  && evidence?.sourceHealth === 'healthy'
-  && exactPositive;
-const degradedExactMatch = canary.sourceHealth === 'degraded'
-  && evidence?.sourceHealth === 'degraded'
-  && evidence.freshness === 'unknown'
-  && exactPositive;
-if (!healthy && !degradedExactMatch) process.exit(1);
-if (evidence?.selectedBrain !== canary.selectedBrain) process.exit(1);
-const evidenceRevision = [
-  evidence?.revision,
-  evidence?.sourceRevision,
-  evidence?.deltaWatermark?.revision,
-  evidence?.baseWatermark?.revision,
-  evidence?.identity?.revision,
-].find(Number.isSafeInteger);
-if (evidenceRevision !== canary.sourceRevision) process.exit(1);
-console.log(JSON.stringify({ query: canary.query, nodeId: canary.nodeId,
-  sourceRevision: canary.sourceRevision, sourceHealth: canary.sourceHealth,
-  matchOutcome: evidence.matchOutcome, freshness: evidence.freshness }));
+  const canary = validated.selected;
+  if (!canary.query || !canary.nodeId || !Number.isSafeInteger(canary.sourceRevision)) {
+    throw new Error('selected canary identity invalid');
+  }
+  const evidence = canary.sourceEvidence;
+  const authoritativeNodes = evidence?.authoritativeTotals?.nodes;
+  const returnedNodes = evidence?.returnedTotals?.nodes;
+  const exactPositive = evidence?.matchOutcome === 'matches'
+    && Number.isSafeInteger(authoritativeNodes) && authoritativeNodes > 0
+    && Number.isSafeInteger(returnedNodes) && returnedNodes > 0
+    && returnedNodes <= authoritativeNodes;
+  const healthy = canary.sourceHealth === 'healthy'
+    && evidence?.sourceHealth === 'healthy' && exactPositive;
+  const degradedExactMatch = canary.sourceHealth === 'degraded'
+    && evidence?.sourceHealth === 'degraded'
+    && evidence.freshness === 'unknown' && exactPositive;
+  const currentRevision = evidence?.deltaWatermark?.revision;
+  const optionalCurrent = [evidence?.revision, evidence?.sourceRevision,
+    evidence?.identity?.revision].filter((value) => value !== undefined);
+  if ((!healthy && !degradedExactMatch)
+      || evidence?.selectedBrain !== canary.selectedBrain
+      || !Number.isSafeInteger(currentRevision) || currentRevision < 0
+      || optionalCurrent.some(
+        (value) => !Number.isSafeInteger(value) || value !== currentRevision,
+      )
+      || (evidence?.baseWatermark !== undefined
+        && (!Number.isSafeInteger(evidence.baseWatermark?.revision)
+          || evidence.baseWatermark.revision > currentRevision))
+      || currentRevision !== canary.sourceRevision) {
+    throw new Error('canary source evidence invalid');
+  }
+  console.log(JSON.stringify({ query: canary.query, nodeId: canary.nodeId,
+    sourceRevision: canary.sourceRevision, sourceHealth: canary.sourceHealth,
+    matchOutcome: evidence.matchOutcome, freshness: evidence.freshness }));
+  await common.assertReceiptContextDirectoryIdentity(context);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 NODE
 node scripts/live-brain-tools-smoke.mjs \
   --base-url http://127.0.0.1:5002 --caller-agent jerry --scenario own \
@@ -6875,27 +7135,32 @@ node scripts/live-brain-tools-smoke.mjs \
   --query-wait-ms 5400000 --pgs-wait-ms 21600000 \
   --output "$LIVE_RECEIPT_DIR/brain-own.jsonl"
 node - "$LIVE_RECEIPT_DIR/brain-own.jsonl" "$RECEIPT_RUN_DIR/run-authority.json" <<'NODE'
-const fs = require('node:fs');
+const path = require('node:path');
 const [receiptFile, authorityFile] = process.argv.slice(2);
-const authority = JSON.parse(fs.readFileSync(authorityFile, 'utf8'));
-const rows = fs.readFileSync(receiptFile, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-if (rows.length !== 4) throw new Error(`own emitted ${rows.length} terminal rows, expected four`);
-const operationIds = new Set();
-for (const row of rows) {
-  if (row.receiptKind !== 'operation-terminal' || row.scenario !== 'own'
-      || row.protectedResultRead !== true || row.requesterAgent !== 'jerry'
-      || !row.operationId || operationIds.has(row.operationId)
-      || row.receiptRunId !== authority.receiptRunId || row.authority !== 'live'
-      || row.implementationCommit !== authority.implementationCommit) {
-    throw new Error('own operation receipt set invalid');
+(async () => {
+  const common = await import('./scripts/lib/brain-acceptance-common.mjs');
+  const smoke = await import('./scripts/live-brain-tools-smoke.mjs');
+  const context = await common.receiptContext({
+    'receipt-run-dir': path.dirname(authorityFile),
+    'receipt-run-id': process.env.RECEIPT_RUN_ID,
+    authority: 'live',
+  }, process.env);
+  const validated = smoke.validateCanonicalReceiptSet(
+    await smoke.readReceiptRows(receiptFile), context, {
+      expectedAuthority: 'live', expectedScenario: 'own', expectedRequester: 'jerry',
+      requireTerminalPerOperation: true, allRowsTerminal: true, selectedLast: true,
+    },
+  );
+  if (validated.rows.length !== 4 || validated.operations.size !== 4) {
+    throw new Error(`own emitted ${validated.operations.size} operations, expected four`);
   }
-  operationIds.add(row.operationId);
-}
-const selected = rows.at(-1);
-if (selected.operationType !== 'query' || !selected.canaryNodeId
-    || !Number.isSafeInteger(selected.canarySourceRevision)) {
-  throw new Error('own selected-last query receipt invalid');
-}
+  const selected = validated.selected;
+  if (selected.operationType !== 'query' || !selected.canaryNodeId
+      || !Number.isSafeInteger(selected.canarySourceRevision)) {
+    throw new Error('own selected-last query receipt invalid');
+  }
+  await common.assertReceiptContextDirectoryIdentity(context);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 NODE
 node scripts/sample-process-memory.mjs \
   --target dashboard=pm2:home23-jerry-dash --target cosmo=pm2:home23-cosmo23 \
@@ -6912,21 +7177,31 @@ node scripts/live-brain-tools-smoke.mjs \
 node - "$LIVE_RECEIPT_DIR/brain-forrest-owned-canary.jsonl" \
   "$RECEIPT_RUN_DIR/run-authority.json" <<'NODE'
 const fs = require('node:fs');
+const path = require('node:path');
 const [receiptFile, authorityFile] = process.argv.slice(2);
-const authority = JSON.parse(fs.readFileSync(authorityFile, 'utf8'));
-const rows = fs.readFileSync(receiptFile, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-const operationIds = new Set();
-if (rows.length < 2) process.exit(1);
-for (const row of rows) {
-  if (row.receiptKind !== 'operation-terminal' || row.scenario !== 'discover-canary'
-      || row.requesterAgent !== 'forrest' || row.protectedResultRead !== true
-      || !row.operationId || operationIds.has(row.operationId)
-      || row.receiptRunId !== authority.receiptRunId || row.authority !== 'live'
-      || row.implementationCommit !== authority.implementationCommit) process.exit(1);
-  operationIds.add(row.operationId);
-}
-const selected = rows.at(-1);
-if (!selected.query || !selected.nodeId || !Number.isSafeInteger(selected.sourceRevision)) process.exit(1);
+(async () => {
+  const common = await import('./scripts/lib/brain-acceptance-common.mjs');
+  const smoke = await import('./scripts/live-brain-tools-smoke.mjs');
+  const context = await common.receiptContext({
+    'receipt-run-dir': path.dirname(authorityFile),
+    'receipt-run-id': process.env.RECEIPT_RUN_ID,
+    authority: 'live',
+  }, process.env);
+  const validated = smoke.validateCanonicalReceiptSet(
+    await smoke.readReceiptRows(receiptFile), context, {
+      expectedAuthority: 'live', expectedScenario: 'discover-canary',
+      expectedRequester: 'forrest', requireTerminalPerOperation: true,
+      allRowsTerminal: true, selectedLast: true,
+    },
+  );
+  const selected = validated.selected;
+  if (validated.rows.length < 2 || validated.operations.size < 2
+      || !selected.query || !selected.nodeId
+      || !Number.isSafeInteger(selected.sourceRevision)) {
+    throw new Error('Forrest-owned canary receipt set invalid');
+  }
+  await common.assertReceiptContextDirectoryIdentity(context);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 NODE
 ```
 
@@ -6997,45 +7272,6 @@ Capture both BEFORE inventories first, then run canary discovery, query, and PGS
 
 ```bash
 CATALOG="$LIVE_RECEIPT_DIR/jerry-brain-catalog.json"
-PM2_FORREST_PROJECTION='let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const rows=JSON.parse(s).filter(p=>p.name==="home23-forrest").map(p=>{const e=p.pm2_env||{};return{name:p.name,pid:p.pid,status:e.status,restarts:e.restart_time,uptime:e.pm_uptime,script:e.pm_exec_path||null,cwd:e.pm_cwd||null,namespace:e.namespace||"default",execMode:e.exec_mode||null,instances:e.instances??null,args:e.args??null,interpreter:e.exec_interpreter||null,nodeArgs:e.node_args??null,envKeys:Object.keys(e.env&&typeof e.env==="object"?e.env:{}).sort()}});process.stdout.write(JSON.stringify(rows,null,2))})'
-pm2 jlist | node -e "$PM2_FORREST_PROJECTION" \
-  > "$LIVE_RECEIPT_DIR/forrest-engine-before-pause.json"
-node -e "const rows=require(process.argv[1]);if(rows.length!==1||rows[0].status!=='online'||!(rows[0].pid>0))process.exit(1)" \
-  "$LIVE_RECEIPT_DIR/forrest-engine-before-pause.json"
-FORREST_RESUME_REQUIRED=1
-resume_forrest_engine() {
-  if [ "${FORREST_RESUME_REQUIRED:-0}" -eq 1 ]; then
-    FORREST_CURRENT_STATUS=$(pm2 jlist | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const rows=JSON.parse(s).filter(p=>p.name==="home23-forrest");process.stdout.write(rows.length===1?String(rows[0].pm2_env.status):"missing")})')
-    if [ "$FORREST_CURRENT_STATUS" != online ]; then pm2 start home23-forrest >/dev/null; fi
-  fi
-}
-trap resume_forrest_engine EXIT
-trap 'resume_forrest_engine; exit 129' HUP
-trap 'resume_forrest_engine; exit 130' INT
-trap 'resume_forrest_engine; exit 143' TERM
-pm2 stop home23-forrest
-pm2 jlist | node -e "$PM2_FORREST_PROJECTION" \
-  > "$LIVE_RECEIPT_DIR/forrest-engine-paused.json"
-node - "$LIVE_RECEIPT_DIR/forrest-engine-before-pause.json" \
-  "$LIVE_RECEIPT_DIR/forrest-engine-paused.json" \
-  "$RECEIPT_RUN_DIR/run-authority.json" \
-  "$LIVE_RECEIPT_DIR/forrest-engine-pause-receipt.json" <<'NODE'
-const fs = require('node:fs');
-const [beforeFile, pausedFile, authorityFile, output] = process.argv.slice(2);
-const before = JSON.parse(fs.readFileSync(beforeFile, 'utf8'));
-const paused = JSON.parse(fs.readFileSync(pausedFile, 'utf8'));
-const authority = JSON.parse(fs.readFileSync(authorityFile, 'utf8'));
-if (before.length !== 1 || paused.length !== 1 || before[0].status !== 'online'
-    || paused[0].status !== 'stopped' || paused[0].restarts !== before[0].restarts) {
-  throw new Error('Forrest pause transition invalid');
-}
-fs.writeFileSync(output, `${JSON.stringify({
-  schemaVersion: 1, receiptRunId: authority.receiptRunId,
-  implementationCommit: authority.implementationCommit, authority: 'live',
-  processName: 'home23-forrest', before: before[0], paused: paused[0],
-  pausedAt: new Date().toISOString(), requiredThrough: 'boundary-compare-complete',
-}, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-NODE
 node scripts/hash-brain-boundaries.mjs --catalog "$CATALOG" --target-agent forrest \
   --require brain,run,pgs,session,cache,export,agency --phase before \
   --output "$LIVE_RECEIPT_DIR/forrest-boundaries-before.json"
@@ -7052,27 +7288,34 @@ node scripts/live-brain-tools-smoke.mjs --base-url http://127.0.0.1:5002 --calle
 node - "$RECEIPT_RUN_DIR/run-authority.json" \
   "$LIVE_RECEIPT_DIR/brain-forrest-canary.jsonl" \
   "$LIVE_RECEIPT_DIR/brain-research-canary.jsonl" <<'NODE'
-const fs = require('node:fs');
+const path = require('node:path');
 const [authorityFile, ...files] = process.argv.slice(2);
-const authority = JSON.parse(fs.readFileSync(authorityFile, 'utf8'));
-for (const file of files) {
-  const rows = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-  if (rows.length < 2) throw new Error(`incomplete discover-canary receipt: ${file}`);
-  const operationIds = new Set();
-  for (const row of rows) {
-    if (row.receiptKind !== 'operation-terminal' || row.scenario !== 'discover-canary'
-        || row.protectedResultRead !== true || !row.operationId || operationIds.has(row.operationId)
-        || row.receiptRunId !== authority.receiptRunId || row.authority !== 'live'
-        || row.implementationCommit !== authority.implementationCommit) {
-      throw new Error(`invalid discover-canary operation set: ${file}`);
+(async () => {
+  const common = await import('./scripts/lib/brain-acceptance-common.mjs');
+  const smoke = await import('./scripts/live-brain-tools-smoke.mjs');
+  const context = await common.receiptContext({
+    'receipt-run-dir': path.dirname(authorityFile),
+    'receipt-run-id': process.env.RECEIPT_RUN_ID,
+    authority: 'live',
+  }, process.env);
+  for (const file of files) {
+    const validated = smoke.validateCanonicalReceiptSet(
+      await smoke.readReceiptRows(file), context, {
+        expectedAuthority: 'live', expectedScenario: 'discover-canary',
+        expectedRequester: 'jerry', requireTerminalPerOperation: true,
+        allRowsTerminal: true, selectedLast: true,
+      },
+    );
+    if (validated.rows.length < 2 || validated.operations.size < 2) {
+      throw new Error(`incomplete discover-canary receipt: ${file}`);
     }
-    operationIds.add(row.operationId);
+    const selected = validated.selected;
+    if (!selected.query || !selected.nodeId || !Number.isSafeInteger(selected.sourceRevision)) {
+      throw new Error(`invalid selected-last canary: ${file}`);
+    }
   }
-  const selected = rows.at(-1);
-  if (!selected.query || !selected.nodeId || !Number.isSafeInteger(selected.sourceRevision)) {
-    throw new Error(`invalid selected-last canary: ${file}`);
-  }
-}
+  await common.assertReceiptContextDirectoryIdentity(context);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 NODE
 node scripts/live-brain-tools-smoke.mjs --base-url http://127.0.0.1:5002 --caller-agent jerry \
   --scenario sibling --target-agent forrest \
@@ -7165,6 +7408,7 @@ else
   HOME23_RECEIPT_AUTHORITY=isolated-controlled node scripts/live-brain-tools-smoke.mjs \
     --scenario large-pgs-isolated --isolated-fixture "$ISOLATED_PGS_ROOT" \
     --synthetic-nodes 100000 --synthetic-edges 300000 --controlled-provider \
+    --fixture-operation-delay-ms 3000 \
     --pgs-wait-ms 21600000 \
     --sse-output "$RECEIPT_RUN_DIR/isolated-controlled/brain-large-pgs-events.jsonl" \
     --heap-output "$RECEIPT_RUN_DIR/isolated-controlled/brain-large-pgs-heap.json" \
@@ -7205,41 +7449,11 @@ for (const file of files) {
       || compared.authority !== 'live') throw new Error(`boundary compare receipt invalid: ${file}`);
 }
 NODE
-pm2 start home23-forrest
-pm2 jlist | node -e "$PM2_FORREST_PROJECTION" \
-  > "$LIVE_RECEIPT_DIR/forrest-engine-resumed.json"
-node - "$LIVE_RECEIPT_DIR/forrest-engine-before-pause.json" \
-  "$LIVE_RECEIPT_DIR/forrest-engine-paused.json" \
-  "$LIVE_RECEIPT_DIR/forrest-engine-resumed.json" \
-  "$RECEIPT_RUN_DIR/run-authority.json" \
-  "$LIVE_RECEIPT_DIR/forrest-engine-resume-receipt.json" <<'NODE'
-const fs = require('node:fs');
-const [beforeFile, pausedFile, resumedFile, authorityFile, output] = process.argv.slice(2);
-const before = JSON.parse(fs.readFileSync(beforeFile, 'utf8'))[0];
-const paused = JSON.parse(fs.readFileSync(pausedFile, 'utf8'))[0];
-const resumed = JSON.parse(fs.readFileSync(resumedFile, 'utf8'))[0];
-const authority = JSON.parse(fs.readFileSync(authorityFile, 'utf8'));
-if (!before || !paused || !resumed || paused.status !== 'stopped'
-    || resumed.status !== 'online' || !(resumed.pid > 0) || resumed.pid === before.pid
-    || resumed.restarts !== paused.restarts) throw new Error('Forrest resume transition invalid');
-fs.writeFileSync(output, `${JSON.stringify({
-  schemaVersion: 1, receiptRunId: authority.receiptRunId,
-  implementationCommit: authority.implementationCommit, authority: 'live',
-  processName: 'home23-forrest', before, paused, resumed,
-  resumedAt: new Date().toISOString(), comparesPersisted: [
-    'live/forrest-boundaries-compare.json', 'live/research-boundaries-compare.json'],
-}, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-NODE
-FORREST_RESUMED_PID=$(node -p "require(process.argv[1])[0].pid" \
-  "$LIVE_RECEIPT_DIR/forrest-engine-resumed.json")
-test "$(lsof -nP -t -iTCP:5011 -sTCP:LISTEN | sort -u)" = "$FORREST_RESUMED_PID"
 curl -fsS http://127.0.0.1:5012/home23/api/brain-operations/catalog \
-  > "$LIVE_RECEIPT_DIR/forrest-catalog-after-resume.json"
-FORREST_RESUME_REQUIRED=0
-trap - EXIT HUP INT TERM
+  > "$LIVE_RECEIPT_DIR/forrest-catalog-after-boundary-proof.json"
 ```
 
-Expected: Forrest's engine is stopped before either BEFORE inventory and remains stopped through both persisted, validated compare receipts; an EXIT/signal trap resumes only that exact process on failure, and success clears the trap only after explicit resume/listener/readiness proof. Both compare commands exit 0 with unchanged source revision and byte-identical recursive inventories across every named boundary, including unknown/new nested files and unchanged absent-root records. Forrest's duplicate resident `brain`/`run` root is represented under both names but never broadened to the containing agent instance. A live large-PGS target is restricted to Forrest or the selected completed-research brain, so the operation is necessarily enclosed by that target's BEFORE/AFTER inventory; if neither cross-brain target meets the size/provider gate, use the wholly isolated fallback instead of weakening the proof with an own-brain target. If Forrest changes independently, the helper returns `target_changed_concurrently`; resume Forrest, wait for one verified idle window, and repeat the complete pause-BEFORE-operation-AFTER-compare-resume sequence once. Confirm new pins, scratch, result files, cache, and exports exist only beneath Jerry's requester-owned `instances/jerry/runtime/brain-operations` or explicit Jerry workspace export path. Never exclude a target file or treat concurrent mutation as success. The isolated fallback must not create any operation/pin/scratch entry in Jerry, Forrest, or live COSMO.
+Expected: no PM2 mutation occurs after the one scoped combined start in Step 3. Both compare commands exit 0 with unchanged source revision and byte-identical recursive inventories across every named boundary, including unknown/new nested files and unchanged absent-root records. Forrest's duplicate resident `brain`/`run` root is represented under both names but never broadened to the containing agent instance. A live large-PGS target is restricted to Forrest or the selected completed-research brain, so the operation is necessarily enclosed by that target's BEFORE/AFTER inventory; if neither cross-brain target meets the size/provider gate, use the wholly isolated fallback instead of weakening the proof with an own-brain target. If Forrest changes independently, the helper returns `target_changed_concurrently`; wait for one verified idle window and repeat the complete BEFORE-operation-AFTER-compare sequence once without stopping or restarting any PM2 process. Confirm new pins, scratch, result files, cache, and exports exist only beneath Jerry's requester-owned `instances/jerry/runtime/brain-operations` or explicit Jerry workspace export path. Never exclude a target file or treat concurrent mutation as success. The isolated fallback must not create any operation/pin/scratch entry in Jerry, Forrest, or live COSMO.
 
 - [ ] **Step 8: Run one scoped PGS canary through the real wait path**
 
@@ -7247,34 +7461,54 @@ The PGS operation was started and polled between hashes in Step 7. Validate its 
 
 ```bash
 node - "$PGS_EVENTS" "$PGS_RECEIPT" "$RECEIPT_RUN_DIR/run-authority.json" <<'NODE'
-const fs = require('node:fs');
-const events = fs.readFileSync(process.argv[2], 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-const receipts = fs.readFileSync(process.argv[3], 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-const authority = JSON.parse(fs.readFileSync(process.argv[4], 'utf8'));
-if (!events.some((event) => event.type === 'heartbeat' || event.type === 'progress' || event.type === 'pgs_phase')) process.exit(1);
-for (let index = 1; index < events.length; index += 1) {
-  if (!(events[index].eventSequence > events[index - 1].eventSequence)) process.exit(1);
-}
-const operationIds = new Set();
-for (const row of receipts) {
-  if (row.receiptKind !== 'operation-terminal' || !row.operationId || operationIds.has(row.operationId)
-      || row.protectedResultRead !== true || row.receiptRunId !== authority.receiptRunId
-      || row.implementationCommit !== authority.implementationCommit) process.exit(1);
-  operationIds.add(row.operationId);
-}
-const terminal = receipts.at(-1);
-if (!terminal || !['complete','partial'].includes(terminal.state)) process.exit(1);
-const sweepOutputs = terminal.result?.sweepOutputs || [];
-const successfulSweepCount = terminal.result?.metadata?.pgs?.successfulSweeps;
-if (terminal.state === 'partial' && !(Array.isArray(sweepOutputs)
-    && sweepOutputs.length > 0 && successfulSweepCount === sweepOutputs.length)) process.exit(1);
-if (terminal.providerTerminalValidated !== true) process.exit(1);
-console.log(JSON.stringify({ operationId: terminal.operationId, state: terminal.state,
-  successfulSweeps: successfulSweepCount || 0, sweepOutputs: sweepOutputs.length }));
+const path = require('node:path');
+(async () => {
+  const common = await import('./scripts/lib/brain-acceptance-common.mjs');
+  const smoke = await import('./scripts/live-brain-tools-smoke.mjs');
+  const context = await common.receiptContext({
+    'receipt-run-dir': path.dirname(process.argv[4]),
+    'receipt-run-id': process.env.RECEIPT_RUN_ID,
+    authority: 'live',
+  }, process.env);
+  const expectedAuthority = process.env.PGS_AUTHORITY;
+  const events = smoke.validateCanonicalReceiptSet(
+    await smoke.readReceiptRows(process.argv[2]), context, { expectedAuthority },
+  ).rows;
+  const validated = smoke.validateCanonicalReceiptSet(
+    await smoke.readReceiptRows(process.argv[3]), context, {
+      expectedAuthority, requireTerminalPerOperation: true,
+      allRowsTerminal: true, selectedLast: true,
+    },
+  );
+  if (!events.some(
+    (event) => ['heartbeat', 'progress', 'pgs_phase'].includes(event.type),
+  )) throw new Error('PGS progress event missing');
+  const prior = new Map();
+  for (const event of events) {
+    const previous = prior.get(event.operationId) ?? -1;
+    if (!(event.eventSequence > previous)) throw new Error('PGS event sequence invalid');
+    prior.set(event.operationId, event.eventSequence);
+  }
+  const terminal = validated.selected;
+  if (!['complete', 'partial'].includes(terminal.state)
+      || !prior.has(terminal.operationId)) throw new Error('PGS terminal invalid');
+  const sweepOutputs = terminal.result?.sweepOutputs || [];
+  const successfulSweepCount = terminal.result?.metadata?.pgs?.successfulSweeps;
+  if (terminal.state === 'partial' && !(Array.isArray(sweepOutputs)
+      && sweepOutputs.length > 0 && successfulSweepCount === sweepOutputs.length)) {
+    throw new Error('PGS partial lost successful sweeps');
+  }
+  if (terminal.providerTerminalValidated !== true) {
+    throw new Error('PGS provider terminal evidence invalid');
+  }
+  console.log(JSON.stringify({ operationId: terminal.operationId, state: terminal.state,
+    successfulSweeps: successfulSweepCount || 0, sweepOutputs: sweepOutputs.length }));
+  await common.assertReceiptContextDirectoryIdentity(context);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 NODE
 ```
 
-Require the terminal receipt's `authoritativeNodeCount >= 100000`, source pin descriptor/digest, authority tag equal to `$PGS_AUTHORITY`, and a two-process heap receipt with fresh dashboard/COSMO metrics, unchanged PIDs, and zero restart deltas. For `live`, require the explicitly probed external provider pairs and record this as the live large-PGS pass. For `isolated-controlled`, require the synthetic size/count/hash, isolated temp Home23 root, allocated loopback ports, both isolated PIDs, guarded process shutdown with the durable store retained for Step 11, and unchanged live PM2/catalog/target hashes; record the live size/provider blocker and do not claim a live-provider pass. Successful sweeps must remain in a partial result if synthesis fails, and no complete/success marker may exist for incomplete synthesis.
+Require the terminal receipt's `authoritativeNodeCount >= 100000`, source pin descriptor/digest, authority tag equal to `$PGS_AUTHORITY`, and fresh dashboard/COSMO heap evidence with unchanged PIDs and zero restart deltas. For `live`, require the explicitly probed external provider pairs and record this as the live large-PGS pass. For `isolated-controlled`, require the synthetic size/count/hash; canonical external Home23 root; launcher-generated owner/config/key/provenance bindings; minimal exact child environments without provider/API-key secrets; launcher-allocated loopback ports; all three launcher-owned dashboard/COSMO/MCP PIDs and security bindings (with heap sampling on dashboard/COSMO); literal configured delay `3000`, actual effective delay, `testOnlyOperationDelay:false`, and action-before-terminal telemetry captured before stop; guarded shutdown of all three children with the durable store retained for Step 11; and unchanged live PM2/catalog/target hashes. No caller-supplied or live endpoint is allowed. Record the live size/provider blocker and do not claim a live-provider pass. Successful sweeps must remain in a partial result if synthesis fails, and no complete/success marker may exist for incomplete synthesis.
 
 - [ ] **Step 9: Verify synthesis reconnect on an isolated fixture brain**
 
@@ -7289,33 +7523,61 @@ HOME23_RECEIPT_AUTHORITY=isolated-controlled node scripts/live-brain-tools-smoke
   --sse-output "$RECEIPT_RUN_DIR/isolated-controlled/brain-synthesis-events.jsonl" \
   --output "$RECEIPT_RUN_DIR/isolated-controlled/brain-synthesis.jsonl"
 node - "$SYNTH_FIXTURE_ROOT" "$RECEIPT_RUN_DIR/isolated-controlled/brain-synthesis.jsonl" <<'NODE'
-const fs = require('node:fs');
 const path = require('node:path');
-const root = fs.realpathSync(process.argv[2]);
-if (!path.basename(root).startsWith('home23-synthesis-canary.')) process.exit(1);
-const receipts = fs.readFileSync(process.argv[3], 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-const terminal = receipts.at(-1);
-if (terminal.state !== 'complete' || terminal.protectedResultRead !== true
-    || terminal.providerTerminalValidated !== true) process.exit(1);
-if (terminal.coordinatorRestarted !== true || terminal.storeReloaded !== true
-    || terminal.reattachedTerminal !== true) process.exit(1);
-if (terminal.coordinatorRestartsAfter !== terminal.coordinatorRestartsBefore + 1
-    || !['running','complete'].includes(terminal.reconciledState)
-    || !Number.isSafeInteger(terminal.reattachAttempts)
-    || !Array.isArray(terminal.detachedStates)) process.exit(1);
-const provider = terminal.providerTerminalStoreEvidence;
-if (provider?.provider !== 'controlled' || provider?.model !== 'controlled-synthesis'
-    || provider?.providerCallId !== 'synthesis' || provider?.outcome !== 'complete') process.exit(1);
-if (typeof terminal.generationMarker !== 'string' || !terminal.generationMarker) process.exit(1);
-console.log(JSON.stringify({ fixtureRoot: root, operationId: terminal.operationId,
-  state: terminal.state, generationMarker: terminal.generationMarker,
-  coordinatorRestarts: [terminal.coordinatorRestartsBefore, terminal.coordinatorRestartsAfter],
-  reattachAttempts: terminal.reattachAttempts }));
+(async () => {
+  const fs = require('node:fs');
+  const common = await import('./scripts/lib/brain-acceptance-common.mjs');
+  const smoke = await import('./scripts/live-brain-tools-smoke.mjs');
+  const root = fs.realpathSync(process.argv[2]);
+  if (!path.basename(root).startsWith('home23-synthesis-canary.')) {
+    throw new Error('synthesis fixture root invalid');
+  }
+  const receiptFile = process.argv[3];
+  const receiptRoot = path.dirname(path.dirname(receiptFile));
+  const context = await common.receiptContext({
+    'receipt-run-dir': receiptRoot, 'receipt-run-id': process.env.RECEIPT_RUN_ID,
+    authority: 'live',
+  }, process.env);
+  const validated = smoke.validateCanonicalReceiptSet(
+    await smoke.readReceiptRows(receiptFile), context, {
+      expectedAuthority: 'isolated-controlled', expectedScenario: 'synthesis-reconnect',
+      requireTerminalPerOperation: true, allRowsTerminal: true, selectedLast: true,
+    },
+  );
+  const terminal = validated.selected;
+  if (terminal.state !== 'complete' || terminal.providerTerminalValidated !== true
+      || terminal.coordinatorRestarted !== true || terminal.storeReloaded !== true
+      || terminal.reattachedTerminal !== true
+      || terminal.coordinatorRestartsAfter !== terminal.coordinatorRestartsBefore + 1
+      || !['running', 'complete'].includes(terminal.reconciledState)
+      || !Number.isSafeInteger(terminal.reattachAttempts)
+      || !Array.isArray(terminal.detachedStates)) throw new Error('synthesis lifecycle invalid');
+  const provider = terminal.providerTerminalStoreEvidence;
+  const fixture = terminal.isolatedFixture;
+  const delay = fixture?.operationDelayEvidence;
+  if (provider?.provider !== 'controlled' || provider?.model !== 'controlled-synthesis'
+      || provider?.providerCallId !== 'synthesis' || provider?.outcome !== 'complete'
+      || typeof terminal.generationMarker !== 'string' || !terminal.generationMarker
+      || fixture?.configuredOperationDelayMs !== 3000
+      || fixture?.effectiveOperationDelayMs !== 3000
+      || fixture?.testOnlyOperationDelay !== false
+      || delay?.configuredDelayMs !== 3000 || delay?.effectiveDelayMs !== 3000
+      || delay?.testOnlyDelay !== false || delay?.capturedBeforeStop !== true
+      || delay?.actionBeforeTerminalProven !== true
+      || !Array.isArray(fixture?.stoppedPids) || fixture.stoppedPids.length !== 3) {
+    throw new Error('synthesis provider/delay/stop evidence invalid');
+  }
+  console.log(JSON.stringify({ fixtureRoot: root, operationId: terminal.operationId,
+    state: terminal.state, generationMarker: terminal.generationMarker,
+    coordinatorRestarts: [terminal.coordinatorRestartsBefore, terminal.coordinatorRestartsAfter],
+    reattachAttempts: terminal.reattachAttempts }));
+  await common.assertReceiptContextDirectoryIdentity(context);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 NODE
 export SYNTH_FIXTURE_ROOT
 ```
 
-The controlled fixture must delay completion, drop an attachment, replace/recreate the dashboard coordinator over the same durable store, and reattach by the exact operation ID after restart. It records one and only one synthesis start; every protected status/result/reattach read uses the exact persisted operation and cannot start provider work. This rollout command proves the complete controlled-provider path with durable provider-terminal store evidence. Typed provider failure and source-CAS conflict remain mandatory deterministic engine-suite gates; do not claim the live command exercised modes the helper does not expose. `source_changed` is never an execution state: it is canonical `state:'failed'` plus `error:{code:'source_changed',retryable:true}` and cannot publish a generation marker. Retain the stopped fixture store until Step 11's protected readback; only then may guarded cleanup remove the exact `mktemp` root whose basename, device/inode, and receipt ownership were proved. A stale prior generation presented as new fails the gate.
+The controlled fixture must use only its launcher-generated endpoints, minimal no-provider-secret child environment, identity-bound owner/config/key files, launcher PID/start-token bindings, and literal configured/effective 3000-ms delay. It drops an attachment after the delayed provider action starts and before terminal evidence, replaces/recreates the dashboard coordinator over the same durable store, and reattaches by the exact operation ID after restart. `operationDelayEvidence` must be captured before all three children stop and prove `testOnlyDelay:false` plus action-before-terminal ordering from counters, event sequences, and timestamps. It records one and only one synthesis start; every protected status/result/reattach read uses the exact persisted operation and cannot start provider work. This rollout command proves the complete controlled-provider path with durable provider-terminal store evidence. Typed provider failure and source-CAS conflict remain mandatory deterministic engine-suite gates; do not claim the live command exercised modes the helper does not expose. `source_changed` is never an execution state: it is canonical `state:'failed'` plus `error:{code:'source_changed',retryable:true}` and cannot publish a generation marker. Retain the stopped fixture store until Step 11's protected readback; only then may guarded cleanup remove the exact `mktemp` root whose basename, device/inode, and receipt ownership were proved. A stale prior generation presented as new fails the gate.
 
 - [ ] **Step 10: Prove bounded graph heap and restart behavior under sampling**
 
@@ -7331,8 +7593,10 @@ node scripts/sample-process-memory.mjs \
     --base-url http://127.0.0.1:5002 --caller-agent jerry --scenario graph \
     --node-limit 250 --edge-limit 1000 \
     --output "$LIVE_RECEIPT_DIR/brain-graph.jsonl"
-node - "$LIVE_RECEIPT_DIR/brain-graph-heap.json" "$LIVE_RECEIPT_DIR/brain-graph.jsonl" <<'NODE'
+node - "$LIVE_RECEIPT_DIR/brain-graph-heap.json" "$LIVE_RECEIPT_DIR/brain-graph.jsonl" \
+  "$RECEIPT_RUN_DIR/run-authority.json" <<'NODE'
 const fs = require('node:fs');
+const path = require('node:path');
 const heap = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 if (heap.metric !== 'runtime-memory-evidence-v2' || !Array.isArray(heap.targets)
     || heap.targets.map((target) => target.name).sort().join(',') !== 'cosmo,dashboard') process.exit(1);
@@ -7340,15 +7604,30 @@ for (const target of heap.targets) {
   if (target.samples.length < 3 || target.metricFresh !== true || target.pidChanged
       || target.restartDelta !== 0 || target.maxSampledV8HeapGrowthMiB > 256) process.exit(1);
 }
-const receipt = fs.readFileSync(process.argv[3], 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse).at(-1);
-if (receipt.returnedTotals.nodes > 250 || receipt.returnedTotals.edges > 1000) process.exit(1);
-if (!(receipt.authoritativeTotals.nodes >= receipt.returnedTotals.nodes)) process.exit(1);
-console.log(JSON.stringify({ targets: heap.targets.map((target) => ({ name: target.name,
-  baselineV8HeapUsedMiB: target.baselineV8HeapUsedMiB,
-  maxSampledV8HeapUsedMiB: target.maxSampledV8HeapUsedMiB,
-  maxSampledV8HeapGrowthMiB: target.maxSampledV8HeapGrowthMiB,
-  restartDelta: target.restartDelta,
-  pid: target.pid, metricFresh: target.metricFresh })) }));
+(async () => {
+  const common = await import('./scripts/lib/brain-acceptance-common.mjs');
+  const smoke = await import('./scripts/live-brain-tools-smoke.mjs');
+  const context = await common.receiptContext({
+    'receipt-run-dir': path.dirname(process.argv[4]),
+    'receipt-run-id': process.env.RECEIPT_RUN_ID,
+    authority: 'live',
+  }, process.env);
+  const receipt = smoke.validateCanonicalReceiptSet(
+    await smoke.readReceiptRows(process.argv[3]), context, {
+      expectedAuthority: 'live', expectedScenario: 'graph', expectedRequester: 'jerry',
+      requireTerminalPerOperation: true, allRowsTerminal: true, selectedLast: true,
+    },
+  ).selected;
+  if (receipt.returnedTotals.nodes > 250 || receipt.returnedTotals.edges > 1000
+      || !(receipt.authoritativeTotals.nodes >= receipt.returnedTotals.nodes)) process.exit(1);
+  console.log(JSON.stringify({ targets: heap.targets.map((target) => ({ name: target.name,
+    baselineV8HeapUsedMiB: target.baselineV8HeapUsedMiB,
+    maxSampledV8HeapUsedMiB: target.maxSampledV8HeapUsedMiB,
+    maxSampledV8HeapGrowthMiB: target.maxSampledV8HeapGrowthMiB,
+    restartDelta: target.restartDelta,
+    pid: target.pid, metricFresh: target.metricFresh })) }));
+  await common.assertReceiptContextDirectoryIdentity(context);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 NODE
 ```
 
@@ -7407,6 +7686,7 @@ node scripts/live-brain-tools-smoke.mjs --scenario zero-result \
 ZERO_FIXTURE_ROOT=$(mktemp -d "$SYSTEM_TMPDIR/home23-zero-manifest.XXXXXX")
 HOME23_RECEIPT_AUTHORITY=isolated-controlled node scripts/live-brain-tools-smoke.mjs \
   --scenario zero-result --isolated-fixture "$ZERO_FIXTURE_ROOT" --controlled-provider \
+  --fixture-operation-delay-ms 3000 \
   --query "$ZERO_TOKEN" --tag "$ZERO_TAG" --zero-policy healthy-no-match \
   --output "$RECEIPT_RUN_DIR/isolated-controlled/brain-zero-proven.jsonl"
 node - "$LIFECYCLE_FIXTURE_ROOT" "$ZERO_FIXTURE_ROOT" \
@@ -7421,63 +7701,137 @@ const fs = require('node:fs');
 const path = require('node:path');
 const [lifecycleRoot, zeroRoot, authorityFile, detachFile, cancelFile, restartFile,
   liveZeroFile, isolatedZeroFile, output] = process.argv.slice(2);
-const fixture = fs.realpathSync(lifecycleRoot);
-const zeroFixture = fs.realpathSync(zeroRoot);
-if (!path.basename(fixture).startsWith('home23-operation-lifecycle.')
-    || !path.basename(zeroFixture).startsWith('home23-zero-manifest.')) process.exit(1);
-const authority = JSON.parse(fs.readFileSync(authorityFile, 'utf8'));
-const readValidated = (file, expectedAuthority) => {
-  const rows = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-  const operationIds = new Set();
-  for (const row of rows) {
-    if (row.receiptKind !== 'operation-terminal' || row.protectedResultRead !== true
-        || !row.operationId || operationIds.has(row.operationId)
-        || row.receiptRunId !== authority.receiptRunId
-        || row.implementationCommit !== authority.implementationCommit
-        || row.authority !== expectedAuthority) process.exit(1);
-    operationIds.add(row.operationId);
+(async () => {
+  const fixture = fs.realpathSync(lifecycleRoot);
+  const zeroFixture = fs.realpathSync(zeroRoot);
+  if (!path.basename(fixture).startsWith('home23-operation-lifecycle.')
+      || !path.basename(zeroFixture).startsWith('home23-zero-manifest.')) {
+    throw new Error('controlled fixture root invalid');
   }
-  return rows.at(-1);
-};
-const detached = readValidated(detachFile, 'isolated-controlled');
-if (detached.detachedState !== 'running' || detached.reattachedTerminal !== true) process.exit(1);
-const cancelled = readValidated(cancelFile, 'isolated-controlled');
-if (cancelled.state !== 'cancelled' || cancelled.providerAbortObserved !== true) process.exit(1);
-const reconciled = readValidated(restartFile, 'isolated-controlled');
-if (!reconciled.storeReloaded || !['running','interrupted'].includes(reconciled.reconciledState)) process.exit(1);
-const liveZero = readValidated(liveZeroFile, 'live');
-if (liveZero.sourceHealth !== 'degraded' || liveZero.sourceEvidence?.freshness !== 'unknown'
-    || liveZero.matchOutcome !== 'unknown' || liveZero.completeCoverage !== true
-    || liveZero.authoritativeTotal <= 0 || liveZero.absenceProven !== false
-    || liveZero.emptyBrainClaimAllowed !== false
-    || liveZero.classification !== 'absence_unprovable'
-    || liveZero.sourceEvidence?.implementation !== 'legacy-resident-sidecar-projection'
-    || liveZero.sourceEvidence?.filters?.tag !== process.env.ZERO_TAG) process.exit(1);
-const isolatedZero = readValidated(isolatedZeroFile, 'isolated-controlled');
-if (isolatedZero.sourceHealth !== 'healthy' || isolatedZero.sourceEvidence?.freshness !== 'known'
-    || isolatedZero.matchOutcome !== 'no_match' || isolatedZero.completeCoverage !== true
-    || isolatedZero.authoritativeTotal <= 0
-    || isolatedZero.sourceEvidence?.implementation !== 'manifest-v1'
-    || isolatedZero.sourceEvidence?.filters?.tag !== process.env.ZERO_TAG
-    || isolatedZero.operationId === liveZero.operationId) process.exit(1);
-fs.writeFileSync(output, `${JSON.stringify({
-  schemaVersion: 1, receiptRunId: authority.receiptRunId,
-  implementationCommit: authority.implementationCommit, authority: 'live',
-  uniqueQuery: process.env.ZERO_TOKEN, uniqueTag: process.env.ZERO_TAG,
-  live: { operationId: liveZero.operationId, classification: liveZero.classification,
-    absenceProven: liveZero.absenceProven, emptyBrainClaimAllowed: liveZero.emptyBrainClaimAllowed },
-  isolatedControlled: { operationId: isolatedZero.operationId,
-    sourceHealth: isolatedZero.sourceHealth, matchOutcome: isolatedZero.matchOutcome },
-}, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+  const authority = JSON.parse(fs.readFileSync(authorityFile, 'utf8'));
+  const common = await import('./scripts/lib/brain-acceptance-common.mjs');
+  const smoke = await import('./scripts/live-brain-tools-smoke.mjs');
+  const context = await common.receiptContext({
+    'receipt-run-dir': path.dirname(authorityFile),
+    'receipt-run-id': process.env.RECEIPT_RUN_ID,
+    authority: 'live',
+  }, process.env);
+  const readValidated = async (file, expectedAuthority, expectedScenario) =>
+    smoke.validateCanonicalReceiptSet(await smoke.readReceiptRows(file), context, {
+      expectedAuthority, expectedScenario, requireTerminalPerOperation: true,
+      allRowsTerminal: true, selectedLast: true,
+    }).selected;
+  const exactDelayProof = (row) => {
+    const controlled = row.isolatedFixture;
+    const evidence = controlled?.operationDelayEvidence;
+    return controlled?.configuredOperationDelayMs === 3000
+      && controlled?.effectiveOperationDelayMs === 3000
+      && controlled?.testOnlyOperationDelay === false
+      && evidence?.configuredDelayMs === 3000 && evidence?.effectiveDelayMs === 3000
+      && evidence?.testOnlyDelay === false && evidence?.capturedBeforeStop === true
+      && evidence?.actionBeforeTerminalProven === true
+      && Array.isArray(controlled?.stoppedPids) && controlled.stoppedPids.length === 3;
+  };
+  const currentRevision = (evidence) => {
+    const revision = evidence?.deltaWatermark?.revision;
+    if (!Number.isSafeInteger(revision) || revision < 0) {
+      throw new Error('current delta watermark missing');
+    }
+    for (const value of [evidence?.sourceRevision, evidence?.revision,
+      evidence?.identity?.revision]) {
+      if (value !== undefined && value !== null
+          && (!Number.isSafeInteger(value) || value < 0 || value !== revision)) {
+        throw new Error('current revision evidence inconsistent');
+      }
+    }
+    const base = evidence?.baseWatermark?.revision;
+    if (base !== undefined && base !== null
+        && (!Number.isSafeInteger(base) || base < 0 || base > revision)) {
+      throw new Error('base watermark invalid');
+    }
+    return revision;
+  };
+  const detached = await readValidated(
+    detachFile, 'isolated-controlled', 'detach-reattach',
+  );
+  if (detached.detachedState !== 'running' || detached.reattachedTerminal !== true
+      || !exactDelayProof(detached)) throw new Error('detach/reattach proof invalid');
+  const cancelled = await readValidated(cancelFile, 'isolated-controlled', 'cancel');
+  if (cancelled.state !== 'cancelled' || cancelled.providerAbortObserved !== true
+      || !exactDelayProof(cancelled)) throw new Error('cancel proof invalid');
+  const reconciled = await readValidated(
+    restartFile, 'isolated-controlled', 'restart-reconcile',
+  );
+  if (!reconciled.storeReloaded
+      || !['running', 'interrupted'].includes(reconciled.reconciledState)
+      || !exactDelayProof(reconciled)) throw new Error('restart reconcile proof invalid');
+  const liveZero = await readValidated(liveZeroFile, 'live', 'zero-result');
+  const liveEvidence = liveZero.sourceEvidence;
+  currentRevision(liveEvidence);
+  if (liveZero.sourceHealth !== 'degraded' || liveEvidence?.freshness !== 'unknown'
+      || liveZero.matchOutcome !== 'unknown' || liveZero.completeCoverage !== true
+      || liveZero.authoritativeTotal <= 0 || liveZero.absenceProven !== false
+      || liveZero.emptyBrainClaimAllowed !== false
+      || liveZero.classification !== 'absence_unprovable'
+      || liveEvidence?.implementation !== 'legacy-resident-sidecar-projection'
+      || liveEvidence?.filters?.tag !== process.env.ZERO_TAG
+      || liveEvidence?.limits?.topK !== 100
+      || liveEvidence?.returnedTotals?.nodes !== 0) {
+    throw new Error('degraded zero evidence invalid');
+  }
+  const isolatedZero = await readValidated(
+    isolatedZeroFile, 'isolated-controlled', 'zero-result',
+  );
+  const isolatedEvidence = isolatedZero.sourceEvidence;
+  const zeroFixtureEvidence = isolatedZero.isolatedFixture;
+  const zeroDelayEvidence = zeroFixtureEvidence?.operationDelayEvidence;
+  const zeroAccepted = zeroDelayEvidence?.acceptedOperations;
+  currentRevision(isolatedEvidence);
+  if (isolatedZero.sourceHealth !== 'healthy' || isolatedEvidence?.freshness !== 'known'
+      || isolatedZero.matchOutcome !== 'no_match' || isolatedZero.completeCoverage !== true
+      || isolatedZero.authoritativeTotal <= 0
+      || isolatedEvidence?.implementation !== 'manifest-v1'
+      || isolatedEvidence?.filters?.tag !== process.env.ZERO_TAG
+      || isolatedEvidence?.limits?.topK !== 100
+      || isolatedEvidence?.returnedTotals?.nodes !== 0
+      || zeroFixtureEvidence?.configuredOperationDelayMs !== 3000
+      || zeroFixtureEvidence?.effectiveOperationDelayMs !== 3000
+      || zeroFixtureEvidence?.testOnlyOperationDelay !== false
+      || zeroDelayEvidence?.configuredDelayMs !== 3000
+      || zeroDelayEvidence?.effectiveDelayMs !== 3000
+      || zeroDelayEvidence?.testOnlyDelay !== false
+      || zeroDelayEvidence?.capturedBeforeStop !== true
+      || zeroDelayEvidence?.actionBeforeTerminalProven !== false
+      || !Array.isArray(zeroAccepted) || zeroAccepted.length !== 1
+      || zeroAccepted[0]?.operationId !== isolatedZero.operationId
+      || zeroAccepted[0]?.actionBeforeTerminalProven !== false
+      || !Array.isArray(zeroAccepted[0]?.actions) || zeroAccepted[0].actions.length !== 0
+      || isolatedZero.operationId === liveZero.operationId) {
+    throw new Error('healthy zero evidence invalid');
+  }
+  fs.writeFileSync(output, `${JSON.stringify({
+    schemaVersion: 1, receiptRunId: authority.receiptRunId,
+    implementationCommit: authority.implementationCommit, authority: 'live',
+    uniqueQuery: process.env.ZERO_TOKEN, uniqueTag: process.env.ZERO_TAG,
+    live: { operationId: liveZero.operationId, classification: liveZero.classification,
+      absenceProven: liveZero.absenceProven,
+      emptyBrainClaimAllowed: liveZero.emptyBrainClaimAllowed },
+    isolatedControlled: { operationId: isolatedZero.operationId,
+      sourceHealth: isolatedZero.sourceHealth, matchOutcome: isolatedZero.matchOutcome },
+  }, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+  await common.assertReceiptContextDirectoryIdentity(context);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 NODE
 export LIFECYCLE_FIXTURE_ROOT ZERO_FIXTURE_ROOT
 ```
 
-Retain the stopped lifecycle and strict-manifest zero fixtures through Step 11 readback, then clean each with the same basename/device/inode/receipt guard as Step 9. The exact 3000-ms controlled delay must keep detach/cancel/restart operations nonterminal long enough to exercise their lifecycle action. Detach must leave the durable job running and reattach to its terminal result; cancel must reach the provider signal; restart reconciliation must reload the real durable store and either reattach a proved worker or mark an orphan interrupted with partial artifacts. The live legacy route is required to prove only `absence_unprovable`—never no-match or empty—while the isolated healthy manifest route separately proves strict no-match over a nonempty, fully searched authority. Persist and later read back both distinct operation IDs. Negative tests do not invoke a paid provider.
+Retain the stopped lifecycle and strict-manifest zero fixtures through Step 11 readback, then clean each with the same basename/device/inode/receipt guard as Step 9. Every lifecycle receipt must carry configured and effective delay exactly `3000`, `testOnlyOperationDelay:false`, all three stopped child PIDs, and before-stop event/counter/timestamp evidence that the detach/cancel/restart action occurred after provider-delay start but before terminal completion or abort. A configured number alone is not proof. Detach must leave the durable job running and reattach to its terminal result; cancel must reach the provider signal; restart reconciliation must reload the real durable store and either reattach a proved worker or mark an orphan interrupted with partial artifacts. Controlled scenarios must use only launcher-generated endpoints; supplying a live or caller-provided endpoint is `isolated_fixture_endpoint_override_refused`, and a live/repository/receipt-overlapping root is `isolated_fixture_live_root_refused`. The live legacy route is required to prove only `absence_unprovable`—never no-match or empty—while the isolated healthy manifest route separately proves strict no-match over a nonempty, fully searched authority. Both routes require a literal nonnegative current delta watermark, only safe-integer equal optional revision fields, a valid base revision no newer than current, exact tag/top-K filters, a positive literal authority total, and literal zero returned nodes; numeric strings and base-only evidence fail. Persist and later read back both distinct operation IDs. Negative tests do not invoke a paid provider.
 
 - [ ] **Step 11: Write the pre-push receipt with observed evidence only**
 
-Build one explicit identity manifest inside `RECEIPT_RUN_DIR`. Separate Jerry-live, Forrest-live, and isolated-controlled operation IDs with their exact receipt paths, run ID, authority, requester, and authorized endpoint/store. Re-read Jerry IDs only through Jerry, Forrest IDs only through Forrest, and fixture IDs only through their retained isolated durable stores; never send a fixture ID to a live dashboard. Prove unauthenticated/wrong-requester live reads are rejected and compare source evidence with the named JSONL receipt. A missing, duplicate-category, mismatched, or nonterminal receipt blocks completion.
+Build one exact-schema identity manifest inside `RECEIPT_RUN_DIR`. Its only top-level keys are `schemaVersion`, `receiptRunId`, `authorities`, `auditRoot`, `createdAt`, and `groups`; its only groups are `jerryLive`, `forrestLive`, and `isolatedControlled`; each entry contains only operation ID, authority, requester, receipt path, isolated store, and authorized endpoint. Do **not** add implementation commit, dual-zero, summary, or convenience fields: run authority and the separate dual-zero evidence already carry those facts, while `verifyReceiptManifest()` rejects extra keys.
+
+Inventory every canonical JSONL through `readReceiptRows()` and `validateCanonicalReceiptSet()`, merge all rows for every unique operation ID across event/terminal files, require consistent canonical context and identity fields plus exactly one global terminal, and only then construct groups from terminal rows. Exact set equality is mandatory: verifier rescans all canonical receipt artifacts and rejects either an unlisted operation or a listed operation absent from receipts. Re-read Jerry IDs only through Jerry, Forrest IDs only through Forrest, and fixture IDs only through retained isolated durable stores; never send a fixture ID to a live dashboard. Prove unauthenticated/wrong-requester live reads are rejected and compare source evidence with the named terminal receipt. A missing category, duplicate terminal, mixed identity, nonterminal-only operation, or selected-last-before-full-validation blocks completion.
 
 Run the readback against every operation ID emitted by the smoke receipts:
 
@@ -7485,111 +7839,108 @@ Run the readback against every operation ID emitted by the smoke receipts:
 node - "$RECEIPT_RUN_DIR" <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
-const root = fs.realpathSync(process.argv[2]);
-const authorityPath = path.join(root, 'run-authority.json');
-const authorityStat = fs.lstatSync(authorityPath);
-const runAuthority = JSON.parse(fs.readFileSync(authorityPath, 'utf8'));
-if (!authorityStat.isFile() || authorityStat.isSymbolicLink()
-    || fs.realpathSync(authorityPath) !== authorityPath
-    || (authorityStat.mode & 0o777) !== 0o600
-    || runAuthority.receiptRunId !== process.env.RECEIPT_RUN_ID
-    || !/^[a-f0-9]{40}$/.test(runAuthority.implementationCommit || '')
-    || runAuthority.expectedLiveTree !== runAuthority.actualLiveTree
-    || (process.env.HOME23_RECEIPT_IMPLEMENTATION_COMMIT
-      && process.env.HOME23_RECEIPT_IMPLEMENTATION_COMMIT !== runAuthority.implementationCommit)) {
-  throw new Error('run-authority.json is not the sole valid identity authority');
-}
-const files = [];
-function walk(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const candidate = path.join(dir, entry.name);
-    if (entry.isSymbolicLink()) throw new Error(`receipt symlink: ${candidate}`);
-    if (entry.isDirectory()) walk(candidate);
-    else if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(candidate);
+(async () => {
+  const root = fs.realpathSync(process.argv[2]);
+  const common = await import('./scripts/lib/brain-acceptance-common.mjs');
+  const smoke = await import('./scripts/live-brain-tools-smoke.mjs');
+  const context = await common.receiptContext({
+    'receipt-run-dir': root,
+    'receipt-run-id': process.env.RECEIPT_RUN_ID,
+    authority: 'live',
+  }, process.env);
+  const files = [];
+  function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const candidate = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) throw new Error(`receipt symlink: ${candidate}`);
+      if (entry.isDirectory()) walk(candidate);
+      else if (entry.isFile() && entry.name.endsWith('.jsonl')) files.push(candidate);
+    }
   }
-}
-walk(root);
-const manifest = { schemaVersion: 1, receiptRunId: runAuthority.receiptRunId,
-  implementationCommit: runAuthority.implementationCommit,
-  authorities: ['live','isolated-controlled'], auditRoot: root, createdAt: new Date().toISOString(),
-  groups: { jerryLive: [], forrestLive: [], isolatedControlled: [] } };
-const seen = new Map();
-const observedOperationIds = new Set();
-let terminalRowCount = 0;
-for (const file of files) {
-  for (const line of fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)) {
-    const value = JSON.parse(line);
-    if (value.receiptRunId !== runAuthority.receiptRunId) throw new Error(`run ID mismatch: ${file}`);
-    if (value.implementationCommit !== runAuthority.implementationCommit) {
-      throw new Error(`implementation commit mismatch: ${file}`);
+  walk(root);
+  files.sort();
+  const operations = new Map();
+  for (const file of files) {
+    const relative = path.relative(root, file);
+    const authority = relative.split(path.sep)[0] === 'isolated-controlled'
+      ? 'isolated-controlled' : 'live';
+    const validated = smoke.validateCanonicalReceiptSet(
+      await smoke.readReceiptRows(file), context, { expectedAuthority: authority },
+    );
+    for (const [operationId, item] of validated.operations) {
+      const current = operations.get(operationId) || {
+        terminalCount: 0, terminal: null, receipt: null, identity: Object.create(null),
+      };
+      for (const [field, value] of Object.entries(item.identity)) {
+        if (Object.hasOwn(current.identity, field)
+            && JSON.stringify(current.identity[field]) !== JSON.stringify(value)) {
+          throw new Error(`operation identity conflict: ${operationId}:${field}`);
+        }
+        current.identity[field] = value;
+      }
+      const terminals = item.rows.filter((row) => row.receiptKind === 'operation-terminal');
+      current.terminalCount += terminals.length;
+      if (terminals.length) {
+        current.terminal = terminals[0];
+        current.receipt = relative;
+      }
+      operations.set(operationId, current);
     }
-    if (!['live','isolated-controlled'].includes(value.authority)) throw new Error(`authority missing: ${file}`);
-    if (!value.operationId) continue;
-    observedOperationIds.add(value.operationId);
-    if (value.receiptKind !== 'operation-terminal') continue;
-    terminalRowCount += 1;
-    if (!['complete','partial','failed','cancelled','interrupted'].includes(value.state)
-        || value.protectedResultRead !== true) {
-      throw new Error(`invalid terminal operation receipt: ${file}`);
-    }
-    const group = value.authority === 'isolated-controlled' ? 'isolatedControlled'
-      : value.requesterAgent === 'forrest' ? 'forrestLive'
-      : value.requesterAgent === 'jerry' ? 'jerryLive' : null;
-    if (!group) throw new Error(`unknown live requester: ${value.requesterAgent}`);
-    if (group === 'isolatedControlled' &&
-        (typeof value.isolatedStore !== 'string' || !value.isolatedStore.trim())) {
-      throw new Error(`isolated operation lacks retained store: ${value.operationId}`);
-    }
-    if (group !== 'isolatedControlled' &&
-        (typeof value.authorizedEndpoint !== 'string' || !value.authorizedEndpoint.trim()
-          || value.isolatedStore != null)) {
-      throw new Error(`live operation authority metadata invalid: ${value.operationId}`);
-    }
-    const prior = seen.get(value.operationId);
-    if (prior) throw new Error(`duplicate terminal operation receipt: ${value.operationId}`);
-    const identity = { group, authority: value.authority,
-      requesterAgent: value.requesterAgent || null,
-      isolatedStore: value.isolatedStore || null,
-      authorizedEndpoint: value.authorizedEndpoint || null };
-    seen.set(value.operationId, identity);
-    manifest.groups[group].push({ operationId: value.operationId,
-      authority: identity.authority, requesterAgent: identity.requesterAgent,
-      implementationCommit: runAuthority.implementationCommit,
-      receipt: path.relative(root, file), isolatedStore: identity.isolatedStore,
-      authorizedEndpoint: identity.authorizedEndpoint });
   }
-}
-for (const operationId of observedOperationIds) {
-  if (!seen.has(operationId)) throw new Error(`operation lacks canonical terminal receipt: ${operationId}`);
-}
-if (!manifest.groups.jerryLive.length || !manifest.groups.forrestLive.length
-    || !manifest.groups.isolatedControlled.length) {
-  throw new Error('identity manifest lacks Jerry, Forrest, or isolated operation IDs');
-}
-if (terminalRowCount !== seen.size || observedOperationIds.size !== seen.size) {
-  throw new Error('not every observed operation has exactly one canonical terminal row');
-}
-const readSelectedLast = (relative) => {
-  const rows = fs.readFileSync(path.join(root, relative), 'utf8')
-    .trim().split('\n').filter(Boolean).map(JSON.parse);
-  if (!rows.length || rows.some((row) => row.receiptKind !== 'operation-terminal')) {
-    throw new Error(`invalid operation receipt set: ${relative}`);
+  const manifest = {
+    schemaVersion: 1,
+    receiptRunId: context.receiptRunId,
+    authorities: ['live', 'isolated-controlled'],
+    auditRoot: root,
+    createdAt: new Date().toISOString(),
+    groups: { jerryLive: [], forrestLive: [], isolatedControlled: [] },
+  };
+  for (const [operationId, item] of [...operations].sort(([a], [b]) => a.localeCompare(b))) {
+    if (item.terminalCount !== 1 || !item.terminal || !item.receipt) {
+      throw new Error(`operation lacks exactly one canonical terminal: ${operationId}`);
+    }
+    const row = item.terminal;
+    const group = row.authority === 'isolated-controlled' ? 'isolatedControlled'
+      : row.requesterAgent === 'forrest' ? 'forrestLive'
+      : row.requesterAgent === 'jerry' ? 'jerryLive' : null;
+    if (!group || (group === 'isolatedControlled'
+      ? row.authorizedEndpoint !== null || typeof row.isolatedStore !== 'string'
+      : typeof row.authorizedEndpoint !== 'string' || row.isolatedStore !== null)) {
+      throw new Error(`terminal authority metadata invalid: ${operationId}`);
+    }
+    manifest.groups[group].push({
+      operationId,
+      authority: row.authority,
+      requesterAgent: row.requesterAgent,
+      receipt: item.receipt,
+      isolatedStore: row.isolatedStore,
+      authorizedEndpoint: row.authorizedEndpoint,
+    });
   }
-  return rows.at(-1);
-};
-const liveZero = readSelectedLast('live/brain-zero-unprovable.jsonl');
-const isolatedZero = readSelectedLast('isolated-controlled/brain-zero-proven.jsonl');
-if (liveZero.operationId === isolatedZero.operationId
-    || seen.get(liveZero.operationId)?.group !== 'jerryLive'
-    || seen.get(isolatedZero.operationId)?.group !== 'isolatedControlled') {
-  throw new Error('dual zero operation identities missing or misgrouped');
-}
-manifest.dualZeroOperationIds = {
-  liveAbsenceUnprovable: liveZero.operationId,
-  isolatedHealthyNoMatch: isolatedZero.operationId,
-};
-fs.writeFileSync(path.join(root, 'operation-identity-manifest.json'),
-  JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  for (const group of Object.values(manifest.groups)) {
+    if (!group.length) throw new Error('identity manifest category is empty');
+  }
+  const selectedTerminal = async (relative, authority) => smoke.validateCanonicalReceiptSet(
+    await smoke.readReceiptRows(path.join(root, relative)), context, {
+      expectedAuthority: authority,
+      requireTerminalPerOperation: true,
+      allRowsTerminal: true,
+      selectedLast: true,
+    },
+  ).selected;
+  const liveZero = await selectedTerminal('live/brain-zero-unprovable.jsonl', 'live');
+  const isolatedZero = await selectedTerminal(
+    'isolated-controlled/brain-zero-proven.jsonl', 'isolated-controlled',
+  );
+  if (liveZero.operationId === isolatedZero.operationId
+      || !manifest.groups.jerryLive.some((row) => row.operationId === liveZero.operationId)
+      || !manifest.groups.isolatedControlled.some(
+        (row) => row.operationId === isolatedZero.operationId,
+      )) throw new Error('dual zero operation identities missing or misgrouped');
+  fs.writeFileSync(path.join(root, 'operation-identity-manifest.json'),
+    `${JSON.stringify(manifest, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+  await common.assertReceiptContextDirectoryIdentity(context);
+})().catch((error) => { console.error(error); process.exitCode = 1; });
 NODE
 node scripts/live-brain-tools-smoke.mjs --scenario verify-receipts \
   --base-url http://127.0.0.1:5002 --caller-agent jerry \
@@ -7620,7 +7971,9 @@ Create `docs/receipts/2026-07-09-brain-tools-hardening.md` with these concrete h
 
 ## Scope and commits
 ## Receipt run identity, authority tags, and artifact-manifest digest
+## Opaque run authority, hostname/run-start binding, receipt ancestry, and full JSONL readback
 ## External three-way expected/actual live tree and preserved-index proof
+## Authenticated prior deployed baseline and unrelated-untracked preservation
 ## Projection-storm root cause, 255 roots, 36.10 GiB, and 99-percent disk evidence
 ## Two-dashboard emergency-stop deviation, already-quiesced engines, and preserved online harness/COSMO state
 ## Cross-process canonical-source admission and retryable HTTP-503 boundaries
@@ -7630,6 +7983,7 @@ Create `docs/receipts/2026-07-09-brain-tools-hardening.md` with these concrete h
 ## Durable cron-query coordinator migration, 5,400-second default, and truthful terminal rendering
 ## Full Plan A-C prerequisite matrix
 ## Focused test commands and exact totals
+## Standalone search, graph, query, and PGS scale-probe limits and results
 ## Build, full test, contract, and portability results
 ## Pre/post PM2 process and listener truth
 ## Existing-install capability and ecosystem migration
@@ -7640,15 +7994,19 @@ Create `docs/receipts/2026-07-09-brain-tools-hardening.md` with these concrete h
 ## Completed research-brain canary and target hash proof
 ## Large PGS progress, heap/PID/restart proof, and live vs isolated authority
 ## Isolated synthesis operation
+## Isolated fixture owner/config/key/launcher/minimal-environment bindings and exact delay evidence
 ## Direct Query and bounded graph dashboard/COSMO heap/PID/restart proof
 ## MCP parity or typed unavailability
 ## Negative authority, detach/reattach, cancel, restart reconciliation, and dual zero-result proof
 ## External provider limitations
-## Guarded PM2 dump backup, full-table comparison, save, and readback
+## Complete canonical operation sets, raw JSON artifacts, snapshots, and final revalidation
+## Guarded PM2 transaction pair, retained dump capability, save, rollback, and publication readback
 ## Final portable Git/remote-main state and preserved dirty live checkout
 ```
 
 Populate every section with the exact commands, timestamps, operation IDs, result states, watermarks, per-process fresh metric windows, PIDs, restart counts, authority tags, and outputs observed in Steps 0B-10b. Include `EXPECTED_LIVE_TREE == ACTUAL_LIVE_TREE`, either the clean fast-forward index-transition proof or combined deployment original-index hashes, receipt run ID, final artifact-manifest digest when available, and exact Plan A-C group totals. The incident/cleanup sections must name the per-request full legacy projection root cause; 255 total immediate dashboard-source roots; approximately 36.10 GiB; original 99-percent disk state; engines already quiesced by the persistence/acceptance gate; the two exact later emergency dashboard stops; final four-row stopped/PID-zero state; still-online harness/COSMO rows; the six-port PM2-env-derived monitored union; protected 5013 port/PID/command/boot/process-start identity; dry-run full-manifest and approval-scope digests; exact approval-scope token/actor/text/time and dry-run `createdAt`; reviewed 248 removed and seven excluded; approximately 38.67 decimal GB selected/removed allocation; all six retained hardlink-pair crash-window roots plus the zero candidate with reason/identity; selected/removed logical and allocated totals; pre/post `statfs` and available-byte delta; every fresh apply-start/after brain and nonselected digest; zero structural scope drift with root identities and membership intact; exact `concurrentContentDrift` reconciliation for any identity-stable protected content advances; the candidate/quarantine mutation audit and separately named receipt-publication evidence; final PM2/listener/open-FD gates; and post-cleanup disk/memory gates. Record any `removed_postcondition_failed` or `removal_state_unknown` as a partial failure, never as reclaimed success. Record that no broad PM2 mutation occurred and that the single combined start used stopped delta `0` for both engines/dashboards. Record portable prompt/UI test totals and only local Jerry guidance relative paths plus before/after SHA-256 values—never the files' contents or external backup path. Record the durable cron focused command and exact total, the removal of legacy `queryEngine()`/`/api/query`, the 5,400-second default, exact alias pair forwarding, one-operation dispatch, and complete/detached/partial/typed-failed rendering evidence. The lifecycle section must reproduce each exact Step 10b command and observed result, name every negative error code, and list the detach, reattach terminal, cancel, restart-reconcile, live `absence_unprovable`, and isolated healthy `no_match` operation IDs with their identity-manifest groups. State `not run` or the typed external blocker for any unavailable provider check; never infer a pass. If PGS used isolated control, say explicitly that live-provider large PGS did not pass. In the final Git section record the exact Step 0B implementation commit and remote readback; do not predict the later status/receipt commit hashes. For the retained private Forrest recovery backup, the tracked receipt records only `live/forrest-config-backup-retention.json`, `live/forrest-config-backup-retention-readback.json`, the backup basename, and its SHA-256. Never copy the absolute external backup path or any config bytes into a tracked file.
+
+The new acceptance sections must also record the executable safety evidence, not just a pass label. Record the opaque WeakMap-bound context revalidation; exact mode-0600 `run-authority.json` inode/bytes, hostname, and run-start binding; component-wise canonical nonsymlink mode-0700 output ancestry; and full prior-plus-appended JSONL byte readbacks. Record the authenticated prior deployed commit/tree, fresh baseline verification, final deployment three-way resolution inventory, helper-authenticated `unrelatedUntracked` preservation, and six-field post-gate live-tree immutability comparison. For every isolated scenario, record schema-v2 owner provenance, root/owner/config/capability-key identities and hashes, launcher PID/random start token, exact minimal inherited environment plus known `NODE_PATH`, all-ready-file final revalidation after initial/restart handshakes, all three child PIDs/ports/stops, retained store, configured/effective delay, test-only flag, and exact accepted-operation/action-before-terminal evidence; never record a provider secret. Record that every complete multi-operation set was validated before selected-last, valid JSON arrays/primitives were treated as raw artifacts, each JSON semantic parse and digest used one identity-bound snapshot, and every earlier artifact was revalidated after all later semantic reads. For guarded PM2 save, record both committed UUID-linked result/intent files and cross-hash; branded single-use transaction binding; immediately-pre-save context/dump/backup/output revalidation; retained descriptor-backed backup identity/digest; distinct dry/apply transactions/backups; exact full-table result; and the tested restore-before-failed-pair behavior for postcondition or publication failure. A missing intent, one-sided publication, result/intent mismatch, reopened-path restore, or final all-artifact revalidation failure blocks closeout.
 
 - [ ] **Step 12: Re-run final verification after writing the receipt**
 
@@ -7656,7 +8014,15 @@ Populate every section with the exact commands, timestamps, operation IDs, resul
 npm run build
 npm test
 npm run test:contracts
+for required in "${SCALE_PROBES[@]}" "${PLAN_C_REQUIRED_FILES[@]}"; do
+  test -f "$required" || { echo "missing required scale artifact: $required" >&2; exit 1; }
+done
+node --expose-gc tests/engine/dashboard/memory-search-heap-probe.cjs
+node --max-old-space-size=192 --expose-gc tests/shared/memory-source-graph-heap-probe.cjs
+node --expose-gc tests/cosmo23/query-engine-heap-probe.cjs
+node --expose-gc tests/cosmo23/pgs-heap-probe.cjs
 node --test --test-concurrency=1 tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs tests/scripts/guarded-pm2-save.test.cjs tests/scripts/cleanup-orphan-brain-projections.test.cjs tests/scripts/verify-live-deployment-tree.test.cjs
+node --test --test-concurrency=1 tests/scripts/brain-acceptance-common.test.cjs tests/scripts/live-brain-tools-authority.test.cjs tests/scripts/isolated-brain-fixture.test.cjs tests/scripts/isolated-brain-cli.test.cjs tests/scripts/list-brain-operations.test.cjs
 node --test --test-concurrency=1 tests/shared/memory-source-operation-context.test.js tests/engine/dashboard/brain-source-api.test.js tests/engine/dashboard/memory-search.test.js tests/cosmo23/brain-source-router.test.cjs
 node --import tsx --test --test-concurrency=1 tests/agent/tools/brain.test.ts tests/agent/tools/cron.test.ts tests/agent/turn-entrypoint-callers.test.ts
 node --test --test-concurrency=1 tests/dashboard/operator-ui.test.js
@@ -7697,22 +8063,104 @@ node scripts/guarded-pm2-save.mjs \
 node - "$RECEIPT_RUN_DIR/run-authority.json" \
   "$RECEIPT_RUN_DIR/live/guarded-pm2-save-dry-run.json" \
   "$RECEIPT_RUN_DIR/live/guarded-pm2-save-apply.json" <<'NODE'
+const crypto = require('node:crypto');
 const fs = require('node:fs');
+const path = require('node:path');
 const [authorityFile, dryFile, applyFile] = process.argv.slice(2);
 const authority = JSON.parse(fs.readFileSync(authorityFile, 'utf8'));
-const dry = JSON.parse(fs.readFileSync(dryFile, 'utf8'));
-const applied = JSON.parse(fs.readFileSync(applyFile, 'utf8'));
-for (const [row, mode, invoked] of [[dry, 'dry-run', false], [applied, 'apply', true]]) {
-  if (row.mode !== mode || row.pm2SaveInvoked !== invoked || row.ok !== true
-      || row.receiptRunId !== authority.receiptRunId
-      || row.implementationCommit !== authority.implementationCommit
-      || row.authority !== 'live' || row.moduleRowsExcluded !== true
-      || row.moduleRowsFrozen !== true || row.unrelatedRestartBaselineMonotonic !== true
-      || row.unrelatedRowsFrozen !== true || row.backupMode !== '0600'
-      || row.backupCreatedExclusively !== true || !row.backupBasename) process.exit(1);
+const receiptRoot = path.dirname(authorityFile);
+const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+const pairFields = [
+  'receiptRunId', 'authority', 'implementationCommit', 'hostname',
+  'receiptRunStartedAt', 'transactionId', 'transactionState', 'mode',
+  'dumpPath', 'outputPath', 'ok', 'pm2SaveInvoked', 'restored',
+  'restorationVerified', 'errorCode', 'backupBasename',
+];
+const readMode600Json = (file) => {
+  const descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true });
+    const named = fs.lstatSync(file, { bigint: true });
+    if (!opened.isFile() || named.isSymbolicLink()
+        || opened.dev !== named.dev || opened.ino !== named.ino
+        || opened.nlink !== 1n || (opened.mode & 0o777n) !== 0o600n
+        || fs.realpathSync(file) !== file) throw new Error(`unsafe receipt: ${file}`);
+    return JSON.parse(fs.readFileSync(descriptor, 'utf8'));
+  } finally { fs.closeSync(descriptor); }
+};
+const inspectBackup = (row) => {
+  const expectedParent = path.join(receiptRoot, 'backups');
+  if (!path.isAbsolute(row.backupPath) || path.normalize(row.backupPath) !== row.backupPath
+      || path.dirname(row.backupPath) !== expectedParent
+      || path.basename(row.backupPath) !== row.backupBasename
+      || row.backupMode !== '0600' || row.backupCreatedExclusively !== true
+      || !/^[a-f0-9]{64}$/.test(row.backupSha256 || '')
+      || row.originalSha256 !== row.backupSha256) throw new Error('backup evidence invalid');
+  const descriptor = fs.openSync(
+    row.backupPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+  );
+  try {
+    const opened = fs.fstatSync(descriptor, { bigint: true });
+    const named = fs.lstatSync(row.backupPath, { bigint: true });
+    const bytes = fs.readFileSync(descriptor);
+    const identity = row.backupIdentity || {};
+    if (!opened.isFile() || named.isSymbolicLink()
+        || opened.dev !== named.dev || opened.ino !== named.ino
+        || opened.nlink !== 1n || (opened.mode & 0o777n) !== 0o600n
+        || fs.realpathSync(row.backupPath) !== row.backupPath
+        || identity.path !== row.backupPath
+        || identity.dev !== String(opened.dev) || identity.ino !== String(opened.ino)
+        || identity.nlink !== '1' || identity.mode !== 0o600
+        || identity.size !== String(opened.size)
+        || crypto.createHash('sha256').update(bytes).digest('hex') !== row.backupSha256) {
+      throw new Error('retained backup capability readback invalid');
+    }
+  } finally { fs.closeSync(descriptor); }
+};
+const validatePair = (outputFile, mode, invoked) => {
+  const result = readMode600Json(outputFile);
+  const intentBasename = `.${path.basename(outputFile)}.${result.transactionId}`
+    + '.guarded-pm2-intent.json';
+  if (result.transactionIntentBasename !== intentBasename) {
+    throw new Error('guarded PM2 intent basename invalid');
+  }
+  const intentFile = path.join(path.dirname(outputFile), intentBasename);
+  const intent = readMode600Json(intentFile);
+  if (result.helper !== 'guarded-pm2-save'
+      || result.receiptKind !== 'guarded-pm2-save-result'
+      || result.transactionRole !== 'result'
+      || intent.helper !== 'guarded-pm2-save'
+      || intent.receiptKind !== 'guarded-pm2-save-intent'
+      || intent.transactionRole !== 'intent'
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        result.transactionId || '',
+      )
+      || result.transactionState !== 'committed' || intent.transactionState !== 'committed'
+      || pairFields.some((field) => !same(result[field], intent[field]))
+      || result.mode !== mode || result.outputPath !== outputFile
+      || result.pm2SaveInvoked !== invoked || result.applied !== invoked
+      || result.ok !== true || result.restored !== false
+      || result.restorationVerified !== false || result.receiptPublicationVerified !== true
+      || intent.outputArtifactSha256 !== result.artifactSha256
+      || !/^[a-f0-9]{64}$/.test(result.artifactSha256 || '')
+      || result.receiptRunId !== authority.receiptRunId
+      || result.implementationCommit !== authority.implementationCommit
+      || result.hostname !== authority.hostname
+      || result.receiptRunStartedAt !== authority.startedAt
+      || result.authority !== 'live' || result.moduleRowsExcluded !== true
+      || result.moduleRowsFrozen !== true
+      || result.unrelatedRestartBaselineMonotonic !== true
+      || result.unrelatedRowsFrozen !== true) throw new Error(`guarded PM2 pair invalid: ${mode}`);
+  inspectBackup(result);
+  return result;
+};
+const dry = validatePair(dryFile, 'dry-run', false);
+const applied = validatePair(applyFile, 'apply', true);
+if (dry.transactionId === applied.transactionId
+    || dry.backupBasename === applied.backupBasename
+    || dry.backupSha256 !== applied.backupSha256) {
+  throw new Error('dry-run/apply transaction or backup relationship invalid');
 }
-if (dry.backupBasename === applied.backupBasename
-    || dry.backupSha256 !== applied.backupSha256) process.exit(1);
 NODE
 test -n "${FORREST_CONFIG_BACKUP:-}"
 test -n "${FORREST_CONFIG_BACKUP_SHA256:-}"
@@ -7871,7 +8319,11 @@ test "$(shasum -a 256 "$FORREST_CONFIG_BACKUP" | awk 'NR == 1 { print $1 }')" = 
   "$FORREST_CONFIG_BACKUP_SHA256"
 ```
 
-The helper must back up the exact dump bytes/mode into a new exclusive path before **each** dry-run/apply attempt, compare the full application live/dump tables, exclude PM2 module rows from dump equality while freezing their secret-free identity/status/PID/restart projection, and refuse any unrelated drift before mutation. The dry-run and apply backup basenames must differ; each captures the same pre-save dump digest, so any reused path or differing pre-save bytes blocks apply. `PM2_CONFIGURED` contains all seven always-configured names plus exactly the enabled MCP rows present once in the regenerated ecosystem. The Step 3 delayed snapshot is the monotonic unrelated restart baseline: later counters may be higher before the attempt, but never lower, and the attempt freezes the immediately observed value. Post-save it requires every expected process exactly once/online with normalized ecosystem identity, the new dump equal to the frozen live application table, modules still frozen, unchanged unrelated normalized rows, no duplicate/stopped/errored application entry, and unchanged live PIDs/restart counts across the save. A failed postcondition restores the apply attempt's own backup atomically and blocks completion; never leave a partially verified resurrection file. After successful save, the retention verifier proves the external Forrest-config backup's canonical parent, exact generated name, regular-file identity, single-link mode, owner, bounded size, captured bytes, and digest before and after creating a mode-0600 receipt. It never renames, links, truncates, or deletes the backup. The receipt records the exact retained path and the explicit policy `operator-removes-only-after-final-acceptance`; any validation or receipt-write failure removes only its exact owned receipt and leaves the backup untouched. Recheck the exported path, mode, owner, size, and digest immediately before the final artifact seal. Keep the absolute recovery path only in the ignored runtime retention/readback receipts. The tracked closeout names those receipt paths relative to the ignored run root plus the backup basename and digest, never the absolute recovery path; the operator reads the local runtime receipt before removing the backup after final pushed acceptance.
+The CLI must reserve its exact output plus hidden same-parent intent file through one module-private, branded, single-use transaction bound to the opaque receipt context, exact mode, dump path, and normalized output path. An unbranded, spread, forged, mismatched, or replayed transaction is rejected before PM2 listing, backup, or save. The final files form one UUID-v4-linked transaction: result kind/role `guarded-pm2-save-result`/`result`, intent kind/role `guarded-pm2-save-intent`/`intent`, identical verifier-defined authority/state/mode/path/boolean/backup fields, and `intent.outputArtifactSha256 === result.artifactSha256`. Both files stay open, are rewritten and fsynced in place, and receive exact named-inode full readback; rename-over publication is forbidden. The validator above proves the committed pair, and Step 15 independently revalidates every pair as part of the artifact seal.
+
+Before **each** dry-run/apply attempt, the helper copies the exact dump bytes/mode into a new exclusive mode-0600 backup and retains that file as an already-verified open capability. It compares the full application live/dump tables, excludes PM2 module rows from dump equality while freezing their secret-free identity/status/PID/restart projection, and refuses unrelated drift. Immediately before `pm2 save`, it revalidates the dump bytes/mode and parent identity, reads the retained backup capability again, and revalidates both reserved transaction artifacts. Restore is permitted only from that retained descriptor capability—never remembered bytes or a reopened pathname—even if its directory entry was renamed; restoration uses a new temp file, fsync, original mode, atomic rename, parent fsync, and exact final bytes/mode readback. The dry-run and apply backup basenames and transaction IDs must differ, while their pre-save dump digests must match; reuse or differing pre-save bytes blocks completion. Any post-save or receipt-publication failure after mutation must restore first and then retain the exact failed/restored result-intent pair. A one-sided or cross-hash-mismatched publication is detectable and blocks the artifact seal.
+
+`PM2_CONFIGURED` contains all seven always-configured names plus exactly the enabled MCP rows present once in the regenerated ecosystem. The Step 3 delayed snapshot is the monotonic unrelated restart baseline: later counters may be higher before the attempt, but never lower, and the attempt freezes the immediately observed value. Post-save it requires every expected process exactly once/online with normalized ecosystem identity, the new dump equal to the frozen live application table, modules still frozen, unchanged unrelated normalized rows, no duplicate/stopped/errored application entry, and unchanged live PIDs/restart counts across the save. After successful save, the retention verifier proves the external Forrest-config backup's canonical parent, exact generated name, regular-file identity, single-link mode, owner, bounded size, captured bytes, and digest before and after creating a mode-0600 receipt. It never renames, links, truncates, or deletes the backup. The receipt records the exact retained path and the explicit policy `operator-removes-only-after-final-acceptance`; any validation or receipt-write failure removes only its exact owned receipt and leaves the backup untouched. Recheck the exported path, mode, owner, size, and digest immediately before the final artifact seal. Keep the absolute recovery path only in the ignored runtime retention/readback receipts. The tracked closeout names those receipt paths relative to the ignored run root plus the backup basename and digest, never the absolute recovery path; the operator reads the local runtime receipt before removing the backup after final pushed acceptance.
 
 - [ ] **Step 13: Commit, push, and read back the verified live receipt before changing status**
 
@@ -7913,7 +8365,7 @@ Expected: the implemented status first exists only after live evidence, final ve
 
 - [ ] **Step 15: Record the status-push readback in the receipt**
 
-Append `STATUS_PUSH_COMMIT` plus its remote equality proof. Because this changes the receipt again, repeat the full A-C arrays, Plan D focused suites, build, `npm test`, contracts, all seven helper tests, diff/portability checks, and authority-link/readback validation after the addendum is present. Save every post-addendum TAP/hash beneath the dedicated receipt run. When—and only when—no further run artifact remains to be written, build the one immutable artifact manifest and verify it through the read-only CLI mode:
+Append `STATUS_PUSH_COMMIT` plus its remote equality proof. Because this changes the receipt again, repeat the full A-C arrays, Plan D focused suites, build, `npm test`, contracts, all seven primary helper tests plus all five authority/isolated/list-helper tests, diff/portability checks, and authority-link/readback validation after the addendum is present. Save every post-addendum TAP/hash beneath the dedicated receipt run. When—and only when—no further run artifact remains to be written, build the one immutable artifact manifest and verify it through the read-only CLI mode:
 
 ```bash
 test -n "${FORREST_CONFIG_BACKUP:-}"
@@ -8252,16 +8704,22 @@ Expected: both remote refs equal `CLOSEOUT_COMMIT`, while the live checkout rema
 - [ ] Compatibility query/export adapters enforce published limits and canonical target agreement before forwarding.
 - [ ] New tests are included in `npm test`.
 - [ ] Vendored COSMO changes, approved spec status, full verification, live canaries, heap proof, and target hash proof are recorded durably.
-- [ ] Immutable `run-authority.json` is the sole run/commit/tree identity; every machine receipt and every operation terminal row matches it, and a redundant commit mismatch fails typed before action.
+- [ ] Mode-0600 single-link `run-authority.json` is the sole run/commit/tree/hostname/run-start identity; only its WeakMap-bound opaque context is accepted, exact authority bytes/inode plus receipt-directory identity are revalidated before and after action, and spread/forged/same-byte-turnover contexts fail typed before action.
+- [ ] Every receipt output walks/creates canonical nonsymlink mode-0700 ancestry component by component, owns a mode-0600 named inode, and performs full final JSON readback or full prior-plus-appended JSONL readback after parent fsync.
 - [ ] Cross-process compatibility admission is acquired by canonical source before UUID/scratch/projection, and dashboard brain-source, memory-search, and COSMO boundaries preserve retryable `source_busy` as HTTP 503.
 - [ ] The portable orphan cleaner requires the exact four-row stopped state with correct gate-versus-emergency provenance; explicit ports equal to the six-port PM2 env union; protected 5013 is disjoint and process-identity-bound; approval includes the mandatory approval-scope digest/token plus trimmed actor, exact text, canonical post-preflight time, and full-manifest integrity; an exclusive private quarantine refuses destination races; every candidate/quarantine mutation has audited intent plus one terminal outcome while receipt publication remains separate evidence; reviewed 248/7 classification and selected/removed byte/statfs evidence reconcile; zero structural scope drift keeps root identities and membership intact; any identity-stable protected content changes reconcile exactly to `concurrentContentDrift`; and final PM2/listener/FD gates pass before full gates run.
 - [ ] Portable runtime prompt, dashboard PGS copy, and live Jerry SOUL/LEARNINGS/MEMORY all teach 90-minute ordinary and six-hour PGS/synthesis wait/reattach semantics without current fixed-duration promises.
-- [ ] Manifest summary or legacy base-plus-committed-delta stream is authoritative; every legacy snapshot is advisory and legacy zero is recorded only as `absence_unprovable`.
-- [ ] Discover/own multi-operation JSONL validates every unique terminal before selecting the last row; the identity manifest includes all terminals and both distinct live/isolated zero operation IDs.
+- [ ] Manifest summary or legacy base-plus-committed-delta stream is authoritative; current/delta revisions are literal safe integers with equal optional revisions and a nonfuture base; every legacy snapshot is advisory and legacy zero is recorded only as `absence_unprovable`, never from numeric-string, base-only, or coerced zero evidence.
+- [ ] Every multi-operation JSONL is read completely with artifact hashes and canonical context validated, grouped by every unique operation ID, and required to contain exactly one terminal per operation before selected-last; the exact-schema identity manifest includes all and only globally inventoried terminals plus both distinct live/isolated zero IDs.
 - [ ] BEFORE/AFTER inventories cover brain, run, PGS, session, cache, export, and agency boundaries with discovery/query/PGS start-and-poll between them.
-- [ ] Forrest remains paused through both persisted boundary compares and is resumed with exact listener/readiness proof.
+- [ ] Forrest and every other named PM2 process remain untouched after the one scoped combined start; both persisted boundary compares fail closed as `target_changed_concurrently` on any independent target advance and are retried only after a read-only idle window.
+- [ ] Controlled scenarios refuse every caller-supplied/live endpoint and overlapping live/repository/receipt root; launcher-owned dashboard/COSMO/MCP children bind schema-v2 owner provenance, immutable config/key/ready identities, launcher PID/start token, exact minimal no-provider-secret environment, and final all-file revalidation after initial/restart handshakes.
+- [ ] Every production controlled lifecycle uses configured/effective delay exactly 3000 ms with no test seam and captures before-stop, exact-operation-bound counters/sequences/timestamps proving the action started before terminal; all three children stop while the durable store is retained for protected readback.
 - [ ] Live acceptance proves PGS SSE progress, isolated synthesis reconnect, V8 used-heap growth at most 256 MiB, and MCP parity or typed unavailability.
-- [ ] PM2 refresh uses state-aware restart deltas plus delayed listener/readiness stability; guarded save freezes/excludes modules and uses unique dry-run/apply backups with a monotonic unrelated baseline.
+- [ ] Artifact build/verify treats valid JSON arrays/primitives as raw, parses and hashes each JSON-like artifact from one identity-bound snapshot, validates complete global operation and guarded transaction-pair inventories, and revalidates the path set plus every earlier artifact after all later semantic reads before final manifest/digest readback.
+- [ ] All four required standalone scale probes exist and pass: one-million-node search at no more than 192 MiB heap growth; one-million-node/three-million-edge graph below 160 MiB peak heap under the approved 192-MiB V8 cap; query at no more than 192 MiB heap and 256 MiB RSS; and PGS at no more than 256 MiB heap and 384 MiB RSS. Missing Plan C probes/helper remain hard blockers, not skips.
+- [ ] PM2 refresh uses state-aware restart deltas plus delayed listener/readiness stability; guarded save requires an opaque branded single-use context/mode/dump/output transaction, exact result/intent pair and cross-hash, unique retained descriptor-backed dry-run/apply backups, pre-save all-capability revalidation, full-table freeze, and restore-before-failed-pair evidence for postcondition or publication failure.
 - [ ] Both engines and dashboards remain exactly stopped/PID-zero through cleanup and prepare, harnesses/COSMO remain online, the two already-quiesced engines and two later emergency dashboard stops are recorded with correct provenance, and only the single scoped combined start follows.
+- [ ] The prior deployed baseline commit/tree is HMAC-authenticated and freshly reproduced before final three-way prepare; the final helper reports one preserved live sweeper row, only feature delta rows, exact expected/actual tree equality, unchanged index, and unchanged authenticated unrelated-untracked inventory.
 - [ ] Remote `main` is fast-forwarded from the clean feature worktree while the intentionally dirty live HEAD/index/diff and sweeper bytes remain unchanged.
 - [ ] Only explicit portable paths are committed and pushed; runtime state and unrelated user changes remain untouched.

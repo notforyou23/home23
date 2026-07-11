@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { PGS_OPERATION_LIMITS } = require('../../lib/brain-operation-limits');
+const { serializeProviderRecord } = require('../../lib/provider-record-sanitizer');
 const {
   canonicalJson,
   sourceDescriptorDigest,
@@ -14,7 +15,9 @@ const {
   getOperationScratchQuotaCleanup,
 } = require('../../../shared/memory-source/scratch-quota.cjs');
 
-const SCHEMA_VERSION = 1;
+// Version 2 stores only provider-safe evidence records. Bumping the binding
+// prevents a pre-sanitizer projection from being reused for provider prompts.
+const SCHEMA_VERSION = 2;
 const MAX_METADATA_VALUE_BYTES = 128 * 1024;
 const MAX_LIST_SCALAR_BYTES = 4 * 1024;
 const METADATA_KEYS = Object.freeze([
@@ -112,17 +115,10 @@ function edgeEndpoint(record, side) {
 }
 
 function serializeRecord(record, maxBytes, kind) {
-  if (!record || typeof record !== 'object' || Array.isArray(record)) {
-    throw typed('source_invalid', `PGS ${kind} record must be an object`);
-  }
-  let json;
-  try { json = JSON.stringify(record); } catch { json = null; }
-  if (typeof json !== 'string') throw typed('source_invalid', `PGS ${kind} record is not serializable`);
-  const bytes = Buffer.byteLength(json, 'utf8');
-  if (bytes > maxBytes) {
-    throw typed('result_too_large', `PGS ${kind} record exceeds the byte limit`);
-  }
-  return { json, bytes };
+  return serializeProviderRecord(record, {
+    maxBytes,
+    label: `PGS ${kind} record`,
+  });
 }
 
 function requireDatabase() {
@@ -776,14 +772,21 @@ async function openPinnedPGSStore({
         let lastOrdinal = -1;
         while (true) {
           const page = db.prepare(`
-            SELECT ordinal, length(json) AS chars FROM nodes
+            SELECT ordinal, length(CAST(json AS BLOB)) AS bytes FROM nodes
             WHERE partition_id = ? AND ordinal > ?
             ORDER BY ordinal LIMIT ?
           `).all(partition.partition_id, lastOrdinal, limits.maxTransactionRecords);
           if (!page.length) break;
           for (const node of page) {
+            if (!Number.isSafeInteger(node.bytes) || node.bytes < 0
+                || node.bytes > limits.maxContextCharsPerWorkUnit) {
+              throw typed(
+                'result_too_large',
+                'PGS source record cannot fit one work-unit context',
+              );
+            }
             const mustSplit = unit && (unit.nodeCount >= limits.maxNodesPerWorkUnit
-              || unit.contextChars + node.chars > limits.maxContextCharsPerWorkUnit);
+              || unit.contextChars + node.bytes > limits.maxContextCharsPerWorkUnit);
             if (mustSplit) {
               pendingRows.push(unit);
               unit = null;
@@ -801,7 +804,7 @@ async function openPinnedPGSStore({
             }
             unit.lastOrdinal = node.ordinal;
             unit.nodeCount += 1;
-            unit.contextChars += node.chars;
+            unit.contextChars += node.bytes;
             lastOrdinal = node.ordinal;
             buildStats.maxRetainedRecords = Math.max(buildStats.maxRetainedRecords, unit.nodeCount);
           }

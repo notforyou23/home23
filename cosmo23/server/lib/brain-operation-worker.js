@@ -21,6 +21,9 @@ const {
   durableBrainOperationRoot,
   sourceDescriptorDigest,
 } = require('../../../shared/memory-source');
+const {
+  createDurableOperationLockCapability,
+} = require('../../../shared/memory-source/durable-lock-authority.cjs');
 const { CapabilityNonceStore } = require('./capability-nonce-store');
 const { boundedJsonStringify } = require('../../lib/bounded-json');
 const {
@@ -359,6 +362,7 @@ class BrainOperationWorker {
     this.nonceStore = options.nonceStore || new CapabilityNonceStore({ now: this.now });
     if (typeof this.nonceStore.consume !== 'function') throw workerError('worker_configuration_invalid');
     this.records = new Map();
+    this.pendingStarts = new Map();
     this.tombstones = new Map();
     this.startLocks = new Map();
     this.inflightStarts = new Set();
@@ -425,15 +429,20 @@ class BrainOperationWorker {
     return hardDeadlineAt;
   }
 
-  _armHardDeadline(controller, hardDeadlineAt) {
+  _armHardDeadline(controllerOrControllers, hardDeadlineAt) {
+    const controllers = Array.isArray(controllerOrControllers)
+      ? controllerOrControllers
+      : [controllerOrControllers];
     let timer = null;
     let active = true;
     const abortAtDeadline = () => {
       timer = null;
-      if (!active || controller.signal.aborted) return;
+      if (!active || controllers.every((controller) => controller.signal.aborted)) return;
       const now = this.now();
       if (!Number.isFinite(now)) {
-        controller.abort(workerError('worker_clock_invalid'));
+        for (const controller of controllers) {
+          if (!controller.signal.aborted) controller.abort(workerError('worker_clock_invalid'));
+        }
         return;
       }
       const remaining = hardDeadlineAt - now;
@@ -442,10 +451,14 @@ class BrainOperationWorker {
         timer?.unref?.();
         return;
       }
-      controller.abort(workerError('operation_timeout', 'operation hard deadline elapsed', {
-        retryable: false,
-        statusCode: 504,
-      }));
+      for (const controller of controllers) {
+        if (!controller.signal.aborted) {
+          controller.abort(workerError('operation_timeout', 'operation hard deadline elapsed', {
+            retryable: false,
+            statusCode: 504,
+          }));
+        }
+      }
     };
     const remaining = hardDeadlineAt - this.now();
     if (!Number.isFinite(remaining) || remaining <= 0) {
@@ -504,7 +517,27 @@ class BrainOperationWorker {
       operationType: request.operationType,
       target: clone(request.target),
     });
-    const target = clone(rawTarget, 'access_denied');
+    const resolvedTarget = clone(rawTarget, 'access_denied');
+    const resolvedPolicy = this.authorizeBrainOperation({
+      requesterAgent: request.requesterAgent,
+      operationType: request.operationType,
+      target: resolvedTarget,
+    });
+    if (resolvedPolicy !== this.operationAuthority[request.operationType]) {
+      throw workerError('worker_configuration_invalid');
+    }
+
+    let target = resolvedTarget;
+    if (resolvedTarget.domain === 'brain' && request.target.domain === 'brain') {
+      // The dashboard and COSMO intentionally build catalogs with different
+      // scopes. Preserve the dashboard's durable snapshot revision while
+      // requiring every target-scoped authority field to match COSMO's fresh
+      // resolution. Source freshness remains bound by the source-pin digest.
+      target = {
+        ...resolvedTarget,
+        catalogRevision: request.target.catalogRevision,
+      };
+    }
     if (canonicalJson(target) !== canonicalJson(request.target)) throw workerError('access_denied');
     const policy = this.authorizeBrainOperation({
       requesterAgent: request.requesterAgent,
@@ -517,18 +550,41 @@ class BrainOperationWorker {
     return { target: Object.freeze(target), policy };
   }
 
-  async _withStartLock(operationId, callback) {
+  _awaitWithAbort(promise, signal) {
+    if (!(signal instanceof AbortSignal)) return Promise.resolve(promise);
+    if (signal.aborted) return Promise.reject(signal.reason);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const finish = (handler, value) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', aborted);
+        handler(value);
+      };
+      const aborted = () => finish(reject, signal.reason);
+      signal.addEventListener('abort', aborted, { once: true });
+      Promise.resolve(promise).then(
+        (value) => finish(resolve, value),
+        (error) => finish(reject, error),
+      );
+    });
+  }
+
+  async _withStartLock(operationId, callback, signal = null) {
     const prior = this.startLocks.get(operationId) || Promise.resolve();
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
     const current = prior.catch(() => {}).then(() => gate);
     this.startLocks.set(operationId, current);
-    await prior.catch(() => {});
+    void current.then(() => {
+      if (this.startLocks.get(operationId) === current) this.startLocks.delete(operationId);
+    });
     try {
+      await this._awaitWithAbort(prior.catch(() => {}), signal);
+      if (signal?.aborted) throw signal.reason;
       return await callback();
     } finally {
       release();
-      if (this.startLocks.get(operationId) === current) this.startLocks.delete(operationId);
     }
   }
 
@@ -598,6 +654,84 @@ class BrainOperationWorker {
       eventSequence: record.eventSequence,
       activeProviderCalls: Object.freeze(activeProviderCalls),
     });
+  }
+
+  _createPendingStart(request, fingerprint) {
+    const hardDeadlineAt = this._assertDeadlineOpen(request);
+    const controller = new AbortController();
+    const cleanupController = new AbortController();
+    const clearDeadline = this._armHardDeadline(controller, hardDeadlineAt);
+    let workerIdBytes;
+    try {
+      workerIdBytes = this.randomBytes(18);
+    } catch (error) {
+      clearDeadline();
+      throw workerError('worker_configuration_invalid', 'worker identity unavailable', { cause: error });
+    }
+    if (!Buffer.isBuffer(workerIdBytes) || workerIdBytes.length !== 18) {
+      clearDeadline();
+      throw workerError('worker_configuration_invalid');
+    }
+    return {
+      reference: Object.freeze({
+        version: 1,
+        workerId: `cosmo-${workerIdBytes.toString('base64url')}`,
+        workerType: 'cosmo',
+        operationType: request.operationType,
+      }),
+      operationId: request.operationId,
+      operationType: request.operationType,
+      request,
+      fingerprint,
+      state: 'running',
+      phase: 'preparing',
+      eventSequence: 0,
+      activeProviderCalls: new Map(),
+      events: [],
+      eventBytes: 0,
+      eventByteSizes: new Map(),
+      waiters: new Set(),
+      result: null,
+      controller,
+      cleanupController,
+      context: null,
+      sourcePin: null,
+      scratchQuota: null,
+      scratchDir: null,
+      releasePromise: null,
+      runPromise: null,
+      settled: null,
+      terminalAt: null,
+      resultObservedAt: null,
+      clearDeadline,
+    };
+  }
+
+  _publishCancelledPendingStart(pending) {
+    pending.request = Object.freeze(pending.request);
+    pending.state = 'cancelled';
+    pending.phase = 'terminal';
+    pending.result = Object.freeze({
+      state: 'cancelled',
+      result: null,
+      resultArtifact: null,
+      error: null,
+      sourceEvidence: null,
+    });
+    pending.terminalAt = this.now();
+    pending.clearDeadline = null;
+    pending.eventSequence += 1;
+    this._pushEvent(pending, Object.freeze({
+      type: 'terminal',
+      operationId: pending.operationId,
+      eventSequence: pending.eventSequence,
+      state: pending.state,
+      at: new Date(pending.terminalAt).toISOString(),
+    }));
+    pending.runPromise = Promise.resolve();
+    this.records.set(pending.operationId, pending);
+    this._notify(pending);
+    return pending;
   }
 
   _notify(record) {
@@ -849,22 +983,34 @@ class BrainOperationWorker {
     }
     record.activeProviderCalls.clear();
     record.phase = 'cleanup';
-    record.clearDeadline?.();
-    record.clearDeadline = null;
     try {
       await this._releaseOnce(record);
-    } catch {
-      envelope = Object.freeze({
-        state: 'interrupted',
-        result: null,
-        resultArtifact: null,
-        error: Object.freeze({
-          code: 'source_cleanup_failed',
-          message: 'Source cleanup failed before terminal publication',
-          retryable: true,
-        }),
-        sourceEvidence: null,
-      });
+    } catch (error) {
+      const cleanupReason = record.cleanupController?.signal.aborted
+        ? record.cleanupController.signal.reason
+        : error;
+      envelope = cleanupReason?.code === 'operation_timeout'
+        ? Object.freeze({
+          state: 'failed',
+          result: null,
+          resultArtifact: null,
+          error: normalizeExecutorError(cleanupReason),
+          sourceEvidence: null,
+        })
+        : Object.freeze({
+          state: 'interrupted',
+          result: null,
+          resultArtifact: null,
+          error: Object.freeze({
+            code: 'source_cleanup_failed',
+            message: 'Source cleanup failed before terminal publication',
+            retryable: true,
+          }),
+          sourceEvidence: null,
+        });
+    } finally {
+      record.clearDeadline?.();
+      record.clearDeadline = null;
     }
     record.result = envelope;
     record.state = envelope.state;
@@ -927,10 +1073,12 @@ class BrainOperationWorker {
     return { operationRoot, scratchDir };
   }
 
-  async _createRecord(request, policy, executor, fingerprint) {
-    const hardDeadlineAt = this._assertDeadlineOpen(request);
-    const controller = new AbortController();
-    const clearDeadline = this._armHardDeadline(controller, hardDeadlineAt);
+  async _createRecord(request, policy, executor, pending) {
+    const {
+      controller,
+      cleanupController,
+      clearDeadline,
+    } = pending;
     const throwIfAborted = () => {
       if (controller.signal.aborted) throw controller.signal.reason;
     };
@@ -939,11 +1087,14 @@ class BrainOperationWorker {
     let cleanupPromise = null;
     const cleanupUnpublished = () => {
       cleanupPromise ||= (async () => {
-        clearDeadline();
         try {
           await sourcePin?.release?.();
         } finally {
-          await scratchQuota?.close?.();
+          try {
+            await scratchQuota?.close?.();
+          } finally {
+            clearDeadline();
+          }
         }
       })();
       return cleanupPromise;
@@ -964,20 +1115,28 @@ class BrainOperationWorker {
         }
         throwIfAborted();
         if (this.stopped) throw workerError('worker_stopped');
-        sourcePin = await this.sourcePins.openPinnedSource(request.sourcePinDescriptor, {
-          expectedCanonicalRoot: request.target.canonicalRoot,
-          expectedRevision: request.sourcePinDescriptor.cutoffRevision,
-          expectedDigest: request.sourcePinDigest,
-          operationId: request.operationId,
-          operationType: request.operationType,
-          requesterAgent: request.requesterAgent,
-          operationRoot,
-          lockRoot: path.join(this.home23Root, 'runtime', 'brain-source-locks'),
-          processIdentity: this.processIdentity,
-          scratchQuota,
-          identity: capabilityBindings(request),
-          signal: controller.signal,
-        });
+        sourcePin = await this.sourcePins.openPinnedSource(
+          request.sourcePinDescriptor,
+          {
+            expectedCanonicalRoot: request.target.canonicalRoot,
+            expectedRevision: request.sourcePinDescriptor.cutoffRevision,
+            expectedDigest: request.sourcePinDigest,
+            operationId: request.operationId,
+            operationType: request.operationType,
+            requesterAgent: request.requesterAgent,
+            operationRoot,
+            lockRoot: path.join(this.home23Root, 'runtime', 'brain-source-locks'),
+            processIdentity: this.processIdentity,
+            scratchQuota,
+            identity: capabilityBindings(request),
+            signal: controller.signal,
+          },
+          createDurableOperationLockCapability({
+            hardDeadlineAt: request.operationControl.hardDeadlineAt,
+            signal: controller.signal,
+            cleanupSignal: cleanupController.signal,
+          }),
+        );
         throwIfAborted();
         if (!sourcePin || typeof sourcePin.release !== 'function'
             || !Number.isSafeInteger(sourcePin.revision)
@@ -991,54 +1150,87 @@ class BrainOperationWorker {
         }
         if (this.stopped) throw workerError('worker_stopped');
       }
-      let workerIdBytes;
-      try {
-        workerIdBytes = this.randomBytes(18);
-      } catch (error) {
-        throw workerError('worker_configuration_invalid', 'worker identity unavailable', { cause: error });
-      }
-      if (!Buffer.isBuffer(workerIdBytes) || workerIdBytes.length !== 18) {
-        throw workerError('worker_configuration_invalid');
-      }
       if (this.stopped) throw workerError('worker_stopped');
-      const reference = Object.freeze({
-        version: 1,
-        workerId: `cosmo-${workerIdBytes.toString('base64url')}`,
-        workerType: 'cosmo',
-        operationType: request.operationType,
-      });
-      const record = {
-        reference,
-        operationId: request.operationId,
-        operationType: request.operationType,
-        request: Object.freeze(request),
-        fingerprint,
-        state: 'running',
-        phase: 'executing',
-        eventSequence: 0,
-        activeProviderCalls: new Map(),
-        events: [],
-        eventBytes: 0,
-        eventByteSizes: new Map(),
-        waiters: new Set(),
-        result: null,
-        controller,
-        context: null,
-        sourcePin,
-        scratchQuota,
-        scratchDir,
-        releasePromise: null,
-        runPromise: null,
-        terminalAt: null,
-        resultObservedAt: null,
-        clearDeadline,
-      };
+      const record = pending;
+      record.phase = 'executing';
+      record.sourcePin = sourcePin;
+      record.scratchQuota = scratchQuota;
+      record.scratchDir = scratchDir;
       this.records.set(request.operationId, record);
       record.runPromise = Promise.resolve().then(() => this._run(record, executor));
       return record;
     } catch (error) {
-      await cleanupUnpublished().catch(() => {});
+      let cleanupError = null;
+      try {
+        await cleanupUnpublished();
+      } catch (cause) {
+        cleanupError = cause;
+      }
+      pending.clearDeadline = null;
+      if (cleanupError) {
+        throw workerError('source_cleanup_failed', 'pending source cleanup failed', {
+          cause: cleanupError,
+          retryable: true,
+        });
+      }
+      if (controller.signal.aborted
+          && controller.signal.reason?.code === 'operation_cancelled') {
+        return this._publishCancelledPendingStart(pending);
+      }
       throw error;
+    }
+  }
+
+  async _runPrestart(pending) {
+    const { request, controller } = pending;
+    try {
+      const { target, policy } = await this._awaitWithAbort(
+        Promise.resolve().then(() => this._resolveAndAuthorize(request)),
+        controller.signal,
+      );
+      if (controller.signal.aborted) throw controller.signal.reason;
+      if (this.stopped) throw workerError('worker_stopped');
+      this._assertDeadlineOpen(request);
+      request.target = target;
+      if (requestFingerprint(request) !== pending.fingerprint) {
+        throw workerError('access_denied');
+      }
+      pending.request = Object.freeze(request);
+      return await this._withStartLock(request.operationId, async () => {
+        if (controller.signal.aborted) throw controller.signal.reason;
+        this._gc();
+        const existing = this.records.get(request.operationId);
+        if (existing) {
+          if (existing.fingerprint !== pending.fingerprint) {
+            throw workerError('worker_operation_conflict');
+          }
+          pending.clearDeadline?.();
+          pending.clearDeadline = null;
+          return existing;
+        }
+        if (this.tombstones.has(request.operationId)) throw workerError('worker_not_found');
+        if (this.stopped) throw workerError('worker_stopped');
+        this._assertDeadlineOpen(request);
+        const executor = this.executors.get(request.operationType);
+        if (!executor) throw workerError('executor_unavailable');
+        pending.phase = 'preparing';
+        return this._createRecord(request, policy, executor, pending);
+      }, controller.signal);
+    } catch (error) {
+      pending.clearDeadline?.();
+      pending.clearDeadline = null;
+      if (error?.code === 'source_cleanup_failed') throw error;
+      if (controller.signal.aborted
+          && controller.signal.reason?.code === 'operation_cancelled') {
+        return this.records.get(request.operationId)
+          || this._publishCancelledPendingStart(pending);
+      }
+      if (controller.signal.aborted) throw controller.signal.reason;
+      throw error;
+    } finally {
+      if (this.pendingStarts.get(request.operationId) === pending) {
+        this.pendingStarts.delete(request.operationId);
+      }
     }
   }
 
@@ -1048,25 +1240,23 @@ class BrainOperationWorker {
     const request = this._normalizeRequest(operationId, rawRequest);
     this._verifyCapability(capability, request);
     this._assertDeadlineOpen(request);
-    const { target, policy } = await this._resolveAndAuthorize(request);
-    this._assertDeadlineOpen(request);
-    request.target = target;
     const fingerprint = requestFingerprint(request);
-    return this._withStartLock(operationId, async () => {
-      this._gc();
-      const existing = this.records.get(operationId);
-      if (existing) {
-        if (existing.fingerprint !== fingerprint) throw workerError('worker_operation_conflict');
-        return this._publicRecord(existing);
-      }
-      if (this.tombstones.has(operationId)) throw workerError('worker_not_found');
-      if (this.stopped) throw workerError('worker_stopped');
-      this._assertDeadlineOpen(request);
-      const executor = this.executors.get(request.operationType);
-      if (!executor) throw workerError('executor_unavailable');
-      const record = await this._createRecord(request, policy, executor, fingerprint);
-      return this._publicRecord(record);
-    });
+    this._gc();
+    const existing = this.records.get(operationId);
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) throw workerError('worker_operation_conflict');
+      return this._publicRecord(existing);
+    }
+    if (this.tombstones.has(operationId)) throw workerError('worker_not_found');
+    const joined = this.pendingStarts.get(operationId);
+    if (joined) {
+      if (joined.fingerprint !== fingerprint) throw workerError('worker_operation_conflict');
+      return this._publicRecord(await joined.settled);
+    }
+    const pending = this._createPendingStart(request, fingerprint);
+    this.pendingStarts.set(operationId, pending);
+    pending.settled = this._runPrestart(pending);
+    return this._publicRecord(await pending.settled);
   }
 
   start(operationId, capability, rawRequest) {
@@ -1133,7 +1323,22 @@ class BrainOperationWorker {
   }
 
   async cancel(operationId, capability) {
-    const record = this._authenticateExisting(operationId, capability);
+    const claims = this._verifyCapabilityForPath(capability, operationId);
+    this._gc();
+    let record = this.records.get(operationId);
+    const pending = record ? null : this.pendingStarts.get(operationId);
+    if (!record && !pending) {
+      this._recordOrThrow(operationId);
+    }
+    this._assertCapabilityMatchesRequest(claims, (record || pending).request);
+    if (pending) {
+      if (!pending.controller.signal.aborted) {
+        pending.controller.abort(workerError('operation_cancelled'));
+      }
+      await pending.settled;
+      record = this.records.get(operationId) || pending;
+      return this._publicRecord(record);
+    }
     if (!TERMINAL_STATES.has(record.state) && !record.controller.signal.aborted) {
       record.controller.abort(workerError('operation_cancelled'));
       this._notify(record);
@@ -1144,18 +1349,31 @@ class BrainOperationWorker {
   async stop() {
     if (this.stopped) return;
     this.stopped = true;
+    for (const pending of this.pendingStarts.values()) {
+      if (!pending.controller.signal.aborted) {
+        pending.controller.abort(workerError('worker_stopped'));
+      }
+    }
     for (const record of this.records.values()) {
       if (!TERMINAL_STATES.has(record.state) && !record.controller.signal.aborted) {
         record.controller.abort(workerError('worker_stopped'));
+      }
+      if (!TERMINAL_STATES.has(record.state)
+          && !record.cleanupController?.signal.aborted) {
+        record.cleanupController.abort(workerError('worker_stopped'));
       }
       record.clearDeadline?.();
       record.clearDeadline = null;
       this._notify(record);
     }
-    await Promise.allSettled([...this.inflightStarts]);
+    const startSettlements = await Promise.allSettled([...this.inflightStarts]);
     await Promise.allSettled([...this.records.values()]
       .map((record) => record.runPromise)
       .filter(Boolean));
+    const cleanupFailure = startSettlements.find((settlement) =>
+      settlement.status === 'rejected'
+      && settlement.reason?.code === 'source_cleanup_failed');
+    if (cleanupFailure) throw cleanupFailure.reason;
   }
 }
 

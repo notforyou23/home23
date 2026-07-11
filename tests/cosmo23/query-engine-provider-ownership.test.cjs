@@ -16,7 +16,7 @@ function catalog() {
       alpha: {
         models: [{
           id: 'answer-model', kind: 'chat', transport: 'responses',
-          maxOutputTokens: 128, providerStallMs: 30_000,
+          maxOutputTokens: 128, contextWindowTokens: 128_000, providerStallMs: 30_000,
         }],
       },
     },
