@@ -20,7 +20,7 @@ import type {
 } from './types.js';
 import type { OperationActivity } from './brain-operations/types.js';
 import type { BrainOperationsClient } from './brain-operations/client.js';
-import { ActivityLease, type LeaseExpiryReason } from './activity-lease.js';
+import { ActivityLease, MAX_TIMER_DELAY_MS, type LeaseExpiryReason } from './activity-lease.js';
 import { MemoryManager } from './memory.js';
 import type { CompactionManager } from './compaction.js';
 import type { MediaAttachment } from '../types.js';
@@ -40,6 +40,36 @@ const TOOL_EVENT_RESULT_LIMIT_CHARS = 4000;
 const DEFAULT_TURN_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_TURN_HARD_DURATION_MS = 8 * 60 * 60 * 1000;
 const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 30 * 1000;
+
+function combineRequestSignals(turnSignal: AbortSignal, timeoutMs: number): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const abortSignalAny = (AbortSignal as unknown as {
+    any?: (signals: AbortSignal[]) => AbortSignal;
+  }).any;
+  if (abortSignalAny) return abortSignalAny([turnSignal, timeoutSignal]);
+
+  const controller = new AbortController();
+  const sources = [turnSignal, timeoutSignal];
+  const listeners = new Map<AbortSignal, () => void>();
+  const cleanup = (): void => {
+    for (const [source, listener] of listeners) {
+      source.removeEventListener('abort', listener);
+    }
+    listeners.clear();
+  };
+  for (const source of sources) {
+    const listener = (): void => controller.abort(source.reason);
+    listeners.set(source, listener);
+    if (source.aborted) {
+      listener();
+      break;
+    }
+    source.addEventListener('abort', listener, { once: true });
+  }
+  if (controller.signal.aborted) cleanup();
+  else controller.signal.addEventListener('abort', cleanup, { once: true });
+  return controller.signal;
+}
 
 function hashText(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
@@ -269,8 +299,8 @@ export class AgentLoop {
   private memory: MemoryManager;
   private compaction: CompactionManager | null;
   private cacheDiagnostics?: CacheDiagnosticsConfig;
-  private activeRuns = new Map<string, AbortController>();
-  private activeTurnIds = new Map<string, string>();
+  private activeRuns = new Map<string, Map<string, AbortController>>();
+  private activeTurnIds = new Map<string, Set<string>>();
   private terminalTurnOverrides = new Map<string, TerminalTurnOverride>();
   private sessionGapMs: number;
   private workspacePath: string;
@@ -542,32 +572,46 @@ export class AgentLoop {
   /** Stop an active run. Returns true if a run was aborted. */
   stop(chatId?: string, turnId?: string): { stopped: boolean; chatIds: string[]; turnIds?: string[]; activeTurnId?: string } {
     if (chatId) {
-      const ac = this.activeRuns.get(chatId);
-      if (ac) {
-        const activeTurnId = this.activeTurnIds.get(chatId);
-        if (turnId && activeTurnId && activeTurnId !== turnId) {
+      const runs = this.activeRuns.get(chatId);
+      if (runs && runs.size > 0) {
+        const selected = turnId ? [[turnId, runs.get(turnId)] as const] : [...runs.entries()];
+        const activeTurnId = [...runs.keys()].at(-1);
+        if (turnId && !runs.has(turnId)) {
           return { stopped: false, chatIds: [], activeTurnId };
         }
-        const terminalTurnId = activeTurnId ?? turnId;
-        if (terminalTurnId) {
-          this.terminalTurnOverrides.set(this.turnKey(chatId, terminalTurnId), {
-            status: 'stopped',
-            stop_reason: 'operator_stop',
-          });
+        const stoppedTurnIds: string[] = [];
+        for (const [selectedTurnId, ac] of selected) {
+          if (!ac) continue;
+          if (!selectedTurnId.startsWith('raw:')) {
+            this.terminalTurnOverrides.set(this.turnKey(chatId, selectedTurnId), {
+              status: 'stopped',
+              stop_reason: 'operator_stop',
+            });
+          }
+          ac.abort(Object.assign(new Error('operator_stop'), { code: 'operator_stop' }));
+          this.unregisterActiveRun(chatId, selectedTurnId, ac);
+          stoppedTurnIds.push(selectedTurnId);
         }
-        ac.abort(new Error('operator_stop'));
-        this.activeRuns.delete(chatId);
-        this.activeTurnIds.delete(chatId);
-        return { stopped: true, chatIds: [chatId], turnIds: [activeTurnId ?? turnId].filter(Boolean) as string[] };
+        return { stopped: stoppedTurnIds.length > 0, chatIds: [chatId], turnIds: stoppedTurnIds };
       }
       return { stopped: false, chatIds: [] };
     }
     // Stop all active runs
     const ids = [...this.activeRuns.keys()];
-    const turnIds = [...this.activeTurnIds.values()];
-    for (const ac of this.activeRuns.values()) ac.abort();
-    this.activeRuns.clear();
-    this.activeTurnIds.clear();
+    const turnIds: string[] = [];
+    for (const [activeChatId, runs] of [...this.activeRuns.entries()]) {
+      for (const [activeTurnId, ac] of [...runs.entries()]) {
+        if (!activeTurnId.startsWith('raw:')) {
+          this.terminalTurnOverrides.set(this.turnKey(activeChatId, activeTurnId), {
+            status: 'stopped',
+            stop_reason: 'operator_stop',
+          });
+        }
+        ac.abort(Object.assign(new Error('operator_stop'), { code: 'operator_stop' }));
+        this.unregisterActiveRun(activeChatId, activeTurnId, ac);
+        turnIds.push(activeTurnId);
+      }
+    }
     return { stopped: ids.length > 0, chatIds: ids, turnIds };
   }
 
@@ -575,9 +619,38 @@ export class AgentLoop {
     return `${chatId}\u0000${turnId}`;
   }
 
+  private registerActiveRun(chatId: string, turnId: string, ac: AbortController): void {
+    let runs = this.activeRuns.get(chatId);
+    if (!runs) {
+      runs = new Map();
+      this.activeRuns.set(chatId, runs);
+    }
+    runs.set(turnId, ac);
+    let turnIds = this.activeTurnIds.get(chatId);
+    if (!turnIds) {
+      turnIds = new Set();
+      this.activeTurnIds.set(chatId, turnIds);
+    }
+    turnIds.add(turnId);
+  }
+
+  private unregisterActiveRun(chatId: string, turnId: string, ac: AbortController): void {
+    const runs = this.activeRuns.get(chatId);
+    if (runs?.get(turnId) !== ac) return;
+    runs.delete(turnId);
+    if (runs.size === 0) this.activeRuns.delete(chatId);
+    const turnIds = this.activeTurnIds.get(chatId);
+    turnIds?.delete(turnId);
+    if (turnIds?.size === 0) this.activeTurnIds.delete(chatId);
+  }
+
+  private isExactRunActive(chatId: string, turnId: string, ac: AbortController): boolean {
+    return this.activeRuns.get(chatId)?.get(turnId) === ac;
+  }
+
   /** Check if the agent is currently running for a given chatId. */
   isRunning(chatId: string): boolean {
-    return this.activeRuns.has(chatId);
+    return (this.activeRuns.get(chatId)?.size ?? 0) > 0;
   }
 
   /** List all active run chatIds. */
@@ -589,8 +662,7 @@ export class AgentLoop {
   recoverStaleTurns(maxAgeMs: number = 10 * 60 * 1000): Array<{ chatId: string; turnId: string }> {
     const recovered: Array<{ chatId: string; turnId: string }> = [];
     for (const chatId of this.history.listChatIds()) {
-      const activeTurnId = this.activeTurnIds.get(chatId);
-      const activeTurnIds = activeTurnId ? new Set([activeTurnId]) : undefined;
+      const activeTurnIds = this.activeTurnIds.get(chatId);
       const turnIds = this.turnStore.sweepOrphans(chatId, maxAgeMs, { activeTurnIds });
       for (const turnId of turnIds) {
         const env = this.turnStore.finalEnvelope(chatId, turnId);
@@ -635,7 +707,7 @@ export class AgentLoop {
     const hardDurationMs = opts.hardDurationMs ?? DEFAULT_TURN_HARD_DURATION_MS;
     const firstTokenTimeoutMs = opts.firstTokenTimeoutMs ?? DEFAULT_FIRST_TOKEN_TIMEOUT_MS;
     if (![inactivityMs, hardDurationMs, firstTokenTimeoutMs]
-      .every(value => Number.isSafeInteger(value) && value > 0)) {
+      .every(value => Number.isSafeInteger(value) && value > 0 && value <= MAX_TIMER_DELAY_MS)) {
       throw new TypeError('invalid turn deadline');
     }
     const activity_deadline_at = new Date(startedAtMs + inactivityMs).toISOString();
@@ -711,25 +783,35 @@ export class AgentLoop {
       brainOperations: runBrainOperations as BrainOperationsClient,
       onOperationActivity,
     });
-    this.turnStore.writeStart(chatId, turnId, model, provider, {
-      deadline_at,
-      activity_deadline_at,
-      hard_deadline_at,
-      first_token_deadline_at,
-    });
-    this.activeTurnIds.set(chatId, turnId);
-    this.activeRuns.set(chatId, ac);
-    lease.start();
-
-    let firstTokenWatchdog: unknown = this.turnTiming.setTimeout(() => {
-      if (seq === 0 && this.activeTurnIds.get(chatId) === turnId) {
-        persistAndFanOut({
-          type: 'status',
-          status: 'awaiting_model',
-          message: `waiting for first model token after ${firstTokenTimeoutMs}ms`,
-        });
+    let firstTokenWatchdog: unknown = null;
+    try {
+      lease.start();
+      firstTokenWatchdog = this.turnTiming.setTimeout(() => {
+        if (seq === 0 && this.isExactRunActive(chatId, turnId, ac)) {
+          persistAndFanOut({
+            type: 'status',
+            status: 'awaiting_model',
+            message: `waiting for first model token after ${firstTokenTimeoutMs}ms`,
+          });
+        }
+      }, firstTokenTimeoutMs);
+      this.registerActiveRun(chatId, turnId, ac);
+      this.turnStore.writeStart(chatId, turnId, model, provider, {
+        deadline_at,
+        activity_deadline_at,
+        hard_deadline_at,
+        first_token_deadline_at,
+      });
+    } catch (err) {
+      lease.close();
+      if (firstTokenWatchdog !== null) {
+        this.turnTiming.clearTimeout(firstTokenWatchdog);
+        firstTokenWatchdog = null;
       }
-    }, firstTokenTimeoutMs);
+      this.unregisterActiveRun(chatId, turnId, ac);
+      this.terminalTurnOverrides.delete(this.turnKey(chatId, turnId));
+      throw err;
+    }
 
     const response = (async () => {
       try {
@@ -742,6 +824,13 @@ export class AgentLoop {
           turnRuntime,
         );
         const terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
+        if (terminalOverride?.status === 'timeout') {
+          if (ac.signal.reason instanceof Error) throw ac.signal.reason;
+          throw Object.assign(
+            new Error(terminalOverride.error_message ?? terminalOverride.stop_reason),
+            { code: terminalOverride.error_code ?? terminalOverride.stop_reason },
+          );
+        }
         const terminalActivityDeadlineAt = new Date(
           lease.activityDeadlineMs ?? startedAtMs + inactivityMs,
         ).toISOString();
@@ -801,10 +890,7 @@ export class AgentLoop {
           this.turnTiming.clearTimeout(firstTokenWatchdog);
           firstTokenWatchdog = null;
         }
-        if (this.activeRuns.get(chatId) === ac) this.activeRuns.delete(chatId);
-        if (this.activeTurnIds.get(chatId) === turnId) {
-          this.activeTurnIds.delete(chatId);
-        }
+        this.unregisterActiveRun(chatId, turnId, ac);
         this.terminalTurnOverrides.delete(this.turnKey(chatId, turnId));
       }
     })();
@@ -831,7 +917,8 @@ export class AgentLoop {
 
     // Abort controller for this run — checked between iterations, passed to API calls
     const ac = turnRuntime?.abortController ?? new AbortController();
-    this.activeRuns.set(chatId, ac);
+    const activeTurnId = turnRuntime?.turnId ?? `raw:${newTurnId()}`;
+    this.registerActiveRun(chatId, activeTurnId, ac);
 
     // Start typing indicator (via toolContext.telegramAdapter)
     const adapter = this.toolContext.telegramAdapter;
@@ -1289,10 +1376,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               console.log(`[agent] codex request: model=${runtimeModel}, tools=${codexTools.length}, input_items=${inputItems.length}, instructions_len=${instructions.length}`);
 
               const codexTimeout = 120_000;
-              // AbortSignal.any is Node 20+; fall back to ac.signal if unavailable
-              const fetchSignal = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any
-                ? (AbortSignal as unknown as { any: (signals: AbortSignal[]) => AbortSignal }).any([ac.signal, AbortSignal.timeout(codexTimeout)])
-                : ac.signal;
+              const fetchSignal = combineRequestSignals(ac.signal, codexTimeout);
 
               const res = await fetch('https://chatgpt.com/backend-api/codex/responses', {
                 method: 'POST',
@@ -1493,9 +1577,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
               };
 
               const xaiTimeout = 120_000;
-              const fetchSignal = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any
-                ? (AbortSignal as unknown as { any: (signals: AbortSignal[]) => AbortSignal }).any([ac.signal, AbortSignal.timeout(xaiTimeout)])
-                : ac.signal;
+              const fetchSignal = combineRequestSignals(ac.signal, xaiTimeout);
 
               const res = await fetch('https://api.x.ai/v1/responses', {
                 method: 'POST',
@@ -1667,7 +1749,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
                   body: JSON.stringify({ model: runtimeModel }),
-                  signal: AbortSignal.timeout(5_000),
+                  signal: combineRequestSignals(ac.signal, 5_000),
                 });
                 if (showRes.ok) {
                   const showData = await showRes.json() as { capabilities?: string[] };
@@ -1716,7 +1798,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   stream: false,
                   options: { num_ctx: 32768, temperature: this.temperature },
                 }),
-                signal: AbortSignal.timeout(pconf.timeout),
+                signal: combineRequestSignals(ac.signal, pconf.timeout),
               });
               if (!res.ok) {
                 const errText = await res.text().catch(() => '');
@@ -1740,7 +1822,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
                   ...tokenParam,
                   temperature: this.temperature,
                 }),
-                signal: AbortSignal.timeout(pconf.timeout),
+                signal: combineRequestSignals(ac.signal, pconf.timeout),
               });
               if (!res.ok) {
                 const errText = await res.text().catch(() => '');
@@ -2073,7 +2155,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
       if (err instanceof Error && err.stack) console.error('[agent] Stack:', err.stack);
       throw err;
     } finally {
-      if (this.activeRuns.get(chatId) === ac) this.activeRuns.delete(chatId);
+      this.unregisterActiveRun(chatId, activeTurnId, ac);
       if (typingInterval) clearInterval(typingInterval);
     }
   }

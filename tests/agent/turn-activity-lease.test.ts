@@ -110,6 +110,28 @@ test('close is idempotent and rejects all later activity', () => {
   assert.deepEqual(expirations, []);
 });
 
+test('durations above the Node timer maximum are rejected before scheduling', () => {
+  const clock = new ManualClock();
+  const makeOptions = () => ({
+    inactivityMs: 10,
+    hardDurationMs: 30,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    onExpire: () => {},
+  });
+
+  assert.throws(
+    () => new ActivityLease({ ...makeOptions(), inactivityMs: 2_147_483_648 }),
+    /invalid activity lease duration/,
+  );
+  assert.throws(
+    () => new ActivityLease({ ...makeOptions(), hardDurationMs: 2_147_483_648 }),
+    /invalid activity lease duration/,
+  );
+  assert.equal(clock.tasks.size, 0);
+});
+
 test('an overdue immutable hard deadline wins when timer delivery is delayed', () => {
   const clock = new ManualClock();
   const expirations: string[] = [];
@@ -123,5 +145,47 @@ test('an overdue immutable hard deadline wins when timer delivery is delayed', (
   });
   lease.start();
   clock.advance(30);
+  assert.deepEqual(expirations, ['hard_timeout']);
+});
+
+test('activity arriving after an undelivered inactivity deadline cannot renew the lease', () => {
+  const clock = new ManualClock();
+  const expirations: string[] = [];
+  const lease = new ActivityLease({
+    inactivityMs: 10,
+    hardDurationMs: 30,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    onExpire: reason => expirations.push(reason),
+  });
+  lease.start();
+  const originalDeadline = lease.activityDeadlineMs;
+
+  clock.nowMs = 11;
+
+  assert.equal(lease.observe({ operationId: 'op-late', sequence: 1 }), false);
+  assert.equal(lease.activityDeadlineMs, originalDeadline);
+  assert.deepEqual(expirations, ['inactivity_timeout']);
+});
+
+test('overdue hard deadline wins over late activity when timer delivery is delayed', () => {
+  const clock = new ManualClock();
+  const expirations: string[] = [];
+  const lease = new ActivityLease({
+    inactivityMs: 10,
+    hardDurationMs: 30,
+    now: clock.now,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    onExpire: reason => expirations.push(reason),
+  });
+  lease.start();
+  const originalDeadline = lease.activityDeadlineMs;
+
+  clock.nowMs = 31;
+
+  assert.equal(lease.observe({ operationId: 'op-too-late', sequence: 1 }), false);
+  assert.equal(lease.activityDeadlineMs, originalDeadline);
   assert.deepEqual(expirations, ['hard_timeout']);
 });

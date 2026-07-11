@@ -1,5 +1,7 @@
 export type LeaseExpiryReason = 'inactivity_timeout' | 'hard_timeout';
 
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 export class ActivityLease {
   private inactivityTimer: unknown;
   private hardTimer: unknown;
@@ -18,7 +20,9 @@ export class ActivityLease {
     onExpire: (reason: LeaseExpiryReason) => void;
   }) {
     if (!Number.isSafeInteger(options.inactivityMs) || options.inactivityMs <= 0
-        || !Number.isSafeInteger(options.hardDurationMs) || options.hardDurationMs <= 0) {
+        || options.inactivityMs > MAX_TIMER_DELAY_MS
+        || !Number.isSafeInteger(options.hardDurationMs) || options.hardDurationMs <= 0
+        || options.hardDurationMs > MAX_TIMER_DELAY_MS) {
       throw new TypeError('invalid activity lease duration');
     }
   }
@@ -41,6 +45,15 @@ export class ActivityLease {
     if (this.closed || !this.started
         || typeof activity.operationId !== 'string' || activity.operationId.length === 0
         || !Number.isSafeInteger(activity.sequence)) return false;
+    const now = this.options.now();
+    if (this._hardDeadlineMs !== null && now >= this._hardDeadlineMs) {
+      this.expire('hard_timeout');
+      return false;
+    }
+    if (this._activityDeadlineMs !== null && now >= this._activityDeadlineMs) {
+      this.expire('inactivity_timeout');
+      return false;
+    }
     const previous = this.lastSequence.get(activity.operationId) ?? 0;
     if (activity.sequence <= previous) return false;
     this.lastSequence.set(activity.operationId, activity.sequence);

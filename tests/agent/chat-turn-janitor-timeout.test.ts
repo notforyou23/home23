@@ -127,7 +127,7 @@ test('recoverStaleTurns orphans stale pending turns across chats and skips the a
       role: 'assistant',
       started_at: freshStartedAt,
     });
-    (agent as any).activeTurnIds.set('active-chat', 't-active');
+    (agent as any).activeTurnIds.set('active-chat', new Set(['t-active']));
 
     const recovered = agent.recoverStaleTurns(10 * 60 * 1000);
 
@@ -349,6 +349,70 @@ test('concurrent turns receive isolated controller, signal, client, and activity
   }
 });
 
+test('same-chat turns retain exact controller ownership and chat-level running state', async () => {
+  const root = join(tmpdir(), `chat-turn-same-chat-${process.pid}-${Math.random()}`);
+  const { agent } = makeAgent(root);
+  const runtimes = new Map<string, TurnRuntimeContext>();
+  const responses: Promise<unknown>[] = [];
+
+  try {
+    (agent as any).run = async (
+      _chatId: string,
+      _userText: string,
+      _media: unknown,
+      _onEvent: unknown,
+      _modelRuntime: unknown,
+      turnRuntime: TurnRuntimeContext,
+    ) => {
+      runtimes.set(turnRuntime.turnId, turnRuntime);
+      await new Promise((_resolve, reject) => {
+        turnRuntime.signal.addEventListener('abort', () => reject(turnRuntime.signal.reason), {
+          once: true,
+        });
+      });
+    };
+
+    const parent = await agent.runWithTurn('shared-chat', 'parent', {
+      inactivityMs: 1_000, hardDurationMs: 2_000, firstTokenTimeoutMs: 1_500,
+    });
+    const subagent = await agent.runWithTurn('shared-chat', 'subagent', {
+      inactivityMs: 1_000, hardDurationMs: 2_000, firstTokenTimeoutMs: 1_500,
+    });
+    responses.push(parent.response, subagent.response);
+    parent.response.catch(() => {});
+    subagent.response.catch(() => {});
+    await flushMicrotasks();
+
+    const parentRuntime = runtimes.get(parent.turnId)!;
+    const subagentRuntime = runtimes.get(subagent.turnId)!;
+    assert.ok(parentRuntime);
+    assert.ok(subagentRuntime);
+    assert.equal(agent.isRunning('shared-chat'), true);
+
+    const parentStop = agent.stop('shared-chat', parent.turnId);
+    assert.equal(parentStop.stopped, true);
+    assert.deepEqual(parentStop.turnIds, [parent.turnId]);
+    assert.equal(parentRuntime.signal.aborted, true);
+    assert.equal(subagentRuntime.signal.aborted, false);
+    await assert.rejects(parent.response, /operator_stop/);
+    assert.equal(agent.isRunning('shared-chat'), true,
+      'the remaining same-chat turn must stay discoverable and stoppable');
+
+    const chatStop = agent.stop('shared-chat');
+    assert.equal(chatStop.stopped, true);
+    assert.deepEqual(chatStop.turnIds, [subagent.turnId]);
+    assert.equal(subagentRuntime.signal.aborted, true);
+    await assert.rejects(subagent.response, /operator_stop/);
+    assert.equal(agent.isRunning('shared-chat'), false);
+  } finally {
+    for (const runtime of runtimes.values()) {
+      if (!runtime.signal.aborted) runtime.abortController.abort(new Error('test cleanup'));
+    }
+    await Promise.all(responses.map(promise => promise.catch(() => {})));
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('invalid lease options fail before a pending turn or active-run entry is created', async () => {
   const root = join(tmpdir(), `chat-turn-invalid-lease-${process.pid}-${Math.random()}`);
   const { agent, history } = makeAgent(root);
@@ -368,10 +432,76 @@ test('invalid lease options fail before a pending turn or active-run entry is cr
   }
 });
 
-test('operator stop cannot be overwritten by a lease deadline while shutdown unwinds', async t => {
+test('oversized first-token deadline is rejected before any timer is scheduled', async () => {
+  const root = join(tmpdir(), `chat-turn-oversized-timer-${process.pid}-${Math.random()}`);
+  const { agent, history } = makeAgent(root);
+  let schedulerCalls = 0;
+  (agent as any).turnTiming = {
+    now: () => 1_000,
+    setTimeout: (): never => {
+      schedulerCalls++;
+      throw new Error('scheduler must not be invoked');
+    },
+    clearTimeout: () => {},
+  };
+
+  try {
+    await assert.rejects(
+      agent.runWithTurn('oversized-timer-chat', 'hello', {
+        inactivityMs: 100,
+        hardDurationMs: 200,
+        firstTokenTimeoutMs: 2_147_483_648,
+      }),
+      /invalid turn deadline/,
+    );
+    assert.equal(schedulerCalls, 0);
+    assert.equal(new TurnStore(history).pendingTurns('oversized-timer-chat').length, 0);
+    assert.equal(agent.isRunning('oversized-timer-chat'), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('timer setup failure leaves no pending turn, active ownership, or armed timer', async () => {
+  const root = join(tmpdir(), `chat-turn-timer-setup-${process.pid}-${Math.random()}`);
+  const { agent, history } = makeAgent(root);
+  const timers = new Set<number>();
+  let timerCalls = 0;
+  let nextId = 1;
+  (agent as any).turnTiming = {
+    now: () => 1_000,
+    setTimeout: (_fn: () => void, _ms: number): number => {
+      timerCalls++;
+      if (timerCalls === 3) throw new Error('scheduler rejected timer');
+      const id = nextId++;
+      timers.add(id);
+      return id;
+    },
+    clearTimeout: (id: number): void => { timers.delete(id); },
+  };
+
+  try {
+    await assert.rejects(
+      agent.runWithTurn('timer-setup-chat', 'hello', {
+        inactivityMs: 100,
+        hardDurationMs: 200,
+        firstTokenTimeoutMs: 150,
+      }),
+      /scheduler rejected timer/,
+    );
+    assert.equal(new TurnStore(history).pendingTurns('timer-setup-chat').length, 0);
+    assert.equal(agent.isRunning('timer-setup-chat'), false);
+    assert.equal((agent as any).activeTurnIds.has('timer-setup-chat'), false);
+    assert.equal(timers.size, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('operator stop cannot be overwritten by a lease deadline while shutdown unwinds', async () => {
   const root = join(tmpdir(), `chat-turn-stop-race-${process.pid}-${Math.random()}`);
   const { agent, history } = makeAgent(root);
-  const clock = installManualClock(t);
+  const clock = installManualClock(agent);
   let release!: () => void;
   const released = new Promise<void>(resolve => { release = resolve; });
   let response: Promise<unknown> | null = null;
@@ -414,10 +544,171 @@ test('operator stop cannot be overwritten by a lease deadline while shutdown unw
   }
 });
 
-test('immutable hard deadline uses the distinct terminal code', async t => {
+test('OpenAI transport receives the exact turn cancellation signal', async () => {
+  const root = join(tmpdir(), `chat-turn-provider-signal-${process.pid}-${Math.random()}`);
+  const { agent } = makeAgent(root);
+  const clock = installManualClock(agent);
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.OPENAI_API_KEY;
+  let providerSignal: AbortSignal | null = null;
+  let rejectProvider: ((reason?: unknown) => void) | null = null;
+  let response: Promise<unknown> | null = null;
+
+  try {
+    process.env.OPENAI_API_KEY = 'test-openai-key';
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (!String(input).includes('api.openai.com')) {
+        return new Response('{}', { status: 503 });
+      }
+      providerSignal = init?.signal as AbortSignal;
+      return await new Promise<Response>((_resolve, reject) => {
+        rejectProvider = reject;
+        const rejectForAbort = (): void => reject(providerSignal!.reason);
+        if (providerSignal.aborted) rejectForAbort();
+        else providerSignal.addEventListener('abort', rejectForAbort, { once: true });
+      });
+    }) as typeof fetch;
+
+    const started = await agent.runWithTurn('provider-signal-chat', 'hello', {
+      inactivityMs: 100,
+      hardDurationMs: 30,
+      firstTokenTimeoutMs: 1_000,
+    });
+    response = started.response;
+    response.catch(() => {});
+    for (let i = 0; i < 20 && providerSignal === null; i++) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.ok(providerSignal, 'provider fetch should have started');
+
+    clock.advance(30);
+
+    assert.equal(providerSignal!.aborted, true,
+      'the active provider request must abort with the exact turn');
+    await assert.rejects(response, /turn hard timeout after 30ms/);
+  } finally {
+    rejectProvider?.(new Error('test cleanup'));
+    if (response) await response.catch(() => {});
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalApiKey;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Ollama capability probe and chat transport receive exact turn cancellation', async () => {
+  const root = join(tmpdir(), `chat-turn-ollama-signal-${process.pid}-${Math.random()}`);
+  const { agent } = makeAgent(root);
+  const clock = installManualClock(agent);
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.OLLAMA_CLOUD_API_KEY;
+  const signals = new Map<string, AbortSignal>();
+  const rejecters: Array<(reason?: unknown) => void> = [];
+  let response: Promise<unknown> | null = null;
+
+  try {
+    process.env.OLLAMA_CLOUD_API_KEY = 'test-ollama-key';
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (!url.includes('ollama.com/api/')) {
+        return new Response('{}', { status: 503 });
+      }
+      const route = url.endsWith('/api/show') ? 'show' : 'chat';
+      const signal = init?.signal as AbortSignal;
+      signals.set(route, signal);
+      if (route === 'show') {
+        return new Response(JSON.stringify({ capabilities: ['tools'] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return await new Promise<Response>((_resolve, reject) => {
+        rejecters.push(reject);
+        const rejectForAbort = (): void => reject(signal.reason);
+        if (signal.aborted) rejectForAbort();
+        else signal.addEventListener('abort', rejectForAbort, { once: true });
+      });
+    }) as typeof fetch;
+
+    const started = await agent.runWithTurn('ollama-provider-signal-chat', 'hello', {
+      modelOverride: {
+        model: `ollama-signal-${process.pid}-${Math.random()}`,
+        provider: 'ollama-cloud',
+      },
+      inactivityMs: 100,
+      hardDurationMs: 30,
+      firstTokenTimeoutMs: 1_000,
+    });
+    response = started.response;
+    response.catch(() => {});
+    for (let i = 0; i < 20 && !signals.has('chat'); i++) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.ok(signals.has('show'), 'Ollama capability probe should have started');
+    assert.ok(signals.has('chat'), 'Ollama chat request should have started');
+
+    clock.advance(30);
+
+    assert.equal(signals.get('show')?.aborted, true);
+    assert.equal(signals.get('chat')?.aborted, true);
+    await assert.rejects(response, /turn hard timeout after 30ms/);
+  } finally {
+    for (const reject of rejecters) reject(new Error('test cleanup'));
+    if (response) await response.catch(() => {});
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.OLLAMA_CLOUD_API_KEY;
+    else process.env.OLLAMA_CLOUD_API_KEY = originalApiKey;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hard-timed-out run cannot resolve as a normal successful response', async () => {
+  const root = join(tmpdir(), `chat-turn-hard-normal-${process.pid}-${Math.random()}`);
+  const { agent, history } = makeAgent(root);
+  const clock = installManualClock(agent);
+  let response: Promise<unknown> | null = null;
+
+  try {
+    (agent as any).run = async (
+      _chatId: string,
+      _userText: string,
+      _media: unknown,
+      _onEvent: unknown,
+      _modelRuntime: unknown,
+      turnRuntime: TurnRuntimeContext,
+    ) => {
+      await new Promise<void>(resolve => {
+        turnRuntime.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return {
+        text: 'Stopped normally.', model: 'gpt-5.5', toolCallCount: 0, durationMs: 30,
+      };
+    };
+
+    const started = await agent.runWithTurn('hard-normal-chat', 'hello', {
+      inactivityMs: 100,
+      hardDurationMs: 30,
+      firstTokenTimeoutMs: 1_000,
+    });
+    response = started.response;
+    response.catch(() => {});
+    await flushMicrotasks();
+    clock.advance(30);
+
+    await assert.rejects(response, /turn hard timeout after 30ms/);
+    const status = new TurnStore(history).statusForTurn('hard-normal-chat', started.turnId);
+    assert.equal(status?.status, 'timeout');
+    assert.equal(status?.stop_reason, 'turn_hard_timeout');
+  } finally {
+    if (response) await response.catch(() => {});
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('immutable hard deadline uses the distinct terminal code', async () => {
   const root = join(tmpdir(), `chat-turn-hard-timeout-${process.pid}-${Math.random()}`);
   const { agent, history } = makeAgent(root);
-  const clock = installManualClock(t);
+  const clock = installManualClock(agent);
   let response: Promise<unknown> | null = null;
   let capturedRuntime: TurnRuntimeContext | null = null;
   try {
