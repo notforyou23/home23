@@ -214,6 +214,73 @@ test('finalizeConsolidationCompost applies removal only after summary provenance
   assert.deepEqual(summaryNode.metadata.consolidationProvenance.sourceNodes, sourceNodes);
   assert.equal(summaryNode.metadata.consolidationProvenance.compostedSourceCount, 3);
   assert.equal(summaryNode.metadata.consolidationProvenance.model, null);
-  assert.equal(memoryNetwork.mutationCalls.patchNode, 1);
+  assert.equal(memoryNetwork.mutationCalls.patchNode, 2);
   assert.equal(memoryNetwork.mutationCalls.removeNodes, 1);
+  assert.equal(summaryNode.metadata.consolidationProvenance.compostStatus, 'complete');
+});
+
+test('consolidateMemories discards provider output when a source identity changes', async () => {
+  process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'test-key';
+  const logger = makeLogger();
+  const summarizer = new MemorySummarizer({}, logger, {});
+  const nodes = Array.from({ length: 10 }, (_, index) => ({
+    id: `source-${index}`,
+    concept: `source memory ${index}`,
+    weight: index,
+  }));
+  const cluster = nodes.slice(0, 3);
+  const memoryNetwork = attachMutationApi({ nodes: new Map(nodes.map((node) => [node.id, node])) });
+  summarizer.clusterSimilarMemories = async () => [cluster];
+  summarizer.createConsolidatedMemoryGPT5 = async () => {
+    memoryNetwork.nodes.set(cluster[0].id, { ...cluster[0], concept: 'replacement identity' });
+    return { content: 'stale summary', reasoning: null, model: 'test-model' };
+  };
+
+  const result = await summarizer.consolidateMemories(memoryNetwork);
+
+  assert.deepEqual(result, []);
+  assert.equal(memoryNetwork.mutationCalls.patchNodes, 0);
+  assert.ok(cluster.every((node) => !node.consolidatedAt));
+  assert.equal(summarizer.consolidationHistory.at(-1).consolidations, 0);
+  assert.ok(logger.entries.some((entry) => entry.message === 'Memory consolidation discarded after source changed'));
+});
+
+test('compost provenance records only source nodes actually removed and preserves numeric IDs', () => {
+  const logger = makeLogger();
+  const summarizer = new MemorySummarizer({}, logger, {});
+  const summaryNode = { id: 99, concept: 'numeric summary', metadata: {} };
+  const memoryNetwork = attachMutationApi({
+    nodes: new Map([
+      [1, { id: 1, concept: 'one' }],
+      [2, { id: 2, concept: 'two' }],
+      [3, { id: 3, concept: 'three' }],
+      [99, summaryNode],
+    ]),
+  });
+  memoryNetwork.removeNodes = (nodeIds) => {
+    memoryNetwork.mutationCalls.removeNodes += 1;
+    assert.deepEqual(nodeIds, [1, 2, 3]);
+    memoryNetwork.nodes.delete(1);
+    return { removedNodes: 1, removedEdges: 0 };
+  };
+
+  const result = summarizer.finalizeConsolidationCompost(memoryNetwork, {
+    sourceNodes: [1, 2, 3],
+    model: 'test-model',
+    compost: { mode: 'ready', sourceNodes: [1, 2, 3] },
+  }, {
+    mode: 'apply',
+    summaryNodeId: 99,
+    confirmedDryRunAt: '2026-07-11T00:00:00.000Z',
+  });
+
+  assert.equal(result.removedSourceNodes, 1);
+  assert.equal(result.skippedSourceNodes, 2);
+  assert.equal(memoryNetwork.mutationCalls.patchNode, 2);
+  assert.equal(memoryNetwork.mutationCalls.removeNodes, 1);
+  assert.deepEqual(summaryNode.metadata.consolidationProvenance.sourceNodes, [1, 2, 3]);
+  assert.deepEqual(summaryNode.metadata.consolidationProvenance.compostedSourceNodes, [1]);
+  assert.equal(summaryNode.metadata.consolidationProvenance.compostedSourceCount, 1);
+  assert.equal(summaryNode.metadata.consolidationProvenance.skippedSourceCount, 2);
+  assert.equal(summaryNode.metadata.consolidationProvenance.compostStatus, 'complete_with_skips');
 });
