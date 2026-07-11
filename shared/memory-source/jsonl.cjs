@@ -16,6 +16,7 @@ const {
 const {
   openConfinedRegularFile,
   assertStableOpenedFile,
+  assertStableOpenedFilePrefix,
 } = require('./confined-file.cjs');
 const { getOperationScratchQuotaCleanup } = require('./scratch-quota.cjs');
 
@@ -767,12 +768,23 @@ async function* readJsonl(filePath, options = {}) {
       retryable: true,
     });
   }
+  const validatePrefix = options.allowTrailingBytes === true
+    && options.byteLimit !== undefined
+    && options.gzip !== true;
+  const prefixHash = validatePrefix ? crypto.createHash('sha256') : null;
   const maxRecordBytes = options.maxRecordBytes ?? 16 * 1024 * 1024;
   const maxDecompressedBytes = options.maxDecompressedBytes ?? 2 * 1024 * 1024 * 1024;
   validatePositiveLimit(maxRecordBytes, 'record limit');
   validatePositiveLimit(maxDecompressedBytes, 'decompressed limit');
   if (inputBytes === 0) {
-    await assertStableOpenedFile(opened);
+    if (prefixHash) {
+      await assertStableOpenedFilePrefix(opened, {
+        bytes: 0,
+        sha256: prefixHash.digest('hex'),
+      });
+    } else {
+      await assertStableOpenedFile(opened);
+    }
     await opened.handle.close();
     if (options.gzip) {
       throw memorySourceError('source_unavailable', 'gzip base is empty', { retryable: true });
@@ -823,6 +835,7 @@ async function* readJsonl(filePath, options = {}) {
   try {
     for await (const chunk of decoded) {
       throwIfAborted(options.signal);
+      prefixHash?.update(chunk);
       decodedBytes += chunk.length;
       if (decodedBytes > maxDecompressedBytes) {
         throw limitError('decompressed', maxDecompressedBytes);
@@ -870,7 +883,14 @@ async function* readJsonl(filePath, options = {}) {
         retryable: true,
       });
     }
-    await assertStableOpenedFile(opened);
+    if (prefixHash) {
+      await assertStableOpenedFilePrefix(opened, {
+        bytes: inputBytes,
+        sha256: prefixHash.digest('hex'),
+      });
+    } else {
+      await assertStableOpenedFile(opened);
+    }
     completed = true;
   } catch (error) {
     rethrowAbort(error, options.signal);

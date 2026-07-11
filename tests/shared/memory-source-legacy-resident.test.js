@@ -12,6 +12,7 @@ const {
   createMemorySourcePinProvider,
   openMemorySource,
   projectLegacyResidentSidecars,
+  sourceDescriptorDigest,
   verifyLegacySourceFingerprint,
   writeJsonlGzAtomic,
 } = require('../../shared/memory-source');
@@ -141,6 +142,129 @@ test('same legacy fingerprint reuses immutable publication and a changed source 
   }
 });
 
+test('published legacy projection records deterministic manifest counts and file digests', async () => {
+  const targetRoot = await makeLegacyFixture();
+  const operationRoot = await tempDir('home23-legacy-resident-integrity-');
+  const quota = await createOperationScratchQuota({ operationRoot, maxBytes: 64 * 1024 * 1024 });
+  try {
+    const projected = await projectLegacyResidentSidecars({
+      canonicalRoot: targetRoot,
+      operationRoot,
+      scratchQuota: quota,
+    });
+    const integrity = JSON.parse(await fsp.readFile(
+      path.join(projected.projectionRoot, 'projection-integrity.json'),
+      'utf8',
+    ));
+    assert.deepEqual(Object.keys(integrity).sort(), [
+      'files',
+      'generation',
+      'manifestDigest',
+      'version',
+    ]);
+    assert.equal(integrity.version, 1);
+    assert.equal(integrity.generation, projected.manifest.generation);
+    assert.equal(integrity.manifestDigest, sourceDescriptorDigest(projected.manifest));
+    for (const [kind, entry] of Object.entries(integrity.files)) {
+      const manifestEntry = kind === 'delta'
+        ? projected.manifest.activeDelta
+        : projected.manifest.activeBase[kind];
+      assert.equal(entry.file, manifestEntry.file);
+      assert.equal(entry.bytes, kind === 'delta' ? manifestEntry.committedBytes : manifestEntry.bytes);
+      assert.equal(entry.count, manifestEntry.count);
+      assert.equal(entry.sha256, crypto.createHash('sha256').update(
+        await fsp.readFile(path.join(projected.projectionRoot, entry.file)),
+      ).digest('hex'));
+    }
+  } finally {
+    await quota.close();
+    await fsp.rm(operationRoot, { recursive: true, force: true });
+    await fsp.rm(targetRoot, { recursive: true, force: true });
+  }
+});
+
+test('legacy projection reuse rejects generation manifest count and file digest drift', async () => {
+  const targetRoot = await makeLegacyFixture();
+  const operationRoot = await tempDir('home23-legacy-resident-validate-reuse-');
+  const quota = await createOperationScratchQuota({ operationRoot, maxBytes: 64 * 1024 * 1024 });
+  try {
+    const projected = await projectLegacyResidentSidecars({
+      canonicalRoot: targetRoot,
+      operationRoot,
+      scratchQuota: quota,
+    });
+    const manifestPath = path.join(projected.projectionRoot, 'memory-manifest.json');
+    const originalManifestText = await fsp.readFile(manifestPath, 'utf8');
+    const originalManifest = JSON.parse(originalManifestText);
+    const nodePath = path.join(
+      projected.projectionRoot,
+      projected.manifest.activeBase.nodes.file,
+    );
+    const originalNodeBytes = await fsp.readFile(nodePath);
+
+    const expectRejected = async (mutate, restore) => {
+      await mutate();
+      await assert.rejects(() => projectLegacyResidentSidecars({
+        canonicalRoot: targetRoot,
+        operationRoot,
+        scratchQuota: quota,
+      }), { code: 'invalid_memory_source' });
+      await restore();
+    };
+
+    await expectRejected(async () => {
+      await fsp.writeFile(manifestPath, `${JSON.stringify({
+        ...originalManifest,
+        generation: 'legacy-wrong-generation',
+      }, null, 2)}\n`);
+    }, async () => fsp.writeFile(manifestPath, originalManifestText));
+
+    await expectRejected(async () => {
+      await fsp.writeFile(manifestPath, `${JSON.stringify({
+        ...originalManifest,
+        activeBase: {
+          ...originalManifest.activeBase,
+          nodes: {
+            ...originalManifest.activeBase.nodes,
+            count: originalManifest.activeBase.nodes.count + 1,
+          },
+        },
+        summary: {
+          ...originalManifest.summary,
+          nodeCount: originalManifest.summary.nodeCount + 1,
+        },
+      }, null, 2)}\n`);
+    }, async () => fsp.writeFile(manifestPath, originalManifestText));
+
+    await expectRejected(async () => {
+      await fsp.writeFile(manifestPath, `${JSON.stringify({
+        ...originalManifest,
+        ann: {
+          ...originalManifest.ann,
+          builtFromRevision: originalManifest.currentRevision,
+        },
+      }, null, 2)}\n`);
+    }, async () => fsp.writeFile(manifestPath, originalManifestText));
+
+    await expectRejected(async () => {
+      const corrupted = Buffer.from(originalNodeBytes);
+      corrupted[corrupted.length - 1] ^= 0xff;
+      await fsp.writeFile(nodePath, corrupted);
+    }, async () => fsp.writeFile(nodePath, originalNodeBytes));
+
+    const reused = await projectLegacyResidentSidecars({
+      canonicalRoot: targetRoot,
+      operationRoot,
+      scratchQuota: quota,
+    });
+    assert.equal(reused.projectionRoot, projected.projectionRoot);
+  } finally {
+    await quota.close();
+    await fsp.rm(operationRoot, { recursive: true, force: true });
+    await fsp.rm(targetRoot, { recursive: true, force: true });
+  }
+});
+
 test('projection retries a source change and removes abandoned attempts', async () => {
   const targetRoot = await makeLegacyFixture();
   const operationRoot = await tempDir('home23-legacy-resident-retry-');
@@ -211,6 +335,83 @@ test('legacy coordinator pin retains its immutable projection after the target a
     await provider.releaseOperationPins(operationId);
     assert.equal(await fsp.access(path.join(operationRoot, 'source-projections'))
       .then(() => true).catch(() => false), false);
+  } finally {
+    await fsp.rm(home23Root, { recursive: true, force: true });
+    await fsp.rm(targetRoot, { recursive: true, force: true });
+  }
+});
+
+test('legacy coordinator pin rejects a physical projection outside its operation root', async () => {
+  const home23Root = await tempDir('home23-legacy-pin-home-');
+  const targetRoot = await makeLegacyFixture();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_legacy_projection_escape';
+  const operationRoot = path.join(
+    await fsp.realpath(home23Root),
+    'instances',
+    'jerry',
+    'runtime',
+    'brain-operations',
+    operationId,
+  );
+  try {
+    const pinned = await provider.pin(targetRoot, operationId);
+    const recordPath = path.join(operationRoot, 'coordinator-source-pin.json');
+    const record = JSON.parse(await fsp.readFile(recordPath, 'utf8'));
+    record.physicalRoot = await fsp.realpath(targetRoot);
+    await fsp.writeFile(recordPath, `${JSON.stringify(record, null, 2)}\n`);
+
+    const quota = await createOperationScratchQuota({ operationRoot });
+    const canonicalTarget = await fsp.realpath(targetRoot);
+    await assert.rejects(() => provider.openPinnedSource(pinned.descriptor, {
+      operationId,
+      operationRoot,
+      scratchQuota: quota,
+      expectedCanonicalRoot: canonicalTarget,
+      expectedRevision: pinned.descriptor.cutoffRevision,
+      expectedDigest: pinned.digest,
+    }), { code: 'source_changed' });
+    await quota.close();
+  } finally {
+    await fsp.rm(home23Root, { recursive: true, force: true });
+    await fsp.rm(targetRoot, { recursive: true, force: true });
+  }
+});
+
+test('legacy coordinator pin rejects a replaced physical projection identity', async () => {
+  const home23Root = await tempDir('home23-legacy-pin-home-');
+  const targetRoot = await makeLegacyFixture();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_legacy_projection_identity';
+  const operationRoot = path.join(
+    await fsp.realpath(home23Root),
+    'instances',
+    'jerry',
+    'runtime',
+    'brain-operations',
+    operationId,
+  );
+  try {
+    const pinned = await provider.pin(targetRoot, operationId);
+    const record = JSON.parse(await fsp.readFile(
+      path.join(operationRoot, 'coordinator-source-pin.json'),
+      'utf8',
+    ));
+    const displacedRoot = `${record.physicalRoot}.displaced`;
+    await fsp.rename(record.physicalRoot, displacedRoot);
+    await fsp.cp(displacedRoot, record.physicalRoot, { recursive: true });
+
+    const quota = await createOperationScratchQuota({ operationRoot });
+    const canonicalTarget = await fsp.realpath(targetRoot);
+    await assert.rejects(() => provider.openPinnedSource(pinned.descriptor, {
+      operationId,
+      operationRoot,
+      scratchQuota: quota,
+      expectedCanonicalRoot: canonicalTarget,
+      expectedRevision: pinned.descriptor.cutoffRevision,
+      expectedDigest: pinned.digest,
+    }), { code: 'source_changed' });
+    await quota.close();
   } finally {
     await fsp.rm(home23Root, { recursive: true, force: true });
     await fsp.rm(targetRoot, { recursive: true, force: true });

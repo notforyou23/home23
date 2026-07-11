@@ -47,6 +47,35 @@ async function writeManifestBrain() {
   return brain;
 }
 
+async function advanceManifestBrain(brain) {
+  const nodes = await writeJsonlGzAtomic(path.join(brain, 'nodes-v2.gz'), [
+    { id: 2, concept: 'live revision advanced' },
+  ]);
+  const edges = await writeJsonlGzAtomic(path.join(brain, 'edges-v2.gz'), []);
+  await fsp.writeFile(path.join(brain, 'delta-v2.jsonl'), '');
+  await fsp.writeFile(path.join(brain, 'memory-manifest.json'), `${JSON.stringify({
+    formatVersion: 1,
+    generation: 'g2',
+    baseRevision: 3,
+    currentRevision: 3,
+    activeDeltaEpoch: 'e1',
+    activeBase: {
+      nodes: { file: 'nodes-v2.gz', count: 1, bytes: nodes.bytes },
+      edges: { file: 'edges-v2.gz', count: 0, bytes: edges.bytes },
+    },
+    activeDelta: {
+      epoch: 'e1',
+      file: 'delta-v2.jsonl',
+      fromRevision: 4,
+      toRevision: 3,
+      count: 0,
+      committedBytes: 0,
+    },
+    ann: { indexFile: null, metaFile: null, builtFromRevision: 3 },
+    summary: { nodeCount: 1, edgeCount: 0, clusterCount: 1 },
+  }, null, 2)}\n`);
+}
+
 async function collect(iterator) {
   const rows = [];
   for await (const row of iterator) rows.push(row);
@@ -84,6 +113,7 @@ test('openPinnedSource validates coordinator record and writes a separate proces
     expectedRevision: pinned.descriptor.cutoffRevision,
     expectedDigest: pinned.digest,
     operationId,
+    requesterAgent: 'jerry',
     operationRoot,
     scratchQuota,
   });
@@ -97,6 +127,43 @@ test('openPinnedSource validates coordinator record and writes a separate proces
   scratchQuota.close();
 });
 
+test('native operation pin reads its exact revision after the live manifest advances', async () => {
+  const home23Root = await tempDir('home23-memory-source-pin-home-');
+  const brain = await writeManifestBrain();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_test_native_revision';
+  const pinned = await provider.pin(brain, operationId);
+  await advanceManifestBrain(brain);
+
+  const operationRoot = path.join(
+    home23Root,
+    'instances',
+    'jerry',
+    'runtime',
+    'brain-operations',
+    operationId,
+  );
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const source = await provider.openPinnedSource(pinned.descriptor, {
+    operationId,
+    operationRoot,
+    scratchQuota,
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    expectedDigest: pinned.digest,
+  });
+  try {
+    assert.equal(source.revision, pinned.descriptor.cutoffRevision);
+    assert.equal(source.manifest.generation, pinned.descriptor.generation);
+    assert.deepEqual((await collect(source.iterateNodes())).map((node) => node.concept), [
+      'pin canary',
+    ]);
+  } finally {
+    await source.release();
+    await scratchQuota.close();
+  }
+});
+
 test('openPinnedSource rejects digest, root, and revision mismatch before reading', async () => {
   const home23Root = await tempDir('home23-memory-source-pin-home-');
   const brain = await writeManifestBrain();
@@ -107,27 +174,94 @@ test('openPinnedSource rejects digest, root, and revision mismatch before readin
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
   const wrongDigest = `${pinned.digest.slice(0, -1)}${pinned.digest.endsWith('0') ? '1' : '0'}`;
   await assert.rejects(() => openPinnedSource(pinned.descriptor, {
+    operationId,
+    requesterAgent: 'jerry',
     expectedDigest: wrongDigest,
     operationRoot,
     scratchQuota,
   }), { code: 'source_changed' });
   await assert.rejects(() => openPinnedSource(pinned.descriptor, {
+    operationId,
+    requesterAgent: 'jerry',
     expectedDigest: pinned.digest,
     expectedCanonicalRoot: path.join(home23Root, 'other'),
     operationRoot,
     scratchQuota,
   }), { code: 'source_changed' });
   await assert.rejects(() => openPinnedSource(pinned.descriptor, {
+    operationId,
+    requesterAgent: 'jerry',
     expectedDigest: pinned.digest,
     expectedRevision: pinned.descriptor.cutoffRevision + 1,
     operationRoot,
     scratchQuota,
   }), { code: 'source_changed' });
   await assert.rejects(() => openPinnedSource(pinned.descriptor, {
+    operationId,
+    requesterAgent: 'jerry',
     expectedDigest: pinned.digest,
     operationRoot,
   }), { code: 'invalid_request' });
   scratchQuota.close();
+});
+
+test('openPinnedSource requires the exact coordinator operation requester and descriptor', async () => {
+  const home23Root = await tempDir('home23-memory-source-pin-home-');
+  const brain = await writeManifestBrain();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_test_exact_record';
+  const pinned = await provider.pin(brain, operationId);
+  const operationRoot = path.join(
+    home23Root,
+    'instances',
+    'jerry',
+    'runtime',
+    'brain-operations',
+    operationId,
+  );
+  const recordPath = path.join(operationRoot, 'coordinator-source-pin.json');
+  const originalRecord = JSON.parse(await fsp.readFile(recordPath, 'utf8'));
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const exact = {
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    expectedDigest: pinned.digest,
+    operationId,
+    requesterAgent: 'jerry',
+    operationRoot,
+    scratchQuota,
+  };
+
+  await assert.rejects(() => openPinnedSource(pinned.descriptor, {
+    ...exact,
+    operationId: 'brop_wrong_operation',
+  }), { code: 'source_changed' });
+  await assert.rejects(() => openPinnedSource(pinned.descriptor, {
+    ...exact,
+    requesterAgent: 'forrest',
+  }), { code: 'source_changed' });
+
+  const wrongDescriptorRecord = structuredClone(originalRecord);
+  wrongDescriptorRecord.descriptor.summary.clusterCount += 1;
+  await fsp.writeFile(recordPath, `${JSON.stringify(wrongDescriptorRecord, null, 2)}\n`);
+  await assert.rejects(() => openPinnedSource(pinned.descriptor, exact), {
+    code: 'source_changed',
+  });
+  await fsp.writeFile(recordPath, `${JSON.stringify(originalRecord, null, 2)}\n`);
+
+  const missingDescriptorRecord = structuredClone(originalRecord);
+  delete missingDescriptorRecord.descriptor;
+  await fsp.writeFile(recordPath, `${JSON.stringify(missingDescriptorRecord, null, 2)}\n`);
+  await assert.rejects(() => openPinnedSource(pinned.descriptor, exact), {
+    code: 'source_changed',
+  });
+  await fsp.writeFile(recordPath, `${JSON.stringify(originalRecord, null, 2)}\n`);
+
+  await assert.rejects(() => openPinnedSource(pinned.descriptor, {
+    ...exact,
+    expectedDigest: undefined,
+  }), { code: 'source_changed' });
+  await scratchQuota.close();
 });
 
 test('pin discovery, stale process prune, and terminal release are exact to operation roots', async () => {
@@ -148,6 +282,7 @@ test('pin discovery, stale process prune, and terminal release are exact to oper
     expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
     expectedRevision: pinned.descriptor.cutoffRevision,
     operationId,
+    requesterAgent: 'jerry',
     operationRoot,
     scratchQuota,
   });

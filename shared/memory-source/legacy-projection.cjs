@@ -1,6 +1,7 @@
 'use strict';
 
-const fsp = require('node:fs').promises;
+const fs = require('node:fs');
+const fsp = fs.promises;
 const path = require('node:path');
 const crypto = require('node:crypto');
 const {
@@ -16,10 +17,16 @@ const {
 const { createBoundedOverlayStore } = require('./overlay-store.cjs');
 const { createOperationScratchQuota } = require('./scratch-quota.cjs');
 const {
+  assertStableOpenedFile,
+  openConfinedRegularFile,
+  readConfinedFile,
+} = require('./confined-file.cjs');
+const {
   edgeKeyFor,
   memorySourceError,
   normalizeId,
   rethrowAbort,
+  sourceDescriptorDigest,
   throwIfAborted,
 } = require('./contracts.cjs');
 
@@ -114,22 +121,157 @@ async function verifyLegacySourceFingerprint(canonicalRoot, expected) {
   }
 }
 
-async function readPublishedProjection(projectionRoot, targetRoot, expectedFingerprint) {
+function exactKeys(value, keys) {
+  const actual = Object.keys(value || {}).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
+function validSha256(value) {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+}
+
+function invalidPublishedProjection(message, cause) {
+  return memorySourceError('invalid_memory_source', message, {
+    retryable: false,
+    ...(cause ? { cause } : {}),
+  });
+}
+
+async function digestPublishedFile(projectionRoot, entry) {
+  if (!entry || typeof entry.file !== 'string'
+      || !Number.isSafeInteger(entry.bytes) || entry.bytes < 0
+      || !validSha256(entry.sha256)) {
+    throw invalidPublishedProjection('invalid projection file integrity');
+  }
+  const filePath = path.join(projectionRoot, entry.file);
+  const opened = await openConfinedRegularFile(projectionRoot, filePath, {
+    flags: fs.constants.O_RDONLY,
+  });
   try {
-    const [manifest, storedFingerprint] = await Promise.all([
+    if (Number(opened.stat.size) !== entry.bytes) {
+      throw invalidPublishedProjection('projection file size mismatch');
+    }
+    const hash = crypto.createHash('sha256');
+    if (entry.bytes > 0) {
+      const stream = fs.createReadStream(null, {
+        fd: opened.handle.fd,
+        autoClose: false,
+        start: 0,
+        end: entry.bytes - 1,
+      });
+      for await (const chunk of stream) hash.update(chunk);
+    }
+    if (hash.digest('hex') !== entry.sha256) {
+      throw invalidPublishedProjection('projection file digest mismatch');
+    }
+    await assertStableOpenedFile(opened);
+  } finally {
+    await opened.handle.close().catch(() => {});
+  }
+}
+
+function validatePublishedManifest({ manifest, integrity, generation, revision }) {
+  const deltaFile = `memory-delta.${generation}.jsonl`;
+  if (manifest.generation !== generation
+      || manifest.baseRevision !== revision
+      || manifest.currentRevision !== revision
+      || manifest.activeDeltaEpoch !== generation
+      || manifest.activeBase.nodes.file !== 'memory-nodes.base.jsonl.gz'
+      || manifest.activeBase.edges.file !== 'memory-edges.base.jsonl.gz'
+      || manifest.activeDelta.epoch !== generation
+      || manifest.activeDelta.file !== deltaFile
+      || manifest.activeDelta.fromRevision !== revision + 1
+      || manifest.activeDelta.toRevision !== revision
+      || manifest.activeDelta.count !== 0
+      || manifest.activeDelta.committedBytes !== 0
+      || manifest.ann.indexFile !== null
+      || manifest.ann.metaFile !== null
+      || manifest.ann.builtFromRevision !== null
+      || manifest.summary.nodeCount !== manifest.activeBase.nodes.count
+      || manifest.summary.edgeCount !== manifest.activeBase.edges.count
+      || manifest.summary.clusterCount > manifest.summary.nodeCount) {
+    throw invalidPublishedProjection('deterministic projection manifest mismatch');
+  }
+  if (!exactKeys(integrity, ['version', 'generation', 'manifestDigest', 'files'])
+      || integrity.version !== 1
+      || integrity.generation !== generation
+      || integrity.manifestDigest !== sourceDescriptorDigest(manifest)
+      || !exactKeys(integrity.files, ['nodes', 'edges', 'delta'])) {
+    throw invalidPublishedProjection('projection integrity metadata mismatch');
+  }
+  const expected = {
+    nodes: manifest.activeBase.nodes,
+    edges: manifest.activeBase.edges,
+    delta: {
+      file: manifest.activeDelta.file,
+      count: manifest.activeDelta.count,
+      bytes: manifest.activeDelta.committedBytes,
+    },
+  };
+  for (const kind of ['nodes', 'edges', 'delta']) {
+    const entry = integrity.files[kind];
+    if (!exactKeys(entry, ['file', 'count', 'bytes', 'sha256'])
+        || entry.file !== expected[kind].file
+        || entry.count !== expected[kind].count
+        || entry.bytes !== expected[kind].bytes
+        || !validSha256(entry.sha256)) {
+      throw invalidPublishedProjection('projection file metadata mismatch');
+    }
+  }
+}
+
+async function readPublishedProjection(projectionRoot, targetRoot, expectedFingerprint) {
+  const existing = await fsp.lstat(projectionRoot).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (existing === null) return null;
+  try {
+    const canonicalProjection = await fsp.realpath(projectionRoot);
+    if (existing.isSymbolicLink() || !existing.isDirectory()
+        || canonicalProjection !== projectionRoot) {
+      throw invalidPublishedProjection('projection root is not canonical');
+    }
+    const [manifest, storedFingerprintBytes, integrityBytes] = await Promise.all([
       readManifest(projectionRoot),
-      fsp.readFile(path.join(projectionRoot, 'source-fingerprint.json'), 'utf8')
-        .then((text) => JSON.parse(text)),
+      readConfinedFile(
+        projectionRoot,
+        path.join(projectionRoot, 'source-fingerprint.json'),
+        { maxBytes: 1024 * 1024 },
+      ),
+      readConfinedFile(
+        projectionRoot,
+        path.join(projectionRoot, 'projection-integrity.json'),
+        { maxBytes: 1024 * 1024 },
+      ),
     ]);
-    if (!manifest || !sameSourceFingerprint(storedFingerprint, expectedFingerprint)) return null;
+    const storedFingerprint = JSON.parse(storedFingerprintBytes.toString('utf8'));
+    const integrity = JSON.parse(integrityBytes.toString('utf8'));
+    const digest = fingerprintDigest(expectedFingerprint);
+    const generation = `legacy-${digest.slice(0, 20)}`;
+    const revision = safeRevisionFromDigest(digest);
+    if (!manifest
+        || path.basename(projectionRoot) !== generation
+        || !sameSourceFingerprint(storedFingerprint, expectedFingerprint)) {
+      throw invalidPublishedProjection('projection generation or fingerprint mismatch');
+    }
+    validatePublishedManifest({ manifest, integrity, generation, revision });
+    await Promise.all([
+      digestPublishedFile(projectionRoot, integrity.files.nodes),
+      digestPublishedFile(projectionRoot, integrity.files.edges),
+      digestPublishedFile(projectionRoot, integrity.files.delta),
+    ]);
     return projectionResult({
       targetRoot,
       projectionRoot,
       manifest,
       sourceFingerprint: storedFingerprint,
     });
-  } catch {
-    return null;
+  } catch (error) {
+    if (error?.code === 'invalid_memory_source') throw error;
+    throw invalidPublishedProjection('published legacy projection failed validation', error);
   }
 }
 
@@ -201,10 +343,6 @@ async function loadLegacyDelta({ targetRoot, fingerprint, overlay, signal }) {
 
 function logicalNodeRecords({ targetRoot, fingerprint, overlay, signal, clusters }) {
   return (async function* nodes() {
-    const pending = new Set();
-    for await (const record of overlay.iterateNodeUpserts({ signal })) {
-      pending.add(normalizeId(record.id));
-    }
     for await (const record of readJsonl(path.join(targetRoot, fingerprint.files.nodes.basename), {
       gzip: true,
       confinedRoot: targetRoot,
@@ -213,9 +351,9 @@ function logicalNodeRecords({ targetRoot, fingerprint, overlay, signal, clusters
     })) {
       throwIfAborted(signal);
       const id = normalizeId(record.id);
-      pending.delete(id);
       if (overlay.hasRemovedNode(id)) continue;
-      const projected = overlay.node(id) || Object.freeze({ ...record, id });
+      if (overlay.hasNodeUpsert(id)) continue;
+      const projected = Object.freeze({ ...record, id });
       if (projected.cluster !== undefined && projected.cluster !== null) {
         clusters.add(normalizeId(projected.cluster));
         if (clusters.size > MAX_CLUSTER_KEYS) {
@@ -229,7 +367,7 @@ function logicalNodeRecords({ targetRoot, fingerprint, overlay, signal, clusters
     }
     for await (const record of overlay.iterateNodeUpserts({ signal })) {
       const id = normalizeId(record.id);
-      if (!pending.has(id) || overlay.hasRemovedNode(id)) continue;
+      if (overlay.hasRemovedNode(id)) continue;
       if (record.cluster !== undefined && record.cluster !== null) {
         clusters.add(normalizeId(record.cluster));
         if (clusters.size > MAX_CLUSTER_KEYS) {
@@ -246,10 +384,6 @@ function logicalNodeRecords({ targetRoot, fingerprint, overlay, signal, clusters
 
 function logicalEdgeRecords({ targetRoot, fingerprint, overlay, signal }) {
   return (async function* edges() {
-    const pending = new Set();
-    for await (const record of overlay.iterateEdgeUpserts({ signal })) {
-      pending.add(edgeKeyFor(record));
-    }
     const eligible = (record) => !overlay.hasRemovedNode(record.source)
       && !overlay.hasRemovedNode(record.target);
     for await (const record of readJsonl(path.join(targetRoot, fingerprint.files.edges.basename), {
@@ -261,14 +395,14 @@ function logicalEdgeRecords({ targetRoot, fingerprint, overlay, signal }) {
       throwIfAborted(signal);
       const normalized = normalizeEdge(record);
       const key = edgeKeyFor(normalized);
-      pending.delete(key);
       if (overlay.hasRemovedEdge(key) || !eligible(normalized)) continue;
-      yield overlay.edge(key) || normalized;
+      if (overlay.hasEdgeUpsert(key)) continue;
+      yield normalized;
     }
     for await (const record of overlay.iterateEdgeUpserts({ signal })) {
       const normalized = normalizeEdge(record);
       const key = edgeKeyFor(normalized);
-      if (pending.has(key) && !overlay.hasRemovedEdge(key) && eligible(normalized)) yield normalized;
+      if (!overlay.hasRemovedEdge(key) && eligible(normalized)) yield normalized;
     }
   })();
 }
@@ -305,6 +439,31 @@ async function publishMetadata({
     ann: { indexFile: null, metaFile: null, builtFromRevision: null },
     summary: { nodeCount: nodes.count, edgeCount: edges.count, clusterCount },
   };
+  const integrity = {
+    version: 1,
+    generation,
+    manifestDigest: sourceDescriptorDigest(manifest),
+    files: {
+      nodes: {
+        file: manifest.activeBase.nodes.file,
+        count: nodes.count,
+        bytes: nodes.bytes,
+        sha256: nodes.sha256,
+      },
+      edges: {
+        file: manifest.activeBase.edges.file,
+        count: edges.count,
+        bytes: edges.bytes,
+        sha256: edges.sha256,
+      },
+      delta: {
+        file: deltaFile,
+        count: 0,
+        bytes: 0,
+        sha256: crypto.createHash('sha256').update('').digest('hex'),
+      },
+    },
+  };
   await quota.withPhysicalGrowth(
     METADATA_GROWTH_BYTES,
     `legacy_projection_metadata_${crypto.randomUUID()}`,
@@ -321,6 +480,17 @@ async function publishMetadata({
         await fingerprintHandle.sync();
       } finally {
         await fingerprintHandle.close();
+      }
+      const integrityHandle = await fsp.open(
+        path.join(attemptRoot, 'projection-integrity.json'),
+        'wx',
+        0o600,
+      );
+      try {
+        await integrityHandle.writeFile(`${JSON.stringify(integrity)}\n`);
+        await integrityHandle.sync();
+      } finally {
+        await integrityHandle.close();
       }
       await writeManifestAtomic(attemptRoot, manifest);
       await fsyncDirectory(attemptRoot);

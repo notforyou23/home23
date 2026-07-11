@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { memorySourceError, throwIfAborted } = require('./contracts.cjs');
 
 function sameIdentity(left, right) {
@@ -122,6 +123,49 @@ async function assertStableOpenedFile(opened) {
   }
 }
 
+async function assertStableOpenedFilePrefix(opened, { bytes, sha256 }) {
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || !/^[a-f0-9]{64}$/.test(sha256 || '')) {
+    throw memorySourceError('invalid_request', 'valid opened-file prefix required');
+  }
+  const current = await opened.handle.stat({ bigint: true });
+  if (!current.isFile()
+      || current.dev !== opened.identity.dev
+      || current.ino !== opened.identity.ino
+      || Number(current.size) < bytes) {
+    throw memorySourceError('source_changed', 'source prefix changed while reading', {
+      retryable: true,
+    });
+  }
+  const hash = crypto.createHash('sha256');
+  const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, Math.max(1, bytes)));
+  let position = 0;
+  while (position < bytes) {
+    const length = Math.min(buffer.length, bytes - position);
+    const { bytesRead } = await opened.handle.read(buffer, 0, length, position);
+    if (bytesRead <= 0) {
+      throw memorySourceError('source_changed', 'source prefix truncated while validating', {
+        retryable: true,
+      });
+    }
+    hash.update(buffer.subarray(0, bytesRead));
+    position += bytesRead;
+  }
+  if (hash.digest('hex') !== sha256) {
+    throw memorySourceError('source_changed', 'source prefix changed while reading', {
+      retryable: true,
+    });
+  }
+  const after = await opened.handle.stat({ bigint: true });
+  if (!after.isFile()
+      || after.dev !== opened.identity.dev
+      || after.ino !== opened.identity.ino
+      || Number(after.size) < bytes) {
+    throw memorySourceError('source_changed', 'source prefix changed while validating', {
+      retryable: true,
+    });
+  }
+}
+
 async function readConfinedFile(root, filePath, options = {}) {
   const opened = await openConfinedRegularFile(root, filePath, options);
   if (opened === null) return null;
@@ -137,5 +181,6 @@ async function readConfinedFile(root, filePath, options = {}) {
 module.exports = {
   openConfinedRegularFile,
   assertStableOpenedFile,
+  assertStableOpenedFilePrefix,
   readConfinedFile,
 };

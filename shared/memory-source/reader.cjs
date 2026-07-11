@@ -4,7 +4,11 @@ const fsp = require('node:fs').promises;
 const path = require('node:path');
 const { readJsonl } = require('./jsonl.cjs');
 const { createBoundedOverlayStore } = require('./overlay-store.cjs');
-const { readManifest, resolveMemorySourceSelection } = require('./manifest.cjs');
+const {
+  readManifest,
+  resolveMemorySourceSelection,
+  validateManifest,
+} = require('./manifest.cjs');
 const {
   projectLegacyResidentSidecars,
   verifyLegacySourceFingerprint,
@@ -214,10 +218,6 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
     }
   };
   const iterateBaseEdges = async function* iterateBaseEdges() {
-    const removedNodes = new Set();
-    for (const node of overlay.upsertedNodes()) {
-      if (overlay.hasRemovedNode(node.id)) removedNodes.add(normalizeId(node.id));
-    }
     try {
       for await (const record of readJsonl(path.join(canonicalRoot, manifest.activeBase.edges.file), {
         gzip: true,
@@ -229,8 +229,8 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         throwIfAborted(options.signal);
         if (overlay.hasRemovedEdge(record) || overlay.hasRemovedNode(record.source)
             || overlay.hasRemovedNode(record.target)) continue;
-        const replacement = overlay.edge(record);
-        yield replacement || Object.freeze({ ...record });
+        if (overlay.hasEdgeUpsert(record)) continue;
+        yield Object.freeze({ ...record });
       }
       for (const record of overlay.upsertedEdges()) {
         if (!overlay.hasRemovedNode(record.source) && !overlay.hasRemovedNode(record.target)) yield record;
@@ -243,8 +243,6 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         cause: error,
         retryable: true,
       });
-    } finally {
-      removedNodes.clear();
     }
   };
   const source = {
@@ -328,7 +326,9 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
 async function openMemorySource(brainDir, options = {}) {
   throwIfAborted(options.signal);
   const canonicalRoot = await fsp.realpath(brainDir);
-  const manifest = await readManifest(canonicalRoot);
+  const manifest = options.pinnedManifest
+    ? validateManifest(options.pinnedManifest)
+    : await readManifest(canonicalRoot);
   try {
     if (manifest) return await openManifestSource(canonicalRoot, manifest, options);
     const selection = await resolveMemorySourceSelection(canonicalRoot);

@@ -8,6 +8,7 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const {
   openMemorySource,
+  readJsonl,
   writeJsonlGzAtomic,
 } = require('../../shared/memory-source');
 
@@ -90,6 +91,40 @@ test('projects base plus ordered delta upserts and tombstones at one pinned revi
   await source.close();
 });
 
+test('edge overlay emits one last-write-wins row for a replaced base edge', async () => {
+  const { dir } = await createManifestFixture({
+    nodes: [{ id: 'n1' }, { id: 'n2' }],
+    edges: [{ source: 'n1', target: 'n2', weight: 0.1 }],
+    baseRevision: 2,
+    currentRevision: 4,
+    delta: [
+      {
+        epoch: 'e3',
+        sequence: 1,
+        revision: 3,
+        op: 'upsert_edge',
+        record: { source: 'n1', target: 'n2', weight: 0.5 },
+      },
+      {
+        epoch: 'e3',
+        sequence: 2,
+        revision: 4,
+        op: 'upsert_edge',
+        record: { source: 'n1', target: 'n2', weight: 0.9 },
+      },
+    ],
+    summary: { nodeCount: 2, edgeCount: 1, clusterCount: 0 },
+  });
+  const source = await openMemorySource(dir);
+  try {
+    assert.deepEqual(await collect(source.iterateEdges()), [
+      { source: 'n1', target: 'n2', weight: 0.9 },
+    ]);
+  } finally {
+    await source.close();
+  }
+});
+
 test('ignores bytes beyond the committed delta cutoff', async () => {
   const { dir, manifest } = await createManifestFixture({
     nodes: [{ id: 1, concept: 'base' }],
@@ -113,6 +148,61 @@ test('ignores bytes beyond the committed delta cutoff', async () => {
   const nodes = await collect(source.iterateNodes());
   assert.deepEqual(nodes.map((node) => node.concept), ['committed']);
   await source.close();
+});
+
+test('committed JSONL reader tolerates append-only bytes beyond its pinned prefix', async () => {
+  const dir = await tempDir();
+  const deltaPath = path.join(dir, 'committed-prefix.jsonl');
+  const committed = [
+    { sequence: 1, value: 'first' },
+    { sequence: 2, value: 'second' },
+  ];
+  const committedBytes = await writeJsonl(deltaPath, committed);
+  const iterator = readJsonl(deltaPath, {
+    confinedRoot: dir,
+    byteLimit: committedBytes,
+    requireCompletePrefix: true,
+    allowTrailingBytes: true,
+  });
+  const first = await iterator.next();
+  assert.deepEqual(first.value, committed[0]);
+
+  await fsp.appendFile(deltaPath, `${JSON.stringify({ sequence: 3, value: 'uncommitted' })}\n`);
+  const rows = [first.value];
+  for await (const row of iterator) rows.push(row);
+  assert.deepEqual(rows, committed);
+});
+
+test('committed JSONL reader rejects an in-place change to its pinned prefix', async () => {
+  const dir = await tempDir();
+  const deltaPath = path.join(dir, 'changed-prefix.jsonl');
+  const committed = [
+    { sequence: 1, value: 'first' },
+    { sequence: 2, value: 'second' },
+  ];
+  const committedBytes = await writeJsonl(deltaPath, committed);
+  const iterator = readJsonl(deltaPath, {
+    confinedRoot: dir,
+    byteLimit: committedBytes,
+    requireCompletePrefix: true,
+    allowTrailingBytes: true,
+  });
+  assert.deepEqual((await iterator.next()).value, committed[0]);
+
+  const text = await fsp.readFile(deltaPath, 'utf8');
+  const position = Buffer.byteLength(text.slice(0, text.indexOf('first')), 'utf8');
+  const handle = await fsp.open(deltaPath, 'r+');
+  try {
+    await handle.write(Buffer.from('F'), 0, 1, position);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await assert.rejects(async () => {
+    for await (const _row of iterator) {
+      // Complete the pinned iterator so its final prefix validation runs.
+    }
+  }, { code: 'source_changed' });
 });
 
 test('summary stays scalar and optional breakdowns are byte and key bounded', async () => {

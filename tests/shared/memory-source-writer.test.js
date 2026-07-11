@@ -177,6 +177,7 @@ test('retirement preserves files named by an active reader pin', async () => {
     expectedCanonicalRoot: pinnedDescriptor.descriptor.canonicalRoot,
     expectedRevision: pinnedDescriptor.descriptor.cutoffRevision,
     operationId,
+    requesterAgent: 'ada',
     operationRoot,
     scratchQuota,
   });
