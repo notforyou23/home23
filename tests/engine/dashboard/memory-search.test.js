@@ -212,6 +212,7 @@ test('healthy empty and healthy no-match remain distinct while unavailable fails
     loadAnn: async () => null,
   });
   assert.equal(empty.evidence.matchOutcome, 'corpus_empty');
+  assert.equal(empty.evidence.completeCoverage, true);
 
   const noMatchDir = await createBrain({ nodes: [{ id: 'other', concept: 'other', embedding: [0, 1] }] });
   const noMatch = await sourceSearch({
@@ -221,6 +222,7 @@ test('healthy empty and healthy no-match remain distinct while unavailable fails
     loadAnn: async () => null,
   });
   assert.equal(noMatch.evidence.matchOutcome, 'no_match');
+  assert.equal(noMatch.evidence.completeCoverage, true);
 
   const degradedSource = {
     manifest: null,

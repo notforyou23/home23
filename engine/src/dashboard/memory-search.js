@@ -471,6 +471,7 @@ function createMemorySearchService({
       ...row,
       retrievalMode: row.retrievalMode || 'keyword',
     }));
+    const completeCoverage = keyword.evidence?.completeCoverage === true;
     const exactMissing = keywordRows.some((row) => !semanticTop.some((existing) => String(existing.id) === String(row.id)));
     if (semanticCandidates.length > 0 && semanticTop.length === 0 && keywordRows.length > 0 && !fallback) {
       fallback = { route: 'logical-keyword-scan', reason: 'semantic_noise_filtered', completeness: 'complete' };
@@ -488,11 +489,11 @@ function createMemorySearchService({
       authoritativeTotal: summary.nodes,
       returnedTotal: results.length,
       filteredTotal: keywordRows.length,
-      completeCoverage: true,
+      completeCoverage,
     });
     const rawEvidence = source.getEvidence({
       identity,
-      completeCoverage: true,
+      completeCoverage,
       filters: { tag },
       limits: { topK: limit },
       authoritativeTotals: { nodes: summary.nodes, edges: summary.edges },
@@ -514,6 +515,7 @@ function createMemorySearchService({
         matchOutcome,
         filters: { tag },
         limits: { topK: limit },
+        completeCoverage,
         authoritativeTotals: { nodes: summary.nodes, edges: summary.edges },
         returnedTotals: { nodes: results.length, edges: 0 },
         fallback,
