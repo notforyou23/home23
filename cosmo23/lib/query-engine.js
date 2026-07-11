@@ -249,6 +249,7 @@ class QueryEngine {
       this.requireCompleteProviderResult = deps.requireCompleteProviderResult
         || requireCompleteProviderResult;
       this.operationEventSink = deps.onEvent || null;
+      this.pgsEngineFactory = deps.pgsEngineFactory || null;
       return;
     }
     this.operationMode = false;
@@ -1897,6 +1898,43 @@ STYLE:
     }
   }
 
+  async executePinnedPGS(query, options = {}) {
+    const signal = options.signal || null;
+    operationThrowIfAborted(signal);
+    let engine;
+    if (typeof this.pgsEngineFactory === 'function') {
+      engine = this.pgsEngineFactory({
+        providerRegistry: options.providerRegistry || this.providerRegistry,
+        modelCatalog: options.modelCatalog || this.modelCatalog,
+      });
+    } else {
+      const { PGSEngine } = require('../pgs-engine/src');
+      engine = new PGSEngine({
+        providerRegistry: options.providerRegistry || this.providerRegistry,
+        modelCatalog: options.modelCatalog || this.modelCatalog,
+      });
+    }
+    if (!engine || typeof engine.runPinnedOperation !== 'function') {
+      throw operationError('executor_unavailable', 'Pinned PGS engine is unavailable', true);
+    }
+    return engine.runPinnedOperation({
+      sourcePin: options.sourcePin,
+      scratchDir: options.scratchDir,
+      scratchQuota: options.scratchQuota,
+      query,
+      pgsSweep: options.pgsSweep,
+      pgsSynth: options.pgsSynth,
+      pgsConfig: options.pgsConfig || {},
+      signal,
+      reportEvent: options.onEvent || this.operationEventSink,
+      onChunk: options.onChunk || null,
+      accessMode: options.accessMode || 'read-only',
+      mutationPolicy: options.mutationPolicy || 'read-only',
+      limits: options.limits || {},
+      statfsImpl: options.statfsImpl,
+    });
+  }
+
   /**
    * Execute query using GPT-5.2 Responses API
    *
@@ -1913,6 +1951,9 @@ STYLE:
    */
   async executeQuery(query, options = {}) {
     if (this.operationMode || options.sourcePin) {
+      if (options.operationType === 'pgs' || options.enablePGS === true) {
+        return this.executePinnedPGS(query, options);
+      }
       return this.executePinnedQuery(query, options);
     }
     const startTime = Date.now(); // Performance tracking
@@ -4562,6 +4603,9 @@ This is STRATEGIC BRAINSTORMING informed by research insights. Be bold, creative
    */
   async executeEnhancedQuery(query, options = {}) {
     if (this.operationMode || options.sourcePin) {
+      if (options.operationType === 'pgs' || options.enablePGS === true) {
+        return this.executePinnedPGS(query, options);
+      }
       return this.executePinnedQuery(query, options);
     }
     const {

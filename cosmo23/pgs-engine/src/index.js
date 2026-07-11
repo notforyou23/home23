@@ -26,6 +26,9 @@ const { routeQuery, cosineSimilarity } = require('./router');
 const { sweepPartitions, sweepPartition: sweepOne } = require('./sweeper');
 const { synthesize: runSynthesis } = require('./synthesizer');
 const { SessionManager, MemoryStorage } = require('./session');
+const { openPinnedPGSStore } = require('./pinned-store');
+const { runPinnedOperation } = require('./pinned-operation');
+const { requireCompleteProviderResult } = require('../../lib/provider-completion');
 
 class PGSEngine {
   /**
@@ -40,10 +43,11 @@ class PGSEngine {
    * @param {Function} [options.onEvent] - Global event listener
    */
   constructor(options = {}) {
-    if (!options.sweepProvider) {
+    const operationOnly = options.providerRegistry && options.modelCatalog;
+    if (!options.sweepProvider && !operationOnly) {
       throw new Error('PGSEngine requires a sweepProvider. Provide an object with a generate() method.');
     }
-    if (!options.synthesisProvider) {
+    if (!options.synthesisProvider && !operationOnly) {
       throw new Error('PGSEngine requires a synthesisProvider. Provide an object with a generate() method.');
     }
 
@@ -53,6 +57,12 @@ class PGSEngine {
     this.config = { ...PGS_DEFAULTS, ...(options.config || {}) };
     this.globalOnEvent = options.onEvent || null;
     this.sessions = new SessionManager(options.storage);
+    this.providerRegistry = options.providerRegistry || null;
+    this.modelCatalog = options.modelCatalog || null;
+    this.openPinnedPGSStore = options.openPinnedPGSStore || openPinnedPGSStore;
+    this.requireCompleteProviderResult = options.requireCompleteProviderResult
+      || requireCompleteProviderResult;
+    this.operationClock = options.clock || Date;
 
     // Partition cache (in-memory, keyed by graph hash)
     this._partitionCache = new Map();
@@ -264,6 +274,15 @@ class PGSEngine {
         timestamp: new Date().toISOString()
       }
     };
+  }
+
+  /**
+   * Durable Home23 operation path. Unlike execute(), this consumes only a
+   * pinned source and requester-owned scratch; it never materializes or writes
+   * the target graph.
+   */
+  async runPinnedOperation(options = {}) {
+    return runPinnedOperation(this, options);
   }
 
   // ─── Composable API ─────────────────────────────────────────────────

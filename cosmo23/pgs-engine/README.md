@@ -6,6 +6,14 @@ PGS solves a problem that every RAG system has: it doesn't know what it doesn't 
 
 PGS answers these questions. It partitions your knowledge graph using community detection, sweeps each partition at full fidelity with structured prompts, then synthesizes across all outputs — discovering cross-domain connections, reporting explicit absences, and identifying convergent findings that no single-pass query can detect.
 
+## Home23 pinned-operation runtime
+
+The durable Home23 path uses `PGSEngine.runPinnedOperation()` and streams a
+revision-bound memory source into requester-owned SQLite scratch. It requires
+Node.js 18 or newer and the native `better-sqlite3` runtime. The legacy
+`execute(query, graph)` array API remains supported and never silently selects
+the pinned-operation path.
+
 ## Quick Start
 
 ```bash

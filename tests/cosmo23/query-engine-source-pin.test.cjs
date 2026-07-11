@@ -266,3 +266,47 @@ test('incomplete provider output is never promoted to success', async () => {
   );
   assert.equal(item.events.at(-1).outcome, 'failed');
 });
+
+test('operation PGS selection delegates only to the pinned package path', async () => {
+  const forwarded = [];
+  const engine = new QueryEngine({
+    operationMode: true,
+    providerRegistry: { get() { throw new Error('query registry path must not run'); } },
+    modelCatalog: catalog(),
+    pgsEngineFactory(dependencies) {
+      assert.ok(dependencies.providerRegistry);
+      assert.ok(dependencies.modelCatalog);
+      return {
+        async runPinnedOperation(options) {
+          forwarded.push(options);
+          return {
+            state: 'complete',
+            result: { answer: 'pgs answer', sweepOutputs: [], metadata: { pgs: {} } },
+            error: null,
+            resultArtifact: null,
+          };
+        },
+      };
+    },
+  });
+  const pin = sourcePin();
+  const signal = new AbortController().signal;
+  const result = await engine.executeEnhancedQuery('pgs query', {
+    operationType: 'pgs',
+    enablePGS: true,
+    sourcePin: pin,
+    scratchDir: '/trusted/scratch',
+    scratchQuota: { operationRoot: '/trusted' },
+    pgsSweep: { provider: 'alpha', model: 'answer-model' },
+    pgsSynth: { provider: 'alpha', model: 'answer-model' },
+    pgsConfig: { sweepFraction: 0.5 },
+    signal,
+  });
+
+  assert.equal(result.result.answer, 'pgs answer');
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0].sourcePin, pin);
+  assert.equal(forwarded[0].signal, signal);
+  assert.deepEqual(forwarded[0].pgsConfig, { sweepFraction: 0.5 });
+  assert.equal(pin.releaseCount(), 0);
+});
