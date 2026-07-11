@@ -5,7 +5,10 @@ const fsp = fs.promises;
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const Database = require('better-sqlite3');
-const { createOperationScratchQuota } = require('./scratch-quota.cjs');
+const {
+  createOperationScratchQuota,
+  getOperationScratchQuotaCleanup,
+} = require('./scratch-quota.cjs');
 const {
   edgeKeyFor,
   normalizeId,
@@ -154,6 +157,7 @@ async function createBoundedOverlayStore(options = {}) {
   let mutationTail = Promise.resolve();
   let pendingAdmissionBytes = 0;
   let scratchQuota = options.scratchQuota || null;
+  let scratchQuotaCleanup = null;
   let ownsScratchQuota = false;
   const quotaKind = `memory_overlay_${randomUUID()}`;
   const privateDirectoryName = `.memory-overlay-${process.pid}-${randomUUID()}`;
@@ -175,6 +179,7 @@ async function createBoundedOverlayStore(options = {}) {
       ownsScratchQuota = true;
       operationRoot = scratchQuota.operationRoot;
     }
+    scratchQuotaCleanup = getOperationScratchQuotaCleanup(scratchQuota);
     const rootStat = await fsp.lstat(operationRoot);
     if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
       throw memorySourceError('invalid_memory_source', 'operation root is not a private directory', {
@@ -282,9 +287,10 @@ async function createBoundedOverlayStore(options = {}) {
     ];
   }
 
-  async function assertOperationRootStable() {
+  async function assertOperationRootStable({ cleanup = false } = {}) {
     if (!operationRoot) return;
-    await scratchQuota.assertOperationRoot(operationRoot);
+    const quota = cleanup ? scratchQuotaCleanup : scratchQuota;
+    await quota.assertOperationRoot(operationRoot);
     const stat = await fsp.lstat(operationRoot).catch((error) => {
       throw confinementError('operation root became unavailable', error);
     });
@@ -294,8 +300,8 @@ async function createBoundedOverlayStore(options = {}) {
     }
   }
 
-  async function assertOverlayRootStable() {
-    await assertOperationRootStable();
+  async function assertOverlayRootStable({ cleanup = false } = {}) {
+    await assertOperationRootStable({ cleanup });
     if (!overlayRootIdentity) throw confinementError('overlay directory is not owned');
     const stat = await fsp.lstat(overlayRoot).catch((error) => {
       throw confinementError('overlay directory became unavailable', error);
@@ -310,7 +316,7 @@ async function createBoundedOverlayStore(options = {}) {
     if (canonical !== overlayRoot || path.dirname(canonical) !== operationRoot) {
       throw confinementError('overlay directory escapes operation scratch');
     }
-    await assertOperationRootStable();
+    await assertOperationRootStable({ cleanup });
   }
 
   async function assertDatabaseStable() {
@@ -647,10 +653,10 @@ async function createBoundedOverlayStore(options = {}) {
       cleanupFilesComplete = true;
       return;
     }
-    await assertOverlayRootStable();
+    await assertOverlayRootStable({ cleanup: true });
     const expectedNames = new Set(artifactPaths().map((filePath) => path.basename(filePath)));
     const entries = await fsp.readdir(overlayRoot);
-    await assertOverlayRootStable();
+    await assertOverlayRootStable({ cleanup: true });
     for (const name of entries.sort((left, right) => left.localeCompare(right))) {
       if (!expectedNames.has(name)) {
         throw confinementError('overlay directory contains an unowned artifact');
@@ -662,21 +668,21 @@ async function createBoundedOverlayStore(options = {}) {
         throw confinementError('overlay cleanup artifact identity changed');
       }
       await hooks.beforeArtifactRemove?.({ operationRoot, overlayRoot, filePath });
-      await assertOverlayRootStable();
+      await assertOverlayRootStable({ cleanup: true });
       const latest = await fsp.lstat(filePath);
       if (latest.isSymbolicLink() || !latest.isFile() || !sameIdentity(latest, identity)) {
         throw confinementError('overlay cleanup artifact changed before removal');
       }
       await fsp.unlink(filePath);
       ownedArtifacts.delete(filePath);
-      await assertOverlayRootStable();
+      await assertOverlayRootStable({ cleanup: true });
     }
     if ((await fsp.readdir(overlayRoot)).length !== 0) {
       throw confinementError('overlay directory changed during cleanup');
     }
-    await assertOverlayRootStable();
+    await assertOverlayRootStable({ cleanup: true });
     await fsp.rmdir(overlayRoot);
-    await assertOperationRootStable();
+    await assertOperationRootStable({ cleanup: true });
     cleanupFilesComplete = true;
   }
 
@@ -692,10 +698,10 @@ async function createBoundedOverlayStore(options = {}) {
     if (scratchQuota) {
       if (diskReservedBytes > 0) {
         const reserved = diskReservedBytes;
-        await scratchQuota.release(reserved, quotaKind);
+        await scratchQuotaCleanup.release(reserved, quotaKind);
         diskReservedBytes = 0;
       } else {
-        await scratchQuota.reconcile();
+        await scratchQuotaCleanup.reconcile();
       }
     }
     diskActualBytes = 0;

@@ -18,6 +18,7 @@ const PROCESS_STARTED_AT = Date.now() - Math.floor(process.uptime() * 1000);
 const execFileAsync = promisify(execFile);
 const FALLBACK_PROCESS_TOKEN = `unverifiable:${process.pid}:${PROCESS_STARTED_AT}:${randomUUID()}`;
 const LOCK_TURNOVER = Symbol('scratch-lock-turnover');
+const cleanupCapabilities = new WeakMap();
 
 function quotaExceeded(message) {
   return memorySourceError('result_too_large', message, {
@@ -555,9 +556,9 @@ async function createOperationScratchQuota({
   let closed = false;
   let localUsedBytes = 0;
 
-  function assertOpen() {
+  function assertOpen({ cleanup = false } = {}) {
     if (closed) throw memorySourceError('invalid_request', 'scratch quota is closed');
-    throwIfAborted(signal);
+    if (!cleanup) throwIfAborted(signal);
   }
 
   async function inspectOwnerLiveness(candidateOwner) {
@@ -663,7 +664,7 @@ async function createOperationScratchQuota({
     }
   }
 
-  async function acquireLock() {
+  async function acquireLock({ cleanup = false } = {}) {
     const startedAt = clock.now();
     let recoveredStaleLock = false;
     async function waitForRetry() {
@@ -676,7 +677,7 @@ async function createOperationScratchQuota({
         delayMs: lockRetryMs,
         elapsedMs,
       });
-      await abortableDelay(lockRetryMs, signal);
+      await abortableDelay(lockRetryMs, cleanup ? undefined : signal);
     }
     const record = `${JSON.stringify({
       version: 1,
@@ -689,7 +690,7 @@ async function createOperationScratchQuota({
       throw memorySourceError('invalid_request', 'scratch lock record is too large');
     }
     for (;;) {
-      assertOpen();
+      assertOpen({ cleanup });
       await assertStableOperationRoot();
       const candidatePath = path.join(root, `${LOCK_NAME}.candidate-${process.pid}-${randomUUID()}`);
       let candidateHandle;
@@ -851,11 +852,11 @@ async function createOperationScratchQuota({
     return { ...parseLedger(file.text, { operationRoot: root, maxBytes }), ledgerBytes: file.size };
   }
 
-  async function transact(mutator, { reconcile = false } = {}) {
-    assertOpen();
-    const releaseLock = await acquireLock();
+  async function transact(mutator, { reconcile = false, cleanup = false } = {}) {
+    assertOpen({ cleanup });
+    const releaseLock = await acquireLock({ cleanup });
     try {
-      assertOpen();
+      assertOpen({ cleanup });
       const prior = await readLedger();
       const next = await mutator({
         ...prior,
@@ -863,7 +864,7 @@ async function createOperationScratchQuota({
       });
       if (reconcile || next.claimedSinceReconcile >= RECONCILE_CLAIM_BYTES) {
         next.actualPrivateBytes = await scanPrivateBytes(root, {
-          signal,
+          signal: cleanup ? undefined : signal,
           rootIdentity,
           assertStableOperationRoot,
           hooks,
@@ -914,29 +915,73 @@ async function createOperationScratchQuota({
 
   await transact(async (ledger) => ledger, { reconcile: true });
 
+  async function assertBoundOperationRoot(candidate, { cleanup = false } = {}) {
+    assertOpen({ cleanup });
+    await assertStableOperationRoot();
+    if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) {
+      throw memorySourceError('invalid_request', 'exact operation root required');
+    }
+    const canonical = await fsp.realpath(candidate).catch(() => null);
+    if (canonical !== root) {
+      throw memorySourceError('invalid_request', 'scratch quota operation root mismatch');
+    }
+    const stat = await fsp.lstat(candidate);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw memorySourceError('invalid_memory_source', 'operation root is not a directory');
+    }
+    if (!sameIdentity(stat, rootIdentity)) {
+      throw memorySourceError('invalid_memory_source', 'operation root identity changed', {
+        retryable: false,
+      });
+    }
+    return true;
+  }
+
+  async function releaseReservation(bytes, kind, { cleanup = false } = {}) {
+    assertOpen({ cleanup });
+    validateBytes(bytes, 'release');
+    if (kind !== undefined) validateKind(kind);
+    return transact(async (ledger) => {
+      if (bytes === 0) return ledger;
+      const reservation = ledger.reservations[handleId];
+      const owned = reservation
+        ? Object.values(reservation.kinds).reduce((sum, value) => sum + value, 0)
+        : 0;
+      if (bytes > owned) {
+        throw memorySourceError('invalid_request', 'scratch release exceeds handle accounting');
+      }
+      if (kind !== undefined) {
+        const prior = reservation.kinds[kind] || 0;
+        if (bytes > prior) {
+          throw memorySourceError('invalid_request', 'scratch release exceeds kind accounting');
+        }
+        if (bytes === prior) delete reservation.kinds[kind];
+        else reservation.kinds[kind] = prior - bytes;
+      } else {
+        let remaining = bytes;
+        for (const key of Object.keys(reservation.kinds).sort()) {
+          const amount = Math.min(remaining, reservation.kinds[key]);
+          reservation.kinds[key] -= amount;
+          remaining -= amount;
+          if (reservation.kinds[key] === 0) delete reservation.kinds[key];
+          if (remaining === 0) break;
+        }
+      }
+      if (Object.keys(reservation.kinds).length === 0) delete ledger.reservations[handleId];
+      return ledger;
+    }, { reconcile: true, cleanup });
+  }
+
+  async function reconcileUsage({ cleanup = false } = {}) {
+    assertOpen({ cleanup });
+    return transact(async (ledger) => ledger, { reconcile: true, cleanup });
+  }
+
   const api = {
     operationRoot: root,
     maxBytes,
     async assertOperationRoot(candidate) {
-      assertOpen();
-      await assertStableOperationRoot();
-      if (typeof candidate !== 'string' || !path.isAbsolute(candidate)) {
-        throw memorySourceError('invalid_request', 'exact operation root required');
-      }
-      const canonical = await fsp.realpath(candidate).catch(() => null);
-      if (canonical !== root) {
-        throw memorySourceError('invalid_request', 'scratch quota operation root mismatch');
-      }
-      const stat = await fsp.lstat(candidate);
-      if (stat.isSymbolicLink() || !stat.isDirectory()) {
-        throw memorySourceError('invalid_memory_source', 'operation root is not a directory');
-      }
-      if (!sameIdentity(stat, rootIdentity)) {
-        throw memorySourceError('invalid_memory_source', 'operation root identity changed', {
-          retryable: false,
-        });
-      }
-      return true;
+      return assertBoundOperationRoot(candidate);
     },
     async claim(bytes, kind = 'scratch') {
       assertOpen();
@@ -957,47 +1002,35 @@ async function createOperationScratchQuota({
       }, { reconcile: true });
     },
     async release(bytes, kind) {
-      assertOpen();
-      validateBytes(bytes, 'release');
-      if (kind !== undefined) validateKind(kind);
-      return transact(async (ledger) => {
-        if (bytes === 0) return ledger;
-        const reservation = ledger.reservations[handleId];
-        const owned = reservation
-          ? Object.values(reservation.kinds).reduce((sum, value) => sum + value, 0)
-          : 0;
-        if (bytes > owned) {
-          throw memorySourceError('invalid_request', 'scratch release exceeds handle accounting');
-        }
-        if (kind !== undefined) {
-          const prior = reservation.kinds[kind] || 0;
-          if (bytes > prior) {
-            throw memorySourceError('invalid_request', 'scratch release exceeds kind accounting');
-          }
-          if (bytes === prior) delete reservation.kinds[kind];
-          else reservation.kinds[kind] = prior - bytes;
-        } else {
-          let remaining = bytes;
-          for (const key of Object.keys(reservation.kinds).sort()) {
-            const amount = Math.min(remaining, reservation.kinds[key]);
-            reservation.kinds[key] -= amount;
-            remaining -= amount;
-            if (reservation.kinds[key] === 0) delete reservation.kinds[key];
-            if (remaining === 0) break;
-          }
-        }
-        if (Object.keys(reservation.kinds).length === 0) delete ledger.reservations[handleId];
-        return ledger;
-      }, { reconcile: true });
+      return releaseReservation(bytes, kind);
     },
     async reconcile() {
-      assertOpen();
-      return transact(async (ledger) => ledger, { reconcile: true });
+      return reconcileUsage();
     },
     get usedBytes() { return localUsedBytes; },
     close() { closed = true; },
   };
-  return Object.freeze(api);
+  const handle = Object.freeze(api);
+  cleanupCapabilities.set(handle, Object.freeze({
+    assertOperationRoot(candidate) {
+      return assertBoundOperationRoot(candidate, { cleanup: true });
+    },
+    release(bytes, kind) {
+      return releaseReservation(bytes, kind, { cleanup: true });
+    },
+    reconcile() {
+      return reconcileUsage({ cleanup: true });
+    },
+  }));
+  return handle;
+}
+
+function getOperationScratchQuotaCleanup(handle) {
+  const cleanup = cleanupCapabilities.get(handle);
+  if (!cleanup) {
+    throw memorySourceError('invalid_request', 'valid scratch quota cleanup handle required');
+  }
+  return cleanup;
 }
 
 module.exports = {
@@ -1005,4 +1038,5 @@ module.exports = {
   LOCK_NAME,
   assertOperationRoot,
   createOperationScratchQuota,
+  getOperationScratchQuotaCleanup,
 };

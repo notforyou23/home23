@@ -352,6 +352,72 @@ test('abort during spill or ordered iteration stops work and permits complete cl
   iterateQuota.close();
 });
 
+test('shared operation abort still permits exact overlay cleanup and quota reconciliation', async () => {
+  const operationRoot = await tempDir();
+  const operationAbort = new AbortController();
+  const scratchQuota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 4 * 1024 * 1024,
+    signal: operationAbort.signal,
+  });
+  let privateDirectory = null;
+  const store = await createBoundedOverlayStore({
+    operationRoot,
+    scratchQuota,
+    signal: operationAbort.signal,
+    maxMemoryBytes: 0,
+    maxDiskBytes: 2 * 1024 * 1024,
+    _testHooks: {
+      async afterPrivateDirectoryCreate({ overlayRoot }) {
+        privateDirectory = overlayRoot;
+      },
+      async beforeDiskMutation() {
+        operationAbort.abort(Object.assign(new Error('stop disk mutation'), {
+          name: 'AbortError',
+        }));
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => store.apply(node('abort-shared-signal', 'x'.repeat(1024))),
+    { name: 'AbortError' },
+  );
+  await assert.rejects(
+    () => scratchQuota.claim(1, 'post-abort-claim'),
+    { name: 'AbortError' },
+  );
+  await assert.rejects(
+    () => scratchQuota.assertOperationRoot(operationRoot),
+    { name: 'AbortError' },
+  );
+  await assert.rejects(
+    () => scratchQuota.release(0),
+    { name: 'AbortError' },
+  );
+  await assert.rejects(
+    () => scratchQuota.reconcile(),
+    { name: 'AbortError' },
+  );
+  assert.notEqual(privateDirectory, null);
+
+  await store.close();
+  await store.close();
+  await assert.rejects(() => fsp.lstat(privateDirectory), { code: 'ENOENT' });
+  assert.deepEqual(await overlayFiles(operationRoot), []);
+
+  const ledger = JSON.parse(await fsp.readFile(
+    path.join(operationRoot, '.scratch-quota.json'),
+    'utf8',
+  ));
+  const reservedBytes = Object.values(ledger.reservations)
+    .flatMap((entry) => Object.values(entry.kinds))
+    .reduce((sum, bytes) => sum + bytes, 0);
+  assert.equal(ledger.actualPrivateBytes, 0);
+  assert.equal(reservedBytes, 0);
+  scratchQuota.close();
+});
+
 test('serializes concurrent threshold-crossing apply calls and spills exactly once', async () => {
   const operationRoot = await tempDir();
   const scratchQuota = await createOperationScratchQuota({
