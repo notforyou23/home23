@@ -332,6 +332,8 @@ class DashboardServer {
     this.brainOperationsReader = dependencies.reader;
     this.brainOperationsExporter = dependencies.exporter;
     this.brainOperationsProviderRuntime = dependencies.providerOperationRuntime || null;
+    this.brainOperationsSynthesisRuntime = dependencies.synthesisOperationRuntime || null;
+    this._synthesisAgent = this.brainOperationsSynthesisRuntime?.agent || null;
     this.brainOperationsProviderReadiness = dependencies.providerReadiness || (() => ({
       ready: false,
       status: 'unavailable',
@@ -373,6 +375,8 @@ class DashboardServer {
       require('../../../cosmo23/server/config/model-catalog.js');
     const { createMemorySourcePinProvider } = require('../../../shared/memory-source');
     const { createOperationScratchQuota } = require('../../../shared/memory-source');
+    const { createDashboardSynthesisOperationRuntime } =
+      require('./brain-operations/synthesis-operation-runtime.js');
     const home23Root = this.getHome23Root();
     const operationRoot = path.join(
       home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations',
@@ -427,7 +431,7 @@ class DashboardServer {
       supportsSourceOperations: true,
       sourceOperationTypes: [
         'search', 'status', 'graph', 'graph_export',
-        'query', 'pgs', 'research_compile', 'research_intelligence',
+        'query', 'pgs', 'synthesis', 'research_compile', 'research_intelligence',
       ],
     });
     worker.registerLocalExecutor('ad_hoc_export', async (context) => ({
@@ -472,7 +476,48 @@ class DashboardServer {
       error.code = 'operation_unavailable';
       throw error;
     };
-    const coordinator = new BrainOperationCoordinator({
+    let coordinator = null;
+    let synthesisOperationRuntime = null;
+    let synthesisOperationError = null;
+    try {
+      if (!providerRuntime || !providerOperationRuntime) throw providerOperationError;
+      const workspacePath = process.env.COSMO_WORKSPACE_PATH
+        || path.join(home23Root, 'instances', requesterAgent, 'workspace');
+      synthesisOperationRuntime = createDashboardSynthesisOperationRuntime({
+        brainDir: this.logsDir,
+        workspacePath,
+        homeConfig: providerRuntime.home,
+        catalog,
+        providerRegistry: providerRuntime.providerRegistry,
+        settingsStore: providerOperationRuntime.settingsStore,
+        logger: this.logger,
+        startOperation: ({ trigger }) => {
+          if (!coordinator) {
+            const error = new Error('synthesis_coordinator_unavailable');
+            error.code = 'synthesis_unavailable';
+            error.retryable = true;
+            throw error;
+          }
+          return coordinator.start({
+            requestId: `synthesis-${Date.now()}-${crypto.randomBytes(9).toString('base64url')}`,
+            operationType: 'synthesis',
+            target: undefined,
+            parameters: { trigger },
+          });
+        },
+      });
+      worker.registerLocalExecutor('synthesis', synthesisOperationRuntime.executor);
+    } catch (error) {
+      synthesisOperationError = error?.code ? error : Object.assign(
+        new Error('Synthesis operations are unavailable'),
+        { code: 'synthesis_unavailable', retryable: true, cause: error },
+      );
+      this.logger.error?.('[brain-operations] synthesis startup unavailable', {
+        code: synthesisOperationError.code,
+        retryable: synthesisOperationError.retryable === true,
+      });
+    }
+    coordinator = new BrainOperationCoordinator({
       requesterAgent,
       store,
       buildCanonicalCatalog: buildCatalog,
@@ -484,6 +529,10 @@ class DashboardServer {
       sourcePins: createMemorySourcePinProvider({ home23Root, requesterAgent }),
       scratchQuotaFactory: createOperationScratchQuota,
       operationModelResolver: async (input) => {
+        if (input.operationType === 'synthesis') {
+          if (!synthesisOperationRuntime) throw synthesisOperationError;
+          return synthesisOperationRuntime.resolveParameters(input);
+        }
         if (!['query', 'pgs'].includes(input.operationType)) {
           const error = new Error(`Provider operation is not ready: ${input.operationType}`);
           error.code = 'provider_unavailable';
@@ -504,6 +553,7 @@ class DashboardServer {
       exporter,
       buildCatalog,
       providerOperationRuntime,
+      synthesisOperationRuntime,
       providerReadiness: () => providerOperationRuntime?.getReadiness() || ({
         ready: false,
         status: 'unavailable',
@@ -7072,14 +7122,11 @@ Be specific, actionable, and maintain research continuity.`;
     // GET /api/synthesis/state — serve brain-state.json
     this.app.get('/api/synthesis/state', async (req, res) => {
       try {
-        const fsSync = require('fs');
-        const statePath = path.join(this.logsDir, 'brain-state.json');
-        if (fsSync.existsSync(statePath)) {
-          const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
-          res.json(state);
-        } else {
-          res.json({ generatedAt: null, message: 'No synthesis has run yet.' });
-        }
+        const { readCommittedSynthesisState } = require('../synthesis/synthesis-agent.js');
+        const state = this.brainOperationsSynthesisRuntime
+          ? await this.brainOperationsSynthesisRuntime.readState()
+          : await readCommittedSynthesisState({ brainDir: this.logsDir });
+        res.json(state || { generatedAt: null, message: 'No synthesis has run yet.' });
       } catch (error) {
         res.status(500).json({ error: error.message });
       }
@@ -11283,6 +11330,7 @@ You are empowered to explore and understand. The user trusts you to discover the
     // Query/PGS defaults must be migrated and every durable operation must be
     // reconciled before this process accepts a new request.
     await this.brainOperationsProviderRuntime?.settled;
+    await this.brainOperationsSynthesisRuntime?.settled;
     await this.brainOperationsCoordinator.reconcile();
   }
 
@@ -11295,18 +11343,14 @@ You are empowered to explore and understand. The user trusts you to discover the
     this.setupIngestRoute();
     await this.prepareBrainOperationsForListen();
 
-    // Initialize synthesis agent (Home23 Intelligence tab)
+    // The Intelligence tab and schedule use the same durable synthesis
+    // coordinator operation as agent tools; there is no direct provider path.
     try {
-      const { SynthesisAgent } = require('../synthesis/synthesis-agent');
-      const workspacePath = process.env.COSMO_WORKSPACE_PATH || path.join(this.logsDir, '..', 'workspace');
-      this._synthesisAgent = new SynthesisAgent({
-        brainDir: this.logsDir,
-        workspacePath,
-        dashboardPort: this.port,
-        // ollama-cloud model IDs are case-sensitive/lowercase; 'MiniMax-M3' 404s on this endpoint.
-        config: { intervalHours: 4, model: process.env.SYNTHESIS_LLM_MODEL || 'minimax-m3' },
-        logger: console,
-      });
+      if (!this._synthesisAgent) {
+        const error = new Error('Durable synthesis operation runtime is unavailable');
+        error.code = 'synthesis_unavailable';
+        throw error;
+      }
       this._synthesisAgent.startSchedule({ runOnStart: false });
       console.log('[DashboardServer] Synthesis agent initialized');
     } catch (err) {
