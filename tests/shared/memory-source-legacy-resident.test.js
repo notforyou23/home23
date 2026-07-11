@@ -335,6 +335,110 @@ test('projection retries an inode replacement instead of reopening the pathname'
   }
 });
 
+test('optional legacy delta appearance before publication retries and includes it', async (t) => {
+  const targetRoot = await makeLegacyFixture();
+  const operationRoot = await tempDir('home23-legacy-resident-delta-appears-');
+  const quota = await createOperationScratchQuota({ operationRoot, maxBytes: 64 * 1024 * 1024 });
+  const deltaPath = path.join(targetRoot, 'memory-delta.jsonl');
+  await fsp.rm(deltaPath);
+  let checks = 0;
+  t.after(async () => {
+    await quota.close();
+    await fsp.rm(operationRoot, { recursive: true, force: true });
+    await fsp.rm(targetRoot, { recursive: true, force: true });
+  });
+
+  const projected = await projectLegacyResidentSidecars({
+    canonicalRoot: targetRoot,
+    operationRoot,
+    scratchQuota: quota,
+    maxAttempts: 3,
+    _testHooks: {
+      async beforeFingerprintVerification() {
+        checks += 1;
+        if (checks === 1) {
+          await fsp.writeFile(deltaPath, `${JSON.stringify({
+            op: 'upsert_node',
+            record: { id: 'appeared', concept: 'optional delta appeared', cluster: 'c' },
+          })}\n`);
+        }
+      },
+    },
+  });
+
+  assert.equal(checks, 2);
+  assert.notEqual(projected.sourceFingerprint.files.delta, null);
+  assert.equal(projected.descriptor.summary.nodeCount, 3);
+  const source = await openMemorySource(projected.projectionRoot);
+  try {
+    const nodes = [];
+    for await (const node of source.iterateNodes()) nodes.push(node.id);
+    assert.equal(nodes.includes('appeared'), true);
+  } finally {
+    await source.close();
+  }
+});
+
+test('optional legacy delta disappearance before publication retries without it', async (t) => {
+  const targetRoot = await makeLegacyFixture();
+  const operationRoot = await tempDir('home23-legacy-resident-delta-disappears-');
+  const quota = await createOperationScratchQuota({ operationRoot, maxBytes: 64 * 1024 * 1024 });
+  const deltaPath = path.join(targetRoot, 'memory-delta.jsonl');
+  let checks = 0;
+  t.after(async () => {
+    await quota.close();
+    await fsp.rm(operationRoot, { recursive: true, force: true });
+    await fsp.rm(targetRoot, { recursive: true, force: true });
+  });
+
+  const projected = await projectLegacyResidentSidecars({
+    canonicalRoot: targetRoot,
+    operationRoot,
+    scratchQuota: quota,
+    maxAttempts: 3,
+    _testHooks: {
+      async beforeFingerprintVerification() {
+        checks += 1;
+        if (checks === 1) await fsp.rm(deltaPath);
+      },
+    },
+  });
+
+  assert.equal(checks, 2);
+  assert.equal(projected.sourceFingerprint.files.delta, null);
+  assert.equal(projected.descriptor.summary.nodeCount, 2);
+});
+
+test('abort from resident final source hook publishes no projection', async (t) => {
+  const targetRoot = await makeLegacyFixture();
+  const operationRoot = await tempDir('home23-legacy-resident-final-abort-');
+  const quota = await createOperationScratchQuota({ operationRoot, maxBytes: 64 * 1024 * 1024 });
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('stop before resident publication'), {
+    name: 'AbortError',
+    code: 'cancelled',
+  });
+  t.after(async () => {
+    await quota.close();
+    await fsp.rm(operationRoot, { recursive: true, force: true });
+    await fsp.rm(targetRoot, { recursive: true, force: true });
+  });
+
+  await assert.rejects(() => projectLegacyResidentSidecars({
+    canonicalRoot: targetRoot,
+    operationRoot,
+    scratchQuota: quota,
+    signal: controller.signal,
+    _testHooks: {
+      async beforeFingerprintVerification() { controller.abort(reason); },
+    },
+  }), (error) => error === reason);
+  assert.deepEqual(
+    await fsp.readdir(path.join(operationRoot, 'source-projections')).catch(() => []),
+    [],
+  );
+});
+
 test('legacy coordinator pin retains its immutable projection after the target advances', async () => {
   const home23Root = await tempDir('home23-legacy-pin-home-');
   const targetRoot = await makeLegacyFixture();
@@ -346,6 +450,7 @@ test('legacy coordinator pin retains its immutable projection after the target a
     'jerry',
     'runtime',
     'brain-operations',
+    'operations',
     operationId,
   );
   try {
@@ -391,6 +496,7 @@ test('legacy coordinator pin rejects a physical projection outside its operation
     'jerry',
     'runtime',
     'brain-operations',
+    'operations',
     operationId,
   );
   try {
@@ -428,6 +534,7 @@ test('legacy coordinator pin rejects a replaced physical projection identity', a
     'jerry',
     'runtime',
     'brain-operations',
+    'operations',
     operationId,
   );
   try {

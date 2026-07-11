@@ -123,16 +123,33 @@ async function closeLegacyResidentFiles(openedFiles) {
   }));
 }
 
-async function revalidateLegacyResidentFiles(openedFiles) {
+async function revalidateLegacyResidentFiles(openedFiles, absentFiles = new Map(), signal) {
   for (const opened of openedFiles.values()) {
     await assertStableOpenedFile(opened);
+    throwIfAborted(signal);
     await assertOpenedFilePathIdentity(opened, portableFileIdentity(opened.stat));
+    throwIfAborted(signal);
+  }
+  for (const absentPath of absentFiles.values()) {
+    const stat = await fsp.lstat(absentPath).catch((error) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    throwIfAborted(signal);
+    if (stat !== null) {
+      throw memorySourceError(
+        'source_changed',
+        'optional legacy resident sidecar appeared during projection',
+        { retryable: true },
+      );
+    }
   }
 }
 
 async function openLegacyResidentFiles(canonicalRoot, { signal } = {}) {
   const targetRoot = await fsp.realpath(canonicalRoot);
   const openedFiles = new Map();
+  const absentFiles = new Map();
   try {
     for (const [role, basename, optional] of [
       ['nodes', 'memory-nodes.jsonl.gz', false],
@@ -145,6 +162,8 @@ async function openLegacyResidentFiles(canonicalRoot, { signal } = {}) {
         { flags: fs.constants.O_RDONLY, optional, signal },
       );
       if (opened) openedFiles.set(role, opened);
+      else if (optional) absentFiles.set(role, path.join(targetRoot, basename));
+      throwIfAborted(signal);
     }
     if (!openedFiles.has('nodes') || !openedFiles.has('edges')) {
       throw memorySourceError('source_unavailable', 'legacy resident sidecars are unavailable', {
@@ -167,8 +186,8 @@ async function openLegacyResidentFiles(canonicalRoot, { signal } = {}) {
         delta: describe('delta'),
       }),
     });
-    await revalidateLegacyResidentFiles(openedFiles);
-    return Object.freeze({ targetRoot, fingerprint, openedFiles });
+    await revalidateLegacyResidentFiles(openedFiles, absentFiles, signal);
+    return Object.freeze({ targetRoot, fingerprint, openedFiles, absentFiles });
   } catch (error) {
     await closeLegacyResidentFiles(openedFiles).catch(() => {});
     throw error;
@@ -480,6 +499,7 @@ async function publishMetadata({
   edges,
   clusterCount,
   sourceFingerprint,
+  signal,
 }) {
   const deltaFile = `memory-delta.${generation}.jsonl`;
   const manifest = {
@@ -534,6 +554,7 @@ async function publishMetadata({
     async ({ checkpoint }) => {
       const deltaHandle = await fsp.open(path.join(attemptRoot, deltaFile), 'wx', 0o600);
       try { await deltaHandle.sync(); } finally { await deltaHandle.close(); }
+      throwIfAborted(signal);
       const fingerprintHandle = await fsp.open(
         path.join(attemptRoot, 'source-fingerprint.json'),
         'wx',
@@ -545,6 +566,7 @@ async function publishMetadata({
       } finally {
         await fingerprintHandle.close();
       }
+      throwIfAborted(signal);
       const integrityHandle = await fsp.open(
         path.join(attemptRoot, 'projection-integrity.json'),
         'wx',
@@ -556,11 +578,16 @@ async function publishMetadata({
       } finally {
         await integrityHandle.close();
       }
+      throwIfAborted(signal);
       await writeManifestAtomic(attemptRoot, manifest);
+      throwIfAborted(signal);
       await fsyncDirectory(attemptRoot);
+      throwIfAborted(signal);
       await checkpoint();
+      throwIfAborted(signal);
     },
   );
+  throwIfAborted(signal);
   return manifest;
 }
 
@@ -599,7 +626,13 @@ async function projectLegacyResidentSidecars({
         const projectionRoot = path.join(projectionsRoot, generation);
         const published = await readPublishedProjection(projectionRoot, targetRoot, before);
         if (published) {
-          await revalidateLegacyResidentFiles(stableSource.openedFiles);
+          throwIfAborted(signal);
+          await revalidateLegacyResidentFiles(
+            stableSource.openedFiles,
+            stableSource.absentFiles,
+            signal,
+          );
+          throwIfAborted(signal);
           return published;
         }
 
@@ -651,8 +684,15 @@ async function projectLegacyResidentSidecars({
             signal,
           }));
           await overlay.close();
+          throwIfAborted(signal);
           await _testHooks.beforeFingerprintVerification?.({ attempt, targetRoot, attemptRoot });
-          await revalidateLegacyResidentFiles(stableSource.openedFiles);
+          throwIfAborted(signal);
+          await revalidateLegacyResidentFiles(
+            stableSource.openedFiles,
+            stableSource.absentFiles,
+            signal,
+          );
+          throwIfAborted(signal);
           const manifest = await publishMetadata({
             attemptRoot,
             quota,
@@ -662,14 +702,22 @@ async function projectLegacyResidentSidecars({
             edges,
             clusterCount: clusters.size,
             sourceFingerprint: before,
+            signal,
           });
-          await revalidateLegacyResidentFiles(stableSource.openedFiles);
+          throwIfAborted(signal);
+          await revalidateLegacyResidentFiles(
+            stableSource.openedFiles,
+            stableSource.absentFiles,
+            signal,
+          );
+          throwIfAborted(signal);
           try {
             await fsp.rename(attemptRoot, projectionRoot);
             await fsyncDirectory(projectionsRoot);
           } catch (error) {
             if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
             const winner = await readPublishedProjection(projectionRoot, targetRoot, before);
+            throwIfAborted(signal);
             if (!winner) {
               throw memorySourceError('invalid_memory_source', 'projection publication conflict');
             }
@@ -677,7 +725,13 @@ async function projectLegacyResidentSidecars({
             await edgesWriter.cleanup();
             await removeOwnedAttempt(attemptRoot, attemptIdentity);
             await quota.reconcile();
-            await revalidateLegacyResidentFiles(stableSource.openedFiles);
+            throwIfAborted(signal);
+            await revalidateLegacyResidentFiles(
+              stableSource.openedFiles,
+              stableSource.absentFiles,
+              signal,
+            );
+            throwIfAborted(signal);
             return winner;
           }
           return projectionResult({
