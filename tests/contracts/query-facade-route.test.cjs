@@ -5,11 +5,25 @@ const Ajv2020 = require('ajv/dist/2020');
 const fs = require('fs');
 const path = require('path');
 const {
-  PUBLIC_QUERY_BODY_LIMIT_BYTES,
+  QUERY_COMPATIBILITY_BODY_LIMIT_BYTES,
   buildQueryCatalog,
   createQueryCompatibilityBodyParser,
   createQueryApiRouter,
 } = require('../../engine/src/dashboard/home23-query-api.js');
+
+const MAX_JSON_ESCAPED_UTF16_UNIT_BYTES = 6;
+const MAX_AGENT_SELECTOR_CHARS = 256;
+const MAX_QUERY_CHARS = 12_000;
+const MAX_AD_HOC_ANSWER_CHARS = 1_000_000;
+const MAX_METADATA_JSON_BYTES = 64 * 1024;
+const MAX_AD_HOC_FIXED_BODY_BYTES = Buffer.byteLength(JSON.stringify({
+  agent: '', query: '', answer: '', format: 'markdown', metadata: null,
+  dryRun: true, validateOnly: true,
+}), 'utf8') - Buffer.byteLength('null', 'utf8');
+const EXPECTED_QUERY_COMPATIBILITY_BODY_LIMIT_BYTES = MAX_AD_HOC_FIXED_BODY_BYTES
+  + MAX_JSON_ESCAPED_UTF16_UNIT_BYTES
+    * (MAX_AGENT_SELECTOR_CHARS + MAX_QUERY_CHARS + MAX_AD_HOC_ANSWER_CHARS)
+  + MAX_METADATA_JSON_BYTES;
 
 function makeFetch(routes) {
   return async (url, init = {}) => {
@@ -81,6 +95,13 @@ function exactJsonBody(bytes) {
   const prefix = '{"pad":"';
   const suffix = '"}';
   return prefix + 'x'.repeat(bytes - Buffer.byteLength(prefix + suffix)) + suffix;
+}
+
+function metadataObjectAtJsonBytes(bytes) {
+  const fixed = Buffer.byteLength('{"pad":""}', 'utf8');
+  const metadata = { pad: 'm'.repeat(bytes - fixed) };
+  assert.equal(Buffer.byteLength(JSON.stringify(metadata), 'utf8'), bytes);
+  return metadata;
 }
 
 async function getJson(app, route) {
@@ -537,10 +558,21 @@ function makeQueryApp({
       exportStored: async (request) => {
         calls.push('exportStored');
         onForward(request);
+        const canonicalEvidence = request.kind === 'canonical';
+        const relativePath = `workspace/brain-exports/result-brexp_${'e'.repeat(32)}.md`;
         return {
-          success: true,
-          exportedTo: '/requester/brain-exports/result.md',
-          resultHandle: `brres_${'d'.repeat(32)}`,
+          operationId: COMPAT_OPERATION_ID,
+          state: 'complete',
+          resultHandle: canonicalEvidence ? `brres_${'d'.repeat(32)}` : null,
+          canonicalEvidence,
+          exportedTo: relativePath,
+          exportHandle: `brexp_${'e'.repeat(32)}`,
+          relativePath,
+          bytes: 123,
+          sha256: 'f'.repeat(64),
+          sourceOperationId: COMPAT_OPERATION_ID,
+          sourceResultHandleHash: canonicalEvidence ? 'a'.repeat(64) : null,
+          format: request.format,
         };
       },
       ...adapter,
@@ -863,20 +895,29 @@ test('compatibility forwarding strips facade controls and binds the selected can
 });
 
 test('compatibility terminal success rejects success false, embedded errors, and missing answer', async () => {
-  for (const result of [
-    { success: false, answer: 'misleading' },
-    { error: 'provider failed', answer: 'misleading' },
-    { metadata: { done: true } },
+  const resultHandle = `brres_${'v'.repeat(32)}`;
+  const resultArtifact = { mediaType: 'application/json', contentEncoding: 'identity', bytes: 7, sha256: 'b'.repeat(64) };
+  const sourceEvidence = { sourceHealth: 'healthy', matchOutcome: 'matches' };
+  const validate = compileQueryDefinition('queryRunResponse');
+  for (const row of [
+    { state: 'complete', result: { success: false, answer: 'misleading' }, error: null },
+    { state: 'complete', result: { error: 'provider failed', answer: 'misleading' }, error: null },
+    { state: 'complete', result: { metadata: { done: true } }, error: null },
+    {
+      state: 'partial', result: { answer: null },
+      error: { code: 'provider_incomplete', message: 'partial malformed', retryable: true },
+    },
   ]) {
     const fixture = makeQueryApp({ adapter: {
+      attachAndWait: async () => canonicalCompatRecord({ state: row.state, eventSequence: 3 }),
       getResult: async (operationId) => ({
         operationId,
-        state: 'complete',
-        result,
-        resultHandle: null,
-        resultArtifact: null,
-        error: null,
-        sourceEvidence: null,
+        state: row.state,
+        result: row.result,
+        resultHandle,
+        resultArtifact,
+        error: row.error,
+        sourceEvidence,
       }),
     } });
     const response = await postJson(fixture.app, '/home23/api/query/run', {
@@ -884,9 +925,15 @@ test('compatibility terminal success rejects success false, embedded errors, and
       modelSelection: { provider: 'openai', model: 'gpt-5.5' },
       enablePGS: false,
     });
-    assert.equal(response.status, 502, JSON.stringify(result));
+    assert.equal(response.status, 502, JSON.stringify(row));
     assert.equal(response.body.ok, false);
     assert.match(response.body.error.code, /^result_/);
+    assert.equal(response.body.operationId, COMPAT_OPERATION_ID);
+    assert.equal(response.body.state, row.state);
+    assert.equal(response.body.resultHandle, resultHandle);
+    assert.deepEqual(response.body.resultArtifact, resultArtifact);
+    assert.deepEqual(response.body.sourceEvidence, sourceEvidence);
+    assert.equal(validate(response.body), true, JSON.stringify(validate.errors));
   }
 });
 
@@ -988,6 +1035,7 @@ test('query compatibility JSON is bounded before the dashboard broad parser mate
   const app = express();
   app.use('/home23/api/query', createQueryCompatibilityBodyParser());
   app.use((req, res, next) => {
+    if (req.queryCompatibilityBodyParsed === true) return next();
     broadCalls += 1;
     return express.json({ limit: '10gb' })(req, res, next);
   });
@@ -1006,12 +1054,63 @@ test('query compatibility JSON is bounded before the dashboard broad parser mate
   const response = await postRawJson(
     app,
     '/home23/api/query/run',
-    exactJsonBody(PUBLIC_QUERY_BODY_LIMIT_BYTES + 1),
+    exactJsonBody(EXPECTED_QUERY_COMPATIBILITY_BODY_LIMIT_BYTES + 1),
   );
   assert.equal(response.status, 413);
   assert.equal(response.body.error.code, 'request_too_large');
   assert.equal(broadCalls, 0);
   assert.equal(adapterCalls, 0);
+});
+
+test('query compatibility body cap admits the maximum valid ad hoc export aggregate', async () => {
+  assert.equal(
+    QUERY_COMPATIBILITY_BODY_LIMIT_BYTES,
+    EXPECTED_QUERY_COMPATIBILITY_BODY_LIMIT_BYTES,
+  );
+  let forwarded = null;
+  let broadCalls = 0;
+  const app = express();
+  app.use('/home23/api/query', createQueryCompatibilityBodyParser());
+  app.use((req, res, next) => {
+    if (req.queryCompatibilityBodyParsed === true) return next();
+    broadCalls += 1;
+    return express.json({ limit: '10gb' })(req, res, next);
+  });
+  app.use('/home23/api/query', createQueryApiRouter({
+    getDefaultAgent: () => 'jerry',
+    resolveAgent: () => 'jerry',
+    catalogProvider: async () => { throw new Error('catalog must not be read'); },
+    operationAdapter: {
+      start: async () => {}, attachAndWait: async () => {}, getResult: async () => {}, detach: async () => {},
+      exportStored: async (request) => {
+        forwarded = request;
+        const relativePath = `workspace/brain-exports/max-brexp_${'m'.repeat(32)}.json`;
+        return {
+          operationId: COMPAT_OPERATION_ID, state: 'complete', resultHandle: null,
+          canonicalEvidence: false, exportedTo: relativePath,
+          exportHandle: `brexp_${'m'.repeat(32)}`, relativePath, bytes: 1,
+          sha256: 'c'.repeat(64), sourceOperationId: COMPAT_OPERATION_ID,
+          sourceResultHandleHash: null, format: 'json',
+        };
+      },
+    },
+  }));
+  const metadata = metadataObjectAtJsonBytes(64 * 1024);
+  const body = JSON.stringify({
+    query: 'q'.repeat(12_000),
+    answer: 'a'.repeat(1_000_000),
+    format: 'json',
+    metadata,
+  });
+  assert.ok(Buffer.byteLength(body, 'utf8') <= QUERY_COMPATIBILITY_BODY_LIMIT_BYTES);
+  const response = await postRawJson(app, '/home23/api/query/export', body);
+  assert.equal(response.status, 200);
+  assert.equal(response.body.success, true);
+  assert.equal(broadCalls, 0);
+  assert.equal(forwarded.query.length, 12_000);
+  assert.equal(forwarded.answer.length, 1_000_000);
+  assert.equal(Buffer.byteLength(JSON.stringify(forwarded.metadata), 'utf8'), 64 * 1024);
+  assert.equal(Object.hasOwn(forwarded.metadata, 'canonicalEvidence'), false);
 });
 
 test('DashboardServer mounts the bounded query parser before its legacy ten-gigabyte parser', () => {
@@ -1034,9 +1133,16 @@ test('DashboardServer mounts the bounded query parser before its legacy ten-giga
   );
 });
 
-test('compatibility ad hoc export is explicitly noncanonical', async () => {
+test('compatibility ad hoc export is explicitly noncanonical and independent of COSMO catalog', async () => {
   const forwarded = [];
-  const fixture = makeQueryApp({ onForward: (request) => forwarded.push(request) });
+  let catalogCalls = 0;
+  const fixture = makeQueryApp({
+    onForward: (request) => forwarded.push(request),
+    catalogProvider: async () => {
+      catalogCalls += 1;
+      throw Object.assign(new Error('COSMO catalog unavailable'), { code: 'catalog_unavailable' });
+    },
+  });
   const response = await postJson(fixture.app, '/home23/api/query/export', {
     query: 'x',
     answer: 'not a stored operation result',
@@ -1045,9 +1151,11 @@ test('compatibility ad hoc export is explicitly noncanonical', async () => {
   });
   assert.equal(response.status, 200);
   assert.equal(response.body.success, true);
+  assert.equal(response.body.canonicalEvidence, false);
+  assert.equal(catalogCalls, 0);
   assert.equal(forwarded.length, 1);
   assert.equal(forwarded[0].kind, 'ad_hoc');
-  assert.equal(forwarded[0].metadata.canonicalEvidence, false);
+  assert.deepEqual(forwarded[0].metadata, { source: 'compatibility' });
   assert.match(forwarded[0].requestId, /^compat-export-/);
 });
 

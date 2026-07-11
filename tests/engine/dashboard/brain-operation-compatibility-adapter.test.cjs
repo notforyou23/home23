@@ -2,10 +2,17 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 const {
   BrainOperationsCompatibilityAdapter,
   DETACH_CLEANUP_MS,
 } = require('../../../engine/src/dashboard/brain-operations/compatibility-adapter.js');
+const {
+  createBrainOperationExporter,
+} = require('../../../engine/src/dashboard/brain-operations/exporter.js');
 
 const OPERATION_ID = `brop_${'a'.repeat(32)}`;
 const RESULT_HANDLE = `brres_${'b'.repeat(32)}`;
@@ -22,6 +29,7 @@ function record(overrides = {}) {
     operationId: OPERATION_ID,
     operationType: 'query',
     requesterAgent: 'jerry',
+    canonicalEvidence: true,
     state: 'running',
     eventSequence: 0,
     result: null,
@@ -30,6 +38,20 @@ function record(overrides = {}) {
     resultExpiredAt: null,
     error: null,
     sourceEvidence: null,
+    ...overrides,
+  };
+}
+
+function exportReceipt(overrides = {}) {
+  return {
+    exportHandle: `brexp_${'c'.repeat(32)}`,
+    relativePath: `workspace/brain-exports/result-brexp_${'c'.repeat(32)}.md`,
+    bytes: 123,
+    sha256: 'd'.repeat(64),
+    sourceOperationId: OPERATION_ID,
+    sourceResultHandleHash: crypto.createHash('sha256').update(RESULT_HANDLE).digest('hex'),
+    format: 'markdown',
+    canonicalEvidence: true,
     ...overrides,
   };
 }
@@ -47,7 +69,7 @@ function makeAdapter(overrides = {}) {
     ...overrides.reader,
   };
   const exporter = {
-    exportResult: async () => ({ exportedTo: 'workspace/brain-exports/result.md' }),
+    exportResult: async () => exportReceipt(),
     ...overrides.exporter,
   };
   const adapter = new BrainOperationsCompatibilityAdapter({
@@ -278,13 +300,13 @@ test('compatibility adapter emits monotonic events and reloads terminal bytes th
   assert.equal(protectedReads, 1);
 });
 
-test('compatibility canonical export delegates stored authority without caller result bytes', async () => {
+test('compatibility canonical export normalizes the real receipt into durable and legacy fields', async () => {
   const calls = [];
   const { adapter } = makeAdapter({
     exporter: {
       exportResult: async (input) => {
         calls.push(input);
-        return { exportedTo: 'workspace/brain-exports/result.md' };
+        return exportReceipt();
       },
     },
   });
@@ -295,7 +317,15 @@ test('compatibility canonical export delegates stored authority without caller r
     format: 'markdown',
     fileName: 'result',
   });
-  assert.equal(result.exportedTo, 'workspace/brain-exports/result.md');
+  assert.equal(result.operationId, OPERATION_ID);
+  assert.equal(result.state, 'complete');
+  assert.equal(result.resultHandle, RESULT_HANDLE);
+  assert.equal(result.canonicalEvidence, true);
+  assert.equal(result.exportedTo, exportReceipt().relativePath);
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(exportReceipt()).map((key) => [key, result[key]])),
+    exportReceipt(),
+  );
   assert.deepEqual(calls, [{
     requesterAgent: 'jerry',
     operationId: OPERATION_ID,
@@ -303,6 +333,69 @@ test('compatibility canonical export delegates stored authority without caller r
     format: 'markdown',
     fileName: 'result',
   }]);
+});
+
+test('compatibility canonical export rejects an unsafe or malformed public receipt', async () => {
+  for (const receipt of [
+    exportReceipt({ relativePath: '../outside.md' }),
+    exportReceipt({ sourceOperationId: `brop_${'z'.repeat(32)}` }),
+    exportReceipt({ canonicalEvidence: false }),
+  ]) {
+    const { adapter } = makeAdapter({
+      exporter: { exportResult: async () => receipt },
+    });
+    await assert.rejects(adapter.exportStored({
+      kind: 'canonical', operationId: OPERATION_ID, resultHandle: RESULT_HANDLE,
+      format: 'markdown', fileName: 'result',
+    }), (error) => error.code === 'export_receipt_invalid');
+  }
+});
+
+test('compatibility canonical export normalizes the actual local exporter receipt', async (t) => {
+  const home23Root = fs.realpathSync.native(fs.mkdtempSync(
+    path.join(os.tmpdir(), 'brain-compat-export-'),
+  ));
+  for (const relative of [
+    'instances/jerry/brain', 'instances/jerry/runtime', 'instances/jerry/workspace',
+  ]) fs.mkdirSync(path.join(home23Root, relative), { recursive: true });
+  t.after(() => fs.rmSync(home23Root, { recursive: true, force: true }));
+  const stored = record({
+    state: 'complete',
+    canonicalEvidence: true,
+    result: { answer: 'stored result' },
+    resultHandle: null,
+  });
+  const reader = {
+    getAuthorized: async () => stored,
+    getResultAuthorized: async () => stored.result,
+    openResultArtifactAuthorized: async () => { throw new Error('not used'); },
+  };
+  const exporter = createBrainOperationExporter({
+    home23Root,
+    requesterAgent: 'jerry',
+    reader,
+    now: () => Date.parse('2026-07-10T16:00:00.000Z'),
+    randomBytes: () => Buffer.alloc(24, 7),
+  });
+  const adapter = new BrainOperationsCompatibilityAdapter({
+    requesterAgent: 'jerry',
+    reader,
+    exporter,
+    coordinator: {
+      start: async () => { throw new Error('not used'); },
+      attach: async () => { throw new Error('not used'); },
+      detach: async () => { throw new Error('not used'); },
+    },
+  });
+  const result = await adapter.exportStored({
+    kind: 'canonical', operationId: OPERATION_ID, format: 'json', fileName: 'real-result',
+  });
+  assert.equal(result.operationId, OPERATION_ID);
+  assert.equal(result.state, 'complete');
+  assert.equal(result.resultHandle, null);
+  assert.equal(result.canonicalEvidence, true);
+  assert.equal(result.exportedTo, result.relativePath);
+  assert.equal(fs.existsSync(path.join(home23Root, 'instances/jerry', result.exportedTo)), true);
 });
 
 test('compatibility ad hoc export creates an explicit noncanonical durable operation', async () => {
@@ -320,7 +413,11 @@ test('compatibility ad hoc export creates an explicit noncanonical durable opera
         state: 'complete', operationType: 'ad_hoc_export', eventSequence: 1,
         resultHandle: RESULT_HANDLE,
       }),
-      getResultAuthorized: async () => ({ exportedTo: 'workspace/brain-exports/ad-hoc.md' }),
+      getResultAuthorized: async () => exportReceipt({
+        relativePath: `workspace/brain-exports/ad-hoc-brexp_${'c'.repeat(32)}.md`,
+        sourceResultHandleHash: null,
+        canonicalEvidence: false,
+      }),
     },
   });
   const result = await adapter.exportStored({
@@ -334,5 +431,8 @@ test('compatibility ad hoc export creates an explicit noncanonical durable opera
   assert.equal(starts[0].operationType, 'ad_hoc_export');
   assert.equal(starts[0].parameters.answer, 'not canonical evidence');
   assert.equal(result.canonicalEvidence, false);
-  assert.equal(result.exportedTo, 'workspace/brain-exports/ad-hoc.md');
+  assert.equal(result.exportedTo, result.relativePath);
+  assert.equal(result.operationId, OPERATION_ID);
+  assert.equal(result.state, 'complete');
+  assert.equal(result.resultHandle, RESULT_HANDLE);
 });

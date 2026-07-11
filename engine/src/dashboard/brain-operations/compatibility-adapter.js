@@ -11,6 +11,9 @@ const TERMINAL_STATES = new Set(['complete', 'partial', 'failed', 'cancelled', '
 const START_STATES = new Set(['queued', 'running']);
 const QUERY_WAIT_MS = 90 * 60_000;
 const DETACH_CLEANUP_MS = 5_000;
+const EXPORT_HANDLE_PATTERN = /^brexp_[A-Za-z0-9_-]{32}$/;
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
+const SAFE_EXPORT_PATH_PATTERN = /^workspace\/brain-exports\/[A-Za-z0-9][A-Za-z0-9._ -]*$/;
 
 function adapterError(code, cause) {
   return operationError(code, cause);
@@ -73,6 +76,45 @@ function attachmentFailure(record, cause) {
   error.resultArtifact = record.resultArtifact ?? null;
   error.sourceEvidence = record.sourceEvidence ?? null;
   return error;
+}
+
+function normalizeExportReceipt(record, receipt, { canonicalEvidence, format }) {
+  try {
+    exactObject(receipt, [
+      'exportHandle', 'relativePath', 'bytes', 'sha256', 'sourceOperationId',
+      'sourceResultHandleHash', 'format', 'canonicalEvidence',
+    ], 'export_receipt_invalid');
+  } catch (error) {
+    if (error?.code === 'export_receipt_invalid') throw error;
+    throw adapterError('export_receipt_invalid', error);
+  }
+  if (Reflect.ownKeys(receipt).length !== 8
+      || !['complete', 'partial'].includes(record.state)
+      || !EXPORT_HANDLE_PATTERN.test(receipt.exportHandle)
+      || typeof receipt.relativePath !== 'string'
+      || !SAFE_EXPORT_PATH_PATTERN.test(receipt.relativePath)
+      || !Number.isSafeInteger(receipt.bytes) || receipt.bytes < 0
+      || typeof receipt.sha256 !== 'string' || !SHA256_HEX_PATTERN.test(receipt.sha256)
+      || receipt.sourceOperationId !== record.operationId
+      || receipt.format !== format
+      || receipt.canonicalEvidence !== canonicalEvidence) {
+    throw adapterError('export_receipt_invalid');
+  }
+  const sourceResultHandle = canonicalEvidence ? (record.resultHandle ?? null) : null;
+  const expectedHandleHash = sourceResultHandle === null
+    ? null
+    : crypto.createHash('sha256').update(sourceResultHandle, 'utf8').digest('hex');
+  if (receipt.sourceResultHandleHash !== expectedHandleHash) {
+    throw adapterError('export_receipt_invalid');
+  }
+  return {
+    operationId: record.operationId,
+    state: record.state,
+    resultHandle: record.resultHandle ?? null,
+    canonicalEvidence,
+    exportedTo: receipt.relativePath,
+    ...receipt,
+  };
 }
 
 class BrainOperationsCompatibilityAdapter {
@@ -280,12 +322,17 @@ class BrainOperationsCompatibilityAdapter {
       'query', 'answer', 'metadata', 'signal',
     ]);
     if (request.kind === 'canonical') {
-      return this.exporter.exportResult({
+      const record = this._authorize(await this.reader.getAuthorized(request.operationId));
+      const receipt = await this.exporter.exportResult({
         requesterAgent: this.requesterAgent,
         operationId: request.operationId,
         resultHandle: request.resultHandle,
         format: request.format,
         fileName: request.fileName,
+      });
+      return normalizeExportReceipt(record, receipt, {
+        canonicalEvidence: true,
+        format: request.format,
       });
     }
     if (request.kind !== 'ad_hoc') throw adapterError('invalid_request');
@@ -318,13 +365,10 @@ class BrainOperationsCompatibilityAdapter {
         || typeof envelope.result !== 'object') {
       throw adapterError(envelope.error?.code || 'export_failed');
     }
-    return {
-      operationId: terminal.operationId,
-      state: envelope.state,
-      resultHandle: envelope.resultHandle,
+    return normalizeExportReceipt(envelope, envelope.result, {
       canonicalEvidence: false,
-      ...envelope.result,
-    };
+      format: request.format,
+    });
   }
 }
 

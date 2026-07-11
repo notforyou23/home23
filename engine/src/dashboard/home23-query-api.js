@@ -18,7 +18,20 @@ const DEFAULT_ENDPOINTS = {
 const MAX_QUERY_CHARS = 12_000;
 const MAX_PRIOR_CONTEXT_CHARS = 20_000;
 const MAX_AD_HOC_ANSWER_CHARS = 1_000_000;
-const PUBLIC_QUERY_BODY_LIMIT_BYTES = 1024 * 1024;
+const MAX_AGENT_SELECTOR_CHARS = 256;
+const MAX_METADATA_JSON_BYTES = 64 * 1024;
+const MAX_JSON_ESCAPED_UTF16_UNIT_BYTES = 6;
+const MAX_AD_HOC_FIXED_BODY_BYTES = Buffer.byteLength(JSON.stringify({
+  agent: '', query: '', answer: '', format: 'markdown', metadata: null,
+  dryRun: true, validateOnly: true,
+}), 'utf8') - Buffer.byteLength('null', 'utf8');
+// This is the audited compact-JSON ceiling for every field-valid ad-hoc export:
+// worst-case JSON escaping for all bounded strings, the full metadata JSON budget,
+// and the fixed keys/punctuation/boolean controls. Requests above it are never needed.
+const QUERY_COMPATIBILITY_BODY_LIMIT_BYTES = MAX_AD_HOC_FIXED_BODY_BYTES
+  + MAX_JSON_ESCAPED_UTF16_UNIT_BYTES
+    * (MAX_AGENT_SELECTOR_CHARS + MAX_QUERY_CHARS + MAX_AD_HOC_ANSWER_CHARS)
+  + MAX_METADATA_JSON_BYTES;
 const QUERY_WAIT_MS = 90 * 60_000;
 const PGS_WAIT_MS = 6 * 60 * 60_000;
 const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -305,7 +318,7 @@ function createQueryCompatibilityBodyParser(options = {}) {
       || Reflect.ownKeys(options).some((key) => key !== 'limitBytes')) {
     throw compatibilityError('invalid_request', 'query parser configuration is invalid');
   }
-  const limitBytes = options.limitBytes ?? PUBLIC_QUERY_BODY_LIMIT_BYTES;
+  const limitBytes = options.limitBytes ?? QUERY_COMPATIBILITY_BODY_LIMIT_BYTES;
   if (!Number.isSafeInteger(limitBytes) || limitBytes <= 0) {
     throw compatibilityError('invalid_request', 'query parser limit is invalid');
   }
@@ -356,7 +369,7 @@ function boundedString(value, field, { required = false, max = 256 } = {}) {
 }
 
 function normalizeAgentSelector(value, field = 'agent') {
-  boundedString(value, field, { required: true, max: 256 });
+  boundedString(value, field, { required: true, max: MAX_AGENT_SELECTOR_CHARS });
   const normalized = value.replace(/^home23-/, '').trim();
   if (!normalized) throw compatibilityError('invalid_request', `${field} is invalid`);
   return normalized;
@@ -560,7 +573,8 @@ function validateMetadata(value) {
   try { serialized = JSON.stringify(value); } catch {
     throw compatibilityError('invalid_request', 'metadata is invalid');
   }
-  if (serialized === undefined || Buffer.byteLength(serialized, 'utf8') > 64 * 1024) {
+  if (serialized === undefined
+      || Buffer.byteLength(serialized, 'utf8') > MAX_METADATA_JSON_BYTES) {
     throw compatibilityError('invalid_request', 'metadata is invalid');
   }
   return JSON.parse(serialized);
@@ -618,7 +632,7 @@ function validateExportRequest(body, catalog, agent) {
     query: body.query,
     answer: body.answer,
     format: body.format,
-    metadata: { ...validateMetadata(body.metadata), canonicalEvidence: false },
+    metadata: validateMetadata(body.metadata),
   };
 }
 
@@ -664,6 +678,18 @@ function isTypedOperationError(error) {
     && typeof error.code === 'string' && error.code.trim()
     && typeof error.message === 'string' && error.message.trim()
     && typeof error.retryable === 'boolean');
+}
+
+function operationResultError(
+  envelope,
+  code,
+  message,
+  status = 502,
+  retryable = true,
+) {
+  const error = compatibilityError(code, message, status, retryable);
+  error.operation = envelope;
+  return error;
 }
 
 function errorStatus(error) {
@@ -746,7 +772,8 @@ function terminalPayload(envelope) {
   }
   if (!SUCCESS_STATES.has(envelope.state)) {
     if (!isTypedOperationError(envelope.error)) {
-      throw compatibilityError(
+      throw operationResultError(
+        envelope,
         'operation_contract_invalid',
         'terminal operation error is invalid',
         502,
@@ -765,17 +792,29 @@ function terminalPayload(envelope) {
   const result = envelope.result;
   if (!result || Array.isArray(result) || typeof result !== 'object'
       || result.success === false || (Object.hasOwn(result, 'error') && result.error !== null)) {
-    throw compatibilityError('result_invalid', 'terminal operation result is invalid', 502, true);
+    throw operationResultError(
+      envelope,
+      'result_invalid',
+      'terminal operation result is invalid',
+    );
   }
   const answer = result.answer;
   const typedPartialError = isTypedOperationError(envelope.error);
   if (envelope.state === 'complete') {
     if (envelope.error !== null || typeof answer !== 'string' || !answer.trim()) {
-      throw compatibilityError('result_missing', 'terminal operation has no answer', 502, true);
+      throw operationResultError(
+        envelope,
+        'result_missing',
+        'terminal operation has no answer',
+      );
     }
   } else if (envelope.operationType === 'query') {
     if (!typedPartialError || typeof answer !== 'string' || !answer.trim()) {
-      throw compatibilityError('result_invalid', 'partial query result is invalid', 502, true);
+      throw operationResultError(
+        envelope,
+        'result_invalid',
+        'partial query result is invalid',
+      );
     }
   } else if (envelope.operationType === 'pgs') {
     const sweepOutputs = result.sweepOutputs;
@@ -799,10 +838,18 @@ function terminalPayload(envelope) {
         || pgs.successfulSweeps !== sweepOutputs.length
         || !validRetryable
         || !((answer === null) || (typeof answer === 'string' && answer.trim()))) {
-      throw compatibilityError('result_invalid', 'partial PGS result is invalid', 502, true);
+      throw operationResultError(
+        envelope,
+        'result_invalid',
+        'partial PGS result is invalid',
+      );
     }
   } else {
-    throw compatibilityError('result_invalid', 'partial operation type is invalid', 502, true);
+    throw operationResultError(
+      envelope,
+      'result_invalid',
+      'partial operation type is invalid',
+    );
   }
   return {
     ok: true,
@@ -852,7 +899,11 @@ async function startAndWait(options, request, { signal, onEvent } = {}) {
   }
   if (envelope?.operationType !== undefined
       && envelope.operationType !== request.operationType) {
-    throw compatibilityError('operation_contract_invalid', 'operation result changed type', 502, true);
+    throw operationResultError(
+      envelope,
+      'operation_contract_invalid',
+      'operation result changed type',
+    );
   }
   return { envelope: { ...envelope, operationType: request.operationType } };
 }
@@ -1026,18 +1077,7 @@ function createQueryApiRouter(options = {}) {
     try {
       validateRouteQuery(req);
       const agent = resolveRequestAgent(req, resolveAgent);
-      const canonical = req.body && !Array.isArray(req.body) && typeof req.body === 'object'
-        && Object.hasOwn(req.body, 'operationId');
-      const needsCatalog = !canonical || Object.hasOwn(req.body, 'brainId');
-      const catalog = needsCatalog ? await catalogFor(options, agent) : null;
-      if (catalog && !catalog.available) {
-        throw compatibilityError(
-          'query_unavailable',
-          catalog.reason || 'query unavailable',
-          503,
-          true,
-        );
-      }
+      const catalog = null;
       const normalized = validateExportRequest(req.body, catalog, agent);
       if (isDryRunRequest(req)) {
         const result = buildDryRunQueryResult(req, { agent, catalog, operation: 'export' });
@@ -1097,7 +1137,7 @@ function registerQueryApiRoutes(app, options = {}) {
 
 module.exports = {
   DEFAULT_ENDPOINTS,
-  PUBLIC_QUERY_BODY_LIMIT_BYTES,
+  QUERY_COMPATIBILITY_BODY_LIMIT_BYTES,
   buildQueryCatalog,
   createQueryCompatibilityBodyParser,
   createQueryApiRouter,

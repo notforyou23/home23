@@ -380,7 +380,7 @@
       "properties": {
         "ok": { "const": false },
         "operationId": { "$ref": "#/$defs/operationId" },
-        "state": { "enum": ["queued", "running", "failed", "cancelled", "interrupted"] },
+        "state": { "enum": ["queued", "running", "complete", "partial", "failed", "cancelled", "interrupted"] },
         "attachmentState": { "enum": ["attached", "closed"] },
         "detached": { "const": false },
         "resultHandle": { "$ref": "#/$defs/resultHandle" },
@@ -410,20 +410,25 @@
     "queryExportSuccess": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["success"],
+      "required": ["success", "operationId", "state", "resultHandle", "canonicalEvidence", "exportedTo", "exportHandle", "relativePath", "bytes", "sha256", "sourceOperationId", "sourceResultHandleHash", "format"],
       "properties": {
         "success": { "const": true },
         "operationId": { "$ref": "#/$defs/operationId" },
         "state": { "enum": ["complete", "partial"] },
         "resultHandle": { "$ref": "#/$defs/resultHandle" },
         "canonicalEvidence": { "type": "boolean" },
-        "exportedTo": { "type": "string", "minLength": 1 },
-        "exportHandle": { "type": "string", "minLength": 1 },
-        "relativePath": { "type": "string", "minLength": 1 },
+        "exportedTo": { "type": "string", "pattern": "^workspace/brain-exports/[A-Za-z0-9][A-Za-z0-9._ -]*$" },
+        "exportHandle": { "type": "string", "pattern": "^brexp_[A-Za-z0-9_-]{32}$" },
+        "relativePath": { "type": "string", "pattern": "^workspace/brain-exports/[A-Za-z0-9][A-Za-z0-9._ -]*$" },
         "bytes": { "type": "integer", "minimum": 0 },
         "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-        "sourceOperationId": { "type": ["string", "null"] },
-        "sourceResultHandleHash": { "type": ["string", "null"] },
+        "sourceOperationId": { "$ref": "#/$defs/operationId" },
+        "sourceResultHandleHash": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          ]
+        },
         "format": { "enum": ["markdown", "json", "jsonl"] }
       }
     },
@@ -464,7 +469,7 @@
       "properties": {
         "success": { "const": false },
         "operationId": { "$ref": "#/$defs/operationId" },
-        "state": { "enum": ["queued", "running", "failed", "cancelled", "interrupted"] },
+        "state": { "enum": ["queued", "running", "complete", "partial", "failed", "cancelled", "interrupted"] },
         "attachmentState": { "enum": ["attached", "closed"] },
         "detached": { "const": false },
         "resultHandle": { "$ref": "#/$defs/resultHandle" },
@@ -553,7 +558,7 @@
         "type": { "const": "error" },
         "ok": { "const": false },
         "operationId": { "$ref": "#/$defs/operationId" },
-        "state": { "enum": ["queued", "running", "failed", "cancelled", "interrupted"] },
+        "state": { "enum": ["queued", "running", "complete", "partial", "failed", "cancelled", "interrupted"] },
         "attachmentState": { "enum": ["attached", "closed"] },
         "detached": { "const": false },
         "resultHandle": { "$ref": "#/$defs/resultHandle" },
