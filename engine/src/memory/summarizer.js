@@ -175,13 +175,25 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
             compostDryRun.clusters += 1;
           }
 
-          consolidations.push({
+          const consolidationRecord = {
             consolidated: consolidated.content,
             reasoning: consolidated.reasoning,
             sourceNodes: cluster.map(n => n.id),
             model: consolidated.model,
             compost
+          };
+          // The summary node is embedded after this method returns, so another
+          // turn can replace a source record before compost finalization. Keep
+          // exact in-process identities off the serialized result surface and
+          // require them when deciding which current records are still safe to
+          // remove.
+          Object.defineProperty(consolidationRecord, 'sourceIdentityTokens', {
+            configurable: false,
+            enumerable: false,
+            writable: false,
+            value: new Map(cluster.map((node) => [node.id, node])),
           });
+          consolidations.push(consolidationRecord);
 
           this.logger?.info('Memories consolidated (GPT-5.5)', {
             sourceCount: cluster.length,
@@ -334,18 +346,35 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
     const removableSourceNodes = Array.from(new Set(
       sourceNodes.filter((sourceNodeId) => sourceNodeId !== summaryNodeId),
     ));
-    const presentBefore = removableSourceNodes.filter((sourceNodeId) => memoryNetwork.nodes.has(sourceNodeId));
-    memoryNetwork.removeNodes(removableSourceNodes);
+    const sourceIdentityTokens = consolidation?.sourceIdentityTokens instanceof Map
+      ? consolidation.sourceIdentityTokens
+      : null;
+    const identityChangedSourceNodes = [];
+    const identitySafeSourceNodes = removableSourceNodes.filter((sourceNodeId) => {
+      if (!sourceIdentityTokens) return true;
+      const current = memoryNetwork.nodes.get(sourceNodeId);
+      if (!sourceIdentityTokens.has(sourceNodeId) || current !== sourceIdentityTokens.get(sourceNodeId)) {
+        identityChangedSourceNodes.push(sourceNodeId);
+        return false;
+      }
+      return true;
+    });
+    const presentBefore = identitySafeSourceNodes.filter((sourceNodeId) => memoryNetwork.nodes.has(sourceNodeId));
+    memoryNetwork.removeNodes(identitySafeSourceNodes);
     const removedSourceNodes = presentBefore.filter((sourceNodeId) => !memoryNetwork.nodes.has(sourceNodeId));
     const removed = removedSourceNodes.length;
-    const skipped = sourceNodes.length - removed;
+    const removedSourceNodeSet = new Set(removedSourceNodes);
+    const skippedSourceNodes = removableSourceNodes.filter((sourceNodeId) => !removedSourceNodeSet.has(sourceNodeId));
+    const skipped = skippedSourceNodes.length;
     const finalMetadata = {
       ...(updatedSummaryNode.metadata || pendingMetadata),
       consolidationProvenance: {
         ...pendingMetadata.consolidationProvenance,
         compostedSourceNodes: removedSourceNodes,
         compostedSourceCount: removed,
+        skippedSourceNodes,
         skippedSourceCount: skipped,
+        identityChangedSourceNodes,
         compostStatus: skipped > 0 ? 'complete_with_skips' : 'complete',
         compostedAt: new Date().toISOString(),
       },
@@ -359,20 +388,29 @@ Capture key insights, decisions, patterns, and learnings. Preserve important fac
         reason: 'provenance_finalize_failed',
         removedSourceNodes: removed,
         skippedSourceNodes: skipped,
+        identityChangedSourceNodes,
         summaryNodeId,
       };
     }
 
-    this.logger?.info?.('Consolidation compost applied', {
+    const finalMode = skipped > 0 ? 'partial' : 'apply';
+    const reason = skipped > 0
+      ? (identityChangedSourceNodes.length > 0 ? 'source_identity_changed' : 'source_removal_incomplete')
+      : null;
+    this.logger?.info?.('Consolidation compost finalized', {
+      mode: finalMode,
+      reason,
       summaryNodeId,
       removedSourceNodes: removed,
       skippedSourceNodes: skipped
     });
 
     return {
-      mode: 'apply',
+      mode: finalMode,
+      ...(reason ? { reason } : {}),
       removedSourceNodes: removed,
       skippedSourceNodes: skipped,
+      identityChangedSourceNodes,
       summaryNodeId
     };
   }

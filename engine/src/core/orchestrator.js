@@ -4117,15 +4117,12 @@ class Orchestrator {
         // Robust validation for consolidation
         const consolidationValidation = validateAndClean(`[CONSOLIDATED] ${cons.consolidated}`);
         if (consolidationValidation.valid) {
-          const summaryNode = await this.memory.addNode(
+          const publication = await this._publishConsolidationSummary(
+            cons,
             consolidationValidation.content,
-            'consolidated'
+            compostOptions,
           );
-          this.summarizer.finalizeConsolidationCompost(this.memory, cons, {
-            mode: compostOptions.mode,
-            summaryNodeId: summaryNode?.id,
-            confirmedDryRunAt: compostOptions.confirmedDryRunAt
-          });
+          if (!publication.published) continue;
           
           this.logger.info('✓ Consolidated (GPT-5.5)', {
             sourceNodes: cons.sourceNodes.length,
@@ -4468,6 +4465,49 @@ class Orchestrator {
     return { mode, confirmedDryRunAt };
   }
 
+  async _publishConsolidationSummary(consolidation, content, compostOptions) {
+    const summaryNode = await this.memory.addNode(content, 'consolidated');
+    if (!summaryNode) {
+      this.logger?.warn?.('Memory consolidation summary creation failed', {
+        reason: 'summary_node_creation_failed',
+        sourceNodes: consolidation?.sourceNodes?.length || 0,
+      });
+      return { published: false, mode: 'blocked', reason: 'summary_node_creation_failed' };
+    }
+
+    const finalization = this.summarizer.finalizeConsolidationCompost(this.memory, consolidation, {
+      mode: compostOptions.mode,
+      summaryNodeId: summaryNode.id,
+      confirmedDryRunAt: compostOptions.confirmedDryRunAt,
+    });
+
+    const mode = String(finalization?.mode || '').toLowerCase();
+    if (!['apply', 'off', 'dry-run'].includes(mode)) {
+      const reason = finalization?.reason || 'consolidation_finalize_result_invalid';
+      this.logger?.warn?.('Memory consolidation not published', {
+        mode: mode || 'blocked',
+        reason,
+        summaryNodeId: summaryNode.id,
+        removedSourceNodes: Number(finalization?.removedSourceNodes || 0),
+        skippedSourceNodes: Number(finalization?.skippedSourceNodes || 0),
+      });
+      return {
+        published: false,
+        mode: mode || 'blocked',
+        reason,
+        summaryNodeId: summaryNode.id,
+        finalization,
+      };
+    }
+
+    return {
+      published: true,
+      mode,
+      summaryNodeId: summaryNode.id,
+      finalization,
+    };
+  }
+
   async performMemoryConsolidation() {
     this.logger.info('🔗 Consolidating (GPT-5.5 deep reasoning)...');
 
@@ -4481,16 +4521,12 @@ class Orchestrator {
       // Robust validation for consolidation
       const consolidationValidation = validateAndClean(`[CONSOLIDATED] ${cons.consolidated}`);
       if (consolidationValidation.valid) {
-        const summaryNode = await this.memory.addNode(
+        const publication = await this._publishConsolidationSummary(
+          cons,
           consolidationValidation.content,
-          'consolidated'
+          compostOptions,
         );
-        this.summarizer.finalizeConsolidationCompost(this.memory, cons, {
-          mode: compostOptions.mode,
-          summaryNodeId: summaryNode?.id,
-          confirmedDryRunAt: compostOptions.confirmedDryRunAt
-        });
-        validCount++;
+        if (publication.published) validCount++;
       } else {
         this.logger.warn('⚠️  Skipped invalid consolidation', {
           sourceNodes: cons.sourceNodes?.length || 0,
@@ -4508,6 +4544,10 @@ class Orchestrator {
         skipped: consolidations.length - validCount
       });
     }
+    return {
+      created: validCount,
+      skipped: consolidations.length - validCount,
+    };
   }
 
   async performReflection() {

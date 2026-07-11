@@ -284,3 +284,63 @@ test('compost provenance records only source nodes actually removed and preserve
   assert.equal(summaryNode.metadata.consolidationProvenance.skippedSourceCount, 2);
   assert.equal(summaryNode.metadata.consolidationProvenance.compostStatus, 'complete_with_skips');
 });
+
+test('compost never deletes a source identity replaced while the summary node is being created', async () => {
+  process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'test-key';
+  const logger = makeLogger();
+  const summarizer = new MemorySummarizer({}, logger, {});
+  const nodes = Array.from({ length: 10 }, (_, index) => ({
+    id: `source-${index}`,
+    concept: `durable source memory ${index}`,
+    weight: index,
+  }));
+  const sourceCluster = nodes.slice(0, 3);
+  const memoryNetwork = attachMutationApi({ nodes: new Map(nodes.map((node) => [node.id, node])) });
+  summarizer.clusterSimilarMemories = async () => [sourceCluster];
+  summarizer.createConsolidatedMemoryGPT5 = async () => ({
+    content: 'durable consolidated insight',
+    reasoning: null,
+    model: 'test-model',
+  });
+
+  const [consolidation] = await summarizer.consolidateMemories(memoryNetwork, 0.75, {
+    compostSources: 'apply',
+  });
+  const replacedSourceId = sourceCluster[0].id;
+  const replacement = {
+    ...sourceCluster[0],
+    concept: 'replacement accepted while summary embedding was pending',
+  };
+  memoryNetwork.nodes.set(replacedSourceId, replacement);
+  const summaryNode = {
+    id: 'summary-identity-race',
+    concept: '[CONSOLIDATED] durable consolidated insight',
+    tag: 'consolidated',
+    metadata: {},
+  };
+  memoryNetwork.nodes.set(summaryNode.id, summaryNode);
+
+  const result = summarizer.finalizeConsolidationCompost(memoryNetwork, consolidation, {
+    mode: 'apply',
+    summaryNodeId: summaryNode.id,
+    confirmedDryRunAt: '2026-07-11T00:00:00.000Z',
+  });
+
+  assert.equal(result.mode, 'partial');
+  assert.equal(result.reason, 'source_identity_changed');
+  assert.equal(result.removedSourceNodes, 2);
+  assert.equal(result.skippedSourceNodes, 1);
+  assert.deepEqual(result.identityChangedSourceNodes, [replacedSourceId]);
+  assert.equal(memoryNetwork.nodes.get(replacedSourceId), replacement);
+  assert.equal(memoryNetwork.nodes.has(sourceCluster[1].id), false);
+  assert.equal(memoryNetwork.nodes.has(sourceCluster[2].id), false);
+  assert.deepEqual(
+    summaryNode.metadata.consolidationProvenance.compostedSourceNodes.sort(),
+    [sourceCluster[1].id, sourceCluster[2].id].sort(),
+  );
+  assert.deepEqual(
+    summaryNode.metadata.consolidationProvenance.identityChangedSourceNodes,
+    [replacedSourceId],
+  );
+  assert.equal(summaryNode.metadata.consolidationProvenance.compostStatus, 'complete_with_skips');
+});
