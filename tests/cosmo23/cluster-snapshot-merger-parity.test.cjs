@@ -195,4 +195,148 @@ for (const implementation of IMPLEMENTATIONS) {
       };
     });
   });
+
+  test(`${implementation.name} merger validates every later field before applying any entry`, () => {
+    const assertAtomicRejection = (invalidOperation, pattern) => {
+      const merger = new implementation.MemoryDiffMerger();
+      merger.applyDiff({
+        diff_id: 'baseline',
+        timestamp: 10,
+        fields: {
+          'memory.node.stable.string': {
+            op: 'set',
+            nodeId: 'stable.string',
+            value: { id: 'stable.string', concept: 'baseline' },
+            versionVector: { source: 1 },
+            timestamp: 10,
+          },
+        },
+      }, 'source');
+      const before = merger.build(1);
+
+      assert.throws(
+        () => merger.applyDiff({
+          diff_id: 'must-be-atomic',
+          timestamp: 20,
+          fields: {
+            'memory.node.stable.string': {
+              op: 'set',
+              nodeId: 'stable.string',
+              value: { id: 'stable.string', concept: 'partial update must not land' },
+              versionVector: { source: 2 },
+              timestamp: 20,
+            },
+            'memory.node.new.string': {
+              op: 'set',
+              nodeId: 'new.string',
+              value: { id: 'new.string', concept: 'new partial row must not land' },
+              versionVector: { source: 2 },
+              timestamp: 20,
+            },
+            'memory.node.later.string': invalidOperation,
+          },
+        }, 'source'),
+        pattern,
+      );
+
+      const after = merger.build(2);
+      assert.equal(after.diffCount, before.diffCount);
+      assert.deepEqual(after.memory, before.memory);
+      assert.deepEqual(after.metadata, before.metadata);
+    };
+
+    assertAtomicRejection({
+      op: 'set',
+      nodeId: 'forged.string',
+      value: { id: 'later.string', concept: 'forged identity' },
+      versionVector: { source: 2 },
+      timestamp: 20,
+    }, /memory_diff_identity_mismatch/);
+    assertAtomicRejection({
+      op: 'forged-operation',
+      nodeId: 'later.string',
+      value: { id: 'later.string', concept: 'invalid operation' },
+      versionVector: { source: 2 },
+      timestamp: 20,
+    }, /memory_diff_operation_invalid/);
+    assertAtomicRejection({
+      op: 'set',
+      nodeId: 'later.string',
+      value: { id: 'later.string', concept: 'invalid vector' },
+      versionVector: { source: -1 },
+      timestamp: 20,
+    }, /memory_diff_version_vector_invalid/);
+  });
+
+  test(`${implementation.name} merger builds deep-detached nested values`, () => {
+    const merger = new implementation.MemoryDiffMerger();
+    const metadata = { nested: { source: 'durable' }, tags: ['one', 'two'] };
+    Object.defineProperty(metadata, '__proto__', {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: { polluted: false },
+    });
+    merger.applyDiff({
+      diff_id: 'detached-build',
+      timestamp: 30,
+      fields: {
+        'memory.node.node.string': {
+          op: 'set',
+          nodeId: 'node.string',
+          value: {
+            id: 'node.string',
+            concept: 'detached node',
+            metadata,
+          },
+          versionVector: { source: 3 },
+          timestamp: 30,
+        },
+        'memory.edge.node.string->peer.string': {
+          op: 'set',
+          edgeKey: 'node.string->peer.string',
+          value: {
+            source: 'node.string',
+            target: 'peer.string',
+            metadata: { nested: { confidence: 0.9 } },
+          },
+          versionVector: { source: 3 },
+          timestamp: 30,
+        },
+        'memory.cluster.cluster.string': {
+          op: 'set',
+          clusterId: 'cluster.string',
+          value: {
+            id: 'cluster.string',
+            nodes: ['node.string', 'peer.string'],
+            metadata: { nested: { label: 'stable' } },
+          },
+          versionVector: { source: 3 },
+          timestamp: 30,
+        },
+      },
+    }, 'source');
+
+    const first = merger.build(1);
+    first.memory.sets.nodes[0].id = 'mutated-id';
+    first.memory.sets.nodes[0].metadata.nested.source = 'mutated';
+    first.memory.sets.nodes[0].metadata.tags.push('three');
+    first.memory.sets.nodes[0].metadata.__proto__.polluted = true;
+    first.memory.sets.edges[0].metadata.nested.confidence = 0;
+    first.memory.sets.clusters[0].nodes.length = 0;
+    first.memory.sets.clusters[0].metadata.nested.label = 'mutated';
+
+    const second = merger.build(2);
+    const node = second.memory.sets.nodes[0];
+    const edge = second.memory.sets.edges[0];
+    const cluster = second.memory.sets.clusters[0];
+    assert.equal(node.id, 'node.string');
+    assert.equal(node.metadata.nested.source, 'durable');
+    assert.deepEqual(node.metadata.tags, ['one', 'two']);
+    assert.equal(node.metadata.__proto__.polluted, false);
+    assert.equal({}.polluted, undefined);
+    assert.equal(edge.metadata.nested.confidence, 0.9);
+    assert.deepEqual(cluster.nodes, ['node.string', 'peer.string']);
+    assert.equal(cluster.metadata.nested.label, 'stable');
+  });
 }

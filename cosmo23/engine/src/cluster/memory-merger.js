@@ -31,7 +31,11 @@ function cloneMemoryDiffValue(value, seen = new Set(), arrayElement = false) {
     if (!Number.isSafeInteger(value.length) || value.length < 0) {
       throw new TypeError('memory_diff_plain_json_required');
     }
-    return Array.from(value, (entry) => cloneMemoryDiffValue(entry, seen, true));
+    const clone = new Array(value.length);
+    for (let index = 0; index < value.length; index += 1) {
+      clone[index] = cloneMemoryDiffValue(value[index], seen, true);
+    }
+    return clone;
   }
   if (seen.has(value)) throw new TypeError('memory_diff_cycle_not_allowed');
   const prototype = Object.getPrototypeOf(value);
@@ -145,6 +149,135 @@ function validateEdgeRecordIdentity(value, edgeKey) {
   }
 }
 
+function validateVersionVector(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('memory_diff_version_vector_invalid');
+  }
+  for (const [instanceId, clock] of Object.entries(value)) {
+    if (!instanceId || !Number.isSafeInteger(clock) || clock < 0) {
+      throw new TypeError('memory_diff_version_vector_invalid');
+    }
+  }
+  return value;
+}
+
+function validateTimestamp(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw new TypeError('memory_diff_timestamp_invalid');
+  }
+  return value;
+}
+
+function validateStringIdentity(value, code) {
+  if (typeof value !== 'string' || value.length === 0) throw new TypeError(code);
+  return value;
+}
+
+function parseMemoryDiff(diff, instanceId) {
+  const safeDiff = cloneMemoryDiffValue(diff);
+  const fieldsProperty = readOwnIdentity(safeDiff, 'fields');
+  if (!fieldsProperty.present) return null;
+  if (!fieldsProperty.value || typeof fieldsProperty.value !== 'object' || Array.isArray(fieldsProperty.value)) {
+    throw new TypeError('memory_diff_fields_invalid');
+  }
+  validateStringIdentity(instanceId, 'memory_diff_instance_invalid');
+
+  const diffTimestamp = readOwnIdentity(safeDiff, 'timestamp');
+  const timestamp = diffTimestamp.present
+    ? validateTimestamp(diffTimestamp.value)
+    : Date.now();
+  const diffIdProperty = readOwnIdentity(safeDiff, 'diff_id');
+  const diffId = diffIdProperty.present
+    ? validateStringIdentity(diffIdProperty.value, 'memory_diff_id_invalid')
+    : `${timestamp}_${instanceId}`;
+  const diffVersionVector = readOwnIdentity(safeDiff, 'versionVector');
+  const defaultVersionVector = diffVersionVector.present
+    ? validateVersionVector(diffVersionVector.value)
+    : {};
+  const staged = [];
+
+  for (const [field, operation] of Object.entries(fieldsProperty.value)) {
+    if (!operation || typeof operation !== 'object' || Array.isArray(operation)) {
+      throw new TypeError('memory_diff_operation_invalid');
+    }
+    const operationType = readOwnIdentity(operation, 'op');
+    if (!operationType.present || !['set', 'delete'].includes(operationType.value)) {
+      throw new TypeError('memory_diff_operation_invalid');
+    }
+    const operationValue = readOwnIdentity(operation, 'value');
+    if (operationType.value === 'set') {
+      if (
+        !operationValue.present
+        || !operationValue.value
+        || typeof operationValue.value !== 'object'
+        || Array.isArray(operationValue.value)
+      ) {
+        throw new TypeError('memory_diff_value_invalid');
+      }
+    } else if (operationValue.present && operationValue.value !== null) {
+      throw new TypeError('memory_diff_value_invalid');
+    }
+    const operationVersionVector = readOwnIdentity(operation, 'versionVector');
+    const versionVector = operationVersionVector.present
+      ? validateVersionVector(operationVersionVector.value)
+      : defaultVersionVector;
+    const operationTimestamp = readOwnIdentity(operation, 'timestamp');
+    const entryTimestamp = operationTimestamp.present
+      ? validateTimestamp(operationTimestamp.value)
+      : timestamp;
+    const entry = {
+      op: operationType.value,
+      value: operationType.value === 'set' ? operationValue.value : null,
+      versionVector,
+      timestamp: entryTimestamp,
+      instanceId,
+      diffId,
+    };
+
+    if (field.startsWith('memory.node.')) {
+      const rawNodeId = field.slice('memory.node.'.length);
+      if (!rawNodeId) throw new TypeError('memory_diff_field_invalid');
+      staged.push({
+        kind: 'node',
+        key: resolveOperationIdentity(operation, 'node', 'nodeId', rawNodeId),
+        entry,
+      });
+    } else if (field.startsWith('memory.edge.')) {
+      const rawEdgeKey = field.slice('memory.edge.'.length);
+      if (!rawEdgeKey) throw new TypeError('memory_diff_field_invalid');
+      const edgeKey = resolveOperationIdentity(operation, 'edge', 'edgeKey', rawEdgeKey);
+      if (entry.op === 'set') validateEdgeRecordIdentity(entry.value, edgeKey);
+      staged.push({ kind: 'edge', key: edgeKey, entry });
+    } else if (field.startsWith('memory.cluster.')) {
+      const rawClusterId = field.slice('memory.cluster.'.length);
+      if (!rawClusterId) throw new TypeError('memory_diff_field_invalid');
+      staged.push({
+        kind: 'cluster',
+        key: resolveOperationIdentity(operation, 'cluster', 'clusterId', rawClusterId),
+        entry,
+      });
+    } else {
+      throw new TypeError('memory_diff_field_invalid');
+    }
+  }
+
+  return staged;
+}
+
+function detachedRecordWithIdentity(value, identity) {
+  const record = cloneMemoryDiffValue(value);
+  if (!record || typeof record !== 'object' || Array.isArray(record)) {
+    throw new TypeError('memory_diff_value_invalid');
+  }
+  Object.defineProperty(record, 'id', {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value: identity,
+  });
+  return record;
+}
+
 class MemoryDiffMerger {
   constructor(logger) {
     this.logger = logger;
@@ -168,68 +301,13 @@ class MemoryDiffMerger {
       return;
     }
 
-    const safeDiff = cloneMemoryDiffValue(diff);
-    const fieldsProperty = readOwnIdentity(safeDiff, 'fields');
-    if (!fieldsProperty.present || !fieldsProperty.value || typeof fieldsProperty.value !== 'object') return;
-    const fields = fieldsProperty.value;
-
-    const diffTimestamp = readOwnIdentity(safeDiff, 'timestamp');
-    const timestamp = diffTimestamp.value || Date.now();
-    const diffIdProperty = readOwnIdentity(safeDiff, 'diff_id');
-    const diffId = diffIdProperty.value || `${timestamp}_${instanceId}`;
-    const diffVersionVector = readOwnIdentity(safeDiff, 'versionVector');
-
-    for (const [field, operation] of Object.entries(fields)) {
-      const operationType = readOwnIdentity(operation, 'op');
-      if (!operation || !operationType.present || !operationType.value) {
-        continue;
-      }
-
-      const operationValue = readOwnIdentity(operation, 'value');
-      const operationVersionVector = readOwnIdentity(operation, 'versionVector');
-      const operationTimestamp = readOwnIdentity(operation, 'timestamp');
-
-      const entry = {
-        op: operationType.value,
-        value: operationValue.value || null,
-        versionVector: operationVersionVector.value || diffVersionVector.value || {},
-        timestamp: operationTimestamp.value || timestamp,
-        instanceId,
-        diffId
-      };
-
-      if (field.startsWith('memory.node.')) {
-        const rawNodeId = field.slice('memory.node.'.length);
-        if (!rawNodeId) continue;
-        const nodeId = resolveOperationIdentity(
-          operation,
-          'node',
-          'nodeId',
-          rawNodeId,
-        );
-        this.applyEntry(this.nodeEntries, nodeId, entry);
-      } else if (field.startsWith('memory.edge.')) {
-        const rawEdgeKey = field.slice('memory.edge.'.length);
-        if (!rawEdgeKey) continue;
-        const edgeKey = resolveOperationIdentity(
-          operation,
-          'edge',
-          'edgeKey',
-          rawEdgeKey,
-        );
-        validateEdgeRecordIdentity(entry.value, edgeKey);
-        this.applyEntry(this.edgeEntries, edgeKey, entry);
-      } else if (field.startsWith('memory.cluster.')) {
-        const rawClusterId = field.slice('memory.cluster.'.length);
-        if (!rawClusterId) continue;
-        const clusterId = resolveOperationIdentity(
-          operation,
-          'cluster',
-          'clusterId',
-          rawClusterId,
-        );
-        this.applyEntry(this.clusterEntries, clusterId, entry);
-      }
+    const staged = parseMemoryDiff(diff, instanceId);
+    if (!staged) return;
+    for (const operation of staged) {
+      const map = operation.kind === 'node'
+        ? this.nodeEntries
+        : (operation.kind === 'edge' ? this.edgeEntries : this.clusterEntries);
+      this.applyEntry(map, operation.key, operation.entry);
     }
 
     this.diffCount++;
@@ -309,10 +387,7 @@ class MemoryDiffMerger {
       if (entry.op === 'delete') {
         nodesToDelete.push(nodeId);
       } else if (entry.op === 'set' && entry.value) {
-        nodesToSet.push({
-          ...entry.value,
-          id: nodeId,
-        });
+        nodesToSet.push(detachedRecordWithIdentity(entry.value, nodeId));
       }
     }
 
@@ -322,10 +397,7 @@ class MemoryDiffMerger {
       if (entry.op === 'delete') {
         edgesToDelete.push(edgeKey);
       } else if (entry.op === 'set' && entry.value) {
-        edgesToSet.push({
-          ...entry.value,
-          id: edgeKey,
-        });
+        edgesToSet.push(detachedRecordWithIdentity(entry.value, edgeKey));
       }
     }
 
@@ -335,10 +407,7 @@ class MemoryDiffMerger {
       if (entry.op === 'delete') {
         clustersToDelete.push(clusterId);
       } else if (entry.op === 'set' && entry.value) {
-        clustersToSet.push({
-          ...entry.value,
-          id: clusterId,
-        });
+        clustersToSet.push(detachedRecordWithIdentity(entry.value, clusterId));
       }
     }
 
