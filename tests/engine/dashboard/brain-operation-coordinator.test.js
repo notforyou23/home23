@@ -994,6 +994,36 @@ test('detaching one durable attachment never changes execution or another attach
   assert.equal((await fixture.store.getAttachment(operation.operationId, 'b')).state, 'attached');
 });
 
+test('terminal state is broadcast to a surviving attachment before durable closure', async (t) => {
+  const fixture = makeFixture(t);
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'terminal-before-attachment-close',
+  }));
+  const attachment = await fixture.coordinator.attach(operation.operationId, {
+    attachmentId: 'surviving-terminal-attachment',
+    afterSequence: operation.eventSequence,
+  });
+  const terminalEvent = attachment.nextEvent();
+
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: { answer: 'terminal attachment result' },
+    error: null,
+    sourceEvidence: null,
+  });
+
+  const event = await terminalEvent;
+  assert.equal(event.state, 'complete');
+  assert.equal((await fixture.coordinator.status(operation.operationId)).state, 'complete');
+  await attachment.done;
+  const closed = await fixture.store.getAttachment(
+    operation.operationId,
+    'surviving-terminal-attachment',
+  );
+  assert.equal(closed.state, 'closed');
+  assert.equal(closed.reason, 'operation_terminal');
+});
+
 test('requester-bound cancel and detach reject a foreign durable record before mutation', async () => {
   const calls = { getWorker: 0, transition: 0, detach: 0 };
   const foreign = {

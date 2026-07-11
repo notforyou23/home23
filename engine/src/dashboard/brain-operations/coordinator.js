@@ -1374,7 +1374,7 @@ class BrainOperationCoordinator {
     }
     const before = record.eventSequence;
     await this.store.appendEvent(operationId, this._cleanWorkerEvent(rawEvent));
-    await this._broadcastNewEvents(runtime, before);
+    if (rawEvent.type !== 'terminal') await this._broadcastNewEvents(runtime, before);
     runtime.workerCursor = rawEvent.eventSequence;
     if (Number.isSafeInteger(runtime.providerSnapshotThrough)
         && runtime.workerCursor >= runtime.providerSnapshotThrough) {
@@ -1860,6 +1860,12 @@ class BrainOperationCoordinator {
 
   async _afterTerminalLocked(record) {
     const runtime = this.runtimes.get(record.operationId);
+    if (runtime?.attachments.size > 0) {
+      const oldestCursor = Math.min(
+        ...[...runtime.attachments.values()].map((subscriber) => subscriber.cursor),
+      );
+      await this._broadcastNewEvents(runtime, oldestCursor);
+    }
     await this._closeRuntimeAttachments(record, runtime);
     this._stopRuntime(record.operationId);
     await this._releasePinOnce(record);
