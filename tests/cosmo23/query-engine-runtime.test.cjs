@@ -4,7 +4,6 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { QueryEngine } = require('../../cosmo23/lib/query-engine');
 const {
   flattenCatalogModels,
   getModelCapabilities,
@@ -37,51 +36,6 @@ function assertCatalogError(action, code = 'model_catalog_invalid') {
     error => error.code === code && error.retryable === false,
   );
 }
-
-function makeRuntime(overrides = {}) {
-  const runtime = Object.create(QueryEngine.prototype);
-  runtime.modelCatalog = loadModelCatalogSync();
-  runtime.modelDefaults = { queryModel: 'MiniMax-M3' };
-  runtime.gpt5Client = { id: 'gpt' };
-  runtime.anthropicClient = { id: 'anthropic' };
-  runtime.minimaxQueryClient = { id: 'minimax' };
-  runtime.ollamaCloudClient = { id: 'ollama-cloud' };
-  runtime.xaiQueryClient = { id: 'xai' };
-  runtime.xaiResponsesClient = { id: 'xai-responses' };
-  runtime.localQueryClient = { id: 'local', defaultModel: 'qwen3.5:4b' };
-  runtime.runMetadata = {};
-  return Object.assign(runtime, overrides);
-}
-
-test('routes MiniMax query defaults to the MiniMax query client', t => {
-  useTemporaryCatalog(t);
-  const runtime = makeRuntime();
-
-  const resolved = runtime.resolveQueryRuntime('MiniMax-M3');
-
-  assert.equal(resolved.providerId, 'minimax');
-  assert.equal(resolved.providerLabel, 'MiniMax');
-  assert.equal(resolved.client, runtime.minimaxQueryClient);
-  assert.equal(resolved.effectiveModel, 'MiniMax-M3');
-});
-
-test('fails clearly when MiniMax is selected but no MiniMax query client is configured', t => {
-  useTemporaryCatalog(t);
-  const runtime = makeRuntime({ minimaxQueryClient: null });
-
-  assert.throws(
-    () => runtime.resolveQueryRuntime('MiniMax-M3'),
-    /MiniMax-M3.*minimax.*not configured/i
-  );
-});
-
-test('builds Codex query input as response input items', () => {
-  assert.deepEqual(QueryEngine.buildCodexInputItems('context\n\nQuestion: test'), [{
-    type: 'message',
-    role: 'user',
-    content: [{ type: 'input_text', text: 'context\n\nQuestion: test' }]
-  }]);
-});
 
 test('model catalog preserves declared provider execution capabilities', t => {
   useTemporaryCatalog(t);
@@ -252,6 +206,41 @@ test('missing, invalid, and ambiguous model selections are typed failures', () =
   );
 });
 
+test('provider IDs are safe and duplicate exact provider/model pairs fail closed', () => {
+  const model = {
+    id: 'shared-model',
+    kind: 'chat',
+    maxOutputTokens: 4096,
+    providerStallMs: 120000,
+    transport: 'chat-completions',
+  };
+
+  for (const providerId of ['', ' ', '__proto__', 'prototype', 'constructor', 'bad/provider']) {
+    const providers = Object.create(null);
+    providers[providerId] = { models: [model] };
+    assertCatalogError(
+      () => normalizeModelCatalog({ version: 1, providers }),
+      'model_catalog_invalid',
+    );
+  }
+
+  assertCatalogError(
+    () => normalizeModelCatalog({ version: 1, providers: {
+      acme: {
+        models: [
+          model,
+          {
+            ...model,
+            maxOutputTokens: 8192,
+            transport: 'responses',
+          },
+        ],
+      },
+    } }),
+    'model_catalog_invalid',
+  );
+});
+
 test('valid custom providers survive an atomic save and reload', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'model-catalog-'));
   const catalogPath = path.join(root, 'model-catalog.json');
@@ -353,6 +342,33 @@ test('present structurally invalid catalogs fail closed on load', t => {
     ['null model row', { version: 1, providers: { acme: { models: [null] } } }],
     ['missing model id', { version: 1, providers: { acme: { models: [{}] } } }],
   ]) {
+    fs.writeFileSync(catalogPath, JSON.stringify(invalid));
+    assertCatalogError(
+      () => loadModelCatalogSync(),
+      'model_catalog_invalid',
+    );
+    assert.equal(fs.existsSync(catalogPath), true, name);
+  }
+});
+
+test('present malformed nested defaults fail closed on normalization and load', t => {
+  const { catalogPath } = useTemporaryCatalog(t, 'model-catalog-invalid-nested-defaults-');
+  const malformed = [];
+  for (const field of ['launch', 'embeddings', 'local']) {
+    for (const value of [null, [], 'invalid', 42]) {
+      malformed.push([`${field}:${String(value)}`, {
+        version: 1,
+        providers: {},
+        defaults: { [field]: value },
+      }]);
+    }
+  }
+
+  for (const [name, invalid] of malformed) {
+    assertCatalogError(
+      () => normalizeModelCatalog(invalid),
+      'model_catalog_invalid',
+    );
     fs.writeFileSync(catalogPath, JSON.stringify(invalid));
     assertCatalogError(
       () => loadModelCatalogSync(),

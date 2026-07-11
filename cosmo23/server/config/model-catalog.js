@@ -54,6 +54,8 @@ const EXECUTION_TRANSPORTS = new Set([
   'anthropic-messages',
   'codex-responses',
 ]);
+const SAFE_PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const RESERVED_PROVIDER_IDS = new Set(['__proto__', 'prototype', 'constructor']);
 
 const BUILTIN_MODEL_CATALOG = {
   version: 1,
@@ -196,6 +198,15 @@ function modelCatalogError(message, cause = null) {
   return error;
 }
 
+function validateProviderId(providerId) {
+  if (typeof providerId !== 'string'
+      || !SAFE_PROVIDER_ID.test(providerId)
+      || RESERVED_PROVIDER_IDS.has(providerId)) {
+    throw modelCatalogError(`Invalid model catalog provider ID: ${String(providerId)}`);
+  }
+  return providerId;
+}
+
 function validateCatalogStructure(input) {
   if (!isPlainRecord(input)) {
     throw modelCatalogError('Model catalog root must be an object');
@@ -206,8 +217,16 @@ function validateCatalogStructure(input) {
   if (hasOwn(input, 'defaults') && !isPlainRecord(input.defaults)) {
     throw modelCatalogError('Model catalog defaults must be an object');
   }
+  if (isPlainRecord(input.defaults)) {
+    for (const section of ['launch', 'embeddings', 'local']) {
+      if (hasOwn(input.defaults, section) && !isPlainRecord(input.defaults[section])) {
+        throw modelCatalogError(`Model catalog defaults.${section} must be an object`);
+      }
+    }
+  }
 
   for (const [providerId, provider] of Object.entries(input.providers)) {
+    validateProviderId(providerId);
     if (!isPlainRecord(provider)) {
       throw modelCatalogError(`Model catalog provider ${providerId} must be an object`);
     }
@@ -323,15 +342,15 @@ function normalizeModelEntry(entry, providerId) {
   };
 }
 
-function dedupeModels(models) {
+function requireUniqueModels(providerId, models) {
   const seen = new Set();
-  return models.filter(model => {
-    if (!model?.id || seen.has(model.id)) {
-      return false;
+  for (const model of models) {
+    if (seen.has(model.id)) {
+      throw modelCatalogError(`Duplicate model catalog pair ${providerId}/${model.id}`);
     }
     seen.add(model.id);
-    return true;
-  });
+  }
+  return models;
 }
 
 function positiveSafeInteger(value) {
@@ -347,6 +366,7 @@ function capabilityError(providerId, modelId, field) {
 }
 
 function normalizeProviderConfig(providerId, providerConfig = {}, fallbackConfig = {}) {
+  validateProviderId(providerId);
   const provider = providerConfig && typeof providerConfig === 'object'
     && !Array.isArray(providerConfig) ? providerConfig : {};
   const fallback = fallbackConfig && typeof fallbackConfig === 'object'
@@ -409,7 +429,7 @@ function normalizeProviderConfig(providerId, providerConfig = {}, fallbackConfig
     ...fallback,
     ...provider,
     label: String(provider.label || fallback.label || providerId),
-    models: dedupeModels(normalizedModels),
+    models: requireUniqueModels(providerId, normalizedModels),
   };
   if (Object.keys(executionDefaults).length > 0) {
     normalizedProvider.executionDefaults = executionDefaults;
