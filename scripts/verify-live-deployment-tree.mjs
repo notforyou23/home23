@@ -6,7 +6,6 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import {
-  appendJsonlReceipt,
   canonicalDirectory,
   failCli,
   isInsideOrEqual,
@@ -14,10 +13,8 @@ import {
   one,
   parseCli,
   readJson,
-  receiptContext,
   sha256Bytes,
   typedError,
-  writeJsonReceipt,
 } from './lib/brain-acceptance-common.mjs';
 
 const execFile = promisify(execFileCallback);
@@ -168,10 +165,58 @@ async function untrackedInventory(liveRoot, excluded = new Set()) {
   return output;
 }
 
-async function writeState(context, auditDir, state) {
-  return writeJsonReceipt(context, path.join(auditDir, 'deployment-state.json'), {
+async function syncDirectory(directory) {
+  const handle = await fsp.open(directory, 'r');
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+async function writePreAuthorityFile(auditDir, relative, bytes) {
+  const target = path.join(auditDir, relative);
+  if (!isInsideOrEqual(auditDir, target) || target === auditDir) {
+    throw typedError('deployment_output_invalid');
+  }
+  const parent = path.dirname(target);
+  await fsp.mkdir(parent, { recursive: true, mode: 0o700 });
+  const canonicalParent = await fsp.realpath(parent);
+  if (!isInsideOrEqual(auditDir, canonicalParent)) throw typedError('deployment_output_invalid');
+  const temporary = path.join(
+    canonicalParent,
+    `.${path.basename(target)}.${process.pid}.${Date.now()}.tmp`,
+  );
+  const handle = await fsp.open(temporary, 'wx', 0o600);
+  try {
+    await handle.writeFile(bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    const existing = await fsp.lstat(target).catch((error) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (existing && (!existing.isFile() || existing.isSymbolicLink())) {
+      throw typedError('deployment_output_invalid');
+    }
+    await fsp.rename(temporary, target);
+    await syncDirectory(canonicalParent);
+  } catch (error) {
+    await fsp.rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
+  return target;
+}
+
+async function writePreAuthorityJson(auditDir, relative, value) {
+  await writePreAuthorityFile(auditDir, relative, `${JSON.stringify(value, null, 2)}\n`);
+  return value;
+}
+
+async function writeState(auditDir, state) {
+  return writePreAuthorityJson(auditDir, 'deployment-state.json', {
     helper: 'verify-live-deployment-tree',
     artifact: 'state',
+    preAuthority: true,
     ...state,
   });
 }
@@ -180,13 +225,12 @@ async function readState(auditDir) {
   return readJson(path.join(auditDir, 'deployment-state.json'));
 }
 
-export async function prepareDeploymentTree({ base, feature, liveRoot, auditDir, context } = {}) {
+export async function prepareDeploymentTree({ base, feature, liveRoot, auditDir } = {}) {
   const live = await canonicalDirectory(liveRoot, 'live checkout');
   const audit = await canonicalDirectory(auditDir, 'deployment audit directory', { create: true });
   if (isInsideOrEqual(live.path, audit.path) || isInsideOrEqual(audit.path, live.path)) {
     throw typedError('audit_tree_overlap');
   }
-  if (!isInsideOrEqual(context.receiptRunDir, audit.path)) throw typedError('audit_outside_receipt_run');
   const baseCommit = await resolveCommit(live.path, base, 'base');
   const featureCommit = await resolveCommit(live.path, feature, 'feature');
   const baseEntries = await treeEntries(live.path, baseCommit);
@@ -202,9 +246,7 @@ export async function prepareDeploymentTree({ base, feature, liveRoot, auditDir,
   const expectedRoot = path.join(audit.path, 'expected', 'files');
   await fsp.rm(path.join(audit.path, 'expected'), { recursive: true, force: true });
   await fsp.mkdir(expectedRoot, { recursive: true, mode: 0o700 });
-  const rowsPath = path.join(audit.path, 'three-way.jsonl');
-  await fsp.rm(rowsPath, { force: true });
-  await fsp.writeFile(rowsPath, '', { mode: 0o600, flag: 'wx' });
+  const threeWayRows = [];
   const expectedManifest = [];
   const expectedAbsent = [];
   const conflicts = [];
@@ -242,7 +284,7 @@ export async function prepareDeploymentTree({ base, feature, liveRoot, auditDir,
       resolution,
     };
     const pending = !sameBlob(baseBlob, featureBlob) || !sameBlob(baseBlob, liveBlob);
-    if (pending) await appendJsonlReceipt(context, rowsPath, row);
+    if (pending) threeWayRows.push(row);
     if (!merged && resolution === 'conflict') conflicts.push(filePath);
     if (merged) {
       await materializeBlob(expectedRoot, filePath, merged);
@@ -271,10 +313,16 @@ export async function prepareDeploymentTree({ base, feature, liveRoot, auditDir,
     expectedTree: null,
     actualTree: null,
   };
-  await writeState(context, audit.path, state);
-  await writeJsonReceipt(context, path.join(audit.path, 'deployment-tree.json'), {
+  await writePreAuthorityFile(
+    audit.path,
+    'three-way.jsonl',
+    threeWayRows.map((row) => JSON.stringify(row)).join('\n') + (threeWayRows.length ? '\n' : ''),
+  );
+  await writeState(audit.path, state);
+  await writePreAuthorityJson(audit.path, 'deployment-tree.json', {
     helper: 'verify-live-deployment-tree',
     mode: 'prepare',
+    preAuthority: true,
     ok: conflicts.length === 0,
     ...state,
   });
@@ -307,15 +355,15 @@ function stateCore(state) {
   return Object.fromEntries(fields.map((field) => [field, state[field]]));
 }
 
-export async function sealDeploymentTree({ auditDir, context } = {}) {
+export async function sealDeploymentTree({ auditDir } = {}) {
   const audit = await canonicalDirectory(auditDir, 'deployment audit directory');
   const state = await readState(audit.path);
   if (state.phase !== 'prepared' || state.conflicts?.length) throw typedError('deployment_tree_not_prepared');
   const expectedTree = await externalTreeOid(audit.path, state.expectedRoot, 'expected');
   const next = { ...stateCore(state), phase: 'sealed', expectedTree, actualTree: null };
-  await writeState(context, audit.path, next);
-  await writeJsonReceipt(context, path.join(audit.path, 'deployment-tree.json'), {
-    helper: 'verify-live-deployment-tree', mode: 'seal', ok: true, ...next,
+  await writeState(audit.path, next);
+  await writePreAuthorityJson(audit.path, 'deployment-tree.json', {
+    helper: 'verify-live-deployment-tree', mode: 'seal', preAuthority: true, ok: true, ...next,
   });
   return next;
 }
@@ -338,7 +386,7 @@ async function materializeActual(state, auditDir) {
   return root;
 }
 
-export async function verifyDeploymentTree({ auditDir, context } = {}) {
+export async function verifyDeploymentTree({ auditDir } = {}) {
   const audit = await canonicalDirectory(auditDir, 'deployment audit directory');
   const state = await readState(audit.path);
   if (state.phase !== 'sealed' || !state.expectedTree) throw typedError('deployment_tree_not_sealed');
@@ -355,9 +403,9 @@ export async function verifyDeploymentTree({ auditDir, context } = {}) {
   const actualTree = await externalTreeOid(audit.path, actualRoot, 'actual');
   if (actualTree !== state.expectedTree) throw typedError('live_tree_oid_mismatch');
   const next = { ...stateCore(state), phase: 'verified', actualTree };
-  await writeState(context, audit.path, next);
-  await writeJsonReceipt(context, path.join(audit.path, 'deployment-tree.json'), {
-    helper: 'verify-live-deployment-tree', mode: 'verify', ok: true,
+  await writeState(audit.path, next);
+  await writePreAuthorityJson(audit.path, 'deployment-tree.json', {
+    helper: 'verify-live-deployment-tree', mode: 'verify', preAuthority: true, ok: true,
     indexUnchanged: true, unrelatedUntrackedUnchanged: true, ...next,
   });
   return next;
@@ -366,7 +414,7 @@ export async function verifyDeploymentTree({ auditDir, context } = {}) {
 export async function main(argv = process.argv.slice(2), env = process.env) {
   const { values, positionals } = parseCli(argv);
   const mode = positionals[0] || one(values, 'mode', { required: true });
-  const context = await receiptContext(values, env);
+  void env;
   const auditDir = path.resolve(one(values, 'audit-dir', { required: true }));
   if (mode === 'prepare') {
     return prepareDeploymentTree({
@@ -374,11 +422,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       feature: one(values, 'feature', { required: true }),
       liveRoot: path.resolve(one(values, 'live-root', { required: true })),
       auditDir,
-      context,
     });
   }
-  if (mode === 'seal') return sealDeploymentTree({ auditDir, context });
-  if (mode === 'verify') return verifyDeploymentTree({ auditDir, context });
+  if (mode === 'seal') return sealDeploymentTree({ auditDir });
+  if (mode === 'verify') return verifyDeploymentTree({ auditDir });
   throw typedError('mode_invalid');
 }
 

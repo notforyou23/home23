@@ -92,6 +92,56 @@ async function applyExpected(state) {
   }
 }
 
+async function runPreAuthorityCli(state, mode) {
+  const script = path.resolve(__dirname, '../../scripts/verify-live-deployment-tree.mjs');
+  const env = { ...process.env };
+  delete env.HOME23_RECEIPT_RUN_DIR;
+  delete env.HOME23_RECEIPT_RUN_ID;
+  delete env.HOME23_RECEIPT_AUTHORITY;
+  return execFile(process.execPath, [
+    script,
+    mode,
+    '--base', state.base,
+    '--feature', state.feature,
+    '--live-root', state.liveRoot,
+    '--audit-dir', state.auditDir,
+  ], { cwd: path.resolve(__dirname, '../..'), env, encoding: 'utf8' });
+}
+
+test('exact pre-authority CLI runs outside receipt authority and preserves live index', async (t) => {
+  const state = await fixture();
+  state.auditDir = path.join(state.root, 'external-deployment-audit');
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  const indexBefore = await fs.readFile(state.absoluteIndex);
+  const unrelatedBefore = crypto.createHash('sha256')
+    .update(await fs.readFile(path.join(state.liveRoot, 'unrelated.tmp'))).digest('hex');
+
+  await runPreAuthorityCli(state, 'prepare');
+  const prepared = JSON.parse(await fs.readFile(
+    path.join(state.auditDir, 'deployment-state.json'), 'utf8',
+  ));
+  assert.equal(prepared.preAuthority, true);
+  assert.equal(Object.hasOwn(prepared, 'receiptRunId'), false);
+  assert.equal(Object.hasOwn(prepared, 'authority'), false);
+  assert.equal(prepared.auditDir, state.auditDir);
+  await runPreAuthorityCli(state, 'seal');
+  const sealed = JSON.parse(await fs.readFile(
+    path.join(state.auditDir, 'deployment-tree.json'), 'utf8',
+  ));
+  assert.match(sealed.expectedTree, /^[a-f0-9]{40,64}$/);
+
+  await applyExpected(prepared);
+  await runPreAuthorityCli(state, 'verify');
+  const verified = JSON.parse(await fs.readFile(
+    path.join(state.auditDir, 'deployment-tree.json'), 'utf8',
+  ));
+  assert.equal(verified.actualTree, sealed.expectedTree);
+  assert.equal(verified.preAuthority, true);
+  assert.deepEqual(await fs.readFile(state.absoluteIndex), indexBefore);
+  assert.equal(crypto.createHash('sha256')
+    .update(await fs.readFile(path.join(state.liveRoot, 'unrelated.tmp'))).digest('hex'), unrelatedBefore);
+});
+
 test('prepare writes only an external expected tree and one row per pending path', async (t) => {
   const { prepareDeploymentTree } = await import('../../scripts/verify-live-deployment-tree.mjs');
   const state = await fixture();
