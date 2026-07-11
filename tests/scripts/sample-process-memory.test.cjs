@@ -102,3 +102,55 @@ test('samples both execution processes around the exact command', async () => {
   assert.equal(sampleCalls, 4);
   assert.equal(result.targets.every((target) => target.samples.at(-1).postCommand === true), true);
 });
+
+test('PM2 targets use loopback request-time runtime metrics instead of synthetic PM2 timestamps', async () => {
+  const {
+    createDefaultSampleProvider,
+    runtimeMetricsUrlForProcess,
+  } = await import('../../scripts/sample-process-memory.mjs');
+  assert.equal(
+    runtimeMetricsUrlForProcess('home23-jerry-dash'),
+    'http://127.0.0.1:5002/home23/api/internal/runtime-metrics',
+  );
+  assert.equal(
+    runtimeMetricsUrlForProcess('home23-cosmo23'),
+    'http://127.0.0.1:43210/api/internal/runtime-metrics',
+  );
+  assert.throws(
+    () => runtimeMetricsUrlForProcess('unapproved-process'),
+    (error) => error.code === 'runtime_metrics_target_unsupported',
+  );
+  const requests = [];
+  const sampledAt = '2026-07-11T12:00:00.000Z';
+  const provider = createDefaultSampleProvider({
+    listPm2Processes: async () => [
+      { name: 'home23-jerry-dash', pid: 101, pm2_env: { restart_time: 3 } },
+      { name: 'home23-cosmo23', pid: 202, pm2_env: { restart_time: 1 } },
+    ],
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      const dashboard = String(url).includes(':5002/');
+      return new Response(JSON.stringify({
+        schemaVersion: 1,
+        role: dashboard ? 'dashboard' : 'cosmo',
+        pid: dashboard ? 101 : 202,
+        heapUsedBytes: (dashboard ? 100 : 40) * 1024 * 1024,
+        sampledAt,
+      }));
+    },
+  });
+  const rows = await provider(targets, Date.parse(sampledAt) + 5);
+  assert.deepEqual(requests, [
+    'http://127.0.0.1:5002/home23/api/internal/runtime-metrics',
+    'http://127.0.0.1:43210/api/internal/runtime-metrics',
+  ]);
+  assert.deepEqual(rows.map((row) => ({
+    name: row.name,
+    heapUsedMiB: row.heapUsedMiB,
+    timestamp: row.metricUpdatedAt,
+    authoritative: row.metricTimestampAuthoritative,
+  })), [
+    { name: 'dashboard', heapUsedMiB: 100, timestamp: Date.parse(sampledAt), authoritative: true },
+    { name: 'cosmo', heapUsedMiB: 40, timestamp: Date.parse(sampledAt), authoritative: true },
+  ]);
+});

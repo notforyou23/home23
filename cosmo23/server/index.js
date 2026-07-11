@@ -90,6 +90,13 @@ const {
 const {
   buildResearchRunTarget,
 } = require('../../shared/brain-operations/research-run-target.cjs');
+const {
+  isLoopback,
+  registerRuntimeMetricsRoute,
+} = require('../../shared/runtime-metrics-route.cjs');
+const {
+  probeExactProviderPair,
+} = require('./lib/provider-pair-probe');
 const { buildStatusContract } = require('./lib/status-contract');
 const {
   buildInteractiveLiveStatus,
@@ -166,6 +173,10 @@ process.env.DASHBOARD_PORT = String(DASHBOARD_PORT);
 process.env.COSMO_DASHBOARD_PORT = String(DASHBOARD_PORT);
 
 const app = express();
+registerRuntimeMetricsRoute(app, {
+  route: '/api/internal/runtime-metrics',
+  role: 'cosmo',
+});
 const runManager = new RunManager(LOCAL_RUNS_PATH, console, ROOT);
 const configGenerator = new ConfigGenerator(ROOT, console);
 const processManager = new ProcessManager(ENGINE_DIR, console);
@@ -1148,6 +1159,32 @@ app.get('/api/providers/status', async (_req, res) => {
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/providers/probe', async (req, res) => {
+  try {
+    if (!isLoopback(req.socket?.remoteAddress)) {
+      return res.status(403).json({ error: { code: 'access_denied' } });
+    }
+    if (!req.body || Array.isArray(req.body) || typeof req.body !== 'object'
+        || Object.keys(req.body).sort().join(',') !== 'pair,purpose') {
+      return res.status(400).json({ error: { code: 'invalid_request' } });
+    }
+    const registry = await getDefaultRegistry();
+    return res.json(await probeExactProviderPair({ registry, ...req.body }));
+  } catch (error) {
+    const code = error?.code || 'provider_probe_failed';
+    const status = code === 'invalid_request' ? 400
+      : code === 'provider_unavailable' ? 503
+        : code === 'provider_incomplete' ? 502 : 500;
+    return res.status(status).json({
+      error: {
+        code,
+        message: String(error?.message || code).slice(0, 1024),
+        retryable: error?.retryable === true,
+      },
+    });
   }
 });
 

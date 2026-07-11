@@ -1,5 +1,8 @@
 const express = require('express');
 const path = require('path');
+const {
+  registerRuntimeMetricsRoute,
+} = require('../../../shared/runtime-metrics-route.cjs');
 const { assertPm2AgentIdentity } = require('../../../scripts/lib/pm2-agent-identity-guard.cjs');
 assertPm2AgentIdentity({ root: path.join(__dirname, '..', '..', '..') });
 const fs = require('fs').promises;
@@ -194,6 +197,10 @@ class DashboardServer {
     this.currentRunMetadata = null;
     
     this.app = express();
+    registerRuntimeMetricsRoute(this.app, {
+      route: '/home23/api/internal/runtime-metrics',
+      role: 'dashboard',
+    });
 
     // Enable CORS for local development (cosmo-lab.html served from different port)
     this.app.use((req, res, next) => {

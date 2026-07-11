@@ -42,24 +42,69 @@ export function parseTarget(value) {
   throw typedError('target_invalid');
 }
 
-function heapFromPm2(row) {
-  const metric = row?.pm2_env?.axm_monitor?.['Used Heap Size'];
-  const value = Number(metric?.value);
-  if (!Number.isFinite(value) || value < 0 || metric?.unit !== 'MiB') {
-    throw typedError('heap_metric_unavailable', `V8 heap metric unavailable for ${row?.name || 'process'}`);
-  }
-  return value;
+const RUNTIME_METRICS_ENDPOINTS = Object.freeze({
+  'home23-jerry-dash': 'http://127.0.0.1:5002/home23/api/internal/runtime-metrics',
+  'home23-forrest-dash': 'http://127.0.0.1:5012/home23/api/internal/runtime-metrics',
+  'home23-cosmo23': 'http://127.0.0.1:43210/api/internal/runtime-metrics',
+});
+
+export function runtimeMetricsUrlForProcess(processName) {
+  const endpoint = RUNTIME_METRICS_ENDPOINTS[processName];
+  if (!endpoint) throw typedError('runtime_metrics_target_unsupported', processName);
+  return endpoint;
 }
 
-export function createDefaultSampleProvider() {
+async function defaultListPm2Processes() {
+  const { stdout } = await execFile('pm2', ['jlist'], {
+    encoding: 'utf8',
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  const rows = JSON.parse(stdout);
+  if (!Array.isArray(rows)) throw typedError('pm2_sample_invalid');
+  return rows;
+}
+
+async function readRuntimeMetrics(target, row, fetchImpl, observedAt) {
+  const endpoint = runtimeMetricsUrlForProcess(target.processName);
+  let response;
+  try {
+    response = await fetchImpl(endpoint, {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+      redirect: 'error',
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch (error) {
+    throw typedError('runtime_metrics_unavailable', target.processName, { cause: error });
+  }
+  const document = await response.json().catch((error) => {
+    throw typedError('runtime_metrics_invalid', target.processName, { cause: error });
+  });
+  const pid = Number(document?.pid);
+  const heapUsedBytes = Number(document?.heapUsedBytes);
+  const metricUpdatedAt = Date.parse(document?.sampledAt);
+  const expectedRole = target.processName === 'home23-cosmo23' ? 'cosmo' : 'dashboard';
+  if (!response.ok || document?.schemaVersion !== 1 || document?.role !== expectedRole
+      || pid !== Number(row.pid) || !Number.isSafeInteger(pid) || pid < 1
+      || !Number.isSafeInteger(heapUsedBytes) || heapUsedBytes < 0
+      || !Number.isFinite(metricUpdatedAt) || metricUpdatedAt > observedAt + 1_000) {
+    throw typedError('runtime_metrics_invalid', target.processName);
+  }
+  return {
+    pid,
+    heapUsedMiB: heapUsedBytes / (1024 * 1024),
+    metricUpdatedAt,
+  };
+}
+
+export function createDefaultSampleProvider({
+  listPm2Processes = defaultListPm2Processes,
+  fetchImpl = fetch,
+} = {}) {
   return async function sample(targets, now = Date.now()) {
     let pm2Rows = null;
     if (targets.some((target) => target.kind === 'pm2')) {
-      const { stdout } = await execFile('pm2', ['jlist'], {
-        encoding: 'utf8',
-        maxBuffer: 32 * 1024 * 1024,
-      });
-      pm2Rows = JSON.parse(stdout);
+      pm2Rows = await listPm2Processes();
       if (!Array.isArray(pm2Rows)) throw typedError('pm2_sample_invalid');
     }
     const output = [];
@@ -68,26 +113,16 @@ export function createDefaultSampleProvider() {
         const matches = pm2Rows.filter((row) => row?.name === target.processName);
         if (matches.length !== 1) throw typedError(matches.length ? 'pm2_duplicate_process' : 'pm2_process_missing');
         const row = matches[0];
-        const heapUsedMiB = heapFromPm2(row);
-        const metric = row?.pm2_env?.axm_monitor?.['Used Heap Size'];
-        const rawMetricTimestamp = metric?.updatedAt ?? metric?.updated_at ?? metric?.timestamp;
-        const metricUpdatedAt = typeof rawMetricTimestamp === 'number'
-          ? rawMetricTimestamp : Date.parse(rawMetricTimestamp);
-        if (!Number.isFinite(metricUpdatedAt)) {
-          throw typedError(
-            'heap_metric_timestamp_unavailable',
-            `PM2 V8 heap metric lacks an authoritative update timestamp for ${target.processName}`,
-          );
-        }
+        const runtime = await readRuntimeMetrics(target, row, fetchImpl, now);
         output.push({
           name: target.name,
-          pid: Number(row.pid),
+          pid: runtime.pid,
           restartCount: Number(row.pm2_env?.restart_time || 0),
-          heapUsedMiB,
-          metricUpdatedAt,
+          heapUsedMiB: runtime.heapUsedMiB,
+          metricUpdatedAt: runtime.metricUpdatedAt,
           metricTimestampAuthoritative: true,
           observedAt: now,
-          metricSource: 'pm2-axm-v8-timestamped',
+          metricSource: 'loopback-runtime-v8-request',
         });
       } else {
         const document = await readJson(target.metricsPath, { maxBytes: 1024 * 1024 });
