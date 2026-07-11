@@ -1183,14 +1183,24 @@ async function readFixtureOwner(ownerFile) {
         || Number(before.mode & 0o777n) !== 0o400) {
       throw typedError('isolated_fixture_ownership_mismatch');
     }
-    const text = await handle.readFile('utf8');
+    const size = Number(before.size);
+    const bytes = Buffer.allocUnsafe(size);
+    let offset = 0;
+    while (offset < size) {
+      const { bytesRead } = await handle.read(bytes, offset, size - offset, offset);
+      if (bytesRead === 0) throw typedError('isolated_fixture_ownership_mismatch');
+      offset += bytesRead;
+    }
+    const overflowProbe = Buffer.allocUnsafe(1);
+    const { bytesRead: overflowBytes } = await handle.read(overflowProbe, 0, 1, size);
     const after = await handle.stat({ bigint: true });
-    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
+    if (overflowBytes !== 0
+        || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size
         || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs) {
       throw typedError('isolated_fixture_ownership_mismatch');
     }
     try {
-      return JSON.parse(text);
+      return JSON.parse(bytes.toString('utf8'));
     } catch (error) {
       throw typedError('isolated_fixture_ownership_mismatch', undefined, { cause: error });
     }

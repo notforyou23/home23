@@ -338,6 +338,81 @@ test('isolated launcher exposes distinct own, sibling, completed-research, and M
   }), (error) => error.code === 'isolated_fixture_ownership_mismatch');
 });
 
+test('fixture owner rejects concurrent growth through positional bounded reads', async (t) => {
+  const {
+    startIsolatedFixture,
+    stopIsolatedFixture,
+  } = await import('../../scripts/lib/isolated-brain-fixture.mjs');
+  const state = await receiptFixture();
+  const isolatedRoot = await fs.realpath(await fs.mkdtemp(
+    path.join(os.tmpdir(), 'home23-owner-growth-fixture-'),
+  ));
+  t.after(() => Promise.all([
+    fs.rm(state.root, { recursive: true, force: true }),
+    fs.rm(isolatedRoot, { recursive: true, force: true }),
+  ]));
+  let launched = await startIsolatedFixture({
+    fixtureRoot: isolatedRoot,
+    context: state.context,
+    agent: 'owner-growth-fixture',
+    operationDelayMs: 5,
+  });
+  await stopIsolatedFixture(launched);
+  launched = null;
+
+  const ownerFile = path.join(isolatedRoot, 'fixture-owner.json');
+  const originalOpen = fs.open;
+  await fs.chmod(ownerFile, 0o600);
+  const writer = await originalOpen(ownerFile, 'r+');
+  await fs.chmod(ownerFile, 0o400);
+  let positionalReadObserved = false;
+  let unboundedReadFileObserved = false;
+  let rejection = null;
+  fs.open = async (file, flags, ...rest) => {
+    const handle = await originalOpen(file, flags, ...rest);
+    if (path.resolve(String(file)) !== ownerFile) return handle;
+    const originalRead = handle.read.bind(handle);
+    Object.defineProperty(handle, 'readFile', {
+      configurable: true,
+      value: async () => {
+        unboundedReadFileObserved = true;
+        throw Object.assign(new Error('unbounded owner read invoked'), {
+          code: 'unbounded_owner_read_invoked',
+        });
+      },
+    });
+    handle.read = async (...args) => {
+      if (!positionalReadObserved) {
+        positionalReadObserved = true;
+        const beforeGrowth = await writer.stat();
+        const growth = Buffer.alloc(1024, 0x78);
+        await writer.write(growth, 0, growth.length, Number(beforeGrowth.size));
+        await writer.sync();
+      }
+      return originalRead(...args);
+    };
+    return handle;
+  };
+  try {
+    launched = await startIsolatedFixture({
+      fixtureRoot: isolatedRoot,
+      context: state.context,
+      agent: 'owner-growth-fixture',
+      operationDelayMs: 5,
+    });
+  } catch (error) {
+    rejection = error;
+  } finally {
+    fs.open = originalOpen;
+    await writer.close();
+    if (launched) await stopIsolatedFixture(launched).catch(() => {});
+  }
+
+  assert.equal(unboundedReadFileObserved, false);
+  assert.equal(positionalReadObserved, true);
+  assert.equal(rejection?.code, 'isolated_fixture_ownership_mismatch');
+});
+
 test('failed dashboard readiness stops only the newly spawned owned child', async (t) => {
   const {
     startIsolatedFixture,
