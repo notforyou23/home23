@@ -184,8 +184,8 @@ test('query catalog route validates against the query catalog schema', async () 
   assert.equal(validate(res.body), true, ajv.errorsText(validate.errors));
 });
 
-test('query export facade proxies through selected agent brain route', async () => {
-  const captured = {};
+test('query export facade refuses raw COSMO fallback when durable adapter is unavailable', async () => {
+  let rawExportCalls = 0;
   const app = express();
   app.use(express.json());
   app.use('/home23/api/query', createQueryApiRouter({
@@ -196,8 +196,8 @@ test('query export facade proxies through selected agent brain route', async () 
       '/api/status': { success: true, running: false, apiReachable: true, activeRun: false },
       '/api/providers/models': { models: [{ id: 'gpt-5.5', label: 'GPT-5.5', provider: 'openai', kind: 'chat' }] },
       '/api/brains': { brains: [{ id: 'brain-jerry', routeKey: 'brain-jerry', displayName: 'Jerry Brain', sourceLabel: 'Jerry' }] },
-      '/api/brain/brain-jerry/export-query': ({ init }) => {
-        captured.body = JSON.parse(init.body);
+      '/api/brain/brain-jerry/export-query': () => {
+        rawExportCalls += 1;
         return { exportedTo: '/fake/exports/query.md' };
       },
     }),
@@ -210,10 +210,10 @@ test('query export facade proxies through selected agent brain route', async () 
     metadata: { model: 'gpt-5.5' },
   });
 
-  assert.equal(res.status, 200);
-  assert.equal(res.body.exportedTo, '/fake/exports/query.md');
-  assert.equal(captured.body.query, 'what changed');
-  assert.equal(captured.body.answer, 'facade export');
+  assert.equal(res.status, 503);
+  assert.equal(res.body.success, false);
+  assert.equal(res.body.error.code, 'operation_adapter_unavailable');
+  assert.equal(rawExportCalls, 0);
 });
 
 test('query run dry-run validates through facade without forwarding to COSMO brain query', async () => {
@@ -235,7 +235,7 @@ test('query run dry-run validates through facade without forwarding to COSMO bra
 
   const res = await postJson(app, '/home23/api/query/run?agent=jerry', {
     query: 'contract probe',
-    model: 'gpt-5.5',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
     mode: 'quick',
     enablePGS: false,
     dryRun: true,
@@ -249,8 +249,8 @@ test('query run dry-run validates through facade without forwarding to COSMO bra
   assert.match(res.body.result.answer, /without forwarding to COSMO23/);
 });
 
-test('query run facade proxies non-dry request through selected brain route and validates response contract', async () => {
-  const captured = {};
+test('query run facade rejects legacy flat model and PGS spellings before execution', async () => {
+  let rawQueryCalls = 0;
   const app = express();
   app.use(express.json());
   app.use('/home23/api/query', createQueryApiRouter({
@@ -270,7 +270,7 @@ test('query run facade proxies non-dry request through selected brain route and 
         ],
       },
       '/api/brain/brain-jerry/query': ({ init }) => {
-        captured.body = JSON.parse(init.body);
+        rawQueryCalls += 1;
         return {
           body: {
             query: 'what changed',
@@ -308,21 +308,14 @@ test('query run facade proxies non-dry request through selected brain route and 
     },
   });
 
-  assert.equal(res.status, 200);
-  assert.equal(res.body.ok, true);
-  assert.equal(res.body.result.answer, 'facade query answer');
-  assert.equal(captured.body.query, 'what changed');
-  assert.equal(captured.body.enablePGS, true);
-  assert.equal(captured.body.pgsConfig.sweepFraction, 0.25);
-  assert.equal(captured.body.priorContext.answer, 'previous answer');
-
-  const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'contracts/schemas/query.schema.json'), 'utf8'));
-  const ajv = new Ajv2020({ strict: false, allErrors: true });
-  const validate = ajv.compile({ ...schema, $ref: '#/$defs/queryRunResponse' });
-  assert.equal(validate(res.body), true, ajv.errorsText(validate.errors));
+  assert.equal(res.status, 400);
+  assert.equal(res.body.ok, false);
+  assert.equal(res.body.error.code, 'invalid_request');
+  assert.equal(rawQueryCalls, 0);
 });
 
-test('query run facade maps upstream query errors into the query response contract', async () => {
+test('query run facade does not fall back to raw COSMO when durable adapter is unavailable', async () => {
+  let rawQueryCalls = 0;
   const app = express();
   app.use(express.json());
   app.use('/home23/api/query', createQueryApiRouter({
@@ -334,27 +327,22 @@ test('query run facade maps upstream query errors into the query response contra
       '/api/providers/models': { models: [{ id: 'gpt-5.5', label: 'GPT-5.5', provider: 'openai', kind: 'chat' }] },
       '/api/brains': { brains: [{ id: 'brain-jerry', routeKey: 'brain-jerry', displayName: 'Jerry Brain', sourceLabel: 'Jerry' }] },
       '/api/brain/brain-jerry/query': {
-        status: 503,
-        body: { error: 'cosmo query unavailable' },
+        body: () => { rawQueryCalls += 1; return { answer: 'must not run' }; },
       },
     }),
   }));
 
   const res = await postJson(app, '/home23/api/query/run?agent=jerry', {
     query: 'will fail',
-    model: 'gpt-5.5',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
     mode: 'quick',
     enablePGS: false,
   });
 
   assert.equal(res.status, 503);
   assert.equal(res.body.ok, false);
-  assert.equal(res.body.error, 'cosmo query unavailable');
-
-  const schema = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'contracts/schemas/query.schema.json'), 'utf8'));
-  const ajv = new Ajv2020({ strict: false, allErrors: true });
-  const validate = ajv.compile({ ...schema, $ref: '#/$defs/queryRunResponse' });
-  assert.equal(validate(res.body), true, ajv.errorsText(validate.errors));
+  assert.equal(res.body.error.code, 'operation_adapter_unavailable');
+  assert.equal(rawQueryCalls, 0);
 });
 
 test('query export dry-run returns export contract shape without writing through COSMO export', async () => {
@@ -387,4 +375,567 @@ test('query export dry-run returns export contract shape without writing through
   assert.equal(res.body.dryRun, true);
   assert.equal(res.body.exportedTo, null);
   assert.equal(res.body.metadata.operation, 'export');
+});
+
+const COMPAT_OPERATION_ID = `brop_${'c'.repeat(32)}`;
+
+function canonicalCompatBoundaries(root) {
+  return [
+    { kind: 'brain', path: root },
+    { kind: 'run', path: root },
+    { kind: 'pgs', path: `${root}/pgs-sessions` },
+    { kind: 'session', path: `${root}/sessions` },
+    { kind: 'cache', path: `${root}/cache` },
+    { kind: 'export', path: `${root}/exports` },
+    { kind: 'agency', path: `${root}/agency` },
+  ];
+}
+
+function canonicalCompatRecord(overrides = {}) {
+  return {
+    operationId: COMPAT_OPERATION_ID,
+    requestId: 'request-compat',
+    operationType: 'query',
+    requestParameters: { query: 'x' },
+    parameters: { query: 'x' },
+    canonicalEvidence: true,
+    recordVersion: 1,
+    eventSequence: 0,
+    requesterAgent: 'jerry',
+    target: {
+      domain: 'brain',
+      brainId: 'brain-jerry',
+      ownerAgent: 'jerry',
+      displayName: 'Jerry Brain',
+      kind: 'resident',
+      lifecycle: 'resident',
+      catalogRevision: 'catalog-compat',
+      route: '/api/brain/brain-jerry',
+      canonicalRoot: '/fixture/jerry',
+      accessMode: 'own',
+      mutationBoundaries: canonicalCompatBoundaries('/fixture/jerry'),
+    },
+    state: 'queued',
+    phase: null,
+    startedAt: null,
+    updatedAt: '2026-07-09T12:00:00.000Z',
+    completedAt: null,
+    lastProviderActivityAt: null,
+    lastProgressAt: null,
+    result: null,
+    resultHandle: null,
+    resultArtifact: null,
+    error: null,
+    sourceEvidence: null,
+    sourcePinDescriptor: null,
+    sourcePinDigest: null,
+    sourcePinReleasedAt: null,
+    resultExpiresAt: null,
+    resultExpiredAt: null,
+    metadataExpiresAt: null,
+    ...overrides,
+  };
+}
+
+function compatCatalog() {
+  return {
+    agent: 'jerry',
+    available: true,
+    reason: null,
+    selectedBrain: { id: 'brain-jerry', routeKey: 'brain-jerry', displayName: 'Jerry Brain' },
+    brains: [{ id: 'brain-jerry', routeKey: 'brain-jerry', displayName: 'Jerry Brain' }],
+    models: [{ id: 'gpt-5.5', provider: 'openai' }],
+    defaults: { model: 'gpt-5.5', mode: 'quick' },
+    endpoints: {
+      run: '/home23/api/query/run',
+      stream: '/home23/api/query/stream',
+      export: '/home23/api/query/export',
+    },
+    cosmo: { apiReachable: true, running: false, activeRun: false },
+    streaming: true,
+    limits: { maxQueryChars: 12000, maxPriorContextChars: 20000 },
+    lastRouteError: null,
+  };
+}
+
+function makeQueryApp({ onForward = () => {}, adapter = {} } = {}) {
+  const calls = [];
+  const app = express();
+  app.use(express.json());
+  app.use('/home23/api/query', createQueryApiRouter({
+    getDefaultAgent: () => 'jerry',
+    resolveAgent: () => 'jerry',
+    cosmoBaseUrl: 'http://cosmo.test',
+    fetchImpl: makeFetch({
+      '/api/status': { success: true, running: false, apiReachable: true, activeRun: false },
+      '/api/providers/models': { models: [{ id: 'gpt-5.5', provider: 'openai', kind: 'chat' }] },
+      '/api/brains': { brains: [{ id: 'brain-jerry', routeKey: 'brain-jerry', displayName: 'Jerry Brain', sourceLabel: 'jerry' }] },
+      '/api/brain/brain-jerry/query': { body: { answer: 'legacy bypass' } },
+      '/api/brain/brain-forrest/query': { body: { answer: 'wrong target bypass' } },
+    }),
+    catalogProvider: async () => compatCatalog(),
+    operationAdapter: {
+      start: async (request) => {
+        calls.push('start');
+        onForward(request);
+        return canonicalCompatRecord({ state: 'queued', eventSequence: 0 });
+      },
+      attachAndWait: async (operation, options) => {
+        calls.push('attachAndWait');
+        assert.equal(operation.operationId, COMPAT_OPERATION_ID);
+        assert.ok(options.attachmentId);
+        assert.equal(options.waitMs, 5_400_000);
+        return canonicalCompatRecord({ state: 'complete', eventSequence: 3, result: null });
+      },
+      getResult: async (operationId) => {
+        calls.push('getResult');
+        return {
+          operationId,
+          state: 'complete',
+          result: { answer: 'ok' },
+          resultHandle: `brres_${'d'.repeat(32)}`,
+          resultArtifact: null,
+          error: null,
+          sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'matches' },
+        };
+      },
+      detach: async () => { calls.push('detach'); },
+      exportStored: async (request) => {
+        calls.push('exportStored');
+        onForward(request);
+        return {
+          success: true,
+          exportedTo: '/requester/brain-exports/result.md',
+          resultHandle: `brres_${'d'.repeat(32)}`,
+        };
+      },
+      ...adapter,
+    },
+  }));
+  return { app, calls };
+}
+
+async function postRaw(app, pathname, body) {
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  try {
+    const address = server.address();
+    const response = await fetch(`http://127.0.0.1:${address.port}${pathname}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, text: await response.text() };
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+}
+
+function parseSseData(text) {
+  return text.replace(/\r\n/g, '\n').split('\n\n').flatMap((frame) => {
+    const data = frame.split('\n')
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n');
+    return data && data !== '[DONE]' ? [JSON.parse(data)] : [];
+  });
+}
+
+function compileQueryDefinition(definition) {
+  const schema = JSON.parse(fs.readFileSync(
+    path.join(process.cwd(), 'contracts/schemas/query.schema.json'),
+    'utf8',
+  ));
+  const ajv = new Ajv2020({ strict: false, allErrors: true });
+  return ajv.compile({ ...schema, $ref: `#/$defs/${definition}` });
+}
+
+test('query facade rejects one character beyond published query and prior-context limits', async () => {
+  const forwarded = [];
+  const { app } = makeQueryApp({ onForward: (request) => forwarded.push(request) });
+  const tooLongQuery = await postJson(app, '/home23/api/query/run', {
+    query: 'q'.repeat(12001),
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    mode: 'quick',
+    enablePGS: false,
+  });
+  assert.equal(tooLongQuery.status, 413);
+  assert.equal(tooLongQuery.body.error.code, 'invalid_request');
+  const tooLongPrior = await postJson(app, '/home23/api/query/run', {
+    query: 'ok',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    mode: 'quick',
+    enablePGS: false,
+    priorContext: { query: 'p', answer: 'a'.repeat(20001) },
+  });
+  assert.equal(tooLongPrior.status, 413);
+  assert.equal(forwarded.length, 0);
+});
+
+test('compatibility facade rejects agent and brain mismatch instead of forwarding arbitrary target', async () => {
+  const response = await postJson(makeQueryApp().app, '/home23/api/query/run?agent=jerry', {
+    brainId: 'brain-forrest',
+    query: 'x',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    mode: 'quick',
+    enablePGS: false,
+  });
+  assert.equal(response.status, 400);
+  assert.equal(response.body.error.code, 'target_mismatch');
+});
+
+test('compatibility run performs durable start, attach/wait, then protected result read', async () => {
+  const fixture = makeQueryApp();
+  const response = await postJson(fixture.app, '/home23/api/query/run', {
+    query: 'x',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    mode: 'quick',
+    enablePGS: false,
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(fixture.calls, ['start', 'attachAndWait', 'getResult']);
+  assert.equal(response.body.operationId, COMPAT_OPERATION_ID);
+  assert.equal(response.body.answer, 'ok');
+});
+
+test('compatibility PGS selects six-hour attachment policy and forwards progress beyond 120 seconds', async () => {
+  let now = 0;
+  const progress = [];
+  const fixture = makeQueryApp({ adapter: {
+    start: async () => ({
+      ...canonicalCompatRecord({ state: 'queued', eventSequence: 0 }),
+      operationType: 'pgs',
+    }),
+    attachAndWait: async (_operation, options) => {
+      assert.equal(options.waitMs, 21_600_000);
+      options.onEvent(canonicalCompatRecord({ state: 'running', eventSequence: 1 }));
+      progress.push(now);
+      now += 121_000;
+      options.onEvent(canonicalCompatRecord({ state: 'running', eventSequence: 2 }));
+      progress.push(now);
+      return canonicalCompatRecord({ state: 'complete', eventSequence: 3, result: null });
+    },
+  } });
+  const response = await postJson(fixture.app, '/home23/api/query/run', {
+    query: 'x',
+    enablePGS: true,
+    pgsConfig: { sweepFraction: 0.25 },
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+    mode: 'quick',
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(progress, [0, 121_000]);
+  assert.equal(response.body.answer, 'ok');
+});
+
+test('compatibility detach is honest and remains actionable', async () => {
+  let resultReads = 0;
+  let detaches = 0;
+  const fixture = makeQueryApp({ adapter: {
+    attachAndWait: async () => ({
+      ...canonicalCompatRecord({ state: 'running', eventSequence: 2 }),
+      attachmentState: 'detached',
+    }),
+    getResult: async () => {
+      resultReads += 1;
+      throw new Error('result must not be read');
+    },
+    detach: async () => { detaches += 1; },
+  } });
+  const response = await postJson(fixture.app, '/home23/api/query/run', {
+    query: 'x',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    mode: 'quick',
+    enablePGS: false,
+  });
+  assert.equal(response.status, 202);
+  assert.equal(response.body.operationId, COMPAT_OPERATION_ID);
+  assert.equal(response.body.state, 'running');
+  assert.equal(response.body.detached, true);
+  assert.match(JSON.stringify(response.body), /status|result|cancel|resume/);
+  assert.equal('answer' in response.body, false);
+  assert.equal(resultReads, 0);
+  assert.equal(detaches, 0, 'adapter already returned an authoritative detached state');
+});
+
+test('compatibility stream attaches to events and terminal bytes come only from result', async () => {
+  let resultReads = 0;
+  const fixture = makeQueryApp({ adapter: {
+    attachAndWait: async (_operation, options) => {
+      options.onEvent(canonicalCompatRecord({ state: 'running', eventSequence: 1 }));
+      options.onEvent(canonicalCompatRecord({ state: 'complete', eventSequence: 2, result: null }));
+      return canonicalCompatRecord({ state: 'complete', eventSequence: 2, result: null });
+    },
+    getResult: async (operationId) => {
+      resultReads += 1;
+      return {
+        operationId,
+        state: 'complete',
+        result: { answer: 'protected bytes' },
+        resultHandle: `brres_${'d'.repeat(32)}`,
+        resultArtifact: null,
+        error: null,
+        sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'matches' },
+      };
+    },
+  } });
+  const response = await postRaw(fixture.app, '/home23/api/query/stream', {
+    query: 'x',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    mode: 'quick',
+    enablePGS: false,
+  });
+  assert.equal(response.status, 200);
+  const rows = parseSseData(response.text);
+  assert.deepEqual(rows.filter((row) => row.eventSequence).map((row) => row.eventSequence), [1, 2]);
+  assert.equal(rows.at(-1).answer, 'protected bytes');
+  assert.equal(resultReads, 1);
+  assert.equal(fixture.calls.filter((call) => call === 'start').length, 1);
+});
+
+test('compatibility request accepts only exact nested provider pairs and finite numeric controls', async () => {
+  const invalidBodies = [
+    { query: 'x', model: 'gpt-5.5', provider: 'openai', enablePGS: false },
+    { query: 'x', modelSelection: null, enablePGS: false },
+    { query: 'x', modelSelection: { provider: 'openai' }, enablePGS: false },
+    { query: 'x', modelSelection: { provider: 'openai', model: 'gpt-5.5', extra: true }, enablePGS: false },
+    { query: 'x', modelSelection: { provider: 'openai', model: 'gpt-5.5' }, topK: null, enablePGS: false },
+    { query: 'x', modelSelection: { provider: 'openai', model: 'gpt-5.5' }, priorContext: null, enablePGS: false },
+    { query: 'x', pgsSweepModel: 'MiniMax-M3', enablePGS: true },
+    { query: 'x', pgsSweep: null, enablePGS: true },
+    { query: 'x', pgsSweep: { provider: 'minimax' }, enablePGS: true },
+    { query: 'x', pgsConfig: { sweepFraction: null }, enablePGS: true },
+    { query: 'x', pgsConfig: { sweepFraction: 0.25, extra: 1 }, enablePGS: true },
+    { query: 'x', unknown: true, enablePGS: false },
+  ];
+  for (const body of invalidBodies) {
+    const fixture = makeQueryApp();
+    const response = await postJson(fixture.app, '/home23/api/query/run', body);
+    assert.equal(response.status, 400, JSON.stringify(body));
+    assert.equal(response.body.error.code, 'invalid_request', JSON.stringify(body));
+    assert.equal(fixture.calls.length, 0, JSON.stringify(body));
+  }
+});
+
+test('compatibility forwarding strips facade controls and binds the selected canonical target', async () => {
+  const forwarded = [];
+  const fixture = makeQueryApp({ onForward: (request) => forwarded.push(request) });
+  const response = await postJson(fixture.app, '/home23/api/query/run?agent=jerry', {
+    agent: 'jerry',
+    brainId: 'brain-jerry',
+    query: 'x',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    mode: 'quick',
+    enablePGS: false,
+  });
+  assert.equal(response.status, 200);
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0].operationType, 'query');
+  assert.deepEqual(forwarded[0].target, { brainId: 'brain-jerry' });
+  assert.deepEqual(forwarded[0].parameters, {
+    query: 'x',
+    mode: 'quick',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+  });
+  assert.equal('enablePGS' in forwarded[0].parameters, false);
+  assert.equal('agent' in forwarded[0].parameters, false);
+});
+
+test('compatibility terminal success rejects success false, embedded errors, and missing answer', async () => {
+  for (const result of [
+    { success: false, answer: 'misleading' },
+    { error: 'provider failed', answer: 'misleading' },
+    { metadata: { done: true } },
+  ]) {
+    const fixture = makeQueryApp({ adapter: {
+      getResult: async (operationId) => ({
+        operationId,
+        state: 'complete',
+        result,
+        resultHandle: null,
+        resultArtifact: null,
+        error: null,
+        sourceEvidence: null,
+      }),
+    } });
+    const response = await postJson(fixture.app, '/home23/api/query/run', {
+      query: 'x',
+      modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+      enablePGS: false,
+    });
+    assert.equal(response.status, 502, JSON.stringify(result));
+    assert.equal(response.body.ok, false);
+    assert.match(response.body.error.code, /^result_/);
+  }
+});
+
+test('compatibility wait and protected result cannot switch operation identity', async () => {
+  const otherId = `brop_${'f'.repeat(32)}`;
+  for (const adapter of [
+    {
+      attachAndWait: async () => canonicalCompatRecord({ operationId: otherId, state: 'complete' }),
+    },
+    {
+      getResult: async () => ({
+        operationId: otherId,
+        state: 'complete',
+        result: { answer: 'wrong operation' },
+        resultHandle: null,
+        resultArtifact: null,
+        error: null,
+        sourceEvidence: null,
+      }),
+    },
+  ]) {
+    const response = await postJson(makeQueryApp({ adapter }).app, '/home23/api/query/run', {
+      query: 'x', enablePGS: false,
+    });
+    assert.equal(response.status, 502);
+    assert.equal(response.body.error.code, 'operation_contract_invalid');
+  }
+});
+
+test('compatibility canonical export rejects inline bytes and forwards only stored operation authority', async () => {
+  const forwarded = [];
+  const fixture = makeQueryApp({ onForward: (request) => forwarded.push(request) });
+  const rejected = await postJson(fixture.app, '/home23/api/query/export', {
+    operationId: COMPAT_OPERATION_ID,
+    answer: 'caller supplied bytes',
+    query: 'x',
+    format: 'markdown',
+  });
+  assert.equal(rejected.status, 400);
+  assert.equal(rejected.body.error.code, 'invalid_request');
+  assert.equal(forwarded.length, 0);
+
+  for (const invalid of [
+    { operationId: 'not-an-operation', format: 'markdown' },
+    { operationId: COMPAT_OPERATION_ID, resultHandle: 'not-a-result', format: 'markdown' },
+  ]) {
+    const response = await postJson(fixture.app, '/home23/api/query/export', invalid);
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error.code, 'invalid_request');
+  }
+  assert.equal(forwarded.length, 0);
+
+  const accepted = await postJson(fixture.app, '/home23/api/query/export', {
+    operationId: COMPAT_OPERATION_ID,
+    resultHandle: `brres_${'d'.repeat(32)}`,
+    format: 'markdown',
+    fileName: 'result',
+  });
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.body.success, true);
+  assert.deepEqual(forwarded[0], {
+    kind: 'canonical',
+    operationId: COMPAT_OPERATION_ID,
+    resultHandle: `brres_${'d'.repeat(32)}`,
+    format: 'markdown',
+    fileName: 'result',
+  });
+});
+
+test('compatibility ad hoc export is explicitly noncanonical', async () => {
+  const forwarded = [];
+  const fixture = makeQueryApp({ onForward: (request) => forwarded.push(request) });
+  const response = await postJson(fixture.app, '/home23/api/query/export', {
+    query: 'x',
+    answer: 'not a stored operation result',
+    format: 'json',
+    metadata: { source: 'compatibility' },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.success, true);
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0].kind, 'ad_hoc');
+  assert.equal(forwarded[0].metadata.canonicalEvidence, false);
+  assert.match(forwarded[0].requestId, /^compat-export-/);
+});
+
+test('query request schema enforces exact direct and PGS provider objects', () => {
+  const validate = compileQueryDefinition('queryRequest');
+  assert.equal(validate({
+    query: 'x',
+    enablePGS: false,
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+  }), true, JSON.stringify(validate.errors));
+  assert.equal(validate({
+    query: 'x',
+    enablePGS: true,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+    pgsConfig: { sweepFraction: 0.25 },
+  }), true, JSON.stringify(validate.errors));
+  for (const invalid of [
+    { query: 'x', enablePGS: false, model: 'gpt-5.5', provider: 'openai' },
+    { query: 'x', enablePGS: false, modelSelection: null },
+    { query: 'x', enablePGS: false, modelSelection: { provider: 'openai' } },
+    { query: 'x', enablePGS: true, pgsSweepModel: 'MiniMax-M3' },
+    { query: 'x', enablePGS: true, pgsSweep: { provider: 'minimax', model: 'MiniMax-M3', extra: 1 } },
+    { query: 'x', enablePGS: true, pgsConfig: { sweepFraction: 0 } },
+  ]) assert.equal(validate(invalid), false, JSON.stringify(invalid));
+});
+
+test('query response schema distinguishes terminal, detached, and typed failure shapes', async () => {
+  const validate = compileQueryDefinition('queryRunResponse');
+  const terminalFixture = makeQueryApp();
+  const terminal = await postJson(terminalFixture.app, '/home23/api/query/run', {
+    query: 'x',
+    enablePGS: false,
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+  });
+  assert.equal(validate(terminal.body), true, JSON.stringify(validate.errors));
+
+  const detachedFixture = makeQueryApp({ adapter: {
+    attachAndWait: async () => ({
+      ...canonicalCompatRecord({ state: 'running', eventSequence: 2 }),
+      attachmentState: 'detached',
+    }),
+  } });
+  const detached = await postJson(detachedFixture.app, '/home23/api/query/run', {
+    query: 'x', enablePGS: false,
+  });
+  assert.equal(detached.status, 202);
+  assert.equal(validate(detached.body), true, JSON.stringify(validate.errors));
+
+  const failure = await postJson(makeQueryApp().app, '/home23/api/query/run', {
+    query: 'x', enablePGS: false, unknown: true,
+  });
+  assert.equal(failure.status, 400);
+  assert.equal(validate(failure.body), true, JSON.stringify(validate.errors));
+  assert.equal(validate({ ok: true, operationId: COMPAT_OPERATION_ID, state: 'running' }), false);
+});
+
+test('query stream and export responses validate against typed compatibility schemas', async () => {
+  const validateStream = compileQueryDefinition('streamEvent');
+  const streamFixture = makeQueryApp({ adapter: {
+    attachAndWait: async (_operation, options) => {
+      options.onEvent(canonicalCompatRecord({ state: 'running', eventSequence: 1 }));
+      options.onEvent(canonicalCompatRecord({ state: 'complete', eventSequence: 2 }));
+      return canonicalCompatRecord({ state: 'complete', eventSequence: 2 });
+    },
+  } });
+  const stream = await postRaw(streamFixture.app, '/home23/api/query/stream', {
+    query: 'x', enablePGS: false,
+  });
+  for (const event of parseSseData(stream.text)) {
+    assert.equal(validateStream(event), true, `${JSON.stringify(event)} ${JSON.stringify(validateStream.errors)}`);
+  }
+
+  const validateExport = compileQueryDefinition('queryExportResponse');
+  const exported = await postJson(makeQueryApp().app, '/home23/api/query/export', {
+    operationId: COMPAT_OPERATION_ID,
+    format: 'markdown',
+  });
+  assert.equal(validateExport(exported.body), true, JSON.stringify(validateExport.errors));
+  const exportFailure = await postJson(makeQueryApp().app, '/home23/api/query/export', {
+    operationId: COMPAT_OPERATION_ID,
+    answer: 'forbidden',
+    format: 'markdown',
+  });
+  assert.equal(validateExport(exportFailure.body), true, JSON.stringify(validateExport.errors));
 });

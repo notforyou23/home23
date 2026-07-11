@@ -1,7 +1,12 @@
 const express = require('express');
+const crypto = require('node:crypto');
 const fs = require('fs');
 const path = require('path');
 const yaml = require('js-yaml');
+const {
+  assertOperationId,
+  assertResultHandle,
+} = require('./brain-operations/operation-contract.js');
 
 const DEFAULT_ENDPOINTS = {
   catalog: '/home23/api/query/catalog',
@@ -9,6 +14,20 @@ const DEFAULT_ENDPOINTS = {
   stream: '/home23/api/query/stream',
   export: '/home23/api/query/export',
 };
+
+const MAX_QUERY_CHARS = 12_000;
+const MAX_PRIOR_CONTEXT_CHARS = 20_000;
+const MAX_AD_HOC_ANSWER_CHARS = 1_000_000;
+const QUERY_WAIT_MS = 90 * 60_000;
+const PGS_WAIT_MS = 6 * 60 * 60_000;
+const QUERY_MODES = new Set([
+  'quick', 'full', 'expert', 'dive', 'fast', 'normal', 'deep', 'executive',
+  'raw', 'report', 'innovation', 'consulting', 'grounded',
+]);
+const PGS_MODES = new Set(['full', 'continue', 'targeted']);
+const NONTERMINAL_STATES = new Set(['queued', 'running']);
+const SUCCESS_STATES = new Set(['complete', 'partial']);
+const TERMINAL_STATES = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
 
 function getDefaultCosmoBaseUrl() {
   return `http://localhost:${process.env.COSMO23_PORT || '43210'}`;
@@ -262,13 +281,429 @@ async function buildQueryCatalog(options = {}) {
     brains,
     selectedBrain,
     cosmo: normalizeCosmoStatus(statusResult.status === 'fulfilled' ? statusResult.value : null, statusError),
-    streaming: false,
+    streaming: !!options.operationAdapter,
     limits: {
-      maxQueryChars: 12000,
-      maxPriorContextChars: 20000,
+      maxQueryChars: MAX_QUERY_CHARS,
+      maxPriorContextChars: MAX_PRIOR_CONTEXT_CHARS,
     },
     lastRouteError: firstError ? (firstError.message || String(firstError)) : null,
   };
+}
+
+function compatibilityError(code, message = code, status = 400, retryable = false, cause) {
+  const error = new Error(message, cause ? { cause } : undefined);
+  error.code = code;
+  error.status = status;
+  error.retryable = retryable;
+  return error;
+}
+
+function ownKeys(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? Reflect.ownKeys(value)
+    : [];
+}
+
+function exactObject(value, allowed, message = 'request body must be an object') {
+  if (!value || Array.isArray(value) || typeof value !== 'object') {
+    throw compatibilityError('invalid_request', message);
+  }
+  const accepted = new Set(allowed);
+  if (Reflect.ownKeys(value).some((key) => typeof key !== 'string' || !accepted.has(key))) {
+    throw compatibilityError('invalid_request', 'request contains an unsupported field');
+  }
+  return value;
+}
+
+function boundedString(value, field, { required = false, max = 256 } = {}) {
+  if (value === undefined && !required) return;
+  if (typeof value !== 'string' || value.length > max || (required && !value.trim())) {
+    throw compatibilityError('invalid_request', `${field} is invalid`);
+  }
+}
+
+function optionalBoolean(value, field) {
+  if (value !== undefined && typeof value !== 'boolean') {
+    throw compatibilityError('invalid_request', `${field} must be a boolean`);
+  }
+}
+
+function exactProviderPair(value, field) {
+  if (value === undefined) return;
+  exactObject(value, ['provider', 'model'], `${field} must be an exact provider/model pair`);
+  if (ownKeys(value).length !== 2) {
+    throw compatibilityError('invalid_request', `${field} must include provider and model`);
+  }
+  boundedString(value.provider, `${field}.provider`, { required: true, max: 256 });
+  boundedString(value.model, `${field}.model`, { required: true, max: 256 });
+}
+
+function validatePriorContext(value) {
+  if (value === undefined) return;
+  exactObject(value, ['query', 'answer'], 'priorContext is invalid');
+  if (ownKeys(value).length !== 2
+      || typeof value.query !== 'string'
+      || typeof value.answer !== 'string') {
+    throw compatibilityError('invalid_request', 'priorContext is invalid');
+  }
+  if (value.query.length + value.answer.length > MAX_PRIOR_CONTEXT_CHARS) {
+    throw compatibilityError(
+      'invalid_request',
+      `priorContext exceeds ${MAX_PRIOR_CONTEXT_CHARS} characters`,
+      413,
+    );
+  }
+}
+
+function validateSelectedBrain(body, catalog, agent) {
+  const selected = catalog?.selectedBrain;
+  const selectedId = selected?.id || selected?.routeKey;
+  if (!selectedId || typeof selectedId !== 'string') {
+    throw compatibilityError('target_unavailable', 'selected agent brain unavailable', 503, true);
+  }
+  if (catalog.agent !== undefined && catalog.agent !== null && catalog.agent !== agent) {
+    throw compatibilityError('target_mismatch', 'catalog agent does not match the request', 400);
+  }
+  if (Object.hasOwn(body, 'brainId')) {
+    boundedString(body.brainId, 'brainId', { required: true, max: 256 });
+    if (body.brainId !== selected.id && body.brainId !== selected.routeKey) {
+      throw compatibilityError(
+        'target_mismatch',
+        'agent and brainId do not select the same canonical brain',
+        400,
+      );
+    }
+  }
+  if (Object.hasOwn(body, 'agent')) {
+    boundedString(body.agent, 'agent', { required: true, max: 256 });
+    if (body.agent !== agent) {
+      throw compatibilityError('target_mismatch', 'request agent does not match the selected agent', 400);
+    }
+  }
+  return selectedId;
+}
+
+function validateRouteQuery(req) {
+  const allowed = new Set(['agent', 'dryRun', 'validateOnly']);
+  for (const [key, value] of Object.entries(req.query || {})) {
+    if (!allowed.has(key) || Array.isArray(value) || typeof value !== 'string') {
+      throw compatibilityError('invalid_request', 'query parameters are invalid');
+    }
+  }
+}
+
+function validateCompatibilityRequest(body, catalog, agent) {
+  const common = [
+    'agent', 'brainId', 'query', 'mode', 'enablePGS', 'priorContext',
+    'dryRun', 'validateOnly',
+  ];
+  const direct = [
+    'modelSelection', 'enableSynthesis', 'includeOutputs', 'includeThoughts',
+    'includeCoordinatorInsights', 'allowActions', 'topK',
+  ];
+  const pgs = ['pgsMode', 'pgsConfig', 'pgsSweep', 'pgsSynth'];
+  exactObject(body, [...common, ...direct, ...pgs]);
+  const targetBrainId = validateSelectedBrain(body, catalog, agent);
+  boundedString(body.query, 'query', { required: true, max: Number.MAX_SAFE_INTEGER });
+  if (body.query.length > MAX_QUERY_CHARS) {
+    throw compatibilityError(
+      'invalid_request',
+      `query exceeds ${MAX_QUERY_CHARS} characters`,
+      413,
+    );
+  }
+  if (body.mode !== undefined && !QUERY_MODES.has(body.mode)) {
+    throw compatibilityError('invalid_request', 'mode is invalid');
+  }
+  optionalBoolean(body.enablePGS, 'enablePGS');
+  validatePriorContext(body.priorContext);
+  const enablePGS = body.enablePGS === true;
+
+  if (enablePGS) {
+    if (direct.some((key) => Object.hasOwn(body, key))) {
+      throw compatibilityError('invalid_request', 'direct-query fields are invalid for PGS');
+    }
+    exactProviderPair(body.pgsSweep, 'pgsSweep');
+    exactProviderPair(body.pgsSynth, 'pgsSynth');
+    if (body.pgsMode !== undefined && !PGS_MODES.has(body.pgsMode)) {
+      throw compatibilityError('invalid_request', 'pgsMode is invalid');
+    }
+    if (body.pgsConfig !== undefined) {
+      exactObject(body.pgsConfig, ['sweepFraction'], 'pgsConfig is invalid');
+      if (ownKeys(body.pgsConfig).length !== 1
+          || typeof body.pgsConfig.sweepFraction !== 'number'
+          || !Number.isFinite(body.pgsConfig.sweepFraction)
+          || body.pgsConfig.sweepFraction <= 0
+          || body.pgsConfig.sweepFraction > 1) {
+        throw compatibilityError('invalid_request', 'pgsConfig.sweepFraction is invalid');
+      }
+    }
+    return {
+      operationType: 'pgs',
+      targetBrainId,
+      parameters: {
+        query: body.query,
+        ...(body.mode !== undefined ? { mode: body.mode } : {}),
+        ...(body.pgsMode !== undefined ? { pgsMode: body.pgsMode } : {}),
+        ...(body.pgsConfig !== undefined ? { pgsConfig: body.pgsConfig } : {}),
+        ...(body.pgsSweep !== undefined ? { pgsSweep: body.pgsSweep } : {}),
+        ...(body.pgsSynth !== undefined ? { pgsSynth: body.pgsSynth } : {}),
+        ...(body.priorContext !== undefined ? { priorContext: body.priorContext } : {}),
+      },
+    };
+  }
+
+  if (pgs.some((key) => Object.hasOwn(body, key))) {
+    throw compatibilityError('invalid_request', 'PGS fields require enablePGS true');
+  }
+  exactProviderPair(body.modelSelection, 'modelSelection');
+  for (const field of [
+    'enableSynthesis', 'includeOutputs', 'includeThoughts',
+    'includeCoordinatorInsights', 'allowActions',
+  ]) optionalBoolean(body[field], field);
+  if (body.topK !== undefined
+      && (!Number.isSafeInteger(body.topK) || body.topK < 1 || body.topK > 100)) {
+    throw compatibilityError('invalid_request', 'topK is invalid');
+  }
+  return {
+    operationType: 'query',
+    targetBrainId,
+    parameters: {
+      query: body.query,
+      ...(body.mode !== undefined ? { mode: body.mode } : {}),
+      ...(body.modelSelection !== undefined ? { modelSelection: body.modelSelection } : {}),
+      ...(body.enableSynthesis !== undefined ? { enableSynthesis: body.enableSynthesis } : {}),
+      ...(body.includeOutputs !== undefined ? { includeOutputs: body.includeOutputs } : {}),
+      ...(body.includeThoughts !== undefined ? { includeThoughts: body.includeThoughts } : {}),
+      ...(body.includeCoordinatorInsights !== undefined
+        ? { includeCoordinatorInsights: body.includeCoordinatorInsights } : {}),
+      ...(body.allowActions !== undefined ? { allowActions: body.allowActions } : {}),
+      ...(body.topK !== undefined ? { topK: body.topK } : {}),
+      ...(body.priorContext !== undefined ? { priorContext: body.priorContext } : {}),
+    },
+  };
+}
+
+function validateMetadata(value) {
+  if (value === undefined) return {};
+  if (!value || Array.isArray(value) || typeof value !== 'object') {
+    throw compatibilityError('invalid_request', 'metadata is invalid');
+  }
+  let serialized;
+  try { serialized = JSON.stringify(value); } catch {
+    throw compatibilityError('invalid_request', 'metadata is invalid');
+  }
+  if (serialized === undefined || Buffer.byteLength(serialized, 'utf8') > 64 * 1024) {
+    throw compatibilityError('invalid_request', 'metadata is invalid');
+  }
+  return JSON.parse(serialized);
+}
+
+function validateExportRequest(body, catalog, agent) {
+  const common = ['agent', 'brainId', 'format', 'dryRun', 'validateOnly'];
+  const canonical = ['operationId', 'resultHandle', 'fileName'];
+  const adHoc = ['query', 'answer', 'metadata'];
+  exactObject(body, [...common, ...canonical, ...adHoc]);
+  validateSelectedBrain(body, catalog, agent);
+  const isCanonical = Object.hasOwn(body, 'operationId');
+  if (isCanonical) {
+    if (adHoc.some((key) => Object.hasOwn(body, key))) {
+      throw compatibilityError('invalid_request', 'canonical export cannot accept inline result bytes');
+    }
+    boundedString(body.operationId, 'operationId', { required: true, max: 256 });
+    try { assertOperationId(body.operationId); } catch {
+      throw compatibilityError('invalid_request', 'operationId is invalid');
+    }
+    boundedString(body.resultHandle, 'resultHandle', { max: 256 });
+    if (body.resultHandle !== undefined) {
+      try { assertResultHandle(body.resultHandle); } catch {
+        throw compatibilityError('invalid_request', 'resultHandle is invalid');
+      }
+    }
+    boundedString(body.fileName, 'fileName', { max: 128 });
+    if (!['markdown', 'json', 'jsonl'].includes(body.format)) {
+      throw compatibilityError('invalid_request', 'format is invalid');
+    }
+    return {
+      kind: 'canonical',
+      operationId: body.operationId,
+      ...(body.resultHandle !== undefined ? { resultHandle: body.resultHandle } : {}),
+      format: body.format,
+      ...(body.fileName !== undefined ? { fileName: body.fileName } : {}),
+    };
+  }
+  if (canonical.some((key) => Object.hasOwn(body, key))) {
+    throw compatibilityError('invalid_request', 'ad hoc export cannot use a stored result handle');
+  }
+  boundedString(body.query, 'query', { required: true, max: MAX_QUERY_CHARS });
+  boundedString(body.answer, 'answer', { required: true, max: MAX_AD_HOC_ANSWER_CHARS });
+  if (!['markdown', 'json'].includes(body.format)) {
+    throw compatibilityError('invalid_request', 'format is invalid');
+  }
+  return {
+    kind: 'ad_hoc',
+    query: body.query,
+    answer: body.answer,
+    format: body.format,
+    metadata: { ...validateMetadata(body.metadata), canonicalEvidence: false },
+  };
+}
+
+function requestId(prefix) {
+  return `${prefix}-${crypto.randomUUID()}`;
+}
+
+async function catalogFor(options, agent) {
+  const catalog = options.catalogProvider
+    ? await options.catalogProvider({ agent })
+    : await buildQueryCatalog({ ...options, agent });
+  if (!catalog || Array.isArray(catalog) || typeof catalog !== 'object') {
+    throw compatibilityError('catalog_unavailable', 'query catalog is unavailable', 503, true);
+  }
+  return catalog;
+}
+
+function operationAdapter(options) {
+  const adapter = options.operationAdapter;
+  if (!adapter || ['start', 'attachAndWait', 'getResult', 'detach', 'exportStored']
+    .some((method) => typeof adapter[method] !== 'function')) {
+    throw compatibilityError(
+      'operation_adapter_unavailable',
+      'durable brain operation adapter is unavailable',
+      503,
+      true,
+    );
+  }
+  return adapter;
+}
+
+function typedError(error) {
+  const code = typeof error?.code === 'string' ? error.code : 'query_operation_failed';
+  return {
+    code,
+    message: typeof error?.message === 'string' && error.message ? error.message : code,
+    retryable: error?.retryable === true,
+  };
+}
+
+function errorStatus(error) {
+  if (Number.isInteger(error?.status)) return error.status;
+  if (error?.code === 'access_denied') return 403;
+  if (error?.code === 'operation_not_found' || error?.code === 'result_not_found') return 404;
+  if (error?.code === 'result_expired') return 410;
+  if (error?.code === 'request_too_large') return 413;
+  if (error?.retryable === true) return 503;
+  return 500;
+}
+
+function sendCompatibilityError(res, error, responseKind = 'run') {
+  const payload = {
+    ...(responseKind === 'export' ? { success: false } : { ok: false }),
+    error: typedError(error),
+  };
+  return res.status(errorStatus(error)).json(payload);
+}
+
+function detachedPayload(record) {
+  const id = record.operationId;
+  const base = `/home23/api/brain-operations/${encodeURIComponent(id)}`;
+  return {
+    ok: false,
+    operationId: id,
+    state: record.state,
+    attachmentState: 'detached',
+    detached: true,
+    guidance: {
+      resume: `Reconnect using operationId ${id}; the durable operation is still running.`,
+      status: `GET ${base}`,
+      result: `GET ${base}/result`,
+      cancel: `POST ${base}/cancel`,
+    },
+  };
+}
+
+function statusEvent(record) {
+  const sequence = record?.eventSequence ?? record?.sequence;
+  if (!Number.isSafeInteger(sequence) || sequence < 0) {
+    throw compatibilityError('event_stream_invalid', 'operation event sequence is invalid', 502, true);
+  }
+  return {
+    type: record.type || 'status',
+    operationId: record.operationId,
+    state: record.state || null,
+    phase: record.phase || null,
+    eventSequence: sequence,
+    updatedAt: record.updatedAt || record.at || null,
+  };
+}
+
+function terminalPayload(envelope) {
+  if (!envelope || Array.isArray(envelope) || typeof envelope !== 'object'
+      || !TERMINAL_STATES.has(envelope.state)) {
+    throw compatibilityError('operation_contract_invalid', 'terminal operation status is invalid', 502, true);
+  }
+  if (!SUCCESS_STATES.has(envelope.state)) {
+    const failure = compatibilityError(
+      envelope.error?.code || `operation_${envelope.state}`,
+      envelope.error?.message || `operation ended in ${envelope.state}`,
+      envelope.state === 'cancelled' ? 409 : 502,
+      envelope.error?.retryable === true,
+    );
+    throw failure;
+  }
+  const result = envelope.result;
+  if (!result || Array.isArray(result) || typeof result !== 'object'
+      || result.success === false || (Object.hasOwn(result, 'error') && result.error !== null)) {
+    throw compatibilityError('result_invalid', 'terminal operation result is invalid', 502, true);
+  }
+  if (typeof result.answer !== 'string' || !result.answer) {
+    throw compatibilityError('result_missing', 'terminal operation has no answer', 502, true);
+  }
+  return {
+    ok: true,
+    operationId: envelope.operationId,
+    state: envelope.state,
+    attachmentState: 'closed',
+    detached: false,
+    resultHandle: envelope.resultHandle ?? null,
+    resultArtifact: envelope.resultArtifact ?? null,
+    sourceEvidence: envelope.sourceEvidence ?? null,
+    result,
+    answer: result.answer,
+    ...(result.query !== undefined ? { query: result.query } : {}),
+    ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
+  };
+}
+
+async function startAndWait(options, request, { signal, onEvent } = {}) {
+  const adapter = operationAdapter(options);
+  const started = await adapter.start(request);
+  if (!started || !NONTERMINAL_STATES.has(started.state)
+      || started.operationType !== request.operationType) {
+    throw compatibilityError('operation_contract_invalid', 'operation did not start durably', 502, true);
+  }
+  const attachmentId = requestId('compat-attachment');
+  const waitMs = started.operationType === 'pgs' ? PGS_WAIT_MS : QUERY_WAIT_MS;
+  const status = await adapter.attachAndWait(started, {
+    attachmentId,
+    signal,
+    waitMs,
+    onEvent: onEvent || (() => {}),
+  });
+  if (status?.operationId !== started.operationId) {
+    throw compatibilityError('operation_contract_invalid', 'operation wait changed identity', 502, true);
+  }
+  if (status?.attachmentState === 'detached' && NONTERMINAL_STATES.has(status.state)) {
+    return { detached: status };
+  }
+  if (!status || !TERMINAL_STATES.has(status.state)) {
+    throw compatibilityError('operation_contract_invalid', 'operation wait returned invalid state', 502, true);
+  }
+  const envelope = await adapter.getResult(started.operationId);
+  if (envelope?.operationId !== started.operationId) {
+    throw compatibilityError('operation_contract_invalid', 'operation result changed identity', 502, true);
+  }
+  return { envelope };
 }
 
 function createQueryApiRouter(options = {}) {
@@ -282,8 +717,9 @@ function createQueryApiRouter(options = {}) {
 
   router.get('/catalog', async (req, res) => {
     try {
+      validateRouteQuery(req);
       const agent = resolveAgent(req.query?.agent);
-      const catalog = await buildQueryCatalog({ ...options, agent });
+      const catalog = await catalogFor(options, agent);
       res.json(catalog);
     } catch (err) {
       res.status(500).json({
@@ -297,121 +733,201 @@ function createQueryApiRouter(options = {}) {
         selectedBrain: null,
         cosmo: normalizeCosmoStatus(null, err),
         streaming: false,
-        limits: { maxQueryChars: 12000 },
+        limits: {
+          maxQueryChars: MAX_QUERY_CHARS,
+          maxPriorContextChars: MAX_PRIOR_CONTEXT_CHARS,
+        },
         lastRouteError: err.message || String(err),
       });
     }
   });
 
   router.post('/run', async (req, res) => {
-    const agent = resolveAgent(req.body?.agent || req.query?.agent);
-    const catalog = await buildQueryCatalog({ ...options, agent });
-    if (isDryRunRequest(req)) {
-      res.json({
-        ok: true,
-        dryRun: true,
-        result: buildDryRunQueryResult(req, { agent, catalog, operation: 'run' }),
-      });
-      return;
-    }
-    if (!catalog.available) {
-      res.status(503).json({ ok: false, unavailable: true, error: catalog.reason || 'query unavailable', catalog });
-      return;
-    }
-    const brainId = req.body?.brainId || req.body?.routeKey || catalog.selectedBrain?.routeKey || catalog.selectedBrain?.id;
-    if (!brainId) {
-      res.status(400).json({ ok: false, unavailable: true, error: 'brainId required', catalog });
-      return;
-    }
+    let responseFinished = false;
+    const controller = new AbortController();
+    res.once('close', () => {
+      if (!responseFinished && !controller.signal.aborted) {
+        controller.abort(compatibilityError('caller_disconnected', 'query caller disconnected', 499));
+      }
+    });
     try {
-      const cosmoBaseUrl = options.cosmoBaseUrl || getDefaultCosmoBaseUrl();
-      const fetchImpl = options.fetchImpl || fetch;
-      const upstream = await fetchImpl(`${String(cosmoBaseUrl).replace(/\/$/, '')}/api/brain/${encodeURIComponent(brainId)}/query`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(req.body || {}),
-        signal: typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
-          ? AbortSignal.timeout(Number(options.runTimeoutMs || 120000))
-          : undefined,
-      });
-      const text = await upstream.text();
-      let body;
-      try { body = text ? JSON.parse(text) : {}; } catch { body = { answer: text }; }
-      if (!upstream.ok || body?.error) {
-        res.status(upstream.status || 502).json({
-          ok: false,
-          error: body?.error || body?.message || `upstream HTTP ${upstream.status}`,
-          upstream: body,
+      validateRouteQuery(req);
+      const agent = resolveAgent(req.body?.agent || req.query?.agent);
+      const catalog = await catalogFor(options, agent);
+      if (!catalog.available) {
+        throw compatibilityError(
+          'query_unavailable',
+          catalog.reason || 'query unavailable',
+          503,
+          true,
+        );
+      }
+      const normalized = validateCompatibilityRequest(req.body, catalog, agent);
+      if (isDryRunRequest(req)) {
+        responseFinished = true;
+        res.json({
+          ok: true,
+          dryRun: true,
+          result: buildDryRunQueryResult(req, { agent, catalog, operation: 'run' }),
         });
         return;
       }
-      res.json({ ok: true, result: body });
+      const outcome = await startAndWait(options, {
+        requestId: requestId('compat-query'),
+        operationType: normalized.operationType,
+        target: { brainId: normalized.targetBrainId },
+        parameters: normalized.parameters,
+      }, { signal: controller.signal });
+      responseFinished = true;
+      if (outcome.detached) {
+        res.status(202).json(detachedPayload(outcome.detached));
+        return;
+      }
+      res.json(terminalPayload(outcome.envelope));
     } catch (err) {
-      res.status(502).json({ ok: false, unavailable: true, error: err.message || String(err) });
+      responseFinished = true;
+      if (!res.headersSent) sendCompatibilityError(res, err);
+      else res.end();
+    }
+  });
+
+  router.post('/stream', async (req, res) => {
+    let responseFinished = false;
+    let headersSent = false;
+    const controller = new AbortController();
+    res.once('close', () => {
+      if (!responseFinished && !controller.signal.aborted) {
+        controller.abort(compatibilityError('caller_disconnected', 'stream caller disconnected', 499));
+      }
+    });
+    try {
+      validateRouteQuery(req);
+      const agent = resolveAgent(req.body?.agent || req.query?.agent);
+      const catalog = await catalogFor(options, agent);
+      if (!catalog.available) {
+        throw compatibilityError(
+          'query_unavailable',
+          catalog.reason || 'query unavailable',
+          503,
+          true,
+        );
+      }
+      const normalized = validateCompatibilityRequest(req.body, catalog, agent);
+      if (isDryRunRequest(req)) {
+        responseFinished = true;
+        res.json({
+          ok: true,
+          dryRun: true,
+          result: buildDryRunQueryResult(req, { agent, catalog, operation: 'stream' }),
+        });
+        return;
+      }
+      operationAdapter(options);
+      res.status(200);
+      res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+      res.setHeader('cache-control', 'no-store');
+      res.setHeader('connection', 'keep-alive');
+      res.flushHeaders?.();
+      headersSent = true;
+      let lastSequence = 0;
+      const send = (payload) => {
+        if (!res.writableEnded && !res.destroyed) {
+          res.write(`data: ${JSON.stringify(payload)}\n\n`);
+        }
+      };
+      const outcome = await startAndWait(options, {
+        requestId: requestId('compat-stream'),
+        operationType: normalized.operationType,
+        target: { brainId: normalized.targetBrainId },
+        parameters: normalized.parameters,
+      }, {
+        signal: controller.signal,
+        onEvent: (event) => {
+          const projected = statusEvent(event);
+          if (projected.eventSequence <= lastSequence) return;
+          lastSequence = projected.eventSequence;
+          send(projected);
+        },
+      });
+      if (outcome.detached) {
+        send({ type: 'detached', ...detachedPayload(outcome.detached) });
+      } else {
+        send({ type: 'result', ...terminalPayload(outcome.envelope) });
+      }
+      responseFinished = true;
+      res.end();
+    } catch (err) {
+      responseFinished = true;
+      if (!headersSent && !res.headersSent) {
+        sendCompatibilityError(res, err);
+      } else if (!res.writableEnded && !res.destroyed) {
+        res.write(`data: ${JSON.stringify({ type: 'error', ok: false, error: typedError(err) })}\n\n`);
+        res.end();
+      }
     }
   });
 
   router.post('/export', async (req, res) => {
-    const agent = resolveAgent(req.body?.agent || req.query?.agent);
-    const catalog = await buildQueryCatalog({ ...options, agent });
-    if (isDryRunRequest(req)) {
-      const result = buildDryRunQueryResult(req, { agent, catalog, operation: 'export' });
-      res.json({
-        success: true,
-        dryRun: true,
-        exportedTo: null,
-        query: result.query,
-        answer: result.answer,
-        format: req.body?.format || req.body?.exportFormat || 'markdown',
-        metadata: result.metadata,
-      });
-      return;
-    }
-    if (!catalog.available) {
-      res.status(503).json({ success: false, unavailable: true, error: catalog.reason || 'query unavailable', catalog });
-      return;
-    }
-    const brainId = req.body?.brainId || req.body?.routeKey || catalog.selectedBrain?.routeKey || catalog.selectedBrain?.id;
-    if (!brainId) {
-      res.status(400).json({ success: false, unavailable: true, error: 'brainId required', catalog });
-      return;
-    }
     try {
-      const cosmoBaseUrl = options.cosmoBaseUrl || getDefaultCosmoBaseUrl();
-      const fetchImpl = options.fetchImpl || fetch;
-      const upstream = await fetchImpl(`${String(cosmoBaseUrl).replace(/\/$/, '')}/api/brain/${encodeURIComponent(brainId)}/export-query`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(req.body || {}),
-        signal: typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
-          ? AbortSignal.timeout(Number(options.exportTimeoutMs || 120000))
-          : undefined,
-      });
-      const text = await upstream.text();
-      let body;
-      try { body = text ? JSON.parse(text) : {}; } catch { body = { error: text }; }
-      if (!upstream.ok || body?.error) {
-        res.status(upstream.status || 502).json({
-          success: false,
-          error: body?.error || body?.message || `upstream HTTP ${upstream.status}`,
-          result: body,
+      validateRouteQuery(req);
+      const agent = resolveAgent(req.body?.agent || req.query?.agent);
+      const catalog = await catalogFor(options, agent);
+      if (!catalog.available) {
+        throw compatibilityError(
+          'query_unavailable',
+          catalog.reason || 'query unavailable',
+          503,
+          true,
+        );
+      }
+      const normalized = validateExportRequest(req.body, catalog, agent);
+      if (isDryRunRequest(req)) {
+        const result = buildDryRunQueryResult(req, { agent, catalog, operation: 'export' });
+        res.json({
+          success: true,
+          dryRun: true,
+          canonicalEvidence: normalized.kind === 'canonical',
+          exportedTo: null,
+          query: normalized.query || result.query,
+          answer: normalized.answer || result.answer,
+          format: normalized.format,
+          metadata: result.metadata,
         });
         return;
       }
-      res.json({ success: body?.success ?? true, ...body });
+      const result = await operationAdapter(options).exportStored({
+        ...normalized,
+        ...(normalized.kind === 'ad_hoc' ? { requestId: requestId('compat-export') } : {}),
+      });
+      if (!result || Array.isArray(result) || typeof result !== 'object'
+          || result.success === false || (Object.hasOwn(result, 'error') && result.error !== null)
+          || result.attachmentState === 'detached') {
+        if (result?.attachmentState === 'detached' && result.operationId) {
+          res.status(202).json({
+            success: false,
+            ...detachedPayload(result),
+            canonicalEvidence: false,
+          });
+          return;
+        }
+        throw compatibilityError('export_failed', 'brain export did not complete', 502, true);
+      }
+      res.json({ success: true, ...result });
     } catch (err) {
-      res.status(502).json({ success: false, unavailable: true, error: err.message || String(err) });
+      if (!res.headersSent) sendCompatibilityError(res, err, 'export');
+      else res.end();
     }
   });
 
   router.get('/stream', (_req, res) => {
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
+    res.status(405).json({
+      ok: false,
+      error: {
+        code: 'method_not_allowed',
+        message: 'query stream requires POST',
+        retryable: false,
+      },
     });
-    res.write(`data: ${JSON.stringify({ type: 'error', error: 'query stream requires POST body; facade stream proxy is not enabled yet' })}\n\n`);
-    res.end();
   });
 
   return router;

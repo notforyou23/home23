@@ -1,0 +1,300 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const {
+  BrainOperationsCompatibilityAdapter,
+} = require('../../../engine/src/dashboard/brain-operations/compatibility-adapter.js');
+
+const OPERATION_ID = `brop_${'a'.repeat(32)}`;
+const RESULT_HANDLE = `brres_${'b'.repeat(32)}`;
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+
+function record(overrides = {}) {
+  return {
+    operationId: OPERATION_ID,
+    operationType: 'query',
+    requesterAgent: 'jerry',
+    state: 'running',
+    eventSequence: 0,
+    result: null,
+    resultHandle: null,
+    resultArtifact: null,
+    resultExpiredAt: null,
+    error: null,
+    sourceEvidence: null,
+    ...overrides,
+  };
+}
+
+function makeAdapter(overrides = {}) {
+  const coordinator = {
+    start: async () => record({ state: 'queued' }),
+    attach: async () => ({ done: Promise.resolve(record({ state: 'complete' })) }),
+    detach: async () => ({ state: 'detached' }),
+    ...overrides.coordinator,
+  };
+  const reader = {
+    getAuthorized: async () => record({ state: 'complete', resultHandle: RESULT_HANDLE }),
+    getResultAuthorized: async () => ({ answer: 'protected' }),
+    ...overrides.reader,
+  };
+  const exporter = {
+    exportResult: async () => ({ exportedTo: 'workspace/brain-exports/result.md' }),
+    ...overrides.exporter,
+  };
+  const adapter = new BrainOperationsCompatibilityAdapter({
+    requesterAgent: 'jerry',
+    coordinator,
+    reader,
+    exporter,
+    ...(overrides.timers ? { timers: overrides.timers } : {}),
+    randomUUID: () => '11111111-1111-4111-8111-111111111111',
+  });
+  return { adapter, coordinator, reader, exporter };
+}
+
+test('compatibility adapter rejects terminal and cross-requester start records', async () => {
+  for (const started of [
+    record({ state: 'complete' }),
+    record({ state: 'queued', requesterAgent: 'forrest' }),
+  ]) {
+    const { adapter } = makeAdapter({ coordinator: { start: async () => started } });
+    await assert.rejects(
+      adapter.start({ requestId: 'request-1', operationType: 'query', parameters: { query: 'x' } }),
+      (error) => ['operation_contract_invalid', 'access_denied'].includes(error.code),
+    );
+  }
+});
+
+test('compatibility attachment deadline detaches durable work without cancelling it', async () => {
+  const done = deferred();
+  const timers = [];
+  const calls = [];
+  const { adapter } = makeAdapter({
+    coordinator: {
+      attach: async () => ({ done: done.promise }),
+      detach: async (_operationId, input) => {
+        calls.push(['detach', input.reason]);
+        done.resolve({ state: 'detached' });
+        return { state: 'detached' };
+      },
+      cancel: async () => { calls.push(['cancel']); },
+    },
+    reader: { getAuthorized: async () => record({ state: 'running', eventSequence: 4 }) },
+    timers: {
+      setTimeout: (callback, ms) => {
+        timers.push({ callback, ms });
+        return timers.length;
+      },
+      clearTimeout: () => {},
+    },
+  });
+  const pending = adapter.attachAndWait(record(), {
+    attachmentId: 'attachment-1',
+    waitMs: 5_400_000,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timers[0].ms, 5_400_000);
+  timers[0].callback();
+  const result = await pending;
+  assert.equal(result.state, 'running');
+  assert.equal(result.attachmentState, 'detached');
+  assert.equal(result.detachedReason, 'attachment_deadline');
+  assert.deepEqual(calls, [['detach', 'attachment_deadline']]);
+});
+
+test('compatibility caller abort detaches only its attachment and keeps operation actionable', async () => {
+  const done = deferred();
+  const reasons = [];
+  const controller = new AbortController();
+  const { adapter } = makeAdapter({
+    coordinator: {
+      attach: async () => ({ done: done.promise }),
+      detach: async (_operationId, input) => {
+        reasons.push(input.reason);
+        done.resolve({ state: 'detached' });
+        return { state: 'detached' };
+      },
+    },
+    reader: { getAuthorized: async () => record({ state: 'running', eventSequence: 2 }) },
+  });
+  const pending = adapter.attachAndWait(record(), {
+    attachmentId: 'attachment-2',
+    waitMs: 5_400_000,
+    signal: controller.signal,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  controller.abort(new Error('caller left'));
+  const result = await pending;
+  assert.equal(result.attachmentState, 'detached');
+  assert.deepEqual(reasons, ['caller_abort']);
+});
+
+test('compatibility deadline returns detached status even when detach cleanup fails', async () => {
+  const timers = [];
+  const never = deferred();
+  const { adapter } = makeAdapter({
+    coordinator: {
+      attach: async () => ({ done: never.promise }),
+      detach: async () => { throw Object.assign(new Error('disk busy'), { code: 'detach_failed' }); },
+    },
+    reader: { getAuthorized: async () => record({ state: 'running', eventSequence: 2 }) },
+    timers: {
+      setTimeout: (callback) => { timers.push(callback); return timers.length; },
+      clearTimeout: () => {},
+    },
+  });
+  const pending = adapter.attachAndWait(record(), {
+    attachmentId: 'attachment-4',
+    waitMs: 5_400_000,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  timers[0]();
+  const outcome = await Promise.race([
+    pending,
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 100)),
+  ]);
+  assert.notEqual(outcome, 'hung');
+  assert.equal(outcome.attachmentState, 'detached');
+  assert.equal(outcome.detachedReason, 'attachment_deadline');
+});
+
+test('compatibility attachment setup failures attempt durable detach cleanup', async () => {
+  let detaches = 0;
+  const { adapter } = makeAdapter({
+    coordinator: {
+      attach: async () => ({ done: new Promise(() => {}) }),
+      detach: async () => { detaches += 1; return { state: 'detached' }; },
+    },
+    timers: {
+      setTimeout: () => { throw new Error('timer setup failed'); },
+      clearTimeout: () => {},
+    },
+  });
+  await assert.rejects(adapter.attachAndWait(record(), {
+    attachmentId: 'attachment-5',
+    waitMs: 5_400_000,
+  }), /timer setup failed/);
+  assert.equal(detaches, 1);
+});
+
+test('compatibility invalid replay event detaches the opened attachment', async () => {
+  let detaches = 0;
+  const { adapter } = makeAdapter({
+    coordinator: {
+      attach: async (_operationId, input) => {
+        input.onEvent({ operationId: OPERATION_ID, eventSequence: -1, type: 'progress' });
+        return { done: Promise.resolve() };
+      },
+      detach: async () => { detaches += 1; return { state: 'detached' }; },
+    },
+  });
+  await assert.rejects(adapter.attachAndWait(record(), {
+    attachmentId: 'attachment-6',
+    waitMs: 5_400_000,
+    onEvent: () => {},
+  }), (error) => error.code === 'event_stream_invalid');
+  assert.equal(detaches, 1);
+});
+
+test('compatibility adapter emits monotonic events and reloads terminal bytes through reader', async () => {
+  const seen = [];
+  let protectedReads = 0;
+  const { adapter } = makeAdapter({
+    coordinator: {
+      attach: async (_operationId, input) => {
+        input.onEvent({ operationId: OPERATION_ID, eventSequence: 2, type: 'progress' });
+        input.onEvent({ operationId: OPERATION_ID, eventSequence: 1, type: 'progress' });
+        input.onEvent({ operationId: OPERATION_ID, eventSequence: 2, type: 'progress' });
+        input.onEvent({ operationId: OPERATION_ID, eventSequence: 3, type: 'terminal' });
+        return { done: Promise.resolve({ state: 'complete' }) };
+      },
+    },
+    reader: {
+      getAuthorized: async () => record({
+        state: 'complete', eventSequence: 3, resultHandle: RESULT_HANDLE,
+      }),
+      getResultAuthorized: async (_operationId, handle) => {
+        protectedReads += 1;
+        assert.equal(handle, RESULT_HANDLE);
+        return { answer: 'protected terminal bytes' };
+      },
+    },
+  });
+  const status = await adapter.attachAndWait(record(), {
+    attachmentId: 'attachment-3',
+    waitMs: 5_400_000,
+    onEvent: (event) => seen.push(event.eventSequence),
+  });
+  assert.equal(status.attachmentState, 'closed');
+  assert.deepEqual(seen, [2, 3]);
+  const result = await adapter.getResult(OPERATION_ID);
+  assert.deepEqual(result.result, { answer: 'protected terminal bytes' });
+  assert.equal(protectedReads, 1);
+});
+
+test('compatibility canonical export delegates stored authority without caller result bytes', async () => {
+  const calls = [];
+  const { adapter } = makeAdapter({
+    exporter: {
+      exportResult: async (input) => {
+        calls.push(input);
+        return { exportedTo: 'workspace/brain-exports/result.md' };
+      },
+    },
+  });
+  const result = await adapter.exportStored({
+    kind: 'canonical',
+    operationId: OPERATION_ID,
+    resultHandle: RESULT_HANDLE,
+    format: 'markdown',
+    fileName: 'result',
+  });
+  assert.equal(result.exportedTo, 'workspace/brain-exports/result.md');
+  assert.deepEqual(calls, [{
+    requesterAgent: 'jerry',
+    operationId: OPERATION_ID,
+    resultHandle: RESULT_HANDLE,
+    format: 'markdown',
+    fileName: 'result',
+  }]);
+});
+
+test('compatibility ad hoc export creates an explicit noncanonical durable operation', async () => {
+  const starts = [];
+  const { adapter } = makeAdapter({
+    coordinator: {
+      start: async (input) => {
+        starts.push(input);
+        return record({ state: 'queued', operationType: 'ad_hoc_export' });
+      },
+      attach: async () => ({ done: Promise.resolve({ state: 'complete' }) }),
+    },
+    reader: {
+      getAuthorized: async () => record({
+        state: 'complete', operationType: 'ad_hoc_export', eventSequence: 1,
+        resultHandle: RESULT_HANDLE,
+      }),
+      getResultAuthorized: async () => ({ exportedTo: 'workspace/brain-exports/ad-hoc.md' }),
+    },
+  });
+  const result = await adapter.exportStored({
+    kind: 'ad_hoc',
+    requestId: 'request-export',
+    query: 'x',
+    answer: 'not canonical evidence',
+    format: 'markdown',
+    metadata: { canonicalEvidence: false },
+  });
+  assert.equal(starts[0].operationType, 'ad_hoc_export');
+  assert.equal(starts[0].parameters.answer, 'not canonical evidence');
+  assert.equal(result.canonicalEvidence, false);
+  assert.equal(result.exportedTo, 'workspace/brain-exports/ad-hoc.md');
+});

@@ -312,6 +312,14 @@ class DashboardServer {
     this.brainOperationsWorker = dependencies.worker || null;
     this.brainOperationsReader = dependencies.reader;
     this.brainOperationsExporter = dependencies.exporter;
+    const { createBrainOperationsCompatibilityAdapter } =
+      require('./brain-operations/compatibility-adapter.js');
+    this.brainOperationsCompatibilityAdapter = createBrainOperationsCompatibilityAdapter({
+      requesterAgent,
+      coordinator: dependencies.coordinator,
+      reader: dependencies.reader,
+      exporter: dependencies.exporter,
+    });
   }
 
   createDefaultBrainOperationsDependencies({ requesterAgent }) {
@@ -2068,6 +2076,7 @@ class DashboardServer {
         home23Root,
         getDefaultAgent: () => this.getHome23AgentName(),
         resolveAgent: (candidate) => this.resolveRequestedHome23Agent(candidate),
+        operationAdapter: this.brainOperationsCompatibilityAdapter,
       });
       const { router: settingsRouter } = createSettingsRouter(home23Root, {
         getOrchestrator: () => this.orchestrator,

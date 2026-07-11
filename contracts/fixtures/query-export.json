@@ -1,14 +1,15 @@
 {
   "success": true,
-  "exportedTo": "/home/user/home23/instances/agent/workspace/query-exports/contract-smoke.md",
-  "filename": "contract-smoke.md",
-  "relativePath": "instances/jerry/workspace/query-exports/contract-smoke.md",
-  "query": "What changed recently?",
-  "answer": "Recent Home23 activity is summarized here.",
+  "operationId": "brop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "state": "complete",
+  "resultHandle": "brres_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "canonicalEvidence": true,
+  "exportHandle": "brexp_cccccccccccccccccccccccccccccccc",
+  "relativePath": "workspace/brain-exports/contract-smoke.md",
+  "bytes": 148,
+  "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "sourceOperationId": "brop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "sourceResultHandleHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   "format": "markdown",
-  "metadata": {
-    "model": "gpt-5.5",
-    "mode": "dive",
-    "timestamp": "2026-06-26T14:28:00Z"
-  }
+  "exportedTo": "workspace/brain-exports/contract-smoke.md"
 }

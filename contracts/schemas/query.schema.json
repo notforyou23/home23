@@ -115,44 +115,80 @@
         "lastRouteError": { "type": ["string", "null"] }
       }
     },
-    "queryRequest": {
+    "providerModelPair": {
       "type": "object",
-      "additionalProperties": true,
-      "required": ["query", "model", "mode", "enablePGS"],
+      "additionalProperties": false,
+      "required": ["provider", "model"],
       "properties": {
-        "query": { "type": "string" },
-        "model": { "type": "string" },
-        "mode": { "type": "string" },
-        "includeEvidenceMetrics": { "type": "boolean" },
+        "provider": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "model": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "priorContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query", "answer"],
+      "properties": {
+        "query": { "type": "string", "maxLength": 20000 },
+        "answer": { "type": "string", "maxLength": 20000 }
+      }
+    },
+    "queryRequest": {
+      "oneOf": [
+        { "$ref": "#/$defs/directQueryRequest" },
+        { "$ref": "#/$defs/pgsQueryRequest" }
+      ]
+    },
+    "directQueryRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query"],
+      "properties": {
+        "agent": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "brainId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "query": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "mode": {
+          "enum": ["quick", "full", "expert", "dive", "fast", "normal", "deep", "executive", "raw", "report", "innovation", "consulting", "grounded"]
+        },
+        "modelSelection": { "$ref": "#/$defs/providerModelPair" },
+        "enablePGS": { "const": false },
         "enableSynthesis": { "type": "boolean" },
-        "includeCoordinatorInsights": { "type": "boolean" },
         "includeOutputs": { "type": "boolean" },
         "includeThoughts": { "type": "boolean" },
+        "includeCoordinatorInsights": { "type": "boolean" },
         "allowActions": { "type": "boolean" },
-        "enablePGS": { "type": "boolean" },
-        "pgsMode": { "type": "string" },
-        "pgsSessionId": { "type": "string" },
-        "pgsFullSweep": { "type": "boolean" },
+        "topK": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "priorContext": { "$ref": "#/$defs/priorContext" },
+        "dryRun": { "type": "boolean" },
+        "validateOnly": { "type": "boolean" }
+      }
+    },
+    "pgsQueryRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["query", "enablePGS"],
+      "properties": {
+        "agent": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "brainId": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "query": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "mode": {
+          "enum": ["quick", "full", "expert", "dive", "fast", "normal", "deep", "executive", "raw", "report", "innovation", "consulting", "grounded"]
+        },
+        "enablePGS": { "const": true },
+        "pgsMode": { "enum": ["full", "continue", "targeted"] },
         "pgsConfig": {
-          "type": ["object", "null"],
-          "additionalProperties": true,
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sweepFraction"],
           "properties": {
-            "sweepFraction": { "type": "number", "minimum": 0, "maximum": 1 }
+            "sweepFraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
           }
         },
-        "pgsSweepModel": { "type": ["string", "null"] },
-        "pgsSweepProvider": { "type": ["string", "null"] },
-        "pgsSynthProvider": { "type": ["string", "null"] },
-        "exportFormat": { "type": ["string", "null"] },
-        "provider": { "type": ["string", "null"] },
-        "priorContext": {
-          "type": ["object", "null"],
-          "additionalProperties": true,
-          "properties": {
-            "query": { "type": "string" },
-            "answer": { "type": "string" }
-          }
-        }
+        "pgsSweep": { "$ref": "#/$defs/providerModelPair" },
+        "pgsSynth": { "$ref": "#/$defs/providerModelPair" },
+        "priorContext": { "$ref": "#/$defs/priorContext" },
+        "dryRun": { "type": "boolean" },
+        "validateOnly": { "type": "boolean" }
       }
     },
     "queryResult": {
@@ -170,47 +206,220 @@
         "exportedTo": { "type": ["string", "null"] }
       }
     },
-    "queryRunResponse": {
+    "operationId": {
+      "type": "string",
+      "pattern": "^brop_[A-Za-z0-9_-]{32,}$"
+    },
+    "resultHandle": {
+      "type": ["string", "null"],
+      "pattern": "^brres_[A-Za-z0-9_-]{32,}$"
+    },
+    "structuredError": {
       "type": "object",
-      "additionalProperties": true,
-      "required": ["ok"],
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
       "properties": {
-        "ok": { "type": "boolean" },
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "operationGuidance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["resume", "status", "result", "cancel"],
+      "properties": {
+        "resume": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "result": { "type": "string", "minLength": 1 },
+        "cancel": { "type": "string", "minLength": 1 }
+      }
+    },
+    "resultArtifact": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "sourceEvidence": {
+      "type": ["object", "null"],
+      "additionalProperties": true
+    },
+    "queryRunResponse": {
+      "oneOf": [
+        { "$ref": "#/$defs/queryTerminalSuccess" },
+        { "$ref": "#/$defs/queryDetached" },
+        { "$ref": "#/$defs/queryFailure" },
+        { "$ref": "#/$defs/queryDryRun" }
+      ]
+    },
+    "queryTerminalSuccess": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "operationId", "state", "attachmentState", "detached", "resultHandle", "resultArtifact", "sourceEvidence", "result", "answer"],
+      "properties": {
+        "type": { "const": "result" },
+        "ok": { "const": true },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "state": { "enum": ["complete", "partial"] },
+        "attachmentState": { "const": "closed" },
+        "detached": { "const": false },
+        "resultHandle": { "$ref": "#/$defs/resultHandle" },
+        "resultArtifact": { "$ref": "#/$defs/resultArtifact" },
+        "sourceEvidence": { "$ref": "#/$defs/sourceEvidence" },
         "result": { "$ref": "#/$defs/queryResult" },
-        "error": { "type": ["string", "null"] },
-        "unavailable": { "type": ["boolean", "null"] }
+        "answer": { "type": "string", "minLength": 1 },
+        "query": { "type": "string" },
+        "metadata": { "type": ["object", "null"], "additionalProperties": true }
+      }
+    },
+    "queryDetached": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "operationId", "state", "attachmentState", "detached", "guidance"],
+      "properties": {
+        "type": { "const": "detached" },
+        "ok": { "const": false },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "state": { "enum": ["queued", "running"] },
+        "attachmentState": { "const": "detached" },
+        "detached": { "const": true },
+        "guidance": { "$ref": "#/$defs/operationGuidance" }
+      }
+    },
+    "queryFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "error"],
+      "properties": {
+        "ok": { "const": false },
+        "error": { "$ref": "#/$defs/structuredError" }
+      }
+    },
+    "queryDryRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "dryRun", "result"],
+      "properties": {
+        "ok": { "const": true },
+        "dryRun": { "const": true },
+        "result": { "$ref": "#/$defs/queryResult" }
       }
     },
     "queryExportResponse": {
+      "oneOf": [
+        { "$ref": "#/$defs/queryExportSuccess" },
+        { "$ref": "#/$defs/queryExportDetached" },
+        { "$ref": "#/$defs/queryExportFailure" },
+        { "$ref": "#/$defs/queryExportDryRun" }
+      ]
+    },
+    "queryExportSuccess": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
+      "required": ["success"],
       "properties": {
-        "success": { "type": ["boolean", "null"] },
-        "dryRun": { "type": ["boolean", "null"] },
-        "exportedTo": { "type": ["string", "null"] },
-        "filepath": { "type": ["string", "null"] },
-        "filename": { "type": ["string", "null"] },
-        "relativePath": { "type": ["string", "null"] },
-        "query": { "type": ["string", "null"] },
-        "answer": { "type": ["string", "null"] },
-        "format": { "type": ["string", "null"] },
-        "metadata": { "type": ["object", "null"], "additionalProperties": true },
-        "error": { "type": ["string", "null"] },
-        "unavailable": { "type": ["boolean", "null"] }
+        "success": { "const": true },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "state": { "enum": ["complete", "partial"] },
+        "resultHandle": { "$ref": "#/$defs/resultHandle" },
+        "canonicalEvidence": { "type": "boolean" },
+        "exportedTo": { "type": "string", "minLength": 1 },
+        "exportHandle": { "type": "string", "minLength": 1 },
+        "relativePath": { "type": "string", "minLength": 1 },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sourceOperationId": { "type": ["string", "null"] },
+        "sourceResultHandleHash": { "type": ["string", "null"] },
+        "format": { "enum": ["markdown", "json", "jsonl"] }
+      }
+    },
+    "queryExportDetached": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["success", "ok", "operationId", "state", "attachmentState", "detached", "guidance", "canonicalEvidence"],
+      "properties": {
+        "success": { "const": false },
+        "ok": { "const": false },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "state": { "enum": ["queued", "running"] },
+        "attachmentState": { "const": "detached" },
+        "detached": { "const": true },
+        "guidance": { "$ref": "#/$defs/operationGuidance" },
+        "canonicalEvidence": { "const": false }
+      }
+    },
+    "queryExportFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["success", "error"],
+      "properties": {
+        "success": { "const": false },
+        "error": { "$ref": "#/$defs/structuredError" }
+      }
+    },
+    "queryExportDryRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["success", "dryRun", "canonicalEvidence", "exportedTo", "query", "answer", "format", "metadata"],
+      "properties": {
+        "success": { "const": true },
+        "dryRun": { "const": true },
+        "canonicalEvidence": { "type": "boolean" },
+        "exportedTo": { "type": "null" },
+        "query": { "type": "string" },
+        "answer": { "type": "string" },
+        "format": { "enum": ["markdown", "json", "jsonl"] },
+        "metadata": { "type": ["object", "null"], "additionalProperties": true }
       }
     },
     "streamEvent": {
+      "oneOf": [
+        { "$ref": "#/$defs/streamStatusEvent" },
+        { "$ref": "#/$defs/streamResultEvent" },
+        { "$ref": "#/$defs/streamDetachedEvent" },
+        { "$ref": "#/$defs/streamErrorEvent" }
+      ]
+    },
+    "streamStatusEvent": {
       "type": "object",
-      "additionalProperties": true,
+      "additionalProperties": false,
+      "required": ["type", "operationId", "state", "phase", "eventSequence", "updatedAt"],
       "properties": {
-        "type": { "type": ["string", "null"] },
-        "error": { "type": ["string", "null"] },
-        "message": { "type": ["string", "null"] },
-        "chunk": { "type": ["string", "null"] },
-        "text": { "type": ["string", "null"] },
-        "tool": { "type": ["string", "null"] },
+        "type": { "type": "string", "minLength": 1 },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "state": { "type": ["string", "null"] },
         "phase": { "type": ["string", "null"] },
-        "result": { "$ref": "#/$defs/queryResult" }
+        "eventSequence": { "type": "integer", "minimum": 0 },
+        "updatedAt": { "type": ["string", "null"] }
+      }
+    },
+    "streamResultEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/queryTerminalSuccess" },
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "result" } }
+        }
+      ]
+    },
+    "streamDetachedEvent": {
+      "allOf": [
+        { "$ref": "#/$defs/queryDetached" },
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "detached" } }
+        }
+      ]
+    },
+    "streamErrorEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "ok", "error"],
+      "properties": {
+        "type": { "const": "error" },
+        "ok": { "const": false },
+        "error": { "$ref": "#/$defs/structuredError" }
       }
     }
   }

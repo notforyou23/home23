@@ -51,7 +51,8 @@
   },
   "streaming": false,
   "limits": {
-    "maxQueryChars": 12000
+    "maxQueryChars": 12000,
+    "maxPriorContextChars": 20000
   },
   "lastRouteError": null
 }

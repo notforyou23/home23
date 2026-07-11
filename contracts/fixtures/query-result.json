@@ -1,5 +1,15 @@
 {
   "ok": true,
+  "operationId": "brop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "state": "complete",
+  "attachmentState": "closed",
+  "detached": false,
+  "resultHandle": "brres_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "resultArtifact": null,
+  "sourceEvidence": {
+    "sourceHealth": "healthy",
+    "matchOutcome": "matches"
+  },
   "result": {
     "query": "What changed recently?",
     "answer": "Recent Home23 activity is summarized here.",
@@ -12,6 +22,18 @@
         "thoughts": 4,
         "edges": 21
       }
+    }
+  },
+  "answer": "Recent Home23 activity is summarized here.",
+  "query": "What changed recently?",
+  "metadata": {
+    "model": "gpt-5.5",
+    "mode": "dive",
+    "timestamp": "2026-06-26T14:28:00Z",
+    "sources": {
+      "memoryNodes": 12,
+      "thoughts": 4,
+      "edges": 21
     }
   }
 }

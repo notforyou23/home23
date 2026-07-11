@@ -275,7 +275,7 @@
     },
     {
       "id": "query-stream-event",
-      "method": "GET",
+      "method": "POST",
       "base": "dashboard",
       "route": "/home23/api/query/stream",
       "schema": "schemas/query.schema.json",

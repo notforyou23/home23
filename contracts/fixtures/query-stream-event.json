@@ -1,6 +1,8 @@
 {
   "type": "progress",
+  "operationId": "brop_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "state": "running",
   "phase": "retrieval",
-  "message": "Searching Home23 memory",
-  "chunk": null
+  "eventSequence": 3,
+  "updatedAt": "2026-06-26T14:28:00Z"
 }
