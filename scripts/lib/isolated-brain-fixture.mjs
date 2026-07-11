@@ -812,7 +812,7 @@ async function runDashboardChild(config) {
       capabilityKey: config.capabilityKey,
       exporter,
       readSynthesisState: synthesisRuntime.readState,
-      limits: { stopTimeoutMs: 250 },
+      limits: { stopTimeoutMs: 5_000 },
     });
     await next.reconcile();
     const compatibilityRouter = express.Router();

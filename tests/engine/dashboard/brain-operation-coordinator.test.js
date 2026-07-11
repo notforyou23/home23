@@ -1028,6 +1028,51 @@ test('terminal state is broadcast to a surviving attachment before durable closu
   assert.equal(closed.reason, 'operation_terminal');
 });
 
+test('graceful stop waits for terminal source-pin release before dropping runtime tracking', async (t) => {
+  const releaseEntered = deferred();
+  const releaseGate = deferred();
+  const sourcePins = {
+    async pin(canonicalRoot) {
+      const descriptor = validDescriptor(canonicalRoot);
+      return { descriptor, digest: descriptorDigest(descriptor) };
+    },
+    async openPinnedSource(descriptor) { return pinnedSourceHandle(descriptor); },
+    async releaseOperationPins() {
+      releaseEntered.resolve();
+      await releaseGate.promise;
+    },
+  };
+  const fixture = makeFixture(t, { sourcePins });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'stop-waits-for-source-pin-release',
+  }));
+  const attachment = await fixture.coordinator.attach(operation.operationId, {
+    attachmentId: 'terminal-release-observer',
+    afterSequence: operation.eventSequence,
+  });
+  const terminalEvent = attachment.nextEvent();
+
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: { answer: 'release before shutdown' },
+    error: null,
+    sourceEvidence: null,
+  });
+  assert.equal((await terminalEvent).state, 'complete');
+  await releaseEntered.promise;
+
+  let stopResolved = false;
+  const stopping = fixture.coordinator.stop().then(() => { stopResolved = true; });
+  await flush();
+  assert.equal(stopResolved, false);
+  releaseGate.resolve();
+  await stopping;
+
+  const terminal = await fixture.store.get(operation.operationId);
+  assert.equal(terminal.state, 'complete');
+  assert.match(terminal.sourcePinReleasedAt, /^2026-07-10T/);
+});
+
 test('terminal closure drains durable provider evidence for a slow pull attachment', async (t) => {
   const fixture = makeFixture(t);
   const operation = await fixture.coordinator.start(request({
@@ -1039,19 +1084,17 @@ test('terminal closure drains durable provider evidence for a slow pull attachme
     attachmentId: 'slow-terminal-evidence',
     afterSequence: running.eventSequence,
   });
+  const slowSubscriber = fixture.coordinator.runtimes
+    .get(operation.operationId).attachments.get('slow-terminal-evidence');
+  const selectedPending = attachment.nextEvent();
   fixture.worker.emit(operation.operationId, {
     type: 'provider_selected',
     providerCallId: 'query',
     providerStallMs: 5_000,
   });
-  let slowSubscriber;
-  await eventually(() => {
-    const subscriber = fixture.coordinator.runtimes
-      .get(operation.operationId).attachments.get('slow-terminal-evidence');
-    assert.equal(subscriber.queue.length, 1);
-    assert.equal(subscriber.queue[0].type, 'provider_selected');
-    slowSubscriber = subscriber;
-  });
+  const selected = await selectedPending;
+  assert.equal(selected.type, 'provider_selected');
+  assert.equal(slowSubscriber.queue.length, 0);
   fixture.worker.emit(operation.operationId, {
     type: 'provider_activity',
     providerCallId: 'query',
@@ -1070,10 +1113,10 @@ test('terminal closure drains durable provider evidence for a slow pull attachme
   await attachment.done;
   assert.deepEqual(
     slowSubscriber.queue.map((event) => event.type),
-    ['provider_selected'],
+    ['provider_activity'],
   );
 
-  const events = [];
+  const events = [selected];
   for (;;) {
     const event = await attachment.nextEvent();
     if (event === null) break;

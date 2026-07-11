@@ -38,6 +38,7 @@ const MINUTE_MS = 60 * 1000;
 const HOUR_MS = 60 * MINUTE_MS;
 const DEFAULT_HEARTBEAT_MS = 10_000;
 const DEFAULT_EVENT_SILENCE_MS = 60_000;
+const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 const CAPABILITY_TTL_MS = 60_000;
 const MAX_ACTIVE_PROVIDER_CALLS = 4096;
 const PROVIDER_OPERATION_TYPES = new Set(['query', 'pgs', 'synthesis', 'research_compile']);
@@ -449,7 +450,7 @@ class BrainOperationCoordinator {
     this.eventSilenceMs = options.limits?.eventSilenceMs ?? DEFAULT_EVENT_SILENCE_MS;
     this.workerControlTimeoutMs = options.limits?.workerControlTimeoutMs
       ?? DEFAULT_EVENT_SILENCE_MS;
-    this.stopTimeoutMs = options.limits?.stopTimeoutMs ?? Math.min(DEFAULT_EVENT_SILENCE_MS, 1_000);
+    this.stopTimeoutMs = options.limits?.stopTimeoutMs ?? DEFAULT_STOP_TIMEOUT_MS;
     this.executionDeadlineMsByType = Object.freeze({
       ...DEFAULT_EXECUTION_DEADLINES_MS,
       ...(options.limits?.executionDeadlineMsByType || {}),
@@ -1983,8 +1984,15 @@ class BrainOperationCoordinator {
       await this._broadcastNewEvents(runtime, oldestCursor);
     }
     await this._closeRuntimeAttachments(record, runtime);
-    this._stopRuntime(record.operationId);
-    await this._releasePinOnce(record);
+    try {
+      // Keep the event-pump promise visible to stop() until the durable source-pin
+      // release marker is committed. Otherwise a prompt process shutdown can exit
+      // while releaseSourcePinOnce still owns the operation lock, forcing the next
+      // coordinator to wait for stale-lock recovery before it can become ready.
+      await this._releasePinOnce(record);
+    } finally {
+      this._stopRuntime(record.operationId);
+    }
   }
 
   _stopRuntime(operationId) {
