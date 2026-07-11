@@ -227,7 +227,7 @@ The coordinator derives requester identity from its configured dashboard instanc
 - `scripts/sample-process-memory.mjs` — samples fresh V8 heap/PID/restart metrics for every named dashboard/COSMO target during graph, Direct Query, and PGS canaries.
 - `scripts/guarded-pm2-save.mjs` — backs up `dump.pm2`, compares the full live/dump process table, refuses unrelated drift, saves, verifies, and restores the backup on a failed postcondition.
 - `scripts/verify-live-deployment-tree.mjs` — builds/seals an external three-way expected tree and compares live working bytes without touching the live index.
-- `scripts/verify-brain-persistence.mjs` — exercises the production engine load path read-only against a named live brain, proves manifest/snapshot/count/hash agreement, and exercises the production save path only in a guarded temporary clone.
+- `scripts/verify-brain-persistence.mjs` — streams the complete logical source through the production source reader against a named live brain under explicit heap/RSS bounds, proves manifest/snapshot/count/hash agreement, exercises only the change-only production save path against an exact external byte clone, and confines full-rewrite load/write/reload proof to a bounded representative clone.
 - `tests/scripts/live-brain-tools-smoke.test.cjs`, `tests/scripts/hash-brain-boundaries.test.cjs`, `tests/scripts/sample-process-memory.test.cjs`, `tests/scripts/verify-brain-persistence.test.cjs`, `tests/scripts/guarded-pm2-save.test.cjs`, `tests/scripts/verify-live-deployment-tree.test.cjs` — controlled fixtures for terminal waits, boundary completeness, revision-change detection, fresh multi-process heap thresholds, live-load immutability, temp-clone-only saves, safe PM2 resurrection-state updates, and external expected-tree proof.
 - `docs/design/COSMO23-VENDORED-PATCHES.md`, `docs/design/STEP16-AGENT-COSMO-TOOLKIT-DESIGN.md` — durable design/patch documentation.
 - `docs/receipts/2026-07-09-brain-tools-hardening.md` — final test and live evidence receipt, created only after acceptance commands run.
@@ -5446,10 +5446,12 @@ git commit --only package.json docs/design/COSMO23-VENDORED-PATCHES.md -m "docs:
 
 Write the six fixture tests before the scripts. `live-brain-tools-smoke.test.cjs` launches a controlled coordinator, imports the built `BrainOperationsClient` plus the real brain-tool executors, advances controlled SSE operations through delayed progress, reconnect, complete, partial, and typed failure, and proves the 90-minute/six-hour production policies are selected without sleeping. It also covers authoritative canary discovery before a query, a large pinned PGS transcript with canonical null-answer/sweepOutputs partials, a wholly isolated controlled-provider fixture, isolated synthesis disconnect/reconnect, MCP source-revision parity, and typed MCP-disabled/unreachable outcomes. `hash-brain-boundaries.test.cjs` proves every nested regular file, including unknown extensions, extensionless files, and files added after the fixture starts, is recursively inventoried; symlinks are recorded but not followed; all seven required named boundaries (`brain`, `run`, `pgs`, `session`, `cache`, `export`, `agency`) are present exactly once even when a root is absent; duplicate physical paths retain separate named records; a resident fixture maps both `brain` and `run` to its canonical brain root rather than the parent agent instance; a research fixture maps `run` to its canonical run root; requester-owned external pin/scratch paths are outside the target inventory; and a revision/stat/file-set change during a sibling run produces `target_changed_concurrently` rather than a false no-write pass. `sample-process-memory.test.cjs` proves per-target peak V8 used-heap, metric freshness, restart delta, and PID replacement calculations from injected dashboard/COSMO samples. `verify-brain-persistence.test.cjs` uses temporary manifest and legacy-sidecar fixtures plus injected filesystem/persistence seams to prove all of the following:
 
-- read-only mode resolves exactly `path.join(home23Root, 'instances', agent, 'brain')`, invokes the production `loadMemoryRevision()` adapter, and accepts only nonzero loaded node and edge counts that equal the authoritative manifest summary when a format-v1 manifest exists or the legacy `brain-snapshot.json` counts otherwise;
-- a current revision-aware snapshot must also equal the loaded counts; a missing, stale, zero, or disagreeing manifest/snapshot/count set fails closed with a typed diagnostic, while the manifest remains authoritative and the snapshot remains advisory;
-- the exact manifest generation files (including only the committed delta prefix), legacy files selected by the production source resolver, and `brain-snapshot.json` are byte-hashed before and after loading; any revision, file-set, or byte change is reported as `source_changed_concurrently`, never a false read-only pass;
-- temp-save mode refuses a destination equal to, beneath, or symlinked into the Home23 root or either live brain, copies the pinned source generation into a fresh directory under a caller-supplied external `mkdtemp` root, materializes it through `loadMemoryRevision()`, calls production `persistMemoryRevision({ forceFull: true })` only with that clone path, reloads the clone, and proves its counts still match; and
+- read-only mode resolves exactly `path.join(home23Root, 'instances', agent, 'brain')`, streams every logical node and edge through production `openMemorySource()` with external requester-owned scratch, hashes the complete logical streams, retains only the largest single representative record of each kind, and accepts counts that equal the authoritative manifest summary when a format-v1 manifest exists or the legacy `brain-snapshot.json` counts otherwise;
+- a current revision-aware snapshot must also equal the streamed counts; a missing, stale, zero, or disagreeing manifest/snapshot/count set fails closed with a typed diagnostic, while the manifest remains authoritative and the snapshot remains advisory;
+- the exact manifest generation files (including only the committed delta prefix for source authority), complete physical legacy files selected by the production source resolver, and `brain-snapshot.json` are byte-hashed before and after streaming; any revision, file-set, or byte change is reported as `source_changed_concurrently`, never a false read-only pass;
+- a 100,000-node/300,000-edge child probe runs with `--max-old-space-size=96`, an independent 80-MiB observed-heap ceiling, and no full materializer;
+- temp-save mode refuses a destination equal to, beneath, or symlinked into the Home23 root or either live brain; copies every selected physical source file byte-for-byte into a fresh external `mkdtemp` clone; calls production `persistMemoryRevision({ forceFull:false, fullRewriteIntervalMs:Number.MAX_SAFE_INTEGER })` with one clone-only canary whose full-view accessor throws; stream-reads that canary and exact new counts back; and separately runs production force-full/load/reload only on two bounded records derived from the largest real-shaped live node/edge records; and
+- the receipt states explicitly that full-live `forceFull` was not attempted because duplicating a multi-gigabyte resident graph on this host is unsafe; the real full-scale load proof is the later scoped engine boot and readiness check; and
 - guarded cleanup can remove only the exact generated clone, while the original source inventory and hashes remain byte-identical even when clone persistence or cleanup fails.
 
 `guarded-pm2-save.test.cjs` uses fixture `jlist` and `dump.pm2` documents plus an injected `pm2 save` runner. It proves a mode-0600 byte backup is made before mutation; all live and dump entries (including non-Home23 apps) are normalized and compared; duplicate names, stopped/errored entries, or any unrelated identity/config/status/PID/restart drift refuse the save; only the exact allowlisted brain processes may show the planned PID/restart/env-key change; post-save dump equals the captured full live table; and any postcondition failure atomically restores the backup and exits nonzero.
@@ -5478,13 +5480,13 @@ For live PGS, require a catalog/source receipt proving at least `PGS_LARGE_MIN_N
 
 The boundary script accepts `--catalog`, one target selector, and `--phase before|after|compare`; it validates exactly seven named entries and the resident/research root rules above, then recursively emits sorted boundary/path/type/size/mtime/SHA-256 records plus explicit absent-root records and the source manifest revision. If two kinds name the same root it walks the root once but emits records under both kinds. It never broadens a resident root to the containing agent instance and never follows a symlink.
 
-The sampler accepts two or more named targets (`--target dashboard=pm2:home23-jerry-dash`, `--target cosmo=pm2:home23-cosmo23`, or isolated `pid+metrics` targets), launches the exact command after `--`, and polls each target's V8 used-heap, PID, restart count, and metric update timestamp. A proof needs baseline plus at least two in-window samples whose metric timestamps advance and are no older than `--max-metric-age-ms`; cached/pre-command PM2 values are rejected. It writes per-target baseline/peak/growth/restart/PID/freshness JSON and exits nonzero on missing/stale samples, PID replacement, restart delta, or `--max-heap-growth-mib 256` excess. Use this around graph, Direct Query, and PGS—not graph alone—and sample both the requester dashboard and COSMO that actually execute each command.
+The sampler accepts two or more named targets (`--target dashboard=pm2:home23-jerry-dash`, `--target cosmo=pm2:home23-cosmo23`, or isolated `pid+metrics` targets), launches the exact command after `--`, and polls each target's V8 used-heap, PID, restart count, and metric update timestamp. Every metrics request records request-start and response-completion bounds, uses response completion as `observedAt`, and requires the server metric timestamp to fall within that request window plus the published tolerance; a legitimate server timestamp produced after request start is never misclassified as negative-age stale. Response bodies are bounded before parsing. A proof needs baseline plus at least two in-window samples whose metric timestamps advance and are no older than `--max-metric-age-ms`; cached/pre-command PM2 values are rejected. It writes the `runtime-memory-evidence-v2` per-target baseline/maximum/growth/restart/PID/freshness schema and exits nonzero on missing/stale samples, PID replacement, restart delta, or `--max-heap-growth-mib 256` excess. Use this around graph, Direct Query, and PGS—not graph alone—and sample both the requester dashboard and COSMO that actually execute each command.
 
-The persistence verifier accepts `--mode read-only|temp-save-clone`, `--home23-root`, `--agent`, `--brain`, `--output`, and, only for clone mode, `--temp-root`. It realpaths the named source and requires it to equal the expected live agent brain. Read-only mode imports and invokes `engine/src/core/memory-persistence.js::loadMemoryRevision`; it snapshots the production-selected source filenames and hashes before load, compares the loaded revision and nonzero node/edge totals with `memory-manifest.json.summary` when present and with the advisory `brain-snapshot.json` as a second consistency check, then re-resolves and re-hashes the source. In legacy mode it requires a valid snapshot and compares both loaded totals against it. It emits the selected authority, revision, loaded/manifest/snapshot totals, complete sorted before/after hashes, and `unchanged:true`; a concurrent legitimate writer still makes this attempt fail and must be retried only after the engine is quiet.
+The persistence verifier accepts `--mode read-only|temp-save-clone`, `--home23-root`, `--agent`, `--brain`, `--temp-root`, `--max-heap-used-mib`, `--max-rss-mib`, and `--output`. The external temp root is mandatory in both modes so legacy projection/scratch never lands in the live installation. It realpaths the named source and requires it to equal the expected live agent brain. Read-only mode invokes the production streaming source reader, hashes and counts the complete logical node/edge streams, compares the revision and totals with `memory-manifest.json.summary` when present and with the advisory `brain-snapshot.json` as a second consistency check, then re-resolves and re-hashes the source. In legacy mode it requires a valid snapshot and compares both streamed totals against it. It emits the selected authority, revision, streamed/manifest/snapshot totals, complete sorted before/after hashes, logical hashes, observed heap/RSS peaks and limits, `fullMaterializerUsed:false`, and `unchanged:true`; a concurrent legitimate writer still makes this attempt fail and must be retried only after the engine is quiet.
 
-Temp-save mode first performs the same live read-only proof, then creates its own unpredictable clone beneath the supplied external temp root, copies only the pinned generation/legacy source files needed to load plus the advisory snapshot, and checks clone realpaths again before importing `persistMemoryRevision`. It constructs a Map-backed memory value from the clone's production load result, calls `persistMemoryRevision({ brainDir: cloneDir, memory, forceFull: true, home23Root: tempRoot })`, reloads the committed clone, compares revision/counts, and finally re-hashes the original live source. It must refuse to call the writer unless the clone realpath is outside `home23Root`, record `sourceBrainDir` and `writeBrainDir` in its receipt, and use prefix-and-device/inode checks for guarded clone cleanup. It never passes a live path to `persistMemoryRevision`.
+Temp-save mode first performs the same live streaming proof, then creates its own unpredictable clone beneath the supplied external temp root, copies the full physical bytes of every selected source file plus the advisory snapshot, and checks source/clone identities and SHA-256 values before importing `persistMemoryRevision`. It supplies a change-only memory facade whose full materializer throws, appends one clone-only canary without a periodic rewrite, stream-reads the committed clone, and proves exactly one new node and no target mutation. It then force-rewrites and production-reloads only a bounded two-node/one-edge representative clone derived from the largest real live records. It refuses any writer path inside `home23Root`, records `sourceBrainDir`, `writeBrainDir`, copy hashes, canary evidence, bounded-force-full evidence, and the explicit full-live prohibition, and uses prefix/device/inode checks for guarded cleanup. It never passes a live path to `persistMemoryRevision` and leaves the external temp root empty.
 
-`guarded-pm2-save.mjs` accepts `--dump ~/.pm2/dump.pm2`, `--allow-changed <exact comma-list>`, and the receipt-run authority arguments. It captures `pm2 jlist` immediately before save, normalizes every entry's name/cardinality/status/PID/restart/script/cwd/namespace/exec mode/instances/args and environment **key names only**, and compares every unrelated row with the existing dump. Any unrelated difference, duplicate, stopped/errored row, table change between pre/post snapshots, or missing dump blocks `pm2 save`. It copies the original dump bytes/mode to the receipt run directory, invokes exactly `pm2 save`, validates the new dump against the full frozen live snapshot and unchanged unrelated rows, and atomically restores the backup on any failed postcondition. It never prints environment values.
+`guarded-pm2-save.mjs` accepts `--dump ~/.pm2/dump.pm2`, `--allow-changed <exact comma-list>`, `--ecosystem <absolute ecosystem.config.cjs>`, `--expected-configured <exact comma-list>`, and the receipt-run authority arguments. The expected list must equal every required/optional allowlisted ecosystem row that exists exactly once. It captures `pm2 jlist` immediately before save, requires every expected process exactly once and online, normalizes every entry's name/cardinality/status/PID/restart/script/cwd/namespace/exec mode/instances/args and environment **key names only**, and compares every unrelated row with the existing dump. Any missing expected row, unrelated difference, duplicate, stopped/errored entry, table change between pre/post snapshots, or missing dump blocks `pm2 save`. A new allowlisted row absent from the old dump is accepted only when its script/cwd/namespace/exec mode/instances/args exactly match the normalized ecosystem authority. The helper copies the original dump bytes/mode to the receipt run directory, invokes exactly `pm2 save`, validates the new dump against the full frozen live snapshot and unchanged unrelated rows, and atomically restores the backup on any failed postcondition. It never prints environment values.
 
 `verify-live-deployment-tree.mjs` has `prepare`, `seal`, and `verify` modes, accepts explicit base/feature/live/audit paths, uses only an external expected directory and external `GIT_INDEX_FILE`, and emits the expected/actual tree OIDs plus index/untracked hashes. It never writes the live checkout or live index.
 
@@ -5565,10 +5567,10 @@ An absent path, skipped unexpected test, or nonzero group blocks live deployment
 
 ```bash
 git diff --cached --quiet
-git add -- package.json scripts/live-brain-tools-smoke.mjs scripts/hash-brain-boundaries.mjs scripts/sample-process-memory.mjs scripts/verify-brain-persistence.mjs scripts/guarded-pm2-save.mjs scripts/verify-live-deployment-tree.mjs tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs tests/scripts/guarded-pm2-save.test.cjs tests/scripts/verify-live-deployment-tree.test.cjs
+git add -- package.json scripts/live-brain-tools-smoke.mjs scripts/hash-brain-boundaries.mjs scripts/sample-process-memory.mjs scripts/verify-brain-persistence.mjs scripts/guarded-pm2-save.mjs scripts/verify-live-deployment-tree.mjs tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs tests/scripts/verify-brain-persistence-heap-probe.cjs tests/scripts/guarded-pm2-save.test.cjs tests/scripts/verify-live-deployment-tree.test.cjs
 git diff --cached --check
-git diff --cached -- package.json scripts/live-brain-tools-smoke.mjs scripts/hash-brain-boundaries.mjs scripts/sample-process-memory.mjs scripts/verify-brain-persistence.mjs scripts/guarded-pm2-save.mjs scripts/verify-live-deployment-tree.mjs tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs tests/scripts/guarded-pm2-save.test.cjs tests/scripts/verify-live-deployment-tree.test.cjs
-git commit --only package.json scripts/live-brain-tools-smoke.mjs scripts/hash-brain-boundaries.mjs scripts/sample-process-memory.mjs scripts/verify-brain-persistence.mjs scripts/guarded-pm2-save.mjs scripts/verify-live-deployment-tree.mjs tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs tests/scripts/guarded-pm2-save.test.cjs tests/scripts/verify-live-deployment-tree.test.cjs -m "test: add live brain reliability harness"
+git diff --cached -- package.json scripts/live-brain-tools-smoke.mjs scripts/hash-brain-boundaries.mjs scripts/sample-process-memory.mjs scripts/verify-brain-persistence.mjs scripts/guarded-pm2-save.mjs scripts/verify-live-deployment-tree.mjs tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs tests/scripts/verify-brain-persistence-heap-probe.cjs tests/scripts/guarded-pm2-save.test.cjs tests/scripts/verify-live-deployment-tree.test.cjs
+git commit --only package.json scripts/live-brain-tools-smoke.mjs scripts/hash-brain-boundaries.mjs scripts/sample-process-memory.mjs scripts/verify-brain-persistence.mjs scripts/guarded-pm2-save.mjs scripts/verify-live-deployment-tree.mjs tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs tests/scripts/verify-brain-persistence-heap-probe.cjs tests/scripts/guarded-pm2-save.test.cjs tests/scripts/verify-live-deployment-tree.test.cjs -m "test: add live brain reliability harness"
 git push -u origin codex/brain-agent-migration
 IMPLEMENTATION_PUSH_COMMIT=$(git rev-parse HEAD)
 git fetch origin codex/brain-agent-migration
@@ -5593,34 +5595,70 @@ LIVE_BASE=$(git -C "$LIVE_ROOT" merge-base HEAD "$IMPLEMENTATION_PUSH_COMMIT")
 git -C "$ISOLATED_ROOT" diff --name-only "$LIVE_BASE" "$IMPLEMENTATION_PUSH_COMMIT" | sort -u > "$DEPLOY_AUDIT/feature-paths.txt"
 { git -C "$LIVE_ROOT" diff --name-only; git -C "$LIVE_ROOT" diff --cached --name-only; git -C "$LIVE_ROOT" ls-files --others --exclude-standard; } | sort -u > "$DEPLOY_AUDIT/pending-paths.txt"
 comm -12 "$DEPLOY_AUDIT/feature-paths.txt" "$DEPLOY_AUDIT/pending-paths.txt" > "$DEPLOY_AUDIT/overlap-paths.txt"
-node "$ISOLATED_ROOT/scripts/verify-live-deployment-tree.mjs" prepare \
-  --base "$LIVE_BASE" --feature "$IMPLEMENTATION_PUSH_COMMIT" \
-  --live-root "$LIVE_ROOT" --audit-dir "$DEPLOY_AUDIT"
 ```
 
-If the live tracked tree is clean, integrate with the normal reviewed fast-forward path and require `git -C "$LIVE_ROOT" rev-parse HEAD` to equal `IMPLEMENTATION_PUSH_COMMIT`. If it has pending tracked work, do not stash, reset, checkout, copy wholesale, or touch the index. Build a complete external expected tree under `$DEPLOY_AUDIT/expected/files` from the pushed feature commit. For **every** pending or overlapping path, record the base blob OID, pushed-feature blob OID, current live byte hash/deletion state, and merged byte hash in `three-way.jsonl`; perform a real three-way merge of `LIVE_BASE`, pushed feature, and current live bytes. Resolve conflicts only in this external expected tree, review each resolution, and stop on any unresolved semantic overlap. New untracked files that collide with a feature path participate in the same three-way proof; unrelated untracked files remain outside the expected tracked tree and must retain their hashes.
-
-After resolving any external expected-tree conflicts, seal it and record its Git tree OID:
+If the live tracked tree is clean and no untracked path collides with a feature path, use the ordinary fast-forward path. Do not run the external deployment-tree verifier in this case: its pre-deployment index seal is intentionally stable, while a legitimate fast-forward replaces the index. Prove the new tracked tree directly from the pushed commit and record both the expected and actual tree OIDs:
 
 ```bash
-node "$ISOLATED_ROOT/scripts/verify-live-deployment-tree.mjs" seal \
-  --base "$LIVE_BASE" --feature "$IMPLEMENTATION_PUSH_COMMIT" \
-  --live-root "$LIVE_ROOT" --audit-dir "$DEPLOY_AUDIT"
-EXPECTED_LIVE_TREE=$(node -p "require(process.argv[1]).expectedTree" "$DEPLOY_AUDIT/deployment-tree.json")
+if git -C "$LIVE_ROOT" diff --quiet \
+    && git -C "$LIVE_ROOT" diff --cached --quiet \
+    && test ! -s "$DEPLOY_AUDIT/overlap-paths.txt"; then
+  DEPLOYMENT_MODE=fast-forward
+  git -C "$LIVE_ROOT" merge --ff-only "$IMPLEMENTATION_PUSH_COMMIT"
+  test "$(git -C "$LIVE_ROOT" rev-parse HEAD)" = "$IMPLEMENTATION_PUSH_COMMIT"
+  EXPECTED_LIVE_TREE=$(git -C "$ISOLATED_ROOT" rev-parse "$IMPLEMENTATION_PUSH_COMMIT^{tree}")
+  ACTUAL_LIVE_TREE=$(git -C "$LIVE_ROOT" rev-parse "HEAD^{tree}")
+  test "$EXPECTED_LIVE_TREE" = "$ACTUAL_LIVE_TREE"
+  git -C "$LIVE_ROOT" diff --quiet
+  git -C "$LIVE_ROOT" diff --cached --quiet
+  git -C "$LIVE_ROOT" ls-files -s > "$DEPLOY_AUDIT/index-after.txt"
+  git -C "$LIVE_ROOT" ls-files --others --exclude-standard -z | xargs -0 -I{} sh -c \
+    'test ! -f "$1" || shasum -a 256 "$1"' _ "$LIVE_ROOT/{}" > "$DEPLOY_AUDIT/untracked-hashes-after.txt"
+  cmp "$DEPLOY_AUDIT/untracked-hashes-before.txt" "$DEPLOY_AUDIT/untracked-hashes-after.txt"
+  export DEPLOYMENT_MODE IMPLEMENTATION_PUSH_COMMIT EXPECTED_LIVE_TREE ACTUAL_LIVE_TREE
+  node - "$DEPLOY_AUDIT/clean-fast-forward.json" <<'NODE'
+const fs = require('node:fs');
+fs.writeFileSync(process.argv[2], `${JSON.stringify({
+  mode: process.env.DEPLOYMENT_MODE,
+  implementationCommit: process.env.IMPLEMENTATION_PUSH_COMMIT,
+  expectedTree: process.env.EXPECTED_LIVE_TREE,
+  actualTree: process.env.ACTUAL_LIVE_TREE,
+  indexTransitionExpected: true,
+}, null, 2)}\n`);
+NODE
+else
+  DEPLOYMENT_MODE=combined
+fi
 ```
 
-Apply only the reviewed combined hunks to live working files with `apply_patch`, never to the live index. Then let the helper build a second external index from the resulting live working bytes and exact expected path set, save `ACTUAL_LIVE_TREE`, and require exact equality. Also require the live cached index bytes and unrelated untracked hashes to remain unchanged. A prose claim such as `feature + pending work` without the two equal Git tree OIDs is not acceptance. After a combined deployment, run:
+If `DEPLOYMENT_MODE=combined`, preserve pending work without stashing, resetting, checking out, copying wholesale, or touching the index. Run `verify-live-deployment-tree.mjs prepare` against the exact base, pushed feature, and live bytes. A reported conflict is a hard stop; the current helper has no authenticated conflict-resolution mode, so do not claim that an externally edited resolution is sealed. For a conflict-free combined tree, inspect every generated `{path,baseOid,featureOid,liveHash,mergedHash,resolution}` row, then seal it:
 
 ```bash
-git -C "$LIVE_ROOT" ls-files -s > "$DEPLOY_AUDIT/index-after.txt"
-git -C "$LIVE_ROOT" diff --cached --binary > "$DEPLOY_AUDIT/cached-after.patch"
-cmp "$DEPLOY_AUDIT/index-before.txt" "$DEPLOY_AUDIT/index-after.txt"
-cmp "$DEPLOY_AUDIT/cached-before.patch" "$DEPLOY_AUDIT/cached-after.patch"
-node "$ISOLATED_ROOT/scripts/verify-live-deployment-tree.mjs" verify \
-  --base "$LIVE_BASE" --feature "$IMPLEMENTATION_PUSH_COMMIT" \
-  --live-root "$LIVE_ROOT" --audit-dir "$DEPLOY_AUDIT"
-ACTUAL_LIVE_TREE=$(node -p "require(process.argv[1]).actualTree" "$DEPLOY_AUDIT/deployment-tree.json")
-test "$EXPECTED_LIVE_TREE" = "$ACTUAL_LIVE_TREE"
+if test "$DEPLOYMENT_MODE" = combined; then
+  node "$ISOLATED_ROOT/scripts/verify-live-deployment-tree.mjs" prepare \
+    --base "$LIVE_BASE" --feature "$IMPLEMENTATION_PUSH_COMMIT" \
+    --live-root "$LIVE_ROOT" --audit-dir "$DEPLOY_AUDIT"
+  node "$ISOLATED_ROOT/scripts/verify-live-deployment-tree.mjs" seal \
+    --base "$LIVE_BASE" --feature "$IMPLEMENTATION_PUSH_COMMIT" \
+    --live-root "$LIVE_ROOT" --audit-dir "$DEPLOY_AUDIT"
+  EXPECTED_LIVE_TREE=$(node -p "require(process.argv[1]).expectedTree" "$DEPLOY_AUDIT/deployment-tree.json")
+fi
+```
+
+For a conflict-free combined deployment only, apply the reviewed generated hunks to live working files with `apply_patch`, never to the live index. Then let the helper build a second external index from the resulting live working bytes and exact expected path set, save `ACTUAL_LIVE_TREE`, and require exact equality. Also require the live cached index bytes and unrelated untracked hashes to remain unchanged. A prose claim such as `feature + pending work` without the two equal Git tree OIDs is not acceptance:
+
+```bash
+if test "$DEPLOYMENT_MODE" = combined; then
+  git -C "$LIVE_ROOT" ls-files -s > "$DEPLOY_AUDIT/index-after.txt"
+  git -C "$LIVE_ROOT" diff --cached --binary > "$DEPLOY_AUDIT/cached-after.patch"
+  cmp "$DEPLOY_AUDIT/index-before.txt" "$DEPLOY_AUDIT/index-after.txt"
+  cmp "$DEPLOY_AUDIT/cached-before.patch" "$DEPLOY_AUDIT/cached-after.patch"
+  node "$ISOLATED_ROOT/scripts/verify-live-deployment-tree.mjs" verify \
+    --base "$LIVE_BASE" --feature "$IMPLEMENTATION_PUSH_COMMIT" \
+    --live-root "$LIVE_ROOT" --audit-dir "$DEPLOY_AUDIT"
+  ACTUAL_LIVE_TREE=$(node -p "require(process.argv[1]).actualTree" "$DEPLOY_AUDIT/deployment-tree.json")
+  test "$EXPECTED_LIVE_TREE" = "$ACTUAL_LIVE_TREE"
+fi
 git -C "$LIVE_ROOT" ls-files --others --exclude-standard -z | xargs -0 -I{} sh -c \
   'test ! -f "$1" || shasum -a 256 "$1"' _ "$LIVE_ROOT/{}" > "$DEPLOY_AUDIT/untracked-hashes-after.txt"
 cmp "$DEPLOY_AUDIT/untracked-hashes-before.txt" "$DEPLOY_AUDIT/untracked-hashes-after.txt"
@@ -5634,7 +5672,7 @@ npm run test:contracts
 git diff --check
 ```
 
-The receipt must name `fast-forward` or `combined`, list every overlap resolution, record `EXPECTED_LIVE_TREE`, equal `ACTUAL_LIVE_TREE`, the pushed feature/base OIDs, full A-C group totals, `live tree = pushed feature + preserved pending work`, and the object-identical index/untracked proofs. These commands run in the actual live checkout; do not run `brain-operations prepare` or point PM2 at the isolated worktree.
+The receipt must name `fast-forward` or `combined`, record `EXPECTED_LIVE_TREE == ACTUAL_LIVE_TREE`, the pushed feature/base OIDs, full A-C group totals, and unchanged unrelated-untracked proof. A clean fast-forward records the expected index transition plus clean worktree/index afterward. A conflict-free combined deployment records every generated merge row plus the object-identical pre/post index proof. Any merge conflict stops deployment. These commands run in the actual live checkout; do not run `brain-operations prepare` or point PM2 at the isolated worktree.
 
 - [ ] **Step 0C: Initialize one dedicated authority-tagged receipt run directory**
 
@@ -5676,7 +5714,7 @@ fs.writeFileSync(output, JSON.stringify(record, null, 2) + '\n', { flag: 'wx', m
 NODE
 ```
 
-All helper invocations inherit those exact environment values or pass the equivalent flags. Raw PM2/curl/TAP output is named directly under `$LIVE_RECEIPT_DIR`; disposable external clones use `$SYSTEM_TMPDIR` explicitly. Isolated commands set `HOME23_RECEIPT_AUTHORITY=isolated-controlled` and name outputs directly under `$ISOLATED_RECEIPT_DIR`. Helper-generated receipt JSON/JSONL rows embed run ID and authority. Raw third-party captures that cannot embed fields are classified `kind:'raw'` in `artifact-manifest.json` and receive run ID/authority on that entry through their directory plus `run-authority.json`. At closeout, recursively hash every regular file without following symlinks, excluding only the manifest and its detached digest while constructing them; then write `artifact-manifest.json` atomically and `artifact-manifest.sha256` over its final bytes. Validate all embedded tags, every manifest entry's authority, and the detached digest, and have `verify-receipts` read only this manifest. A reused path, pre-existing file, outside realpath, symlink, mixed run ID, or missing authority stops acceptance.
+All helper invocations inherit those exact environment values or pass the equivalent flags. Raw PM2/curl/TAP output is named directly under `$LIVE_RECEIPT_DIR`; disposable external clones use `$SYSTEM_TMPDIR` explicitly. Isolated commands set `HOME23_RECEIPT_AUTHORITY=isolated-controlled` and name outputs directly under `$ISOLATED_RECEIPT_DIR`. Helper-generated receipt JSON/JSONL rows embed run ID and authority. Raw third-party captures that cannot embed fields are classified `kind:'raw'` in the final artifact manifest and receive run ID/authority on that entry through their directory plus `run-authority.json`. Build exactly one immutable `artifact-manifest.json` only in Step 15, after fixture cleanup, guarded PM2 save, all final TAP/readback artifacts, and status-push evidence already exist. Its builder recursively hashes every regular file without following symlinks, excluding only the manifest and detached digest while constructing them, then writes `artifact-manifest.json` atomically and `artifact-manifest.sha256` over its final bytes. The separate `--verify-artifact-manifest` mode is read-only and must not write an output inside the run root. No acceptance artifact may be added after that final path-set seal. A reused path, pre-existing file, outside realpath, symlink, mixed run ID, or missing authority stops acceptance.
 
 - [ ] **Step 1: Capture pre-rollout process, listener, and source truth**
 
@@ -5688,11 +5726,166 @@ lsof -nP -iTCP:5002 -sTCP:LISTEN | tee "$LIVE_RECEIPT_DIR/listener-5002-before.t
 lsof -nP -iTCP:5012 -sTCP:LISTEN | tee "$LIVE_RECEIPT_DIR/listener-5012-before.txt"
 lsof -nP -iTCP:5003 -sTCP:LISTEN | tee "$LIVE_RECEIPT_DIR/listener-5003-before.txt"
 lsof -nP -iTCP:5013 -sTCP:LISTEN | tee "$LIVE_RECEIPT_DIR/listener-5013-before.txt"
+lsof -nP -iTCP:5015 -sTCP:LISTEN | tee "$LIVE_RECEIPT_DIR/listener-5015-before.txt"
 lsof -nP -iTCP:43210 -sTCP:LISTEN | tee "$LIVE_RECEIPT_DIR/listener-43210-before.txt"
 curl -fsS http://127.0.0.1:43210/api/status | tee "$LIVE_RECEIPT_DIR/cosmo-status-initial.json"
+EMPIRE_5013_BEFORE=$(lsof -nP -t -iTCP:5013 -sTCP:LISTEN | sort -u)
+test -n "$EMPIRE_5013_BEFORE"
+test "$(printf '%s\n' "$EMPIRE_5013_BEFORE" | wc -l | tr -d ' ')" = 1
+ps -p "$EMPIRE_5013_BEFORE" -o pid=,command= > "$LIVE_RECEIPT_DIR/listener-5013-unrelated-before.txt"
+if lsof -nP -iTCP:5015 -sTCP:LISTEN > "$LIVE_RECEIPT_DIR/listener-5015-pre-prepare.txt"; then
+  echo 'Refusing rollout: reviewed Forrest MCP port 5015 is occupied' >&2
+  exit 1
+fi
+export EMPIRE_5013_BEFORE
 ```
 
-Expected before refresh: the seven core named processes are online, each configured-enabled MCP process is online with its loopback listener owned by that named PID, any intentionally disabled MCP is absent with typed disabled authority, and the existing COSMO status is captured. Do not require the new coordinator route from an old in-memory dashboard process.
+Expected before refresh: the seven core named processes are online and the
+existing COSMO status is captured. Record each MCP process/listener exactly as
+found. A configured-enabled MCP process may still be absent at this pre-migration
+point, but Step 3 must start it exactly once and Step 4 must prove its loopback
+listener is owned by the named PID. A conflicting listener or a configured MCP
+that remains absent after refresh is a rollout failure. An intentionally
+disabled MCP remains absent with typed disabled authority. Do not require the
+new coordinator route from an old in-memory dashboard process.
+
+For this installation, preserve the unrelated `empire-dashboard` listener on
+5013 and set only `instances/forrest/config.yaml` → `ports.mcp` to 5015 before
+running preparation. This ignored per-agent config is the local port authority;
+do not hand-edit the four generated ecosystem rows. Capture only the secret-free
+`ports` projection before and after the one-line local change, require
+`bridge:5014` to remain unchanged, and re-run `lsof` immediately before prepare
+to prove 5015 is still free. `brain-operations prepare` then regenerates the
+ignored ecosystem atomically from that authority. A newly occupied 5015 blocks
+the rollout and requires another reviewed free loopback port; it never permits
+stopping or replacing the unrelated 5013 owner.
+
+Perform and receipt that one local authority change before the first prepare
+command. The full mode-0600 backup stays outside the receipt tree; only the
+secret-free four-port projections and hashes enter the live receipt. A missing
+`lsof`, any stderr, or any 5015 listener blocks the change:
+
+```bash
+FORREST_CONFIG="$LIVE_ROOT/instances/forrest/config.yaml"
+FORREST_CONFIG_BACKUP="$SYSTEM_TMPDIR/home23-forrest-config-$RECEIPT_RUN_ID.yaml"
+cp -p "$FORREST_CONFIG" "$FORREST_CONFIG_BACKUP"
+chmod 600 "$FORREST_CONFIG_BACKUP"
+
+if lsof -nP -iTCP:5015 -sTCP:LISTEN \
+    > "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-config.txt" \
+    2> "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-config.stderr.txt"; then
+  echo 'port 5015 became occupied before the Forrest config change' >&2
+  exit 1
+else
+  LSOF_5015_STATUS=$?
+  test "$LSOF_5015_STATUS" -eq 1
+  test ! -s "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-config.txt"
+  test ! -s "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-config.stderr.txt"
+fi
+
+node - "$FORREST_CONFIG" \
+  "$LIVE_RECEIPT_DIR/forrest-ports-before.json" \
+  "$LIVE_RECEIPT_DIR/forrest-ports-after.json" <<'NODE'
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const yaml = require('js-yaml');
+const [file, beforeOutput, afterOutput] = process.argv.slice(2);
+const stat = fs.lstatSync(file, { bigint: true });
+if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync(file) !== file) {
+  throw new Error('forrest_config_identity_invalid');
+}
+const raw = fs.readFileSync(file, 'utf8');
+const before = yaml.load(raw) || {};
+const projection = (value) => {
+  const ports = value?.ports;
+  if (!ports || Array.isArray(ports) || typeof ports !== 'object') {
+    throw new Error('forrest_ports_invalid');
+  }
+  const result = Object.fromEntries(['engine', 'dashboard', 'mcp', 'bridge']
+    .map((key) => [key, Number(ports[key])]));
+  if (Object.values(result).some((value) => !Number.isSafeInteger(value) || value < 1)) {
+    throw new Error('forrest_ports_invalid');
+  }
+  return result;
+};
+assert.deepEqual(projection(before), {
+  engine: 5011, dashboard: 5012, mcp: 5013, bridge: 5014,
+});
+fs.writeFileSync(beforeOutput, `${JSON.stringify({ ports: projection(before) }, null, 2)}\n`, {
+  flag: 'wx', mode: 0o600,
+});
+
+const lines = raw.split(/(?<=\n)/);
+const text = (line) => line.replace(/\r?\n$/, '');
+const portsLines = lines.map((line, index) => ({ line: text(line), index }))
+  .filter(({ line }) => /^(\s*)ports:\s*(?:#.*)?$/.test(line));
+if (portsLines.length !== 1) throw new Error('forrest_ports_block_ambiguous');
+const portsIndex = portsLines[0].index;
+const portsIndent = /^(\s*)/.exec(portsLines[0].line)[1].length;
+let blockEnd = lines.length;
+for (let index = portsIndex + 1; index < lines.length; index += 1) {
+  const line = text(lines[index]);
+  if (!line.trim() || /^\s*#/.test(line)) continue;
+  if (/^(\s*)/.exec(line)[1].length <= portsIndent) { blockEnd = index; break; }
+}
+const matches = [];
+for (let index = portsIndex + 1; index < blockEnd; index += 1) {
+  const match = /^(\s*mcp:\s*)5013(\s*(?:#.*)?)(\r?\n)?$/.exec(lines[index]);
+  if (match) matches.push({ index, match });
+}
+if (matches.length !== 1) throw new Error('forrest_mcp_port_line_ambiguous');
+const [{ index, match }] = matches;
+lines[index] = `${match[1]}5015${match[2]}${match[3] || ''}`;
+const nextRaw = lines.join('');
+const expected = structuredClone(before);
+expected.ports.mcp = 5015;
+assert.deepEqual(yaml.load(nextRaw), expected);
+assert.deepEqual(projection(expected), {
+  engine: 5011, dashboard: 5012, mcp: 5015, bridge: 5014,
+});
+
+const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+let descriptor;
+try {
+  descriptor = fs.openSync(temporary, 'wx', Number(stat.mode & 0o777n));
+  fs.writeFileSync(descriptor, nextRaw, 'utf8');
+  fs.fsyncSync(descriptor);
+  fs.closeSync(descriptor);
+  descriptor = undefined;
+  const current = fs.lstatSync(file, { bigint: true });
+  if (current.dev !== stat.dev || current.ino !== stat.ino
+      || fs.readFileSync(file, 'utf8') !== raw) {
+    throw new Error('forrest_config_changed_concurrently');
+  }
+  fs.renameSync(temporary, file);
+  const directory = fs.openSync(path.dirname(file), 'r');
+  try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+} finally {
+  if (descriptor !== undefined) fs.closeSync(descriptor);
+  fs.rmSync(temporary, { force: true });
+}
+assert.deepEqual(yaml.load(fs.readFileSync(file, 'utf8')), expected);
+fs.writeFileSync(afterOutput, `${JSON.stringify({ ports: projection(expected) }, null, 2)}\n`, {
+  flag: 'wx', mode: 0o600,
+});
+NODE
+shasum -a 256 "$FORREST_CONFIG_BACKUP" "$FORREST_CONFIG" \
+  > "$LIVE_RECEIPT_DIR/forrest-config-before-after.sha256.txt"
+
+if lsof -nP -iTCP:5015 -sTCP:LISTEN \
+    > "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-prepare.txt" \
+    2> "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-prepare.stderr.txt"; then
+  echo 'port 5015 became occupied before brain-operations prepare' >&2
+  exit 1
+else
+  LSOF_5015_STATUS=$?
+  test "$LSOF_5015_STATUS" -eq 1
+  test ! -s "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-prepare.txt"
+  test ! -s "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-prepare.stderr.txt"
+fi
+```
 
 Back up the ignored ecosystem file without exposing secrets, then exercise the idempotent existing-install migration supplied by the authority plan:
 
@@ -5718,13 +5911,13 @@ curl -fsS http://127.0.0.1:43210/api/status > "$LIVE_RECEIPT_DIR/cosmo-status-be
 node - "$LIVE_RECEIPT_DIR/cosmo-status-before.json" <<'NODE'
 const fs = require('node:fs');
 const status = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-if (status.running === true || status.activeRun === true || status.lifecycle === 'running') {
+if (status.running !== false || status.activeRun !== false || status.lifecycle !== 'idle') {
   console.error(JSON.stringify({ code: 'cosmo_not_idle', running: status.running,
     activeRun: status.activeRun, lifecycle: status.lifecycle, runId: status.runId || null }));
   process.exit(1);
 }
 console.log(JSON.stringify({ code: 'cosmo_idle', running: status.running,
-  activeRun: status.activeRun, lifecycle: status.lifecycle || 'idle' }));
+  activeRun: status.activeRun, lifecycle: status.lifecycle }));
 NODE
 node cli/home23.js brain-operations list --state nonterminal --all-requesters
 ```
@@ -5740,24 +5933,28 @@ cd /Users/jtr/_JTR23_/release/home23
 LIVE_ROOT=$(pwd -P)
 PERSISTENCE_AUDIT="$LIVE_RECEIPT_DIR/persistence"
 mkdir -p "$PERSISTENCE_AUDIT"
+PERSISTENCE_CLONE_ROOT=$(mktemp -d "$SYSTEM_TMPDIR/home23-brain-persistence-clones.XXXXXX")
 
-node scripts/verify-brain-persistence.mjs \
+node --max-old-space-size=768 scripts/verify-brain-persistence.mjs \
   --mode read-only --home23-root "$LIVE_ROOT" --agent jerry \
-  --brain "$LIVE_ROOT/instances/jerry/brain" \
+  --brain "$LIVE_ROOT/instances/jerry/brain" --temp-root "$PERSISTENCE_CLONE_ROOT" \
+  --max-heap-used-mib 640 --max-rss-mib 1536 \
   --output "$PERSISTENCE_AUDIT/jerry-live-load.json"
-node scripts/verify-brain-persistence.mjs \
+node --max-old-space-size=768 scripts/verify-brain-persistence.mjs \
   --mode read-only --home23-root "$LIVE_ROOT" --agent forrest \
-  --brain "$LIVE_ROOT/instances/forrest/brain" \
+  --brain "$LIVE_ROOT/instances/forrest/brain" --temp-root "$PERSISTENCE_CLONE_ROOT" \
+  --max-heap-used-mib 640 --max-rss-mib 1536 \
   --output "$PERSISTENCE_AUDIT/forrest-live-load.json"
 
-PERSISTENCE_CLONE_ROOT=$(mktemp -d "$SYSTEM_TMPDIR/home23-brain-persistence-clones.XXXXXX")
-node scripts/verify-brain-persistence.mjs \
+node --max-old-space-size=768 scripts/verify-brain-persistence.mjs \
   --mode temp-save-clone --home23-root "$LIVE_ROOT" --agent jerry \
   --brain "$LIVE_ROOT/instances/jerry/brain" --temp-root "$PERSISTENCE_CLONE_ROOT" \
+  --max-heap-used-mib 640 --max-rss-mib 1536 \
   --output "$PERSISTENCE_AUDIT/jerry-temp-save.json"
-node scripts/verify-brain-persistence.mjs \
+node --max-old-space-size=768 scripts/verify-brain-persistence.mjs \
   --mode temp-save-clone --home23-root "$LIVE_ROOT" --agent forrest \
   --brain "$LIVE_ROOT/instances/forrest/brain" --temp-root "$PERSISTENCE_CLONE_ROOT" \
+  --max-heap-used-mib 640 --max-rss-mib 1536 \
   --output "$PERSISTENCE_AUDIT/forrest-temp-save.json"
 node -e "if (require('node:fs').readdirSync(process.argv[1]).length) process.exit(1)" "$PERSISTENCE_CLONE_ROOT"
 rmdir "$PERSISTENCE_CLONE_ROOT"
@@ -5771,32 +5968,56 @@ const [home23Root, ...files] = process.argv.slice(2);
 for (const file of files) {
   const receipt = JSON.parse(fs.readFileSync(file, 'utf8'));
   if (receipt.ok !== true || receipt.unchanged !== true) throw new Error(`persistence proof failed: ${file}`);
-  if (!(receipt.loaded?.nodes > 0) || !(receipt.loaded?.edges > 0)) {
+  if (!(receipt.streamed?.nodes > 0) || !(receipt.streamed?.edges > 0)) {
     throw new Error(`zero live graph count: ${file}`);
   }
-  if (receipt.loaded.nodes !== receipt.expected.nodes || receipt.loaded.edges !== receipt.expected.edges) {
+  if (receipt.streamed.nodes !== receipt.expected.nodes || receipt.streamed.edges !== receipt.expected.edges) {
     throw new Error(`authoritative count mismatch: ${file}`);
   }
-  if (receipt.snapshot?.nodeCount !== receipt.loaded.nodes || receipt.snapshot?.edgeCount !== receipt.loaded.edges) {
+  if (receipt.snapshot?.nodes !== receipt.streamed.nodes || receipt.snapshot?.edges !== receipt.streamed.edges) {
     throw new Error(`snapshot consistency mismatch: ${file}`);
   }
-  if (receipt.mode === 'temp-save-clone') {
+  if (receipt.fullMaterializerUsed !== false || receipt.streamed.resources?.peakHeapUsedMiB > 640
+      || receipt.streamed.resources?.peakRssMiB > 1536) {
+    throw new Error(`streaming resource contract failed: ${file}`);
+  }
+  if (receipt.selectedAuthority === 'legacy-resident-sidecars'
+      && (receipt.streamed.sourceHealth !== 'degraded'
+        || receipt.streamed.freshness !== 'unknown')) {
+    throw new Error(`legacy source provenance mismatch: ${file}`);
+  }
+  if (receipt.selectedAuthority === 'manifest-v1'
+      && receipt.streamed.freshness !== 'known') {
+    throw new Error(`manifest source freshness mismatch: ${file}`);
+  }
+  if (receipt.mode === 'temp-save-clone-safe') {
     const relative = path.relative(home23Root, receipt.writeBrainDir);
     if (!relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
       throw new Error(`clone writer entered Home23 tree: ${file}`);
     }
-    if (receipt.cloneReloaded?.nodes !== receipt.loaded.nodes || receipt.cloneReloaded?.edges !== receipt.loaded.edges) {
-      throw new Error(`clone save/reload mismatch: ${file}`);
+    if (receipt.clone?.loaded?.nodes !== receipt.streamed.nodes + 1
+        || receipt.clone?.loaded?.edges !== receipt.streamed.edges
+        || receipt.clone?.canaryMatches !== 1 || receipt.clone?.fullMaterializerUsed !== false) {
+      throw new Error(`clone delta/readback mismatch: ${file}`);
     }
+    if (receipt.clone.copiedFiles.some((row) => row.sourceSha256 !== row.destinationSha256)
+        || receipt.boundedForceFull?.persistedMode !== 'full'
+        || receipt.boundedForceFull?.loaded?.nodes !== 2
+        || receipt.boundedForceFull?.loaded?.edges !== 1
+        || receipt.liveForceFull?.attempted !== false || receipt.cloneRemoved !== true) {
+      throw new Error(`bounded force-full or guarded-copy proof failed: ${file}`);
+    }
+  } else if (receipt.mode !== 'read-only-stream') {
+    throw new Error(`unexpected persistence mode: ${file}`);
   }
 }
 console.log(JSON.stringify({ code: 'live_persistence_gate_passed', receipts: files }));
 NODE
 ```
 
-For a format-v1 source, `expected` must come from `memory-manifest.json.summary`; the helper must also require the manifest revision selected before load, the revision returned by `loadMemoryRevision()`, and the revision re-read after load to be identical. `brain-snapshot.json` is advisory and never overrides that manifest, but a missing/stale snapshot or count disagreement is still a restart blocker until investigated. For a legacy source with no committed manifest, the helper may use the required snapshot counts as the expected totals and must report degraded legacy source evidence explicitly. Both node and edge totals must be nonzero.
+For a format-v1 source, `expected` must come from `memory-manifest.json.summary`; the helper must also require the manifest revision selected before streaming, the production source revision, and the revision re-read afterward to be identical. `brain-snapshot.json` is advisory and never overrides that manifest, but a missing/stale snapshot or count disagreement is still a restart blocker until investigated. For a legacy source with no committed manifest, the helper may use the required snapshot counts as expected totals and must report the legacy projection implementation explicitly. Both node and edge totals must be nonzero.
 
-Each live-load receipt must contain the complete sorted source inventory and byte hashes from before and after `loadMemoryRevision()` and prove them identical. Each temp-save receipt must prove the writer received only its external clone realpath, the clone survived a production save/reload with identical logical totals, and the original live source inventory/hashes remained identical. If any command observes concurrent source movement, wait for that named engine to become quiet and repeat the entire named-agent proof; do not waive or hand-edit the receipt. **Do not restart Jerry or Forrest unless all four machine-read receipts pass.** Never invoke the production save API with either live brain path.
+Each live-load receipt must contain the complete sorted source inventory and hashes from before and after the bounded production stream and prove them identical. Each temp-save receipt must prove the writer received only its external clone realpath, every copied physical file matched byte-for-byte, one change-only canary survived production delta save plus full streaming readback, the bounded representative force-full load/write/reload passed, and the original live source inventory/hashes remained identical. Full-live force-full is deliberately prohibited; the later named engine restart and readiness check is the full-scale boot proof. If any command observes concurrent source movement, wait for that named engine to become quiet and repeat the entire named-agent proof; do not waive or hand-edit the receipt. **Do not restart Jerry or Forrest unless all four machine-read receipts pass.** Never invoke the production save API with either live brain path.
 
 - [ ] **Step 3: Refresh only the exact affected PM2 allowlist**
 
@@ -5832,6 +6053,18 @@ for (const name of expected) if ((counts.get(name) || 0) > 1) throw new Error(`d
 const configured = expected.filter((name) => counts.get(name) === 1);
 console.log(JSON.stringify({ allowlist: actual, configured }, null, 2));
 NODE
+
+memory_pressure -Q > "$PM2_SCOPE_AUDIT/memory-pressure-before-refresh.txt"
+MEMORY_FREE_PERCENT=$(node -e '
+const text = require("node:fs").readFileSync(process.argv[1], "utf8");
+const match = text.match(/memory free percentage:\s*(\d+)%/i);
+if (!match) process.exit(1);
+process.stdout.write(match[1]);
+' "$PM2_SCOPE_AUDIT/memory-pressure-before-refresh.txt")
+if [ "$MEMORY_FREE_PERCENT" -lt 40 ]; then
+  echo "Refusing simultaneous scoped refresh: only ${MEMORY_FREE_PERCENT}% system memory free" >&2
+  exit 1
+fi
 
 pm2 start ecosystem.config.cjs --only "$PM2_ONLY" --update-env
 
@@ -5872,12 +6105,25 @@ for (const row of after) {
 }
 console.log(JSON.stringify({ code: 'pm2_exact_scope_passed', configured }));
 NODE
+pm2 jlist | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const names=['home23-jerry-mcp','home23-forrest-mcp'];const rows=JSON.parse(s).filter(p=>names.includes(p.name)).map(p=>({name:p.name,pid:p.pid,status:p.pm2_env.status,host:p.pm2_env.MCP_HTTP_HOST,port:Number(p.pm2_env.MCP_HTTP_PORT)})).sort((a,b)=>a.name.localeCompare(b.name));if(rows.length!==2||rows.some(r=>r.status!=='online'||r.host!=='127.0.0.1'))process.exit(1);process.stdout.write(JSON.stringify(rows,null,2))})" > "$PM2_SCOPE_AUDIT/mcp-processes.json"
+JERRY_MCP_PID=$(node -p "require(process.argv[1]).find(row => row.name === 'home23-jerry-mcp').pid" "$PM2_SCOPE_AUDIT/mcp-processes.json")
+FORREST_MCP_PID=$(node -p "require(process.argv[1]).find(row => row.name === 'home23-forrest-mcp').pid" "$PM2_SCOPE_AUDIT/mcp-processes.json")
+test "$(lsof -nP -t -iTCP:5003 -sTCP:LISTEN | sort -u)" = "$JERRY_MCP_PID"
+test "$(lsof -nP -t -iTCP:5015 -sTCP:LISTEN | sort -u)" = "$FORREST_MCP_PID"
+lsof -nP -a -p "$JERRY_MCP_PID" -iTCP:5003 -sTCP:LISTEN > "$PM2_SCOPE_AUDIT/listener-5003-after.txt"
+lsof -nP -a -p "$FORREST_MCP_PID" -iTCP:5015 -sTCP:LISTEN > "$PM2_SCOPE_AUDIT/listener-5015-after.txt"
+rg -F '127.0.0.1:5003 (LISTEN)' "$PM2_SCOPE_AUDIT/listener-5003-after.txt"
+rg -F '127.0.0.1:5015 (LISTEN)' "$PM2_SCOPE_AUDIT/listener-5015-after.txt"
+EMPIRE_5013_AFTER=$(lsof -nP -t -iTCP:5013 -sTCP:LISTEN | sort -u)
+test "$EMPIRE_5013_AFTER" = "$EMPIRE_5013_BEFORE"
+ps -p "$EMPIRE_5013_AFTER" -o pid=,command= > "$PM2_SCOPE_AUDIT/listener-5013-unrelated-after.txt"
+cmp "$LIVE_RECEIPT_DIR/listener-5013-unrelated-before.txt" "$PM2_SCOPE_AUDIT/listener-5013-unrelated-after.txt"
 node cli/home23.js brain-operations prepare --dry-run | tee "$LIVE_RECEIPT_DIR/prepare-after-refresh.json"
 ```
 
-The one literal `pm2 start ... --only "$PM2_ONLY" --update-env` line above is the only mutating PM2 command in this step. Do not split it into sequential restarts, substitute `restart`, use `all`, or invoke `delete`. A configured allowlisted process must be online exactly once; an existing one must show one restart and a new PID/uptime, while a missing configured one may be started. Every unrelated PM2 row must remain object-identical in the secret-free projection. Concurrent unrelated movement fails this proof and must be investigated rather than waived.
+The one literal `pm2 start ... --only "$PM2_ONLY" --update-env` line above is the only mutating PM2 command in this step. Do not split it into sequential restarts, substitute `restart`, use `all`, or invoke `delete`. The fresh system-memory gate must show at least 40% free before the combined refresh; otherwise defer without restarting. A configured allowlisted process must be online exactly once; an existing one must show one restart and a new PID/uptime, while a missing configured one may be started. Every unrelated PM2 row, including the exact 5013 listener PID/command, must remain object-identical in the secret-free projection. Concurrent unrelated movement fails this proof and must be investigated rather than waived.
 
-Immediately re-run `node cli/home23.js brain-operations prepare --dry-run`, save it in `$LIVE_RECEIPT_DIR/prepare-after-refresh.json`, and require `keyCreated:false`, `keyWouldBeCreated:false`, `permissionsRepaired:false`, `permissionsWouldBeRepaired:false`, `ecosystemRegenerated:false`, `ecosystemWouldChange:false`, `changedProcessNames:[]`, `restartRequired:false`, and `liveEnvVerified:true`. Do not assert an undefined aggregate `filesystemChanged`. Inspect the two MCP PM2 environments without printing secrets and require `MCP_HTTP_HOST=127.0.0.1`; `lsof` must show ports 5003 and 5013 bound only to loopback and owned by the named MCP PIDs. If MCP is intentionally disabled for an agent, its catalog/runtime must explicitly advertise disabled and the live matrix expects typed unavailable instead of starting a listener; a configured enabled MCP process may not be omitted.
+Immediately re-run `node cli/home23.js brain-operations prepare --dry-run`, save it in `$LIVE_RECEIPT_DIR/prepare-after-refresh.json`, and require `keyCreated:false`, `keyWouldBeCreated:false`, `permissionsRepaired:false`, `permissionsWouldBeRepaired:false`, `ecosystemRegenerated:false`, `ecosystemWouldChange:false`, `changedProcessNames:[]`, `restartRequired:false`, and `liveEnvVerified:true`. Do not assert an undefined aggregate `filesystemChanged`. Inspect the two MCP PM2 environments without printing secrets and require `MCP_HTTP_HOST=127.0.0.1`; `lsof` must show ports 5003 and 5015 bound only to loopback and owned by the named MCP PIDs. Port 5015 is Forrest's operator-selected local MCP authority because the unrelated `empire-dashboard` owns 5013; that unrelated process must remain unchanged. If MCP is intentionally disabled for an agent, its catalog/runtime must explicitly advertise disabled and the live matrix expects typed unavailable instead of starting a listener; a configured enabled MCP process may not be omitted.
 
 - [ ] **Step 4: Re-read process/listener truth after restart**
 
@@ -5956,15 +6202,19 @@ node scripts/live-brain-tools-smoke.mjs \
   --output "$LIVE_RECEIPT_DIR/brain-own.jsonl"
 node scripts/sample-process-memory.mjs \
   --target dashboard=pm2:home23-jerry-dash --target cosmo=pm2:home23-cosmo23 \
-  --metric v8-used-heap-mib --interval-ms 250 --max-metric-age-ms 5000 \
+  --metric runtime-memory-evidence-v2 --interval-ms 250 --max-metric-age-ms 5000 \
   --max-heap-growth-mib 256 --output "$LIVE_RECEIPT_DIR/brain-direct-query-heap.json" -- \
   node scripts/live-brain-tools-smoke.mjs \
     --base-url http://127.0.0.1:5002 --caller-agent jerry --scenario direct-query \
     --canary-receipt "$LIVE_RECEIPT_DIR/brain-own-canary.json" \
     --query-wait-ms 5400000 --output "$LIVE_RECEIPT_DIR/brain-direct-query.jsonl"
+node scripts/live-brain-tools-smoke.mjs \
+  --base-url http://127.0.0.1:5012 --caller-agent forrest \
+  --scenario discover-canary \
+  --output "$LIVE_RECEIPT_DIR/brain-forrest-owned-canary.jsonl"
 ```
 
-The discovery scenario selects a stable unique token from a bounded authoritative source read and records its node ID plus revision. The `own` scenario imports the built `BrainOperationsClient` and invokes the real `brain_search`, `brain_status`, bounded `brain_memory_graph`, and `brain_query` executors with omitted targets using that exact token. The separately sampled `direct-query` scenario proves the exact durable query route on the same canary. Both dashboard and COSMO metric series must be fresh, retain their PIDs, show zero restart delta, and stay within the heap bound. The run must show monotonic SSE activity, protected result retrieval, correct own-brain identity/evidence, and complete/partial results. A typed failure is recorded as a failure, never rendered as success or an empty brain.
+The Jerry discovery scenario selects a stable unique token from a bounded authoritative source read and records its node ID plus revision. The `own` scenario imports the built `BrainOperationsClient` and invokes the real `brain_search`, `brain_status`, bounded `brain_memory_graph`, and `brain_query` executors with omitted targets using that exact token. The separately sampled `direct-query` scenario proves the exact durable query route on the same canary. The provider-free Forrest-owned discovery runs before Forrest's Step 7 BEFORE hashes so Step 11 has a real terminal operation owned by the Forrest requester without contaminating the later no-write window. Both dashboard and COSMO metric series must be fresh, retain their PIDs, show zero restart delta, and stay within the heap bound. Positive canaries must be complete and target-identical; a legacy projection may honestly report degraded plus a proved exact match/freshness unknown, but only healthy complete coverage may prove no-match or corpus-empty. A typed failure is recorded as a failure, never rendered as success or an empty brain.
 
 - [ ] **Step 6: Resolve exact sibling and completed-research targets**
 
@@ -6019,9 +6269,35 @@ node scripts/live-brain-tools-smoke.mjs --base-url http://127.0.0.1:5002 --calle
 node scripts/live-brain-tools-smoke.mjs --base-url http://127.0.0.1:5002 --caller-agent jerry \
   --scenario canonical-export --operation-receipt "$LIVE_RECEIPT_DIR/brain-research.jsonl" \
   --format markdown --output "$LIVE_RECEIPT_DIR/brain-research-export.jsonl"
-node scripts/live-brain-tools-smoke.mjs --list-healthy-models \
-  --base-url http://127.0.0.1:43210 \
-  > "$LIVE_RECEIPT_DIR/brain-provider-selection.json" || PROVIDER_EXIT=$?
+PROVIDER_SELECTION_TMP="$LIVE_RECEIPT_DIR/.brain-provider-selection.$$.tmp"
+PROVIDER_ERROR_TXT="$LIVE_RECEIPT_DIR/brain-provider-selection-error.txt"
+if node scripts/live-brain-tools-smoke.mjs --list-healthy-models \
+    --base-url http://127.0.0.1:43210 \
+    > "$PROVIDER_SELECTION_TMP" 2> "$PROVIDER_ERROR_TXT"; then
+  node -e "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8'))" "$PROVIDER_SELECTION_TMP"
+  mv "$PROVIDER_SELECTION_TMP" "$LIVE_RECEIPT_DIR/brain-provider-selection.json"
+  rm -f "$PROVIDER_ERROR_TXT"
+  PROVIDER_EXIT=0
+else
+  PROVIDER_EXIT=$?
+  rm -f "$PROVIDER_SELECTION_TMP"
+  test -s "$PROVIDER_ERROR_TXT" || node -e \
+    "require('node:fs').writeFileSync(process.argv[1], 'provider probe exited without stderr\n')" \
+    "$PROVIDER_ERROR_TXT"
+  export PROVIDER_EXIT PROVIDER_ERROR_TXT
+  node - "$LIVE_RECEIPT_DIR/brain-provider-limitation.json" <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+fs.writeFileSync(process.argv[2], `${JSON.stringify({
+  schemaVersion: 1,
+  receiptRunId: process.env.RECEIPT_RUN_ID,
+  authority: 'live',
+  code: 'no_healthy_provider',
+  exitCode: Number(process.env.PROVIDER_EXIT),
+  stderrArtifact: path.basename(process.env.PROVIDER_ERROR_TXT),
+}, null, 2)}\n`);
+NODE
+fi
 LARGE_PGS_TARGET=$(node - "$CATALOG" "$RESEARCH_BRAIN_ID" <<'NODE'
 const fs = require('node:fs');
 const [catalogFile, researchId] = process.argv.slice(2);
@@ -6047,7 +6323,7 @@ if [ "${PROVIDER_EXIT:-0}" -eq 0 ] && [ -n "$LARGE_PGS_TARGET" ]; then
   PGS_SYNTH_SELECTION=$(node -p "JSON.stringify(require(process.argv[1]).pgsSynth)" "$LIVE_RECEIPT_DIR/brain-provider-selection.json")
   node scripts/sample-process-memory.mjs \
     --target dashboard=pm2:home23-jerry-dash --target cosmo=pm2:home23-cosmo23 \
-    --metric v8-used-heap-mib --interval-ms 1000 --max-metric-age-ms 5000 \
+    --metric runtime-memory-evidence-v2 --interval-ms 1000 --max-metric-age-ms 5000 \
     --max-heap-growth-mib 256 --output "$LIVE_RECEIPT_DIR/brain-pgs-heap.json" -- \
     node scripts/live-brain-tools-smoke.mjs --base-url http://127.0.0.1:5002 --caller-agent jerry \
       --scenario pgs --target-brain "$PGS_TARGET_ID" --require-authoritative-nodes "$PGS_TARGET_NODES" \
@@ -6127,7 +6403,7 @@ Run the helper's isolated production coordinator/worker fixture; it creates a te
 SYNTH_FIXTURE_ROOT=$(mktemp -d "$SYSTEM_TMPDIR/home23-synthesis-canary.XXXXXX")
 HOME23_RECEIPT_AUTHORITY=isolated-controlled node scripts/live-brain-tools-smoke.mjs \
   --scenario synthesis-reconnect --isolated-fixture "$SYNTH_FIXTURE_ROOT" \
-  --fixture-agent brain-ops-canary --pgs-wait-ms 21600000 \
+  --fixture-agent brain-ops-canary --controlled-provider --pgs-wait-ms 21600000 \
   --sse-output "$RECEIPT_RUN_DIR/isolated-controlled/brain-synthesis-events.jsonl" \
   --output "$RECEIPT_RUN_DIR/isolated-controlled/brain-synthesis.jsonl"
 node - "$SYNTH_FIXTURE_ROOT" "$RECEIPT_RUN_DIR/isolated-controlled/brain-synthesis.jsonl" <<'NODE'
@@ -6137,24 +6413,27 @@ const root = fs.realpathSync(process.argv[2]);
 if (!path.basename(root).startsWith('home23-synthesis-canary.')) process.exit(1);
 const receipts = fs.readFileSync(process.argv[3], 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
 const terminal = receipts.at(-1);
-if (!['complete', 'failed'].includes(terminal.state)) process.exit(1);
-if (terminal.error?.code === 'source_changed' && terminal.state !== 'failed') process.exit(1);
-if (terminal.state === 'failed' && !['source_changed','provider_failed','provider_incomplete'].includes(terminal.error?.code)) process.exit(1);
-if (!terminal.startingSourceRevision || !terminal.startingGenerationMarker) process.exit(1);
-if (terminal.attachmentIds?.length !== 1 || terminal.reconnectCount < 2) process.exit(1);
-if (terminal.synthesisStartCount !== 1 || terminal.statusStartedSynthesis !== false) process.exit(1);
-if (!terminal.dashboardRestarted || !terminal.storeReloaded || terminal.generationStatusPolls < 2) process.exit(1);
-if (terminal.state === 'complete'
-    && (!terminal.returnedGenerationMarker
-      || terminal.returnedGenerationMarker === terminal.startingGenerationMarker)) process.exit(1);
-if (terminal.error?.code === 'source_changed' && terminal.returnedGenerationMarker) process.exit(1);
+if (terminal.state !== 'complete' || terminal.protectedResultRead !== true
+    || terminal.providerTerminalValidated !== true) process.exit(1);
+if (terminal.coordinatorRestarted !== true || terminal.storeReloaded !== true
+    || terminal.reattachedTerminal !== true) process.exit(1);
+if (terminal.coordinatorRestartsAfter !== terminal.coordinatorRestartsBefore + 1
+    || !['running','complete'].includes(terminal.reconciledState)
+    || !Number.isSafeInteger(terminal.reattachAttempts)
+    || !Array.isArray(terminal.detachedStates)) process.exit(1);
+const provider = terminal.providerTerminalStoreEvidence;
+if (provider?.provider !== 'controlled' || provider?.model !== 'controlled-synthesis'
+    || provider?.providerCallId !== 'synthesis' || provider?.outcome !== 'complete') process.exit(1);
+if (typeof terminal.generationMarker !== 'string' || !terminal.generationMarker) process.exit(1);
 console.log(JSON.stringify({ fixtureRoot: root, operationId: terminal.operationId,
-  state: terminal.state, generationMarker: terminal.returnedGenerationMarker || null }));
+  state: terminal.state, generationMarker: terminal.generationMarker,
+  coordinatorRestarts: [terminal.coordinatorRestartsBefore, terminal.coordinatorRestartsAfter],
+  reattachAttempts: terminal.reattachAttempts }));
 NODE
 export SYNTH_FIXTURE_ROOT
 ```
 
-The controlled fixture must delay completion across at least two generation-marker status polls, drop one attachment, replace/recreate the dashboard coordinator over the same durable store, and reattach by the exact operation ID after restart. It records one and only one synthesis start; every tool `action:'status'` call uses `synthesisStatus()`/protected status-result reads, `action:'reattach'` uses the exact persisted operation, and neither starts provider work. Exercise complete, typed provider failure, and source CAS conflict under deterministic controls. `source_changed` is never an execution state: it is canonical `state:'failed'` plus `error:{code:'source_changed',retryable:true}` and cannot publish a generation marker. Retain the stopped fixture store until Step 11's protected readback; only then may guarded cleanup remove the exact `mktemp` root whose basename, device/inode, and receipt ownership were proved. A stale prior generation presented as new fails the gate.
+The controlled fixture must delay completion, drop an attachment, replace/recreate the dashboard coordinator over the same durable store, and reattach by the exact operation ID after restart. It records one and only one synthesis start; every protected status/result/reattach read uses the exact persisted operation and cannot start provider work. This rollout command proves the complete controlled-provider path with durable provider-terminal store evidence. Typed provider failure and source-CAS conflict remain mandatory deterministic engine-suite gates; do not claim the live command exercised modes the helper does not expose. `source_changed` is never an execution state: it is canonical `state:'failed'` plus `error:{code:'source_changed',retryable:true}` and cannot publish a generation marker. Retain the stopped fixture store until Step 11's protected readback; only then may guarded cleanup remove the exact `mktemp` root whose basename, device/inode, and receipt ownership were proved. A stale prior generation presented as new fails the gate.
 
 - [ ] **Step 10: Prove bounded graph heap and restart behavior under sampling**
 
@@ -6163,7 +6442,7 @@ Sample fresh V8 `Used Heap Size` metrics from both the requester dashboard and C
 ```bash
 node scripts/sample-process-memory.mjs \
   --target dashboard=pm2:home23-jerry-dash --target cosmo=pm2:home23-cosmo23 \
-  --metric v8-used-heap-mib --interval-ms 250 --max-metric-age-ms 5000 \
+  --metric runtime-memory-evidence-v2 --interval-ms 250 --max-metric-age-ms 5000 \
   --max-heap-growth-mib 256 \
   --output "$LIVE_RECEIPT_DIR/brain-graph-heap.json" -- \
   node scripts/live-brain-tools-smoke.mjs \
@@ -6173,18 +6452,20 @@ node scripts/sample-process-memory.mjs \
 node - "$LIVE_RECEIPT_DIR/brain-graph-heap.json" "$LIVE_RECEIPT_DIR/brain-graph.jsonl" <<'NODE'
 const fs = require('node:fs');
 const heap = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
-if (heap.metric !== 'v8-used-heap-mib' || !Array.isArray(heap.targets)
+if (heap.metric !== 'runtime-memory-evidence-v2' || !Array.isArray(heap.targets)
     || heap.targets.map((target) => target.name).sort().join(',') !== 'cosmo,dashboard') process.exit(1);
 for (const target of heap.targets) {
   if (target.samples.length < 3 || target.metricFresh !== true || target.pidChanged
-      || target.restartDelta !== 0 || target.heapGrowthMiB > 256) process.exit(1);
+      || target.restartDelta !== 0 || target.maxSampledV8HeapGrowthMiB > 256) process.exit(1);
 }
 const receipt = fs.readFileSync(process.argv[3], 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse).at(-1);
 if (receipt.returnedTotals.nodes > 250 || receipt.returnedTotals.edges > 1000) process.exit(1);
 if (!(receipt.authoritativeTotals.nodes >= receipt.returnedTotals.nodes)) process.exit(1);
 console.log(JSON.stringify({ targets: heap.targets.map((target) => ({ name: target.name,
-  baselineHeapMiB: target.baselineHeapMiB, peakHeapMiB: target.peakHeapMiB,
-  heapGrowthMiB: target.heapGrowthMiB, restartDelta: target.restartDelta,
+  baselineV8HeapUsedMiB: target.baselineV8HeapUsedMiB,
+  maxSampledV8HeapUsedMiB: target.maxSampledV8HeapUsedMiB,
+  maxSampledV8HeapGrowthMiB: target.maxSampledV8HeapGrowthMiB,
+  restartDelta: target.restartDelta,
   pid: target.pid, metricFresh: target.metricFresh })) }));
 NODE
 ```
@@ -6327,8 +6608,9 @@ for (const file of files) {
 for (const operationId of observedOperationIds) {
   if (!seen.has(operationId)) throw new Error(`operation lacks canonical terminal receipt: ${operationId}`);
 }
-if (!manifest.groups.jerryLive.length || !manifest.groups.isolatedControlled.length) {
-  throw new Error('identity manifest lacks required live or fixture IDs');
+if (!manifest.groups.jerryLive.length || !manifest.groups.forrestLive.length
+    || !manifest.groups.isolatedControlled.length) {
+  throw new Error('identity manifest lacks Jerry, Forrest, or isolated operation IDs');
 }
 fs.writeFileSync(path.join(root, 'operation-identity-manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 NODE
@@ -6338,13 +6620,9 @@ node scripts/live-brain-tools-smoke.mjs --scenario verify-receipts \
   --identity-manifest "$RECEIPT_RUN_DIR/operation-identity-manifest.json" \
   --smoke-root "$RECEIPT_RUN_DIR" \
   --output "$RECEIPT_RUN_DIR/live/brain-receipt-verification.jsonl"
-node scripts/live-brain-tools-smoke.mjs --scenario verify-receipts \
-  --build-artifact-manifest --smoke-root "$RECEIPT_RUN_DIR" \
-  --identity-manifest "$RECEIPT_RUN_DIR/operation-identity-manifest.json" \
-  --output "$RECEIPT_RUN_DIR/artifact-manifest.json"
 ```
 
-Expected: all Jerry/Forrest status-result reads match terminal durable authority and source evidence; isolated IDs match their retained stores; Forrest rejects Jerry-owned operation IDs; COSMO rejects missing capability; every artifact hash/run ID/authority validates; and the receipt verifier exits 0 without printing secrets. Only after this verification may the isolated fixture helpers perform their already-guarded cleanup and append cleanup receipts with `authority:'isolated-controlled'`; regenerate and verify the artifact manifest once afterward.
+Expected: all Jerry/Forrest status-result reads match terminal durable authority and source evidence; isolated IDs match their retained stores; Forrest rejects Jerry-owned operation IDs; COSMO rejects every unauthenticated protected status/result/control attempt; and the receipt verifier exits 0 without printing secrets. Only after this verification may the isolated fixture helpers perform their already-guarded cleanup and append cleanup receipts with `authority:'isolated-controlled'`. Do not build an artifact manifest yet: cleanup, Step 12 PM2-save evidence, status-push readback, and final TAP artifacts must exist before the one immutable Step 15 seal.
 
 Return explicitly to the isolated feature worktree before creating or committing portable evidence:
 
@@ -6354,7 +6632,7 @@ test "$(git branch --show-current)" = codex/brain-agent-migration
 test "$(pwd -P)" != "$LIVE_ROOT"
 ```
 
-All remaining Git edits/commits/pushes occur here. The primary live checkout remains deployment state with its original index preserved; evidence is read only from the validated `$RECEIPT_RUN_DIR/artifact-manifest.json` and its authority-tagged files. Do not rescan an arbitrary `${TMPDIR}` glob or hand-select favorable receipts.
+All remaining portable Git edits/commits/pushes occur here. The primary live checkout remains deployment state: a clean fast-forward has an intentional index transition to the exact implementation tree, while a combined deployment preserves its pre-deployment index byte-for-byte. Evidence is read only from the dedicated authority-tagged `$RECEIPT_RUN_DIR`; its path set is sealed once in Step 15. Do not rescan an arbitrary `${TMPDIR}` glob or hand-select favorable receipts.
 
 Leave the approved spec status unchanged in this step. It cannot say `Implemented` until the receipt exists, final verification passes, and the verified portable commit has been pushed and read back from `origin` in Step 14. An external provider outage may be recorded as a typed limitation only when the controlled-provider path proves the implementation and every local safety/authority/no-write test passes.
 
@@ -6386,7 +6664,7 @@ Create `docs/receipts/2026-07-09-brain-tools-hardening.md` with these concrete h
 ## Final Git status, commit, and push
 ```
 
-Populate every section with the exact commands, timestamps, operation IDs, result states, watermarks, per-process fresh metric windows, PIDs, restart counts, authority tags, and outputs observed in Steps 0B-10b. Include `EXPECTED_LIVE_TREE == ACTUAL_LIVE_TREE`, original-index hashes, receipt run ID, artifact-manifest digest, and exact Plan A-C group totals. The lifecycle section must reproduce each exact Step 10b command and observed result, name every negative error code, and list the detach, reattach terminal, cancel, restart-reconcile, and zero-result operation IDs with their identity-manifest group. State `not run` or the typed external blocker for any unavailable provider check; never infer a pass. If PGS used isolated control, say explicitly that live-provider large PGS did not pass. In the final Git section record the exact Step 0B implementation commit and remote readback; do not predict the later status/receipt commit hashes.
+Populate every section with the exact commands, timestamps, operation IDs, result states, watermarks, per-process fresh metric windows, PIDs, restart counts, authority tags, and outputs observed in Steps 0B-10b. Include `EXPECTED_LIVE_TREE == ACTUAL_LIVE_TREE`, either the clean fast-forward index-transition proof or combined deployment original-index hashes, receipt run ID, final artifact-manifest digest when available, and exact Plan A-C group totals. The lifecycle section must reproduce each exact Step 10b command and observed result, name every negative error code, and list the detach, reattach terminal, cancel, restart-reconcile, and zero-result operation IDs with their identity-manifest group. State `not run` or the typed external blocker for any unavailable provider check; never infer a pass. If PGS used isolated control, say explicitly that live-provider large PGS did not pass. In the final Git section record the exact Step 0B implementation commit and remote readback; do not predict the later status/receipt commit hashes.
 
 - [ ] **Step 12: Re-run final verification after writing the receipt**
 
@@ -6408,13 +6686,20 @@ Repeat the exact A_TESTS/B_TESTS/C_TESTS block from Step 0B against these final 
 After those live readbacks pass, persist only the verified named PM2 table for reboot resurrection:
 
 ```bash
+PM2_CONFIGURED=$(node -e '
+const fs = require("node:fs");
+const { configured } = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+if (!Array.isArray(configured) || !configured.length) throw new Error("configured PM2 list missing");
+process.stdout.write(configured.join(","));
+' "$PM2_SCOPE_AUDIT/configured-selection.json")
 node scripts/guarded-pm2-save.mjs \
   --dump "$HOME/.pm2/dump.pm2" --allow-changed "$PM2_ONLY" \
+  --ecosystem "$(pwd)/ecosystem.config.cjs" --expected-configured "$PM2_CONFIGURED" \
   --receipt-run-dir "$RECEIPT_RUN_DIR" --receipt-run-id "$RECEIPT_RUN_ID" \
   --authority live --output "$RECEIPT_RUN_DIR/live/guarded-pm2-save.json"
 ```
 
-The helper must back up the exact dump bytes/mode before invoking `pm2 save`, compare the **full** live/dump tables, and refuse any unrelated drift before mutation. Post-save it requires all expected named Home23 processes exactly once with the regenerated ecosystem script path, the new dump equal to the frozen live table, unchanged unrelated normalized rows, no duplicate/stopped/errored entry, and unchanged live PIDs/restart counts across the save. A failed postcondition restores the backup atomically and blocks completion; never leave a partially verified resurrection file.
+The helper must back up the exact dump bytes/mode before invoking `pm2 save`, compare the **full** live/dump tables, and refuse any unrelated drift before mutation. `PM2_CONFIGURED` contains all seven always-configured names plus exactly the enabled MCP rows present once in the regenerated ecosystem. Post-save it requires every expected process exactly once/online with the normalized ecosystem identity, the new dump equal to the frozen live table, unchanged unrelated normalized rows, no duplicate/stopped/errored entry, and unchanged live PIDs/restart counts across the save. A failed postcondition restores the backup atomically and blocks completion; never leave a partially verified resurrection file.
 
 - [ ] **Step 13: Commit, push, and read back the verified live receipt before changing status**
 
@@ -6456,10 +6741,25 @@ Expected: the implemented status first exists only after live evidence, final ve
 
 - [ ] **Step 15: Record the status-push readback in the receipt**
 
-Append `STATUS_PUSH_COMMIT` plus its remote equality proof. Because this changes the receipt again, repeat the full A-C arrays, Plan D focused suites, build, `npm test`, contracts, all six helper tests, diff/portability checks, and authority-link/readback validation after the addendum is present. Save the post-addendum TAP/hashes beneath the dedicated receipt run and include their artifact-manifest digest. Only then commit the receipt-only addendum, push, and verify once more:
+Append `STATUS_PUSH_COMMIT` plus its remote equality proof. Because this changes the receipt again, repeat the full A-C arrays, Plan D focused suites, build, `npm test`, contracts, all six helper tests, diff/portability checks, and authority-link/readback validation after the addendum is present. Save every post-addendum TAP/hash beneath the dedicated receipt run. When—and only when—no further run artifact remains to be written, build the one immutable artifact manifest and verify it through the read-only CLI mode:
+
+```bash
+node scripts/live-brain-tools-smoke.mjs --scenario verify-receipts \
+  --build-artifact-manifest --smoke-root "$RECEIPT_RUN_DIR" \
+  --output "$RECEIPT_RUN_DIR/artifact-manifest.json"
+ARTIFACT_VERIFY=$(node scripts/live-brain-tools-smoke.mjs --scenario verify-receipts \
+  --verify-artifact-manifest \
+  --artifact-manifest "$RECEIPT_RUN_DIR/artifact-manifest.json")
+node -e 'const row=JSON.parse(process.argv[1]);if(row.ok!==true||row.receiptKind!=="artifact-manifest-verification"||!row.manifestSha256)process.exit(1)' "$ARTIFACT_VERIFY"
+ARTIFACT_MANIFEST_DIGEST=$(node -p "JSON.parse(process.argv[1]).manifestSha256" "$ARTIFACT_VERIFY")
+export ARTIFACT_MANIFEST_DIGEST
+```
+
+Use `apply_patch` to append that exact digest and the successful read-only verification result to the receipt. Do not create another file beneath `$RECEIPT_RUN_DIR` after the manifest is sealed. A subsequent need for operational evidence invalidates the seal and requires a fresh dedicated receipt run, not overwriting the manifest. Then commit the receipt-only addendum, push, and verify once more:
 
 ```bash
 git diff --cached --quiet
+rg -F "$ARTIFACT_MANIFEST_DIGEST" docs/receipts/2026-07-09-brain-tools-hardening.md
 git add -- docs/receipts/2026-07-09-brain-tools-hardening.md
 git diff --cached --check
 git diff --cached -- docs/receipts/2026-07-09-brain-tools-hardening.md
@@ -6471,6 +6771,55 @@ test "$FINAL_RECEIPT_COMMIT" = "$(git rev-parse origin/codex/brain-agent-migrati
 git show "origin/codex/brain-agent-migration:docs/superpowers/specs/2026-07-09-brain-operations-reliability-design.md" | rg -F '**Status:** Implemented'
 git show "origin/codex/brain-agent-migration:docs/receipts/2026-07-09-brain-tools-hardening.md" | rg -F "$STATUS_PUSH_COMMIT"
 test -z "$(git status --porcelain)"
+```
+
+- [ ] **Step 16: Fast-forward the verified portable closeout to `main` and prove remote equality**
+
+The primary checkout was deployed at the implementation commit and must still have a clean tracked tree. Do not use the deployment-tree helper for this normal index-changing fast-forward. If tracked state appeared during live acceptance, stop and preserve it; do not stash, reset, or overwrite it.
+
+```bash
+git fetch origin codex/brain-agent-migration main
+test "$FINAL_RECEIPT_COMMIT" = "$(git rev-parse origin/codex/brain-agent-migration)"
+test "$(git -C "$LIVE_ROOT" branch --show-current)" = main
+git -C "$LIVE_ROOT" diff --quiet
+git -C "$LIVE_ROOT" diff --cached --quiet
+git -C "$LIVE_ROOT" merge --ff-only "$FINAL_RECEIPT_COMMIT"
+test "$(git -C "$LIVE_ROOT" rev-parse HEAD)" = "$FINAL_RECEIPT_COMMIT"
+git -C "$LIVE_ROOT" push origin main
+git -C "$LIVE_ROOT" fetch origin main
+test "$(git -C "$LIVE_ROOT" rev-parse HEAD)" = "$(git -C "$LIVE_ROOT" rev-parse origin/main)"
+MAIN_INTEGRATION_COMMIT=$(git -C "$LIVE_ROOT" rev-parse HEAD)
+test "$MAIN_INTEGRATION_COMMIT" = "$FINAL_RECEIPT_COMMIT"
+export MAIN_INTEGRATION_COMMIT
+```
+
+- [ ] **Step 17: Record the first `main` readback and perform the final documentation closeout**
+
+Return to the isolated feature worktree. Use `apply_patch` to append `MAIN_INTEGRATION_COMMIT`, its `origin/main` equality proof, and the final artifact-manifest digest to the receipt, and update `.superpowers/sdd/progress.md` to the observed completed state. This docs-only addendum creates no new runtime acceptance artifact and therefore does not invalidate the sealed artifact manifest. Commit only those portable authority/status paths, push the feature branch, fast-forward `main` once more, and prove both remote refs are exactly equal:
+
+```bash
+cd "$ISOLATED_ROOT"
+test "$(git branch --show-current)" = codex/brain-agent-migration
+rg -F "$MAIN_INTEGRATION_COMMIT" docs/receipts/2026-07-09-brain-tools-hardening.md
+rg -F "$ARTIFACT_MANIFEST_DIGEST" docs/receipts/2026-07-09-brain-tools-hardening.md
+git add -- docs/receipts/2026-07-09-brain-tools-hardening.md .superpowers/sdd/progress.md
+git diff --cached --check
+git commit --only docs/receipts/2026-07-09-brain-tools-hardening.md .superpowers/sdd/progress.md -m "docs: close out brain reliability rollout"
+CLOSEOUT_COMMIT=$(git rev-parse HEAD)
+git push origin codex/brain-agent-migration
+git fetch origin codex/brain-agent-migration
+test "$CLOSEOUT_COMMIT" = "$(git rev-parse origin/codex/brain-agent-migration)"
+git -C "$LIVE_ROOT" merge --ff-only "$CLOSEOUT_COMMIT"
+git -C "$LIVE_ROOT" push origin main
+git -C "$LIVE_ROOT" fetch origin main
+test "$CLOSEOUT_COMMIT" = "$(git -C "$LIVE_ROOT" rev-parse HEAD)"
+test "$CLOSEOUT_COMMIT" = "$(git -C "$LIVE_ROOT" rev-parse origin/main)"
+test "$CLOSEOUT_COMMIT" = "$(git rev-parse origin/codex/brain-agent-migration)"
+git show "origin/main:docs/superpowers/specs/2026-07-09-brain-operations-reliability-design.md" | rg -F '**Status:** Implemented'
+git show "origin/main:docs/receipts/2026-07-09-brain-tools-hardening.md" | rg -F "$MAIN_INTEGRATION_COMMIT"
+git show "origin/main:docs/receipts/2026-07-09-brain-tools-hardening.md" | rg -F "$ARTIFACT_MANIFEST_DIGEST"
+test -z "$(git status --porcelain)"
+test -z "$(git -C "$LIVE_ROOT" status --porcelain)"
 ```
 
 Never stage or discard unrelated primary live-checkout state.
