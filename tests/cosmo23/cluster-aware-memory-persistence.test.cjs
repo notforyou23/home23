@@ -404,6 +404,30 @@ for (const implementation of IMPLEMENTATIONS) {
     assert.equal(base.nextNodeId, 61);
     assert.equal(base.nextClusterId, 26);
     assert.equal(base.dirtyNodeIds.has(60), true);
+
+    base.markPersistenceCleanIfGeneration(base.persistenceGeneration);
+    const beforeVetoedRecord = base.persistenceGeneration;
+    base.importGraphChanges({
+      nodes: [{ id: 'vetoed-high', concept: 'must not set a cluster floor', cluster: 800 }],
+      clusters: [{ id: 800, nodes: ['vetoed-high'] }],
+      nodeDeletes: ['vetoed-high'],
+      clusterDeletes: [800],
+    });
+    assert.equal(base.nextNodeId, 61);
+    assert.equal(base.nextClusterId, 26);
+    assert.equal(base.persistenceGeneration, beforeVetoedRecord + 1);
+    assert.equal(base.deletedNodeIds.has('vetoed-high'), true);
+
+    base.markPersistenceCleanIfGeneration(base.persistenceGeneration);
+    const beforeEmptyClusters = base.persistenceGeneration;
+    base.importGraphChanges({
+      clusters: [
+        { id: 900, nodes: [] },
+        { id: 901, nodes: ['missing-member'] },
+      ],
+    });
+    assert.equal(base.nextClusterId, 26);
+    assert.equal(base.persistenceGeneration, beforeEmptyClusters);
   });
 
   test(`${implementation.name} legacy save/load is barrier-backed, clean, in-place, and dirty-safe`, async (t) => {

@@ -55,16 +55,17 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-async function eventually(callback, attempts = 100) {
+async function eventually(callback, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
   let last;
-  for (let index = 0; index < attempts; index += 1) {
+  do {
     try {
       return await callback();
     } catch (error) {
       last = error;
-      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setTimeout(resolve, 5));
     }
-  }
+  } while (Date.now() < deadline);
   throw last;
 }
 
