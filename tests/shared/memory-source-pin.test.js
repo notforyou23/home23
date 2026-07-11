@@ -9,12 +9,16 @@ const require = createRequire(import.meta.url);
 const {
   createMemorySourcePinProvider,
   createOperationScratchQuota,
+  durableBrainOperationRoot,
   openPinnedSource,
   pinOperationSource,
   sourceDescriptorDigest,
   writeJsonlGzAtomic,
 } = require('../../shared/memory-source');
 const { createDefaultLoadAnn } = require('../../engine/src/dashboard/memory-search');
+const {
+  BrainOperationStore,
+} = require('../../engine/src/dashboard/brain-operations/operation-store.js');
 
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -86,6 +90,151 @@ async function collect(iterator) {
   return rows;
 }
 
+function durableOperationRoot(home23Root, requesterAgent, operationId) {
+  return path.join(
+    home23Root,
+    'instances',
+    requesterAgent,
+    'runtime',
+    'brain-operations',
+    'operations',
+    operationId,
+  );
+}
+
+function residentTarget(canonicalRoot, requesterAgent = 'jerry') {
+  return {
+    domain: 'brain',
+    brainId: `brain-${requesterAgent}`,
+    canonicalRoot,
+    accessMode: 'own',
+    ownerAgent: requesterAgent,
+    displayName: requesterAgent,
+    kind: 'resident',
+    lifecycle: 'resident',
+    catalogRevision: 'catalog-durable-root-test',
+    route: `/api/brain/brain-${requesterAgent}`,
+    mutationBoundaries: [
+      { kind: 'brain', path: canonicalRoot },
+      { kind: 'run', path: canonicalRoot },
+      { kind: 'pgs', path: path.join(canonicalRoot, 'pgs') },
+      { kind: 'session', path: path.join(canonicalRoot, 'sessions') },
+      { kind: 'cache', path: path.join(canonicalRoot, 'cache') },
+      { kind: 'export', path: path.join(canonicalRoot, 'exports') },
+      { kind: 'agency', path: path.join(canonicalRoot, 'agency') },
+    ],
+  };
+}
+
+test('durable operation root rejects dot segments before path construction', async () => {
+  const home23Root = path.resolve('/tmp/home23-durable-root-validation');
+  for (const [requesterAgent, operationId] of [
+    ['..', 'brop_safe'],
+    ['.', 'brop_safe'],
+    ['jerry', '..'],
+    ['jerry', '.'],
+  ]) {
+    assert.throws(
+      () => durableBrainOperationRoot(home23Root, requesterAgent, operationId),
+      { code: 'invalid_request' },
+    );
+  }
+});
+
+test('pin provider opens against the exact BrainOperationStore scratch quota root', async (t) => {
+  const home23Root = await fsp.realpath(await tempDir('home23-memory-source-pin-store-root-'));
+  const brain = await writeManifestBrain();
+  t.after(() => Promise.all([
+    fsp.rm(home23Root, { recursive: true, force: true }),
+    fsp.rm(brain, { recursive: true, force: true }),
+  ]));
+  const storeRoot = path.join(
+    home23Root, 'instances', 'jerry', 'runtime', 'brain-operations',
+  );
+  await fsp.mkdir(storeRoot, { recursive: true });
+  const store = new BrainOperationStore({ root: storeRoot, requesterAgent: 'jerry' });
+  const created = await store.create({
+    requestId: 'durable-root-synthesis',
+    requesterAgent: 'jerry',
+    target: residentTarget(await fsp.realpath(brain)),
+    operationType: 'synthesis',
+    requestParameters: { trigger: 'manual' },
+    parameters: { trigger: 'manual', provider: 'test', model: 'test-model' },
+    sourcePinDescriptor: null,
+    sourcePinDigest: null,
+    canonicalEvidence: true,
+  });
+  const operationId = created.record.operationId;
+  const scratchDir = await store.ensureScratchDirectory(operationId);
+  const operationRoot = path.dirname(scratchDir);
+  assert.equal(operationRoot, durableOperationRoot(home23Root, 'jerry', operationId));
+
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const pinned = await provider.pin(brain, operationId);
+  const source = await provider.openPinnedSource(pinned.descriptor, {
+    operationId,
+    operationRoot,
+    scratchQuota,
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    expectedDigest: pinned.digest,
+  });
+  try {
+    assert.equal(source.operationRoot, undefined);
+    assert.deepEqual((await collect(source.iterateNodes())).map((node) => node.concept), [
+      'pin canary',
+    ]);
+    assert.equal(
+      await fsp.access(path.join(operationRoot, 'coordinator-source-pin.json'))
+        .then(() => true).catch(() => false),
+      true,
+    );
+  } finally {
+    await source.release();
+    await provider.releaseOperationPins(operationId);
+    await scratchQuota.close();
+  }
+});
+
+test('pin discovery includes durable nested and legacy flat operation roots', async (t) => {
+  const home23Root = await tempDir('home23-memory-source-discovery-layouts-');
+  t.after(() => fsp.rm(home23Root, { recursive: true, force: true }));
+  const brainOperationsRoot = path.join(
+    home23Root, 'instances', 'jerry', 'runtime', 'brain-operations',
+  );
+  const operationIds = {
+    durable: 'brop_durable_discovery',
+    legacy: 'mcp-legacy-discovery',
+  };
+  const roots = {
+    durable: durableOperationRoot(home23Root, 'jerry', operationIds.durable),
+    legacy: path.join(brainOperationsRoot, operationIds.legacy),
+  };
+  for (const [kind, operationRoot] of Object.entries(roots)) {
+    const processIdentity = `${kind}-process`;
+    const pinDir = path.join(operationRoot, 'pins', processIdentity);
+    await fsp.mkdir(pinDir, { recursive: true });
+    await fsp.writeFile(path.join(operationRoot, 'coordinator-source-pin.json'), '{}\n');
+    await fsp.writeFile(path.join(pinDir, `${kind === 'durable' ? 'a' : 'b'}`.repeat(64) + '.json'), '{}\n');
+  }
+  const { discoverOperationPinFiles } = require('../../shared/memory-source');
+  const discovered = await discoverOperationPinFiles(home23Root);
+  assert.deepEqual(
+    discovered.map(({ kind, operationId }) => ({ kind, operationId })),
+    [
+      { kind: 'coordinator', operationId: operationIds.durable },
+      { kind: 'process', operationId: operationIds.durable },
+      { kind: 'coordinator', operationId: operationIds.legacy },
+      { kind: 'process', operationId: operationIds.legacy },
+    ].sort((left, right) => {
+      const leftPath = left.operationId === operationIds.durable ? roots.durable : roots.legacy;
+      const rightPath = right.operationId === operationIds.durable ? roots.durable : roots.legacy;
+      return `${leftPath}/${left.kind}`.localeCompare(`${rightPath}/${right.kind}`);
+    }),
+  );
+});
+
 test('pin provider returns exactly descriptor and digest and persists private coordinator record', async () => {
   const home23Root = await tempDir('home23-memory-source-pin-home-');
   const brain = await writeManifestBrain();
@@ -97,7 +246,10 @@ test('pin provider returns exactly descriptor and digest and persists private co
   assert.equal('close' in result, false);
   assert.equal('release' in result, false);
   assert.equal('physicalRoot' in result.descriptor, false);
-  const recordPath = path.join(home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', 'brop_test_pin', 'coordinator-source-pin.json');
+  const recordPath = path.join(
+    durableOperationRoot(home23Root, 'jerry', 'brop_test_pin'),
+    'coordinator-source-pin.json',
+  );
   const record = JSON.parse(await fsp.readFile(recordPath, 'utf8'));
   assert.equal(record.physicalRoot, await fsp.realpath(brain));
   assert.equal(record.digest, result.digest);
@@ -138,9 +290,7 @@ for (const [role, file] of protectedReplacementCases) {
     const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
     const operationId = `brop_test_replace_${role.replace('-', '_')}`;
     const pinned = await provider.pin(brain, operationId);
-    const operationRoot = path.join(
-      home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId,
-    );
+    const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
     const scratchQuota = await createOperationScratchQuota({ operationRoot });
     const target = path.join(brain, file);
     const displaced = `${target}.displaced`;
@@ -206,7 +356,7 @@ test('openPinnedSource validates coordinator record and writes a separate proces
   const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
   const operationId = 'brop_test_open';
   const pinned = await provider.pin(brain, operationId);
-  const operationRoot = path.join(home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId);
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
   const source = await openPinnedSource(pinned.descriptor, {
     expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
@@ -233,9 +383,7 @@ test('an opened pinned source reads its anchored base handle after pathname repl
   const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
   const operationId = 'brop_test_anchored_base';
   const pinned = await provider.pin(brain, operationId);
-  const operationRoot = path.join(
-    home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId,
-  );
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
   const source = await provider.openPinnedSource(pinned.descriptor, {
     operationId,
@@ -263,9 +411,7 @@ test('ANN loading uses anchored index and metadata handles after pathname replac
   const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
   const operationId = 'brop_test_anchored_ann';
   const pinned = await provider.pin(brain, operationId);
-  const operationRoot = path.join(
-    home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId,
-  );
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
   const source = await provider.openPinnedSource(pinned.descriptor, {
     operationId,
@@ -304,9 +450,7 @@ test('openPinnedSource binds a safe PID-plus-start process identity and rolls ba
   const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
   const operationId = 'brop_test_process_identity';
   const pinned = await provider.pin(brain, operationId);
-  const operationRoot = path.join(
-    home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId,
-  );
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
   const exact = {
     expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
@@ -354,9 +498,7 @@ test('same-process concurrent opens retain the shared pin until the last release
   const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
   const operationId = 'brop_test_process_reference';
   const pinned = await provider.pin(brain, operationId);
-  const operationRoot = path.join(
-    home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId,
-  );
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
   const processIdentity = 'cosmo-777-reference-test';
   const exact = {
@@ -397,14 +539,7 @@ test('native operation pin reads its exact revision after the live manifest adva
   const operationId = 'brop_test_native_revision';
   const pinned = await provider.pin(brain, operationId);
 
-  const operationRoot = path.join(
-    home23Root,
-    'instances',
-    'jerry',
-    'runtime',
-    'brain-operations',
-    operationId,
-  );
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
   const source = await provider.openPinnedSource(pinned.descriptor, {
     operationId,
@@ -433,7 +568,7 @@ test('openPinnedSource rejects digest, root, and revision mismatch before readin
   const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
   const operationId = 'brop_test_reject';
   const pinned = await provider.pin(brain, operationId);
-  const operationRoot = path.join(home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId);
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
   const wrongDigest = `${pinned.digest.slice(0, -1)}${pinned.digest.endsWith('0') ? '1' : '0'}`;
   await assert.rejects(() => openPinnedSource(pinned.descriptor, {
@@ -474,14 +609,7 @@ test('openPinnedSource requires the exact coordinator operation requester and de
   const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
   const operationId = 'brop_test_exact_record';
   const pinned = await provider.pin(brain, operationId);
-  const operationRoot = path.join(
-    home23Root,
-    'instances',
-    'jerry',
-    'runtime',
-    'brain-operations',
-    operationId,
-  );
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
   const recordPath = path.join(operationRoot, 'coordinator-source-pin.json');
   const originalRecord = JSON.parse(await fsp.readFile(recordPath, 'utf8'));
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
@@ -533,7 +661,7 @@ test('pin discovery, stale process prune, and terminal release are exact to oper
   const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
   const operationId = 'brop_test_discovery';
   const pinned = await provider.pin(brain, operationId);
-  const operationRoot = path.join(home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId);
+  const operationRoot = durableOperationRoot(home23Root, 'jerry', operationId);
   const scratchQuota = await createOperationScratchQuota({ operationRoot });
   const {
     discoverOperationPinFiles,

@@ -88,7 +88,9 @@ async function operationScratchContext() {
   const home23Root = await tempDir('home23-export-root-');
   const canonicalRoot = path.join(home23Root, 'instances', 'ada', 'brain');
   await fsp.mkdir(canonicalRoot, { recursive: true });
-  const scratchDir = path.join(home23Root, 'instances', 'ada', 'runtime', 'brain-operations', 'op-1', 'scratch');
+  const scratchDir = path.join(
+    home23Root, 'instances', 'ada', 'runtime', 'brain-operations', 'operations', 'op-1', 'scratch',
+  );
   await fsp.mkdir(scratchDir, { recursive: true });
   const context = await baseContext();
   context.target.canonicalRoot = canonicalRoot;

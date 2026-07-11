@@ -18,6 +18,7 @@ const {
 } = require('../../../shared/brain-operations/capability.cjs');
 const {
   createOperationScratchQuota,
+  durableBrainOperationRoot,
   sourceDescriptorDigest,
 } = require('../../../shared/memory-source');
 const { CapabilityNonceStore } = require('./capability-nonce-store');
@@ -844,6 +845,11 @@ class BrainOperationWorker {
   }
 
   async _prepareScratch(request) {
+    const operationRoot = durableBrainOperationRoot(
+      this.home23Root,
+      request.requesterAgent,
+      request.operationId,
+    );
     let current = this.home23Root;
     const homeStat = await fsp.lstat(current);
     if (!homeStat.isDirectory() || homeStat.isSymbolicLink()
@@ -852,7 +858,7 @@ class BrainOperationWorker {
     }
     for (const segment of [
       'instances', request.requesterAgent, 'runtime', 'brain-operations',
-      request.operationId, 'scratch',
+      'operations', request.operationId, 'scratch',
     ]) {
       const next = path.join(current, segment);
       const parentStat = await fsp.lstat(current);
@@ -877,7 +883,9 @@ class BrainOperationWorker {
       current = next;
     }
     const scratchDir = current;
-    const operationRoot = operationRootFromScratch(scratchDir);
+    if (operationRootFromScratch(scratchDir) !== operationRoot) {
+      throw workerError('invalid_request');
+    }
     return { operationRoot, scratchDir };
   }
 

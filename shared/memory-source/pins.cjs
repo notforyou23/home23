@@ -206,6 +206,25 @@ function validateOperationId(operationId) {
   return operationId;
 }
 
+function durableBrainOperationRoot(home23Root, requesterAgent, operationId) {
+  if (typeof home23Root !== 'string' || !path.isAbsolute(home23Root)
+      || path.normalize(home23Root) !== home23Root || home23Root.includes('\0')
+      || typeof requesterAgent !== 'string'
+      || !/^[A-Za-z0-9_.-]+$/.test(requesterAgent)) {
+    throw memorySourceError('invalid_request', 'trusted durable operation root required');
+  }
+  validateOperationId(operationId);
+  return path.join(
+    home23Root,
+    'instances',
+    requesterAgent,
+    'runtime',
+    'brain-operations',
+    'operations',
+    operationId,
+  );
+}
+
 function canonicalRootHash(canonicalRoot) {
   return crypto.createHash('sha256').update(canonicalRoot).digest('hex');
 }
@@ -1380,30 +1399,57 @@ async function discoverOperationPinFiles(home23Root) {
   const results = [];
   const agents = await fsp.readdir(instances, { withFileTypes: true }).catch(() => []);
   for (const agent of agents) {
-    if (!agent.isDirectory()) continue;
-    const operationsRoot = path.join(instances, agent.name, 'runtime', 'brain-operations');
-    const operations = await fsp.readdir(operationsRoot, { withFileTypes: true }).catch(() => []);
-    for (const operation of operations) {
-      if (!operation.isDirectory() || !/^[A-Za-z0-9_.-]+$/.test(operation.name)) continue;
-      const operationRoot = path.join(operationsRoot, operation.name);
-      const coordinator = path.join(operationRoot, 'coordinator-source-pin.json');
-      if (await fsp.access(coordinator).then(() => true).catch(() => false)) {
-        results.push({ kind: 'coordinator', requesterAgent: agent.name, operationId: operation.name, path: coordinator });
-      }
-      const pinsRoot = path.join(operationRoot, 'pins');
-      const processes = await fsp.readdir(pinsRoot, { withFileTypes: true }).catch(() => []);
-      for (const processDir of processes) {
-        if (!processDir.isDirectory()) continue;
-        const files = await fsp.readdir(path.join(pinsRoot, processDir.name), { withFileTypes: true }).catch(() => []);
-        for (const file of files) {
-          if (file.isFile() && /^[a-f0-9]{64}\.json$/.test(file.name)) {
-            results.push({
-              kind: 'process',
-              requesterAgent: agent.name,
-              operationId: operation.name,
-              processIdentity: processDir.name,
-              path: path.join(pinsRoot, processDir.name, file.name),
-            });
+    if (!agent.isDirectory() || !/^[A-Za-z0-9_.-]+$/.test(agent.name)) continue;
+    const brainOperationsRoot = path.join(instances, agent.name, 'runtime', 'brain-operations');
+    const containers = [
+      { root: path.join(brainOperationsRoot, 'operations'), excludedName: null },
+      { root: brainOperationsRoot, excludedName: 'operations' },
+    ];
+    for (const container of containers) {
+      const containerStat = await fsp.lstat(container.root).catch(() => null);
+      if (!containerStat?.isDirectory() || containerStat.isSymbolicLink()
+          || await fsp.realpath(container.root).catch(() => null) !== container.root) continue;
+      const operations = await fsp.readdir(container.root, { withFileTypes: true }).catch(() => []);
+      for (const operation of operations) {
+        if (operation.name === container.excludedName
+            || !operation.isDirectory()
+            || !/^[A-Za-z0-9_.-]+$/.test(operation.name)) continue;
+        const operationRoot = path.join(container.root, operation.name);
+        const operationStat = await fsp.lstat(operationRoot).catch(() => null);
+        if (!operationStat?.isDirectory() || operationStat.isSymbolicLink()
+            || await fsp.realpath(operationRoot).catch(() => null) !== operationRoot) continue;
+        const coordinator = path.join(operationRoot, 'coordinator-source-pin.json');
+        const coordinatorStat = await fsp.lstat(coordinator).catch(() => null);
+        if (coordinatorStat?.isFile() && !coordinatorStat.isSymbolicLink()) {
+          results.push({
+            kind: 'coordinator',
+            requesterAgent: agent.name,
+            operationId: operation.name,
+            path: coordinator,
+          });
+        }
+        const pinsRoot = path.join(operationRoot, 'pins');
+        const pinsStat = await fsp.lstat(pinsRoot).catch(() => null);
+        if (!pinsStat?.isDirectory() || pinsStat.isSymbolicLink()
+            || await fsp.realpath(pinsRoot).catch(() => null) !== pinsRoot) continue;
+        const processes = await fsp.readdir(pinsRoot, { withFileTypes: true }).catch(() => []);
+        for (const processDir of processes) {
+          if (!processDir.isDirectory() || !/^[A-Za-z0-9_.-]+$/.test(processDir.name)) continue;
+          const processRoot = path.join(pinsRoot, processDir.name);
+          const processStat = await fsp.lstat(processRoot).catch(() => null);
+          if (!processStat?.isDirectory() || processStat.isSymbolicLink()
+              || await fsp.realpath(processRoot).catch(() => null) !== processRoot) continue;
+          const files = await fsp.readdir(processRoot, { withFileTypes: true }).catch(() => []);
+          for (const file of files) {
+            if (file.isFile() && /^[a-f0-9]{64}\.json$/.test(file.name)) {
+              results.push({
+                kind: 'process',
+                requesterAgent: agent.name,
+                operationId: operation.name,
+                processIdentity: processDir.name,
+                path: path.join(processRoot, file.name),
+              });
+            }
           }
         }
       }
@@ -1435,8 +1481,7 @@ async function pruneStalePins(home23Root, {
 }
 
 async function releaseOperationSource({ home23Root, requesterAgent, operationId }) {
-  validateOperationId(operationId);
-  const operationRoot = path.join(home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations', operationId);
+  const operationRoot = durableBrainOperationRoot(home23Root, requesterAgent, operationId);
   const pinsRoot = path.join(operationRoot, 'pins');
   for (const pinFile of processPinReferences.keys()) {
     const relative = path.relative(pinsRoot, pinFile);
@@ -1461,8 +1506,7 @@ function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
   const providerContext = Object.freeze({ lockRoot, ownBrainPath });
   return Object.freeze({
     async pin(canonicalRoot, operationId) {
-      validateOperationId(operationId);
-      const operationRoot = path.join(home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations', operationId);
+      const operationRoot = durableBrainOperationRoot(home23Root, requesterAgent, operationId);
       const scratchQuota = await createOperationScratchQuota({ operationRoot });
       try {
         return await pinOperationSource({
@@ -1479,14 +1523,7 @@ function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
     },
     async openPinnedSource(descriptor, expectations) {
       const operationId = validateOperationId(expectations?.operationId);
-      const operationRoot = path.join(
-        home23Root,
-        'instances',
-        requesterAgent,
-        'runtime',
-        'brain-operations',
-        operationId,
-      );
+      const operationRoot = durableBrainOperationRoot(home23Root, requesterAgent, operationId);
       return openPinnedSource(descriptor, {
         ...expectations,
         operationId,
@@ -1503,6 +1540,7 @@ function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
 
 module.exports = {
   validateOperationId,
+  durableBrainOperationRoot,
   coordinatorPinPath,
   withMemorySourceLock,
   pinOperationSource,

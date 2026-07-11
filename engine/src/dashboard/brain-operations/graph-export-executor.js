@@ -10,6 +10,7 @@ const {
   OPERATION_RESULT_ARTIFACT_MAX_BYTES,
 } = require('./operation-contract.js');
 const {
+  durableBrainOperationRoot,
   enrichEvidenceIdentity,
   memorySourceError,
   throwIfAborted,
@@ -68,12 +69,7 @@ async function trustedScratchDir(context, home23Root) {
   if (home23Root) {
     const root = await fsp.realpath(home23Root);
     const expected = path.join(
-      root,
-      'instances',
-      context.requesterAgent,
-      'runtime',
-      'brain-operations',
-      context.operationId,
+      durableBrainOperationRoot(root, context.requesterAgent, context.operationId),
       'scratch',
     );
     const expectedReal = await fsp.realpath(expected);

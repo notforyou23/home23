@@ -430,8 +430,10 @@ test('32 equivalent starts create one worker, one process pin, and one executor'
   assert.equal(received.operationType, 'query');
   assert.equal(received.scratchDir, path.join(
     await fsp.realpath(fixture.home23Root), 'instances', 'jerry', 'runtime', 'brain-operations',
-    request.operationId, 'scratch',
+    'operations', request.operationId, 'scratch',
   ));
+  assert.equal(openExpectations.operationRoot, path.dirname(received.scratchDir));
+  assert.equal(openExpectations.scratchQuota.operationRoot, path.dirname(received.scratchDir));
   assert.equal(received.signal instanceof AbortSignal, true);
   assert.equal(openExpectations.requesterAgent, 'jerry');
   assert.equal(openExpectations.operationId, request.operationId);
@@ -605,7 +607,7 @@ test('scratch creation rejects a preplanted operation symlink before writing thr
   const request = requestFor({ id: operationId('p') });
   const operationsRoot = path.join(
     await fsp.realpath(fixture.home23Root),
-    'instances', 'jerry', 'runtime', 'brain-operations',
+    'instances', 'jerry', 'runtime', 'brain-operations', 'operations',
   );
   await fsp.mkdir(operationsRoot, { recursive: true });
   await fsp.symlink(outside, path.join(operationsRoot, request.operationId));
@@ -1252,7 +1254,7 @@ async function prepareLegacyResearchPin({ home23Root, targetRoot, operationId: i
   const canonicalHome = await fsp.realpath(home23Root);
   const canonicalTarget = await fsp.realpath(targetRoot);
   const operationRoot = path.join(
-    canonicalHome, 'instances', 'jerry', 'runtime', 'brain-operations', id,
+    canonicalHome, 'instances', 'jerry', 'runtime', 'brain-operations', 'operations', id,
   );
   const quota = await createOperationScratchQuota({ operationRoot });
   const projected = await projectLegacyResearchSnapshot({
