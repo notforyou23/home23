@@ -41,6 +41,19 @@ function invalidSource(field) {
   });
 }
 
+function normalizeOptionalTag(value) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value !== 'string' || value.trim() !== value
+      || Buffer.byteLength(value, 'utf8') > 1024) {
+    throw Object.assign(new Error('tag must be a bounded exact string'), {
+      code: 'invalid_request',
+      status: 400,
+      field: 'tag',
+    });
+  }
+  return value;
+}
+
 function assertPlainJsonRecord(value, field) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
@@ -240,6 +253,7 @@ async function sampleMemoryGraph(source, options = {}) {
   const clusterId = options.clusterId === null || options.clusterId === undefined
     ? null
     : normalizeId(options.clusterId);
+  const tag = normalizeOptionalTag(options.tag);
   const minWeight = Number(options.minWeight ?? 0);
   if (!Number.isFinite(minWeight)) {
     throw Object.assign(new Error('minWeight must be finite'), {
@@ -266,6 +280,7 @@ async function sampleMemoryGraph(source, options = {}) {
       clusterTotalsOmitted = true;
     }
     if (clusterId !== null && normalizeId(node.cluster) !== clusterId) continue;
+    if (tag !== null && String(node.tag ?? 'general') !== tag) continue;
     const projected = projectGraphNode(node);
     selected.push({ node: projected, rank: nodeRank(projected) });
   }
@@ -313,7 +328,7 @@ async function sampleMemoryGraph(source, options = {}) {
     },
     evidence: source.getEvidence({
       completeCoverage: true,
-      filters: { clusterId, minWeight },
+      filters: { clusterId, tag, minWeight },
       limits: { nodeLimit, edgeLimit },
       authoritativeTotals: { nodes: summary.nodes, edges: summary.edges },
       returnedTotals: { nodes: nodes.length, edges: edgeRows.length },

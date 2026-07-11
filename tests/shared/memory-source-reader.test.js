@@ -262,3 +262,27 @@ test('short-token keyword canary is searchable with complete-coverage evidence',
   await assert.rejects(() => source.searchKeyword({ query: '   ... ' }), { code: 'invalid_request' });
   await source.close();
 });
+
+test('keyword search applies the advertised exact tag filter and reports filtered matches', async () => {
+  const { dir } = await createManifestFixture({
+    nodes: [
+      { id: 1, concept: 'shared canary', tag: 'alpha' },
+      { id: 2, concept: 'shared canary', tag: 'beta' },
+    ],
+    edges: [],
+    delta: [],
+    currentRevision: 2,
+    summary: { nodeCount: 2, edgeCount: 0, clusterCount: 1 },
+  });
+  const source = await openMemorySource(dir);
+  const result = await source.searchKeyword({ query: 'shared canary', topK: 10, tag: 'alpha' });
+  assert.deepEqual(result.results, [{ id: '1', concept: 'shared canary', tag: 'alpha' }]);
+  assert.equal(result.filtered, 1);
+  assert.deepEqual(result.evidence.filters, { tag: 'alpha' });
+  assert.deepEqual(result.evidence.limits, { topK: 10 });
+  await assert.rejects(
+    () => source.searchKeyword({ query: 'shared', tag: ' alpha ' }),
+    { code: 'invalid_request', status: 400, field: 'tag' },
+  );
+  await source.close();
+});

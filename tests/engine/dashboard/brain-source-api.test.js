@@ -10,6 +10,7 @@ const {
   createBrainSourceService,
   rejectCallerIdentity,
 } = require('../../../engine/src/dashboard/brain-source-api');
+const { openMemorySource } = require('../../../shared/memory-source');
 
 async function tempDir(prefix) {
   return fsp.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -159,6 +160,33 @@ test('status on unavailable source returns false with unknown evidence', async (
   assert.equal(status.ok, false);
   assert.equal(status.evidence.sourceHealth, 'unavailable');
   assert.equal(status.evidence.matchOutcome, 'unknown');
+});
+
+test('the real unavailable source cannot become a successful zero graph', async () => {
+  const brainDir = await tempDir('home23-brain-source-api-unavailable-');
+  const canonicalRoot = await fsp.realpath(brainDir);
+  const source = await openMemorySource(brainDir);
+  assert.equal(source.getEvidence().sourceHealth, 'unavailable');
+  const service = createBrainSourceService({
+    brainDir,
+    home23Root: await tempDir('home23-brain-source-api-home-'),
+    requesterAgent: 'jerry',
+    resolveTargetContext: async () => ({
+      catalogRevision: 'catalog-1',
+      accessMode: 'own',
+      target: { id: 'brain-jerry', canonicalRoot, kind: 'resident', sourceType: 'brain' },
+    }),
+    withEphemeralSource: async (options, callback) => callback(source, {
+      identity: { ...options.identity, canonicalRoot, operationId: 'dashboard-source-unavailable' },
+    }),
+  });
+  await assert.rejects(
+    () => service.graph({ nodeLimit: 10 }),
+    (error) => error.code === 'source_unavailable'
+      && error.status === 503
+      && error.sourceEvidence?.sourceHealth === 'unavailable',
+  );
+  await source.close();
 });
 
 test('full graph compatibility request is rejected with typed 413', async () => {

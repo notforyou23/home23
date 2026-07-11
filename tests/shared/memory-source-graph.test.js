@@ -102,6 +102,28 @@ test('normalizes numeric cluster filters and produces a deterministic pinned sam
   assert.equal(first.nodes.every((row) => String(row.cluster) === '4'), true);
 });
 
+test('graph sampling applies an exact bounded tag filter to returned nodes and evidence', async () => {
+  const source = syntheticStreamingSource({
+    nodes: 8,
+    edges: 8,
+    extraNode: (index) => ({ tag: index % 2 ? 'beta' : 'alpha' }),
+  });
+  const result = await sampleMemoryGraph(source, {
+    tag: 'alpha', nodeLimit: 8, edgeLimit: 8,
+  });
+  assert.equal(result.nodes.length, 4);
+  assert.equal(result.nodes.every((node) => node.tag === 'alpha'), true);
+  assert.equal(result.edges.every((edge) => (
+    Number(edge.source.split('-')[1]) % 2 === 0
+    && Number(edge.target.split('-')[1]) % 2 === 0
+  )), true);
+  assert.equal(result.evidence.filters.tag, 'alpha');
+  await assert.rejects(
+    () => sampleMemoryGraph(source, { tag: ' alpha ' }),
+    (error) => error.code === 'invalid_request' && error.status === 400 && error.field === 'tag',
+  );
+});
+
 test('rejects full graph compatibility requests', async () => {
   await assert.rejects(
     () => sampleMemoryGraph(syntheticStreamingSource({ nodes: 1, edges: 0 }), { full: '1' }),

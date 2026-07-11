@@ -47,6 +47,7 @@ function pickGraphParameters(query = {}) {
     nodeLimit: query.nodeLimit ?? query.limit,
     edgeLimit: query.edgeLimit,
     clusterId: query.clusterId,
+    tag: query.tag,
     minWeight: query.minWeight,
     full: query.full,
   };
@@ -145,8 +146,23 @@ function createBrainSourceService({
       const { sourcePin = null, signal, identity, ...graphOptions } = options;
       throwIfAborted(signal);
       return withSource(sourcePin, { signal, identity }, async (source, context) => {
+        const initialEvidence = source.getEvidence();
+        if (initialEvidence.sourceHealth === 'unavailable') {
+          throw memorySourceError('source_unavailable', 'canonical brain source is unavailable', {
+            status: 503,
+            retryable: true,
+            sourceEvidence: enrichEvidenceIdentity(initialEvidence, context.identity),
+          });
+        }
         const result = await sampleMemoryGraph(source, { ...graphOptions, signal });
         result.evidence = enrichEvidenceIdentity(result.evidence, context.identity);
+        if (result.evidence.sourceHealth === 'unavailable') {
+          throw memorySourceError('source_unavailable', 'canonical brain source became unavailable', {
+            status: 503,
+            retryable: true,
+            sourceEvidence: result.evidence,
+          });
+        }
         return result;
       });
     },

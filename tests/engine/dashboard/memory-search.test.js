@@ -13,6 +13,8 @@ const {
   appendMemoryRevision,
 } = require('../../../shared/memory-source');
 const {
+  createDefaultEmbedQuery,
+  createDefaultLoadAnn,
   createMemorySearchService,
 } = require('../../../engine/src/dashboard/memory-search');
 
@@ -201,7 +203,7 @@ test('noise-filtered semantic candidates are supplemented by exact keyword resul
   assert.equal(result.evidence.fallback.reason, 'ann_missing');
 });
 
-test('healthy empty, healthy no-match, and degraded unknown remain distinct', async () => {
+test('healthy empty and healthy no-match remain distinct while unavailable fails truthfully', async () => {
   const emptyDir = await createBrain({ nodes: [] });
   const empty = await sourceSearch({
     dir: emptyDir,
@@ -240,12 +242,105 @@ test('healthy empty, healthy no-match, and degraded unknown remain distinct', as
     loadAnn: async () => null,
     logger: { warn() {} },
   });
-  const degraded = await service.search({
-    sourcePin: degradedSource,
-    identity: { operationId: 'test-search' },
-    query: 'anything',
+  await assert.rejects(
+    () => service.search({
+      sourcePin: degradedSource,
+      identity: { operationId: 'test-search' },
+      query: 'anything',
+    }),
+    (error) => error.code === 'source_unavailable'
+      && error.status === 503
+      && error.sourceEvidence?.matchOutcome === 'unknown',
+  );
+});
+
+test('keyword fallback applies exact tags instead of merely claiming the filter', async () => {
+  const dir = await createBrain({
+    nodes: [
+      { id: 'alpha', concept: 'shared route canary', tag: 'alpha' },
+      { id: 'beta', concept: 'shared route canary', tag: 'beta' },
+    ],
   });
-  assert.equal(degraded.evidence.matchOutcome, 'unknown');
+  const result = await sourceSearch({
+    dir,
+    query: 'shared route canary',
+    embedQuery: async () => { throw new Error('offline'); },
+    loadAnn: async () => null,
+    request: { tag: 'alpha' },
+  });
+  assert.deepEqual(result.results.map((row) => row.id), ['alpha']);
+  assert.deepEqual(result.evidence.filters, { tag: 'alpha' });
+  await assert.rejects(
+    () => sourceSearch({
+      dir,
+      query: 'shared route canary',
+      embedQuery: async () => null,
+      loadAnn: async () => null,
+      request: { tag: ' alpha ' },
+    }),
+    (error) => error.code === 'invalid_request' && error.field === 'tag',
+  );
+});
+
+test('default embedding transport forwards the exact AbortSignal', async () => {
+  const controller = new AbortController();
+  let receivedSignal = null;
+  const embed = createDefaultEmbedQuery({
+    getClient: () => ({
+      embeddings: {
+        async create(_parameters, options) {
+          receivedSignal = options.signal;
+          return { data: [{ embedding: [1, 0] }] };
+        },
+      },
+    }),
+  });
+  assert.deepEqual(await embed('canary', { signal: controller.signal }), [1, 0]);
+  assert.equal(receivedSignal, controller.signal);
+  controller.abort(Object.assign(new Error('stop'), { name: 'AbortError', code: 'cancelled' }));
+  await assert.rejects(() => embed('never sent', { signal: controller.signal }), {
+    code: 'cancelled',
+  });
+});
+
+test('default ANN loading derives files from the pinned target source, not requester brainDir', async () => {
+  const requesterDir = await createBrain({ nodes: [{ id: 'requester', concept: 'wrong brain' }] });
+  const targetDir = await createBrain({ nodes: [{ id: 'target', concept: 'target canary' }] });
+  const manifest = await markAnn(targetDir);
+  await fsp.writeFile(path.join(targetDir, manifest.ann.metaFile), JSON.stringify({
+    dimension: 2,
+    labels: [],
+  }));
+  const pathsRead = [];
+  class FakeIndex {
+    readIndexSync(filePath) { pathsRead.push(filePath); }
+    setEf() {}
+    searchKnn() { return { neighbors: [], distances: [] }; }
+  }
+  const source = await openMemorySource(targetDir);
+  const service = createMemorySearchService({
+    brainDir: requesterDir,
+    embedQuery: async () => [1, 0],
+    loadAnn: createDefaultLoadAnn({
+      hnswlibLoader: () => ({ HierarchicalNSW: FakeIndex }),
+    }),
+    logger: { warn() {} },
+  });
+  try {
+    const result = await service.search({
+      sourcePin: source,
+      identity: { operationId: 'cross-brain-ann', accessMode: 'read-only' },
+      query: 'target canary',
+      topK: 5,
+      minSimilarity: 0.1,
+      noiseFloor: 0.1,
+    });
+    assert.equal(result.results.some((row) => row.id === 'target'), true);
+    assert.deepEqual(pathsRead, [path.join(await fsp.realpath(targetDir), manifest.ann.indexFile)]);
+    assert.equal(pathsRead[0].startsWith(await fsp.realpath(requesterDir)), false);
+  } finally {
+    await source.close();
+  }
 });
 
 test('search cancellation is never converted into embedding fallback or source unavailable', async () => {

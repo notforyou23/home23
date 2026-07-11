@@ -18,6 +18,7 @@ const {
   MATCH_OUTCOME,
   normalizeId,
   normalizeKeywordTokens,
+  parseBoundedInteger,
   edgeKeyFor,
   classifyMatchOutcome,
   createEvidence,
@@ -27,6 +28,18 @@ const {
   rethrowAbort,
   isTypedMemorySourceError,
 } = require('./contracts.cjs');
+
+function normalizeOptionalTag(tag) {
+  if (tag === null || tag === undefined || tag === '') return null;
+  if (typeof tag !== 'string' || tag.trim() !== tag
+      || Buffer.byteLength(tag, 'utf8') > 1024) {
+    throw memorySourceError('invalid_request', 'tag must be a bounded exact string', {
+      status: 400,
+      field: 'tag',
+    });
+  }
+  return tag;
+}
 
 function activeFiles(manifest) {
   return [
@@ -284,10 +297,17 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
         maxBytes,
       };
     },
-    async searchKeyword({ query, topK = 10 } = {}) {
+    async searchKeyword({ query, topK = 10, tag = null, signal } = {}) {
       const tokens = normalizeKeywordTokens(query);
+      const limit = parseBoundedInteger(topK, {
+        name: 'topK', defaultValue: 10, min: 1, max: 100,
+      });
+      const exactTag = normalizeOptionalTag(tag);
       const results = [];
-      for await (const node of this.iterateNodes()) {
+      let filtered = 0;
+      let completeCoverage = true;
+      for await (const node of this.iterateNodes({ signal })) {
+        throwIfAborted(signal);
         const haystack = JSON.stringify({
           id: node.id,
           concept: node.concept,
@@ -295,18 +315,30 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
           cluster: node.cluster,
         }).toLocaleLowerCase('en-US');
         if (tokens.some((token) => haystack.includes(token))) {
+          if (exactTag !== null && node.tag !== exactTag) {
+            filtered += 1;
+            continue;
+          }
           results.push({
             id: normalizeId(node.id),
             concept: typeof node.concept === 'string' ? node.concept.slice(0, 1024) : null,
+            tag: node.tag ?? null,
           });
-          if (results.length >= topK) break;
+          if (results.length >= limit) {
+            completeCoverage = false;
+            break;
+          }
         }
       }
       return {
         results,
+        filtered,
         evidence: this.getEvidence({
           returnedTotals: { nodes: results.length, edges: 0 },
-          completeCoverage: results.length < topK,
+          completeCoverage,
+          filteredTotal: filtered,
+          filters: { tag: exactTag },
+          limits: { topK: limit },
         }),
       };
     },

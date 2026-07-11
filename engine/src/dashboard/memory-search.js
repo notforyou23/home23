@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs').promises;
+const path = require('node:path');
 const {
   withEphemeralMemorySource,
   classifyMatchOutcome,
@@ -170,29 +171,92 @@ function annSearchRows(ann, queryEmbedding, candidateLimit) {
   return [];
 }
 
-function createDefaultEmbedQuery() {
-  return async function embedQuery(query) {
+function normalizeOptionalTag(tag) {
+  if (tag === null || tag === undefined || tag === '') return null;
+  if (typeof tag !== 'string' || tag.trim() !== tag
+      || Buffer.byteLength(tag, 'utf8') > 1024) {
+    throw memorySourceError('invalid_request', 'tag must be a bounded exact string', {
+      status: 400,
+      field: 'tag',
+    });
+  }
+  return tag;
+}
+
+function createDefaultEmbedQuery({ getClient } = {}) {
+  const resolveClient = getClient || (() => {
     const { getEmbeddingClient } = require('../core/openai-client');
-    const client = getEmbeddingClient();
+    return getEmbeddingClient();
+  });
+  return async function embedQuery(query, { signal } = {}) {
+    throwIfAborted(signal);
+    const client = resolveClient();
     const embeddingModel = process.env.EMBEDDING_MODEL || 'nomic-embed-text';
     const createParams = { model: embeddingModel, input: String(query).slice(0, 2000) };
     if (!(process.env.EMBEDDING_BASE_URL || '').includes('11434')) {
       createParams.encoding_format = 'float';
     }
-    const response = await client.embeddings.create(createParams);
+    const response = await client.embeddings.create(createParams, signal ? { signal } : undefined);
+    throwIfAborted(signal);
     return response?.data?.[0]?.embedding || null;
   };
 }
 
-function createDefaultLoadAnn(brainDir) {
-  return async function loadAnn(annMeta) {
+function createDefaultLoadAnn({ hnswlibLoader = () => require('hnswlib-node') } = {}) {
+  return async function loadAnn(source, annMeta, { signal } = {}) {
     if (!annMeta?.indexFile || !annMeta?.metaFile) return null;
-    const hnswlib = require('hnswlib-node');
-    const meta = JSON.parse(await fs.readFile(`${brainDir}/${annMeta.metaFile}`, 'utf8'));
+    throwIfAborted(signal);
+    const canonicalRoot = source?.descriptor?.canonicalRoot;
+    if (typeof canonicalRoot !== 'string' || !path.isAbsolute(canonicalRoot)) {
+      throw memorySourceError('source_unavailable', 'ANN target root is unavailable', {
+        status: 503,
+        retryable: true,
+      });
+    }
+    const root = await fs.realpath(canonicalRoot);
+    const resolveRegular = async (basename, label) => {
+      if (typeof basename !== 'string' || path.basename(basename) !== basename
+          || basename === '.' || basename === '..') {
+        throw memorySourceError('source_unavailable', `${label} path is invalid`, {
+          status: 503,
+          retryable: true,
+        });
+      }
+      const filePath = path.join(root, basename);
+      const stat = await fs.lstat(filePath);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1
+          || path.dirname(await fs.realpath(filePath)) !== root) {
+        throw memorySourceError('source_unavailable', `${label} path is unsafe`, {
+          status: 503,
+          retryable: true,
+        });
+      }
+      return { filePath, stat };
+    };
+    const [{ filePath: indexPath }, { filePath: metaPath, stat: metaStat }] = await Promise.all([
+      resolveRegular(annMeta.indexFile, 'ANN index'),
+      resolveRegular(annMeta.metaFile, 'ANN metadata'),
+    ]);
+    if (metaStat.size > 16 * 1024 * 1024) {
+      throw memorySourceError('result_too_large', 'ANN metadata exceeds byte limit', {
+        status: 413,
+        retryable: false,
+      });
+    }
+    const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+    throwIfAborted(signal);
     const dimension = meta.dimension || meta.dim;
+    if (!Number.isSafeInteger(dimension) || dimension < 1 || dimension > MAX_EMBEDDING_DIMENSIONS) {
+      throw memorySourceError('source_unavailable', 'ANN metadata dimension is invalid', {
+        status: 503,
+        retryable: true,
+      });
+    }
+    const hnswlib = hnswlibLoader();
     const index = new hnswlib.HierarchicalNSW('cosine', dimension);
-    index.readIndexSync(`${brainDir}/${annMeta.indexFile}`);
+    index.readIndexSync(indexPath);
     index.setEf(Math.max(100, meta.efConstruction || 100));
+    throwIfAborted(signal);
     return {
       dimension,
       count: meta.count,
@@ -223,7 +287,7 @@ function createMemorySearchService({
   requesterAgent,
   resolveTargetContext,
   embedQuery = createDefaultEmbedQuery(),
-  loadAnn = createDefaultLoadAnn(brainDir),
+  loadAnn = createDefaultLoadAnn(),
   logger = console,
   withEphemeralSource = withEphemeralMemorySource,
 } = {}) {
@@ -233,12 +297,13 @@ function createMemorySearchService({
       topK = 10,
       minSimilarity = 0.4,
       noiseFloor = 0.55,
-      tag = null,
+      tag: requestedTag = null,
       signal,
       identity,
     } = request;
     throwIfAborted(signal);
     normalizeKeywordTokens(query);
+    const tag = normalizeOptionalTag(requestedTag);
     const limit = parseBoundedInteger(topK, {
       name: 'topK',
       defaultValue: 10,
@@ -247,6 +312,14 @@ function createMemorySearchService({
     });
     const similarityThreshold = Number.isFinite(Number(minSimilarity)) ? Number(minSimilarity) : 0.4;
     const semanticNoiseFloor = Number.isFinite(Number(noiseFloor)) ? Number(noiseFloor) : 0.55;
+    const initialEvidence = source.getEvidence();
+    if (initialEvidence.sourceHealth === 'unavailable') {
+      throw memorySourceError('source_unavailable', 'canonical memory source is unavailable', {
+        status: 503,
+        retryable: true,
+        sourceEvidence: initialEvidence,
+      });
+    }
     const summary = await source.summarize({ signal });
     const manifest = source.manifest;
     const annAvailable = manifest?.formatVersion === 1
@@ -276,7 +349,7 @@ function createMemorySearchService({
     });
     let semanticRoute = 'none';
     if (queryEmbedding && annFresh) {
-      const ann = await loadAnn(manifest.ann, { signal });
+      const ann = await loadAnn(source, manifest.ann, { signal });
       if (ann && Number(ann.dimension || ann.dim) === queryEmbedding.length) {
         semanticRoute = 'semantic-ann';
         for (const hit of annSearchRows(ann, queryEmbedding, candidateLimit)) {
@@ -439,6 +512,8 @@ module.exports = {
   MAX_RECORD_BYTES,
   MAX_RESPONSE_BYTES,
   createBoundedCandidateHeap,
+  createDefaultEmbedQuery,
+  createDefaultLoadAnn,
   createMemorySearchService,
   cosineSimilarity,
   projectBoundedSearchNode,
