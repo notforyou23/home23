@@ -33,12 +33,29 @@ export class ActivityLease {
   start(): void {
     if (this.closed || this.started) return;
     this.started = true;
-    this.armInactivity();
-    this._hardDeadlineMs = this.options.now() + this.options.hardDurationMs;
-    this.hardTimer = this.options.setTimeout(
-      () => this.expire('hard_timeout'),
-      this.options.hardDurationMs,
-    );
+    try {
+      this.armInactivity();
+      this._hardDeadlineMs = this.options.now() + this.options.hardDurationMs;
+      this.hardTimer = this.options.setTimeout(
+        () => this.expire('hard_timeout'),
+        this.options.hardDurationMs,
+      );
+    } catch (error) {
+      const inactivityTimer = this.inactivityTimer;
+      const hardTimer = this.hardTimer;
+      this.inactivityTimer = undefined;
+      this.hardTimer = undefined;
+      this._activityDeadlineMs = null;
+      this._hardDeadlineMs = null;
+      this.started = false;
+      if (inactivityTimer !== undefined) {
+        try { this.options.clearTimeout(inactivityTimer); } catch { /* preserve schedule error */ }
+      }
+      if (hardTimer !== undefined) {
+        try { this.options.clearTimeout(hardTimer); } catch { /* preserve schedule error */ }
+      }
+      throw error;
+    }
   }
 
   observe(activity: { operationId: string; sequence: number }): boolean {

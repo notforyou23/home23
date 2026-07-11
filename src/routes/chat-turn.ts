@@ -264,7 +264,7 @@ export function createTurnStopHandler(config: ChatTurnConfig) {
 
     const result = config.agent.stop(chatId, turnId);
 
-    if (turnId && result.activeTurnId && result.activeTurnId !== turnId) {
+    if (turnId && !result.terminal && result.activeTurnId && result.activeTurnId !== turnId) {
       res.status(409).json({
         stopped: false,
         chatIds: [],
@@ -278,9 +278,16 @@ export function createTurnStopHandler(config: ChatTurnConfig) {
     if (turnId && !store.finalEnvelope(chatId, turnId)) {
       const events = store.eventsSince(chatId, turnId, -1);
       const lastSeq = events.length ? events[events.length - 1]!.seq : 0;
-      const env = store.writeEnd(chatId, turnId, 'stopped', {
-        last_seq: lastSeq,
+      const terminal = result.terminal ?? {
+        status: 'stopped' as const,
         stop_reason: result.stopped ? 'operator_stop' : 'operator_stop_no_active_run',
+      };
+      const env = store.writeEnd(chatId, turnId, terminal.status, {
+        last_seq: lastSeq,
+        stop_reason: terminal.stop_reason,
+        error: terminal.error_message,
+        error_code: terminal.error_code,
+        error_message: terminal.error_message,
       });
       turnBus.emit(chatId, turnId, env);
       turnBus.close(chatId, turnId);

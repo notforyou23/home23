@@ -113,11 +113,19 @@ type RuntimeModelContext = {
   memory: MemoryManager;
 };
 
-type TerminalTurnOverride = {
+export type TerminalTurnOutcome = {
   status: 'stopped' | 'timeout';
   stop_reason: string;
   error_code?: string;
   error_message?: string;
+};
+
+export type AgentStopResult = {
+  stopped: boolean;
+  chatIds: string[];
+  turnIds?: string[];
+  activeTurnId?: string;
+  terminal?: TerminalTurnOutcome;
 };
 
 // Cache model capabilities from Ollama Cloud /api/show
@@ -280,7 +288,7 @@ export class AgentLoop {
   private cacheDiagnostics?: CacheDiagnosticsConfig;
   private activeRuns = new Map<string, Map<string, AbortController>>();
   private activeTurnIds = new Map<string, Set<string>>();
-  private terminalTurnOverrides = new Map<string, TerminalTurnOverride>();
+  private terminalTurnOverrides = new Map<string, TerminalTurnOutcome>();
   private sessionGapMs: number;
   private workspacePath: string;
   private eventLedger: EventLedger;
@@ -549,16 +557,25 @@ export class AgentLoop {
   }
 
   /** Stop an active run. Returns true if a run was aborted. */
-  stop(chatId?: string, turnId?: string): { stopped: boolean; chatIds: string[]; turnIds?: string[]; activeTurnId?: string } {
+  stop(chatId?: string, turnId?: string): AgentStopResult {
     if (chatId) {
       const runs = this.activeRuns.get(chatId);
+      const existingTerminal = turnId
+        ? this.terminalTurnOverrides.get(this.turnKey(chatId, turnId))
+        : undefined;
       if (runs && runs.size > 0) {
         const selected = turnId ? [[turnId, runs.get(turnId)] as const] : [...runs.entries()];
         const activeTurnId = [...runs.keys()].at(-1);
         if (turnId && !runs.has(turnId)) {
-          return { stopped: false, chatIds: [], activeTurnId };
+          return {
+            stopped: false,
+            chatIds: [],
+            activeTurnId,
+            ...(existingTerminal ? { terminal: { ...existingTerminal } } : {}),
+          };
         }
         const stoppedTurnIds: string[] = [];
+        let requestedTerminal = existingTerminal;
         for (const [selectedTurnId, ac] of selected) {
           if (!ac) continue;
           if (!selectedTurnId.startsWith('raw:')) {
@@ -566,14 +583,28 @@ export class AgentLoop {
               status: 'stopped',
               stop_reason: 'operator_stop',
             });
+            if (selectedTurnId === turnId) {
+              requestedTerminal = this.terminalTurnOverrides.get(
+                this.turnKey(chatId, selectedTurnId),
+              );
+            }
           }
           ac.abort(Object.assign(new Error('operator_stop'), { code: 'operator_stop' }));
           this.unregisterActiveRun(chatId, selectedTurnId, ac);
           stoppedTurnIds.push(selectedTurnId);
         }
-        return { stopped: stoppedTurnIds.length > 0, chatIds: [chatId], turnIds: stoppedTurnIds };
+        return {
+          stopped: stoppedTurnIds.length > 0,
+          chatIds: [chatId],
+          turnIds: stoppedTurnIds,
+          ...(requestedTerminal ? { terminal: { ...requestedTerminal } } : {}),
+        };
       }
-      return { stopped: false, chatIds: [] };
+      return {
+        stopped: false,
+        chatIds: [],
+        ...(existingTerminal ? { terminal: { ...existingTerminal } } : {}),
+      };
     }
     // Stop all active runs
     const ids = [...this.activeRuns.keys()];
@@ -601,7 +632,7 @@ export class AgentLoop {
   private setTerminalTurnOverrideOnce(
     chatId: string,
     turnId: string,
-    override: TerminalTurnOverride,
+    override: TerminalTurnOutcome,
   ): void {
     const key = this.turnKey(chatId, turnId);
     if (!this.terminalTurnOverrides.has(key)) this.terminalTurnOverrides.set(key, override);
@@ -812,9 +843,14 @@ export class AgentLoop {
           turnRuntime,
         );
         let terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
+        const completedAtMs = this.turnTiming.now();
         if (!terminalOverride && lease.hardDeadlineMs !== null
-            && this.turnTiming.now() >= lease.hardDeadlineMs) {
+            && completedAtMs >= lease.hardDeadlineMs) {
           expireTurn('hard_timeout');
+          terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
+        } else if (!terminalOverride && lease.activityDeadlineMs !== null
+            && completedAtMs >= lease.activityDeadlineMs) {
+          expireTurn('inactivity_timeout');
           terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
         }
         if (terminalOverride?.status === 'timeout') {

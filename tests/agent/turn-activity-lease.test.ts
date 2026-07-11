@@ -132,6 +132,37 @@ test('durations above the Node timer maximum are rejected before scheduling', ()
   assert.equal(clock.tasks.size, 0);
 });
 
+test('start rolls back inactivity state when hard timer scheduling fails', () => {
+  const clock = new ManualClock();
+  const expirations: string[] = [];
+  let scheduleCalls = 0;
+  const lease = new ActivityLease({
+    inactivityMs: 10,
+    hardDurationMs: 30,
+    now: clock.now,
+    setTimeout: (fn, ms) => {
+      scheduleCalls += 1;
+      if (scheduleCalls === 2) throw new Error('hard timer rejected');
+      return clock.setTimeout(fn, ms);
+    },
+    clearTimeout: clock.clearTimeout,
+    onExpire: reason => expirations.push(reason),
+  });
+
+  assert.throws(() => lease.start(), /hard timer rejected/);
+  assert.equal(clock.tasks.size, 0);
+  assert.equal(lease.activityDeadlineMs, null);
+  assert.equal(lease.hardDeadlineMs, null);
+  assert.equal(lease.observe({ operationId: 'op-before-retry', sequence: 1 }), false);
+
+  lease.start();
+  assert.equal(clock.tasks.size, 2);
+  assert.equal(lease.activityDeadlineMs, 10);
+  assert.equal(lease.hardDeadlineMs, 30);
+  clock.advance(10);
+  assert.deepEqual(expirations, ['inactivity_timeout']);
+});
+
 test('an overdue immutable hard deadline wins when timer delivery is delayed', () => {
   const clock = new ManualClock();
   const expirations: string[] = [];

@@ -7,6 +7,7 @@ import { AgentLoop } from '../../src/agent/loop.js';
 import { ConversationHistory } from '../../src/agent/history.js';
 import { TurnStore } from '../../src/chat/turn-store.js';
 import type { ToolContext, TurnRuntimeContext } from '../../src/agent/types.js';
+import { ManualClock, deferred, flushMicrotasks } from '../helpers/manual-clock.js';
 
 function makeBrainOperations() {
   const base = {
@@ -54,46 +55,15 @@ function makeAgent(root: string): {
   return { agent, history, toolContext };
 }
 
-class ManualClock {
-  nowMs = 1_000;
-  tasks = new Map<number, { at: number; fn: () => void }>();
-  nextId = 1;
-  now = (): number => this.nowMs;
-  setTimeout = (fn: () => void, ms: number): number => {
-    const id = this.nextId++;
-    this.tasks.set(id, { at: this.nowMs + ms, fn });
-    return id;
-  };
-  clearTimeout = (id: number): void => { this.tasks.delete(id); };
-  advance(ms: number): void {
-    this.nowMs += ms;
-    for (;;) {
-      const due = [...this.tasks.entries()]
-        .filter(([, task]) => task.at <= this.nowMs)
-        .sort((left, right) => left[1].at - right[1].at || left[0] - right[0]);
-      if (due.length === 0) return;
-      for (const [id, task] of due) {
-        if (!this.tasks.delete(id)) continue;
-        task.fn();
-      }
-    }
-  }
-}
-
 function installManualClock(agent: AgentLoop): ManualClock {
   const clock = new ManualClock();
+  clock.nowMs = 1_000;
   (agent as any).turnTiming = {
     now: clock.now,
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
   };
   return clock;
-}
-
-async function flushMicrotasks(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
 }
 
 test('recoverStaleTurns orphans stale pending turns across chats and skips the active turn', () => {
@@ -604,6 +574,7 @@ test('OpenAI transport receives the exact turn cancellation signal', async () =>
   const clock = installManualClock(agent);
   const originalFetch = globalThis.fetch;
   const originalApiKey = process.env.OPENAI_API_KEY;
+  const providerStarted = deferred<void>();
   let providerSignal: AbortSignal | null = null;
   let rejectProvider: ((reason?: unknown) => void) | null = null;
   let response: Promise<unknown> | null = null;
@@ -615,6 +586,7 @@ test('OpenAI transport receives the exact turn cancellation signal', async () =>
         return new Response('{}', { status: 503 });
       }
       providerSignal = init?.signal as AbortSignal;
+      providerStarted.resolve();
       return await new Promise<Response>((_resolve, reject) => {
         rejectProvider = reject;
         const rejectForAbort = (): void => reject(providerSignal!.reason);
@@ -630,9 +602,7 @@ test('OpenAI transport receives the exact turn cancellation signal', async () =>
     });
     response = started.response;
     response.catch(() => {});
-    for (let i = 0; i < 20 && providerSignal === null; i++) {
-      await new Promise<void>(resolve => setImmediate(resolve));
-    }
+    await providerStarted.promise;
     assert.ok(providerSignal, 'provider fetch should have started');
 
     clock.advance(30);
@@ -658,6 +628,7 @@ test('Ollama capability probe and chat transport receive exact turn cancellation
   const originalApiKey = process.env.OLLAMA_CLOUD_API_KEY;
   const signals = new Map<string, AbortSignal>();
   const rejecters: Array<(reason?: unknown) => void> = [];
+  const chatStarted = deferred<void>();
   let response: Promise<unknown> | null = null;
 
   try {
@@ -676,6 +647,7 @@ test('Ollama capability probe and chat transport receive exact turn cancellation
           headers: { 'Content-Type': 'application/json' },
         });
       }
+      chatStarted.resolve();
       return await new Promise<Response>((_resolve, reject) => {
         rejecters.push(reject);
         const rejectForAbort = (): void => reject(signal.reason);
@@ -695,9 +667,7 @@ test('Ollama capability probe and chat transport receive exact turn cancellation
     });
     response = started.response;
     response.catch(() => {});
-    for (let i = 0; i < 20 && !signals.has('chat'); i++) {
-      await new Promise<void>(resolve => setImmediate(resolve));
-    }
+    await chatStarted.promise;
     assert.ok(signals.has('show'), 'Ollama capability probe should have started');
     assert.ok(signals.has('chat'), 'Ollama chat request should have started');
 
@@ -802,6 +772,73 @@ test('completion enforces the immutable hard deadline when timer delivery is del
   }
 });
 
+test('completion enforces the renewed inactivity deadline when timer delivery is delayed', async () => {
+  const root = join(tmpdir(), `chat-turn-delayed-activity-timer-${process.pid}-${Math.random()}`);
+  const { agent, history } = makeAgent(root);
+  const clock = installManualClock(agent);
+  let release!: () => void;
+  const released = new Promise<void>(resolve => { release = resolve; });
+  let response: Promise<unknown> | null = null;
+  let capturedRuntime: TurnRuntimeContext | null = null;
+
+  try {
+    (agent as any).run = async (
+      _chatId: string,
+      _userText: string,
+      _media: unknown,
+      _onEvent: unknown,
+      _modelRuntime: unknown,
+      turnRuntime: TurnRuntimeContext,
+    ) => {
+      capturedRuntime = turnRuntime;
+      await released;
+      return {
+        text: 'Late success.', model: 'gpt-5.5', toolCallCount: 0, durationMs: 41,
+      };
+    };
+
+    const started = await agent.runWithTurn('delayed-activity-timer-chat', 'hello', {
+      inactivityMs: 30,
+      hardDurationMs: 100,
+      firstTokenTimeoutMs: 1_000,
+    });
+    response = started.response;
+    response.catch(() => {});
+    await flushMicrotasks();
+    assert.ok(capturedRuntime);
+
+    // Renew once, then move beyond only the renewed inactivity deadline without
+    // delivering either the cleared original timer or its replacement.
+    clock.nowMs += 10;
+    capturedRuntime!.onOperationActivity({
+      source: 'brain_operation',
+      operationId: 'op-renewed',
+      sequence: 1,
+      state: 'running',
+      phase: 'provider',
+      updatedAt: new Date().toISOString(),
+      lastProviderActivityAt: null,
+    });
+    assert.equal(capturedRuntime!.signal.aborted, false);
+    clock.nowMs += 31;
+    release();
+
+    await assert.rejects(response, /turn inactivity timeout after 30ms/);
+    const status = new TurnStore(history).statusForTurn(
+      'delayed-activity-timer-chat', started.turnId,
+    );
+    assert.equal(status?.status, 'timeout');
+    assert.equal(status?.stop_reason, 'turn_timeout');
+    assert.equal(status?.error_code, 'turn_timeout');
+    assert.equal(new Date(status!.activity_deadline_at!).getTime(), 1_040);
+    assert.equal(new Date(status!.hard_deadline_at!).getTime(), 1_100);
+  } finally {
+    release?.();
+    if (response) await response.catch(() => {});
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('immutable hard deadline uses the distinct terminal code', async () => {
   const root = join(tmpdir(), `chat-turn-hard-timeout-${process.pid}-${Math.random()}`);
   const { agent, history } = makeAgent(root);
@@ -853,6 +890,7 @@ test('pending Codex credentials receive the exact turn signal and settle on hard
   const { agent } = makeAgent(root);
   const clock = installManualClock(agent);
   const originalFetch = globalThis.fetch;
+  const credentialsStarted = deferred<void>();
   let credentialCalls = 0;
   let credentialSignal: AbortSignal | undefined;
   let finishCredentials: (() => void) | null = null;
@@ -864,6 +902,7 @@ test('pending Codex credentials receive the exact turn signal and settle on hard
     (agent as any).codexCredentialsProvider = (signal?: AbortSignal) => {
       credentialCalls++;
       credentialSignal = signal;
+      credentialsStarted.resolve();
       return new Promise((resolve, reject) => {
         finishCredentials = () => resolve(null);
         if (!signal) return;
@@ -885,9 +924,7 @@ test('pending Codex credentials receive the exact turn signal and settle on hard
       () => { responseSettled = true; },
     );
     response.catch(() => {});
-    for (let i = 0; i < 20 && credentialCalls === 0; i++) {
-      await new Promise<void>(resolve => setImmediate(resolve));
-    }
+    await credentialsStarted.promise;
     assert.equal(credentialCalls, 1);
 
     const controller = (agent as any).activeRuns
@@ -914,6 +951,7 @@ test('pending compaction receives the exact turn signal and settles on hard canc
   const clock = installManualClock(agent);
   let compactCalls = 0;
   let compactSignal: AbortSignal | undefined;
+  const compactionStarted = deferred<void>();
   let finishCompaction: (() => void) | null = null;
   let response: Promise<unknown> | null = null;
   let responseSettled = false;
@@ -929,6 +967,7 @@ test('pending compaction receives the exact turn signal and settles on hard canc
     ) => {
       compactCalls++;
       compactSignal = signal;
+      compactionStarted.resolve();
       return new Promise((resolve, reject) => {
         finishCompaction = () => resolve({
           messages: [],
@@ -959,9 +998,7 @@ test('pending compaction receives the exact turn signal and settles on hard canc
       () => { responseSettled = true; },
     );
     response.catch(() => {});
-    for (let i = 0; i < 20 && compactCalls === 0; i++) {
-      await new Promise<void>(resolve => setImmediate(resolve));
-    }
+    await compactionStarted.promise;
     assert.equal(compactCalls, 1);
 
     const controller = (agent as any).activeRuns
