@@ -2574,7 +2574,13 @@ source/retry/cancellation/store slice passed 36/36. A cleanup follow-up at
 delta/ANN handle even when overlay cleanup fails, while preserving the primary
 typed error. Its operation-root replacement regression deterministically proves
 all six handles close, and the full pin suite passed 41/41 without garbage-
-collector cleanup. This remains offline proof, not live rollout acceptance.
+collector cleanup. The isolated 100k-node/300k-edge PGS acceptance regression
+now uses a five-minute attachment budget instead of the brittle former
+60-second cutoff; the repaired operation completed with durable proof in
+117.9 seconds. Protected result inspection first confirms terminal status, and
+lifecycle attachment evidence is read through the production store's atomic-
+replacement retry path. This remains offline proof, not live rollout
+acceptance.
 
 The original Patch 53 receipts run through branch commit `b6a44f7`; the
 canonical retrieval-evidence follow-up is verified at `8d917ca`. They do not
