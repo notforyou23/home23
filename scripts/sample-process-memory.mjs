@@ -20,6 +20,8 @@ import {
 
 const execFile = promisify(execFileCallback);
 const MIB = 1024 * 1024;
+const MAX_RUNTIME_METRICS_BYTES = 64 * 1024;
+const MAX_RUNTIME_METRICS_CHUNKS = 1_024;
 const METRIC_SEMANTICS = Object.freeze({
   v8HeapUsedBytes: 'request-time-sample',
   rssBytes: 'request-time-sample',
@@ -70,8 +72,53 @@ async function defaultListPm2Processes() {
   return rows;
 }
 
-async function readRuntimeMetrics(target, row, fetchImpl, observedAt) {
+async function readRuntimeMetricsJson(response, processName) {
+  let reader = null;
+  try {
+    const declaredText = response?.headers?.get?.('content-length');
+    if (declaredText !== null && declaredText !== undefined) {
+      if (!/^\d+$/.test(declaredText)) throw typedError('runtime_metrics_invalid', processName);
+      const declared = Number(declaredText);
+      if (!Number.isSafeInteger(declared) || declared > MAX_RUNTIME_METRICS_BYTES) {
+        throw typedError('runtime_metrics_invalid', processName);
+      }
+    }
+    if (!response?.body || typeof response.body.getReader !== 'function') {
+      throw typedError('runtime_metrics_invalid', processName);
+    }
+    reader = response.body.getReader();
+    const chunks = [];
+    let total = 0;
+    let chunkCount = 0;
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      chunkCount += 1;
+      if (chunkCount > MAX_RUNTIME_METRICS_CHUNKS || !(value instanceof Uint8Array)) {
+        throw typedError('runtime_metrics_invalid', processName);
+      }
+      total += value.byteLength;
+      if (!Number.isSafeInteger(total) || total > MAX_RUNTIME_METRICS_BYTES) {
+        throw typedError('runtime_metrics_invalid', processName);
+      }
+      chunks.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+    }
+    if (total === 0) throw typedError('runtime_metrics_invalid', processName);
+    return JSON.parse(Buffer.concat(chunks, total).toString('utf8'));
+  } catch (error) {
+    try {
+      await reader?.cancel?.(error);
+    } catch {}
+    if (error?.code === 'runtime_metrics_invalid') throw error;
+    throw typedError('runtime_metrics_invalid', processName, { cause: error });
+  } finally {
+    reader?.releaseLock?.();
+  }
+}
+
+async function readRuntimeMetrics(target, row, fetchImpl, clock) {
   const endpoint = runtimeMetricsUrlForProcess(target.processName);
+  const requestStartedAt = clock();
   let response;
   try {
     response = await fetchImpl(endpoint, {
@@ -83,9 +130,8 @@ async function readRuntimeMetrics(target, row, fetchImpl, observedAt) {
   } catch (error) {
     throw typedError('runtime_metrics_unavailable', target.processName, { cause: error });
   }
-  const document = await response.json().catch((error) => {
-    throw typedError('runtime_metrics_invalid', target.processName, { cause: error });
-  });
+  const document = await readRuntimeMetricsJson(response, target.processName);
+  const observedAt = clock();
   const pid = Number(document?.pid);
   const v8HeapUsedBytes = Number(document?.v8HeapUsedBytes);
   const rssBytes = Number(document?.rssBytes);
@@ -98,7 +144,11 @@ async function readRuntimeMetrics(target, row, fetchImpl, observedAt) {
       || !Number.isSafeInteger(rssBytes) || rssBytes < 0
       || !Number.isSafeInteger(processMaxRssBytes) || processMaxRssBytes < rssBytes
       || JSON.stringify(document?.semantics) !== JSON.stringify(METRIC_SEMANTICS)
-      || !Number.isFinite(metricUpdatedAt) || metricUpdatedAt > observedAt + 1_000) {
+      || !Number.isFinite(requestStartedAt) || !Number.isFinite(observedAt)
+      || observedAt < requestStartedAt
+      || !Number.isFinite(metricUpdatedAt)
+      || metricUpdatedAt < requestStartedAt - 1_000
+      || metricUpdatedAt > observedAt + 1_000) {
     throw typedError('runtime_metrics_invalid', target.processName);
   }
   return {
@@ -107,14 +157,17 @@ async function readRuntimeMetrics(target, row, fetchImpl, observedAt) {
     rssMiB: rssBytes / MIB,
     processMaxRssMiB: processMaxRssBytes / MIB,
     metricUpdatedAt,
+    observedAt,
   };
 }
 
 export function createDefaultSampleProvider({
   listPm2Processes = defaultListPm2Processes,
   fetchImpl = fetch,
+  now: clock = Date.now,
 } = {}) {
-  return async function sample(targets, now = Date.now()) {
+  if (typeof clock !== 'function') throw typedError('sample_clock_invalid');
+  return async function sample(targets, sampleObservedAt = clock()) {
     let pm2Rows = null;
     if (targets.some((target) => target.kind === 'pm2')) {
       pm2Rows = await listPm2Processes();
@@ -126,7 +179,7 @@ export function createDefaultSampleProvider({
         const matches = pm2Rows.filter((row) => row?.name === target.processName);
         if (matches.length !== 1) throw typedError(matches.length ? 'pm2_duplicate_process' : 'pm2_process_missing');
         const row = matches[0];
-        const runtime = await readRuntimeMetrics(target, row, fetchImpl, now);
+        const runtime = await readRuntimeMetrics(target, row, fetchImpl, clock);
         output.push({
           name: target.name,
           pid: runtime.pid,
@@ -136,7 +189,7 @@ export function createDefaultSampleProvider({
           processMaxRssMiB: runtime.processMaxRssMiB,
           metricUpdatedAt: runtime.metricUpdatedAt,
           metricTimestampAuthoritative: true,
-          observedAt: now,
+          observedAt: runtime.observedAt,
           metricSource: 'loopback-runtime-v8-request',
         });
       } else {
@@ -161,7 +214,7 @@ export function createDefaultSampleProvider({
           name: target.name, pid, restartCount,
           v8HeapUsedMiB, rssMiB, processMaxRssMiB, metricUpdatedAt,
           metricTimestampAuthoritative: true,
-          observedAt: now, metricSource: 'isolated-metrics-document',
+          observedAt: sampleObservedAt, metricSource: 'isolated-metrics-document',
         });
       }
     }

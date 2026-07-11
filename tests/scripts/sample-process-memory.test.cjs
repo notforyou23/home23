@@ -165,7 +165,13 @@ test('PM2 targets use loopback request-time runtime metrics instead of synthetic
     (error) => error.code === 'runtime_metrics_target_unsupported',
   );
   const requests = [];
-  const sampledAt = '2026-07-11T12:00:00.000Z';
+  const requestWindowStart = Date.parse('2026-07-11T12:00:00.000Z');
+  const clockValues = [
+    requestWindowStart,
+    requestWindowStart + 25,
+    requestWindowStart + 30,
+    requestWindowStart + 55,
+  ];
   const provider = createDefaultSampleProvider({
     listPm2Processes: async () => [
       { name: 'home23-jerry-dash', pid: 101, pm2_env: { restart_time: 3 } },
@@ -174,6 +180,7 @@ test('PM2 targets use loopback request-time runtime metrics instead of synthetic
     fetchImpl: async (url) => {
       requests.push(String(url));
       const dashboard = String(url).includes(':5002/');
+      const sampledAt = new Date(requestWindowStart + (dashboard ? 10 : 40)).toISOString();
       return new Response(JSON.stringify({
         schemaVersion: 2,
         role: dashboard ? 'dashboard' : 'cosmo',
@@ -189,8 +196,9 @@ test('PM2 targets use loopback request-time runtime metrics instead of synthetic
         sampledAt,
       }));
     },
+    now: () => clockValues.shift(),
   });
-  const rows = await provider(targets, Date.parse(sampledAt) + 5);
+  const rows = await provider(targets, requestWindowStart - 100);
   assert.deepEqual(requests, [
     'http://127.0.0.1:5002/home23/api/internal/runtime-metrics',
     'http://127.0.0.1:43210/api/internal/runtime-metrics',
@@ -201,15 +209,98 @@ test('PM2 targets use loopback request-time runtime metrics instead of synthetic
     rssMiB: row.rssMiB,
     processMaxRssMiB: row.processMaxRssMiB,
     timestamp: row.metricUpdatedAt,
+    observedAt: row.observedAt,
     authoritative: row.metricTimestampAuthoritative,
   })), [
     {
       name: 'dashboard', v8HeapUsedMiB: 100, rssMiB: 200,
-      processMaxRssMiB: 220, timestamp: Date.parse(sampledAt), authoritative: true,
+      processMaxRssMiB: 220, timestamp: requestWindowStart + 10,
+      observedAt: requestWindowStart + 25, authoritative: true,
     },
     {
       name: 'cosmo', v8HeapUsedMiB: 40, rssMiB: 80,
-      processMaxRssMiB: 90, timestamp: Date.parse(sampledAt), authoritative: true,
+      processMaxRssMiB: 90, timestamp: requestWindowStart + 40,
+      observedAt: requestWindowStart + 55, authoritative: true,
     },
   ]);
+  assert.equal(clockValues.length, 0);
+});
+
+test('PM2 runtime metrics reject timestamps outside the request observation window', async () => {
+  const { createDefaultSampleProvider } = await import('../../scripts/sample-process-memory.mjs');
+  const requestStartedAt = Date.parse('2026-07-11T12:00:00.000Z');
+  const provider = createDefaultSampleProvider({
+    listPm2Processes: async () => [
+      { name: 'home23-jerry-dash', pid: 101, pm2_env: { restart_time: 3 } },
+    ],
+    fetchImpl: async () => new Response(JSON.stringify({
+      schemaVersion: 2,
+      role: 'dashboard',
+      pid: 101,
+      v8HeapUsedBytes: 100 * 1024 * 1024,
+      rssBytes: 200 * 1024 * 1024,
+      processMaxRssBytes: 220 * 1024 * 1024,
+      semantics: {
+        v8HeapUsedBytes: 'request-time-sample',
+        rssBytes: 'request-time-sample',
+        processMaxRssBytes: 'process-lifetime-high-water',
+      },
+      sampledAt: new Date(requestStartedAt - 1_001).toISOString(),
+    })),
+    now: (() => {
+      const values = [requestStartedAt, requestStartedAt + 25];
+      return () => values.shift();
+    })(),
+  });
+  await assert.rejects(
+    provider([targets[0]], requestStartedAt),
+    (error) => error.code === 'runtime_metrics_invalid',
+  );
+});
+
+test('PM2 runtime metrics reject declared and chunked oversized bodies before JSON parsing', async () => {
+  const { createDefaultSampleProvider } = await import('../../scripts/sample-process-memory.mjs');
+  const pm2 = async () => [
+    { name: 'home23-jerry-dash', pid: 101, pm2_env: { restart_time: 3 } },
+  ];
+
+  let bodyRead = false;
+  const declaredProvider = createDefaultSampleProvider({
+    listPm2Processes: pm2,
+    fetchImpl: async () => ({
+      ok: true,
+      headers: new Headers({ 'content-length': String(64 * 1024 + 1) }),
+      get body() {
+        bodyRead = true;
+        throw new Error('oversized declared body must not be opened');
+      },
+      json() { throw new Error('unbounded response.json must not be called'); },
+    }),
+  });
+  await assert.rejects(
+    declaredProvider([targets[0]]),
+    (error) => error.code === 'runtime_metrics_invalid',
+  );
+  assert.equal(bodyRead, false);
+
+  let cancelled = false;
+  const chunkedProvider = createDefaultSampleProvider({
+    listPm2Processes: pm2,
+    fetchImpl: async () => ({
+      ok: true,
+      headers: new Headers(),
+      body: new ReadableStream({
+        pull(controller) {
+          controller.enqueue(new Uint8Array(24 * 1024).fill(0x78));
+        },
+        cancel() { cancelled = true; },
+      }),
+      json() { throw new Error('unbounded response.json must not be called'); },
+    }),
+  });
+  await assert.rejects(
+    chunkedProvider([targets[0]]),
+    (error) => error.code === 'runtime_metrics_invalid',
+  );
+  assert.equal(cancelled, true);
 });
