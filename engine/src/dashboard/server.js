@@ -45,6 +45,7 @@ const {
   isMcpProxyAvailable,
   probeMcpAvailability,
 } = require('./mcp-availability.js');
+const { createMcpProxyRouter } = require('./mcp-proxy-router.js');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -210,6 +211,13 @@ class DashboardServer {
     this.app.use('/home23/api/brain-operations', this.brainOperationsPlaceholder.router);
     this.queryCompatibilityBodyParser = createQueryCompatibilityBodyParser();
     this.app.use('/home23/api/query', this.queryCompatibilityBodyParser);
+    this.app.use(createMcpProxyRouter({
+      port: this.mcpPort,
+      isEnabled: isMcpProxyAvailable,
+      probeAvailability: probeMcpAvailability,
+      buildUnavailableEnvelope: buildMcpUnavailableEnvelope,
+      logger: this.logger || console,
+    }));
 
     // COSMO is a local research system - no artificial limits on data ingestion
     // Set to 10GB to handle serious document collections, large queries, and AI analysis
@@ -8342,90 +8350,6 @@ You are empowered to explore and understand. The user trusts you to discover the
       } catch (error) {
         console.error('Export failed:', error);
         res.status(500).json({ error: error.message });
-      }
-    });
-
-    // API: MCP Proxy - Forward requests to MCP HTTP server
-    // This enables intelligence view to work regardless of MCP port
-    this.app.post('/api/mcp', async (req, res) => {
-      try {
-        const availability = await probeMcpAvailability({
-          enabled: isMcpProxyAvailable(),
-          port: this.mcpPort,
-        });
-        if (!availability.available) {
-          return res.status(503).json(buildMcpUnavailableEnvelope(this.mcpPort, availability));
-        }
-
-        const http = require('http');
-        const mcpUrl = `http://localhost:${this.mcpPort}/mcp`;
-        
-        // Forward the request to actual MCP server using http module
-        const postData = JSON.stringify(req.body);
-        
-        const options = {
-          hostname: 'localhost',
-          port: this.mcpPort,
-          path: '/mcp',
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': req.headers.accept || 'application/json, text/event-stream',
-            'Content-Length': Buffer.byteLength(postData)
-          }
-        };
-        
-        const mcpReq = http.request(options, (mcpRes) => {
-          let data = '';
-          
-          // Forward response headers (especially content-type for SSE)
-          res.status(mcpRes.statusCode);
-          Object.keys(mcpRes.headers).forEach(key => {
-            res.setHeader(key, mcpRes.headers[key]);
-          });
-          
-          mcpRes.on('data', (chunk) => {
-            data += chunk;
-          });
-          
-          mcpRes.on('end', () => {
-            try {
-              // Check if it's SSE or JSON based on content-type
-              const contentType = mcpRes.headers['content-type'] || '';
-              if (contentType.includes('text/event-stream')) {
-                // Forward SSE as-is
-                res.send(data);
-              } else {
-                // Parse and return JSON
-                const mcpData = JSON.parse(data);
-                res.json(mcpData);
-              }
-            } catch (parseError) {
-              console.error('[MCP Proxy] Failed to parse MCP response:', parseError);
-              res.status(500).json({ error: 'Invalid MCP response', details: parseError.message });
-            }
-          });
-        });
-        
-        mcpReq.on('error', (error) => {
-          console.error('[MCP Proxy] Request failed:', error);
-          res.status(500).json({ 
-            error: 'MCP proxy failed', 
-            details: error.message,
-            mcpPort: this.mcpPort
-          });
-        });
-        
-        mcpReq.write(postData);
-        mcpReq.end();
-        
-      } catch (error) {
-        console.error('[MCP Proxy] Failed to forward request:', error);
-        res.status(500).json({ 
-          error: 'MCP proxy failed', 
-          details: error.message,
-          mcpPort: this.mcpPort
-        });
       }
     });
 
