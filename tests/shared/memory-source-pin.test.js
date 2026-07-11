@@ -177,6 +177,48 @@ test('openPinnedSource binds a safe PID-plus-start process identity and rolls ba
   await scratchQuota.close();
 });
 
+test('same-process concurrent opens retain the shared pin until the last release', async () => {
+  const home23Root = await tempDir('home23-memory-source-pin-home-');
+  const brain = await writeManifestBrain();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_test_process_reference';
+  const pinned = await provider.pin(brain, operationId);
+  const operationRoot = path.join(
+    home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId,
+  );
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const processIdentity = 'cosmo-777-reference-test';
+  const exact = {
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    expectedDigest: pinned.digest,
+    operationId,
+    requesterAgent: 'jerry',
+    operationRoot,
+    scratchQuota,
+    processIdentity,
+  };
+  const [first, second] = await Promise.all([
+    openPinnedSource(pinned.descriptor, exact),
+    openPinnedSource(pinned.descriptor, exact),
+  ]);
+  const pinDir = path.join(operationRoot, 'pins', processIdentity);
+  const [pinName] = await fsp.readdir(pinDir);
+  const pinFile = path.join(pinDir, pinName);
+
+  await first.release();
+  assert.equal(await fsp.access(pinFile).then(() => true).catch(() => false), true);
+  assert.deepEqual((await collect(second.iterateNodes())).map((node) => node.concept), [
+    'pin canary',
+  ]);
+  await first.release();
+  assert.equal(await fsp.access(pinFile).then(() => true).catch(() => false), true);
+
+  await second.release();
+  assert.equal(await fsp.access(pinFile).then(() => true).catch(() => false), false);
+  await scratchQuota.close();
+});
+
 test('native operation pin reads its exact revision after the live manifest advances', async () => {
   const home23Root = await tempDir('home23-memory-source-pin-home-');
   const brain = await writeManifestBrain();

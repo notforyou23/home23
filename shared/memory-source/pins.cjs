@@ -177,6 +177,80 @@ function validateProcessIdentity(value) {
   return identity;
 }
 
+const processPinReferences = new Map();
+
+function processPinRecordMatches(actual, expected) {
+  return actual?.version === 1
+    && actual.operationId === expected.operationId
+    && actual.requesterAgent === expected.requesterAgent
+    && actual.canonicalRoot === expected.canonicalRoot
+    && actual.generation === expected.generation
+    && actual.revision === expected.revision
+    && actual.digest === expected.digest
+    && actual.pid === expected.pid
+    && actual.processIdentity === expected.processIdentity;
+}
+
+async function writeProcessPinExclusive(pinFile, record) {
+  await fsp.mkdir(path.dirname(pinFile), { recursive: true, mode: 0o700 });
+  try {
+    await fsp.writeFile(pinFile, `${JSON.stringify(record, null, 2)}\n`, {
+      mode: 0o600,
+      flag: 'wx',
+    });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    let existing;
+    try {
+      existing = JSON.parse(await fsp.readFile(pinFile, 'utf8'));
+    } catch (cause) {
+      throw memorySourceError('source_pin_conflict', 'existing process pin is unreadable', {
+        cause,
+        retryable: true,
+      });
+    }
+    if (!processPinRecordMatches(existing, record)) {
+      throw memorySourceError('source_pin_conflict', 'existing process pin identity conflicts', {
+        retryable: true,
+      });
+    }
+  }
+}
+
+async function acquireProcessPin(pinFile, pinDir, record) {
+  let entry = processPinReferences.get(pinFile);
+  if (entry) {
+    entry.references += 1;
+    try {
+      await entry.ready;
+    } catch (error) {
+      entry.references -= 1;
+      throw error;
+    }
+  } else {
+    entry = { references: 1, ready: null };
+    processPinReferences.set(pinFile, entry);
+    entry.ready = writeProcessPinExclusive(pinFile, record);
+    try {
+      await entry.ready;
+    } catch (error) {
+      if (processPinReferences.get(pinFile) === entry) processPinReferences.delete(pinFile);
+      throw error;
+    }
+  }
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    if (processPinReferences.get(pinFile) !== entry) return;
+    entry.references -= 1;
+    if (entry.references > 0) return;
+    processPinReferences.delete(pinFile);
+    await fsp.rm(pinFile, { force: true }).catch(() => {});
+    await fsp.rmdir(pinDir).catch(() => {});
+  };
+}
+
 function pinnedManifestFromDescriptor(descriptor) {
   const actualKeys = Object.keys(descriptor || {}).sort();
   const expectedKeys = [
@@ -301,7 +375,7 @@ async function openPinnedSource(descriptor, expectations = {}) {
   const processPinIdentity = validateProcessIdentity(expectations.processIdentity);
   const pinDir = path.join(operationRoot, 'pins', processPinIdentity);
   const pinFile = path.join(pinDir, `${canonicalRootHash(descriptor.canonicalRoot)}.json`);
-  await writeAtomicJson(pinFile, {
+  const releaseProcessPin = await acquireProcessPin(pinFile, pinDir, {
     version: 1,
     operationId,
     requesterAgent: record.requesterAgent,
@@ -312,13 +386,7 @@ async function openPinnedSource(descriptor, expectations = {}) {
     pid: process.pid,
     processIdentity: processPinIdentity,
     createdAt: new Date().toISOString(),
-  }).catch(async (error) => {
-    if (error.code !== 'EEXIST') throw error;
   });
-  const release = async () => {
-    await fsp.rm(pinFile, { force: true }).catch(() => {});
-    await fsp.rmdir(pinDir).catch(() => {});
-  };
   let source;
   try {
     source = await openMemorySource(physicalRoot, {
@@ -328,17 +396,29 @@ async function openPinnedSource(descriptor, expectations = {}) {
       legacySourceFingerprint: record.sourceFingerprint || null,
     });
   } catch (error) {
-    await release();
+    await releaseProcessPin();
     throw error;
   }
   const closeSource = source.close.bind(source);
+  let closePromise = null;
+  const closeOnce = () => {
+    closePromise ||= Promise.resolve().then(() => closeSource());
+    return closePromise;
+  };
+  let releasePromise = null;
   return Object.assign(source, {
     descriptor,
     async release() {
-      await release();
-      await closeSource();
+      releasePromise ||= (async () => {
+        try {
+          await closeOnce();
+        } finally {
+          await releaseProcessPin();
+        }
+      })();
+      return releasePromise;
     },
-    async close() { await closeSource(); },
+    async close() { await closeOnce(); },
   });
 }
 
@@ -428,8 +508,15 @@ async function pruneStalePins(home23Root, {
 async function releaseOperationSource({ home23Root, requesterAgent, operationId }) {
   validateOperationId(operationId);
   const operationRoot = path.join(home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations', operationId);
+  const pinsRoot = path.join(operationRoot, 'pins');
+  for (const pinFile of processPinReferences.keys()) {
+    const relative = path.relative(pinsRoot, pinFile);
+    if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+      processPinReferences.delete(pinFile);
+    }
+  }
   await fsp.rm(coordinatorPinPath(operationRoot), { force: true }).catch(() => {});
-  await fsp.rm(path.join(operationRoot, 'pins'), { recursive: true, force: true }).catch(() => {});
+  await fsp.rm(pinsRoot, { recursive: true, force: true }).catch(() => {});
   await fsp.rm(path.join(operationRoot, 'source-projections'), { recursive: true, force: true }).catch(() => {});
 }
 
