@@ -1,1003 +1,746 @@
 /**
- * COSMO 2.3 research toolkit — 11 atomic tools mapping to COSMO's API surface.
+ * COSMO research toolkit — requester-authorized durable operations only.
  *
- * Policy/workflow lives in the COSMO_RESEARCH.md skill file loaded via the
- * identity layer. This file is pure mechanism — one HTTP call per tool, focused
- * schemas, minimal branching.
- *
- * See: docs/design/STEP16-AGENT-COSMO-TOOLKIT-DESIGN.md
+ * Policy and workflow live in COSMO_RESEARCH.md. This module validates the
+ * public tool contract and delegates to the turn-scoped BrainOperationsClient.
  */
 
-import * as path from 'node:path';
-import type { ToolDefinition, ToolResult, ToolContext } from '../types.js';
+import {
+  exactProviderModelPair,
+  hasOwn,
+  optionalBoolean,
+  optionalBoundedText,
+  optionalEnum,
+  optionalFiniteInteger,
+  optionalFiniteNumber,
+  requiredBoundedText,
+} from '../brain-operations/input-validation.js';
+import type { BrainQueryRequest } from '../brain-operations/types.js';
+import { operationToolResult, recoverableExcerpt } from '../tool-result.js';
+import type { ToolContext, ToolDefinition, ToolResult } from '../types.js';
 
-function getCosmoBase(_ctx?: ToolContext): string {
-  const port = parseInt(process.env.COSMO23_PORT || '43210', 10);
-  return `http://localhost:${port}`;
+const SEARCH_ALL_MAX_TARGETS = 20;
+const SEARCH_ALL_CONCURRENCY = 3;
+const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const SUMMARY_SECTIONS = ['executive', 'goals', 'trajectory', 'thoughts', 'insights'] as const;
+
+const providerModelSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    provider: { type: 'string', minLength: 1 },
+    model: { type: 'string', minLength: 1 },
+  },
+  required: ['provider', 'model'],
+} as const;
+
+function invalidRequest(message = 'invalid_request'): Error {
+  return Object.assign(new Error(message), { code: 'invalid_request' });
 }
 
-function errResult(msg: string): ToolResult {
-  return { content: msg, is_error: true };
-}
-
-function generateRunName(topic: string): string {
-  const slug = (topic || 'research')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48) || 'research';
-  const ts = new Date().toISOString()
-    .replace(/[-:T.Z]/g, '')
-    .slice(0, 14);
-  return `${slug}-${ts}`;
-}
-
-async function fetchJson<T>(url: string, init?: RequestInit, timeoutMs = 15_000): Promise<T> {
-  const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`HTTP ${res.status} ${res.statusText}${body ? `: ${body.slice(0, 200)}` : ''}`);
+function assertToolKeys(input: Record<string, unknown>, allowed: readonly string[]): void {
+  const keys = Reflect.ownKeys(input);
+  const allowedSet = new Set(allowed);
+  if (keys.some((key) => typeof key !== 'string' || !allowedSet.has(key))) {
+    throw invalidRequest();
   }
-  return res.json() as Promise<T>;
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Shared types (narrow — only what we read from responses)
-// ────────────────────────────────────────────────────────────────────────────
-
-interface BrainSummary {
-  id?: string;
-  name?: string;
-  path?: string;
-  source?: string;
-  updatedAt?: string;
-  nodeCount?: number;
-  cycleCount?: number;
-  topic?: string;
-  domain?: string;
+function parsedWhenPresent<T>(
+  input: Record<string, unknown>,
+  key: string,
+  parse: (value: unknown) => T | undefined,
+): T | undefined {
+  if (!hasOwn(input, key)) return undefined;
+  const parsed = parse(input[key]);
+  if (parsed === undefined) throw invalidRequest(`${key}_invalid`);
+  return parsed;
 }
 
-interface ActiveContext {
-  runName?: string;
-  topic?: string;
-  explorationMode?: string;
-  startedAt?: string;
+function runtime(ctx: ToolContext): NonNullable<ToolContext['turnRuntime']> {
+  if (!ctx.turnRuntime) {
+    throw Object.assign(new Error('turn_runtime_unavailable'), { code: 'turn_runtime_unavailable' });
+  }
+  return ctx.turnRuntime;
 }
 
-interface StatusResponse {
-  running?: boolean;
-  activeRun?: boolean;
-  health?: {
-    activeRun?: boolean;
-    process?: { count?: number };
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw signal.reason;
+}
+
+async function boundedMap<T, R>(
+  items: T[],
+  concurrency: number,
+  signal: AbortSignal,
+  run: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const output = new Array<R>(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      throwIfAborted(signal);
+      if (cursor >= items.length) return;
+      const index = cursor;
+      cursor += 1;
+      output[index] = await run(items[index]!);
+      throwIfAborted(signal);
+    }
+  });
+  await Promise.all(workers);
+  return output;
+}
+
+function researchError(error: unknown): { code: string; message: string } {
+  return {
+    code: typeof error === 'object' && error && 'code' in error
+      ? String((error as { code: unknown }).code)
+      : 'research_operation_failed',
+    message: error instanceof Error ? error.message : String(error),
   };
-  activeContext?: ActiveContext | null;
-  processStatus?: { running?: Array<{ name?: string }>; count?: number };
 }
 
-interface QueryResponse {
-  response?: string;
-  answer?: string;
+function errorResult(error: unknown): ToolResult {
+  const typed = researchError(error);
+  return { content: `${typed.code}: ${typed.message}`, is_error: true, metadata: { code: typed.code } };
 }
 
-interface LaunchResponse {
-  success: boolean;
-  runName?: string;
-  brainId?: string;
-  cycles?: number;
-  dashboardUrl?: string;
-  wsUrl?: string;
-  message?: string;
-  error?: string;
+function exactPgsConfig(value: unknown): { sweepFraction?: number } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalidRequest();
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== 'string' || key !== 'sweepFraction')) {
+    throw invalidRequest();
+  }
+  if (!hasOwn(value, 'sweepFraction')) return {};
+  const sweepFraction = optionalFiniteNumber(
+    (value as { sweepFraction?: unknown }).sweepFraction,
+    'pgsConfig.sweepFraction',
+    0,
+    1,
+    { exclusiveMin: true },
+  );
+  if (sweepFraction === undefined) throw invalidRequest();
+  return { sweepFraction };
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// Active-run helper (also used by loop.ts for situational awareness)
-// ────────────────────────────────────────────────────────────────────────────
+function exactPairWhenPresent(
+  input: Record<string, unknown>,
+  key: string,
+): { provider: string; model: string } | undefined {
+  return parsedWhenPresent(input, key, (value) => exactProviderModelPair(value, key));
+}
+
+function researchQueryParameters(input: Record<string, unknown>): Omit<BrainQueryRequest, 'target'> {
+  const enablePGS = parsedWhenPresent(input, 'enablePGS', (value) =>
+    optionalBoolean(value, 'enablePGS')) ?? false;
+  const request: Omit<BrainQueryRequest, 'target'> = {
+    query: requiredBoundedText(input.query, 'query', 12_000),
+    mode: parsedWhenPresent(input, 'mode', (value) =>
+      optionalEnum(value, 'mode', ['quick', 'full', 'expert', 'dive'] as const)) ?? 'quick',
+    enablePGS,
+  };
+  if (enablePGS) {
+    if (hasOwn(input, 'modelSelection')) throw invalidRequest();
+    request.pgsMode = 'full';
+    if (hasOwn(input, 'pgsConfig')) request.pgsConfig = exactPgsConfig(input.pgsConfig);
+    const pgsSweep = exactPairWhenPresent(input, 'pgsSweep');
+    const pgsSynth = exactPairWhenPresent(input, 'pgsSynth');
+    if (pgsSweep !== undefined) request.pgsSweep = pgsSweep;
+    if (pgsSynth !== undefined) request.pgsSynth = pgsSynth;
+  } else {
+    if (hasOwn(input, 'pgsConfig') || hasOwn(input, 'pgsSweep') || hasOwn(input, 'pgsSynth')) {
+      throw invalidRequest();
+    }
+    const modelSelection = exactPairWhenPresent(input, 'modelSelection');
+    if (modelSelection !== undefined) request.modelSelection = modelSelection;
+  }
+  return request;
+}
+
+function copyExactProviderOverride(
+  input: Record<string, unknown>,
+  output: Record<string, unknown>,
+  modelKey: string,
+  providerKey: string,
+): void {
+  const hasModel = hasOwn(input, modelKey);
+  const hasProvider = hasOwn(input, providerKey);
+  if (hasModel !== hasProvider) throw invalidRequest();
+  if (!hasModel) return;
+  const model = requiredBoundedText(input[modelKey], modelKey, 256);
+  const provider = requiredBoundedText(input[providerKey], providerKey, 128);
+  output[modelKey] = model;
+  output[providerKey] = provider;
+}
+
+function approvedLaunchOptions(input: Record<string, unknown>): Record<string, unknown> {
+  assertToolKeys(input, [
+    'topic', 'context', 'cycles', 'explorationMode', 'analysisDepth', 'maxConcurrent',
+    'primaryModel', 'primaryProvider', 'fastModel', 'fastProvider',
+    'strategicModel', 'strategicProvider',
+  ]);
+  const output: Record<string, unknown> = {
+    topic: requiredBoundedText(input.topic, 'topic', 12_000),
+  };
+  const context = parsedWhenPresent(input, 'context', (value) =>
+    optionalBoundedText(value, 'context', 20_000));
+  const cycles = parsedWhenPresent(input, 'cycles', (value) =>
+    optionalFiniteInteger(value, 'cycles', 1, 10_000));
+  const explorationMode = parsedWhenPresent(input, 'explorationMode', (value) =>
+    optionalEnum(value, 'explorationMode', ['guided', 'autonomous'] as const));
+  const analysisDepth = parsedWhenPresent(input, 'analysisDepth', (value) =>
+    optionalEnum(value, 'analysisDepth', ['shallow', 'normal', 'deep'] as const));
+  const maxConcurrent = parsedWhenPresent(input, 'maxConcurrent', (value) =>
+    optionalFiniteInteger(value, 'maxConcurrent', 1, 64));
+  if (context !== undefined) output.context = context;
+  if (cycles !== undefined) output.cycles = cycles;
+  if (explorationMode !== undefined) output.explorationMode = explorationMode;
+  if (analysisDepth !== undefined) output.analysisDepth = analysisDepth;
+  if (maxConcurrent !== undefined) output.maxConcurrent = maxConcurrent;
+  copyExactProviderOverride(input, output, 'primaryModel', 'primaryProvider');
+  copyExactProviderOverride(input, output, 'fastModel', 'fastProvider');
+  copyExactProviderOverride(input, output, 'strategicModel', 'strategicProvider');
+  return output;
+}
+
+function exactRunId(input: Record<string, unknown>, allowed: readonly string[]): string {
+  assertToolKeys(input, allowed);
+  if (!hasOwn(input, 'runId') || typeof input.runId !== 'string' || !RUN_ID.test(input.runId)) {
+    throw invalidRequest();
+  }
+  return input.runId;
+}
+
+function approvedContinueOptions(input: Record<string, unknown>): Record<string, unknown> {
+  const runId = exactRunId(input, [
+    'runId', 'context', 'cycles', 'primaryModel', 'primaryProvider',
+  ]);
+  const output: Record<string, unknown> = { target: { runId } };
+  const context = parsedWhenPresent(input, 'context', (value) =>
+    optionalBoundedText(value, 'context', 20_000));
+  const cycles = parsedWhenPresent(input, 'cycles', (value) =>
+    optionalFiniteInteger(value, 'cycles', 1, 10_000));
+  if (context !== undefined) output.context = context;
+  if (cycles !== undefined) output.cycles = cycles;
+  copyExactProviderOverride(input, output, 'primaryModel', 'primaryProvider');
+  return output;
+}
+
+function exactInclude(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > SUMMARY_SECTIONS.length) {
+    throw invalidRequest();
+  }
+  const output = value.map((entry) => {
+    if (typeof entry !== 'string' || !SUMMARY_SECTIONS.includes(entry as typeof SUMMARY_SECTIONS[number])) {
+      throw invalidRequest();
+    }
+    return entry;
+  });
+  if (new Set(output).size !== output.length) throw invalidRequest();
+  return output;
+}
 
 export async function checkCosmoActiveRun(
-  _ctx?: ToolContext
-): Promise<{ runName: string; topic: string; startedAt: string; processCount: number } | null> {
+  ctx?: ToolContext,
+): Promise<{ runName: string; topic: string; startedAt: string; processCount: number | null } | null> {
+  if (!ctx?.turnRuntime) return null;
   try {
-    const base = getCosmoBase();
-    const res = await fetch(`${base}/api/status`, { signal: AbortSignal.timeout(3_000) });
-    if (!res.ok) return null;
-    const status = (await res.json()) as StatusResponse;
-    const activeRun = status.health?.activeRun ?? status.activeRun ?? status.running;
-    if (!activeRun || !status.activeContext?.runName) return null;
+    const turn = ctx.turnRuntime;
+    const operations = await turn.brainOperations.listNonterminal(turn.signal);
+    const active = operations
+      .filter((operation) => ['queued', 'running'].includes(operation.state)
+        && ['research_launch', 'research_continue', 'research_stop'].includes(operation.operationType))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    if (!active) return null;
+    const runName = active.target.domain === 'owned-run'
+      ? active.target.runId
+      : typeof active.result?.runId === 'string'
+        ? active.result.runId
+        : `research-${active.operationId}`;
+    const topic = typeof active.requestParameters.topic === 'string'
+      ? active.requestParameters.topic
+      : '';
     return {
-      runName: status.activeContext.runName,
-      topic: status.activeContext.topic || '',
-      startedAt: status.activeContext.startedAt || '',
-      processCount: status.health?.process?.count ?? status.processStatus?.count ?? 0,
+      runName,
+      topic,
+      startedAt: active.startedAt || '',
+      processCount: null,
     };
   } catch {
     return null;
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-// 1. research_list_brains
-// ────────────────────────────────────────────────────────────────────────────
+async function executeListBrains(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, ['limit', 'includeReferences']);
+    const turn = runtime(ctx);
+    const limit = parsedWhenPresent(input, 'limit', (value) =>
+      optionalFiniteInteger(value, 'limit', 1, 100)) ?? 20;
+    const includeReferences = parsedWhenPresent(input, 'includeReferences', (value) =>
+      optionalBoolean(value, 'includeReferences')) ?? true;
+    const catalog = await turn.brainOperations.getCatalog({ signal: turn.signal });
+    const selected = catalog.brains
+      .filter((brain) => includeReferences || brain.sourceType === 'local')
+      .slice(0, limit);
+    const lines = selected.map((brain) =>
+      `${brain.displayName} (${brain.id}) — ${brain.lifecycle} — ${brain.nodeCount ?? '?'} nodes`);
+    return {
+      content: `Catalog ${catalog.catalogRevision}\n${lines.length ? lines.join('\n') : '(no matching catalog rows)'}`,
+    };
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+async function executeQueryBrain(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, [
+      'brainId', 'query', 'mode', 'enablePGS', 'modelSelection',
+      'pgsConfig', 'pgsSweep', 'pgsSynth',
+    ]);
+    const turn = runtime(ctx);
+    const brainId = requiredBoundedText(input.brainId, 'brainId', 128);
+    return operationToolResult(await turn.brainOperations.query({
+      target: { brainId },
+      ...researchQueryParameters(input),
+    }, turn.signal));
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+async function executeSearchAll(
+  input: Record<string, unknown>,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, [
+      'query', 'mode', 'topN', 'enablePGS', 'modelSelection',
+      'pgsConfig', 'pgsSweep', 'pgsSynth',
+    ]);
+    const turn = runtime(ctx);
+    const signal = turn.signal;
+    throwIfAborted(signal);
+    const queryParameters = researchQueryParameters(input);
+    const topN = parsedWhenPresent(input, 'topN', (value) =>
+      optionalFiniteInteger(value, 'topN', 1, SEARCH_ALL_MAX_TARGETS)) ?? 5;
+    const catalog = await turn.brainOperations.getCatalog({ signal });
+    throwIfAborted(signal);
+    const selected = catalog.brains
+      .filter((brain) => brain.kind === 'research' && brain.lifecycle === 'completed')
+      .sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.id.localeCompare(b.id))
+      .slice(0, topN);
+    if (selected.length === 0) {
+      return {
+        content: 'no_eligible_targets: catalog has no completed research brains',
+        is_error: true,
+        metadata: {
+          aggregate: 'no_eligible_targets',
+          catalogRevision: catalog.catalogRevision,
+          selectedCount: 0,
+          outcomes: [],
+        },
+      };
+    }
+    const outcomes = await boundedMap(selected, SEARCH_ALL_CONCURRENCY, signal, async (brain) => {
+      throwIfAborted(signal);
+      try {
+        const operation = await turn.brainOperations.query({
+          target: { brainId: brain.id },
+          ...queryParameters,
+        }, signal);
+        throwIfAborted(signal);
+        const classified = operationToolResult(operation);
+        const classification = String(classified.metadata?.classification || operation.state);
+        const useful = classified.is_error !== true
+          && (operation.state === 'complete' || classification === 'useful_partial');
+        return {
+          brainId: brain.id,
+          displayName: brain.displayName,
+          catalogRevision: catalog.catalogRevision,
+          state: operation.state,
+          classification,
+          useful,
+          operationId: operation.operationId,
+          resultHandle: operation.resultHandle,
+          sourceEvidence: operation.sourceEvidence,
+          error: operation.error,
+          excerpt: recoverableExcerpt(classified.content, 4_000, {
+            operationId: operation.operationId,
+            resultHandle: operation.resultHandle,
+          }),
+        };
+      } catch (error) {
+        if (signal.aborted) throw signal.reason;
+        return {
+          brainId: brain.id,
+          displayName: brain.displayName,
+          catalogRevision: catalog.catalogRevision,
+          state: 'failed',
+          operationId: null,
+          classification: 'failed',
+          useful: false,
+          resultHandle: null,
+          sourceEvidence: null,
+          error: researchError(error),
+          excerpt: '',
+        };
+      }
+    });
+    const usefulCount = outcomes.filter((item) => item.useful).length;
+    const aggregate = usefulCount === outcomes.length
+      && outcomes.every((item) => item.state === 'complete')
+      ? 'complete'
+      : usefulCount > 0 ? 'partial' : 'all_failed';
+    return {
+      content: `${aggregate}\n${outcomes.map((item) =>
+        `${item.brainId}: ${item.state}: ${item.excerpt || item.error?.code || 'no answer'}`,
+      ).join('\n')}`,
+      is_error: aggregate === 'all_failed' || undefined,
+      metadata: {
+        aggregate,
+        catalogRevision: catalog.catalogRevision,
+        selectedCount: selected.length,
+        outcomes: outcomes.map(({ excerpt: _displayOnly, useful: _internal, ...provenance }) => provenance),
+      },
+    };
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+async function executeLaunch(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  try {
+    const turn = runtime(ctx);
+    return operationToolResult(await turn.brainOperations.launchResearch(
+      approvedLaunchOptions(input), turn.signal,
+    ));
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+async function executeContinue(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  try {
+    const turn = runtime(ctx);
+    return operationToolResult(await turn.brainOperations.continueResearch(
+      approvedContinueOptions(input) as {
+        target: { runId: string }; context?: string; cycles?: number;
+        primaryModel?: string; primaryProvider?: string;
+      },
+      turn.signal,
+    ));
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+async function executeStop(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  try {
+    const turn = runtime(ctx);
+    const runId = exactRunId(input, ['runId']);
+    return operationToolResult(await turn.brainOperations.stopResearch(
+      { target: { runId } }, turn.signal,
+    ));
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+async function executeWatch(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  try {
+    const turn = runtime(ctx);
+    const runId = exactRunId(input, ['runId', 'after', 'limit', 'filter']);
+    const after = parsedWhenPresent(input, 'after', (value) =>
+      optionalFiniteInteger(value, 'after', 0, Number.MAX_SAFE_INTEGER)) ?? 0;
+    const limit = parsedWhenPresent(input, 'limit', (value) =>
+      optionalFiniteInteger(value, 'limit', 1, 500));
+    const filter = parsedWhenPresent(input, 'filter', (value) =>
+      optionalEnum(value, 'filter', ['all', 'errors', 'progress', 'cycles'] as const));
+    const value = await turn.brainOperations.watchResearch({
+      target: { runId },
+      after,
+      ...(limit !== undefined ? { limit } : {}),
+      ...(filter !== undefined ? { filter } : {}),
+    }, turn.signal);
+    return {
+      content: `**Cursor:** ${String(value.latest ?? after)}\n${JSON.stringify(value.logs || [], null, 2)}`,
+      metadata: { runId, cursor: value.latest ?? after, active: value.active },
+    };
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+async function executeSummary(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, ['brainId', 'include']);
+    const turn = runtime(ctx);
+    const include = hasOwn(input, 'include')
+      ? exactInclude(input.include)
+      : ['executive', 'goals', 'trajectory'];
+    const value = await turn.brainOperations.readIntelligence({
+      target: { brainId: requiredBoundedText(input.brainId, 'brainId', 128) },
+      include,
+    }, turn.signal);
+    return { content: JSON.stringify(value, null, 2), metadata: { sourceEvidence: value.sourceEvidence } };
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+async function executeGraph(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, ['brainId', 'clusterId', 'minWeight', 'limit']);
+    const turn = runtime(ctx);
+    const nodeLimit = parsedWhenPresent(input, 'limit', (value) =>
+      optionalFiniteInteger(value, 'limit', 1, 2_000)) ?? 250;
+    const clusterId = parsedWhenPresent(input, 'clusterId', (value) =>
+      optionalBoundedText(value, 'clusterId', 256));
+    const minWeight = parsedWhenPresent(input, 'minWeight', (value) =>
+      optionalFiniteNumber(value, 'minWeight', 0, 1));
+    const value = await turn.brainOperations.graph({
+      target: { brainId: requiredBoundedText(input.brainId, 'brainId', 128) },
+      nodeLimit,
+      edgeLimit: Math.min(8_000, nodeLimit * 2),
+      ...(clusterId !== undefined ? { clusterId } : {}),
+      ...(minWeight !== undefined ? { minWeight } : {}),
+    }, turn.signal);
+    return { content: JSON.stringify(value, null, 2), metadata: { sourceEvidence: value.sourceEvidence } };
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+async function executeCompileBrain(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, ['brainId', 'focus']);
+    const turn = runtime(ctx);
+    const focus = parsedWhenPresent(input, 'focus', (value) =>
+      optionalBoundedText(value, 'focus', 12_000));
+    return operationToolResult(await turn.brainOperations.compile({
+      target: { brainId: requiredBoundedText(input.brainId, 'brainId', 128) },
+      kind: 'brain',
+      ...(focus !== undefined ? { focus } : {}),
+    }, turn.signal));
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+async function executeCompileSection(input: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult> {
+  try {
+    assertToolKeys(input, ['brainId', 'section', 'sectionId', 'focus']);
+    const turn = runtime(ctx);
+    const focus = parsedWhenPresent(input, 'focus', (value) =>
+      optionalBoundedText(value, 'focus', 12_000));
+    const section = parsedWhenPresent(input, 'section', (value) =>
+      optionalEnum(value, 'section', ['goal', 'insight', 'agent'] as const));
+    if (section === undefined) throw invalidRequest();
+    return operationToolResult(await turn.brainOperations.compile({
+      target: { brainId: requiredBoundedText(input.brainId, 'brainId', 128) },
+      kind: 'section',
+      section,
+      sectionId: requiredBoundedText(input.sectionId, 'sectionId', 256),
+      ...(focus !== undefined ? { focus } : {}),
+    }, turn.signal));
+  } catch (error) {
+    return errorResult(error);
+  }
+}
 
 export const listBrainsTool: ToolDefinition = {
   name: 'research_list_brains',
-  description:
-    'List all available COSMO 2.3 research brains with metadata (name, node count, cycle count, source). Always use this first to discover what research already exists before launching new runs.',
+  description: 'List canonical resident and completed research brains before launching more work.',
   input_schema: {
-    type: 'object',
+    type: 'object', additionalProperties: false,
     properties: {
-      limit: { type: 'number', description: 'Max brains to return (default 20)' },
-      includeReferences: {
-        type: 'boolean',
-        description: 'Include reference brains from external paths (default true)',
-      },
+      limit: { type: 'integer', minimum: 1, maximum: 100 },
+      includeReferences: { type: 'boolean' },
     },
   },
-  async execute(input, ctx) {
-    const limit = (input.limit as number) || 20;
-    const includeRefs = input.includeReferences !== false;
-    try {
-      const base = getCosmoBase(ctx);
-      const data = await fetchJson<{ brains?: BrainSummary[]; count?: number }>(
-        `${base}/api/brains`
-      );
-      let brains = data.brains || [];
-      if (!includeRefs) brains = brains.filter((b) => !b.source || b.source === 'local');
-      brains = brains.slice(0, limit);
-      if (brains.length === 0) {
-        return { content: 'No research brains available. Use research_launch to start one.' };
-      }
-      const lines = [`${brains.length} research brain(s):`, ''];
-      for (const b of brains) {
-        const nodes = b.nodeCount != null ? `${b.nodeCount} nodes` : '—';
-        const cycles = b.cycleCount != null ? `${b.cycleCount} cycles` : '—';
-        const src = b.source && b.source !== 'local' ? ` [${b.source}]` : '';
-        const topic = b.topic || b.domain || '';
-        lines.push(`- **${b.name || b.id}**${src} — ${nodes}, ${cycles}`);
-        if (topic) lines.push(`  topic: ${topic}`);
-      }
-      return { content: lines.join('\n') };
-    } catch (err) {
-      return errResult(`research_list_brains: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
+  execute: executeListBrains,
 };
-
-// ────────────────────────────────────────────────────────────────────────────
-// 2. research_query_brain
-// ────────────────────────────────────────────────────────────────────────────
 
 export const queryBrainTool: ToolDefinition = {
   name: 'research_query_brain',
-  description:
-    'Query ONE specific COSMO research brain with full mode control. Use this when you know which brain to target. Modes: quick=fast overview, full=standard (default), expert=deep with coordinator insights, dive=exhaustive. Response can be 5-30KB — paraphrase or compile rather than quoting verbatim.',
+  description: 'Run a durable direct or PGS query against one exact research brain.',
   input_schema: {
-    type: 'object',
+    type: 'object', additionalProperties: false,
     properties: {
-      brainId: { type: 'string', description: 'Brain ID or run name (from research_list_brains)' },
-      query: { type: 'string', description: 'Question to ask the brain' },
-      mode: {
-        type: 'string',
-        enum: ['quick', 'full', 'expert', 'dive'],
-        description: 'Query depth (default: full)',
+      brainId: { type: 'string', minLength: 1 },
+      query: { type: 'string', minLength: 1 },
+      mode: { type: 'string', enum: ['quick', 'full', 'expert', 'dive'] },
+      enablePGS: { type: 'boolean' },
+      modelSelection: providerModelSchema,
+      pgsConfig: {
+        type: 'object', additionalProperties: false,
+        properties: { sweepFraction: { type: 'number', exclusiveMinimum: 0, maximum: 1 } },
       },
-      includeThoughts: { type: 'boolean', description: 'Include agent thoughts (default true)' },
-      includeCoordinatorInsights: {
-        type: 'boolean',
-        description: 'Include coordinator reviews (default: true for expert/dive)',
-      },
+      pgsSweep: providerModelSchema,
+      pgsSynth: providerModelSchema,
     },
     required: ['brainId', 'query'],
   },
-  async execute(input, ctx) {
-    const brainId = input.brainId as string;
-    const query = input.query as string;
-    const mode = (input.mode as string) || 'full';
-    const includeThoughts = input.includeThoughts !== false;
-    const includeCoordinatorInsights =
-      input.includeCoordinatorInsights !== undefined
-        ? Boolean(input.includeCoordinatorInsights)
-        : mode === 'expert' || mode === 'dive';
-    try {
-      const base = getCosmoBase(ctx);
-      const result = await fetchJson<QueryResponse>(
-        `${base}/api/brain/${encodeURIComponent(brainId)}/query`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            query,
-            mode,
-            enableSynthesis: true,
-            includeThoughts,
-            includeCoordinatorInsights,
-          }),
-        },
-        60_000
-      );
-      const answer = result.response || result.answer || '';
-      if (!answer) {
-        return { content: `Brain "${brainId}" returned no response for query: ${query}` };
-      }
-      let agencyLine = '';
-      try {
-        agencyLine = `\n\n${await assimilateResearchOutput(ctx, {
-          brainId,
-          summary: answer,
-          query,
-          evidenceType: 'research_query',
-        })}`;
-      } catch (agencyErr) {
-        agencyLine = `\n\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
-      }
-      return { content: `${answer}${agencyLine}` };
-    } catch (err) {
-      return errResult(`research_query_brain: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
+  execute: executeQueryBrain,
 };
-
-// ────────────────────────────────────────────────────────────────────────────
-// 3. research_search_all_brains
-// ────────────────────────────────────────────────────────────────────────────
 
 export const searchAllBrainsTool: ToolDefinition = {
   name: 'research_search_all_brains',
-  description:
-    'Query the top N most recent research brains at once. Convenience for "do I already have research on X?" Use this as step 2 after research_list_brains, before deciding to launch a new run.',
+  description: 'Query up to twenty completed research brains with bounded concurrency and explicit outcomes.',
   input_schema: {
-    type: 'object',
+    type: 'object', additionalProperties: false,
     properties: {
-      query: { type: 'string', description: 'Question to search across brains' },
-      topN: { type: 'number', description: 'Number of most recent brains to query (default 5)' },
-      mode: {
-        type: 'string',
-        enum: ['quick', 'full', 'expert'],
-        description: 'Query depth (default: full)',
+      query: { type: 'string', minLength: 1 },
+      topN: { type: 'integer', minimum: 1, maximum: SEARCH_ALL_MAX_TARGETS },
+      mode: { type: 'string', enum: ['quick', 'full', 'expert', 'dive'] },
+      enablePGS: { type: 'boolean' },
+      modelSelection: providerModelSchema,
+      pgsConfig: {
+        type: 'object', additionalProperties: false,
+        properties: { sweepFraction: { type: 'number', exclusiveMinimum: 0, maximum: 1 } },
       },
+      pgsSweep: providerModelSchema,
+      pgsSynth: providerModelSchema,
     },
     required: ['query'],
   },
-  async execute(input, ctx) {
-    const query = input.query as string;
-    const topN = (input.topN as number) || 5;
-    const mode = (input.mode as string) || 'full';
-    try {
-      const base = getCosmoBase(ctx);
-      const data = await fetchJson<{ brains?: BrainSummary[] }>(`${base}/api/brains`);
-      const brains = (data.brains || []).slice(0, topN);
-      if (brains.length === 0) {
-        return { content: 'No brains available. Use research_launch to start one.' };
-      }
-      const results: string[] = [];
-      for (const brain of brains) {
-        try {
-          const qRes = await fetchJson<QueryResponse>(
-            `${base}/api/brain/${encodeURIComponent(brain.id || brain.name || '')}/query`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                query,
-                mode,
-                enableSynthesis: true,
-                includeThoughts: true,
-              }),
-            },
-            45_000
-          );
-          const answer = qRes.response || qRes.answer || '';
-          if (answer && answer.length > 50) {
-            results.push(`## ${brain.name || brain.id}\n\n${answer}`);
-          }
-        } catch {
-          // skip brains that fail — listed in summary at end
-        }
-      }
-      if (results.length === 0) {
-        return {
-          content: `Searched ${brains.length} brain(s) for "${query}" — no relevant findings. Consider research_launch.`,
-        };
-      }
-      const content = `Found relevant research in ${results.length}/${brains.length} brain(s):\n\n${results.join('\n\n---\n\n')}`;
-      let agencyLine = '';
-      try {
-        agencyLine = `\n\n${await assimilateResearchOutput(ctx, {
-          brainId: 'multi-brain-search',
-          summary: content,
-          query,
-          evidenceType: 'research_query',
-          summaryOverride: `Searched COSMO research brains for "${query}".`,
-        })}`;
-      } catch (agencyErr) {
-        agencyLine = `\n\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
-      }
-      return {
-        content: `${content}${agencyLine}`,
-      };
-    } catch (err) {
-      return errResult(
-        `research_search_all_brains: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  },
+  execute: executeSearchAll,
 };
-
-// ────────────────────────────────────────────────────────────────────────────
-// 4. research_launch
-// ────────────────────────────────────────────────────────────────────────────
 
 export const launchTool: ToolDefinition = {
   name: 'research_launch',
-  description:
-    'Start a NEW COSMO 2.3 research run. CRITICAL: always provide `context` — without it, the guided planner fabricates framing from model priors and over-scopes the plan. Cycles: 5-10 for primers, 20-40 for investigations, 60-80 for deep dives. Runs take minutes to hours. Only launch if an existing brain does not already answer the question — check first with research_list_brains and research_search_all_brains.',
+  description: 'Start one durable server-owned research run after checking existing brains.',
   input_schema: {
-    type: 'object',
+    type: 'object', additionalProperties: false,
     properties: {
-      topic: {
-        type: 'string',
-        description:
-          'Focused research topic. "Cosine similarity in semantic search" not "everything about embeddings".',
-      },
-      context: {
-        type: 'string',
-        description:
-          'Framing, constraints, source preferences, scope, rails. Example: "One-page primer for someone who knows linear algebra. Wikipedia + primary docs fine, no academic deep-dives. 5 cycles, normal depth." DO NOT skip this.',
-      },
-      cycles: { type: 'number', description: 'Max cognitive cycles (default 20)' },
-      explorationMode: {
-        type: 'string',
-        enum: ['guided', 'autonomous'],
-        description: 'guided=plan-then-execute (default), autonomous=exploratory',
-      },
-      analysisDepth: {
-        type: 'string',
-        enum: ['shallow', 'normal', 'deep'],
-        description: 'Synthesis detail (default: normal)',
-      },
-      maxConcurrent: { type: 'number', description: 'Max parallel agents (default 6)' },
-      primaryModel: {
-        type: 'string',
-        description: 'Model for research/analysis agents (e.g., gpt-5.5)',
-      },
-      primaryProvider: { type: 'string', description: 'openai, anthropic, xai, ollama-cloud' },
-      fastModel: { type: 'string', description: 'Model for coordinator/planner (e.g., gpt-5.4-mini)' },
-      fastProvider: { type: 'string' },
-      strategicModel: { type: 'string', description: 'Model for synthesis/QA' },
-      strategicProvider: { type: 'string' },
+      topic: { type: 'string', minLength: 1 },
+      context: { type: 'string', minLength: 1 },
+      cycles: { type: 'integer', minimum: 1, maximum: 10_000 },
+      explorationMode: { type: 'string', enum: ['guided', 'autonomous'] },
+      analysisDepth: { type: 'string', enum: ['shallow', 'normal', 'deep'] },
+      maxConcurrent: { type: 'integer', minimum: 1, maximum: 64 },
+      primaryModel: { type: 'string', minLength: 1 },
+      primaryProvider: { type: 'string', minLength: 1 },
+      fastModel: { type: 'string', minLength: 1 },
+      fastProvider: { type: 'string', minLength: 1 },
+      strategicModel: { type: 'string', minLength: 1 },
+      strategicProvider: { type: 'string', minLength: 1 },
     },
     required: ['topic'],
   },
-  async execute(input, ctx) {
-    const topic = input.topic as string;
-    if (!topic) return errResult('research_launch: topic is required');
-    try {
-      const base = getCosmoBase(ctx);
-      // Refuse if a run is already active — jerry should explicitly stop first
-      const active = await checkCosmoActiveRun(ctx);
-      if (active) {
-        return errResult(
-          `Cannot launch: a run is already active ("${active.runName}", topic: "${active.topic}"). Use research_stop first, or research_watch_run to monitor it.`
-        );
-      }
-      // Generate runName + runRoot client-side so agent workspace owns the run.
-      // cosmo23 Patch 7 creates the run at runRoot and symlinks cosmo23/runs/<runName> back.
-      const runName = generateRunName(topic);
-      const runRoot = path.join(ctx.workspacePath, 'research-runs', runName);
-
-      const payload: Record<string, unknown> = {
-        topic,
-        runName,
-        runRoot,
-        owner: ctx.agentName,
-        context: input.context || '',
-        explorationMode: input.explorationMode || 'guided',
-        analysisDepth: input.analysisDepth || 'normal',
-        cycles: input.cycles || 20,
-        maxConcurrent: input.maxConcurrent || 6,
-        enableWebSearch: true,
-        enableCodingAgents: false,
-        enableAgentRouting: true,
-        enableMemoryGovernance: true,
-      };
-      if (input.primaryModel) payload.primaryModel = input.primaryModel;
-      if (input.primaryProvider) payload.primaryProvider = input.primaryProvider;
-      if (input.fastModel) payload.fastModel = input.fastModel;
-      if (input.fastProvider) payload.fastProvider = input.fastProvider;
-      if (input.strategicModel) payload.strategicModel = input.strategicModel;
-      if (input.strategicProvider) payload.strategicProvider = input.strategicProvider;
-
-      const result = await fetchJson<LaunchResponse>(
-        `${base}/api/launch`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        },
-        45_000
-      );
-
-      if (!result.success) {
-        return errResult(`research_launch failed: ${result.error || result.message || 'unknown'}`);
-      }
-      const lines = [
-        `Research run launched:`,
-        `- runName: **${result.runName}**`,
-        `- brainId: ${result.brainId || '(pending)'}`,
-        `- cycles: ${result.cycles || payload.cycles}`,
-        `- runRoot: ${runRoot}`,
-      ];
-      if (result.dashboardUrl) lines.push(`- dashboard: ${result.dashboardUrl}`);
-      lines.push('');
-      lines.push('The run lives in your workspace. Feeder will ingest markdown output as it appears.');
-      lines.push('Use research_watch_run to check progress. Do not check every turn.');
-      return { content: lines.join('\n') };
-    } catch (err) {
-      return errResult(`research_launch: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
+  execute: executeLaunch,
 };
-
-// ────────────────────────────────────────────────────────────────────────────
-// 5. research_continue
-// ────────────────────────────────────────────────────────────────────────────
 
 export const continueRunTool: ToolDefinition = {
   name: 'research_continue',
-  description:
-    "Resume a completed research brain with a new focus. Reuses the prior run's model selections and settings by default — only pass overrides for what you want to change. Useful for deepening research you already have, or shifting emphasis without starting from scratch.",
+  description: 'Continue one exact requester-owned research run.',
   input_schema: {
-    type: 'object',
+    type: 'object', additionalProperties: false,
     properties: {
-      brainId: { type: 'string', description: 'Brain ID of the completed run to continue' },
-      context: { type: 'string', description: 'New framing or focus for the continuation' },
-      cycles: { type: 'number', description: 'Additional cycles to run' },
-      primaryModel: { type: 'string' },
-      primaryProvider: { type: 'string' },
+      runId: { type: 'string', minLength: 1 },
+      context: { type: 'string', minLength: 1 },
+      cycles: { type: 'integer', minimum: 1, maximum: 10_000 },
+      primaryModel: { type: 'string', minLength: 1 },
+      primaryProvider: { type: 'string', minLength: 1 },
     },
-    required: ['brainId'],
+    required: ['runId'],
   },
-  async execute(input, ctx) {
-    const brainId = input.brainId as string;
-    if (!brainId) return errResult('research_continue: brainId is required');
-    try {
-      const base = getCosmoBase(ctx);
-      const active = await checkCosmoActiveRun(ctx);
-      if (active) {
-        return errResult(
-          `Cannot continue: a run is already active ("${active.runName}"). Use research_stop first.`
-        );
-      }
-      const payload: Record<string, unknown> = {};
-      if (input.context) payload.context = input.context;
-      if (input.cycles) payload.cycles = input.cycles;
-      if (input.primaryModel) payload.primaryModel = input.primaryModel;
-      if (input.primaryProvider) payload.primaryProvider = input.primaryProvider;
-
-      const result = await fetchJson<LaunchResponse>(
-        `${base}/api/continue/${encodeURIComponent(brainId)}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        },
-        45_000
-      );
-      if (!result.success) {
-        return errResult(
-          `research_continue failed: ${result.error || result.message || 'unknown'}`
-        );
-      }
-      return {
-        content: `Continuation launched on brain "${brainId}":\n- runName: ${result.runName}\n- cycles: ${result.cycles}\n\nUse research_watch_run to monitor.`,
-      };
-    } catch (err) {
-      return errResult(`research_continue: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
+  execute: executeContinue,
 };
-
-// ────────────────────────────────────────────────────────────────────────────
-// 6. research_stop
-// ────────────────────────────────────────────────────────────────────────────
 
 export const stopRunTool: ToolDefinition = {
   name: 'research_stop',
-  description:
-    'Stop the currently active COSMO research run. Use this to cancel a run that is going the wrong direction, or before launching a new one when an old one is still in flight.',
+  description: 'Stop and wait for one exact requester-owned research run.',
   input_schema: {
-    type: 'object',
-    properties: {},
+    type: 'object', additionalProperties: false,
+    properties: { runId: { type: 'string', minLength: 1 } },
+    required: ['runId'],
   },
-  async execute(_input, ctx) {
-    try {
-      const base = getCosmoBase(ctx);
-      const result = await fetchJson<{ success?: boolean; status?: string; message?: string }>(
-        `${base}/api/stop`,
-        { method: 'POST' },
-        30_000
-      );
-      if (result.status === 'not_running') {
-        return { content: 'No active research run to stop.' };
-      }
-      return { content: `Research run stopped: ${result.status || 'ok'}` };
-    } catch (err) {
-      return errResult(`research_stop: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
+  execute: executeStop,
 };
-
-// ────────────────────────────────────────────────────────────────────────────
-// 7. research_watch_run
-// ────────────────────────────────────────────────────────────────────────────
-
-interface LogEntry {
-  source?: string;
-  level?: string;
-  message?: string;
-  timestamp?: number;
-}
-
-interface LogsResponse {
-  success?: boolean;
-  logs?: LogEntry[];
-  latest?: number;
-  running?: boolean;
-  activeRun?: boolean;
-  health?: { activeRun?: boolean };
-  activeContext?: ActiveContext | null;
-}
 
 export const watchRunTool: ToolDefinition = {
   name: 'research_watch_run',
-  description:
-    'Tail logs from the currently active research run. Use cursor-paginated calls (pass `after` from the previous response) so you only see new entries. Check every 2-3 turns, not every turn. Returns run state at top + filtered log entries.',
+  description: 'Read the bounded log ring for one exact requester-owned run using a durable cursor.',
   input_schema: {
-    type: 'object',
+    type: 'object', additionalProperties: false,
     properties: {
-      after: {
-        type: 'number',
-        description: 'Log cursor from the previous call (default 0 = from start)',
-      },
-      limit: { type: 'number', description: 'Max entries to return (default 50)' },
-      filter: {
-        type: 'string',
-        enum: ['all', 'errors', 'progress', 'cycles'],
-        description:
-          'What to include (default progress). all=everything, errors=warn+error only, progress=agent progress + phases, cycles=cycle markers only',
-      },
+      runId: { type: 'string', minLength: 1 },
+      after: { type: 'integer', minimum: 0 },
+      limit: { type: 'integer', minimum: 1, maximum: 500 },
+      filter: { type: 'string', enum: ['all', 'errors', 'progress', 'cycles'] },
     },
+    required: ['runId'],
   },
-  async execute(input, ctx) {
-    const after = (input.after as number) || 0;
-    const limit = (input.limit as number) || 50;
-    const filter = (input.filter as string) || 'progress';
-    try {
-      const base = getCosmoBase(ctx);
-      const data = await fetchJson<LogsResponse>(
-        `${base}/api/watch/logs?after=${after}&limit=${Math.min(limit, 500)}`
-      );
-      const header: string[] = [];
-      const activeRun = data.health?.activeRun ?? data.activeRun ?? data.running;
-      if (activeRun && data.activeContext?.runName) {
-        header.push(`**Active run:** ${data.activeContext.runName}`);
-        if (data.activeContext.topic) header.push(`**Topic:** ${data.activeContext.topic}`);
-      } else {
-        header.push('**No active run**');
-      }
-      const allLogs = data.logs || [];
-      // Filter
-      const filtered = allLogs.filter((e) => {
-        const msg = e.message || '';
-        const lvl = (e.level || '').toLowerCase();
-        if (filter === 'errors') return lvl === 'warn' || lvl === 'error' || lvl === 'warning';
-        if (filter === 'cycles')
-          return /cycle\s+(\d+|start|complete)/i.test(msg) || /phase\s+\d/i.test(msg);
-        if (filter === 'progress')
-          return /agent|goal|cycle|phase|synthesis|completed|progress/i.test(msg);
-        return true;
-      });
-      const shown = filtered.slice(-limit);
-      header.push(
-        `**Cursor:** ${data.latest ?? allLogs.length} (pass as \`after\` next call)`,
-        `**Filtered:** ${shown.length}/${allLogs.length} entries (filter=${filter})`,
-        ''
-      );
-      const body = shown.map((e) => `[${(e.level || 'info').slice(0, 5)}] ${(e.message || '').slice(0, 220)}`);
-      if (body.length === 0) body.push('(no new entries)');
-      return { content: header.concat(body).join('\n') };
-    } catch (err) {
-      return errResult(`research_watch_run: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
+  execute: executeWatch,
 };
-
-// ────────────────────────────────────────────────────────────────────────────
-// 8. research_get_brain_summary
-// ────────────────────────────────────────────────────────────────────────────
 
 export const getBrainSummaryTool: ToolDefinition = {
   name: 'research_get_brain_summary',
-  description:
-    "Aggregated high-level summary of a completed brain: executive review, goals, trajectory, optionally thoughts and insights. Pulls from COSMO's intelligence endpoints. Use this to orient yourself on a brain before deciding which section to query in depth.",
+  description: 'Read bounded pinned intelligence sections from one exact research brain.',
   input_schema: {
-    type: 'object',
+    type: 'object', additionalProperties: false,
     properties: {
-      brainId: { type: 'string', description: 'Brain ID or run name' },
+      brainId: { type: 'string', minLength: 1 },
       include: {
-        type: 'array',
-        items: { type: 'string', enum: ['executive', 'goals', 'trajectory', 'thoughts', 'insights'] },
-        description: 'Sections to include (default: [executive, goals, trajectory])',
+        type: 'array', minItems: 1, maxItems: SUMMARY_SECTIONS.length,
+        items: { type: 'string', enum: SUMMARY_SECTIONS },
       },
     },
     required: ['brainId'],
   },
-  async execute(input, ctx) {
-    const brainId = input.brainId as string;
-    if (!brainId) return errResult('research_get_brain_summary: brainId is required');
-    const include =
-      (input.include as string[]) || ['executive', 'goals', 'trajectory'];
-    try {
-      const base = getCosmoBase(ctx);
-      const sections: string[] = [`# Brain summary: ${brainId}`, ''];
-
-      const fetchSection = async (kind: string, label: string) => {
-        try {
-          const data = await fetchJson<Record<string, unknown>>(
-            `${base}/api/brain/${encodeURIComponent(brainId)}/intelligence/${kind}`,
-            undefined,
-            15_000
-          );
-          return { label, data };
-        } catch (err) {
-          return { label, error: err instanceof Error ? err.message : String(err) };
-        }
-      };
-
-      for (const kind of include) {
-        const label = kind.charAt(0).toUpperCase() + kind.slice(1);
-        const result = await fetchSection(kind, label);
-        sections.push(`## ${result.label}`);
-        if ('error' in result) {
-          sections.push(`_error: ${result.error}_`);
-        } else {
-          // Compact JSON-ish rendering — intelligence endpoints return varied shapes
-          const json = JSON.stringify(result.data, null, 2);
-          const truncated = json.length > 3000 ? json.slice(0, 3000) + '\n... (truncated)' : json;
-          sections.push('```json', truncated, '```');
-        }
-        sections.push('');
-      }
-      const content = sections.join('\n');
-      let agencyLine = '';
-      try {
-        agencyLine = `\n${await assimilateResearchOutput(ctx, {
-          brainId,
-          summary: content,
-          evidenceType: 'research_query',
-          summaryOverride: `Summarized COSMO research brain "${brainId}".`,
-        })}`;
-      } catch (agencyErr) {
-        agencyLine = `\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
-      }
-      return { content: `${content}${agencyLine}` };
-    } catch (err) {
-      return errResult(
-        `research_get_brain_summary: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  },
+  execute: executeSummary,
 };
-
-// ────────────────────────────────────────────────────────────────────────────
-// 9. research_get_brain_graph
-// ────────────────────────────────────────────────────────────────────────────
-
-interface GraphResponse {
-  nodes?: Array<{ id?: string | number; concept?: string; tag?: string; cluster?: string; weight?: number }>;
-  edges?: Array<{ source?: string | number; target?: string | number; weight?: number; type?: string }>;
-  clusters?: Array<{ id?: string; label?: string; nodeCount?: number }>;
-}
 
 export const getBrainGraphTool: ToolDefinition = {
   name: 'research_get_brain_graph',
-  description:
-    'Get the knowledge graph structure of a brain: nodes, edges, and clusters. Use this to see HOW knowledge connects rather than what it says. Returns structural summary + a capped sample of nodes/edges to control context size.',
+  description: 'Read a server-bounded graph sample from one exact research brain.',
   input_schema: {
-    type: 'object',
+    type: 'object', additionalProperties: false,
     properties: {
-      brainId: { type: 'string', description: 'Brain ID or run name' },
-      clusterId: { type: 'string', description: 'Filter to one cluster' },
-      minWeight: { type: 'number', description: 'Filter edges by weight (default 0.3)' },
-      limit: { type: 'number', description: 'Max nodes returned (default 50)' },
+      brainId: { type: 'string', minLength: 1 },
+      clusterId: { type: 'string', minLength: 1 },
+      minWeight: { type: 'number', minimum: 0, maximum: 1 },
+      limit: { type: 'integer', minimum: 1, maximum: 2_000 },
     },
     required: ['brainId'],
   },
-  async execute(input, ctx) {
-    const brainId = input.brainId as string;
-    if (!brainId) return errResult('research_get_brain_graph: brainId is required');
-    const clusterId = input.clusterId as string | undefined;
-    const minWeight = (input.minWeight as number) ?? 0.3;
-    const limit = (input.limit as number) || 50;
-    try {
-      const base = getCosmoBase(ctx);
-      const data = await fetchJson<GraphResponse>(
-        `${base}/api/brain/${encodeURIComponent(brainId)}/graph`,
-        undefined,
-        30_000
-      );
-      const nodes = data.nodes || [];
-      const edges = data.edges || [];
-      const clusters = data.clusters || [];
-
-      let filteredNodes = nodes;
-      if (clusterId) filteredNodes = filteredNodes.filter((n) => n.cluster === clusterId);
-      filteredNodes = filteredNodes.slice(0, limit);
-
-      const filteredEdges = edges.filter((e) => (e.weight ?? 0) >= minWeight).slice(0, limit * 2);
-
-      const lines = [
-        `# Brain graph: ${brainId}`,
-        '',
-        `**Totals:** ${nodes.length} nodes · ${edges.length} edges · ${clusters.length} clusters`,
-        `**Filtered:** ${filteredNodes.length} nodes (limit ${limit})${clusterId ? ` in cluster "${clusterId}"` : ''}, ${filteredEdges.length} edges (weight >= ${minWeight})`,
-        '',
-      ];
-
-      if (clusters.length > 0) {
-        lines.push('## Clusters');
-        for (const c of clusters.slice(0, 20)) {
-          lines.push(`- ${c.id || c.label} (${c.nodeCount ?? '?'} nodes)`);
-        }
-        lines.push('');
-      }
-
-      lines.push('## Sample nodes');
-      for (const n of filteredNodes) {
-        const concept = (n.concept || '').slice(0, 120);
-        lines.push(
-          `- [${n.id}] tag=${n.tag || '?'} cluster=${n.cluster || '?'} weight=${(n.weight ?? 0).toFixed(2)} · ${concept}`
-        );
-      }
-
-      if (filteredEdges.length > 0) {
-        lines.push('');
-        lines.push('## Sample edges');
-        for (const e of filteredEdges.slice(0, 30)) {
-          lines.push(`- ${e.source} → ${e.target} [${e.type || 'assoc'}] w=${(e.weight ?? 0).toFixed(2)}`);
-        }
-      }
-      const content = lines.join('\n');
-      let agencyLine = '';
-      try {
-        agencyLine = `\n${await assimilateResearchOutput(ctx, {
-          brainId,
-          summary: content,
-          evidenceType: 'research_query',
-          summaryOverride: `Mapped COSMO research graph for brain "${brainId}".`,
-        })}`;
-      } catch (agencyErr) {
-        agencyLine = `\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
-      }
-      return { content: `${content}${agencyLine}` };
-    } catch (err) {
-      return errResult(
-        `research_get_brain_graph: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  },
+  execute: executeGraph,
 };
-
-// ────────────────────────────────────────────────────────────────────────────
-// 10. research_compile_brain
-// ────────────────────────────────────────────────────────────────────────────
-
-async function writeWorkspaceFile(filename: string, content: string): Promise<string> {
-  const agentName = process.env.HOME23_AGENT || 'test-agent';
-  const projectRoot = process.cwd();
-  const researchDir = `${projectRoot}/instances/${agentName}/workspace/research`;
-  const { mkdirSync, writeFileSync } = await import('node:fs');
-  mkdirSync(researchDir, { recursive: true });
-  const path = `${researchDir}/${filename}`;
-  writeFileSync(path, content);
-  return path;
-}
-
-function agencyBridgeBaseUrl(ctx: ToolContext): string {
-  return ctx.workerConnectorBaseUrl || `http://127.0.0.1:${process.env.HOME23_BRIDGE_PORT || '5004'}`;
-}
-
-async function assimilateResearchOutput(
-  ctx: ToolContext,
-  input: {
-    brainId: string;
-    summary: string;
-    path?: string;
-    query?: string;
-    evidenceType: 'research_compile' | 'research_query';
-    summaryOverride?: string;
-    section?: string;
-    sectionId?: string;
-  }
-): Promise<string> {
-  const fetchImpl = ctx.fetch || fetch;
-  const label = input.section
-    ? `section ${input.section}:${input.sectionId || 'unknown'} from brain "${input.brainId}"`
-    : `brain "${input.brainId}"`;
-  const action = input.evidenceType === 'research_compile' ? 'Compiled' : 'Queried';
-  const res = await fetchImpl(`${agencyBridgeBaseUrl(ctx)}/api/agency/world-stream`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      source: 'cosmo.research',
-      kind: 'research_summary',
-      summary: input.summaryOverride || `${action} COSMO research ${label}.`,
-      seen: [input.summary.slice(0, 2000)],
-      discarded: [],
-      explicitNoChange: false,
-      desiredChangedFuture: 'COSMO research output enters resident agency as evidence for memory, watch, pursuit, task, question, handoff, or explicit discard instead of ending as chat content or a markdown artifact.',
-      nextMove: 'triage research output against active resident pursuits and decide whether it changes belief, attention, or behavior',
-      evidence: [{
-        type: input.evidenceType,
-        ref: input.path || input.query || input.brainId,
-        brainId: input.brainId,
-      }],
-      tags: ['world-stream', 'research', 'cosmo'],
-    }),
-  });
-  const text = await res.text();
-  const data = text ? JSON.parse(text) as { receipt?: { outcome?: string }; decision?: { route?: string }; pursuit?: { id?: string } } : {};
-  if (!res.ok) {
-    throw new Error((data && typeof data === 'object' && 'error' in data) ? String((data as any).error) : `HTTP ${res.status}`);
-  }
-  const outcome = data.receipt?.outcome || data.decision?.route || 'assimilated';
-  return `Agency intake: ${outcome}${data.pursuit?.id ? ` (${data.pursuit.id})` : ''}`;
-}
 
 export const compileBrainTool: ToolDefinition = {
   name: 'research_compile_brain',
-  description:
-    "Compile a completed research brain to a markdown file in your workspace/research/ directory. The engine feeder automatically ingests it into your own brain as a compiled knowledge node. Use this to KEEP the knowledge from a run. Prefer research_compile_section when you only need one thread — whole-brain compiles produce one giant node.",
+  description: 'Compile one authorized brain into requester-owned durable output.',
   input_schema: {
-    type: 'object',
+    type: 'object', additionalProperties: false,
     properties: {
-      brainId: { type: 'string', description: 'Brain ID or run name to compile' },
-      focus: {
-        type: 'string',
-        description: 'Optional focused prompt (default: comprehensive summary)',
-      },
+      brainId: { type: 'string', minLength: 1 },
+      focus: { type: 'string', minLength: 1 },
     },
     required: ['brainId'],
   },
-  async execute(input, ctx) {
-    const brainId = input.brainId as string;
-    if (!brainId) return errResult('research_compile_brain: brainId is required');
-    const focus =
-      (input.focus as string) ||
-      'Provide a comprehensive summary of all key findings, conclusions, and insights from this research. Include the main topic, methodology, key discoveries, contradictions found, and open questions remaining.';
-    try {
-      const base = getCosmoBase(ctx);
-      const brainCheck = await fetch(
-        `${base}/api/brains/${encodeURIComponent(brainId)}`,
-        { signal: AbortSignal.timeout(10_000) }
-      );
-      if (!brainCheck.ok) {
-        return errResult(`Brain "${brainId}" not found. Use research_list_brains to see available.`);
-      }
-      const queryResult = await fetchJson<QueryResponse>(
-        `${base}/api/brain/${encodeURIComponent(brainId)}/query`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            query: focus,
-            mode: 'expert',
-            enableSynthesis: true,
-            includeCoordinatorInsights: true,
-            includeThoughts: true,
-          }),
-        },
-        90_000
-      );
-      const summary = queryResult.response || queryResult.answer || '';
-      if (!summary || summary.length < 50) {
-        return errResult('Brain returned insufficient summary to compile.');
-      }
-      const date = new Date().toISOString().slice(0, 10);
-      const filename = `cosmo-${brainId}-${date}.md`;
-      const body = `# COSMO Research: ${brainId}\n\nCompiled: ${new Date().toISOString()}\nSource: COSMO 2.3 run "${brainId}"\n\n---\n\n${summary}`;
-      const path = await writeWorkspaceFile(filename, body);
-      let agencyLine = '';
-      try {
-        agencyLine = `\n${await assimilateResearchOutput(ctx, { brainId, summary, path, evidenceType: 'research_compile' })}`;
-      } catch (agencyErr) {
-        agencyLine = `\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
-      }
-      return {
-        content: `Compiled brain "${brainId}" to workspace:\n- path: ${path}\n- size: ${body.length} bytes${agencyLine}\n\nThe engine feeder will ingest this into your brain shortly.\n\n**Preview:**\n${summary.slice(0, 500)}...`,
-      };
-    } catch (err) {
-      return errResult(`research_compile_brain: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  },
+  execute: executeCompileBrain,
 };
-
-// ────────────────────────────────────────────────────────────────────────────
-// 11. research_compile_section
-// ────────────────────────────────────────────────────────────────────────────
 
 export const compileSectionTool: ToolDefinition = {
   name: 'research_compile_section',
-  description:
-    'Compile ONE section of a brain (a single goal, insight, or agent output) to your workspace — narrower than research_compile_brain. Use when you only need one specific thread from a larger run. Produces a focused brain node that clusters better than a whole-run dump.',
+  description: 'Compile one exact goal, insight, or agent section into requester-owned output.',
   input_schema: {
-    type: 'object',
+    type: 'object', additionalProperties: false,
     properties: {
-      brainId: { type: 'string', description: 'Brain ID or run name' },
-      section: {
-        type: 'string',
-        enum: ['goal', 'insight', 'agent'],
-        description: 'What kind of section to compile',
-      },
-      sectionId: {
-        type: 'string',
-        description: 'Goal ID, insight filename, or agent ID (see research_get_brain_summary)',
-      },
-      focus: { type: 'string', description: 'Optional focused query about this section' },
+      brainId: { type: 'string', minLength: 1 },
+      section: { type: 'string', enum: ['goal', 'insight', 'agent'] },
+      sectionId: { type: 'string', minLength: 1 },
+      focus: { type: 'string', minLength: 1 },
     },
     required: ['brainId', 'section', 'sectionId'],
   },
-  async execute(input, ctx) {
-    const brainId = input.brainId as string;
-    const section = input.section as string;
-    const sectionId = input.sectionId as string;
-    if (!brainId || !section || !sectionId) {
-      return errResult('research_compile_section: brainId, section, sectionId all required');
-    }
-    const focus =
-      (input.focus as string) ||
-      `Summarize the ${section} "${sectionId}" from this research brain — its goal, findings, conclusions, and how it connects to the broader research.`;
-    try {
-      const base = getCosmoBase(ctx);
-      // Use focused query — COSMO's PGS engine handles the routing
-      const queryResult = await fetchJson<QueryResponse>(
-        `${base}/api/brain/${encodeURIComponent(brainId)}/query`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            query: focus,
-            mode: 'expert',
-            enableSynthesis: true,
-            includeCoordinatorInsights: true,
-            includeThoughts: true,
-          }),
-        },
-        60_000
-      );
-      const summary = queryResult.response || queryResult.answer || '';
-      if (!summary || summary.length < 50) {
-        return errResult(`No content found for ${section} "${sectionId}".`);
-      }
-      const date = new Date().toISOString().slice(0, 10);
-      const safeSectionId = sectionId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60);
-      const filename = `cosmo-${brainId}-${section}-${safeSectionId}-${date}.md`;
-      const body = `# COSMO Research Section: ${brainId} / ${section}:${sectionId}\n\nCompiled: ${new Date().toISOString()}\nSource: COSMO 2.3 run "${brainId}", ${section} "${sectionId}"\n\n---\n\n${summary}`;
-      const path = await writeWorkspaceFile(filename, body);
-      let agencyLine = '';
-      try {
-        agencyLine = `\n${await assimilateResearchOutput(ctx, { brainId, summary, path, evidenceType: 'research_compile', section, sectionId })}`;
-      } catch (agencyErr) {
-        agencyLine = `\nAgency intake failed: ${agencyErr instanceof Error ? agencyErr.message : String(agencyErr)}`;
-      }
-      return {
-        content: `Compiled ${section} "${sectionId}" from brain "${brainId}" to workspace:\n- path: ${path}\n- size: ${body.length} bytes${agencyLine}\n\nThe engine feeder will ingest this shortly.\n\n**Preview:**\n${summary.slice(0, 500)}...`,
-      };
-    } catch (err) {
-      return errResult(
-        `research_compile_section: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  },
+  execute: executeCompileSection,
 };

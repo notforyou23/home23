@@ -937,6 +937,19 @@ export class AgentLoop {
     const activeTurnId = turnRuntime?.turnId ?? `raw:${newTurnId()}`;
     this.registerActiveRun(chatId, activeTurnId, ac);
 
+    // Per-run context copy — avoids races between concurrent turns and makes
+    // situational-awareness reads use the exact turn client and abort signal.
+    const runContext: ToolContext = {
+      ...this.toolContext,
+      chatId,
+      onEvent,
+      conversationHistory: this.history,
+      abortSignal: ac.signal,
+      brainOperations: turnRuntime?.brainOperations ?? this.toolContext.brainOperations,
+      onOperationActivity: turnRuntime?.onOperationActivity,
+      turnRuntime: turnRuntime ?? null,
+    };
+
     // Start typing indicator (via toolContext.telegramAdapter)
     const adapter = this.toolContext.telegramAdapter;
     let typingInterval: ReturnType<typeof setInterval> | null = null;
@@ -1111,14 +1124,14 @@ export class AgentLoop {
       if (this.registry.get('research_launch')) {
         try {
           const { checkCosmoActiveRun } = await import('./tools/research.js');
-          const active = await checkCosmoActiveRun();
+          const active = await checkCosmoActiveRun(runContext);
           if (active) {
             rawSystemPrompt += `\n\n[COSMO ACTIVE RUN]
 A research run is currently in flight — do not launch another.
 - runName: ${active.runName}
 - topic: ${active.topic || '(unknown)'}
 - started: ${active.startedAt || '(unknown)'}
-- processes: ${active.processCount}
+- processes: ${active.processCount ?? '(unknown)'}
 Use research_watch_run to check progress. Use research_stop to cancel. You can still query completed brains while this runs.`;
           }
         } catch {
@@ -1226,19 +1239,6 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
           console.warn('[cache-diagnostics] Failed to emit turn diagnostics:', err);
         }
       }
-
-      // Per-run context copy — avoids race condition when concurrent runs
-      // (e.g., telegram message + cron job) would overwrite each other's chatId
-      const runContext: ToolContext = {
-        ...this.toolContext,
-        chatId,
-        onEvent,
-        conversationHistory: this.history,
-        abortSignal: ac.signal,
-        brainOperations: turnRuntime?.brainOperations ?? this.toolContext.brainOperations,
-        onOperationActivity: turnRuntime?.onOperationActivity,
-        turnRuntime: turnRuntime ?? null,
-      };
 
       // Track all messages exchanged during this turn for persistence
       const turnMessages: HistoryRecord[] = [userMsg];

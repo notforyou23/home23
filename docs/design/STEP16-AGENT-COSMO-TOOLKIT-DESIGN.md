@@ -330,3 +330,35 @@ access don't pay the poll cost.
 - `docs/design/COSMO23-VENDORED-PATCHES.md` — reference (do not modify bundled
   cosmo23 unless this doc says so)
 - `cosmo23/server/CLAUDE.md` — authoritative COSMO route map
+
+## 2026-07-10 Reliability Addendum
+
+This addendum supersedes the direct-HTTP, current-run, client-owned path, and
+automatic-assimilation mechanics described above. The eleven public tool names
+remain stable, but all execution now crosses the requester dashboard through
+the shared `BrainOperationsClient` and its canonical catalog.
+
+- Every tool uses the exact turn-scoped client and abort signal. Query, PGS,
+  launch, continue, stop, and compile are durable operations with operation IDs,
+  typed terminal states, resumable waits, and requester-owned result handles.
+- Catalog rendering consumes canonical `id`, `displayName`, `kind`, `lifecycle`,
+  `sourceType`, `nodeCount`, and `modifiedAt` fields. It does not infer identity
+  from paths or obsolete response aliases.
+- Multi-brain search selects only completed research brains, sorts and caps the
+  target set deterministically, runs at bounded concurrency, and returns one
+  explicit outcome per selected brain. Partial and all-failed results remain
+  visible with their operation IDs, errors, source evidence, and handles.
+- Continue, stop, and watch require an exact requester-owned `runId`. No tool
+  substitutes the globally active run, forwards an owner, or supplies a target
+  filesystem path.
+- Summary and graph reads are server-bounded pinned-source reads. Full graph
+  materialization is not part of this toolkit.
+- Compile operations select the exact brain or section on the server and write
+  only through a prevalidated requester-output capability. Agent code no longer
+  writes workspace files directly.
+- Read-only calls no longer mutate resident agency state. Deliberate promotion
+  remains a separate authorized action instead of an automatic side effect of
+  listing, querying, summarizing, or inspecting a graph.
+- Turn-start active-run awareness reads requester-authorized nonterminal durable
+  operations. It no longer performs an independent `/api/status` poll or treats
+  whichever process happens to be active as the requested run.

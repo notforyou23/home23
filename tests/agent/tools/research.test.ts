@@ -1,12 +1,57 @@
-import { describe, it } from 'node:test';
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { checkCosmoActiveRun, compileBrainTool, getBrainGraphTool, getBrainSummaryTool, launchTool, queryBrainTool, searchAllBrainsTool } from '../../../src/agent/tools/research.js';
+import { readFileSync } from 'node:fs';
+import type { BrainOperationsClient } from '../../../src/agent/brain-operations/client.js';
+import type {
+  BrainCatalogEntry,
+  BrainOperationResult,
+} from '../../../src/agent/brain-operations/types.js';
 import type { ToolContext } from '../../../src/agent/types.js';
+import {
+  checkCosmoActiveRun,
+  compileBrainTool,
+  compileSectionTool,
+  continueRunTool,
+  getBrainGraphTool,
+  getBrainSummaryTool,
+  launchTool,
+  listBrainsTool,
+  queryBrainTool,
+  searchAllBrainsTool,
+  stopRunTool,
+  watchRunTool,
+} from '../../../src/agent/tools/research.js';
+import {
+  canonicalResearchTarget,
+  makeBrainOperationRecord,
+} from '../../helpers/brain-operation-record.js';
 
-function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
+type BrainClientStub = Record<string, (...args: any[]) => any>;
+type ContextOverrides = Omit<Partial<ToolContext>, 'brainOperations' | 'turnRuntime'> & {
+  brainOperations?: BrainClientStub;
+  turnAbortController?: AbortController;
+};
+
+let startupSentinelCalls = 0;
+
+function makeCtx(overrides: ContextOverrides = {}): ToolContext {
+  const {
+    brainOperations = {},
+    turnAbortController = new AbortController(),
+    ...contextOverrides
+  } = overrides;
+  const startupSentinel = new Proxy({}, {
+    get: (_target, key) => () => {
+      startupSentinelCalls += 1;
+      throw new Error(`startup_global_client_used:${String(key)}`);
+    },
+  }) as BrainOperationsClient;
+  const runtimeClient = new Proxy(brainOperations, {
+    get: (target, key) => {
+      if (typeof key === 'string' && key in target) return target[key];
+      return () => { throw new Error(`unexpected_brain_client_call:${String(key)}`); };
+    },
+  }) as unknown as BrainOperationsClient;
   return {
     scheduler: null,
     ttsService: null,
@@ -15,7 +60,7 @@ function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
     enginePort: 5002,
     agentName: 'jerry',
     cosmo23BaseUrl: 'http://localhost:43210',
-    brainRoute: 'http://localhost:43210/api/brain/abc123',
+    brainRoute: null,
     workspacePath: '/fake/instances/jerry/workspace',
     tempDir: '/tmp',
     contextManager: {
@@ -24,309 +69,493 @@ function makeCtx(overrides: Partial<ToolContext> = {}): ToolContext {
       invalidate: () => {},
     },
     subAgentTracker: { active: 0, maxConcurrent: 3, queue: [] },
-    chatId: '',
+    chatId: 'chat-fixture',
     telegramAdapter: null,
     runAgentLoop: null,
-    ...overrides,
+    brainOperations: startupSentinel,
+    turnRuntime: {
+      turnId: 'turn-fixture',
+      abortController: turnAbortController,
+      signal: turnAbortController.signal,
+      brainOperations: runtimeClient,
+      onOperationActivity: () => {},
+    },
+    ...contextOverrides,
   };
 }
 
-describe('research_launch', () => {
-  it('sends runName + runRoot + owner derived from ctx.workspacePath and ctx.agentName', async () => {
-    let capturedBody: any;
-    (globalThis as any).fetch = async (url: any, init: any) => {
-      const u = String(url);
-      if (u.endsWith('/api/status')) {
-        return { ok: true, json: async () => ({ running: false }) } as unknown as Response;
-      }
-      if (u.endsWith('/api/launch')) {
-        capturedBody = JSON.parse(init.body);
-        return {
-          ok: true,
-          json: async () => ({ success: true, runName: capturedBody.runName, brainId: 'b1', cycles: 10 }),
-        } as unknown as Response;
-      }
-      return { ok: true, json: async () => ({}) } as unknown as Response;
-    };
+function canonicalResearch(id: string, displayName: string): BrainCatalogEntry {
+  return {
+    id,
+    displayName,
+    ownerAgent: 'jerry',
+    kind: 'research',
+    lifecycle: 'completed',
+    canonicalRoot: `/tmp/${id}`,
+    sourceType: 'local',
+    nodeCount: 10,
+    modifiedAt: '2026-07-09T12:00:00.000Z',
+    route: `/api/brain/${id}`,
+    mutationBoundaries: [
+      { kind: 'brain', path: `/tmp/${id}` },
+      { kind: 'run', path: `/tmp/${id}` },
+      { kind: 'pgs', path: `/tmp/${id}/pgs-sessions` },
+      { kind: 'session', path: `/tmp/${id}/sessions` },
+      { kind: 'cache', path: `/tmp/${id}/cache` },
+      { kind: 'export', path: `/tmp/${id}/exports` },
+      { kind: 'agency', path: `/tmp/${id}/agency` },
+    ],
+  };
+}
 
-    await launchTool.execute({ topic: 'sauna HRV correlation' }, makeCtx());
+function completeOperation(
+  operationId: string,
+  answer: string,
+  extraResult: Record<string, unknown> = {},
+): BrainOperationResult {
+  return {
+    ...makeBrainOperationRecord({
+      operationId,
+      state: 'complete',
+      phase: 'done',
+      target: canonicalResearchTarget('brain-r1'),
+      result: { answer, ...extraResult },
+      resultHandle: 'brres_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      sourceEvidence: { sourceHealth: 'healthy', matchOutcome: 'matches' },
+    }),
+    attachmentState: 'closed',
+  };
+}
 
-    assert.match(capturedBody.runName, /^sauna-hrv-correlation-\d{14}$/);
-    assert.equal(capturedBody.runRoot, '/fake/instances/jerry/workspace/research-runs/' + capturedBody.runName);
-    assert.equal(capturedBody.owner, 'jerry');
-    assert.equal(capturedBody.topic, 'sauna HRV correlation');
+function failedOperation(operationId: string, code: string): BrainOperationResult {
+  return {
+    ...completeOperation(operationId, ''),
+    state: 'failed',
+    result: null,
+    resultHandle: null,
+    error: { code, message: `${code} fixture`, retryable: true },
+    sourceEvidence: { sourceHealth: 'unavailable', matchOutcome: 'unknown' },
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+test('research_list_brains renders canonical catalog fields through the turn client', async () => {
+  startupSentinelCalls = 0;
+  const result = await listBrainsTool.execute({}, makeCtx({ brainOperations: {
+    getCatalog: async () => ({ catalogRevision: 'catalog-7', brains: [{
+      ...canonicalResearch('brain-r1', 'Research One'), nodeCount: 42,
+    }] }),
+  } }));
+  assert.match(result.content, /Research One/);
+  assert.match(result.content, /42 nodes/);
+  assert.match(result.content, /completed/);
+  assert.match(result.content, /catalog-7/);
+  assert.equal(startupSentinelCalls, 0);
+});
+
+test('research_search_all_brains reports one outcome per target and never hides failures', async () => {
+  const ctx = makeCtx({ brainOperations: {
+    getCatalog: async () => ({ catalogRevision: 'c1', brains: [
+      canonicalResearch('brain-a', 'A'), canonicalResearch('brain-b', 'B'),
+    ] }),
+    query: async (request: Record<string, unknown>) => {
+      const target = request.target as { brainId?: string } | undefined;
+      return target?.brainId === 'brain-a'
+        ? completeOperation('op-a', 'A found evidence')
+        : failedOperation('op-b', 'provider_failed');
+    },
+  } });
+  const result = await searchAllBrainsTool.execute({ query: 'evidence', topN: 2 }, ctx);
+  assert.match(result.content, /A found evidence/);
+  assert.match(result.content, /brain-b.*provider_failed/is);
+  assert.match(result.content, /partial/i);
+  assert.doesNotMatch(result.content, /no relevant findings/i);
+  const outcomes = result.metadata?.outcomes as Array<Record<string, unknown>>;
+  assert.equal(outcomes[0]?.operationId, 'op-a');
+  assert.equal(outcomes[0]?.resultHandle, 'brres_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  assert.equal(outcomes[0]?.catalogRevision, 'c1');
+  assert.deepEqual(outcomes[0]?.sourceEvidence, {
+    sourceHealth: 'healthy', matchOutcome: 'matches',
   });
 });
 
-describe('checkCosmoActiveRun', () => {
-  it('uses explicit health.activeRun when available', async () => {
-    (globalThis as any).fetch = async (url: any) => {
-      assert.ok(String(url).endsWith('/api/status'));
-      return {
-        ok: true,
-        json: async () => ({
-          running: false,
-          health: { activeRun: true, process: { count: 1 } },
-          activeContext: {
-            runName: 'run-health-contract',
-            topic: 'status contracts',
-            startedAt: '2026-04-24T15:00:00Z',
-          },
-          processStatus: { count: 0 },
-        }),
-      } as unknown as Response;
-    };
+test('research query reuses the shared direct-query partial classifier', async () => {
+  const valid = completeOperation('op-research-partial', 'useful research answer');
+  valid.operationType = 'query';
+  valid.state = 'partial';
+  valid.error = { code: 'provider_incomplete', message: 'ended early', retryable: true };
+  const ctx = makeCtx({ brainOperations: { query: async () => valid } });
+  const useful = await queryBrainTool.execute({ brainId: 'brain-r1', query: 'x' }, ctx);
+  assert.equal(useful.is_error, undefined);
+  assert.equal(useful.metadata?.classification, 'useful_partial');
+  assert.match(useful.content, /useful research answer/);
+  assert.match(useful.content, /provider_incomplete/);
+  valid.result = { answer: '' };
+  const invalid = await queryBrainTool.execute({ brainId: 'brain-r1', query: 'x' }, ctx);
+  assert.equal(invalid.is_error, true);
+  assert.equal(invalid.metadata?.classification, 'invalid_partial_result');
+});
 
-    const active = await checkCosmoActiveRun(makeCtx());
+test('research query separates direct and PGS parameters and rejects present-null pairs', async () => {
+  const requests: Record<string, unknown>[] = [];
+  const ctx = makeCtx({ brainOperations: { query: async (request: Record<string, unknown>) => {
+    requests.push(request);
+    return completeOperation('op-query-shape', 'ok');
+  } } });
+  await queryBrainTool.execute({ brainId: 'brain-r1', query: 'direct' }, ctx);
+  assert.deepEqual(requests[0], {
+    target: { brainId: 'brain-r1' }, query: 'direct', mode: 'quick', enablePGS: false,
+  });
+  await queryBrainTool.execute({
+    brainId: 'brain-r1', query: 'pgs', enablePGS: true,
+    pgsConfig: { sweepFraction: 0.25 },
+  }, ctx);
+  assert.deepEqual(requests[1], {
+    target: { brainId: 'brain-r1' }, query: 'pgs', mode: 'quick', enablePGS: true,
+    pgsMode: 'full', pgsConfig: { sweepFraction: 0.25 },
+  });
+  for (const input of [
+    { brainId: 'brain-r1', query: 'x', modelSelection: null },
+    { brainId: 'brain-r1', query: 'x', enablePGS: true, pgsSweep: null },
+    { brainId: 'brain-r1', query: 'x', enablePGS: true, pgsSynth: null },
+    { brainId: 'brain-r1', query: 'x', enablePGS: true, pgsConfig: null },
+  ]) {
+    const before = requests.length;
+    const result = await queryBrainTool.execute(input, ctx);
+    assert.equal(result.is_error, true);
+    assert.equal(requests.length, before);
+  }
+});
 
-    assert.equal(active?.runName, 'run-health-contract');
-    assert.equal(active?.processCount, 1);
+test('search-all forwards exact Direct Query and PGS provider shapes', async () => {
+  const requests: Record<string, unknown>[] = [];
+  const ctx = makeCtx({ brainOperations: {
+    getCatalog: async () => ({ catalogRevision: 'pair-catalog', brains: [
+      canonicalResearch('brain-a', 'A'), canonicalResearch('brain-b', 'B'),
+    ] }),
+    query: async (request: Record<string, unknown>) => {
+      requests.push(request);
+      return completeOperation(`op-${requests.length}`, 'ok');
+    },
+  } });
+  await searchAllBrainsTool.execute({
+    query: 'x', topN: 2, enablePGS: true, pgsConfig: { sweepFraction: 0.25 },
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+  }, ctx);
+  assert.equal(requests.length, 2);
+  for (const request of requests) assert.deepEqual({ ...request, target: undefined }, {
+    target: undefined, query: 'x', mode: 'quick', enablePGS: true, pgsMode: 'full',
+    pgsConfig: { sweepFraction: 0.25 },
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+  });
+  requests.length = 0;
+  await searchAllBrainsTool.execute({ query: 'direct', topN: 2,
+    modelSelection: { provider: 'xai', model: 'grok-4' } }, ctx);
+  for (const request of requests) assert.deepEqual({ ...request, target: undefined }, {
+    target: undefined, query: 'direct', mode: 'quick', enablePGS: false,
+    modelSelection: { provider: 'xai', model: 'grok-4' },
   });
 });
 
-describe('research_compile_brain agency assimilation', () => {
-  it('emits a resident agency world-stream intake packet for compiled research output', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'home23-research-agency-'));
-    const previousCwd = process.cwd();
-    const previousAgent = process.env.HOME23_AGENT;
-    const previousFetch = globalThis.fetch;
-    let capturedAgencyBody: any = null;
-    try {
-      process.chdir(root);
-      process.env.HOME23_AGENT = 'jerry';
-      (globalThis as any).fetch = async (url: any, init: any = {}) => {
-        const u = String(url);
-        if (u === 'http://localhost:43210/api/brains/brain-agency') {
-          return { ok: true, json: async () => ({ id: 'brain-agency' }) } as unknown as Response;
-        }
-        if (u === 'http://localhost:43210/api/brain/brain-agency/query') {
-          return {
-            ok: true,
-            json: async () => ({
-              response: 'Research finding: compiled COSMO output should become resident agency evidence, not just a markdown artifact. It proposes a watch/pursuit decision with receipts.',
-            }),
-          } as unknown as Response;
-        }
-        if (u === 'http://bridge.test/api/agency/world-stream') {
-          capturedAgencyBody = JSON.parse(String(init.body || '{}'));
-          return {
-            ok: true,
-            text: async () => JSON.stringify({ decision: { route: 'watch' }, pursuit: { id: 'ap_research' } }),
-          } as unknown as Response;
-        }
-        throw new Error(`unexpected fetch ${u}`);
-      };
+test('research_watch_run round-trips cursor 847 unchanged', async () => {
+  let afterSeen: number | null = null;
+  let runSeen: string | null = null;
+  const ctx = makeCtx({ brainOperations: { watchResearch: async (request: {
+    after: number; target: { runId: string };
+  }) => {
+    afterSeen = request.after;
+    runSeen = request.target.runId;
+    return { latest: 847, logs: [], active: true };
+  } } });
+  const first = await watchRunTool.execute({ runId: 'run-owned', after: 0 }, ctx);
+  assert.match(first.content, /Cursor:\*\* 847/);
+  await watchRunTool.execute({ runId: 'run-owned', after: 847 }, ctx);
+  assert.equal(afterSeen, 847);
+  assert.equal(runSeen, 'run-owned');
+});
 
-      const result = await compileBrainTool.execute({ brainId: 'brain-agency' }, makeCtx({
-        workerConnectorBaseUrl: 'http://bridge.test',
-      }));
+test('research_get_brain_graph sends server-side limits and exact filters', async () => {
+  let request: Record<string, unknown> | null = null;
+  await getBrainGraphTool.execute({
+    brainId: 'brain-a', limit: 40, clusterId: 'cluster-1', minWeight: 0.4,
+  }, makeCtx({ brainOperations: { graph: async (value: Record<string, unknown>) => {
+    request = value;
+    return { nodes: [], edges: [], clusters: [], meta: { nodeCount: 5000, edgeCount: 9000 } };
+  } } }));
+  assert.deepEqual(request, {
+    target: { brainId: 'brain-a' }, nodeLimit: 40, edgeLimit: 80,
+    clusterId: 'cluster-1', minWeight: 0.4,
+  });
+});
 
-      assert.equal(result.is_error, undefined);
-      assert.equal(capturedAgencyBody.source, 'cosmo.research');
-      assert.equal(capturedAgencyBody.kind, 'research_summary');
-      assert.match(capturedAgencyBody.summary, /Compiled COSMO research brain/);
-      assert.match(capturedAgencyBody.desiredChangedFuture, /resident agency/);
-      assert.deepEqual(capturedAgencyBody.evidence[0].type, 'research_compile');
-      assert.match(result.content, /Agency intake: watch/);
-    } finally {
-      process.chdir(previousCwd);
-      if (previousAgent === undefined) delete process.env.HOME23_AGENT;
-      else process.env.HOME23_AGENT = previousAgent;
-      (globalThis as any).fetch = previousFetch;
-      rmSync(root, { recursive: true, force: true });
+test('research_compile_section sends the exact section selector and requester result path', async () => {
+  let request: Record<string, unknown> | null = null;
+  const ctx = makeCtx({ brainOperations: { compile: async (value: Record<string, unknown>) => {
+    request = value;
+    return completeOperation('op-compile', 'compiled section', {
+      path: 'workspace/research/section.md',
+    });
+  } } });
+  const result = await compileSectionTool.execute({
+    brainId: 'brain-a', section: 'goal', sectionId: 'goal-7', focus: 'facts only',
+  }, ctx);
+  assert.equal(request?.kind, 'section');
+  assert.equal(request?.section, 'goal');
+  assert.equal(request?.sectionId, 'goal-7');
+  assert.match(result.content, /workspace\/research\/section\.md/);
+});
+
+test('research stop and continue forward only the canonical run selector', async () => {
+  let stopped: Record<string, unknown> | null = null;
+  let continued: Record<string, unknown> | null = null;
+  const ctx = makeCtx({ brainOperations: {
+    stopResearch: async (value: Record<string, unknown>) => {
+      stopped = value;
+      return completeOperation('op-stop', 'stopped');
+    },
+    continueResearch: async (value: Record<string, unknown>) => {
+      continued = value;
+      return completeOperation('op-continue', 'continued');
+    },
+  } });
+  const result = await stopRunTool.execute({ runId: 'run-owned' }, ctx);
+  await continueRunTool.execute({ runId: 'run-owned', context: 'resume' }, ctx);
+  assert.deepEqual(stopped?.target, { runId: 'run-owned' });
+  assert.deepEqual(continued, { target: { runId: 'run-owned' }, context: 'resume' });
+  assert.match(result.content, /stopped/);
+  assert.doesNotMatch(result.content, /30 second|timed out/i);
+});
+
+test('research_search_all_brains reports all_failed with every error code', async () => {
+  const ctx = makeCtx({ brainOperations: {
+    getCatalog: async () => ({ catalogRevision: 'c2', brains: [
+      canonicalResearch('brain-a', 'A'), canonicalResearch('brain-b', 'B'),
+    ] }),
+    query: async (request: Record<string, unknown>) =>
+      (request.target as { brainId: string }).brainId === 'brain-a'
+        ? failedOperation('op-a', 'source_unavailable')
+        : failedOperation('op-b', 'provider_failed'),
+  } });
+  const result = await searchAllBrainsTool.execute({ query: 'missing evidence', topN: 2 }, ctx);
+  assert.match(result.content, /all_failed/);
+  assert.match(result.content, /source_unavailable/);
+  assert.match(result.content, /provider_failed/);
+  assert.equal(result.is_error, true);
+  assert.doesNotMatch(result.content, /no relevant findings|launch new research/i);
+});
+
+test('research launch and continue preserve every approved option and reject authority fields', async () => {
+  let launched: Record<string, unknown> | null = null;
+  let continued: Record<string, unknown> | null = null;
+  const ctx = makeCtx({ brainOperations: {
+    launchResearch: async (request: Record<string, unknown>) => {
+      launched = request;
+      return completeOperation('op-launch', 'launched');
+    },
+    continueResearch: async (request: Record<string, unknown>) => {
+      continued = request;
+      return completeOperation('op-continue', 'continued');
+    },
+  } });
+  const options = {
+    topic: 't', context: 'c', cycles: 4, explorationMode: 'autonomous',
+    analysisDepth: 'deep', maxConcurrent: 2, primaryModel: 'm1', primaryProvider: 'p1',
+    fastModel: 'm2', fastProvider: 'p2', strategicModel: 'm3', strategicProvider: 'p3',
+  };
+  await launchTool.execute(options, ctx);
+  assert.deepEqual(launched, options);
+  await continueRunTool.execute({ runId: 'run-owned', context: 'more' }, ctx);
+  assert.deepEqual(continued, { target: { runId: 'run-owned' }, context: 'more' });
+  for (const input of [
+    { ...options, cycles: Infinity }, { ...options, maxConcurrent: 1.5 },
+    { ...options, analysisDepth: 3 }, { ...options, explorationMode: 'broad' },
+    { ...options, primaryProvider: null }, { ...options, owner: 'forrest' },
+    { ...options, runRoot: '/tmp/escape' }, { ...options, enableWebSearch: false },
+    { ...options, enableDebate: true }, { ...options, enableSynthesis: true },
+    { topic: 't', primaryModel: 'duplicate-label' },
+    { topic: 't', primaryProvider: 'provider-only' },
+    { topic: 't', fastModel: 'duplicate-label' },
+    { topic: 't', strategicProvider: 'provider-only' },
+    { ...options, unknown: true },
+  ]) {
+    const before = launched;
+    const result = await launchTool.execute(input, ctx);
+    assert.equal(result.is_error, true, JSON.stringify(input));
+    assert.equal(launched, before);
+  }
+});
+
+test('continue stop and watch reject noncanonical run selectors before any client call', async () => {
+  let calls = 0;
+  const ctx = makeCtx({ brainOperations: {
+    continueResearch: async () => { calls += 1; return completeOperation('bad', 'bad'); },
+    stopResearch: async () => { calls += 1; return completeOperation('bad', 'bad'); },
+    watchResearch: async () => { calls += 1; return { latest: 0, logs: [] }; },
+  } });
+  for (const tool of [continueRunTool, stopRunTool, watchRunTool]) {
+    for (const input of [{}, { runId: null }, { runId: {} }, { runId: '*' },
+      { runId: '   ' }, { runId: 'run-ok', brainId: 'brain-alias' }]) {
+      const result = await tool.execute(input as never, ctx);
+      assert.equal(result.is_error, true);
+      assert.equal(calls, 0);
     }
-  });
+  }
 });
 
-describe('research_query_brain agency assimilation', () => {
-  it('emits a resident agency world-stream intake packet for direct research answers', async () => {
-    const previousFetch = globalThis.fetch;
-    let capturedAgencyBody: any = null;
-    try {
-      (globalThis as any).fetch = async (url: any, init: any = {}) => {
-        const u = String(url);
-        if (u === 'http://localhost:43210/api/brain/brain-query/query') {
-          return {
-            ok: true,
-            json: async () => ({
-              response: 'Research answer: the existing brain already contains a concrete repair path that should update resident attention rather than remain a chat-only answer.',
-            }),
-          } as unknown as Response;
-        }
-        if (u === 'http://bridge.test/api/agency/world-stream') {
-          capturedAgencyBody = JSON.parse(String(init.body || '{}'));
-          return {
-            ok: true,
-            text: async () => JSON.stringify({ decision: { route: 'pursue' }, pursuit: { id: 'ap_research_query' } }),
-          } as unknown as Response;
-        }
-        throw new Error(`unexpected fetch ${u}`);
-      };
-
-      const result = await queryBrainTool.execute({
-        brainId: 'brain-query',
-        query: 'what should change now?',
-      }, makeCtx({ workerConnectorBaseUrl: 'http://bridge.test' }));
-
-      assert.equal(result.is_error, undefined);
-      assert.equal(capturedAgencyBody.source, 'cosmo.research');
-      assert.equal(capturedAgencyBody.kind, 'research_summary');
-      assert.match(capturedAgencyBody.summary, /Queried COSMO research brain/);
-      assert.match(capturedAgencyBody.nextMove, /triage research output/);
-      assert.equal(capturedAgencyBody.evidence[0].type, 'research_query');
-      assert.match(result.content, /Agency intake: pursue/);
-    } finally {
-      (globalThis as any).fetch = previousFetch;
-    }
-  });
+test('search-all selects only capped completed research targets with bounded concurrency/provenance', async () => {
+  const completed = Array.from({ length: 25 }, (_, index) => ({
+    ...canonicalResearch(`brain-${String(index).padStart(2, '0')}`, `Brain ${index}`),
+    modifiedAt: `2026-07-${String((index % 9) + 1).padStart(2, '0')}T12:00:00.000Z`,
+  })).reverse();
+  const gate = deferred<void>();
+  const threeStarted = deferred<void>();
+  let active = 0;
+  let peak = 0;
+  const selected: string[] = [];
+  const pending = searchAllBrainsTool.execute({ query: 'evidence', topN: 20 }, makeCtx({
+    brainOperations: {
+      getCatalog: async () => ({ catalogRevision: 'catalog-bounded', brains: [
+        { ...canonicalResearch('resident', 'Resident'), kind: 'resident', lifecycle: 'resident' },
+        { ...canonicalResearch('active', 'Active'), lifecycle: 'active' },
+        { ...canonicalResearch('unavailable', 'Unavailable'), lifecycle: 'unavailable' },
+        ...completed,
+      ] }),
+      query: async (request: Record<string, unknown>) => {
+        const id = (request.target as { brainId: string }).brainId;
+        selected.push(id);
+        active += 1;
+        peak = Math.max(peak, active);
+        if (selected.length === 3) threeStarted.resolve();
+        await gate.promise;
+        active -= 1;
+        return completeOperation(`op-${id}`, 'x'.repeat(10_000));
+      },
+    },
+  }));
+  await threeStarted.promise;
+  assert.equal(peak, 3);
+  gate.resolve();
+  const result = await pending;
+  assert.equal(selected.length, 20);
+  assert.equal(selected.includes('resident'), false);
+  assert.equal(selected.includes('active'), false);
+  assert.equal(selected.includes('unavailable'), false);
+  const outcomes = result.metadata?.outcomes as Array<Record<string, unknown>>;
+  assert.equal(outcomes.length, 20);
+  assert.equal(outcomes.every((row) => row.operationId && row.resultHandle && row.sourceEvidence), true);
+  assert.equal(JSON.stringify(outcomes).includes('x'.repeat(1_000)), false);
 });
 
-describe('research_search_all_brains agency assimilation', () => {
-  it('emits one resident agency world-stream packet for multi-brain search findings', async () => {
-    const previousFetch = globalThis.fetch;
-    let capturedAgencyBody: any = null;
-    try {
-      (globalThis as any).fetch = async (url: any, init: any = {}) => {
-        const u = String(url);
-        if (u === 'http://localhost:43210/api/brains') {
-          return {
-            ok: true,
-            json: async () => ({ brains: [{ id: 'brain-a', name: 'Brain A' }, { id: 'brain-b', name: 'Brain B' }] }),
-          } as unknown as Response;
-        }
-        if (u === 'http://localhost:43210/api/brain/brain-a/query') {
-          return {
-            ok: true,
-            json: async () => ({ response: 'Brain A found a specific resident-spine repair path with enough detail to become a watch or pursuit item.' }),
-          } as unknown as Response;
-        }
-        if (u === 'http://localhost:43210/api/brain/brain-b/query') {
-          return {
-            ok: true,
-            json: async () => ({ response: 'Brain B found corroborating agency evidence and a possible stop condition for the same path.' }),
-          } as unknown as Response;
-        }
-        if (u === 'http://bridge.test/api/agency/world-stream') {
-          capturedAgencyBody = JSON.parse(String(init.body || '{}'));
-          return {
-            ok: true,
-            text: async () => JSON.stringify({ decision: { route: 'watch' }, pursuit: { id: 'ap_research_search' } }),
-          } as unknown as Response;
-        }
-        throw new Error(`unexpected fetch ${u}`);
-      };
-
-      const result = await searchAllBrainsTool.execute({
-        query: 'agency repair path',
-        topN: 2,
-      }, makeCtx({ workerConnectorBaseUrl: 'http://bridge.test' }));
-
-      assert.equal(result.is_error, undefined);
-      assert.equal(capturedAgencyBody.source, 'cosmo.research');
-      assert.equal(capturedAgencyBody.kind, 'research_summary');
-      assert.match(capturedAgencyBody.summary, /Searched COSMO research brains/);
-      assert.equal(capturedAgencyBody.evidence[0].type, 'research_query');
-      assert.match(capturedAgencyBody.seen[0], /Brain A found/);
-      assert.match(result.content, /Agency intake: watch/);
-    } finally {
-      (globalThis as any).fetch = previousFetch;
-    }
-  });
+test('search-all with no completed research targets is an explicit error', async () => {
+  const result = await searchAllBrainsTool.execute({ query: 'x' }, makeCtx({ brainOperations: {
+    getCatalog: async () => ({ catalogRevision: 'empty-catalog', brains: [
+      { ...canonicalResearch('active', 'Active'), lifecycle: 'active' },
+    ] }),
+  } }));
+  assert.equal(result.is_error, true);
+  assert.match(result.content, /no_eligible_targets/);
+  assert.equal(result.metadata?.catalogRevision, 'empty-catalog');
+  assert.equal(result.metadata?.selectedCount, 0);
 });
 
-describe('research_get_brain_summary agency assimilation', () => {
-  it('emits a resident agency world-stream packet for aggregated brain summaries', async () => {
-    const previousFetch = globalThis.fetch;
-    let capturedAgencyBody: any = null;
-    try {
-      (globalThis as any).fetch = async (url: any, init: any = {}) => {
-        const u = String(url);
-        if (u === 'http://localhost:43210/api/brain/brain-summary/intelligence/executive') {
-          return {
-            ok: true,
-            json: async () => ({ thesis: 'Executive summary says the resident spine needs a tighter veto loop.' }),
-          } as unknown as Response;
+test('search-all cancellation stops after three claimed targets and preserves abort identity', async () => {
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('turn_cancelled'), { code: 'turn_cancelled' });
+  const threeStarted = deferred<void>();
+  const seenSignals: AbortSignal[] = [];
+  const selected: string[] = [];
+  const caught: unknown[] = [];
+  const pending = searchAllBrainsTool.execute({ query: 'x', topN: 20 }, makeCtx({
+    turnAbortController: controller,
+    brainOperations: {
+      getCatalog: async () => ({ catalogRevision: 'cancel-catalog', brains: Array.from(
+        { length: 20 }, (_, index) => canonicalResearch(`brain-${index}`, `Brain ${index}`),
+      ) }),
+      query: async (request: Record<string, unknown>, signal: AbortSignal) => {
+        selected.push((request.target as { brainId: string }).brainId);
+        seenSignals.push(signal);
+        if (selected.length === 3) threeStarted.resolve();
+        try {
+          await new Promise((_, reject) => signal.addEventListener(
+            'abort', () => reject(signal.reason), { once: true },
+          ));
+        } catch (error) {
+          caught.push(error);
+          throw error;
         }
-        if (u === 'http://localhost:43210/api/brain/brain-summary/intelligence/goals') {
-          return {
-            ok: true,
-            json: async () => ({ goals: ['Bind research outputs to pursuits instead of leaving them as orientation content.'] }),
-          } as unknown as Response;
-        }
-        if (u === 'http://bridge.test/api/agency/world-stream') {
-          capturedAgencyBody = JSON.parse(String(init.body || '{}'));
-          return {
-            ok: true,
-            text: async () => JSON.stringify({ decision: { route: 'watch' }, pursuit: { id: 'ap_research_summary' } }),
-          } as unknown as Response;
-        }
-        throw new Error(`unexpected fetch ${u}`);
-      };
-
-      const result = await getBrainSummaryTool.execute({
-        brainId: 'brain-summary',
-        include: ['executive', 'goals'],
-      }, makeCtx({ workerConnectorBaseUrl: 'http://bridge.test' }));
-
-      assert.equal(result.is_error, undefined);
-      assert.equal(capturedAgencyBody.source, 'cosmo.research');
-      assert.equal(capturedAgencyBody.kind, 'research_summary');
-      assert.match(capturedAgencyBody.summary, /Summarized COSMO research brain/);
-      assert.equal(capturedAgencyBody.evidence[0].type, 'research_query');
-      assert.match(capturedAgencyBody.seen[0], /resident spine needs a tighter veto loop/);
-      assert.match(result.content, /Agency intake: watch/);
-    } finally {
-      (globalThis as any).fetch = previousFetch;
-    }
-  });
+        throw new Error('unreachable');
+      },
+    },
+  }));
+  await threeStarted.promise;
+  controller.abort(reason);
+  const result = await pending;
+  assert.equal(result.is_error, true);
+  assert.match(result.content, /turn_cancelled/);
+  assert.equal(selected.length, 3);
+  assert.equal(seenSignals.every((signal) => signal === controller.signal), true);
+  assert.equal(caught.length, 3);
+  assert.equal(caught.every((error) => error === reason), true);
 });
 
-describe('research_get_brain_graph agency assimilation', () => {
-  it('emits a resident agency world-stream packet for structural graph findings', async () => {
-    const previousFetch = globalThis.fetch;
-    let capturedAgencyBody: any = null;
-    try {
-      (globalThis as any).fetch = async (url: any, init: any = {}) => {
-        const u = String(url);
-        if (u === 'http://localhost:43210/api/brain/brain-graph/graph') {
-          return {
-            ok: true,
-            json: async () => ({
-              nodes: [
-                { id: 'n1', concept: 'Resident agency graph shows consequence receipts linked to editor veto decisions.', tag: 'agency', cluster: 'c1', weight: 0.9 },
-              ],
-              edges: [
-                { source: 'n1', target: 'n2', type: 'supports', weight: 0.8 },
-              ],
-              clusters: [
-                { id: 'c1', label: 'agency spine', nodeCount: 2 },
-              ],
-            }),
-          } as unknown as Response;
-        }
-        if (u === 'http://bridge.test/api/agency/world-stream') {
-          capturedAgencyBody = JSON.parse(String(init.body || '{}'));
-          return {
-            ok: true,
-            text: async () => JSON.stringify({ decision: { route: 'watch' }, pursuit: { id: 'ap_research_graph' } }),
-          } as unknown as Response;
-        }
-        throw new Error(`unexpected fetch ${u}`);
-      };
-
-      const result = await getBrainGraphTool.execute({
-        brainId: 'brain-graph',
-      }, makeCtx({ workerConnectorBaseUrl: 'http://bridge.test' }));
-
-      assert.equal(result.is_error, undefined);
-      assert.equal(capturedAgencyBody.source, 'cosmo.research');
-      assert.equal(capturedAgencyBody.kind, 'research_summary');
-      assert.match(capturedAgencyBody.summary, /Mapped COSMO research graph/);
-      assert.equal(capturedAgencyBody.evidence[0].type, 'research_query');
-      assert.match(capturedAgencyBody.seen[0], /consequence receipts linked to editor veto/);
-      assert.match(result.content, /Agency intake: watch/);
-    } finally {
-      (globalThis as any).fetch = previousFetch;
-    }
+test('summary is a bounded read and preserves exact include selection', async () => {
+  let request: Record<string, unknown> | null = null;
+  const result = await getBrainSummaryTool.execute({
+    brainId: 'brain-summary', include: ['executive', 'goals'],
+  }, makeCtx({ brainOperations: { readIntelligence: async (value: Record<string, unknown>) => {
+    request = value;
+    return { content: 'summary', sourceEvidence: { sourceHealth: 'healthy' } };
+  } } }));
+  assert.deepEqual(request, {
+    target: { brainId: 'brain-summary' }, include: ['executive', 'goals'],
   });
+  assert.match(result.content, /summary/);
+});
+
+test('active-run awareness uses requester durable operations and exact turn signal', async () => {
+  let signalSeen: AbortSignal | undefined;
+  const ctx = makeCtx({ brainOperations: { listNonterminal: async (signal: AbortSignal) => {
+    signalSeen = signal;
+    return [makeBrainOperationRecord({
+      operationId: 'brop_ACTIVEACTIVEACTIVEACTIVEACTIVE12',
+      operationType: 'research_launch',
+      requestParameters: { topic: 'durable topic' },
+      parameters: { topic: 'durable topic' },
+      state: 'running',
+      startedAt: '2026-07-10T12:00:00.000Z',
+    })];
+  } } });
+  const active = await checkCosmoActiveRun(ctx);
+  assert.equal(active?.runName, 'research-brop_ACTIVEACTIVEACTIVEACTIVEACTIVE12');
+  assert.equal(active?.topic, 'durable topic');
+  assert.equal(signalSeen, ctx.turnRuntime?.signal);
+  assert.equal(await checkCosmoActiveRun(), null);
+});
+
+test('read-only research adapters contain no raw HTTP, agency assimilation, or local writes', () => {
+  const source = readFileSync(new URL('../../../src/agent/tools/research.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /assimilateResearchOutput/);
+  assert.doesNotMatch(source, /writeWorkspaceFile/);
+  assert.doesNotMatch(source, /process\.env|process\.cwd\(\)/);
+  assert.doesNotMatch(source, /\bfetch\s*\(/);
+  assert.doesNotMatch(source, /AbortSignal\.timeout/);
+});
+
+test('all research schemas are strict and run controls require runId', () => {
+  const tools = [listBrainsTool, queryBrainTool, searchAllBrainsTool, launchTool, continueRunTool,
+    stopRunTool, watchRunTool, getBrainSummaryTool, getBrainGraphTool, compileBrainTool,
+    compileSectionTool];
+  for (const tool of tools) assert.equal((tool.input_schema as any).additionalProperties, false, tool.name);
+  for (const tool of [continueRunTool, stopRunTool, watchRunTool]) {
+    assert.deepEqual((tool.input_schema as any).required, ['runId']);
+    assert.equal('brainId' in (tool.input_schema as any).properties, false);
+  }
 });

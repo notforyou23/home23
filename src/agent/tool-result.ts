@@ -63,11 +63,20 @@ export function operationToolResult(operation: BrainOperationResult): ToolResult
   const usefulQueryPartial = isQueryPartial && Boolean(answer.trim()) && typedPartialError;
   const usefulPartial = usefulPgsPartial || usefulQueryPartial;
   const invalidPartial = operation.state === 'partial' && !usefulPartial;
-  const useful = answer.trim() || (sweepOutputs.length
-    ? sweepOutputs
-      .map((sweep, index) => `Sweep ${index + 1}: ${String(sweep.output || '')}`)
-      .join('\n')
-    : JSON.stringify(operation.result || {}));
+  const supplementalResult = operation.result && typeof operation.result === 'object'
+    ? Object.fromEntries(Object.entries(operation.result).filter(([key]) =>
+      !['answer', 'sweepOutputs', 'metadata'].includes(key)))
+    : {};
+  const supplementalText = Object.keys(supplementalResult).length
+    ? JSON.stringify(supplementalResult)
+    : '';
+  const useful = answer.trim()
+    ? `${answer.trim()}${supplementalText ? `\n${supplementalText}` : ''}`
+    : sweepOutputs.length
+      ? sweepOutputs
+        .map((sweep, index) => `Sweep ${index + 1}: ${String(sweep.output || '')}`)
+        .join('\n')
+      : JSON.stringify(operation.result || {});
   const stateLine = `operation=${operation.operationId} state=${operation.state}`;
   const errorLine = operation.error
     ? `\n${operation.error.code}: ${operation.error.message} (retryable=${operation.error.retryable})`

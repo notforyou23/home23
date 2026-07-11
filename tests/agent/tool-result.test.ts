@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   executeAndFormatTool,
+  operationToolResult,
   recoverableExcerpt,
 } from '../../src/agent/tool-result.js';
+import { makeBrainOperationRecord } from '../helpers/brain-operation-record.js';
 
 test('is_error always produces an unsuccessful tool event', async () => {
   const events: Array<Record<string, unknown>> = [];
@@ -87,6 +89,20 @@ test('display limits are strict finite safe integers and too-small recoverable m
 
 test('recoverable excerpt leaves short output byte-for-byte unchanged', () => {
   assert.equal(recoverableExcerpt('short answer', 128, {}), 'short answer');
+});
+
+test('complete operation display preserves non-answer result fields such as requester output paths', () => {
+  const rendered = operationToolResult({
+    ...makeBrainOperationRecord({
+      operationId: 'op-output-path',
+      state: 'complete',
+      result: { answer: 'compiled section', path: 'workspace/research/section.md', bytes: 42 },
+    }),
+    attachmentState: 'closed',
+  });
+  assert.match(rendered.content, /compiled section/);
+  assert.match(rendered.content, /workspace\/research\/section\.md/);
+  assert.match(rendered.content, /"bytes":42/);
 });
 
 test('provider branches cannot bypass centralized tool result execution', () => {
