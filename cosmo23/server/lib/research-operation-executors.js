@@ -215,6 +215,11 @@ function createResearchOperationExecutors({
       });
       throwIfAborted(context.signal);
       if (!section) return failure('section_not_found', 'Requested intelligence section was not found');
+      context.reportEvent({
+        type: 'progress',
+        phase: 'research_compile',
+        stage: 'source_projection_complete',
+      });
       const writer = await createRequesterOutputWriter({
         requesterAgent: context.requesterAgent,
         operationId: context.operationId,
@@ -229,6 +234,13 @@ function createResearchOperationExecutors({
         writer,
       });
       throwIfAborted(context.signal);
+      if (compiled?.state === 'complete') {
+        context.reportEvent({
+          type: 'progress',
+          phase: 'research_compile',
+          stage: 'requester_artifact_published',
+        });
+      }
       return compiled;
     }],
   ]);

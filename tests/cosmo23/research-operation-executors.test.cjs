@@ -218,11 +218,13 @@ test('research intelligence reads only the supplied source pin with exact bounde
 test('research compile validates the writer before provider work and keeps its operation type', async () => {
   const pin = sourcePin();
   const { executors, calls } = harness();
+  const events = [];
   const ctx = context('research_compile', {
     parameters: {
       kind: 'section', section: 'goal', sectionId: 'goal-7', focus: 'evidence',
     },
     sourcePin: pin,
+    reportEvent(event) { events.push(event); },
   });
   const result = await executors.get('research_compile')(ctx);
   assert.equal(result.state, 'complete');
@@ -236,6 +238,10 @@ test('research compile validates the writer before provider work and keeps its o
   });
   assert.equal(calls[2][1].context.operationType, 'research_compile');
   assert.equal(calls[2][1].writer.writeAtomic instanceof Function, true);
+  assert.deepEqual(events, [
+    { type: 'progress', phase: 'research_compile', stage: 'source_projection_complete' },
+    { type: 'progress', phase: 'research_compile', stage: 'requester_artifact_published' },
+  ]);
 });
 
 test('missing section and writer prevalidation failure prevent provider work', async () => {
