@@ -278,6 +278,34 @@ function descriptorDigest(descriptor) {
   return `sha256:${crypto.createHash('sha256').update(canonicalJson(descriptor)).digest('hex')}`;
 }
 
+function synthesisCompletion(operationId, overrides = {}) {
+  return {
+    version: 1,
+    operationId,
+    generationMarker: `generation-1-${'a'.repeat(24)}`,
+    generatedAt: '2026-07-10T16:00:00.000Z',
+    sourceRevision: 1,
+    provider: 'fake',
+    model: 'synthesis-model',
+    brainStateSha256: `sha256:${'b'.repeat(64)}`,
+    ...overrides,
+  };
+}
+
+function synthesisResultFromClaim(claim) {
+  const { version, ...result } = claim;
+  return result;
+}
+
+function synthesisStateFromClaim(claim) {
+  return {
+    ...synthesisResultFromClaim(claim),
+    selfUnderstanding: {},
+    consolidatedInsights: [],
+    recentActivity: [],
+  };
+}
+
 function pinnedSourceHandle(descriptor, { release = async () => {} } = {}) {
   return {
     revision: descriptor.cutoffRevision,
@@ -553,6 +581,7 @@ function makeFixture(t, overrides = {}) {
     sourcePins,
     scratchQuotaFactory,
     operationModelResolver,
+    readSynthesisState: overrides.readSynthesisState,
     capabilityIssuer: overrides.capabilityIssuer || (({ operationId, purpose }) => {
       const token = `cap-${purpose}-${operationId}-${counters.capabilities.length + 1}`;
       counters.capabilities.push({ operationId, purpose, token });
@@ -613,7 +642,7 @@ async function waitForState(fixture, operationId, expected) {
     const record = await fixture.store.get(operationId);
     assert.equal(record.state, expected);
     return record;
-  });
+  }, 10_000);
 }
 
 async function directQueuedRecord(fixture, {
@@ -1751,6 +1780,231 @@ test('durable cancellation does not wait forever for a stuck worker control resp
   assert.equal(worker.cancelCalls.length, 1);
 });
 
+test('claim-first synthesis cancellation yields to the durable committed result', async (t) => {
+  let committedState = synthesisStateFromClaim(synthesisCompletion(`brop_${'8'.repeat(32)}`, {
+    generationMarker: `generation-1-${'8'.repeat(24)}`,
+    brainStateSha256: `sha256:${'8'.repeat(64)}`,
+  }));
+  const fixture = makeFixture(t, {
+    readSynthesisState: async () => committedState,
+  });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'synthesis-claim-first-cancel',
+    operationType: 'synthesis',
+    parameters: { trigger: 'manual' },
+  }));
+  const claim = synthesisCompletion(operation.operationId);
+  await fixture.store.claimSynthesisCompletion(operation.operationId, claim);
+
+  const pending = await fixture.coordinator.cancel(operation.operationId);
+  assert.equal(pending.state, 'running');
+  assert.equal(fixture.worker.cancelCalls.length, 0);
+
+  committedState = synthesisStateFromClaim(claim);
+  const complete = await fixture.coordinator.cancel(operation.operationId);
+  assert.equal(complete.state, 'complete');
+  assert.deepEqual(complete.result, synthesisResultFromClaim(claim));
+  assert.equal(fixture.worker.cancelCalls.length, 0);
+});
+
+test('a claim racing between cancellation read and terminal CAS still wins cleanly', async (t) => {
+  const fixture = makeFixture(t, { readSynthesisState: async () => null });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'synthesis-claim-cancel-interleave',
+    operationType: 'synthesis',
+    parameters: { trigger: 'manual' },
+  }));
+  const transitionEntered = deferred();
+  const releaseTransition = deferred();
+  const originalTransition = fixture.store.transition.bind(fixture.store);
+  fixture.store.transition = async (operationId, input) => {
+    if (operationId === operation.operationId && input.state === 'cancelled') {
+      transitionEntered.resolve();
+      await releaseTransition.promise;
+    }
+    return originalTransition(operationId, input);
+  };
+
+  const cancelling = fixture.coordinator.cancel(operation.operationId);
+  await transitionEntered.promise;
+  await fixture.store.claimSynthesisCompletion(
+    operation.operationId,
+    synthesisCompletion(operation.operationId),
+  );
+  releaseTransition.resolve();
+  const winner = await cancelling;
+  assert.equal(winner.state, 'running');
+  assert.equal(fixture.worker.cancelCalls.length, 0);
+});
+
+test('restart reconciliation completes exact synthesis claims before generic worker interruption', async (t) => {
+  let committedState = null;
+  const fixture = makeFixture(t, { readSynthesisState: async () => committedState });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'synthesis-crash-after-rename',
+    operationType: 'synthesis',
+    parameters: { trigger: 'manual' },
+  }));
+  const claim = synthesisCompletion(operation.operationId);
+  await fixture.store.claimSynthesisCompletion(operation.operationId, claim);
+  committedState = synthesisStateFromClaim(claim);
+  await fixture.coordinator.stop();
+  fixture.worker.records.delete(operation.operationId);
+
+  const resumed = makeFixture(t, {
+    store: fixture.store,
+    worker: fixture.worker,
+    timers: fixture.timers,
+    readSynthesisState: async () => committedState,
+  });
+  await resumed.coordinator.reconcile();
+  const complete = await fixture.store.get(operation.operationId);
+  assert.equal(complete.state, 'complete');
+  assert.deepEqual(complete.result, synthesisResultFromClaim(claim));
+  assert.equal(complete.error, null);
+});
+
+test('restart reconciliation keeps missing and mismatched claimed synthesis state honest', async (t) => {
+  for (const scenario of ['missing', 'mismatched']) {
+    await t.test(scenario, async (subtest) => {
+      let committedState = null;
+      const fixture = makeFixture(subtest, { readSynthesisState: async () => committedState });
+      const operation = await fixture.coordinator.start(request({
+        requestId: `synthesis-recovery-${scenario}`,
+        operationType: 'synthesis',
+        parameters: { trigger: 'manual' },
+      }));
+      const claim = synthesisCompletion(operation.operationId);
+      await fixture.store.claimSynthesisCompletion(operation.operationId, claim);
+      if (scenario === 'mismatched') {
+        committedState = synthesisStateFromClaim({
+          ...claim,
+          operationId: `brop_${'9'.repeat(32)}`,
+        });
+      }
+      await fixture.coordinator.stop();
+      fixture.worker.records.delete(operation.operationId);
+      const resumed = makeFixture(subtest, {
+        store: fixture.store,
+        worker: fixture.worker,
+        timers: fixture.timers,
+        readSynthesisState: async () => committedState,
+      });
+      await resumed.coordinator.reconcile();
+      const terminal = await fixture.store.get(operation.operationId);
+      assert.equal(terminal.state, scenario === 'missing' ? 'interrupted' : 'failed');
+      assert.equal(
+        terminal.error.code,
+        scenario === 'missing' ? 'synthesis_commit_missing' : 'synthesis_commit_mismatch',
+      );
+      assert.equal(terminal.result, null);
+    });
+  }
+});
+
+test('a synthesis worker completing before the event pump reconciles from claim plus state', async (t) => {
+  let committedState = null;
+  const fixture = makeFixture(t, { readSynthesisState: async () => committedState });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'synthesis-worker-before-pump',
+    operationType: 'synthesis',
+    parameters: { trigger: 'manual' },
+  }));
+  const claim = synthesisCompletion(operation.operationId);
+  await fixture.store.claimSynthesisCompletion(operation.operationId, claim);
+  committedState = synthesisStateFromClaim(claim);
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: { untrusted: 'worker copy must not win' },
+    resultArtifact: null,
+    error: null,
+    sourceEvidence: {},
+  }, { emit: false });
+
+  const complete = await fixture.coordinator.status(operation.operationId);
+  assert.equal(complete.state, 'complete');
+  assert.deepEqual(complete.result, synthesisResultFromClaim(claim));
+});
+
+test('worker completion cannot terminalize a mismatched claimed synthesis state as complete', async (t) => {
+  let committedState = null;
+  const fixture = makeFixture(t, { readSynthesisState: async () => committedState });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'synthesis-worker-mismatch',
+    operationType: 'synthesis',
+    parameters: { trigger: 'manual' },
+  }));
+  const claim = synthesisCompletion(operation.operationId);
+  await fixture.store.claimSynthesisCompletion(operation.operationId, claim);
+  committedState = synthesisStateFromClaim({
+    ...claim,
+    brainStateSha256: `sha256:${'c'.repeat(64)}`,
+  });
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: synthesisResultFromClaim(claim),
+    resultArtifact: null,
+    error: null,
+    sourceEvidence: {},
+  }, { emit: false });
+
+  const failed = await fixture.coordinator.status(operation.operationId);
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.error.code, 'synthesis_commit_mismatch');
+  assert.equal(failed.result, null);
+});
+
+test('a claimed synthesis with no state terminalizes honestly at its hard deadline', async (t) => {
+  const fixture = makeFixture(t, {
+    readSynthesisState: async () => null,
+    executionDeadlineMsByType: { synthesis: 100 },
+  });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'synthesis-claim-hard-timeout',
+    operationType: 'synthesis',
+    parameters: { trigger: 'manual' },
+  }));
+  await fixture.store.claimSynthesisCompletion(
+    operation.operationId,
+    synthesisCompletion(operation.operationId),
+  );
+  await fixture.timers.advance(100);
+  const failed = await fixture.store.get(operation.operationId);
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.error.code, 'operation_timeout');
+  assert.equal(failed.result, null);
+});
+
+test('a typed worker commit failure survives before its claim replaces the prior state', async (t) => {
+  const prior = synthesisStateFromClaim(synthesisCompletion(`brop_${'7'.repeat(32)}`, {
+    generationMarker: `generation-1-${'7'.repeat(24)}`,
+    brainStateSha256: `sha256:${'7'.repeat(64)}`,
+  }));
+  const fixture = makeFixture(t, { readSynthesisState: async () => prior });
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'synthesis-claim-worker-failed',
+    operationType: 'synthesis',
+    parameters: { trigger: 'manual' },
+  }));
+  await fixture.store.claimSynthesisCompletion(
+    operation.operationId,
+    synthesisCompletion(operation.operationId),
+  );
+  fixture.worker.finish(operation.operationId, {
+    state: 'failed',
+    result: null,
+    resultArtifact: null,
+    error: {
+      code: 'synthesis_commit_failed', message: 'state readback failed', retryable: false,
+    },
+    sourceEvidence: {},
+  }, { emit: false });
+  const failed = await fixture.coordinator.status(operation.operationId);
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.error.code, 'synthesis_commit_failed');
+  assert.equal(failed.error.retryable, false);
+});
+
 test('terminal transitions release requester source pins once across duplicate callbacks and reconciliation', async (t) => {
   for (const state of ['complete', 'partial', 'failed', 'cancelled']) {
     const fixture = makeFixture(t);
@@ -2648,6 +2902,40 @@ test('worker adapter cancellation aborts the exact local executor and event snap
     assert.equal(status.eventSequence >= 2, true);
   });
   controller.abort();
+});
+
+test('worker adapter preserves a typed executor failure after its signal was aborted', async (t) => {
+  const adapter = new BrainOperationWorkerAdapter();
+  t.after(() => adapter.stop?.());
+  const operationId = `brop_${'f'.repeat(32)}`;
+  adapter.registerLocalExecutor('research_launch', async ({ signal }) => {
+    const local = adapter.localRecords.get(operationId);
+    local.controller.abort(Object.assign(new Error('late cancel'), {
+      code: 'operation_cancelled',
+    }));
+    assert.equal(signal.aborted, true);
+    throw Object.assign(new Error('commit readback failed'), {
+      code: 'synthesis_commit_failed', retryable: false,
+    });
+  });
+  await adapter.start({
+    operationId,
+    operationType: 'research_launch',
+    requesterAgent: 'jerry',
+    target: { domain: 'requester', requesterAgent: 'jerry' },
+    parameters: {
+      operationControl: { hardDeadlineAt: new Date(INITIAL_NOW + 1_000).toISOString() },
+    },
+    scratchDir: '/tmp/typed-failure-after-abort',
+    scratchQuota: null,
+    sourcePin: null,
+  }, 'cap-start');
+  await eventually(async () => {
+    assert.equal((await adapter.status(operationId, 'cap-status')).state, 'failed');
+  });
+  const result = await adapter.result(operationId, 'cap-result');
+  assert.equal(result.state, 'failed');
+  assert.equal(result.error.code, 'synthesis_commit_failed');
 });
 
 test('worker adapter GC bounds observed and unread terminal retention but never evicts live work', async (t) => {

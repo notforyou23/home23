@@ -258,65 +258,46 @@ async function compareAndSwapSourceRevision(brainDir, update = {}) {
       || typeof update.expectedDigest !== 'string'
       || !/^sha256:[a-f0-9]{64}$/.test(update.expectedDigest)
       || typeof update.commit !== 'function'
-      || (update.authorize !== undefined && typeof update.authorize !== 'function')
-      || (update.rollback !== undefined && typeof update.rollback !== 'function')) {
+      || (update.authorize !== undefined && typeof update.authorize !== 'function')) {
     throw memorySourceError('invalid_request', 'exact source CAS contract required');
   }
   throwIfAborted(update.signal);
-  const result = await withMemorySourceLock(brainDir, {
-    lockRoot: update.lockRoot,
-    signal: update.signal,
-  }, async () => {
-    throwIfAborted(update.signal);
-    const manifest = await readManifest(brainDir);
-    const descriptor = manifest ? {
-      version: 1,
-      canonicalRoot: await fsp.realpath(brainDir),
-      generation: manifest.generation,
-      baseRevision: manifest.baseRevision,
-      cutoffRevision: manifest.currentRevision,
-      activeBase: manifest.activeBase,
-      activeDelta: manifest.activeDelta,
-      summary: manifest.summary,
-    } : null;
-    if (!manifest || manifest.generation !== update.expectedGeneration
-        || manifest.currentRevision !== update.expectedRevision
-        || sourceDescriptorDigest(descriptor) !== update.expectedDigest) {
-      return { committed: false, reason: 'source_changed', manifest };
-    }
-    if (update.authorize) await update.authorize();
-    throwIfAborted(update.signal);
-    let value;
-    let commitReturned = false;
-    try {
-      value = await update.commit();
-      commitReturned = true;
+  let completedOutcome = null;
+  try {
+    return await withMemorySourceLock(brainDir, {
+      lockRoot: update.lockRoot,
+      signal: update.signal,
+      _testHooks: update._testHooks,
+    }, async () => {
       throwIfAborted(update.signal);
-    } catch (error) {
-      if (commitReturned && update.rollback) {
-        await update.rollback(value).catch((cause) => {
-          throw memorySourceError('source_rollback_failed', 'source CAS rollback failed', {
-            cause,
-            retryable: false,
-          });
-        });
+      const manifest = await readManifest(brainDir);
+      const descriptor = manifest ? {
+        version: 1,
+        canonicalRoot: await fsp.realpath(brainDir),
+        generation: manifest.generation,
+        baseRevision: manifest.baseRevision,
+        cutoffRevision: manifest.currentRevision,
+        activeBase: manifest.activeBase,
+        activeDelta: manifest.activeDelta,
+        summary: manifest.summary,
+      } : null;
+      if (!manifest || manifest.generation !== update.expectedGeneration
+          || manifest.currentRevision !== update.expectedRevision
+          || sourceDescriptorDigest(descriptor) !== update.expectedDigest) {
+        return { committed: false, reason: 'source_changed', manifest };
       }
-      throw error;
-    }
-    return { committed: true, manifest, value };
-  });
-  if (result.committed === true && update.signal?.aborted && update.rollback) {
-    await withMemorySourceLock(brainDir, { lockRoot: update.lockRoot }, async () => {
-      await update.rollback(result.value);
-    }).catch((cause) => {
-      throw memorySourceError('source_rollback_failed', 'source CAS rollback failed', {
-        cause,
-        retryable: false,
-      });
+      if (update.authorize) await update.authorize();
+      throwIfAborted(update.signal);
+      const value = await update.commit();
+      completedOutcome = { committed: true, manifest, value };
+      return completedOutcome;
     });
-    throw update.signal.reason || memorySourceError('cancelled', 'source CAS cancelled');
+  } catch (error) {
+    // A completed callback is the logical commit point. Cancellation or lock
+    // cleanup failure observed afterward cannot turn that commit into failure.
+    if (completedOutcome) return completedOutcome;
+    throw error;
   }
-  return result;
 }
 
 async function retireUnpinnedSources(brainDir, options = {}) {

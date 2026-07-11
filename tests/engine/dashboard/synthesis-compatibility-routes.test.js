@@ -8,6 +8,25 @@ const {
   registerSynthesisCompatibilityRoutes,
 } = require('../../../engine/src/dashboard/brain-operations/synthesis-compatibility-routes.js');
 
+const DEFAULT_MARKER = 'generation-1-aaaaaaaaaaaaaaaaaaaaaaaa';
+
+function committedState(operationId, overrides = {}) {
+  return {
+    operationId,
+    generationMarker: DEFAULT_MARKER,
+    generatedAt: '2026-07-10T00:00:00.000Z',
+    sourceRevision: 1,
+    provider: 'minimax',
+    model: 'MiniMax-M3',
+    brainStateSha256: `sha256:${'b'.repeat(64)}`,
+    ...overrides,
+  };
+}
+
+function claimFromState(state) {
+  return { version: 1, ...state };
+}
+
 function fixture(overrides = {}) {
   const routes = new Map();
   const starts = [];
@@ -23,13 +42,16 @@ function fixture(overrides = {}) {
       stateReads += 1;
       return overrides.committed === null
         ? null
-        : { generationMarker: overrides.committed || 'generation-1-aaaaaaaaaaaaaaaaaaaaaaaa' };
+        : overrides.committed;
     },
   } : overrides.synthesisRuntime;
   const store = overrides.store === undefined ? {
     async list() {
       listReads += 1;
       return overrides.operations || [];
+    },
+    async getSynthesisCompletionClaim(operationId) {
+      return overrides.claims?.get(operationId) || null;
     },
   } : overrides.store;
   const coordinator = overrides.coordinator === undefined ? {
@@ -79,6 +101,10 @@ function operation(operationId, state, updatedAt, requesterAgent = 'jerry') {
     phase: state === 'running' ? 'synthesis' : 'terminal',
     createdAt: '2026-07-10T00:00:00.000Z',
     updatedAt,
+    target: {
+      domain: 'brain', accessMode: 'own', ownerAgent: requesterAgent,
+    },
+    result: null,
     sourcePinDescriptor: { secret: 'must not leak' },
   };
 }
@@ -94,7 +120,11 @@ test('synthesis state reports authoritative generation status and bounded reques
     'complete',
     '2026-07-10T00:00:02.000Z',
   );
+  const state = committedState(complete.operationId);
+  complete.result = { ...state };
   const fx = fixture({
+    committed: state,
+    claims: new Map([[complete.operationId, claimFromState(state)]]),
     operations: [
       operation('brop_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdec', 'running', '2026-07-10T00:00:03.000Z', 'cosmo'),
       complete,
@@ -102,7 +132,7 @@ test('synthesis state reports authoritative generation status and bounded reques
       { ...complete, operationId: 'brop_ABCDEFGHIJKLMNOPQRSTUVWXYZabcded', operationType: 'query' },
     ],
   });
-  const marker = 'generation-1-aaaaaaaaaaaaaaaaaaaaaaaa';
+  const marker = DEFAULT_MARKER;
   const matched = await invoke(fx, 'GET', '/api/synthesis/state', {
     query: { generationMarker: marker },
   });
@@ -135,6 +165,63 @@ test('absent committed state is distinct from an unrequested marker', async () =
   assert.equal(result.body.markerStatus, 'absent');
   assert.equal(result.body.latestOperation, null);
   assert.equal(result.body.activeOperation, null);
+});
+
+test('state marker is exposed only for an exact complete or recoverable claimed operation', async () => {
+  const operationId = 'brop_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdee';
+  const state = committedState(operationId);
+  const exactClaim = claimFromState(state);
+  const variants = [
+    {
+      label: 'failed',
+      operations: [{ ...operation(operationId, 'failed', '2026-07-10T00:00:01.000Z'), result: { ...state } }],
+      claims: new Map([[operationId, exactClaim]]),
+    },
+    {
+      label: 'cancelled',
+      operations: [{ ...operation(operationId, 'cancelled', '2026-07-10T00:00:01.000Z'), result: { ...state } }],
+      claims: new Map([[operationId, exactClaim]]),
+    },
+    {
+      label: 'interrupted',
+      operations: [{ ...operation(operationId, 'interrupted', '2026-07-10T00:00:01.000Z'), result: { ...state } }],
+      claims: new Map([[operationId, exactClaim]]),
+    },
+    {
+      label: 'preclaim active',
+      operations: [operation(operationId, 'running', '2026-07-10T00:00:01.000Z')],
+      claims: new Map(),
+    },
+    {
+      label: 'mismatched claim',
+      operations: [operation(operationId, 'running', '2026-07-10T00:00:01.000Z')],
+      claims: new Map([[operationId, { ...exactClaim, brainStateSha256: `sha256:${'c'.repeat(64)}` }]]),
+    },
+    {
+      label: 'stale state',
+      operations: [],
+      claims: new Map(),
+    },
+  ];
+  for (const variant of variants) {
+    const fx = fixture({ committed: state, ...variant });
+    const response = await invoke(fx, 'GET', '/api/synthesis/state', {
+      query: { generationMarker: DEFAULT_MARKER },
+    });
+    assert.equal(response.body.currentGenerationMarker, null, variant.label);
+    assert.equal(response.body.markerStatus, 'absent', variant.label);
+  }
+
+  const recoverable = fixture({
+    committed: state,
+    operations: [operation(operationId, 'running', '2026-07-10T00:00:01.000Z')],
+    claims: new Map([[operationId, exactClaim]]),
+  });
+  const response = await invoke(recoverable, 'GET', '/api/synthesis/state', {
+    query: { generationMarker: DEFAULT_MARKER },
+  });
+  assert.equal(response.body.currentGenerationMarker, DEFAULT_MARKER);
+  assert.equal(response.body.markerStatus, 'matched');
 });
 
 test('state query rejects duplicate, unknown, blank, NUL, and oversized markers before reads', async () => {

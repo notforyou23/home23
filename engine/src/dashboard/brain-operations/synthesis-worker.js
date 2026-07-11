@@ -28,9 +28,8 @@ function sourceEvidence(context) {
 }
 
 function isCancellation(error, signal) {
-  return Boolean(signal?.aborted
-    || error?.name === 'AbortError'
-    || error?.code === 'cancelled');
+  if (signal?.aborted) return error === signal.reason;
+  return Boolean(error?.name === 'AbortError' || error?.code === 'cancelled');
 }
 
 function exactKeys(value, expected) {
@@ -99,6 +98,9 @@ function validateContext(context, selection) {
       || context.sourcePin.descriptor?.canonicalRoot !== target.canonicalRoot) {
     throw typed('source_changed', 'Synthesis source pin does not match the target', true);
   }
+  if (typeof context.claimSynthesisCompletion !== 'function') {
+    throw typed('worker_context_invalid', 'Durable synthesis completion claim is required');
+  }
   const trigger = parameters.trigger === undefined
     ? (parameters.reason === undefined ? 'manual' : bounded(parameters.reason, 'reason'))
     : bounded(parameters.trigger, 'trigger', 256);
@@ -142,6 +144,7 @@ function createSynthesisWorker({ agent, selection } = {}) {
         sourcePin: context.sourcePin,
         signal: context.signal || null,
         onEvent: context.reportEvent || null,
+        claimCompletion: context.claimSynthesisCompletion,
       }), context, fixedSelection);
       return {
         state: 'complete',

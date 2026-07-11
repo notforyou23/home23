@@ -169,6 +169,35 @@ async function createOne(fixture, overrides = {}) {
   return fixture.store.create(validRequest(overrides));
 }
 
+async function createSynthesisRecord(fixture, requestId) {
+  const created = await createOne(fixture, {
+    requestId,
+    operationType: 'synthesis',
+    requestParameters: { trigger: 'manual' },
+    parameters: { trigger: 'manual', provider: 'minimax', model: 'MiniMax-M3' },
+  });
+  const descriptor = validDescriptor();
+  return fixture.store.attachSourcePin(created.record.operationId, {
+    expectedVersion: created.record.recordVersion,
+    descriptor,
+    digest: descriptorDigest(descriptor),
+  });
+}
+
+function synthesisClaim(record, overrides = {}) {
+  return {
+    version: 1,
+    operationId: record.operationId,
+    generationMarker: `generation-1-${'a'.repeat(24)}`,
+    generatedAt: '2026-07-10T12:00:00.000Z',
+    sourceRevision: 1,
+    provider: 'minimax',
+    model: 'MiniMax-M3',
+    brainStateSha256: `sha256:${'b'.repeat(64)}`,
+    ...overrides,
+  };
+}
+
 async function startLockHolder(t, targetPath, lockPath, holdMs) {
   const childSource = `
     const lockfile = require(process.env.LOCK_MODULE);
@@ -1957,6 +1986,63 @@ test('cancel-versus-complete permits exactly one terminal winner', async (t) => 
   ]);
   assert.equal(raced.filter((row) => row.status === 'fulfilled').length, 1);
   assert.equal(TERMINAL_STATES.has((await fixture.store.get(record.operationId)).state), true);
+});
+
+test('durable synthesis claim is CAS-serialized with cancellation in both lock orders', async (t) => {
+  const fixture = makeFixture(t);
+  const contender = anotherStore(fixture);
+  const cancelFirst = await createSynthesisRecord(fixture, 'synthesis-cancel-first');
+  const cancelled = await fixture.store.transition(cancelFirst.operationId, {
+    expectedVersion: cancelFirst.recordVersion,
+    state: 'cancelled',
+  });
+  await assert.rejects(() => contender.claimSynthesisCompletion(
+    cancelFirst.operationId,
+    synthesisClaim(cancelFirst),
+  ), typedCode('operation_terminal'));
+  assert.equal(cancelled.state, 'cancelled');
+  assert.equal(await fixture.store.getSynthesisCompletionClaim(cancelFirst.operationId), null);
+
+  const claimFirst = await createSynthesisRecord(fixture, 'synthesis-claim-first');
+  const claim = synthesisClaim(claimFirst);
+  const claimed = await fixture.store.claimSynthesisCompletion(claimFirst.operationId, claim);
+  assert.deepEqual(claimed, claim);
+  assert.deepEqual(await fixture.store.getSynthesisCompletionClaim(claimFirst.operationId), claim);
+  const claimedRecord = await fixture.store.get(claimFirst.operationId);
+  await assert.rejects(() => fixture.store.transition(claimFirst.operationId, {
+    expectedVersion: claimedRecord.recordVersion,
+    state: 'cancelled',
+  }), typedCode('synthesis_completion_claimed'));
+  assert.equal((await fixture.store.get(claimFirst.operationId)).state, 'queued');
+});
+
+test('only one nonterminal synthesis operation may own the committing claim', async (t) => {
+  const fixture = makeFixture(t);
+  const contender = anotherStore(fixture);
+  const first = await createSynthesisRecord(fixture, 'synthesis-commit-owner-one');
+  const second = await createSynthesisRecord(fixture, 'synthesis-commit-owner-two');
+  await fixture.store.claimSynthesisCompletion(first.operationId, synthesisClaim(first));
+  await assert.rejects(() => contender.claimSynthesisCompletion(
+    second.operationId,
+    synthesisClaim(second, {
+      generationMarker: `generation-1-${'c'.repeat(24)}`,
+      brainStateSha256: `sha256:${'d'.repeat(64)}`,
+    }),
+  ), typedCode('synthesis_commit_busy'));
+
+  const current = await fixture.store.get(first.operationId);
+  await fixture.store.transition(first.operationId, {
+    expectedVersion: current.recordVersion,
+    state: 'complete',
+  });
+  const secondClaim = synthesisClaim(second, {
+    generationMarker: `generation-1-${'c'.repeat(24)}`,
+    brainStateSha256: `sha256:${'d'.repeat(64)}`,
+  });
+  assert.deepEqual(
+    await contender.claimSynthesisCompletion(second.operationId, secondClaim),
+    secondClaim,
+  );
 });
 
 test('events stay bounded, retain material evidence, and report a resumable gap', async (t) => {

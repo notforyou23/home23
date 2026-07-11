@@ -38,6 +38,7 @@ function context(overrides = {}) {
       model: 'MiniMax-M3',
     },
     sourcePin,
+    claimSynthesisCompletion: overrides.claimSynthesisCompletion || (async (claim) => claim),
     signal: null,
     reportEvent() {},
     ...overrides,
@@ -56,6 +57,7 @@ test('synthesis worker returns the standard complete envelope without releasing 
   const execute = worker({
     async runOperation(request) {
       calls.push(request);
+      assert.equal(typeof request.claimCompletion, 'function');
       return {
         generationMarker: `generation-51-${'d'.repeat(24)}`,
         generatedAt: '2026-07-10T12:00:00.000Z',
@@ -143,6 +145,26 @@ test('exact cancellation reason reaches the agent and is rethrown to the common 
     },
   });
   await assert.rejects(() => execute(context({ signal: controller.signal })), (error) => error === reason);
+});
+
+test('an aborted signal cannot mask a typed synthesis commit failure as cancellation', async () => {
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancel-lost-the-claim-race'), {
+    name: 'AbortError', code: 'operation_cancelled',
+  });
+  const commitFailure = Object.assign(new Error('durable readback mismatch'), {
+    code: 'synthesis_commit_failed', retryable: false,
+  });
+  const execute = worker({
+    async runOperation() {
+      controller.abort(reason);
+      throw commitFailure;
+    },
+  });
+  const result = await execute(context({ signal: controller.signal }));
+  assert.equal(result.state, 'failed');
+  assert.equal(result.error.code, 'synthesis_commit_failed');
+  assert.equal(result.error.retryable, false);
 });
 
 test('worker forwards the exact event sink and trusted trigger only', async () => {

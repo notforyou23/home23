@@ -60,6 +60,7 @@ async function fixture(t, options = {}) {
 
   let releaseCalls = 0;
   let compareCalls = 0;
+  const claims = [];
   const revision = options.revision ?? 51;
   const sourcePin = {
     descriptor: {
@@ -128,6 +129,12 @@ async function fixture(t, options = {}) {
     adapter,
     agent,
     providerCalls,
+    claims,
+    async claimCompletion(claim) {
+      claims.push(structuredClone(claim));
+      await options.onClaim?.(claim);
+      return claim;
+    },
     get releaseCalls() { return releaseCalls; },
     get compareCalls() { return compareCalls; },
   };
@@ -156,6 +163,7 @@ test('runOperation emits correlated provider events and commits a verifiable mar
     operationId: OPERATION_ID,
     trigger: 'manual',
     sourcePin: fx.sourcePin,
+    claimCompletion: fx.claimCompletion,
     onEvent: (event) => events.push(event),
   });
 
@@ -209,6 +217,7 @@ test('source change prevents the durable write and publishes no prospective mark
   await assert.rejects(() => fx.agent.runOperation({
     operationId: OPERATION_ID,
     sourcePin: fx.sourcePin,
+    claimCompletion: fx.claimCompletion,
   }), { code: 'source_changed' });
   assert.equal(await fsp.readFile(path.join(fx.brainDir, 'brain-state.json'), 'utf8'), previous);
   assert.equal(fx.releaseCalls, 0);
@@ -235,6 +244,7 @@ test('exact cancellation identity is preserved at source, provider, JSON, and CA
     await assert.rejects(() => fx.agent.runOperation({
       operationId: OPERATION_ID,
       sourcePin: fx.sourcePin,
+      claimCompletion: fx.claimCompletion,
       signal: controller.signal,
     }), (error) => error === reason);
     assert.equal(fx.releaseCalls, 0);
@@ -244,25 +254,15 @@ test('exact cancellation identity is preserved at source, provider, JSON, and CA
   }
 });
 
-test('cancellation after the durable state rename restores the prior marker byte-identically', async (t) => {
+test('cancellation immediately before the completion claim wins without publishing state', async (t) => {
   const controller = new AbortController();
-  const reason = Object.assign(new Error('cancelled-during-state-publication'), {
+  const reason = Object.assign(new Error('cancelled-before-claim'), {
     name: 'AbortError',
     code: 'cancelled',
   });
   const fx = await fixture(t, {
-    durableWriter: async (filePath, content, options) => {
-      const lifecycle = options.lifecycle;
-      return writeFileDurable(filePath, content, {
-        ...options,
-        lifecycle: {
-          ...lifecycle,
-          async afterRename(context) {
-            controller.abort(reason);
-            await lifecycle.afterRename(context);
-          },
-        },
-      });
+    hooks: {
+      beforeCompletionClaim() { controller.abort(reason); },
     },
   });
   const prior = '{"generationMarker":"prior-byte-exact"}\n';
@@ -273,10 +273,121 @@ test('cancellation after the durable state rename restores the prior marker byte
     operationId: OPERATION_ID,
     sourcePin: fx.sourcePin,
     signal: controller.signal,
+    claimCompletion: fx.claimCompletion,
   }), (error) => error === reason);
 
+  assert.equal(fx.claims.length, 0);
   assert.equal(await fsp.readFile(statePath, 'utf8'), prior);
+});
+
+test('claim-first cancellation cannot roll back or mask the committed synthesis result', async (t) => {
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancelled-after-claim'), {
+    name: 'AbortError',
+    code: 'cancelled',
+  });
+  const fx = await fixture(t, {
+    onClaim() {
+      controller.abort(reason);
+    },
+    durableWriter: async (filePath, content, options) => {
+      const lifecycle = options.lifecycle;
+      return writeFileDurable(filePath, content, {
+        ...options,
+        lifecycle: {
+          ...lifecycle,
+          async afterRename(context) {
+            await lifecycle?.afterRename?.(context);
+          },
+        },
+      });
+    },
+  });
+  const prior = '{"generationMarker":"prior-byte-exact"}\n';
+  const statePath = path.join(fx.brainDir, 'brain-state.json');
+  await fsp.writeFile(statePath, prior);
+
+  const result = await fx.agent.runOperation({
+    operationId: OPERATION_ID,
+    sourcePin: fx.sourcePin,
+    signal: controller.signal,
+    claimCompletion: fx.claimCompletion,
+  });
+
+  assert.equal(fx.claims.length, 1);
+  assert.deepEqual(fx.claims[0], { version: 1, ...result });
+  assert.notEqual(await fsp.readFile(statePath, 'utf8'), prior);
+  assert.equal((await readCommittedSynthesisState({ brainDir: fx.brainDir })).operationId, OPERATION_ID);
   assert.equal((await fsp.readdir(fx.brainDir)).some((name) => name.includes('.tmp-')), false);
+});
+
+test('an abort observed after final rename cannot roll back or replace the committed result', async (t) => {
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancelled-after-final-rename'), {
+    name: 'AbortError', code: 'cancelled',
+  });
+  const fx = await fixture(t, {
+    durableWriter: async (filePath, content, options) => writeFileDurable(filePath, content, {
+      ...options,
+      lifecycle: {
+        async afterRename() {
+          controller.abort(reason);
+        },
+      },
+    }),
+  });
+  const result = await fx.agent.runOperation({
+    operationId: OPERATION_ID,
+    sourcePin: fx.sourcePin,
+    signal: controller.signal,
+    claimCompletion: fx.claimCompletion,
+  });
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(result.operationId, OPERATION_ID);
+  assert.equal((await readCommittedSynthesisState({ brainDir: fx.brainDir })).brainStateSha256,
+    result.brainStateSha256);
+});
+
+test('a typed commit failure is not replaced by an already-aborted signal reason', async (t) => {
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancel-lost-claim-race'), {
+    name: 'AbortError', code: 'cancelled',
+  });
+  const fx = await fixture(t, {
+    onClaim() { controller.abort(reason); },
+    durableWriter: async () => {
+      throw Object.assign(new Error('rename failed'), { code: 'EIO' });
+    },
+  });
+  await assert.rejects(() => fx.agent.runOperation({
+    operationId: OPERATION_ID,
+    sourcePin: fx.sourcePin,
+    signal: controller.signal,
+    claimCompletion: fx.claimCompletion,
+  }), (error) => error !== reason
+    && error?.code === 'synthesis_commit_failed'
+    && error?.retryable === false);
+});
+
+test('a post-rename durability failure remains typed and never rolls state back', async (t) => {
+  const fx = await fixture(t, {
+    durableWriter: async (filePath, content, options) => writeFileDurable(filePath, content, {
+      ...options,
+      lifecycle: {
+        afterRename() {
+          throw Object.assign(new Error('directory sync unavailable'), { code: 'EIO' });
+        },
+      },
+    }),
+  });
+  await assert.rejects(() => fx.agent.runOperation({
+    operationId: OPERATION_ID,
+    sourcePin: fx.sourcePin,
+    claimCompletion: fx.claimCompletion,
+  }), { code: 'synthesis_commit_failed', retryable: false });
+  const committed = await readCommittedSynthesisState({ brainDir: fx.brainDir });
+  assert.equal(committed.operationId, OPERATION_ID);
+  assert.equal(fx.claims.length, 1);
 });
 
 test('oversized workspace input fails before allocation/provider work and symlinks fail closed', async (t) => {
@@ -285,6 +396,7 @@ test('oversized workspace input fails before allocation/provider work and symlin
   await assert.rejects(() => fx.agent.runOperation({
     operationId: OPERATION_ID,
     sourcePin: fx.sourcePin,
+    claimCompletion: fx.claimCompletion,
   }), { code: 'result_too_large', retryable: false });
   assert.equal(fx.providerCalls.length, 0);
 
@@ -293,6 +405,7 @@ test('oversized workspace input fails before allocation/provider work and symlin
   await assert.rejects(() => fx.agent.runOperation({
     operationId: OPERATION_ID,
     sourcePin: fx.sourcePin,
+    claimCompletion: fx.claimCompletion,
   }), { code: 'invalid_memory_source' });
   assert.equal(fx.providerCalls.length, 0);
 });
@@ -306,7 +419,11 @@ test('provider output exact boundary passes and one byte over fails before parse
       content, terminalReceived: true, finishReason: 'stop', hadError: false,
     }),
   });
-  await exact.agent.runOperation({ operationId: OPERATION_ID, sourcePin: exact.sourcePin });
+  await exact.agent.runOperation({
+    operationId: OPERATION_ID,
+    sourcePin: exact.sourcePin,
+    claimCompletion: exact.claimCompletion,
+  });
   assert.equal(exact.compareCalls, 1);
 
   const over = await fixture(t, {
@@ -320,6 +437,7 @@ test('provider output exact boundary passes and one byte over fails before parse
   await assert.rejects(() => over.agent.runOperation({
     operationId: OPERATION_ID,
     sourcePin: over.sourcePin,
+    claimCompletion: over.claimCompletion,
   }), { code: 'result_too_large', retryable: false });
   assert.equal(over.compareCalls, 0);
   assert.equal(await fsp.readFile(path.join(over.brainDir, 'brain-state.json'), 'utf8'), previous);
@@ -327,7 +445,11 @@ test('provider output exact boundary passes and one byte over fails before parse
 
 test('brain-state one byte over fails before durable CAS and leaves prior state byte-identical', async (t) => {
   const baseline = await fixture(t);
-  await baseline.agent.runOperation({ operationId: OPERATION_ID, sourcePin: baseline.sourcePin });
+  await baseline.agent.runOperation({
+    operationId: OPERATION_ID,
+    sourcePin: baseline.sourcePin,
+    claimCompletion: baseline.claimCompletion,
+  });
   const bytes = (await fsp.readFile(path.join(baseline.brainDir, 'brain-state.json'))).length;
 
   const over = await fixture(t, { limits: { maxBrainStateBytes: bytes - 1 } });
@@ -336,6 +458,7 @@ test('brain-state one byte over fails before durable CAS and leaves prior state 
   await assert.rejects(() => over.agent.runOperation({
     operationId: OPERATION_ID,
     sourcePin: over.sourcePin,
+    claimCompletion: over.claimCompletion,
   }), { code: 'result_too_large', retryable: false });
   assert.equal(over.compareCalls, 0);
   assert.equal(await fsp.readFile(path.join(over.brainDir, 'brain-state.json'), 'utf8'), previous);
@@ -347,6 +470,7 @@ test('descriptor summary mismatch blocks provider work', async (t) => {
   await assert.rejects(() => fx.agent.runOperation({
     operationId: OPERATION_ID,
     sourcePin: fx.sourcePin,
+    claimCompletion: fx.claimCompletion,
   }), { code: 'source_changed' });
   assert.equal(fx.providerCalls.length, 0);
 });

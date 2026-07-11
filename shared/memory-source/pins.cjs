@@ -715,14 +715,9 @@ function attachPinnedSourceMutation(source, {
   let releaseRequested = false;
   let activeMutation = null;
 
-  async function compareAndSwap(commit, options = {}) {
+  async function compareAndSwap(commit) {
     if (typeof commit !== 'function') {
       throw memorySourceError('invalid_request', 'source CAS commit callback required');
-    }
-    if (!options || Array.isArray(options) || typeof options !== 'object'
-        || Reflect.ownKeys(options).some((key) => key !== 'rollback')
-        || (options.rollback !== undefined && typeof options.rollback !== 'function')) {
-      throw memorySourceError('invalid_request', 'source CAS rollback contract is invalid');
     }
     if (releaseRequested) {
       throw memorySourceError('source_stale', 'pinned source has been released', { retryable: true });
@@ -760,7 +755,6 @@ function attachPinnedSourceMutation(source, {
           signal: expectations.signal,
         }),
         commit,
-        rollback: options.rollback,
       });
     })();
     activeMutation = mutation;
@@ -1373,6 +1367,10 @@ async function withMemorySourceLock(canonicalRoot, options = {}, callback) {
         retryable: false,
       });
     }
+    await _testHooks.afterLockReleased?.({
+      canonicalRoot: canonical,
+      lockDir,
+    });
   }
 }
 

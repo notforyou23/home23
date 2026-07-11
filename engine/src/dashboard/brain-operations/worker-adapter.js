@@ -246,6 +246,10 @@ function validateContext(rawContext) {
     throw workerError(code);
   }
   delete parameters.operationControl;
+  const claimSynthesisCompletion = rawContext.claimSynthesisCompletion ?? null;
+  if (claimSynthesisCompletion !== null && typeof claimSynthesisCompletion !== 'function') {
+    throw workerError(code);
+  }
   return {
     operationId: rawContext.operationId,
     operationType: rawContext.operationType,
@@ -258,6 +262,7 @@ function validateContext(rawContext) {
     sourcePin: rawContext.sourcePin ?? null,
     sourcePinDescriptor: rawContext.sourcePinDescriptor ?? rawContext.sourcePin?.descriptor ?? null,
     sourcePinDigest: rawContext.sourcePinDigest ?? null,
+    claimSynthesisCompletion,
   };
 }
 
@@ -507,10 +512,11 @@ class BrainOperationWorkerAdapter {
         scratchQuota: record.context.scratchQuota,
         signal: record.controller.signal,
         sourcePin: record.context.sourcePin,
+        claimSynthesisCompletion: record.context.claimSynthesisCompletion,
         reportEvent: (event) => this._reportEvent(record, event),
       }));
     } catch (error) {
-      if (record.controller.signal.aborted) {
+      if (record.controller.signal.aborted && error === record.controller.signal.reason) {
         envelope = {
           state: 'cancelled',
           result: null,

@@ -193,7 +193,7 @@ test('derived-state compare-and-swap rejects a newer source revision', async () 
   await pinned.close();
 });
 
-test('derived-state CAS rolls back when cancellation arrives during lock release', async () => {
+test('derived-state CAS keeps a completed commit when cancellation arrives after callback entry', async () => {
   const { dir, lockRoot } = await createCommittedFixture();
   const source = await openMemorySource(dir);
   const descriptor = source.descriptor;
@@ -206,9 +206,7 @@ test('derived-state CAS rolls back when cancellation arrives during lock release
     name: 'AbortError',
     code: 'cancelled',
   });
-  let rollbackCalls = 0;
-
-  await assert.rejects(() => compareAndSwapSourceRevision(dir, {
+  const result = await compareAndSwapSourceRevision(dir, {
     lockRoot,
     expectedGeneration: descriptor.generation,
     expectedRevision: descriptor.cutoffRevision,
@@ -216,18 +214,39 @@ test('derived-state CAS rolls back when cancellation arrives during lock release
     signal: controller.signal,
     async commit() {
       await fsp.writeFile(derivedPath, 'prospective-state\n');
-      setImmediate(() => controller.abort(reason));
+      controller.abort(reason);
       return { published: true };
     },
-    async rollback() {
-      rollbackCalls += 1;
-      assert.equal(await fsp.readFile(derivedPath, 'utf8'), 'prospective-state\n');
-      await fsp.writeFile(derivedPath, prior);
-    },
-  }), (error) => error === reason);
+  });
 
-  assert.equal(rollbackCalls, 1);
-  assert.equal(await fsp.readFile(derivedPath, 'utf8'), prior);
+  assert.equal(result.committed, true);
+  assert.equal(await fsp.readFile(derivedPath, 'utf8'), 'prospective-state\n');
+});
+
+test('a source-lock release error cannot erase a completed CAS callback outcome', async () => {
+  const { dir, lockRoot } = await createCommittedFixture();
+  const source = await openMemorySource(dir);
+  const descriptor = source.descriptor;
+  await source.close();
+  let releaseHookCalls = 0;
+  const result = await compareAndSwapSourceRevision(dir, {
+    lockRoot,
+    expectedGeneration: descriptor.generation,
+    expectedRevision: descriptor.cutoffRevision,
+    expectedDigest: sourceDescriptorDigest(descriptor),
+    async commit() {
+      return { published: true };
+    },
+    _testHooks: {
+      afterLockReleased() {
+        releaseHookCalls += 1;
+        throw new Error('injected release failure after cleanup');
+      },
+    },
+  });
+  assert.equal(releaseHookCalls, 1);
+  assert.deepEqual(result.value, { published: true });
+  assert.equal(result.committed, true);
 });
 
 test('retirement preserves files named by an active reader pin', async () => {

@@ -103,6 +103,7 @@ const PRIVATE_RECORD_FIELDS = Object.freeze([
   '_resultCleanup',
   '_eventBytes',
   '_eventOldestSequence',
+  '_synthesisCompletionClaim',
   '_deleting',
 ]);
 const EVENT_PRIVATE_PATH_FIELDS = new Set([
@@ -195,6 +196,45 @@ function assertPlainObject(value, code = 'operation_corrupt') {
   safeJsonClone(value, code);
 }
 
+function validateSynthesisCompletionClaim(rawClaim, record, code = 'synthesis_claim_invalid') {
+  let claim;
+  try {
+    claim = safeJsonClone(rawClaim, code);
+  } catch (error) {
+    throw operationError(code, error);
+  }
+  exactInputKeys(claim, [
+    'version', 'operationId', 'generationMarker', 'generatedAt', 'sourceRevision',
+    'provider', 'model', 'brainStateSha256',
+  ], code);
+  const text = (value) => typeof value === 'string'
+    && value.length > 0
+    && value.length <= 256
+    && !/[\u0000-\u001f\u007f]/.test(value);
+  const generatedAt = Date.parse(claim.generatedAt);
+  if (claim.version !== 1
+      || record.operationType !== 'synthesis'
+      || record.target?.domain !== 'brain'
+      || record.target.accessMode !== 'own'
+      || record.target.ownerAgent !== record.requesterAgent
+      || claim.operationId !== record.operationId
+      || !Number.isSafeInteger(claim.sourceRevision)
+      || claim.sourceRevision < 0
+      || record.sourcePinDescriptor?.cutoffRevision !== claim.sourceRevision
+      || !text(claim.provider)
+      || !text(claim.model)
+      || claim.provider !== record.parameters?.provider
+      || claim.model !== record.parameters?.model
+      || !Number.isFinite(generatedAt)
+      || new Date(generatedAt).toISOString() !== claim.generatedAt
+      || !new RegExp(`^generation-${claim.sourceRevision}-[a-f0-9]{24}$`)
+        .test(claim.generationMarker)
+      || !SHA256_PATTERN.test(claim.brainStateSha256)) {
+    throw operationError(code);
+  }
+  return claim;
+}
+
 function assertResultArtifactMetadata(value, expectedKind, code = 'operation_corrupt') {
   if (!value || Array.isArray(value) || typeof value !== 'object') throw operationError(code);
   exactInputKeys(value, ['mediaType', 'contentEncoding', 'bytes', 'sha256'], code);
@@ -279,6 +319,8 @@ class BrainOperationStore {
     this.idempotencyIndexPath = path.join(this.idempotencyRoot, 'index.json');
     this.idempotencyLockPath = path.join(this.idempotencyRoot, '.index.lock');
     this.resultHandlesRoot = path.join(root, 'result-handles');
+    this.synthesisCommitTargetPath = path.join(root, '.synthesis-commit-authority');
+    this.synthesisCommitLockPath = path.join(root, '.synthesis-commit-authority.lock');
     this.now = typeof options.now === 'function' ? options.now : Date.now;
     this.randomBytes = typeof options.randomBytes === 'function' ? options.randomBytes : crypto.randomBytes;
     this.crashInjector = typeof options.crashInjector === 'function'
@@ -312,6 +354,7 @@ class BrainOperationStore {
     this.operationQueues = new Map();
     this.idempotencyQueue = new Map();
     this.handleIndexQueue = new Map();
+    this.synthesisCommitQueue = new Map();
     this.eventCache = new Map();
   }
 
@@ -523,6 +566,21 @@ class BrainOperationStore {
     });
   }
 
+  async _withSynthesisCommitLock(callback) {
+    return this._serialize(this.synthesisCommitQueue, 'claim', async () => {
+      await this._ensureDirectory(this.root);
+      return this._withDirectoryConfinement(
+        [this.root],
+        'operation_corrupt',
+        () => this._withLock(
+          this.synthesisCommitTargetPath,
+          this.synthesisCommitLockPath,
+          callback,
+        ),
+      );
+    });
+  }
+
   async _assertCanonicalOperationDirectory(operationId) {
     const operationDirectory = this._operationDirectory(operationId);
     try {
@@ -558,6 +616,9 @@ class BrainOperationStore {
   _validatePrivateRecord(record, expectedOperationId) {
     if (!record || Array.isArray(record) || typeof record !== 'object') {
       throw operationError('operation_corrupt');
+    }
+    if (!Object.hasOwn(record, '_synthesisCompletionClaim')) {
+      record._synthesisCompletionClaim = null;
     }
     exactInputKeys(record, PRIVATE_RECORD_FIELDS, 'operation_corrupt');
     if (record.operationId !== expectedOperationId || !OPERATION_ID_PATTERN.test(record.operationId)) {
@@ -628,6 +689,18 @@ class BrainOperationStore {
       throw operationError('operation_corrupt', error);
     }
     if (record._worker !== null) assertPlainObjectOrNull(record._worker);
+    if (record._synthesisCompletionClaim !== null) {
+      try {
+        validateSynthesisCompletionClaim(
+          record._synthesisCompletionClaim,
+          record,
+          'operation_corrupt',
+        );
+      } catch (error) {
+        if (error?.code === 'operation_corrupt') throw error;
+        throw operationError('operation_corrupt', error);
+      }
+    }
     if (![null, 'inline', 'json-file', 'artifact', 'expired'].includes(record._resultKind)) {
       throw operationError('operation_corrupt');
     }
@@ -950,6 +1023,7 @@ class BrainOperationStore {
       _resultCleanup: null,
       _eventBytes: 0,
       _eventOldestSequence: 1,
+      _synthesisCompletionClaim: null,
       _deleting: false,
     };
   }
@@ -1014,6 +1088,53 @@ class BrainOperationStore {
       throw operationError('operation_corrupt');
     }
     return worker;
+  }
+
+  async getSynthesisCompletionClaim(operationId) {
+    const record = await this._readPrivateRecord(operationId);
+    return record._synthesisCompletionClaim === null
+      ? null
+      : safeJsonClone(record._synthesisCompletionClaim, 'operation_corrupt');
+  }
+
+  async claimSynthesisCompletion(operationId, rawClaim) {
+    assertOperationId(operationId);
+    return this._withSynthesisCommitLock(async () => {
+      const initial = await this._readPrivateRecord(operationId);
+      const claim = validateSynthesisCompletionClaim(rawClaim, initial);
+      if (initial._synthesisCompletionClaim !== null) {
+        if (canonicalJson(initial._synthesisCompletionClaim) === canonicalJson(claim)) return claim;
+        throw operationError('synthesis_claim_conflict');
+      }
+      if (TERMINAL_STATES.has(initial.state)) throw operationError('operation_terminal');
+      for (const candidateId of await this._listOperationIds()) {
+        if (candidateId === operationId) continue;
+        const candidate = await this._readPrivateRecord(candidateId);
+        if (candidate.operationType === 'synthesis'
+            && candidate._synthesisCompletionClaim !== null
+            && !TERMINAL_STATES.has(candidate.state)) {
+          const error = operationError('synthesis_commit_busy');
+          error.retryable = true;
+          throw error;
+        }
+      }
+      return this._withOperationLock(operationId, async (record) => {
+        if (record._synthesisCompletionClaim !== null) {
+          if (canonicalJson(record._synthesisCompletionClaim) === canonicalJson(claim)) return claim;
+          throw operationError('synthesis_claim_conflict');
+        }
+        if (TERMINAL_STATES.has(record.state)) throw operationError('operation_terminal');
+        const validated = validateSynthesisCompletionClaim(claim, record);
+        const next = await this._commitMutation(record, (draft) => {
+          draft._synthesisCompletionClaim = validated;
+        }, {
+          type: 'synthesis_completion_claimed',
+          generationMarker: validated.generationMarker,
+          sourceRevision: validated.sourceRevision,
+        });
+        return safeJsonClone(next._synthesisCompletionClaim, 'operation_corrupt');
+      });
+    });
   }
 
   async ensureScratchDirectory(operationId) {
@@ -1351,6 +1472,9 @@ class BrainOperationStore {
     return this._withOperationLock(operationId, async (record) => {
       if (TERMINAL_STATES.has(record.state)) throw operationError('operation_terminal');
       if (record.recordVersion !== transition.expectedVersion) throw operationError('version_conflict');
+      if (transition.state === 'cancelled' && record._synthesisCompletionClaim !== null) {
+        throw operationError('synthesis_completion_claimed');
+      }
       assertTransition(record.state, transition.state);
       const next = await this._commitMutation(record, (draft, now) => {
         draft.state = transition.state;

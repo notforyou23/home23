@@ -550,6 +550,9 @@ class DashboardServer {
         if (!providerOperationRuntime) throw providerOperationError;
         return providerOperationRuntime.resolve(input);
       },
+      readSynthesisState: synthesisOperationRuntime
+        ? () => synthesisOperationRuntime.readState()
+        : null,
       capabilityKey: process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY || null,
       exporter,
     });

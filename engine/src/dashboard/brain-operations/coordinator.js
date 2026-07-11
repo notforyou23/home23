@@ -116,6 +116,22 @@ function sameJson(left, right) {
   }
 }
 
+function synthesisResultFromClaim(claim) {
+  const { version, ...result } = claim;
+  return result;
+}
+
+function synthesisStateMatchesClaim(state, claim) {
+  const result = synthesisResultFromClaim(claim);
+  return state?.operationId === result.operationId
+    && state.generationMarker === result.generationMarker
+    && state.generatedAt === result.generatedAt
+    && state.sourceRevision === result.sourceRevision
+    && state.provider === result.provider
+    && state.model === result.model
+    && state.brainStateSha256 === result.brainStateSha256;
+}
+
 function sanitizeErrorCode(value, fallback) {
   if (typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:@+-]{0,255}$/.test(value)) {
     return value;
@@ -398,6 +414,9 @@ class BrainOperationCoordinator {
     this.scratchQuotaFactory = options.scratchQuotaFactory ?? null;
     this.operationModelResolver = options.operationModelResolver ?? null;
     this.exporter = options.exporter ?? null;
+    this.readSynthesisState = typeof options.readSynthesisState === 'function'
+      ? options.readSynthesisState
+      : null;
     this.now = typeof options.clock?.now === 'function' ? options.clock.now : Date.now;
     this.setTimeout = typeof options.timers?.setTimeout === 'function'
       ? options.timers.setTimeout
@@ -797,6 +816,8 @@ class BrainOperationCoordinator {
       validateScratchQuotaHandle(scratchQuota, policy.requiresSourcePin);
       const localSource = typeof this.worker.usesLocalExecutor !== 'function'
         || this.worker.usesLocalExecutor(record.operationType);
+      const localExecutor = typeof this.worker.usesLocalExecutor === 'function'
+        && this.worker.usesLocalExecutor(record.operationType);
       if (policy.requiresSourcePin && localSource) {
         sourcePin = await this.sourcePins.openPinnedSource(record.sourcePinDescriptor, {
             requesterAgent: record.requesterAgent,
@@ -825,6 +846,10 @@ class BrainOperationCoordinator {
         sourcePin,
         sourcePinDescriptor: record.sourcePinDescriptor,
         sourcePinDigest: record.sourcePinDigest,
+        ...(record.operationType === 'synthesis' && localExecutor ? {
+          claimSynthesisCompletion: (claim) =>
+            this.store.claimSynthesisCompletion(record.operationId, claim),
+        } : {}),
       };
     } catch (error) {
       try {
@@ -1510,6 +1535,44 @@ class BrainOperationCoordinator {
       if (workerRecord && envelope.state !== workerRecord.state) {
         throw coordinatorError('worker_result_invalid');
       }
+      if (record.operationType === 'synthesis'
+          && typeof this.store.getSynthesisCompletionClaim === 'function') {
+        const claim = await this.store.getSynthesisCompletionClaim(operationId);
+        if (claim !== null) {
+          let state = null;
+          let readError = null;
+          if (this.readSynthesisState) {
+            try {
+              state = await this.readSynthesisState();
+            } catch (error) {
+              readError = error;
+            }
+          }
+          if (!readError && synthesisStateMatchesClaim(state, claim)) {
+            return this._completeClaimedSynthesisLocked(record, claim);
+          }
+          if (envelope.state !== 'failed' && (readError || state !== null)) {
+            return this._failLocked(operationId, {
+              state: 'failed',
+              code: 'synthesis_commit_mismatch',
+              message: 'Claimed synthesis state does not match durable operation authority',
+              retryable: false,
+              cancelWorker: false,
+              skipClaimReconcile: true,
+            });
+          }
+          if (envelope.state !== 'failed') {
+            return this._failLocked(operationId, {
+              state: 'interrupted',
+              code: 'synthesis_commit_missing',
+              message: 'Claimed synthesis state was not committed',
+              retryable: true,
+              cancelWorker: false,
+              skipClaimReconcile: true,
+            });
+          }
+        }
+      }
       const artifact = envelope.resultArtifact ?? null;
       if (artifact !== null) {
         const validated = validateArtifactEnvelope(record.operationType, artifact);
@@ -1602,10 +1665,83 @@ class BrainOperationCoordinator {
     }
   }
 
+  async _completeClaimedSynthesisLocked(record, claim) {
+    let current = await this.store.get(record.operationId);
+    if (TERMINAL_STATES.has(current.state)) return current;
+    const result = synthesisResultFromClaim(claim);
+    if (current.result === null && current.resultArtifact === null) {
+      current = await this.store.setResult(current.operationId, {
+        expectedVersion: current.recordVersion,
+        result,
+      });
+    } else {
+      const persisted = current.result !== null
+        ? current.result
+        : await this.store.getResult(current.operationId, {
+          requesterAgent: this.requesterAgent,
+          resultHandle: current.resultHandle,
+        });
+      if (!sameJson(persisted, result)) throw coordinatorError('synthesis_commit_mismatch');
+    }
+    current = await this.store.transition(current.operationId, {
+      expectedVersion: current.recordVersion,
+      state: 'complete',
+      phase: 'terminal',
+      error: null,
+      sourceEvidence: current.sourceEvidence,
+    });
+    await this._afterTerminalLocked(current);
+    return current;
+  }
+
+  async _reconcileClaimedSynthesisLocked(record, {
+    allowPending = false,
+    preserveMissing = false,
+  } = {}) {
+    if (record.operationType !== 'synthesis'
+        || typeof this.store.getSynthesisCompletionClaim !== 'function') return null;
+    const claim = await this.store.getSynthesisCompletionClaim(record.operationId);
+    if (claim === null) return null;
+    let state = null;
+    let readError = null;
+    if (this.readSynthesisState) {
+      try {
+        state = await this.readSynthesisState();
+      } catch (error) {
+        readError = error;
+      }
+    }
+    if (!readError && synthesisStateMatchesClaim(state, claim)) {
+      return this._completeClaimedSynthesisLocked(record, claim);
+    }
+    if (allowPending) return this.store.get(record.operationId);
+    if (!readError && state === null) {
+      if (preserveMissing) return null;
+      return this._failLocked(record.operationId, {
+        state: 'interrupted',
+        code: 'synthesis_commit_missing',
+        message: 'Claimed synthesis state was not committed before interruption',
+        retryable: true,
+        cancelWorker: false,
+        skipClaimReconcile: true,
+      });
+    }
+    return this._failLocked(record.operationId, {
+      state: 'failed',
+      code: 'synthesis_commit_mismatch',
+      message: 'Claimed synthesis state does not match durable operation authority',
+      retryable: false,
+      cancelWorker: false,
+      skipClaimReconcile: true,
+      extra: readError ? { causeCode: sanitizeErrorCode(readError.code, 'synthesis_state_invalid') } : {},
+    });
+  }
+
   async _cancelWorker(record) {
     try {
       const capability = this._issueCapability(record, 'cancel');
-      await this._boundedWorkerControl(() => this.worker.cancel(record.operationId, capability));
+      const pending = this.worker.cancel(record.operationId, capability);
+      await this._boundedWorkerControl(() => pending);
     } catch (error) {
       if (error?.code !== 'worker_not_found') throw error;
     }
@@ -1614,10 +1750,14 @@ class BrainOperationCoordinator {
   async _failLocked(operationId, options) {
     let record = await this.store.get(operationId);
     if (TERMINAL_STATES.has(record.state)) return record;
-    if (options.cancelWorker) {
-      // The durable terminal transition cannot be held hostage by a wedged
-      // control response. The fresh capability is issued synchronously and
-      // the best-effort cancellation remains observed to avoid rejections.
+    if (!options.skipClaimReconcile) {
+      const claimed = await this._reconcileClaimedSynthesisLocked(record, { preserveMissing: true });
+      if (claimed !== null) return claimed;
+    }
+    if (options.cancelWorker && !options.cancelAfterTerminal) {
+      // Non-user failure paths retain the existing prompt best-effort abort.
+      // Explicit cancellation uses cancelAfterTerminal so its durable CAS is
+      // serialized against a synthesis completion claim first.
       void this._cancelWorker(record).catch(() => {});
     }
     const error = {
@@ -1636,11 +1776,23 @@ class BrainOperationCoordinator {
       });
     } catch (transitionError) {
       record = await this.store.get(operationId).catch(() => null);
+      if (options.state === 'cancelled'
+          && record
+          && !TERMINAL_STATES.has(record.state)
+          && ['version_conflict', 'synthesis_completion_claimed'].includes(transitionError?.code)) {
+        const claimed = await this._reconcileClaimedSynthesisLocked(record, { allowPending: true });
+        if (claimed !== null) return claimed;
+      }
       if (record && TERMINAL_STATES.has(record.state)) {
         await this._afterTerminalLocked(record);
         return record;
       }
       throw transitionError;
+    }
+    if (options.cancelWorker && options.cancelAfterTerminal) {
+      // Durable terminal truth wins before best-effort worker cancellation,
+      // so a racing synthesis claim observes cancellation-first atomically.
+      void this._cancelWorker(record).catch(() => {});
     }
     await this._afterTerminalLocked(record);
     return record;
@@ -1709,12 +1861,15 @@ class BrainOperationCoordinator {
     return this._enqueue(operationId, async () => {
       const record = await this.store.get(operationId);
       if (record.requesterAgent !== this.requesterAgent) throw coordinatorError('access_denied');
+      const claimed = await this._reconcileClaimedSynthesisLocked(record, { allowPending: true });
+      if (claimed !== null) return claimed;
       return this._failLocked(operationId, {
         state: 'cancelled',
         code: 'operation_cancelled',
         message: 'operation cancelled',
         retryable: false,
         cancelWorker: true,
+        cancelAfterTerminal: true,
       });
     });
   }
@@ -1734,6 +1889,8 @@ class BrainOperationCoordinator {
   async _recoverNonterminalLocked(record) {
     let current = await this.store.get(record.operationId);
     if (TERMINAL_STATES.has(current.state)) return current;
+    const claimedSynthesis = await this._reconcileClaimedSynthesisLocked(current);
+    if (claimedSynthesis !== null) return claimedSynthesis;
     let policy;
     let hardDeadlineAt;
     try {
