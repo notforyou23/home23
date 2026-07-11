@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   BrainOperationsCompatibilityAdapter,
+  DETACH_CLEANUP_MS,
 } = require('../../../engine/src/dashboard/brain-operations/compatibility-adapter.js');
 
 const OPERATION_ID = `brop_${'a'.repeat(32)}`;
@@ -137,7 +138,7 @@ test('compatibility caller abort detaches only its attachment and keeps operatio
   assert.deepEqual(reasons, ['caller_abort']);
 });
 
-test('compatibility deadline returns detached status even when detach cleanup fails', async () => {
+test('compatibility deadline reports the last confirmed attached state when detach cleanup fails', async () => {
   const timers = [];
   const never = deferred();
   const { adapter } = makeAdapter({
@@ -157,13 +158,49 @@ test('compatibility deadline returns detached status even when detach cleanup fa
   });
   await new Promise((resolve) => setImmediate(resolve));
   timers[0]();
-  const outcome = await Promise.race([
-    pending,
-    new Promise((resolve) => setTimeout(() => resolve('hung'), 100)),
-  ]);
-  assert.notEqual(outcome, 'hung');
-  assert.equal(outcome.attachmentState, 'detached');
-  assert.equal(outcome.detachedReason, 'attachment_deadline');
+  await assert.rejects(pending, (error) => {
+    assert.equal(error.code, 'attachment_detach_failed');
+    assert.equal(error.operationId, OPERATION_ID);
+    assert.equal(error.state, 'running');
+    assert.equal(error.attachmentState, 'attached');
+    return true;
+  });
+});
+
+test('compatibility detach cleanup is bounded and never reports a hanging detach as detached', async () => {
+  const timers = [];
+  const never = deferred();
+  const { adapter } = makeAdapter({
+    coordinator: {
+      attach: async () => ({ done: never.promise }),
+      detach: async () => new Promise(() => {}),
+    },
+    reader: { getAuthorized: async () => record({ state: 'running', eventSequence: 2 }) },
+    timers: {
+      setTimeout: (callback, ms) => {
+        timers.push({ callback, ms });
+        return timers.length;
+      },
+      clearTimeout: () => {},
+    },
+  });
+  const pending = adapter.attachAndWait(record(), {
+    attachmentId: 'attachment-bounded-cleanup',
+    waitMs: 5_400_000,
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timers[0].ms, 5_400_000);
+  timers[0].callback();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(timers[1].ms, DETACH_CLEANUP_MS);
+  timers[1].callback();
+  await assert.rejects(pending, (error) => {
+    assert.equal(error.code, 'attachment_detach_failed');
+    assert.equal(error.operationId, OPERATION_ID);
+    assert.equal(error.state, 'running');
+    assert.equal(error.attachmentState, 'attached');
+    return true;
+  });
 });
 
 test('compatibility attachment setup failures attempt durable detach cleanup', async () => {
@@ -236,6 +273,7 @@ test('compatibility adapter emits monotonic events and reloads terminal bytes th
   assert.equal(status.attachmentState, 'closed');
   assert.deepEqual(seen, [2, 3]);
   const result = await adapter.getResult(OPERATION_ID);
+  assert.equal(result.operationType, 'query');
   assert.deepEqual(result.result, { answer: 'protected terminal bytes' });
   assert.equal(protectedReads, 1);
 });

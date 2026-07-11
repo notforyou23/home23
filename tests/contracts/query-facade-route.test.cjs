@@ -5,7 +5,9 @@ const Ajv2020 = require('ajv/dist/2020');
 const fs = require('fs');
 const path = require('path');
 const {
+  PUBLIC_QUERY_BODY_LIMIT_BYTES,
   buildQueryCatalog,
+  createQueryCompatibilityBodyParser,
   createQueryApiRouter,
 } = require('../../engine/src/dashboard/home23-query-api.js');
 
@@ -52,6 +54,33 @@ async function postJson(app, route, body) {
       }
     });
   });
+}
+
+async function postRawJson(app, route, body) {
+  return await new Promise((resolve, reject) => {
+    const server = app.listen(0, async () => {
+      try {
+        const port = server.address().port;
+        const res = await fetch(`http://127.0.0.1:${port}${route}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body,
+        });
+        const json = await res.json();
+        server.close();
+        resolve({ status: res.status, body: json });
+      } catch (err) {
+        server.close();
+        reject(err);
+      }
+    });
+  });
+}
+
+function exactJsonBody(bytes) {
+  const prefix = '{"pad":"';
+  const suffix = '"}';
+  return prefix + 'x'.repeat(bytes - Buffer.byteLength(prefix + suffix)) + suffix;
 }
 
 async function getJson(app, route) {
@@ -458,13 +487,18 @@ function compatCatalog() {
   };
 }
 
-function makeQueryApp({ onForward = () => {}, adapter = {} } = {}) {
+function makeQueryApp({
+  onForward = () => {},
+  adapter = {},
+  catalogProvider = async () => compatCatalog(),
+  resolveAgent = () => 'jerry',
+} = {}) {
   const calls = [];
   const app = express();
   app.use(express.json());
   app.use('/home23/api/query', createQueryApiRouter({
     getDefaultAgent: () => 'jerry',
-    resolveAgent: () => 'jerry',
+    resolveAgent,
     cosmoBaseUrl: 'http://cosmo.test',
     fetchImpl: makeFetch({
       '/api/status': { success: true, running: false, apiReachable: true, activeRun: false },
@@ -473,7 +507,7 @@ function makeQueryApp({ onForward = () => {}, adapter = {} } = {}) {
       '/api/brain/brain-jerry/query': { body: { answer: 'legacy bypass' } },
       '/api/brain/brain-forrest/query': { body: { answer: 'wrong target bypass' } },
     }),
-    catalogProvider: async () => compatCatalog(),
+    catalogProvider,
     operationAdapter: {
       start: async (request) => {
         calls.push('start');
@@ -587,6 +621,36 @@ test('compatibility facade rejects agent and brain mismatch instead of forwardin
   assert.equal(response.body.error.code, 'target_mismatch');
 });
 
+test('compatibility facade rejects query/body disagreement and explicit unknown agents before catalog or start', async () => {
+  let catalogCalls = 0;
+  const disagree = makeQueryApp({
+    catalogProvider: async () => { catalogCalls += 1; return compatCatalog(); },
+  });
+  const mismatch = await postJson(disagree.app, '/home23/api/query/run?agent=forrest', {
+    agent: 'jerry',
+    query: 'x',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    enablePGS: false,
+  });
+  assert.equal(mismatch.status, 400);
+  assert.equal(mismatch.body.error.code, 'target_mismatch');
+  assert.equal(catalogCalls, 0);
+  assert.equal(disagree.calls.length, 0);
+
+  const unknown = makeQueryApp({
+    catalogProvider: async () => { catalogCalls += 1; return compatCatalog(); },
+  });
+  const missing = await postJson(unknown.app, '/home23/api/query/run?agent=forrest', {
+    query: 'x',
+    modelSelection: { provider: 'openai', model: 'gpt-5.5' },
+    enablePGS: false,
+  });
+  assert.equal(missing.status, 404);
+  assert.equal(missing.body.error.code, 'target_not_found');
+  assert.equal(catalogCalls, 0);
+  assert.equal(unknown.calls.length, 0);
+});
+
 test('compatibility run performs durable start, attach/wait, then protected result read', async () => {
   const fixture = makeQueryApp();
   const response = await postJson(fixture.app, '/home23/api/query/run', {
@@ -630,6 +694,59 @@ test('compatibility PGS selects six-hour attachment policy and forwards progress
   assert.equal(response.status, 200);
   assert.deepEqual(progress, [0, 121_000]);
   assert.equal(response.body.answer, 'ok');
+});
+
+test('compatibility PGS preserves a useful null-answer partial with sweep output and typed error', async () => {
+  const sourceEvidence = { sourceHealth: 'healthy', matchOutcome: 'matches' };
+  const fixture = makeQueryApp({ adapter: {
+    start: async () => ({
+      ...canonicalCompatRecord({ state: 'queued', eventSequence: 0 }),
+      operationType: 'pgs',
+    }),
+    attachAndWait: async () => ({
+      ...canonicalCompatRecord({ state: 'partial', eventSequence: 3 }),
+      operationType: 'pgs',
+    }),
+    getResult: async (operationId) => ({
+      operationId,
+      state: 'partial',
+      result: {
+        answer: null,
+        sweepOutputs: [{
+          workUnitId: 'p1-u1',
+          partitionId: 'p1',
+          output: 'useful evidence',
+          provider: 'minimax',
+          model: 'MiniMax-M3',
+        }],
+        metadata: { pgs: {
+          successfulSweeps: 1,
+          retryablePartitions: ['p2'],
+          sweepFraction: 1,
+          selectedWorkUnits: 2,
+          pendingWorkUnits: 1,
+        } },
+        sourceEvidence,
+      },
+      resultHandle: `brres_${'d'.repeat(32)}`,
+      resultArtifact: null,
+      error: { code: 'provider_incomplete', message: 'synthesis truncated', retryable: true },
+      sourceEvidence,
+    }),
+  } });
+  const response = await postJson(fixture.app, '/home23/api/query/run', {
+    query: 'x',
+    enablePGS: true,
+    pgsSweep: { provider: 'minimax', model: 'MiniMax-M3' },
+    pgsSynth: { provider: 'anthropic', model: 'claude-sonnet-4-7' },
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.state, 'partial');
+  assert.equal(response.body.answer, null);
+  assert.equal(response.body.result.sweepOutputs[0].output, 'useful evidence');
+  assert.equal(response.body.error.code, 'provider_incomplete');
+  const validate = compileQueryDefinition('queryRunResponse');
+  assert.equal(validate(response.body), true, JSON.stringify(validate.errors));
 });
 
 test('compatibility detach is honest and remains actionable', async () => {
@@ -839,6 +956,84 @@ test('compatibility canonical export rejects inline bytes and forwards only stor
   });
 });
 
+test('canonical stored export remains local and works while the live COSMO catalog is unavailable', async () => {
+  const forwarded = [];
+  let catalogCalls = 0;
+  const fixture = makeQueryApp({
+    onForward: (request) => forwarded.push(request),
+    catalogProvider: async () => {
+      catalogCalls += 1;
+      throw Object.assign(new Error('COSMO catalog unavailable'), { code: 'catalog_unavailable' });
+    },
+  });
+  const response = await postJson(fixture.app, '/home23/api/query/export', {
+    operationId: COMPAT_OPERATION_ID,
+    resultHandle: `brres_${'d'.repeat(32)}`,
+    format: 'markdown',
+  });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.success, true);
+  assert.equal(catalogCalls, 0);
+  assert.deepEqual(forwarded, [{
+    kind: 'canonical',
+    operationId: COMPAT_OPERATION_ID,
+    resultHandle: `brres_${'d'.repeat(32)}`,
+    format: 'markdown',
+  }]);
+});
+
+test('query compatibility JSON is bounded before the dashboard broad parser materializes it', async () => {
+  let broadCalls = 0;
+  let adapterCalls = 0;
+  const app = express();
+  app.use('/home23/api/query', createQueryCompatibilityBodyParser());
+  app.use((req, res, next) => {
+    broadCalls += 1;
+    return express.json({ limit: '10gb' })(req, res, next);
+  });
+  app.use('/home23/api/query', createQueryApiRouter({
+    getDefaultAgent: () => 'jerry',
+    resolveAgent: () => 'jerry',
+    catalogProvider: async () => compatCatalog(),
+    operationAdapter: {
+      start: async () => { adapterCalls += 1; throw new Error('must not start'); },
+      attachAndWait: async () => {},
+      getResult: async () => {},
+      detach: async () => {},
+      exportStored: async () => {},
+    },
+  }));
+  const response = await postRawJson(
+    app,
+    '/home23/api/query/run',
+    exactJsonBody(PUBLIC_QUERY_BODY_LIMIT_BYTES + 1),
+  );
+  assert.equal(response.status, 413);
+  assert.equal(response.body.error.code, 'request_too_large');
+  assert.equal(broadCalls, 0);
+  assert.equal(adapterCalls, 0);
+});
+
+test('DashboardServer mounts the bounded query parser before its legacy ten-gigabyte parser', () => {
+  const source = fs.readFileSync(path.join(
+    process.cwd(), 'engine/src/dashboard/server.js',
+  ), 'utf8');
+  const boundedQueryParser = source.indexOf(
+    "this.app.use('/home23/api/query', this.queryCompatibilityBodyParser)",
+  );
+  const broadParser = source.indexOf('const broadJsonParser =');
+  const broadUrlencodedParser = source.indexOf('const broadUrlencodedParser =');
+  const routeRegistration = source.indexOf('registerQueryApiRoutes(this.app');
+  assert.ok(boundedQueryParser > 0);
+  assert.ok(boundedQueryParser < broadParser);
+  assert.ok(broadParser < broadUrlencodedParser);
+  assert.ok(broadUrlencodedParser < routeRegistration);
+  assert.equal(
+    (source.match(/if \(req\.queryCompatibilityBodyParsed === true\) return next\(\);/g) || []).length,
+    2,
+  );
+});
+
 test('compatibility ad hoc export is explicitly noncanonical', async () => {
   const forwarded = [];
   const fixture = makeQueryApp({ onForward: (request) => forwarded.push(request) });
@@ -908,6 +1103,78 @@ test('query response schema distinguishes terminal, detached, and typed failure 
   assert.equal(failure.status, 400);
   assert.equal(validate(failure.body), true, JSON.stringify(validate.errors));
   assert.equal(validate({ ok: true, operationId: COMPAT_OPERATION_ID, state: 'running' }), false);
+});
+
+test('failed, cancelled, and interrupted durable responses retain actionable operation references', async () => {
+  const validate = compileQueryDefinition('queryRunResponse');
+  for (const state of ['failed', 'cancelled', 'interrupted']) {
+    const resultHandle = `brres_${state[0].repeat(32)}`;
+    const resultArtifact = {
+      mediaType: 'application/json',
+      contentEncoding: 'identity',
+      bytes: 123,
+      sha256: 'a'.repeat(64),
+    };
+    const sourceEvidence = { sourceHealth: 'degraded', matchOutcome: 'unknown' };
+    const fixture = makeQueryApp({ adapter: {
+      attachAndWait: async () => canonicalCompatRecord({ state, eventSequence: 4 }),
+      getResult: async (operationId) => ({
+        operationId,
+        operationType: 'query',
+        state,
+        result: null,
+        resultHandle,
+        resultArtifact,
+        error: { code: `operation_${state}`, message: `${state} durably`, retryable: state !== 'cancelled' },
+        sourceEvidence,
+      }),
+    } });
+    const response = await postJson(fixture.app, '/home23/api/query/run', {
+      query: 'x', enablePGS: false,
+    });
+    assert.equal(response.status, state === 'cancelled' ? 409 : 502);
+    assert.equal(response.body.ok, false);
+    assert.equal(response.body.operationId, COMPAT_OPERATION_ID);
+    assert.equal(response.body.state, state);
+    assert.equal(response.body.resultHandle, resultHandle);
+    assert.deepEqual(response.body.resultArtifact, resultArtifact);
+    assert.deepEqual(response.body.sourceEvidence, sourceEvidence);
+    assert.equal(response.body.error.code, `operation_${state}`);
+    assert.equal(validate(response.body), true, `${state}: ${JSON.stringify(validate.errors)}`);
+  }
+});
+
+test('stream terminal failure retains the durable operation reference in its typed error event', async () => {
+  const sourceEvidence = { sourceHealth: 'degraded', matchOutcome: 'unknown' };
+  const fixture = makeQueryApp({ adapter: {
+    attachAndWait: async (_operation, options) => {
+      options.onEvent(canonicalCompatRecord({ state: 'running', eventSequence: 1 }));
+      return canonicalCompatRecord({ state: 'failed', eventSequence: 2 });
+    },
+    getResult: async (operationId) => ({
+      operationId,
+      operationType: 'query',
+      state: 'failed',
+      result: null,
+      resultHandle: `brres_${'e'.repeat(32)}`,
+      resultArtifact: null,
+      error: { code: 'provider_failed', message: 'provider failed durably', retryable: true },
+      sourceEvidence,
+    }),
+  } });
+  const response = await postRaw(fixture.app, '/home23/api/query/stream', {
+    query: 'x', enablePGS: false,
+  });
+  assert.equal(response.status, 200);
+  const final = parseSseData(response.text).at(-1);
+  assert.equal(final.type, 'error');
+  assert.equal(final.operationId, COMPAT_OPERATION_ID);
+  assert.equal(final.state, 'failed');
+  assert.equal(final.resultHandle, `brres_${'e'.repeat(32)}`);
+  assert.deepEqual(final.sourceEvidence, sourceEvidence);
+  assert.equal(final.error.code, 'provider_failed');
+  const validate = compileQueryDefinition('streamEvent');
+  assert.equal(validate(final), true, JSON.stringify(validate.errors));
 });
 
 test('query stream and export responses validate against typed compatibility schemas', async () => {

@@ -10,6 +10,7 @@ const {
 const TERMINAL_STATES = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
 const START_STATES = new Set(['queued', 'running']);
 const QUERY_WAIT_MS = 90 * 60_000;
+const DETACH_CLEANUP_MS = 5_000;
 
 function adapterError(code, cause) {
   return operationError(code, cause);
@@ -60,6 +61,18 @@ function resultlessTerminal(record) {
     && record.resultHandle === null
     && record.resultArtifact === null
     && record.resultExpiredAt === null;
+}
+
+function attachmentFailure(record, cause) {
+  const error = adapterError('attachment_detach_failed', cause);
+  error.retryable = true;
+  error.operationId = record.operationId;
+  error.state = record.state;
+  error.attachmentState = 'attached';
+  error.resultHandle = record.resultHandle ?? null;
+  error.resultArtifact = record.resultArtifact ?? null;
+  error.sourceEvidence = record.sourceEvidence ?? null;
+  return error;
 }
 
 class BrainOperationsCompatibilityAdapter {
@@ -126,13 +139,27 @@ class BrainOperationsCompatibilityAdapter {
     let cursor = 0;
     let detachedReason = null;
     let detachPromise = null;
+    let detachFailure = null;
+    let detachSucceeded = false;
     let settled = false;
+    let attachmentOutcome = null;
     const detachFinished = deferredSignal();
     const detachOnce = (reason) => {
       if (settled || detachPromise) return detachPromise;
       detachedReason = reason;
-      detachPromise = this.detach(record.operationId, options.attachmentId, reason)
-        .catch(() => null)
+      detachPromise = this._detachWithinDeadline(
+        record.operationId,
+        options.attachmentId,
+        reason,
+      )
+        .then((value) => {
+          detachSucceeded = true;
+          return value;
+        })
+        .catch((error) => {
+          detachFailure = error;
+          return null;
+        })
         .finally(() => detachFinished.resolve());
       return detachPromise;
     };
@@ -163,7 +190,7 @@ class BrainOperationsCompatibilityAdapter {
           if (options.signal.aborted) onAbort();
           else options.signal.addEventListener('abort', onAbort, { once: true });
         }
-        await Promise.race([attachment.done, detachFinished.promise]);
+        attachmentOutcome = await Promise.race([attachment.done, detachFinished.promise]);
         if (detachPromise) await detachPromise;
       } catch (error) {
         if (!detachPromise) {
@@ -181,11 +208,39 @@ class BrainOperationsCompatibilityAdapter {
     if (TERMINAL_STATES.has(current.state)) {
       return { ...current, attachmentState: 'closed' };
     }
+    if (detachFailure) throw attachmentFailure(current, detachFailure);
+    const externallyDetached = attachmentOutcome?.state === 'detached';
+    if (!detachSucceeded && !externallyDetached) {
+      throw attachmentFailure(current, adapterError('attachment_state_unknown'));
+    }
     return {
       ...current,
       attachmentState: 'detached',
-      detachedReason: detachedReason || attachment?.reason || 'transport_closed',
+      detachedReason: detachedReason
+        || attachmentOutcome?.reason
+        || attachment?.reason
+        || 'transport_closed',
     };
+  }
+
+  async _detachWithinDeadline(operationId, attachmentId, reason) {
+    const attempt = this.detach(operationId, attachmentId, reason);
+    let timer = null;
+    const deadline = new Promise((_, reject) => {
+      timer = this.setTimeout(() => {
+        reject(adapterError('attachment_detach_timeout'));
+      }, DETACH_CLEANUP_MS);
+      if (typeof timer?.unref === 'function') timer.unref();
+    });
+    try {
+      const detached = await Promise.race([attempt, deadline]);
+      if (!detached || detached.state !== 'detached') {
+        throw adapterError('attachment_detach_invalid');
+      }
+      return detached;
+    } finally {
+      if (timer !== null) this.clearTimeout(timer);
+    }
   }
 
   async getResult(operationId) {
@@ -202,6 +257,7 @@ class BrainOperationsCompatibilityAdapter {
     }
     return {
       operationId: record.operationId,
+      operationType: record.operationType,
       state: record.state,
       result,
       resultHandle: record.resultHandle,
@@ -278,6 +334,7 @@ function createBrainOperationsCompatibilityAdapter(options) {
 
 module.exports = {
   BrainOperationsCompatibilityAdapter,
+  DETACH_CLEANUP_MS,
   QUERY_WAIT_MS,
   createBrainOperationsCompatibilityAdapter,
 };

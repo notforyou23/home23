@@ -18,8 +18,10 @@ const DEFAULT_ENDPOINTS = {
 const MAX_QUERY_CHARS = 12_000;
 const MAX_PRIOR_CONTEXT_CHARS = 20_000;
 const MAX_AD_HOC_ANSWER_CHARS = 1_000_000;
+const PUBLIC_QUERY_BODY_LIMIT_BYTES = 1024 * 1024;
 const QUERY_WAIT_MS = 90 * 60_000;
 const PGS_WAIT_MS = 6 * 60 * 60_000;
+const BODY_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const QUERY_MODES = new Set([
   'quick', 'full', 'expert', 'dive', 'fast', 'normal', 'deep', 'executive',
   'raw', 'report', 'innovation', 'consulting', 'grounded',
@@ -298,6 +300,37 @@ function compatibilityError(code, message = code, status = 400, retryable = fals
   return error;
 }
 
+function createQueryCompatibilityBodyParser(options = {}) {
+  if (!options || Array.isArray(options) || typeof options !== 'object'
+      || Reflect.ownKeys(options).some((key) => key !== 'limitBytes')) {
+    throw compatibilityError('invalid_request', 'query parser configuration is invalid');
+  }
+  const limitBytes = options.limitBytes ?? PUBLIC_QUERY_BODY_LIMIT_BYTES;
+  if (!Number.isSafeInteger(limitBytes) || limitBytes <= 0) {
+    throw compatibilityError('invalid_request', 'query parser limit is invalid');
+  }
+  const parser = express.json({ limit: limitBytes, strict: true });
+  return (req, res, next) => {
+    if (req.queryCompatibilityBodyParsed === true || !BODY_METHODS.has(req.method)) {
+      return next();
+    }
+    return parser(req, res, (error) => {
+      if (error) {
+        const parsed = error.type === 'entity.too.large'
+          ? compatibilityError('request_too_large', 'query request body is too large', 413)
+          : compatibilityError('invalid_json', 'query request body is invalid JSON', 400);
+        return sendCompatibilityError(
+          res,
+          parsed,
+          req.path === '/export' ? 'export' : 'run',
+        );
+      }
+      req.queryCompatibilityBodyParsed = true;
+      return next();
+    });
+  };
+}
+
 function ownKeys(value) {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? Reflect.ownKeys(value)
@@ -320,6 +353,13 @@ function boundedString(value, field, { required = false, max = 256 } = {}) {
   if (typeof value !== 'string' || value.length > max || (required && !value.trim())) {
     throw compatibilityError('invalid_request', `${field} is invalid`);
   }
+}
+
+function normalizeAgentSelector(value, field = 'agent') {
+  boundedString(value, field, { required: true, max: 256 });
+  const normalized = value.replace(/^home23-/, '').trim();
+  if (!normalized) throw compatibilityError('invalid_request', `${field} is invalid`);
+  return normalized;
 }
 
 function optionalBoolean(value, field) {
@@ -375,8 +415,7 @@ function validateSelectedBrain(body, catalog, agent) {
     }
   }
   if (Object.hasOwn(body, 'agent')) {
-    boundedString(body.agent, 'agent', { required: true, max: 256 });
-    if (body.agent !== agent) {
+    if (normalizeAgentSelector(body.agent) !== agent) {
       throw compatibilityError('target_mismatch', 'request agent does not match the selected agent', 400);
     }
   }
@@ -389,7 +428,35 @@ function validateRouteQuery(req) {
     if (!allowed.has(key) || Array.isArray(value) || typeof value !== 'string') {
       throw compatibilityError('invalid_request', 'query parameters are invalid');
     }
+    if (key === 'agent') normalizeAgentSelector(value, 'query agent');
   }
+}
+
+function resolveRequestAgent(req, resolveAgent) {
+  const bodyAgent = req.body && !Array.isArray(req.body) && typeof req.body === 'object'
+    && Object.hasOwn(req.body, 'agent')
+    ? normalizeAgentSelector(req.body.agent, 'body agent')
+    : null;
+  const queryAgent = req.query && Object.hasOwn(req.query, 'agent')
+    ? normalizeAgentSelector(req.query.agent, 'query agent')
+    : null;
+  if (bodyAgent && queryAgent && bodyAgent !== queryAgent) {
+    throw compatibilityError(
+      'target_mismatch',
+      'query and body agent selectors disagree',
+      400,
+    );
+  }
+  const requested = bodyAgent || queryAgent;
+  const resolvedValue = resolveAgent(requested || undefined);
+  if (typeof resolvedValue !== 'string' || !resolvedValue.trim()) {
+    throw compatibilityError('target_not_found', 'requested agent was not found', 404);
+  }
+  const resolved = normalizeAgentSelector(resolvedValue, 'resolved agent');
+  if (requested && resolved !== requested) {
+    throw compatibilityError('target_not_found', 'requested agent was not found', 404);
+  }
+  return resolved;
 }
 
 function validateCompatibilityRequest(body, catalog, agent) {
@@ -504,7 +571,13 @@ function validateExportRequest(body, catalog, agent) {
   const canonical = ['operationId', 'resultHandle', 'fileName'];
   const adHoc = ['query', 'answer', 'metadata'];
   exactObject(body, [...common, ...canonical, ...adHoc]);
-  validateSelectedBrain(body, catalog, agent);
+  if (catalog) validateSelectedBrain(body, catalog, agent);
+  else if (Object.hasOwn(body, 'brainId')) {
+    throw compatibilityError(
+      'invalid_request',
+      'canonical export target is derived from the stored operation',
+    );
+  }
   const isCanonical = Object.hasOwn(body, 'operationId');
   if (isCanonical) {
     if (adHoc.some((key) => Object.hasOwn(body, key))) {
@@ -586,22 +659,51 @@ function typedError(error) {
   };
 }
 
+function isTypedOperationError(error) {
+  return Boolean(error
+    && typeof error.code === 'string' && error.code.trim()
+    && typeof error.message === 'string' && error.message.trim()
+    && typeof error.retryable === 'boolean');
+}
+
 function errorStatus(error) {
   if (Number.isInteger(error?.status)) return error.status;
   if (error?.code === 'access_denied') return 403;
-  if (error?.code === 'operation_not_found' || error?.code === 'result_not_found') return 404;
+  if (['operation_not_found', 'result_not_found', 'target_not_found'].includes(error?.code)) return 404;
   if (error?.code === 'result_expired') return 410;
   if (error?.code === 'request_too_large') return 413;
   if (error?.retryable === true) return 503;
   return 500;
 }
 
-function sendCompatibilityError(res, error, responseKind = 'run') {
-  const payload = {
+function operationReferenceFromError(error) {
+  const operation = error?.operation && typeof error.operation === 'object'
+    ? error.operation
+    : error?.operationId ? error : null;
+  if (!operation || typeof operation.operationId !== 'string'
+      || typeof operation.state !== 'string') return null;
+  return {
+    operationId: operation.operationId,
+    state: operation.state,
+    attachmentState: operation.attachmentState
+      || (TERMINAL_STATES.has(operation.state) ? 'closed' : 'attached'),
+    detached: false,
+    resultHandle: operation.resultHandle ?? null,
+    resultArtifact: operation.resultArtifact ?? null,
+    sourceEvidence: operation.sourceEvidence ?? null,
+  };
+}
+
+function compatibilityFailurePayload(error, responseKind = 'run') {
+  return {
     ...(responseKind === 'export' ? { success: false } : { ok: false }),
+    ...(operationReferenceFromError(error) || {}),
     error: typedError(error),
   };
-  return res.status(errorStatus(error)).json(payload);
+}
+
+function sendCompatibilityError(res, error, responseKind = 'run') {
+  return res.status(errorStatus(error)).json(compatibilityFailurePayload(error, responseKind));
 }
 
 function detachedPayload(record) {
@@ -643,12 +745,21 @@ function terminalPayload(envelope) {
     throw compatibilityError('operation_contract_invalid', 'terminal operation status is invalid', 502, true);
   }
   if (!SUCCESS_STATES.has(envelope.state)) {
+    if (!isTypedOperationError(envelope.error)) {
+      throw compatibilityError(
+        'operation_contract_invalid',
+        'terminal operation error is invalid',
+        502,
+        true,
+      );
+    }
     const failure = compatibilityError(
-      envelope.error?.code || `operation_${envelope.state}`,
-      envelope.error?.message || `operation ended in ${envelope.state}`,
+      envelope.error.code,
+      envelope.error.message,
       envelope.state === 'cancelled' ? 409 : 502,
-      envelope.error?.retryable === true,
+      envelope.error.retryable,
     );
+    failure.operation = envelope;
     throw failure;
   }
   const result = envelope.result;
@@ -656,8 +767,42 @@ function terminalPayload(envelope) {
       || result.success === false || (Object.hasOwn(result, 'error') && result.error !== null)) {
     throw compatibilityError('result_invalid', 'terminal operation result is invalid', 502, true);
   }
-  if (typeof result.answer !== 'string' || !result.answer) {
-    throw compatibilityError('result_missing', 'terminal operation has no answer', 502, true);
+  const answer = result.answer;
+  const typedPartialError = isTypedOperationError(envelope.error);
+  if (envelope.state === 'complete') {
+    if (envelope.error !== null || typeof answer !== 'string' || !answer.trim()) {
+      throw compatibilityError('result_missing', 'terminal operation has no answer', 502, true);
+    }
+  } else if (envelope.operationType === 'query') {
+    if (!typedPartialError || typeof answer !== 'string' || !answer.trim()) {
+      throw compatibilityError('result_invalid', 'partial query result is invalid', 502, true);
+    }
+  } else if (envelope.operationType === 'pgs') {
+    const sweepOutputs = result.sweepOutputs;
+    const pgs = result.metadata && typeof result.metadata === 'object'
+      ? result.metadata.pgs
+      : null;
+    const retryablePartitions = pgs?.retryablePartitions;
+    const validSweep = (sweep) => sweep && !Array.isArray(sweep) && typeof sweep === 'object'
+      && Object.keys(sweep).sort().join(',') === 'model,output,partitionId,provider,workUnitId'
+      && ['workUnitId', 'partitionId', 'output', 'provider', 'model'].every((key) =>
+        typeof sweep[key] === 'string' && Boolean(sweep[key].trim()));
+    const validRetryable = Array.isArray(retryablePartitions)
+      && retryablePartitions.every((value) => typeof value === 'string' && Boolean(value.trim()))
+      && new Set(retryablePartitions).size === retryablePartitions.length
+      && retryablePartitions.every((value, index) =>
+        index === 0 || retryablePartitions[index - 1] < value);
+    if (!typedPartialError
+        || !Array.isArray(sweepOutputs) || sweepOutputs.length === 0
+        || !sweepOutputs.every(validSweep)
+        || !Number.isSafeInteger(pgs?.successfulSweeps)
+        || pgs.successfulSweeps !== sweepOutputs.length
+        || !validRetryable
+        || !((answer === null) || (typeof answer === 'string' && answer.trim()))) {
+      throw compatibilityError('result_invalid', 'partial PGS result is invalid', 502, true);
+    }
+  } else {
+    throw compatibilityError('result_invalid', 'partial operation type is invalid', 502, true);
   }
   return {
     ok: true,
@@ -669,7 +814,9 @@ function terminalPayload(envelope) {
     resultArtifact: envelope.resultArtifact ?? null,
     sourceEvidence: envelope.sourceEvidence ?? null,
     result,
-    answer: result.answer,
+    answer,
+    ...(envelope.error ? { error: envelope.error } : {}),
+    ...(result.sweepOutputs !== undefined ? { sweepOutputs: result.sweepOutputs } : {}),
     ...(result.query !== undefined ? { query: result.query } : {}),
     ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
   };
@@ -703,11 +850,16 @@ async function startAndWait(options, request, { signal, onEvent } = {}) {
   if (envelope?.operationId !== started.operationId) {
     throw compatibilityError('operation_contract_invalid', 'operation result changed identity', 502, true);
   }
-  return { envelope };
+  if (envelope?.operationType !== undefined
+      && envelope.operationType !== request.operationType) {
+    throw compatibilityError('operation_contract_invalid', 'operation result changed type', 502, true);
+  }
+  return { envelope: { ...envelope, operationType: request.operationType } };
 }
 
 function createQueryApiRouter(options = {}) {
   const router = express.Router();
+  router.use(createQueryCompatibilityBodyParser());
   const resolveAgent = options.resolveAgent || ((candidate) => {
     if (options.home23Root) {
       return resolveAgentFromRoot(options.home23Root, candidate, options.getDefaultAgent?.() || 'jerry');
@@ -718,7 +870,7 @@ function createQueryApiRouter(options = {}) {
   router.get('/catalog', async (req, res) => {
     try {
       validateRouteQuery(req);
-      const agent = resolveAgent(req.query?.agent);
+      const agent = resolveRequestAgent(req, resolveAgent);
       const catalog = await catalogFor(options, agent);
       res.json(catalog);
     } catch (err) {
@@ -752,7 +904,7 @@ function createQueryApiRouter(options = {}) {
     });
     try {
       validateRouteQuery(req);
-      const agent = resolveAgent(req.body?.agent || req.query?.agent);
+      const agent = resolveRequestAgent(req, resolveAgent);
       const catalog = await catalogFor(options, agent);
       if (!catalog.available) {
         throw compatibilityError(
@@ -802,7 +954,7 @@ function createQueryApiRouter(options = {}) {
     });
     try {
       validateRouteQuery(req);
-      const agent = resolveAgent(req.body?.agent || req.query?.agent);
+      const agent = resolveRequestAgent(req, resolveAgent);
       const catalog = await catalogFor(options, agent);
       if (!catalog.available) {
         throw compatibilityError(
@@ -861,7 +1013,10 @@ function createQueryApiRouter(options = {}) {
       if (!headersSent && !res.headersSent) {
         sendCompatibilityError(res, err);
       } else if (!res.writableEnded && !res.destroyed) {
-        res.write(`data: ${JSON.stringify({ type: 'error', ok: false, error: typedError(err) })}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          type: 'error',
+          ...compatibilityFailurePayload(err),
+        })}\n\n`);
         res.end();
       }
     }
@@ -870,9 +1025,12 @@ function createQueryApiRouter(options = {}) {
   router.post('/export', async (req, res) => {
     try {
       validateRouteQuery(req);
-      const agent = resolveAgent(req.body?.agent || req.query?.agent);
-      const catalog = await catalogFor(options, agent);
-      if (!catalog.available) {
+      const agent = resolveRequestAgent(req, resolveAgent);
+      const canonical = req.body && !Array.isArray(req.body) && typeof req.body === 'object'
+        && Object.hasOwn(req.body, 'operationId');
+      const needsCatalog = !canonical || Object.hasOwn(req.body, 'brainId');
+      const catalog = needsCatalog ? await catalogFor(options, agent) : null;
+      if (catalog && !catalog.available) {
         throw compatibilityError(
           'query_unavailable',
           catalog.reason || 'query unavailable',
@@ -939,7 +1097,9 @@ function registerQueryApiRoutes(app, options = {}) {
 
 module.exports = {
   DEFAULT_ENDPOINTS,
+  PUBLIC_QUERY_BODY_LIMIT_BYTES,
   buildQueryCatalog,
+  createQueryCompatibilityBodyParser,
   createQueryApiRouter,
   registerQueryApiRoutes,
 };

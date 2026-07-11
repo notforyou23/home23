@@ -39,6 +39,7 @@ const {
 } = require('./brain-operations/router.js');
 const { createSourceOperationExecutors } = require('./brain-operations/source-executors.js');
 const { createGraphExportExecutor } = require('./brain-operations/graph-export-executor.js');
+const { createQueryCompatibilityBodyParser } = require('./home23-query-api.js');
 const {
   buildMcpUnavailableEnvelope,
   isMcpProxyAvailable,
@@ -207,6 +208,8 @@ class DashboardServer {
     // requester-bound coordinator dependencies have been constructed.
     this.brainOperationsPlaceholder = createBrainOperationsPlaceholderRouter();
     this.app.use('/home23/api/brain-operations', this.brainOperationsPlaceholder.router);
+    this.queryCompatibilityBodyParser = createQueryCompatibilityBodyParser();
+    this.app.use('/home23/api/query', this.queryCompatibilityBodyParser);
 
     // COSMO is a local research system - no artificial limits on data ingestion
     // Set to 10GB to handle serious document collections, large queries, and AI analysis
@@ -215,9 +218,15 @@ class DashboardServer {
     if (typeof broadJsonParser !== 'function') throw new TypeError('dashboard_options_invalid');
     this.app.use((req, res, next) => {
       if (req.brainOperationBodyParsed === true) return next();
+      if (req.queryCompatibilityBodyParsed === true) return next();
       return broadJsonParser(req, res, next);
     });
-    this.app.use(express.urlencoded({ limit: '10gb', extended: true }));
+    const broadUrlencodedParser = express.urlencoded({ limit: '10gb', extended: true });
+    this.app.use((req, res, next) => {
+      if (req.brainOperationBodyParsed === true) return next();
+      if (req.queryCompatibilityBodyParsed === true) return next();
+      return broadUrlencodedParser(req, res, next);
+    });
     this.clients = new Set();
     this.insightAnalyzer = new InsightAnalyzer(this.logsDir, console);
     this.noveltyValidator = new NoveltyValidator({}, console, this.logsDir); // NEW: Novelty validation layer with logsDir

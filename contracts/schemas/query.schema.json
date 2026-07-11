@@ -197,13 +197,29 @@
       "required": ["answer"],
       "properties": {
         "query": { "type": ["string", "null"] },
-        "answer": { "type": "string" },
+        "answer": { "type": ["string", "null"] },
+        "sweepOutputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/pgsSweepOutput" }
+        },
         "metadata": { "type": ["object", "null"], "additionalProperties": true },
         "actionSuggestion": { "type": ["object", "null"], "additionalProperties": true },
         "actionExecuted": { "type": ["boolean", "null"] },
         "actionError": { "type": ["string", "null"] },
         "actionResult": { "type": ["object", "null"], "additionalProperties": true },
         "exportedTo": { "type": ["string", "null"] }
+      }
+    },
+    "pgsSweepOutput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workUnitId", "partitionId", "output", "provider", "model"],
+      "properties": {
+        "workUnitId": { "type": "string", "minLength": 1 },
+        "partitionId": { "type": "string", "minLength": 1 },
+        "output": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 }
       }
     },
     "operationId": {
@@ -266,10 +282,67 @@
         "resultArtifact": { "$ref": "#/$defs/resultArtifact" },
         "sourceEvidence": { "$ref": "#/$defs/sourceEvidence" },
         "result": { "$ref": "#/$defs/queryResult" },
-        "answer": { "type": "string", "minLength": 1 },
+        "answer": { "type": ["string", "null"] },
+        "error": { "$ref": "#/$defs/structuredError" },
+        "sweepOutputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/pgsSweepOutput" }
+        },
         "query": { "type": "string" },
         "metadata": { "type": ["object", "null"], "additionalProperties": true }
-      }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "state": { "const": "complete" } }, "required": ["state"] },
+          "then": {
+            "properties": {
+              "answer": { "type": "string", "minLength": 1 },
+              "result": {
+                "allOf": [
+                  { "$ref": "#/$defs/queryResult" },
+                  { "properties": { "answer": { "type": "string", "minLength": 1 } } }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "state": { "const": "partial" } }, "required": ["state"] },
+          "then": {
+            "required": ["error"],
+            "anyOf": [
+              { "properties": { "answer": { "type": "string", "minLength": 1 } } },
+              {
+                "required": ["sweepOutputs"],
+                "properties": {
+                  "answer": { "type": "null" },
+                  "sweepOutputs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "$ref": "#/$defs/pgsSweepOutput" }
+                  },
+                  "result": {
+                    "allOf": [
+                      { "$ref": "#/$defs/queryResult" },
+                      {
+                        "required": ["answer", "sweepOutputs"],
+                        "properties": {
+                          "answer": { "type": "null" },
+                          "sweepOutputs": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": { "$ref": "#/$defs/pgsSweepOutput" }
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
     },
     "queryDetached": {
       "type": "object",
@@ -286,11 +359,33 @@
       }
     },
     "queryFailure": {
+      "oneOf": [
+        { "$ref": "#/$defs/queryRequestFailure" },
+        { "$ref": "#/$defs/queryOperationFailure" }
+      ]
+    },
+    "queryRequestFailure": {
       "type": "object",
       "additionalProperties": false,
       "required": ["ok", "error"],
       "properties": {
         "ok": { "const": false },
+        "error": { "$ref": "#/$defs/structuredError" }
+      }
+    },
+    "queryOperationFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "operationId", "state", "attachmentState", "detached", "resultHandle", "resultArtifact", "sourceEvidence", "error"],
+      "properties": {
+        "ok": { "const": false },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "state": { "enum": ["queued", "running", "failed", "cancelled", "interrupted"] },
+        "attachmentState": { "enum": ["attached", "closed"] },
+        "detached": { "const": false },
+        "resultHandle": { "$ref": "#/$defs/resultHandle" },
+        "resultArtifact": { "$ref": "#/$defs/resultArtifact" },
+        "sourceEvidence": { "$ref": "#/$defs/sourceEvidence" },
         "error": { "$ref": "#/$defs/structuredError" }
       }
     },
@@ -348,11 +443,33 @@
       }
     },
     "queryExportFailure": {
+      "oneOf": [
+        { "$ref": "#/$defs/queryExportRequestFailure" },
+        { "$ref": "#/$defs/queryExportOperationFailure" }
+      ]
+    },
+    "queryExportRequestFailure": {
       "type": "object",
       "additionalProperties": false,
       "required": ["success", "error"],
       "properties": {
         "success": { "const": false },
+        "error": { "$ref": "#/$defs/structuredError" }
+      }
+    },
+    "queryExportOperationFailure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["success", "operationId", "state", "attachmentState", "detached", "resultHandle", "resultArtifact", "sourceEvidence", "error"],
+      "properties": {
+        "success": { "const": false },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "state": { "enum": ["queued", "running", "failed", "cancelled", "interrupted"] },
+        "attachmentState": { "enum": ["attached", "closed"] },
+        "detached": { "const": false },
+        "resultHandle": { "$ref": "#/$defs/resultHandle" },
+        "resultArtifact": { "$ref": "#/$defs/resultArtifact" },
+        "sourceEvidence": { "$ref": "#/$defs/sourceEvidence" },
         "error": { "$ref": "#/$defs/structuredError" }
       }
     },
@@ -413,12 +530,35 @@
       ]
     },
     "streamErrorEvent": {
+      "oneOf": [
+        { "$ref": "#/$defs/streamRequestErrorEvent" },
+        { "$ref": "#/$defs/streamOperationErrorEvent" }
+      ]
+    },
+    "streamRequestErrorEvent": {
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "ok", "error"],
       "properties": {
         "type": { "const": "error" },
         "ok": { "const": false },
+        "error": { "$ref": "#/$defs/structuredError" }
+      }
+    },
+    "streamOperationErrorEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "ok", "operationId", "state", "attachmentState", "detached", "resultHandle", "resultArtifact", "sourceEvidence", "error"],
+      "properties": {
+        "type": { "const": "error" },
+        "ok": { "const": false },
+        "operationId": { "$ref": "#/$defs/operationId" },
+        "state": { "enum": ["queued", "running", "failed", "cancelled", "interrupted"] },
+        "attachmentState": { "enum": ["attached", "closed"] },
+        "detached": { "const": false },
+        "resultHandle": { "$ref": "#/$defs/resultHandle" },
+        "resultArtifact": { "$ref": "#/$defs/resultArtifact" },
+        "sourceEvidence": { "$ref": "#/$defs/sourceEvidence" },
         "error": { "$ref": "#/$defs/structuredError" }
       }
     }
