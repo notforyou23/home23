@@ -20,9 +20,10 @@ function isVectorLike(value) {
  * From: "Network Theory and Emergent Idea Graphs" section
  */
 class NetworkMemory {
-  constructor(config, logger) {
+  constructor(config, logger, deps = {}) {
     this.config = config;
     this.logger = logger;
+    this.getEmbeddingClient = deps.getEmbeddingClient || getEmbeddingClient;
     
     // Initialize extractive summarizer for memory compression
     this.extractiveSummarizer = new ExtractiveSummarizer(logger);
@@ -117,47 +118,31 @@ class NetworkMemory {
     return createParams;
   }
 
+  prepareEmbeddingText(text) {
+    const value = String(text || '');
+    if (this.tokenizer) {
+      const tokens = this.tokenizer.encode(value);
+      const maxTokens = this.isOllamaEmbeddingEndpoint() ? 512 : 8000;
+      if (tokens.length > maxTokens) {
+        const decoded = this.tokenizer.decode(tokens.slice(0, maxTokens));
+        return typeof decoded === 'string' ? decoded : new TextDecoder().decode(decoded);
+      }
+    }
+    const maxChars = this.isOllamaEmbeddingEndpoint() ? 2000 : 30000;
+    return value.length > maxChars ? value.slice(0, maxChars) : value;
+  }
+
   /**
    * Generate embedding using OpenAI
    * @param {string} text - Text to embed
    * Note: All embeddings use same dimensions (512) for network consistency
    */
   async embed(text) {
+    const originalText = String(text || '');
     try {
-      // Token-aware truncation (8191 token limit for text-embedding-3-small)
-      // Use 8000 tokens for safety margin (API can be strict with boundaries)
-      if (this.tokenizer) {
-        const tokens = this.tokenizer.encode(text);
-        // nomic-embed-text via Ollama rejects texts producing >~2048 BERT tokens.
-        // GPT BPE tokens are ~4 chars each; BERT wordpiece ~3-4 chars each.
-        // 512 GPT tokens ≈ 2048 chars — comfortably within Ollama's limit.
-        const maxTokens = 512;
-        
-        if (tokens.length > maxTokens) {
-          this.logger?.info?.('Text exceeds token limit, truncating for embedding', {
-            originalTokens: tokens.length,
-            truncatedTo: maxTokens,
-            textPreview: text.substring(0, 100) + '...'
-          });
-          
-          // Decode truncated tokens back to text (tiktoken returns Uint8Array)
-          const decoded = this.tokenizer.decode(tokens.slice(0, maxTokens));
-          text = typeof decoded === 'string' ? decoded : new TextDecoder().decode(decoded);
-        }
-      } else {
-        // Fallback to character-based truncation if tokenizer unavailable
-        // 2000 chars ≈ 500 tokens — safely within nomic-embed-text's limit
-        if (text.length > 2000) {
-          this.logger?.info?.('Text exceeds character limit, truncating for embedding', {
-            originalLength: text.length,
-            truncatedTo: 2000
-          });
-          text = text.substring(0, 2000);
-        }
-      }
-      
-      const client = getEmbeddingClient();
-      const response = await client.embeddings.create(this.buildEmbeddingCreateParams(text));
+      const preparedText = this.prepareEmbeddingText(originalText);
+      const client = this.getEmbeddingClient();
+      const response = await client.embeddings.create(this.buildEmbeddingCreateParams(preparedText));
 
       if (!response?.data?.[0]?.embedding) {
         this.logger?.error?.('Embedding API returned invalid response', {
@@ -172,18 +157,18 @@ class NetworkMemory {
       return response.data[0].embedding;
     } catch (error) {
       // If embedding fails even after truncation, try extractive summary as last resort
-      if (text.length > 5000 && this.extractiveSummarizer) {
+      if (originalText.length > 5000 && this.extractiveSummarizer) {
         this.logger?.warn?.('Embedding failed, trying extractive summary', { 
           error: error.message,
-          textLength: text.length
+          textLength: originalText.length
         });
         
         try {
-          const extracted = this.extractiveSummarizer.summarize(text);
+          const extracted = this.extractiveSummarizer.summarize(originalText);
           if (extracted.quality >= 0.5) {
             // Retry embedding with much shorter summary (recursive call with safety)
             const summaryText = extracted.summary;
-            if (summaryText.length < text.length) {
+            if (summaryText.length < originalText.length) {
               return await this.embed(summaryText);
             }
           }
@@ -196,7 +181,7 @@ class NetworkMemory {
       
       this.logger?.error?.('Embedding API call failed', {
         error: error.message,
-        textLength: text?.length
+        textLength: originalText.length
       });
       return null;
     }
@@ -209,63 +194,42 @@ class NetworkMemory {
    * @returns {Array} Array of embeddings (same order as input)
    */
   async embedBatch(texts) {
-    if (!texts || texts.length === 0) return [];
-    
-    const batchSize = 2048; // OpenAI's max batch size
-    const allEmbeddings = [];
-    
-    // Process in batches of 2048
-    for (let i = 0; i < texts.length; i += batchSize) {
-      const batch = texts.slice(i, i + batchSize);
-      
-      // Token-aware truncation for each text in batch
-      const processedBatch = batch.map(text => {
-        if (this.tokenizer) {
-          const tokens = this.tokenizer.encode(text);
-          const maxTokens = 8191;
-          if (tokens.length > maxTokens) {
-            const dec = this.tokenizer.decode(tokens.slice(0, maxTokens));
-            return typeof dec === 'string' ? dec : new TextDecoder().decode(dec);
-          }
-        } else if (text.length > 30000) {
-          return text.substring(0, 30000);
-        }
-        return text;
-      });
-      
+    if (!Array.isArray(texts) || texts.length === 0) return [];
+    const output = new Array(texts.length).fill(null);
+    const batchSize = 2048;
+    for (let offset = 0; offset < texts.length; offset += batchSize) {
+      const original = texts.slice(offset, offset + batchSize);
+      const input = original.map(text => this.prepareEmbeddingText(text));
+      const missing = new Set(input.map((_text, index) => index));
       try {
-        const client = getEmbeddingClient();
-        const response = await client.embeddings.create(this.buildEmbeddingCreateParams(processedBatch));
-        
-        // Sort by index to ensure order matches input
-        const embeddings = response.data
-          .sort((a, b) => a.index - b.index)
-          .map(d => d.embedding);
-        
-        allEmbeddings.push(...embeddings);
-        
-        this.logger?.debug?.('Batch embeddings generated', {
-          batchSize: batch.length,
-          totalSoFar: allEmbeddings.length,
-          totalRequested: texts.length,
-          precision
-        });
-        
-      } catch (error) {
-        this.logger?.error?.('Batch embedding failed, falling back to individual calls', {
-          error: error.message,
-          batchSize: batch.length
-        });
-        
-        // Fallback to individual calls for this batch
-        for (const text of batch) {
-          const emb = await this.embed(text);
-          allEmbeddings.push(emb);
+        const response = await this.getEmbeddingClient().embeddings.create(
+          this.buildEmbeddingCreateParams(input),
+        );
+        for (const item of response?.data || []) {
+          if (!Number.isInteger(item?.index)
+              || item.index < 0
+              || item.index >= input.length
+              || !Array.isArray(item.embedding)
+              || !missing.has(item.index)) continue;
+          output[offset + item.index] = item.embedding;
+          missing.delete(item.index);
         }
+        this.logger?.debug?.('Batch embeddings generated', {
+          batchSize: original.length,
+          resolved: original.length - missing.size,
+          totalRequested: texts.length,
+        });
+      } catch (error) {
+        this.logger?.warn?.('Batch embedding failed; retrying inputs individually', {
+          error: error.message,
+          batchSize: input.length,
+        });
+      }
+      for (const index of missing) {
+        output[offset + index] = await this.embed(original[index]);
       }
     }
-    
-    return allEmbeddings;
+    return output;
   }
 
   /**
@@ -545,6 +509,17 @@ class NetworkMemory {
     this.deletedNodeIds.delete(nodeId);
     this.persistenceRevision += 1;
     this.persistenceGeneration += 1;
+  }
+
+  recordNodeAccess(nodeIds, { weightBoost = 0.05 } = {}) {
+    for (const id of nodeIds) {
+      const stored = this.nodes.get(id);
+      if (!stored) continue;
+      stored.accessed = new Date();
+      stored.accessCount = Number(stored.accessCount || 0) + 1;
+      stored.weight = Math.min(1, Number(stored.weight || 0) + weightBoost);
+      this.markNodeDirty(id);
+    }
   }
 
   markEdgeDirty(edgeKey) {
@@ -983,17 +958,14 @@ class NetworkMemory {
     
     // Mark as accessed and boost weight
     if (options.markAccess !== false && options.accessMode !== 'read-only') {
-      results.forEach(node => {
+      this.recordNodeAccess(results.map(node => node.id), { weightBoost: 0.1 });
+      for (const node of results) {
         const stored = this.nodes.get(node.id);
-        if (!stored) return;
-        stored.accessed = new Date();
-        stored.accessCount++;
-        stored.weight = Math.min(1.0, stored.weight + 0.1);
+        if (!stored) continue;
         node.accessed = stored.accessed;
         node.accessCount = stored.accessCount;
         node.weight = stored.weight;
-        this.markNodeDirty(stored.id);
-      });
+      }
     }
     
     return results;
@@ -1057,15 +1029,8 @@ class NetworkMemory {
       })
       .slice(0, topK);
 
-    if (options.markAccess !== false) {
-      results.forEach(node => {
-        const stored = this.nodes.get(node.id);
-        if (!stored) return;
-        stored.accessed = new Date();
-        stored.accessCount++;
-        stored.weight = Math.min(1.0, stored.weight + 0.05);
-        this.markNodeDirty(stored.id);
-      });
+    if (options.markAccess !== false && options.accessMode !== 'read-only') {
+      this.recordNodeAccess(results.map(node => node.id), { weightBoost: 0.05 });
     }
 
     return results;

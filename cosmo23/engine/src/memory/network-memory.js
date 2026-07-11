@@ -55,10 +55,16 @@ class NetworkMemory {
     CLAIM_SUPERSEDED_BY: 'claim_superseded_by'
   };
   
-  constructor(config, logger, eventEmitter = null) {
+  constructor(config, logger, eventEmitter = null, deps = {}) {
+    if (eventEmitter && typeof eventEmitter.getEmbeddingClient === 'function'
+        && typeof eventEmitter.emit !== 'function' && Object.keys(deps).length === 0) {
+      deps = eventEmitter;
+      eventEmitter = null;
+    }
     this.config = config;
     this.logger = logger;
     this.events = eventEmitter;  // Multi-tenant event emitter
+    this.getEmbeddingClient = deps.getEmbeddingClient || getOpenAIClient;
 
     // Initialize extractive summarizer for memory compression
     this.extractiveSummarizer = new ExtractiveSummarizer(logger);
@@ -95,56 +101,57 @@ class NetworkMemory {
     return getSingletonEvents();
   }
 
+  getEmbeddingModel() {
+    return process.env.EMBEDDING_MODEL || this.config.embedding?.model || 'nomic-embed-text';
+  }
+
+  getEmbeddingDimensions() {
+    const envDims = Number.parseInt(process.env.EMBEDDING_DIMENSIONS || '', 10);
+    if (Number.isSafeInteger(envDims) && envDims > 0) return envDims;
+    let dims = this.config.embedding?.dimensions;
+    if (typeof dims === 'object') dims = dims.default || 512;
+    return Number.isFinite(Number(dims)) ? Number(dims) : 512;
+  }
+
+  isOllamaEmbeddingEndpoint() {
+    return (process.env.EMBEDDING_PROVIDER || '').includes('ollama')
+      || (process.env.EMBEDDING_BASE_URL || '').includes('11434');
+  }
+
+  buildEmbeddingCreateParams(input) {
+    const params = { model: this.getEmbeddingModel(), input };
+    if (!this.isOllamaEmbeddingEndpoint()) {
+      params.encoding_format = 'float';
+      params.dimensions = this.getEmbeddingDimensions();
+    }
+    return params;
+  }
+
+  prepareEmbeddingText(text) {
+    const value = String(text || '');
+    if (this.tokenizer) {
+      const tokens = this.tokenizer.encode(value);
+      const maxTokens = this.isOllamaEmbeddingEndpoint() ? 512 : 8000;
+      if (tokens.length > maxTokens) {
+        const decoded = this.tokenizer.decode(tokens.slice(0, maxTokens));
+        return typeof decoded === 'string' ? decoded : new TextDecoder().decode(decoded);
+      }
+    }
+    const maxChars = this.isOllamaEmbeddingEndpoint() ? 2000 : 30000;
+    return value.length > maxChars ? value.slice(0, maxChars) : value;
+  }
+
   /**
    * Generate embedding using OpenAI
    * @param {string} text - Text to embed
    * Note: All embeddings use same dimensions (512) for network consistency
    */
   async embed(text) {
+    const originalText = String(text || '');
     try {
-      // Token-aware truncation (8191 token limit for text-embedding-3-small)
-      // Use 8000 tokens for safety margin (API can be strict with boundaries)
-      if (this.tokenizer) {
-        const tokens = this.tokenizer.encode(text);
-        const maxTokens = 8000; // Safety margin below 8191 limit
-        
-        if (tokens.length > maxTokens) {
-          this.logger?.warn?.('Text exceeds token limit, truncating', {
-            originalTokens: tokens.length,
-            truncatedTo: maxTokens,
-            textPreview: text.substring(0, 100) + '...'
-          });
-          
-          // Decode truncated tokens back to text
-          text = this.tokenizer.decode(tokens.slice(0, maxTokens));
-        }
-      } else {
-        // Fallback to character-based truncation if tokenizer unavailable
-        // Use 25000 chars (~6250 tokens avg) for safety
-        if (text.length > 25000) {
-          this.logger?.warn?.('Text exceeds character limit, truncating (tokenizer unavailable)', {
-            originalLength: text.length,
-            truncatedTo: 25000
-          });
-          text = text.substring(0, 25000);
-        }
-      }
-      
-      const client = getOpenAIClient();
-      
-      // Get dimension size from config (support both number and object format)
-      let dims = this.config.embedding.dimensions;
-      if (typeof dims === 'object') {
-        // Legacy support for old multi-dimension config
-        dims = dims.default || 512;
-      }
-      
-      const response = await client.embeddings.create({
-        model: this.config.embedding.model,
-        input: text,
-        encoding_format: 'float',
-        dimensions: dims
-      });
+      const preparedText = this.prepareEmbeddingText(originalText);
+      const client = this.getEmbeddingClient();
+      const response = await client.embeddings.create(this.buildEmbeddingCreateParams(preparedText));
 
       if (!response?.data?.[0]?.embedding) {
         this.logger?.error?.('Embedding API returned invalid response', {
@@ -159,18 +166,18 @@ class NetworkMemory {
       return response.data[0].embedding;
     } catch (error) {
       // If embedding fails even after truncation, try extractive summary as last resort
-      if (text.length > 5000 && this.extractiveSummarizer) {
+      if (originalText.length > 5000 && this.extractiveSummarizer) {
         this.logger?.warn?.('Embedding failed, trying extractive summary', { 
           error: error.message,
-          textLength: text.length
+          textLength: originalText.length
         });
         
         try {
-          const extracted = this.extractiveSummarizer.summarize(text);
+          const extracted = this.extractiveSummarizer.summarize(originalText);
           if (extracted.quality >= 0.5) {
             // Retry embedding with much shorter summary (recursive call with safety)
             const summaryText = extracted.summary;
-            if (summaryText.length < text.length) {
+            if (summaryText.length < originalText.length) {
               return await this.embed(summaryText);
             }
           }
@@ -183,7 +190,7 @@ class NetworkMemory {
       
       this.logger?.error?.('Embedding API call failed', {
         error: error.message,
-        textLength: text?.length
+        textLength: originalText.length
       });
       return null;
     }
@@ -196,73 +203,42 @@ class NetworkMemory {
    * @returns {Array} Array of embeddings (same order as input)
    */
   async embedBatch(texts) {
-    if (!texts || texts.length === 0) return [];
-    
-    const batchSize = 2048; // OpenAI's max batch size
-    const allEmbeddings = [];
-    
-    // Get dimension size from config (support both number and object format)
-    let dims = this.config.embedding.dimensions;
-    if (typeof dims === 'object') {
-      dims = dims.default || 512;
-    }
-    
-    // Process in batches of 2048
-    for (let i = 0; i < texts.length; i += batchSize) {
-      const batch = texts.slice(i, i + batchSize);
-      
-      // Token-aware truncation for each text in batch
-      const processedBatch = batch.map(text => {
-        if (this.tokenizer) {
-          const tokens = this.tokenizer.encode(text);
-          const maxTokens = 8191;
-          if (tokens.length > maxTokens) {
-            return this.tokenizer.decode(tokens.slice(0, maxTokens));
-          }
-        } else if (text.length > 30000) {
-          return text.substring(0, 30000);
-        }
-        return text;
-      });
-      
+    if (!Array.isArray(texts) || texts.length === 0) return [];
+    const output = new Array(texts.length).fill(null);
+    const batchSize = 2048;
+    for (let offset = 0; offset < texts.length; offset += batchSize) {
+      const original = texts.slice(offset, offset + batchSize);
+      const input = original.map(text => this.prepareEmbeddingText(text));
+      const missing = new Set(input.map((_text, index) => index));
       try {
-        const client = getOpenAIClient();
-        const response = await client.embeddings.create({
-          model: this.config.embedding.model,
-          input: processedBatch,  // Array of strings
-          encoding_format: 'float',
-          dimensions: dims
-        });
-        
-        // Sort by index to ensure order matches input
-        const embeddings = response.data
-          .sort((a, b) => a.index - b.index)
-          .map(d => d.embedding);
-        
-        allEmbeddings.push(...embeddings);
-        
-        this.logger?.debug?.('Batch embeddings generated', {
-          batchSize: batch.length,
-          totalSoFar: allEmbeddings.length,
-          totalRequested: texts.length,
-          precision
-        });
-        
-      } catch (error) {
-        this.logger?.error?.('Batch embedding failed, falling back to individual calls', {
-          error: error.message,
-          batchSize: batch.length
-        });
-        
-        // Fallback to individual calls for this batch
-        for (const text of batch) {
-          const emb = await this.embed(text);
-          allEmbeddings.push(emb);
+        const response = await this.getEmbeddingClient().embeddings.create(
+          this.buildEmbeddingCreateParams(input),
+        );
+        for (const item of response?.data || []) {
+          if (!Number.isInteger(item?.index)
+              || item.index < 0
+              || item.index >= input.length
+              || !Array.isArray(item.embedding)
+              || !missing.has(item.index)) continue;
+          output[offset + item.index] = item.embedding;
+          missing.delete(item.index);
         }
+        this.logger?.debug?.('Batch embeddings generated', {
+          batchSize: original.length,
+          resolved: original.length - missing.size,
+          totalRequested: texts.length,
+        });
+      } catch (error) {
+        this.logger?.warn?.('Batch embedding failed; retrying inputs individually', {
+          error: error.message,
+          batchSize: input.length,
+        });
+      }
+      for (const index of missing) {
+        output[offset + index] = await this.embed(original[index]);
       }
     }
-    
-    return allEmbeddings;
+    return output;
   }
 
   /**
@@ -703,6 +679,17 @@ class NetworkMemory {
     return existed;
   }
 
+  recordNodeAccess(nodeIds, { weightBoost = 0.05 } = {}) {
+    for (const id of nodeIds) {
+      const stored = this.nodes.get(id);
+      if (!stored) continue;
+      stored.accessed = new Date();
+      stored.accessCount = Number(stored.accessCount || 0) + 1;
+      stored.weight = Math.min(1, Number(stored.weight || 0) + weightBoost);
+      if (typeof this.markNodeDirty === 'function') this.markNodeDirty(id);
+    }
+  }
+
   /**
    * Query with spreading activation
    */
@@ -792,16 +779,14 @@ class NetworkMemory {
     // read-only calls are used for cross-brain search and must not mutate the
     // target brain.
     if (options.markAccess !== false && options.accessMode !== 'read-only') {
-      results.forEach(node => {
+      this.recordNodeAccess(results.map(node => node.id), { weightBoost: 0.1 });
+      for (const node of results) {
         const stored = this.nodes.get(node.id);
-        if (!stored) return;
-        stored.accessed = new Date();
-        stored.accessCount++;
-        stored.weight = Math.min(1.0, stored.weight + 0.1);
+        if (!stored) continue;
         node.accessed = stored.accessed;
         node.accessCount = stored.accessCount;
         node.weight = stored.weight;
-      });
+      }
     }
     
     return results;
