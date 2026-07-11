@@ -25,7 +25,10 @@ function operation(overrides = {}) {
     completedAt: ['queued', 'running'].includes(state) ? null : '2026-07-10T00:00:02.000Z',
     lastProviderActivityAt: '2026-07-10T00:00:02.000Z',
     lastProgressAt: '2026-07-10T00:00:01.000Z',
-    result: overrides.result ?? { answer: 'authoritative answer' },
+    result: overrides.result ?? {
+      answer: 'authoritative answer',
+      metadata: { provider: 'fixture-provider', model: 'fixture-model' },
+    },
     resultHandle: ['queued', 'running'].includes(state) ? null : 'brres_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     resultArtifact: null,
     error: overrides.error ?? null,
@@ -34,6 +37,7 @@ function operation(overrides = {}) {
       matchOutcome: 'matches',
       deltaWatermark: { revision: 7 },
       authoritativeTotals: { nodes: 140_086, edges: 456_709 },
+      returnedTotals: { nodes: 1, edges: 0 },
       selectedBrain: 'brain-jerry',
     },
     sourcePinDescriptor: null,
@@ -268,6 +272,99 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
   assert.equal(row.sourcePinDescriptor.sourceRevision, 7);
   assert.match(row.sourcePinDigest, /^sha256:[a-f0-9]{64}$/);
   assert.equal(row.liveProviderLargePgsGatePassed, true);
+
+  await assert.rejects(executeScenario({
+    scenario: 'pgs', modules, client,
+    values: {
+      'canary-receipt': canary,
+      'target-brain': 'brain-jerry',
+      'require-authoritative-nodes': '100000',
+      'pgs-sweep-selection': JSON.stringify({ provider: 'fixture-provider', model: 'fixture-model' }),
+      'pgs-synth-selection': JSON.stringify({ provider: 'fixture-provider', model: 'fixture-model' }),
+    },
+    context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry',
+    signal: new AbortController().signal,
+    activityLog: [
+      ...sweepOutputs.map((sweep, index) => providerTerminal(partial, {
+        eventSequence: index + 1,
+        phase: 'pgs_sweep',
+        providerCallId: `pgs:${sweep.workUnitId}`,
+        workUnitId: sweep.workUnitId,
+        partitionId: sweep.partitionId,
+        provider: sweep.provider,
+        model: sweep.model,
+      })),
+      providerTerminal(partial, {
+        eventSequence: sweepOutputs.length + 1,
+        phase: 'pgs_synthesis',
+        providerCallId: 'pgs:synthesis',
+        provider: 'wrong-synthesis-provider',
+        model: 'wrong-synthesis-model',
+        outcome: 'failed',
+      }),
+    ],
+  }), (error) => error.code === 'provider_terminal_unproven');
+
+  for (const outcome of ['cancelled', 'aborted']) {
+    await assert.rejects(executeScenario({
+      scenario: 'pgs', modules, client,
+      values: {
+        'canary-receipt': canary,
+        'target-brain': 'brain-jerry',
+        'require-authoritative-nodes': '100000',
+        'pgs-sweep-selection': JSON.stringify({ provider: 'fixture-provider', model: 'fixture-model' }),
+        'pgs-synth-selection': JSON.stringify({ provider: 'fixture-provider', model: 'fixture-model' }),
+      },
+      context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry',
+      signal: new AbortController().signal,
+      activityLog: [
+        ...sweepOutputs.map((sweep, index) => providerTerminal(partial, {
+          eventSequence: index + 1,
+          phase: 'pgs_sweep',
+          providerCallId: `pgs:${sweep.workUnitId}`,
+          workUnitId: sweep.workUnitId,
+          partitionId: sweep.partitionId,
+          provider: sweep.provider,
+          model: sweep.model,
+        })),
+        providerTerminal(partial, {
+          eventSequence: sweepOutputs.length + 1,
+          phase: 'pgs_synthesis',
+          providerCallId: 'pgs:synthesis',
+          outcome,
+        }),
+      ],
+    }), (error) => error.code === 'provider_terminal_unproven');
+  }
+
+  await assert.rejects(executeScenario({
+    scenario: 'pgs', modules, client,
+    values: {
+      'canary-receipt': canary,
+      'target-brain': 'brain-jerry',
+      'require-authoritative-nodes': '100000',
+      'pgs-sweep-selection': JSON.stringify({ provider: 'fixture-provider', model: 'fixture-model' }),
+    },
+    context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry',
+    signal: new AbortController().signal,
+    activityLog: [
+      ...sweepOutputs.map((sweep, index) => providerTerminal(partial, {
+        eventSequence: index + 1,
+        phase: 'pgs_sweep',
+        providerCallId: `pgs:${sweep.workUnitId}`,
+        workUnitId: sweep.workUnitId,
+        partitionId: sweep.partitionId,
+        provider: sweep.provider,
+        model: sweep.model,
+      })),
+      providerTerminal(partial, {
+        eventSequence: sweepOutputs.length + 1,
+        phase: 'pgs_synthesis',
+        providerCallId: 'pgs:synthesis',
+        outcome: 'failed',
+      }),
+    ],
+  }), (error) => error.code === 'provider_terminal_unproven');
 
   const degradedCanary = await canaryReceipt(state, state.context.authority, {
     sourceHealth: 'degraded',
@@ -874,6 +971,27 @@ test('authoritative canary discovery precedes query and typed failures remain fa
     activityLog: [providerTerminal(degradedProviderProse)],
   }), (error) => error.code === 'source_evidence_not_useful');
 
+  const healthyNoMatchProse = operation({
+    operationId: 'op_query_healthy_no_match_prose_0001',
+    sourceEvidence: {
+      sourceHealth: 'healthy', matchOutcome: 'no_match', completeCoverage: true,
+      deltaWatermark: { revision: 7 },
+      authoritativeTotals: { nodes: 140_086, edges: 456_709 },
+      returnedTotals: { nodes: 0, edges: 0 },
+      selectedBrain: 'brain-jerry',
+    },
+  });
+  await assert.rejects(executeScenario({
+    scenario: 'direct-query', modules,
+    client: {
+      async query() { return healthyNoMatchProse; },
+      async inspectOperation() { return healthyNoMatchProse; },
+    },
+    values: { 'canary-receipt': consumedCanary }, context: state.context,
+    baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
+    activityLog: [providerTerminal(healthyNoMatchProse)],
+  }), (error) => error.code === 'source_evidence_not_useful');
+
   for (const invalidIdentity of [
     { phase: 'synthesis', providerCallId: 'query' },
     { phase: 'query', providerCallId: 'synthesis' },
@@ -889,6 +1007,55 @@ test('authoritative canary discovery precedes query and typed failures remain fa
       activityLog: [providerTerminal(queryTerminal, invalidIdentity)],
     }), (error) => error.code === 'provider_terminal_unproven');
   }
+
+  for (const invalidPair of [
+    { provider: 'wrong-provider' },
+    { model: 'wrong-model' },
+  ]) {
+    await assert.rejects(executeScenario({
+      scenario: 'direct-query', modules,
+      client: {
+        async query() { return queryTerminal; },
+        async inspectOperation() { return queryTerminal; },
+      },
+      values: { 'canary-receipt': consumedCanary }, context: state.context,
+      baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
+      activityLog: [providerTerminal(queryTerminal, invalidPair)],
+    }), (error) => error.code === 'provider_terminal_unproven');
+  }
+
+  const compileTerminal = operation({
+    operationId: 'op_research_compile_exact_provider_0001',
+    operationType: 'research_compile',
+    result: {
+      relativePath: 'research-compile-exact-provider.md',
+      provider: 'fixture-provider',
+      model: 'fixture-model',
+    },
+  });
+  const compileModules = {
+    compileBrainTool: {
+      async execute() { return { metadata: { operationId: compileTerminal.operationId } }; },
+    },
+  };
+  const compileClient = { async inspectOperation() { return compileTerminal; } };
+  const compileValues = {
+    'canary-receipt': consumedCanary,
+    'target-brain': 'brain-jerry',
+  };
+  const compiled = await executeScenario({
+    scenario: 'completed-research-compile', modules: compileModules,
+    client: compileClient, values: compileValues, context: state.context,
+    baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
+    activityLog: [providerTerminal(compileTerminal)],
+  });
+  assert.equal(compiled.providerTerminalValidated, true);
+  await assert.rejects(executeScenario({
+    scenario: 'completed-research-compile', modules: compileModules,
+    client: compileClient, values: compileValues, context: state.context,
+    baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
+    activityLog: [providerTerminal(compileTerminal, { model: 'wrong-model' })],
+  }), (error) => error.code === 'provider_terminal_unproven');
 
   const canary = await canaryReceipt(state);
   await assert.rejects(executeScenario({
@@ -967,8 +1134,9 @@ test('positive reads require complete exact targets while zero-result requires h
     operationType: 'search',
     target: { domain: 'brain', brainId: 'brain-other', ownerAgent: 'other', accessMode: 'sibling' },
     sourceEvidence: {
-      sourceHealth: 'healthy', matchOutcome: 'matched', deltaWatermark: { revision: 7 },
-      authoritativeTotals: { nodes: 10, edges: 4 }, selectedBrain: 'brain-other',
+      sourceHealth: 'healthy', matchOutcome: 'matches', deltaWatermark: { revision: 7 },
+      authoritativeTotals: { nodes: 10, edges: 4 }, returnedTotals: { nodes: 1, edges: 0 },
+      selectedBrain: 'brain-other',
     },
   });
   await assert.rejects(executeScenario({
@@ -1068,7 +1236,11 @@ test('positive reads require complete exact targets while zero-result requires h
       text: JSON.stringify({
         results: [{ id: 'n-canary' }],
         evidence: {
-          sourceHealth: 'healthy', deltaWatermark: { revision: 7 }, selectedBrain,
+          sourceHealth: 'healthy', matchOutcome: 'matches',
+          deltaWatermark: { revision: 7 },
+          authoritativeTotals: { nodes: 140_086, edges: 456_709 },
+          returnedTotals: { nodes: 1, edges: 0 },
+          selectedBrain,
         },
       }),
     }] },
@@ -1142,7 +1314,11 @@ test('isolated synthesis reconnect and MCP disabled/unreachable outcomes are typ
   const values = { 'isolated-store': state.isolatedStore };
   const completed = operation({
     operationId: 'op_synthesis_0001', operationType: 'synthesis',
-    result: { generationMarker: 'generation-7' },
+    result: {
+      generationMarker: 'generation-7',
+      provider: 'fixture-provider',
+      model: 'fixture-model',
+    },
   });
   let reattached = 0;
   await assert.rejects(executeScenario({
@@ -1176,6 +1352,22 @@ test('isolated synthesis reconnect and MCP disabled/unreachable outcomes are typ
   assert.equal(synthesis.generationMarker, 'generation-7');
   assert.equal(synthesis.providerTerminalValidated, true);
   assert.equal(synthesis.lastProgressAt, completed.lastProgressAt);
+  await assert.rejects(executeScenario({
+    scenario: 'synthesis-reconnect', modules: {},
+    client: {
+      async synthesize() { return operation({ ...completed, state: 'running', result: null }); },
+      async reattachSynthesis() { return completed; },
+      async inspectOperation() { return completed; },
+    },
+    values, context: state.context, baseUrl: 'http://isolated', callerAgent: 'jerry',
+    signal: new AbortController().signal,
+    activityLog: [providerTerminal(completed, {
+      eventSequence: 7,
+      phase: 'synthesis',
+      providerCallId: 'synthesis',
+      provider: 'wrong-provider',
+    })],
+  }), (error) => error.code === 'provider_terminal_unproven');
   await assert.rejects(executeScenario({
     scenario: 'synthesis-reconnect', modules: {},
     client: {

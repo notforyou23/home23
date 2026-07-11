@@ -5476,7 +5476,21 @@ dashboard endpoint or a nonempty retained `isolatedStore`. SSE/progress rows use
 authority. Duplicate terminal rows or conflicting requester/authority/store
 metadata for one operation are a hard receipt failure.
 
+Every successful or partial provider-backed receipt also requires an exact
+provider-terminal identity and pair. Query events must equal
+`result.metadata.provider/model`; research-compile and synthesis events must
+equal `result.provider/model`. Every PGS sweep event remains bound to its exact
+work-unit output pair, and the `pgs_synthesis` terminal must equal the exact
+requested `pgsSynth` pair carried through the scenario. A missing pair, a
+nonempty but different provider/model, or a phase/call-ID mismatch is
+`provider_terminal_unproven`; provider prose cannot substitute for that proof.
+
 For live PGS, require a catalog/source receipt proving at least `PGS_LARGE_MIN_NODES=100000` authoritative nodes and run the configured provider on that pinned source; a 10% fraction without the size gate is not a large acceptance. If either the size gate or healthy external provider is unavailable, do **not** point a controlled provider at any live brain. Generate a 100,000-node/300,000-edge numeric-v1 source under an external `mktemp -d`, start a separate temp Home23 root with isolated requester dashboard and COSMO processes on allocated loopback ports, use isolated secrets/runtime/scratch, run `large-pgs-isolated`, capture both isolated PIDs, then guardedly stop its processes while retaining the proved fixture root and durable operation store through Step 11 protected readback. Record basename, device/inode, authority, requester, store root, and stopped PIDs; guarded removal is permitted only after every fixture operation rereads successfully. Its authority is `isolated-controlled` and the final receipt must say the live-provider large-PGS gate did not pass.
+
+The isolated large-PGS launcher injects its exact controlled
+`{provider:'controlled',model:'controlled-pgs'}` sweep and synthesis pairs into
+the request and receipt-validation path; it may not rely on an implicit server
+default that the acceptance helper cannot independently bind.
 
 The boundary script accepts `--catalog`, one target selector, and `--phase before|after|compare`; it validates exactly seven named entries and the resident/research root rules above, then recursively emits sorted boundary/path/type/size/mtime/SHA-256 records plus explicit absent-root records and the source manifest revision. If two kinds name the same root it walks the root once but emits records under both kinds. It never broadens a resident root to the containing agent instance and never follows a symlink.
 
@@ -6209,9 +6223,33 @@ node - "$LIVE_RECEIPT_DIR/brain-own-canary.json" <<'NODE'
 const fs = require('node:fs');
 const canary = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 if (!canary.query || !canary.nodeId || !Number.isSafeInteger(canary.sourceRevision)) process.exit(1);
-if (canary.sourceHealth !== 'healthy') process.exit(1);
+const evidence = canary.sourceEvidence;
+const authoritativeNodes = evidence?.authoritativeTotals?.nodes;
+const returnedNodes = evidence?.returnedTotals?.nodes;
+const exactPositive = evidence?.matchOutcome === 'matches'
+  && Number.isSafeInteger(authoritativeNodes) && authoritativeNodes > 0
+  && Number.isSafeInteger(returnedNodes) && returnedNodes > 0
+  && returnedNodes <= authoritativeNodes;
+const healthy = canary.sourceHealth === 'healthy'
+  && evidence?.sourceHealth === 'healthy'
+  && exactPositive;
+const degradedExactMatch = canary.sourceHealth === 'degraded'
+  && evidence?.sourceHealth === 'degraded'
+  && evidence.freshness === 'unknown'
+  && exactPositive;
+if (!healthy && !degradedExactMatch) process.exit(1);
+if (evidence?.selectedBrain !== canary.selectedBrain) process.exit(1);
+const evidenceRevision = [
+  evidence?.revision,
+  evidence?.sourceRevision,
+  evidence?.deltaWatermark?.revision,
+  evidence?.baseWatermark?.revision,
+  evidence?.identity?.revision,
+].find(Number.isSafeInteger);
+if (evidenceRevision !== canary.sourceRevision) process.exit(1);
 console.log(JSON.stringify({ query: canary.query, nodeId: canary.nodeId,
-  sourceRevision: canary.sourceRevision }));
+  sourceRevision: canary.sourceRevision, sourceHealth: canary.sourceHealth,
+  matchOutcome: evidence.matchOutcome, freshness: evidence.freshness }));
 NODE
 node scripts/live-brain-tools-smoke.mjs \
   --base-url http://127.0.0.1:5002 --caller-agent jerry --scenario own \
@@ -6232,7 +6270,7 @@ node scripts/live-brain-tools-smoke.mjs \
   --output "$LIVE_RECEIPT_DIR/brain-forrest-owned-canary.jsonl"
 ```
 
-The Jerry discovery scenario selects a stable unique token from a bounded authoritative source read and records its node ID plus revision. The `own` scenario imports the built `BrainOperationsClient` and invokes the real `brain_search`, `brain_status`, bounded `brain_memory_graph`, and `brain_query` executors with omitted targets using that exact token. The separately sampled `direct-query` scenario proves the exact durable query route on the same canary. The provider-free Forrest-owned discovery runs before Forrest's Step 7 BEFORE hashes so Step 11 has a real terminal operation owned by the Forrest requester without contaminating the later no-write window. Both dashboard and COSMO metric series must be fresh, retain their PIDs, show zero restart delta, and stay within the heap bound. Positive canaries must be complete and target-identical; a legacy projection may honestly report degraded plus a proved exact match/freshness unknown, but only healthy complete coverage may prove no-match or corpus-empty. A typed failure is recorded as a failure, never rendered as success or an empty brain.
+The Jerry discovery scenario selects a stable unique token from a bounded authoritative source read and records its node ID plus revision. The `own` scenario imports the built `BrainOperationsClient` and invokes the real `brain_search`, `brain_status`, bounded `brain_memory_graph`, and `brain_query` executors with omitted targets using that exact token. The separately sampled `direct-query` scenario proves the exact durable query route on the same canary. The provider-free Forrest-owned discovery runs before Forrest's Step 7 BEFORE hashes so Step 11 has a real terminal operation owned by the Forrest requester without contaminating the later no-write window. Both dashboard and COSMO metric series must be fresh, retain their PIDs, show zero restart delta, and stay within the heap bound. Positive canaries must be complete and target-identical. Healthy and degraded sources both require match outcome exactly `matches`, positive safe-integer authoritative and returned node totals, returned totals no larger than authority, and selected brain plus revision equal to the canary. A legacy projection additionally requires both receipt and evidence to say degraded and freshness exactly unknown. No unknown-match or zero-total evidence may pass. Only healthy complete coverage may prove no-match or corpus-empty. A typed failure is recorded as a failure, never rendered as success or an empty brain.
 
 - [ ] **Step 6: Resolve exact sibling and completed-research targets**
 
@@ -6729,45 +6767,195 @@ const expectedPath = path.join(temporaryRoot, `home23-forrest-config-${receiptRu
 if (file !== expectedPath || path.dirname(file) !== temporaryRoot
     || fs.realpathSync(temporaryRoot) !== temporaryRoot
     || fs.realpathSync(path.dirname(file)) !== temporaryRoot
+    || fs.realpathSync(path.dirname(output)) !== path.dirname(output)
+    || path.basename(output) !== 'forrest-config-backup-cleanup.json'
     || !/^[a-f0-9]{64}$/.test(expectedSha256)) {
   throw new Error('forrest_config_backup_cleanup_authority_invalid');
 }
+const lstatOrNull = (candidate) => {
+  try { return fs.lstatSync(candidate, { bigint: true }); }
+  catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+};
+const syncDirectory = (directory) => {
+  const handle = fs.openSync(directory, fs.constants.O_RDONLY);
+  try { fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
+};
+const sameIdentity = (left, right) => left && right
+  && left.dev === right.dev && left.ino === right.ino;
+const recovery = `${file}.cleanup-recovery`;
+if (lstatOrNull(recovery) !== null) {
+  throw new Error('forrest_config_backup_cleanup_recovery_exists');
+}
 const descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+let outputDescriptor;
+let outputIdentity;
+let opened;
+let backupBytes;
+let recoveryLinked = false;
+let originalRemoved = false;
+let receiptFinalized = false;
 try {
-  const opened = fs.fstatSync(descriptor);
-  const current = fs.lstatSync(file);
+  opened = fs.fstatSync(descriptor, { bigint: true });
+  const current = fs.lstatSync(file, { bigint: true });
   if (!opened.isFile() || current.isSymbolicLink() || current.dev !== opened.dev
-      || current.ino !== opened.ino || (opened.mode & 0o777) !== 0o600) {
+      || current.ino !== opened.ino || (opened.mode & 0o777n) !== 0o600n
+      || opened.nlink !== 1n) {
     throw new Error('forrest_config_backup_cleanup_identity_invalid');
   }
-  const actualSha256 = crypto.createHash('sha256').update(fs.readFileSync(descriptor)).digest('hex');
+  backupBytes = fs.readFileSync(descriptor);
+  const actualSha256 = crypto.createHash('sha256').update(backupBytes).digest('hex');
   if (actualSha256 !== expectedSha256) {
     throw new Error('forrest_config_backup_cleanup_digest_mismatch');
   }
-  const finalIdentity = fs.lstatSync(file);
+  const finalIdentity = fs.lstatSync(file, { bigint: true });
   if (finalIdentity.dev !== opened.dev || finalIdentity.ino !== opened.ino) {
     throw new Error('forrest_config_backup_cleanup_changed_concurrently');
   }
+
+  outputDescriptor = fs.openSync(
+    output,
+    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+    0o600,
+  );
+  outputIdentity = fs.fstatSync(outputDescriptor, { bigint: true });
+  const prepared = `${JSON.stringify({
+    schemaVersion: 1,
+    receiptRunId,
+    authority: 'live',
+    cleanupState: 'prepared',
+    backupBasename: path.basename(file),
+    backupSha256: expectedSha256,
+    backupRemoved: false,
+    recoveryRemoved: false,
+  }, null, 2)}\n`;
+  fs.writeFileSync(outputDescriptor, prepared, 'utf8');
+  fs.fsyncSync(outputDescriptor);
+  syncDirectory(path.dirname(output));
+
+  fs.linkSync(file, recovery);
+  recoveryLinked = true;
+  const recoveryIdentity = fs.lstatSync(recovery, { bigint: true });
+  const linkedOriginal = fs.lstatSync(file, { bigint: true });
+  if (!sameIdentity(recoveryIdentity, opened) || !sameIdentity(linkedOriginal, opened)
+      || recoveryIdentity.nlink !== 2n || linkedOriginal.nlink !== 2n) {
+    throw new Error('forrest_config_backup_cleanup_recovery_invalid');
+  }
+  syncDirectory(temporaryRoot);
+
   fs.unlinkSync(file);
-  const directory = fs.openSync(temporaryRoot, 'r');
-  try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+  originalRemoved = true;
+  syncDirectory(temporaryRoot);
+
+  const completed = Buffer.from(`${JSON.stringify({
+    schemaVersion: 1,
+    receiptRunId,
+    authority: 'live',
+    cleanupState: 'complete',
+    backupBasename: path.basename(file),
+    backupSha256: expectedSha256,
+    backupRemoved: true,
+    recoveryRemoved: true,
+  }, null, 2)}\n`);
+  fs.ftruncateSync(outputDescriptor, 0);
+  const written = fs.writeSync(outputDescriptor, completed, 0, completed.length, 0);
+  if (written !== completed.length) {
+    throw new Error('forrest_config_backup_cleanup_receipt_short_write');
+  }
+  fs.fsyncSync(outputDescriptor);
+  syncDirectory(path.dirname(output));
+  receiptFinalized = true;
+
+  const finalRecovery = fs.lstatSync(recovery, { bigint: true });
+  if (!sameIdentity(finalRecovery, opened)) {
+    throw new Error('forrest_config_backup_cleanup_recovery_changed');
+  }
+  fs.unlinkSync(recovery);
+  recoveryLinked = false;
+  syncDirectory(temporaryRoot);
+  if (lstatOrNull(file) !== null || lstatOrNull(recovery) !== null) {
+    throw new Error('forrest_config_backup_cleanup_failed');
+  }
+} catch (error) {
+  let rollbackError = null;
+  try {
+    let current = lstatOrNull(file);
+    if (originalRemoved && current === null) {
+      const recoveryIdentity = lstatOrNull(recovery);
+      if (sameIdentity(recoveryIdentity, opened)) {
+        fs.linkSync(recovery, file);
+      } else {
+        const restored = fs.openSync(
+          file,
+          fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
+            | fs.constants.O_NOFOLLOW,
+          Number(opened.mode & 0o777n),
+        );
+        try {
+          fs.writeFileSync(restored, backupBytes);
+          fs.fsyncSync(restored);
+        } finally {
+          fs.closeSync(restored);
+        }
+      }
+      syncDirectory(temporaryRoot);
+      current = fs.lstatSync(file, { bigint: true });
+    }
+    if (current !== null) {
+      const restoredDescriptor = fs.openSync(
+        file,
+        fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW,
+      );
+      let restoredBytes;
+      try {
+        const restoredIdentity = fs.fstatSync(restoredDescriptor, { bigint: true });
+        if (!current.isFile() || current.isSymbolicLink()
+            || !sameIdentity(current, restoredIdentity)
+            || (current.mode & 0o777n) !== 0o600n) {
+          throw new Error('forrest_config_backup_cleanup_rollback_invalid');
+        }
+        restoredBytes = fs.readFileSync(restoredDescriptor);
+      } finally {
+        fs.closeSync(restoredDescriptor);
+      }
+      if (crypto.createHash('sha256').update(restoredBytes).digest('hex')
+          !== expectedSha256) {
+        throw new Error('forrest_config_backup_cleanup_rollback_invalid');
+      }
+    }
+    const recoveryIdentity = lstatOrNull(recovery);
+    if (recoveryIdentity !== null && sameIdentity(recoveryIdentity, opened)) {
+      fs.unlinkSync(recovery);
+      recoveryLinked = false;
+      syncDirectory(temporaryRoot);
+    }
+  } catch (rollbackFailure) {
+    rollbackError = rollbackFailure;
+  }
+  try {
+    const currentOutput = lstatOrNull(output);
+    if (sameIdentity(currentOutput, outputIdentity)) {
+      fs.unlinkSync(output);
+      syncDirectory(path.dirname(output));
+    }
+  } catch (receiptCleanupFailure) {
+    rollbackError ||= receiptCleanupFailure;
+  }
+  error.rollbackError = rollbackError;
+  error.receiptFinalized = receiptFinalized;
+  error.recoveryRetained = recoveryLinked;
+  throw error;
 } finally {
+  if (outputDescriptor !== undefined) fs.closeSync(outputDescriptor);
   fs.closeSync(descriptor);
 }
-if (fs.existsSync(file)) throw new Error('forrest_config_backup_cleanup_failed');
-fs.writeFileSync(output, `${JSON.stringify({
-  schemaVersion: 1,
-  receiptRunId,
-  authority: 'live',
-  backupBasename: path.basename(file),
-  backupSha256: expectedSha256,
-  backupRemoved: true,
-}, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
 NODE
 unset FORREST_CONFIG_BACKUP FORREST_CONFIG_BACKUP_SHA256
 ```
 
-The helper must back up the exact dump bytes/mode before invoking `pm2 save`, compare the **full** live/dump tables, and refuse any unrelated drift before mutation. `PM2_CONFIGURED` contains all seven always-configured names plus exactly the enabled MCP rows present once in the regenerated ecosystem. Post-save it requires every expected process exactly once/online with the normalized ecosystem identity, the new dump equal to the frozen live table, unchanged unrelated normalized rows, no duplicate/stopped/errored entry, and unchanged live PIDs/restart counts across the save. A failed postcondition restores the backup atomically and blocks completion; never leave a partially verified resurrection file. Only after that successful live rollout does the guarded cleanup verify the external Forrest-config backup's canonical parent, exact generated name, regular-file identity, mode, and captured digest before unlinking and fsyncing its parent. Any cleanup mismatch fails closed and retains the backup; the secret-free cleanup receipt is created before the final artifact seal.
+The helper must back up the exact dump bytes/mode before invoking `pm2 save`, compare the **full** live/dump tables, and refuse any unrelated drift before mutation. `PM2_CONFIGURED` contains all seven always-configured names plus exactly the enabled MCP rows present once in the regenerated ecosystem. Post-save it requires every expected process exactly once/online with the normalized ecosystem identity, the new dump equal to the frozen live table, unchanged unrelated normalized rows, no duplicate/stopped/errored entry, and unchanged live PIDs/restart counts across the save. A failed postcondition restores the backup atomically and blocks completion; never leave a partially verified resurrection file. Only after that successful live rollout does the guarded cleanup verify the external Forrest-config backup's canonical parent, exact generated name, regular-file identity, single-link mode, captured bytes, and digest. It exclusively creates and fsyncs a prepared cleanup receipt before mutation, creates and fsyncs a same-inode recovery link, and only then removes the original name. The final receipt is written and fsynced through that already-owned descriptor before the recovery link is removed. Any later write, fsync, identity, or recovery-removal failure restores the original name from the same inode when available or from the still-open validated bytes, removes only the exact owned prepared receipt, and blocks completion with a recoverable mode-0600 backup. The secret-free completed cleanup receipt must exist before the final artifact seal.
 
 - [ ] **Step 13: Commit, push, and read back the verified live receipt before changing status**
 

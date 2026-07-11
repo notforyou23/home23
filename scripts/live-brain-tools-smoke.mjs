@@ -51,6 +51,10 @@ const PROVIDER_TERMINAL_IDENTITIES = new Map([
   ['research_compile', { phase: 'research_compile', providerCallId: 'research_compile' }],
   ['synthesis', { phase: 'synthesis', providerCallId: 'synthesis' }],
 ]);
+const ISOLATED_CONTROLLED_PGS_PAIR = Object.freeze({
+  provider: 'controlled',
+  model: 'controlled-pgs',
+});
 const PROVIDER_TERMINAL_OUTCOMES = new Set([
   'complete', 'partial', 'failed', 'cancelled', 'aborted',
 ]);
@@ -371,6 +375,19 @@ export function createActivityCollector({
   });
 }
 
+function terminalResultProviderPair(terminal) {
+  const source = terminal?.operationType === 'query'
+    ? terminal?.result?.metadata
+    : ['research_compile', 'synthesis'].includes(terminal?.operationType)
+      ? terminal?.result
+      : null;
+  if (!source || typeof source.provider !== 'string' || !source.provider.trim()
+      || typeof source.model !== 'string' || !source.model.trim()) {
+    return null;
+  }
+  return { provider: source.provider, model: source.model };
+}
+
 function providerTerminalEventValid(evidence, terminal, { retained = false } = {}) {
   const structurallyValid = evidence
     && (retained
@@ -389,9 +406,13 @@ function providerTerminalEventValid(evidence, terminal, { retained = false } = {
     && PROVIDER_TERMINAL_OUTCOMES.has(evidence.outcome);
   if (!structurallyValid) return false;
   const expectedIdentity = PROVIDER_TERMINAL_IDENTITIES.get(terminal.operationType);
-  return !expectedIdentity
-    || (evidence.phase === expectedIdentity.phase
-      && evidence.providerCallId === expectedIdentity.providerCallId);
+  if (!expectedIdentity) return true;
+  const expectedPair = terminalResultProviderPair(terminal);
+  return expectedPair !== null
+    && evidence.phase === expectedIdentity.phase
+    && evidence.providerCallId === expectedIdentity.providerCallId
+    && expectedPair.provider === evidence.provider
+    && expectedPair.model === evidence.model;
 }
 
 function dedupeProviderTerminalEvents(events) {
@@ -424,7 +445,7 @@ function dedupeProviderTerminalEvents(events) {
   return unique;
 }
 
-function pgsProviderTerminalCoverage(terminal, events) {
+function pgsProviderTerminalCoverage(terminal, events, synthesisPair) {
   const sweeps = terminal.result?.sweepOutputs;
   const successfulSweeps = terminal.result?.metadata?.pgs?.successfulSweeps;
   if (!Array.isArray(sweeps) || sweeps.length === 0
@@ -456,12 +477,19 @@ function pgsProviderTerminalCoverage(terminal, events) {
   if (!sweepsCovered) return false;
   const answerComplete = typeof terminal.result?.answer === 'string'
     && Boolean(terminal.result.answer.trim());
-  return events.some((event) => event.phase === 'pgs_synthesis'
+  return synthesisPair
+    && typeof synthesisPair.provider === 'string' && Boolean(synthesisPair.provider.trim())
+    && typeof synthesisPair.model === 'string' && Boolean(synthesisPair.model.trim())
+    && events.some((event) => event.phase === 'pgs_synthesis'
     && event.providerCallId === 'pgs:synthesis'
-    && (answerComplete ? event.outcome === 'complete' : event.outcome !== 'complete'));
+    && event.provider === synthesisPair.provider
+    && event.model === synthesisPair.model
+    && (answerComplete ? event.outcome === 'complete' : event.outcome === 'failed'));
 }
 
-function providerTerminalProof(terminal, activityLog, retainedEvidence) {
+function providerTerminalProof(terminal, activityLog, retainedEvidence, {
+  pgsSynthesisPair = null,
+} = {}) {
   const streamedRaw = activityLog.filter((activity) =>
     activity?.operationId === terminal.operationId
       && activity?.type === 'provider_call_terminal');
@@ -478,7 +506,7 @@ function providerTerminalProof(terminal, activityLog, retainedEvidence) {
       covered = covered && events.some((event) => event.outcome === 'complete');
     }
     if (terminal.operationType === 'pgs') {
-      covered = covered && pgsProviderTerminalCoverage(terminal, events);
+      covered = covered && pgsProviderTerminalCoverage(terminal, events, pgsSynthesisPair);
     }
     return covered;
   };
@@ -505,8 +533,13 @@ function terminalReceipt({
   context, values, baseUrl, callerAgent, scenario, terminal, activityLog = [], extras = {},
   retainedProviderTerminalEvidence = null,
 }) {
+  const pgsSynthesisPair = terminal.operationType === 'pgs'
+    ? exactPair(values, 'pgs-synth-selection')
+    : null;
   const providerProof = PROVIDER_OPERATION_TYPES.has(terminal.operationType)
-    ? providerTerminalProof(terminal, activityLog, retainedProviderTerminalEvidence)
+    ? providerTerminalProof(terminal, activityLog, retainedProviderTerminalEvidence, {
+        pgsSynthesisPair,
+      })
     : null;
   const providerTerminalValidated = providerProof?.validated ?? null;
   if (PROVIDER_OPERATION_TYPES.has(terminal.operationType)
@@ -642,14 +675,15 @@ async function canaryFromReceipt(values, context, callerAgent) {
 }
 
 function assertPositiveSourceEvidence(evidence) {
-  if (evidence?.sourceHealth === 'healthy') return;
-  const authoritativeNodes = Number(evidence?.authoritativeTotals?.nodes);
-  const returnedNodes = Number(evidence?.returnedTotals?.nodes);
-  if (evidence?.sourceHealth === 'degraded'
-      && evidence.freshness === 'unknown'
-      && evidence.matchOutcome === 'matches'
-      && Number.isSafeInteger(authoritativeNodes) && authoritativeNodes > 0
-      && Number.isSafeInteger(returnedNodes) && returnedNodes > 0) {
+  const authoritativeNodes = evidence?.authoritativeTotals?.nodes;
+  const returnedNodes = evidence?.returnedTotals?.nodes;
+  const exactPositive = evidence?.matchOutcome === 'matches'
+    && Number.isSafeInteger(authoritativeNodes) && authoritativeNodes > 0
+    && Number.isSafeInteger(returnedNodes) && returnedNodes > 0
+    && returnedNodes <= authoritativeNodes;
+  if (exactPositive && evidence?.sourceHealth === 'healthy') return;
+  if (exactPositive && evidence?.sourceHealth === 'degraded'
+      && evidence.freshness === 'unknown') {
     return;
   }
   throw typedError('source_evidence_not_useful');
@@ -3419,6 +3453,11 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       const fixtureModule = await import('./lib/isolated-brain-fixture.mjs');
       stopIsolatedFixture = fixtureModule.stopIsolatedFixture;
       const largePgs = scenario === 'large-pgs-isolated';
+      if (largePgs) {
+        const controlledPair = JSON.stringify(ISOLATED_CONTROLLED_PGS_PAIR);
+        values['pgs-sweep-selection'] ||= controlledPair;
+        values['pgs-synth-selection'] ||= controlledPair;
+      }
       fixture = await fixtureModule.startIsolatedFixture({
         fixtureRoot: path.resolve(one(values, 'isolated-fixture', { required: true })),
         context,
