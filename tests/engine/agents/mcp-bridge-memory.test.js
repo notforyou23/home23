@@ -106,6 +106,14 @@ for (const [name, Bridge] of implementations) {
     assert.equal(query.results.some((row) => row.id === 'tombstone'), false);
     assert.equal(query.evidence.sourceHealth, 'healthy');
     assert.equal(query.evidence.deltaWatermark.appliedRecords, 2);
+    assert.equal(query.evidence.identity.requesterAgent, 'jerry');
+    assert.equal(query.evidence.identity.targetAgent, 'jerry');
+    assert.equal(query.evidence.identity.brainId, 'brain-jerry');
+    assert.equal(query.evidence.identity.catalogRevision, 'catalog-test-1');
+    assert.equal(query.evidence.identity.kind, 'resident');
+    assert.equal(query.evidence.identity.sourceType, 'memory-manifest');
+    assert.equal(query.evidence.identity.accessMode, 'own');
+    assert.match(query.evidence.identity.operationId, /^mcp-/);
 
     const statistics = await bridge.get_memory_statistics();
     assert.equal(statistics.ok, true);
@@ -158,6 +166,9 @@ for (const [name, Bridge] of implementations) {
     assert.equal(query.results, null);
     assert.equal(query.evidence.sourceHealth, 'unavailable');
     assert.equal(query.evidence.matchOutcome, 'unknown');
+    assert.equal(query.evidence.identity.requesterAgent, 'jerry');
+    assert.equal(query.evidence.identity.brainId, 'brain-jerry');
+    assert.equal(query.evidence.identity.accessMode, 'own');
 
     const statistics = await bridge.get_memory_statistics();
     assert.equal(statistics.ok, false);

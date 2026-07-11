@@ -92,10 +92,30 @@ function enumerateMemoryMutationBoundaries(canonicalRoot, { extra = [] } = {}) {
     .sort((a, b) => a.kind.localeCompare(b.kind) || a.path.localeCompare(b.path)));
 }
 
-function unavailableSource(canonicalRoot, diagnostics = []) {
+function evidenceIdentity(canonicalRoot, options = {}) {
+  const supplied = options.identity;
+  if (supplied !== undefined
+      && (!supplied || Array.isArray(supplied) || typeof supplied !== 'object')) {
+    throw memorySourceError('invalid_request', 'source evidence identity is invalid');
+  }
+  if (supplied?.canonicalRoot && supplied.canonicalRoot !== canonicalRoot) {
+    throw memorySourceError('source_changed', 'source evidence root mismatch', { retryable: true });
+  }
+  if (supplied?.operationId && options.operationId
+      && supplied.operationId !== options.operationId) {
+    throw memorySourceError('source_changed', 'source evidence operation mismatch', { retryable: true });
+  }
+  return Object.freeze({
+    ...(supplied || {}),
+    canonicalRoot,
+    operationId: options.operationId || supplied?.operationId || null,
+  });
+}
+
+function unavailableSource(canonicalRoot, diagnostics = [], options = {}) {
   const evidence = createEvidence({
     implementation: 'manifest-v1',
-    identity: { canonicalRoot },
+    identity: evidenceIdentity(canonicalRoot, options),
     sourceHealth: SOURCE_HEALTH.UNAVAILABLE,
     matchOutcome: MATCH_OUTCOME.UNKNOWN,
     diagnostics,
@@ -178,9 +198,10 @@ async function openManifestSource(canonicalRoot, manifest, options = {}) {
   const legacyProjection = options.legacySourceFingerprint || null;
   const descriptor = createDescriptor(logicalRoot, manifest);
   const { overlay, appliedRecords } = await loadOverlay(canonicalRoot, manifest, options);
+  const identity = evidenceIdentity(logicalRoot, options);
   const evidenceBase = {
     implementation: legacyProjection ? 'legacy-resident-sidecar-projection' : 'manifest-v1',
-    identity: { canonicalRoot: logicalRoot, operationId: options.operationId || null },
+    identity,
     baseRevision: manifest.baseRevision,
     baseFile: manifest.activeBase.nodes.file,
     deltaRevision: manifest.currentRevision,
@@ -382,16 +403,16 @@ async function openMemorySource(brainDir, options = {}) {
         legacySourceFingerprint: projected.sourceFingerprint,
       });
     }
-    return unavailableSource(canonicalRoot, ['source_missing']);
+    return unavailableSource(canonicalRoot, ['source_missing'], options);
   } catch (error) {
     rethrowAbort(error, options.signal);
     if (isTypedMemorySourceError(error)) {
       if (error.code === 'source_unavailable' || error.code === 'invalid_memory_source') {
-        return unavailableSource(canonicalRoot, [error.message]);
+        return unavailableSource(canonicalRoot, [error.message], options);
       }
       throw error;
     }
-    return unavailableSource(canonicalRoot, [error.message || 'source_unavailable']);
+    return unavailableSource(canonicalRoot, [error.message || 'source_unavailable'], options);
   }
 }
 
