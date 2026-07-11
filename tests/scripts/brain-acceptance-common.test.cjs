@@ -89,3 +89,18 @@ test('receipt outputs are create-new and never overwrite or adopt a pre-existing
   assert.equal(await fs.readFile(json, 'utf8'), 'operator bytes\n');
   assert.equal(await fs.readFile(jsonl, 'utf8'), 'operator rows\n');
 });
+
+test('npm pretest cannot silently omit the isolated authority and lifecycle regressions', () => {
+  const scripts = require('../../package.json').scripts;
+  const aggregateName = 'test:brain-acceptance-runtime';
+  assert.equal(scripts.pretest.split(`npm run ${aggregateName}`).length - 1, 1);
+  const aggregate = scripts[aggregateName];
+  assert.equal(typeof aggregate, 'string');
+  for (const file of [
+    'tests/scripts/live-brain-tools-authority.test.cjs',
+    'tests/scripts/isolated-brain-fixture.test.cjs',
+    'tests/scripts/isolated-brain-cli.test.cjs',
+  ]) {
+    assert.equal(aggregate.split(file).length - 1, 1, `${file} registration count`);
+  }
+});

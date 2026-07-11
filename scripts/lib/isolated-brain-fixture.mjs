@@ -2,6 +2,7 @@
 
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { existsSync, readFileSync } from 'node:fs';
 import fsp from 'node:fs/promises';
 import http from 'node:http';
@@ -59,8 +60,18 @@ const {
   createBrainSourceService,
 } = require('../../engine/src/dashboard/brain-source-api.js');
 const {
+  createMcpProxyRouter,
+} = require('../../engine/src/dashboard/mcp-proxy-router.js');
+const {
+  buildMcpUnavailableEnvelope,
+  probeMcpAvailability,
+} = require('../../engine/src/dashboard/mcp-availability.js');
+const {
   createMemorySearchService,
 } = require('../../engine/src/dashboard/memory-search.js');
+const {
+  startMcpHttpServer,
+} = require('../../engine/mcp/http-server.js');
 const {
   createBrainProviderClientRegistry,
 } = require('../../cosmo23/lib/brain-provider-client-registry.js');
@@ -68,27 +79,62 @@ const {
   createCosmoBrainOperationRuntime,
 } = require('../../cosmo23/server/lib/brain-operation-runtime.js');
 const {
+  createResearchCompileProviderAdapter,
+} = require('../../cosmo23/server/lib/research-compile-provider-adapter.js');
+const {
+  createResearchOperationExecutors,
+} = require('../../cosmo23/server/lib/research-operation-executors.js');
+const {
+  readPinnedIntelligence,
+} = require('../../cosmo23/server/lib/research-pinned-source-reader.js');
+const {
+  createRequesterOutputWriter,
+} = require('../../cosmo23/server/lib/research-requester-output-writer.js');
+const {
   createBrainOperationRoutes,
 } = require('../../cosmo23/server/lib/brain-operation-routes.js');
 const {
+  getModelCapabilities,
+} = require('../../cosmo23/server/config/model-catalog.js');
+const {
+  requireCompleteProviderResult,
+} = require('../../cosmo23/lib/provider-completion.js');
+const {
   createMemorySourcePinProvider,
   createOperationScratchQuota,
+  openMemorySource,
   readManifest,
   writeJsonlGzAtomic,
   writeManifestAtomic,
 } = require('../../shared/memory-source');
+const {
+  createMemoryTools,
+} = require('../../shared/memory-source/mcp-tools.cjs');
+const {
+  createMcpReadinessController,
+  createSnapshotScalarStateReader,
+} = require('../../shared/memory-source/mcp-http-runtime.cjs');
 
 const CHILD_READY_TIMEOUT_MS = 30_000;
 const CHILD_STOP_TIMEOUT_MS = 10_000;
-const INTERNAL_ROLE = new Set(['cosmo', 'dashboard']);
+const INTERNAL_ROLE = new Set(['cosmo', 'dashboard', 'mcp']);
+const OWNED_CHILDREN = new WeakMap();
+const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const CONTROLLED_PROVIDER = 'controlled';
 const CONTROLLED_QUERY_MODEL = 'controlled-query';
 const CONTROLLED_PGS_MODEL = 'controlled-pgs';
 const CONTROLLED_SYNTHESIS_MODEL = 'controlled-synthesis';
+const METRIC_SEMANTICS = Object.freeze({
+  v8HeapUsedBytes: 'request-time-sample',
+  rssBytes: 'request-time-sample',
+  processMaxRssBytes: 'process-lifetime-high-water',
+});
+let observedProcessMaxRssMiB = 0;
 
-function boundaries(root) {
+function boundaries(root, kind = 'resident') {
+  const brainRoot = kind === 'research' ? path.join(root, 'brain') : root;
   return [
-    { kind: 'brain', path: root },
+    { kind: 'brain', path: brainRoot },
     { kind: 'run', path: root },
     { kind: 'pgs', path: path.join(root, 'pgs-sessions') },
     { kind: 'session', path: path.join(root, 'sessions') },
@@ -99,19 +145,28 @@ function boundaries(root) {
 }
 
 function catalogFor(config) {
-  const entry = ({ id, ownerAgent, displayName, kind = 'resident', lifecycle = 'resident' }) => ({
+  const entry = ({
+    id,
+    ownerAgent,
+    displayName,
+    kind = 'resident',
+    lifecycle = 'resident',
+    canonicalRoot = config.brainDir,
+    nodeCount = config.nodeCount,
+    edgeCount = config.edgeCount,
+  }) => ({
     id,
     displayName,
     ownerAgent,
     kind,
     lifecycle,
-    canonicalRoot: config.brainDir,
+    canonicalRoot,
     sourceType: 'memory-manifest',
-    nodeCount: config.nodeCount,
-    edgeCount: config.edgeCount,
+    nodeCount,
+    edgeCount,
     modifiedAt: config.createdAt,
     route: `/api/brain/${id}`,
-    mutationBoundaries: boundaries(config.brainDir),
+    mutationBoundaries: boundaries(canonicalRoot, kind),
   });
   return {
     catalogRevision: config.catalogRevision,
@@ -121,6 +176,19 @@ function catalogFor(config) {
         id: `${config.brainId}-sibling`,
         ownerAgent: `${config.agent}-sibling`,
         displayName: `${config.agent} sibling`,
+        canonicalRoot: config.siblingBrainDir,
+        nodeCount: config.siblingNodeCount,
+        edgeCount: config.siblingEdgeCount,
+      }),
+      entry({
+        id: `${config.brainId}-research-completed`,
+        ownerAgent: `${config.agent}-research`,
+        displayName: `${config.agent} completed research`,
+        kind: 'research',
+        lifecycle: 'completed',
+        canonicalRoot: config.researchBrainDir,
+        nodeCount: config.researchNodeCount,
+        edgeCount: config.researchEdgeCount,
       }),
       entry({
         id: `${config.brainId}-unavailable`,
@@ -207,11 +275,23 @@ async function writeJsonAtomic(file, value) {
 }
 
 async function writeMetrics(file, role, restartCount = 0, telemetry = {}) {
+  const memory = process.memoryUsage();
+  const rssMiB = memory.rss / (1024 * 1024);
+  const resourceMaxRssMiB = process.resourceUsage().maxRSS / 1024;
+  observedProcessMaxRssMiB = Math.max(
+    observedProcessMaxRssMiB,
+    rssMiB,
+    resourceMaxRssMiB,
+  );
   await writeJsonAtomic(file, {
+    schemaVersion: 2,
     role,
     pid: process.pid,
     restartCount,
-    heapUsedMiB: process.memoryUsage().heapUsed / (1024 * 1024),
+    v8HeapUsedMiB: memory.heapUsed / (1024 * 1024),
+    rssMiB,
+    processMaxRssMiB: observedProcessMaxRssMiB,
+    semantics: METRIC_SEMANTICS,
     providerStarts: telemetry.providerStarts ?? 0,
     providerCompletions: telemetry.providerCompletions ?? 0,
     providerAborts: telemetry.providerAborts ?? 0,
@@ -254,8 +334,8 @@ function controlledProviderClient(config, telemetry, model) {
         type: 'controlled_provider_started',
         at: telemetry.lastProviderStartedAt,
       });
-      const requestedDelay = /controlled lifecycle|detach|cancel|restart/i
-        .test(String(options.input || ''))
+      const requestedDelay = model === CONTROLLED_SYNTHESIS_MODEL
+        || /controlled lifecycle|detach|cancel|restart/i.test(String(options.input || ''))
         ? Math.max(config.operationDelayMs, 750)
         : config.operationDelayMs;
       await waitControlled(requestedDelay, options.signal, telemetry);
@@ -328,6 +408,17 @@ function freshTelemetry() {
   };
 }
 
+function unavailableResearchProcessManager() {
+  const unavailable = async () => { throw typedError('fixture_research_process_unavailable'); };
+  return Object.freeze({
+    createOwnedRun: unavailable,
+    start: unavailable,
+    continue: unavailable,
+    stopAndWait: unavailable,
+    watch: unavailable,
+  });
+}
+
 async function runCosmoChild(config) {
   const { QueryEngine } = require('../../cosmo23/lib/query-engine.js');
   const telemetry = freshTelemetry();
@@ -338,6 +429,42 @@ async function runCosmoChild(config) {
     providerRegistry,
     modelCatalog,
   });
+  const executeEnhancedQuery = queryEngine.executeEnhancedQuery.bind(queryEngine);
+  queryEngine.executeEnhancedQuery = async (query, options = {}) => {
+    options.reportEvent?.({
+      type: 'progress',
+      phase: options.enablePGS === true ? 'pgs' : 'query',
+      message: 'Controlled fixture entered the production pinned query executor',
+    });
+    return executeEnhancedQuery(query, options);
+  };
+  const compileSectionWithProvider = createResearchCompileProviderAdapter({
+    resolveConfiguredPair: async () => ({
+      provider: CONTROLLED_PROVIDER,
+      model: CONTROLLED_QUERY_MODEL,
+    }),
+    getExactProviderClient: (provider, model) => providerRegistry.getExact(provider, model),
+    requireCompleteProviderResult,
+    getModelCapabilities: (provider, model) => getModelCapabilities(
+      modelCatalog,
+      provider,
+      model,
+    ),
+  });
+  const researchExecutors = createResearchOperationExecutors({
+    processManager: unavailableResearchProcessManager(),
+    resolveOwnedRun: async () => null,
+    readPinnedIntelligence,
+    createRequesterOutputWriter: (request) => createRequesterOutputWriter({
+      home23Root: config.fixtureRoot,
+      ...request,
+    }),
+    compileSectionWithProvider,
+  });
+  const extraExecutors = new Map([
+    ['research_compile', researchExecutors.get('research_compile')],
+    ['research_intelligence', researchExecutors.get('research_intelligence')],
+  ]);
   const catalog = catalogFor(config);
   const runtime = createCosmoBrainOperationRuntime({
     home23Root: config.fixtureRoot,
@@ -347,27 +474,93 @@ async function runCosmoChild(config) {
     modelCatalog,
     providerRegistry,
     queryEngine,
+    extraExecutors,
   });
   const app = express();
   app.get('/health', (_request, response) => response.json({
     ok: true, role: 'cosmo', pid: process.pid,
   }));
   app.get('/telemetry', (_request, response) => response.json({ ...telemetry, pid: process.pid }));
+  app.get('/fixture/operations/:operationId', (request, response) => {
+    const record = runtime.worker.records.get(request.params.operationId);
+    if (!record) return response.status(404).json({ error: { code: 'worker_not_found' } });
+    return response.json({
+      operationId: record.operationId,
+      operationType: record.operationType,
+      state: record.state,
+      phase: record.phase,
+      eventSequence: record.eventSequence,
+      events: structuredClone(record.events),
+    });
+  });
   app.use(createBrainOperationRoutes({ worker: runtime.worker }));
   const server = http.createServer(app);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   if (!address || typeof address === 'string') throw typedError('fixture_listener_failed');
+  await writeMetrics(config.metricsFile, 'cosmo', 0, telemetry);
   await writeJsonAtomic(config.readyFile, {
-    role: 'cosmo', pid: process.pid, port: address.port, metricsPath: config.metricsFile,
+    role: 'cosmo', pid: process.pid, port: address.port,
+    startToken: config.startToken, metricsPath: config.metricsFile,
   });
   const metrics = setInterval(() => writeMetrics(
     config.metricsFile, 'cosmo', 0, telemetry,
   ).catch(() => {}), 50);
-  await writeMetrics(config.metricsFile, 'cosmo', 0, telemetry);
   const shutdown = async () => {
     clearInterval(metrics);
     await runtime.worker.stop().catch(() => {});
+    server.closeIdleConnections?.();
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+    process.exit(0);
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+}
+
+async function runMcpChild(config) {
+  const catalog = catalogFor(config);
+  const readScalarState = createSnapshotScalarStateReader({ brainDir: config.brainDir });
+  const memoryTools = createMemoryTools({
+    brainDir: config.brainDir,
+    home23Root: config.fixtureRoot,
+    requesterAgent: config.agent,
+    readScalarState,
+    logger: { info() {}, warn() {}, error() {}, debug() {} },
+    resolveTargetContext: async () => Object.freeze({
+      catalogRevision: catalog.catalogRevision,
+      accessMode: 'own',
+      target: Object.freeze(resolveTarget(catalog, config.agent, {})),
+    }),
+  });
+  const readiness = createMcpReadinessController({
+    memoryTools,
+    retryMs: 50,
+    logger: { info() {}, warn() {}, error() {}, debug() {} },
+  });
+  await readiness.refresh();
+  const server = startMcpHttpServer({
+    port: 0,
+    host: '127.0.0.1',
+    log: false,
+    memoryTools,
+    readScalarState,
+    readRecentThoughts: async () => [],
+    readiness,
+  });
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string') throw typedError('fixture_listener_failed');
+  await writeMetrics(config.metricsFile, 'mcp');
+  await writeJsonAtomic(config.readyFile, {
+    role: 'mcp', pid: process.pid, port: address.port,
+    startToken: config.startToken, metricsPath: config.metricsFile,
+  });
+  const metrics = setInterval(() => writeMetrics(
+    config.metricsFile, 'mcp', 0,
+  ).catch(() => {}), 50);
+  const shutdown = async () => {
+    clearInterval(metrics);
     server.closeIdleConnections?.();
     server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
@@ -386,12 +579,15 @@ async function runDashboardChild(config) {
   await fsp.mkdir(operationsRoot, { recursive: true, mode: 0o700 });
   const remoteWorker = createCosmoBrainOperationWorkerClient({
     baseUrl: config.cosmoBaseUrl,
-    sourceOperationTypes: ['query', 'pgs'],
+    sourceOperationTypes: ['query', 'pgs', 'research_compile', 'research_intelligence'],
   });
   const worker = new BrainOperationWorkerAdapter({
     remoteWorker,
     supportsSourceOperations: true,
-    sourceOperationTypes: ['search', 'status', 'graph', 'graph_export', 'query', 'pgs', 'synthesis'],
+    sourceOperationTypes: [
+      'search', 'status', 'graph', 'graph_export', 'query', 'pgs', 'synthesis',
+      'research_compile', 'research_intelligence',
+    ],
   });
   const brainSourceService = createBrainSourceService({
     brainDir: config.brainDir,
@@ -404,7 +600,9 @@ async function runDashboardChild(config) {
     home23Root: config.fixtureRoot,
     requesterAgent: config.agent,
     resolveTargetContext: async () => coordinator.resolveTargetContext({}),
-    embedQuery: async () => null,
+    embedQuery: async (query) => /authoritative isolated/i.test(String(query || ''))
+      ? [1, 0]
+      : [0, 1],
     loadAnn: async () => null,
     logger: { info() {}, warn() {}, error() {}, debug() {} },
   });
@@ -563,6 +761,13 @@ async function runDashboardChild(config) {
   coordinator = active.coordinator;
   const app = express();
   app.use(express.json({ limit: '16mb' }));
+  app.use(createMcpProxyRouter({
+    port: config.mcpPort,
+    isEnabled: () => true,
+    probeAvailability: probeMcpAvailability,
+    buildUnavailableEnvelope: buildMcpUnavailableEnvelope,
+    logger: { info() {}, warn() {}, error() {}, debug() {} },
+  }));
   app.get('/health', (_request, response) => response.json({
     ok: true, role: 'dashboard', pid: process.pid,
   }));
@@ -592,13 +797,14 @@ async function runDashboardChild(config) {
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   if (!address || typeof address === 'string') throw typedError('fixture_listener_failed');
+  await writeMetrics(config.metricsFile, 'dashboard', 0, telemetry);
   await writeJsonAtomic(config.readyFile, {
-    role: 'dashboard', pid: process.pid, port: address.port, metricsPath: config.metricsFile,
+    role: 'dashboard', pid: process.pid, port: address.port,
+    startToken: config.startToken, metricsPath: config.metricsFile,
   });
   const metrics = setInterval(() => writeMetrics(
     config.metricsFile, 'dashboard', telemetry.coordinatorRestarts, telemetry,
   ).catch(() => {}), 50);
-  await writeMetrics(config.metricsFile, 'dashboard', 0, telemetry);
   const shutdown = async () => {
     clearInterval(metrics);
     await active.coordinator.stop().catch(() => {});
@@ -664,9 +870,14 @@ async function writeFixtureFile(file, value) {
   }
 }
 
-async function prepareSyntheticSource(fixtureRoot, agent, nodeCount, edgeCount) {
-  const brainDir = path.join(fixtureRoot, 'instances', agent, 'brain');
-  const workspacePath = path.join(fixtureRoot, 'instances', agent, 'workspace');
+async function prepareSyntheticSource(fixtureRoot, agent, nodeCount, edgeCount, options = {}) {
+  const brainDir = options.brainDir
+    || path.join(fixtureRoot, 'instances', agent, 'brain');
+  const workspacePath = options.workspacePath
+    || path.join(fixtureRoot, 'instances', agent, 'workspace');
+  const generation = options.generation || 'isolated-g1';
+  const canaryConcept = options.canaryConcept
+    || 'authoritative isolated own canary production pinned source';
   await fsp.mkdir(brainDir, { recursive: true, mode: 0o700 });
   await fsp.mkdir(workspacePath, { recursive: true, mode: 0o700 });
   const nodesFile = path.join(brainDir, 'memory-nodes.base-1.jsonl.gz');
@@ -680,7 +891,7 @@ async function prepareSyntheticSource(fixtureRoot, agent, nodeCount, edgeCount) 
   if (existingManifest) {
     if (existingManifest.summary.nodeCount !== nodeCount
         || existingManifest.summary.edgeCount !== edgeCount
-        || existingManifest.generation !== 'isolated-g1'
+        || existingManifest.generation !== generation
         || existingManifest.currentRevision !== 1) {
       throw typedError('isolated_fixture_source_mismatch');
     }
@@ -690,11 +901,12 @@ async function prepareSyntheticSource(fixtureRoot, agent, nodeCount, edgeCount) 
       writeGzipJsonl(nodesFile, nodeCount, (index) => ({
         id: index + 1,
         concept: index === 0
-          ? 'authoritative isolated canary production pinned source'
+          ? canaryConcept
           : `isolated generated evidence node ${index + 1}`,
         tag: index === 0 ? 'canary' : 'generated',
         cluster: Math.floor(index / 250),
         clusterId: `cluster-${Math.floor(index / 250)}`,
+        embedding: [1, 0],
       })),
       writeGzipJsonl(edgesFile, edgeCount, (index) => ({
         source: (index % nodeCount) + 1,
@@ -706,7 +918,7 @@ async function prepareSyntheticSource(fixtureRoot, agent, nodeCount, edgeCount) 
     await fsp.writeFile(deltaFile, '', { mode: 0o600, flag: 'wx' });
     await writeManifestAtomic(brainDir, {
       formatVersion: 1,
-      generation: 'isolated-g1',
+      generation,
       baseRevision: 1,
       currentRevision: 1,
       activeDeltaEpoch: 'e1',
@@ -731,7 +943,7 @@ async function prepareSyntheticSource(fixtureRoot, agent, nodeCount, edgeCount) 
     });
   }
   await writeFixtureFile(snapshotFile, `${JSON.stringify({
-    nodeCount, edgeCount, currentRevision: 1, generation: 'isolated-g1',
+    nodeCount, edgeCount, currentRevision: 1, generation,
     savedAt: '2026-07-10T00:00:00.000Z',
   })}\n`);
   await writeFixtureFile(stateFile, `${canonicalJson(initialSynthesisState())}\n`);
@@ -752,7 +964,40 @@ async function prepareSyntheticSource(fixtureRoot, agent, nodeCount, edgeCount) 
   };
 }
 
+async function discoverPreparedCanary(source, brainId) {
+  const opened = await openMemorySource(source.brainDir);
+  let iterator = null;
+  try {
+    const evidence = opened.getEvidence();
+    iterator = opened.iterateNodes()[Symbol.asyncIterator]();
+    const first = await iterator.next();
+    if (first.done || first.value?.id === undefined
+        || typeof first.value?.concept !== 'string'
+        || evidence.sourceHealth !== 'healthy'
+        || !Number.isSafeInteger(opened.revision)) {
+      throw typedError('isolated_fixture_canary_unavailable');
+    }
+    const tokens = first.value.concept.trim().split(/\s+/)
+      .filter((token) => token.length >= 5 && token.length <= 64);
+    const query = tokens.slice(0, 4).join(' ');
+    if (!query) throw typedError('isolated_fixture_canary_unavailable');
+    return Object.freeze({
+      query,
+      nodeId: String(first.value.id),
+      sourceRevision: opened.revision,
+      sourceHealth: 'healthy',
+      selectedBrain: brainId,
+      discoveryRoute: 'production-memory-source-reader',
+    });
+  } finally {
+    await iterator?.return?.();
+    await opened.close();
+  }
+}
+
 async function waitReady(file, child, timeoutMs = CHILD_READY_TIMEOUT_MS) {
+  const ownership = OWNED_CHILDREN.get(child);
+  if (!ownership) throw typedError('isolated_child_not_owned');
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
@@ -760,7 +1005,9 @@ async function waitReady(file, child, timeoutMs = CHILD_READY_TIMEOUT_MS) {
     }
     try {
       const ready = await readJson(file);
-      if (ready.pid !== child.pid || !Number.isSafeInteger(ready.port) || ready.port < 1) {
+      if (ready.pid !== child.pid || ready.role !== ownership.role
+          || ready.startToken !== ownership.startToken
+          || !Number.isSafeInteger(ready.port) || ready.port < 1) {
         throw typedError('isolated_child_identity_mismatch');
       }
       return ready;
@@ -792,6 +1039,11 @@ function spawnChild(configFile, role) {
     }
   } catch { /* normal checkout has a .git directory */ }
   if (process.env.NODE_PATH) nodePaths.push(...process.env.NODE_PATH.split(path.delimiter));
+  const childConfig = JSON.parse(readFileSync(configFile, 'utf8'));
+  if (childConfig.role !== role || typeof childConfig.startToken !== 'string'
+      || !/^[0-9a-f-]{36}$/i.test(childConfig.startToken)) {
+    throw typedError('isolated_child_invocation_invalid');
+  }
   const childEnv = {
     ...process.env,
     HOME23_ISOLATED_FIXTURE_CHILD: '1',
@@ -804,6 +1056,12 @@ function spawnChild(configFile, role) {
     stdio: ['ignore', 'ignore', 'pipe'],
     env: childEnv,
   });
+  OWNED_CHILDREN.set(child, {
+    pid: child.pid,
+    role,
+    startToken: childConfig.startToken,
+    configFile,
+  });
   let stderr = '';
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', (chunk) => { stderr = `${stderr}${chunk}`.slice(-64 * 1024); });
@@ -812,7 +1070,13 @@ function spawnChild(configFile, role) {
 }
 
 async function stopChild(child) {
-  if (!child || child.exitCode !== null) return { pid: child?.pid ?? null, signal: null, exited: true };
+  if (!child) return { pid: null, signal: null, exited: true };
+  const ownership = OWNED_CHILDREN.get(child);
+  if (!ownership || ownership.pid !== child.pid
+      || !Number.isSafeInteger(child.pid) || child.pid < 1) {
+    throw typedError('isolated_child_not_owned');
+  }
+  if (child.exitCode !== null) return { pid: child.pid, signal: null, exited: true };
   const completed = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
   child.kill('SIGTERM');
   const timeout = Symbol('timeout');
@@ -870,19 +1134,77 @@ export async function startIsolatedFixture({
     throw typedError('isolated_fixture_configuration_invalid');
   }
   const fixture = await canonicalDirectory(fixtureRoot, 'isolated fixture');
+  if (isInsideOrEqual(REPOSITORY_ROOT, fixture.path)
+      || isInsideOrEqual(fixture.path, REPOSITORY_ROOT)) {
+    throw typedError('isolated_fixture_live_root_refused');
+  }
   if (isInsideOrEqual(context.receiptRunDir, fixture.path)
       || isInsideOrEqual(fixture.path, context.receiptRunDir)) {
     throw typedError('isolated_fixture_receipt_overlap');
   }
   const owner = await assertFixtureOwnership(fixture, context);
-  const source = await prepareSyntheticSource(fixture.path, agent, nodeCount, edgeCount);
+  const source = await prepareSyntheticSource(
+    fixture.path,
+    agent,
+    nodeCount,
+    edgeCount,
+    { canaryConcept: 'authoritative isolated own canary production pinned source' },
+  );
+  const siblingSource = await prepareSyntheticSource(
+    fixture.path,
+    `${agent}-sibling`,
+    nodeCount,
+    edgeCount,
+    {
+      generation: 'isolated-sibling-g1',
+      canaryConcept: 'authoritative isolated sibling canary production pinned source',
+    },
+  );
+  const researchRoot = path.join(
+    fixture.path,
+    'instances',
+    agent,
+    'workspace',
+    'research',
+    'runs',
+    'completed-fixture-run',
+  );
+  const researchSource = await prepareSyntheticSource(
+    fixture.path,
+    agent,
+    nodeCount,
+    edgeCount,
+    {
+      brainDir: researchRoot,
+      workspacePath: source.workspacePath,
+      generation: 'isolated-research-g1',
+      canaryConcept: 'authoritative isolated completed research canary production pinned source',
+    },
+  );
+  const brainId = `brain-${agent}`;
+  const canary = await discoverPreparedCanary(source, brainId);
   const runtime = path.join(fixture.path, 'runtime', 'isolated-fixture');
   await fsp.mkdir(runtime, { recursive: true, mode: 0o700 });
+  const token = randomUUID();
+  const capabilityKeyFile = path.join(runtime, `capability-${token}.key`);
+  const capabilityKey = createHash('sha256')
+    .update(`${fixture.path}\0${context.receiptRunId}\0${randomUUID()}`)
+    .digest('hex');
+  await fsp.writeFile(capabilityKeyFile, `${capabilityKey}\n`, {
+    mode: 0o600,
+    flag: 'wx',
+  });
   const baseConfig = {
     fixtureRoot: fixture.path,
     agent,
-    brainId: `brain-${agent}`,
+    brainId,
     ...source,
+    siblingBrainDir: siblingSource.brainDir,
+    siblingNodeCount: nodeCount,
+    siblingEdgeCount: edgeCount,
+    researchBrainDir: researchSource.brainDir,
+    researchNodeCount: nodeCount,
+    researchEdgeCount: edgeCount,
     nodeCount,
     edgeCount,
     sourceRevision: 1,
@@ -891,12 +1213,10 @@ export async function startIsolatedFixture({
     createdAt: owner.createdAt,
     operationDelayMs,
     pgsSynthesisIncomplete,
-    capabilityKey: createHash('sha256')
-      .update(`${fixture.path}\0${context.receiptRunId}\0${randomUUID()}`)
-      .digest('hex'),
+    startToken: token,
+    capabilityKeyFile,
     operationsRoot: path.join(fixture.path, 'instances', agent, 'runtime', 'brain-operations'),
   };
-  const token = randomUUID();
   const cosmoConfigFile = path.join(runtime, `cosmo-${token}.json`);
   const cosmoReady = path.join(runtime, `cosmo-${token}.ready.json`);
   const cosmoMetrics = path.join(runtime, `cosmo-${token}.metrics.json`);
@@ -904,9 +1224,18 @@ export async function startIsolatedFixture({
     ...baseConfig, role: 'cosmo', readyFile: cosmoReady, metricsFile: cosmoMetrics,
   });
   const cosmo = spawnChild(cosmoConfigFile, 'cosmo');
+  let mcp = null;
   let dashboard = null;
   try {
     const cosmoIdentity = await waitReady(cosmoReady, cosmo);
+    const mcpConfigFile = path.join(runtime, `mcp-${token}.json`);
+    const mcpReady = path.join(runtime, `mcp-${token}.ready.json`);
+    const mcpMetrics = path.join(runtime, `mcp-${token}.metrics.json`);
+    await writeJsonAtomic(mcpConfigFile, {
+      ...baseConfig, role: 'mcp', readyFile: mcpReady, metricsFile: mcpMetrics,
+    });
+    mcp = spawnChild(mcpConfigFile, 'mcp');
+    const mcpIdentity = await waitReady(mcpReady, mcp);
     const dashboardConfigFile = path.join(runtime, `dashboard-${token}.json`);
     const dashboardReady = path.join(runtime, `dashboard-${token}.ready.json`);
     const dashboardMetrics = path.join(runtime, `dashboard-${token}.metrics.json`);
@@ -916,6 +1245,7 @@ export async function startIsolatedFixture({
       readyFile: dashboardReady,
       metricsFile: dashboardMetrics,
       cosmoBaseUrl: `http://127.0.0.1:${cosmoIdentity.port}`,
+      mcpPort: mcpIdentity.port,
     });
     dashboard = spawnChild(dashboardConfigFile, 'dashboard');
     const dashboardIdentity = await waitReady(dashboardReady, dashboard);
@@ -923,6 +1253,12 @@ export async function startIsolatedFixture({
       fixtureRoot: fixture.path,
       owner,
       source,
+      canary,
+      sources: {
+        own: source,
+        sibling: siblingSource,
+        research: researchSource,
+      },
       nodeCount,
       edgeCount,
       agent,
@@ -932,10 +1268,19 @@ export async function startIsolatedFixture({
       operationsRoot: baseConfig.operationsRoot,
       baseUrl: `http://127.0.0.1:${dashboardIdentity.port}`,
       cosmoBaseUrl: `http://127.0.0.1:${cosmoIdentity.port}`,
-      ports: { dashboard: dashboardIdentity.port, cosmo: cosmoIdentity.port },
-      pids: { dashboard: dashboard.pid, cosmo: cosmo.pid },
-      metrics: { dashboard: dashboardMetrics, cosmo: cosmoMetrics },
-      children: { dashboard, cosmo },
+      mcpBaseUrl: `http://127.0.0.1:${mcpIdentity.port}`,
+      ports: {
+        dashboard: dashboardIdentity.port,
+        cosmo: cosmoIdentity.port,
+        mcp: mcpIdentity.port,
+      },
+      pids: { dashboard: dashboard.pid, cosmo: cosmo.pid, mcp: mcp.pid },
+      metrics: { dashboard: dashboardMetrics, cosmo: cosmoMetrics, mcp: mcpMetrics },
+      children: { dashboard, cosmo, mcp },
+      runtimeRoot: runtime,
+      capabilityKeyFile,
+      cosmoConfigFile,
+      mcpConfigFile,
       dashboardConfigFile,
       async restartDashboard() {
         const stopped = await stopChild(this.children.dashboard);
@@ -970,22 +1315,33 @@ export async function startIsolatedFixture({
           cosmo: await cosmoResponse.json(),
         };
       },
+      async operationTelemetry(operationId) {
+        const response = await fetch(
+          `${this.cosmoBaseUrl}/fixture/operations/${encodeURIComponent(operationId)}`,
+        );
+        const value = await response.json();
+        if (!response.ok) throw typedError(value?.error?.code || 'fixture_telemetry_failed');
+        return value;
+      },
     };
   } catch (error) {
-    await Promise.all([stopChild(dashboard), stopChild(cosmo)]);
+    await Promise.all([stopChild(dashboard), stopChild(mcp), stopChild(cosmo)]);
     error.fixtureStderr = {
-      dashboard: dashboard?.fixtureStderr?.() || '', cosmo: cosmo.fixtureStderr?.() || '',
+      dashboard: dashboard?.fixtureStderr?.() || '',
+      mcp: mcp?.fixtureStderr?.() || '',
+      cosmo: cosmo.fixtureStderr?.() || '',
     };
     throw error;
   }
 }
 
 export async function stopIsolatedFixture(fixture) {
-  const [dashboard, cosmo] = await Promise.all([
+  const [dashboard, cosmo, mcp] = await Promise.all([
     stopChild(fixture?.children?.dashboard),
     stopChild(fixture?.children?.cosmo),
+    stopChild(fixture?.children?.mcp),
   ]);
-  return { dashboard, cosmo, retainedStore: fixture.operationsRoot };
+  return { dashboard, cosmo, mcp, retainedStore: fixture.operationsRoot };
 }
 
 async function internalMain(argv) {
@@ -997,8 +1353,30 @@ async function internalMain(argv) {
     throw typedError('isolated_child_invocation_invalid');
   }
   const config = await readJson(path.resolve(configFile));
-  if (config.role !== role) throw typedError('isolated_child_invocation_invalid');
+  if (config.role !== role || Object.hasOwn(config, 'capabilityKey')
+      || typeof config.capabilityKeyFile !== 'string') {
+    throw typedError('isolated_child_invocation_invalid');
+  }
+  const keyFile = path.resolve(config.capabilityKeyFile);
+  if (!isInsideOrEqual(config.fixtureRoot, keyFile)
+      || await fsp.realpath(keyFile) !== keyFile) {
+    throw typedError('isolated_child_invocation_invalid');
+  }
+  const before = await fsp.lstat(keyFile, { bigint: true });
+  if (!before.isFile() || before.isSymbolicLink() || Number(before.mode & 0o777n) !== 0o600) {
+    throw typedError('isolated_child_invocation_invalid');
+  }
+  const capabilityKey = (await fsp.readFile(keyFile, 'utf8')).trim();
+  const after = await fsp.lstat(keyFile, { bigint: true });
+  if (!/^[a-f0-9]{64}$/.test(capabilityKey)
+      || before.dev !== after.dev || before.ino !== after.ino
+      || before.size !== after.size || before.mtimeNs !== after.mtimeNs
+      || before.ctimeNs !== after.ctimeNs) {
+    throw typedError('isolated_child_invocation_invalid');
+  }
+  config.capabilityKey = capabilityKey;
   if (role === 'cosmo') return runCosmoChild(config);
+  if (role === 'mcp') return runMcpChild(config);
   return runDashboardChild(config);
 }
 

@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 
+import { createHash } from 'node:crypto';
 import fsp from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import {
   appendJsonlReceipt,
   booleanFlag,
@@ -18,6 +21,7 @@ import {
   readJson,
   receiptContext,
   sha256Bytes,
+  sleep,
   typedError,
   writeJsonReceipt,
 } from './lib/brain-acceptance-common.mjs';
@@ -25,6 +29,13 @@ import {
 export const QUERY_WAIT_MS = 90 * 60 * 1000;
 export const PGS_WAIT_MS = 6 * 60 * 60 * 1000;
 export const PGS_LARGE_MIN_NODES = 100_000;
+export const NEGATIVE_TARGET_CODES = Object.freeze([
+  'target_not_found',
+  'target_not_available',
+  'target_mismatch',
+  'target_ambiguous',
+  'access_denied',
+]);
 export const SCENARIOS = Object.freeze([
   'discover-canary', 'own', 'direct-query', 'sibling', 'completed-research',
   'completed-research-compile', 'canonical-export', 'pgs', 'large-pgs-isolated',
@@ -42,6 +53,7 @@ const ACTIVITY_TYPES = new Set([
 ]);
 const SWEEP_RECEIPT_MAX_COUNT = 10_000;
 const SWEEP_EXCERPT_CHARACTERS = 512;
+const require = createRequire(import.meta.url);
 
 export async function loadProductionModules() {
   try {
@@ -104,6 +116,21 @@ async function runTool(tool, input, client, callerAgent, signal) {
     });
   }
   return result;
+}
+
+function parseToolJson(result, label) {
+  const prefix = `${label}\n`;
+  if (typeof result?.content !== 'string' || !result.content.startsWith(prefix)) {
+    throw typedError('brain_tool_result_invalid', label);
+  }
+  let value;
+  try { value = JSON.parse(result.content.slice(prefix.length)); } catch (error) {
+    throw typedError('brain_tool_result_invalid', label, { cause: error });
+  }
+  if (!value || Array.isArray(value) || typeof value !== 'object') {
+    throw typedError('brain_tool_result_invalid', label);
+  }
+  return value;
 }
 
 function evidenceRevision(evidence) {
@@ -185,6 +212,21 @@ function terminalReceipt({
     ? activityLog.some((activity) => activity?.operationId === terminal.operationId
       && activity?.type === 'provider_call_terminal')
     : null;
+  if (PROVIDER_OPERATION_TYPES.has(terminal.operationType)
+      && ['complete', 'partial'].includes(terminal.state)
+      && providerTerminalValidated !== true) {
+    throw typedError('provider_terminal_unproven', JSON.stringify({
+      operationId: terminal.operationId,
+      operationType: terminal.operationType,
+      observedActivity: activityLog
+        .filter((activity) => activity?.operationId === terminal.operationId)
+        .map((activity) => ({ type: activity.type, eventSequence: activity.eventSequence })),
+    }));
+  }
+  if (typeof terminal.lastProgressAt !== 'string'
+      || !Number.isFinite(Date.parse(terminal.lastProgressAt))) {
+    throw typedError('operation_progress_timestamp_missing');
+  }
   return {
     helper: 'live-brain-tools-smoke',
     scenario,
@@ -208,6 +250,7 @@ function terminalReceipt({
       Number(terminal.sourceEvidence?.authoritativeTotals?.nodes),
     ) ? Number(terminal.sourceEvidence.authoritativeTotals.nodes) : null,
     providerTerminalValidated,
+    lastProgressAt: terminal.lastProgressAt,
     error: terminal.error,
     result: resultProjection(terminal.result),
     ...extras,
@@ -216,8 +259,8 @@ function terminalReceipt({
 
 async function ensureFreshOutput(file) {
   try {
-    const stat = await fsp.lstat(file);
-    if (stat.size > 0) throw typedError('receipt_output_exists', file);
+    await fsp.lstat(file);
+    throw typedError('receipt_output_exists', file);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
@@ -228,20 +271,40 @@ async function readLastReceipt(file) {
   return rows.at(-1);
 }
 
+function parseReceiptDocument(text) {
+  const trimmed = text.trim();
+  if (!trimmed) throw typedError('receipt_invalid');
+  try {
+    const document = JSON.parse(trimmed);
+    if (!document || typeof document !== 'object' || Array.isArray(document)) {
+      throw typedError('receipt_invalid');
+    }
+    return [document];
+  } catch (error) {
+    if (error?.code === 'receipt_invalid') throw error;
+  }
+  const rows = [];
+  for (const line of trimmed.split('\n').filter(Boolean)) {
+    let row;
+    try { row = JSON.parse(line); } catch (error) {
+      throw typedError('receipt_invalid', 'receipt contains invalid JSON', { cause: error });
+    }
+    if (!row || typeof row !== 'object' || Array.isArray(row)) {
+      throw typedError('receipt_invalid');
+    }
+    rows.push(row);
+  }
+  if (rows.length === 0) throw typedError('receipt_invalid');
+  return rows;
+}
+
 export async function readReceiptRows(file, { verifyArtifact = true } = {}) {
   const stat = await fsp.lstat(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024 * 1024) {
     throw typedError('receipt_invalid');
   }
   const text = await fsp.readFile(file, 'utf8');
-  const lines = text.trim().split('\n').filter(Boolean);
-  if (lines.length === 0) throw typedError('receipt_invalid');
-  return lines.map((line) => {
-    let row;
-    try { row = JSON.parse(line); } catch (error) {
-      throw typedError('receipt_invalid', 'receipt contains invalid JSON', { cause: error });
-    }
-    if (!row || typeof row !== 'object' || Array.isArray(row)) throw typedError('receipt_invalid');
+  return parseReceiptDocument(text).map((row) => {
     if (verifyArtifact) {
       const { artifactSha256, ...core } = row;
       if (typeof artifactSha256 !== 'string'
@@ -296,13 +359,41 @@ function deriveCanaryQuery(node) {
   return query.slice(0, 256);
 }
 
+async function awaitShortResult(client, initial, signal) {
+  if (!initial?.operationId || !['queued', 'running'].includes(initial.state)) return initial;
+  await client.resumeOperation(initial.operationId, signal);
+  const terminal = await protectedTerminal(client, initial.operationId, signal);
+  if (!['complete', 'partial'].includes(terminal.state) || !terminal.result) {
+    throw typedError(terminal.error?.code || 'brain_operation_failed');
+  }
+  return {
+    ...terminal.result,
+    operationId: terminal.operationId,
+    state: terminal.state,
+    attachmentState: terminal.attachmentState,
+    resultHandle: terminal.resultHandle,
+    resultArtifact: terminal.resultArtifact,
+    sourceEvidence: terminal.sourceEvidence,
+  };
+}
+
 async function discoverCanary({ client, selector, signal }) {
   const target = await client.resolveTarget(selector);
-  const graph = await client.graph({ ...(selector ? { target: selector } : {}), nodeLimit: 100, edgeLimit: 1 }, signal);
+  const graph = await awaitShortResult(
+    client,
+    await client.graph({
+      ...(selector ? { target: selector } : {}), nodeLimit: 100, edgeLimit: 1,
+    }, signal),
+    signal,
+  );
   const candidates = nodesFromGraph(graph).filter((node) => node?.id != null);
   for (const node of candidates) {
     const query = deriveCanaryQuery(node);
-    const search = await client.search({ ...(selector ? { target: selector } : {}), query, topK: 20 }, signal);
+    const search = await awaitShortResult(
+      client,
+      await client.search({ ...(selector ? { target: selector } : {}), query, topK: 20 }, signal),
+      signal,
+    );
     const match = resultsFromSearch(search).find((result) => String(result.id) === String(node.id));
     const revision = evidenceRevision(search.sourceEvidence);
     if (match && Number.isSafeInteger(revision) && search.sourceEvidence?.sourceHealth === 'healthy') {
@@ -325,45 +416,79 @@ async function fetchJson(url, init = {}, fetchImpl = fetch, timeoutMs = 30_000) 
   return body;
 }
 
-function selectHealthyPair(modelId, models, healthyProviders) {
-  const matches = models.filter((model) => model?.id === modelId && healthyProviders.has(model.provider));
-  if (matches.length === 0) throw typedError('no_healthy_provider');
-  const exact = matches.sort((left, right) => left.provider.localeCompare(right.provider))[0];
-  return { provider: exact.provider, model: exact.id };
-}
-
 export async function discoverHealthyModels(baseUrl, fetchImpl = fetch) {
-  const [catalogPayload, statusPayload] = await Promise.all([
-    fetchJson(`${baseUrl}/api/models/catalog`, {}, fetchImpl, 120_000),
-    fetchJson(`${baseUrl}/api/providers/status`, {}, fetchImpl, 120_000),
-  ]);
-  const healthy = new Set((statusPayload.providers || [])
-    .filter((provider) => provider?.healthy === true).map((provider) => provider.provider));
-  const models = catalogPayload.models || [];
-  const defaults = catalogPayload.defaults || catalogPayload.catalog?.defaults || {};
-  if (healthy.size === 0) throw typedError('no_healthy_provider');
-  const modelSelection = selectHealthyPair(defaults.queryModel, models, healthy);
-  const pgsSweep = selectHealthyPair(defaults.pgsSweepModel, models, healthy);
-  const pgsSynth = modelSelection;
+  const requests = ['direct-query', 'pgs-sweep', 'pgs-synthesis']
+    .map((purpose) => ({ purpose }));
+  const probes = [];
+  for (const request of requests) {
+    const probe = await fetchJson(`${baseUrl}/api/providers/probe`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(request),
+    }, fetchImpl, 120_000);
+    if (probe?.healthy !== true || probe?.terminalReceived !== true
+        || probe?.purpose !== request.purpose
+        || !probe?.requestedPair?.provider || !probe?.requestedPair?.model
+        || probe?.pair?.provider !== probe.requestedPair.provider
+        || probe?.pair?.model !== probe.requestedPair.model
+        || probe?.observedPair?.provider !== probe.requestedPair.provider
+        || probe?.observedPair?.model !== probe.requestedPair.model) {
+      throw typedError('no_healthy_provider');
+    }
+    probes.push({
+      purpose: request.purpose,
+      pair: probe.requestedPair,
+      healthy: true,
+      terminalReceived: true,
+      latency: probe.latency ?? null,
+      timestamp: probe.timestamp ?? null,
+    });
+  }
+  const pairFor = (purpose) => probes.find((probe) => probe.purpose === purpose)?.pair;
   return {
-    modelSelection,
-    pgsSweep,
-    pgsSynth,
-    probes: (statusPayload.providers || []).map((provider) => ({
-      provider: provider.provider,
-      healthy: provider.healthy === true,
-      latency: provider.latency ?? null,
-      timestamp: provider.timestamp ?? null,
-    })),
+    modelSelection: pairFor('direct-query'),
+    pgsSweep: pairFor('pgs-sweep'),
+    pgsSynth: pairFor('pgs-synthesis'),
+    probes,
   };
 }
 
 async function mcpCall(baseUrl, name, args, fetchImpl = fetch) {
-  const body = await fetchJson(`${baseUrl}/api/mcp`, {
+  const response = await fetchImpl(`${baseUrl}/api/mcp`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', accept: 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: `acceptance-${Date.now()}`, method: 'tools/call', params: { name, arguments: args } }),
-  }, fetchImpl);
+    headers: {
+      'content-type': 'application/json',
+      accept: 'application/json, text/event-stream',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0', id: `acceptance-${Date.now()}`,
+      method: 'tools/call', params: { name, arguments: args },
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const textBody = await response.text();
+  let body = null;
+  try {
+    if (response.headers.get('content-type')?.includes('text/event-stream')) {
+      const messages = textBody.split('\n')
+        .filter((line) => line.startsWith('data: '))
+        .map((line) => JSON.parse(line.slice(6)));
+      body = messages.findLast((message) => message?.result || message?.error) || null;
+    } else {
+      body = textBody ? JSON.parse(textBody) : null;
+    }
+  } catch (error) {
+    throw typedError('mcp_result_invalid', 'MCP returned an invalid protocol response', {
+      cause: error,
+    });
+  }
+  if (!response.ok) {
+    throw typedError(
+      body?.error?.code || 'mcp_failed',
+      body?.error?.message || `MCP failed with HTTP ${response.status}`,
+      { status: response.status },
+    );
+  }
   if (body?.error) throw typedError(body.error.code || 'mcp_failed', body.error.message || 'MCP failed');
   const text = body?.result?.content?.find((entry) => entry?.type === 'text')?.text;
   if (typeof text !== 'string') throw typedError('mcp_result_invalid');
@@ -429,6 +554,7 @@ export async function flushActivity(context, output, activities, callerAgent, sc
       phase: activity.phase,
       eventUpdatedAt: activity.updatedAt,
       lastProviderActivityAt: activity.lastProviderActivityAt,
+      lastProgressAt: activity.lastProgressAt,
       protectedResultRead: false,
       eventAuthority: authority,
     });
@@ -449,10 +575,19 @@ async function canonicalExportScenario({ modules, client, values, context, calle
     ...(source.resultHandle ? { resultHandle: source.resultHandle } : {}),
     format: one(values, 'format', { defaultValue: 'markdown' }),
   }, client, callerAgent, signal);
+  const exportResult = parseToolJson(result, 'brain_query_export');
+  if (exportResult.sourceOperationId !== source.operationId
+      || exportResult.canonicalEvidence !== true
+      || typeof exportResult.exportHandle !== 'string' || !exportResult.exportHandle
+      || typeof exportResult.relativePath !== 'string' || !exportResult.relativePath
+      || typeof exportResult.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(exportResult.sha256)
+      || !Number.isSafeInteger(exportResult.bytes) || exportResult.bytes < 0) {
+    throw typedError('canonical_export_invalid');
+  }
   return {
     helper: 'live-brain-tools-smoke', scenario: 'canonical-export', receiptKind: 'export',
     operationId: source.operationId, sourceReceipt: receiptPath,
-    protectedResultRead: true, exportResult: result.metadata || null,
+    protectedResultRead: true, exportResult,
   };
 }
 
@@ -462,41 +597,441 @@ async function lifecycleStart(client, values, signal) {
   return client.start('query', { query, mode: 'quick', ...(modelSelection ? { modelSelection } : {}) }, signal);
 }
 
+function negativeCatalogPlan(catalog, callerAgent, code) {
+  const brains = Array.isArray(catalog?.brains) ? catalog.brains : [];
+  const resident = brains.filter((brain) => brain?.kind === 'resident'
+    && brain.lifecycle === 'resident');
+  if (code === 'target_not_found') {
+    return { method: 'resolveTarget', input: { brainId: 'brain-negative-target-missing' } };
+  }
+  if (code === 'target_not_available') {
+    const unavailable = brains.find((brain) => !((brain?.kind === 'resident'
+      && brain.lifecycle === 'resident')
+      || (brain?.kind === 'research' && brain.lifecycle === 'completed')));
+    return unavailable
+      ? { method: 'resolveTarget', input: { brainId: unavailable.id } }
+      : null;
+  }
+  if (code === 'target_mismatch') {
+    const counts = new Map();
+    for (const brain of resident) {
+      counts.set(brain.ownerAgent, (counts.get(brain.ownerAgent) || 0) + 1);
+    }
+    const byAgent = resident.find((brain) => counts.get(brain.ownerAgent) === 1);
+    const byId = resident.find((brain) => brain.id !== byAgent?.id);
+    return byAgent && byId
+      ? {
+          method: 'resolveTarget',
+          input: { agent: byAgent.ownerAgent, brainId: byId.id },
+        }
+      : null;
+  }
+  if (code === 'target_ambiguous') {
+    const counts = new Map();
+    for (const brain of resident) {
+      counts.set(brain.ownerAgent, (counts.get(brain.ownerAgent) || 0) + 1);
+    }
+    const ambiguous = resident.find((brain) => counts.get(brain.ownerAgent) > 1);
+    return ambiguous
+      ? { method: 'resolveTarget', input: { agent: ambiguous.ownerAgent } }
+      : null;
+  }
+  if (code === 'access_denied') {
+    const readOnly = brains.find((brain) => ((brain?.kind === 'resident'
+      && brain.lifecycle === 'resident')
+      || (brain?.kind === 'research' && brain.lifecycle === 'completed'))
+      && brain.ownerAgent !== callerAgent);
+    return readOnly
+      ? {
+          method: 'probeAccessDenied',
+          input: {
+            target: { brainId: readOnly.id },
+          },
+        }
+      : null;
+  }
+  return null;
+}
+
+async function attemptNegativeCode(source, callerAgent, code, signal) {
+  const catalog = await source.client.getCatalog({ forceRefresh: true, signal });
+  const plan = negativeCatalogPlan(catalog, callerAgent, code);
+  if (!plan || typeof source.client[plan.method] !== 'function') return null;
+  try {
+    await source.client[plan.method](plan.input, signal);
+  } catch (error) {
+    if (error?.code !== code) return null;
+    return {
+      code,
+      source: source.source,
+      authority: source.authority,
+      route: plan.method === 'probeAccessDenied'
+        ? 'authorizeBrainOperation-controlled-precheck'
+        : 'BrainOperationsClient.resolveTarget',
+      providerFree: true,
+    };
+  }
+  return null;
+}
+
+export async function collectNegativeTargetCoverage({
+  client,
+  controlledClient = null,
+  callerAgent,
+  expectedCodes,
+  signal = null,
+  primaryAuthority = 'live',
+} = {}) {
+  if (!Array.isArray(expectedCodes)
+      || expectedCodes.length !== NEGATIVE_TARGET_CODES.length
+      || new Set(expectedCodes).size !== NEGATIVE_TARGET_CODES.length
+      || NEGATIVE_TARGET_CODES.some((code) => !expectedCodes.includes(code))) {
+    throw typedError('negative_target_expected_codes_invalid');
+  }
+  if (!client || typeof client.getCatalog !== 'function'
+      || typeof callerAgent !== 'string' || !callerAgent) {
+    throw typedError('negative_target_client_invalid');
+  }
+  const sources = [{
+    client,
+    source: client.source || 'live-client',
+    authority: primaryAuthority,
+  }];
+  if (controlledClient) {
+    sources.push({
+      client: controlledClient,
+      source: controlledClient.source || 'controlled-production-client',
+      authority: 'isolated-controlled',
+    });
+  }
+  const coverage = [];
+  for (const code of NEGATIVE_TARGET_CODES) {
+    let result = null;
+    for (const source of sources) {
+      result = await attemptNegativeCode(source, callerAgent, code, signal);
+      if (result) break;
+    }
+    if (!result) throw typedError('negative_target_coverage_failed', code);
+    coverage.push(result);
+  }
+  return {
+    expectedCodes: [...NEGATIVE_TARGET_CODES],
+    observedCodes: coverage.map((entry) => entry.code),
+    providerCallsObserved: 0,
+    coverage,
+  };
+}
+
+function controlledNegativeBoundaries(root) {
+  return [
+    { kind: 'brain', path: root },
+    { kind: 'run', path: root },
+    { kind: 'pgs', path: path.join(root, 'pgs-sessions') },
+    { kind: 'session', path: path.join(root, 'sessions') },
+    { kind: 'cache', path: path.join(root, 'cache') },
+    { kind: 'export', path: path.join(root, 'exports') },
+    { kind: 'agency', path: path.join(root, 'agency') },
+  ];
+}
+
+export function createControlledNegativeTargetClient({ Client, callerAgent } = {}) {
+  if (typeof Client !== 'function' || typeof callerAgent !== 'string' || !callerAgent) {
+    throw typedError('negative_target_client_invalid');
+  }
+  const { resolveCanonicalTarget } = require('../cosmo23/server/lib/brain-registry.js');
+  const { authorizeBrainOperation } = require('../shared/brain-operations/authority.cjs');
+  const entry = ({ id, ownerAgent, kind = 'resident', lifecycle = 'resident' }) => {
+    const canonicalRoot = `/controlled-negative/${id}`;
+    return {
+      id,
+      ownerAgent,
+      displayName: id,
+      kind,
+      lifecycle,
+      canonicalRoot,
+      sourceType: 'controlled-production-fixture',
+      nodeCount: 1,
+      modifiedAt: '2026-07-11T00:00:00.000Z',
+      route: `/controlled-negative/api/${id}`,
+      mutationBoundaries: controlledNegativeBoundaries(canonicalRoot),
+    };
+  };
+  const catalog = Object.freeze({
+    catalogRevision: 'controlled-negative-v1',
+    brains: Object.freeze([
+      entry({ id: 'brain-controlled-owner', ownerAgent: callerAgent }),
+      entry({ id: 'brain-controlled-sibling', ownerAgent: 'controlled-sibling' }),
+      entry({
+        id: 'brain-controlled-unavailable', ownerAgent: 'controlled-unavailable',
+        kind: 'research', lifecycle: 'active',
+      }),
+      entry({ id: 'brain-controlled-ambiguous-a', ownerAgent: 'controlled-ambiguous' }),
+      entry({ id: 'brain-controlled-ambiguous-b', ownerAgent: 'controlled-ambiguous' }),
+    ]),
+  });
+  const response = (status, body) => new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+  const fetchImpl = async (url, init = {}) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === '/home23/api/brain-operations/catalog') return response(200, catalog);
+    if (pathname === '/home23/api/brain-operations' && init.method === 'POST') {
+      try {
+        const body = JSON.parse(String(init.body || '{}'));
+        const selected = resolveCanonicalTarget(catalog, callerAgent, body.target || {});
+        const accessMode = selected.kind === 'resident'
+          && selected.lifecycle === 'resident'
+          && selected.ownerAgent === callerAgent ? 'own' : 'read-only';
+        authorizeBrainOperation({
+          requesterAgent: callerAgent,
+          operationType: body.operationType,
+          target: {
+            domain: 'brain',
+            brainId: selected.id,
+            canonicalRoot: selected.canonicalRoot,
+            accessMode,
+            ownerAgent: selected.ownerAgent,
+            displayName: selected.displayName,
+            kind: selected.kind,
+            lifecycle: selected.lifecycle,
+            catalogRevision: catalog.catalogRevision,
+            route: selected.route,
+            mutationBoundaries: selected.mutationBoundaries,
+          },
+        });
+        return response(500, { error: { code: 'negative_probe_unexpected_success' } });
+      } catch (error) {
+        return response(error?.code === 'access_denied' ? 403 : 400, {
+          error: {
+            code: error?.code || 'negative_probe_failed',
+            message: error?.message || 'negative probe failed',
+            retryable: false,
+          },
+        });
+      }
+    }
+    return response(404, { error: { code: 'route_not_found' } });
+  };
+  const production = new Client({
+    baseUrl: 'http://controlled-negative.invalid',
+    callerAgent,
+    fetchImpl,
+    statusReadMs: 1_000,
+  });
+  return Object.freeze({
+    source: 'controlled-production-client',
+    getCatalog: production.getCatalog.bind(production),
+    resolveTarget: production.resolveTarget.bind(production),
+    async probeAccessDenied(request) {
+      const selected = resolveCanonicalTarget(catalog, callerAgent, request?.target || {});
+      const accessMode = selected.kind === 'resident'
+        && selected.lifecycle === 'resident'
+        && selected.ownerAgent === callerAgent ? 'own' : 'read-only';
+      return authorizeBrainOperation({
+        requesterAgent: callerAgent,
+        operationType: 'synthesis',
+        target: {
+          domain: 'brain',
+          brainId: selected.id,
+          canonicalRoot: selected.canonicalRoot,
+          accessMode,
+          ownerAgent: selected.ownerAgent,
+          displayName: selected.displayName,
+          kind: selected.kind,
+          lifecycle: selected.lifecycle,
+          catalogRevision: catalog.catalogRevision,
+          route: selected.route,
+          mutationBoundaries: selected.mutationBoundaries,
+        },
+      });
+    },
+  });
+}
+
+const IDENTITY_GROUP_NAMES = Object.freeze([
+  'jerryLive', 'forrestLive', 'isolatedControlled',
+]);
+const IDENTITY_MANIFEST_KEYS = Object.freeze([
+  'schemaVersion', 'receiptRunId', 'authorities', 'auditRoot', 'createdAt', 'groups',
+]);
+const IDENTITY_ENTRY_KEYS = Object.freeze([
+  'operationId', 'authority', 'requesterAgent', 'receipt',
+  'isolatedStore', 'authorizedEndpoint',
+]);
+
+function exactIdentityKeys(value, expected) {
+  if (!value || Array.isArray(value) || typeof value !== 'object') {
+    throw typedError('identity_manifest_invalid');
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.length !== expected.length
+      || keys.some((key) => typeof key !== 'string' || !expected.includes(key))) {
+    throw typedError('identity_manifest_invalid');
+  }
+  return value;
+}
+
+function strictIsoTimestamp(value) {
+  const milliseconds = typeof value === 'string' ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(milliseconds) && new Date(milliseconds).toISOString() === value;
+}
+
+function assertProtectedReadback(terminal, receipt, result) {
+  const fields = [
+    'operationId', 'operationType', 'state', 'target', 'resultHandle', 'resultArtifact',
+    'sourcePinDescriptor', 'sourcePinDigest', 'sourceEvidence', 'error',
+  ];
+  for (const field of fields) {
+    const actual = Object.hasOwn(terminal, field) ? terminal[field] : null;
+    const expected = Object.hasOwn(receipt, field) ? receipt[field] : null;
+    if (!isDeepStrictEqual(actual, expected)) {
+      throw typedError('protected_readback_mismatch', field);
+    }
+  }
+  if (!isDeepStrictEqual(resultProjection(result), receipt.result)) {
+    throw typedError('protected_readback_mismatch', 'result');
+  }
+}
+
+async function verifyArtifactStream(opened, expected) {
+  if (!opened || !isDeepStrictEqual(opened.metadata, expected)
+      || !opened.stream || typeof opened.stream[Symbol.asyncIterator] !== 'function') {
+    throw typedError('protected_readback_mismatch', 'resultArtifact');
+  }
+  const hash = createHash('sha256');
+  let bytes = 0;
+  for await (const chunk of opened.stream) {
+    bytes += chunk.length;
+    hash.update(chunk);
+  }
+  if (bytes !== expected.bytes || hash.digest('hex') !== expected.sha256) {
+    throw typedError('protected_readback_mismatch', 'resultArtifact');
+  }
+}
+
+function wrongRequesterFor(requesterAgent) {
+  return requesterAgent === 'wrong-requester' ? 'other-requester' : 'wrong-requester';
+}
+
+async function collectReceiptOperationInventory(root, excluded) {
+  const operations = new Map();
+  for (const file of await collectArtifactFiles(root, excluded)) {
+    const rows = await artifactRows(file.absolute);
+    const canonical = rows.some((row) => Object.hasOwn(row, 'artifactSha256'));
+    if (!canonical) continue;
+    if (rows.some((row) => !Object.hasOwn(row, 'artifactSha256'))) {
+      throw typedError('artifact_receipt_mixed', file.relative);
+    }
+    for (const row of await readReceiptRows(file.absolute)) {
+      if (typeof row.operationId !== 'string' || !row.operationId) continue;
+      const current = operations.get(row.operationId) || {
+        terminalCount: 0,
+        paths: new Set(),
+      };
+      if (row.receiptKind === 'operation-terminal') current.terminalCount += 1;
+      current.paths.add(file.relative);
+      operations.set(row.operationId, current);
+    }
+  }
+  return operations;
+}
+
 export async function verifyReceiptManifest({
-  manifestPath, modules, context, values, callerAgent, signal,
+  manifestPath,
+  modules,
+  context,
+  values,
+  callerAgent,
+  signal,
+  clientFactory = null,
+  storeReaderFactory = null,
 }) {
-  const manifest = await readJson(manifestPath);
-  const groups = manifest?.groups || {};
+  const manifest = exactIdentityKeys(await readJson(manifestPath), IDENTITY_MANIFEST_KEYS);
+  const manifestRealPath = await fsp.realpath(manifestPath);
+  if (manifest.schemaVersion !== 1
+      || manifest.receiptRunId !== context.receiptRunId
+      || !Array.isArray(manifest.authorities)
+      || manifest.authorities.length !== 2
+      || [...manifest.authorities].sort().join(',') !== 'isolated-controlled,live'
+      || manifest.auditRoot !== context.receiptRunDir
+      || path.dirname(manifestRealPath) !== context.receiptRunDir
+      || !strictIsoTimestamp(manifest.createdAt)) {
+    throw typedError('identity_manifest_invalid');
+  }
+  const auditRoot = await canonicalDirectory(manifest.auditRoot, 'identity manifest audit root');
+  if (auditRoot.path !== context.receiptRunDir) throw typedError('identity_manifest_invalid');
+  exactIdentityKeys(manifest.groups, IDENTITY_GROUP_NAMES);
+  for (const groupName of IDENTITY_GROUP_NAMES) {
+    if (!Array.isArray(manifest.groups[groupName]) || manifest.groups[groupName].length === 0) {
+      throw typedError('identity_manifest_invalid');
+    }
+  }
+
+  const jerryBaseUrl = one(values, 'base-url', { required: true });
+  const forrestBaseUrl = one(values, 'forrest-base-url', { required: true });
+  if (typeof jerryBaseUrl !== 'string' || typeof forrestBaseUrl !== 'string'
+      || jerryBaseUrl === forrestBaseUrl || callerAgent !== 'jerry') {
+    throw typedError('identity_manifest_invalid');
+  }
+  const makeClient = clientFactory || ((options) => {
+    if (typeof modules?.BrainOperationsClient !== 'function') {
+      throw typedError('built_brain_tools_unavailable');
+    }
+    return new modules.BrainOperationsClient({
+      ...options,
+      queryWaitMs: QUERY_WAIT_MS,
+      pgsWaitMs: PGS_WAIT_MS,
+    });
+  });
+  const makeStoreReader = storeReaderFactory || ((options) => {
+    const { createBrainOperationStoreReader } = require(
+      '../engine/src/dashboard/brain-operations/store-reader.js'
+    );
+    return createBrainOperationStoreReader(options);
+  });
+
   const observed = [];
   const seenOperations = new Set();
-  for (const [groupName, entries] of Object.entries(groups)) {
-    if (!Array.isArray(entries)) throw typedError('identity_manifest_invalid');
-    for (const entry of entries) {
-      if (!entry?.operationId || !entry?.receipt) throw typedError('identity_manifest_invalid');
-      if (seenOperations.has(entry.operationId)) throw typedError('receipt_terminal_duplicate');
+  const liveEntries = { jerryLive: [], forrestLive: [] };
+  const isolatedWrongRequesterReads = [];
+  for (const groupName of IDENTITY_GROUP_NAMES) {
+    for (const rawEntry of manifest.groups[groupName]) {
+      const entry = exactIdentityKeys(rawEntry, IDENTITY_ENTRY_KEYS);
+      if (!/^brop_[A-Za-z0-9_-]{32}$/.test(entry.operationId)
+          || typeof entry.requesterAgent !== 'string' || !entry.requesterAgent
+          || typeof entry.receipt !== 'string' || !entry.receipt
+          || path.isAbsolute(entry.receipt)
+          || path.normalize(entry.receipt) !== entry.receipt
+          || seenOperations.has(entry.operationId)) {
+        throw typedError('identity_manifest_invalid');
+      }
       seenOperations.add(entry.operationId);
-      const receiptPath = path.resolve(path.dirname(manifestPath), entry.receipt);
-      const relative = path.relative(path.dirname(manifestPath), receiptPath);
-      if (relative.startsWith('..') || path.isAbsolute(relative)
-          || !isInsideOrEqual(context.receiptRunDir, receiptPath)) {
+      const receiptPath = path.resolve(context.receiptRunDir, entry.receipt);
+      if (!isInsideOrEqual(context.receiptRunDir, receiptPath)
+          || await fsp.realpath(receiptPath) !== receiptPath) {
         throw typedError('identity_manifest_invalid');
       }
       const rows = await readReceiptRows(receiptPath);
-      const terminals = rows.filter((row) => row?.operationId === entry.operationId
-        && row?.receiptKind === 'operation-terminal');
-      if (terminals.length !== 1) throw typedError('receipt_terminal_duplicate');
+      const terminals = rows.filter((row) => row.operationId === entry.operationId
+        && row.receiptKind === 'operation-terminal');
+      if (terminals.length !== 1
+          || rows.some((row) => row.receiptKind === 'operation-terminal'
+            && row.operationId !== entry.operationId)) {
+        throw typedError('receipt_terminal_duplicate');
+      }
       const receipt = terminals[0];
-      if (rows.some((row) => row?.receiptKind === 'operation-terminal'
-          && row?.operationId !== entry.operationId)
-          || receipt.operationId !== entry.operationId
+      if (!TERMINAL.has(receipt.state)
           || receipt.protectedResultRead !== true
           || receipt.receiptRunId !== context.receiptRunId
+          || receipt.operationId !== entry.operationId
           || receipt.authority !== entry.authority
           || receipt.requesterAgent !== entry.requesterAgent) {
         throw typedError('identity_manifest_mismatch');
       }
       for (const row of rows.filter((candidate) => candidate.operationId === entry.operationId)) {
-        if (row.receiptRunId !== receipt.receiptRunId || row.authority !== receipt.authority
+        if (row.receiptRunId !== receipt.receiptRunId
+            || row.authority !== receipt.authority
             || row.requesterAgent !== receipt.requesterAgent
             || (Object.hasOwn(row, 'authorizedEndpoint')
               && row.authorizedEndpoint !== receipt.authorizedEndpoint)
@@ -505,23 +1040,131 @@ export async function verifyReceiptManifest({
           throw typedError('receipt_identity_conflict');
         }
       }
-      if (entry.authority === 'live') {
-        const baseUrl = entry.authorizedEndpoint;
-        if (!baseUrl || receipt.authorizedEndpoint !== baseUrl || receipt.isolatedStore !== null) {
+
+      if (groupName === 'jerryLive' || groupName === 'forrestLive') {
+        const expectedRequester = groupName === 'jerryLive' ? 'jerry' : 'forrest';
+        const expectedEndpoint = groupName === 'jerryLive' ? jerryBaseUrl : forrestBaseUrl;
+        if (entry.authority !== 'live'
+            || entry.requesterAgent !== expectedRequester
+            || entry.authorizedEndpoint !== expectedEndpoint
+            || entry.isolatedStore !== null
+            || receipt.authorizedEndpoint !== expectedEndpoint
+            || receipt.isolatedStore !== null) {
           throw typedError('identity_manifest_mismatch');
         }
-        const Client = modules.BrainOperationsClient;
-        const client = new Client({ baseUrl, callerAgent: entry.requesterAgent, queryWaitMs: QUERY_WAIT_MS, pgsWaitMs: PGS_WAIT_MS });
+        const client = makeClient({
+          baseUrl: expectedEndpoint,
+          callerAgent: expectedRequester,
+        });
         const terminal = await protectedTerminal(client, entry.operationId, signal);
-        if (terminal.state !== receipt.state) throw typedError('protected_readback_mismatch');
-      } else if (!entry.isolatedStore || receipt.isolatedStore !== entry.isolatedStore
-          || receipt.authorizedEndpoint !== null) {
+        assertProtectedReadback(terminal, receipt, terminal.result);
+        liveEntries[groupName].push(entry);
+        observed.push({
+          group: groupName,
+          operationId: entry.operationId,
+          state: receipt.state,
+          readback: 'live-protected-result',
+        });
+        continue;
+      }
+
+      if (entry.authority !== 'isolated-controlled'
+          || entry.authorizedEndpoint !== null
+          || receipt.authorizedEndpoint !== null
+          || typeof entry.isolatedStore !== 'string'
+          || receipt.isolatedStore !== entry.isolatedStore) {
         throw typedError('identity_manifest_mismatch');
       }
-      observed.push({ group: groupName, operationId: entry.operationId, state: receipt.state });
+      const storeRoot = await canonicalDirectory(entry.isolatedStore, 'isolated operation store');
+      if (storeRoot.path !== entry.isolatedStore
+          || isInsideOrEqual(context.receiptRunDir, storeRoot.path)
+          || isInsideOrEqual(storeRoot.path, context.receiptRunDir)) {
+        throw typedError('identity_manifest_mismatch');
+      }
+      const reader = makeStoreReader({
+        operationsRoot: storeRoot.path,
+        expectedRequester: entry.requesterAgent,
+      });
+      const record = await reader.getAuthorized(entry.operationId);
+      if (!TERMINAL.has(record.state)) throw typedError('protected_readback_mismatch');
+      let result = null;
+      if (record.resultArtifact?.mediaType === 'application/x-ndjson') {
+        const opened = await reader.openResultArtifactAuthorized(
+          entry.operationId,
+          record.resultHandle || undefined,
+        );
+        await verifyArtifactStream(opened, record.resultArtifact);
+      } else if (record.result !== null || record.resultHandle !== null) {
+        result = await reader.getResultAuthorized(
+          entry.operationId,
+          record.resultHandle || undefined,
+        );
+      }
+      assertProtectedReadback(record, receipt, result);
+      const wrongRequester = wrongRequesterFor(entry.requesterAgent);
+      const wrongReader = makeStoreReader({
+        operationsRoot: storeRoot.path,
+        expectedRequester: wrongRequester,
+        liveStore: reader.store,
+      });
+      let wrongCode = null;
+      try { await wrongReader.getAuthorized(entry.operationId); }
+      catch (error) { wrongCode = error?.code || null; }
+      if (wrongCode !== 'access_denied') throw typedError('wrong_requester_read_succeeded');
+      isolatedWrongRequesterReads.push({
+        operationId: entry.operationId,
+        requesterAgent: wrongRequester,
+        code: wrongCode,
+      });
+      observed.push({
+        group: groupName,
+        operationId: entry.operationId,
+        state: receipt.state,
+        readback: 'isolated-production-store-reader',
+      });
     }
   }
-  return { ok: true, observed };
+
+  const inventory = await collectReceiptOperationInventory(
+    context.receiptRunDir,
+    new Set([manifestRealPath]),
+  );
+  for (const [operationId, item] of inventory) {
+    if (!seenOperations.has(operationId)) {
+      throw typedError('identity_manifest_unlisted_operation', operationId);
+    }
+    if (item.terminalCount !== 1) throw typedError('receipt_terminal_duplicate', operationId);
+  }
+  for (const operationId of seenOperations) {
+    if (!inventory.has(operationId)) throw typedError('identity_manifest_mismatch', operationId);
+  }
+
+  const wrongRequesterReads = [];
+  for (const [groupName, entries] of Object.entries(liveEntries)) {
+    const wrongEndpoint = groupName === 'jerryLive' ? forrestBaseUrl : jerryBaseUrl;
+    const wrongRequester = groupName === 'jerryLive' ? 'forrest' : 'jerry';
+    for (const entry of entries) {
+      const wrongClient = makeClient({ baseUrl: wrongEndpoint, callerAgent: wrongRequester });
+      let code = null;
+      try { await wrongClient.inspectOperation(entry.operationId, 'result', signal); }
+      catch (error) { code = error?.code || null; }
+      if (!['access_denied', 'operation_not_found', 'result_not_found'].includes(code)) {
+        throw typedError('wrong_requester_read_succeeded');
+      }
+      wrongRequesterReads.push({
+        operationId: entry.operationId,
+        viaRequester: wrongRequester,
+        viaEndpoint: wrongEndpoint,
+        code,
+      });
+    }
+  }
+  return {
+    ok: true,
+    observed,
+    wrongRequesterReads,
+    isolatedWrongRequesterReads,
+  };
 }
 
 function artifactAuthority(relativePath, context) {
@@ -532,15 +1175,13 @@ function artifactAuthority(relativePath, context) {
 }
 
 async function artifactRows(file) {
+  const extension = path.extname(file).toLowerCase();
+  if (!['.json', '.jsonl', '.ndjson'].includes(extension)) return [];
   const text = await fsp.readFile(file, 'utf8');
-  const lines = text.trim().split('\n').filter(Boolean);
-  if (lines.length === 0) return [];
-  const rows = [];
-  for (const line of lines) {
-    try { rows.push(JSON.parse(line)); }
-    catch { return []; }
+  try { return parseReceiptDocument(text); }
+  catch (error) {
+    throw typedError('artifact_json_invalid', `invalid JSON artifact: ${file}`, { cause: error });
   }
-  return rows.every((row) => row && typeof row === 'object' && !Array.isArray(row)) ? rows : [];
 }
 
 async function collectArtifactFiles(root, excluded) {
@@ -582,6 +1223,7 @@ export async function buildArtifactManifest({ smokeRoot, output, context } = {})
   await ensureFreshOutput(manifestPath);
   await ensureFreshOutput(digestPath);
   const artifacts = [];
+  let terminalOperations = 0;
   for (const file of await collectArtifactFiles(root.path, new Set([manifestPath, digestPath]))) {
     const authority = artifactAuthority(file.relative, context);
     const rows = await artifactRows(file.absolute);
@@ -595,6 +1237,8 @@ export async function buildArtifactManifest({ smokeRoot, output, context } = {})
           || row.authority !== authority)) {
         throw typedError('artifact_authority_mismatch', file.relative);
       }
+      terminalOperations += canonicalRows.filter((row) => row.receiptKind === 'operation-terminal'
+        && typeof row.operationId === 'string' && row.operationId).length;
     } else {
       for (const row of rows) {
         if (Object.hasOwn(row, 'receiptRunId') && row.receiptRunId !== context.receiptRunId) {
@@ -609,11 +1253,18 @@ export async function buildArtifactManifest({ smokeRoot, output, context } = {})
     artifacts.push({
       path: file.relative,
       kind: looksCanonical ? 'receipt' : 'raw',
+      receiptRunId: context.receiptRunId,
       authority,
       size: hashed.physicalSize,
       sha256: hashed.sha256,
+      dev: hashed.dev,
+      ino: hashed.ino,
+      nlink: Number((await fsp.lstat(file.absolute, { bigint: true })).nlink),
+      mtimeNs: hashed.mtimeNs,
+      ctimeNs: hashed.ctimeNs,
     });
   }
+  if (terminalOperations === 0) throw typedError('operation_inventory_empty');
   const row = await writeJsonReceipt(context, manifestPath, {
     helper: 'live-brain-tools-smoke',
     scenario: 'verify-receipts',
@@ -629,8 +1280,105 @@ export async function buildArtifactManifest({ smokeRoot, output, context } = {})
   await fsp.writeFile(temporary, `${digest}  ${path.basename(manifestPath)}\n`, {
     mode: 0o600, flag: 'wx',
   });
-  await fsp.rename(temporary, digestPath);
+  try {
+    await fsp.link(temporary, digestPath);
+  } catch (error) {
+    if (error.code === 'EEXIST') throw typedError('receipt_output_exists', digestPath);
+    throw error;
+  } finally {
+    await fsp.rm(temporary, { force: true }).catch(() => {});
+  }
   return row;
+}
+
+export async function verifyArtifactManifest({ manifestPath, context } = {}) {
+  const manifestFile = path.resolve(manifestPath);
+  if (!isInsideOrEqual(context.receiptRunDir, manifestFile)) {
+    throw typedError('artifact_manifest_invalid');
+  }
+  const digestPath = path.join(
+    path.dirname(manifestFile),
+    `${path.basename(manifestFile, path.extname(manifestFile))}.sha256`,
+  );
+  const [manifestBytes, digestBytes] = await Promise.all([
+    fsp.readFile(manifestFile),
+    fsp.readFile(digestPath),
+  ]).catch((error) => {
+    throw typedError('artifact_manifest_invalid', 'artifact manifest unavailable', { cause: error });
+  });
+  const digestMatch = /^([a-f0-9]{64})  ([^\r\n]+)\n?$/.exec(digestBytes.toString('utf8'));
+  if (!digestMatch || digestMatch[2] !== path.basename(manifestFile)
+      || digestMatch[1] !== sha256Bytes(manifestBytes)) {
+    throw typedError('artifact_manifest_digest_mismatch');
+  }
+  const manifestRows = await readReceiptRows(manifestFile);
+  if (manifestRows.length !== 1) throw typedError('artifact_manifest_invalid');
+  const manifest = manifestRows[0];
+  if (manifest.receiptKind !== 'artifact-manifest'
+      || manifest.receiptRunId !== context.receiptRunId
+      || manifest.authority !== context.authority
+      || manifest.auditRoot !== context.receiptRunDir
+      || !Array.isArray(manifest.artifacts) || manifest.artifacts.length === 0) {
+    throw typedError('artifact_manifest_invalid');
+  }
+  const excluded = new Set([manifestFile, digestPath]);
+  const actualFiles = await collectArtifactFiles(context.receiptRunDir, excluded);
+  const actualPaths = actualFiles.map((entry) => entry.relative);
+  const expectedPaths = manifest.artifacts.map((entry) => entry.path);
+  if (new Set(expectedPaths).size !== expectedPaths.length
+      || JSON.stringify(actualPaths) !== JSON.stringify([...expectedPaths].sort())) {
+    throw typedError('artifact_path_set_mismatch');
+  }
+  let terminalOperations = 0;
+  for (const entry of manifest.artifacts) {
+    if (!entry || typeof entry.path !== 'string'
+        || entry.receiptRunId !== context.receiptRunId
+        || !['live', 'isolated-controlled'].includes(entry.authority)
+        || !['receipt', 'raw'].includes(entry.kind)
+        || !/^[a-f0-9]{64}$/.test(entry.sha256)
+        || typeof entry.dev !== 'string' || typeof entry.ino !== 'string'
+        || !Number.isSafeInteger(entry.nlink) || entry.nlink !== 1) {
+      throw typedError('artifact_manifest_invalid');
+    }
+    const absolute = path.join(context.receiptRunDir, entry.path);
+    if (!isInsideOrEqual(context.receiptRunDir, absolute)) throw typedError('artifact_manifest_invalid');
+    const hashed = await hashFile(absolute);
+    const stat = await fsp.lstat(absolute, { bigint: true });
+    if (hashed.sha256 !== entry.sha256 || hashed.physicalSize !== entry.size
+        || hashed.dev !== entry.dev || hashed.ino !== entry.ino
+        || hashed.mtimeNs !== entry.mtimeNs || hashed.ctimeNs !== entry.ctimeNs
+        || Number(stat.nlink) !== entry.nlink) {
+      throw typedError('artifact_identity_mismatch', entry.path);
+    }
+    const expectedAuthority = artifactAuthority(entry.path, context);
+    if (entry.authority !== expectedAuthority) throw typedError('artifact_authority_mismatch');
+    const rows = await artifactRows(absolute);
+    const looksCanonical = rows.some((row) => Object.hasOwn(row, 'artifactSha256'));
+    if ((entry.kind === 'receipt') !== looksCanonical) throw typedError('artifact_manifest_invalid');
+    if (looksCanonical) {
+      const canonicalRows = await readReceiptRows(absolute);
+      if (canonicalRows.some((row) => row.receiptRunId !== context.receiptRunId
+          || row.authority !== entry.authority)) {
+        throw typedError('artifact_authority_mismatch');
+      }
+      terminalOperations += canonicalRows.filter((row) => row.receiptKind === 'operation-terminal'
+        && typeof row.operationId === 'string' && row.operationId).length;
+    } else {
+      for (const row of rows) {
+        if ((Object.hasOwn(row, 'receiptRunId') && row.receiptRunId !== context.receiptRunId)
+            || (Object.hasOwn(row, 'authority') && row.authority !== entry.authority)) {
+          throw typedError('artifact_authority_mismatch');
+        }
+      }
+    }
+  }
+  if (terminalOperations === 0) throw typedError('operation_inventory_empty');
+  return {
+    ok: true,
+    artifactCount: manifest.artifacts.length,
+    operationCount: terminalOperations,
+    manifestSha256: digestMatch[1],
+  };
 }
 
 export async function executeScenario({
@@ -644,6 +1392,8 @@ export async function executeScenario({
   signal,
   fetchImpl = fetch,
   activityLog = [],
+  controlledNegativeClient = null,
+  canaryOverride = null,
 } = {}) {
   const selector = targetSelector(values);
   if (scenario === 'discover-canary') {
@@ -694,7 +1444,15 @@ export async function executeScenario({
         || evidence.matchOutcome !== 'no_match'
         || evidence.completeCoverage !== true
         || Number(evidence.authoritativeTotals?.nodes ?? evidence.authoritativeTotal) <= 0) {
-      throw typedError('zero_result_not_proven');
+      throw typedError('zero_result_not_proven', JSON.stringify({
+        resultCount: resultsFromSearch(search).length,
+        sourceHealth: evidence.sourceHealth ?? null,
+        matchOutcome: evidence.matchOutcome ?? null,
+        completeCoverage: evidence.completeCoverage ?? null,
+        authoritativeTotal: evidence.authoritativeTotals?.nodes
+          ?? evidence.authoritativeTotal
+          ?? null,
+      }));
     }
     return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog, extras: {
       sourceHealth: evidence.sourceHealth,
@@ -717,26 +1475,24 @@ export async function executeScenario({
     } });
   }
   if (scenario === 'negative-targets') {
-    const expected = String(one(values, 'expect-codes', { required: true })).split(',').filter(Boolean);
-    const catalog = await client.getCatalog({ forceRefresh: true, signal });
-    const observed = new Set();
-    const attempts = [
-      () => client.resolveTarget({ agent: `missing-${Date.now()}` }),
-      () => client.resolveTarget({ brainId: `missing-${Date.now()}` }),
-    ];
-    const unavailable = catalog.brains.find((brain) => !((brain.kind === 'resident' && brain.lifecycle === 'resident')
-      || (brain.kind === 'research' && brain.lifecycle === 'completed')));
-    if (unavailable) attempts.push(() => client.resolveTarget({ brainId: unavailable.id }));
-    for (const attempt of attempts) {
-      try { await attempt(); } catch (error) { observed.add(error.code || error.message); }
-    }
-    if (!expected.every((code) => observed.has(code))) {
-      throw typedError('negative_target_coverage_failed');
-    }
+    const expected = String(one(values, 'expect-codes', { required: true }))
+      .split(',').map((code) => code.trim()).filter(Boolean);
+    const controlled = controlledNegativeClient || createControlledNegativeTargetClient({
+      Client: modules.BrainOperationsClient,
+      callerAgent,
+    });
+    const coverage = await collectNegativeTargetCoverage({
+      client,
+      controlledClient: controlled,
+      callerAgent,
+      expectedCodes: expected,
+      signal,
+      primaryAuthority: context.authority,
+    });
     return {
       helper: 'live-brain-tools-smoke', scenario, receiptKind: 'authority-negative',
       requesterAgent: callerAgent, protectedResultRead: false,
-      expectedCodes: expected, observedCodes: [...observed].sort(),
+      ...coverage,
       ...authorityFields(context, values, baseUrl),
     };
   }
@@ -820,7 +1576,14 @@ export async function executeScenario({
   }
 
   if (['own', 'direct-query', 'sibling', 'completed-research', 'pgs', 'large-pgs-isolated'].includes(scenario)) {
-    const canary = await canaryFromReceipt(values, context, callerAgent);
+    const canary = scenario === 'large-pgs-isolated' && canaryOverride
+      ? canaryOverride
+      : await canaryFromReceipt(values, context, callerAgent);
+    if (!canary?.query || !canary?.nodeId
+        || !Number.isSafeInteger(canary?.sourceRevision)
+        || canary?.sourceHealth !== 'healthy') {
+      throw typedError('canary_receipt_invalid');
+    }
     if (scenario === 'large-pgs-isolated') {
       if (context.authority !== 'isolated-controlled' || !booleanFlag(values, 'controlled-provider', false)) {
         throw typedError('controlled_provider_scope_invalid');
@@ -882,6 +1645,476 @@ export async function executeScenario({
   throw typedError('scenario_not_implemented', scenario);
 }
 
+const ISOLATED_LIFECYCLE_SCENARIOS = new Set([
+  'detach-reattach',
+  'cancel',
+  'restart-reconcile',
+  'synthesis-reconnect',
+]);
+const ISOLATED_AUTO_LAUNCH_SCENARIOS = new Set([
+  ...ISOLATED_LIFECYCLE_SCENARIOS,
+  'large-pgs-isolated',
+]);
+
+async function waitForOperationState(client, operationId, expected, signal, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw signal.reason;
+    const current = await client.getOperation(operationId, signal);
+    if (expected.has(current.state)) return current;
+    if (TERMINAL.has(current.state)) throw typedError('isolated_lifecycle_terminal_early');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw typedError('isolated_lifecycle_state_timeout');
+}
+
+async function waitForProviderStart(
+  fixture,
+  role,
+  baseline,
+  signal,
+  timeoutMs = 10_000,
+) {
+  if (!['cosmo', 'dashboard'].includes(role)) throw typedError('isolated_fixture_role_invalid');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (signal?.aborted) throw signal.reason;
+    const telemetry = await fixture.telemetry();
+    if (Number(telemetry[role]?.providerStarts) > baseline) return telemetry;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw typedError('isolated_provider_start_timeout');
+}
+
+async function resumeIsolatedOperationToTerminal(client, operationId, signal, timeoutMs = 10_000) {
+  const initialResume = await client.resumeOperation(operationId, signal);
+  if (TERMINAL.has(initialResume.state)) {
+    return { initialResume, terminal: initialResume, statusPolls: 0 };
+  }
+  const deadline = Date.now() + timeoutMs;
+  let statusPolls = 0;
+  let status = initialResume;
+  while (!TERMINAL.has(status.state) && Date.now() < deadline) {
+    await sleep(25, signal);
+    status = await client.getOperation(operationId, signal);
+    statusPolls += 1;
+  }
+  if (!TERMINAL.has(status.state)) {
+    throw typedError('reattach_not_terminal', JSON.stringify({
+      resumed: initialResume.state,
+      attachmentState: initialResume.attachmentState ?? null,
+      lastStatus: status.state,
+      statusPolls,
+    }));
+  }
+  const terminal = await client.resumeOperation(operationId, signal);
+  if (!TERMINAL.has(terminal.state)) {
+    throw typedError('reattach_not_terminal', JSON.stringify({
+      resumed: initialResume.state,
+      attachmentState: initialResume.attachmentState ?? null,
+      lastStatus: status.state,
+      finalResume: terminal.state,
+      statusPolls,
+    }));
+  }
+  return { initialResume, terminal, statusPolls };
+}
+
+async function readAttachmentEvidence(fixture, operationId) {
+  const directory = path.join(fixture.operationsRoot, 'operations', operationId, 'attachments');
+  const names = (await fsp.readdir(directory)).filter((name) => name.endsWith('.json')).sort();
+  const rows = [];
+  for (const name of names) {
+    const row = await readJson(path.join(directory, name));
+    if (row.operationId !== operationId || row.requesterAgent !== fixture.agent
+        || !['attached', 'detached', 'closed'].includes(row.state)) {
+      throw typedError('isolated_attachment_evidence_invalid');
+    }
+    rows.push(row);
+  }
+  return {
+    total: rows.length,
+    attached: rows.filter((row) => row.state === 'attached').length,
+    detached: rows.filter((row) => row.state === 'detached').length,
+    closed: rows.filter((row) => row.state === 'closed').length,
+    attachmentIds: rows.map((row) => row.attachmentId),
+    entries: rows.map((row) => ({
+      attachmentId: row.attachmentId,
+      state: row.state,
+      reason: row.reason,
+    })),
+  };
+}
+
+async function readRetainedProviderTerminalEvidence(fixture, operationId) {
+  const { BrainOperationStore } = require(
+    '../engine/src/dashboard/brain-operations/operation-store.js'
+  );
+  const store = new BrainOperationStore({
+    root: fixture.operationsRoot,
+    requesterAgent: fixture.agent,
+  });
+  const events = await store.readEvents(operationId, 0);
+  const terminals = events.filter((event) => event.type === 'provider_call_terminal');
+  if (terminals.length !== 1) throw typedError('provider_terminal_store_evidence_invalid');
+  const [event] = terminals;
+  if (event.operationId !== operationId
+      || event.provider !== 'controlled'
+      || event.model !== 'controlled-synthesis'
+      || event.providerCallId !== 'synthesis'
+      || event.outcome !== 'complete'
+      || !Number.isSafeInteger(event.sequence)) {
+    throw typedError('provider_terminal_store_evidence_invalid');
+  }
+  return {
+    operationId,
+    eventSequence: event.sequence,
+    provider: event.provider,
+    model: event.model,
+    providerCallId: event.providerCallId,
+    outcome: event.outcome,
+  };
+}
+
+async function readIsolatedOperationDiagnostics(fixture) {
+  const { BrainOperationStore } = require(
+    '../engine/src/dashboard/brain-operations/operation-store.js'
+  );
+  const store = new BrainOperationStore({
+    root: fixture.operationsRoot,
+    requesterAgent: fixture.agent,
+  });
+  return (await store.list()).map((record) => ({
+    operationId: record.operationId,
+    operationType: record.operationType,
+    state: record.state,
+    phase: record.phase,
+    error: record.error,
+  }));
+}
+
+function isolatedFixtureReceipt(fixture, stopped) {
+  const stoppedPids = [stopped?.dashboard?.pid, stopped?.cosmo?.pid, stopped?.mcp?.pid]
+    .filter((pid) => Number.isSafeInteger(pid) && pid > 0);
+  if (stopped?.dashboard?.exited !== true || stopped?.cosmo?.exited !== true
+      || stopped?.mcp?.exited !== true
+      || stoppedPids.length !== 3 || new Set(stoppedPids).size !== 3
+      || stopped?.retainedStore !== fixture.operationsRoot) {
+    throw typedError('isolated_fixture_shutdown_unproven');
+  }
+  return {
+    root: fixture.fixtureRoot,
+    basename: fixture.owner.basename,
+    dev: fixture.owner.dev,
+    ino: fixture.owner.ino,
+    pids: { ...fixture.pids },
+    ports: { ...fixture.ports },
+    stoppedPids,
+    retainedStore: stopped.retainedStore,
+    sourceHashes: { ...fixture.source.sourceHashes },
+  };
+}
+
+function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
+  const roles = ['dashboard', 'cosmo'];
+  const samples = new Map(roles.map((role) => [role, []]));
+  let stopping = false;
+  let failure = null;
+
+  async function capture() {
+    const capturedAtMs = Date.now();
+    for (const role of roles) {
+      const metric = await readJson(fixture.metrics[role]);
+      const updatedAtMs = Date.parse(metric.updatedAt);
+      if (metric.schemaVersion !== 2 || metric.role !== role
+          || metric.pid !== fixture.pids[role]
+          || metric.restartCount !== 0
+          || !Number.isFinite(metric.v8HeapUsedMiB) || metric.v8HeapUsedMiB < 0
+          || !Number.isFinite(metric.rssMiB) || metric.rssMiB <= 0
+          || !Number.isFinite(metric.processMaxRssMiB)
+          || metric.processMaxRssMiB < metric.rssMiB
+          || !Number.isFinite(updatedAtMs)
+          || Math.abs(capturedAtMs - updatedAtMs) > 5_000) {
+        throw typedError('isolated_fixture_metric_invalid', role);
+      }
+      const rows = samples.get(role);
+      if (rows.at(-1)?.updatedAt === metric.updatedAt) continue;
+      rows.push({
+        capturedAt: new Date(capturedAtMs).toISOString(),
+        updatedAt: metric.updatedAt,
+        pid: metric.pid,
+        restartCount: metric.restartCount,
+        v8HeapUsedMiB: metric.v8HeapUsedMiB,
+        rssMiB: metric.rssMiB,
+        processMaxRssMiB: metric.processMaxRssMiB,
+      });
+    }
+  }
+
+  const task = (async () => {
+    while (!stopping) {
+      try { await capture(); } catch (error) { failure ||= error; }
+      await sleep(intervalMs);
+    }
+  })();
+
+  return Object.freeze({
+    async stop() {
+      stopping = true;
+      await task;
+      try { await capture(); } catch (error) { failure ||= error; }
+      if (failure) throw failure;
+      const targets = roles.map((role) => {
+        const rows = samples.get(role);
+        if (rows.length < 3) throw typedError('isolated_fixture_metric_insufficient', role);
+        const pidChanged = rows.some((row) => row.pid !== fixture.pids[role]);
+        const restartDelta = Math.max(...rows.map((row) => row.restartCount))
+          - Math.min(...rows.map((row) => row.restartCount));
+        const baselineHeapMiB = rows[0].v8HeapUsedMiB;
+        const peakHeapMiB = Math.max(...rows.map((row) => row.v8HeapUsedMiB));
+        return {
+          name: role,
+          pid: fixture.pids[role],
+          samples: rows,
+          baselineHeapMiB,
+          peakHeapMiB,
+          heapGrowthMiB: Math.max(0, peakHeapMiB - baselineHeapMiB),
+          peakRssMiB: Math.max(...rows.map((row) => row.rssMiB)),
+          processMaxRssMiB: Math.max(...rows.map((row) => row.processMaxRssMiB)),
+          pidChanged,
+          restartDelta,
+          metricFresh: true,
+        };
+      });
+      if (targets.some((target) => target.pidChanged || target.restartDelta !== 0
+          || target.heapGrowthMiB > 256)) {
+        throw typedError('isolated_fixture_metric_gate_failed');
+      }
+      return { metric: 'v8-used-heap-mib', maxHeapGrowthMiB: 256, targets };
+    },
+  });
+}
+
+async function executeIsolatedLifecycleScenario({
+  scenario,
+  modules,
+  fixture,
+  client,
+  clientOptions,
+  values,
+  context,
+  callerAgent,
+  signal,
+  activities,
+}) {
+  const synthesis = scenario === 'synthesis-reconnect';
+  const telemetryBefore = await fixture.telemetry();
+  let initial;
+  try {
+    initial = synthesis
+      ? await client.start('synthesis', {
+          trigger: 'acceptance',
+          reason: 'controlled synthesis coordinator reconnect acceptance',
+        }, signal)
+      : await client.start('query', {
+          query: `controlled lifecycle ${scenario} acceptance`,
+          mode: 'quick',
+        }, signal);
+  } catch (error) {
+    if (synthesis) {
+      error.message = `${error.message}: ${JSON.stringify(
+        await readIsolatedOperationDiagnostics(fixture),
+      )}`;
+    }
+    throw error;
+  }
+  const running = await waitForOperationState(
+    client, initial.operationId, new Set(['running']), signal,
+  );
+  await waitForProviderStart(
+    fixture,
+    synthesis ? 'dashboard' : 'cosmo',
+    Number(telemetryBefore[synthesis ? 'dashboard' : 'cosmo']?.providerStarts || 0),
+    signal,
+  );
+
+  if (synthesis) {
+    const restartsBefore = Number(telemetryBefore.dashboard?.coordinatorRestarts || 0);
+    const restarted = await fixture.restartCoordinator();
+    if (restarted.coordinatorRestarts !== restartsBefore + 1) {
+      throw typedError('coordinator_restart_not_observed');
+    }
+    const restartedClient = new modules.BrainOperationsClient(clientOptions);
+    const reconciled = await restartedClient.getOperation(initial.operationId, signal);
+    if (!['running', 'complete'].includes(reconciled.state)) {
+      throw typedError('synthesis_restart_reconcile_invalid');
+    }
+    let reattached = reconciled;
+    let reattachAttempts = 0;
+    const detachedStates = [];
+    const reconnectDeadline = Date.now() + 10_000;
+    while (!TERMINAL.has(reattached.state) && Date.now() < reconnectDeadline) {
+      reattachAttempts += 1;
+      reattached = await restartedClient.reattachSynthesis(initial.operationId, signal);
+      if (!TERMINAL.has(reattached.state)) {
+        detachedStates.push({
+          state: reattached.state,
+          attachmentState: reattached.attachmentState ?? null,
+        });
+        await sleep(25, signal);
+      }
+    }
+    if (!TERMINAL.has(reattached.state)) {
+      throw typedError('reattach_not_terminal', JSON.stringify({
+        reconciled: reconciled.state,
+        reattachAttempts,
+        detachedStates,
+      }));
+    }
+    const terminal = await protectedTerminal(restartedClient, initial.operationId, signal);
+    const providerTerminalStoreEvidence = await readRetainedProviderTerminalEvidence(
+      fixture,
+      initial.operationId,
+    );
+    activities.push({
+      ...providerTerminalStoreEvidence,
+      type: 'provider_call_terminal',
+    });
+    const telemetryAfter = await fixture.telemetry();
+    if (Number(telemetryAfter.dashboard?.coordinatorRestarts) !== restartsBefore + 1
+        || Number(telemetryAfter.dashboard?.synthesisStarts) < 1) {
+      throw typedError('synthesis_restart_evidence_invalid');
+    }
+    return terminalReceipt({
+      context, values, baseUrl: fixture.baseUrl, callerAgent, scenario, terminal,
+      activityLog: activities,
+      extras: {
+        coordinatorRestarted: true,
+        coordinatorRestartsBefore: restartsBefore,
+        coordinatorRestartsAfter: telemetryAfter.dashboard.coordinatorRestarts,
+        storeReloaded: true,
+        reconciledState: reconciled.state,
+        reattachedTerminal: true,
+        reattachAttempts,
+        detachedStates,
+        providerTerminalStoreEvidence,
+        generationMarker: terminal.result?.generationMarker ?? null,
+      },
+    });
+  }
+
+  if (scenario === 'detach-reattach') {
+    const survivorClient = new modules.BrainOperationsClient(clientOptions);
+    const controller = new AbortController();
+    const detachedPromise = client.wait(initial.operationId, {
+      operationType: initial.operationType,
+      initial: running,
+      signal: controller.signal,
+      waitMs: QUERY_WAIT_MS,
+    });
+    const survivorPromise = survivorClient.wait(initial.operationId, {
+      operationType: initial.operationType,
+      initial: running,
+      signal,
+      waitMs: QUERY_WAIT_MS,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    controller.abort(Object.assign(new Error('transport_disconnect'), {
+      code: 'transport_disconnect',
+    }));
+    const detached = await detachedPromise;
+    if (detached.attachmentState !== 'detached' || detached.state !== 'running') {
+      throw typedError('detach_not_observed');
+    }
+    const concurrentAttachments = await readAttachmentEvidence(fixture, initial.operationId);
+    if (concurrentAttachments.total !== 2
+        || concurrentAttachments.detached !== 1
+        || concurrentAttachments.attached !== 1) {
+      throw typedError('two_attachment_detach_not_proven');
+    }
+    const survived = await survivorPromise;
+    const reattachment = await resumeIsolatedOperationToTerminal(
+      client,
+      initial.operationId,
+      signal,
+    );
+    const terminal = await protectedTerminal(survivorClient, initial.operationId, signal);
+    const terminalAttachments = await readAttachmentEvidence(fixture, initial.operationId);
+    if (terminalAttachments.detached !== 1 || terminalAttachments.closed < 1) {
+      throw typedError('surviving_attachment_not_proven');
+    }
+    return terminalReceipt({
+      context, values, baseUrl: fixture.baseUrl, callerAgent, scenario, terminal,
+      activityLog: activities,
+      extras: {
+        detachedState: detached.state,
+        survivorWaitState: survived.state,
+        survivorWaitAttachment: survived.attachmentState,
+        reattachInitialState: reattachment.initialResume.state,
+        reattachStatusPolls: reattachment.statusPolls,
+        reattachedTerminal: true,
+        concurrentAttachments,
+        terminalAttachments,
+      },
+    });
+  }
+
+  if (scenario === 'cancel') {
+    const abortsBefore = Number((await fixture.telemetry()).cosmo?.providerAborts || 0);
+    await client.cancel(initial.operationId, signal);
+    const terminal = await protectedTerminal(client, initial.operationId, signal);
+    const abortsAfter = Number((await fixture.telemetry()).cosmo?.providerAborts || 0);
+    if (terminal.state !== 'cancelled' || abortsAfter !== abortsBefore + 1) {
+      throw typedError('cancel_not_terminal');
+    }
+    return terminalReceipt({
+      context, values, baseUrl: fixture.baseUrl, callerAgent, scenario, terminal,
+      activityLog: activities,
+      extras: { providerAbortObserved: true },
+    });
+  }
+
+  const dashboardPidBeforeRestart = fixture.pids.dashboard;
+  const stoppedDashboard = await fixture.restartDashboard();
+  if (stoppedDashboard.pid !== dashboardPidBeforeRestart || stoppedDashboard.exited !== true) {
+    throw typedError('isolated_fixture_restart_unproven');
+  }
+  const restartedClient = new modules.BrainOperationsClient({
+    ...clientOptions,
+    baseUrl: fixture.baseUrl,
+  });
+  const reconciled = await restartedClient.getOperation(initial.operationId, signal);
+  if (!['running', 'interrupted'].includes(reconciled.state)) {
+    throw typedError('restart_reconcile_invalid');
+  }
+  const reattachment = TERMINAL.has(reconciled.state)
+    ? {
+        initialResume: reconciled,
+        terminal: await protectedTerminal(restartedClient, initial.operationId, signal),
+        statusPolls: 0,
+      }
+    : await resumeIsolatedOperationToTerminal(
+        restartedClient,
+        initial.operationId,
+        signal,
+      );
+  const protectedRead = await protectedTerminal(restartedClient, initial.operationId, signal);
+  return terminalReceipt({
+    context, values, baseUrl: fixture.baseUrl, callerAgent, scenario,
+    terminal: protectedRead, activityLog: activities,
+    extras: {
+      dashboardRestarted: true,
+      dashboardPidBeforeRestart,
+      dashboardPidAfterRestart: fixture.pids.dashboard,
+      storeReloaded: true,
+      reconciledState: reconciled.state,
+      reattachInitialState: reattachment.initialResume.state,
+      reattachStatusPolls: reattachment.statusPolls,
+      reattachedTerminal: TERMINAL.has(reattachment.terminal.state),
+    },
+  });
+}
+
 export function createClientOptions({ baseUrl, callerAgent, values, onActivity, fetchImpl }) {
   return {
     baseUrl,
@@ -897,7 +2130,7 @@ export function createClientOptions({ baseUrl, callerAgent, values, onActivity, 
 export async function main(argv = process.argv.slice(2), env = process.env) {
   const { values } = parseCli(argv);
   const context = await receiptContext(values, env);
-  const baseUrl = one(values, 'base-url');
+  let baseUrl = one(values, 'base-url');
   if (booleanFlag(values, 'controlled-provider', false)
       && (context.authority !== 'isolated-controlled' || !one(values, 'isolated-fixture'))) {
     throw typedError('controlled_provider_scope_invalid');
@@ -918,6 +2151,10 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
   }
   const scenario = one(values, 'scenario', { required: true });
   if (!SCENARIOS.includes(scenario)) throw typedError('scenario_invalid');
+  if (baseUrl && booleanFlag(values, 'controlled-provider', false)
+      && ISOLATED_LIFECYCLE_SCENARIOS.has(scenario)) {
+    throw typedError('isolated_fixture_endpoint_override_refused');
+  }
   if (scenario === 'verify-receipts' && booleanFlag(values, 'build-artifact-manifest', false)) {
     return buildArtifactManifest({
       smokeRoot: path.resolve(one(values, 'smoke-root', { required: true })),
@@ -925,26 +2162,117 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       context,
     });
   }
-  if (!baseUrl && !['verify-receipts'].includes(scenario)) throw typedError('base_url_required');
+  const isolatedAutoLaunch = !baseUrl && ISOLATED_AUTO_LAUNCH_SCENARIOS.has(scenario);
+  if (isolatedAutoLaunch && (context.authority !== 'isolated-controlled'
+      || !booleanFlag(values, 'controlled-provider', false)
+      || !one(values, 'isolated-fixture'))) {
+    throw typedError('controlled_provider_scope_invalid');
+  }
+  if (!baseUrl && !isolatedAutoLaunch && !['verify-receipts'].includes(scenario)) {
+    throw typedError('base_url_required');
+  }
+  if (one(values, 'heap-output') && !isolatedAutoLaunch) {
+    throw typedError('isolated_fixture_heap_scope_invalid');
+  }
+  const fixtureAgent = one(values, 'fixture-agent');
   const callerAgent = one(values, 'caller-agent', {
-    defaultValue: context.authority === 'isolated-controlled' ? 'acceptance-fixture' : undefined,
+    defaultValue: context.authority === 'isolated-controlled'
+      ? (fixtureAgent || 'acceptance-fixture')
+      : undefined,
   });
   if (!callerAgent || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(callerAgent)) {
     throw typedError('caller_agent_invalid');
   }
+  if (isolatedAutoLaunch && fixtureAgent && fixtureAgent !== callerAgent) {
+    throw typedError('isolated_fixture_requester_mismatch');
+  }
   const modules = await loadProductionModules();
   const activities = [];
-  const client = new modules.BrainOperationsClient(createClientOptions({
-    baseUrl,
-    callerAgent,
-    values,
+  let fixture = null;
+  let stopIsolatedFixture = null;
+  let metricSampler = null;
+  let heapEvidence = null;
+  if (isolatedAutoLaunch) {
+    const fixtureModule = await import('./lib/isolated-brain-fixture.mjs');
+    stopIsolatedFixture = fixtureModule.stopIsolatedFixture;
+    const largePgs = scenario === 'large-pgs-isolated';
+    fixture = await fixtureModule.startIsolatedFixture({
+      fixtureRoot: path.resolve(one(values, 'isolated-fixture', { required: true })),
+      context,
+      agent: callerAgent,
+      nodeCount: largePgs
+        ? integer(values, 'synthetic-nodes', { required: true, min: PGS_LARGE_MIN_NODES })
+        : 2,
+      edgeCount: largePgs
+        ? integer(values, 'synthetic-edges', {
+            required: true,
+            min: integer(values, 'synthetic-nodes', {
+              required: true,
+              min: PGS_LARGE_MIN_NODES,
+            }),
+          })
+        : 1,
+      operationDelayMs: integer(values, 'fixture-operation-delay-ms', {
+        defaultValue: 100, min: 0, max: 60_000,
+      }),
+    });
+    const suppliedStore = one(values, 'isolated-store');
+    if (suppliedStore && path.resolve(suppliedStore) !== fixture.operationsRoot) {
+      await stopIsolatedFixture(fixture);
+      fixture = null;
+      throw typedError('isolated_store_mismatch');
+    }
+    values['isolated-store'] = fixture.operationsRoot;
+    baseUrl = fixture.baseUrl;
+    if (one(values, 'heap-output')) metricSampler = startIsolatedMetricSampler(fixture);
+  }
+  const clientOptions = createClientOptions({
+    baseUrl, callerAgent, values,
     onActivity: (activity) => activities.push(activity),
-  }));
-  const controller = new AbortController();
-  const row = await executeScenario({
-    scenario, modules, client, values, context, baseUrl, callerAgent,
-    signal: controller.signal, activityLog: activities,
   });
+  const client = new modules.BrainOperationsClient(clientOptions);
+  const controller = new AbortController();
+  let row;
+  let stopped = null;
+  try {
+    row = fixture && ISOLATED_LIFECYCLE_SCENARIOS.has(scenario)
+      ? await executeIsolatedLifecycleScenario({
+          scenario, modules, fixture, client, clientOptions, values, context, callerAgent,
+          signal: controller.signal, activities,
+        })
+      : await executeScenario({
+          scenario, modules, client, values, context, baseUrl, callerAgent,
+          signal: controller.signal, activityLog: activities,
+          canaryOverride: fixture?.canary || null,
+        });
+  } finally {
+    try {
+      if (metricSampler) heapEvidence = await metricSampler.stop();
+    } finally {
+      if (fixture) stopped = await stopIsolatedFixture(fixture);
+    }
+  }
+  if (fixture) {
+    row = {
+      ...row,
+      isolatedFixture: isolatedFixtureReceipt(fixture, stopped),
+    };
+  }
+  const heapOutputRaw = one(values, 'heap-output');
+  if (heapOutputRaw) {
+    if (!heapEvidence || !fixture) throw typedError('isolated_fixture_metric_unavailable');
+    await writeJsonReceipt(context, path.resolve(heapOutputRaw), {
+      helper: 'live-brain-tools-smoke',
+      scenario,
+      receiptKind: 'isolated-process-memory',
+      protectedResultRead: false,
+      requesterAgent: callerAgent,
+      authorizedEndpoint: null,
+      isolatedStore: fixture.operationsRoot,
+      isolatedPids: { dashboard: fixture.pids.dashboard, cosmo: fixture.pids.cosmo },
+      ...heapEvidence,
+    });
+  }
   const sseOutputRaw = one(values, 'sse-output');
   if (sseOutputRaw) await flushActivity(
     context, path.resolve(sseOutputRaw), activities, callerAgent, scenario, context.authority,
