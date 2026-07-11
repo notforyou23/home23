@@ -1498,7 +1498,7 @@ Create an injected executor:
 
 Assert valid capabilities start once, replayed/nonmatching capabilities fail, scratchDir resolves inside:
 
-    instances/jerry/runtime/brain-operations/<operationId>/scratch
+    instances/jerry/runtime/brain-operations/operations/<operationId>/scratch
 
 and supplied scratchDir, requesterAgent, canonicalRoot, operationId, owner, lifecycle, run owner, policy, or write-scope body overrides are rejected. Assert cancel aborts the executor and events are monotonic. For each internal endpoint—start, status, events, result, and cancel—run a table test with a fresh valid capability, then invalid signature, expired token, replayed nonce, wrong requester, wrong target kind/brain/run/requester/root, wrong operation type, and wrong operation ID. A capability consumed on one endpoint cannot be replayed on another.
 
