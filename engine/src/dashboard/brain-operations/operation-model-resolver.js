@@ -64,8 +64,9 @@ function optionalBoolean(value, label) {
 function priorContext(value) {
   assertExactKeys(value, ['query', 'answer'], 'priorContext');
   if (Object.keys(value).length !== 2
-      || typeof value.query !== 'string' || value.query.length > 12_000
-      || typeof value.answer !== 'string' || value.answer.length > 20_000) {
+      || typeof value.query !== 'string'
+      || typeof value.answer !== 'string'
+      || value.query.length + value.answer.length > 20_000) {
     throw typed('invalid_request', 'priorContext is invalid');
   }
   return deepFreeze({ query: value.query, answer: value.answer });

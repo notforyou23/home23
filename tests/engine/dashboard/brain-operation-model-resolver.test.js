@@ -148,6 +148,19 @@ test('validates bounded non-provider query and PGS options exactly', () => {
   assert.deepEqual(pgs.parameters.pgsConfig, { sweepFraction: 0.25 });
 });
 
+test('prior context uses the public combined 20k contract without a hidden query sub-cap', () => {
+  const { resolver } = fixture();
+  const accepted = resolver.resolve('query', {
+    query: 'current',
+    priorContext: { query: 'q'.repeat(13_000), answer: 'a'.repeat(7_000) },
+  });
+  assert.equal(accepted.parameters.priorContext.query.length, 13_000);
+  assert.throws(() => resolver.resolve('query', {
+    query: 'current',
+    priorContext: { query: 'q'.repeat(13_000), answer: 'a'.repeat(7_001) },
+  }), { code: 'invalid_request' });
+});
+
 test('migrates three model-only default slots in one settings CAS', async () => {
   const base = fixture();
   let data = {
