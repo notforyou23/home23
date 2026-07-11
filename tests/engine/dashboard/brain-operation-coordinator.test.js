@@ -1144,6 +1144,63 @@ test('late terminal attachment replays the retained journal read-only and closes
   );
 });
 
+test('late terminal attachment crosses compacted gaps and retains provider terminal evidence', async (t) => {
+  const fixture = makeFixture(t);
+  fixture.store.eventMaxCount = 8;
+  fixture.store.eventMaxBytes = 1024 * 1024;
+  const operation = await fixture.coordinator.start(request({
+    requestId: 'late-terminal-compacted-replay',
+  }));
+  await waitForState(fixture, operation.operationId, 'running');
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_selected',
+    providerCallId: 'query',
+    providerStallMs: 5_000,
+  });
+  for (let index = 0; index < 24; index += 1) {
+    fixture.worker.emit(operation.operationId, {
+      type: 'progress',
+      completed: index + 1,
+    });
+  }
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_activity',
+    providerCallId: 'query',
+  });
+  fixture.worker.emit(operation.operationId, {
+    type: 'provider_call_terminal',
+    providerCallId: 'query',
+  });
+  fixture.worker.finish(operation.operationId, {
+    state: 'complete',
+    result: { answer: 'compacted replay result' },
+    error: null,
+    sourceEvidence: null,
+  });
+  await waitForState(fixture, operation.operationId, 'complete');
+
+  const attachment = await fixture.coordinator.attach(operation.operationId, {
+    attachmentId: 'late-compacted-terminal-replay',
+    afterSequence: 0,
+  });
+  const events = [];
+  for (;;) {
+    const event = await attachment.nextEvent();
+    if (event === null) break;
+    events.push(event);
+  }
+  await attachment.done;
+
+  assert.equal(events.some((event) => event.type === 'event_gap'), true);
+  assert.equal(events.some((event) => event.type === 'provider_call_terminal'
+    && event.providerCallId === 'query'), true);
+  assert.equal(events.at(-1).type, 'state');
+  assert.equal(events.at(-1).state, 'complete');
+  for (let index = 1; index < events.length; index += 1) {
+    assert.equal(events[index].eventSequence > events[index - 1].eventSequence, true);
+  }
+});
+
 test('authenticated Query progress survives terminal finalization as lastProgressAt', async (t) => {
   const fixture = makeFixture(t);
   const operation = await fixture.coordinator.start(request({
@@ -3389,9 +3446,12 @@ test('worker adapter event streams surface an interior compacted sequence gap', 
   assert.equal((await events.next()).value.eventSequence, 1);
   const gap = (await events.next()).value;
   assert.equal(gap.type, 'event_gap');
-  assert.equal(gap.oldestSequence, 3);
-  assert.equal(gap.latestSequence, 3);
-  assert.equal(gap.eventSequence, 3);
+  assert.equal(gap.oldestSequence, 2);
+  assert.equal(gap.latestSequence, 2);
+  assert.equal(gap.eventSequence, 2);
+  const retained = await events.next();
+  assert.equal(retained.value.eventSequence, 3);
+  assert.equal(retained.value.phase, 'third');
 
   controller.abort();
   await adapter.cancel(operationId, 'cap-cancel');

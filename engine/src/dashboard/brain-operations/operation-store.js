@@ -1466,15 +1466,27 @@ class BrainOperationStore {
     if (!Number.isSafeInteger(after) || after < 0) throw operationError('event_cursor_invalid');
     const record = await this._readPrivateRecord(operationId);
     const rows = await this._readEventRows(record);
-    const oldestSequence = oldestContiguousSequence(rows, record.eventSequence);
-    const latestSequence = record.eventSequence;
-    const output = rows.filter((event) => event.sequence > after).map((event) => safeJsonClone(event));
-    if (after < oldestSequence - 1 && latestSequence > 0) {
-      output.unshift({
+    const output = [];
+    let cursor = after;
+    for (const row of rows) {
+      if (row.sequence <= after) continue;
+      if (row.sequence > cursor + 1) {
+        output.push({
+          type: 'event_gap',
+          operationId,
+          oldestSequence: cursor + 1,
+          latestSequence: row.sequence - 1,
+        });
+      }
+      output.push(safeJsonClone(row));
+      cursor = row.sequence;
+    }
+    if (record.eventSequence > cursor) {
+      output.push({
         type: 'event_gap',
         operationId,
-        oldestSequence,
-        latestSequence,
+        oldestSequence: cursor + 1,
+        latestSequence: record.eventSequence,
       });
     }
     return output;

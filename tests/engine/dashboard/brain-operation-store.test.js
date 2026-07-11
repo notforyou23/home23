@@ -2060,15 +2060,27 @@ test('events stay bounded, retain material evidence, and report a resumable gap'
     });
   }
   const events = await fixture.store.readEvents(record.operationId, 0);
-  assert.equal(events[0].type, 'event_gap');
-  assert.ok(events[0].oldestSequence > 1);
-  assert.equal(events[0].latestSequence, (await fixture.store.get(record.operationId)).eventSequence);
+  const status = await fixture.store.get(record.operationId);
+  assert.equal(events.some((event) => event.type === 'event_gap'), true);
+  let cursor = 0;
+  for (const event of events) {
+    if (event.type === 'event_gap') {
+      assert.equal(event.oldestSequence, cursor + 1);
+      assert.equal(event.latestSequence >= event.oldestSequence, true);
+      cursor = event.latestSequence;
+    } else {
+      assert.equal(event.sequence, cursor + 1);
+      cursor = event.sequence;
+    }
+  }
+  assert.equal(cursor, status.eventSequence);
   assert.ok(events.some((event) => event.type === 'phase'));
   assert.ok(events.some((event) => event.type === 'provider_selected'));
   const retained = events.filter((event) => event.type !== 'event_gap');
   assert.ok(retained.length <= 12);
   assert.ok(Buffer.byteLength(retained.map((event) => JSON.stringify(event) + '\n').join('')) <= 1800);
-  const resumed = await fixture.store.readEvents(record.operationId, events[0].oldestSequence - 1);
+  const gap = events.find((event) => event.type === 'event_gap');
+  const resumed = await fixture.store.readEvents(record.operationId, gap.latestSequence);
   assert.notEqual(resumed[0]?.type, 'event_gap');
   for (let index = 1; index < resumed.length; index += 1) {
     assert.ok(resumed[index].sequence > resumed[index - 1].sequence);

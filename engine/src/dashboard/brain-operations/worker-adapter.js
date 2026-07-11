@@ -676,15 +676,18 @@ class BrainOperationWorkerAdapter {
       const event = local.events.find((candidate) => candidate.eventSequence > cursor);
       if (local.eventSequence > cursor
           && (!event || event.eventSequence > cursor + 1)) {
+        const latestSequence = event
+          ? event.eventSequence - 1
+          : local.eventSequence;
         yield {
           type: 'event_gap',
           operationId,
-          eventSequence: local.eventSequence,
-          oldestSequence: event?.eventSequence ?? local.eventSequence,
-          latestSequence: local.eventSequence,
+          eventSequence: latestSequence,
+          oldestSequence: cursor + 1,
+          latestSequence,
           currentStatus: this._publicRecord(local),
         };
-        cursor = local.eventSequence;
+        cursor = latestSequence;
         continue;
       }
       if (event) {

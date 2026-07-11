@@ -29,7 +29,7 @@
 - Preserve all existing runtime data and all pre-existing staged/working-tree changes. Never stage `instances/`, local `config/*.yaml`/`*.json`, `ecosystem.config.cjs`, logs, caches, receipts containing secrets, or operation runtime state.
 - Do not run `pm2 stop all`, `pm2 delete all`, destructive Git cleanup, or a shared COSMO restart while a research run or brain operation is active.
 - Do not restart a live resident engine until Task 8 Step 2A has run the production load path read-only against that exact brain, proved nonzero manifest/snapshot/count and before/after hash agreement, and exercised the production save path only against an external guarded temporary clone.
-- Execute this plan in a clean isolated worktree created with `superpowers:using-git-worktrees`, on branch `codex/brain-operations-reliability`, from the commit containing all four approved plans. At task start, `test -z "$(git status --porcelain)"` and `git diff --cached --quiet` must both pass. Do not execute implementation tasks in the live installation's already-modified worktree.
+- Execute this plan in a clean isolated worktree created with `superpowers:using-git-worktrees`, on branch `codex/brain-agent-migration`, from the commit containing all four approved plans. The approved implementation used the isolated integration worktree `.worktrees/brain-agent-migration`; the commands below use that canonical branch name. At task start, `test -z "$(git status --porcelain)"` and `git diff --cached --quiet` must both pass. Do not execute implementation tasks in the live installation's already-modified worktree.
 - Before every commit, require a clean index, stage only the paths named in that task with `git add -- <paths>`, run `git diff --cached --check`, inspect `git diff --cached -- <paths>`, and commit those explicit paths. A task may not absorb a file changed outside its own RED/GREEN cycle. After the commit, `test -z "$(git status --porcelain)"` must pass before the next task starts.
 - The isolated worktree contains no ignored `instances/`, local config, secrets, or `ecosystem.config.cjs`; never run existing-install migration there and never point PM2 at it. Prefer an exact fast-forward so the live checkout equals the remotely read-back tested implementation commit. A reviewed combined live deployment may preserve pending tracked work only through Task 8's three-way/object-ID procedure: prove the primary index is byte/object-identical, run the complete verification matrix on the combined bytes, and record `live tree = pushed feature + preserved pending work`. Never stash, copy wholesale, discard, or rewrite the primary index. An unresolved semantic overlap stops prepare/restart. Ignored runtime state stays only in the live checkout.
 
@@ -5569,10 +5569,10 @@ git add -- package.json scripts/live-brain-tools-smoke.mjs scripts/hash-brain-bo
 git diff --cached --check
 git diff --cached -- package.json scripts/live-brain-tools-smoke.mjs scripts/hash-brain-boundaries.mjs scripts/sample-process-memory.mjs scripts/verify-brain-persistence.mjs scripts/guarded-pm2-save.mjs scripts/verify-live-deployment-tree.mjs tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs tests/scripts/guarded-pm2-save.test.cjs tests/scripts/verify-live-deployment-tree.test.cjs
 git commit --only package.json scripts/live-brain-tools-smoke.mjs scripts/hash-brain-boundaries.mjs scripts/sample-process-memory.mjs scripts/verify-brain-persistence.mjs scripts/guarded-pm2-save.mjs scripts/verify-live-deployment-tree.mjs tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs tests/scripts/guarded-pm2-save.test.cjs tests/scripts/verify-live-deployment-tree.test.cjs -m "test: add live brain reliability harness"
-git push -u origin codex/brain-operations-reliability
+git push -u origin codex/brain-agent-migration
 IMPLEMENTATION_PUSH_COMMIT=$(git rev-parse HEAD)
-git fetch origin codex/brain-operations-reliability
-test "$IMPLEMENTATION_PUSH_COMMIT" = "$(git rev-parse origin/codex/brain-operations-reliability)"
+git fetch origin codex/brain-agent-migration
+test "$IMPLEMENTATION_PUSH_COMMIT" = "$(git rev-parse origin/codex/brain-agent-migration)"
 ```
 
 Before touching the primary live checkout, capture its branch/status, cached diff, working diff, and untracked-name inventory to a timestamped operator-only directory outside Git; do not copy ignored secrets or runtime data. Use this exact preflight:
@@ -6350,7 +6350,7 @@ Return explicitly to the isolated feature worktree before creating or committing
 
 ```bash
 cd "$ISOLATED_ROOT"
-test "$(git branch --show-current)" = codex/brain-operations-reliability
+test "$(git branch --show-current)" = codex/brain-agent-migration
 test "$(pwd -P)" != "$LIVE_ROOT"
 ```
 
@@ -6426,10 +6426,10 @@ git add -- docs/receipts/2026-07-09-brain-tools-hardening.md
 git diff --cached --check
 git diff --cached -- docs/receipts/2026-07-09-brain-tools-hardening.md
 git commit --only docs/receipts/2026-07-09-brain-tools-hardening.md -m "docs: record live brain reliability acceptance"
-git push origin codex/brain-operations-reliability
+git push origin codex/brain-agent-migration
 RECEIPT_PUSH_COMMIT=$(git rev-parse HEAD)
-git fetch origin codex/brain-operations-reliability
-test "$RECEIPT_PUSH_COMMIT" = "$(git rev-parse origin/codex/brain-operations-reliability)"
+git fetch origin codex/brain-agent-migration
+test "$RECEIPT_PUSH_COMMIT" = "$(git rev-parse origin/codex/brain-agent-migration)"
 ```
 
 Expected: the live receipt exists on the remote and the spec still does not claim implementation.
@@ -6446,10 +6446,10 @@ git add -- docs/superpowers/specs/2026-07-09-brain-operations-reliability-design
 git diff --cached --check
 git diff --cached -- docs/superpowers/specs/2026-07-09-brain-operations-reliability-design.md docs/receipts/2026-07-09-brain-tools-hardening.md
 git commit --only docs/superpowers/specs/2026-07-09-brain-operations-reliability-design.md docs/receipts/2026-07-09-brain-tools-hardening.md -m "docs: mark brain operations implementation verified"
-git push origin codex/brain-operations-reliability
+git push origin codex/brain-agent-migration
 STATUS_PUSH_COMMIT=$(git rev-parse HEAD)
-git fetch origin codex/brain-operations-reliability
-test "$STATUS_PUSH_COMMIT" = "$(git rev-parse origin/codex/brain-operations-reliability)"
+git fetch origin codex/brain-agent-migration
+test "$STATUS_PUSH_COMMIT" = "$(git rev-parse origin/codex/brain-agent-migration)"
 ```
 
 Expected: the implemented status first exists only after live evidence, final verification, implementation push/readback, and receipt push/readback.
@@ -6464,12 +6464,12 @@ git add -- docs/receipts/2026-07-09-brain-tools-hardening.md
 git diff --cached --check
 git diff --cached -- docs/receipts/2026-07-09-brain-tools-hardening.md
 git commit --only docs/receipts/2026-07-09-brain-tools-hardening.md -m "docs: record brain reliability push readback"
-git push origin codex/brain-operations-reliability
+git push origin codex/brain-agent-migration
 FINAL_RECEIPT_COMMIT=$(git rev-parse HEAD)
-git fetch origin codex/brain-operations-reliability
-test "$FINAL_RECEIPT_COMMIT" = "$(git rev-parse origin/codex/brain-operations-reliability)"
-git show "origin/codex/brain-operations-reliability:docs/superpowers/specs/2026-07-09-brain-operations-reliability-design.md" | rg -F '**Status:** Implemented'
-git show "origin/codex/brain-operations-reliability:docs/receipts/2026-07-09-brain-tools-hardening.md" | rg -F "$STATUS_PUSH_COMMIT"
+git fetch origin codex/brain-agent-migration
+test "$FINAL_RECEIPT_COMMIT" = "$(git rev-parse origin/codex/brain-agent-migration)"
+git show "origin/codex/brain-agent-migration:docs/superpowers/specs/2026-07-09-brain-operations-reliability-design.md" | rg -F '**Status:** Implemented'
+git show "origin/codex/brain-agent-migration:docs/receipts/2026-07-09-brain-tools-hardening.md" | rg -F "$STATUS_PUSH_COMMIT"
 test -z "$(git status --porcelain)"
 ```
 

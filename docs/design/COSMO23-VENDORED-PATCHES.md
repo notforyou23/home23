@@ -2432,6 +2432,136 @@ resident, unavailable, cross-layout, and explicitly owned-run paths on
 
 ---
 
+## Patch 53 — Durable brain transport, bounded providers, and research memory generations
+
+**Vendored production files touched:**
+- `cosmo23/server/lib/brain-operation-worker.js`
+- `cosmo23/server/lib/brain-operation-routes.js`
+- `cosmo23/server/lib/provider-pair-probe.js`
+- `cosmo23/server/lib/legacy-query-operation-adapter.js`
+- `cosmo23/server/lib/research-compile-provider-adapter.js`
+- `cosmo23/server/lib/research-operation-executors.js`
+- `cosmo23/server/index.js`
+- `cosmo23/lib/provider-execution.js`
+- `cosmo23/lib/provider-completion.js`
+- `cosmo23/lib/bounded-json.js`
+- `cosmo23/lib/gpt5-client.js`
+- `cosmo23/lib/anthropic-client.js`
+- `cosmo23/lib/codex-responses-client.js`
+- `cosmo23/lib/query-engine.js`
+- `cosmo23/lib/pgs-engine.js`
+- `cosmo23/lib/brain-provider-client-registry.js`
+- `cosmo23/lib/memory-sidecar.js`
+- `cosmo23/lib/memory-source-adapter.js`
+- `cosmo23/engine/src/core/chat-completions-client.js`
+- `cosmo23/engine/src/core/guided-mode-planner.js`
+- `cosmo23/engine/src/core/orchestrator.js`
+- `cosmo23/engine/src/merge/merge-engine.js`
+- `cosmo23/pgs-engine/src/pinned-operation.js`
+- `cosmo23/pgs-engine/src/pinned-store.js`
+
+**Integration companion:** `shared/memory-source/jsonl.cjs` now quiesces an
+owned JSONL stream before its file handle is closed when a consumer returns
+early. This shared source-reader lifecycle is used by the vendored bounded
+memory paths but is intentionally not a COSMO fork.
+
+**Problem:** The protected worker could coalesce a noisy provider-activity
+event and then describe the resulting missing prefix as a gap through the
+operation's latest sequence. That discarded retained provider-terminal and
+operation-terminal frames that followed the gap. The events HTTP route could
+also stop pulling merely because a normally completed request emitted
+`close`, even though its response was still writable. Together those races
+made a completed long operation look detached or permanently running.
+
+Provider transports had a second unbounded layer: retained streamed content,
+reasoning, tool arguments, citations, and response metadata could grow until
+V8 exhausted its heap before the durable result ceiling ran. Several callers
+also failed to pass their narrower operation budget. Legacy guided PGS could
+combine provider and model fields from different configuration sources, while
+retry rows, receipts, and synthesis input needed one exact source/pair and
+bounded durable readback throughout.
+
+Finally, normal and merged research saves could publish a compressed state
+without first making the base/delta manifest generation authoritative. An
+interrupted sidecar write could therefore leave an empty inline shell without
+a complete recoverable graph. Early termination of a shared JSONL iterator
+could race its still-active stream against file-handle close as well.
+
+**Fix — terminal transport:** `brain-operation-worker.js` now emits an
+authenticated gap only for the actually missing prefix through the first
+retained sequence minus one, then replays every retained frame in order. It
+advances to the record sequence only when no retained event exists.
+`brain-operation-routes.js` continues draining after a normally completed
+request and stops only for a real aborted/incomplete request or closed
+response. The durable status and protected result routes remain terminal
+authority; SSE is resumable notification, not a substitute result. Research
+compile now reports progress only from the real provider/source lifecycle.
+The COSMO server also mounts the shared internal runtime-metrics route so
+acceptance can distinguish request-time V8/RSS samples from the process-level
+RSS high-water mark without treating a sparse sample as a measured peak.
+
+**Fix — provider and PGS bounds:** GPT Responses, Anthropic, Codex Responses,
+and Chat Completions share `provider-execution.js` byte accounting and bounded
+JSON helpers. The default retained-output limit is 8 MiB, an explicit trusted
+caller ceiling is validated up to the 64 MiB transport maximum, and each
+operation passes its narrower bound. Overflow is the non-retryable typed error
+`result_too_large`; the
+clients preserve exact caller abort identity, cancel readers/iterators, and do
+not retry or fall back after overflow. Requested provider/model identity stays
+canonical, while any bounded observed model is diagnostic only.
+
+The concrete caller limits are 8 MiB for Direct Query and research compile,
+256 KiB for each PGS sweep, 2 MiB for PGS synthesis, and 4 KiB for the
+protected provider-pair probe. `query-engine.js`, both PGS layers, the research
+compile adapter, and the Home23 synthesis registry propagate those trusted
+limits instead of relying on a transport default. The pair probe accepts only
+an exact configured pair through the protected client, validates requested and
+observed identity, rejects browser-origin access before provider work, and has
+its own abortable deadline.
+
+Pinned PGS keeps one immutable source descriptor and exact sweep/synthesis
+pair across retries. It retains validated successes, leaves failed/cancelled
+partitions pending, bounds SQLite result/listing reads, counts canonical
+`{output}` JSON bytes across all durable successes, and publishes receipts
+through scratch-confined no-follow/no-replace inode checks. Guided-mode
+assessment now passes distinct exact persisted sweep and synthesis pairs and
+never infers or cross-combines a provider from a model-only configuration.
+
+**Fix — research memory generations and source cleanup:**
+`memory-sidecar.js` captures one frozen memory revision and publishes its
+numeric manifest, base, and empty delta before replacing the compressed state
+with an empty memory shell. Both `Orchestrator.saveState()` and merged-run
+publication call this shared path. If manifest publication fails, the
+compressed state retains the complete captured inline graph with degraded
+diagnostics, so recovery never depends on a manifest that did not commit.
+The COSMO memory-source adapter now carries the already validated projected
+manifest, logical canonical target root, and legacy resident fingerprint into
+the shared pin. Reopening a legacy projection therefore proves the original
+target identity instead of misidentifying requester scratch as the brain.
+`shared/memory-source/jsonl.cjs` now awaits stream destruction/quiescence before
+closing an owned handle and leaves borrowed handles to their owner.
+
+**Focused verification (offline only):**
+
+- Provider streaming, bounded serialization, terminal identity, overflow,
+  abort, and cleanup coverage passed 73/73.
+- Exact provider identity, PGS retry/cancellation/receipt bounds, Query mutation
+  boundaries, and cross-brain read-only coverage passed 59/59; the standalone
+  fixture-free PGS package command passed 84/84.
+- Guided-mode exact-pair assessment passed 17/17. The worker, provider-probe,
+  and compatibility PGS node suites passed 42/42 in a focused rerun.
+- Normal save, merged save, single-capture ordering, and manifest-failure
+  recovery passed 4/4 in `research-memory-manifest.test.cjs`.
+- Shared base/delta/source-reader coverage, including owned and borrowed early
+  iterator return, passed 11/11.
+
+These are isolated-worktree and focused-suite receipts through branch commit
+`b6a44f7`. They do not claim deployment, process restart, live Jerry/Forrest
+acceptance, MCP runtime availability, or completion of the full Brain
+Operations Reliability rollout.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -2750,3 +2880,10 @@ resident, unavailable, cross-layout, and explicitly owned-run paths on
   the whole graph. Both production executor families now inject exact trusted
   resident or explicitly owned-run source context; the root and vendored COSMO
   executor-context regressions are registered in the aggregate test command.
+- **2026-07-11** — Patch 53 closed the post-worker reliability gaps in the
+  vendored brain path: retained events now replay after the exact missing gap,
+  provider streams and every operation caller enforce typed byte ceilings,
+  protected probes and guided PGS preserve exact configured pairs, research
+  saves publish recoverable manifest generations, and early source iteration
+  quiesces before an owned file handle closes. This records offline focused
+  verification only; live rollout acceptance remains pending.
