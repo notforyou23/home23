@@ -5,9 +5,13 @@ const crypto = require('node:crypto');
 const {
   canonicalJson,
 } = require('../../../shared/brain-operations/canonical-json.cjs');
+const {
+  assertProviderResultIdentity,
+} = require('../../lib/provider-completion');
 
 const PROVIDER_CALL_ID = 'research_compile';
 const PHASE = 'research_compile';
+const RESEARCH_COMPILE_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MAX_PROVIDER_EVENT_TYPE_BYTES = 128;
 const MAX_PROVIDER_EVENT_AT_BYTES = 64;
 
@@ -184,6 +188,7 @@ function createResearchCompileProviderAdapter({
         instructions,
         input,
         maxOutputTokens: capabilities.maxOutputTokens,
+        maxOutputBytes: RESEARCH_COMPILE_MAX_OUTPUT_BYTES,
         signal: context.signal,
         onProviderActivity(child = {}) {
           throwIfAborted(context.signal);
@@ -199,14 +204,21 @@ function createResearchCompileProviderAdapter({
       });
       throwIfAborted(context.signal);
       const complete = requireCompleteProviderResult(raw);
+      assertProviderResultIdentity(complete, pair.provider, pair.model);
       throwIfAborted(context.signal);
       const content = String(complete?.content || '').trim();
       if (!content) {
         throw adapterError('provider_incomplete', 'Research compile provider returned no content', true);
       }
+      if (Buffer.byteLength(content, 'utf8') > RESEARCH_COMPILE_MAX_OUTPUT_BYTES) {
+        throw adapterError(
+          'result_too_large',
+          'Research compile provider output exceeds the requester output byte limit',
+        );
+      }
       const published = await writer.writeAtomic(
         outputBasename(context.operationId),
-        Buffer.from(`${content}\n`, 'utf8'),
+        Buffer.from(content, 'utf8'),
       );
       throwIfAborted(context.signal);
       if (!published || typeof published.relativePath !== 'string'
@@ -247,6 +259,7 @@ function createResearchCompileProviderAdapter({
 }
 
 module.exports = {
+  RESEARCH_COMPILE_MAX_OUTPUT_BYTES,
   createResearchCompileProviderAdapter,
   safeProviderEventAt,
   safeProviderEventType,

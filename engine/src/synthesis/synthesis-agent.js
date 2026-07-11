@@ -628,6 +628,7 @@ class SynthesisAgent {
       const raw = await this.providerAdapter.generate({
         instructions: PROVIDER_INSTRUCTIONS,
         input,
+        maxOutputBytes: this.limits.maxProviderOutputBytes,
         signal,
         onProviderActivity: (child = {}) => {
           throwIfAborted(signal);

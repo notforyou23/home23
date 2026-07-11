@@ -103,7 +103,12 @@ const limits = {
   maxResultBytes: 512 * 1024,
 };
 
-function makeEngine({ pending = false } = {}) {
+function makeEngine({
+  pending = false,
+  sweepOutput = null,
+  synthesisOutput = null,
+  enforceOutputBytes = false,
+} = {}) {
   const events = [];
   const calls = [];
   const sweepClient = {
@@ -111,8 +116,15 @@ function makeEngine({ pending = false } = {}) {
     async generate(options) {
       calls.push({ phase: 'sweep', options });
       options.onProviderActivity({ type: 'response.output_text.delta', at: '2000-01-01T00:00:00Z' });
+      const content = sweepOutput
+        ?? `finding for ${JSON.parse(JSON.stringify(options.input)).slice(0, 24)}`;
+      if (enforceOutputBytes && Buffer.byteLength(content, 'utf8') > options.maxOutputBytes) {
+        throw Object.assign(new Error('bounded sweep adapter rejected output'), {
+          code: 'result_too_large', retryable: false,
+        });
+      }
       return {
-        content: `finding for ${JSON.parse(JSON.stringify(options.input)).slice(0, 24)}`,
+        content,
         terminalReceived: true,
         finishReason: 'completed',
         hadError: false,
@@ -125,8 +137,14 @@ function makeEngine({ pending = false } = {}) {
     providerId: 'synth',
     async generate(options) {
       calls.push({ phase: 'synth', options });
+      const content = synthesisOutput ?? 'final pinned synthesis';
+      if (enforceOutputBytes && Buffer.byteLength(content, 'utf8') > options.maxOutputBytes) {
+        throw Object.assign(new Error('bounded synthesis adapter rejected output'), {
+          code: 'result_too_large', retryable: false,
+        });
+      }
       return {
-        content: 'final pinned synthesis',
+        content,
         terminalReceived: true,
         finishReason: 'completed',
         hadError: false,
@@ -211,6 +229,11 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
   assert.equal(fixture.calls.filter(call => call.phase === 'sweep').length, 6);
   assert.equal(fixture.calls.filter(call => call.phase === 'synth').length, 1);
   assert.equal(fixture.calls.every(call => call.options.maxOutputTokens === 512), true);
+  assert.equal(fixture.calls
+    .filter(call => call.phase === 'sweep')
+    .every(call => call.options.maxOutputBytes === limits.maxSweepOutputBytes), true);
+  assert.equal(fixture.calls.find(call => call.phase === 'synth').options.maxOutputBytes,
+    limits.maxSynthesisOutputBytes);
   assert.equal(events.filter(event => event.type === 'provider_selected').length, 7);
   assert.equal(events.filter(event => event.type === 'provider_call_terminal').length, 7);
   assert.equal(events.every(event => event.type !== 'response.output_text.delta'), true);
@@ -227,6 +250,62 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
   const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
   assert.match(receipt.attemptId, /^attempt-/);
   assert.equal(receipt.result.answer, 'final pinned synthesis');
+});
+
+test('pinned PGS enforces lowered sweep and synthesis byte ceilings inside provider adapters', async t => {
+  const exactSweepBytes = 128;
+  const exactSynthesisBytes = 192;
+
+  for (const [phase, over] of [
+    ['sweep', false],
+    ['sweep', true],
+    ['synthesis', false],
+    ['synthesis', true],
+  ]) {
+    const scratch = await scratchFixture(t);
+    const fixture = makeEngine({
+      enforceOutputBytes: true,
+      sweepOutput: 's'.repeat(exactSweepBytes + (phase === 'sweep' && over ? 1 : 0)),
+      synthesisOutput: 'y'.repeat(
+        exactSynthesisBytes + (phase === 'synthesis' && over ? 1 : 0),
+      ),
+    });
+    const bounded = {
+      ...limits,
+      maxSweepOutputBytes: exactSweepBytes,
+      maxSynthesisOutputBytes: exactSynthesisBytes,
+    };
+    const run = fixture.engine.runPinnedOperation({
+      ...options(sourcePin({ nodeCount: 1 }), scratch),
+      limits: bounded,
+    });
+
+    if (over) {
+      await assert.rejects(run, { code: 'result_too_large', retryable: false });
+      const callPhase = phase === 'synthesis' ? 'synth' : phase;
+      assert.equal(
+        fixture.calls.filter(call => call.phase === callPhase).length,
+        1,
+        `${phase} over-limit call count`,
+      );
+      if (phase === 'sweep') {
+        assert.equal(fixture.calls.some(call => call.phase === 'synth'), false);
+      }
+      const receipts = await fs.readdir(path.join(scratch.scratchDir, 'pgs-receipts'))
+        .catch((error) => {
+          if (error.code === 'ENOENT') return [];
+          throw error;
+        });
+      assert.deepEqual(receipts, []);
+    } else {
+      const result = await run;
+      assert.equal(result.state, 'complete');
+      assert.equal(fixture.calls.find(call => call.phase === 'sweep').options.maxOutputBytes,
+        exactSweepBytes);
+      assert.equal(fixture.calls.find(call => call.phase === 'synth').options.maxOutputBytes,
+        exactSynthesisBytes);
+    }
+  }
 });
 
 test('pinned PGS rejects a redirected receipt directory before provider work', async t => {

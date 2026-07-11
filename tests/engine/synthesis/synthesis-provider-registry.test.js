@@ -16,6 +16,9 @@ const {
   ProviderCompletionError,
 } = require('../../../cosmo23/lib/provider-completion.js');
 const {
+  SYNTHESIS_OPERATION_LIMITS,
+} = require('../../../cosmo23/lib/brain-operation-limits.js');
+const {
   createSynthesisProviderAdapter,
   resolveSynthesisConfig,
 } = require('../../../engine/src/synthesis/provider-registry.js');
@@ -171,11 +174,49 @@ test('fixed adapter crosses the exact registry client and revalidates completion
   assert.equal(calls[0].provider, 'minimax');
   assert.equal(calls[0].model, 'MiniMax-M3');
   assert.equal(calls[0].maxOutputTokens, 32768);
+  assert.equal(
+    calls[0].maxOutputBytes,
+    SYNTHESIS_OPERATION_LIMITS.maxProviderOutputBytes,
+  );
   assert.equal(calls[0].signal, clientSignal);
   assert.deepEqual(activity, [{ type: 'content_delta', at: '2026-07-10T00:00:00.000Z' }]);
   await assert.rejects(() => adapter.generate({ model: 'other' }), {
     code: 'provider_model_mismatch',
   });
+});
+
+test('fixed adapter forwards lowered output bytes, accepts exact boundary, and rejects raises', async () => {
+  const modelCatalog = catalog();
+  let content = 'x'.repeat(64);
+  let calls = 0;
+  const registry = exactRegistry(modelCatalog, async (request) => {
+    calls += 1;
+    assert.equal(request.maxOutputBytes, 64);
+    if (Buffer.byteLength(content, 'utf8') > request.maxOutputBytes) {
+      throw Object.assign(new Error('bounded provider adapter rejected output'), {
+        code: 'result_too_large', retryable: false,
+      });
+    }
+    return {
+      content, terminalReceived: true, finishReason: 'stop', hadError: false,
+    };
+  });
+  const adapter = createSynthesisProviderAdapter(resolveSynthesisConfig({
+    homeConfig: {}, env: {}, modelCatalog, providerRegistry: registry,
+  }));
+
+  const exact = await adapter.generate({ maxOutputBytes: 64 });
+  assert.equal(exact.content, 'x'.repeat(64));
+  content += 'x';
+  await assert.rejects(adapter.generate({ maxOutputBytes: 64 }), {
+    code: 'result_too_large', retryable: false,
+  });
+  assert.equal(calls, 2);
+
+  await assert.rejects(adapter.generate({
+    maxOutputBytes: SYNTHESIS_OPERATION_LIMITS.maxProviderOutputBytes + 1,
+  }), { code: 'invalid_request' });
+  assert.equal(calls, 2);
 });
 
 test('fixed adapter preserves exact cancellation and rejects incomplete provider results', async () => {

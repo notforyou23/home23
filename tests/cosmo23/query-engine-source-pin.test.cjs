@@ -124,6 +124,7 @@ test('operation query uses only the pinned iterator and exact provider pair', as
   assert.equal(pin.releaseCount(), 0);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].maxOutputTokens, 256);
+  assert.equal(calls[0].maxOutputBytes, 8 * 1024 * 1024);
   assert.equal(calls[0].provider, 'alpha');
   assert.equal(calls[0].model, 'answer-model');
   assert.equal(calls[0].signal, options.signal);
@@ -225,7 +226,13 @@ test('prompt and provider result byte limits fail at the correct boundary', asyn
       providerId: 'alpha',
       async generate(options) {
         result.calls.push(options);
-        return complete('x'.repeat(2048));
+        const content = 'x'.repeat(2048);
+        if (Buffer.byteLength(content, 'utf8') > options.maxOutputBytes) {
+          throw Object.assign(new Error('provider output exceeded its byte budget'), {
+            code: 'result_too_large', retryable: false,
+          });
+        }
+        return complete(content);
       },
     },
   });
@@ -236,7 +243,49 @@ test('prompt and provider result byte limits fail at the correct boundary', asyn
     error => error.code === 'result_too_large',
   );
   assert.equal(result.calls.length, 1);
+  assert.equal(result.calls[0].maxOutputBytes, 1024);
   assert.equal(result.events.at(-1).outcome, 'failed');
+});
+
+test('generic exact completion lowers a trusted byte ceiling and rejects caller raises before provider work', async () => {
+  let content = 'x'.repeat(16);
+  let calls = 0;
+  const item = fixture({
+    client: {
+      providerId: 'alpha',
+      async generate(options) {
+        calls += 1;
+        assert.equal(options.maxOutputBytes, 16);
+        if (Buffer.byteLength(content, 'utf8') > options.maxOutputBytes) {
+          throw Object.assign(new Error('bounded provider adapter rejected output'), {
+            code: 'result_too_large', retryable: false,
+          });
+        }
+        return complete(content);
+      },
+    },
+  });
+
+  const exact = await item.engine._generateExactCompletion({
+    provider: 'alpha', model: 'answer-model', maxOutputBytes: 16,
+  });
+  assert.equal(exact.content, 'x'.repeat(16));
+  content += 'x';
+  await assert.rejects(
+    item.engine._generateExactCompletion({
+      provider: 'alpha', model: 'answer-model', maxOutputBytes: 16,
+    }),
+    { code: 'result_too_large', retryable: false },
+  );
+  assert.equal(calls, 2);
+
+  await assert.rejects(
+    item.engine._generateExactCompletion({
+      provider: 'alpha', model: 'answer-model', maxOutputBytes: (8 * 1024 * 1024) + 1,
+    }),
+    { code: 'invalid_request' },
+  );
+  assert.equal(calls, 2);
 });
 
 test('operation query bounds prompt construction before serializing a huge projection', async () => {

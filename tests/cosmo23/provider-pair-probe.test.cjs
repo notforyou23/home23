@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  PROVIDER_PROBE_MAX_OUTPUT_BYTES,
   createProviderProbeHandler,
   probeExactProviderPair,
   resolveConfiguredProviderPairs,
@@ -64,11 +65,39 @@ test('exact pair probe uses only the protected client and proves requested and o
   assert.equal(calls[0].provider, 'sweep');
   assert.equal(calls[0].model, 'sweep-model');
   assert.equal(calls[0].maxOutputTokens, 16);
+  assert.equal(calls[0].maxOutputBytes, PROVIDER_PROBE_MAX_OUTPUT_BYTES);
   assert.equal(calls[0].signal instanceof AbortSignal, true);
   assert.equal(result.healthy, true);
   assert.equal(result.terminalReceived, true);
   assert.deepEqual(result.requestedPair, { provider: 'sweep', model: 'sweep-model' });
   assert.deepEqual(result.observedPair, { provider: 'sweep', model: 'sweep-model' });
+});
+
+test('pair probe rejects one byte over its small transport ceiling', async () => {
+  let observedLimit = null;
+  const registry = {
+    getExact() {
+      return {
+        providerId: 'direct',
+        async generate(request) {
+          observedLimit = request.maxOutputBytes;
+          return {
+            provider: 'direct', model: 'query-model',
+            content: 'x'.repeat(request.maxOutputBytes + 1),
+            terminalReceived: true, finishReason: 'completed', hadError: false,
+          };
+        },
+      };
+    },
+  };
+  await assert.rejects(
+    probeExactProviderPair({
+      registry, catalog: catalog(), configuredPairs: configuredPairs(),
+      purpose: 'direct-query', pair: { provider: 'direct', model: 'query-model' },
+    }),
+    { code: 'result_too_large', retryable: false },
+  );
+  assert.equal(observedLimit, PROVIDER_PROBE_MAX_OUTPUT_BYTES);
 });
 
 test('pair probe rejects empty, incomplete, wrong-identity, and nonconfigured output', async () => {

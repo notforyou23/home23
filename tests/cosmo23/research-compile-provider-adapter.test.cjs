@@ -4,19 +4,25 @@ const assert = require('node:assert/strict');
 const test = require('node:test');
 
 const {
+  RESEARCH_COMPILE_MAX_OUTPUT_BYTES,
   createResearchCompileProviderAdapter,
 } = require('../../cosmo23/server/lib/research-compile-provider-adapter');
 const {
   requireCompleteProviderResult,
 } = require('../../cosmo23/lib/provider-completion');
 
-function complete(content = '# Compiled\n\nEvidence.') {
+function complete(content = '# Compiled\n\nEvidence.', {
+  provider = 'beta',
+  model = 'shared-model',
+} = {}) {
   return {
     status: 'complete',
     content,
     terminalReceived: true,
     finishReason: 'stop',
     error: null,
+    provider,
+    model,
   };
 }
 
@@ -102,9 +108,48 @@ test('uses only the exact configured provider/model and publishes through the wr
   assert.equal(h.providerCalls[0][1].provider, 'beta');
   assert.equal(h.providerCalls[0][1].model, 'shared-model');
   assert.equal(h.providerCalls[0][1].maxOutputTokens, 4096);
+  assert.equal(h.providerCalls[0][1].maxOutputBytes, RESEARCH_COMPILE_MAX_OUTPUT_BYTES);
   assert.equal(h.writes.length, 1);
   assert.match(h.writes[0][0], /^research-compile-[a-f0-9]{24}\.md$/);
-  assert.equal(h.writes[0][1].toString('utf8'), '# Compiled\n\nEvidence.\n');
+  assert.equal(h.writes[0][1].toString('utf8'), '# Compiled\n\nEvidence.');
+});
+
+test('research compile exact byte boundary publishes and one byte over never reaches the writer', async () => {
+  const exactContent = 'x'.repeat(RESEARCH_COMPILE_MAX_OUTPUT_BYTES);
+  const exact = harness({
+    clients: {
+      beta: {
+        providerId: 'beta',
+        async generate(input) {
+          exact.providerCalls.push(['beta', input]);
+          assert.equal(input.maxOutputBytes, RESEARCH_COMPILE_MAX_OUTPUT_BYTES);
+          return complete(exactContent);
+        },
+      },
+    },
+  });
+  const published = await exact.compile(request(exact));
+  assert.equal(published.state, 'complete');
+  assert.equal(exact.writes.length, 1);
+  assert.equal(exact.writes[0][1].length, RESEARCH_COMPILE_MAX_OUTPUT_BYTES);
+
+  const over = harness({
+    clients: {
+      beta: {
+        providerId: 'beta',
+        async generate(input) {
+          over.providerCalls.push(['beta', input]);
+          return complete('x'.repeat(input.maxOutputBytes + 1));
+        },
+      },
+    },
+  });
+  await assert.rejects(over.compile(request(over)), {
+    code: 'result_too_large', retryable: false,
+  });
+  assert.equal(over.providerCalls.length, 1);
+  assert.equal(over.writes.length, 0);
+  assert.equal(over.events.at(-1).outcome, 'failed');
 });
 
 test('emits authoritative selected/activity/terminal events without trusting child timestamps', async () => {
@@ -216,4 +261,19 @@ test('rejects caller provider/output authority and mismatched provider clients',
   await assert.rejects(mismatch.compile(request(mismatch)), { code: 'provider_model_mismatch' });
   assert.equal(mismatch.events.length, 0);
   assert.equal(mismatch.writes.length, 0);
+
+  const completionMismatch = harness({
+    clients: {
+      beta: {
+        providerId: 'beta',
+        async generate() {
+          return complete('wrong model', { model: 'other-model' });
+        },
+      },
+    },
+  });
+  await assert.rejects(completionMismatch.compile(request(completionMismatch)), {
+    code: 'provider_model_mismatch',
+  });
+  assert.equal(completionMismatch.writes.length, 0);
 });

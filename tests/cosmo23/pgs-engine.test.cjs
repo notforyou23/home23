@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { PGSEngine } = require('../../cosmo23/lib/pgs-engine');
+const { PGS_OPERATION_LIMITS } = require('../../cosmo23/lib/brain-operation-limits');
 
 function makeEngine() {
   const engine = Object.create(PGSEngine.prototype);
@@ -65,12 +66,16 @@ test('resolves providers only from explicit input or an exact persisted assignme
 test('rejects model error strings as failed partition sweeps', async () => {
   const engine = makeEngine();
   let resolvedPair = null;
+  let providerRequest = null;
   const client = {
-    generate: async () => ({
-      content: '[Error: No content received from GPT-5.2 (response.incomplete)]',
-      hadError: true,
-      errorType: 'response.incomplete'
-    })
+    generate: async (request) => {
+      providerRequest = request;
+      return {
+        content: '[Error: No content received from GPT-5.2 (response.incomplete)]',
+        hadError: true,
+        errorType: 'response.incomplete'
+      };
+    }
   };
   engine.qe = {
     resolveQueryRuntime: (model, provider) => {
@@ -105,6 +110,7 @@ test('rejects model error strings as failed partition sweeps', async () => {
     model: 'claude-sonnet-4-6',
     provider: 'anthropic',
   });
+  assert.equal(providerRequest.maxOutputBytes, PGS_OPERATION_LIMITS.maxSweepOutputBytes);
 });
 
 test('counts failed partition sweeps instead of passing them to synthesis', async () => {
@@ -172,6 +178,7 @@ test('PGS synthesis applies commit step and records receipt metadata', async () 
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'home23-pgs-commit-'));
   let instructions = '';
   let resolvedPair = null;
+  let providerRequest = null;
 
   engine.qe = {
     runtimeDir: tmpDir,
@@ -183,6 +190,7 @@ test('PGS synthesis applies commit step and records receipt metadata', async () 
         capabilities: { maxOutputTokens: 8192 },
         client: {
           generate: async (params) => {
+            providerRequest = params;
             instructions = params.instructions;
             return {
               content: `# Committed PGS Verdict
@@ -244,6 +252,10 @@ test('PGS synthesis applies commit step and records receipt metadata', async () 
     model: 'claude-opus-4-8',
     provider: 'anthropic',
   });
+  assert.equal(
+    providerRequest.maxOutputBytes,
+    PGS_OPERATION_LIMITS.maxSynthesisOutputBytes,
+  );
 
   const receipts = await fs.readFile(path.join(tmpDir, 'synthesis-commit-receipts.jsonl'), 'utf8');
   const parsed = JSON.parse(receipts.trim());

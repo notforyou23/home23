@@ -324,7 +324,17 @@ async function runPinnedOperation(engine, options = {}) {
   const selected = pending.slice(0, selectedCount);
   const uncommitted = [];
 
-  async function providerCall({ phase, pair, capabilities, client, id, work, instructions, input }) {
+  async function providerCall({
+    phase,
+    pair,
+    capabilities,
+    client,
+    id,
+    work,
+    instructions,
+    input,
+    maxOutputBytes,
+  }) {
     const context = work ? { workUnitId: work.workUnitId, partitionId: work.partitionId } : {};
     emit({
       type: 'provider_selected', phase, provider: pair.provider, model: pair.model,
@@ -338,6 +348,7 @@ async function runPinnedOperation(engine, options = {}) {
         instructions,
         input,
         maxOutputTokens: capabilities.maxOutputTokens,
+        maxOutputBytes,
         signal,
         onChunk: phase === 'pgs_synthesis' ? onChunk : null,
         onProviderActivity(child = {}) {
@@ -382,6 +393,7 @@ async function runPinnedOperation(engine, options = {}) {
       client: sweepClient, id: `pgs:${workUnitId}`, work,
       instructions: 'Analyze only this pinned PGS work unit. Return evidence-backed findings and explicit absences.',
       input: buildWorkInput(query, work, limits.maxContextCharsPerWorkUnit),
+      maxOutputBytes: limits.maxSweepOutputBytes,
     });
     const output = String(completion.content || '').trim();
     if (!output) throw typed('provider_incomplete', 'PGS sweep returned no content', true);
@@ -475,6 +487,7 @@ async function runPinnedOperation(engine, options = {}) {
         client: synthClient, id: 'pgs:synthesis', work: null,
         instructions: 'Synthesize the pinned PGS findings into a direct answer. Preserve absences and cite work-unit IDs.',
         input: inputParts.join(''),
+        maxOutputBytes: limits.maxSynthesisOutputBytes,
       });
       const answer = String(completion.content || '').trim();
       assertBytes(answer, limits.maxSynthesisOutputBytes, 'PGS synthesis output');

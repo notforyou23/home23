@@ -30,6 +30,7 @@ const {
   assertProviderResultIdentity,
   requireCompleteProviderResult,
 } = require('./provider-completion');
+const { PGS_OPERATION_LIMITS } = require('./brain-operation-limits');
 
 function readIntEnv(name, fallback) {
   const raw = process.env[name];
@@ -1278,6 +1279,7 @@ Explicitly state what was searched for and NOT found in this partition. "This pa
       maxTokens: sweepMaxTokens,
       max_output_tokens: sweepMaxTokens,
       maxOutputTokens: Math.min(sweepMaxTokens, runtime.capabilities.maxOutputTokens),
+      maxOutputBytes: PGS_OPERATION_LIMITS.maxSweepOutputBytes,
       reasoningEffort: 'medium'
     });
 
@@ -1363,6 +1365,7 @@ Structure your response clearly with sections. Cite partition IDs and node IDs w
       maxTokens: synthesisMaxTokens,
       max_output_tokens: synthesisMaxTokens,
       maxOutputTokens: Math.min(synthesisMaxTokens, runtime.capabilities.maxOutputTokens),
+      maxOutputBytes: PGS_OPERATION_LIMITS.maxSynthesisOutputBytes,
       reasoningEffort: 'high',
       onChunk
     });

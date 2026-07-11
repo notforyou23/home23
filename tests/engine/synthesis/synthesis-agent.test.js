@@ -199,6 +199,7 @@ test('runOperation emits correlated provider events and commits a verifiable mar
   assert.equal(events[2].childEventType, 'content_delta');
   assert.equal(events[3].outcome, 'complete');
   assert.equal(fx.providerCalls.length, 1);
+  assert.equal(fx.providerCalls[0].maxOutputBytes, 2 * 1024 * 1024);
   assert.match(fx.providerCalls[0].input, /Pinned brain stats: 2 nodes, 1 edges, 1 clusters/);
   assert.equal(fx.compareCalls, 1);
   assert.equal(fx.releaseCalls, 0);
@@ -481,9 +482,12 @@ test('provider output exact boundary passes and one byte over fails before parse
   const exactBytes = Buffer.byteLength(content, 'utf8');
   const exact = await fixture(t, {
     limits: { maxProviderOutputBytes: exactBytes },
-    generate: async () => ({
-      content, terminalReceived: true, finishReason: 'stop', hadError: false,
-    }),
+    generate: async (request) => {
+      assert.equal(request.maxOutputBytes, exactBytes);
+      return {
+        content, terminalReceived: true, finishReason: 'stop', hadError: false,
+      };
+    },
   });
   await exact.agent.runOperation({
     operationId: OPERATION_ID,
@@ -494,9 +498,17 @@ test('provider output exact boundary passes and one byte over fails before parse
 
   const over = await fixture(t, {
     limits: { maxProviderOutputBytes: exactBytes - 1 },
-    generate: async () => ({
-      content, terminalReceived: true, finishReason: 'stop', hadError: false,
-    }),
+    generate: async (request) => {
+      assert.equal(request.maxOutputBytes, exactBytes - 1);
+      if (Buffer.byteLength(content, 'utf8') > request.maxOutputBytes) {
+        throw Object.assign(new Error('bounded synthesis adapter rejected output'), {
+          code: 'result_too_large', retryable: false,
+        });
+      }
+      return {
+        content, terminalReceived: true, finishReason: 'stop', hadError: false,
+      };
+    },
   });
   const previous = '{"generationMarker":"prior"}\n';
   await fsp.writeFile(path.join(over.brainDir, 'brain-state.json'), previous);

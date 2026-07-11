@@ -120,6 +120,14 @@ function utf8Bytes(value) {
   return Buffer.byteLength(typeof value === 'string' ? value : JSON.stringify(value), 'utf8');
 }
 
+function lowerTrustedOutputBytes(value, ceiling, label) {
+  const selected = value ?? ceiling;
+  if (!Number.isSafeInteger(selected) || selected <= 0 || selected > ceiling) {
+    throw operationError('invalid_request', `Invalid ${label} output limit`);
+  }
+  return selected;
+}
+
 function exactProviderPair(options, catalog) {
   const pair = options.modelSelection || {
     provider: options.provider ?? options.explicitProvider,
@@ -1552,14 +1560,26 @@ STYLE:
     };
   }
 
-  async _generateExactCompletion({ provider, model, signal = null, ...request }) {
+  async _generateExactCompletion({
+    provider,
+    model,
+    signal = null,
+    maxOutputBytes = QUERY_OPERATION_LIMITS.maxResultBytes,
+    ...request
+  }) {
     operationThrowIfAborted(signal);
     const runtime = this.resolveQueryRuntime(model, provider);
+    const trustedMaxOutputBytes = lowerTrustedOutputBytes(
+      maxOutputBytes,
+      QUERY_OPERATION_LIMITS.maxResultBytes,
+      'query provider',
+    );
     const raw = await runtime.client.generate({
       ...request,
       provider: runtime.providerId,
       model: runtime.effectiveModel,
       maxOutputTokens: runtime.capabilities.maxOutputTokens,
+      maxOutputBytes: trustedMaxOutputBytes,
       signal,
     });
     operationThrowIfAborted(signal);
@@ -1657,6 +1677,11 @@ STYLE:
     });
     const input = serializedPrompt.json;
     const promptBytes = serializedPrompt.totalBytes;
+    const maxResultBytes = lowerTrustedOutputBytes(
+      (options.limits || {}).maxResultBytes,
+      QUERY_OPERATION_LIMITS.maxResultBytes,
+      'query result',
+    );
 
     this._emitOperationEvent({
       type: 'progress',
@@ -1682,6 +1707,7 @@ STYLE:
         instructions,
         input,
         maxOutputTokens: capabilities.maxOutputTokens,
+        maxOutputBytes: maxResultBytes,
         signal,
         onChunk: options.onChunk || null,
         onProviderActivity: (event = {}) => {
@@ -1717,12 +1743,6 @@ STYLE:
         sourceEvidence: projection.sourceEvidence,
         resultArtifact: null,
       };
-      const maxResultBytes = Number.isSafeInteger((options.limits || {}).maxResultBytes)
-        ? options.limits.maxResultBytes
-        : QUERY_OPERATION_LIMITS.maxResultBytes;
-      if (maxResultBytes <= 0 || maxResultBytes > QUERY_OPERATION_LIMITS.maxResultBytes) {
-        throw operationError('invalid_request', 'Invalid query result limit');
-      }
       if (utf8Bytes(result) > maxResultBytes) {
         throw operationError('result_too_large', 'Query result exceeds the byte limit');
       }
@@ -2131,6 +2151,7 @@ STYLE:
         input: `${context}\n\nQuestion: ${query}`,
         reasoningEffort: config.reasoningEffort,
         maxOutputTokens: capabilities.maxOutputTokens,
+        maxOutputBytes: QUERY_OPERATION_LIMITS.maxResultBytes,
         verbosity: config.verbosity,
         signal,
         onChunk,

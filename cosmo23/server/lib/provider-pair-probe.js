@@ -9,6 +9,7 @@ const { isLoopback } = require('../../../shared/runtime-metrics-route.cjs');
 
 const PURPOSES = new Set(['direct-query', 'pgs-sweep', 'pgs-synthesis']);
 const DEFAULT_PROBE_TIMEOUT_MS = 120_000;
+const PROVIDER_PROBE_MAX_OUTPUT_BYTES = 4 * 1024;
 
 function typed(code, message = code, fields = {}) {
   return Object.assign(new Error(message), { code, ...fields });
@@ -128,6 +129,7 @@ async function probeExactProviderPair({
       instructions: 'Return a normal terminal response containing OK.',
       input: 'Reply with OK.',
       maxOutputTokens: Math.min(16, capabilities.maxOutputTokens),
+      maxOutputBytes: PROVIDER_PROBE_MAX_OUTPUT_BYTES,
       signal: controller.signal,
     }));
     const abortWork = new Promise((_, reject) => {
@@ -139,6 +141,13 @@ async function probeExactProviderPair({
     if (controller.signal.aborted) throw controller.signal.reason;
     const complete = requireCompleteProviderResult(raw);
     assertProviderResultIdentity(complete, selected.provider, selected.model);
+    if (Buffer.byteLength(complete.content, 'utf8') > PROVIDER_PROBE_MAX_OUTPUT_BYTES) {
+      throw typed(
+        'result_too_large',
+        'Exact provider probe output exceeded its byte limit',
+        { retryable: false },
+      );
+    }
     if (!complete.content.trim()) {
       throw typed(
         'provider_incomplete',
@@ -182,6 +191,7 @@ function errorStatus(code) {
   if (['invalid_request', 'provider_model_mismatch'].includes(code)) return 400;
   if (code === 'access_denied') return 403;
   if (code === 'provider_probe_timeout') return 504;
+  if (code === 'result_too_large') return 413;
   if (['provider_unavailable', 'provider_configuration_invalid'].includes(code)) return 503;
   if (code === 'provider_incomplete') return 502;
   return 500;
@@ -243,6 +253,7 @@ function createProviderProbeHandler({ getRuntime } = {}) {
 
 module.exports = {
   DEFAULT_PROBE_TIMEOUT_MS,
+  PROVIDER_PROBE_MAX_OUTPUT_BYTES,
   PURPOSES,
   createProviderProbeHandler,
   probeExactProviderPair,

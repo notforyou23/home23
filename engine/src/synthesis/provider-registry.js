@@ -10,6 +10,9 @@ const {
 const {
   throwIfAborted,
 } = require('../../../cosmo23/lib/provider-execution.js');
+const {
+  SYNTHESIS_OPERATION_LIMITS,
+} = require('../../../cosmo23/lib/brain-operation-limits.js');
 
 const DEFAULT_SYNTHESIS_SELECTION = Object.freeze({
   provider: 'minimax',
@@ -199,6 +202,12 @@ function createSynthesisProviderAdapter(resolved) {
         }
       }
       const signal = options.signal || null;
+      const maxOutputBytes = options.maxOutputBytes
+        ?? SYNTHESIS_OPERATION_LIMITS.maxProviderOutputBytes;
+      if (!Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0
+          || maxOutputBytes > SYNTHESIS_OPERATION_LIMITS.maxProviderOutputBytes) {
+        throw typed('invalid_request', 'Synthesis provider output byte limit is invalid');
+      }
       throwIfAborted(signal);
       const raw = await client.generate({
         provider,
@@ -206,6 +215,7 @@ function createSynthesisProviderAdapter(resolved) {
         instructions: String(options.instructions || ''),
         input: String(options.input || ''),
         maxOutputTokens,
+        maxOutputBytes,
         signal,
         onProviderActivity: options.onProviderActivity || null,
       });
