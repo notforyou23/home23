@@ -18,6 +18,7 @@ const {
   createMcpReadinessController,
   createSnapshotScalarStateReader,
 } = require('../../shared/memory-source/mcp-http-runtime.cjs');
+const { readRecentJsonlTail } = require('../../shared/bounded-jsonl-tail.cjs');
 
 // Initialize free web search
 const webSearch = new FreeWebSearch(console);
@@ -92,11 +93,8 @@ function isPathAllowed(relPath) {
   });
 }
 
-async function readRecentThoughts(limit = 20) {
-  const content = await readFile(THOUGHTS_FILE, 'utf-8');
-  const lines = content.trim().split('\n');
-  const thoughts = lines.slice(-limit).map(line => JSON.parse(line));
-  return thoughts.reverse();
+async function readRecentThoughts(limit = 20, { signal } = {}) {
+  return readRecentJsonlTail(THOUGHTS_FILE, { limit, signal });
 }
 
 async function readTopicsQueue() {
@@ -149,6 +147,7 @@ function createMCPServer(options = {}) {
   const memoryTools = options.memoryTools;
   const readScalarState = options.readScalarState;
   const signal = options.signal;
+  const readThoughts = options.readRecentThoughts || readRecentThoughts;
   if (!memoryTools || typeof memoryTools.queryMemory !== 'function'
       || typeof memoryTools.getMemoryStatistics !== 'function'
       || typeof memoryTools.getMemoryGraph !== 'function'
@@ -520,7 +519,7 @@ function createMCPServer(options = {}) {
         
         case 'get_recent_thoughts': {
           const limit = Math.min(args.limit || 20, 100);
-          const thoughts = await readRecentThoughts(limit);
+          const thoughts = await readThoughts(limit, { signal });
           result = { count: thoughts.length, thoughts };
           break;
         }
@@ -1104,11 +1103,19 @@ function createMcpHttpApp(options = {}) {
     next();
   });
   
-  // COSMO is a local research system - no artificial limits on data ingestion
-  // Set to 10GB to handle serious document collections and large-scale analysis
-  // This is a LOCAL system, not a public API - memory constraints come from OS, not app limits
-  app.use(express.json({ limit: '10gb' }));
-  app.use(express.urlencoded({ limit: '10gb', extended: true }));
+  // MCP control messages are bounded. Large artifacts travel through the
+  // existing file/operation paths rather than being buffered as request JSON.
+  const requestBodyLimit = options.requestBodyLimit || '16mb';
+  app.use(express.json({ limit: requestBodyLimit, strict: true }));
+  app.use(express.urlencoded({ limit: requestBodyLimit, extended: true }));
+  app.use((error, _req, res, next) => {
+    if (error?.type !== 'entity.too.large') return next(error);
+    return res.status(413).json({
+      jsonrpc: '2.0',
+      error: { code: -32600, message: 'MCP request body exceeds limit' },
+      id: null,
+    });
+  });
 
   app.get('/health', (_req, res) => {
     const status = readiness.status();
@@ -1123,6 +1130,7 @@ function createMcpHttpApp(options = {}) {
     const server = createMCPServer({
       memoryTools,
       readScalarState,
+      readRecentThoughts: options.readRecentThoughts,
       signal: requestController.signal,
       sdk,
     });

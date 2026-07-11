@@ -129,3 +129,25 @@ test('COSMO MCP HTTP server rejects non-loopback hosts before listen', () => {
     );
   }
 });
+
+test('COSMO MCP HTTP rejects an oversized control message before tool dispatch', async () => {
+  const server = startMcpHttpServer({
+    port: 0,
+    host: '127.0.0.1',
+    log: false,
+    requestBodyLimit: '1kb',
+    memoryTools: { async checkReadiness() { return { ok: true, sourceHealth: 'healthy' }; } },
+  });
+  await once(server, 'listening');
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ padding: 'x'.repeat(2048) }),
+    });
+    assert.equal(response.status, 413);
+    assert.equal((await response.json()).error.code, -32600);
+  } finally {
+    await closeServer(server);
+  }
+});

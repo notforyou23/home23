@@ -103,6 +103,10 @@ test('engine MCP memory tools delegate to the bounded canonical-source adapter',
     log: false,
     memoryTools,
     readScalarState: async () => { throw new Error('full state path must not run'); },
+    readRecentThoughts: async (limit, { signal }) => {
+      calls.push(['thoughts', { limit, signal }]);
+      return [{ id: 'recent' }];
+    },
   });
   await once(server, 'listening');
   try {
@@ -110,12 +114,40 @@ test('engine MCP memory tools delegate to the bounded canonical-source adapter',
     assert.equal((await callTool(server, 'get_memory_statistics')).route, 'statistics');
     assert.equal((await callTool(server, 'get_memory_graph', { limit: 5, edgeLimit: 7 })).route, 'graph');
     assert.equal((await callTool(server, 'get_system_state')).route, 'state');
-    assert.deepEqual(calls.map(([name]) => name), ['search', 'statistics', 'graph', 'state']);
+    assert.deepEqual(await callTool(server, 'get_recent_thoughts', { limit: 2 }), {
+      count: 1,
+      thoughts: [{ id: 'recent' }],
+    });
+    assert.deepEqual(calls.map(([name]) => name), ['search', 'statistics', 'graph', 'state', 'thoughts']);
     assert.equal(calls[0][1].query, 'canary');
     assert.equal(calls[0][1].limit, 3);
     assert.equal(calls[2][1].nodeLimit, 5);
     assert.equal(calls[2][1].edgeLimit, 7);
+    assert.equal(calls[4][1].limit, 2);
     for (const [, input] of calls) assert.ok(input.signal instanceof AbortSignal);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test('engine MCP HTTP rejects an oversized control message before tool dispatch', async () => {
+  const server = startMcpHttpServer({
+    port: 0,
+    host: '127.0.0.1',
+    log: false,
+    requestBodyLimit: '1kb',
+    memoryTools: { async checkReadiness() { return { ok: true, sourceHealth: 'healthy' }; } },
+  });
+  await once(server, 'listening');
+  try {
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ padding: 'x'.repeat(2048) }),
+    });
+    assert.equal(response.status, 413);
+    const body = await response.json();
+    assert.equal(body.error.code, -32600);
   } finally {
     await closeServer(server);
   }
