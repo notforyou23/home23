@@ -316,12 +316,21 @@ class DashboardServer {
       reader: dependencies.reader,
       exporter: dependencies.exporter,
       buildCatalog: dependencies.buildCatalog,
+      providerReadiness: dependencies.providerReadiness,
     });
     this.brainOperationsPlaceholder.attach(route.router);
     this.brainOperationsCoordinator = dependencies.coordinator;
     this.brainOperationsWorker = dependencies.worker || null;
     this.brainOperationsReader = dependencies.reader;
     this.brainOperationsExporter = dependencies.exporter;
+    this.brainOperationsProviderRuntime = dependencies.providerOperationRuntime || null;
+    this.brainOperationsProviderReadiness = dependencies.providerReadiness || (() => ({
+      ready: false,
+      status: 'unavailable',
+      code: 'provider_unavailable',
+      retryable: true,
+      migrated: false,
+    }));
     const { createBrainOperationsCompatibilityAdapter } =
       require('./brain-operations/compatibility-adapter.js');
     this.brainOperationsCompatibilityAdapter = createBrainOperationsCompatibilityAdapter({
@@ -346,6 +355,14 @@ class DashboardServer {
     const { createBrainOperationExporter } = require('./brain-operations/exporter.js');
     const { BrainOperationCoordinator } = require('./brain-operations/coordinator.js');
     const { BrainOperationWorkerAdapter } = require('./brain-operations/worker-adapter.js');
+    const { createCosmoBrainOperationWorkerClient } =
+      require('./brain-operations/cosmo-worker-client.js');
+    const { createProviderOperationRuntime } =
+      require('./brain-operations/provider-operation-runtime.js');
+    const { createHome23BrainProviderRuntime } =
+      require('../../../cosmo23/lib/brain-provider-runtime.js');
+    const { loadModelCatalogSync } =
+      require('../../../cosmo23/server/config/model-catalog.js');
     const { createMemorySourcePinProvider } = require('../../../shared/memory-source');
     const { createOperationScratchQuota } = require('../../../shared/memory-source');
     const home23Root = this.getHome23Root();
@@ -363,9 +380,47 @@ class DashboardServer {
       requesterAgent,
       reader,
     });
+    const catalog = loadModelCatalogSync();
+    let providerOperationRuntime = null;
+    let providerOperationError = null;
+    let providerRuntime = null;
+    try {
+      providerRuntime = createHome23BrainProviderRuntime({
+        home23Root,
+        catalog,
+        logger: this.logger,
+      });
+      providerOperationRuntime = createProviderOperationRuntime({
+        home23Root,
+        catalog,
+        providerRegistry: providerRuntime.providerRegistry,
+        logger: this.logger,
+      });
+    } catch (error) {
+      providerOperationError = error?.code
+        ? error
+        : Object.assign(new Error('Brain provider operations are unavailable'), {
+            code: 'provider_unavailable', retryable: true, cause: error,
+          });
+      this.logger.error?.('[brain-operations] provider startup unavailable', {
+        code: providerOperationError.code,
+        retryable: providerOperationError.retryable === true,
+      });
+    }
+    const configuredCosmoPort = Number(
+      process.env.COSMO23_PORT || providerRuntime?.home?.cosmo23?.ports?.app || 43210,
+    );
+    const remoteWorker = createCosmoBrainOperationWorkerClient({
+      baseUrl: `http://127.0.0.1:${configuredCosmoPort}`,
+      sourceOperationTypes: ['query', 'pgs', 'research_compile', 'research_intelligence'],
+    });
     const worker = new BrainOperationWorkerAdapter({
+      remoteWorker,
       supportsSourceOperations: true,
-      sourceOperationTypes: ['search', 'status', 'graph', 'graph_export'],
+      sourceOperationTypes: [
+        'search', 'status', 'graph', 'graph_export',
+        'query', 'pgs', 'research_compile', 'research_intelligence',
+      ],
     });
     worker.registerLocalExecutor('ad_hoc_export', async (context) => ({
       state: 'complete',
@@ -420,11 +475,35 @@ class DashboardServer {
       worker,
       sourcePins: createMemorySourcePinProvider({ home23Root, requesterAgent }),
       scratchQuotaFactory: createOperationScratchQuota,
-      operationModelResolver: null,
+      operationModelResolver: async (input) => {
+        if (!['query', 'pgs'].includes(input.operationType)) {
+          const error = new Error(`Provider operation is not ready: ${input.operationType}`);
+          error.code = 'provider_unavailable';
+          error.retryable = true;
+          throw error;
+        }
+        if (!providerOperationRuntime) throw providerOperationError;
+        return providerOperationRuntime.resolve(input);
+      },
       capabilityKey: process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY || null,
       exporter,
     });
-    return { coordinator, worker, store, reader, exporter, buildCatalog };
+    return {
+      coordinator,
+      worker,
+      store,
+      reader,
+      exporter,
+      buildCatalog,
+      providerOperationRuntime,
+      providerReadiness: () => providerOperationRuntime?.getReadiness() || ({
+        ready: false,
+        status: 'unavailable',
+        code: providerOperationError?.code || 'provider_unavailable',
+        retryable: true,
+        migrated: false,
+      }),
+    };
   }
 
   /**
@@ -11276,8 +11355,21 @@ You are empowered to explore and understand. The user trusts you to discover the
     });
   }
 
-  start() {
+  async prepareBrainOperationsForListen() {
+    // Query/PGS defaults must be migrated and every durable operation must be
+    // reconciled before this process accepts a new request.
+    await this.brainOperationsProviderRuntime?.settled;
+    await this.brainOperationsCoordinator.reconcile();
+  }
+
+  async stopBrainOperations() {
+    await this.brainOperationsCoordinator?.stop?.();
+    await this.brainOperationsWorker?.stop?.();
+  }
+
+  async start() {
     this.setupIngestRoute();
+    await this.prepareBrainOperationsForListen();
 
     // Initialize synthesis agent (Home23 Intelligence tab)
     try {
@@ -11390,6 +11482,8 @@ You are empowered to explore and understand. The user trusts you to discover the
       try { client.destroy?.(); } catch {}
     }
     this.logStreamClients?.clear?.();
+
+    await this.stopBrainOperations();
 
     if (this.server) {
       const server = this.server;
@@ -11812,7 +11906,11 @@ if (require.main === module) {
   console.log('');
   
   const server = new DashboardServer(port);
-  server.start();
+  server.start().catch((error) => {
+    console.error('[Dashboard Server] startup failed:', error?.message || error);
+    process.exitCode = 1;
+    setTimeout(() => process.exit(1), 10).unref?.();
+  });
 }
 
 module.exports = { DashboardServer, readJsonlTail, updateDashboardOAuthTokenSecrets };

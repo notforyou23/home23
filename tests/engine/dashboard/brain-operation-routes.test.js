@@ -60,6 +60,34 @@ function record(overrides = {}) {
   };
 }
 
+test('readiness reports provider migration truth without creating an operation', async () => {
+  const ready = fakes();
+  await withRouter(ready, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/readiness`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), {
+      ready: true,
+      providerOperations: {
+        ready: true, status: 'ready', code: null, retryable: false, migrated: false,
+      },
+    });
+  });
+  assert.deepEqual(ready.calls, []);
+
+  const unavailable = fakes({
+    providerReadiness: () => ({
+      ready: false, status: 'unavailable', code: 'provider_unavailable',
+      retryable: true, migrated: false,
+    }),
+  });
+  await withRouter(unavailable, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/readiness`);
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).providerOperations.code, 'provider_unavailable');
+  });
+  assert.deepEqual(unavailable.calls, []);
+});
+
 async function withRouter(dependencies, callback, { broadParser } = {}) {
   const app = express();
   const placeholder = createBrainOperationsPlaceholderRouter();
@@ -92,6 +120,9 @@ function fakes(overrides = {}) {
   return {
     calls,
     requesterAgent: 'jerry',
+    providerReadiness: () => ({
+      ready: true, status: 'ready', code: null, retryable: false, migrated: false,
+    }),
     buildCatalog: async () => ({ catalogRevision: 'catalog-1', brains: [] }),
     coordinator: {
       start: async (input) => { calls.push(['start', input]); return current; },

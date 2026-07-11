@@ -62,10 +62,20 @@ function loadHome23BrainProviderConfig({ home23Root, yamlImpl = yaml } = {}) {
   if (typeof home23Root !== 'string' || !path.isAbsolute(home23Root)) {
     throw runtimeError('provider_configuration_invalid', 'Absolute Home23 root required');
   }
-  const home = readYamlRegularFile(path.join(home23Root, 'config', 'home.yaml'), {
+  let canonicalHome;
+  let configDir;
+  try {
+    canonicalHome = fs.realpathSync(home23Root);
+    configDir = path.join(canonicalHome, 'config');
+    const configStat = fs.lstatSync(configDir);
+    if (configStat.isSymbolicLink() || !configStat.isDirectory()) throw new Error('unsafe config');
+  } catch (error) {
+    throw runtimeError('provider_configuration_invalid', 'Home23 config directory is unsafe', error);
+  }
+  const home = readYamlRegularFile(path.join(configDir, 'home.yaml'), {
     yamlImpl,
   });
-  const secrets = readYamlRegularFile(path.join(home23Root, 'config', 'secrets.yaml'), {
+  const secrets = readYamlRegularFile(path.join(configDir, 'secrets.yaml'), {
     optional: true,
     yamlImpl,
   });
@@ -76,8 +86,10 @@ function loadHome23BrainProviderConfig({ home23Root, yamlImpl = yaml } = {}) {
 }
 
 function defaultCodexCredentialsProvider() {
-  const { getCodexCredentials } = require('../engine/src/services/codex-oauth-engine');
-  return (options = {}) => getCodexCredentials(options);
+  return (options = {}) => {
+    const { getCodexCredentials } = require('../engine/src/services/codex-oauth-engine');
+    return getCodexCredentials(options);
+  };
 }
 
 function createHome23BrainProviderRuntime({

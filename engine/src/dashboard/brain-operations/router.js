@@ -60,7 +60,8 @@ function httpStatusFor(error) {
   if (error?.code === 'result_expired') return 410;
   if (['idempotency_conflict', 'version_conflict', 'operation_terminal'].includes(error?.code)) return 409;
   if (['target_not_available', 'catalog_unavailable', 'source_unavailable',
-    'executor_unavailable', 'operation_unavailable'].includes(error?.code)) return 503;
+    'executor_unavailable', 'operation_unavailable', 'provider_unavailable',
+    'source_operations_unavailable'].includes(error?.code)) return 503;
   if (['invalid_request', 'invalid_json', 'operation_id_invalid', 'identifier_invalid',
     'result_handle_invalid', 'event_cursor_invalid', 'brain_operations_route_not_found'].includes(error?.code)) return 400;
   return 500;
@@ -361,7 +362,7 @@ function createBrainOperationsPlaceholderRouter(options = {}) {
 
 function createBrainOperationsRouter(options = {}) {
   const {
-    requesterAgent, coordinator, reader, exporter, buildCatalog,
+    requesterAgent, coordinator, reader, exporter, buildCatalog, providerReadiness,
   } = options;
   assertIdentifier(requesterAgent, 'requesterAgent');
   if (!coordinator || !reader || !exporter || typeof buildCatalog !== 'function') {
@@ -376,6 +377,18 @@ function createBrainOperationsRouter(options = {}) {
       else res.end();
     }
   };
+
+  router.get('/readiness', asyncRoute(async (req, res) => {
+    assertNoQuery(req);
+    const provider = typeof providerReadiness === 'function'
+      ? await providerReadiness()
+      : { ready: false, status: 'unavailable', code: 'provider_unavailable', retryable: true };
+    exactObject(provider, ['ready', 'status', 'code', 'retryable', 'migrated'], 'operation_store_corrupt');
+    res.status(provider.ready ? 200 : 503).json({
+      ready: provider.ready === true,
+      providerOperations: provider,
+    });
+  }));
 
   router.get('/catalog', asyncRoute(async (req, res) => {
     assertNoQuery(req);

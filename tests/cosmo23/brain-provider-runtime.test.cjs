@@ -89,4 +89,13 @@ test('provider runtime rejects symlinked canonical config and permits an absent 
   assert.throws(() => loadHome23BrainProviderConfig({ home23Root: root }), {
     code: 'provider_configuration_invalid',
   });
+
+  await fsp.rm(path.join(root, 'config'), { recursive: true });
+  const outsideConfig = path.join(root, 'outside-config');
+  await fsp.mkdir(outsideConfig);
+  await fsp.writeFile(path.join(outsideConfig, 'home.yaml'), 'providers: {}\n');
+  await fsp.symlink(outsideConfig, path.join(root, 'config'));
+  assert.throws(() => loadHome23BrainProviderConfig({ home23Root: root }), {
+    code: 'provider_configuration_invalid',
+  });
 });
