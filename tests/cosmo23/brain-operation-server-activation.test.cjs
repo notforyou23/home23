@@ -43,6 +43,18 @@ test('COSMO composes and mounts the exact protected query runtime before broad m
   const queryEngine = { identity: 'operation-query-engine' };
   const worker = fakeWorker();
   const runtime = { worker };
+  const researchRunAdapter = {
+    async createOwnedRun() {},
+    async start() {},
+    async continue() {},
+    async stopAndWait() {},
+    async watch() {},
+    async resolveOwnedRun() {},
+  };
+  const researchOperationTypes = [
+    'research_compile', 'research_continue', 'research_intelligence',
+    'research_launch', 'research_stop', 'research_watch',
+  ];
   const result = initializeProtectedBrainOperations({
     capabilityKey: 'a'.repeat(64),
     targetApp: { use(router) { mounted.push(router); } },
@@ -62,6 +74,21 @@ test('COSMO composes and mounts the exact protected query runtime before broad m
     },
     buildCatalog: async () => ({ catalogRevision: 'c', brains: [] }),
     canonicalTargetResolver() {},
+    configuredAgents: {
+      'agents.research-synthesis': { provider: 'alpha', model: 'model' },
+    },
+    researchRunAdapterFactory(options) {
+      calls.researchRun = options;
+      return researchRunAdapter;
+    },
+    researchCompileAdapterFactory(options) {
+      calls.researchCompile = options;
+      return async () => {};
+    },
+    researchExecutorsFactory(options) {
+      calls.researchExecutors = options;
+      return new Map(researchOperationTypes.map((type) => [type, async () => {}]));
+    },
   });
 
   assert.equal(result, runtime);
@@ -73,5 +100,13 @@ test('COSMO composes and mounts the exact protected query runtime before broad m
   assert.equal(calls.runtime.providerRegistry, providerRegistry);
   assert.equal(calls.runtime.queryEngine, queryEngine);
   assert.equal(calls.runtime.modelCatalog, catalog);
-  assert.deepEqual([...calls.runtime.extraExecutors], []);
+  assert.deepEqual([...calls.runtime.extraExecutors.keys()].sort(), researchOperationTypes);
+  assert.equal(calls.runtime.resolveOwnedRun, researchRunAdapter.resolveOwnedRun);
+  assert.equal(typeof calls.runtime.buildOwnedRunTarget, 'function');
+  assert.equal(calls.researchRun.home23Root, '/tmp/home23');
+  assert.equal(calls.researchExecutors.processManager, researchRunAdapter);
+  assert.equal(calls.researchExecutors.resolveOwnedRun, researchRunAdapter.resolveOwnedRun);
+  assert.equal(typeof calls.researchExecutors.readPinnedIntelligence, 'function');
+  assert.equal(typeof calls.researchExecutors.createRequesterOutputWriter, 'function');
+  assert.equal(typeof calls.researchExecutors.compileSectionWithProvider, 'function');
 });

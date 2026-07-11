@@ -15,7 +15,11 @@ const { ConfigGenerator } = require('../launcher/config-generator');
 const { ProcessManager } = require('../launcher/process-manager');
 const { BrainQueryEngine } = require('../lib/brain-query-engine');
 const { QueryEngine } = require('../lib/query-engine');
-const { createHome23BrainProviderRuntime } = require('../lib/brain-provider-runtime');
+const {
+  createHome23BrainProviderRuntime,
+  readYamlRegularFile,
+} = require('../lib/brain-provider-runtime');
+const { requireCompleteProviderResult } = require('../lib/provider-completion');
 const {
   loadConfigurationSync,
   getDatabaseUrl,
@@ -64,6 +68,28 @@ const {
 const {
   createCosmoBrainOperationRuntime
 } = require('./lib/brain-operation-runtime');
+const {
+  createResearchRunOperationAdapter,
+} = require('./lib/research-run-operation-adapter');
+const {
+  loadCanonicalRunMetadata,
+  writeCanonicalRunMetadataAtomic,
+} = require('./lib/research-run-metadata');
+const {
+  readPinnedIntelligence,
+} = require('./lib/research-pinned-source-reader');
+const {
+  createRequesterOutputWriter: createResearchRequesterOutputWriter,
+} = require('./lib/research-requester-output-writer');
+const {
+  createResearchCompileProviderAdapter,
+} = require('./lib/research-compile-provider-adapter');
+const {
+  createResearchOperationExecutors,
+} = require('./lib/research-operation-executors');
+const {
+  buildResearchRunTarget,
+} = require('../../shared/brain-operations/research-run-target.cjs');
 const { buildStatusContract } = require('./lib/status-contract');
 const {
   buildInteractiveLiveStatus,
@@ -84,7 +110,9 @@ const {
   listCatalogModels,
   inferProviderFromModel,
   getCatalogDefaults,
-  inferModelKind
+  inferModelKind,
+  getModelCapabilities,
+  resolveExactConfiguredPair,
 } = require('./config/model-catalog');
 const {
   normalizeExecutionMode
@@ -171,6 +199,11 @@ function initializeProtectedBrainOperations({
   buildCatalog = () => buildCanonicalCatalog(getCanonicalRunsOptions()),
   canonicalTargetResolver = resolveCanonicalTarget,
   extraExecutors = new Map(),
+  configuredAgents,
+  researchRunAdapterFactory = createResearchRunOperationAdapter,
+  researchCompileAdapterFactory = createResearchCompileProviderAdapter,
+  researchExecutorsFactory = createResearchOperationExecutors,
+  clock,
 } = {}) {
   if (typeof capabilityKey !== 'string' || capabilityKey.length === 0) return null;
   const catalog = modelCatalog || loadModelCatalogSync();
@@ -184,6 +217,66 @@ function initializeProtectedBrainOperations({
     providerRegistry: providerRuntime.providerRegistry,
     modelCatalog: catalog,
   });
+  let effectiveConfiguredAgents = configuredAgents;
+  if (effectiveConfiguredAgents === undefined) {
+    const baseEngine = readYamlRegularFile(path.join(home23Root, 'configs', 'base-engine.yaml'));
+    effectiveConfiguredAgents = baseEngine?.modelAssignments || {};
+  }
+  if (!effectiveConfiguredAgents || Array.isArray(effectiveConfiguredAgents)
+      || typeof effectiveConfiguredAgents !== 'object') {
+    throw Object.assign(new Error('Configured agent model assignments are invalid'), {
+      code: 'provider_configuration_invalid', retryable: false,
+    });
+  }
+  const researchRunAdapter = researchRunAdapterFactory({
+    home23Root,
+    runManager,
+    processManager,
+    launchPreparedResearch,
+    getActiveContext: () => activeContext,
+    setActiveContext: (value) => { activeContext = value; },
+    loadCanonicalRunMetadata,
+    writeCanonicalRunMetadataAtomic,
+    clock,
+  });
+  const compileSectionWithProvider = researchCompileAdapterFactory({
+    resolveConfiguredPair: () => resolveExactConfiguredPair(
+      catalog,
+      effectiveConfiguredAgents,
+      'agents.research-synthesis',
+    ),
+    getExactProviderClient: (provider, model) => {
+      const getExact = providerRuntime.providerRegistry.getExact
+        || providerRuntime.providerRegistry.get;
+      if (typeof getExact !== 'function') {
+        throw Object.assign(new Error('Exact provider registry lookup is unavailable'), {
+          code: 'provider_unavailable', retryable: true,
+        });
+      }
+      return getExact.call(providerRuntime.providerRegistry, provider, model);
+    },
+    requireCompleteProviderResult,
+    getModelCapabilities: (provider, model) => getModelCapabilities(catalog, provider, model),
+  });
+  const researchExecutors = researchExecutorsFactory({
+    processManager: researchRunAdapter,
+    resolveOwnedRun: researchRunAdapter.resolveOwnedRun,
+    readPinnedIntelligence,
+    createRequesterOutputWriter: (request) => createResearchRequesterOutputWriter({
+      home23Root,
+      ...request,
+    }),
+    compileSectionWithProvider,
+  });
+  const combinedExecutors = new Map(researchExecutors);
+  for (const [operationType, executor] of extraExecutors) {
+    if (combinedExecutors.has(operationType)) {
+      throw Object.assign(new Error(`Duplicate operation executor: ${operationType}`), {
+        code: 'executor_conflict', retryable: false,
+      });
+    }
+    combinedExecutors.set(operationType, executor);
+  }
   const runtime = runtimeFactory({
     home23Root,
     capabilityKey,
@@ -192,7 +285,10 @@ function initializeProtectedBrainOperations({
     modelCatalog: catalog,
     providerRegistry: providerRuntime.providerRegistry,
     queryEngine,
-    extraExecutors,
+    resolveOwnedRun: researchRunAdapter.resolveOwnedRun,
+    buildOwnedRunTarget: buildResearchRunTarget,
+    extraExecutors: combinedExecutors,
+    clock,
   });
   registerBrainOperationWorkerRoutes(runtime.worker, targetApp);
   return runtime;
