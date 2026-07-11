@@ -6,12 +6,20 @@ const crypto = require('node:crypto');
 const { readManifest, validateManifest } = require('./manifest.cjs');
 const { createDescriptor, openMemorySource } = require('./reader.cjs');
 const { projectLegacyResidentSidecars } = require('./legacy-projection.cjs');
+const { readConfinedFile } = require('./confined-file.cjs');
 const {
   canonicalJson,
   sourceDescriptorDigest,
   memorySourceError,
+  throwIfAborted,
 } = require('./contracts.cjs');
 const { assertOperationRoot, createOperationScratchQuota } = require('./scratch-quota.cjs');
+
+const TRUSTED_PROVIDER_CONTEXT = Symbol('trusted-memory-source-provider-context');
+const MAX_OPERATION_STATUS_BYTES = 1024 * 1024;
+const MUTATION_BOUNDARY_KINDS = Object.freeze([
+  'brain', 'run', 'pgs', 'session', 'cache', 'export', 'agency',
+]);
 
 function validateOperationId(operationId) {
   if (typeof operationId !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(operationId)) {
@@ -83,74 +91,79 @@ async function pinOperationSource({
   operationRoot,
   operationId,
   requesterAgent,
+  lockRoot,
   scratchQuota,
   signal,
 }) {
   validateOperationId(operationId);
   const canonical = await fsp.realpath(canonicalRoot);
   const root = await assertOperationRoot(operationRoot);
-  const existing = await fsp.readFile(coordinatorPinPath(root), 'utf8').catch((error) => {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  });
-  if (existing !== null) {
-    const record = JSON.parse(existing);
-    if (record.canonicalRoot !== canonical || record.operationId !== operationId
-        || record.requesterAgent !== requesterAgent
-        || !descriptorMatchesDigest(record.descriptor, record.digest)) {
-      throw memorySourceError('source_pin_conflict', 'source pin conflict');
-    }
-    return Object.freeze({ descriptor: record.descriptor, digest: record.digest });
-  }
-  let manifest = await readManifest(canonical);
-  let descriptor;
-  let physicalRoot = canonical;
-  let sourceFingerprint = null;
-  if (manifest) {
-    descriptor = createDescriptor(canonical, manifest);
-  } else {
-    if (!scratchQuota || scratchQuota.operationRoot !== root) {
-      throw memorySourceError(
-        'source_operation_required',
-        'legacy source pin requires operation scratch quota',
-        { retryable: false },
-      );
-    }
-    const projected = await projectLegacyResidentSidecars({
-      canonicalRoot: canonical,
-      operationRoot: root,
-      scratchQuota,
-      signal,
+  return withMemorySourceLock(canonical, { lockRoot }, async () => {
+    throwIfAborted(signal);
+    const existing = await fsp.readFile(coordinatorPinPath(root), 'utf8').catch((error) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
     });
-    manifest = projected.manifest;
-    descriptor = projected.descriptor;
-    physicalRoot = projected.projectionRoot;
-    sourceFingerprint = projected.sourceFingerprint;
-  }
-  const digest = sourceDescriptorDigest(descriptor);
-  const physical = await inspectPhysicalRoot(physicalRoot);
-  const record = {
-    version: 1,
-    operationId,
-    requesterAgent,
-    canonicalRoot: canonical,
-    descriptor,
-    digest,
-    protectedFiles: [
-      manifest.activeBase.nodes.file,
-      manifest.activeBase.edges.file,
-      manifest.activeDelta.file,
-      manifest.ann.indexFile,
-      manifest.ann.metaFile,
-    ].filter(Boolean),
-    committedBytes: manifest.activeDelta.committedBytes,
-    physicalRoot,
-    physicalRootIdentity: physicalIdentity(physical.stat),
-    projectionRoot: sourceFingerprint ? physicalRoot : null,
-    sourceFingerprint,
-  };
-  await writeAtomicJson(coordinatorPinPath(root), record);
-  return Object.freeze({ descriptor, digest });
+    if (existing !== null) {
+      const record = JSON.parse(existing);
+      if (record.canonicalRoot !== canonical || record.operationId !== operationId
+          || record.requesterAgent !== requesterAgent
+          || !descriptorMatchesDigest(record.descriptor, record.digest)) {
+        throw memorySourceError('source_pin_conflict', 'source pin conflict');
+      }
+      return Object.freeze({ descriptor: record.descriptor, digest: record.digest });
+    }
+    let manifest = await readManifest(canonical);
+    let descriptor;
+    let physicalRoot = canonical;
+    let sourceFingerprint = null;
+    if (manifest) {
+      descriptor = createDescriptor(canonical, manifest);
+    } else {
+      if (!scratchQuota || scratchQuota.operationRoot !== root) {
+        throw memorySourceError(
+          'source_operation_required',
+          'legacy source pin requires operation scratch quota',
+          { retryable: false },
+        );
+      }
+      const projected = await projectLegacyResidentSidecars({
+        canonicalRoot: canonical,
+        operationRoot: root,
+        scratchQuota,
+        signal,
+      });
+      manifest = projected.manifest;
+      descriptor = projected.descriptor;
+      physicalRoot = projected.projectionRoot;
+      sourceFingerprint = projected.sourceFingerprint;
+    }
+    throwIfAborted(signal);
+    const digest = sourceDescriptorDigest(descriptor);
+    const physical = await inspectPhysicalRoot(physicalRoot);
+    const record = {
+      version: 1,
+      operationId,
+      requesterAgent,
+      canonicalRoot: canonical,
+      descriptor,
+      digest,
+      protectedFiles: [
+        manifest.activeBase.nodes.file,
+        manifest.activeBase.edges.file,
+        manifest.activeDelta.file,
+        manifest.ann.indexFile,
+        manifest.ann.metaFile,
+      ].filter(Boolean),
+      committedBytes: manifest.activeDelta.committedBytes,
+      physicalRoot,
+      physicalRootIdentity: physicalIdentity(physical.stat),
+      projectionRoot: sourceFingerprint ? physicalRoot : null,
+      sourceFingerprint,
+    };
+    await writeAtomicJson(coordinatorPinPath(root), record);
+    return Object.freeze({ descriptor, digest });
+  });
 }
 
 const PROCESS_START_IDENTITY = `${process.pid}:${Math.max(
@@ -280,6 +293,157 @@ function pinnedManifestFromDescriptor(descriptor) {
   });
 }
 
+function isConfinedOrEqual(root, candidate) {
+  if (candidate === root) return true;
+  const relative = path.relative(root, candidate);
+  return Boolean(relative) && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+function validateMutationBoundaries(target, canonicalRoot) {
+  const boundaries = target?.mutationBoundaries;
+  if (!Array.isArray(boundaries) || boundaries.length !== MUTATION_BOUNDARY_KINDS.length) {
+    throw memorySourceError('access_denied', 'authorized mutation boundaries required');
+  }
+  const found = new Set();
+  for (const boundary of boundaries) {
+    if (!boundary || Array.isArray(boundary) || typeof boundary !== 'object'
+        || !MUTATION_BOUNDARY_KINDS.includes(boundary.kind)
+        || found.has(boundary.kind)
+        || typeof boundary.path !== 'string'
+        || !path.isAbsolute(boundary.path)
+        || path.normalize(boundary.path) !== boundary.path
+        || boundary.path.includes('\0')
+        || !isConfinedOrEqual(canonicalRoot, boundary.path)) {
+      throw memorySourceError('access_denied', 'mutation boundary escapes authorized brain');
+    }
+    found.add(boundary.kind);
+  }
+  if (found.size !== MUTATION_BOUNDARY_KINDS.length) {
+    throw memorySourceError('access_denied', 'authorized mutation boundaries required');
+  }
+}
+
+async function readAuthorizedMutationRecord({
+  operationRoot,
+  operationId,
+  requesterAgent,
+  descriptor,
+  digest,
+  ownBrainRoot,
+  expectedOperationType,
+  signal,
+}) {
+  throwIfAborted(signal);
+  if (expectedOperationType !== 'synthesis' || descriptor.canonicalRoot !== ownBrainRoot) {
+    throw memorySourceError('access_denied', 'source mutation is restricted to own-brain synthesis');
+  }
+  const statusPath = path.join(operationRoot, 'status.json');
+  const bytes = await readConfinedFile(operationRoot, statusPath, {
+    maxBytes: MAX_OPERATION_STATUS_BYTES,
+    signal,
+  });
+  let status;
+  try {
+    status = JSON.parse(bytes.toString('utf8'));
+  } catch (cause) {
+    throw memorySourceError('access_denied', 'authorized operation record is unreadable', { cause });
+  }
+  const target = status?.target;
+  if (!status || Array.isArray(status) || typeof status !== 'object'
+      || status.operationId !== operationId
+      || status.requesterAgent !== requesterAgent
+      || status.operationType !== 'synthesis'
+      || !['queued', 'running'].includes(status.state)
+      || status.sourcePinReleasedAt !== null
+      || status._deleting === true
+      || status.sourcePinDigest !== digest
+      || !descriptorsMatch(status.sourcePinDescriptor, descriptor)
+      || !target || Array.isArray(target) || typeof target !== 'object'
+      || target.domain !== 'brain'
+      || target.canonicalRoot !== descriptor.canonicalRoot
+      || target.accessMode !== 'own'
+      || target.ownerAgent !== requesterAgent
+      || target.kind !== 'resident'
+      || target.lifecycle !== 'resident') {
+    throw memorySourceError('access_denied', 'own-brain synthesis authorization is invalid');
+  }
+  validateMutationBoundaries(target, descriptor.canonicalRoot);
+  throwIfAborted(signal);
+  return status;
+}
+
+function attachPinnedSourceMutation(source, {
+  descriptor,
+  record,
+  operationRoot,
+  operationId,
+  requesterAgent,
+  expectedDigest,
+  expectations,
+}) {
+  const providerContext = expectations[TRUSTED_PROVIDER_CONTEXT] || null;
+  let releaseRequested = false;
+  let activeMutation = null;
+
+  async function compareAndSwap(commit) {
+    if (typeof commit !== 'function') {
+      throw memorySourceError('invalid_request', 'source CAS commit callback required');
+    }
+    if (releaseRequested) {
+      throw memorySourceError('source_stale', 'pinned source has been released', { retryable: true });
+    }
+    if (activeMutation) {
+      throw memorySourceError('source_busy', 'source CAS already active', { retryable: true });
+    }
+    if (!providerContext || record.projectionRoot !== null) {
+      throw memorySourceError(
+        record.projectionRoot !== null ? 'source_changed' : 'access_denied',
+        'pinned source is read-only',
+        { retryable: record.projectionRoot !== null },
+      );
+    }
+    const mutation = (async () => {
+      const ownBrainRoot = await fsp.realpath(providerContext.ownBrainPath).catch(() => null);
+      if (!ownBrainRoot || releaseRequested) {
+        throw memorySourceError('access_denied', 'own brain source is unavailable');
+      }
+      const { compareAndSwapSourceRevision } = require('./writer.cjs');
+      return compareAndSwapSourceRevision(descriptor.canonicalRoot, {
+        lockRoot: providerContext.lockRoot,
+        expectedGeneration: descriptor.generation,
+        expectedRevision: descriptor.cutoffRevision,
+        expectedDigest,
+        signal: expectations.signal,
+        authorize: () => readAuthorizedMutationRecord({
+          operationRoot,
+          operationId,
+          requesterAgent,
+          descriptor,
+          digest: expectedDigest,
+          ownBrainRoot,
+          expectedOperationType: expectations.operationType,
+          signal: expectations.signal,
+        }),
+        commit,
+      });
+    })();
+    activeMutation = mutation;
+    try {
+      return await mutation;
+    } finally {
+      if (activeMutation === mutation) activeMutation = null;
+    }
+  }
+
+  return {
+    compareAndSwap,
+    requestRelease() { releaseRequested = true; },
+    async waitForMutation() {
+      if (activeMutation) await activeMutation.catch(() => {});
+    },
+  };
+}
+
 async function resolvePinnedPhysicalRoot({ record, operationRoot, descriptor }) {
   const physicalRoot = record.physicalRoot;
   if (typeof physicalRoot !== 'string' || !path.isAbsolute(physicalRoot)
@@ -400,14 +564,27 @@ async function openPinnedSource(descriptor, expectations = {}) {
     throw error;
   }
   const closeSource = source.close.bind(source);
+  const mutation = attachPinnedSourceMutation(source, {
+    descriptor,
+    record,
+    operationRoot,
+    operationId,
+    requesterAgent: expectations.requesterAgent,
+    expectedDigest,
+    expectations,
+  });
   let closePromise = null;
   const closeOnce = () => {
-    closePromise ||= Promise.resolve().then(() => closeSource());
+    mutation.requestRelease();
+    closePromise ||= Promise.resolve()
+      .then(() => mutation.waitForMutation())
+      .then(() => closeSource());
     return closePromise;
   };
   let releasePromise = null;
   return Object.assign(source, {
     descriptor,
+    compareAndSwap: mutation.compareAndSwap,
     async release() {
       releasePromise ||= (async () => {
         try {
@@ -527,6 +704,9 @@ function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
   if (typeof requesterAgent !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(requesterAgent)) {
     throw memorySourceError('invalid_request', 'safe requester required');
   }
+  const lockRoot = path.join(home23Root, 'runtime', 'brain-source-locks');
+  const ownBrainPath = path.join(home23Root, 'instances', requesterAgent, 'brain');
+  const providerContext = Object.freeze({ lockRoot, ownBrainPath });
   return Object.freeze({
     async pin(canonicalRoot, operationId) {
       validateOperationId(operationId);
@@ -538,6 +718,7 @@ function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
           operationRoot,
           operationId,
           requesterAgent,
+          lockRoot,
           scratchQuota,
         });
       } finally {
@@ -559,6 +740,7 @@ function createMemorySourcePinProvider({ home23Root, requesterAgent }) {
         operationId,
         operationRoot,
         requesterAgent,
+        [TRUSTED_PROVIDER_CONTEXT]: providerContext,
       });
     },
     async releaseOperationPins(operationId) {

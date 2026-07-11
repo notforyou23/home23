@@ -19,6 +19,7 @@ const {
   releaseOperationSource,
   retireUnpinnedSources,
   rewriteMemoryBase,
+  sourceDescriptorDigest,
   writeJsonlGzAtomic,
 } = require('../../shared/memory-source');
 
@@ -156,6 +157,7 @@ test('derived-state compare-and-swap rejects a newer source revision', async () 
     lockRoot,
     expectedGeneration: pinned.manifest.generation,
     expectedRevision: pinned.revision,
+    expectedDigest: sourceDescriptorDigest(pinned.descriptor),
     commit: async () => { writes += 1; },
   });
   assert.equal(result.committed, false);

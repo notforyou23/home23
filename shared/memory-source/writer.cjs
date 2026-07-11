@@ -8,7 +8,11 @@ const { writeJsonlGzAtomic, limitError } = require('./jsonl.cjs');
 const { readManifest, writeManifestAtomic, fsyncDirectory } = require('./manifest.cjs');
 const { openConfinedRegularFile } = require('./confined-file.cjs');
 const { withMemorySourceLock, discoverOperationPinFiles } = require('./pins.cjs');
-const { memorySourceError } = require('./contracts.cjs');
+const {
+  memorySourceError,
+  sourceDescriptorDigest,
+  throwIfAborted,
+} = require('./contracts.cjs');
 
 function inject(options, point) {
   if (options.faultAt === point) throw new Error(`injected:${point}`);
@@ -215,13 +219,36 @@ async function advanceAnnBuiltFromRevision(brainDir, update = {}) {
 }
 
 async function compareAndSwapSourceRevision(brainDir, update = {}) {
+  if (typeof update.expectedGeneration !== 'string' || update.expectedGeneration.length === 0
+      || !Number.isSafeInteger(update.expectedRevision) || update.expectedRevision < 0
+      || typeof update.expectedDigest !== 'string'
+      || !/^sha256:[a-f0-9]{64}$/.test(update.expectedDigest)
+      || typeof update.commit !== 'function'
+      || (update.authorize !== undefined && typeof update.authorize !== 'function')) {
+    throw memorySourceError('invalid_request', 'exact source CAS contract required');
+  }
+  throwIfAborted(update.signal);
   return withMemorySourceLock(brainDir, { lockRoot: update.lockRoot }, async () => {
+    throwIfAborted(update.signal);
     const manifest = await readManifest(brainDir);
+    const descriptor = manifest ? {
+      version: 1,
+      canonicalRoot: await fsp.realpath(brainDir),
+      generation: manifest.generation,
+      baseRevision: manifest.baseRevision,
+      cutoffRevision: manifest.currentRevision,
+      activeBase: manifest.activeBase,
+      activeDelta: manifest.activeDelta,
+      summary: manifest.summary,
+    } : null;
     if (!manifest || manifest.generation !== update.expectedGeneration
-        || manifest.currentRevision !== update.expectedRevision) {
+        || manifest.currentRevision !== update.expectedRevision
+        || sourceDescriptorDigest(descriptor) !== update.expectedDigest) {
       return { committed: false, reason: 'source_changed', manifest };
     }
-    const value = await update.commit(manifest);
+    if (update.authorize) await update.authorize();
+    throwIfAborted(update.signal);
+    const value = await update.commit();
     return { committed: true, manifest, value };
   });
 }
