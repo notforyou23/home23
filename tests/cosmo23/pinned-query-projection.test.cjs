@@ -129,6 +129,21 @@ test('projection cancellation preserves the exact caller reason', async () => {
   assert.equal(sourcePin.stats().recordsConsumed, 10_000);
 });
 
+test('CPU-ready projection yields so external cancellation is observed by identity', async () => {
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('external cancel projection'), { code: 'cancelled' });
+  const sourcePin = createSyntheticPinnedSource({ nodeCount: 100_000, edgeCount: 100_000 });
+  setImmediate(() => controller.abort(reason));
+
+  await assert.rejects(projectPinnedQuery({
+    sourcePin,
+    query: 'canary',
+    signal: controller.signal,
+    limits: { maxNodes: 400, maxEdges: 1_600 },
+  }), error => error === reason);
+  assert.equal(sourcePin.stats().recordsConsumed < 200_000, true);
+});
+
 test('trusted limit overrides may lower but never raise production ceilings', () => {
   assert.equal(boundedLimits({ maxNodes: 1 }).maxNodes, 1);
   assert.throws(

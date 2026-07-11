@@ -2,12 +2,20 @@
 
 const { QUERY_OPERATION_LIMITS } = require('./brain-operation-limits');
 
+const COOPERATIVE_YIELD_EVERY = 1_000;
+
 function typed(code, message, retryable = false) {
   return Object.assign(new Error(message), { code, retryable });
 }
 
 function throwIfAborted(signal) {
   if (signal?.aborted) throw signal.reason;
+}
+
+async function yieldForCancellation(count, signal) {
+  if (count % COOPERATIVE_YIELD_EVERY !== 0) return;
+  await new Promise((resolve) => setImmediate(resolve));
+  throwIfAborted(signal);
 }
 
 function boundedLimits(overrides = {}) {
@@ -205,6 +213,7 @@ async function projectPinnedQuery({
       }
     }
     if (typeof onNodeScanned === 'function') onNodeScanned(nodesScanned);
+    await yieldForCancellation(nodesScanned, signal);
   }
 
   const nodes = heap.valuesBestFirst().map(row => row.record);
@@ -230,6 +239,7 @@ async function projectPinnedQuery({
       maxRetainedBytes = Math.max(maxRetainedBytes, retainedNodeBytes + edgeBytes);
     }
     if (typeof onEdgeScanned === 'function') onEdgeScanned(edgesScanned);
+    await yieldForCancellation(edgesScanned, signal);
   }
   throwIfAborted(signal);
 
@@ -265,6 +275,7 @@ async function projectPinnedQuery({
 }
 
 module.exports = {
+  COOPERATIVE_YIELD_EVERY,
   boundedLimits,
   projectPinnedQuery,
 };
