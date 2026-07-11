@@ -1564,10 +1564,12 @@ class BrainOperationCoordinator {
               readError = error;
             }
           }
-          if (!readError && synthesisStateMatchesClaim(state, claim)) {
+          const relation = readError ? 'invalid' : synthesisStateRelation(state, claim);
+          if (relation === 'match') {
             return this._completeClaimedSynthesisLocked(record, claim, envelope.sourceEvidence);
           }
-          if (envelope.state !== 'failed' && (readError || state !== null)) {
+          if (envelope.state !== 'failed'
+              && (relation === 'invalid' || relation === 'mismatch')) {
             return this._failLocked(operationId, {
               state: 'failed',
               code: 'synthesis_commit_mismatch',

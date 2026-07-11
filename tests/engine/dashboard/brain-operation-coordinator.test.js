@@ -1864,8 +1864,8 @@ test('restart reconciliation completes exact synthesis claims before generic wor
   assert.equal(complete.error, null);
 });
 
-test('restart reconciliation keeps missing and mismatched claimed synthesis state honest', async (t) => {
-  for (const scenario of ['missing', 'mismatched']) {
+test('restart reconciliation keeps missing, prior, and mismatched claimed synthesis state honest', async (t) => {
+  for (const scenario of ['missing', 'prior', 'mismatched']) {
     await t.test(scenario, async (subtest) => {
       let committedState = null;
       const fixture = makeFixture(subtest, { readSynthesisState: async () => committedState });
@@ -1876,10 +1876,19 @@ test('restart reconciliation keeps missing and mismatched claimed synthesis stat
       }));
       const claim = synthesisCompletion(operation.operationId);
       await fixture.store.claimSynthesisCompletion(operation.operationId, claim);
-      if (scenario === 'mismatched') {
+      if (scenario === 'prior') {
+        committedState = synthesisStateFromClaim(synthesisCompletion(
+          `brop_${'9'.repeat(32)}`,
+          {
+            generationMarker: `generation-prior-${'d'.repeat(24)}`,
+            generatedAt: '2026-07-09T16:00:00.000Z',
+            brainStateSha256: `sha256:${'d'.repeat(64)}`,
+          },
+        ));
+      } else if (scenario === 'mismatched') {
         committedState = synthesisStateFromClaim({
           ...claim,
-          operationId: `brop_${'9'.repeat(32)}`,
+          brainStateSha256: `sha256:${'c'.repeat(64)}`,
         });
       }
       await fixture.coordinator.stop();
@@ -1892,10 +1901,10 @@ test('restart reconciliation keeps missing and mismatched claimed synthesis stat
       });
       await resumed.coordinator.reconcile();
       const terminal = await fixture.store.get(operation.operationId);
-      assert.equal(terminal.state, scenario === 'missing' ? 'interrupted' : 'failed');
+      assert.equal(terminal.state, scenario === 'mismatched' ? 'failed' : 'interrupted');
       assert.equal(
         terminal.error.code,
-        scenario === 'missing' ? 'synthesis_commit_missing' : 'synthesis_commit_mismatch',
+        scenario === 'mismatched' ? 'synthesis_commit_mismatch' : 'synthesis_commit_missing',
       );
       assert.equal(terminal.result, null);
     });
