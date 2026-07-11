@@ -33,6 +33,38 @@ function isCancellation(error, signal) {
     || error?.code === 'cancelled');
 }
 
+function exactKeys(value, expected) {
+  const keys = Reflect.ownKeys(value || {});
+  return keys.length === expected.length
+    && keys.every((key) => typeof key === 'string' && expected.includes(key));
+}
+
+function validateSynthesisResult(result, context, selection) {
+  const fields = [
+    'generationMarker', 'generatedAt', 'sourceRevision', 'provider', 'model',
+    'operationId', 'brainStateSha256',
+  ];
+  if (!result || Array.isArray(result) || typeof result !== 'object'
+      || !exactKeys(result, fields)
+      || result.operationId !== context.operationId
+      || result.provider !== selection.provider
+      || result.model !== selection.model
+      || !Number.isSafeInteger(result.sourceRevision)
+      || result.sourceRevision < 0
+      || result.sourceRevision !== context.sourcePin?.revision
+      || !new RegExp(`^generation-${result.sourceRevision}-[a-f0-9]{24}$`).test(result.generationMarker)
+      || !/^sha256:[a-f0-9]{64}$/.test(result.brainStateSha256)
+      || typeof result.generatedAt !== 'string') {
+    throw typed('worker_result_invalid', 'Synthesis result is invalid');
+  }
+  const generatedAt = Date.parse(result.generatedAt);
+  if (!Number.isFinite(generatedAt)
+      || new Date(generatedAt).toISOString() !== result.generatedAt) {
+    throw typed('worker_result_invalid', 'Synthesis generatedAt is invalid');
+  }
+  return result;
+}
+
 function validateContext(context, selection) {
   if (!context || Array.isArray(context) || typeof context !== 'object') {
     throw typed('worker_context_invalid', 'Synthesis worker context is required');
@@ -104,13 +136,13 @@ function createSynthesisWorker({ agent, selection } = {}) {
     try {
       const { trigger } = validateContext(context, fixedSelection);
       if (context.signal?.aborted) throw context.signal.reason;
-      const result = await agent.runOperation({
+      const result = validateSynthesisResult(await agent.runOperation({
         operationId: context.operationId,
         trigger,
         sourcePin: context.sourcePin,
         signal: context.signal || null,
         onEvent: context.reportEvent || null,
-      });
+      }), context, fixedSelection);
       if (context.signal?.aborted) throw context.signal.reason;
       return {
         state: 'complete',
@@ -131,5 +163,6 @@ function createSynthesisWorker({ agent, selection } = {}) {
 
 module.exports = {
   createSynthesisWorker,
+  validateSynthesisResult,
   validateSynthesisWorkerContext: validateContext,
 };

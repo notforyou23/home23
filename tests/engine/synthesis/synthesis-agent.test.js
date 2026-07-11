@@ -190,6 +190,12 @@ test('runOperation emits correlated provider events and commits a verifiable mar
     `sha256:${createHash('sha256').update(canonicalJson(withoutHash)).digest('hex')}`,
   );
   assert.equal(result.brainStateSha256, brainStateSha256);
+
+  state.selfUnderstanding.summary = 'tampered';
+  await fsp.writeFile(path.join(fx.brainDir, 'brain-state.json'), JSON.stringify(state));
+  await assert.rejects(() => readCommittedSynthesisState({ brainDir: fx.brainDir }), {
+    code: 'synthesis_state_invalid',
+  });
 });
 
 test('source change prevents the durable write and publishes no prospective marker', async (t) => {

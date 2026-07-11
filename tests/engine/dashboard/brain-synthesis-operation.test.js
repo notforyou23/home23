@@ -16,6 +16,7 @@ const ROOT = '/tmp/home23-synthesis-brain';
 function context(overrides = {}) {
   const sourcePin = overrides.sourcePin || {
     descriptor: { canonicalRoot: ROOT },
+    revision: 51,
     getEvidence() { return { sourceHealth: 'healthy' }; },
   };
   return {
@@ -56,7 +57,7 @@ test('synthesis worker returns the standard complete envelope without releasing 
     async runOperation(request) {
       calls.push(request);
       return {
-        generationMarker: 'generation-51-deadbeef',
+        generationMarker: `generation-51-${'d'.repeat(24)}`,
         generatedAt: '2026-07-10T12:00:00.000Z',
         sourceRevision: 51,
         provider: 'minimax',
@@ -70,7 +71,7 @@ test('synthesis worker returns the standard complete envelope without releasing 
   assert.equal(result.state, 'complete');
   assert.equal(result.resultArtifact, null);
   assert.equal(result.error, null);
-  assert.equal(result.result.generationMarker, 'generation-51-deadbeef');
+  assert.equal(result.result.generationMarker, `generation-51-${'d'.repeat(24)}`);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].sourcePin.descriptor.canonicalRoot, ROOT);
 });
@@ -111,6 +112,26 @@ test('typed provider and source_changed failures publish no marker', async () =>
   }
 });
 
+test('worker rejects malformed or mismatched successful result payloads', async () => {
+  const execute = worker({
+    async runOperation() {
+      return {
+        generationMarker: `generation-51-${'a'.repeat(24)}`,
+        generatedAt: '2026-07-10T12:00:00.000Z',
+        sourceRevision: 51,
+        provider: 'anthropic',
+        model: 'MiniMax-M3',
+        operationId: OPERATION_ID,
+        brainStateSha256: `sha256:${'a'.repeat(64)}`,
+      };
+    },
+  });
+  const result = await execute(context());
+  assert.equal(result.state, 'failed');
+  assert.equal(result.result, null);
+  assert.equal(result.error.code, 'worker_result_invalid');
+});
+
 test('exact cancellation reason reaches the agent and is rethrown to the common terminalizer', async () => {
   const controller = new AbortController();
   const reason = Object.assign(new Error('cancel exactly'), { name: 'AbortError' });
@@ -131,8 +152,8 @@ test('worker forwards the exact event sink and trusted trigger only', async () =
       assert.equal(request.trigger, 'scheduled');
       await request.onEvent({ type: 'phase', phase: 'synthesis' });
       return {
-        generationMarker: 'generation-1-ok', generatedAt: '2026-07-10T12:00:00.000Z',
-        sourceRevision: 1, provider: 'minimax', model: 'MiniMax-M3',
+        generationMarker: `generation-51-${'e'.repeat(24)}`, generatedAt: '2026-07-10T12:00:00.000Z',
+        sourceRevision: 51, provider: 'minimax', model: 'MiniMax-M3',
         operationId: OPERATION_ID, brainStateSha256: `sha256:${'b'.repeat(64)}`,
       };
     },
@@ -169,7 +190,7 @@ test('synthesis provider events cross the real local worker adapter as one corre
           model: 'MiniMax-M3', providerCallId: 'synthesis', outcome: 'complete',
         });
         return {
-          generationMarker: 'generation-51-ok', generatedAt: '2026-07-10T12:00:00.000Z',
+          generationMarker: `generation-51-${'f'.repeat(24)}`, generatedAt: '2026-07-10T12:00:00.000Z',
           sourceRevision: 51, provider: 'minimax', model: 'MiniMax-M3',
           operationId: OPERATION_ID, brainStateSha256: `sha256:${'c'.repeat(64)}`,
         };
@@ -183,6 +204,7 @@ test('synthesis provider events cross the real local worker adapter as one corre
     scratchDir: '/tmp/home23-synthesis-operation',
     sourcePin: {
       descriptor: { canonicalRoot: ROOT },
+      revision: 51,
       getEvidence() { return { sourceHealth: 'healthy' }; },
       async release() { released += 1; },
     },

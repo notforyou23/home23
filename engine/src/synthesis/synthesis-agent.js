@@ -285,6 +285,43 @@ async function readBoundedWorkspaceFile({ workspacePath, fileName, maxBytes, sig
   }
 }
 
+function validateCommittedSynthesisState(state) {
+  if (!state || Array.isArray(state) || typeof state !== 'object'
+      || !OPERATION_ID_PATTERN.test(state.operationId || '')
+      || !Number.isSafeInteger(state.sourceRevision)
+      || state.sourceRevision < 0
+      || typeof state.provider !== 'string'
+      || typeof state.model !== 'string'
+      || typeof state.generatedAt !== 'string'
+      || !new RegExp(`^generation-${state.sourceRevision}-[a-f0-9]{24}$`)
+        .test(state.generationMarker || '')
+      || !/^sha256:[a-f0-9]{64}$/.test(state.brainStateSha256 || '')) {
+    throw typed('synthesis_state_invalid', 'Committed synthesis state is invalid');
+  }
+  const generatedAt = Date.parse(state.generatedAt);
+  if (!Number.isFinite(generatedAt)
+      || new Date(generatedAt).toISOString() !== state.generatedAt) {
+    throw typed('synthesis_state_invalid', 'Committed synthesis timestamp is invalid');
+  }
+  const withoutHash = Object.fromEntries(
+    Object.entries(state).filter(([key]) => key !== 'brainStateSha256'),
+  );
+  let expected;
+  try {
+    expected = `sha256:${createHash('sha256')
+      .update(canonicalJson(withoutHash), 'utf8')
+      .digest('hex')}`;
+  } catch (error) {
+    throw typed('synthesis_state_invalid', 'Committed synthesis state is not canonical', false, {
+      cause: error,
+    });
+  }
+  if (state.brainStateSha256 !== expected) {
+    throw typed('synthesis_state_invalid', 'Committed synthesis state hash mismatch');
+  }
+  return state;
+}
+
 async function readCommittedSynthesisState({
   brainDir,
   maxBytes = SYNTHESIS_OPERATION_LIMITS.maxBrainStateBytes,
@@ -304,10 +341,7 @@ async function readCommittedSynthesisState({
     throwIfAborted(signal);
     await assertStableOpenedFile(opened);
     const state = JSON.parse(bytes.toString('utf8'));
-    if (!state || Array.isArray(state) || typeof state !== 'object') {
-      throw typed('synthesis_state_invalid', 'Committed synthesis state is invalid');
-    }
-    return state;
+    return validateCommittedSynthesisState(state);
   } catch (error) {
     if (signal?.aborted) throw signal.reason;
     if (error?.code) throw error;
@@ -753,4 +787,5 @@ module.exports = {
   extractJsonObject,
   normalizeSynthesis,
   readCommittedSynthesisState,
+  validateCommittedSynthesisState,
 };
