@@ -1086,6 +1086,55 @@ test('terminal closure drains durable provider evidence for a slow pull attachme
   assert.equal(events.at(-1).state, 'complete');
 });
 
+test('shared terminal replay clips a compacted gap to each attachment cursor', async () => {
+  const operationId = `brop_${'g'.repeat(32)}`;
+  const rows = [
+    {
+      type: 'event_gap', operationId, oldestSequence: 2, latestSequence: 4,
+    },
+    {
+      type: 'phase', operationId, sequence: 5, phase: 'retained-terminal-evidence',
+    },
+  ];
+  const subscriber = (cursor) => ({ cursor, onEvent: null, waiting: [], queue: [] });
+  const lagging = subscriber(1);
+  const advanced = subscriber(2);
+  const coordinator = Object.create(BrainOperationCoordinator.prototype);
+  coordinator.store = {
+    async readEvents(actualOperationId, afterSequence) {
+      assert.equal(actualOperationId, operationId);
+      assert.equal(afterSequence, 1);
+      return rows;
+    },
+  };
+  const runtime = {
+    operationId,
+    attachments: new Map([
+      ['lagging', lagging],
+      ['advanced', advanced],
+    ]),
+  };
+
+  // Terminal closure reads once from the oldest cursor, then shares those rows
+  // with every attachment. Each requester must see only its own unseen suffix.
+  await coordinator._broadcastNewEvents(runtime, 1);
+  assert.deepEqual(lagging.queue, [{
+    ...rows[0], eventSequence: 4,
+  }]);
+  assert.deepEqual(advanced.queue, [{
+    ...rows[0], oldestSequence: 3, eventSequence: 4,
+  }]);
+
+  lagging.queue.shift();
+  advanced.queue.shift();
+  coordinator._deliverRowsToSubscriber(lagging, rows);
+  coordinator._deliverRowsToSubscriber(advanced, rows);
+  assert.deepEqual(lagging.queue, [{ ...rows[1], eventSequence: 5 }]);
+  assert.deepEqual(advanced.queue, [{ ...rows[1], eventSequence: 5 }]);
+  assert.equal(lagging.cursor, 5);
+  assert.equal(advanced.cursor, 5);
+});
+
 test('late terminal attachment replays the retained journal read-only and closes cleanly', async (t) => {
   const fixture = makeFixture(t);
   const operation = await fixture.coordinator.start(request({

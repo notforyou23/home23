@@ -1319,9 +1319,10 @@ class BrainOperationCoordinator {
             || row.oldestSequence > row.latestSequence) {
           throw coordinatorError('event_stream_invalid');
         }
-        if (row.oldestSequence <= subscriber.cursor) continue;
+        if (row.latestSequence <= subscriber.cursor) continue;
         event = Object.freeze({
           ...row,
+          oldestSequence: Math.max(row.oldestSequence, subscriber.cursor + 1),
           eventSequence: row.latestSequence,
         });
         nextCursor = event.eventSequence;
