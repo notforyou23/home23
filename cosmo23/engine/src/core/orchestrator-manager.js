@@ -235,7 +235,8 @@ class OrchestratorManager extends EventEmitter {
           contextId,
           runtimePath: contextConfig.runtimePath,
           ports,
-          config: contextConfig.config
+          config: contextConfig.config,
+          requesterAgent: contextConfig.requesterAgent,
         });
 
         context.orchestrator = orchestrator;

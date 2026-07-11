@@ -26,7 +26,10 @@ const { TemporalRhythms } = require('./temporal/rhythms');
 const { FocusExplorationOscillator } = require('./temporal/oscillator');
 const { MetaCoordinator } = require('./coordinator/meta-coordinator');
 const { ActionCoordinator } = require('./coordinator/action-coordinator');
-const { AgentExecutor } = require('./agents/agent-executor');
+const {
+  AgentExecutor,
+  createTrustedAgentBrainSourceContext,
+} = require('./agents/agent-executor');
 const { ResearchAgent } = require('./agents/research-agent');
 const { AnalysisAgent } = require('./agents/analysis-agent');
 const { SynthesisAgent } = require('./agents/synthesis-agent');
@@ -66,6 +69,29 @@ const { FilesystemClusterOrchestrator } = require('./cluster/orchestrators/files
 const { ClusterCoordinator } = require('./cluster/cluster-coordinator');
 
 const logger = new SimpleLogger('info');
+
+function createProcessBrainSourceContext({
+  config,
+  brainDir,
+  requesterAgent = process.env.HOME23_AGENT || config?.requesterAgent || config?.agent?.name,
+  sourceKind,
+  contextLogger = logger,
+} = {}) {
+  if (!requesterAgent || !sourceKind) return null;
+  try {
+    return createTrustedAgentBrainSourceContext({
+      home23Root: path.resolve(__dirname, '..', '..', '..'),
+      requesterAgent,
+      brainDir,
+      sourceKind,
+    });
+  } catch (error) {
+    contextLogger.warn('MCP memory source context unavailable', {
+      code: error?.code || 'mcp_source_context_required',
+    });
+    return null;
+  }
+}
 
 // Optional: Initialize split-screen TUI dashboard
 let tuiDashboard = null;
@@ -376,10 +402,16 @@ async function main() {
   const actionCoordinator = new ActionCoordinator(config, logger, pathResolver);
   await actionCoordinator.initialize();
   logger.info('✅ Action Coordinator initialized');
+
+  const brainSourceContext = createProcessBrainSourceContext({
+    config,
+    brainDir: runtimeRoot,
+    sourceKind: process.env.COSMO_RUNTIME_PATH ? 'owned-run' : null,
+  });
   
   // Initialize Agent Executor
   const agentExecutor = new AgentExecutor(
-    { memory, goals, pathResolver },
+    { memory, goals, pathResolver, brainSourceContext },
     config,
     logger
   );
@@ -904,7 +936,13 @@ if (require.main === module) {
  * @returns {Promise<{ orchestrator, subsystems, realtimeServer, eventEmitter }>}
  */
 async function createOrchestratorContext(options) {
-  const { contextId, runtimePath, ports, config: configOverrides } = options;
+  const {
+    contextId,
+    runtimePath,
+    ports,
+    config: configOverrides,
+    requesterAgent,
+  } = options;
 
   // Create context-specific logger
   const contextLogger = new SimpleLogger('info');
@@ -1015,9 +1053,17 @@ async function createOrchestratorContext(options) {
   await actionCoordinator.initialize();
   contextLogger.info(`[Context ${contextId}] ✅ Action Coordinator initialized`);
 
+  const brainSourceContext = createProcessBrainSourceContext({
+    config,
+    brainDir: runtimePath,
+    requesterAgent: requesterAgent || config.requesterAgent,
+    sourceKind: 'owned-run',
+    contextLogger,
+  });
+
   // Initialize agent executor with eventEmitter in phase2bSubsystems
   const agentExecutor = new AgentExecutor(
-    { memory, goals, pathResolver, eventEmitter },
+    { memory, goals, pathResolver, eventEmitter, brainSourceContext },
     config,
     contextLogger
   );

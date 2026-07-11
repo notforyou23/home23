@@ -154,7 +154,10 @@ async function startOrchestrator(startConfig) {
     const { TrajectoryForkSystem } = require(path.join(enginePath, 'cognition/trajectory-fork'));
     const { TopicQueueSystem } = require(path.join(enginePath, 'goals/topic-queue'));
     const { MetaCoordinator } = require(path.join(enginePath, 'coordinator/meta-coordinator'));
-    const { AgentExecutor } = require(path.join(enginePath, 'agents/agent-executor'));
+    const {
+      AgentExecutor,
+      createTrustedAgentBrainSourceContext,
+    } = require(path.join(enginePath, 'agents/agent-executor'));
 
     // Agent types
     const { ResearchAgent } = require(path.join(enginePath, 'agents/research-agent'));
@@ -193,6 +196,26 @@ async function startOrchestrator(startConfig) {
       logsDir: config.runtimePath,
       contextId: contextId
     };
+
+    let brainSourceContext = null;
+    const requesterAgent = config.requesterAgent
+      || mergedConfig.requesterAgent
+      || process.env.HOME23_AGENT
+      || null;
+    if (requesterAgent) {
+      try {
+        brainSourceContext = createTrustedAgentBrainSourceContext({
+          home23Root: path.resolve(enginePath, '..', '..'),
+          requesterAgent,
+          brainDir: config.runtimePath,
+          sourceKind: 'owned-run',
+        });
+      } catch (error) {
+        logger.warn('MCP memory source context unavailable', {
+          code: error?.code || 'mcp_source_context_required',
+        });
+      }
+    }
 
     // Validate configuration
     const validator = new ConfigValidator(mergedConfig, logger);
@@ -261,7 +284,7 @@ async function startOrchestrator(startConfig) {
 
     // Initialize agent executor with event emitter
     const agentExecutor = new AgentExecutor(
-      { memory, goals, pathResolver, eventEmitter },
+      { memory, goals, pathResolver, eventEmitter, brainSourceContext },
       mergedConfig,
       logger
     );

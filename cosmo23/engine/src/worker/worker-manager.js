@@ -225,6 +225,7 @@ class WorkerOrchestratorManager extends EventEmitter {
                 contextId,
                 runtimePath: config.runtimePath,
                 runName: config.runName,
+                requesterAgent: config.requesterAgent,
                 engineConfig: config.engineConfig
               }
             });

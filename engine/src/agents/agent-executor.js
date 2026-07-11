@@ -10,6 +10,103 @@ const { cosmoEvents } = require('../realtime/event-emitter');
 // Optional external prompt injection (non-fatal)
 const fs = require('fs');
 const path = require('path');
+const {
+  createInstalledLocalSourceContext,
+} = require('../../../shared/memory-source/operation-context.cjs');
+
+function sourceContextError(message) {
+  return Object.assign(new Error(message), { code: 'mcp_source_context_required' });
+}
+
+function canonicalDirectory(value, label) {
+  if (typeof value !== 'string' || !path.isAbsolute(value)) {
+    throw sourceContextError(`absolute ${label} required`);
+  }
+  let stat;
+  let canonical;
+  try {
+    stat = fs.lstatSync(value);
+    canonical = fs.realpathSync(value);
+  } catch (error) {
+    throw sourceContextError(`${label} is unavailable`);
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink() || canonical !== path.resolve(value)) {
+    throw sourceContextError(`canonical nonsymlink ${label} required`);
+  }
+  return canonical;
+}
+
+function pathsOverlap(left, right) {
+  const leftToRight = path.relative(left, right);
+  const rightToLeft = path.relative(right, left);
+  const inside = (relative) => relative === ''
+    || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  return inside(leftToRight) || inside(rightToLeft);
+}
+
+/**
+ * Build the process-owned MCP source context used by specialist agents.
+ * Callers must identify the exact local resident brain or owned run; this
+ * helper deliberately has no public selector or mission-derived fallback.
+ */
+function createTrustedAgentBrainSourceContext({
+  home23Root,
+  requesterAgent,
+  brainDir,
+  sourceKind = 'resident',
+} = {}) {
+  if (typeof requesterAgent !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(requesterAgent)) {
+    throw sourceContextError('safe requester agent required');
+  }
+  if (!['resident', 'owned-run'].includes(sourceKind)) {
+    throw sourceContextError('explicit local source kind required');
+  }
+  const canonicalHome = canonicalDirectory(home23Root, 'Home23 root');
+  const canonicalBrain = canonicalDirectory(brainDir, 'brain directory');
+  if (sourceKind === 'resident') {
+    const expected = path.join(canonicalHome, 'instances', requesterAgent, 'brain');
+    if (canonicalBrain !== expected) {
+      throw sourceContextError('resident brain does not match requester layout');
+    }
+  }
+
+  const operationBase = path.join(
+    canonicalHome,
+    'instances',
+    requesterAgent,
+    'runtime',
+    'brain-operations',
+  );
+  const lockRoot = path.join(canonicalHome, 'runtime', 'brain-source-locks');
+  if (pathsOverlap(canonicalBrain, operationBase) || pathsOverlap(canonicalBrain, lockRoot)) {
+    throw sourceContextError('brain source must be external to operation scratch and lock roots');
+  }
+
+  const target = Object.freeze({
+    id: sourceKind === 'resident'
+      ? `resident-${requesterAgent}`
+      : `run-${path.basename(canonicalBrain)}`,
+    brainId: sourceKind === 'resident'
+      ? `resident-${requesterAgent}`
+      : `run-${path.basename(canonicalBrain)}`,
+    ownerAgent: requesterAgent,
+    requesterAgent,
+    canonicalRoot: canonicalBrain,
+    kind: sourceKind === 'resident' ? 'resident' : 'run',
+    sourceType: sourceKind === 'resident' ? 'resident-brain' : 'research-run',
+  });
+  return createInstalledLocalSourceContext({
+    home23Root: canonicalHome,
+    requesterAgent,
+    brainDir: canonicalBrain,
+    activeRunPath: sourceKind === 'owned-run' ? canonicalBrain : null,
+    buildCatalog: async () => ({
+      revision: `installed-local:${target.id}`,
+      entries: [target],
+    }),
+  });
+}
 
 /**
  * AgentExecutor - Manages specialist agent lifecycle
@@ -43,7 +140,13 @@ class AgentExecutor {
     this.registry = new AgentRegistry(logger);
     this.resultsQueue = new AgentResultsQueue(config.logsDir, logger);
     this.messageQueue = new MessageQueue(logger);
-    this.mcpBridge = new MCPBridge(config.logsDir, logger);  // MCP bridge for system introspection
+    // The source identity is owned by the process that assembled the engine
+    // subsystems. Never derive it from a mission or an MCP tool request. When
+    // an older embedding does not provide the context, MCP memory reads stay
+    // explicitly unavailable instead of guessing a resident brain.
+    this.mcpBridge = new MCPBridge(config.logsDir, logger, {
+      brainSourceContext: phase2bSubsystems.brainSourceContext || null,
+    });  // MCP bridge for system introspection
     this.externalBridge = new ExternalBridge(config, logger);  // External API integrations
     this.frontierGate = new FrontierGate(config, logger);  // FrontierGate for governance
     this.capabilities = null;  // NEW: Capabilities (injected by Orchestrator after ExecutiveRing init)
@@ -1914,4 +2017,4 @@ class AgentExecutor {
   }
 }
 
-module.exports = { AgentExecutor };
+module.exports = { AgentExecutor, createTrustedAgentBrainSourceContext };

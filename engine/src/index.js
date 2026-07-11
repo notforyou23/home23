@@ -28,7 +28,10 @@ const { TemporalRhythms } = require('./temporal/rhythms');
 const { buildTemporalContext } = require('./core/temporal-context');
 const { FocusExplorationOscillator } = require('./temporal/oscillator');
 const { MetaCoordinator } = require('./coordinator/meta-coordinator');
-const { AgentExecutor } = require('./agents/agent-executor');
+const {
+  AgentExecutor,
+  createTrustedAgentBrainSourceContext,
+} = require('./agents/agent-executor');
 const { ResearchAgent } = require('./agents/research-agent');
 const { AnalysisAgent } = require('./agents/analysis-agent');
 const { SynthesisAgent } = require('./agents/synthesis-agent');
@@ -247,10 +250,27 @@ async function main() {
   
   const coordinator = new MetaCoordinator(config, logger, pathResolver);
   await coordinator.initialize();
+
+  let brainSourceContext = null;
+  const requesterAgent = process.env.HOME23_AGENT || config.agent?.name || null;
+  if (requesterAgent) {
+    try {
+      brainSourceContext = createTrustedAgentBrainSourceContext({
+        home23Root: path.resolve(__dirname, '..', '..'),
+        requesterAgent,
+        brainDir: runtimeRoot,
+        sourceKind: 'resident',
+      });
+    } catch (error) {
+      logger.warn('MCP memory source context unavailable', {
+        code: error?.code || 'mcp_source_context_required',
+      });
+    }
+  }
   
   // Initialize Agent Executor
   const agentExecutor = new AgentExecutor(
-    { memory, goals, pathResolver },
+    { memory, goals, pathResolver, brainSourceContext },
     config,
     logger
   );
