@@ -60,6 +60,12 @@ export interface OperationActivity {
   updatedAt: string;
   lastProviderActivityAt: string | null;
   lastProgressAt: string | null;
+  provider?: string;
+  model?: string;
+  providerCallId?: string;
+  outcome?: 'complete' | 'partial' | 'failed' | 'cancelled' | 'aborted';
+  workUnitId?: string;
+  partitionId?: string;
 }
 
 export interface BrainOperationRecord {
@@ -175,7 +181,12 @@ export interface BrainOperationHeartbeatNotification extends BrainOperationNotif
 
 export interface BrainOperationProviderNotification extends BrainOperationNotificationBase {
   type: 'provider_selected' | 'provider_activity' | 'provider_call_terminal';
+  provider?: string;
+  model?: string;
   providerCallId?: string;
+  outcome?: 'complete' | 'partial' | 'failed' | 'cancelled' | 'aborted';
+  workUnitId?: string;
+  partitionId?: string;
 }
 
 export interface BrainOperationLifecycleNotification extends BrainOperationNotificationBase {

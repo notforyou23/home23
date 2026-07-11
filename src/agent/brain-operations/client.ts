@@ -44,6 +44,16 @@ const OWNED_RUN_OPERATION_TYPES = new Set([
 
 const MAX_ERROR_BODY_BYTES = 64 * 1024;
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const PROVIDER_ACTIVITY_TEXT_LIMITS = Object.freeze({
+  provider: 256,
+  model: 512,
+  providerCallId: 256,
+  workUnitId: 512,
+  partitionId: 512,
+} as const);
+const PROVIDER_ACTIVITY_OUTCOMES = new Set([
+  'complete', 'partial', 'failed', 'cancelled', 'aborted',
+]);
 const requireCjs = createRequire(import.meta.url);
 const { OPERATION_ID_PATTERN: OPERATION_ID } = requireCjs(
   '../../../engine/src/dashboard/brain-operations/operation-contract.js',
@@ -77,6 +87,31 @@ const PARAMETER_FIELDS: Record<string, readonly string[]> = {
 
 function invalid(message = 'invalid_request'): Error {
   return Object.assign(new Error(message), { code: 'invalid_request' });
+}
+
+function projectProviderActivity(event: BrainOperationNotification): Partial<OperationActivity> {
+  if (!['provider_selected', 'provider_activity', 'provider_call_terminal'].includes(event.type)) {
+    return {};
+  }
+  const input = event as unknown as Record<string, unknown>;
+  const output: Record<string, string> = {};
+  for (const [field, maxBytes] of Object.entries(PROVIDER_ACTIVITY_TEXT_LIMITS)) {
+    const value = input[field];
+    if (value === undefined) continue;
+    if (typeof value !== 'string' || !value || /[\0\r\n]/.test(value)
+        || Buffer.byteLength(value, 'utf8') > maxBytes) {
+      throw invalid('operation_event_invalid');
+    }
+    output[field] = value;
+  }
+  const outcome = input.outcome;
+  if (outcome !== undefined) {
+    if (typeof outcome !== 'string' || !PROVIDER_ACTIVITY_OUTCOMES.has(outcome)) {
+      throw invalid('operation_event_invalid');
+    }
+    output.outcome = outcome;
+  }
+  return output as Partial<OperationActivity>;
 }
 
 function validateTargetSelector(value: unknown): BrainTargetSelector {
@@ -555,6 +590,7 @@ export class BrainOperationsClient {
         updatedAt: eventUpdatedAt,
         lastProviderActivityAt: providerActivity,
         lastProgressAt: progressActivity,
+        ...projectProviderActivity(event),
       });
     };
     const pauseBeforeReconnect = (): Promise<void> => new Promise((resolve, reject) => {

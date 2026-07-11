@@ -574,6 +574,7 @@ test('strict identity manifest rereads live and retained-store operations withou
   const smoke = await import('../../scripts/live-brain-tools-smoke.mjs');
   const jerryUrl = 'http://jerry.invalid';
   const forrestUrl = 'http://forrest.invalid';
+  const cosmoUrl = 'http://127.0.0.1:43210';
   const jerry = terminalRecord({
     operationId: `brop_${'J'.repeat(32)}`, agent: 'jerry', answer: 'jerry protected result',
   });
@@ -639,15 +640,28 @@ test('strict identity manifest rereads live and retained-store operations withou
       return structuredClone(record);
     },
   });
+  const cosmoRequests = [];
+  const fetchImpl = async (url, init = {}) => {
+    cosmoRequests.push({ url: String(url), init });
+    return new Response(JSON.stringify({
+      success: false,
+      error: { code: 'capability_invalid', message: 'capability_invalid' },
+    }), { status: 401, headers: { 'content-type': 'application/json' } });
+  };
 
   const verified = await smoke.verifyReceiptManifest({
     manifestPath,
     modules: {},
     context: fx.context,
-    values: { 'base-url': jerryUrl, 'forrest-base-url': forrestUrl },
+    values: {
+      'base-url': jerryUrl,
+      'forrest-base-url': forrestUrl,
+      'cosmo-base-url': cosmoUrl,
+    },
     callerAgent: 'jerry',
     signal: new AbortController().signal,
     clientFactory,
+    fetchImpl,
   });
 
   assert.equal(verified.ok, true);
@@ -663,7 +677,31 @@ test('strict identity manifest rereads live and retained-store operations withou
     { operationId: forrest.operationId, code: 'access_denied' },
   ]);
   assert.equal(verified.isolatedWrongRequesterReads[0].code, 'access_denied');
+  assert.deepEqual(verified.cosmoAuthorityRejection, {
+    operationId: jerry.operationId,
+    endpoint: `${cosmoUrl}/api/internal/brain-operations/${jerry.operationId}/status`,
+    status: 401,
+    code: 'capability_invalid',
+  });
+  assert.equal(cosmoRequests.length, 1);
+  assert.equal(Object.hasOwn(cosmoRequests[0].init.headers, 'authorization'), false);
   assert.equal(calls.some((call) => call.operationId === isolated.record.operationId), false);
+  await assert.rejects(smoke.verifyReceiptManifest({
+    manifestPath,
+    modules: {},
+    context: fx.context,
+    values: {
+      'base-url': jerryUrl,
+      'forrest-base-url': forrestUrl,
+      'cosmo-base-url': cosmoUrl,
+    },
+    callerAgent: 'jerry',
+    signal: new AbortController().signal,
+    clientFactory,
+    fetchImpl: async () => new Response(JSON.stringify({
+      error: { code: 'worker_not_found' },
+    }), { status: 404, headers: { 'content-type': 'application/json' } }),
+  }), (error) => error.code === 'cosmo_authority_rejection_unproven');
 
   const omitted = terminalRecord({
     operationId: `brop_${'U'.repeat(32)}`, agent: 'jerry', answer: 'unlisted result',
@@ -679,9 +717,14 @@ test('strict identity manifest rereads live and retained-store operations withou
     manifestPath,
     modules: {},
     context: fx.context,
-    values: { 'base-url': jerryUrl, 'forrest-base-url': forrestUrl },
+    values: {
+      'base-url': jerryUrl,
+      'forrest-base-url': forrestUrl,
+      'cosmo-base-url': cosmoUrl,
+    },
     callerAgent: 'jerry',
     clientFactory,
+    fetchImpl,
   }), (error) => error.code === 'identity_manifest_unlisted_operation');
 });
 

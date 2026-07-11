@@ -46,6 +46,9 @@ export const SCENARIOS = Object.freeze([
 ]);
 const TERMINAL = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
 const PROVIDER_OPERATION_TYPES = new Set(['query', 'pgs', 'research_compile', 'synthesis']);
+const PROVIDER_TERMINAL_OUTCOMES = new Set([
+  'complete', 'partial', 'failed', 'cancelled', 'aborted',
+]);
 const ACTIVITY_TYPES = new Set([
   'progress', 'progress_update', 'token', 'token_estimate',
   'phase', 'terminal', 'state', 'heartbeat', 'provider_selected',
@@ -363,30 +366,90 @@ export function createActivityCollector({
   });
 }
 
-function retainedProviderTerminalValid(evidence, terminal) {
-  return evidence?.evidenceSource === 'durable-operation-store'
+function providerTerminalEventValid(evidence, terminal, { retained = false } = {}) {
+  return evidence
+    && (retained
+      ? evidence.evidenceSource === 'durable-operation-store'
+      : evidence.type === 'provider_call_terminal')
     && evidence.operationId === terminal.operationId
     && Number.isSafeInteger(evidence.eventSequence)
-    && typeof evidence.provider === 'string' && evidence.provider
-    && typeof evidence.model === 'string' && evidence.model
-    && typeof evidence.providerCallId === 'string' && evidence.providerCallId
-    && ['complete', 'partial', 'failed', 'cancelled', 'aborted'].includes(evidence.outcome);
+    && typeof evidence.phase === 'string' && Boolean(evidence.phase.trim())
+    && typeof evidence.provider === 'string' && Boolean(evidence.provider.trim())
+    && typeof evidence.model === 'string' && Boolean(evidence.model.trim())
+    && typeof evidence.providerCallId === 'string' && Boolean(evidence.providerCallId.trim())
+    && PROVIDER_TERMINAL_OUTCOMES.has(evidence.outcome);
+}
+
+function pgsProviderTerminalCoverage(terminal, events) {
+  const sweeps = terminal.result?.sweepOutputs;
+  const successfulSweeps = terminal.result?.metadata?.pgs?.successfulSweeps;
+  if (!Array.isArray(sweeps) || sweeps.length === 0
+      || !Number.isSafeInteger(successfulSweeps)
+      || successfulSweeps !== sweeps.length) {
+    return false;
+  }
+  const sweepsCovered = sweeps.every((sweep) => sweep
+    && typeof sweep.workUnitId === 'string' && sweep.workUnitId
+    && typeof sweep.partitionId === 'string' && sweep.partitionId
+    && typeof sweep.provider === 'string' && sweep.provider
+    && typeof sweep.model === 'string' && sweep.model
+    && events.some((event) => event.phase === 'pgs_sweep'
+      && event.outcome === 'complete'
+      && event.providerCallId === `pgs:${sweep.workUnitId}`
+      && event.workUnitId === sweep.workUnitId
+      && event.partitionId === sweep.partitionId
+      && event.provider === sweep.provider
+      && event.model === sweep.model));
+  if (!sweepsCovered) return false;
+  const answerComplete = typeof terminal.result?.answer === 'string'
+    && Boolean(terminal.result.answer.trim());
+  return events.some((event) => event.phase === 'pgs_synthesis'
+    && event.providerCallId === 'pgs:synthesis'
+    && (answerComplete ? event.outcome === 'complete' : event.outcome !== 'complete'));
+}
+
+function providerTerminalProof(terminal, activityLog, retainedEvidence) {
+  const streamedRaw = activityLog.filter((activity) =>
+    activity?.operationId === terminal.operationId
+      && activity?.type === 'provider_call_terminal');
+  if (streamedRaw.some((event) => !providerTerminalEventValid(event, terminal))) {
+    return { validated: false, source: null };
+  }
+  const retainedProvided = retainedEvidence !== null && retainedEvidence !== undefined;
+  if (retainedProvided && !providerTerminalEventValid(retainedEvidence, terminal, { retained: true })) {
+    return { validated: false, source: null };
+  }
+  const coversTerminal = (events) => {
+    let covered = events.length > 0;
+    if (terminal.state === 'complete') {
+      covered = covered && events.some((event) => event.outcome === 'complete');
+    }
+    if (terminal.operationType === 'pgs') {
+      covered = covered && pgsProviderTerminalCoverage(terminal, events);
+    }
+    return covered;
+  };
+  const retainedEvents = retainedProvided ? [retainedEvidence] : [];
+  const streamedValidated = coversTerminal(streamedRaw);
+  const retainedValidated = coversTerminal(retainedEvents);
+  const combinedValidated = coversTerminal([...streamedRaw, ...retainedEvents]);
+  return {
+    validated: combinedValidated,
+    source: streamedValidated ? 'operation-stream'
+      : retainedValidated ? 'durable-operation-store'
+        : combinedValidated ? 'operation-stream+durable-operation-store'
+          : null,
+  };
 }
 
 function terminalReceipt({
   context, values, baseUrl, callerAgent, scenario, terminal, activityLog = [], extras = {},
   retainedProviderTerminalEvidence = null,
 }) {
-  const streamedProviderTerminal = activityLog.some((activity) =>
-    activity?.operationId === terminal.operationId
-      && activity?.type === 'provider_call_terminal');
-  const retainedProviderTerminal = retainedProviderTerminalValid(
-    retainedProviderTerminalEvidence,
-    terminal,
-  );
-  const providerTerminalValidated = PROVIDER_OPERATION_TYPES.has(terminal.operationType)
-    ? streamedProviderTerminal || retainedProviderTerminal
+  const providerProof = PROVIDER_OPERATION_TYPES.has(terminal.operationType)
+    ? providerTerminalProof(terminal, activityLog, retainedProviderTerminalEvidence)
     : null;
+  const providerTerminalValidated = providerProof?.validated ?? null;
   if (PROVIDER_OPERATION_TYPES.has(terminal.operationType)
       && ['complete', 'partial'].includes(terminal.state)
       && providerTerminalValidated !== true) {
@@ -426,9 +489,7 @@ function terminalReceipt({
     ) ? Number(terminal.sourceEvidence.authoritativeTotals.nodes) : null,
     providerTerminalValidated,
     providerTerminalEvidenceSource: PROVIDER_OPERATION_TYPES.has(terminal.operationType)
-      ? streamedProviderTerminal ? 'operation-stream'
-        : retainedProviderTerminal ? 'durable-operation-store'
-          : null
+      ? providerProof.source
       : null,
     lastProgressAt: terminal.lastProgressAt,
     error: terminal.error,
@@ -508,30 +569,77 @@ async function canaryFromReceipt(values, context, callerAgent) {
   const file = one(values, 'canary-receipt', { required: true });
   const receipt = await readLastReceipt(path.resolve(file));
   if (!receipt.query || !receipt.nodeId || !Number.isSafeInteger(receipt.sourceRevision)
-      || receipt.sourceHealth !== 'healthy' || receipt.scenario !== 'discover-canary'
+      || !['healthy', 'degraded'].includes(receipt.sourceHealth)
+      || receipt.scenario !== 'discover-canary'
+      || typeof receipt.selectedBrain !== 'string' || !receipt.selectedBrain
       || receipt.receiptRunId !== context.receiptRunId
       || receipt.authority !== context.authority
       || receipt.requesterAgent !== callerAgent) {
     throw typedError('canary_receipt_invalid');
   }
+  try { assertPositiveSourceEvidence(receipt.sourceEvidence); }
+  catch { throw typedError('canary_receipt_invalid'); }
   return receipt;
+}
+
+function assertPositiveSourceEvidence(evidence) {
+  if (evidence?.sourceHealth === 'healthy') return;
+  const authoritativeNodes = Number(evidence?.authoritativeTotals?.nodes);
+  const returnedNodes = Number(evidence?.returnedTotals?.nodes);
+  if (evidence?.sourceHealth === 'degraded'
+      && evidence.freshness === 'unknown'
+      && evidence.matchOutcome === 'matches'
+      && Number.isSafeInteger(authoritativeNodes) && authoritativeNodes > 0
+      && Number.isSafeInteger(returnedNodes) && returnedNodes > 0) {
+    return;
+  }
+  throw typedError('source_evidence_not_useful');
+}
+
+function assertTerminalBrainIdentity(terminal, expectedBrain = null, errorCode = 'brain_target_mismatch') {
+  const targetBrain = terminal?.target?.brainId;
+  const evidenceBrain = terminal?.sourceEvidence?.selectedBrain;
+  if (typeof targetBrain !== 'string' || !targetBrain
+      || typeof evidenceBrain !== 'string' || !evidenceBrain
+      || targetBrain !== evidenceBrain
+      || (expectedBrain !== null && (typeof expectedBrain !== 'string'
+        || !expectedBrain || targetBrain !== expectedBrain))) {
+    throw typedError(errorCode);
+  }
+  return targetBrain;
+}
+
+function assertCompleteTerminal(terminal, {
+  expectedBrain = null,
+  targetErrorCode = 'brain_target_mismatch',
+  sourcePolicy = 'positive',
+} = {}) {
+  if (terminal?.state !== 'complete') throw typedError('operation_success_required');
+  if (sourcePolicy === 'healthy' && terminal?.sourceEvidence?.sourceHealth !== 'healthy') {
+    throw typedError('source_health_unhealthy');
+  }
+  if (sourcePolicy === 'positive') assertPositiveSourceEvidence(terminal?.sourceEvidence);
+  return assertTerminalBrainIdentity(terminal, expectedBrain, targetErrorCode);
 }
 
 function assertCanaryEvidence(terminal, canary) {
   const revision = evidenceRevision(terminal?.sourceEvidence);
-  if (terminal?.sourceEvidence?.sourceHealth !== 'healthy'
-      || revision !== canary.sourceRevision) {
+  assertPositiveSourceEvidence(terminal?.sourceEvidence);
+  if (revision !== canary.sourceRevision) {
     throw typedError('canary_source_revision_mismatch');
   }
-  const selectedBrain = terminal.target?.brainId ?? terminal.sourceEvidence?.selectedBrain;
-  if (canary.selectedBrain && selectedBrain && selectedBrain !== canary.selectedBrain) {
-    throw typedError('canary_target_mismatch');
-  }
+  assertTerminalBrainIdentity(terminal, canary?.selectedBrain, 'canary_target_mismatch');
 }
 
 function nodesFromGraph(value) {
   if (Array.isArray(value?.nodes)) return value.nodes;
   if (Array.isArray(value?.graph?.nodes)) return value.graph.nodes;
+  return [];
+}
+
+function edgesFromGraph(value) {
+  if (Array.isArray(value?.edges)) return value.edges;
+  if (Array.isArray(value?.graph?.edges)) return value.graph.edges;
   return [];
 }
 
@@ -567,6 +675,10 @@ async function awaitShortResult(client, initial, signal) {
 
 async function discoverCanary({ client, selector, signal }) {
   const target = await client.resolveTarget(selector);
+  if (typeof target?.id !== 'string' || !target.id
+      || typeof target?.ownerAgent !== 'string' || !target.ownerAgent) {
+    throw typedError('canary_target_invalid');
+  }
   const graph = await awaitShortResult(
     client,
     await client.graph({
@@ -584,8 +696,11 @@ async function discoverCanary({ client, selector, signal }) {
     );
     const match = resultsFromSearch(search).find((result) => String(result.id) === String(node.id));
     const revision = evidenceRevision(search.sourceEvidence);
-    if (match && Number.isSafeInteger(revision) && search.sourceEvidence?.sourceHealth === 'healthy') {
-      return { target, graph, search, query, nodeId: String(node.id), sourceRevision: revision };
+    if (match && Number.isSafeInteger(revision)) {
+      try {
+        assertPositiveSourceEvidence(search.sourceEvidence);
+        return { target, graph, search, query, nodeId: String(node.id), sourceRevision: revision };
+      } catch { /* try another exact positive canary */ }
     }
   }
   throw typedError('canary_unavailable');
@@ -776,15 +891,27 @@ async function mcpCall(baseUrl, name, args, fetchImpl = fetch) {
 async function verifyMcpParity({ client, baseUrl, canary, signal, fetchImpl = fetch }) {
   const dashboard = await client.search({ query: canary.query, topK: 20 }, signal);
   const mcp = await mcpCall(baseUrl, 'query_memory', { query: canary.query, limit: 20 }, fetchImpl);
+  const mcpEvidence = mcp.evidence || mcp.sourceEvidence;
   const dashboardIds = new Set(resultsFromSearch(dashboard).map((result) => String(result.id)));
   const mcpIds = new Set(resultsFromSearch(mcp).map((result) => String(result.id)));
   if (!dashboardIds.has(canary.nodeId) || !mcpIds.has(canary.nodeId)) throw typedError('mcp_canary_mismatch');
   const dashboardRevision = evidenceRevision(dashboard.sourceEvidence);
-  const mcpRevision = evidenceRevision(mcp.evidence || mcp.sourceEvidence);
-  if (dashboardRevision !== canary.sourceRevision || mcpRevision !== canary.sourceRevision
-      || dashboard.sourceEvidence?.sourceHealth !== 'healthy'
-      || (mcp.evidence || mcp.sourceEvidence)?.sourceHealth !== 'healthy') {
+  const mcpRevision = evidenceRevision(mcpEvidence);
+  if (dashboardRevision !== canary.sourceRevision || mcpRevision !== canary.sourceRevision) {
     throw typedError('mcp_source_revision_mismatch');
+  }
+  try {
+    assertPositiveSourceEvidence(dashboard.sourceEvidence);
+    assertPositiveSourceEvidence(mcpEvidence);
+  } catch { throw typedError('mcp_source_evidence_not_useful'); }
+  if (typeof canary.selectedBrain !== 'string' || !canary.selectedBrain
+      || dashboard.sourceEvidence?.selectedBrain !== canary.selectedBrain
+      || mcpEvidence?.selectedBrain !== canary.selectedBrain) {
+    throw typedError('mcp_target_mismatch', JSON.stringify({
+      canary: canary.selectedBrain ?? null,
+      dashboard: dashboard.sourceEvidence?.selectedBrain ?? null,
+      mcp: mcpEvidence?.selectedBrain ?? null,
+    }));
   }
   return { dashboard, mcp, nodeId: canary.nodeId, sourceRevision: canary.sourceRevision };
 }
@@ -1306,6 +1433,53 @@ async function collectReceiptOperationInventory(root, excluded) {
   return operations;
 }
 
+function cosmoAuthorityEndpoint(baseUrl, operationId) {
+  let parsed;
+  try { parsed = new URL(baseUrl); }
+  catch (error) {
+    throw typedError('cosmo_base_url_invalid', 'COSMO base URL is invalid', { cause: error });
+  }
+  const loopback = parsed.hostname === 'localhost'
+    || parsed.hostname === '127.0.0.1'
+    || parsed.hostname === '[::1]';
+  if (parsed.protocol !== 'http:' || !loopback || parsed.username || parsed.password
+      || parsed.search || parsed.hash || (parsed.pathname !== '/' && parsed.pathname !== '')) {
+    throw typedError('cosmo_base_url_invalid');
+  }
+  return `${parsed.origin}/api/internal/brain-operations/${operationId}/status`;
+}
+
+async function proveCosmoAuthorityRejection({ baseUrl, operationId, signal, fetchImpl }) {
+  const endpoint = cosmoAuthorityEndpoint(baseUrl, operationId);
+  let response;
+  let body;
+  try {
+    response = await fetchImpl(endpoint, {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+      redirect: 'error',
+      signal: signal || AbortSignal.timeout(10_000),
+    });
+    body = await readResponseJsonBounded(response, {
+      maxBytes: 256 * 1024,
+      errorCode: 'cosmo_authority_rejection_unproven',
+    });
+  } catch (error) {
+    if (error?.code === 'cosmo_authority_rejection_unproven') throw error;
+    throw typedError('cosmo_authority_rejection_unproven', undefined, { cause: error });
+  }
+  if (response.ok || response.status !== 401 || body?.success !== false
+      || body?.error?.code !== 'capability_invalid') {
+    throw typedError('cosmo_authority_rejection_unproven');
+  }
+  return {
+    operationId,
+    endpoint,
+    status: response.status,
+    code: body.error.code,
+  };
+}
+
 export async function verifyReceiptManifest({
   manifestPath,
   modules,
@@ -1315,6 +1489,7 @@ export async function verifyReceiptManifest({
   signal,
   clientFactory = null,
   storeReaderFactory = null,
+  fetchImpl = fetch,
 }) {
   const manifest = exactIdentityKeys(await readJson(manifestPath), IDENTITY_MANIFEST_KEYS);
   const manifestRealPath = await fsp.realpath(manifestPath);
@@ -1347,7 +1522,9 @@ export async function verifyReceiptManifest({
 
   const jerryBaseUrl = one(values, 'base-url', { required: true });
   const forrestBaseUrl = one(values, 'forrest-base-url', { required: true });
+  const cosmoBaseUrl = one(values, 'cosmo-base-url', { required: true });
   if (typeof jerryBaseUrl !== 'string' || typeof forrestBaseUrl !== 'string'
+      || typeof cosmoBaseUrl !== 'string'
       || jerryBaseUrl === forrestBaseUrl || callerAgent !== 'jerry') {
     throw typedError('identity_manifest_invalid');
   }
@@ -1536,11 +1713,18 @@ export async function verifyReceiptManifest({
       });
     }
   }
+  const cosmoAuthorityRejection = await proveCosmoAuthorityRejection({
+    baseUrl: cosmoBaseUrl,
+    operationId: liveEntries.jerryLive[0].operationId,
+    signal,
+    fetchImpl,
+  });
   return {
     ok: true,
     observed,
     wrongRequesterReads,
     isolatedWrongRequesterReads,
+    cosmoAuthorityRejection,
   };
 }
 
@@ -1804,8 +1988,11 @@ export async function executeScenario({
   if (scenario === 'discover-canary') {
     const discovered = await discoverCanary({ client, selector, signal });
     const terminal = await protectedTerminal(client, discovered.search.operationId, signal);
-    if (terminal.sourceEvidence?.sourceHealth !== 'healthy'
-        || evidenceRevision(terminal.sourceEvidence) !== discovered.sourceRevision) {
+    assertCompleteTerminal(terminal, {
+      expectedBrain: discovered.target?.id,
+      targetErrorCode: 'canary_target_mismatch',
+    });
+    if (evidenceRevision(terminal.sourceEvidence) !== discovered.sourceRevision) {
       throw typedError('canary_source_revision_mismatch');
     }
     return terminalReceipt({
@@ -1814,7 +2001,7 @@ export async function executeScenario({
         query: discovered.query,
         nodeId: discovered.nodeId,
         sourceRevision: discovered.sourceRevision,
-        sourceHealth: 'healthy',
+        sourceHealth: terminal.sourceEvidence.sourceHealth,
         selectedBrain: discovered.target.id,
         selectedAgent: discovered.target.ownerAgent,
       },
@@ -1827,6 +2014,11 @@ export async function executeScenario({
     const canary = await canaryFromReceipt(values, context, callerAgent);
     const parity = await verifyMcpParity({ client, baseUrl, canary, signal, fetchImpl });
     const terminal = await protectedTerminal(client, parity.dashboard.operationId, signal);
+    assertCompleteTerminal(terminal, {
+      expectedBrain: canary.selectedBrain,
+      targetErrorCode: 'mcp_target_mismatch',
+    });
+    assertCanaryEvidence(terminal, canary);
     return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog, extras: {
       mcpParity: true, nodeId: parity.nodeId, sourceRevision: parity.sourceRevision,
     } });
@@ -1844,13 +2036,20 @@ export async function executeScenario({
     const query = one(values, 'query', { required: true });
     const search = await client.search({ query, topK: 100 }, signal);
     const terminal = await protectedTerminal(client, search.operationId, signal);
+    const selectedBrain = assertCompleteTerminal(terminal, {
+      targetErrorCode: 'zero_result_target_mismatch',
+      sourcePolicy: 'healthy',
+    });
     const evidence = terminal.sourceEvidence || {};
-    if (resultsFromSearch(search).length !== 0 || evidence.sourceHealth !== 'healthy'
+    if (search.sourceEvidence?.selectedBrain !== selectedBrain
+        || resultsFromSearch(search).length !== 0 || evidence.sourceHealth !== 'healthy'
         || evidence.matchOutcome !== 'no_match'
         || evidence.completeCoverage !== true
         || Number(evidence.authoritativeTotals?.nodes ?? evidence.authoritativeTotal) <= 0) {
       throw typedError('zero_result_not_proven', JSON.stringify({
         resultCount: resultsFromSearch(search).length,
+        selectedBrain,
+        resultSelectedBrain: search.sourceEvidence?.selectedBrain ?? null,
         sourceHealth: evidence.sourceHealth ?? null,
         matchOutcome: evidence.matchOutcome ?? null,
         completeCoverage: evidence.completeCoverage ?? null,
@@ -1871,11 +2070,30 @@ export async function executeScenario({
     const edgeLimit = integer(values, 'edge-limit', { defaultValue: Math.min(nodeLimit * 4, 8000), min: 1, max: 8000 });
     const graph = await client.graph({ ...(selector ? { target: selector } : {}), nodeLimit, edgeLimit }, signal);
     const terminal = await protectedTerminal(client, graph.operationId, signal);
+    assertCompleteTerminal(terminal, {
+      expectedBrain: selector?.brainId ?? null,
+      targetErrorCode: 'graph_target_mismatch',
+    });
+    const actualReturnedTotals = {
+      nodes: nodesFromGraph(graph).length,
+      edges: edgesFromGraph(graph).length,
+    };
+    const returnedTotals = terminal.sourceEvidence?.returnedTotals || actualReturnedTotals;
+    const authoritativeTotals = terminal.sourceEvidence?.authoritativeTotals;
+    const returnedNodes = Number(returnedTotals?.nodes);
+    const returnedEdges = Number(returnedTotals?.edges);
+    const authoritativeNodes = Number(authoritativeTotals?.nodes);
+    const authoritativeEdges = Number(authoritativeTotals?.edges);
+    if (returnedNodes !== actualReturnedTotals.nodes || returnedEdges !== actualReturnedTotals.edges
+        || !Number.isSafeInteger(returnedNodes) || returnedNodes < 1 || returnedNodes > nodeLimit
+        || !Number.isSafeInteger(returnedEdges) || returnedEdges < 0 || returnedEdges > edgeLimit
+        || !Number.isSafeInteger(authoritativeNodes) || authoritativeNodes < returnedNodes
+        || !Number.isSafeInteger(authoritativeEdges) || authoritativeEdges < returnedEdges) {
+      throw typedError('graph_result_invalid');
+    }
     return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog, extras: {
-      returnedTotals: terminal.sourceEvidence?.returnedTotals || {
-        nodes: nodesFromGraph(graph).length, edges: Array.isArray(graph.edges) ? graph.edges.length : 0,
-      },
-      authoritativeTotals: terminal.sourceEvidence?.authoritativeTotals || null,
+      returnedTotals,
+      authoritativeTotals,
       limits: { nodeLimit, edgeLimit },
     } });
   }
@@ -1970,7 +2188,7 @@ export async function executeScenario({
       protectedResultRead: true,
       ...(await verifyReceiptManifest({
         manifestPath: path.resolve(one(values, 'identity-manifest', { required: true })),
-        modules, context, values, callerAgent, signal,
+        modules, context, values, callerAgent, signal, fetchImpl,
       })),
     };
   }
@@ -2190,6 +2408,7 @@ async function readRetainedProviderTerminalEvidence(fixture, operationId) {
       || event.provider !== 'controlled'
       || event.model !== 'controlled-synthesis'
       || event.providerCallId !== 'synthesis'
+      || event.phase !== 'synthesis'
       || event.outcome !== 'complete'
       || !Number.isSafeInteger(event.sequence)) {
     throw typedError('provider_terminal_store_evidence_invalid');
@@ -2198,6 +2417,7 @@ async function readRetainedProviderTerminalEvidence(fixture, operationId) {
     evidenceSource: 'durable-operation-store',
     operationId,
     eventSequence: event.sequence,
+    phase: event.phase,
     provider: event.provider,
     model: event.model,
     providerCallId: event.providerCallId,
@@ -3002,7 +3222,30 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
       && ISOLATED_LIFECYCLE_SCENARIOS.has(scenario)) {
     throw typedError('isolated_fixture_endpoint_override_refused');
   }
-  if (scenario === 'verify-receipts' && booleanFlag(values, 'build-artifact-manifest', false)) {
+  const buildArtifactManifestRequested = scenario === 'verify-receipts'
+    && booleanFlag(values, 'build-artifact-manifest', false);
+  const verifyArtifactManifestRequested = scenario === 'verify-receipts'
+    && booleanFlag(values, 'verify-artifact-manifest', false);
+  if (buildArtifactManifestRequested && verifyArtifactManifestRequested) {
+    throw typedError('artifact_manifest_mode_conflict');
+  }
+  if (verifyArtifactManifestRequested) {
+    if (one(values, 'output')) throw typedError('artifact_manifest_verification_read_only');
+    const verified = await verifyArtifactManifest({
+      manifestPath: path.resolve(one(values, 'artifact-manifest', { required: true })),
+      context,
+    });
+    const row = canonicalReceiptRow(context, {
+      helper: 'live-brain-tools-smoke',
+      scenario,
+      receiptKind: 'artifact-manifest-verification',
+      protectedResultRead: false,
+      ...verified,
+    });
+    process.stdout.write(`${JSON.stringify(row)}\n`);
+    return row;
+  }
+  if (buildArtifactManifestRequested) {
     return buildArtifactManifest({
       smokeRoot: path.resolve(one(values, 'smoke-root', { required: true })),
       output: path.resolve(one(values, 'output', { required: true })),

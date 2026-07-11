@@ -31,7 +31,7 @@ function operation(overrides = {}) {
     error: overrides.error ?? null,
     sourceEvidence: overrides.sourceEvidence ?? {
       sourceHealth: 'healthy',
-      matchOutcome: 'matched',
+      matchOutcome: 'matches',
       deltaWatermark: { revision: 7 },
       authoritativeTotals: { nodes: 140_086, edges: 456_709 },
       selectedBrain: 'brain-jerry',
@@ -74,6 +74,20 @@ function notification(value, type = value.state === 'running' ? 'progress' : 'te
   };
 }
 
+function providerTerminal(value, overrides = {}) {
+  return {
+    operationId: value.operationId,
+    type: 'provider_call_terminal',
+    eventSequence: overrides.eventSequence ?? 4,
+    phase: overrides.phase ?? value.operationType,
+    provider: overrides.provider ?? 'fixture-provider',
+    model: overrides.model ?? 'fixture-model',
+    providerCallId: overrides.providerCallId ?? value.operationType,
+    outcome: overrides.outcome ?? 'complete',
+    ...overrides,
+  };
+}
+
 async function fixture(authority = 'live') {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'home23-live-smoke-')));
   const receiptRunDir = path.join(root, 'receipt-run');
@@ -113,6 +127,13 @@ async function canaryReceipt(state, authority = state.context.authority) {
     sourceRevision: 7,
     sourceHealth: 'healthy',
     selectedBrain: 'brain-jerry',
+    sourceEvidence: {
+      sourceHealth: 'healthy', matchOutcome: 'matches',
+      deltaWatermark: { revision: 7 },
+      authoritativeTotals: { nodes: 140_086, edges: 456_709 },
+      returnedTotals: { nodes: 1, edges: 0 },
+      selectedBrain: 'brain-jerry',
+    },
   });
   await fs.writeFile(file, `${JSON.stringify(row)}\n`);
   return file;
@@ -215,11 +236,23 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
     },
     context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry',
     signal: new AbortController().signal,
-    activityLog: [{
-      operationId: partial.operationId,
-      type: 'provider_call_terminal',
-      eventSequence: 9,
-    }],
+    activityLog: [
+      ...sweepOutputs.map((sweep, index) => providerTerminal(partial, {
+        eventSequence: index + 1,
+        phase: 'pgs_sweep',
+        providerCallId: `pgs:${sweep.workUnitId}`,
+        workUnitId: sweep.workUnitId,
+        partitionId: sweep.partitionId,
+        provider: sweep.provider,
+        model: sweep.model,
+      })),
+      providerTerminal(partial, {
+        eventSequence: sweepOutputs.length + 1,
+        phase: 'pgs_synthesis',
+        providerCallId: 'pgs:synthesis',
+        outcome: 'failed',
+      }),
+    ],
   });
   assert.equal(row.state, 'partial');
   assert.equal(row.result.answerPresent, false);
@@ -233,6 +266,23 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
   assert.equal(row.sourcePinDescriptor.sourceRevision, 7);
   assert.match(row.sourcePinDigest, /^sha256:[a-f0-9]{64}$/);
   assert.equal(row.liveProviderLargePgsGatePassed, true);
+  await assert.rejects(executeScenario({
+    scenario: 'pgs', modules, client,
+    values: {
+      'canary-receipt': canary,
+      'target-brain': 'brain-jerry',
+      'require-authoritative-nodes': '100000',
+      'pgs-sweep-selection': JSON.stringify({ provider: 'fixture-provider', model: 'fixture-model' }),
+      'pgs-synth-selection': JSON.stringify({ provider: 'fixture-provider', model: 'fixture-model' }),
+    },
+    context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry',
+    signal: new AbortController().signal,
+    activityLog: [{
+      operationId: partial.operationId,
+      type: 'provider_call_terminal',
+      eventSequence: 9,
+    }],
+  }), (error) => error.code === 'provider_terminal_unproven');
   await assert.rejects(executeScenario({
     scenario: 'pgs', modules, client,
     values: {
@@ -633,11 +683,7 @@ test('authoritative canary discovery precedes query and typed failures remain fa
     },
     values: { 'canary-receipt': consumedCanary }, context: state.context,
     baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
-    activityLog: [{
-      operationId: queryTerminal.operationId,
-      type: 'provider_call_terminal',
-      eventSequence: 4,
-    }],
+    activityLog: [providerTerminal(queryTerminal)],
   });
   assert.equal(consumed.canaryNodeId, 'n-canary');
   assert.equal(consumed.canarySourceRevision, 7);
@@ -649,6 +695,190 @@ test('authoritative canary discovery precedes query and typed failures remain fa
     values: { 'canary-receipt': canary }, context: state.context,
     baseUrl: 'http://fixture', callerAgent: 'jerry', signal: new AbortController().signal,
   }), (error) => error.code === 'operation_timeout');
+});
+
+test('positive reads require complete exact targets while zero-result requires healthy coverage', async (t) => {
+  const { executeScenario } = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const state = await fixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  const signal = new AbortController().signal;
+
+  const failedGraph = operation({
+    operationId: 'op_graph_failed_0001',
+    operationType: 'graph',
+    state: 'failed',
+    result: null,
+    error: { code: 'source_failed', message: 'graph failed', retryable: false },
+  });
+  await assert.rejects(executeScenario({
+    scenario: 'graph', modules: {},
+    client: {
+      async graph() { return { operationId: failedGraph.operationId, nodes: [{ id: 'n1' }] }; },
+      async inspectOperation() { return failedGraph; },
+    },
+    values: {}, context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry', signal,
+  }), (error) => error.code === 'operation_success_required');
+
+  const lyingGraph = operation({
+    operationId: 'op_graph_lying_totals_0001',
+    operationType: 'graph',
+    sourceEvidence: {
+      sourceHealth: 'healthy', matchOutcome: 'matches', selectedBrain: 'brain-jerry',
+      authoritativeTotals: { nodes: 3, edges: 2 },
+      returnedTotals: { nodes: 1, edges: 1 },
+    },
+  });
+  await assert.rejects(executeScenario({
+    scenario: 'graph', modules: {},
+    client: {
+      async graph() {
+        return {
+          operationId: lyingGraph.operationId,
+          nodes: [{ id: 'n1' }, { id: 'n2' }],
+          edges: [{ source: 'n1', target: 'n2' }, { source: 'n2', target: 'n1' }],
+        };
+      },
+      async inspectOperation() { return lyingGraph; },
+    },
+    values: { 'node-limit': '1', 'edge-limit': '1' }, context: state.context,
+    baseUrl: 'http://fixture', callerAgent: 'jerry', signal,
+  }), (error) => error.code === 'graph_result_invalid');
+
+  const wrongCanaryTarget = operation({
+    operationId: 'op_search_wrong_target_0001',
+    operationType: 'search',
+    target: { domain: 'brain', brainId: 'brain-other', ownerAgent: 'other', accessMode: 'sibling' },
+    sourceEvidence: {
+      sourceHealth: 'healthy', matchOutcome: 'matched', deltaWatermark: { revision: 7 },
+      authoritativeTotals: { nodes: 10, edges: 4 }, selectedBrain: 'brain-other',
+    },
+  });
+  await assert.rejects(executeScenario({
+    scenario: 'discover-canary', modules: {},
+    client: {
+      async resolveTarget() { return { id: 'brain-jerry', ownerAgent: 'jerry' }; },
+      async graph() { return { nodes: [{ id: 'n-canary', concept: 'authoritative canary phrase' }] }; },
+      async search() {
+        return {
+          operationId: wrongCanaryTarget.operationId,
+          results: [{ id: 'n-canary' }],
+          sourceEvidence: wrongCanaryTarget.sourceEvidence,
+        };
+      },
+      async inspectOperation() { return wrongCanaryTarget; },
+    },
+    values: {}, context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry', signal,
+  }), (error) => error.code === 'canary_target_mismatch');
+
+  const degradedEvidence = {
+    sourceHealth: 'degraded', freshness: 'unknown', matchOutcome: 'matches',
+    deltaWatermark: { revision: 7 }, authoritativeTotals: { nodes: 10, edges: 4 },
+    returnedTotals: { nodes: 1, edges: 0 }, selectedBrain: 'brain-jerry',
+  };
+  const degradedSearch = operation({
+    operationId: 'op_search_degraded_0001', operationType: 'search',
+    sourceEvidence: degradedEvidence,
+  });
+  const degradedCanary = await executeScenario({
+    scenario: 'discover-canary', modules: {},
+    client: {
+      async resolveTarget() { return { id: 'brain-jerry', ownerAgent: 'jerry' }; },
+      async graph() { return { nodes: [{ id: 'n-canary', concept: 'authoritative canary phrase' }] }; },
+      async search() {
+        return {
+          operationId: degradedSearch.operationId,
+          results: [{ id: 'n-canary' }],
+          sourceEvidence: degradedEvidence,
+        };
+      },
+      async inspectOperation() { return degradedSearch; },
+    },
+    values: {}, context: state.context, baseUrl: 'http://fixture', callerAgent: 'jerry', signal,
+  });
+  assert.equal(degradedCanary.state, 'complete');
+  assert.equal(degradedCanary.sourceHealth, 'degraded');
+
+  const zeroEvidence = {
+    sourceHealth: 'healthy', matchOutcome: 'no_match', completeCoverage: true,
+    deltaWatermark: { revision: 7 }, authoritativeTotals: { nodes: 10, edges: 4 },
+    selectedBrain: 'brain-jerry',
+  };
+  const partialZero = operation({
+    operationId: 'op_zero_partial_0001', operationType: 'search', state: 'partial',
+    result: { results: [] }, sourceEvidence: zeroEvidence,
+    error: { code: 'source_partial', message: 'partial search', retryable: true },
+  });
+  await assert.rejects(executeScenario({
+    scenario: 'zero-result', modules: {},
+    client: {
+      async search() {
+        return { operationId: partialZero.operationId, results: [], sourceEvidence: zeroEvidence };
+      },
+      async inspectOperation() { return partialZero; },
+    },
+    values: { query: 'definitely absent' }, context: state.context,
+    baseUrl: 'http://fixture', callerAgent: 'jerry', signal,
+  }), (error) => error.code === 'operation_success_required');
+  const degradedZero = operation({
+    operationId: 'op_zero_degraded_0001', operationType: 'search',
+    result: { results: [] },
+    sourceEvidence: { ...zeroEvidence, sourceHealth: 'degraded', freshness: 'unknown' },
+  });
+  await assert.rejects(executeScenario({
+    scenario: 'zero-result', modules: {},
+    client: {
+      async search() {
+        return {
+          operationId: degradedZero.operationId,
+          results: [],
+          sourceEvidence: degradedZero.sourceEvidence,
+        };
+      },
+      async inspectOperation() { return degradedZero; },
+    },
+    values: { query: 'degraded absence is not proof' }, context: state.context,
+    baseUrl: 'http://fixture', callerAgent: 'jerry', signal,
+  }), (error) => error.code === 'source_health_unhealthy');
+
+  const canary = await canaryReceipt(state);
+  const dashboardTerminal = operation({
+    operationId: 'op_mcp_parity_0001', operationType: 'search',
+  });
+  const mcpResponse = (selectedBrain) => new Response(JSON.stringify({
+    jsonrpc: '2.0', id: 'acceptance', result: { content: [{
+      type: 'text',
+      text: JSON.stringify({
+        results: [{ id: 'n-canary' }],
+        evidence: {
+          sourceHealth: 'healthy', deltaWatermark: { revision: 7 }, selectedBrain,
+        },
+      }),
+    }] },
+  }), { headers: { 'content-type': 'application/json' } });
+  const mcpClient = {
+    async search() {
+      return {
+        operationId: dashboardTerminal.operationId,
+        results: [{ id: 'n-canary' }],
+        sourceEvidence: dashboardTerminal.sourceEvidence,
+      };
+    },
+    async inspectOperation() { return dashboardTerminal; },
+  };
+  await assert.rejects(executeScenario({
+    scenario: 'mcp-parity', modules: {}, client: mcpClient,
+    values: { 'canary-receipt': canary }, context: state.context,
+    baseUrl: 'http://fixture', callerAgent: 'jerry', signal,
+    fetchImpl: async () => mcpResponse('brain-other'),
+  }), (error) => error.code === 'mcp_target_mismatch');
+  const parity = await executeScenario({
+    scenario: 'mcp-parity', modules: {}, client: mcpClient,
+    values: { 'canary-receipt': canary }, context: state.context,
+    baseUrl: 'http://fixture', callerAgent: 'jerry', signal,
+    fetchImpl: async () => mcpResponse('brain-jerry'),
+  });
+  assert.equal(parity.state, 'complete');
+  assert.equal(parity.mcpParity, true);
 });
 
 test('healthy model discovery performs exact direct, PGS sweep, and PGS synthesis pair probes', async () => {
@@ -717,11 +947,11 @@ test('isolated synthesis reconnect and MCP disabled/unreachable outcomes are typ
     },
     values, context: state.context, baseUrl: 'http://isolated', callerAgent: 'jerry',
     signal: new AbortController().signal,
-    activityLog: [{
-      operationId: completed.operationId,
-      type: 'provider_call_terminal',
+    activityLog: [providerTerminal(completed, {
       eventSequence: 7,
-    }],
+      phase: 'synthesis',
+      providerCallId: 'synthesis',
+    })],
   });
   assert.equal(reattached, 1);
   assert.equal(synthesis.state, 'complete');
@@ -753,7 +983,11 @@ test('receipt verification rejects duplicate terminal rows and conflicting ident
   const { BrainOperationStore } = require('../../engine/src/dashboard/brain-operations/operation-store.js');
   const state = await fixture();
   t.after(() => fs.rm(state.root, { recursive: true, force: true }));
-  const urls = { jerry: 'http://jerry.fixture', forrest: 'http://forrest.fixture' };
+  const urls = {
+    jerry: 'http://jerry.fixture',
+    forrest: 'http://forrest.fixture',
+    cosmo: 'http://127.0.0.1:43210',
+  };
   const boundaries = (root) => ['brain', 'run', 'pgs', 'session', 'cache', 'export', 'agency']
     .map((kind) => ({ kind, path: kind === 'brain' || kind === 'run' ? root : path.join(root, kind) }));
   const target = (agent) => ({
@@ -847,8 +1081,16 @@ test('receipt verification rejects duplicate terminal rows and conflicting ident
   });
   const verify = () => verifyReceiptManifest({
     manifestPath: manifest, modules: {}, context: state.context,
-    values: { 'base-url': urls.jerry, 'forrest-base-url': urls.forrest },
+    values: {
+      'base-url': urls.jerry,
+      'forrest-base-url': urls.forrest,
+      'cosmo-base-url': urls.cosmo,
+    },
     callerAgent: 'jerry', signal: new AbortController().signal, clientFactory,
+    fetchImpl: async () => new Response(JSON.stringify({
+      success: false,
+      error: { code: 'capability_invalid', message: 'capability_invalid' },
+    }), { status: 401, headers: { 'content-type': 'application/json' } }),
   });
   const valid = await verify();
   assert.equal(valid.observed.length, 3);
@@ -867,6 +1109,7 @@ test('artifact manifest fails closed on malformed JSON and verifies detached dig
   const { canonicalReceiptRow } = await import('../../scripts/lib/brain-acceptance-common.mjs');
   const {
     buildArtifactManifest,
+    main,
     verifyArtifactManifest,
   } = await import('../../scripts/live-brain-tools-smoke.mjs');
 
@@ -923,6 +1166,53 @@ test('artifact manifest fails closed on malformed JSON and verifies detached dig
     && /^[a-f0-9]{64}$/.test(entry.sha256)));
   const verified = await verifyArtifactManifest({ manifestPath, context: state.context });
   assert.equal(verified.artifactCount, 3);
+  const inventory = async () => {
+    const names = (await fs.readdir(state.context.receiptRunDir, { recursive: true })).sort();
+    return Promise.all(names.map(async (name) => {
+      const absolute = path.join(state.context.receiptRunDir, name);
+      const stat = await fs.lstat(absolute, { bigint: true });
+      return {
+        name,
+        size: String(stat.size),
+        mtimeNs: String(stat.mtimeNs),
+        ctimeNs: String(stat.ctimeNs),
+      };
+    }));
+  };
+  const beforeCliVerification = await inventory();
+  const cliVerified = await main([
+    '--receipt-run-dir', state.context.receiptRunDir,
+    '--receipt-run-id', state.context.receiptRunId,
+    '--authority', state.context.authority,
+    '--scenario', 'verify-receipts',
+    '--verify-artifact-manifest',
+    '--artifact-manifest', manifestPath,
+  ], {});
+  assert.equal(cliVerified.receiptKind, 'artifact-manifest-verification');
+  assert.equal(cliVerified.ok, true);
+  assert.deepEqual(await inventory(), beforeCliVerification);
+  const refusedOutput = path.join(state.context.receiptRunDir, 'verification.json');
+  await assert.rejects(main([
+    '--receipt-run-dir', state.context.receiptRunDir,
+    '--receipt-run-id', state.context.receiptRunId,
+    '--authority', state.context.authority,
+    '--scenario', 'verify-receipts',
+    '--verify-artifact-manifest',
+    '--artifact-manifest', manifestPath,
+    '--output', refusedOutput,
+  ], {}), (error) => error.code === 'artifact_manifest_verification_read_only');
+  await assert.rejects(fs.lstat(refusedOutput), (error) => error.code === 'ENOENT');
+  await assert.rejects(main([
+    '--receipt-run-dir', state.context.receiptRunDir,
+    '--receipt-run-id', state.context.receiptRunId,
+    '--authority', state.context.authority,
+    '--scenario', 'verify-receipts',
+    '--build-artifact-manifest',
+    '--verify-artifact-manifest',
+    '--smoke-root', state.context.receiptRunDir,
+    '--artifact-manifest', manifestPath,
+    '--output', path.join(state.context.receiptRunDir, 'other-manifest.json'),
+  ], {}), (error) => error.code === 'artifact_manifest_mode_conflict');
   await fs.appendFile(path.join(live, 'raw.txt'), 'tamper');
   await assert.rejects(
     verifyArtifactManifest({ manifestPath, context: state.context }),

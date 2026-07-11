@@ -97,6 +97,9 @@ test('MCP query reads manifest base plus delta and excludes tombstones', async (
   assert.equal(delta.ok, true);
   assert.deepEqual(delta.results.map((row) => row.id), ['delta-canary']);
   assert.equal(delta.evidence.authoritativeTotals.nodes, 2);
+  assert.equal(delta.evidence.selectedBrain, 'ada');
+  assert.equal(delta.evidence.selectedAgent, 'ada');
+  assert.equal(delta.evidence.deltaWatermark.revision, 4);
   assert.equal(delta.evidence.identity.canonicalRoot, await fsp.realpath(brainDir));
 
   const removed = await tools.queryMemory({ query: 'tombstone', limit: 5 });

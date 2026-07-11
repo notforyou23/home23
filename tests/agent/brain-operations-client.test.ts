@@ -1311,11 +1311,17 @@ test('late terminal journal replay preserves provider-terminal activity before p
     ...record(operationId, 6, 'complete', { answer: 'replayed terminal' }),
     operationType: 'query',
   });
-  const activities: string[] = [];
+  const activities: Array<Record<string, unknown>> = [];
   let detachCalls = 0;
   const frames = [
     { type: 'progress', operationId, eventSequence: 4, stage: 'provider_running' },
-    { type: 'provider_call_terminal', operationId, eventSequence: 5, providerCallId: 'query' },
+    {
+      type: 'provider_call_terminal', operationId, eventSequence: 5,
+      phase: 'query', provider: 'fixture-provider', model: 'fixture-model',
+      providerCallId: 'query', outcome: 'complete',
+      workUnitId: 'work-1', partitionId: 'partition-1',
+      ignoredUntrustedField: 'must-not-cross-the-client-boundary',
+    },
     { type: 'terminal', operationId, eventSequence: 6, state: 'complete' },
   ];
   const fetchImpl: typeof fetch = async (url, init) => {
@@ -1344,13 +1350,32 @@ test('late terminal journal replay preserves provider-terminal activity before p
     baseUrl: 'http://fixture',
     callerAgent: 'jerry',
     fetchImpl,
-    onActivity: (activity) => activities.push(activity.type),
+    onActivity: (activity) => activities.push(activity as unknown as Record<string, unknown>),
   });
 
   const result = await client.query({ query: 'late terminal replay' });
   assert.equal(result.state, 'complete');
   assert.equal(result.result?.answer, 'replayed terminal');
-  assert.equal(activities.includes('provider_call_terminal'), true);
+  const providerTerminal = activities.find((activity) => activity.type === 'provider_call_terminal');
+  assert.deepEqual(providerTerminal, {
+    source: 'brain_operation',
+    operationId,
+    type: 'provider_call_terminal',
+    eventSequence: 5,
+    sequence: 5,
+    state: 'running',
+    phase: 'query',
+    updatedAt: '2026-07-09T12:00:03.000Z',
+    lastProviderActivityAt: '2026-07-09T12:00:03.000Z',
+    lastProgressAt: null,
+    provider: 'fixture-provider',
+    model: 'fixture-model',
+    providerCallId: 'query',
+    outcome: 'complete',
+    workUnitId: 'work-1',
+    partitionId: 'partition-1',
+  });
+  assert.equal(Object.hasOwn(providerTerminal || {}, 'ignoredUntrustedField'), false);
   assert.equal(detachCalls, 0);
 });
 

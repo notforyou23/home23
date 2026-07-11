@@ -4,6 +4,7 @@ const fsp = require('node:fs').promises;
 const path = require('node:path');
 const {
   createEvidence,
+  enrichEvidenceIdentity,
   memorySourceError,
   parseBoundedInteger,
   rethrowAbort,
@@ -93,20 +94,26 @@ function createMemoryTools({
         identity: baseIdentity,
         signal,
         prefix: 'mcp',
-      }, async (source) => {
-        sourceEvidence = source.getEvidence?.() || null;
+      }, async (source, operation) => {
+        const withIdentity = (evidence) => enrichEvidenceIdentity(evidence, operation.identity);
+        sourceEvidence = withIdentity(source.getEvidence?.() || null);
         if (sourceEvidence?.sourceHealth === 'unavailable') {
           return unavailableResult(
             memorySourceError('source_unavailable', 'authoritative source unavailable', {
               retryable: true,
             }),
-            source.getEvidence({ matchOutcome: 'unknown' }),
+            withIdentity(source.getEvidence({ matchOutcome: 'unknown' })),
           );
         }
         try {
-          return await fn(source);
+          const result = await fn(source);
+          return result && typeof result === 'object' && result.evidence
+            ? { ...result, evidence: withIdentity(result.evidence) }
+            : result;
         } catch (error) {
-          error.sourceEvidence = source.getEvidence?.({ matchOutcome: 'unknown' }) || sourceEvidence;
+          error.sourceEvidence = withIdentity(
+            source.getEvidence?.({ matchOutcome: 'unknown' }) || sourceEvidence,
+          );
           throw error;
         }
       });
