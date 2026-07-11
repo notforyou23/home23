@@ -509,6 +509,248 @@ for (const implementation of IMPLEMENTATIONS) {
     assert.equal(wrapped.base.nodes.size, 0);
   });
 
+  test(`${implementation.name} legacy load rejects forged or incomplete authoritative envelopes atomically`, async (t) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-network-load-invalid-'));
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+    const validEnvelope = {
+      nodes: [
+        ['node.string', {
+          id: 'node.string', concept: 'clustered node', embedding: [1, 0], cluster: 'cluster.string',
+        }],
+        ['peer.string', {
+          id: 'peer.string', concept: 'unclustered peer', embedding: [0, 1], cluster: null,
+        }],
+      ],
+      edges: [['node.string->peer.string', {
+        source: 'node.string', target: 'peer.string', weight: 0.5, type: 'evidence',
+      }]],
+      clusters: [
+        ['cluster.string', ['node.string']],
+        ['empty.string', []],
+      ],
+      nextNodeId: 1,
+      nextClusterId: 1,
+      nodeIdFormat: 'numeric',
+      nodeIdPrefix: null,
+    };
+
+    const cases = [
+      {
+        name: 'missing clusters',
+        pattern: /network_load_invalid_state/,
+        mutate(envelope) { delete envelope.clusters; },
+      },
+      {
+        name: 'non-array clusters',
+        pattern: /network_load_invalid_state/,
+        mutate(envelope) { envelope.clusters = { forged: true }; },
+      },
+      {
+        name: 'forged node identity',
+        pattern: /network_load_identity_mismatch/,
+        mutate(envelope) { envelope.nodes[0][1].id = 'forged.string'; },
+      },
+      {
+        name: 'duplicate node identity',
+        pattern: /network_load_duplicate_node/,
+        mutate(envelope) { envelope.nodes.push(toPlainJson(envelope.nodes[0])); },
+      },
+      {
+        name: 'forged edge identity',
+        pattern: /network_load_identity_mismatch/,
+        mutate(envelope) { envelope.edges[0][0] = 'forged.edge'; },
+      },
+      {
+        name: 'duplicate edge identity',
+        pattern: /network_load_duplicate_edge/,
+        mutate(envelope) { envelope.edges.push(toPlainJson(envelope.edges[0])); },
+      },
+      {
+        name: 'ambiguous omitted edge endpoint types',
+        pattern: /network_load_invalid_edge/,
+        mutate(envelope) {
+          envelope.nodes = [
+            ['7', { id: '7', concept: 'string seven', embedding: [1, 0], cluster: null }],
+            [7, { id: 7, concept: 'numeric seven', embedding: [0, 1], cluster: null }],
+            ['peer.string', {
+              id: 'peer.string', concept: 'peer', embedding: [1, 1], cluster: null,
+            }],
+          ];
+          envelope.edges = [['7->peer.string', { weight: 0.5, type: 'evidence' }]];
+          envelope.clusters = [];
+        },
+      },
+      {
+        name: 'duplicate cluster identity',
+        pattern: /network_load_duplicate_cluster/,
+        mutate(envelope) { envelope.clusters.push(['cluster.string', []]); },
+      },
+      {
+        name: 'duplicate cluster member',
+        pattern: /network_load_duplicate_cluster_member/,
+        mutate(envelope) { envelope.clusters[0][1].push('node.string'); },
+      },
+      {
+        name: 'missing cluster member',
+        pattern: /network_load_invalid_cluster/,
+        mutate(envelope) { envelope.clusters[0][1].push('missing.string'); },
+      },
+      {
+        name: 'member disagrees with node cluster',
+        pattern: /network_load_identity_mismatch/,
+        mutate(envelope) { envelope.clusters[0][1].push('peer.string'); },
+      },
+      {
+        name: 'clustered node omitted from authoritative membership',
+        pattern: /network_load_invalid_cluster/,
+        mutate(envelope) { envelope.clusters[0][1] = []; },
+      },
+    ];
+
+    for (const fixture of cases) {
+      const envelope = toPlainJson(validEnvelope);
+      fixture.mutate(envelope);
+      const filepath = path.join(directory, `${fixture.name.replaceAll(' ', '-')}.json`);
+      fs.writeFileSync(filepath, JSON.stringify(envelope));
+
+      const target = createBareVariantMemory(implementation);
+      target.importGraphChanges({
+        nodes: [{ id: 'live.string', concept: 'must survive rejection', embedding: [1, 1], cluster: null }],
+      });
+      target.markPersistenceCleanIfGeneration(target.persistenceGeneration);
+      const mapIdentities = { nodes: target.nodes, edges: target.edges, clusters: target.clusters };
+      const liveNode = target.nodes.get('live.string');
+      const generation = target.persistenceGeneration;
+
+      await assert.rejects(target.load(filepath), fixture.pattern, fixture.name);
+      assert.equal(target.nodes, mapIdentities.nodes, `${fixture.name}: nodes map replaced`);
+      assert.equal(target.edges, mapIdentities.edges, `${fixture.name}: edges map replaced`);
+      assert.equal(target.clusters, mapIdentities.clusters, `${fixture.name}: clusters map replaced`);
+      assert.equal(target.nodes.size, 1, `${fixture.name}: node count changed`);
+      assert.equal(target.nodes.get('live.string'), liveNode, `${fixture.name}: live node replaced`);
+      assert.equal(target.persistenceGeneration, generation, `${fixture.name}: generation changed`);
+      assert.equal(target.persistenceBarrierActive, false, `${fixture.name}: barrier leaked`);
+    }
+  });
+
+  test(`${implementation.name} legacy load preserves exact IDs and empty clusters and always refuses wrappers`, async (t) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-network-load-exact-'));
+    const filepath = path.join(directory, 'network.json');
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+    const envelope = {
+      nodes: [
+        ['007', { id: '007', concept: 'string identity', embedding: [1, 0], cluster: 'cluster.string' }],
+        [7, { id: 7, concept: 'numeric identity', embedding: [0, 1], cluster: 7 }],
+      ],
+      edges: [['007->7', {
+        source: 7, target: '007', weight: 0.5, type: 'evidence',
+      }]],
+      clusters: [
+        ['cluster.string', ['007']],
+        [7, [7]],
+        ['empty.string', []],
+      ],
+      nextNodeId: 8,
+      nextClusterId: 8,
+      nodeIdFormat: 'numeric',
+      nodeIdPrefix: null,
+    };
+    fs.writeFileSync(filepath, JSON.stringify(envelope));
+
+    const target = createBareVariantMemory(implementation);
+    assert.equal((await target.load(filepath)).loaded, true);
+    assert.equal(target.nodes.get('007').id, '007');
+    assert.equal(target.nodes.get(7).id, 7);
+    assert.deepEqual(
+      [target.edges.get('007->7').source, target.edges.get('007->7').target],
+      ['007', 7],
+    );
+    assert.deepEqual([...target.clusters.get('cluster.string')], ['007']);
+    assert.deepEqual([...target.clusters.get(7)], [7]);
+    assert.equal(target.clusters.has('empty.string'), true);
+    assert.equal(target.clusters.get('empty.string').size, 0);
+
+    const roundTripPath = path.join(directory, 'round-trip.json');
+    await target.save(roundTripPath);
+    const reloaded = createBareVariantMemory(implementation);
+    assert.equal((await reloaded.load(roundTripPath)).loaded, true);
+    assert.equal(reloaded.clusters.has('empty.string'), true);
+    assert.equal(reloaded.clusters.get('empty.string').size, 0);
+    assert.deepEqual(
+      [reloaded.edges.get('007->7').source, reloaded.edges.get('007->7').target],
+      ['007', 7],
+    );
+
+    new implementation.ClusterAwareMemory(target, {
+      logger: { info() {}, warn() {}, error() {}, debug() {} },
+      config: { cluster: { enabled: false } },
+      instanceId: `${implementation.name}-identical-load-wrapper`,
+    });
+    await assert.rejects(
+      target.load(path.join(directory, 'missing.json')),
+      /network_load_cluster_wrapper_active/,
+    );
+    await assert.rejects(
+      target.load(filepath),
+      /network_load_cluster_wrapper_active/,
+    );
+  });
+
+  test(`${implementation.name} legacy save rejects non-scalar cluster members without invoking accessors`, async (t) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-network-save-invalid-'));
+    const filepath = path.join(directory, 'network.json');
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+    const source = createBareVariantMemory(implementation);
+    let getterCalls = 0;
+    const forgedMember = {};
+    Object.defineProperty(forgedMember, 'id', {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return 'forged.string';
+      },
+    });
+    Map.prototype.set.call(source.clusters, 'cluster.string', new Set([forgedMember]));
+
+    await assert.rejects(
+      source.save(filepath),
+      /network_save_invalid_cluster/,
+    );
+    assert.equal(getterCalls, 0);
+    assert.equal(source.persistenceBarrierActive, false);
+    assert.equal(fs.existsSync(filepath), false);
+  });
+
+  test(`${implementation.name} legacy save rejects ambiguous omitted endpoint identities`, async (t) => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'home23-network-save-identity-'));
+    const filepath = path.join(directory, 'network.json');
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+
+    const source = createBareVariantMemory(implementation);
+    for (const [nodeId, concept] of [['7', 'string seven'], [7, 'numeric seven'], ['peer.string', 'peer']]) {
+      Map.prototype.set.call(source.nodes, nodeId, {
+        id: nodeId,
+        concept,
+        embedding: [1, 0],
+        cluster: null,
+      });
+    }
+    Map.prototype.set.call(source.edges, '7->peer.string', {
+      weight: 0.5,
+      type: 'evidence',
+    });
+
+    await assert.rejects(
+      source.save(filepath),
+      /network_save_invalid_edge/,
+    );
+    assert.equal(source.persistenceBarrierActive, false);
+    assert.equal(fs.existsSync(filepath), false);
+  });
+
   test(`${implementation.name} tombstone-only imports persist node identity without inventing cluster state`, async () => {
     const { base } = createVariantMemory(implementation, `${implementation.name}-tombstone-floor`);
     base.markPersistenceCleanIfGeneration(base.persistenceGeneration);

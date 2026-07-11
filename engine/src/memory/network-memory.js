@@ -170,6 +170,186 @@ function nextSafeIntegerAfter(iterable, current) {
   return next;
 }
 
+function isLegacyGraphIdentity(value) {
+  return (typeof value === 'string' && value.length > 0) || Number.isSafeInteger(value);
+}
+
+function requireLegacyGraphIdentity(value, code) {
+  if (!isLegacyGraphIdentity(value)) throw new TypeError(code);
+  return value;
+}
+
+function readOwnDataProperty(record, key, code) {
+  if (!record || typeof record !== 'object') return { present: false, value: undefined };
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  if (!descriptor) return { present: false, value: undefined };
+  if (descriptor.get || descriptor.set) throw new TypeError(code);
+  return { present: true, value: descriptor.value };
+}
+
+function orderLegacyEdgeEndpoints(source, target) {
+  return [source, target]
+    .sort((left, right) => String(left).localeCompare(String(right)));
+}
+
+function resolveLegacyEdgeEndpoint(rawIdentity, nodes) {
+  const hasStringIdentity = Map.prototype.has.call(nodes, rawIdentity);
+  let numericIdentity;
+  let hasNumericIdentity = false;
+  if (/^-?(?:0|[1-9]\d*)$/.test(rawIdentity)) {
+    const numeric = Number(rawIdentity);
+    if (Number.isSafeInteger(numeric)
+        && String(numeric) === rawIdentity
+        && Map.prototype.has.call(nodes, numeric)) {
+      numericIdentity = numeric;
+      hasNumericIdentity = true;
+    }
+  }
+  if (hasStringIdentity && hasNumericIdentity) return undefined;
+  if (hasStringIdentity) return rawIdentity;
+  if (hasNumericIdentity) return numericIdentity;
+  return undefined;
+}
+
+function validateLegacyEdgeRecord(edgeKey, edge, nodes, scope) {
+  const invalidCode = `${scope}_invalid_edge`;
+  const mismatchCode = `${scope}_identity_mismatch`;
+  if (typeof edgeKey !== 'string' || edgeKey.length === 0
+      || !edge || typeof edge !== 'object' || Array.isArray(edge)) {
+    throw new TypeError(invalidCode);
+  }
+
+  const sourceProperty = readOwnDataProperty(edge, 'source', invalidCode);
+  const targetProperty = readOwnDataProperty(edge, 'target', invalidCode);
+  const fromProperty = readOwnDataProperty(edge, 'from', invalidCode);
+  const toProperty = readOwnDataProperty(edge, 'to', invalidCode);
+  if (sourceProperty.present && fromProperty.present
+      && !Object.is(sourceProperty.value, fromProperty.value)) {
+    throw new Error(mismatchCode);
+  }
+  if (targetProperty.present && toProperty.present
+      && !Object.is(targetProperty.value, toProperty.value)) {
+    throw new Error(mismatchCode);
+  }
+
+  let source = sourceProperty.present ? sourceProperty.value : fromProperty.value;
+  let target = targetProperty.present ? targetProperty.value : toProperty.value;
+  const hasSource = sourceProperty.present || fromProperty.present;
+  const hasTarget = targetProperty.present || toProperty.present;
+  if (hasSource !== hasTarget) throw new TypeError(invalidCode);
+  if (!hasSource) {
+    const parts = edgeKey.split('->');
+    if (parts.length !== 2) throw new TypeError(invalidCode);
+    source = resolveLegacyEdgeEndpoint(parts[0], nodes);
+    target = resolveLegacyEdgeEndpoint(parts[1], nodes);
+  }
+
+  requireLegacyGraphIdentity(source, invalidCode);
+  requireLegacyGraphIdentity(target, invalidCode);
+  if (!Map.prototype.has.call(nodes, source)
+      || !Map.prototype.has.call(nodes, target)
+      || Object.is(source, target)) {
+    throw new TypeError(invalidCode);
+  }
+  const orderedEndpoints = orderLegacyEdgeEndpoints(source, target);
+  const canonicalKey = orderedEndpoints.join('->');
+  if (canonicalKey !== edgeKey) throw new Error(mismatchCode);
+  const recordId = readOwnDataProperty(edge, 'id', invalidCode);
+  if (recordId.present && !Object.is(recordId.value, edgeKey)) throw new Error(mismatchCode);
+  return { source: orderedEndpoints[0], target: orderedEndpoints[1], canonicalKey };
+}
+
+function buildLegacyClusterMap(clusterTuples, nodes) {
+  const clusters = new Map();
+  const memberClusters = new Map();
+  for (const tuple of clusterTuples) {
+    if (!Array.isArray(tuple) || tuple.length !== 2 || !Array.isArray(tuple[1])) {
+      throw new TypeError('network_load_invalid_cluster');
+    }
+    const [clusterId, rawMembers] = tuple;
+    requireLegacyGraphIdentity(clusterId, 'network_load_invalid_cluster');
+    if (Map.prototype.has.call(clusters, clusterId)) {
+      throw new Error('network_load_duplicate_cluster');
+    }
+    const members = new Set();
+    for (const nodeId of rawMembers) {
+      requireLegacyGraphIdentity(nodeId, 'network_load_invalid_cluster');
+      if (Set.prototype.has.call(members, nodeId)
+          || Map.prototype.has.call(memberClusters, nodeId)) {
+        throw new Error('network_load_duplicate_cluster_member');
+      }
+      if (!Map.prototype.has.call(nodes, nodeId)) {
+        throw new TypeError('network_load_invalid_cluster');
+      }
+      const node = Map.prototype.get.call(nodes, nodeId);
+      const nodeCluster = readOwnDataProperty(node, 'cluster', 'network_load_invalid_cluster');
+      if (!nodeCluster.present || !Object.is(nodeCluster.value, clusterId)) {
+        throw new Error('network_load_identity_mismatch');
+      }
+      Set.prototype.add.call(members, nodeId);
+      Map.prototype.set.call(memberClusters, nodeId, clusterId);
+    }
+    Map.prototype.set.call(clusters, clusterId, members);
+  }
+
+  for (const [nodeId, node] of Map.prototype.entries.call(nodes)) {
+    const nodeCluster = readOwnDataProperty(node, 'cluster', 'network_load_invalid_cluster');
+    if (!nodeCluster.present || nodeCluster.value === null || nodeCluster.value === undefined) {
+      if (Map.prototype.has.call(memberClusters, nodeId)) {
+        throw new Error('network_load_identity_mismatch');
+      }
+      continue;
+    }
+    requireLegacyGraphIdentity(nodeCluster.value, 'network_load_invalid_cluster');
+    if (!Map.prototype.has.call(clusters, nodeCluster.value)
+        || !Map.prototype.has.call(memberClusters, nodeId)
+        || !Object.is(Map.prototype.get.call(memberClusters, nodeId), nodeCluster.value)) {
+      throw new TypeError('network_load_invalid_cluster');
+    }
+  }
+  return clusters;
+}
+
+function serializeLegacyClusterEntries(clusterMap, nodes) {
+  const entries = [];
+  const memberClusters = new Map();
+  for (const [clusterId, clusterMembers] of Map.prototype.entries.call(clusterMap)) {
+    requireLegacyGraphIdentity(clusterId, 'network_save_invalid_cluster');
+    if (!(clusterMembers instanceof Set)) throw new TypeError('network_save_invalid_cluster');
+    const members = [];
+    for (const nodeId of Set.prototype.values.call(clusterMembers)) {
+      requireLegacyGraphIdentity(nodeId, 'network_save_invalid_cluster');
+      if (Map.prototype.has.call(memberClusters, nodeId)) {
+        throw new Error('network_save_duplicate_cluster_member');
+      }
+      if (!Map.prototype.has.call(nodes, nodeId)) throw new TypeError('network_save_invalid_cluster');
+      const node = Map.prototype.get.call(nodes, nodeId);
+      const nodeCluster = readOwnDataProperty(node, 'cluster', 'network_save_invalid_cluster');
+      if (!nodeCluster.present || !Object.is(nodeCluster.value, clusterId)) {
+        throw new Error('network_save_identity_mismatch');
+      }
+      members.push(nodeId);
+      Map.prototype.set.call(memberClusters, nodeId, clusterId);
+    }
+    entries.push([clusterId, members]);
+  }
+  for (const [nodeId, node] of Map.prototype.entries.call(nodes)) {
+    const nodeCluster = readOwnDataProperty(node, 'cluster', 'network_save_invalid_cluster');
+    if (!nodeCluster.present || nodeCluster.value === null || nodeCluster.value === undefined) continue;
+    requireLegacyGraphIdentity(nodeCluster.value, 'network_save_invalid_cluster');
+    if (!Map.prototype.has.call(memberClusters, nodeId)
+        || !Object.is(Map.prototype.get.call(memberClusters, nodeId), nodeCluster.value)) {
+      throw new TypeError('network_save_invalid_cluster');
+    }
+  }
+  return entries;
+}
+
+function hasActiveClusterWrapper(map) {
+  const descriptor = Object.getOwnPropertyDescriptor(map, '__clusterInstrumented');
+  return Boolean(descriptor && (descriptor.get || descriptor.set || descriptor.value));
+}
+
 /**
  * Network Memory Graph
  * Implements spreading activation, Hebbian learning, and small-world topology
@@ -2374,18 +2554,49 @@ class NetworkMemory {
    * Save network state
    */
   async save(filepath) {
-    const state = this.withPersistenceBarrier(() => deepFreezeJson({
-      nodes: Array.from(this.nodes.entries())
-        .map(([id, node]) => [id, serializeNodePersistenceRecord(node)]),
-      edges: Array.from(this.edges.entries())
-        .map(([edgeKey, edge]) => [edgeKey, serializeEdgePersistenceRecord(edgeKey, edge)]),
-      clusters: Array.from(this.clusters.entries())
-        .map(([id, nodes]) => [id, Array.from(nodes)]),
-      nextNodeId: this.nextNodeId,
-      nextClusterId: this.nextClusterId,
-      nodeIdFormat: this.nodeIdFormat,
-      nodeIdPrefix: this.nodeIdPrefix,
-    }));
+    const state = this.withPersistenceBarrier(() => {
+      const nodes = new Map();
+      const nodeEntries = [];
+      for (const [nodeId, rawNode] of Map.prototype.entries.call(this.nodes)) {
+        requireLegacyGraphIdentity(nodeId, 'network_save_invalid_node');
+        const node = serializeNodePersistenceRecord(rawNode);
+        if (!node || typeof node !== 'object' || Array.isArray(node)) {
+          throw new TypeError('network_save_invalid_node');
+        }
+        const recordId = readOwnDataProperty(node, 'id', 'network_save_invalid_node');
+        if (recordId.present && !Object.is(recordId.value, nodeId)) {
+          throw new Error('network_save_identity_mismatch');
+        }
+        Object.defineProperty(node, 'id', {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: nodeId,
+        });
+        Map.prototype.set.call(nodes, nodeId, node);
+        nodeEntries.push([nodeId, node]);
+      }
+
+      const edgeEntries = [];
+      for (const [edgeKey, rawEdge] of Map.prototype.entries.call(this.edges)) {
+        const edge = deepCloneJsonRecord(rawEdge);
+        const identity = validateLegacyEdgeRecord(edgeKey, edge, nodes, 'network_save');
+        edge.source = identity.source;
+        edge.target = identity.target;
+        delete edge.id;
+        edgeEntries.push([edgeKey, edge]);
+      }
+
+      return deepFreezeJson({
+        nodes: nodeEntries,
+        edges: edgeEntries,
+        clusters: serializeLegacyClusterEntries(this.clusters, nodes),
+        nextNodeId: this.nextNodeId,
+        nextClusterId: this.nextClusterId,
+        nodeIdFormat: this.nodeIdFormat,
+        nodeIdPrefix: this.nodeIdPrefix,
+      });
+    });
     const encoded = JSON.stringify(state, null, 2);
     
     await fs.promises.writeFile(filepath, encoded);
@@ -2395,19 +2606,23 @@ class NetworkMemory {
 
   _prepareLegacyLoadedState(data) {
     if (!data || typeof data !== 'object' || Array.isArray(data)
-        || !Array.isArray(data.nodes) || !Array.isArray(data.edges)) {
+        || !Array.isArray(data.nodes) || !Array.isArray(data.edges)
+        || !Array.isArray(data.clusters)) {
       throw new TypeError('network_load_invalid_state');
     }
     const nodes = new Map();
     for (const tuple of data.nodes) {
       if (!Array.isArray(tuple) || tuple.length !== 2) throw new TypeError('network_load_invalid_node');
       const [nodeId, rawNode] = tuple;
-      if (!((typeof nodeId === 'string' && nodeId.length > 0) || Number.isSafeInteger(nodeId))) {
-        throw new TypeError('network_load_invalid_node');
-      }
+      requireLegacyGraphIdentity(nodeId, 'network_load_invalid_node');
+      if (Map.prototype.has.call(nodes, nodeId)) throw new Error('network_load_duplicate_node');
       const node = deepCloneJsonRecord(rawNode);
       if (!node || typeof node !== 'object' || Array.isArray(node)) {
         throw new TypeError('network_load_invalid_node');
+      }
+      const recordId = readOwnDataProperty(node, 'id', 'network_load_invalid_node');
+      if (recordId.present && !Object.is(recordId.value, nodeId)) {
+        throw new Error('network_load_identity_mismatch');
       }
       Object.defineProperty(node, 'id', {
         configurable: true,
@@ -2419,12 +2634,12 @@ class NetworkMemory {
         node.embedding = this.normalizeEmbedding(node.embedding);
       }
       for (const field of ['created', 'accessed']) {
-        if (!node[field]) continue;
+        if (node[field] === null || node[field] === undefined) continue;
         const timestamp = new Date(node[field]);
         if (Number.isNaN(timestamp.getTime())) throw new TypeError('network_load_invalid_timestamp');
         node[field] = timestamp;
       }
-      nodes.set(nodeId, node);
+      Map.prototype.set.call(nodes, nodeId, node);
     }
 
     const edges = new Map();
@@ -2432,45 +2647,26 @@ class NetworkMemory {
       if (!Array.isArray(tuple) || tuple.length !== 2 || typeof tuple[0] !== 'string' || !tuple[0]) {
         throw new TypeError('network_load_invalid_edge');
       }
+      const edgeKey = tuple[0];
+      if (Map.prototype.has.call(edges, edgeKey)) throw new Error('network_load_duplicate_edge');
       const edge = deepCloneJsonRecord(tuple[1]);
       if (!edge || typeof edge !== 'object' || Array.isArray(edge)) {
         throw new TypeError('network_load_invalid_edge');
       }
-      let source = edge.source ?? edge.from;
-      let target = edge.target ?? edge.to;
-      if (source === undefined || target === undefined) {
-        const parts = tuple[0].split('->');
-        if (parts.length !== 2) throw new TypeError('network_load_invalid_edge');
-        source = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
-        target = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
-      }
-      if (!nodes.has(source) || !nodes.has(target) || source === target) {
-        throw new TypeError('network_load_invalid_edge');
-      }
-      const sorted = [source, target].sort((left, right) => String(left).localeCompare(String(right)));
-      const edgeKey = sorted.join('->');
-      edge.source = sorted[0];
-      edge.target = sorted[1];
+      const identity = validateLegacyEdgeRecord(edgeKey, edge, nodes, 'network_load');
+      edge.source = identity.source;
+      edge.target = identity.target;
       delete edge.id;
       for (const field of ['created', 'accessed']) {
-        if (!edge[field]) continue;
+        if (edge[field] === null || edge[field] === undefined) continue;
         const timestamp = new Date(edge[field]);
         if (Number.isNaN(timestamp.getTime())) throw new TypeError('network_load_invalid_timestamp');
         edge[field] = timestamp;
       }
-      edges.set(edgeKey, edge);
+      Map.prototype.set.call(edges, edgeKey, edge);
     }
 
-    const clusters = new Map();
-    for (const [nodeId, node] of nodes) {
-      const clusterId = node.cluster;
-      if (clusterId === null || clusterId === undefined) continue;
-      if (!((typeof clusterId === 'string' && clusterId.length > 0) || Number.isSafeInteger(clusterId))) {
-        throw new TypeError('network_load_invalid_cluster');
-      }
-      if (!clusters.has(clusterId)) clusters.set(clusterId, new Set());
-      clusters.get(clusterId).add(nodeId);
-    }
+    const clusters = buildLegacyClusterMap(data.clusters, nodes);
 
     let nodeIdFormat = data.nodeIdFormat === 'string' ? 'string' : 'numeric';
     let nodeIdPrefix = typeof data.nodeIdPrefix === 'string' && data.nodeIdPrefix
@@ -2523,11 +2719,21 @@ class NetworkMemory {
    * Load network state
    */
   async load(filepath, options = {}) {
+    if (hasActiveClusterWrapper(this.nodes)
+        || hasActiveClusterWrapper(this.edges)
+        || hasActiveClusterWrapper(this.clusters)) {
+      throw new Error('network_load_cluster_wrapper_active');
+    }
     try {
       const data = JSON.parse(await fs.promises.readFile(filepath, 'utf8'));
       const prepared = this._prepareLegacyLoadedState(data);
       const allowDirtyReplacement = options?.allowDirtyReplacement === true;
       const result = this.withPersistenceBarrier(() => {
+        if (hasActiveClusterWrapper(this.nodes)
+            || hasActiveClusterWrapper(this.edges)
+            || hasActiveClusterWrapper(this.clusters)) {
+          throw new Error('network_load_cluster_wrapper_active');
+        }
         if (this._legacyLoadedStateMatchesUnsafe(prepared)) {
           return { loaded: false, reason: 'unchanged', generation: this.persistenceGeneration };
         }
@@ -2535,10 +2741,6 @@ class NetworkMemory {
           || this.deletedNodeIds.size > 0 || this.deletedEdgeKeys.size > 0;
         if (hasPending && !allowDirtyReplacement) {
           throw new Error('network_load_dirty_state');
-        }
-        if (this.nodes.__clusterInstrumented || this.edges.__clusterInstrumented
-            || this.clusters.__clusterInstrumented) {
-          throw new Error('network_load_cluster_wrapper_active');
         }
         Map.prototype.clear.call(this.nodes);
         Map.prototype.clear.call(this.edges);
