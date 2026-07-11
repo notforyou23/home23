@@ -101,11 +101,22 @@ function validateContext(context, selection) {
   if (typeof context.claimSynthesisCompletion !== 'function') {
     throw typed('worker_context_invalid', 'Durable synthesis completion claim is required');
   }
+  const operationControl = context.operationControl;
+  if (!operationControl || Array.isArray(operationControl)
+      || typeof operationControl !== 'object'
+      || !exactKeys(operationControl, ['hardDeadlineAt'])) {
+    throw typed('worker_context_invalid', 'Synthesis hard deadline is required');
+  }
+  const hardDeadline = Date.parse(operationControl.hardDeadlineAt);
+  if (!Number.isFinite(hardDeadline)
+      || new Date(hardDeadline).toISOString() !== operationControl.hardDeadlineAt) {
+    throw typed('worker_context_invalid', 'Synthesis hard deadline is invalid');
+  }
   const trigger = parameters.trigger === undefined
     ? (parameters.reason === undefined ? 'manual' : bounded(parameters.reason, 'reason'))
     : bounded(parameters.trigger, 'trigger', 256);
   if (parameters.reason !== undefined) bounded(parameters.reason, 'reason');
-  return { trigger };
+  return { trigger, hardDeadlineAt: operationControl.hardDeadlineAt };
 }
 
 function failureEnvelope(error, context) {
@@ -136,7 +147,7 @@ function createSynthesisWorker({ agent, selection } = {}) {
 
   return async function executeSynthesis(context) {
     try {
-      const { trigger } = validateContext(context, fixedSelection);
+      const { trigger, hardDeadlineAt } = validateContext(context, fixedSelection);
       if (context.signal?.aborted) throw context.signal.reason;
       const result = validateSynthesisResult(await agent.runOperation({
         operationId: context.operationId,
@@ -145,6 +156,7 @@ function createSynthesisWorker({ agent, selection } = {}) {
         signal: context.signal || null,
         onEvent: context.reportEvent || null,
         claimCompletion: context.claimSynthesisCompletion,
+        hardDeadlineAt,
       }), context, fixedSelection);
       return {
         state: 'complete',

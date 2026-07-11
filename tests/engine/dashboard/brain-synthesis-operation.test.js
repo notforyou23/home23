@@ -37,6 +37,7 @@ function context(overrides = {}) {
       provider: 'minimax',
       model: 'MiniMax-M3',
     },
+    operationControl: { hardDeadlineAt: '2099-01-01T00:00:00.000Z' },
     sourcePin,
     claimSynthesisCompletion: overrides.claimSynthesisCompletion || (async (claim) => claim),
     signal: null,
@@ -58,6 +59,7 @@ test('synthesis worker returns the standard complete envelope without releasing 
     async runOperation(request) {
       calls.push(request);
       assert.equal(typeof request.claimCompletion, 'function');
+      assert.equal(request.hardDeadlineAt, '2099-01-01T00:00:00.000Z');
       return {
         generationMarker: `generation-51-${'d'.repeat(24)}`,
         generatedAt: '2026-07-10T12:00:00.000Z',
@@ -196,7 +198,8 @@ test('synthesis provider events cross the real local worker adapter as one corre
   const execute = createSynthesisWorker({
     selection: { provider: 'minimax', model: 'MiniMax-M3' },
     agent: {
-      async runOperation({ onEvent }) {
+      async runOperation({ onEvent, hardDeadlineAt }) {
+        assert.equal(hardDeadlineAt, '2026-07-11T12:00:00.000Z');
         onEvent({
           type: 'provider_selected', phase: 'synthesis', provider: 'minimax',
           model: 'MiniMax-M3', providerCallId: 'synthesis', providerStallMs: 900000,

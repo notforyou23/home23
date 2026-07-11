@@ -20,7 +20,7 @@ const {
 const {
   SYNTHESIS_OPERATION_LIMITS,
 } = require('../../../cosmo23/lib/brain-operation-limits.js');
-const { writeFileDurable } = require('../utils/durable-write.js');
+const { writeFileDurableSync } = require('../utils/durable-write.js');
 
 const OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;
 const PROVIDER_CALL_ID = 'synthesis';
@@ -29,6 +29,10 @@ const MAX_THEME_BYTES = 512;
 const MAX_RESULT_TEXT_BYTES = 16 * 1024;
 const MAX_SEARCH_THEMES = 8;
 const MAX_SEARCH_RESULTS_PER_THEME = 3;
+const DURABLE_WRITE_LIFECYCLE_HOOKS = new Set([
+  'afterTempCreated', 'afterWrite', 'afterFileSync', 'beforeRename',
+  'afterRename', 'afterDirectorySync',
+]);
 
 const PROVIDER_INSTRUCTIONS = [
   'Analyze only the pinned Home23 brain evidence in the input.',
@@ -120,6 +124,41 @@ function assertOperationId(operationId) {
     throw typed('operation_id_invalid', 'Canonical synthesis operation ID required');
   }
   return operationId;
+}
+
+function hardDeadline(value) {
+  if (value === null || value === undefined) return null;
+  const parsed = typeof value === 'string' ? Date.parse(value) : NaN;
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) {
+    throw typed('invalid_request', 'Canonical synthesis hard deadline required');
+  }
+  return parsed;
+}
+
+function assertDeadlineOpen(deadline, now) {
+  if (deadline === null) return;
+  if (!Number.isFinite(now)) {
+    throw typed('synthesis_clock_invalid', 'Synthesis clock is invalid');
+  }
+  if (now >= deadline) {
+    throw typed('operation_timeout', 'Synthesis hard deadline elapsed', false);
+  }
+}
+
+function validateDurableWriteLifecycle(value) {
+  if (value === null || value === undefined) return Object.freeze({});
+  if (!value || Array.isArray(value) || typeof value !== 'object') {
+    throw typed('synthesis_configuration_invalid', 'Durable write lifecycle is invalid');
+  }
+  const hooks = {};
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string' || !DURABLE_WRITE_LIFECYCLE_HOOKS.has(key)
+        || typeof value[key] !== 'function') {
+      throw typed('synthesis_configuration_invalid', 'Durable write lifecycle is invalid');
+    }
+    hooks[key] = value[key];
+  }
+  return Object.freeze(hooks);
 }
 
 function eventText(value, fallback) {
@@ -372,7 +411,8 @@ class SynthesisAgent {
     limits = {},
     clock = {},
     hooks = {},
-    durableWriter = writeFileDurable,
+    durableWriter,
+    durableWriteLifecycle = null,
     timers = {},
   } = {}) {
     if (typeof brainDir !== 'string' || !path.isAbsolute(brainDir)
@@ -392,7 +432,14 @@ class SynthesisAgent {
     this.limits = validateLimits(limits);
     this.now = typeof clock.now === 'function' ? clock.now : Date.now;
     this.hooks = hooks && typeof hooks === 'object' ? hooks : {};
-    this.durableWriter = durableWriter;
+    if (durableWriter !== undefined) {
+      throw typed(
+        'synthesis_configuration_invalid',
+        'Custom synthesis durable writers are not supported',
+      );
+    }
+    this.durableWriter = writeFileDurableSync;
+    this.durableWriteLifecycle = validateDurableWriteLifecycle(durableWriteLifecycle);
     this.setTimeout = timers.setTimeout || setTimeout;
     this.clearTimeout = timers.clearTimeout || clearTimeout;
     this.setInterval = timers.setInterval || setInterval;
@@ -519,8 +566,11 @@ class SynthesisAgent {
     signal = null,
     onEvent = null,
     claimCompletion,
+    hardDeadlineAt = null,
   } = {}) {
     assertOperationId(operationId);
+    const deadline = hardDeadline(hardDeadlineAt);
+    assertDeadlineOpen(deadline, this.now());
     if (typeof claimCompletion !== 'function') {
       throw typed('synthesis_claim_unavailable', 'Durable synthesis completion claim is required', true);
     }
@@ -702,15 +752,26 @@ class SynthesisAgent {
         throw typed('synthesis_claim_invalid', 'Durable synthesis claim response mismatched');
       }
 
-      // The durable claim is the cancellation linearization point. Once it
-      // wins, state rename, directory fsync, and readback are noncancellable.
+      // The claim and deadline check are the final asynchronous boundary.
+      // After this point the state rename and fsync must not yield, so a server
+      // timeout either wins before the write or observes the committed state.
+      assertDeadlineOpen(deadline, this.now());
       let writeError = null;
       try {
-        await this.durableWriter(this.statePath, serialized, {
+        const receipt = this.durableWriter(this.statePath, serialized, {
           encoding: 'utf8',
           mode: 0o600,
           strictDirectorySync: true,
+          lifecycle: this.durableWriteLifecycle,
         });
+        if (receipt && typeof receipt.then === 'function') {
+          Promise.resolve(receipt).catch(() => {});
+          throw typed(
+            'synthesis_commit_failed',
+            'Synthesis durable writer violated the synchronous commit protocol',
+            false,
+          );
+        }
       } catch (error) {
         writeError = error;
       }

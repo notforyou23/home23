@@ -516,6 +516,7 @@ class BrainOperationWorkerAdapter {
         requesterAgent: record.context.requesterAgent,
         target: clone(record.context.target),
         parameters: clone(record.context.parameters),
+        operationControl: { hardDeadlineAt: record.context.hardDeadlineAt },
         scratchDir: record.context.scratchDir,
         scratchQuota: record.context.scratchQuota,
         signal: record.controller.signal,

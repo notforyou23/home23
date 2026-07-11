@@ -16,12 +16,19 @@ const {
   extractJsonObject,
   readCommittedSynthesisState,
 } = require('../../../engine/src/synthesis/synthesis-agent.js');
-const {
-  writeFileDurable,
-} = require('../../../engine/src/utils/durable-write.js');
 
 const OPERATION_ID = `brop_${'A'.repeat(32)}`;
 const GENERATED_AT_MS = Date.parse('2026-07-10T12:00:00.000Z');
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 function completeContent(extra = {}) {
   return JSON.stringify({
@@ -118,8 +125,8 @@ async function fixture(t, options = {}) {
     providerAdapter: adapter,
     limits: options.limits || {},
     hooks: options.hooks || {},
-    clock: { now: () => GENERATED_AT_MS },
-    durableWriter: options.durableWriter,
+    clock: { now: options.now || (() => GENERATED_AT_MS) },
+    durableWriteLifecycle: options.durableWriteLifecycle,
   });
   return {
     root,
@@ -299,18 +306,6 @@ test('claim-first cancellation cannot roll back or mask the committed synthesis 
     onClaim() {
       controller.abort(reason);
     },
-    durableWriter: async (filePath, content, options) => {
-      const lifecycle = options.lifecycle;
-      return writeFileDurable(filePath, content, {
-        ...options,
-        lifecycle: {
-          ...lifecycle,
-          async afterRename(context) {
-            await lifecycle?.afterRename?.(context);
-          },
-        },
-      });
-    },
   });
   const prior = '{"generationMarker":"prior-byte-exact"}\n';
   const statePath = path.join(fx.brainDir, 'brain-state.json');
@@ -330,20 +325,83 @@ test('claim-first cancellation cannot roll back or mask the committed synthesis 
   assert.equal((await fsp.readdir(fx.brainDir)).some((name) => name.includes('.tmp-')), false);
 });
 
+test('a Promise-returning commit hook fails finitely before rename instead of hanging', async (t) => {
+  const writerEntered = deferred();
+  const never = deferred();
+  const fx = await fixture(t, {
+    durableWriteLifecycle: {
+      afterFileSync() {
+        writerEntered.resolve();
+        return never.promise;
+      },
+    },
+  });
+  const running = fx.agent.runOperation({
+    operationId: OPERATION_ID,
+    sourcePin: fx.sourcePin,
+    claimCompletion: fx.claimCompletion,
+    hardDeadlineAt: new Date(GENERATED_AT_MS + 100).toISOString(),
+  });
+  await writerEntered.promise;
+
+  let timeout;
+  let outcome;
+  try {
+    outcome = await Promise.race([
+      running.then(
+        () => ({ state: 'resolved' }),
+        (error) => ({ state: 'rejected', error }),
+      ),
+      new Promise((resolve) => {
+        timeout = setTimeout(() => resolve({ state: 'pending' }), 1000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
+  }
+  assert.equal(outcome.state, 'rejected');
+  assert.equal(outcome.error.code, 'synthesis_commit_failed');
+  assert.equal(outcome.error.retryable, false);
+});
+
+test('a claim returning at the server deadline cannot start the commit writer', async (t) => {
+  let now = GENERATED_AT_MS;
+  let writerCalls = 0;
+  const hardDeadlineAt = new Date(GENERATED_AT_MS + 100).toISOString();
+  const fx = await fixture(t, {
+    now: () => now,
+    onClaim() { now = Date.parse(hardDeadlineAt); },
+    durableWriteLifecycle: {
+      afterTempCreated() { writerCalls += 1; },
+    },
+  });
+
+  await assert.rejects(() => fx.agent.runOperation({
+    operationId: OPERATION_ID,
+    sourcePin: fx.sourcePin,
+    claimCompletion: fx.claimCompletion,
+    hardDeadlineAt,
+  }), { code: 'operation_timeout', retryable: false });
+  assert.equal(fx.claims.length, 1);
+  assert.equal(writerCalls, 0);
+  assert.equal(
+    await fsp.access(path.join(fx.brainDir, 'brain-state.json'))
+      .then(() => true).catch(() => false),
+    false,
+  );
+});
+
 test('an abort observed after final rename cannot roll back or replace the committed result', async (t) => {
   const controller = new AbortController();
   const reason = Object.assign(new Error('cancelled-after-final-rename'), {
     name: 'AbortError', code: 'cancelled',
   });
   const fx = await fixture(t, {
-    durableWriter: async (filePath, content, options) => writeFileDurable(filePath, content, {
-      ...options,
-      lifecycle: {
-        async afterRename() {
-          controller.abort(reason);
-        },
+    durableWriteLifecycle: {
+      afterRename() {
+        controller.abort(reason);
       },
-    }),
+    },
   });
   const result = await fx.agent.runOperation({
     operationId: OPERATION_ID,
@@ -364,8 +422,10 @@ test('a typed commit failure is not replaced by an already-aborted signal reason
   });
   const fx = await fixture(t, {
     onClaim() { controller.abort(reason); },
-    durableWriter: async () => {
-      throw Object.assign(new Error('rename failed'), { code: 'EIO' });
+    durableWriteLifecycle: {
+      beforeRename() {
+        throw Object.assign(new Error('rename failed'), { code: 'EIO' });
+      },
     },
   });
   await assert.rejects(() => fx.agent.runOperation({
@@ -380,14 +440,11 @@ test('a typed commit failure is not replaced by an already-aborted signal reason
 
 test('a post-rename durability failure remains typed and never rolls state back', async (t) => {
   const fx = await fixture(t, {
-    durableWriter: async (filePath, content, options) => writeFileDurable(filePath, content, {
-      ...options,
-      lifecycle: {
-        afterRename() {
-          throw Object.assign(new Error('directory sync unavailable'), { code: 'EIO' });
-        },
+    durableWriteLifecycle: {
+      afterRename() {
+        throw Object.assign(new Error('directory sync unavailable'), { code: 'EIO' });
       },
-    }),
+    },
   });
   await assert.rejects(() => fx.agent.runOperation({
     operationId: OPERATION_ID,

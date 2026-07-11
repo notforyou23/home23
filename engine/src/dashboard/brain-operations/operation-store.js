@@ -1458,19 +1458,8 @@ class BrainOperationStore {
 
   async transition(operationId, transition) {
     assertOperationId(operationId);
-    exactInputKeys(transition, [
-      'expectedVersion',
-      'state',
-      'phase',
-      'error',
-      'sourceEvidence',
-      'requireNoSynthesisCompletionClaim',
-    ], 'transition_invalid');
+    exactInputKeys(transition, ['expectedVersion', 'state', 'phase', 'error', 'sourceEvidence'], 'transition_invalid');
     assertExpectedVersion(transition.expectedVersion);
-    if (transition.requireNoSynthesisCompletionClaim !== undefined
-        && transition.requireNoSynthesisCompletionClaim !== true) {
-      throw operationError('transition_invalid');
-    }
     if (transition.phase !== undefined && transition.phase !== null) assertIdentifier(transition.phase, 'phase');
     const hasError = Object.hasOwn(transition, 'error');
     const hasSourceEvidence = Object.hasOwn(transition, 'sourceEvidence');
@@ -1484,10 +1473,6 @@ class BrainOperationStore {
       if (TERMINAL_STATES.has(record.state)) throw operationError('operation_terminal');
       if (record.recordVersion !== transition.expectedVersion) throw operationError('version_conflict');
       if (transition.state === 'cancelled' && record._synthesisCompletionClaim !== null) {
-        throw operationError('synthesis_completion_claimed');
-      }
-      if (transition.requireNoSynthesisCompletionClaim === true
-          && record._synthesisCompletionClaim !== null) {
         throw operationError('synthesis_completion_claimed');
       }
       assertTransition(record.state, transition.state);

@@ -2112,7 +2112,7 @@ test('worker completion cannot terminalize a mismatched claimed synthesis state 
   assert.equal(failed.result, null);
 });
 
-test('a claimed synthesis with no state remains pending at its live hard deadline', async (t) => {
+test('a claimed synthesis with no committed state terminalizes at its hard deadline', async (t) => {
   const fixture = makeFixture(t, {
     readSynthesisState: async () => null,
     executionDeadlineMsByType: { synthesis: 100 },
@@ -2127,16 +2127,14 @@ test('a claimed synthesis with no state remains pending at its live hard deadlin
     synthesisCompletion(operation.operationId),
   );
   await fixture.timers.advance(100);
-  const pending = await fixture.store.get(operation.operationId);
-  assert.equal(pending.state, 'running');
-  assert.equal(pending.error, null);
-  assert.equal(pending.result, null);
-  assert.equal(fixture.worker.cancelCalls.length, 0);
+  const failed = await fixture.store.get(operation.operationId);
+  assert.equal(failed.state, 'failed');
+  assert.equal(failed.error.code, 'operation_timeout');
+  assert.equal(failed.result, null);
+  assert.equal(fixture.worker.cancelCalls.length, 1);
 });
 
-test('hard deadline cannot strand a committed synthesis after its completion claim', async (t) => {
-  const durableWriterEntered = deferred();
-  const releaseDurableWriter = deferred();
+test('hard deadline reconciles a committed synthesis claim before timing out', async (t) => {
   let committedState = null;
   const fixture = makeFixture(t, {
     readSynthesisState: async () => committedState,
@@ -2152,41 +2150,14 @@ test('hard deadline cannot strand a committed synthesis after its completion cla
     await fixture.store.claimSynthesisCompletion(operation.operationId, claim),
     claim,
   );
-  const durableWriter = (async () => {
-    durableWriterEntered.resolve();
-    await releaseDurableWriter.promise;
-    committedState = synthesisStateFromClaim(claim);
-    fixture.worker.finish(operation.operationId, {
-      state: 'complete',
-      result: synthesisResultFromClaim(claim),
-      resultArtifact: null,
-      error: null,
-      sourceEvidence: { cutoffRevision: claim.sourceRevision },
-    });
-  })();
-  await durableWriterEntered.promise;
+  committedState = synthesisStateFromClaim(claim);
+  await fixture.timers.advance(100);
+  const terminal = await fixture.store.get(operation.operationId);
 
-  let atDeadline;
-  try {
-    await fixture.timers.advance(100);
-    atDeadline = await fixture.store.get(operation.operationId);
-  } finally {
-    releaseDurableWriter.resolve();
-  }
-  await durableWriter;
-  await eventually(() => assert.notEqual(committedState, null));
-  const terminal = await eventually(async () => {
-    const current = await fixture.coordinator.status(operation.operationId);
-    assert.equal(current.state, 'complete');
-    return current;
-  });
-
-  assert.equal(atDeadline.state, 'running');
   assert.equal(terminal.state, 'complete');
   assert.equal(terminal.error, null);
-  assert.deepEqual(terminal.result, synthesisResultFromClaim(
-    await fixture.store.getSynthesisCompletionClaim(operation.operationId),
-  ));
+  assert.deepEqual(terminal.result, synthesisResultFromClaim(claim));
+  assert.equal(fixture.worker.cancelCalls.length, 0);
 });
 
 test('a typed worker commit failure survives before its claim replaces the prior state', async (t) => {

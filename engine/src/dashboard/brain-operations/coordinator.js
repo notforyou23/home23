@@ -781,8 +781,6 @@ class BrainOperationCoordinator {
             message: 'operation execution deadline elapsed',
             retryable: true,
             cancelWorker: true,
-            cancelAfterTerminal: true,
-            deferIfSynthesisClaimed: true,
           });
         });
       } catch (error) {
@@ -1790,10 +1788,7 @@ class BrainOperationCoordinator {
     let record = await this.store.get(operationId);
     if (TERMINAL_STATES.has(record.state)) return record;
     if (!options.skipClaimReconcile) {
-      const claimed = await this._reconcileClaimedSynthesisLocked(record, {
-        preserveMissing: true,
-        allowPending: options.deferIfSynthesisClaimed === true,
-      });
+      const claimed = await this._reconcileClaimedSynthesisLocked(record, { preserveMissing: true });
       if (claimed !== null) return claimed;
     }
     if (options.cancelWorker && !options.cancelAfterTerminal) {
@@ -1815,13 +1810,10 @@ class BrainOperationCoordinator {
         phase: 'terminal',
         error,
         sourceEvidence: record.sourceEvidence,
-        ...(options.deferIfSynthesisClaimed === true
-          ? { requireNoSynthesisCompletionClaim: true }
-          : {}),
       });
     } catch (transitionError) {
       record = await this.store.get(operationId).catch(() => null);
-      if ((options.state === 'cancelled' || options.deferIfSynthesisClaimed === true)
+      if (options.state === 'cancelled'
           && record
           && !TERMINAL_STATES.has(record.state)
           && ['version_conflict', 'synthesis_completion_claimed'].includes(transitionError?.code)) {
