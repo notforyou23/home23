@@ -8,6 +8,107 @@
  */
 
 const crypto = require('crypto');
+const { types: { isProxy } } = require('node:util');
+
+function parseLegacyIdentitySegment(rawValue) {
+  const value = String(rawValue);
+  if (/^-?(?:0|[1-9]\d*)$/.test(value)) {
+    const numeric = Number(value);
+    if (Number.isSafeInteger(numeric) && String(numeric) === value) return numeric;
+  }
+  return value;
+}
+
+function cloneClusterSnapshotValue(value, seen = new Set(), arrayElement = false) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'bigint') throw new TypeError('cluster_snapshot_bigint_not_allowed');
+  if (typeof value === 'undefined' || typeof value === 'function' || typeof value === 'symbol') {
+    return arrayElement ? null : undefined;
+  }
+  if (isProxy(value)) throw new TypeError('cluster_snapshot_proxy_not_allowed');
+  if (value instanceof Date) {
+    const timestamp = Date.prototype.getTime.call(value);
+    if (!Number.isFinite(timestamp)) throw new TypeError('cluster_snapshot_plain_json_required');
+    return new Date(timestamp).toISOString();
+  }
+  if (ArrayBuffer.isView(value)) {
+    if (!Number.isSafeInteger(value.length) || value.length < 0) {
+      throw new TypeError('cluster_snapshot_plain_json_required');
+    }
+    const clone = new Array(value.length);
+    for (let index = 0; index < value.length; index += 1) {
+      clone[index] = cloneClusterSnapshotValue(value[index], seen, true);
+    }
+    return clone;
+  }
+  if (seen.has(value)) throw new TypeError('cluster_snapshot_cycle_not_allowed');
+  const prototype = Object.getPrototypeOf(value);
+  if (Array.isArray(value)) {
+    if (prototype !== Array.prototype) throw new TypeError('cluster_snapshot_plain_json_required');
+  } else if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError('cluster_snapshot_plain_json_required');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const descriptor = descriptors[key];
+    if (typeof key === 'symbol') {
+      if (descriptor.enumerable) throw new TypeError('cluster_snapshot_symbol_key_not_allowed');
+      continue;
+    }
+    if (descriptor.enumerable && (descriptor.get || descriptor.set)) {
+      throw new TypeError('cluster_snapshot_accessor_not_allowed');
+    }
+  }
+
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      const clone = new Array(value.length);
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor) continue;
+        clone[index] = cloneClusterSnapshotValue(descriptor.value, seen, true);
+      }
+      return clone;
+    }
+
+    const clone = {};
+    for (const key of Reflect.ownKeys(descriptors)) {
+      const descriptor = descriptors[key];
+      if (typeof key === 'symbol') {
+        continue;
+      }
+      if (!descriptor.enumerable) continue;
+      const child = cloneClusterSnapshotValue(descriptor.value, seen, false);
+      if (child !== undefined) {
+        Object.defineProperty(clone, key, {
+          configurable: true,
+          enumerable: true,
+          writable: true,
+          value: child,
+        });
+      }
+    }
+    return clone;
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function defineSnapshotField(record, key, value) {
+  Object.defineProperty(record, key, {
+    configurable: true,
+    enumerable: true,
+    writable: true,
+    value,
+  });
+}
+
+function snapshotDataProperty(record, key) {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  return descriptor ? descriptor.value : undefined;
+}
 
 class ClusterAwareMemory {
   constructor(localMemory, options = {}) {
@@ -29,6 +130,7 @@ class ClusterAwareMemory {
     this.trackedEdges = new Set();
     this.deletedEdges = new Set();
     this.trackedClusters = new Set();
+    this.deletedClusters = new Set();
     this.suppressTracking = false;
 
     // Instrumented object caches (weak to avoid leaks)
@@ -95,6 +197,7 @@ class ClusterAwareMemory {
     this.trackedEdges.clear();
     this.deletedEdges.clear();
     this.trackedClusters.clear();
+    this.deletedClusters.clear();
     this.lastDiffTimestamp = Date.now();
   }
 
@@ -219,27 +322,25 @@ class ClusterAwareMemory {
     const originalClear = map.clear.bind(map);
 
     map.set = (key, value) => {
-      const clusterId = Number(key);
-      const instrumentedSet = this.instrumentClusterSet(clusterId, value);
+      const instrumentedSet = this.instrumentClusterSet(key, value);
       const result = originalSet(key, instrumentedSet);
       if (!this.suppressTracking) {
-        this.recordClusterMutation(clusterId);
+        this.recordClusterMutation(key);
       }
       return result;
     };
 
     map.delete = (key) => {
-      const clusterId = Number(key);
       const existed = map.has(key);
       const result = originalDelete(key);
       if (existed && !this.suppressTracking) {
-        this.recordClusterDeletion(clusterId);
+        this.recordClusterDeletion(key);
       }
       return result;
     };
 
     map.clear = () => {
-      const ids = Array.from(map.keys()).map(Number);
+      const ids = Array.from(map.keys());
       const result = originalClear();
       if (!this.suppressTracking) {
         for (const id of ids) {
@@ -252,7 +353,7 @@ class ClusterAwareMemory {
     map.__clusterInstrumented = true;
 
     for (const [key, value] of Array.from(map.entries())) {
-      originalSet(key, this.instrumentClusterSet(Number(key), value));
+      originalSet(key, this.instrumentClusterSet(key, value));
     }
   }
 
@@ -415,15 +516,18 @@ class ClusterAwareMemory {
 
   recordClusterMutation(clusterId) {
     if (this.suppressTracking) return;
-    const key = Number.isNaN(Number(clusterId)) ? clusterId : Number(clusterId);
-    this.trackedClusters.add(key);
+    if (!this.localMemory.clusters?.has(clusterId)) return;
+    this.trackedClusters.add(clusterId);
+    this.deletedClusters.delete(clusterId);
+    this.versionClock += 1;
     this.lastDiffTimestamp = Date.now();
   }
 
   recordClusterDeletion(clusterId) {
     if (this.suppressTracking) return;
-    const key = Number.isNaN(Number(clusterId)) ? clusterId : Number(clusterId);
-    this.trackedClusters.add(key);
+    this.trackedClusters.delete(clusterId);
+    this.deletedClusters.add(clusterId);
+    this.versionClock += 1;
     this.lastDiffTimestamp = Date.now();
   }
 
@@ -431,42 +535,33 @@ class ClusterAwareMemory {
     const stored = this.localMemory.nodes?.get(nodeId);
     if (!stored) return null;
     const node = this.unwrapNode(stored);
-    return {
-      id: node.id,
-      concept: node.concept,
-      summary: node.summary,
-      keyPhrase: node.keyPhrase,
-      tag: node.tag,
-      embedding: node.embedding ? Array.from(node.embedding) : null,
-      weight: node.weight,
-      activation: node.activation,
-      cluster: node.cluster,
-      accessCount: node.accessCount,
-      created: this.normalizeTimestamp(node.created),
-      accessed: this.normalizeTimestamp(node.accessed)
-    };
+    const snapshot = cloneClusterSnapshotValue(node);
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+      throw new TypeError('cluster_snapshot_node_record_required');
+    }
+    defineSnapshotField(snapshot, 'id', nodeId);
+    return snapshot;
   }
 
   getEdgeSnapshot(edgeKey) {
     const stored = this.localMemory.edges?.get(edgeKey);
     if (!stored) return null;
     const edge = this.unwrapEdge(stored);
-    let source = edge.source;
-    let target = edge.target;
-    if (source === undefined || target === undefined) {
-      const parts = edgeKey.split('->');
-      source = Number.isNaN(Number(parts[0])) ? parts[0] : Number(parts[0]);
-      target = Number.isNaN(Number(parts[1])) ? parts[1] : Number(parts[1]);
+    const snapshot = cloneClusterSnapshotValue(edge);
+    if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+      throw new TypeError('cluster_snapshot_edge_record_required');
     }
-    return {
-      id: edgeKey,
-      source,
-      target,
-      weight: edge.weight,
-      type: edge.type,
-      created: this.normalizeTimestamp(edge.created),
-      accessed: this.normalizeTimestamp(edge.accessed)
-    };
+    let source = snapshotDataProperty(snapshot, 'source') ?? snapshotDataProperty(snapshot, 'from');
+    let target = snapshotDataProperty(snapshot, 'target') ?? snapshotDataProperty(snapshot, 'to');
+    if (source === undefined || target === undefined) {
+      const parts = String(edgeKey).split('->');
+      source = parseLegacyIdentitySegment(parts[0]);
+      target = parseLegacyIdentitySegment(parts[1]);
+    }
+    defineSnapshotField(snapshot, 'id', edgeKey);
+    defineSnapshotField(snapshot, 'source', source);
+    defineSnapshotField(snapshot, 'target', target);
+    return snapshot;
   }
 
   getClusterSnapshot(clusterId) {
@@ -495,6 +590,7 @@ class ClusterAwareMemory {
       if (snapshot) {
         fields[`memory.node.${nodeId}`] = {
           op: 'set',
+          nodeId,
           value: snapshot,
           timestamp,
           versionVector
@@ -505,6 +601,7 @@ class ClusterAwareMemory {
     for (const nodeId of this.deletedNodes) {
       fields[`memory.node.${nodeId}`] = {
         op: 'delete',
+        nodeId,
         timestamp,
         versionVector
       };
@@ -516,6 +613,7 @@ class ClusterAwareMemory {
       if (snapshot) {
         fields[`memory.edge.${edgeKey}`] = {
           op: 'set',
+          edgeKey,
           value: snapshot,
           timestamp,
           versionVector
@@ -526,6 +624,7 @@ class ClusterAwareMemory {
     for (const edgeKey of this.deletedEdges) {
       fields[`memory.edge.${edgeKey}`] = {
         op: 'delete',
+        edgeKey,
         timestamp,
         versionVector
       };
@@ -536,11 +635,21 @@ class ClusterAwareMemory {
       if (snapshot) {
         fields[`memory.cluster.${clusterId}`] = {
           op: 'set',
+          clusterId,
           value: snapshot,
           timestamp,
           versionVector
         };
       }
+    }
+
+    for (const clusterId of this.deletedClusters) {
+      fields[`memory.cluster.${clusterId}`] = {
+        op: 'delete',
+        clusterId,
+        timestamp,
+        versionVector
+      };
     }
 
     if (Object.keys(fields).length === 0) {
@@ -639,7 +748,7 @@ class ClusterAwareMemory {
       pendingMutations: {
         nodes: this.trackedNodes.size + this.deletedNodes.size,
         edges: this.trackedEdges.size + this.deletedEdges.size,
-        clusters: this.trackedClusters.size
+        clusters: this.trackedClusters.size + this.deletedClusters.size
       }
     };
   }

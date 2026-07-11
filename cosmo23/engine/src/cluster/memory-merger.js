@@ -13,6 +13,67 @@
 
 const { CRDTMerger } = require('./backends/crdt-merger');
 
+function parseLegacyGraphIdentity(rawValue) {
+  const value = String(rawValue);
+  if (/^-?(?:0|[1-9]\d*)$/.test(value)) {
+    const numeric = Number(value);
+    if (Number.isSafeInteger(numeric) && String(numeric) === value) return numeric;
+  }
+  return value;
+}
+
+function readOwnIdentity(record, key) {
+  if (!record || typeof record !== 'object') return { present: false, value: undefined };
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  if (!descriptor) return { present: false, value: undefined };
+  if (descriptor.get || descriptor.set) throw new TypeError('memory_diff_identity_invalid');
+  return { present: true, value: descriptor.value };
+}
+
+function validateIdentity(value, kind) {
+  if (typeof value === 'number') {
+    if (kind === 'edge' || !Number.isSafeInteger(value)) {
+      throw new TypeError('memory_diff_identity_invalid');
+    }
+    return value;
+  }
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError('memory_diff_identity_invalid');
+  }
+  return value;
+}
+
+function resolveOperationIdentity(operation, kind, explicitKey, rawSuffix) {
+  const explicit = readOwnIdentity(operation, explicitKey);
+  const valueIdentity = readOwnIdentity(operation?.value, 'id');
+  if (explicit.present) validateIdentity(explicit.value, kind);
+  if (valueIdentity.present) validateIdentity(valueIdentity.value, kind);
+  if (explicit.present && valueIdentity.present && !Object.is(explicit.value, valueIdentity.value)) {
+    throw new Error('memory_diff_identity_mismatch');
+  }
+  const fallback = kind === 'edge' ? rawSuffix : parseLegacyGraphIdentity(rawSuffix);
+  const identity = explicit.present
+    ? explicit.value
+    : (valueIdentity.present ? valueIdentity.value : fallback);
+  validateIdentity(identity, kind);
+  if ((explicit.present || valueIdentity.present) && String(identity) !== rawSuffix) {
+    throw new Error('memory_diff_identity_mismatch');
+  }
+  return identity;
+}
+
+function validateEdgeRecordIdentity(value, edgeKey) {
+  const source = readOwnIdentity(value, 'source');
+  const target = readOwnIdentity(value, 'target');
+  if (!source.present && !target.present) return;
+  if (!source.present || !target.present) throw new TypeError('memory_diff_identity_invalid');
+  validateIdentity(source.value, 'node');
+  validateIdentity(target.value, 'node');
+  if (`${String(source.value)}->${String(target.value)}` !== edgeKey) {
+    throw new Error('memory_diff_identity_mismatch');
+  }
+}
+
 class MemoryDiffMerger {
   constructor(logger) {
     this.logger = logger;
@@ -54,15 +115,35 @@ class MemoryDiffMerger {
       };
 
       if (field.startsWith('memory.node.')) {
-        const nodeId = Number(field.replace('memory.node.', ''));
-        if (Number.isNaN(nodeId)) continue;
+        const rawNodeId = field.slice('memory.node.'.length);
+        if (!rawNodeId) continue;
+        const nodeId = resolveOperationIdentity(
+          operation,
+          'node',
+          'nodeId',
+          rawNodeId,
+        );
         this.applyEntry(this.nodeEntries, nodeId, entry);
       } else if (field.startsWith('memory.edge.')) {
-        const edgeKey = field.replace('memory.edge.', '');
+        const rawEdgeKey = field.slice('memory.edge.'.length);
+        if (!rawEdgeKey) continue;
+        const edgeKey = resolveOperationIdentity(
+          operation,
+          'edge',
+          'edgeKey',
+          rawEdgeKey,
+        );
+        validateEdgeRecordIdentity(entry.value, edgeKey);
         this.applyEntry(this.edgeEntries, edgeKey, entry);
       } else if (field.startsWith('memory.cluster.')) {
-        const clusterId = Number(field.replace('memory.cluster.', ''));
-        if (Number.isNaN(clusterId)) continue;
+        const rawClusterId = field.slice('memory.cluster.'.length);
+        if (!rawClusterId) continue;
+        const clusterId = resolveOperationIdentity(
+          operation,
+          'cluster',
+          'clusterId',
+          rawClusterId,
+        );
         this.applyEntry(this.clusterEntries, clusterId, entry);
       }
     }
@@ -144,7 +225,10 @@ class MemoryDiffMerger {
       if (entry.op === 'delete') {
         nodesToDelete.push(nodeId);
       } else if (entry.op === 'set' && entry.value) {
-        nodesToSet.push(entry.value);
+        nodesToSet.push({
+          ...entry.value,
+          id: nodeId,
+        });
       }
     }
 
@@ -155,8 +239,8 @@ class MemoryDiffMerger {
         edgesToDelete.push(edgeKey);
       } else if (entry.op === 'set' && entry.value) {
         edgesToSet.push({
+          ...entry.value,
           id: edgeKey,
-          ...entry.value
         });
       }
     }
@@ -167,7 +251,10 @@ class MemoryDiffMerger {
       if (entry.op === 'delete') {
         clustersToDelete.push(clusterId);
       } else if (entry.op === 'set' && entry.value) {
-        clustersToSet.push(entry.value);
+        clustersToSet.push({
+          ...entry.value,
+          id: clusterId,
+        });
       }
     }
 
