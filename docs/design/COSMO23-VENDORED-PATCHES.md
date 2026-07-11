@@ -2569,8 +2569,12 @@ Positive legacy coverage can therefore report the exact degraded
 honest unknown canonical baseline, while any non-null result must carry
 consistent retrieval facts. Focused pinned Query projection, Query worker, and
 PGS source-pin verification passed 33/33 at commit `8d917ca`; the wider PGS
-source/retry/cancellation/store slice passed 36/36. This remains offline proof,
-not live rollout acceptance.
+source/retry/cancellation/store slice passed 36/36. A cleanup follow-up at
+`6860b6e` makes shared pinned-source close attempt every anchored manifest/base/
+delta/ANN handle even when overlay cleanup fails, while preserving the primary
+typed error. Its operation-root replacement regression deterministically proves
+all six handles close, and the full pin suite passed 41/41 without garbage-
+collector cleanup. This remains offline proof, not live rollout acceptance.
 
 The original Patch 53 receipts run through branch commit `b6a44f7`; the
 canonical retrieval-evidence follow-up is verified at `8d917ca`. They do not
