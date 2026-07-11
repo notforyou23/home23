@@ -109,6 +109,28 @@ function readJsonlTail(file, limit = 20, maxBytes = 256 * 1024) {
   }
 }
 
+function sendMemorySearchError(res, error, logger = console) {
+  if (error?.name === 'AbortError' || error?.code === 'cancelled') {
+    return res.status(499).json({ ok: false, error: { code: 'cancelled' } });
+  }
+  const status = Number(error?.status) || (error?.code === 'invalid_request' ? 400
+    : error?.code === 'result_too_large' ? 413
+      : error?.code === 'source_changed' ? 409
+        : ['source_unavailable', 'source_busy'].includes(error?.code) ? 503
+          : 500);
+  if (status >= 500 && !['source_unavailable', 'source_busy'].includes(error?.code)) {
+    logger.error?.('[/api/memory/search] Error:', error.message);
+  }
+  return res.status(status).json({
+    ok: false,
+    error: {
+      code: error?.code || 'memory_search_failed',
+      message: error.message,
+      retryable: error?.retryable === true,
+    },
+  });
+}
+
 function readJsonlTailLines(filePath, limit = 100, maxBytes = 1024 * 1024) {
   const fsSync = require('fs');
   const count = Math.max(0, Number(limit) || 0);
@@ -7107,21 +7129,13 @@ Be specific, actionable, and maintain research continuity.`;
         if (result.evidence?.sourceHealth === 'unavailable') {
           return res.status(503).json({
             ok: false,
-            error: { code: 'source_unavailable' },
+            error: { code: 'source_unavailable', retryable: true },
             ...result,
           });
         }
         return res.json(result);
       } catch (error) {
-        if (error?.name === 'AbortError' || error?.code === 'cancelled') {
-          return res.status(499).json({ ok: false, error: { code: 'cancelled' } });
-        }
-        const status = Number(error?.status) || (error?.code === 'invalid_request' ? 400 : 500);
-        if (status >= 500) console.error('[/api/memory/search] Error:', error.message);
-        return res.status(status).json({
-          ok: false,
-          error: { code: error?.code || 'memory_search_failed', message: error.message },
-        });
+        return sendMemorySearchError(res, error);
       }
     };
     this.app.post('/api/memory/search', handleMemorySearch);
@@ -11891,4 +11905,9 @@ if (require.main === module) {
   });
 }
 
-module.exports = { DashboardServer, readJsonlTail, updateDashboardOAuthTokenSecrets };
+module.exports = {
+  DashboardServer,
+  readJsonlTail,
+  sendMemorySearchError,
+  updateDashboardOAuthTokenSecrets,
+};

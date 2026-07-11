@@ -83,6 +83,7 @@ function sendBrainSourceError(res, error) {
   const status = Number(error?.status) || (error?.code === 'invalid_request' ? 400
     : error?.code === 'result_too_large' ? 413
       : error?.code === 'source_changed' ? 409
+        : ['source_unavailable', 'source_busy'].includes(error?.code) ? 503
         : 500);
   return res.status(status).json({
     success: false,
