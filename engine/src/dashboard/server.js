@@ -377,6 +377,8 @@ class DashboardServer {
     const { createOperationScratchQuota } = require('../../../shared/memory-source');
     const { createDashboardSynthesisOperationRuntime } =
       require('./brain-operations/synthesis-operation-runtime.js');
+    const { createResearchRunTargetResolver } =
+      require('./brain-operations/research-run-target-resolver.js');
     const home23Root = this.getHome23Root();
     const operationRoot = path.join(
       home23Root, 'instances', requesterAgent, 'runtime', 'brain-operations',
@@ -471,11 +473,10 @@ class DashboardServer {
         activeRunPath: path.join(cosmoRoot, 'runtime'),
       });
     };
-    const resolveOwnedRunTarget = async () => {
-      const error = new Error('owned_run_operations_unavailable');
-      error.code = 'operation_unavailable';
-      throw error;
-    };
+    const resolveOwnedRunTarget = createResearchRunTargetResolver({
+      home23Root,
+      requesterAgent,
+    });
     let coordinator = null;
     let synthesisOperationRuntime = null;
     let synthesisOperationError = null;
@@ -532,6 +533,9 @@ class DashboardServer {
         if (input.operationType === 'synthesis') {
           if (!synthesisOperationRuntime) throw synthesisOperationError;
           return synthesisOperationRuntime.resolveParameters(input);
+        }
+        if (input.operationType === 'research_compile') {
+          return input.requestParameters;
         }
         if (!['query', 'pgs'].includes(input.operationType)) {
           const error = new Error(`Provider operation is not ready: ${input.operationType}`);
