@@ -2257,6 +2257,40 @@ resolution, and deterministic concurrent mutation conflicts.
 
 ---
 
+## Patch 52 — Source-honest in-process MCP bridge
+
+**Files touched:**
+- `shared/memory-source/mcp-bridge-adapter.cjs`
+- `engine/src/agents/mcp-bridge.js`
+- `cosmo23/engine/src/agents/mcp-bridge.js`
+- `tests/engine/agents/mcp-bridge-memory.test.js`
+
+**Problem:** The agent-facing in-process MCP bridges still answered system,
+query, statistics, and graph memory calls by parsing the legacy state snapshot.
+The resident bridge also hydrated every node and edge sidecar into arrays. On a
+large live brain this could exhaust the V8 heap; on an empty inline shell or a
+failed read it instead reported zero nodes as if zero were authoritative.
+`get_memory_graph(0)` additionally exposed an unbounded full-graph path.
+
+**Fix:** Both bridges now delegate memory reads to the shared canonical
+base-plus-delta tools through one trusted adapter. The adapter binds requester
+and target context at construction, rejects caller-provided identity, forwards
+abort signals and supported tag filters, preserves bounded positive node/edge
+limits, and adds compatibility graph statistics from authoritative source
+metadata. Missing context or unavailable source returns null totals with
+`sourceHealth:unavailable` and `matchOutcome:unknown`, never false zero. Scalar
+state remains separate and is constrained to an 8 MiB compressed / 32 MiB
+decompressed read, so it cannot reintroduce sidecar hydration or an unbounded
+legacy snapshot parse. The COSMO constructor still accepts its legacy positional
+`ClusterStateStore` while also supporting named source context.
+
+**Verification:** `node --test --test-concurrency=1
+tests/engine/agents/mcp-bridge-memory.test.js` passes 9 parity, source-failure,
+limit, cancellation, authority, and constructor-compatibility tests across both
+engine copies.
+
+---
+
 ## History
 
 - **2026-04-10** — initial patches applied during COSMO 2.3 integration smoke test.
@@ -2567,3 +2601,8 @@ resolution, and deterministic concurrent mutation conflicts.
   The per-agent `COSMO_RUNTIME_DIR` contract is now honored ahead of the legacy
   unified-server runtime path. Focused protocol, readiness, bounded-snapshot,
   and canonical-source tests pass for both engine copies.
+- **2026-07-10** — Patch 52 moved the agent-facing in-process MCP bridge onto
+  the same canonical bounded memory-source contract. Empty inline state shells,
+  missing source context, and read failures can no longer become authoritative
+  zero-node answers, and graph requests can no longer use `limit=0` to request
+  the whole graph.

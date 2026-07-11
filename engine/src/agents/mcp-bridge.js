@@ -1,9 +1,11 @@
 const fs = require('fs').promises;
 const path = require('path');
-const zlib = require('zlib');
 const { promisify } = require('util');
-
-const gunzip = promisify(zlib.gunzip);
+const {
+  createMcpBridgeMemoryAdapter,
+  projectScalarSystemState,
+  readBoundedGzipJson,
+} = require('../../../shared/memory-source/mcp-bridge-adapter.cjs');
 
 function loadLockfile() {
   try {
@@ -21,34 +23,6 @@ async function lock(file, options) {
 
 async function unlock(file) {
   return promisify(loadLockfile().unlock)(file);
-}
-
-function nodeTimeMs(node) {
-  const value = node?.asserted_at || node?.metadata?.asserted_at || node?.created;
-  const ms = value instanceof Date ? value.getTime() : Date.parse(value);
-  return Number.isFinite(ms) ? ms : 0;
-}
-
-function isStateSnapshot(node) {
-  const tags = Array.isArray(node?.tags) ? node.tags : [];
-  return node?.tag === 'state_snapshot' ||
-    node?.type === 'state_snapshot' ||
-    tags.includes('state_snapshot') ||
-    node?.metadata?.kind === 'state_snapshot';
-}
-
-function temporalFreshness(node, now = Date.now()) {
-  const ms = nodeTimeMs(node);
-  if (!ms) return 0.55;
-  const ageDays = Math.max(0, (now - ms) / 86400000);
-  return Math.max(0.2, Math.exp(-ageDays / 14));
-}
-
-function statusMultiplier(node) {
-  if (node?.superseded_by || node?.metadata?.superseded_by) return 0.25;
-  const status = String(node?.status || node?.metadata?.status || '').toLowerCase();
-  if (['resolved', 'completed', 'archived', 'superseded', 'stale'].includes(status)) return 0.35;
-  return 1;
 }
 
 /**
@@ -76,9 +50,10 @@ function statusMultiplier(node) {
  * 13. get_dreams - Sleep-generated insights
  */
 class MCPBridge {
-  constructor(logsDir, logger) {
+  constructor(logsDir, logger, options = {}) {
     this.logsDir = logsDir || path.join(__dirname, '..', '..', 'runtime');
     this.logger = logger;
+    const normalizedOptions = options && typeof options === 'object' ? options : {};
     
     // File paths
     this.stateFile = path.join(this.logsDir, 'state.json.gz');
@@ -86,69 +61,40 @@ class MCPBridge {
     this.topicsQueue = path.join(this.logsDir, 'topics-queue.json');
     this.topicsQueueLock = this.topicsQueue + '.lock';  // Lock file path
     this.coordinatorDir = path.join(this.logsDir, 'coordinator');
+    this.memoryAdapter = createMcpBridgeMemoryAdapter({
+      logsDir: path.resolve(this.logsDir),
+      logger,
+      brainSourceContext: normalizedOptions.brainSourceContext || null,
+      memoryTools: normalizedOptions.memoryTools || null,
+      readScalarState: ({ signal } = {}) => this.readSystemStateShell({ signal }),
+    });
   }
 
   /**
    * Read compressed system state
    */
-  async readSystemState() {
+  async readSystemState({ signal } = {}) {
     try {
-      const compressed = await fs.readFile(this.stateFile);
-      const decompressed = await gunzip(compressed);
-      const state = JSON.parse(decompressed.toString());
-
-      if (state?.memory && (!Array.isArray(state.memory.nodes) || state.memory.nodes.length === 0)) {
-        try {
-          const { sidecarsExist, readMemorySidecars } = require('../core/memory-sidecar');
-          if (sidecarsExist(this.logsDir)) {
-            const nodes = [];
-            const edges = [];
-            await readMemorySidecars(this.logsDir, {
-              onNode: n => { nodes.push(n); },
-              onEdge: e => { edges.push(e); },
-            });
-            state.memory.nodes = nodes;
-            state.memory.edges = edges;
-          }
-        } catch (sidecarError) {
-          this.logger?.warn?.('Failed to hydrate memory sidecars for MCP state', { error: sidecarError.message });
-        }
-      }
-
-      return state;
+      return await readBoundedGzipJson(this.stateFile, { signal });
     } catch (error) {
+      if (signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
+        throw signal?.reason || error;
+      }
       this.logger?.warn?.('Failed to read system state', { error: error.message });
       return null;
     }
+  }
+
+  async readSystemStateShell({ signal } = {}) {
+    return projectScalarSystemState(await this.readSystemState({ signal }));
   }
 
   /**
    * Tool 1: get_system_state
    * Returns: cycle, cognitiveState, mode, memory stats, goal counts
    */
-  async get_system_state() {
-    const state = await this.readSystemState();
-    if (!state) return null;
-
-    return {
-      cycle: state.cycleCount || 0,
-      cognitiveState: state.cognitiveState || {},
-      mode: state.currentMode || 'focus',
-      memory: {
-        totalNodes: state.memory?.nodes?.length || 0,
-        totalEdges: state.memory?.edges?.length || 0,
-        clusters: state.memory?.clusters?.length || 0,
-      },
-      goals: {
-        active: state.goals?.active?.length || 0,
-        completed: state.goals?.completed?.length || 0,
-        archived: state.goals?.archived?.length || 0,
-      },
-      journal: {
-        totalEntries: state.journal?.length || 0,
-      },
-      agents: state.activeAgents || [],
-    };
+  async get_system_state(options = {}) {
+    return this.memoryAdapter.getSystemState(options);
   }
 
   /**
@@ -173,60 +119,8 @@ class MCPBridge {
    * Tool 3: query_memory
    * Simple keyword-based search (agents can also use this.memory.query for embedding-based)
    */
-  async query_memory(query, limit = 10) {
-    const state = await this.readSystemState();
-    
-    if (!state?.memory?.nodes || state.memory.nodes.length === 0) {
-      return { query, resultsFound: 0, totalNodes: 0, results: [] };
-    }
-    
-    const queryWords = query.toLowerCase().split(/\s+/);
-    
-    const scored = state.memory.nodes.map(node => {
-      const conceptLower = (node.concept || '').toLowerCase();
-      let score = 0;
-      
-      queryWords.forEach(word => {
-        if (conceptLower.includes(word)) {
-          score += 1;
-        }
-      });
-      
-      const relevance = score;
-      const base = score * (node.activation || 0.5) * (node.weight || 0.5);
-      const freshness = temporalFreshness(node);
-      const snapshotBoost = isStateSnapshot(node) && relevance > 0 ? 5 : 0;
-      score = (base * (0.65 + 0.35 * freshness) * statusMultiplier(node)) + snapshotBoost;
-      
-      return { ...node, score, temporalFreshness: freshness };
-    });
-    
-    const results = scored
-      .filter(n => n.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit)
-      .map(({ score, concept, tag, activation, weight, accessCount, cluster, asserted_at, asserted_cycle, superseded_by, confidence_decay, status, temporalFreshness }) => ({
-        concept: concept.substring(0, 200),
-        tag,
-        activation: activation?.toFixed(3),
-        weight: weight?.toFixed(3),
-        accessCount,
-        cluster,
-        assertedAt: asserted_at || null,
-        assertedCycle: asserted_cycle ?? null,
-        supersededBy: superseded_by || null,
-        confidenceDecay: confidence_decay ?? null,
-        status: status || null,
-        temporalFreshness: temporalFreshness?.toFixed?.(3),
-        relevanceScore: score.toFixed(3)
-      }));
-    
-    return {
-      query,
-      resultsFound: results.length,
-      totalNodes: state.memory.nodes.length,
-      results
-    };
+  async query_memory(query, limit = 10, options = {}) {
+    return this.memoryAdapter.queryMemory({ ...options, query, limit });
   }
 
   /**
@@ -326,56 +220,8 @@ class MCPBridge {
   /**
    * Tool 7: get_memory_statistics
    */
-  async get_memory_statistics() {
-    const state = await this.readSystemState();
-    const memory = state?.memory || { nodes: [], edges: [] };
-
-    const stats = {
-      totalNodes: memory.nodes?.length || 0,
-      totalEdges: memory.edges?.length || 0,
-      clusters: memory.clusters?.length || 0,
-      nodesByTag: {},
-      averageActivation: 0,
-      averageWeight: 0,
-      mostAccessedNodes: [],
-      highestActivationNodes: [],
-    };
-
-    if (memory.nodes && memory.nodes.length > 0) {
-      // Group by tag
-      memory.nodes.forEach(node => {
-        const tag = node.tag || 'unknown';
-        stats.nodesByTag[tag] = (stats.nodesByTag[tag] || 0) + 1;
-      });
-
-      // Averages
-      const totalActivation = memory.nodes.reduce((sum, n) => sum + (n.activation || 0), 0);
-      const totalWeight = memory.nodes.reduce((sum, n) => sum + (n.weight || 0), 0);
-      stats.averageActivation = (totalActivation / memory.nodes.length).toFixed(3);
-      stats.averageWeight = (totalWeight / memory.nodes.length).toFixed(3);
-
-      // Most accessed
-      stats.mostAccessedNodes = memory.nodes
-        .sort((a, b) => (b.accessCount || 0) - (a.accessCount || 0))
-        .slice(0, 5)
-        .map(n => ({
-          concept: n.concept?.substring(0, 100),
-          accessCount: n.accessCount,
-          activation: n.activation?.toFixed(3),
-        }));
-
-      // Highest activation
-      stats.highestActivationNodes = memory.nodes
-        .sort((a, b) => (b.activation || 0) - (a.activation || 0))
-        .slice(0, 5)
-        .map(n => ({
-          concept: n.concept?.substring(0, 100),
-          activation: n.activation?.toFixed(3),
-          weight: n.weight?.toFixed(3),
-        }));
-    }
-
-    return stats;
+  async get_memory_statistics(options = {}) {
+    return this.memoryAdapter.getMemoryStatistics(options);
   }
 
   /**
@@ -513,31 +359,15 @@ class MCPBridge {
    * Tool 12: get_memory_graph
    * Returns complete memory network for visualization
    */
-  async get_memory_graph(limit = 200) {
-    const state = await this.readSystemState();
-    const memory = state?.memory || { nodes: [], edges: [], clusters: [] };
-
-    const nodes = limit === 0 ? memory.nodes : memory.nodes?.slice(0, limit) || [];
-    
-    return {
-      nodes: nodes.map(n => ({
-        id: n.id,
-        concept: n.concept,
-        tag: n.tag,
-        activation: n.activation,
-        weight: n.weight,
-        cluster: n.cluster,
-        accessCount: n.accessCount
-      })),
-      edges: memory.edges || [],
-      clusters: memory.clusters || [],
-      stats: {
-        totalNodes: memory.nodes?.length || 0,
-        returnedNodes: nodes.length,
-        totalEdges: memory.edges?.length || 0,
-        totalClusters: memory.clusters?.length || 0
-      }
-    };
+  async get_memory_graph(limit = 200, options = {}) {
+    if (limit && typeof limit === 'object' && !Array.isArray(limit)) {
+      const request = limit;
+      return this.memoryAdapter.getMemoryGraph({
+        ...request,
+        nodeLimit: request.nodeLimit ?? request.limit ?? 200,
+      });
+    }
+    return this.memoryAdapter.getMemoryGraph({ ...options, nodeLimit: limit });
   }
 
   /**
