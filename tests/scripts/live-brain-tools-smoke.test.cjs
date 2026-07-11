@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -248,7 +249,10 @@ test('large pinned PGS partial retains canonical null-answer sweep outputs and e
 });
 
 test('SSE receipts preserve production event type and monotonic eventSequence', async (t) => {
-  const { flushActivity } = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const {
+    createActivityCollector,
+    flushActivity,
+  } = await import('../../scripts/live-brain-tools-smoke.mjs');
   const state = await fixture();
   t.after(() => fs.rm(state.root, { recursive: true, force: true }));
   const output = path.join(state.context.receiptRunDir, 'pgs-events.jsonl');
@@ -276,6 +280,293 @@ test('SSE receipts preserve production event type and monotonic eventSequence', 
     '2026-07-10T00:00:01.000Z',
     '2026-07-10T00:00:01.000Z',
   ]);
+
+  const collector = createActivityCollector({ maxEvents: 4 });
+  const replay = {
+    source: 'brain_operation', operationId: 'op_attachment_replay', type: 'progress',
+    eventSequence: 1, sequence: 1, state: 'running', phase: 'provider',
+    updatedAt: '2026-07-10T00:00:01.000Z', lastProviderActivityAt: null,
+    lastProgressAt: '2026-07-10T00:00:01.000Z',
+  };
+  collector.listener('primary')(replay);
+  collector.listener('survivor')({ ...replay });
+  assert.equal(collector.events.length, 1);
+  assert.deepEqual(collector.events[0].observedAttachments, ['primary', 'survivor']);
+  assert.deepEqual(collector.summary('op_attachment_replay'), {
+    uniqueEvents: 1,
+    duplicateDeliveries: 1,
+    attachments: [
+      { attachment: 'primary', observations: 1 },
+      { attachment: 'survivor', observations: 1 },
+    ],
+  });
+  assert.throws(
+    () => collector.listener('conflicting')({ ...replay, type: 'terminal' }),
+    (error) => error.code === 'operation_event_identity_conflict',
+  );
+  const payloadReplay = {
+    ...replay,
+    eventSequence: 2,
+    sequence: 2,
+    tokenDelta: { text: 'first authenticated payload' },
+  };
+  collector.listener('primary')(payloadReplay);
+  assert.throws(
+    () => collector.listener('survivor')({
+      ...payloadReplay,
+      tokenDelta: { text: 'conflicting authenticated payload' },
+    }),
+    (error) => error.code === 'operation_event_identity_conflict',
+  );
+  collector.listener('other-operation')({
+    ...replay,
+    operationId: 'op_other_attachment',
+  });
+  assert.deepEqual(collector.summary('op_attachment_replay').attachments, [
+    { attachment: 'primary', observations: 2 },
+    { attachment: 'survivor', observations: 1 },
+  ]);
+
+  const eventBytes = Buffer.byteLength(JSON.stringify(replay), 'utf8');
+  const byteBounded = createActivityCollector({
+    maxEvents: 10,
+    maxEventBytes: eventBytes + 16,
+    maxRetainedBytes: eventBytes + 16,
+  });
+  byteBounded.add(replay);
+  assert.throws(
+    () => byteBounded.add({ ...replay, eventSequence: 2, sequence: 2 }),
+    (error) => error.code === 'operation_activity_bytes_exceeded',
+  );
+  assert.throws(
+    () => createActivityCollector({
+      maxEvents: 10,
+      maxEventBytes: 128,
+      maxRetainedBytes: 1024,
+    }).add({ ...replay, oversized: 'x'.repeat(1024) }),
+    (error) => error.code === 'operation_activity_event_too_large',
+  );
+  const dedupedOutput = path.join(state.context.receiptRunDir, 'deduped-events.jsonl');
+  await flushActivity(
+    state.context,
+    dedupedOutput,
+    collector.events,
+    'jerry',
+    'detach-reattach',
+    'live',
+  );
+  const [deduped] = (await fs.readFile(dedupedOutput, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(deduped.streamAttachments, ['primary', 'survivor']);
+  await assert.rejects(
+    flushActivity(
+      state.context,
+      path.join(state.context.receiptRunDir, 'duplicate-events.jsonl'),
+      [replay, { ...replay }],
+      'jerry',
+      'detach-reattach',
+      'live',
+    ),
+    (error) => error.code === 'operation_event_out_of_order',
+  );
+});
+
+test('HTTP, receipt, and memory evidence readers remain bounded before parse', async (t) => {
+  const {
+    createBoundedMetricAccumulator,
+    readReceiptRows,
+    readResponseJsonBounded,
+  } = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const state = await fixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+
+  const oversizedReceipt = path.join(state.context.receiptRunDir, 'oversized.json');
+  const handle = await fs.open(oversizedReceipt, 'wx');
+  await handle.truncate(32 * 1024 * 1024 + 1);
+  await handle.close();
+  await assert.rejects(
+    readReceiptRows(oversizedReceipt),
+    (error) => error.code === 'receipt_invalid',
+  );
+  const response = new Response('12345', {
+    headers: { 'content-type': 'application/json', 'content-length': '5' },
+  });
+  await assert.rejects(
+    readResponseJsonBounded(response, { maxBytes: 4, errorCode: 'bounded_http_test' }),
+    (error) => error.code === 'bounded_http_test',
+  );
+  let advertisedBodyCancelled = false;
+  await assert.rejects(
+    readResponseJsonBounded({
+      headers: { get: () => '5' },
+      body: {
+        async cancel() { advertisedBodyCancelled = true; },
+        getReader() { throw new Error('oversized body must not be opened'); },
+      },
+    }, { maxBytes: 4, errorCode: 'bounded_http_test' }),
+    (error) => error.code === 'bounded_http_test',
+  );
+  assert.equal(advertisedBodyCancelled, true);
+  await assert.rejects(
+    readResponseJsonBounded({ headers: { get: () => null }, body: {} }, {
+      maxBytes: 4,
+      errorCode: 'bounded_http_test',
+    }),
+    (error) => error.code === 'bounded_http_test',
+  );
+  let invalidChunkCancelled = false;
+  await assert.rejects(
+    readResponseJsonBounded({
+      headers: { get: () => null },
+      body: {
+        getReader() {
+          let delivered = false;
+          return {
+            async read() {
+              if (delivered) return { done: true, value: undefined };
+              delivered = true;
+              return { done: false, value: 'not-a-byte-chunk' };
+            },
+            async cancel() { invalidChunkCancelled = true; },
+            releaseLock() {},
+          };
+        },
+      },
+    }, { maxBytes: 64, errorCode: 'bounded_http_test' }),
+    (error) => error.code === 'bounded_http_test',
+  );
+  assert.equal(invalidChunkCancelled, true);
+
+  const accumulator = createBoundedMetricAccumulator({ role: 'dashboard', expectedPid: 123 });
+  for (let index = 0; index < 10_000; index += 1) {
+    accumulator.add({
+      role: 'dashboard', pid: 123, restartCount: 0,
+      capturedAt: new Date(1_000 + index).toISOString(),
+      updatedAt: new Date(1_000 + index).toISOString(),
+      v8HeapUsedMiB: 100 + (index === 5_000 ? 50 : 0),
+      rssMiB: 200 + (index === 6_000 ? 60 : 0),
+      processMaxRssMiB: 300 + Math.floor(index / 1_000),
+    });
+  }
+  const summary = accumulator.summary();
+  assert.equal(summary.observedSamples, 10_000);
+  assert.ok(summary.retainedSamples <= 256);
+  assert.equal(summary.maxSampledV8HeapGrowthMiB, 50);
+  assert.equal(summary.maxSampledRssGrowthMiB, 60);
+  assert.equal(summary.processMaxRssGrowthMiB, 9);
+  assert.equal(summary.samples.length, summary.retainedSamples);
+});
+
+test('fixture cleanup owns signals, aborts work, removes handlers, and stops once', async () => {
+  const { createBoundedFixtureCleanup } = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const signalTarget = new EventEmitter();
+  const controller = new AbortController();
+  let stops = 0;
+  const fixtureValue = { pids: {}, children: {} };
+  const cleanup = createBoundedFixtureCleanup({
+    fixture: fixtureValue,
+    stopFixture: async (received) => {
+      stops += 1;
+      assert.equal(received, fixtureValue);
+      return { retainedStore: '/controlled/store' };
+    },
+    controller,
+    signalTarget,
+    timeoutMs: 1_000,
+  });
+  signalTarget.emit('SIGTERM');
+  assert.equal(controller.signal.aborted, true);
+  assert.equal(controller.signal.reason.code, 'acceptance_interrupted');
+  assert.equal(controller.signal.reason.exitCode, 143);
+  assert.deepEqual(await cleanup.cleanup(), { retainedStore: '/controlled/store' });
+  await cleanup.cleanup();
+  cleanup.dispose();
+  assert.equal(stops, 1);
+  assert.equal(signalTarget.listenerCount('SIGINT'), 0);
+  assert.equal(signalTarget.listenerCount('SIGTERM'), 0);
+});
+
+test('fixture cleanup deadline force-kills only the three exact owned fixture children', async () => {
+  const { createBoundedFixtureCleanup } = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const killed = [];
+  const pids = { dashboard: 101, cosmo: 202, mcp: 303 };
+  const children = Object.fromEntries(Object.entries(pids).map(([role, pid]) => {
+    const child = new EventEmitter();
+    child.pid = pid;
+    child.exitCode = null;
+    child.signalCode = null;
+    child.kill = (signal) => {
+      killed.push({ role, pid, signal });
+      setImmediate(() => child.emit('exit', null, signal));
+      return true;
+    };
+    return [role, child];
+  }));
+  const cleanup = createBoundedFixtureCleanup({
+    fixture: { pids, children },
+    stopFixture: () => new Promise(() => {}),
+    controller: new AbortController(),
+    signalTarget: new EventEmitter(),
+    timeoutMs: 5,
+    forceTimeoutMs: 1_000,
+  });
+  await assert.rejects(
+    cleanup.cleanup(),
+    (error) => error.code === 'isolated_fixture_cleanup_timeout',
+  );
+  cleanup.dispose();
+  assert.deepEqual(killed, [
+    { role: 'dashboard', pid: 101, signal: 'SIGKILL' },
+    { role: 'cosmo', pid: 202, signal: 'SIGKILL' },
+    { role: 'mcp', pid: 303, signal: 'SIGKILL' },
+  ]);
+});
+
+test('isolated own, sibling, and research source manifests are rehashed after a run', async (t) => {
+  const {
+    captureFixtureSourceIntegrity,
+    verifyFixtureSourceIntegrity,
+  } = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'home23-source-integrity-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const agent = 'integrity-fixture';
+  const roots = {
+    own: path.join(root, 'instances', agent, 'brain'),
+    sibling: path.join(root, 'instances', `${agent}-sibling`, 'brain'),
+    research: path.join(
+      root, 'instances', agent, 'workspace', 'research', 'runs', 'completed-fixture-run',
+    ),
+  };
+  for (const [role, brainDir] of Object.entries(roots)) {
+    await fs.mkdir(brainDir, { recursive: true });
+    await Promise.all([
+      fs.writeFile(path.join(brainDir, 'nodes.jsonl'), `${role}-node\n`),
+      fs.writeFile(path.join(brainDir, 'edges.jsonl'), `${role}-edge\n`),
+      fs.writeFile(path.join(brainDir, 'delta.jsonl'), ''),
+      fs.writeFile(path.join(brainDir, 'brain-snapshot.json'), '{"currentRevision":1}\n'),
+      fs.writeFile(path.join(brainDir, 'brain-state.json'), '{"mutable":true}\n'),
+    ]);
+    await fs.writeFile(path.join(brainDir, 'memory-manifest.json'), JSON.stringify({
+      generation: `${role}-g1`,
+      currentRevision: 1,
+      activeBase: { nodes: { file: 'nodes.jsonl' }, edges: { file: 'edges.jsonl' } },
+      activeDelta: { file: 'delta.jsonl' },
+    }));
+  }
+  const options = { fixtureRoot: root, agent };
+  const before = await captureFixtureSourceIntegrity(options);
+  const unchanged = await verifyFixtureSourceIntegrity(before, options);
+  assert.equal(unchanged.unchanged, true);
+  assert.deepEqual(unchanged.before.sources.map((source) => source.role), [
+    'own', 'sibling', 'research',
+  ]);
+  assert.ok(unchanged.before.sources.every((source) => source.files.length === 5
+    && source.excludedMutableFiles[0] === 'brain-state.json'));
+
+  await fs.appendFile(path.join(roots.sibling, 'nodes.jsonl'), 'drift\n');
+  await assert.rejects(
+    verifyFixtureSourceIntegrity(before, options),
+    (error) => error.code === 'isolated_source_identity_or_hash_drift',
+  );
 });
 
 test('authoritative canary discovery precedes query and typed failures remain failures', async (t) => {

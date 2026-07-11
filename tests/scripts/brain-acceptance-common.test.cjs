@@ -104,3 +104,28 @@ test('npm pretest cannot silently omit the isolated authority and lifecycle regr
     assert.equal(aggregate.split(file).length - 1, 1, `${file} registration count`);
   }
 });
+
+test('bounded readers reject oversized and symlinked JSON before parsing', async (t) => {
+  const {
+    readBoundedFile,
+    readJson,
+  } = await import('../../scripts/lib/brain-acceptance-common.mjs');
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'home23-bounded-read-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const document = path.join(root, 'document.json');
+  const link = path.join(root, 'document-link.json');
+  await fs.writeFile(document, JSON.stringify({ value: 'bounded' }));
+  await fs.symlink(document, link);
+
+  assert.deepEqual(await readJson(document, { maxBytes: 1024 }), { value: 'bounded' });
+  assert.equal((await readBoundedFile(document, { maxBytes: 1024, encoding: 'utf8' })),
+    JSON.stringify({ value: 'bounded' }));
+  await assert.rejects(
+    readJson(document, { maxBytes: 4 }),
+    (error) => error.code === 'json_file_invalid',
+  );
+  await assert.rejects(
+    readJson(link, { maxBytes: 1024 }),
+    (error) => error.code === 'json_file_invalid',
+  );
+});

@@ -323,11 +323,21 @@ export async function hashFile(file, { maxBytes = DEFAULT_MAX_HASH_BYTES, prefix
     if (error?.code === 'file_too_large') error.message = `bounded file hash refused: ${file}`;
     throw error;
   }
-  const handle = await fsp.open(file, 'r');
+  const handle = await fsp.open(
+    file,
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0),
+  );
   const hash = createHash('sha256');
   let offset = 0;
   const buffer = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, size)));
   try {
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || opened.isSymbolicLink()
+        || opened.dev !== stat.dev || opened.ino !== stat.ino
+        || opened.size !== stat.size || opened.mtimeNs !== stat.mtimeNs
+        || opened.ctimeNs !== stat.ctimeNs) {
+      throw typedError('file_changed', `file changed before hashing: ${file}`);
+    }
     while (offset < size) {
       const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, size - offset), offset);
       if (!bytesRead) throw typedError('file_changed', `file shortened while hashing: ${file}`);
@@ -353,12 +363,71 @@ export async function hashFile(file, { maxBytes = DEFAULT_MAX_HASH_BYTES, prefix
   });
 }
 
-export async function readJson(file, { maxBytes = 32 * 1024 * 1024 } = {}) {
-  const stat = await fsp.lstat(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > maxBytes) {
-    throw typedError('json_file_invalid', `invalid JSON file: ${file}`);
+export async function readBoundedFile(file, {
+  maxBytes = 32 * 1024 * 1024,
+  encoding = null,
+  errorCode = 'file_invalid',
+  requireSingleLink = false,
+} = {}) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0
+      || (encoding !== null && typeof encoding !== 'string')) {
+    throw typedError('bounded_read_invalid');
   }
-  return JSON.parse(await fsp.readFile(file, 'utf8'));
+  let handle;
+  try {
+    const before = await fsp.lstat(file, { bigint: true });
+    if (!before.isFile() || before.isSymbolicLink() || before.size > BigInt(maxBytes)
+        || (requireSingleLink && before.nlink !== 1n)) {
+      throw typedError(errorCode, `bounded read refused: ${file}`);
+    }
+    handle = await fsp.open(
+      file,
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0),
+    );
+    const opened = await handle.stat({ bigint: true });
+    if (!opened.isFile() || opened.isSymbolicLink()
+        || opened.dev !== before.dev || opened.ino !== before.ino
+        || opened.size !== before.size || opened.size > BigInt(maxBytes)
+        || (requireSingleLink && opened.nlink !== 1n)) {
+      throw typedError(errorCode, `bounded read identity changed: ${file}`);
+    }
+    const size = Number(opened.size);
+    const bytes = Buffer.allocUnsafe(size);
+    let offset = 0;
+    while (offset < size) {
+      const { bytesRead } = await handle.read(bytes, offset, size - offset, offset);
+      if (bytesRead === 0) throw typedError(errorCode, `bounded read shortened: ${file}`);
+      offset += bytesRead;
+    }
+    const overflowProbe = Buffer.allocUnsafe(1);
+    const { bytesRead: overflowBytes } = await handle.read(overflowProbe, 0, 1, size);
+    const after = await handle.stat({ bigint: true });
+    if (overflowBytes !== 0 || after.dev !== opened.dev || after.ino !== opened.ino
+        || after.size !== opened.size || after.mtimeNs !== opened.mtimeNs
+        || after.ctimeNs !== opened.ctimeNs
+        || (requireSingleLink && after.nlink !== 1n)) {
+      throw typedError(errorCode, `bounded read changed concurrently: ${file}`);
+    }
+    return encoding === null ? bytes : bytes.toString(encoding);
+  } catch (error) {
+    if (error?.code === errorCode || error?.code === 'bounded_read_invalid') throw error;
+    throw typedError(errorCode, `bounded read failed: ${file}`, { cause: error });
+  } finally {
+    await handle?.close();
+  }
+}
+
+export async function readJson(file, { maxBytes = 32 * 1024 * 1024 } = {}) {
+  const text = await readBoundedFile(file, {
+    maxBytes,
+    encoding: 'utf8',
+    errorCode: 'json_file_invalid',
+  });
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw typedError('json_file_invalid', `invalid JSON file: ${file}`, { cause: error });
+  }
 }
 
 export function isMain(importMetaUrl, argv = process.argv) {
@@ -369,7 +438,10 @@ export function failCli(error) {
   const code = error?.code || 'acceptance_helper_failed';
   const message = error?.message || String(error);
   process.stderr.write(`${JSON.stringify({ ok: false, error: { code, message } })}\n`);
-  process.exitCode = 1;
+  process.exitCode = Number.isSafeInteger(error?.exitCode)
+    && error.exitCode >= 1 && error.exitCode <= 255
+    ? error.exitCode
+    : 1;
 }
 
 export async function sleep(ms, signal) {

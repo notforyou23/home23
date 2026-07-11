@@ -18,6 +18,7 @@ import {
   numberValue,
   one,
   parseCli,
+  readBoundedFile,
   readJson,
   receiptContext,
   sha256Bytes,
@@ -53,6 +54,28 @@ const ACTIVITY_TYPES = new Set([
 ]);
 const SWEEP_RECEIPT_MAX_COUNT = 10_000;
 const SWEEP_EXCERPT_CHARACTERS = 512;
+const MAX_TOOL_RESULT_BYTES = 16 * 1024 * 1024;
+const MAX_HTTP_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_MCP_RESPONSE_BYTES = 16 * 1024 * 1024;
+const MAX_RECEIPT_BYTES = 32 * 1024 * 1024;
+const MAX_RECEIPT_ROWS = 100_000;
+const MAX_ARTIFACT_MANIFEST_BYTES = 32 * 1024 * 1024;
+const MAX_ARTIFACT_FILES = 50_000;
+const MAX_IDENTITY_OPERATIONS = 10_000;
+const MAX_RESULT_ARTIFACT_BYTES = 8 * 1024 * 1024 * 1024;
+const MAX_ACTIVITY_EVENTS = 100_000;
+const MAX_ACTIVITY_EVENT_BYTES = 256 * 1024;
+const MAX_ACTIVITY_RETAINED_BYTES = 64 * 1024 * 1024;
+const MAX_METRIC_SAMPLES_PER_ROLE = 256;
+const MAX_SOURCE_FILES_PER_BRAIN = 10_000;
+const MAX_SOURCE_FILE_BYTES = 8 * 1024 * 1024 * 1024;
+const MAX_SOURCE_TOTAL_BYTES = 16 * 1024 * 1024 * 1024;
+const MEMORY_GROWTH_LIMIT_MIB = 256;
+const METRIC_SEMANTICS = Object.freeze({
+  v8HeapUsedBytes: 'request-time-sample',
+  rssBytes: 'request-time-sample',
+  processMaxRssBytes: 'process-lifetime-high-water',
+});
 const require = createRequire(import.meta.url);
 
 export async function loadProductionModules() {
@@ -83,6 +106,9 @@ function targetSelector(values) {
 function exactPair(values, key) {
   const raw = one(values, key);
   if (!raw) return undefined;
+  if (typeof raw !== 'string' || Buffer.byteLength(raw, 'utf8') > 4 * 1024) {
+    throw typedError('provider_pair_invalid', key);
+  }
   let pair;
   try { pair = JSON.parse(raw); } catch (error) { throw typedError('provider_pair_invalid', key, { cause: error }); }
   if (!pair || Array.isArray(pair) || typeof pair !== 'object'
@@ -122,6 +148,9 @@ function parseToolJson(result, label) {
   const prefix = `${label}\n`;
   if (typeof result?.content !== 'string' || !result.content.startsWith(prefix)) {
     throw typedError('brain_tool_result_invalid', label);
+  }
+  if (Buffer.byteLength(result.content, 'utf8') > MAX_TOOL_RESULT_BYTES) {
+    throw typedError('brain_tool_result_too_large', label);
   }
   let value;
   try { value = JSON.parse(result.content.slice(prefix.length)); } catch (error) {
@@ -205,12 +234,151 @@ function authorityFields(context, values, baseUrl) {
   return { authorizedEndpoint: null, isolatedStore: path.resolve(store) };
 }
 
+function activityEventSequence(activity) {
+  const value = activity?.eventSequence ?? activity?.sequence;
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+function activityConflictFields(activity) {
+  const {
+    observedAttachments: _observedAttachments,
+    eventSequence: _eventSequence,
+    sequence: _sequence,
+    ...payload
+  } = activity || {};
+  return { ...payload, eventSequence: activityEventSequence(activity) };
+}
+
+function activityByteLength(activity) {
+  try {
+    const encoded = JSON.stringify(activity);
+    if (typeof encoded !== 'string') throw new Error('activity is not serializable');
+    return Buffer.byteLength(encoded, 'utf8');
+  } catch (error) {
+    throw typedError('operation_event_invalid', undefined, { cause: error });
+  }
+}
+
+export function createActivityCollector({
+  maxEvents = MAX_ACTIVITY_EVENTS,
+  maxEventBytes = MAX_ACTIVITY_EVENT_BYTES,
+  maxRetainedBytes = MAX_ACTIVITY_RETAINED_BYTES,
+} = {}) {
+  if (!Number.isSafeInteger(maxEvents) || maxEvents < 1
+      || !Number.isSafeInteger(maxEventBytes) || maxEventBytes < 1
+      || !Number.isSafeInteger(maxRetainedBytes) || maxRetainedBytes < 1) {
+    throw typedError('operation_activity_limit_invalid');
+  }
+  const events = [];
+  const byIdentity = new Map();
+  const observationsByAttachment = new Map();
+  const duplicateDeliveriesByOperation = new Map();
+  let duplicateDeliveries = 0;
+  let retainedBytes = 0;
+
+  function add(activity, attachment = 'primary') {
+    const sequence = activityEventSequence(activity);
+    if (typeof attachment !== 'string' || !attachment
+        || typeof activity?.operationId !== 'string' || !activity.operationId
+        || sequence === null || !ACTIVITY_TYPES.has(activity.type)) {
+      throw typedError('operation_event_invalid');
+    }
+    const eventBytes = activityByteLength(activity);
+    if (eventBytes > maxEventBytes) {
+      throw typedError('operation_activity_event_too_large');
+    }
+    const identity = `${activity.operationId}\0${sequence}`;
+    const existing = byIdentity.get(identity);
+    if (existing) {
+      if (!isDeepStrictEqual(
+        activityConflictFields(existing),
+        activityConflictFields(activity),
+      )) {
+        throw typedError('operation_event_identity_conflict', identity);
+      }
+      duplicateDeliveries += 1;
+      duplicateDeliveriesByOperation.set(
+        activity.operationId,
+        (duplicateDeliveriesByOperation.get(activity.operationId) || 0) + 1,
+      );
+      if (!existing.observedAttachments.includes(attachment)) {
+        existing.observedAttachments.push(attachment);
+        existing.observedAttachments.sort();
+      }
+    } else {
+      if (events.length >= maxEvents) throw typedError('operation_activity_limit_exceeded');
+      if (retainedBytes + eventBytes > maxRetainedBytes) {
+        throw typedError('operation_activity_bytes_exceeded');
+      }
+      const captured = {
+        ...activity,
+        eventSequence: sequence,
+        observedAttachments: [attachment],
+      };
+      byIdentity.set(identity, captured);
+      events.push(captured);
+      retainedBytes += eventBytes;
+    }
+    const attachmentObservations = observationsByAttachment.get(attachment) || new Map();
+    attachmentObservations.set(
+      activity.operationId,
+      (attachmentObservations.get(activity.operationId) || 0) + 1,
+    );
+    observationsByAttachment.set(attachment, attachmentObservations);
+  }
+
+  return Object.freeze({
+    events,
+    listener(attachment) {
+      return (activity) => add(activity, attachment);
+    },
+    add,
+    summary(operationId = null) {
+      const selected = operationId
+        ? events.filter((event) => event.operationId === operationId)
+        : events;
+      return {
+        uniqueEvents: selected.length,
+        duplicateDeliveries: operationId
+          ? duplicateDeliveriesByOperation.get(operationId) || 0
+          : duplicateDeliveries,
+        attachments: [...observationsByAttachment.entries()]
+          .map(([attachment, byOperation]) => ({
+            attachment,
+            observations: operationId
+              ? byOperation.get(operationId) || 0
+              : [...byOperation.values()].reduce((total, value) => total + value, 0),
+          }))
+          .filter((entry) => entry.observations > 0)
+          .sort((left, right) => left.attachment.localeCompare(right.attachment)),
+      };
+    },
+  });
+}
+
+function retainedProviderTerminalValid(evidence, terminal) {
+  return evidence?.evidenceSource === 'durable-operation-store'
+    && evidence.operationId === terminal.operationId
+    && Number.isSafeInteger(evidence.eventSequence)
+    && typeof evidence.provider === 'string' && evidence.provider
+    && typeof evidence.model === 'string' && evidence.model
+    && typeof evidence.providerCallId === 'string' && evidence.providerCallId
+    && ['complete', 'partial', 'failed', 'cancelled', 'aborted'].includes(evidence.outcome);
+}
+
 function terminalReceipt({
   context, values, baseUrl, callerAgent, scenario, terminal, activityLog = [], extras = {},
+  retainedProviderTerminalEvidence = null,
 }) {
+  const streamedProviderTerminal = activityLog.some((activity) =>
+    activity?.operationId === terminal.operationId
+      && activity?.type === 'provider_call_terminal');
+  const retainedProviderTerminal = retainedProviderTerminalValid(
+    retainedProviderTerminalEvidence,
+    terminal,
+  );
   const providerTerminalValidated = PROVIDER_OPERATION_TYPES.has(terminal.operationType)
-    ? activityLog.some((activity) => activity?.operationId === terminal.operationId
-      && activity?.type === 'provider_call_terminal')
+    ? streamedProviderTerminal || retainedProviderTerminal
     : null;
   if (PROVIDER_OPERATION_TYPES.has(terminal.operationType)
       && ['complete', 'partial'].includes(terminal.state)
@@ -250,6 +418,11 @@ function terminalReceipt({
       Number(terminal.sourceEvidence?.authoritativeTotals?.nodes),
     ) ? Number(terminal.sourceEvidence.authoritativeTotals.nodes) : null,
     providerTerminalValidated,
+    providerTerminalEvidenceSource: PROVIDER_OPERATION_TYPES.has(terminal.operationType)
+      ? streamedProviderTerminal ? 'operation-stream'
+        : retainedProviderTerminal ? 'durable-operation-store'
+          : null
+      : null,
     lastProgressAt: terminal.lastProgressAt,
     error: terminal.error,
     result: resultProjection(terminal.result),
@@ -284,7 +457,14 @@ function parseReceiptDocument(text) {
     if (error?.code === 'receipt_invalid') throw error;
   }
   const rows = [];
-  for (const line of trimmed.split('\n').filter(Boolean)) {
+  let offset = 0;
+  while (offset <= trimmed.length) {
+    const newline = trimmed.indexOf('\n', offset);
+    const end = newline === -1 ? trimmed.length : newline;
+    const line = trimmed.slice(offset, end).trim();
+    offset = newline === -1 ? trimmed.length + 1 : newline + 1;
+    if (!line) continue;
+    if (rows.length >= MAX_RECEIPT_ROWS) throw typedError('receipt_row_limit_exceeded');
     let row;
     try { row = JSON.parse(line); } catch (error) {
       throw typedError('receipt_invalid', 'receipt contains invalid JSON', { cause: error });
@@ -299,11 +479,12 @@ function parseReceiptDocument(text) {
 }
 
 export async function readReceiptRows(file, { verifyArtifact = true } = {}) {
-  const stat = await fsp.lstat(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 128 * 1024 * 1024) {
-    throw typedError('receipt_invalid');
-  }
-  const text = await fsp.readFile(file, 'utf8');
+  const text = await readBoundedFile(file, {
+    maxBytes: MAX_RECEIPT_BYTES,
+    encoding: 'utf8',
+    errorCode: 'receipt_invalid',
+    requireSingleLink: true,
+  });
   return parseReceiptDocument(text).map((row) => {
     if (verifyArtifact) {
       const { artifactSha256, ...core } = row;
@@ -403,11 +584,89 @@ async function discoverCanary({ client, selector, signal }) {
   throw typedError('canary_unavailable');
 }
 
+export async function readResponseBytesBounded(response, {
+  maxBytes = MAX_HTTP_JSON_BYTES,
+  errorCode = 'http_response_invalid',
+} = {}) {
+  if (!response || !Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw typedError(errorCode);
+  }
+  const cancelSafely = async (target) => {
+    try { await target?.cancel?.(); } catch { /* cancellation is best-effort */ }
+  };
+  const declared = response.headers?.get?.('content-length');
+  if (declared !== null && declared !== undefined && declared !== '') {
+    const contentLength = Number(declared);
+    if (!Number.isSafeInteger(contentLength) || contentLength < 0 || contentLength > maxBytes) {
+      await cancelSafely(response.body);
+      throw typedError(errorCode, 'response body exceeds bounded reader');
+    }
+  }
+  if (!response.body) return Buffer.alloc(0);
+  let reader;
+  try {
+    reader = response.body.getReader();
+  } catch (error) {
+    throw typedError(errorCode, 'response body is not a readable byte stream', { cause: error });
+  }
+  if (!reader || typeof reader.read !== 'function'
+      || typeof reader.cancel !== 'function'
+      || typeof reader.releaseLock !== 'function') {
+    await cancelSafely(reader);
+    throw typedError(errorCode, 'response body is not a readable byte stream');
+  }
+  const chunks = [];
+  let total = 0;
+  let chunkCount = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) {
+        throw typedError(errorCode, 'response body yielded a non-byte chunk');
+      }
+      const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+      total += chunk.length;
+      chunkCount += 1;
+      if (total > maxBytes || chunkCount > 100_000) {
+        await cancelSafely(reader);
+        throw typedError(errorCode, 'response body exceeds bounded reader');
+      }
+      if (chunk.length > 0) chunks.push(chunk);
+    }
+  } catch (error) {
+    await cancelSafely(reader);
+    if (error?.code === errorCode) throw error;
+    throw typedError(errorCode, 'response body read failed', { cause: error });
+  } finally {
+    try { reader.releaseLock(); } catch { /* stream already released by cancellation */ }
+  }
+  return Buffer.concat(chunks, total);
+}
+
+export async function readResponseJsonBounded(response, options = {}) {
+  const errorCode = options.errorCode || 'http_response_invalid';
+  const bytes = await readResponseBytesBounded(response, options);
+  if (bytes.length === 0) return null;
+  try {
+    return JSON.parse(bytes.toString('utf8'));
+  } catch (error) {
+    throw typedError(errorCode, 'response contains invalid JSON', { cause: error });
+  }
+}
+
 async function fetchJson(url, init = {}, fetchImpl = fetch, timeoutMs = 30_000) {
   const response = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
-  const text = await response.text();
   let body;
-  try { body = text ? JSON.parse(text) : null; } catch { body = null; }
+  try {
+    body = await readResponseJsonBounded(response, {
+      maxBytes: MAX_HTTP_JSON_BYTES,
+      errorCode: 'http_response_invalid',
+    });
+  } catch (error) {
+    if (response.ok) throw error;
+    body = null;
+  }
   if (!response.ok) {
     throw typedError(body?.error?.code || 'http_request_failed', body?.error?.message || `HTTP ${response.status}`, {
       status: response.status, body,
@@ -466,14 +725,26 @@ async function mcpCall(baseUrl, name, args, fetchImpl = fetch) {
     }),
     signal: AbortSignal.timeout(30_000),
   });
-  const textBody = await response.text();
+  const textBody = (await readResponseBytesBounded(response, {
+    maxBytes: MAX_MCP_RESPONSE_BYTES,
+    errorCode: 'mcp_result_invalid',
+  })).toString('utf8');
   let body = null;
   try {
     if (response.headers.get('content-type')?.includes('text/event-stream')) {
-      const messages = textBody.split('\n')
-        .filter((line) => line.startsWith('data: '))
-        .map((line) => JSON.parse(line.slice(6)));
-      body = messages.findLast((message) => message?.result || message?.error) || null;
+      let messages = 0;
+      let offset = 0;
+      while (offset <= textBody.length) {
+        const newline = textBody.indexOf('\n', offset);
+        const end = newline === -1 ? textBody.length : newline;
+        const line = textBody.slice(offset, end);
+        offset = newline === -1 ? textBody.length + 1 : newline + 1;
+        if (!line.startsWith('data: ')) continue;
+        messages += 1;
+        if (messages > 10_000) throw typedError('mcp_result_invalid');
+        const message = JSON.parse(line.slice(6));
+        if (message?.result || message?.error) body = message;
+      }
     } else {
       body = textBody ? JSON.parse(textBody) : null;
     }
@@ -523,7 +794,10 @@ async function validateUnavailableMcp({ baseUrl, expectedReasons, fetchImpl = fe
     if (expectedReasons.includes('mcp_unreachable')) return { reason: 'mcp_unreachable' };
     throw error;
   }
-  const body = await response.json().catch(() => null);
+  const body = await readResponseJsonBounded(response, {
+    maxBytes: 256 * 1024,
+    errorCode: 'mcp_result_invalid',
+  }).catch(() => null);
   const reason = body?.mcp?.reason;
   if (response.ok || !expectedReasons.includes(reason)) throw typedError('mcp_unavailability_mismatch');
   return { reason, status: response.status };
@@ -531,17 +805,27 @@ async function validateUnavailableMcp({ baseUrl, expectedReasons, fetchImpl = fe
 
 export async function flushActivity(context, output, activities, callerAgent, scenario, authority) {
   if (!output) return;
+  if (!Array.isArray(activities) || activities.length > MAX_ACTIVITY_EVENTS) {
+    throw typedError('operation_activity_limit_exceeded');
+  }
   await ensureFreshOutput(output);
   const previousByOperation = new Map();
-  for (const activity of activities) {
+  const seen = new Set();
+  const ordered = [...activities].sort((left, right) => {
+    const operation = String(left?.operationId || '').localeCompare(String(right?.operationId || ''));
+    return operation || Number(activityEventSequence(left)) - Number(activityEventSequence(right));
+  });
+  for (const activity of ordered) {
     const previous = previousByOperation.get(activity.operationId) ?? -1;
+    const sequence = activityEventSequence(activity);
+    const identity = `${activity.operationId}\0${sequence}`;
     if (typeof activity.operationId !== 'string' || !activity.operationId
         || !ACTIVITY_TYPES.has(activity.type)
-        || !Number.isSafeInteger(activity.eventSequence)
-        || activity.eventSequence <= previous) {
+        || sequence === null || sequence <= previous || seen.has(identity)) {
       throw typedError('operation_event_out_of_order');
     }
-    previousByOperation.set(activity.operationId, activity.eventSequence);
+    seen.add(identity);
+    previousByOperation.set(activity.operationId, sequence);
     await appendJsonlReceipt(context, output, {
       helper: 'live-brain-tools-smoke',
       scenario,
@@ -549,7 +833,10 @@ export async function flushActivity(context, output, activities, callerAgent, sc
       requesterAgent: callerAgent,
       operationId: activity.operationId,
       type: activity.type,
-      eventSequence: activity.eventSequence,
+      eventSequence: sequence,
+      streamAttachments: Array.isArray(activity.observedAttachments)
+        ? [...new Set(activity.observedAttachments.map(String))].sort()
+        : [],
       state: activity.state,
       phase: activity.phase,
       eventUpdatedAt: activity.updatedAt,
@@ -654,21 +941,53 @@ function negativeCatalogPlan(catalog, callerAgent, code) {
 }
 
 async function attemptNegativeCode(source, callerAgent, code, signal) {
+  const providerEvidence = async () => {
+    if (typeof source.client.providerEvidence === 'function') {
+      const evidence = await source.client.providerEvidence();
+      if (!evidence || !Number.isSafeInteger(evidence.providerCalls)
+          || evidence.providerCalls < 0) {
+        throw typedError('negative_target_provider_evidence_invalid');
+      }
+      return { ...evidence };
+    }
+    const calls = source.client.providerCalls;
+    return Number.isSafeInteger(calls) && calls >= 0
+      ? { evidenceSource: 'instrumented-client-counter', providerCalls: calls }
+      : null;
+  };
+  const providerBefore = await providerEvidence();
   const catalog = await source.client.getCatalog({ forceRefresh: true, signal });
   const plan = negativeCatalogPlan(catalog, callerAgent, code);
   if (!plan || typeof source.client[plan.method] !== 'function') return null;
   try {
     await source.client[plan.method](plan.input, signal);
+    const providerAfter = await providerEvidence();
+    if (providerBefore && providerAfter
+        && providerAfter.providerCalls !== providerBefore.providerCalls) {
+      throw typedError('negative_target_provider_boundary_crossed', code);
+    }
   } catch (error) {
+    const providerAfter = await providerEvidence();
+    const providerCallDelta = providerBefore && providerAfter
+      ? providerAfter.providerCalls - providerBefore.providerCalls
+      : null;
+    if (providerCallDelta !== null && providerCallDelta !== 0) {
+      throw typedError('negative_target_provider_boundary_crossed', code);
+    }
     if (error?.code !== code) return null;
     return {
       code,
       source: source.source,
       authority: source.authority,
       route: plan.method === 'probeAccessDenied'
-        ? 'authorizeBrainOperation-controlled-precheck'
+        ? 'controlled-production-route-authority'
         : 'BrainOperationsClient.resolveTarget',
-      providerFree: true,
+      providerFree: providerCallDelta === 0 ? true : null,
+      providerBoundaryEvidence: providerBefore && providerAfter ? {
+        before: providerBefore,
+        after: providerAfter,
+        providerCallDelta,
+      } : null,
     };
   }
   return null;
@@ -707,17 +1026,33 @@ export async function collectNegativeTargetCoverage({
   const coverage = [];
   for (const code of NEGATIVE_TARGET_CODES) {
     let result = null;
+    let unproven = null;
     for (const source of sources) {
-      result = await attemptNegativeCode(source, callerAgent, code, signal);
-      if (result) break;
+      const attempted = await attemptNegativeCode(source, callerAgent, code, signal);
+      if (!attempted) continue;
+      if (attempted.providerFree === true
+          && attempted.providerBoundaryEvidence?.providerCallDelta === 0) {
+        result = attempted;
+        break;
+      }
+      unproven ||= attempted;
     }
-    if (!result) throw typedError('negative_target_coverage_failed', code);
+    if (!result) {
+      if (unproven) throw typedError('negative_target_provider_evidence_incomplete', code);
+      throw typedError('negative_target_coverage_failed', code);
+    }
     coverage.push(result);
   }
+  const measuredProviderDeltas = coverage
+    .map((entry) => entry.providerBoundaryEvidence?.providerCallDelta)
+    .filter((value) => Number.isSafeInteger(value));
   return {
     expectedCodes: [...NEGATIVE_TARGET_CODES],
     observedCodes: coverage.map((entry) => entry.code),
-    providerCallsObserved: 0,
+    providerCallsObserved: measuredProviderDeltas.length === coverage.length
+      ? measuredProviderDeltas.reduce((total, value) => total + value, 0)
+      : null,
+    providerEvidenceComplete: measuredProviderDeltas.length === coverage.length,
     coverage,
   };
 }
@@ -773,10 +1108,14 @@ export function createControlledNegativeTargetClient({ Client, callerAgent } = {
     status,
     headers: { 'content-type': 'application/json' },
   });
+  let providerCalls = 0;
+  let operationRequests = 0;
+  let authorizationDenials = 0;
   const fetchImpl = async (url, init = {}) => {
     const pathname = new URL(String(url)).pathname;
     if (pathname === '/home23/api/brain-operations/catalog') return response(200, catalog);
     if (pathname === '/home23/api/brain-operations' && init.method === 'POST') {
+      operationRequests += 1;
       try {
         const body = JSON.parse(String(init.body || '{}'));
         const selected = resolveCanonicalTarget(catalog, callerAgent, body.target || {});
@@ -800,8 +1139,10 @@ export function createControlledNegativeTargetClient({ Client, callerAgent } = {
             mutationBoundaries: selected.mutationBoundaries,
           },
         });
+        providerCalls += 1;
         return response(500, { error: { code: 'negative_probe_unexpected_success' } });
       } catch (error) {
+        if (error?.code === 'access_denied') authorizationDenials += 1;
         return response(error?.code === 'access_denied' ? 403 : 400, {
           error: {
             code: error?.code || 'negative_probe_failed',
@@ -823,28 +1164,40 @@ export function createControlledNegativeTargetClient({ Client, callerAgent } = {
     source: 'controlled-production-client',
     getCatalog: production.getCatalog.bind(production),
     resolveTarget: production.resolveTarget.bind(production),
-    async probeAccessDenied(request) {
-      const selected = resolveCanonicalTarget(catalog, callerAgent, request?.target || {});
-      const accessMode = selected.kind === 'resident'
-        && selected.lifecycle === 'resident'
-        && selected.ownerAgent === callerAgent ? 'own' : 'read-only';
-      return authorizeBrainOperation({
-        requesterAgent: callerAgent,
-        operationType: 'synthesis',
-        target: {
-          domain: 'brain',
-          brainId: selected.id,
-          canonicalRoot: selected.canonicalRoot,
-          accessMode,
-          ownerAgent: selected.ownerAgent,
-          displayName: selected.displayName,
-          kind: selected.kind,
-          lifecycle: selected.lifecycle,
-          catalogRevision: catalog.catalogRevision,
-          route: selected.route,
-          mutationBoundaries: selected.mutationBoundaries,
-        },
+    async probeAccessDenied(request, signal) {
+      const responseValue = await fetchImpl('http://controlled-negative.invalid/home23/api/brain-operations', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          operationType: 'synthesis',
+          requestId: 'negative-target-acceptance',
+          target: request?.target,
+          parameters: {
+            trigger: 'negative-target-acceptance',
+            reason: 'prove authorization rejects before provider work',
+          },
+        }),
+        signal,
       });
+      const body = await readResponseJsonBounded(responseValue, {
+        maxBytes: 256 * 1024,
+        errorCode: 'negative_probe_response_invalid',
+      });
+      if (!responseValue.ok || body?.error) {
+        throw typedError(
+          body?.error?.code || 'negative_probe_failed',
+          body?.error?.message || 'negative probe failed',
+        );
+      }
+      return body;
+    },
+    providerEvidence() {
+      return {
+        evidenceSource: 'controlled-production-route-counters',
+        providerCalls,
+        operationRequests,
+        authorizationDenials,
+      };
     },
   });
 }
@@ -899,10 +1252,19 @@ async function verifyArtifactStream(opened, expected) {
       || !opened.stream || typeof opened.stream[Symbol.asyncIterator] !== 'function') {
     throw typedError('protected_readback_mismatch', 'resultArtifact');
   }
+  if (!Number.isSafeInteger(expected?.bytes) || expected.bytes < 0
+      || expected.bytes > MAX_RESULT_ARTIFACT_BYTES
+      || typeof expected.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(expected.sha256)) {
+    throw typedError('result_artifact_bound_invalid');
+  }
   const hash = createHash('sha256');
   let bytes = 0;
   for await (const chunk of opened.stream) {
-    bytes += chunk.length;
+    if (!(chunk instanceof Uint8Array)) throw typedError('result_artifact_chunk_invalid');
+    bytes += chunk.byteLength;
+    if (bytes > expected.bytes || bytes > MAX_RESULT_ARTIFACT_BYTES) {
+      throw typedError('result_artifact_too_large');
+    }
     hash.update(chunk);
   }
   if (bytes !== expected.bytes || hash.digest('hex') !== expected.sha256) {
@@ -966,6 +1328,14 @@ export async function verifyReceiptManifest({
     if (!Array.isArray(manifest.groups[groupName]) || manifest.groups[groupName].length === 0) {
       throw typedError('identity_manifest_invalid');
     }
+  }
+  const identityOperationCount = IDENTITY_GROUP_NAMES.reduce(
+    (total, groupName) => total + manifest.groups[groupName].length,
+    0,
+  );
+  if (!Number.isSafeInteger(identityOperationCount)
+      || identityOperationCount > MAX_IDENTITY_OPERATIONS) {
+    throw typedError('identity_manifest_invalid');
   }
 
   const jerryBaseUrl = one(values, 'base-url', { required: true });
@@ -1177,7 +1547,12 @@ function artifactAuthority(relativePath, context) {
 async function artifactRows(file) {
   const extension = path.extname(file).toLowerCase();
   if (!['.json', '.jsonl', '.ndjson'].includes(extension)) return [];
-  const text = await fsp.readFile(file, 'utf8');
+  const text = await readBoundedFile(file, {
+    maxBytes: MAX_RECEIPT_BYTES,
+    encoding: 'utf8',
+    errorCode: 'artifact_json_invalid',
+    requireSingleLink: true,
+  });
   try { return parseReceiptDocument(text); }
   catch (error) {
     throw typedError('artifact_json_invalid', `invalid JSON artifact: ${file}`, { cause: error });
@@ -1186,17 +1561,32 @@ async function artifactRows(file) {
 
 async function collectArtifactFiles(root, excluded) {
   const files = [];
+  let entries = 0;
   async function walk(directory) {
     const before = await fsp.lstat(directory, { bigint: true });
     if (!before.isDirectory() || before.isSymbolicLink()) throw typedError('artifact_tree_invalid');
-    const names = (await fsp.readdir(directory)).sort((left, right) => left.localeCompare(right));
+    const names = [];
+    const handle = await fsp.opendir(directory);
+    try {
+      for await (const entry of handle) {
+        names.push(entry.name);
+        entries += 1;
+        if (entries > MAX_ARTIFACT_FILES) throw typedError('artifact_file_limit_exceeded');
+      }
+    } finally {
+      await handle.close().catch(() => {});
+    }
+    names.sort((left, right) => left.localeCompare(right));
     for (const name of names) {
       const absolute = path.join(directory, name);
       const relative = path.relative(root, absolute);
       const stat = await fsp.lstat(absolute, { bigint: true });
       if (stat.isSymbolicLink()) throw typedError('artifact_symlink_refused', relative);
       if (stat.isDirectory()) await walk(absolute);
-      else if (stat.isFile() && !excluded.has(absolute)) files.push({ absolute, relative });
+      else if (stat.isFile() && !excluded.has(absolute)) {
+        if (files.length >= MAX_ARTIFACT_FILES) throw typedError('artifact_file_limit_exceeded');
+        files.push({ absolute, relative });
+      }
       else if (!stat.isFile()) throw typedError('artifact_tree_invalid', relative);
     }
     const after = await fsp.lstat(directory, { bigint: true });
@@ -1274,8 +1664,8 @@ export async function buildArtifactManifest({ smokeRoot, output, context } = {})
     authorities: [...new Set(artifacts.map((entry) => entry.authority))].sort(),
     artifacts,
   });
-  const manifestBytes = await fsp.readFile(manifestPath);
-  const digest = sha256Bytes(manifestBytes);
+  const manifestHash = await hashFile(manifestPath, { maxBytes: MAX_ARTIFACT_MANIFEST_BYTES });
+  const digest = manifestHash.sha256;
   const temporary = `${digestPath}.${process.pid}.${Date.now()}.tmp`;
   await fsp.writeFile(temporary, `${digest}  ${path.basename(manifestPath)}\n`, {
     mode: 0o600, flag: 'wx',
@@ -1301,8 +1691,16 @@ export async function verifyArtifactManifest({ manifestPath, context } = {}) {
     `${path.basename(manifestFile, path.extname(manifestFile))}.sha256`,
   );
   const [manifestBytes, digestBytes] = await Promise.all([
-    fsp.readFile(manifestFile),
-    fsp.readFile(digestPath),
+    readBoundedFile(manifestFile, {
+      maxBytes: MAX_ARTIFACT_MANIFEST_BYTES,
+      errorCode: 'artifact_manifest_invalid',
+      requireSingleLink: true,
+    }),
+    readBoundedFile(digestPath, {
+      maxBytes: 1024,
+      errorCode: 'artifact_manifest_invalid',
+      requireSingleLink: true,
+    }),
   ]).catch((error) => {
     throw typedError('artifact_manifest_invalid', 'artifact manifest unavailable', { cause: error });
   });
@@ -1517,9 +1915,21 @@ export async function executeScenario({
     await client.cancel(initial.operationId, signal);
     const terminal = await protectedTerminal(client, initial.operationId, signal);
     if (terminal.state !== 'cancelled') throw typedError('cancel_not_terminal');
+    const providerAbortEvent = activityLog.find((activity) =>
+      activity?.operationId === initial.operationId
+        && activity?.type === 'provider_call_terminal'
+        && ['cancelled', 'aborted'].includes(activity?.outcome));
+    const resultEvidence = terminal.result?.providerAbortObserved === true;
     return terminalReceipt({ context, values, baseUrl, callerAgent, scenario, terminal, activityLog, extras: {
-      providerAbortObserved: terminal.error?.code === 'cancelled'
-        || terminal.result?.providerAbortObserved === true,
+      providerAbortObserved: Boolean(providerAbortEvent || resultEvidence),
+      providerAbortEvidence: providerAbortEvent ? {
+        evidenceSource: 'operation-stream',
+        eventSequence: activityEventSequence(providerAbortEvent),
+        outcome: providerAbortEvent.outcome,
+      } : resultEvidence ? {
+        evidenceSource: 'protected-operation-result',
+        providerAbortObserved: true,
+      } : null,
     } });
   }
   if (scenario === 'restart-reconcile') {
@@ -1722,10 +2132,21 @@ async function resumeIsolatedOperationToTerminal(client, operationId, signal, ti
 
 async function readAttachmentEvidence(fixture, operationId) {
   const directory = path.join(fixture.operationsRoot, 'operations', operationId, 'attachments');
-  const names = (await fsp.readdir(directory)).filter((name) => name.endsWith('.json')).sort();
+  const names = [];
+  const handle = await fsp.opendir(directory);
+  try {
+    for await (const entry of handle) {
+      if (!entry.name.endsWith('.json')) continue;
+      names.push(entry.name);
+      if (names.length > 10_000) throw typedError('isolated_attachment_evidence_invalid');
+    }
+  } finally {
+    await handle.close().catch(() => {});
+  }
+  names.sort();
   const rows = [];
   for (const name of names) {
-    const row = await readJson(path.join(directory, name));
+    const row = await readJson(path.join(directory, name), { maxBytes: 1024 * 1024 });
     if (row.operationId !== operationId || row.requesterAgent !== fixture.agent
         || !['attached', 'detached', 'closed'].includes(row.state)) {
       throw typedError('isolated_attachment_evidence_invalid');
@@ -1767,6 +2188,7 @@ async function readRetainedProviderTerminalEvidence(fixture, operationId) {
     throw typedError('provider_terminal_store_evidence_invalid');
   }
   return {
+    evidenceSource: 'durable-operation-store',
     operationId,
     eventSequence: event.sequence,
     provider: event.provider,
@@ -1793,7 +2215,169 @@ async function readIsolatedOperationDiagnostics(fixture) {
   }));
 }
 
-function isolatedFixtureReceipt(fixture, stopped) {
+function sourceRootDescriptors({ fixture = null, fixtureRoot = null, agent = null } = {}) {
+  if (fixture?.sources) {
+    return ['own', 'sibling', 'research'].map((role) => ({
+      role,
+      brainDir: fixture.sources[role]?.brainDir,
+    }));
+  }
+  if (typeof fixtureRoot !== 'string' || typeof agent !== 'string' || !agent) {
+    throw typedError('isolated_source_integrity_configuration_invalid');
+  }
+  return [
+    { role: 'own', brainDir: path.join(fixtureRoot, 'instances', agent, 'brain') },
+    { role: 'sibling', brainDir: path.join(fixtureRoot, 'instances', `${agent}-sibling`, 'brain') },
+    {
+      role: 'research',
+      brainDir: path.join(
+        fixtureRoot,
+        'instances',
+        agent,
+        'workspace',
+        'research',
+        'runs',
+        'completed-fixture-run',
+      ),
+    },
+  ];
+}
+
+async function hashFixtureBrainSource(role, brainDir) {
+  if (!['own', 'sibling', 'research'].includes(role) || typeof brainDir !== 'string') {
+    throw typedError('isolated_source_integrity_configuration_invalid');
+  }
+  const root = await canonicalDirectory(path.resolve(brainDir), `${role} fixture source`);
+  const manifestPath = path.join(root.path, 'memory-manifest.json');
+  const manifest = await readJson(manifestPath, { maxBytes: 1024 * 1024 });
+  const selectedFiles = [
+    manifest?.activeBase?.nodes?.file,
+    manifest?.activeBase?.edges?.file,
+    manifest?.activeDelta?.file,
+  ];
+  if (selectedFiles.some((name) => typeof name !== 'string' || !name
+      || /[\\/\0]/.test(name)
+      || path.basename(name) !== name || path.normalize(name) !== name)) {
+    throw typedError('isolated_source_manifest_invalid', role);
+  }
+  const required = new Set([
+    'memory-manifest.json',
+    'brain-snapshot.json',
+    ...selectedFiles,
+  ]);
+  const files = [];
+  let totalBytes = 0;
+  let totalEntries = 0;
+
+  async function walk(directory) {
+    const before = await fsp.lstat(directory, { bigint: true });
+    if (!before.isDirectory() || before.isSymbolicLink()) {
+      throw typedError('isolated_source_tree_invalid', role);
+    }
+    const directoryHandle = await fsp.opendir(directory);
+    const names = [];
+    try {
+      for await (const entry of directoryHandle) {
+        names.push(entry.name);
+        totalEntries += 1;
+        if (totalEntries > MAX_SOURCE_FILES_PER_BRAIN) {
+          throw typedError('isolated_source_file_limit_exceeded', role);
+        }
+      }
+    } finally {
+      await directoryHandle.close().catch(() => {});
+    }
+    names.sort((left, right) => left.localeCompare(right));
+    for (const name of names) {
+      const absolute = path.join(directory, name);
+      const relative = path.relative(root.path, absolute);
+      const stat = await fsp.lstat(absolute, { bigint: true });
+      if (stat.isSymbolicLink()) throw typedError('isolated_source_symlink_refused', relative);
+      if (stat.isDirectory()) {
+        await walk(absolute);
+        continue;
+      }
+      if (!stat.isFile()) throw typedError('isolated_source_tree_invalid', relative);
+      if (relative === 'brain-state.json') continue;
+      if (files.length >= MAX_SOURCE_FILES_PER_BRAIN) {
+        throw typedError('isolated_source_file_limit_exceeded', role);
+      }
+      const canonical = await fsp.realpath(absolute);
+      if (!isInsideOrEqual(root.path, canonical) || canonical !== absolute) {
+        throw typedError('isolated_source_path_invalid', relative);
+      }
+      const hashed = await hashFile(absolute, { maxBytes: MAX_SOURCE_FILE_BYTES });
+      totalBytes += hashed.physicalSize;
+      if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_SOURCE_TOTAL_BYTES) {
+        throw typedError('isolated_source_byte_limit_exceeded', role);
+      }
+      files.push({
+        path: relative,
+        size: hashed.physicalSize,
+        sha256: hashed.sha256,
+        dev: hashed.dev,
+        ino: hashed.ino,
+        mtimeNs: hashed.mtimeNs,
+        ctimeNs: hashed.ctimeNs,
+      });
+    }
+    const after = await fsp.lstat(directory, { bigint: true });
+    if (after.dev !== before.dev || after.ino !== before.ino
+        || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
+      throw typedError('isolated_source_changed_concurrently', role);
+    }
+  }
+
+  await walk(root.path);
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  const observed = new Set(files.map((file) => file.path));
+  if ([...required].some((name) => !observed.has(name))) {
+    throw typedError('isolated_source_manifest_invalid', role);
+  }
+  return {
+    role,
+    brainDir: root.path,
+    rootDev: root.dev,
+    rootIno: root.ino,
+    manifestGeneration: manifest.generation ?? null,
+    manifestRevision: Number.isSafeInteger(manifest.currentRevision)
+      ? manifest.currentRevision
+      : null,
+    excludedMutableFiles: ['brain-state.json'],
+    totalBytes,
+    files,
+  };
+}
+
+export async function captureFixtureSourceIntegrity(options = {}) {
+  const descriptors = sourceRootDescriptors(options);
+  const sources = [];
+  for (const descriptor of descriptors) {
+    sources.push(await hashFixtureBrainSource(descriptor.role, descriptor.brainDir));
+  }
+  return {
+    schemaVersion: 1,
+    sources,
+  };
+}
+
+export async function verifyFixtureSourceIntegrity(before, options = {}) {
+  const after = await captureFixtureSourceIntegrity(options);
+  if (!isDeepStrictEqual(before, after)) {
+    throw typedError(
+      'isolated_source_identity_or_hash_drift',
+      'isolated source identity or byte hash changed during acceptance',
+      { before, after },
+    );
+  }
+  return {
+    unchanged: true,
+    before,
+    after,
+  };
+}
+
+function isolatedFixtureReceipt(fixture, stopped, sourceIntegrity) {
   const stoppedPids = [stopped?.dashboard?.pid, stopped?.cosmo?.pid, stopped?.mcp?.pid]
     .filter((pid) => Number.isSafeInteger(pid) && pid > 0);
   if (stopped?.dashboard?.exited !== true || stopped?.cosmo?.exited !== true
@@ -1812,34 +2396,162 @@ function isolatedFixtureReceipt(fixture, stopped) {
     stoppedPids,
     retainedStore: stopped.retainedStore,
     sourceHashes: { ...fixture.source.sourceHashes },
+    sourceIntegrity,
   };
+}
+
+export function createBoundedMetricAccumulator({
+  role,
+  expectedPid,
+  maxRetainedSamples = MAX_METRIC_SAMPLES_PER_ROLE,
+} = {}) {
+  if (typeof role !== 'string' || !role
+      || !Number.isSafeInteger(expectedPid) || expectedPid < 1
+      || !Number.isSafeInteger(maxRetainedSamples) || maxRetainedSamples < 8) {
+    throw typedError('isolated_fixture_metric_accumulator_invalid');
+  }
+  const retained = [];
+  let retentionStride = 1;
+  let observedSamples = 0;
+  let baseline = null;
+  let last = null;
+  let maxV8HeapUsedMiB = -Infinity;
+  let maxSampledRssMiB = -Infinity;
+  let maxProcessRssMiB = -Infinity;
+  let minRestartCount = Infinity;
+  let maxRestartCount = -Infinity;
+  let pidChanged = false;
+
+  function retain(row, force = false) {
+    if (!force && observedSamples > 1 && observedSamples % retentionStride !== 0) return;
+    if (retained.at(-1)?.updatedAt === row.updatedAt) {
+      retained[retained.length - 1] = row;
+      return;
+    }
+    if (retained.length >= maxRetainedSamples) {
+      const compacted = [retained[0]];
+      for (let index = 2; index < retained.length - 1; index += 2) {
+        compacted.push(retained[index]);
+      }
+      compacted.push(retained.at(-1));
+      retained.splice(0, retained.length, ...compacted);
+      retentionStride *= 2;
+    }
+    retained.push(row);
+  }
+
+  return Object.freeze({
+    add(row, { forceRetain = false } = {}) {
+      if (!row || row.role !== role || row.pid !== expectedPid
+          || !Number.isSafeInteger(row.restartCount) || row.restartCount < 0
+          || !Number.isFinite(row.v8HeapUsedMiB) || row.v8HeapUsedMiB < 0
+          || !Number.isFinite(row.rssMiB) || row.rssMiB <= 0
+          || !Number.isFinite(row.processMaxRssMiB)
+          || row.processMaxRssMiB < row.rssMiB
+          || typeof row.updatedAt !== 'string' || !Number.isFinite(Date.parse(row.updatedAt))) {
+        throw typedError('isolated_fixture_metric_invalid', role);
+      }
+      if (last?.updatedAt === row.updatedAt) return false;
+      if (last && row.processMaxRssMiB < last.processMaxRssMiB) {
+        throw typedError('rss_high_water_regressed', role);
+      }
+      const captured = { ...row };
+      observedSamples += 1;
+      baseline ||= captured;
+      last = captured;
+      pidChanged ||= captured.pid !== expectedPid;
+      maxV8HeapUsedMiB = Math.max(maxV8HeapUsedMiB, captured.v8HeapUsedMiB);
+      maxSampledRssMiB = Math.max(maxSampledRssMiB, captured.rssMiB);
+      maxProcessRssMiB = Math.max(maxProcessRssMiB, captured.processMaxRssMiB);
+      minRestartCount = Math.min(minRestartCount, captured.restartCount);
+      maxRestartCount = Math.max(maxRestartCount, captured.restartCount);
+      retain(captured, forceRetain);
+      return true;
+    },
+    summary() {
+      if (!baseline || !last || observedSamples < 3) {
+        throw typedError('isolated_fixture_metric_insufficient', role);
+      }
+      const maxSampledV8HeapGrowthMiB = maxV8HeapUsedMiB - baseline.v8HeapUsedMiB;
+      const maxSampledRssGrowthMiB = maxSampledRssMiB - baseline.rssMiB;
+      const processMaxRssGrowthMiB = maxProcessRssMiB - baseline.processMaxRssMiB;
+      return {
+        name: role,
+        pid: expectedPid,
+        observedSamples,
+        retainedSamples: retained.length,
+        retentionStride,
+        samples: retained.map((row) => ({ ...row })),
+        baselineV8HeapUsedMiB: baseline.v8HeapUsedMiB,
+        maxSampledV8HeapUsedMiB: maxV8HeapUsedMiB,
+        maxSampledV8HeapGrowthMiB,
+        baselineRssMiB: baseline.rssMiB,
+        maxSampledRssMiB,
+        maxSampledRssGrowthMiB,
+        baselineProcessMaxRssMiB: baseline.processMaxRssMiB,
+        finalProcessMaxRssMiB: maxProcessRssMiB,
+        processMaxRssGrowthMiB,
+        baselineHeapMiB: baseline.v8HeapUsedMiB,
+        peakHeapMiB: maxV8HeapUsedMiB,
+        heapGrowthMiB: maxSampledV8HeapGrowthMiB,
+        peakRssMiB: maxSampledRssMiB,
+        processMaxRssMiB: maxProcessRssMiB,
+        pidChanged,
+        restartDelta: maxRestartCount - minRestartCount,
+        metricFresh: true,
+      };
+    },
+  });
 }
 
 function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
   const roles = ['dashboard', 'cosmo'];
-  const samples = new Map(roles.map((role) => [role, []]));
-  let stopping = false;
+  const accumulators = new Map(roles.map((role) => [role, createBoundedMetricAccumulator({
+    role,
+    expectedPid: fixture.pids[role],
+  })]));
+  const samplerController = new AbortController();
   let failure = null;
+  let settleReady;
+  let rejectReady;
+  const ready = new Promise((resolve, reject) => {
+    settleReady = resolve;
+    rejectReady = reject;
+  });
 
-  async function capture() {
+  async function readMetric(role, retrySignal) {
+    let lastError = null;
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      try {
+        return await readJson(fixture.metrics[role], { maxBytes: 1024 * 1024 });
+      } catch (error) {
+        lastError = error;
+        if (error?.code !== 'json_file_invalid' || attempt === 7) break;
+        await sleep(5, retrySignal);
+      }
+    }
+    throw lastError;
+  }
+
+  async function capture({ forceRetain = false } = {}) {
     const capturedAtMs = Date.now();
     for (const role of roles) {
-      const metric = await readJson(fixture.metrics[role]);
+      const metric = await readMetric(
+        role,
+        forceRetain ? null : samplerController.signal,
+      );
       const updatedAtMs = Date.parse(metric.updatedAt);
       if (metric.schemaVersion !== 2 || metric.role !== role
           || metric.pid !== fixture.pids[role]
           || metric.restartCount !== 0
-          || !Number.isFinite(metric.v8HeapUsedMiB) || metric.v8HeapUsedMiB < 0
-          || !Number.isFinite(metric.rssMiB) || metric.rssMiB <= 0
-          || !Number.isFinite(metric.processMaxRssMiB)
-          || metric.processMaxRssMiB < metric.rssMiB
+          || JSON.stringify(metric.semantics) !== JSON.stringify(METRIC_SEMANTICS)
           || !Number.isFinite(updatedAtMs)
-          || Math.abs(capturedAtMs - updatedAtMs) > 5_000) {
+          || updatedAtMs > capturedAtMs + 1_000
+          || capturedAtMs - updatedAtMs > 5_000) {
         throw typedError('isolated_fixture_metric_invalid', role);
       }
-      const rows = samples.get(role);
-      if (rows.at(-1)?.updatedAt === metric.updatedAt) continue;
-      rows.push({
+      accumulators.get(role).add({
+        role,
         capturedAt: new Date(capturedAtMs).toISOString(),
         updatedAt: metric.updatedAt,
         pid: metric.pid,
@@ -1847,50 +2559,58 @@ function startIsolatedMetricSampler(fixture, { intervalMs = 100 } = {}) {
         v8HeapUsedMiB: metric.v8HeapUsedMiB,
         rssMiB: metric.rssMiB,
         processMaxRssMiB: metric.processMaxRssMiB,
-      });
+      }, { forceRetain });
     }
   }
 
   const task = (async () => {
-    while (!stopping) {
-      try { await capture(); } catch (error) { failure ||= error; }
-      await sleep(intervalMs);
+    try {
+      await capture();
+      settleReady();
+    } catch (error) {
+      failure ||= error;
+      rejectReady(error);
+      return;
+    }
+    while (!samplerController.signal.aborted) {
+      try {
+        await sleep(intervalMs, samplerController.signal);
+        await capture();
+      } catch (error) {
+        if (samplerController.signal.aborted) break;
+        failure ||= error;
+        break;
+      }
     }
   })();
 
   return Object.freeze({
+    ready,
     async stop() {
-      stopping = true;
+      samplerController.abort(typedError('metric_sampler_stopped'));
       await task;
-      try { await capture(); } catch (error) { failure ||= error; }
+      try { await capture({ forceRetain: true }); } catch (error) { failure ||= error; }
       if (failure) throw failure;
-      const targets = roles.map((role) => {
-        const rows = samples.get(role);
-        if (rows.length < 3) throw typedError('isolated_fixture_metric_insufficient', role);
-        const pidChanged = rows.some((row) => row.pid !== fixture.pids[role]);
-        const restartDelta = Math.max(...rows.map((row) => row.restartCount))
-          - Math.min(...rows.map((row) => row.restartCount));
-        const baselineHeapMiB = rows[0].v8HeapUsedMiB;
-        const peakHeapMiB = Math.max(...rows.map((row) => row.v8HeapUsedMiB));
-        return {
-          name: role,
-          pid: fixture.pids[role],
-          samples: rows,
-          baselineHeapMiB,
-          peakHeapMiB,
-          heapGrowthMiB: Math.max(0, peakHeapMiB - baselineHeapMiB),
-          peakRssMiB: Math.max(...rows.map((row) => row.rssMiB)),
-          processMaxRssMiB: Math.max(...rows.map((row) => row.processMaxRssMiB)),
-          pidChanged,
-          restartDelta,
-          metricFresh: true,
-        };
-      });
+      const targets = roles.map((role) => accumulators.get(role).summary());
       if (targets.some((target) => target.pidChanged || target.restartDelta !== 0
-          || target.heapGrowthMiB > 256)) {
+          || target.maxSampledV8HeapGrowthMiB > MEMORY_GROWTH_LIMIT_MIB
+          || target.maxSampledRssGrowthMiB > MEMORY_GROWTH_LIMIT_MIB
+          || target.processMaxRssGrowthMiB > MEMORY_GROWTH_LIMIT_MIB)) {
         throw typedError('isolated_fixture_metric_gate_failed');
       }
-      return { metric: 'v8-used-heap-mib', maxHeapGrowthMiB: 256, targets };
+      return {
+        metric: 'runtime-memory-evidence-v2',
+        semantics: {
+          sampledV8Heap: 'discrete request-time observations; not a continuous heap high-water',
+          sampledRss: 'discrete request-time observations',
+          processMaxRss: 'process-lifetime OS high-water; captures spikes between requests',
+        },
+        maxHeapGrowthMiB: MEMORY_GROWTH_LIMIT_MIB,
+        maxRssGrowthMiB: MEMORY_GROWTH_LIMIT_MIB,
+        maxProcessMaxRssGrowthMiB: MEMORY_GROWTH_LIMIT_MIB,
+        maxRetainedSamplesPerRole: MAX_METRIC_SAMPLES_PER_ROLE,
+        targets,
+      };
     },
   });
 }
@@ -1906,6 +2626,7 @@ async function executeIsolatedLifecycleScenario({
   callerAgent,
   signal,
   activities,
+  activityCollector = null,
 }) {
   const synthesis = scenario === 'synthesis-reconnect';
   const telemetryBefore = await fixture.telemetry();
@@ -1931,10 +2652,12 @@ async function executeIsolatedLifecycleScenario({
   const running = await waitForOperationState(
     client, initial.operationId, new Set(['running']), signal,
   );
-  await waitForProviderStart(
+  const providerRole = synthesis ? 'dashboard' : 'cosmo';
+  const providerStartsBefore = Number(telemetryBefore[providerRole]?.providerStarts || 0);
+  const providerStartedTelemetry = await waitForProviderStart(
     fixture,
-    synthesis ? 'dashboard' : 'cosmo',
-    Number(telemetryBefore[synthesis ? 'dashboard' : 'cosmo']?.providerStarts || 0),
+    providerRole,
+    providerStartsBefore,
     signal,
   );
 
@@ -1944,7 +2667,12 @@ async function executeIsolatedLifecycleScenario({
     if (restarted.coordinatorRestarts !== restartsBefore + 1) {
       throw typedError('coordinator_restart_not_observed');
     }
-    const restartedClient = new modules.BrainOperationsClient(clientOptions);
+    const restartedClient = new modules.BrainOperationsClient({
+      ...clientOptions,
+      ...(activityCollector
+        ? { onActivity: activityCollector.listener('synthesis-reconnect') }
+        : {}),
+    });
     const reconciled = await restartedClient.getOperation(initial.operationId, signal);
     if (!['running', 'complete'].includes(reconciled.state)) {
       throw typedError('synthesis_restart_reconcile_invalid');
@@ -1976,10 +2704,6 @@ async function executeIsolatedLifecycleScenario({
       fixture,
       initial.operationId,
     );
-    activities.push({
-      ...providerTerminalStoreEvidence,
-      type: 'provider_call_terminal',
-    });
     const telemetryAfter = await fixture.telemetry();
     if (Number(telemetryAfter.dashboard?.coordinatorRestarts) !== restartsBefore + 1
         || Number(telemetryAfter.dashboard?.synthesisStarts) < 1) {
@@ -1988,6 +2712,7 @@ async function executeIsolatedLifecycleScenario({
     return terminalReceipt({
       context, values, baseUrl: fixture.baseUrl, callerAgent, scenario, terminal,
       activityLog: activities,
+      retainedProviderTerminalEvidence: providerTerminalStoreEvidence,
       extras: {
         coordinatorRestarted: true,
         coordinatorRestartsBefore: restartsBefore,
@@ -1998,13 +2723,17 @@ async function executeIsolatedLifecycleScenario({
         reattachAttempts,
         detachedStates,
         providerTerminalStoreEvidence,
+        activityAttachments: activityCollector?.summary(initial.operationId) ?? null,
         generationMarker: terminal.result?.generationMarker ?? null,
       },
     });
   }
 
   if (scenario === 'detach-reattach') {
-    const survivorClient = new modules.BrainOperationsClient(clientOptions);
+    const survivorClient = new modules.BrainOperationsClient({
+      ...clientOptions,
+      ...(activityCollector ? { onActivity: activityCollector.listener('survivor') } : {}),
+    });
     const controller = new AbortController();
     const detachedPromise = client.wait(initial.operationId, {
       operationType: initial.operationType,
@@ -2055,6 +2784,7 @@ async function executeIsolatedLifecycleScenario({
         reattachedTerminal: true,
         concurrentAttachments,
         terminalAttachments,
+        activityAttachments: activityCollector?.summary(initial.operationId) ?? null,
       },
     });
   }
@@ -2064,13 +2794,28 @@ async function executeIsolatedLifecycleScenario({
     await client.cancel(initial.operationId, signal);
     const terminal = await protectedTerminal(client, initial.operationId, signal);
     const abortsAfter = Number((await fixture.telemetry()).cosmo?.providerAborts || 0);
-    if (terminal.state !== 'cancelled' || abortsAfter !== abortsBefore + 1) {
+    const providerStartsAfter = Number(providerStartedTelemetry.cosmo?.providerStarts || 0);
+    const providerAbortDelta = abortsAfter - abortsBefore;
+    if (terminal.state !== 'cancelled' || providerAbortDelta !== 1
+        || providerStartsAfter <= providerStartsBefore) {
       throw typedError('cancel_not_terminal');
     }
     return terminalReceipt({
       context, values, baseUrl: fixture.baseUrl, callerAgent, scenario, terminal,
       activityLog: activities,
-      extras: { providerAbortObserved: true },
+      extras: {
+        providerAbortObserved: providerAbortDelta === 1,
+        providerAbortEvidence: {
+          evidenceSource: 'isolated-provider-telemetry',
+          providerRole: 'cosmo',
+          providerStartsBefore,
+          providerStartsAfter,
+          providerAbortsBefore: abortsBefore,
+          providerAbortsAfter: abortsAfter,
+          providerAbortDelta,
+        },
+        activityAttachments: activityCollector?.summary(initial.operationId) ?? null,
+      },
     });
   }
 
@@ -2082,6 +2827,7 @@ async function executeIsolatedLifecycleScenario({
   const restartedClient = new modules.BrainOperationsClient({
     ...clientOptions,
     baseUrl: fixture.baseUrl,
+    ...(activityCollector ? { onActivity: activityCollector.listener('restart-reconcile') } : {}),
   });
   const reconciled = await restartedClient.getOperation(initial.operationId, signal);
   if (!['running', 'interrupted'].includes(reconciled.state)) {
@@ -2111,7 +2857,101 @@ async function executeIsolatedLifecycleScenario({
       reattachInitialState: reattachment.initialResume.state,
       reattachStatusPolls: reattachment.statusPolls,
       reattachedTerminal: TERMINAL.has(reattachment.terminal.state),
+      activityAttachments: activityCollector?.summary(initial.operationId) ?? null,
     },
+  });
+}
+
+async function promiseWithDeadline(promise, timeoutMs, code) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(typedError(code)), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function forceStopOwnedFixtureChildren(fixture, timeoutMs = 2_000) {
+  const exits = [];
+  for (const role of ['dashboard', 'cosmo', 'mcp']) {
+    const child = fixture?.children?.[role];
+    const expectedPid = fixture?.pids?.[role];
+    if (!child || child.pid !== expectedPid || !Number.isSafeInteger(expectedPid) || expectedPid < 1) {
+      throw typedError('isolated_fixture_cleanup_ownership_invalid', role);
+    }
+    if (child.exitCode !== null || child.signalCode) continue;
+    exits.push(new Promise((resolve) => child.once('exit', resolve)));
+    child.kill('SIGKILL');
+  }
+  if (exits.length > 0) {
+    await promiseWithDeadline(
+      Promise.all(exits),
+      timeoutMs,
+      'isolated_fixture_force_cleanup_timeout',
+    );
+  }
+}
+
+export function createBoundedFixtureCleanup({
+  fixture,
+  stopFixture,
+  controller,
+  signalTarget = process,
+  timeoutMs = 20_000,
+  forceTimeoutMs = 2_000,
+} = {}) {
+  if (!fixture || typeof stopFixture !== 'function'
+      || !(controller instanceof AbortController)
+      || !signalTarget || typeof signalTarget.once !== 'function'
+      || typeof signalTarget.removeListener !== 'function'
+      || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1
+      || !Number.isSafeInteger(forceTimeoutMs) || forceTimeoutMs < 1) {
+    throw typedError('isolated_fixture_cleanup_invalid');
+  }
+  let cleanupPromise = null;
+  let signalReceived = null;
+  const cleanup = () => {
+    cleanupPromise ||= (async () => {
+      try {
+        return await promiseWithDeadline(
+          Promise.resolve().then(() => stopFixture(fixture)),
+          timeoutMs,
+          'isolated_fixture_cleanup_timeout',
+        );
+      } catch (error) {
+        await forceStopOwnedFixtureChildren(fixture, forceTimeoutMs).catch((forceError) => {
+          error.forceCleanupError = forceError;
+        });
+        throw error;
+      }
+    })();
+    return cleanupPromise;
+  };
+  const onSignal = (signal) => {
+    signalReceived ||= signal;
+    const exitCode = signal === 'SIGINT' ? 130 : 143;
+    if (!controller.signal.aborted) {
+      controller.abort(typedError('acceptance_interrupted', signal, { signal, exitCode }));
+    }
+    void cleanup().catch(() => {});
+  };
+  const onSigint = () => onSignal('SIGINT');
+  const onSigterm = () => onSignal('SIGTERM');
+  signalTarget.once('SIGINT', onSigint);
+  signalTarget.once('SIGTERM', onSigterm);
+  return Object.freeze({
+    cleanup,
+    dispose() {
+      signalTarget.removeListener('SIGINT', onSigint);
+      signalTarget.removeListener('SIGTERM', onSigterm);
+    },
+    get signalReceived() { return signalReceived; },
   });
 }
 
@@ -2187,58 +3027,81 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
     throw typedError('isolated_fixture_requester_mismatch');
   }
   const modules = await loadProductionModules();
-  const activities = [];
+  const activityCollector = createActivityCollector();
+  const activities = activityCollector.events;
+  const controller = new AbortController();
   let fixture = null;
   let stopIsolatedFixture = null;
+  let cleanupOwner = null;
   let metricSampler = null;
   let heapEvidence = null;
-  if (isolatedAutoLaunch) {
-    const fixtureModule = await import('./lib/isolated-brain-fixture.mjs');
-    stopIsolatedFixture = fixtureModule.stopIsolatedFixture;
-    const largePgs = scenario === 'large-pgs-isolated';
-    fixture = await fixtureModule.startIsolatedFixture({
-      fixtureRoot: path.resolve(one(values, 'isolated-fixture', { required: true })),
-      context,
-      agent: callerAgent,
-      nodeCount: largePgs
-        ? integer(values, 'synthetic-nodes', { required: true, min: PGS_LARGE_MIN_NODES })
-        : 2,
-      edgeCount: largePgs
-        ? integer(values, 'synthetic-edges', {
-            required: true,
-            min: integer(values, 'synthetic-nodes', {
-              required: true,
-              min: PGS_LARGE_MIN_NODES,
-            }),
-          })
-        : 1,
-      operationDelayMs: integer(values, 'fixture-operation-delay-ms', {
-        defaultValue: 100, min: 0, max: 60_000,
-      }),
-    });
-    const suppliedStore = one(values, 'isolated-store');
-    if (suppliedStore && path.resolve(suppliedStore) !== fixture.operationsRoot) {
-      await stopIsolatedFixture(fixture);
-      fixture = null;
-      throw typedError('isolated_store_mismatch');
-    }
-    values['isolated-store'] = fixture.operationsRoot;
-    baseUrl = fixture.baseUrl;
-    if (one(values, 'heap-output')) metricSampler = startIsolatedMetricSampler(fixture);
-  }
-  const clientOptions = createClientOptions({
-    baseUrl, callerAgent, values,
-    onActivity: (activity) => activities.push(activity),
-  });
-  const client = new modules.BrainOperationsClient(clientOptions);
-  const controller = new AbortController();
+  let sourceIntegrityOptions = null;
+  let sourceIntegrityBefore = null;
+  let sourceIntegrity = null;
   let row;
   let stopped = null;
   try {
+    if (isolatedAutoLaunch) {
+      const fixtureModule = await import('./lib/isolated-brain-fixture.mjs');
+      stopIsolatedFixture = fixtureModule.stopIsolatedFixture;
+      const largePgs = scenario === 'large-pgs-isolated';
+      fixture = await fixtureModule.startIsolatedFixture({
+        fixtureRoot: path.resolve(one(values, 'isolated-fixture', { required: true })),
+        context,
+        agent: callerAgent,
+        nodeCount: largePgs
+          ? integer(values, 'synthetic-nodes', { required: true, min: PGS_LARGE_MIN_NODES })
+          : 2,
+        edgeCount: largePgs
+          ? integer(values, 'synthetic-edges', {
+              required: true,
+              min: integer(values, 'synthetic-nodes', {
+                required: true,
+                min: PGS_LARGE_MIN_NODES,
+              }),
+            })
+          : 1,
+        operationDelayMs: integer(values, 'fixture-operation-delay-ms', {
+          defaultValue: 100, min: 0, max: 60_000,
+        }),
+      });
+      cleanupOwner = createBoundedFixtureCleanup({
+        fixture,
+        stopFixture: stopIsolatedFixture,
+        controller,
+      });
+      const suppliedStore = one(values, 'isolated-store');
+      if (suppliedStore && path.resolve(suppliedStore) !== fixture.operationsRoot) {
+        throw typedError('isolated_store_mismatch');
+      }
+      values['isolated-store'] = fixture.operationsRoot;
+      baseUrl = fixture.baseUrl;
+      sourceIntegrityOptions = { fixture };
+      if (one(values, 'heap-output')) {
+        metricSampler = startIsolatedMetricSampler(fixture);
+        await metricSampler.ready;
+      }
+    } else if (context.authority === 'isolated-controlled'
+        && booleanFlag(values, 'controlled-provider', false)
+        && one(values, 'isolated-fixture')) {
+      const fixtureRoot = await canonicalDirectory(
+        path.resolve(one(values, 'isolated-fixture', { required: true })),
+        'isolated fixture',
+      );
+      sourceIntegrityOptions = { fixtureRoot: fixtureRoot.path, agent: callerAgent };
+    }
+    if (sourceIntegrityOptions) {
+      sourceIntegrityBefore = await captureFixtureSourceIntegrity(sourceIntegrityOptions);
+    }
+    const clientOptions = createClientOptions({
+      baseUrl, callerAgent, values,
+      onActivity: activityCollector.listener('primary'),
+    });
+    const client = new modules.BrainOperationsClient(clientOptions);
     row = fixture && ISOLATED_LIFECYCLE_SCENARIOS.has(scenario)
       ? await executeIsolatedLifecycleScenario({
           scenario, modules, fixture, client, clientOptions, values, context, callerAgent,
-          signal: controller.signal, activities,
+          signal: controller.signal, activities, activityCollector,
         })
       : await executeScenario({
           scenario, modules, client, values, context, baseUrl, callerAgent,
@@ -2246,16 +3109,46 @@ export async function main(argv = process.argv.slice(2), env = process.env) {
           canaryOverride: fixture?.canary || null,
         });
   } finally {
+    let finalizationError = null;
     try {
       if (metricSampler) heapEvidence = await metricSampler.stop();
+    } catch (error) {
+      finalizationError ||= error;
+    }
+    try {
+      if (cleanupOwner) stopped = await cleanupOwner.cleanup();
+    } catch (error) {
+      finalizationError ||= error;
     } finally {
-      if (fixture) stopped = await stopIsolatedFixture(fixture);
+      cleanupOwner?.dispose();
+    }
+    try {
+      if (sourceIntegrityBefore && sourceIntegrityOptions) {
+        sourceIntegrity = await verifyFixtureSourceIntegrity(
+          sourceIntegrityBefore,
+          sourceIntegrityOptions,
+        );
+      }
+    } catch (error) {
+      finalizationError ||= error;
+    }
+    if (finalizationError) {
+      if (controller.signal.reason?.code === 'acceptance_interrupted') {
+        controller.signal.reason.finalizationError = finalizationError;
+        throw controller.signal.reason;
+      }
+      throw finalizationError;
     }
   }
+  row = {
+    ...row,
+    activityAttachments: activityCollector.summary(row?.operationId || null),
+    ...(sourceIntegrity ? { isolatedSourceIntegrity: sourceIntegrity } : {}),
+  };
   if (fixture) {
     row = {
       ...row,
-      isolatedFixture: isolatedFixtureReceipt(fixture, stopped),
+      isolatedFixture: isolatedFixtureReceipt(fixture, stopped, sourceIntegrity),
     };
   }
   const heapOutputRaw = one(values, 'heap-output');

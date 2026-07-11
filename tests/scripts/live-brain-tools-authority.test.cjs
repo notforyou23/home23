@@ -120,6 +120,9 @@ function targetClient(catalog, { source, denySynthesis = true } = {}) {
   return {
     source,
     get providerCalls() { return providerCalls; },
+    providerEvidence() {
+      return { evidenceSource: 'test-provider-counter', providerCalls };
+    },
     async getCatalog() { return structuredClone(catalog); },
     async resolveTarget(selector) { return resolve(selector); },
     async synthesize(request) {
@@ -203,6 +206,10 @@ test('negative target coverage observes all five exact codes without reaching a 
   ]);
   assert.equal(primary.providerCalls, 0);
   assert.equal(controlled.providerCalls, 0);
+  assert.equal(result.providerCallsObserved, 0);
+  assert.equal(result.providerEvidenceComplete, true);
+  assert.ok(result.coverage.every((entry) =>
+    entry.providerBoundaryEvidence?.providerCallDelta === 0));
 });
 
 test('negative target coverage requires the exact five-code contract', async () => {
@@ -212,6 +219,49 @@ test('negative target coverage requires the exact five-code contract', async () 
     callerAgent: 'jerry',
     expectedCodes: ['target_not_found'],
   }), (error) => error.code === 'negative_target_expected_codes_invalid');
+});
+
+test('negative target coverage falls back to controlled proof and rejects uninstrumented-only evidence', async () => {
+  const smoke = await import('../../scripts/live-brain-tools-smoke.mjs');
+  const catalog = {
+    catalogRevision: 'unproven-live-catalog',
+    brains: [
+      { id: 'brain-jerry', ownerAgent: 'jerry', kind: 'resident', lifecycle: 'resident' },
+      { id: 'brain-sibling', ownerAgent: 'forrest', kind: 'resident', lifecycle: 'resident' },
+      { id: 'brain-unavailable', ownerAgent: 'offline', kind: 'research', lifecycle: 'active' },
+      { id: 'brain-ambiguous-a', ownerAgent: 'twins', kind: 'resident', lifecycle: 'resident' },
+      { id: 'brain-ambiguous-b', ownerAgent: 'twins', kind: 'resident', lifecycle: 'resident' },
+    ],
+  };
+  const unprovenDelegate = targetClient(catalog, { source: 'unproven-live-delegate' });
+  const unprovenLive = {
+    source: 'live-client-without-provider-proof',
+    getCatalog: unprovenDelegate.getCatalog.bind(unprovenDelegate),
+    resolveTarget: unprovenDelegate.resolveTarget.bind(unprovenDelegate),
+    probeAccessDenied: unprovenDelegate.probeAccessDenied.bind(unprovenDelegate),
+  };
+  const controlled = targetClient(catalog, { source: 'controlled-production-client' });
+
+  const result = await smoke.collectNegativeTargetCoverage({
+    client: unprovenLive,
+    controlledClient: controlled,
+    callerAgent: 'jerry',
+    expectedCodes: smoke.NEGATIVE_TARGET_CODES,
+    primaryAuthority: 'live',
+  });
+  assert.equal(result.providerEvidenceComplete, true);
+  assert.equal(result.providerCallsObserved, 0);
+  assert.ok(result.coverage.every((entry) =>
+    entry.source === 'controlled-production-client'
+      && entry.authority === 'isolated-controlled'
+      && entry.providerBoundaryEvidence?.providerCallDelta === 0));
+
+  await assert.rejects(smoke.collectNegativeTargetCoverage({
+    client: unprovenLive,
+    callerAgent: 'jerry',
+    expectedCodes: smoke.NEGATIVE_TARGET_CODES,
+    primaryAuthority: 'live',
+  }), (error) => error.code === 'negative_target_provider_evidence_incomplete');
 });
 
 test('default controlled negative client uses production resolver and authority code paths', async () => {
@@ -230,6 +280,7 @@ test('default controlled negative client uses production resolver and authority 
   });
   assert.deepEqual(result.observedCodes, smoke.NEGATIVE_TARGET_CODES);
   assert.equal(result.providerCallsObserved, 0);
+  assert.equal(result.providerEvidenceComplete, true);
 });
 
 test('cross-brain synthesis denial crosses the production client, router, coordinator, and store without provider work', async (t) => {
@@ -257,6 +308,7 @@ test('cross-brain synthesis denial crosses the production client, router, coordi
     resolveCanonicalTarget,
   } = require('../../cosmo23/server/lib/brain-registry.js');
   const { BrainOperationsClient } = await import('../../dist/agent/brain-operations/client.js');
+  const { readResponseJsonBounded } = await import('../../scripts/live-brain-tools-smoke.mjs');
 
   const catalogEntry = (agent) => {
     const canonicalRoot = path.join(fx.root, 'brains', agent);
@@ -367,7 +419,10 @@ test('cross-brain synthesis denial crosses the production client, router, coordi
     }),
   });
   assert.equal(response.status, 403);
-  assert.equal((await response.json()).error.code, 'access_denied');
+  assert.equal((await readResponseJsonBounded(response, {
+    maxBytes: 1024 * 1024,
+    errorCode: 'authority_response_invalid',
+  })).error.code, 'access_denied');
   assert.deepEqual(calls, { worker: 0, model: 0, pin: 0, quota: 0 });
   assert.deepEqual(await store.list(), []);
 });

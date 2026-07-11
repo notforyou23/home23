@@ -37,6 +37,22 @@ function assertStopped(pid) {
   assert.throws(() => process.kill(pid, 0), (error) => error.code === 'ESRCH');
 }
 
+function assertSourceIntegrity(row) {
+  assert.equal(row.isolatedSourceIntegrity?.unchanged, true, JSON.stringify(row));
+  assert.deepEqual(
+    row.isolatedSourceIntegrity.before.sources.map((source) => source.role),
+    ['own', 'sibling', 'research'],
+  );
+  assert.deepEqual(
+    row.isolatedSourceIntegrity.before,
+    row.isolatedSourceIntegrity.after,
+  );
+  for (const source of row.isolatedSourceIntegrity.after.sources) {
+    assert.ok(source.files.length >= 5);
+    assert.ok(source.files.every((file) => /^[a-f0-9]{64}$/.test(file.sha256)));
+  }
+}
+
 function assertIsolatedTerminal(row, state) {
   assert.equal(row.receiptKind, 'operation-terminal');
   assert.equal(row.authority, 'isolated-controlled');
@@ -46,6 +62,8 @@ function assertIsolatedTerminal(row, state) {
   assert.equal(typeof row.isolatedStore, 'string');
   assert.equal(path.isAbsolute(row.isolatedStore), true);
   assert.equal(row.isolatedFixture.retainedStore, row.isolatedStore);
+  assertSourceIntegrity(row);
+  assert.deepEqual(row.isolatedFixture.sourceIntegrity, row.isolatedSourceIntegrity);
   assert.match(row.isolatedFixture.basename, /^fixture$/);
   assert.match(row.isolatedFixture.dev, /^\d+$/);
   assert.match(row.isolatedFixture.ino, /^\d+$/);
@@ -123,6 +141,7 @@ test('isolated CLI proves real dashboard-to-MCP parity and a healthy exhaustive 
     '--output', parityFile,
   ], state.env);
   const [parity] = await readRows(parityFile);
+  assertSourceIntegrity(parity);
   assert.equal(parity.mcpParity, true);
   assert.equal(parity.nodeId, canary.nodeId);
   assert.equal(parity.sourceRevision, canary.sourceRevision);
@@ -209,6 +228,7 @@ test('isolated CLI reads sibling and completed-research brains and exports reque
     throw error;
   }
   const [sibling] = await readRows(siblingFile);
+  assertSourceIntegrity(sibling);
   assert.equal(sibling.state, 'complete', JSON.stringify(sibling));
   assert.equal(sibling.target.brainId, `${launched.brainId}-sibling`);
   assert.equal(sibling.target.accessMode, 'read-only');
@@ -231,6 +251,7 @@ test('isolated CLI reads sibling and completed-research brains and exports reque
     '--output', researchFile,
   ], state.env);
   const [research] = await readRows(researchFile);
+  assertSourceIntegrity(research);
   assert.equal(research.state, 'complete', JSON.stringify(research));
   assert.equal(research.target.brainId, researchBrain);
   assert.equal(research.target.accessMode, 'read-only');
@@ -260,6 +281,7 @@ test('isolated CLI reads sibling and completed-research brains and exports reque
     '--output', compileFile,
   ], state.env);
   const [compiled] = await readRows(compileFile);
+  assertSourceIntegrity(compiled);
   assert.equal(compiled.state, 'complete', JSON.stringify(compiled));
   assert.equal(compiled.target.accessMode, 'read-only');
 
@@ -318,7 +340,7 @@ test('large PGS CLI auto-launches a 100k/300k isolated source and retains durabl
   }
   const [heap] = await readRows(heapFile);
   assert.equal(heap.receiptKind, 'isolated-process-memory');
-  assert.equal(heap.metric, 'v8-used-heap-mib');
+  assert.equal(heap.metric, 'runtime-memory-evidence-v2');
   assert.deepEqual(heap.targets.map((target) => target.name).sort(), ['cosmo', 'dashboard']);
   for (const target of heap.targets) {
     assert.ok(target.samples.length >= 3);
@@ -326,8 +348,12 @@ test('large PGS CLI auto-launches a 100k/300k isolated source and retains durabl
     assert.equal(target.pidChanged, false);
     assert.equal(target.restartDelta, 0);
     assert.equal(target.metricFresh, true);
-    assert.ok(target.heapGrowthMiB <= 256);
-    assert.ok(target.processMaxRssMiB >= target.peakRssMiB);
+    assert.ok(target.maxSampledV8HeapGrowthMiB <= 256);
+    assert.ok(target.maxSampledRssGrowthMiB <= 256);
+    assert.ok(target.processMaxRssGrowthMiB <= 256);
+    assert.ok(target.finalProcessMaxRssMiB >= target.maxSampledRssMiB);
+    assert.ok(target.observedSamples >= target.retainedSamples);
+    assert.ok(target.retainedSamples <= heap.maxRetainedSamplesPerRole);
   }
 });
 
@@ -341,8 +367,10 @@ test('exact lifecycle CLIs auto-launch isolated production processes and retain 
   ];
 
   const detachFile = path.join(state.receiptRunDir, 'detach.jsonl');
+  const detachEventsFile = path.join(state.receiptRunDir, 'detach-events.jsonl');
   await main([
     '--scenario', 'detach-reattach', ...shared,
+    '--sse-output', detachEventsFile,
     '--output', detachFile,
   ], state.env);
   const [detached] = await readRows(detachFile);
@@ -356,6 +384,12 @@ test('exact lifecycle CLIs auto-launch isolated production processes and retain 
   }, { total: 2, attached: 1, detached: 1 });
   assert.equal(detached.terminalAttachments.detached, 1);
   assert.ok(detached.terminalAttachments.closed >= 1);
+  const detachEvents = await readRows(detachEventsFile);
+  assert.equal(new Set(detachEvents.map((event) =>
+    `${event.operationId}:${event.eventSequence}`)).size, detachEvents.length);
+  assert.ok(detachEvents.every((event) => event.streamAttachments.length >= 1));
+  assert.ok(detached.activityAttachments.attachments.some((entry) =>
+    entry.attachment === 'survivor'));
 
   const cancelFile = path.join(state.receiptRunDir, 'cancel.jsonl');
   await main([
@@ -365,6 +399,8 @@ test('exact lifecycle CLIs auto-launch isolated production processes and retain 
   const [cancelled] = await readRows(cancelFile);
   assertIsolatedTerminal(cancelled, 'cancelled');
   assert.equal(cancelled.providerAbortObserved, true);
+  assert.equal(cancelled.providerAbortEvidence.evidenceSource, 'isolated-provider-telemetry');
+  assert.equal(cancelled.providerAbortEvidence.providerAbortDelta, 1);
 
   const restartFile = path.join(state.receiptRunDir, 'restart.jsonl');
   await main([
@@ -380,8 +416,10 @@ test('exact lifecycle CLIs auto-launch isolated production processes and retain 
   assertStopped(restarted.dashboardPidBeforeRestart);
 
   const synthesisFile = path.join(state.receiptRunDir, 'synthesis.jsonl');
+  const synthesisEventsFile = path.join(state.receiptRunDir, 'synthesis-events.jsonl');
   await main([
     '--scenario', 'synthesis-reconnect', ...shared,
+    '--sse-output', synthesisEventsFile,
     '--output', synthesisFile,
   ], state.env);
   const [synthesis] = await readRows(synthesisFile);
@@ -401,6 +439,18 @@ test('exact lifecycle CLIs auto-launch isolated production processes and retain 
     providerCallId: 'synthesis',
     outcome: 'complete',
   });
+  const synthesisEvents = await readRows(synthesisEventsFile);
+  assert.equal(new Set(synthesisEvents.map((event) =>
+    `${event.operationId}:${event.eventSequence}`)).size, synthesisEvents.length);
+  assert.ok(synthesisEvents.every((event) => event.streamAttachments.length >= 1));
+  assert.ok(['operation-stream', 'durable-operation-store'].includes(
+    synthesis.providerTerminalEvidenceSource,
+  ));
+  if (synthesis.providerTerminalEvidenceSource === 'durable-operation-store') {
+    assert.equal(synthesisEvents.some((event) =>
+      event.eventSequence === synthesis.providerTerminalStoreEvidence.eventSequence
+        && event.type === 'provider_call_terminal'), false);
+  }
 
   assert.equal(detached.isolatedStore, cancelled.isolatedStore);
   assert.equal(cancelled.isolatedStore, restarted.isolatedStore);
