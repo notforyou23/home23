@@ -6,6 +6,9 @@ const {
   projectScalarSystemState,
   readBoundedGzipJson,
 } = require('../../../../shared/memory-source/mcp-bridge-adapter.cjs');
+const {
+  readRecentJsonlTail,
+} = require('../../../../shared/bounded-jsonl-tail.cjs');
 
 function loadLockfile() {
   try {
@@ -23,6 +26,16 @@ async function lock(file, options) {
 
 async function unlock(file) {
   return promisify(loadLockfile().unlock)(file);
+}
+
+function boundedToolLimit(value, fallback = 20) {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved < 1 || resolved > 100) {
+    throw Object.assign(new Error('tool limit must be between 1 and 100'), {
+      code: 'invalid_request', status: 400,
+    });
+  }
+  return resolved;
 }
 
 /**
@@ -107,16 +120,23 @@ class MCPBridge {
   /**
    * Tool 2: get_recent_thoughts
    */
-  async get_recent_thoughts(limit = 20) {
+  async get_recent_thoughts(limit = 20, options = {}) {
     try {
-      const content = await fs.readFile(this.thoughtsFile, 'utf-8');
-      const lines = content.trim().split('\n');
-      const thoughts = lines.slice(-Math.min(limit, 100)).map(line => JSON.parse(line));
+      const boundedLimit = boundedToolLimit(limit);
+      const thoughts = await readRecentJsonlTail(this.thoughtsFile, {
+        limit: boundedLimit,
+        maxEntries: 100,
+        signal: options.signal,
+      });
       return {
         count: thoughts.length,
-        thoughts: thoughts.reverse() // Most recent first
+        thoughts,
       };
     } catch (error) {
+      if (options.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
+        throw options.signal?.reason || error;
+      }
+      if (error?.code === 'invalid_request' || error?.code === 'result_too_large') throw error;
       this.logger?.warn?.('Failed to read thoughts', { error: error.message });
       return { count: 0, thoughts: [] };
     }
@@ -363,11 +383,14 @@ class MCPBridge {
    * Tool 13: get_dreams
    * Returns dreams generated during sleep cycles
    */
-  async get_dreams(limit = 20) {
+  async get_dreams(limit = 20, options = {}) {
     try {
-      const content = await fs.readFile(this.thoughtsFile, 'utf-8');
-      const lines = content.trim().split('\n');
-      const allThoughts = lines.map(line => JSON.parse(line));
+      const boundedLimit = boundedToolLimit(limit);
+      const allThoughts = await readRecentJsonlTail(this.thoughtsFile, {
+        limit: 1_000,
+        maxEntries: 1_000,
+        signal: options.signal,
+      });
       
       // Filter for dreams (thoughts during sleep/dream mode)
       const dreams = allThoughts.filter(t => 
@@ -377,10 +400,16 @@ class MCPBridge {
       );
 
       return {
-        count: dreams.length,
-        dreams: dreams.slice(-Math.min(limit, 100)).reverse()
+        count: Math.min(dreams.length, boundedLimit),
+        dreams: dreams.slice(0, boundedLimit),
+        scannedRecentThoughts: allThoughts.length,
+        coverage: 'bounded-recent-tail',
       };
     } catch (error) {
+      if (options.signal?.aborted || error?.name === 'AbortError' || error?.code === 'ABORT_ERR') {
+        throw options.signal?.reason || error;
+      }
+      if (error?.code === 'invalid_request' || error?.code === 'result_too_large') throw error;
       this.logger?.warn?.('Failed to read dreams', { error: error.message });
       return { count: 0, dreams: [] };
     }

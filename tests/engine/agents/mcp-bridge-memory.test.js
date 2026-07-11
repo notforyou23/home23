@@ -286,3 +286,28 @@ test('system state parsing fails bounded while canonical memory truth remains av
   assert.equal(system.memory.totalEdges, 4);
   assert.equal(system.memory.evidence.sourceHealth, 'healthy');
 });
+
+for (const [name, Bridge] of implementations) {
+  test(`${name} MCP thought and dream reads use a bounded reverse tail`, async (t) => {
+    const fixture = await createFixture({ withManifest: false });
+    t.after(fixture.cleanup);
+    const largeDiscardedPrefix = Buffer.alloc(9 * 1024 * 1024, 0x78);
+    await fsp.writeFile(path.join(fixture.brainDir, 'thoughts.jsonl'), Buffer.concat([
+      largeDiscardedPrefix,
+      Buffer.from('\n'),
+      Buffer.from(`${JSON.stringify({ id: 'recent-1', text: 'recent' })}\n`),
+      Buffer.from(`${JSON.stringify({ id: 'dream-1', role: 'dreamer', text: 'dream' })}\n`),
+    ]));
+    const bridge = new Bridge(fixture.brainDir, logger, {
+      brainSourceContext: fixture.brainSourceContext,
+    });
+    const thoughts = await bridge.get_recent_thoughts(2);
+    assert.equal(thoughts.count, 2);
+    assert.deepEqual(thoughts.thoughts.map((entry) => entry.id), ['dream-1', 'recent-1']);
+    const dreams = await bridge.get_dreams(5);
+    assert.equal(dreams.count, 1);
+    assert.equal(dreams.dreams[0].id, 'dream-1');
+    assert.equal(dreams.coverage, 'bounded-recent-tail');
+    assert.equal(dreams.scannedRecentThoughts, 2);
+  });
+}
