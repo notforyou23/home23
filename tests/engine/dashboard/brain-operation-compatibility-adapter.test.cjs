@@ -351,6 +351,50 @@ test('compatibility canonical export rejects an unsafe or malformed public recei
   }
 });
 
+test('compatibility canonical export rejects non-exportable terminal sources before any writer call', async (t) => {
+  const home23Root = fs.realpathSync.native(fs.mkdtempSync(
+    path.join(os.tmpdir(), 'brain-compat-rejected-export-'),
+  ));
+  t.after(() => fs.rmSync(home23Root, { recursive: true, force: true }));
+  const marker = path.join(home23Root, 'writer-was-called');
+  const sourceEvidence = { sourceHealth: 'degraded', matchOutcome: 'unknown' };
+  for (const state of ['failed', 'cancelled', 'interrupted']) {
+    let writes = 0;
+    const { adapter } = makeAdapter({
+      reader: {
+        getAuthorized: async () => record({
+          state,
+          resultHandle: null,
+          error: { code: `source_${state}`, message: `source is ${state}`, retryable: false },
+          sourceEvidence,
+        }),
+      },
+      exporter: {
+        exportResult: async () => {
+          writes += 1;
+          fs.writeFileSync(marker, state);
+          return exportReceipt();
+        },
+      },
+    });
+    await assert.rejects(adapter.exportStored({
+      kind: 'canonical', operationId: OPERATION_ID, resultHandle: RESULT_HANDLE,
+      format: 'markdown', fileName: 'result',
+    }), (error) => {
+      assert.equal(error.code, 'export_source_state_invalid');
+      assert.equal(error.retryable, false);
+      assert.equal(error.operation.operationId, OPERATION_ID);
+      assert.equal(error.operation.state, state);
+      assert.equal(error.operation.attachmentState, 'closed');
+      assert.equal(error.operation.resultHandle, null);
+      assert.deepEqual(error.operation.sourceEvidence, sourceEvidence);
+      return true;
+    });
+    assert.equal(writes, 0, `${state} source reached the export writer`);
+    assert.equal(fs.existsSync(marker), false, `${state} source wrote an export artifact`);
+  }
+});
+
 test('compatibility canonical export normalizes the actual local exporter receipt', async (t) => {
   const home23Root = fs.realpathSync.native(fs.mkdtempSync(
     path.join(os.tmpdir(), 'brain-compat-export-'),
@@ -435,4 +479,94 @@ test('compatibility ad hoc export creates an explicit noncanonical durable opera
   assert.equal(result.operationId, OPERATION_ID);
   assert.equal(result.state, 'complete');
   assert.equal(result.resultHandle, RESULT_HANDLE);
+});
+
+test('compatibility ad hoc export preserves typed terminal failure and durable authority', async () => {
+  const resultArtifact = {
+    mediaType: 'application/json', contentEncoding: 'identity', bytes: 42, sha256: 'e'.repeat(64),
+  };
+  const sourceEvidence = { sourceHealth: 'degraded', matchOutcome: 'unknown' };
+  const failed = record({
+    state: 'failed', operationType: 'ad_hoc_export', eventSequence: 4,
+    resultHandle: RESULT_HANDLE,
+    resultArtifact,
+    error: {
+      code: 'provider_export_failed',
+      message: 'provider stopped after the durable export started',
+      retryable: true,
+    },
+    sourceEvidence,
+  });
+  const { adapter } = makeAdapter({
+    coordinator: {
+      start: async () => record({ state: 'queued', operationType: 'ad_hoc_export' }),
+      attach: async () => ({ done: Promise.resolve({ state: 'failed' }) }),
+    },
+    reader: {
+      getAuthorized: async () => failed,
+      getResultAuthorized: async () => null,
+    },
+  });
+  await assert.rejects(adapter.exportStored({
+    kind: 'ad_hoc', requestId: 'request-export-failed', query: 'x', answer: 'y',
+    format: 'markdown', metadata: {},
+  }), (error) => {
+    assert.equal(error.code, 'provider_export_failed');
+    assert.equal(error.message, 'provider stopped after the durable export started');
+    assert.equal(error.retryable, true);
+    assert.equal(error.operation.operationId, OPERATION_ID);
+    assert.equal(error.operation.state, 'failed');
+    assert.equal(error.operation.attachmentState, 'closed');
+    assert.equal(error.operation.resultHandle, RESULT_HANDLE);
+    assert.deepEqual(error.operation.resultArtifact, resultArtifact);
+    assert.deepEqual(error.operation.sourceEvidence, sourceEvidence);
+    return true;
+  });
+});
+
+test('compatibility ad hoc export retains durable authority for malformed complete and partial receipts', async () => {
+  const resultArtifact = {
+    mediaType: 'application/json', contentEncoding: 'identity', bytes: 42, sha256: 'f'.repeat(64),
+  };
+  const sourceEvidence = { sourceHealth: 'healthy', matchOutcome: 'matches' };
+  for (const state of ['complete', 'partial']) {
+    const terminal = record({
+      state, operationType: 'ad_hoc_export', eventSequence: 5,
+      resultHandle: RESULT_HANDLE,
+      resultArtifact,
+      error: state === 'partial'
+        ? { code: 'provider_partial', message: 'partial export receipt', retryable: true }
+        : null,
+      sourceEvidence,
+    });
+    const { adapter } = makeAdapter({
+      coordinator: {
+        start: async () => record({ state: 'queued', operationType: 'ad_hoc_export' }),
+        attach: async () => ({ done: Promise.resolve({ state }) }),
+      },
+      reader: {
+        getAuthorized: async () => terminal,
+        getResultAuthorized: async () => exportReceipt({
+          relativePath: '../unsafe.md',
+          canonicalEvidence: false,
+          sourceResultHandleHash: null,
+        }),
+      },
+    });
+    await assert.rejects(adapter.exportStored({
+      kind: 'ad_hoc', requestId: `request-export-${state}`, query: 'x', answer: 'y',
+      format: 'markdown', metadata: {},
+    }), (error) => {
+      assert.equal(error.code, 'export_receipt_invalid');
+      assert.equal(error.message, 'export_receipt_invalid');
+      assert.equal(error.retryable, false);
+      assert.equal(error.operation.operationId, OPERATION_ID);
+      assert.equal(error.operation.state, state);
+      assert.equal(error.operation.attachmentState, 'closed');
+      assert.equal(error.operation.resultHandle, RESULT_HANDLE);
+      assert.deepEqual(error.operation.resultArtifact, resultArtifact);
+      assert.deepEqual(error.operation.sourceEvidence, sourceEvidence);
+      return true;
+    });
+  }
 });

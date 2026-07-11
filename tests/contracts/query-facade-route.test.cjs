@@ -1159,6 +1159,63 @@ test('compatibility ad hoc export is explicitly noncanonical and independent of 
   assert.match(forwarded[0].requestId, /^compat-export-/);
 });
 
+test('compatibility export failures retain typed error and durable operation authority', async () => {
+  const validate = compileQueryDefinition('queryExportResponse');
+  const resultHandle = `brres_${'u'.repeat(32)}`;
+  const resultArtifact = {
+    mediaType: 'application/json', contentEncoding: 'identity', bytes: 42, sha256: 'b'.repeat(64),
+  };
+  const sourceEvidence = { sourceHealth: 'degraded', matchOutcome: 'unknown' };
+  for (const row of [
+    {
+      state: 'failed', code: 'provider_export_failed',
+      message: 'provider stopped after the durable export started', retryable: true,
+    },
+    {
+      state: 'complete', code: 'export_receipt_invalid',
+      message: 'export receipt failed validation', retryable: false,
+    },
+    {
+      state: 'partial', code: 'export_receipt_invalid',
+      message: 'partial export receipt failed validation', retryable: false,
+    },
+  ]) {
+    const fixture = makeQueryApp({ adapter: {
+      exportStored: async () => {
+        const error = Object.assign(new Error(row.message), {
+          code: row.code,
+          retryable: row.retryable,
+          operation: {
+            operationId: COMPAT_OPERATION_ID,
+            state: row.state,
+            attachmentState: 'closed',
+            resultHandle,
+            resultArtifact,
+            sourceEvidence,
+          },
+        });
+        throw error;
+      },
+    } });
+    const response = await postJson(fixture.app, '/home23/api/query/export', {
+      query: 'x', answer: 'not canonical evidence', format: 'markdown',
+    });
+    assert.equal(response.status, row.retryable ? 503 : 500);
+    assert.equal(response.body.success, false);
+    assert.equal(response.body.operationId, COMPAT_OPERATION_ID);
+    assert.equal(response.body.state, row.state);
+    assert.equal(response.body.attachmentState, 'closed');
+    assert.equal(response.body.detached, false);
+    assert.equal(response.body.resultHandle, resultHandle);
+    assert.deepEqual(response.body.resultArtifact, resultArtifact);
+    assert.deepEqual(response.body.sourceEvidence, sourceEvidence);
+    assert.deepEqual(response.body.error, {
+      code: row.code, message: row.message, retryable: row.retryable,
+    });
+    assert.equal(validate(response.body), true, JSON.stringify(validate.errors));
+  }
+});
+
 test('query request schema enforces exact direct and PGS provider objects', () => {
   const validate = compileQueryDefinition('queryRequest');
   assert.equal(validate({

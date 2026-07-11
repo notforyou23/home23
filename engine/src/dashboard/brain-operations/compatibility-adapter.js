@@ -78,6 +78,43 @@ function attachmentFailure(record, cause) {
   return error;
 }
 
+function operationFailure(record, failure, {
+  code = 'export_failed',
+  message = code,
+  retryable = false,
+} = {}) {
+  const referenced = failure?.operation && typeof failure.operation === 'object'
+    ? failure.operation
+    : failure?.operationId ? failure : null;
+  const value = (field, fallback = null) => (referenced && Object.hasOwn(referenced, field)
+    ? referenced[field]
+    : Object.hasOwn(record, field) ? record[field] : fallback);
+  const state = value('state');
+  const operation = {
+    operationId: value('operationId'),
+    state,
+    attachmentState: value(
+      'attachmentState',
+      TERMINAL_STATES.has(state) ? 'closed' : 'attached',
+    ),
+    resultHandle: value('resultHandle'),
+    resultArtifact: value('resultArtifact'),
+    sourceEvidence: value('sourceEvidence'),
+  };
+  const typedCode = typeof failure?.code === 'string' && failure.code
+    ? failure.code
+    : code;
+  const typedMessage = typeof failure?.message === 'string' && failure.message
+    ? failure.message
+    : message;
+  const error = failure instanceof Error ? failure : adapterError(typedCode, failure);
+  error.code = typedCode;
+  error.message = typedMessage;
+  error.retryable = typeof failure?.retryable === 'boolean' ? failure.retryable : retryable;
+  error.operation = operation;
+  return error;
+}
+
 function normalizeExportReceipt(record, receipt, { canonicalEvidence, format }) {
   try {
     exactObject(receipt, [
@@ -323,17 +360,28 @@ class BrainOperationsCompatibilityAdapter {
     ]);
     if (request.kind === 'canonical') {
       const record = this._authorize(await this.reader.getAuthorized(request.operationId));
-      const receipt = await this.exporter.exportResult({
-        requesterAgent: this.requesterAgent,
-        operationId: request.operationId,
-        resultHandle: request.resultHandle,
-        format: request.format,
-        fileName: request.fileName,
-      });
-      return normalizeExportReceipt(record, receipt, {
-        canonicalEvidence: true,
-        format: request.format,
-      });
+      if (!['complete', 'partial'].includes(record.state)) {
+        throw operationFailure(record, {
+          code: 'export_source_state_invalid',
+          message: `canonical export requires a complete or partial source; source is ${record.state}`,
+          retryable: false,
+        });
+      }
+      try {
+        const receipt = await this.exporter.exportResult({
+          requesterAgent: this.requesterAgent,
+          operationId: request.operationId,
+          resultHandle: request.resultHandle,
+          format: request.format,
+          fileName: request.fileName,
+        });
+        return normalizeExportReceipt(record, receipt, {
+          canonicalEvidence: true,
+          format: request.format,
+        });
+      } catch (error) {
+        throw operationFailure(record, error);
+      }
     }
     if (request.kind !== 'ad_hoc') throw adapterError('invalid_request');
     const started = await this.start({
@@ -346,29 +394,46 @@ class BrainOperationsCompatibilityAdapter {
         metadata: request.metadata,
       },
     });
-    const attachmentId = createAttachmentId(this.randomUUID);
-    const terminal = await this.attachAndWait(started, {
-      attachmentId,
-      signal: request.signal,
-      waitMs: QUERY_WAIT_MS,
-    });
-    if (terminal.attachmentState === 'detached') {
-      return {
-        operationId: terminal.operationId,
-        state: terminal.state,
-        attachmentState: 'detached',
-      };
+    let authority = started;
+    try {
+      const attachmentId = createAttachmentId(this.randomUUID);
+      const terminal = await this.attachAndWait(started, {
+        attachmentId,
+        signal: request.signal,
+        waitMs: QUERY_WAIT_MS,
+      });
+      authority = terminal;
+      if (terminal.attachmentState === 'detached') {
+        return {
+          operationId: terminal.operationId,
+          state: terminal.state,
+          attachmentState: 'detached',
+        };
+      }
+      const envelope = await this.getResult(terminal.operationId);
+      authority = envelope;
+      if (!['complete', 'partial'].includes(envelope.state)) {
+        throw operationFailure(envelope, envelope.error || {
+          code: 'export_failed',
+          message: 'durable export operation did not produce a receipt',
+          retryable: false,
+        });
+      }
+      if (!envelope.result || Array.isArray(envelope.result)
+          || typeof envelope.result !== 'object') {
+        throw operationFailure(envelope, {
+          code: 'export_receipt_invalid',
+          message: 'export_receipt_invalid',
+          retryable: false,
+        });
+      }
+      return normalizeExportReceipt(envelope, envelope.result, {
+        canonicalEvidence: false,
+        format: request.format,
+      });
+    } catch (error) {
+      throw operationFailure(authority, error);
     }
-    const envelope = await this.getResult(terminal.operationId);
-    if (!['complete', 'partial'].includes(envelope.state)
-        || !envelope.result || Array.isArray(envelope.result)
-        || typeof envelope.result !== 'object') {
-      throw adapterError(envelope.error?.code || 'export_failed');
-    }
-    return normalizeExportReceipt(envelope, envelope.result, {
-      canonicalEvidence: false,
-      format: request.format,
-    });
   }
 }
 
