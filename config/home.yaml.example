@@ -128,6 +128,17 @@ chat:
   historyBudget: 400000
   sessionGapMs: 1800000
 
+query:
+  defaultProvider: anthropic
+  defaultModel: claude-opus-4-8
+  defaultMode: full
+  enablePGSByDefault: false
+  pgsSweepProvider: minimax
+  pgsSweepModel: MiniMax-M3
+  pgsSynthProvider: anthropic
+  pgsSynthModel: claude-opus-4-8
+  pgsDepth: 0.25
+
 situationalAwareness:
   bootstrap:
     reads:
