@@ -33,6 +33,7 @@ import { MemoryObjectStore } from './memory-objects.js';
 import { TurnStore } from '../chat/turn-store.js';
 import { turnBus } from '../chat/turn-bus.js';
 import { newTurnId, type TurnEvent } from '../chat/turn-types.js';
+import { combineRequestSignals } from './abort-signals.js';
 
 const MAX_ITERATIONS = 500;
 const TYPING_INTERVAL_MS = 4000;
@@ -41,36 +42,6 @@ const TOOL_EVENT_RESULT_LIMIT_CHARS = 4000;
 const DEFAULT_TURN_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_TURN_HARD_DURATION_MS = 8 * 60 * 60 * 1000;
 const DEFAULT_FIRST_TOKEN_TIMEOUT_MS = 30 * 1000;
-
-function combineRequestSignals(turnSignal: AbortSignal, timeoutMs: number): AbortSignal {
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  const abortSignalAny = (AbortSignal as unknown as {
-    any?: (signals: AbortSignal[]) => AbortSignal;
-  }).any;
-  if (abortSignalAny) return abortSignalAny([turnSignal, timeoutSignal]);
-
-  const controller = new AbortController();
-  const sources = [turnSignal, timeoutSignal];
-  const listeners = new Map<AbortSignal, () => void>();
-  const cleanup = (): void => {
-    for (const [source, listener] of listeners) {
-      source.removeEventListener('abort', listener);
-    }
-    listeners.clear();
-  };
-  for (const source of sources) {
-    const listener = (): void => controller.abort(source.reason);
-    listeners.set(source, listener);
-    if (source.aborted) {
-      listener();
-      break;
-    }
-    source.addEventListener('abort', listener, { once: true });
-  }
-  if (controller.signal.aborted) cleanup();
-  else controller.signal.addEventListener('abort', cleanup, { once: true });
-  return controller.signal;
-}
 
 function hashText(text: string): string {
   return createHash('sha256').update(text).digest('hex').slice(0, 16);
@@ -840,7 +811,12 @@ export class AgentLoop {
           runtime,
           turnRuntime,
         );
-        const terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
+        let terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
+        if (!terminalOverride && lease.hardDeadlineMs !== null
+            && this.turnTiming.now() >= lease.hardDeadlineMs) {
+          expireTurn('hard_timeout');
+          terminalOverride = this.terminalTurnOverrides.get(this.turnKey(chatId, turnId));
+        }
         if (terminalOverride?.status === 'timeout') {
           if (ac.signal.reason instanceof Error) throw ac.signal.reason;
           throw Object.assign(
@@ -1037,7 +1013,13 @@ export class AgentLoop {
 
       if (this.compaction && this.compaction.needsCompaction(storedHistory, this.history.budget)) {
         try {
-          const { messages: compactedMsgs, result } = await this.compaction.compact(chatId, storedHistory, runtimeModel, runtimeProvider);
+          const { messages: compactedMsgs, result } = await this.compaction.compact(
+            chatId,
+            storedHistory,
+            runtimeModel,
+            runtimeProvider,
+            ac.signal,
+          );
           truncated = compactedMsgs;
           didTruncate = result.compacted;
           recoveryBundle = result.recoveryBundle;
@@ -1045,6 +1027,7 @@ export class AgentLoop {
             console.log(`[agent] Auto-compacted: ${result.reason} (${result.tokensBefore} → ${result.tokensAfter})`);
           }
         } catch (err) {
+          if (ac.signal.aborted) ac.signal.throwIfAborted();
           console.warn('[agent] Smart compaction failed, falling back to truncation:', err);
           truncated = this.history.truncate(storedHistory);
           didTruncate = truncated.length < storedHistory.length;
@@ -1260,7 +1243,7 @@ Use research_watch_run to check progress. Use research_stop to cancel. You can s
             // Calls https://chatgpt.com/backend-api/codex/responses (Responses API, SSE).
             // Returns respMsg in OAI Chat Completions format so the tool loop below runs unchanged.
 
-            const creds = await this.codexCredentialsProvider();
+            const creds = await this.codexCredentialsProvider(ac.signal);
             if (!creds) throw new Error('openai-codex credentials not found — connect OpenAI Codex in Home23 Setup or Settings > Providers');
 
             const sysText = typeof systemPrompt === 'string'

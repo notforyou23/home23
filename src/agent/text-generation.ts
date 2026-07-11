@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { getCodexCredentials, getCodexHeaders, type CodexCredentials } from './codex-auth.js';
+import { combineRequestSignals } from './abort-signals.js';
 
 export interface TextGenerationOptions {
   provider?: string;
@@ -12,7 +13,8 @@ export interface TextGenerationOptions {
   maxTokens?: number;
   temperature?: number;
   timeoutMs?: number;
-  codexCredentialsProvider?: () => Promise<CodexCredentials | null>;
+  signal?: AbortSignal;
+  codexCredentialsProvider?: (signal?: AbortSignal) => Promise<CodexCredentials | null>;
 }
 
 export function inferTextGenerationProvider(model?: string, provider?: string): string {
@@ -32,23 +34,28 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
   const temperature = opts.temperature ?? 0.1;
   const timeoutMs = opts.timeoutMs ?? 60_000;
 
+  if (provider === 'openai-codex') {
+    return generateCodexText({ ...opts, model, maxTokens, timeoutMs });
+  }
+
+  const requestSignal = combineRequestSignals(opts.signal, timeoutMs);
+
   if (provider === 'anthropic' || provider === 'minimax') {
     const client = opts.client || new Anthropic({
       apiKey: opts.apiKey || envApiKey(provider) || 'placeholder',
       ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
     });
-    const response = await client.messages.create({
-      model,
-      max_tokens: maxTokens,
-      temperature,
-      ...(opts.system ? { system: opts.system } : {}),
-      messages: [{ role: 'user', content: opts.prompt }],
-    });
+    const response = await client.messages.create(
+      {
+        model,
+        max_tokens: maxTokens,
+        temperature,
+        ...(opts.system ? { system: opts.system } : {}),
+        messages: [{ role: 'user', content: opts.prompt }],
+      },
+      { signal: requestSignal },
+    );
     return extractAnthropicText(response);
-  }
-
-  if (provider === 'openai-codex') {
-    return generateCodexText({ ...opts, model, maxTokens, timeoutMs });
   }
 
   if (provider === 'ollama-cloud') {
@@ -67,7 +74,7 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
         stream: false,
         options: { num_ctx: 32768, temperature },
       }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: requestSignal,
     });
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
@@ -97,7 +104,7 @@ export async function generateText(opts: TextGenerationOptions): Promise<string>
         ...tokenParam,
         temperature,
       }),
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: requestSignal,
     });
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
@@ -139,7 +146,7 @@ function extractAnthropicText(response: unknown): string {
 
 async function generateCodexText(opts: Required<Pick<TextGenerationOptions, 'prompt'>> & TextGenerationOptions): Promise<string> {
   const credentialsProvider = opts.codexCredentialsProvider || getCodexCredentials;
-  const creds = await credentialsProvider();
+  const creds = await credentialsProvider(opts.signal);
   if (!creds) throw new Error('openai-codex credentials not found');
 
   const body = {
@@ -159,7 +166,7 @@ async function generateCodexText(opts: Required<Pick<TextGenerationOptions, 'pro
     method: 'POST',
     headers: getCodexHeaders(creds),
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(opts.timeoutMs ?? 90_000),
+    signal: combineRequestSignals(opts.signal, opts.timeoutMs ?? 90_000),
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => '');

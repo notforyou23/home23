@@ -759,6 +759,49 @@ test('hard-timed-out run cannot resolve as a normal successful response', async 
   }
 });
 
+test('completion enforces the immutable hard deadline when timer delivery is delayed', async () => {
+  const root = join(tmpdir(), `chat-turn-delayed-hard-timer-${process.pid}-${Math.random()}`);
+  const { agent, history } = makeAgent(root);
+  const clock = installManualClock(agent);
+  let release!: () => void;
+  const released = new Promise<void>(resolve => { release = resolve; });
+  let response: Promise<unknown> | null = null;
+
+  try {
+    (agent as any).run = async () => {
+      await released;
+      return {
+        text: 'Late success.', model: 'gpt-5.5', toolCallCount: 0, durationMs: 31,
+      };
+    };
+
+    const started = await agent.runWithTurn('delayed-hard-timer-chat', 'hello', {
+      inactivityMs: 100,
+      hardDurationMs: 30,
+      firstTokenTimeoutMs: 1_000,
+    });
+    response = started.response;
+    response.catch(() => {});
+    await flushMicrotasks();
+
+    // Move beyond the immutable deadline without delivering queued timers.
+    clock.nowMs += 31;
+    release();
+
+    await assert.rejects(response, /turn hard timeout after 30ms/);
+    const status = new TurnStore(history).statusForTurn(
+      'delayed-hard-timer-chat', started.turnId,
+    );
+    assert.equal(status?.status, 'timeout');
+    assert.equal(status?.stop_reason, 'turn_hard_timeout');
+    assert.equal(status?.error_code, 'turn_hard_timeout');
+  } finally {
+    release?.();
+    if (response) await response.catch(() => {});
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('immutable hard deadline uses the distinct terminal code', async () => {
   const root = join(tmpdir(), `chat-turn-hard-timeout-${process.pid}-${Math.random()}`);
   const { agent, history } = makeAgent(root);
@@ -800,6 +843,139 @@ test('immutable hard deadline uses the distinct terminal code', async () => {
     if (capturedRuntime && !capturedRuntime.signal.aborted) {
       capturedRuntime.abortController.abort(new Error('test cleanup'));
     }
+    if (response) await response.catch(() => {});
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('pending Codex credentials receive the exact turn signal and settle on hard cancellation', async () => {
+  const root = join(tmpdir(), `chat-turn-codex-credentials-signal-${process.pid}-${Math.random()}`);
+  const { agent } = makeAgent(root);
+  const clock = installManualClock(agent);
+  const originalFetch = globalThis.fetch;
+  let credentialCalls = 0;
+  let credentialSignal: AbortSignal | undefined;
+  let finishCredentials: (() => void) | null = null;
+  let response: Promise<unknown> | null = null;
+  let responseSettled = false;
+
+  try {
+    globalThis.fetch = (async () => new Response('{}', { status: 503 })) as typeof fetch;
+    (agent as any).codexCredentialsProvider = (signal?: AbortSignal) => {
+      credentialCalls++;
+      credentialSignal = signal;
+      return new Promise((resolve, reject) => {
+        finishCredentials = () => resolve(null);
+        if (!signal) return;
+        const rejectForAbort = (): void => reject(signal.reason);
+        if (signal.aborted) rejectForAbort();
+        else signal.addEventListener('abort', rejectForAbort, { once: true });
+      });
+    };
+
+    const started = await agent.runWithTurn('codex-credentials-signal-chat', 'hello', {
+      modelOverride: { model: 'gpt-5.5', provider: 'openai-codex' },
+      inactivityMs: 100,
+      hardDurationMs: 30,
+      firstTokenTimeoutMs: 1_000,
+    });
+    response = started.response;
+    response.then(
+      () => { responseSettled = true; },
+      () => { responseSettled = true; },
+    );
+    response.catch(() => {});
+    for (let i = 0; i < 20 && credentialCalls === 0; i++) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.equal(credentialCalls, 1);
+
+    const controller = (agent as any).activeRuns
+      .get('codex-credentials-signal-chat')?.get(started.turnId) as AbortController | undefined;
+    assert.ok(controller);
+    clock.advance(30);
+    for (let i = 0; i < 20 && !responseSettled; i++) await Promise.resolve();
+
+    assert.equal(credentialSignal, controller.signal);
+    assert.equal(credentialSignal?.aborted, true);
+    assert.equal(responseSettled, true, 'hard cancellation must not wait for credential refresh');
+    await assert.rejects(response, /turn hard timeout after 30ms/);
+  } finally {
+    finishCredentials?.();
+    if (response) await response.catch(() => {});
+    globalThis.fetch = originalFetch;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('pending compaction receives the exact turn signal and settles on hard cancellation', async () => {
+  const root = join(tmpdir(), `chat-turn-compaction-signal-${process.pid}-${Math.random()}`);
+  const { agent } = makeAgent(root);
+  const clock = installManualClock(agent);
+  let compactCalls = 0;
+  let compactSignal: AbortSignal | undefined;
+  let finishCompaction: (() => void) | null = null;
+  let response: Promise<unknown> | null = null;
+  let responseSettled = false;
+
+  (agent as any).compaction = {
+    needsCompaction: () => true,
+    compact: (
+      _chatId: string,
+      _records: unknown[],
+      _model: string,
+      _provider: string,
+      signal?: AbortSignal,
+    ) => {
+      compactCalls++;
+      compactSignal = signal;
+      return new Promise((resolve, reject) => {
+        finishCompaction = () => resolve({
+          messages: [],
+          result: {
+            compacted: false,
+            reason: 'review cleanup',
+            tokensBefore: 0,
+            tokensAfter: 0,
+          },
+        });
+        if (!signal) return;
+        const rejectForAbort = (): void => reject(signal.reason);
+        if (signal.aborted) rejectForAbort();
+        else signal.addEventListener('abort', rejectForAbort, { once: true });
+      });
+    },
+  };
+
+  try {
+    const started = await agent.runWithTurn('compaction-signal-chat', 'hello', {
+      inactivityMs: 100,
+      hardDurationMs: 30,
+      firstTokenTimeoutMs: 1_000,
+    });
+    response = started.response;
+    response.then(
+      () => { responseSettled = true; },
+      () => { responseSettled = true; },
+    );
+    response.catch(() => {});
+    for (let i = 0; i < 20 && compactCalls === 0; i++) {
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    assert.equal(compactCalls, 1);
+
+    const controller = (agent as any).activeRuns
+      .get('compaction-signal-chat')?.get(started.turnId) as AbortController | undefined;
+    assert.ok(controller);
+    clock.advance(30);
+    for (let i = 0; i < 20 && !responseSettled; i++) await Promise.resolve();
+
+    assert.equal(compactSignal, controller.signal);
+    assert.equal(compactSignal?.aborted, true);
+    assert.equal(responseSettled, true, 'hard cancellation must not wait for compaction');
+    await assert.rejects(response, /turn hard timeout after 30ms/);
+  } finally {
+    finishCompaction?.();
     if (response) await response.catch(() => {});
     rmSync(root, { recursive: true, force: true });
   }

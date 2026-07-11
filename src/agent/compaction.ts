@@ -80,6 +80,7 @@ export class CompactionManager {
     olderMessages: StoredMessage[],
     currentModel?: string,
     currentProvider?: string,
+    signal?: AbortSignal,
   ): Promise<string> {
     const transcript = olderMessages
       .map(m => {
@@ -105,6 +106,7 @@ export class CompactionManager {
       baseURL: this.baseURL,
       maxTokens: 800,
       temperature: 0.1,
+      signal,
       system: 'You are a conversation summarizer. Produce a dense, factual summary that preserves: key decisions, tool actions taken, current goals, important context. No fluff. No preamble.',
       prompt: `Summarize this conversation segment. Preserve all important context, decisions, and state. The summary will replace these messages in the conversation history.\n\n${transcript.slice(0, 12000)}`,
     });
@@ -123,7 +125,9 @@ export class CompactionManager {
     records: HistoryRecord[],
     currentModel?: string,
     currentProvider?: string,
+    signal?: AbortSignal,
   ): Promise<{ messages: StoredMessage[]; result: CompactionResult }> {
+    signal?.throwIfAborted();
     const messages = records.filter(
       (r): r is StoredMessage => !('type' in r && r.type === 'session_boundary'),
     );
@@ -148,13 +152,16 @@ export class CompactionManager {
       currentModel,
       currentProvider,
       memory: this.memory,
+      signal,
     });
+    signal?.throwIfAborted();
 
     // Phase 2: LLM summarization
     let summary: string;
     try {
-      summary = await this.summarizeMessages(olderMessages, currentModel, currentProvider);
+      summary = await this.summarizeMessages(olderMessages, currentModel, currentProvider, signal);
     } catch (err) {
+      if (signal?.aborted) signal.throwIfAborted();
       console.warn('[compaction] Summarization failed, falling back to truncation:', err);
       const charsAfter = this.history.estimateChars(recentMessages);
       this.history.compact(chatId, recentMessages);
@@ -166,12 +173,15 @@ export class CompactionManager {
         currentModel,
         currentProvider,
         memory: this.memory,
+        signal,
       });
+      signal?.throwIfAborted();
       return {
         messages: recentMessages,
         result: { compacted: true, reason: 'Summarization failed, fell back to truncation', tokensBefore: charsBefore, tokensAfter: charsAfter, extractedLearnings, recoveryBundle },
       };
     }
+    signal?.throwIfAborted();
 
     // Phase 3: Build compacted history
     const finalMessages: StoredMessage[] = [
@@ -196,7 +206,9 @@ export class CompactionManager {
       currentModel,
       currentProvider,
       memory: this.memory,
+      signal,
     });
+    signal?.throwIfAborted();
 
     const charsAfter = this.history.estimateChars(finalMessages);
     console.log(`[compaction] ${chatId}: ${charsBefore} → ${charsAfter} chars, summary ${summary.length} chars, extracted=${extractedLearnings}`);

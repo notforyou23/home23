@@ -9,6 +9,7 @@
 import { readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
+import { combineRequestSignals } from './abort-signals.js';
 
 const AUTH_PATH = join(homedir(), '.evobrew', 'auth-profiles.json');
 const TOKEN_URL = 'https://auth.openai.com/oauth/token';
@@ -66,7 +67,10 @@ function saveCredentials(creds: CodexCredentials): void {
  * Refresh an expired/near-expiry access token.
  * Returns updated credentials or null on failure.
  */
-async function refreshCredentials(creds: CodexCredentials): Promise<CodexCredentials | null> {
+async function refreshCredentials(
+  creds: CodexCredentials,
+  signal?: AbortSignal,
+): Promise<CodexCredentials | null> {
   try {
     const res = await fetch(TOKEN_URL, {
       method: 'POST',
@@ -76,7 +80,7 @@ async function refreshCredentials(creds: CodexCredentials): Promise<CodexCredent
         refresh_token: creds.refreshToken,
         client_id: CLIENT_ID,
       }),
-      signal: AbortSignal.timeout(10_000),
+      signal: combineRequestSignals(signal, 10_000),
     });
 
     if (!res.ok) {
@@ -102,6 +106,7 @@ async function refreshCredentials(creds: CodexCredentials): Promise<CodexCredent
     console.log('[codex-auth] Token refreshed successfully');
     return refreshed;
   } catch (err) {
+    if (signal?.aborted) signal.throwIfAborted();
     console.error('[codex-auth] Refresh error:', err instanceof Error ? err.message : String(err));
     return null;
   }
@@ -111,13 +116,14 @@ async function refreshCredentials(creds: CodexCredentials): Promise<CodexCredent
  * Get valid Codex credentials, refreshing if near-expiry.
  * Returns null if not configured or refresh fails.
  */
-export async function getCodexCredentials(): Promise<CodexCredentials | null> {
+export async function getCodexCredentials(signal?: AbortSignal): Promise<CodexCredentials | null> {
+  signal?.throwIfAborted();
   const creds = loadCredentials();
   if (!creds) return null;
 
   if (creds.expires - Date.now() < REFRESH_THRESHOLD_MS) {
     console.log('[codex-auth] Token near-expiry — refreshing');
-    return refreshCredentials(creds);
+    return refreshCredentials(creds, signal);
   }
 
   return creds;

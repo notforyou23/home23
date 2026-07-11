@@ -261,6 +261,7 @@ Output ONLY the JSON objects, one per line. No prose.`,
     messages: StoredMessage[],
     currentModel?: string,
     currentProvider?: string,
+    signal?: AbortSignal,
   ): Promise<string | null> {
     try {
       if (messages.length < 3) return null;
@@ -289,9 +290,11 @@ Output ONLY the JSON objects, one per line. No prose.`,
         baseURL: this.baseURL,
         maxTokens: 600,
         temperature: 0.1,
+        signal,
         system: 'Extract structured learnings from this conversation segment. Be terse. Bullet points only.',
         prompt: `Extract learnings from this conversation in these 5 categories:\n\n1. DECISIONS MADE\n2. WHAT WORKED\n3. WHAT FAILED/BLOCKED\n4. FACTS LEARNED\n5. OPEN QUESTIONS\n\nSkip any category with nothing notable. Be concise.\n\n${transcript}`,
       });
+      signal?.throwIfAborted();
 
       if (!extracted) return null;
 
@@ -309,6 +312,7 @@ Output ONLY the JSON objects, one per line. No prose.`,
       console.log(`[memory] Pre-compaction extraction for ${chatId}: ${extracted.length} chars`);
       return extracted;
     } catch (err) {
+      if (signal?.aborted) signal.throwIfAborted();
       console.warn('[memory] preCompactionExtract failed:', err instanceof Error ? err.message : err);
       return null;
     }

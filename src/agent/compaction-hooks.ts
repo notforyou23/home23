@@ -7,6 +7,7 @@ export interface PreCompactionContext {
   currentModel?: string;
   currentProvider?: string;
   memory: MemoryManager;
+  signal?: AbortSignal;
 }
 
 export interface PostCompactionContext {
@@ -18,6 +19,7 @@ export interface PostCompactionContext {
   currentModel?: string;
   currentProvider?: string;
   memory: MemoryManager;
+  signal?: AbortSignal;
 }
 
 export interface PostCompactionHookResult {
@@ -36,6 +38,7 @@ export class DefaultCompactionHooks implements CompactionHooks {
       ctx.olderMessages,
       ctx.currentModel,
       ctx.currentProvider,
+      ctx.signal,
     );
 
     return { extractedLearnings: !!extracted };
