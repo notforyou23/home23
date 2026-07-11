@@ -1,58 +1,145 @@
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const OpenAI = require('openai');
+const fs = require('node:fs');
+const fsp = fs.promises;
+const path = require('node:path');
+const { createHash } = require('node:crypto');
+const {
+  canonicalJson,
+} = require('../../../shared/brain-operations/canonical-json.cjs');
+const {
+  openConfinedRegularFile,
+  assertStableOpenedFile,
+} = require('../../../shared/memory-source/confined-file.cjs');
+const {
+  requireCompleteProviderResult,
+} = require('../../../cosmo23/lib/provider-completion.js');
+const {
+  throwIfAborted,
+} = require('../../../cosmo23/lib/provider-execution.js');
+const {
+  SYNTHESIS_OPERATION_LIMITS,
+} = require('../../../cosmo23/lib/brain-operation-limits.js');
+const {
+  writeFileDurable,
+} = require('../utils/durable-write.js');
 
-const SYNTHESIS_PROMPT = `You are a brain synthesis agent. You analyze a brain's contents and produce a structured overview of what it knows.
+const OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;
+const PROVIDER_CALL_ID = 'synthesis';
+const MAX_TRIGGER_BYTES = 256;
+const MAX_THEME_BYTES = 512;
+const MAX_RESULT_TEXT_BYTES = 16 * 1024;
+const MAX_SEARCH_THEMES = 8;
+const MAX_SEARCH_RESULTS_PER_THEME = 3;
 
-Brain identity:
----
-{IDENTITY}
----
+const PROVIDER_INSTRUCTIONS = [
+  'Analyze only the pinned Home23 brain evidence in the input.',
+  'Return one complete JSON object and no markdown fences.',
+  'Distinguish current high-salience evidence from historical index volume.',
+  'Do not invent facts or claim coverage beyond the supplied pinned source.',
+].join(' ');
 
-Brain knowledge index (compiled documents):
----
-{INDEX}
----
-
-Representative brain nodes from semantic search:
----
-{NODES}
----
-
-Brain stats: {STATS}
-
-Important:
-- Infer current obsessions from salience-weighted representative nodes first, not from raw index volume.
-- Treat the knowledge index as a map of compiled material, not proof that a topic is currently salient.
-- Do not list finance, trading, portfolio, cron output, or telemetry as a current obsession unless recent high-salience conversation, identity, or state nodes support it.
-- If a topic is supported only by old index volume or low-salience machine chatter, call it historical context instead of a current obsession.
-
-Produce a JSON object (and ONLY the JSON, no markdown fences):
+const RESPONSE_SCHEMA = `Produce this JSON shape:
 {
   "selfUnderstanding": {
-    "summary": "(2-3 sentences: what this brain is, what it knows, what it does)",
-    "currentObsessions": ["(top 3-5 themes the brain is focused on)"],
-    "relationship": "(one sentence: how this brain relates to its user)"
+    "summary": "2-3 sentences describing this brain",
+    "currentObsessions": ["3-5 evidence-grounded themes"],
+    "relationship": "one sentence describing how this brain relates to its user"
   },
   "consolidatedInsights": [
     {
-      "title": "(short title)",
-      "excerpt": "(2-3 sentence insight grounded in actual brain content)",
-      "source": "(which topic/category this came from)",
-      "themes": ["(relevant tags)"]
+      "title": "short title",
+      "excerpt": "2-3 evidence-grounded sentences",
+      "source": "topic or category",
+      "themes": ["relevant tags"]
     }
   ],
-  "recentActivity": ["(what has happened recently based on index timestamps and node content)"]
+  "recentActivity": ["recent activity supported by the supplied evidence"]
+}
+Return at most five consolidated insights. If the brain is sparse, say so honestly.`;
+
+function typed(code, message, retryable = false, extra = {}) {
+  return Object.assign(new Error(message), { code, retryable, ...extra });
 }
 
-Produce exactly 5 consolidated insights (or fewer if the brain is sparse).
-Be grounded in actual content. Do not invent. If the brain is sparse, say so honestly.`;
+function tooLarge(kind, limit) {
+  return typed('result_too_large', `${kind} exceeds the synthesis byte limit`, false, {
+    status: 413,
+    limitKind: kind,
+    limit,
+  });
+}
+
+function validateLimits(overrides = {}) {
+  if (!overrides || Array.isArray(overrides) || typeof overrides !== 'object') {
+    throw typed('invalid_request', 'Synthesis limits must be an object');
+  }
+  const output = {};
+  for (const key of ['maxPromptBytes', 'maxProviderOutputBytes', 'maxBrainStateBytes']) {
+    const ceiling = SYNTHESIS_OPERATION_LIMITS[key];
+    const value = overrides[key] ?? ceiling;
+    if (!Number.isSafeInteger(value) || value <= 0 || value > ceiling) {
+      throw typed('invalid_request', `Invalid synthesis limit: ${key}`);
+    }
+    output[key] = value;
+  }
+  return Object.freeze(output);
+}
+
+function boundedText(value, label, maxBytes = MAX_RESULT_TEXT_BYTES, { optional = false } = {}) {
+  if (value === undefined || value === null) {
+    if (optional) return '';
+    throw typed('synthesis_response_invalid', `${label} is required`);
+  }
+  if (typeof value !== 'string' || value.includes('\0')
+      || Buffer.byteLength(value, 'utf8') > maxBytes) {
+    throw typed('synthesis_response_invalid', `${label} is invalid`);
+  }
+  return value;
+}
+
+function exactTrigger(value) {
+  const trigger = value ?? 'manual';
+  if (typeof trigger !== 'string'
+      || trigger.trim() !== trigger
+      || trigger.length === 0
+      || /[\u0000-\u001f\u007f]/.test(trigger)
+      || Buffer.byteLength(trigger, 'utf8') > MAX_TRIGGER_BYTES) {
+    throw typed('invalid_request', 'Synthesis trigger is invalid');
+  }
+  return trigger;
+}
+
+function safeInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw typed('source_changed', `Pinned source ${label} is invalid`, true);
+  }
+  return value;
+}
+
+function assertOperationId(operationId) {
+  if (typeof operationId !== 'string' || !OPERATION_ID_PATTERN.test(operationId)) {
+    throw typed('operation_id_invalid', 'Canonical synthesis operation ID required');
+  }
+  return operationId;
+}
+
+function eventText(value, fallback) {
+  if (typeof value !== 'string' || value.length === 0
+      || /[\u0000-\u001f\u007f]/.test(value)
+      || Buffer.byteLength(value, 'utf8') > 128) return fallback;
+  return value;
+}
+
+function providerEventAt(value) {
+  return typeof value === 'string' && value.length <= 128 && !value.includes('\0')
+    ? value
+    : null;
+}
 
 function extractJsonObject(raw) {
   const text = String(raw || '').trim();
-  if (!text) throw new Error('empty synthesis response');
+  if (!text) throw typed('synthesis_response_invalid', 'empty synthesis response');
 
   const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/i.exec(text);
   const candidates = [];
@@ -61,270 +148,536 @@ function extractJsonObject(raw) {
 
   for (const candidate of candidates) {
     try {
-      return JSON.parse(candidate);
-    } catch { /* try extracting balanced object below */ }
+      const parsed = JSON.parse(candidate);
+      if (parsed && !Array.isArray(parsed) && typeof parsed === 'object') return parsed;
+    } catch { /* try extracting the first balanced object */ }
 
     const start = candidate.indexOf('{');
     if (start === -1) continue;
     let depth = 0;
     let inString = false;
     let escaped = false;
-    for (let i = start; i < candidate.length; i += 1) {
-      const ch = candidate[i];
+    for (let index = start; index < candidate.length; index += 1) {
+      const character = candidate[index];
       if (inString) {
         if (escaped) escaped = false;
-        else if (ch === '\\') escaped = true;
-        else if (ch === '"') inString = false;
+        else if (character === '\\') escaped = true;
+        else if (character === '"') inString = false;
         continue;
       }
-      if (ch === '"') inString = true;
-      else if (ch === '{') depth += 1;
-      else if (ch === '}') {
+      if (character === '"') inString = true;
+      else if (character === '{') depth += 1;
+      else if (character === '}') {
         depth -= 1;
         if (depth === 0) {
-          return JSON.parse(candidate.slice(start, i + 1));
+          const parsed = JSON.parse(candidate.slice(start, index + 1));
+          if (parsed && !Array.isArray(parsed) && typeof parsed === 'object') return parsed;
+          break;
         }
       }
     }
   }
 
-  throw new Error('no complete JSON object found in synthesis response');
+  throw typed('synthesis_response_invalid', 'no complete JSON object found in synthesis response');
+}
+
+function normalizedStringArray(value, label, { maxItems, maxBytes = MAX_RESULT_TEXT_BYTES } = {}) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > maxItems) {
+    throw typed('synthesis_response_invalid', `${label} is invalid`);
+  }
+  return value.map((entry, index) => boundedText(entry, `${label}[${index}]`, maxBytes));
+}
+
+function normalizeSynthesis(value) {
+  if (!value || Array.isArray(value) || typeof value !== 'object') {
+    throw typed('synthesis_response_invalid', 'Synthesis response must be an object');
+  }
+  const understanding = value.selfUnderstanding ?? {};
+  if (!understanding || Array.isArray(understanding) || typeof understanding !== 'object') {
+    throw typed('synthesis_response_invalid', 'selfUnderstanding is invalid');
+  }
+  const insights = value.consolidatedInsights ?? [];
+  if (!Array.isArray(insights) || insights.length > 5) {
+    throw typed('synthesis_response_invalid', 'consolidatedInsights is invalid');
+  }
+  return {
+    selfUnderstanding: {
+      summary: boundedText(
+        understanding.summary ?? 'Synthesis produced no self-understanding.',
+        'selfUnderstanding.summary',
+      ),
+      currentObsessions: normalizedStringArray(
+        understanding.currentObsessions,
+        'selfUnderstanding.currentObsessions',
+        { maxItems: 8 },
+      ),
+      relationship: boundedText(
+        understanding.relationship ?? '',
+        'selfUnderstanding.relationship',
+      ),
+    },
+    consolidatedInsights: insights.map((insight, index) => {
+      if (!insight || Array.isArray(insight) || typeof insight !== 'object') {
+        throw typed('synthesis_response_invalid', `consolidatedInsights[${index}] is invalid`);
+      }
+      return {
+        title: boundedText(insight.title ?? '', `consolidatedInsights[${index}].title`),
+        excerpt: boundedText(insight.excerpt ?? '', `consolidatedInsights[${index}].excerpt`, 64 * 1024),
+        source: boundedText(insight.source ?? '', `consolidatedInsights[${index}].source`),
+        themes: normalizedStringArray(insight.themes, `consolidatedInsights[${index}].themes`, {
+          maxItems: 32,
+        }),
+      };
+    }),
+    recentActivity: normalizedStringArray(value.recentActivity, 'recentActivity', {
+      maxItems: 64,
+      maxBytes: 64 * 1024,
+    }),
+  };
+}
+
+class Utf8BudgetWriter {
+  constructor(limit, initialBytes = 0) {
+    this.limit = limit;
+    this.bytes = initialBytes;
+    this.parts = [];
+    if (this.bytes > this.limit) throw tooLarge('prompt', this.limit);
+  }
+
+  append(value) {
+    const text = String(value);
+    const bytes = Buffer.byteLength(text, 'utf8');
+    if (this.bytes + bytes > this.limit) throw tooLarge('prompt', this.limit);
+    this.parts.push(text);
+    this.bytes += bytes;
+    return this;
+  }
+
+  toString() {
+    return this.parts.join('');
+  }
+}
+
+async function readBoundedWorkspaceFile({ workspacePath, fileName, maxBytes, signal }) {
+  throwIfAborted(signal);
+  const filePath = path.join(workspacePath, fileName);
+  const opened = await openConfinedRegularFile(workspacePath, filePath, {
+    optional: true,
+    maxBytes,
+    signal,
+  });
+  if (opened === null) return { text: '', bytes: 0 };
+  try {
+    const bytes = await opened.handle.readFile(signal ? { signal } : undefined);
+    throwIfAborted(signal);
+    await assertStableOpenedFile(opened);
+    throwIfAborted(signal);
+    let text;
+    try {
+      text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch (error) {
+      throw typed('source_unavailable', `${fileName} is not valid UTF-8`, false, { cause: error });
+    }
+    return { text, bytes: bytes.length };
+  } finally {
+    await opened.handle.close().catch(() => {});
+  }
+}
+
+async function readCommittedSynthesisState({
+  brainDir,
+  maxBytes = SYNTHESIS_OPERATION_LIMITS.maxBrainStateBytes,
+  signal = null,
+} = {}) {
+  if (typeof brainDir !== 'string' || !path.isAbsolute(brainDir)) {
+    throw typed('invalid_request', 'Absolute brain directory required');
+  }
+  const opened = await openConfinedRegularFile(brainDir, path.join(brainDir, 'brain-state.json'), {
+    optional: true,
+    maxBytes,
+    signal,
+  });
+  if (opened === null) return null;
+  try {
+    const bytes = await opened.handle.readFile(signal ? { signal } : undefined);
+    throwIfAborted(signal);
+    await assertStableOpenedFile(opened);
+    const state = JSON.parse(bytes.toString('utf8'));
+    if (!state || Array.isArray(state) || typeof state !== 'object') {
+      throw typed('synthesis_state_invalid', 'Committed synthesis state is invalid');
+    }
+    return state;
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason;
+    if (error?.code) throw error;
+    throw typed('synthesis_state_invalid', 'Committed synthesis state is invalid', false, {
+      cause: error,
+    });
+  } finally {
+    await opened.handle.close().catch(() => {});
+  }
 }
 
 class SynthesisAgent {
-  /**
-   * @param {object} opts
-   * @param {string} opts.brainDir - Path to agent's brain directory (where brain-state.json is written)
-   * @param {string} opts.workspacePath - Path to agent's workspace (where BRAIN_INDEX.md and identity files live)
-   * @param {number} opts.dashboardPort - Dashboard API port for brain queries
-   * @param {object} opts.config - { model, baseURL, apiKey, intervalHours }
-   * @param {object} opts.logger
-   */
-  constructor({ brainDir, workspacePath, dashboardPort, config = {}, logger = null }) {
-    this.brainDir = brainDir;
-    this.workspacePath = workspacePath;
-    this.dashboardPort = dashboardPort;
-    this.config = config;
+  constructor({
+    brainDir,
+    workspacePath,
+    providerAdapter = null,
+    startSynthesisOperation = null,
+    intervalHours = 4,
+    logger = null,
+    limits = {},
+    clock = {},
+    hooks = {},
+    durableWriter = writeFileDurable,
+    timers = {},
+  } = {}) {
+    if (typeof brainDir !== 'string' || !path.isAbsolute(brainDir)
+        || typeof workspacePath !== 'string' || !path.isAbsolute(workspacePath)) {
+      throw typed('synthesis_configuration_invalid', 'Brain and workspace paths are required');
+    }
+    this.brainDir = path.resolve(brainDir);
+    this.workspacePath = path.resolve(workspacePath);
+    this.statePath = path.join(this.brainDir, 'brain-state.json');
+    this.providerAdapter = providerAdapter;
+    this.startSynthesisOperation = startSynthesisOperation;
+    this.intervalHours = Number(intervalHours);
+    if (!Number.isFinite(this.intervalHours) || this.intervalHours <= 0 || this.intervalHours > 720) {
+      throw typed('synthesis_configuration_invalid', 'Invalid synthesis interval');
+    }
     this.logger = logger;
-    this.statePath = path.join(brainDir, 'brain-state.json');
+    this.limits = validateLimits(limits);
+    this.now = typeof clock.now === 'function' ? clock.now : Date.now;
+    this.hooks = hooks && typeof hooks === 'object' ? hooks : {};
+    this.durableWriter = durableWriter;
+    this.setTimeout = timers.setTimeout || setTimeout;
+    this.clearTimeout = timers.clearTimeout || clearTimeout;
+    this.setInterval = timers.setInterval || setInterval;
+    this.clearInterval = timers.clearInterval || clearInterval;
     this.running = false;
-
-    const baseURL = config.baseURL || process.env.COMPILER_LLM_BASE_URL || 'https://ollama.com/v1';
-    const apiKey = config.apiKey || process.env.COMPILER_LLM_API_KEY || process.env.OLLAMA_CLOUD_API_KEY || 'ollama';
-
-    this.client = new OpenAI({ apiKey, baseURL });
-    this.model = config.model || 'MiniMax-M3';
-    this.intervalHours = config.intervalHours || 4;
     this._timer = null;
+    this._startupTimer = null;
   }
 
-  /**
-   * Start scheduled synthesis runs.
-   */
-  startSchedule({ runOnStart = true } = {}) {
-    const intervalMs = this.intervalHours * 60 * 60 * 1000;
-    this.logger?.info?.(`[synthesis] Scheduled every ${this.intervalHours}h`);
-
-    if (runOnStart) {
-      // Run once on start (after a short delay to let brain load)
-      setTimeout(() => this.run('startup'), 30_000);
-    }
-
-    // Then on interval
-    this._timer = setInterval(() => this.run('scheduled'), intervalMs);
+  async _checkpoint(name, context = {}) {
+    throwIfAborted(context.signal);
+    if (typeof this.hooks[name] === 'function') await this.hooks[name](context);
+    throwIfAborted(context.signal);
   }
 
-  /**
-   * Stop the schedule.
-   */
-  stopSchedule() {
-    if (this._timer) {
-      clearInterval(this._timer);
-      this._timer = null;
+  async _validateSourcePin(sourcePin, signal) {
+    if (!sourcePin || typeof sourcePin.summarize !== 'function'
+        || typeof sourcePin.searchKeyword !== 'function'
+        || typeof sourcePin.compareAndSwap !== 'function') {
+      throw typed('source_pin_required', 'Writable own-brain source pin required');
     }
-  }
-
-  /**
-   * Run a synthesis pass.
-   * @param {string} trigger - 'startup' | 'scheduled' | 'manual'
-   * @returns {Promise<object|null>} The brain state or null on failure
-   */
-  async run(trigger = 'manual') {
-    if (this.running) {
-      this.logger?.warn?.('[synthesis] Already running, skipping');
-      return null;
-    }
-
-    this.running = true;
-    const startTime = Date.now();
-    this.logger?.info?.(`[synthesis] Starting (trigger: ${trigger})`);
-
-    try {
-      // 1. Read identity files
-      const identity = this._readIdentity();
-
-      // 2. Read BRAIN_INDEX.md
-      const index = this._readFile(path.join(this.workspacePath, 'BRAIN_INDEX.md'));
-      const indexDigest = this._buildIndexDigest(index);
-
-      // 3. Get brain stats from API
-      const stats = await this._fetchBrainStats();
-
-      // 4. Search brain for representative nodes across key themes
-      const nodes = await this._searchBrainThemes(index);
-
-      // 5. Build prompt and call LLM
-      const prompt = SYNTHESIS_PROMPT
-        .replace('{IDENTITY}', identity || '(no identity files found)')
-        .replace('{INDEX}', indexDigest || '(no compiled documents yet)')
-        .replace('{NODES}', nodes || '(no search results)')
-        .replace('{STATS}', stats ? `${stats.nodes || 0} nodes, ${stats.edges || 0} edges, ${stats.cycles || 0} cycles` : 'unknown');
-
-      const response = await this.client.chat.completions.create({
-        model: this.model,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 4096,
-        temperature: 0.1,
+    const descriptor = sourcePin.descriptor;
+    const canonicalBrain = await fsp.realpath(this.brainDir).catch((error) => {
+      throw typed('source_unavailable', 'Canonical brain directory is unavailable', true, {
+        cause: error,
       });
+    });
+    if (!descriptor || descriptor.version !== 1
+        || descriptor.canonicalRoot !== canonicalBrain
+        || sourcePin.revision !== descriptor.cutoffRevision) {
+      throw typed('source_changed', 'Synthesis source pin does not match the own brain', true);
+    }
+    safeInteger(sourcePin.revision, 'revision');
+    throwIfAborted(signal);
+    return descriptor;
+  }
 
-      const raw = response.choices?.[0]?.message?.content || '';
+  async _readWorkspaceInputs(signal) {
+    let remaining = this.limits.maxPromptBytes;
+    const files = {};
+    for (const fileName of ['SOUL.md', 'MISSION.md', 'BRAIN_INDEX.md']) {
+      const value = await readBoundedWorkspaceFile({
+        workspacePath: this.workspacePath,
+        fileName,
+        maxBytes: remaining,
+        signal,
+      });
+      remaining -= value.bytes;
+      files[fileName] = value.text;
+    }
+    return files;
+  }
 
-      // 6. Parse JSON from response
-      let synthesis;
-      try {
-        synthesis = extractJsonObject(raw);
-      } catch (parseErr) {
-        this.logger?.error?.('[synthesis] Failed to parse LLM response as JSON', {
-          error: parseErr.message,
-          raw: raw.slice(0, 200),
-        });
-        return null;
+  async _summarizeSource(sourcePin, descriptor, signal) {
+    throwIfAborted(signal);
+    const summary = await sourcePin.summarize({ signal });
+    throwIfAborted(signal);
+    const expected = descriptor.summary || {};
+    const normalized = {
+      nodes: safeInteger(summary?.nodes, 'node count'),
+      edges: safeInteger(summary?.edges, 'edge count'),
+      clusters: safeInteger(summary?.clusters, 'cluster count'),
+    };
+    if (normalized.nodes !== safeInteger(expected.nodeCount, 'descriptor node count')
+        || normalized.edges !== safeInteger(expected.edgeCount, 'descriptor edge count')
+        || normalized.clusters !== safeInteger(expected.clusterCount, 'descriptor cluster count')) {
+      throw typed('source_changed', 'Pinned source summary does not match its descriptor', true);
+    }
+    return normalized;
+  }
+
+  async _searchPinnedThemes(sourcePin, themes, signal) {
+    const sections = [];
+    for (const theme of themes.slice(0, MAX_SEARCH_THEMES)) {
+      throwIfAborted(signal);
+      const response = await sourcePin.searchKeyword({
+        query: theme,
+        topK: MAX_SEARCH_RESULTS_PER_THEME,
+        signal,
+      });
+      throwIfAborted(signal);
+      if (!response || !Array.isArray(response.results)
+          || response.results.length > MAX_SEARCH_RESULTS_PER_THEME) {
+        throw typed('source_changed', 'Pinned keyword search returned an invalid result', true);
       }
+      if (response.results.length === 0) continue;
+      const lines = [`### ${theme}`];
+      for (const [index, result] of response.results.entries()) {
+        if (!result || Array.isArray(result) || typeof result !== 'object') {
+          throw typed('source_changed', 'Pinned keyword result is invalid', true);
+        }
+        const id = boundedText(result.id ?? `result-${index + 1}`, 'search result id', 1024);
+        const concept = boundedText(result.concept ?? '', 'search result concept', 4096);
+        lines.push(`- [${id}] ${concept}`);
+      }
+      sections.push(lines.join('\n'));
+    }
+    return sections;
+  }
 
-      // 7. Build brain-state.json
-      const brainState = {
-        generatedAt: new Date().toISOString(),
-        trigger,
-        model: this.model,
-        durationMs: Date.now() - startTime,
-        brainStats: {
-          nodes: stats?.nodes || 0,
-          edges: stats?.edges || 0,
-          cycles: stats?.cycles || 0,
-          documentsCompiled: this._countCompiledDocs(index),
+  _buildPrompt({ identity, indexDigest, sections, summary }) {
+    const writer = new Utf8BudgetWriter(
+      this.limits.maxPromptBytes,
+      Buffer.byteLength(PROVIDER_INSTRUCTIONS, 'utf8'),
+    );
+    writer.append('Brain identity:\n---\n')
+      .append(identity || '(no identity files found)')
+      .append('\n---\n\nBrain knowledge index summary:\n---\n')
+      .append(indexDigest || '(no compiled documents yet)')
+      .append('\n---\n\nRepresentative pinned brain nodes:\n---\n');
+    for (const section of sections) writer.append(section).append('\n\n');
+    if (sections.length === 0) writer.append('(no matching keyword evidence)\n');
+    writer.append('---\n\nPinned brain stats: ')
+      .append(`${summary.nodes} nodes, ${summary.edges} edges, ${summary.clusters} clusters`)
+      .append('\nPinned source evidence is authoritative only at the stated revision.\n\n')
+      .append(RESPONSE_SCHEMA);
+    return writer.toString();
+  }
+
+  async runOperation({ operationId, trigger = 'manual', sourcePin, signal = null, onEvent = null } = {}) {
+    assertOperationId(operationId);
+    const normalizedTrigger = exactTrigger(trigger);
+    if (!this.providerAdapter || typeof this.providerAdapter.generate !== 'function') {
+      throw typed('synthesis_unavailable', 'Synthesis provider is unavailable', true);
+    }
+    const provider = boundedText(this.providerAdapter.provider, 'provider', 256);
+    const model = boundedText(this.providerAdapter.model, 'model', 256);
+    const providerStallMs = this.providerAdapter.capabilities?.providerStallMs;
+    if (!Number.isSafeInteger(providerStallMs) || providerStallMs <= 0) {
+      throw typed('model_capability_invalid', 'Synthesis provider stall capability is invalid');
+    }
+
+    const startedAt = this.now();
+    throwIfAborted(signal);
+    const descriptor = await this._validateSourcePin(sourcePin, signal);
+    const files = await this._readWorkspaceInputs(signal);
+    const identity = [files['SOUL.md'], files['MISSION.md']].filter(Boolean).join('\n\n---\n\n');
+    const index = files['BRAIN_INDEX.md'];
+    const indexDigest = this._buildIndexDigest(index);
+    const summary = await this._summarizeSource(sourcePin, descriptor, signal);
+    await this._checkpoint('afterSummarize', { signal, sourcePin, summary });
+    const themes = this._collectSearchThemes(index).slice(0, MAX_SEARCH_THEMES);
+    const sections = await this._searchPinnedThemes(sourcePin, themes, signal);
+    const input = this._buildPrompt({ identity, indexDigest, sections, summary });
+    await this._checkpoint('beforeProvider', { signal, sourcePin });
+
+    const emit = async (event) => {
+      if (typeof onEvent === 'function') await onEvent(Object.freeze(event));
+    };
+    await emit({
+      type: 'provider_selected',
+      phase: 'synthesis',
+      provider,
+      model,
+      providerStallMs,
+      providerCallId: PROVIDER_CALL_ID,
+      sourceRevision: sourcePin.revision,
+    });
+    throwIfAborted(signal);
+
+    let outcome = 'failed';
+    let completion;
+    try {
+      const raw = await this.providerAdapter.generate({
+        instructions: PROVIDER_INSTRUCTIONS,
+        input,
+        signal,
+        onProviderActivity: (child = {}) => {
+          throwIfAborted(signal);
+          if (typeof onEvent === 'function') {
+            const returned = onEvent(Object.freeze({
+              type: 'provider_activity',
+              phase: 'synthesis',
+              provider,
+              model,
+              providerCallId: PROVIDER_CALL_ID,
+              childEventType: eventText(child?.type, 'provider_event'),
+              providerEventAt: providerEventAt(child?.at),
+              sourceRevision: sourcePin.revision,
+            }));
+            if (returned && typeof returned.then === 'function') {
+              returned.catch(() => {});
+              throw typed('worker_event_invalid', 'Provider activity sink must be synchronous');
+            }
+          }
         },
-        selfUnderstanding: synthesis.selfUnderstanding || { summary: 'Synthesis produced no self-understanding.', currentObsessions: [], relationship: '' },
-        consolidatedInsights: synthesis.consolidatedInsights || [],
-        knowledgeIndex: index || '',
-        recentActivity: synthesis.recentActivity || [],
-      };
-
-      // 8. Write brain-state.json
-      fs.writeFileSync(this.statePath, JSON.stringify(brainState, null, 2));
-      this.logger?.info?.(`[synthesis] Complete (${Date.now() - startTime}ms, ${brainState.consolidatedInsights.length} insights)`);
-
-      return brainState;
+      });
+      throwIfAborted(signal);
+      await this._checkpoint('beforeCompletionValidation', { signal, sourcePin, raw });
+      completion = requireCompleteProviderResult(raw);
+      throwIfAborted(signal);
+      outcome = 'complete';
     } catch (error) {
-      this.logger?.error?.('[synthesis] Failed', { error: error.message });
-      return null;
+      if (signal?.aborted) {
+        outcome = 'cancelled';
+        throw signal.reason;
+      }
+      throw error;
+    } finally {
+      await emit({
+        type: 'provider_call_terminal',
+        phase: 'synthesis',
+        provider,
+        model,
+        providerCallId: PROVIDER_CALL_ID,
+        outcome,
+      });
+    }
+
+    const providerOutputBytes = Buffer.byteLength(completion.content, 'utf8');
+    if (providerOutputBytes > this.limits.maxProviderOutputBytes) {
+      throw tooLarge('provider_output', this.limits.maxProviderOutputBytes);
+    }
+    await this._checkpoint('beforeJsonExtract', { signal, sourcePin, completion });
+    throwIfAborted(signal);
+    const synthesis = normalizeSynthesis(extractJsonObject(completion.content));
+    throwIfAborted(signal);
+
+    const generatedAt = new Date(this.now()).toISOString();
+    const durationMs = Math.max(0, Math.floor(this.now() - startedAt));
+    const markerDigest = createHash('sha256')
+      .update(operationId, 'utf8')
+      .update('\0', 'utf8')
+      .update(generatedAt, 'utf8')
+      .update('\0', 'utf8')
+      .update(provider, 'utf8')
+      .update('\0', 'utf8')
+      .update(model, 'utf8')
+      .digest('hex')
+      .slice(0, 24);
+    const generationMarker = `generation-${sourcePin.revision}-${markerDigest}`;
+    const stateWithoutHash = {
+      generatedAt,
+      generationMarker,
+      operationId,
+      trigger: normalizedTrigger,
+      sourceRevision: sourcePin.revision,
+      provider,
+      model,
+      durationMs,
+      brainStats: {
+        nodes: summary.nodes,
+        edges: summary.edges,
+        clusters: summary.clusters,
+        documentsCompiled: this._countCompiledDocs(index),
+      },
+      selfUnderstanding: synthesis.selfUnderstanding,
+      consolidatedInsights: synthesis.consolidatedInsights,
+      knowledgeIndex: indexDigest,
+      recentActivity: synthesis.recentActivity,
+    };
+    const brainStateSha256 = `sha256:${createHash('sha256')
+      .update(canonicalJson(stateWithoutHash), 'utf8')
+      .digest('hex')}`;
+    const brainState = { ...stateWithoutHash, brainStateSha256 };
+    const serialized = `${canonicalJson(brainState)}\n`;
+    if (Buffer.byteLength(serialized, 'utf8') > this.limits.maxBrainStateBytes) {
+      throw tooLarge('brain_state', this.limits.maxBrainStateBytes);
+    }
+
+    await this._checkpoint('beforeCompareAndSwap', { signal, sourcePin, brainState });
+    throwIfAborted(signal);
+    const committed = await sourcePin.compareAndSwap(async () => {
+      throwIfAborted(signal);
+      await this._checkpoint('insideCompareAndSwap', { signal, sourcePin, brainState });
+      throwIfAborted(signal);
+      return this.durableWriter(this.statePath, serialized, { encoding: 'utf8', mode: 0o600 });
+    });
+    if (!committed || committed.committed !== true) {
+      throw typed('source_changed', 'Pinned source changed before synthesis commit', true);
+    }
+    throwIfAborted(signal);
+
+    return Object.freeze({
+      generationMarker,
+      generatedAt,
+      sourceRevision: sourcePin.revision,
+      provider,
+      model,
+      operationId,
+      brainStateSha256,
+    });
+  }
+
+  async run(trigger = 'manual') {
+    if (typeof this.startSynthesisOperation !== 'function') {
+      throw typed('synthesis_unavailable', 'Durable synthesis coordinator is unavailable', true);
+    }
+    if (this.running) return null;
+    this.running = true;
+    try {
+      return await this.startSynthesisOperation({ trigger: exactTrigger(trigger) });
     } finally {
       this.running = false;
     }
   }
 
-  /**
-   * Read current brain-state.json if it exists.
-   */
+  startSchedule({ runOnStart = true } = {}) {
+    const schedule = (trigger) => {
+      void this.run(trigger).catch((error) => {
+        this.logger?.error?.('[synthesis] scheduled start failed', {
+          code: error?.code || 'synthesis_failed',
+          message: error?.message || 'synthesis failed',
+        });
+      });
+    };
+    if (runOnStart) this._startupTimer = this.setTimeout(() => schedule('startup'), 30_000);
+    this._timer = this.setInterval(() => schedule('scheduled'), this.intervalHours * 60 * 60 * 1000);
+  }
+
+  stopSchedule() {
+    if (this._startupTimer) this.clearTimeout(this._startupTimer);
+    if (this._timer) this.clearInterval(this._timer);
+    this._startupTimer = null;
+    this._timer = null;
+  }
+
   getState() {
     try {
-      if (fs.existsSync(this.statePath)) {
-        return JSON.parse(fs.readFileSync(this.statePath, 'utf8'));
-      }
-    } catch { /* missing or corrupt */ }
-    return null;
-  }
-
-  // ── Private helpers ──
-
-  _readFile(filePath) {
-    try {
-      if (fs.existsSync(filePath)) {
-        return fs.readFileSync(filePath, 'utf8');
-      }
-    } catch { /* missing */ }
-    return '';
-  }
-
-  _readIdentity() {
-    const files = ['SOUL.md', 'MISSION.md'];
-    const parts = [];
-    for (const f of files) {
-      const content = this._readFile(path.join(this.workspacePath, f));
-      if (content) parts.push(content);
-    }
-    return parts.join('\n\n---\n\n');
-  }
-
-  async _fetchBrainStats() {
-    try {
-      const res = await fetch(`http://localhost:${this.dashboardPort}/api/state`, {
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      const nodeCount = Number.isFinite(data.memory?.nodes)
-        ? data.memory.nodes
-        : data.memory?.nodes
-          ? (Array.isArray(data.memory.nodes) ? data.memory.nodes.length : Object.keys(data.memory.nodes).length)
-          : 0;
-      const edgeCount = Number.isFinite(data.memory?.edges)
-        ? data.memory.edges
-        : data.memory?.edges
-          ? (Array.isArray(data.memory.edges) ? data.memory.edges.length : Object.keys(data.memory.edges).length)
-          : 0;
-      return {
-        nodes: nodeCount,
-        edges: edgeCount,
-        cycles: data.cycleCount || 0,
-      };
+      const stat = fs.lstatSync(this.statePath);
+      if (!stat.isFile() || stat.isSymbolicLink()
+          || stat.size > this.limits.maxBrainStateBytes) return null;
+      const state = JSON.parse(fs.readFileSync(this.statePath, 'utf8'));
+      return state && !Array.isArray(state) && typeof state === 'object' ? state : null;
     } catch {
       return null;
     }
-  }
-
-  async _searchBrainThemes(index) {
-    const themes = this._collectSearchThemes(index);
-
-    // Fallback themes if index is empty
-    if (themes.length === 0) {
-      themes.push('main topics', 'recent decisions', 'key findings');
-    }
-
-    // Search for top 3 nodes per theme (limit total to keep prompt manageable)
-    const results = [];
-    const maxThemes = 8;
-    for (const theme of themes.slice(0, maxThemes)) {
-      try {
-        const res = await fetch(`http://localhost:${this.dashboardPort}/api/memory/search`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query: theme, topK: 3, minSimilarity: 0.3 }),
-          signal: AbortSignal.timeout(15_000),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.results && data.results.length > 0) {
-            results.push(`### ${theme}\n${data.results.map(r => {
-              const sourceClass = r.sourceClass || 'unknown';
-              const retrievalScore = r.retrievalScore ?? r.similarity;
-              return `- [${r.id}] (${sourceClass}, score ${retrievalScore}, sim ${r.similarity}) ${(r.concept || '').slice(0, 300)}`;
-            }).join('\n')}`);
-          }
-        }
-      } catch { /* skip failed searches */ }
-    }
-
-    return results.join('\n\n') || '';
   }
 
   _collectSearchThemes(index) {
@@ -334,35 +687,32 @@ class SynthesisAgent {
       'brain cleanup memory retrieval consolidation salience',
       'recent state snapshot current correction',
     ];
-    const seen = new Set(themes.map(t => t.toLowerCase()));
-
-    if (index) {
-      const headings = index.match(/^## .+/gm) || [];
-      for (const h of headings) {
-        const theme = h
-          .replace(/^##\s+/, '')
-          .replace(/[`*_]/g, '')
-          .replace(/Compiled from:.*/, '')
-          .trim();
-        const key = theme.toLowerCase();
-        if (theme && theme.length > 2 && !theme.startsWith('Compiled') && !seen.has(key)) {
-          themes.push(theme);
-          seen.add(key);
-        }
-      }
+    const seen = new Set(themes.map((theme) => theme.toLocaleLowerCase('en-US')));
+    if (!index) return themes;
+    for (const line of index.split(/\r?\n/)) {
+      if (!line.startsWith('## ')) continue;
+      const theme = line
+        .replace(/^##\s+/, '')
+        .replace(/[`*_]/g, '')
+        .replace(/Compiled from:.*/, '')
+        .trim();
+      const key = theme.toLocaleLowerCase('en-US');
+      if (!theme || theme.length <= 2 || theme.startsWith('Compiled') || seen.has(key)) continue;
+      if (Buffer.byteLength(theme, 'utf8') > MAX_THEME_BYTES) continue;
+      themes.push(theme);
+      seen.add(key);
+      if (themes.length >= 64) break;
     }
-
     return themes;
   }
 
   _buildIndexDigest(index) {
     if (!index) return '';
     const lines = index.split(/\r?\n/);
-    const header = lines.filter(line =>
-      /documents compiled:/i.test(line) ||
-      /last updated:/i.test(line) ||
-      /^#\s+/.test(line)
-    ).slice(0, 12);
+    const header = lines.filter((line) =>
+      /documents compiled:/i.test(line)
+      || /last updated:/i.test(line)
+      || /^#\s+/.test(line)).slice(0, 12);
     const headingCounts = new Map();
     for (const line of lines) {
       if (!line.startsWith('## ')) continue;
@@ -371,11 +721,12 @@ class SynthesisAgent {
         .replace(/[`*_]/g, '')
         .replace(/Compiled from:.*/, '')
         .trim();
-      if (!heading || heading.startsWith('Compiled')) continue;
+      if (!heading || heading.startsWith('Compiled')
+          || Buffer.byteLength(heading, 'utf8') > MAX_THEME_BYTES) continue;
       headingCounts.set(heading, (headingCounts.get(heading) || 0) + 1);
     }
     const headings = Array.from(headingCounts.entries())
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
       .slice(0, 40)
       .map(([heading, count]) => `- ${heading} (${count} index sections)`);
     return [
@@ -389,8 +740,17 @@ class SynthesisAgent {
   _countCompiledDocs(index) {
     if (!index) return 0;
     const match = index.match(/Documents compiled: (\d+)/);
-    return match ? parseInt(match[1], 10) : 0;
+    if (!match) return 0;
+    const count = Number(match[1]);
+    return Number.isSafeInteger(count) && count >= 0 ? count : 0;
   }
 }
 
-module.exports = { SynthesisAgent, extractJsonObject };
+module.exports = {
+  PROVIDER_CALL_ID,
+  SynthesisAgent,
+  Utf8BudgetWriter,
+  extractJsonObject,
+  normalizeSynthesis,
+  readCommittedSynthesisState,
+};

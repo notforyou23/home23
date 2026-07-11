@@ -139,6 +139,11 @@ query:
   pgsSynthModel: claude-opus-4-8
   pgsDepth: 0.25
 
+synthesis:
+  provider: minimax
+  model: MiniMax-M3
+  intervalHours: 4
+
 situationalAwareness:
   bootstrap:
     reads:
