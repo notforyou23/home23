@@ -153,8 +153,28 @@ async function pinOperationSource({
   return Object.freeze({ descriptor, digest });
 }
 
-function processIdentity() {
-  return `pid-${process.pid}`;
+const PROCESS_START_IDENTITY = `${process.pid}:${Math.max(
+  0,
+  Math.floor(Date.now() - (process.uptime() * 1000)),
+)}`;
+
+function defaultProcessIdentity() {
+  const digest = crypto.createHash('sha256')
+    .update(`${process.pid}\0${PROCESS_START_IDENTITY}`)
+    .digest('hex')
+    .slice(0, 20);
+  return `node-${process.pid}-${digest}`;
+}
+
+function validateProcessIdentity(value) {
+  const identity = value ?? defaultProcessIdentity();
+  if (typeof identity !== 'string'
+      || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(identity)
+      || identity === '.'
+      || identity === '..') {
+    throw memorySourceError('invalid_request', 'safe process identity required');
+  }
+  return identity;
 }
 
 function pinnedManifestFromDescriptor(descriptor) {
@@ -278,7 +298,8 @@ async function openPinnedSource(descriptor, expectations = {}) {
     operationRoot,
     descriptor,
   });
-  const pinDir = path.join(operationRoot, 'pins', processIdentity());
+  const processPinIdentity = validateProcessIdentity(expectations.processIdentity);
+  const pinDir = path.join(operationRoot, 'pins', processPinIdentity);
   const pinFile = path.join(pinDir, `${canonicalRootHash(descriptor.canonicalRoot)}.json`);
   await writeAtomicJson(pinFile, {
     version: 1,
@@ -289,21 +310,28 @@ async function openPinnedSource(descriptor, expectations = {}) {
     revision: descriptor.cutoffRevision,
     digest: expectedDigest,
     pid: process.pid,
+    processIdentity: processPinIdentity,
     createdAt: new Date().toISOString(),
   }).catch(async (error) => {
     if (error.code !== 'EEXIST') throw error;
   });
-  const source = await openMemorySource(physicalRoot, {
-    ...expectations,
-    pinnedManifest,
-    logicalCanonicalRoot: descriptor.canonicalRoot,
-    legacySourceFingerprint: record.sourceFingerprint || null,
-  });
-  const closeSource = source.close.bind(source);
   const release = async () => {
     await fsp.rm(pinFile, { force: true }).catch(() => {});
     await fsp.rmdir(pinDir).catch(() => {});
   };
+  let source;
+  try {
+    source = await openMemorySource(physicalRoot, {
+      ...expectations,
+      pinnedManifest,
+      logicalCanonicalRoot: descriptor.canonicalRoot,
+      legacySourceFingerprint: record.sourceFingerprint || null,
+    });
+  } catch (error) {
+    await release();
+    throw error;
+  }
+  const closeSource = source.close.bind(source);
   return Object.assign(source, {
     descriptor,
     async release() {

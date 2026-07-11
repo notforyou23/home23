@@ -42,7 +42,9 @@ const CAPABILITY_TTL_MS = 60_000;
 const MAX_ACTIVE_PROVIDER_CALLS = 4096;
 const PROVIDER_OPERATION_TYPES = new Set(['query', 'pgs', 'synthesis', 'research_compile']);
 const TERMINAL_WORKER_STATES = new Set(['complete', 'partial', 'failed', 'cancelled', 'interrupted']);
-const WORKER_RESULT_STATES = new Set(['complete', 'partial', 'failed', 'cancelled']);
+const WORKER_RESULT_STATES = new Set([
+  'complete', 'partial', 'failed', 'cancelled', 'interrupted',
+]);
 const WORKER_EVENT_TYPES = new Set([
   'event_gap', 'heartbeat', 'phase', 'progress', 'progress_update', 'provider_activity',
   'provider_call_terminal', 'provider_selected', 'terminal', 'token', 'token_estimate',

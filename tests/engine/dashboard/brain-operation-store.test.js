@@ -104,7 +104,6 @@ function validDescriptor(overrides = {}) {
     version: 1,
     canonicalRoot: '/brains/jerry',
     generation: 'g1',
-    sourceMode: 'memory_manifest',
     baseRevision: 1,
     cutoffRevision: 1,
     activeBase: {
@@ -1441,7 +1440,7 @@ test('source pin rejects malformed manifest and legacy projection descriptors be
   const fixture = makeFixture(t);
   const mutations = [
     (d) => { delete d.activeBase.nodes.count; },
-    (d) => { d.activeBase.nodes.bytes = 0; },
+    (d) => { d.activeBase.nodes.bytes = -1; },
     (d) => { d.activeBase.edges.count = -1; },
     (d) => { d.activeBase.edges.bytes = 1.5; },
     (d) => { d.activeDelta.fromRevision = 1; },
@@ -1472,7 +1471,7 @@ test('source pin rejects malformed manifest and legacy projection descriptors be
     assert.deepEqual(fs.readFileSync(statusPath(fixture.root, created.record.operationId)), before);
   }
 
-  const legacy = validDescriptor({ sourceMode: 'legacy_projection' });
+  const legacy = validDescriptor();
   const legacyOperation = await createOne(fixture, { requestId: 'legacy-pin' });
   const attached = await fixture.store.attachSourcePin(legacyOperation.record.operationId, {
     expectedVersion: legacyOperation.record.recordVersion,
@@ -1480,7 +1479,22 @@ test('source pin rejects malformed manifest and legacy projection descriptors be
     digest: descriptorDigest(legacy),
   });
   assert.equal(attached.sourcePinDescriptor.version, 1);
+  assert.equal(Object.hasOwn(attached.sourcePinDescriptor, 'sourceMode'), false);
   assert.equal(Object.hasOwn(attached.sourcePinDescriptor, 'projectionRoot'), false);
+
+  const zeroByteBase = validDescriptor({
+    activeBase: {
+      ...validDescriptor().activeBase,
+      edges: { ...validDescriptor().activeBase.edges, bytes: 0 },
+    },
+  });
+  const zeroByteOperation = await createOne(fixture, { requestId: 'zero-byte-base' });
+  const zeroByteAttached = await fixture.store.attachSourcePin(zeroByteOperation.record.operationId, {
+    expectedVersion: zeroByteOperation.record.recordVersion,
+    descriptor: zeroByteBase,
+    digest: descriptorDigest(zeroByteBase),
+  });
+  assert.equal(zeroByteAttached.sourcePinDescriptor.activeBase.edges.bytes, 0);
 
   const nonzeroCommittedBytes = validDescriptor({
     activeDelta: { ...validDescriptor().activeDelta, committedBytes: 1 },
@@ -1497,14 +1511,14 @@ test('source pin rejects malformed manifest and legacy projection descriptors be
 test('source-pin authority rejects every scalar, nested-shape, path, and digest drift', async (t) => {
   const fixture = makeFixture(t);
   const mutations = [
-    (d) => { d.sourceMode = 'legacy-path'; },
+    (d) => { d.sourceMode = 'memory_manifest'; },
     (d) => { delete d.baseRevision; },
     (d) => { d.baseRevision = 1.5; },
     (d) => { d.baseRevision = '1'; },
     (d) => { d.cutoffRevision = 0; },
     (d) => { delete d.cutoffRevision; },
     (d) => { d.activeBase.nodes.count = '12'; },
-    (d) => { d.activeBase.edges.bytes = 0; },
+    (d) => { d.activeBase.edges.bytes = -1; },
     (d) => { d.activeBase.edges.file = 'nested/edges.gz'; },
     (d) => { d.activeDelta.epoch = ''; },
     (d) => { d.activeDelta.count = '0'; },
@@ -1573,7 +1587,7 @@ test('persisted source-pin null-pair, descriptor shape, and digest tampering fai
     (record) => { record.sourcePinDescriptor = null; },
     (record) => { record.sourcePinDigest = null; },
     (record) => {
-      record.sourcePinDescriptor.activeBase.nodes.bytes = 0;
+      record.sourcePinDescriptor.sourceMode = 'memory_manifest';
       record.sourcePinDigest = descriptorDigest(record.sourcePinDescriptor);
     },
     (record) => { record.sourcePinDigest = 'sha256:' + 'f'.repeat(64); },

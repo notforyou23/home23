@@ -127,6 +127,56 @@ test('openPinnedSource validates coordinator record and writes a separate proces
   scratchQuota.close();
 });
 
+test('openPinnedSource binds a safe PID-plus-start process identity and rolls back failed opens', async () => {
+  const home23Root = await tempDir('home23-memory-source-pin-home-');
+  const brain = await writeManifestBrain();
+  const provider = createMemorySourcePinProvider({ home23Root, requesterAgent: 'jerry' });
+  const operationId = 'brop_test_process_identity';
+  const pinned = await provider.pin(brain, operationId);
+  const operationRoot = path.join(
+    home23Root, 'instances', 'jerry', 'runtime', 'brain-operations', operationId,
+  );
+  const scratchQuota = await createOperationScratchQuota({ operationRoot });
+  const exact = {
+    expectedCanonicalRoot: pinned.descriptor.canonicalRoot,
+    expectedRevision: pinned.descriptor.cutoffRevision,
+    expectedDigest: pinned.digest,
+    operationId,
+    requesterAgent: 'jerry',
+    operationRoot,
+    scratchQuota,
+  };
+
+  const processIdentity = 'cosmo-43210-0123456789abcdefabcd';
+  const source = await openPinnedSource(pinned.descriptor, { ...exact, processIdentity });
+  const processPin = path.join(
+    operationRoot, 'pins', processIdentity,
+    `${path.basename((await fsp.readdir(path.join(operationRoot, 'pins', processIdentity)))[0])}`,
+  );
+  const processRecord = JSON.parse(await fsp.readFile(processPin, 'utf8'));
+  assert.equal(processRecord.processIdentity, processIdentity);
+  await source.release();
+
+  await assert.rejects(
+    () => openPinnedSource(pinned.descriptor, { ...exact, processIdentity: '../escape' }),
+    { code: 'invalid_request' },
+  );
+
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('cancel before open'), { code: 'cancelled' });
+  controller.abort(reason);
+  await assert.rejects(
+    () => openPinnedSource(pinned.descriptor, {
+      ...exact,
+      processIdentity,
+      signal: controller.signal,
+    }),
+    (error) => error === reason,
+  );
+  assert.deepEqual(await fsp.readdir(path.join(operationRoot, 'pins')).catch(() => []), []);
+  await scratchQuota.close();
+});
+
 test('native operation pin reads its exact revision after the live manifest advances', async () => {
   const home23Root = await tempDir('home23-memory-source-pin-home-');
   const brain = await writeManifestBrain();

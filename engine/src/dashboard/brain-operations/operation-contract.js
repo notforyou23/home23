@@ -28,7 +28,6 @@ const OPERATION_ID_PATTERN = /^brop_[A-Za-z0-9_-]{32}$/;
 const RESULT_HANDLE_PATTERN = /^brres_[A-Za-z0-9_-]{32}$/;
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
-const SOURCE_MODES = new Set(['memory_manifest', 'legacy_projection']);
 const TARGET_ACCESS_MODES = new Set(['own', 'read-only']);
 const BRAIN_KINDS = new Set(['resident', 'research']);
 const BRAIN_LIFECYCLES = new Set(['resident', 'completed']);
@@ -363,20 +362,19 @@ function validateBaseFile(value, code) {
   assertExactKeys(value, ['file', 'count', 'bytes'], code);
   assertGeneratedBasename(value.file, code);
   assertSafeNonnegative(value.count, code);
-  assertSafePositive(value.bytes, code);
+  assertSafeNonnegative(value.bytes, code);
 }
 
 function validateSourcePinDescriptor(rawDescriptor, expectedCanonicalRoot) {
   const code = 'source_pin_invalid';
   const descriptor = assertJsonObject(rawDescriptor, code);
   assertExactKeys(descriptor, [
-    'version', 'canonicalRoot', 'generation', 'sourceMode', 'baseRevision', 'cutoffRevision',
+    'version', 'canonicalRoot', 'generation', 'baseRevision', 'cutoffRevision',
     'activeBase', 'activeDelta', 'summary',
   ], code);
   if (descriptor.version !== 1) throw operationError(code);
   assertBoundedString(descriptor.generation, code);
   if (!IDENTIFIER_PATTERN.test(descriptor.generation)) throw operationError(code);
-  if (!SOURCE_MODES.has(descriptor.sourceMode)) throw operationError(code);
   if (descriptor.canonicalRoot !== expectedCanonicalRoot) throw operationError(code);
   assertSafeNonnegative(descriptor.baseRevision, code);
   assertSafeNonnegative(descriptor.cutoffRevision, code);

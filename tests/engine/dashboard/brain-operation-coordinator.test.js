@@ -256,7 +256,6 @@ function validDescriptor(canonicalRoot = '/brains/jerry') {
     version: 1,
     canonicalRoot,
     generation: 'g1',
-    sourceMode: 'memory_manifest',
     baseRevision: 1,
     cutoffRevision: 1,
     activeBase: {
@@ -2149,6 +2148,26 @@ test('lost terminal transition response reloads terminal truth and still release
   assert.equal(fixture.counters.releaseCalls, 1);
 });
 
+test('interrupted worker result is a truthful terminal result and releases its pin', async (t) => {
+  const fixture = makeFixture(t);
+  const operation = await fixture.coordinator.start(request({ requestId: 'worker-interrupted' }));
+  fixture.worker.finish(operation.operationId, {
+    state: 'interrupted',
+    result: null,
+    resultArtifact: null,
+    error: { code: 'worker_interrupted', message: 'COSMO restarted', retryable: true },
+    sourceEvidence: {},
+  });
+  const interrupted = await waitForState(fixture, operation.operationId, 'interrupted');
+  assert.equal(interrupted.error.code, 'worker_interrupted');
+  assert.equal(interrupted.error.retryable, true);
+  await eventually(async () => {
+    const reloaded = await fixture.store.get(operation.operationId);
+    assert.equal(typeof reloaded.sourcePinReleasedAt, 'string');
+  });
+  assert.equal(fixture.counters.releaseCalls, 1);
+});
+
 test('graph artifact adopts before terminal visibility and invalid artifacts cannot expose handles', async (t) => {
   const fixture = makeFixture(t);
   const calls = [];
@@ -2568,6 +2587,22 @@ test('worker adapter rejects malformed remote events before yielding them', asyn
   }, 'cap-events')[Symbol.asyncIterator]();
   await assert.rejects(() => events.next(), typedCode('worker_event_invalid'));
   controller.abort();
+});
+
+test('worker adapter accepts an interrupted remote result envelope', async () => {
+  const operationId = `brop_${'7'.repeat(32)}`;
+  const adapter = new BrainOperationWorkerAdapter({
+    remoteWorker: {
+      async result() {
+        return {
+          state: 'interrupted', result: null, resultArtifact: null,
+          error: { code: 'worker_interrupted', message: 'restarted', retryable: true },
+          sourceEvidence: null,
+        };
+      },
+    },
+  });
+  assert.equal((await adapter.result(operationId, 'cap-result')).state, 'interrupted');
 });
 
 test('worker adapter cancellation aborts the exact local executor and event snapshots are monotonic', async (t) => {

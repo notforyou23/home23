@@ -20,7 +20,9 @@ const WORKER_STATES = new Set([
 const WORKER_TERMINAL_STATES = new Set([
   'complete', 'partial', 'failed', 'cancelled', 'interrupted',
 ]);
-const LOCAL_RESULT_STATES = new Set(['complete', 'partial', 'failed', 'cancelled']);
+const LOCAL_RESULT_STATES = new Set([
+  'complete', 'partial', 'failed', 'cancelled', 'interrupted',
+]);
 const PROVIDER_EVENT_TYPES = new Set([
   'provider_selected', 'provider_activity', 'provider_call_terminal',
 ]);
