@@ -395,3 +395,38 @@ test('pin discovery, stale process prune, and terminal release are exact to oper
   await source.close();
   scratchQuota.close();
 });
+
+test('stale process pruning treats partial operations as terminal', async () => {
+  const home23Root = await tempDir('home23-memory-source-pin-partial-');
+  const operationId = 'brop_partial_terminal';
+  const processIdentity = 'cosmo-partial-dead-process';
+  const pinDir = path.join(
+    home23Root,
+    'instances',
+    'jerry',
+    'runtime',
+    'brain-operations',
+    operationId,
+    'pins',
+    processIdentity,
+  );
+  const pinFile = path.join(pinDir, `${'a'.repeat(64)}.json`);
+  await fsp.mkdir(pinDir, { recursive: true });
+  await fsp.writeFile(pinFile, `${JSON.stringify({
+    pid: 999_994,
+    processIdentity,
+  })}\n`);
+  const canonicalPinFile = await fsp.realpath(pinFile);
+  const { pruneStalePins } = require('../../shared/memory-source');
+
+  const removed = await pruneStalePins(home23Root, {
+    getOperationState: async (candidate) => {
+      assert.equal(candidate, operationId);
+      return 'partial';
+    },
+    isProcessAlive: async () => false,
+  });
+
+  assert.deepEqual(removed, [canonicalPinFile]);
+  assert.equal(await fsp.access(pinFile).then(() => true).catch(() => false), false);
+});
