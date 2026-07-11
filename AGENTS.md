@@ -90,5 +90,8 @@ For fresh-install separation, also verify tracked files:
 
 ```bash
 git ls-files -ci --exclude-standard
-git archive HEAD | tar -tf - | rg '^(instances/|config/(home|targets|cron-jobs)\.yaml|ecosystem\.config\.cjs)'
+if git archive HEAD | tar -tf - | rg '^(instances/|config/(home|targets|secrets)\.yaml$|config/(cron-jobs|agents)\.json$|ecosystem\.config\.cjs$)'; then
+  echo 'Refusing release: archive contains local installation state' >&2
+  exit 1
+fi
 ```

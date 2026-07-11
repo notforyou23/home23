@@ -5399,7 +5399,10 @@ Expected: every command exits 0. Record exact totals for the receipt; do not cop
 ```bash
 git diff --check
 git ls-files -ci --exclude-standard
-git archive HEAD | tar -tf - | rg '^(instances/|config/(home|targets|cron-jobs)\.yaml|ecosystem\.config\.cjs)'
+if git archive HEAD | tar -tf - | rg '^(instances/|config/(home|targets|secrets)\.yaml$|config/(cron-jobs|agents)\.json$|ecosystem\.config\.cjs$)'; then
+  echo 'Refusing release: archive contains local installation state' >&2
+  exit 1
+fi
 ```
 
 Expected: `git diff --check` exits 0; both separation searches print nothing. If a search finds a tracked local-state path, stop and repair that specific tracking issue without deleting the local file.
@@ -6394,7 +6397,10 @@ npm run test:contracts
 node --test --test-concurrency=1 tests/scripts/live-brain-tools-smoke.test.cjs tests/scripts/hash-brain-boundaries.test.cjs tests/scripts/sample-process-memory.test.cjs tests/scripts/verify-brain-persistence.test.cjs tests/scripts/guarded-pm2-save.test.cjs tests/scripts/verify-live-deployment-tree.test.cjs
 git diff --check
 git ls-files -ci --exclude-standard
-git archive HEAD | tar -tf - | rg '^(instances/|config/(home|targets|cron-jobs)\.yaml|ecosystem\.config\.cjs)'
+if git archive HEAD | tar -tf - | rg '^(instances/|config/(home|targets|secrets)\.yaml$|config/(cron-jobs|agents)\.json$|ecosystem\.config\.cjs$)'; then
+  echo 'Refusing release: archive contains local installation state' >&2
+  exit 1
+fi
 ```
 
 Repeat the exact A_TESTS/B_TESTS/C_TESTS block from Step 0B against these final implementation-plus-receipt bytes as well. Expected: all A-D groups, build/test/contracts/helper tests, and diff check exit 0; separation searches print nothing. Re-read both requester catalogs/list routes, COSMO status, named PM2 rows/listeners, and generated harness tool registries once more. Record fresh totals in the receipt run; historical Step 0B totals are not a substitute.
