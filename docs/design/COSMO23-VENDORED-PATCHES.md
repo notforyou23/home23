@@ -2227,12 +2227,20 @@ tests/cosmo23/codex-unified-client-request.test.cjs`.
 - `cosmo23/lib/brain-provider-client-registry.js`
 - `cosmo23/server/providers/registry.js`
 - `cosmo23/server/index.js`
+- `shared/brain-operations/research-run-target.cjs`
+- `engine/src/dashboard/brain-operations/research-run-target-resolver.js`
+- `engine/src/dashboard/server.js`
 - `tests/cosmo23/research-run-operation-adapter.test.cjs`
 - `tests/cosmo23/research-run-metadata.test.cjs`
 - `tests/cosmo23/research-pinned-source-reader.test.cjs`
 - `tests/cosmo23/research-requester-output-writer.test.cjs`
 - `tests/cosmo23/research-compile-provider-adapter.test.cjs`
 - `tests/cosmo23/research-operation-executors.test.cjs`
+- `tests/cosmo23/model-catalog-exact-pair.test.cjs`
+- `tests/cosmo23/brain-provider-client-registry.test.cjs`
+- `tests/cosmo23/brain-operation-server-activation.test.cjs`
+- `tests/shared/research-run-target.test.cjs`
+- `tests/engine/dashboard/research-run-target-resolver.test.js`
 
 **Problem:** The durable brain-operation backend could not safely drive COSMO
 research runs through the real launcher. The legacy HTTP routes accepted
@@ -2265,13 +2273,28 @@ agency or the target brain. Compile uses the exact configured provider/model
 pair, writes only through a prevalidated requester-workspace capability, and
 cannot be relabeled as a public query operation.
 
-**Verification:** `node --test --test-concurrency=1` over the six research
-backend tests above, plus the server activation and dashboard owned-run target
-tests, passed 56/56 on 2026-07-10. The coverage includes server-derived roots,
-symlink/escape refusal, write-before-spawn ordering, durable lifecycle
-transitions, exact provider selection, bounded pinned reads, requester-only
-atomic output, stop cancellation truth, exact-run cursor isolation, and
-deterministic concurrent mutation conflicts.
+**Verification:** With `NODE_PATH` pointed at the existing COSMO dependency
+install while running from the isolated integration worktree, these three
+focused commands passed on 2026-07-10:
+
+```bash
+node --test --test-concurrency=1 tests/cosmo23/research-run-operation-adapter.test.cjs tests/cosmo23/research-run-metadata.test.cjs tests/shared/research-run-target.test.cjs
+# 26/26 passed
+
+node --test --test-concurrency=1 tests/cosmo23/research-pinned-source-reader.test.cjs tests/cosmo23/research-requester-output-writer.test.cjs tests/cosmo23/research-compile-provider-adapter.test.cjs tests/cosmo23/research-operation-executors.test.cjs tests/cosmo23/model-catalog-exact-pair.test.cjs tests/cosmo23/brain-provider-client-registry.test.cjs
+# 37/37 passed
+
+node --test --test-concurrency=1 tests/cosmo23/brain-operation-server-activation.test.cjs tests/engine/dashboard/research-run-target-resolver.test.js
+# 5/5 passed
+```
+
+The coverage includes server-derived roots, symlink/escape refusal,
+write-before-spawn ordering, durable lifecycle transitions, exact provider
+selection, bounded pinned reads, requester-only atomic output, stop
+cancellation truth, exact-run cursor isolation, production executor
+registration, and deterministic concurrent mutation conflicts. These focused
+receipts do not claim Task 8 live acceptance or that the full reliability spec
+is implemented.
 
 ---
 
@@ -2281,7 +2304,16 @@ deterministic concurrent mutation conflicts.
 - `shared/memory-source/mcp-bridge-adapter.cjs`
 - `engine/src/agents/mcp-bridge.js`
 - `cosmo23/engine/src/agents/mcp-bridge.js`
+- `engine/src/agents/agent-executor.js`
+- `engine/src/index.js`
+- `cosmo23/engine/src/agents/agent-executor.js`
+- `cosmo23/engine/src/core/orchestrator-manager.js`
+- `cosmo23/engine/src/index.js`
+- `cosmo23/engine/src/worker/orchestrator-worker.js`
+- `cosmo23/engine/src/worker/worker-manager.js`
 - `tests/engine/agents/mcp-bridge-memory.test.js`
+- `tests/engine/agents/agent-executor-memory-context.test.js`
+- `tests/cosmo23/agent-executor-memory-context.test.cjs`
 
 **Problem:** The agent-facing in-process MCP bridges still answered system,
 query, statistics, and graph memory calls by parsing the legacy state snapshot.
@@ -2308,10 +2340,14 @@ access mode, and operation identity. Recent thought/dream reads use the shared
 bounded reverse JSONL tail instead of whole-file hydration.
 
 **Verification:** `node --test --test-concurrency=1
-tests/engine/agents/mcp-bridge-memory.test.js` passes 11 parity, source-failure,
-limit, cancellation, authority, evidence-identity, bounded-tail, and
-constructor-compatibility tests across both engine copies. The executor context
-suites pass 9/9 across resident, unavailable, cross-layout, and owned-run paths.
+tests/engine/agents/mcp-bridge-memory.test.js` passed 11/11 parity,
+source-failure, limit, cancellation, authority, evidence-identity,
+bounded-tail, and constructor-compatibility tests across both engine copies.
+`node --test --test-concurrency=1
+tests/engine/agents/agent-executor-memory-context.test.js
+tests/cosmo23/agent-executor-memory-context.test.cjs` passed 9/9 across
+resident, unavailable, cross-layout, and explicitly owned-run paths on
+2026-07-10.
 
 ---
 
@@ -2611,12 +2647,13 @@ suites pass 9/9 across resident, unavailable, cross-layout, and owned-run paths.
   provider registry and exact model-pair QueryEngine. Worker hard deadlines are
   now independently armed and typed, and scoped SIGINT/SIGTERM shutdown aborts
   and joins active operations.
-- **2026-07-10** — Patch 50 foundation added the concrete durable
-  research-run adapter and extracted one prepared-run launcher from
-  `server/index.js`. Owner/run paths and lifecycle transitions are now
-  server-derived, exact, durable, cancellable without false stop claims, and
-  protected by a per-run mutation lock; executor/worker registration follows in
-  the remaining Task 5 integration slices.
+- **2026-07-10** — Patch 50 completed the durable research-operation backend.
+  The concrete run adapter and single prepared-run launcher now feed all six
+  protected research executors; exact configured provider/model resolution,
+  pinned read-only intelligence, requester-owned atomic compile output,
+  canonical owned-run targets, and production worker registration are covered
+  by the three focused command receipts in the patch entry. This is backend
+  verification only and does not claim Task 8 live acceptance.
 - **2026-07-10** — Patch 51 made the vendored MCP HTTP runtime source-honest.
   Health remains unavailable until a real canonical memory-source readiness
   check completes, missing MCP SDK dependencies fail startup instead of yielding
@@ -2629,4 +2666,6 @@ suites pass 9/9 across resident, unavailable, cross-layout, and owned-run paths.
   the same canonical bounded memory-source contract. Empty inline state shells,
   missing source context, and read failures can no longer become authoritative
   zero-node answers, and graph requests can no longer use `limit=0` to request
-  the whole graph.
+  the whole graph. Both production executor families now inject exact trusted
+  resident or explicitly owned-run source context; the root and vendored COSMO
+  executor-context regressions are registered in the aggregate test command.
