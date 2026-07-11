@@ -2116,9 +2116,13 @@ bounded with explicit authenticated gaps, graph artifacts are scratch-confined
 identity NDJSON, and terminal cleanup shares one cached pin-release promise.
 Observed and unread terminal workers have bounded retry retention; the dashboard
 durable store remains authoritative and canonical stored-result export stays
-dashboard-local. `server/index.js` exposes only an injectable route-registration
-seam here—the exact provider and research executor rollout is intentionally not
-constructed by this patch.
+dashboard-local. `server/index.js` now composes the canonical Home23 provider
+registry and operation-mode QueryEngine, mounts the query/PGS worker routes
+before COSMO's broad JSON middleware whenever the generated capability is
+present, and stops the worker during scoped process shutdown. The worker also
+arms the caller's long hard deadline itself, so a lost dashboard coordinator
+cannot leave a provider operation running forever. Research executors remain an
+explicit later Patch 50 registration and are never substituted by query.
 
 **Verification:** `tests/cosmo23/brain-operation-worker.test.cjs` covers
 capability binding/replay, 32-way idempotent start, authority/source matrices,
@@ -2127,10 +2131,11 @@ release-once cleanup, and all five internal route handlers. The existing brains
 router and shared capability/authority/source suites remain part of the patch
 acceptance command.
 
-**Phase boundary:** Patch 47 now contains both its canonical-catalog authority
-and capability-protected worker phases. Patch 48 remains source-truth authority,
-Patch 49 remains provider execution, and Patch 50 remains agent/research tool
-integration; this entry does not claim those later rollouts are complete.
+**Phase boundary:** Patch 47 contains its canonical-catalog authority,
+capability-protected worker, and production query/PGS activation phases. Patch
+48 remains source-truth authority, Patch 49 supplies provider execution, and
+Patch 50 remains agent/research tool integration; this entry does not claim the
+research rollout is complete.
 
 ---
 
@@ -2543,6 +2548,11 @@ resolution, and deterministic concurrent mutation conflicts.
   terminal result retention, and release-once cleanup. Canonical stored-result
   export remains dashboard-owned; this does not claim the later source,
   provider, or agent-tool rollouts are complete.
+- **2026-07-10** — Patch 47's protected query/PGS worker was activated in the
+  production COSMO server ahead of broad body parsing, using the canonical
+  provider registry and exact model-pair QueryEngine. Worker hard deadlines are
+  now independently armed and typed, and scoped SIGINT/SIGTERM shutdown aborts
+  and joins active operations.
 - **2026-07-10** — Patch 50 foundation added the concrete durable
   research-run adapter and extracted one prepared-run launcher from
   `server/index.js`. Owner/run paths and lifecycle transitions are now

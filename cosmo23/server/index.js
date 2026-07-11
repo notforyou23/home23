@@ -14,6 +14,8 @@ const { RunManager } = require('../launcher/run-manager');
 const { ConfigGenerator } = require('../launcher/config-generator');
 const { ProcessManager } = require('../launcher/process-manager');
 const { BrainQueryEngine } = require('../lib/brain-query-engine');
+const { QueryEngine } = require('../lib/query-engine');
+const { createHome23BrainProviderRuntime } = require('../lib/brain-provider-runtime');
 const {
   loadConfigurationSync,
   getDatabaseUrl,
@@ -45,6 +47,7 @@ const {
   parseReferenceRunsPaths,
   listBrains,
   buildCanonicalCatalog,
+  resolveCanonicalTarget,
   resolveBrainBySelector,
   importReferenceBrain,
   ensureUniqueRunName
@@ -58,6 +61,9 @@ const {
 const {
   createBrainOperationRoutes
 } = require('./lib/brain-operation-routes');
+const {
+  createCosmoBrainOperationRuntime
+} = require('./lib/brain-operation-runtime');
 const { buildStatusContract } = require('./lib/status-contract');
 const {
   buildInteractiveLiveStatus,
@@ -152,6 +158,45 @@ function registerBrainOperationWorkerRoutes(worker, targetApp = app) {
 
 let activeContext = null;
 let isLaunching = false;
+let brainOperationRuntime = null;
+
+function initializeProtectedBrainOperations({
+  capabilityKey = process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY,
+  targetApp = app,
+  home23Root = HOME23_ROOT,
+  modelCatalog = null,
+  providerRuntimeFactory = createHome23BrainProviderRuntime,
+  queryEngineFactory = (options) => new QueryEngine(options),
+  runtimeFactory = createCosmoBrainOperationRuntime,
+  buildCatalog = () => buildCanonicalCatalog(getCanonicalRunsOptions()),
+  canonicalTargetResolver = resolveCanonicalTarget,
+  extraExecutors = new Map(),
+} = {}) {
+  if (typeof capabilityKey !== 'string' || capabilityKey.length === 0) return null;
+  const catalog = modelCatalog || loadModelCatalogSync();
+  const providerRuntime = providerRuntimeFactory({
+    home23Root,
+    catalog,
+    logger: console,
+  });
+  const queryEngine = queryEngineFactory({
+    operationMode: true,
+    providerRegistry: providerRuntime.providerRegistry,
+    modelCatalog: catalog,
+  });
+  const runtime = runtimeFactory({
+    home23Root,
+    capabilityKey,
+    buildCatalog,
+    resolveCanonicalTarget: canonicalTargetResolver,
+    modelCatalog: catalog,
+    providerRegistry: providerRuntime.providerRegistry,
+    queryEngine,
+    extraExecutors,
+  });
+  registerBrainOperationWorkerRoutes(runtime.worker, targetApp);
+  return runtime;
+}
 
 processManager.on('cosmo-exit', ({ code, signal }) => {
   if (activeContext) {
@@ -161,6 +206,15 @@ processManager.on('cosmo-exit', ({ code, signal }) => {
       `Run "${runName}" ended (code: ${code}, signal: ${signal || 'none'}) — cleared activeContext`);
   }
 });
+
+if (process.env.HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY) {
+  try {
+    brainOperationRuntime = initializeProtectedBrainOperations();
+  } catch (error) {
+    const code = typeof error?.code === 'string' ? error.code : 'worker_configuration_invalid';
+    console.error(`[brain-operations] protected worker unavailable (${code})`);
+  }
+}
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -2487,11 +2541,32 @@ function startServer() {
   });
 }
 
+function installMainProcessShutdown(server) {
+  let stopping = false;
+  const shutdown = async () => {
+    if (stopping) return;
+    stopping = true;
+    try {
+      await brainOperationRuntime?.worker?.stop?.();
+      await new Promise((resolve) => server.close(resolve));
+      process.exitCode = 0;
+    } catch (error) {
+      console.error(`[brain-operations] shutdown failed (${error?.code || 'shutdown_failed'})`);
+      process.exitCode = 1;
+    }
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+  return shutdown;
+}
+
 if (require.main === module) {
-  startServer();
+  installMainProcessShutdown(startServer());
 }
 
 module.exports = {
+  initializeProtectedBrainOperations,
+  installMainProcessShutdown,
   launchPreparedResearch,
   registerBrainOperationWorkerRoutes,
   startServer,
