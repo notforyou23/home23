@@ -378,6 +378,21 @@ test('a dangling catalog symlink fails closed instead of loading built-ins', t =
   );
 });
 
+test('a catalog beneath a dangling parent symlink fails closed', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'model-catalog-dangling-parent-'));
+  const linkedParent = path.join(root, 'config-link');
+  const catalogPath = path.join(linkedParent, 'model-catalog.json');
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  useCatalogPath(t, catalogPath);
+
+  fs.symlinkSync(path.join(root, 'missing-config-directory'), linkedParent, 'dir');
+  assert.equal(fs.lstatSync(linkedParent).isSymbolicLink(), true);
+  assertCatalogError(
+    () => loadModelCatalogSync(),
+    'model_catalog_invalid',
+  );
+});
+
 test('an unreadable present catalog path fails closed', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'model-catalog-unreadable-'));
   const locked = path.join(root, 'locked');

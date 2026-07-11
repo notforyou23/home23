@@ -61,6 +61,32 @@ test('a normalized incomplete result remains incomplete when required', () => {
   );
 });
 
+test('a raw failed envelope cannot use an incomplete label to become complete', () => {
+  const result = normalizeProviderCompletion({
+    ...base,
+    status: 'failed',
+    hadError: false,
+    error: {
+      code: 'provider_incomplete',
+      message: 'upstream provider failed',
+      retryable: true,
+    },
+  });
+
+  assert.notEqual(result.status, 'complete');
+  assert.equal(result.error.code, 'provider_failed');
+  assert.throws(
+    () => requireCompleteProviderResult({
+      ...base,
+      status: 'failed',
+      hadError: false,
+      error: { code: 'provider_incomplete', message: 'upstream provider failed' },
+    }),
+    error => error instanceof ProviderCompletionError
+      && error.code === 'provider_failed',
+  );
+});
+
 test('status-labeled envelopes are normalized and revalidated', () => {
   assert.throws(
     () => requireCompleteProviderResult({

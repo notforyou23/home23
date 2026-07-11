@@ -242,6 +242,35 @@ function getModelCatalogPath() {
   return process.env.COSMO23_MODEL_CATALOG_PATH || path.join(getConfigDir(), MODEL_CATALOG_FILE_NAME);
 }
 
+function isTrulyAbsentCatalogPath(catalogPath) {
+  const absolutePath = path.resolve(catalogPath);
+  const root = path.parse(absolutePath).root;
+  let currentPath = absolutePath;
+  let missingComponent = false;
+
+  while (true) {
+    let entry = null;
+    try {
+      entry = fs.lstatSync(currentPath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      missingComponent = true;
+    }
+
+    if (entry?.isSymbolicLink()) {
+      try {
+        fs.statSync(currentPath);
+      } catch (error) {
+        if (error.code === 'ENOENT') return false;
+        throw error;
+      }
+    }
+
+    if (currentPath === root) return missingComponent;
+    currentPath = path.dirname(currentPath);
+  }
+}
+
 function inferModelKind(modelId, explicitKind = null) {
   if (explicitKind === 'chat' || explicitKind === 'embedding') {
     return explicitKind;
@@ -565,14 +594,13 @@ function loadModelCatalogSync() {
   } catch (error) {
     if (error.code === 'ENOENT') {
       try {
-        fs.lstatSync(catalogPath);
-      } catch (lstatError) {
-        if (lstatError.code === 'ENOENT') {
+        if (isTrulyAbsentCatalogPath(catalogPath)) {
           return normalizeModelCatalog();
         }
+      } catch (pathError) {
         throw modelCatalogError(
-          `Invalid model catalog at ${catalogPath}: ${lstatError.message}`,
-          lstatError,
+          `Invalid model catalog at ${catalogPath}: ${pathError.message}`,
+          pathError,
         );
       }
     }

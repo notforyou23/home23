@@ -38,14 +38,15 @@ function normalizeProviderCompletion(input = {}) {
   const content = String(source.content || '').trim();
   const finishReason = source.finishReason == null ? null : String(source.finishReason);
   const terminalReceived = source.terminalReceived === true;
+  const abnormal = finishReason && ABNORMAL_FINISH_REASONS.has(finishReason);
+  const normal = finishReason && NORMAL_FINISH_REASONS.has(finishReason);
+  const terminalIncomplete = !terminalReceived || abnormal || !normal || !content;
   const derivedIncomplete = source.hadError === false
     && source.error?.code === 'provider_incomplete'
-    && (source.status === 'partial' || source.status === 'failed');
+    && terminalIncomplete;
   const hadError = source.hadError === true
     || (source.error != null && !derivedIncomplete)
     || source.errorType != null;
-  const abnormal = finishReason && ABNORMAL_FINISH_REASONS.has(finishReason);
-  const normal = finishReason && NORMAL_FINISH_REASONS.has(finishReason);
   const errorPayload = isErrorPayload(content);
 
   let status = 'complete';
@@ -53,7 +54,7 @@ function normalizeProviderCompletion(input = {}) {
   if (hadError || errorPayload) {
     status = content && !errorPayload ? 'partial' : 'failed';
     code = 'provider_failed';
-  } else if (!terminalReceived || abnormal || !normal || !content) {
+  } else if (terminalIncomplete) {
     status = content ? 'partial' : 'failed';
     code = 'provider_incomplete';
   }
