@@ -5582,7 +5582,7 @@ Before touching the primary live checkout, capture its branch/status, cached dif
 ```bash
 ISOLATED_ROOT=$(pwd -P)
 LIVE_ROOT=/Users/jtr/_JTR23_/release/home23
-SYSTEM_TMPDIR=${TMPDIR:-/tmp}
+SYSTEM_TMPDIR=$(cd "${TMPDIR:-/tmp}" && pwd -P)
 DEPLOY_AUDIT=$(mktemp -d "$SYSTEM_TMPDIR/home23-brain-deploy-$(date +%Y%m%dT%H%M%S).XXXXXX")
 git -C "$LIVE_ROOT" status --short --branch > "$DEPLOY_AUDIT/status-before.txt"
 git -C "$LIVE_ROOT" ls-files -s > "$DEPLOY_AUDIT/index-before.txt"
@@ -5681,7 +5681,7 @@ Create this once in the live checkout before the first operational observation. 
 ```bash
 cd /Users/jtr/_JTR23_/release/home23
 LIVE_ROOT=$(pwd -P)
-SYSTEM_TMPDIR=${TMPDIR:-/tmp}
+SYSTEM_TMPDIR=$(cd "${TMPDIR:-/tmp}" && pwd -P)
 RECEIPT_RUN_ID=$(node -e "console.log(require('node:crypto').randomUUID())")
 RECEIPT_RUN_DIR="$LIVE_ROOT/runtime/brain-acceptance/$RECEIPT_RUN_ID"
 LIVE_RECEIPT_DIR="$RECEIPT_RUN_DIR/live"
@@ -5766,10 +5766,16 @@ secret-free four-port projections and hashes enter the live receipt. A missing
 `lsof`, any stderr, or any 5015 listener blocks the change:
 
 ```bash
+set -euo pipefail
 FORREST_CONFIG="$LIVE_ROOT/instances/forrest/config.yaml"
 FORREST_CONFIG_BACKUP="$SYSTEM_TMPDIR/home23-forrest-config-$RECEIPT_RUN_ID.yaml"
+test ! -e "$FORREST_CONFIG_BACKUP"
+test ! -L "$FORREST_CONFIG_BACKUP"
 cp -p "$FORREST_CONFIG" "$FORREST_CONFIG_BACKUP"
 chmod 600 "$FORREST_CONFIG_BACKUP"
+FORREST_CONFIG_BACKUP_SHA256=$(shasum -a 256 "$FORREST_CONFIG_BACKUP" | awk 'NR == 1 { print $1 }')
+test "${#FORREST_CONFIG_BACKUP_SHA256}" -eq 64
+export FORREST_CONFIG FORREST_CONFIG_BACKUP FORREST_CONFIG_BACKUP_SHA256
 
 if lsof -nP -iTCP:5015 -sTCP:LISTEN \
     > "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-config.txt" \
@@ -5778,7 +5784,10 @@ if lsof -nP -iTCP:5015 -sTCP:LISTEN \
   exit 1
 else
   LSOF_5015_STATUS=$?
-  test "$LSOF_5015_STATUS" -eq 1
+  if test "$LSOF_5015_STATUS" -ne 1; then
+    echo "lsof failed while checking port 5015 (status $LSOF_5015_STATUS)" >&2
+    exit "$LSOF_5015_STATUS"
+  fi
   test ! -s "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-config.txt"
   test ! -s "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-config.stderr.txt"
 fi
@@ -5881,11 +5890,20 @@ if lsof -nP -iTCP:5015 -sTCP:LISTEN \
   exit 1
 else
   LSOF_5015_STATUS=$?
-  test "$LSOF_5015_STATUS" -eq 1
+  if test "$LSOF_5015_STATUS" -ne 1; then
+    echo "lsof failed while rechecking port 5015 (status $LSOF_5015_STATUS)" >&2
+    exit "$LSOF_5015_STATUS"
+  fi
   test ! -s "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-prepare.txt"
   test ! -s "$LIVE_RECEIPT_DIR/listener-5015-immediate-pre-prepare.stderr.txt"
 fi
 ```
+
+Do not attach an `EXIT` trap that deletes `FORREST_CONFIG_BACKUP`. Any failure
+after the ignored config mutation and before preparation/restart acceptance must
+stop under the strict shell settings above and retain that mode-0600 external
+backup for operator recovery. Keep the exported path and digest until the sole
+guarded deletion in Step 12; no earlier success or failure path removes it.
 
 Back up the ignored ecosystem file without exposing secrets, then exercise the idempotent existing-install migration supplied by the authority plan:
 
@@ -6686,6 +6704,7 @@ Repeat the exact A_TESTS/B_TESTS/C_TESTS block from Step 0B against these final 
 After those live readbacks pass, persist only the verified named PM2 table for reboot resurrection:
 
 ```bash
+set -euo pipefail
 PM2_CONFIGURED=$(node -e '
 const fs = require("node:fs");
 const { configured } = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -6697,9 +6716,58 @@ node scripts/guarded-pm2-save.mjs \
   --ecosystem "$(pwd)/ecosystem.config.cjs" --expected-configured "$PM2_CONFIGURED" \
   --receipt-run-dir "$RECEIPT_RUN_DIR" --receipt-run-id "$RECEIPT_RUN_ID" \
   --authority live --output "$RECEIPT_RUN_DIR/live/guarded-pm2-save.json"
+test -n "${FORREST_CONFIG_BACKUP:-}"
+test -n "${FORREST_CONFIG_BACKUP_SHA256:-}"
+node - "$FORREST_CONFIG_BACKUP" "$SYSTEM_TMPDIR" "$RECEIPT_RUN_ID" \
+  "$FORREST_CONFIG_BACKUP_SHA256" \
+  "$LIVE_RECEIPT_DIR/forrest-config-backup-cleanup.json" <<'NODE'
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const [file, temporaryRoot, receiptRunId, expectedSha256, output] = process.argv.slice(2);
+const expectedPath = path.join(temporaryRoot, `home23-forrest-config-${receiptRunId}.yaml`);
+if (file !== expectedPath || path.dirname(file) !== temporaryRoot
+    || fs.realpathSync(temporaryRoot) !== temporaryRoot
+    || fs.realpathSync(path.dirname(file)) !== temporaryRoot
+    || !/^[a-f0-9]{64}$/.test(expectedSha256)) {
+  throw new Error('forrest_config_backup_cleanup_authority_invalid');
+}
+const descriptor = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+try {
+  const opened = fs.fstatSync(descriptor);
+  const current = fs.lstatSync(file);
+  if (!opened.isFile() || current.isSymbolicLink() || current.dev !== opened.dev
+      || current.ino !== opened.ino || (opened.mode & 0o777) !== 0o600) {
+    throw new Error('forrest_config_backup_cleanup_identity_invalid');
+  }
+  const actualSha256 = crypto.createHash('sha256').update(fs.readFileSync(descriptor)).digest('hex');
+  if (actualSha256 !== expectedSha256) {
+    throw new Error('forrest_config_backup_cleanup_digest_mismatch');
+  }
+  const finalIdentity = fs.lstatSync(file);
+  if (finalIdentity.dev !== opened.dev || finalIdentity.ino !== opened.ino) {
+    throw new Error('forrest_config_backup_cleanup_changed_concurrently');
+  }
+  fs.unlinkSync(file);
+  const directory = fs.openSync(temporaryRoot, 'r');
+  try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
+} finally {
+  fs.closeSync(descriptor);
+}
+if (fs.existsSync(file)) throw new Error('forrest_config_backup_cleanup_failed');
+fs.writeFileSync(output, `${JSON.stringify({
+  schemaVersion: 1,
+  receiptRunId,
+  authority: 'live',
+  backupBasename: path.basename(file),
+  backupSha256: expectedSha256,
+  backupRemoved: true,
+}, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
+NODE
+unset FORREST_CONFIG_BACKUP FORREST_CONFIG_BACKUP_SHA256
 ```
 
-The helper must back up the exact dump bytes/mode before invoking `pm2 save`, compare the **full** live/dump tables, and refuse any unrelated drift before mutation. `PM2_CONFIGURED` contains all seven always-configured names plus exactly the enabled MCP rows present once in the regenerated ecosystem. Post-save it requires every expected process exactly once/online with the normalized ecosystem identity, the new dump equal to the frozen live table, unchanged unrelated normalized rows, no duplicate/stopped/errored entry, and unchanged live PIDs/restart counts across the save. A failed postcondition restores the backup atomically and blocks completion; never leave a partially verified resurrection file.
+The helper must back up the exact dump bytes/mode before invoking `pm2 save`, compare the **full** live/dump tables, and refuse any unrelated drift before mutation. `PM2_CONFIGURED` contains all seven always-configured names plus exactly the enabled MCP rows present once in the regenerated ecosystem. Post-save it requires every expected process exactly once/online with the normalized ecosystem identity, the new dump equal to the frozen live table, unchanged unrelated normalized rows, no duplicate/stopped/errored entry, and unchanged live PIDs/restart counts across the save. A failed postcondition restores the backup atomically and blocks completion; never leave a partially verified resurrection file. Only after that successful live rollout does the guarded cleanup verify the external Forrest-config backup's canonical parent, exact generated name, regular-file identity, mode, and captured digest before unlinking and fsyncing its parent. Any cleanup mismatch fails closed and retains the backup; the secret-free cleanup receipt is created before the final artifact seal.
 
 - [ ] **Step 13: Commit, push, and read back the verified live receipt before changing status**
 

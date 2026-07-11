@@ -143,6 +143,12 @@ test('missing, stale, zero, or disagreeing snapshot evidence fails closed', asyn
     ['missing generation', 'missing-generation', 'snapshot_stale'],
     ['wrong generation', 'wrong-generation', 'snapshot_stale'],
     ['zero', { nodeCount: 0, edgeCount: 0 }, 'snapshot_counts_invalid'],
+    ['string node count', { nodeCount: '2', edgeCount: 1 }, 'snapshot_counts_invalid'],
+    ['string edge count', { nodeCount: 2, edgeCount: '1' }, 'snapshot_counts_invalid'],
+    ['array node count', { nodeCount: [2], edgeCount: 1 }, 'snapshot_counts_invalid'],
+    ['array edge count', { nodeCount: 2, edgeCount: [1] }, 'snapshot_counts_invalid'],
+    ['boolean node count', { nodeCount: true, edgeCount: 1 }, 'snapshot_counts_invalid'],
+    ['boolean edge count', { nodeCount: 2, edgeCount: true }, 'snapshot_counts_invalid'],
     ['disagreeing', { nodeCount: 3, edgeCount: 1 }, 'persistence_count_mismatch'],
   ]) {
     const state = await fixture();

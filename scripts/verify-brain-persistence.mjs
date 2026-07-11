@@ -98,9 +98,9 @@ async function optionalSnapshot(brainDir) {
 
 function snapshotTotals(snapshot) {
   if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
-  const nodes = Number(snapshot.nodeCount ?? snapshot.memory?.nodeCount ?? snapshot.memory?.nodes);
-  const edges = Number(snapshot.edgeCount ?? snapshot.memory?.edgeCount ?? snapshot.memory?.edges);
-  if (!Number.isSafeInteger(nodes) || nodes <= 0 || !Number.isSafeInteger(edges) || edges < 0) {
+  const nodes = snapshot.nodeCount ?? snapshot.memory?.nodeCount ?? snapshot.memory?.nodes;
+  const edges = snapshot.edgeCount ?? snapshot.memory?.edgeCount ?? snapshot.memory?.edges;
+  if (!Number.isSafeInteger(nodes) || nodes < 0 || !Number.isSafeInteger(edges) || edges < 0) {
     return null;
   }
   return {
@@ -278,7 +278,7 @@ function validateStreamed({ streamed, inventory, snapshot }) {
     throw typedError('streamed_counts_invalid');
   }
   const snapshotExpected = snapshotTotals(snapshot);
-  if (!snapshotExpected) throw typedError('snapshot_counts_invalid');
+  if (!snapshotExpected || snapshotExpected.nodes <= 0) throw typedError('snapshot_counts_invalid');
   let expected;
   if (inventory.authority === 'manifest-v1') {
     const summary = inventory.manifest?.summary;
