@@ -1,8 +1,11 @@
 'use strict';
 
-const fsp = require('node:fs').promises;
+const fs = require('node:fs');
+const fsp = fs.promises;
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
 const { readManifest, validateManifest } = require('./manifest.cjs');
 const { createDescriptor, openMemorySource } = require('./reader.cjs');
 const { projectLegacyResidentSidecars } = require('./legacy-projection.cjs');
@@ -20,6 +23,161 @@ const MAX_OPERATION_STATUS_BYTES = 1024 * 1024;
 const MUTATION_BOUNDARY_KINDS = Object.freeze([
   'brain', 'run', 'pgs', 'session', 'cache', 'export', 'agency',
 ]);
+const SOURCE_LOCK_OWNER_BYTES = 8 * 1024;
+const SOURCE_LOCK_PROCESS_STARTED_AT = Date.now() - Math.floor(process.uptime() * 1000);
+const SOURCE_LOCK_FALLBACK_IDENTITY = `unverifiable:${process.pid}:${SOURCE_LOCK_PROCESS_STARTED_AT}:${crypto.randomUUID()}`;
+const execFileAsync = promisify(execFile);
+let currentSourceLockIdentityPromise = null;
+
+function boundedIdentityToken(value) {
+  return typeof value === 'string' && value.length > 0
+    && Buffer.byteLength(value, 'utf8') <= 512;
+}
+
+async function readDarwinProcessIdentity(pid) {
+  let bootToken;
+  try {
+    ({ stdout: bootToken } = await execFileAsync(
+      '/usr/sbin/sysctl', ['-n', 'kern.bootsessionuuid'], {
+        encoding: 'utf8',
+        maxBuffer: 4096,
+        env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
+      },
+    ));
+  } catch {
+    return null;
+  }
+  let processOutput;
+  try {
+    ({ stdout: processOutput } = await execFileAsync(
+      '/bin/ps', ['-p', String(pid), '-o', 'pid=,lstart='], {
+        encoding: 'utf8',
+        maxBuffer: 4096,
+        env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
+      },
+    ));
+  } catch (error) {
+    if (error.code === 1) return false;
+    return null;
+  }
+  const normalized = processOutput.trim().replace(/\s+/g, ' ');
+  if (!normalized.startsWith(`${pid} `)) return null;
+  return Object.freeze({
+    bootToken: bootToken.trim(),
+    processStartToken: normalized.slice(String(pid).length + 1),
+  });
+}
+
+async function readLinuxProcessIdentity(pid) {
+  let statText;
+  let bootToken;
+  try {
+    statText = await fsp.readFile(`/proc/${pid}/stat`, 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ESRCH') return false;
+    return null;
+  }
+  try {
+    bootToken = await fsp.readFile('/proc/sys/kernel/random/boot_id', 'utf8');
+  } catch {
+    return null;
+  }
+  const closeParen = statText.lastIndexOf(')');
+  if (closeParen < 0) return null;
+  const fields = statText.slice(closeParen + 1).trim().split(/\s+/);
+  const processStartToken = fields[19];
+  if (!processStartToken) return null;
+  return Object.freeze({ bootToken: bootToken.trim(), processStartToken });
+}
+
+async function inspectSourceLockProcessIdentity(pid) {
+  if (process.platform === 'darwin') return readDarwinProcessIdentity(pid);
+  if (process.platform === 'linux') return readLinuxProcessIdentity(pid);
+  return null;
+}
+
+function inspectCurrentSourceLockIdentity() {
+  currentSourceLockIdentityPromise ||= inspectSourceLockProcessIdentity(process.pid);
+  return currentSourceLockIdentityPromise;
+}
+
+async function createSourceLockOwner(canonicalRoot, now) {
+  const exact = await inspectCurrentSourceLockIdentity();
+  return Object.freeze({
+    version: 1,
+    canonicalRoot,
+    pid: process.pid,
+    processStartedAt: SOURCE_LOCK_PROCESS_STARTED_AT,
+    bootToken: exact && exact !== false
+      ? exact.bootToken
+      : `unverifiable-boot:${SOURCE_LOCK_FALLBACK_IDENTITY}`,
+    processStartToken: exact && exact !== false
+      ? exact.processStartToken
+      : `unverifiable-start:${SOURCE_LOCK_FALLBACK_IDENTITY}`,
+    createdAt: new Date(now).toISOString(),
+  });
+}
+
+function validateSourceLockOwner(owner, canonicalRoot) {
+  const fields = [
+    'version', 'canonicalRoot', 'pid', 'processStartedAt',
+    'bootToken', 'processStartToken', 'createdAt',
+  ];
+  if (!owner || Array.isArray(owner) || typeof owner !== 'object'
+      || Reflect.ownKeys(owner).length !== fields.length
+      || fields.some((field) => !Object.hasOwn(owner, field))
+      || owner.version !== 1
+      || owner.canonicalRoot !== canonicalRoot
+      || !Number.isSafeInteger(owner.pid) || owner.pid <= 0
+      || !Number.isSafeInteger(owner.processStartedAt) || owner.processStartedAt < 0
+      || !boundedIdentityToken(owner.bootToken)
+      || !boundedIdentityToken(owner.processStartToken)
+      || typeof owner.createdAt !== 'string'
+      || Number.isNaN(Date.parse(owner.createdAt))) {
+    return null;
+  }
+  return owner;
+}
+
+function sourceLockOwnerHasFallbackIdentity(owner) {
+  return [owner.bootToken, owner.processStartToken].some((token) =>
+    token.startsWith('unverifiable-') || token.startsWith('unverifiable:'));
+}
+
+async function defaultIsSourceLockOwnerAlive(owner) {
+  try {
+    process.kill(owner.pid, 0);
+  } catch (error) {
+    if (error.code === 'ESRCH') return false;
+    if (error.code !== 'EPERM') return null;
+  }
+  if (sourceLockOwnerHasFallbackIdentity(owner)) return null;
+  const exact = owner.pid === process.pid
+    ? await inspectCurrentSourceLockIdentity()
+    : await inspectSourceLockProcessIdentity(owner.pid);
+  if (exact === false) return false;
+  if (exact === null) return null;
+  return exact.bootToken === owner.bootToken
+    && exact.processStartToken === owner.processStartToken;
+}
+
+function abortableDelay(ms, signal) {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(done, ms);
+    function done() {
+      signal?.removeEventListener('abort', aborted);
+      resolve();
+    }
+    function aborted() {
+      clearTimeout(timer);
+      reject(signal.reason || Object.assign(new Error('cancelled'), {
+        name: 'AbortError', code: 'cancelled',
+      }));
+    }
+    signal?.addEventListener('abort', aborted, { once: true });
+  });
+}
 
 function validateOperationId(operationId) {
   if (typeof operationId !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(operationId)) {
@@ -599,27 +757,437 @@ async function openPinnedSource(descriptor, expectations = {}) {
   });
 }
 
-async function withMemorySourceLock(canonicalRoot, { lockRoot } = {}, callback) {
+function sourceLockIdentity(stat) {
+  return Object.freeze({ dev: String(stat.dev), ino: String(stat.ino) });
+}
+
+function sameSourceLockIdentity(stat, expected) {
+  return Boolean(stat && expected
+    && String(stat.dev) === expected.dev
+    && String(stat.ino) === expected.ino);
+}
+
+async function sourceLockLstatOptional(filePath) {
+  return fsp.lstat(filePath).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+}
+
+async function fsyncSourceLockDirectory(directory) {
+  const handle = await fsp.open(directory, fs.constants.O_RDONLY);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function assertStableSourceLockDirectory(directory, expected, label) {
+  const stat = await sourceLockLstatOptional(directory);
+  if (stat === null || stat.isSymbolicLink() || !stat.isDirectory()
+      || !sameSourceLockIdentity(stat, expected)) {
+    throw memorySourceError('invalid_memory_source', `${label} identity changed`, {
+      retryable: false,
+    });
+  }
+  return stat;
+}
+
+async function readPublishedSourceLock(lockDir, lockIdentity, canonicalRoot) {
+  try {
+    await assertStableSourceLockDirectory(lockDir, lockIdentity, 'source lock');
+    const entries = await fsp.readdir(lockDir);
+    if (entries.length !== 1 || entries[0] !== 'owner.json') return null;
+    const ownerPath = path.join(lockDir, 'owner.json');
+    const before = await sourceLockLstatOptional(ownerPath);
+    if (before === null || before.isSymbolicLink() || !before.isFile()
+        || before.size > SOURCE_LOCK_OWNER_BYTES) return null;
+    const ownerIdentity = sourceLockIdentity(before);
+    let handle;
+    try {
+      handle = await fsp.open(
+        ownerPath,
+        fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0),
+      );
+      const opened = await handle.stat();
+      if (!opened.isFile() || opened.size !== before.size
+          || !sameSourceLockIdentity(opened, ownerIdentity)) return null;
+      const text = await handle.readFile('utf8');
+      const after = await sourceLockLstatOptional(ownerPath);
+      if (after === null || after.isSymbolicLink() || !after.isFile()
+          || !sameSourceLockIdentity(after, ownerIdentity)) return null;
+      await assertStableSourceLockDirectory(lockDir, lockIdentity, 'source lock');
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return null;
+      }
+      const owner = validateSourceLockOwner(parsed, canonicalRoot);
+      return owner ? Object.freeze({ owner, ownerIdentity }) : null;
+    } finally {
+      await handle?.close().catch(() => {});
+    }
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function removeExactSourceLockDirectory(directory, directoryIdentity, files) {
+  const stat = await sourceLockLstatOptional(directory);
+  if (stat === null) return true;
+  if (stat.isSymbolicLink() || !stat.isDirectory()
+      || !sameSourceLockIdentity(stat, directoryIdentity)) return false;
+  const entries = await fsp.readdir(directory);
+  if (entries.length !== files.size || entries.some((name) => !files.has(name))) return false;
+  for (const name of entries) {
+    const filePath = path.join(directory, name);
+    const fileStat = await sourceLockLstatOptional(filePath);
+    const expected = files.get(name);
+    if (fileStat === null || fileStat.isSymbolicLink() || !fileStat.isFile()
+        || !sameSourceLockIdentity(fileStat, expected)) return false;
+  }
+  for (const name of entries) await fsp.unlink(path.join(directory, name));
+  const latest = await sourceLockLstatOptional(directory);
+  if (latest === null) return true;
+  if (latest.isSymbolicLink() || !latest.isDirectory()
+      || !sameSourceLockIdentity(latest, directoryIdentity)) return false;
+  await fsp.rmdir(directory);
+  return true;
+}
+
+async function moveExactSourceLockDirectory(directory, directoryIdentity, destination) {
+  const before = await sourceLockLstatOptional(directory);
+  if (before === null || before.isSymbolicLink() || !before.isDirectory()
+      || !sameSourceLockIdentity(before, directoryIdentity)) return false;
+  try {
+    await fsp.rename(directory, destination);
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+  const moved = await sourceLockLstatOptional(destination);
+  if (moved === null || moved.isSymbolicLink() || !moved.isDirectory()
+      || !sameSourceLockIdentity(moved, directoryIdentity)) {
+    throw memorySourceError('invalid_memory_source', 'source lock moved a different identity', {
+      retryable: false,
+    });
+  }
+  return true;
+}
+
+async function withMemorySourceLock(canonicalRoot, options = {}, callback) {
+  const {
+    lockRoot,
+    signal,
+    lockRetryMs = 10,
+    lockJitterMs = 10,
+    lockTimeoutMs = 30_000,
+    isProcessAlive = defaultIsSourceLockOwnerAlive,
+    clock = Date,
+    random = Math.random,
+    _testHooks = {},
+  } = options || {};
+  if (typeof callback !== 'function'
+      || !Number.isSafeInteger(lockRetryMs) || lockRetryMs < 0
+      || !Number.isSafeInteger(lockJitterMs) || lockJitterMs < 0
+      || !Number.isSafeInteger(lockTimeoutMs) || lockTimeoutMs < 0
+      || typeof isProcessAlive !== 'function'
+      || typeof clock?.now !== 'function'
+      || typeof random !== 'function'
+      || !_testHooks || Array.isArray(_testHooks) || typeof _testHooks !== 'object'
+      || Object.values(_testHooks).some((hook) => typeof hook !== 'function')) {
+    throw memorySourceError('invalid_request', 'invalid source lock coordination options');
+  }
+  throwIfAborted(signal);
   const canonical = await fsp.realpath(canonicalRoot);
   const root = await assertOperationRoot(lockRoot);
   const relative = path.relative(canonical, root);
   if (!relative || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
     throw memorySourceError('invalid_request', 'lock root must be outside target');
   }
+  const rootStat = await fsp.lstat(root);
+  const rootIdentity = sourceLockIdentity(rootStat);
   const lockDir = path.join(root, canonicalRootHash(canonical));
-  await fsp.mkdir(lockDir, { mode: 0o700 }).catch((error) => {
-    if (error.code === 'EEXIST') throw memorySourceError('source_busy', 'source lock busy', { retryable: true });
-    throw error;
-  });
-  try {
-    await fsp.writeFile(path.join(lockDir, 'owner.json'), `${JSON.stringify({
-      pid: process.pid,
+  const startedAt = clock.now();
+  const owner = await createSourceLockOwner(canonical, startedAt);
+  const ownerText = `${JSON.stringify(owner)}\n`;
+  if (Buffer.byteLength(ownerText, 'utf8') > SOURCE_LOCK_OWNER_BYTES) {
+    throw memorySourceError('invalid_request', 'source lock owner record is too large');
+  }
+
+  async function assertStableLockRoot() {
+    return assertStableSourceLockDirectory(root, rootIdentity, 'source lock root');
+  }
+
+  async function waitForRetry(reason) {
+    throwIfAborted(signal);
+    const elapsedMs = Math.max(0, clock.now() - startedAt);
+    if (elapsedMs >= lockTimeoutMs) {
+      throw memorySourceError('source_busy', 'source lock busy', {
+        retryable: true,
+        reason,
+      });
+    }
+    const sample = random();
+    if (!Number.isFinite(sample) || sample < 0 || sample >= 1) {
+      throw memorySourceError('invalid_request', 'source lock random sample is invalid');
+    }
+    const jitter = Math.floor(sample * (lockJitterMs + 1));
+    const delayMs = Math.min(lockRetryMs + jitter, lockTimeoutMs - elapsedMs);
+    if (delayMs <= 0) {
+      throw memorySourceError('source_busy', 'source lock busy', {
+        retryable: true,
+        reason,
+      });
+    }
+    await _testHooks.beforeLockRetry?.({
       canonicalRoot: canonical,
-      createdAt: new Date().toISOString(),
-    })}\n`, { mode: 0o600 });
+      lockDir,
+      delayMs,
+      elapsedMs,
+      reason,
+    });
+    await abortableDelay(delayMs, signal);
+  }
+
+  async function quarantinePublishedLock(lockIdentity, ownerIdentity, suffix) {
+    await assertStableLockRoot();
+    const quarantine = `${lockDir}.${suffix}-${process.pid}-${crypto.randomUUID()}`;
+    if (!await moveExactSourceLockDirectory(lockDir, lockIdentity, quarantine)) return false;
+    await fsyncSourceLockDirectory(root);
+    const removed = await removeExactSourceLockDirectory(
+      quarantine,
+      lockIdentity,
+      new Map([['owner.json', ownerIdentity]]),
+    );
+    if (!removed) {
+      throw memorySourceError('invalid_memory_source', 'source lock quarantine changed', {
+        retryable: false,
+      });
+    }
+    await fsyncSourceLockDirectory(root);
+    return true;
+  }
+
+  async function inspectPublishedLock() {
+    await assertStableLockRoot();
+    const stat = await sourceLockLstatOptional(lockDir);
+    if (stat === null) return false;
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      await waitForRetry('published_lock_invalid');
+      return true;
+    }
+    const lockIdentity = sourceLockIdentity(stat);
+    const snapshot = await readPublishedSourceLock(lockDir, lockIdentity, canonical)
+      .catch((error) => {
+        if (error.code === 'invalid_memory_source') return null;
+        throw error;
+      });
+    if (snapshot === null) {
+      await waitForRetry('published_owner_invalid');
+      return true;
+    }
+    let alive = null;
+    try {
+      const inspected = await isProcessAlive(snapshot.owner);
+      if (inspected === true || inspected === false) alive = inspected;
+    } catch {
+      alive = null;
+    }
+    if (alive !== false) {
+      await waitForRetry('published_owner_alive_or_unknown');
+      return true;
+    }
+    const latest = await readPublishedSourceLock(lockDir, lockIdentity, canonical)
+      .catch((error) => {
+        if (error.code === 'invalid_memory_source') return null;
+        throw error;
+      });
+    if (latest === null
+        || !sameSourceLockIdentity(
+          { dev: latest.ownerIdentity.dev, ino: latest.ownerIdentity.ino },
+          snapshot.ownerIdentity,
+        )
+        || canonicalJson(latest.owner) !== canonicalJson(snapshot.owner)) {
+      await waitForRetry('published_lock_turned_over');
+      return true;
+    }
+    if (!await quarantinePublishedLock(lockIdentity, snapshot.ownerIdentity, 'stale')) {
+      await waitForRetry('published_lock_turned_over');
+      return true;
+    }
+    await _testHooks.afterStaleLockRecovered?.({
+      canonicalRoot: canonical,
+      lockDir,
+      owner: snapshot.owner,
+    });
+    return true;
+  }
+
+  async function acquire() {
+    for (;;) {
+      throwIfAborted(signal);
+      await assertStableLockRoot();
+      if (await inspectPublishedLock()) continue;
+      const candidateDir = `${lockDir}.candidate-${process.pid}-${crypto.randomUUID()}`;
+      const ownerTemporaryName = `.owner.${process.pid}.${crypto.randomUUID()}.tmp`;
+      let candidateIdentity = null;
+      let ownerIdentity = null;
+      let ownerTemporaryIdentity = null;
+      let ownerHandle = null;
+      let published = false;
+      try {
+        await fsp.mkdir(candidateDir, { mode: 0o700 });
+        const candidateStat = await fsp.lstat(candidateDir);
+        if (candidateStat.isSymbolicLink() || !candidateStat.isDirectory()) {
+          throw memorySourceError('invalid_memory_source', 'source lock candidate is invalid', {
+            retryable: false,
+          });
+        }
+        candidateIdentity = sourceLockIdentity(candidateStat);
+        const ownerTemporaryPath = path.join(candidateDir, ownerTemporaryName);
+        ownerHandle = await fsp.open(
+          ownerTemporaryPath,
+          fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL
+            | (fs.constants.O_NOFOLLOW || 0),
+          0o600,
+        );
+        const openedOwner = await ownerHandle.stat();
+        if (!openedOwner.isFile()) {
+          throw memorySourceError('invalid_memory_source', 'source lock owner candidate is invalid', {
+            retryable: false,
+          });
+        }
+        ownerTemporaryIdentity = sourceLockIdentity(openedOwner);
+        await ownerHandle.writeFile(ownerText, 'utf8');
+        await ownerHandle.sync();
+        await _testHooks.afterOwnerFsync?.({
+          canonicalRoot: canonical,
+          candidateDir,
+          ownerTemporaryPath,
+        });
+        await ownerHandle.close();
+        ownerHandle = null;
+        await _testHooks.beforeOwnerRename?.({
+          canonicalRoot: canonical,
+          candidateDir,
+          ownerTemporaryPath,
+        });
+        const ownerTemporaryStat = await fsp.lstat(ownerTemporaryPath);
+        if (ownerTemporaryStat.isSymbolicLink() || !ownerTemporaryStat.isFile()
+            || !sameSourceLockIdentity(ownerTemporaryStat, ownerTemporaryIdentity)) {
+          throw memorySourceError('invalid_memory_source', 'source lock owner candidate changed', {
+            retryable: false,
+          });
+        }
+        const ownerPath = path.join(candidateDir, 'owner.json');
+        await fsp.rename(ownerTemporaryPath, ownerPath);
+        ownerIdentity = ownerTemporaryIdentity;
+        ownerTemporaryIdentity = null;
+        await fsyncSourceLockDirectory(candidateDir);
+        await assertStableSourceLockDirectory(
+          candidateDir,
+          candidateIdentity,
+          'source lock candidate',
+        );
+        const candidateSnapshot = await readPublishedSourceLock(
+          candidateDir,
+          candidateIdentity,
+          canonical,
+        );
+        if (candidateSnapshot === null
+            || canonicalJson(candidateSnapshot.owner) !== canonicalJson(owner)) {
+          throw memorySourceError('invalid_memory_source', 'source lock candidate owner changed', {
+            retryable: false,
+          });
+        }
+        ownerIdentity = candidateSnapshot.ownerIdentity;
+        await _testHooks.beforeFinalDirectoryRename?.({
+          canonicalRoot: canonical,
+          candidateDir,
+          lockDir,
+        });
+        await assertStableLockRoot();
+        if (await sourceLockLstatOptional(lockDir) !== null) {
+          await removeExactSourceLockDirectory(
+            candidateDir,
+            candidateIdentity,
+            new Map([['owner.json', ownerIdentity]]),
+          );
+          candidateIdentity = null;
+          continue;
+        }
+        try {
+          await fsp.rename(candidateDir, lockDir);
+        } catch (error) {
+          if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
+          await removeExactSourceLockDirectory(
+            candidateDir,
+            candidateIdentity,
+            new Map([['owner.json', ownerIdentity]]),
+          );
+          candidateIdentity = null;
+          continue;
+        }
+        published = true;
+        const publishedStat = await fsp.lstat(lockDir);
+        if (publishedStat.isSymbolicLink() || !publishedStat.isDirectory()
+            || !sameSourceLockIdentity(publishedStat, candidateIdentity)) {
+          throw memorySourceError('invalid_memory_source', 'source lock publication changed', {
+            retryable: false,
+          });
+        }
+        await fsyncSourceLockDirectory(root);
+        await _testHooks.afterFinalDirectoryRename?.({
+          canonicalRoot: canonical,
+          lockDir,
+        });
+        return Object.freeze({ lockIdentity: candidateIdentity, ownerIdentity });
+      } catch (error) {
+        await ownerHandle?.close().catch(() => {});
+        if (!published && candidateIdentity) {
+          const files = new Map();
+          if (ownerTemporaryIdentity) files.set(ownerTemporaryName, ownerTemporaryIdentity);
+          if (ownerIdentity) files.set('owner.json', ownerIdentity);
+          await removeExactSourceLockDirectory(candidateDir, candidateIdentity, files).catch(() => {});
+        }
+        throw error;
+      }
+    }
+  }
+
+  const acquired = await acquire();
+  try {
     return await callback();
   } finally {
-    await fsp.rm(lockDir, { recursive: true, force: true }).catch(() => {});
+    await assertStableLockRoot();
+    const snapshot = await readPublishedSourceLock(
+      lockDir,
+      acquired.lockIdentity,
+      canonical,
+    );
+    if (snapshot === null
+        || !sameSourceLockIdentity(
+          { dev: snapshot.ownerIdentity.dev, ino: snapshot.ownerIdentity.ino },
+          acquired.ownerIdentity,
+        )
+        || canonicalJson(snapshot.owner) !== canonicalJson(owner)) {
+      throw memorySourceError('invalid_memory_source', 'source lock ownership changed before release', {
+        retryable: false,
+      });
+    }
+    if (!await quarantinePublishedLock(
+      acquired.lockIdentity,
+      acquired.ownerIdentity,
+      'release',
+    )) {
+      throw memorySourceError('invalid_memory_source', 'source lock disappeared before release', {
+        retryable: false,
+      });
+    }
   }
 }
 
@@ -672,7 +1240,8 @@ async function pruneStalePins(home23Root, {
     const record = JSON.parse(await fsp.readFile(file.path, 'utf8').catch(() => '{}'));
     const alive = await isProcessAlive(record);
     const state = await getOperationState(file.operationId);
-    const terminal = state === null || ['complete', 'failed', 'cancelled', 'interrupted'].includes(state);
+    const terminal = state === null
+      || ['complete', 'partial', 'failed', 'cancelled', 'interrupted'].includes(state);
     if (!alive && terminal) {
       await fsp.rm(file.path, { force: true });
       await fsp.rmdir(path.dirname(file.path)).catch(() => {});
