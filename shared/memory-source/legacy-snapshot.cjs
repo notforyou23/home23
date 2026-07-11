@@ -8,14 +8,19 @@ const crypto = require('node:crypto');
 const { once } = require('node:events');
 const { StringDecoder } = require('node:string_decoder');
 const { createOperationScratchQuota } = require('./scratch-quota.cjs');
-const { writeManifestAtomic, fsyncDirectory } = require('./manifest.cjs');
+const { readManifest, writeManifestAtomic, fsyncDirectory } = require('./manifest.cjs');
 const {
   assertOpenedFilePathIdentity,
   assertStableOpenedFile,
   openConfinedRegularFile,
   portableFileIdentity,
 } = require('./confined-file.cjs');
-const { memorySourceError, rethrowAbort, throwIfAborted } = require('./contracts.cjs');
+const {
+  canonicalJson,
+  memorySourceError,
+  rethrowAbort,
+  throwIfAborted,
+} = require('./contracts.cjs');
 
 function fingerprint(stat) {
   return {
@@ -239,6 +244,134 @@ async function streamSnapshot({
   }
 }
 
+async function removeOwnedProjectionAttempt(attemptRoot, identity) {
+  if (!attemptRoot || !identity) return;
+  const stat = await fsp.lstat(attemptRoot).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (stat === null) return;
+  if (!stat.isDirectory() || stat.isSymbolicLink()
+      || String(stat.dev) !== identity.dev || String(stat.ino) !== identity.ino) {
+    throw memorySourceError(
+      'invalid_memory_source',
+      'legacy research projection attempt identity changed',
+      { retryable: false },
+    );
+  }
+  await fsp.rm(attemptRoot, { recursive: true, force: false });
+}
+
+async function digestOpenedRegularFile(root, basename) {
+  const opened = await openConfinedRegularFile(root, path.join(root, basename), {
+    flags: fs.constants.O_RDONLY,
+  });
+  try {
+    const byteLimit = Number(opened.stat.size);
+    if (!Number.isSafeInteger(byteLimit) || byteLimit < 0) {
+      throw memorySourceError('invalid_memory_source', 'published projection file is too large', {
+        retryable: false,
+      });
+    }
+    const hash = crypto.createHash('sha256');
+    if (byteLimit > 0) {
+      const stream = fs.createReadStream(null, {
+        fd: opened.handle.fd,
+        autoClose: false,
+        start: 0,
+        end: byteLimit - 1,
+      });
+      for await (const chunk of stream) hash.update(chunk);
+    }
+    await assertStableOpenedFile(opened);
+    await assertOpenedFilePathIdentity(opened, portableFileIdentity(opened.stat));
+    return Object.freeze({ bytes: byteLimit, sha256: hash.digest('hex') });
+  } finally {
+    await opened.handle.close().catch(() => {});
+  }
+}
+
+async function validateResearchProjectionWinner({
+  projectionRoot,
+  attemptRoot,
+  expectedManifest,
+}) {
+  const winnerStat = await fsp.lstat(projectionRoot).catch((error) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (winnerStat === null || winnerStat.isSymbolicLink() || !winnerStat.isDirectory()
+      || await fsp.realpath(projectionRoot) !== projectionRoot) {
+    throw memorySourceError('invalid_memory_source', 'legacy research projection winner is unsafe', {
+      retryable: false,
+    });
+  }
+  const manifest = await readManifest(projectionRoot);
+  if (!manifest || canonicalJson(manifest) !== canonicalJson(expectedManifest)) {
+    throw memorySourceError(
+      'invalid_memory_source',
+      'legacy research projection winner manifest differs',
+      { retryable: false },
+    );
+  }
+  const files = [
+    manifest.activeBase.nodes.file,
+    manifest.activeBase.edges.file,
+    manifest.activeDelta.file,
+    'memory-manifest.json',
+  ];
+  const entries = (await fsp.readdir(projectionRoot)).sort();
+  if (canonicalJson(entries) !== canonicalJson([...files].sort())) {
+    throw memorySourceError(
+      'invalid_memory_source',
+      'legacy research projection winner files differ',
+      { retryable: false },
+    );
+  }
+  for (const file of files) {
+    const [candidate, winner] = await Promise.all([
+      digestOpenedRegularFile(attemptRoot, file),
+      digestOpenedRegularFile(projectionRoot, file),
+    ]);
+    if (candidate.bytes !== winner.bytes || candidate.sha256 !== winner.sha256) {
+      throw memorySourceError(
+        'invalid_memory_source',
+        'legacy research projection winner bytes differ',
+        { retryable: false },
+      );
+    }
+  }
+  return manifest;
+}
+
+function legacyResearchProjectionResult({
+  targetRoot,
+  projectionRoot,
+  manifest,
+  sourceFingerprint,
+}) {
+  return Object.freeze({
+    descriptor: Object.freeze({
+      version: 1,
+      canonicalRoot: targetRoot,
+      generation: manifest.generation,
+      baseRevision: manifest.baseRevision,
+      cutoffRevision: manifest.currentRevision,
+      activeBase: manifest.activeBase,
+      activeDelta: manifest.activeDelta,
+      summary: manifest.summary,
+    }),
+    projectionRoot,
+    manifest,
+    sourceFingerprint,
+    evidence: Object.freeze({
+      sourceHealth: 'degraded',
+      matchOutcome: 'unknown',
+      freshness: 'unknown',
+    }),
+  });
+}
+
 async function projectLegacyResearchSnapshot({
   canonicalRoot,
   stateFile,
@@ -269,24 +402,34 @@ async function projectLegacyResearchSnapshot({
   if (!crossing || crossing.startsWith('..') || path.isAbsolute(crossing)) {
     throw memorySourceError('invalid_request', 'state file must be inside canonical root');
   }
+  const ownsQuota = !scratchQuota;
   const quota = scratchQuota || await createOperationScratchQuota({ operationRoot });
-  const root = quota.operationRoot;
-  const projectionsRoot = path.join(root, 'source-projections');
-  await fsp.mkdir(projectionsRoot, { recursive: true, mode: 0o700 });
-  let lastMismatch = null;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+  try {
+    const root = quota.operationRoot;
+    const projectionsRoot = path.join(root, 'source-projections');
+    await fsp.mkdir(projectionsRoot, { recursive: true, mode: 0o700 });
     throwIfAborted(signal);
-    const openedSource = await openConfinedRegularFile(targetRoot, sourceFile, {
-      flags: fs.constants.O_RDONLY,
-      signal,
-    });
-    let attemptRoot = null;
-    let nodes = null;
-    let edges = null;
-    try {
-      const before = fingerprint(openedSource.stat);
-      attemptRoot = path.join(projectionsRoot, `attempt-${process.pid}-${Date.now()}-${attempt}`);
-      await fsp.mkdir(attemptRoot, { recursive: false, mode: 0o700 });
+    let lastMismatch = null;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      throwIfAborted(signal);
+      const openedSource = await openConfinedRegularFile(targetRoot, sourceFile, {
+        flags: fs.constants.O_RDONLY,
+        signal,
+      });
+      let attemptRoot = null;
+      let attemptIdentity = null;
+      let nodes = null;
+      let edges = null;
+      try {
+        const before = fingerprint(openedSource.stat);
+        attemptRoot = path.join(projectionsRoot, `.attempt-${crypto.randomUUID()}`);
+        await fsp.mkdir(attemptRoot, { recursive: false, mode: 0o700 });
+        const attemptStat = await fsp.lstat(attemptRoot);
+        attemptIdentity = Object.freeze({
+          dev: String(attemptStat.dev),
+          ino: String(attemptStat.ino),
+        });
+        throwIfAborted(signal);
       const nodesPath = path.join(attemptRoot, 'memory-nodes.tmp.jsonl.gz');
       const edgesPath = path.join(attemptRoot, 'memory-edges.tmp.jsonl.gz');
       nodes = createGzipJsonlWriter(nodesPath, { scratchQuota: quota, signal });
@@ -311,24 +454,39 @@ async function projectLegacyResearchSnapshot({
           }
         },
       });
-      const nodeFile = await nodes.finish();
-      const edgeFile = await edges.finish();
-      await _testHooks.beforeSourceRecheck?.({ attempt, targetRoot, stateFile: sourceFile });
-      await assertStableOpenedFile(openedSource);
-      await assertOpenedFilePathIdentity(openedSource, portableFileIdentity(openedSource.stat));
-      const revision = Number.parseInt(streamed.sha256.slice(0, 13), 16);
-      const generation = `legacy-${streamed.sha256.slice(0, 20)}`;
-      const projectionRoot = path.join(projectionsRoot, generation);
-      await fsp.rm(projectionRoot, { recursive: true, force: true });
-      await fsp.mkdir(projectionRoot, { recursive: false, mode: 0o700 });
-      const nodeBase = `memory-nodes.base-${revision}.jsonl.gz`;
-      const edgeBase = `memory-edges.base-${revision}.jsonl.gz`;
-      const deltaFile = `memory-delta.e-${revision}.jsonl`;
-      await fsp.rename(nodesPath, path.join(projectionRoot, nodeBase));
-      await fsp.rename(edgesPath, path.join(projectionRoot, edgeBase));
-      await fsp.writeFile(path.join(projectionRoot, deltaFile), '');
-      await fsyncDirectory(projectionRoot);
-      const manifest = {
+        const nodeFile = await nodes.finish();
+        throwIfAborted(signal);
+        const edgeFile = await edges.finish();
+        throwIfAborted(signal);
+        await _testHooks.beforeSourceRecheck?.({ attempt, targetRoot, stateFile: sourceFile });
+        throwIfAborted(signal);
+        await assertStableOpenedFile(openedSource);
+        throwIfAborted(signal);
+        await assertOpenedFilePathIdentity(openedSource, portableFileIdentity(openedSource.stat));
+        throwIfAborted(signal);
+        const revision = Number.parseInt(streamed.sha256.slice(0, 13), 16);
+        if (!Number.isSafeInteger(revision) || revision < 0) {
+          throw memorySourceError('invalid_memory_source', 'legacy research revision is invalid', {
+            retryable: false,
+          });
+        }
+        const generation = `legacy-${streamed.sha256.slice(0, 20)}`;
+        const projectionRoot = path.join(projectionsRoot, generation);
+        const nodeBase = `memory-nodes.base-${revision}.jsonl.gz`;
+        const edgeBase = `memory-edges.base-${revision}.jsonl.gz`;
+        const deltaFile = `memory-delta.e-${revision}.jsonl`;
+        await fsp.rename(nodesPath, path.join(attemptRoot, nodeBase));
+        throwIfAborted(signal);
+        await fsp.rename(edgesPath, path.join(attemptRoot, edgeBase));
+        throwIfAborted(signal);
+        const deltaHandle = await fsp.open(path.join(attemptRoot, deltaFile), 'wx', 0o600);
+        try {
+          await deltaHandle.sync();
+        } finally {
+          await deltaHandle.close();
+        }
+        throwIfAborted(signal);
+        const manifest = {
         formatVersion: 1,
         generation,
         baseRevision: revision,
@@ -348,48 +506,74 @@ async function projectLegacyResearchSnapshot({
         },
         ann: { indexFile: null, metaFile: null, builtFromRevision: revision },
         summary: { nodeCount, edgeCount, clusterCount: clusters.size },
-      };
-      await writeManifestAtomic(projectionRoot, manifest);
-      await fsp.rm(attemptRoot, { recursive: true, force: true }).catch(() => {});
-      return Object.freeze({
-        descriptor: Object.freeze({
-          version: 1,
-          canonicalRoot: targetRoot,
-          generation,
-          baseRevision: revision,
-          cutoffRevision: revision,
-          activeBase: manifest.activeBase,
-          activeDelta: manifest.activeDelta,
-          summary: manifest.summary,
-        }),
-        projectionRoot,
-        manifest,
-        sourceFingerprint: before,
-        evidence: Object.freeze({
-          sourceHealth: 'degraded',
-          matchOutcome: 'unknown',
-          freshness: 'unknown',
-        }),
-      });
-    } catch (error) {
-      await nodes?.cleanup?.().catch(() => {});
-      await edges?.cleanup?.().catch(() => {});
-      if (attemptRoot) {
-        await fsp.rm(attemptRoot, { recursive: true, force: true }).catch(() => {});
+        };
+        await writeManifestAtomic(attemptRoot, manifest);
+        throwIfAborted(signal);
+        await fsyncDirectory(attemptRoot);
+        throwIfAborted(signal);
+        await assertStableOpenedFile(openedSource);
+        throwIfAborted(signal);
+        await assertOpenedFilePathIdentity(openedSource, portableFileIdentity(openedSource.stat));
+        throwIfAborted(signal);
+        let publishedManifest = manifest;
+        await quota.withPhysicalGrowth(
+          0,
+          `legacy_research_publication_${crypto.randomUUID()}`,
+          async ({ checkpoint }) => {
+            throwIfAborted(signal);
+            await assertStableOpenedFile(openedSource);
+            throwIfAborted(signal);
+            await assertOpenedFilePathIdentity(
+              openedSource,
+              portableFileIdentity(openedSource.stat),
+            );
+            throwIfAborted(signal);
+            try {
+              await fsp.rename(attemptRoot, projectionRoot);
+              attemptRoot = null;
+              attemptIdentity = null;
+              await fsyncDirectory(projectionsRoot);
+            } catch (error) {
+              if (!['EEXIST', 'ENOTEMPTY'].includes(error.code)) throw error;
+              publishedManifest = await validateResearchProjectionWinner({
+                projectionRoot,
+                attemptRoot,
+                expectedManifest: manifest,
+              });
+              throwIfAborted(signal);
+              await removeOwnedProjectionAttempt(attemptRoot, attemptIdentity);
+              attemptRoot = null;
+              attemptIdentity = null;
+            }
+            await checkpoint();
+          },
+        );
+        return legacyResearchProjectionResult({
+          targetRoot,
+          projectionRoot,
+          manifest: publishedManifest,
+          sourceFingerprint: before,
+        });
+      } catch (error) {
+        await nodes?.cleanup?.().catch(() => {});
+        await edges?.cleanup?.().catch(() => {});
+        await removeOwnedProjectionAttempt(attemptRoot, attemptIdentity).catch(() => {});
+        rethrowAbort(error, signal);
+        if (error?.code === 'source_changed') {
+          lastMismatch = error;
+          continue;
+        }
+        throw error;
+      } finally {
+        await openedSource.handle.close().catch(() => {});
       }
-      rethrowAbort(error, signal);
-      if (error?.code === 'source_changed') {
-        lastMismatch = error;
-        continue;
-      }
-      throw error;
-    } finally {
-      await openedSource.handle.close().catch(() => {});
     }
+    throw lastMismatch || memorySourceError('source_changed', 'legacy snapshot changed during projection', {
+      retryable: true,
+    });
+  } finally {
+    if (ownsQuota) await quota.close();
   }
-  throw lastMismatch || memorySourceError('source_changed', 'legacy snapshot changed during projection', {
-    retryable: true,
-  });
 }
 
 module.exports = {

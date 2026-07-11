@@ -7,6 +7,7 @@ const path = require('node:path');
 const zlib = require('node:zlib');
 
 const {
+  createOperationScratchQuota,
   openMemorySource,
   projectLegacyResearchSnapshot,
 } = require('../../shared/memory-source');
@@ -178,4 +179,74 @@ test('legacy research projection retries a replaced state pathname from a new no
     edgeCount: 1,
     clusterCount: 1,
   });
+});
+
+test('32 concurrent legacy research projections reuse one immutable no-overwrite winner', async (t) => {
+  const { dir, file } = await writeFixture({ gzip: true });
+  const operationRoot = await tempDir('home23-legacy-snapshot-race-operation-');
+  const quota = await createOperationScratchQuota({
+    operationRoot,
+    maxBytes: 256 * 1024 * 1024,
+  });
+  t.after(async () => {
+    await quota.close();
+    await fsp.rm(operationRoot, { recursive: true, force: true });
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  const projected = await Promise.all(Array.from({ length: 32 }, (_, index) =>
+    projectLegacyResearchSnapshot({
+      canonicalRoot: dir,
+      stateFile: file,
+      operationRoot,
+      operationId: `op-legacy-race-${index}`,
+      requesterAgent: 'jerry',
+      scratchQuota: quota,
+    })));
+
+  assert.equal(new Set(projected.map((entry) => entry.projectionRoot)).size, 1);
+  assert.equal(new Set(projected.map((entry) => JSON.stringify(entry.manifest))).size, 1);
+  const projectionsRoot = path.join(operationRoot, 'source-projections');
+  assert.deepEqual(await fsp.readdir(projectionsRoot), [
+    path.basename(projected[0].projectionRoot),
+  ]);
+  const source = await openMemorySource(projected[0].projectionRoot);
+  try {
+    const nodes = [];
+    for await (const node of source.iterateNodes()) nodes.push(node.id);
+    assert.deepEqual(nodes, ['n1', 'n2']);
+  } finally {
+    await source.close();
+  }
+});
+
+test('abort from the final research source-recheck hook publishes no projection', async (t) => {
+  const { dir, file } = await writeFixture({ gzip: false });
+  const operationRoot = await tempDir('home23-legacy-snapshot-final-abort-');
+  const controller = new AbortController();
+  const reason = Object.assign(new Error('stop before research publication'), {
+    name: 'AbortError',
+    code: 'cancelled',
+  });
+  t.after(() => Promise.all([
+    fsp.rm(operationRoot, { recursive: true, force: true }),
+    fsp.rm(dir, { recursive: true, force: true }),
+  ]));
+
+  await assert.rejects(() => projectLegacyResearchSnapshot({
+    canonicalRoot: dir,
+    stateFile: file,
+    operationRoot,
+    operationId: 'op-legacy-final-abort',
+    requesterAgent: 'jerry',
+    signal: controller.signal,
+    _testHooks: {
+      async beforeSourceRecheck() { controller.abort(reason); },
+    },
+  }), (error) => error === reason);
+
+  assert.deepEqual(
+    await fsp.readdir(path.join(operationRoot, 'source-projections')).catch(() => []),
+    [],
+  );
 });
