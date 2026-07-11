@@ -73,8 +73,8 @@ export class ActivityLease {
     }
     const previous = this.lastSequence.get(activity.operationId) ?? 0;
     if (activity.sequence <= previous) return false;
-    this.lastSequence.set(activity.operationId, activity.sequence);
     this.armInactivity();
+    this.lastSequence.set(activity.operationId, activity.sequence);
     return true;
   }
 
@@ -88,12 +88,22 @@ export class ActivityLease {
   }
 
   private armInactivity(): void {
-    if (this.inactivityTimer !== undefined) this.options.clearTimeout(this.inactivityTimer);
-    this._activityDeadlineMs = this.options.now() + this.options.inactivityMs;
-    this.inactivityTimer = this.options.setTimeout(
+    const nextDeadlineMs = this.options.now() + this.options.inactivityMs;
+    const nextTimer = this.options.setTimeout(
       () => this.expire('inactivity_timeout'),
       this.options.inactivityMs,
     );
+    const previousTimer = this.inactivityTimer;
+    if (previousTimer !== undefined) {
+      try {
+        this.options.clearTimeout(previousTimer);
+      } catch (error) {
+        try { this.options.clearTimeout(nextTimer); } catch { /* preserve clear error */ }
+        throw error;
+      }
+    }
+    this.inactivityTimer = nextTimer;
+    this._activityDeadlineMs = nextDeadlineMs;
   }
 
   private expire(reason: LeaseExpiryReason): void {

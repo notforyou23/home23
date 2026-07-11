@@ -568,6 +568,119 @@ test('a hard deadline cannot be downgraded by a later operator stop', async () =
   }
 });
 
+test('hard cancellation aborts pending context assembly with the exact turn reason', async () => {
+  const root = join(tmpdir(), `chat-turn-context-signal-${process.pid}-${Math.random()}`);
+  const { agent } = makeAgent(root);
+  const clock = installManualClock(agent);
+  const originalFetch = globalThis.fetch;
+  const searchStarted = deferred<void>();
+  let searchSignal: AbortSignal | null = null;
+  let rejectSearch: ((reason?: unknown) => void) | null = null;
+  let response: Promise<unknown> | null = null;
+
+  try {
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (!url.includes('/api/memory/search')) {
+        throw new Error(`unexpected fetch after pending context assembly: ${url}`);
+      }
+      searchSignal = init?.signal as AbortSignal;
+      searchStarted.resolve();
+      return await new Promise<Response>((_resolve, reject) => {
+        rejectSearch = reject;
+        const rejectForAbort = (): void => reject(searchSignal!.reason);
+        if (searchSignal.aborted) rejectForAbort();
+        else searchSignal.addEventListener('abort', rejectForAbort, { once: true });
+      });
+    }) as typeof fetch;
+
+    const started = await agent.runWithTurn('context-signal-chat', 'hello', {
+      inactivityMs: 100,
+      hardDurationMs: 30,
+      firstTokenTimeoutMs: 1_000,
+    });
+    response = started.response;
+    response.catch(() => {});
+    await searchStarted.promise;
+
+    const controller = (agent as any).activeRuns
+      .get('context-signal-chat')?.get(started.turnId) as AbortController | undefined;
+    assert.ok(controller);
+    clock.advance(30);
+    await flushMicrotasks();
+
+    assert.equal(searchSignal!.aborted, true,
+      'the context search must observe the hard cancellation without waiting 20 seconds');
+    assert.equal(searchSignal!.reason, controller.signal.reason);
+    await assert.rejects(response, error => error === controller.signal.reason);
+  } finally {
+    rejectSearch?.(new Error('test cleanup'));
+    if (response) await response.catch(() => {});
+    globalThis.fetch = originalFetch;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('hard cancellation reaches the COSMO active-run probe with the exact turn reason', async () => {
+  const root = join(tmpdir(), `chat-turn-active-probe-signal-${process.pid}-${Math.random()}`);
+  const { agent } = makeAgent(root);
+  const clock = installManualClock(agent);
+  const originalFetch = globalThis.fetch;
+  const probeStarted = deferred<void>();
+  let probeSignal: AbortSignal | null = null;
+  let rejectProbe: ((reason?: unknown) => void) | null = null;
+  let response: Promise<unknown> | null = null;
+
+  try {
+    (agent as any).registry.get = (name: string) => name === 'research_launch' ? {} : undefined;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/api/memory/search')) {
+        return new Response(JSON.stringify({ results: [] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (!url.endsWith('/api/status')) {
+        throw new Error(`unexpected fetch after pending active-run probe: ${url}`);
+      }
+      probeSignal = init?.signal as AbortSignal;
+      probeStarted.resolve();
+      return await new Promise<Response>((_resolve, reject) => {
+        rejectProbe = reject;
+        const rejectForAbort = (): void => reject(probeSignal!.reason);
+        if (probeSignal.aborted) rejectForAbort();
+        else probeSignal.addEventListener('abort', rejectForAbort, { once: true });
+      });
+    }) as typeof fetch;
+
+    const started = await agent.runWithTurn('active-probe-signal-chat', 'hello', {
+      inactivityMs: 100,
+      hardDurationMs: 30,
+      firstTokenTimeoutMs: 1_000,
+    });
+    response = started.response;
+    response.catch(() => {});
+    await probeStarted.promise;
+
+    const controller = (agent as any).activeRuns
+      .get('active-probe-signal-chat')?.get(started.turnId) as AbortController | undefined;
+    assert.ok(controller);
+    clock.advance(30);
+    await flushMicrotasks();
+
+    assert.equal(probeSignal!.aborted, true,
+      'the active-run probe must observe the hard cancellation without waiting three seconds');
+    assert.equal(probeSignal!.reason, controller.signal.reason);
+    await assert.rejects(response, error => error === controller.signal.reason);
+  } finally {
+    rejectProbe?.(new Error('test cleanup'));
+    if (response) await response.catch(() => {});
+    globalThis.fetch = originalFetch;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('OpenAI transport receives the exact turn cancellation signal', async () => {
   const root = join(tmpdir(), `chat-turn-provider-signal-${process.pid}-${Math.random()}`);
   const { agent } = makeAgent(root);

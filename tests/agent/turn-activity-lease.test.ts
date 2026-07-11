@@ -163,6 +163,40 @@ test('start rolls back inactivity state when hard timer scheduling fails', () =>
   assert.deepEqual(expirations, ['inactivity_timeout']);
 });
 
+test('renewal scheduling failure preserves the prior timer and does not consume sequence', () => {
+  const clock = new ManualClock();
+  const expirations: string[] = [];
+  let scheduleCalls = 0;
+  const lease = new ActivityLease({
+    inactivityMs: 10,
+    hardDurationMs: 30,
+    now: clock.now,
+    setTimeout: (fn, ms) => {
+      scheduleCalls += 1;
+      if (scheduleCalls === 3) throw new Error('replacement timer rejected');
+      return clock.setTimeout(fn, ms);
+    },
+    clearTimeout: clock.clearTimeout,
+    onExpire: reason => expirations.push(reason),
+  });
+  lease.start();
+  const originalDeadline = lease.activityDeadlineMs;
+  clock.advance(5);
+
+  assert.throws(
+    () => lease.observe({ operationId: 'op-retry', sequence: 1 }),
+    /replacement timer rejected/,
+  );
+  assert.equal(lease.activityDeadlineMs, originalDeadline);
+  assert.equal(clock.tasks.size, 2, 'the original inactivity and hard timers must remain armed');
+
+  assert.equal(lease.observe({ operationId: 'op-retry', sequence: 1 }), true,
+    'the failed renewal must not consume the activity sequence');
+  assert.equal(lease.activityDeadlineMs, 15);
+  clock.advance(10);
+  assert.deepEqual(expirations, ['inactivity_timeout']);
+});
+
 test('an overdue immutable hard deadline wins when timer delivery is delayed', () => {
   const clock = new ManualClock();
   const expirations: string[] = [];

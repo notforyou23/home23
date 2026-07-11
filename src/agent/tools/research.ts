@@ -248,10 +248,13 @@ function exactInclude(value: unknown): string[] {
 export async function checkCosmoActiveRun(
   ctx?: ToolContext,
 ): Promise<{ runName: string; topic: string; startedAt: string; processCount: number | null } | null> {
+  const callerSignal = ctx?.turnRuntime?.signal ?? ctx?.abortSignal;
   if (!ctx?.turnRuntime) return null;
   try {
+    callerSignal?.throwIfAborted();
     const turn = ctx.turnRuntime;
     const operations = await turn.brainOperations.listNonterminal(turn.signal);
+    callerSignal?.throwIfAborted();
     const active = operations
       .filter((operation) => ['queued', 'running'].includes(operation.state)
         && ['research_launch', 'research_continue', 'research_stop'].includes(operation.operationType))
@@ -267,6 +270,7 @@ export async function checkCosmoActiveRun(
       processCount: null,
     };
   } catch {
+    if (callerSignal?.aborted) callerSignal.throwIfAborted();
     return null;
   }
 }

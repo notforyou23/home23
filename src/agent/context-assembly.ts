@@ -269,6 +269,7 @@ export async function assembleContext(
   recentTurns: Array<{ role: string; content: string }>,
   config: AssemblyConfig,
   ledger?: EventLedger,
+  signal?: AbortSignal,
 ): Promise<AssemblyResult> {
   const events: EventEnvelope[] = [];
   const isFirstTurn = recentTurns.length === 0;
@@ -299,10 +300,12 @@ export async function assembleContext(
       .join(' ');
     searchQuery = `${userText} ${contextSnippet}`.trim().slice(0, 500);
 
+    config.signal.throwIfAborted();
     const retrieval = await config.brainOperations.search(
       { query: searchQuery, topK: BRAIN_SEARCH_LIMIT },
       config.signal,
     );
+    config.signal.throwIfAborted();
     brainCues = Array.isArray(retrieval.results)
       ? retrieval.results as BrainSearchResult[]
       : [];
@@ -317,6 +320,7 @@ export async function assembleContext(
       : 'unknown';
     degraded = sourceHealth !== 'healthy';
   } catch (err) {
+    if (config.signal.aborted) config.signal.throwIfAborted();
     degraded = true;
     sourceHealth = 'unavailable';
     matchOutcome = 'unknown';

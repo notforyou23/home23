@@ -1123,6 +1123,7 @@ export class AgentLoop {
             triggerIndex: this.triggerIndex,
           },
           this.eventLedger,
+          ac.signal,
         );
 
         if (assembly.block) {
@@ -1140,6 +1141,7 @@ export class AgentLoop {
           console.log(`[agent] Situational awareness: ${assembly.brainCueCount} brain cues, ${assembly.surfacesLoaded.length} surfaces (${assembly.surfacesLoaded.join(', ')})`);
         }
       } catch (err) {
+        if (ac.signal.aborted) ac.signal.throwIfAborted();
         // Never block on assembly failure — proceed with static identity only
         console.warn('[agent] Context assembly failed, proceeding without situational awareness:', err instanceof Error ? err.message : err);
       }
@@ -1160,6 +1162,7 @@ A research run is currently in flight — do not launch another.
 Use research_watch_run to check progress. Use research_stop to cancel. You can still query completed brains while this runs.`;
           }
         } catch {
+          if (ac.signal.aborted) ac.signal.throwIfAborted();
           // Never block on situational awareness failure
         }
       }
