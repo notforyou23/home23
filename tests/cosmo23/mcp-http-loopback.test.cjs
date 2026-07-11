@@ -130,6 +130,33 @@ test('COSMO MCP HTTP server rejects non-loopback hosts before listen', () => {
   }
 });
 
+test('COSMO MCP HTTP defaults an omitted host to IPv4 loopback', async (t) => {
+  const originalHost = process.env.MCP_HTTP_HOST;
+  delete process.env.MCP_HTTP_HOST;
+  t.after(() => {
+    if (originalHost === undefined) delete process.env.MCP_HTTP_HOST;
+    else process.env.MCP_HTTP_HOST = originalHost;
+  });
+  const server = startMcpHttpServer({
+    port: 0,
+    log: false,
+    memoryTools: {
+      async checkReadiness() {
+        return {
+          ok: true,
+          protocolVersion: '2025-03-26',
+          sourceHealth: 'healthy',
+          revision: 11,
+        };
+      },
+    },
+  });
+  await once(server, 'listening');
+  t.after(() => closeServer(server));
+  assert.equal(server.address().address, '127.0.0.1');
+  assert.equal(server.address().family, 'IPv4');
+});
+
 test('COSMO MCP HTTP rejects an oversized control message before tool dispatch', async () => {
   const server = startMcpHttpServer({
     port: 0,
