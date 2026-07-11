@@ -63,7 +63,21 @@ function sourcePin({ nodeCount = 12 } = {}) {
       }
     },
     getEvidence(extra) {
-      return { sourceHealth: 'healthy', deltaWatermark: { revision: 5 }, ...extra };
+      const returnedTotals = extra.returnedTotals || { nodes: 0, edges: 0 };
+      const completeCoverage = extra.completeCoverage === true;
+      return {
+        sourceHealth: 'healthy',
+        deltaWatermark: { revision: 5 },
+        authoritativeTotals: { nodes: nodes.length, edges: edgeCount },
+        returnedTotals,
+        completeCoverage,
+        filteredTotal: extra.filteredTotal || 0,
+        matchOutcome: returnedTotals.nodes > 0
+          ? 'matches'
+          : completeCoverage && nodes.length === 0 ? 'corpus_empty'
+            : completeCoverage ? 'no_match' : 'unknown',
+        ...extra,
+      };
     },
     async release() { releases += 1; },
     releaseCount() { return releases; },
@@ -252,6 +266,62 @@ test('pinned PGS keeps provider roles exact and returns machine-readable durable
   assert.equal(receipt.result.answer, 'final pinned synthesis');
 });
 
+test('pinned PGS derives complete source evidence from the opened projection store', async t => {
+  const scratch = await scratchFixture(t);
+  const pin = sourcePin({ nodeCount: 1 });
+  const fixture = makeEngine();
+  const evidenceCalls = [];
+  let storeOpened = false;
+  pin.getEvidence = (extra) => {
+    assert.equal(storeOpened, true, 'source evidence must be derived after the store opens');
+    evidenceCalls.push(structuredClone(extra));
+    return {
+      sourceHealth: 'healthy',
+      matchOutcome: extra.returnedTotals.nodes > 0 ? 'matches' : 'corpus_empty',
+      deltaWatermark: { revision: 5 },
+      ...extra,
+    };
+  };
+  fixture.engine.openPinnedPGSStore = async () => {
+    storeOpened = true;
+    return singleWorkStore();
+  };
+
+  const envelope = await fixture.engine.runPinnedOperation(options(pin, scratch));
+
+  assert.deepEqual(evidenceCalls, [{
+    route: 'pinned-pgs',
+    returnedTotals: { nodes: 1, edges: 0 },
+    completeCoverage: true,
+  }]);
+  assert.deepEqual(envelope.result.sourceEvidence.returnedTotals, { nodes: 1, edges: 0 });
+  assert.equal(envelope.result.sourceEvidence.completeCoverage, true);
+  assert.equal(envelope.result.sourceEvidence.matchOutcome, 'matches');
+  assert.equal(envelope.sourceEvidence, envelope.result.sourceEvidence);
+});
+
+test('pinned PGS rejects non-integer projection totals before evidence or provider work', async t => {
+  const scratch = await scratchFixture(t);
+  const pin = sourcePin({ nodeCount: 1 });
+  const fixture = makeEngine();
+  let evidenceCalls = 0;
+  let closes = 0;
+  pin.getEvidence = () => { evidenceCalls += 1; };
+  fixture.engine.openPinnedPGSStore = async () => ({
+    ...singleWorkStore(),
+    stats: { nodeCount: '1', edgeCount: 0, workUnitCount: 1 },
+    close() { closes += 1; },
+  });
+
+  await assert.rejects(
+    fixture.engine.runPinnedOperation(options(pin, scratch)),
+    { code: 'pgs_projection_invalid', retryable: false },
+  );
+  assert.equal(evidenceCalls, 0);
+  assert.equal(fixture.calls.length, 0);
+  assert.equal(closes, 1);
+});
+
 test('pinned PGS enforces lowered sweep and synthesis byte ceilings inside provider adapters', async t => {
   const exactSweepBytes = 128;
   const exactSynthesisBytes = 192;
@@ -381,6 +451,9 @@ test('empty pinned source fails honestly without provider work', async t => {
   assert.deepEqual(envelope.result.metadata.pgs.sourceTotals, {
     nodes: 0, edges: 0, workUnits: 0,
   });
+  assert.deepEqual(envelope.sourceEvidence.returnedTotals, { nodes: 0, edges: 0 });
+  assert.equal(envelope.sourceEvidence.completeCoverage, true);
+  assert.equal(envelope.sourceEvidence.matchOutcome, 'corpus_empty');
   assert.equal(fixture.calls.length, 0);
   assert.equal(pin.releaseCount(), 0);
 });

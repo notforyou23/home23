@@ -248,7 +248,12 @@ async function projectPinnedQuery({
     : sourcePin.descriptor?.summary || null;
   throwIfAborted(signal);
   const evidence = typeof sourcePin.getEvidence === 'function'
-    ? sourcePin.getEvidence({ operation: 'query_projection' })
+    ? sourcePin.getEvidence({
+      operation: 'query_projection',
+      returnedTotals: { nodes: nodes.length, edges: edges.length },
+      completeCoverage: true,
+      filteredTotal: 0,
+    })
     : sourcePin.evidence || null;
   const sourceRevision = sourcePin.revision
     ?? sourcePin.descriptor?.cutoffRevision

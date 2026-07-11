@@ -296,12 +296,10 @@ async function runPinnedOperation(engine, options = {}) {
   const emit = event => {
     if (typeof reportEvent === 'function') reportEvent(Object.freeze(event));
   };
-  const sourceEvidence = typeof sourcePin.getEvidence === 'function'
-    ? sourcePin.getEvidence({ route: 'pinned-pgs' })
-    : sourcePin.evidence || null;
   const receiptBoundary = await captureOperationScratchBoundary(scratchDir, scratchQuota);
   let receiptDirectory;
   let store;
+  let sourceEvidence;
   try {
     receiptDirectory = await ensureExactScratchChild(
       receiptBoundary,
@@ -313,8 +311,27 @@ async function runPinnedOperation(engine, options = {}) {
       sourcePin, scratchDir, scratchQuota, pgsSweep: sweepPair, signal, limits,
       statfsImpl: options.statfsImpl, clock: engine.operationClock,
     });
+    const returnedTotals = {
+      nodes: store.stats?.nodeCount,
+      edges: store.stats?.edgeCount,
+    };
+    if (!Number.isSafeInteger(returnedTotals.nodes) || returnedTotals.nodes < 0
+        || !Number.isSafeInteger(returnedTotals.edges) || returnedTotals.edges < 0) {
+      throw typed('pgs_projection_invalid', 'PGS projection source totals are invalid');
+    }
+    sourceEvidence = typeof sourcePin.getEvidence === 'function'
+      ? sourcePin.getEvidence({
+        route: 'pinned-pgs',
+        returnedTotals,
+        completeCoverage: true,
+      })
+      : sourcePin.evidence || null;
   } catch (error) {
-    closeScratchBoundary(receiptBoundary);
+    try {
+      store?.close();
+    } finally {
+      closeScratchBoundary(receiptBoundary);
+    }
     throw error;
   }
   const validateCompletion = engine.requireCompleteProviderResult || requireCompleteProviderResult;

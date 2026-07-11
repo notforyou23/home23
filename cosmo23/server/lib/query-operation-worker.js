@@ -208,14 +208,233 @@ function validateContext(context) {
   return context;
 }
 
-function canonicalEvidence(context) {
-  return context.sourcePin.getEvidence({
-    selectedAgent: context.target.ownerAgent ?? null,
-    selectedBrain: context.target.brainId,
-    route: typeof context.target.route === 'string' && context.target.route
-      ? context.target.route
-      : 'brain-operation-worker',
-  });
+function invalidWorkerResult(message) {
+  return typed('worker_result_invalid', message);
+}
+
+function assertWorkerDataObject(value, label) {
+  try {
+    return assertDataObject(value, label);
+  } catch {
+    throw invalidWorkerResult(`${label} is invalid`);
+  }
+}
+
+function exactEvidenceTotals(value, label) {
+  assertWorkerDataObject(value, label);
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  if (Reflect.ownKeys(descriptors).length !== 2
+      || !Object.hasOwn(descriptors, 'nodes') || !Object.hasOwn(descriptors, 'edges')) {
+    throw invalidWorkerResult(`${label} must contain exact node and edge totals`);
+  }
+  const nodes = descriptors.nodes.value;
+  const edges = descriptors.edges.value;
+  if (!Number.isSafeInteger(nodes) || nodes < 0
+      || !Number.isSafeInteger(edges) || edges < 0) {
+    throw invalidWorkerResult(`${label} must contain safe nonnegative integers`);
+  }
+  return Object.freeze({ nodes, edges });
+}
+
+function retrievalFacts(evidence, label) {
+  assertWorkerDataObject(evidence, label);
+  const descriptors = Object.getOwnPropertyDescriptors(evidence);
+  if (!Object.hasOwn(descriptors, 'returnedTotals')
+      || !Object.hasOwn(descriptors, 'completeCoverage')
+      || !Object.hasOwn(descriptors, 'filteredTotal')) {
+    throw invalidWorkerResult(`${label} is missing retrieval facts`);
+  }
+  const returnedTotals = exactEvidenceTotals(
+    descriptors.returnedTotals.value,
+    `${label}.returnedTotals`,
+  );
+  const completeCoverage = descriptors.completeCoverage.value;
+  const filteredTotal = descriptors.filteredTotal.value;
+  if (typeof completeCoverage !== 'boolean'
+      || !Number.isSafeInteger(filteredTotal) || filteredTotal < 0) {
+    throw invalidWorkerResult(`${label} contains invalid retrieval facts`);
+  }
+  return Object.freeze({ returnedTotals, completeCoverage, filteredTotal });
+}
+
+function sameRetrievalFacts(left, right) {
+  return left.completeCoverage === right.completeCoverage
+    && left.filteredTotal === right.filteredTotal
+    && left.returnedTotals.nodes === right.returnedTotals.nodes
+    && left.returnedTotals.edges === right.returnedTotals.edges;
+}
+
+function evidenceCandidates(raw) {
+  const candidates = [];
+  const terminal = Object.hasOwn(raw, 'state');
+  let result = raw;
+  if (terminal) {
+    result = Object.hasOwn(raw, 'result') ? raw.result : null;
+    if (Object.hasOwn(raw, 'sourceEvidence') && raw.sourceEvidence !== null) {
+      candidates.push({ value: raw.sourceEvidence, label: 'query executor sourceEvidence' });
+    }
+    if (result !== null) {
+      assertWorkerDataObject(result, 'query executor result.result');
+      if (Object.hasOwn(result, 'sourceEvidence') && result.sourceEvidence !== null) {
+        candidates.push({
+          value: result.sourceEvidence,
+          label: 'query executor result.sourceEvidence',
+        });
+      }
+    }
+  } else if (Object.hasOwn(raw, 'sourceEvidence') && raw.sourceEvidence !== null) {
+    candidates.push({ value: raw.sourceEvidence, label: 'query result sourceEvidence' });
+  }
+  const requiresEvidence = !terminal || raw.state !== 'failed' || result !== null;
+  if (requiresEvidence && candidates.length === 0) {
+    throw invalidWorkerResult('Query executor omitted source evidence');
+  }
+  return candidates;
+}
+
+function expectedMatchOutcome(evidence, facts, authoritativeTotals) {
+  if (facts.returnedTotals.nodes > 0) return 'matches';
+  if (evidence.sourceHealth !== 'healthy' || !facts.completeCoverage) return 'unknown';
+  if (authoritativeTotals.nodes === 0) return 'corpus_empty';
+  if (facts.filteredTotal > 0) return 'filtered';
+  return 'no_match';
+}
+
+function canonicalEvidence(context, facts) {
+  const route = typeof context.target.route === 'string' && context.target.route
+    ? context.target.route
+    : 'brain-operation-worker';
+  const selectedAgent = context.target.ownerAgent ?? null;
+  const selectedBrain = context.target.brainId;
+  let evidence;
+  try {
+    evidence = context.sourcePin.getEvidence({
+      selectedAgent,
+      selectedBrain,
+      route,
+      returnedTotals: facts.returnedTotals,
+      completeCoverage: facts.completeCoverage,
+      filteredTotal: facts.filteredTotal,
+    });
+  } catch {
+    throw invalidWorkerResult('Pinned source returned invalid evidence');
+  }
+  assertWorkerDataObject(evidence, 'canonical source evidence');
+  const canonicalFacts = retrievalFacts(evidence, 'canonical source evidence');
+  const authoritativeTotals = exactEvidenceTotals(
+    evidence.authoritativeTotals,
+    'canonical source evidence.authoritativeTotals',
+  );
+  if (!['healthy', 'degraded', 'unavailable'].includes(evidence.sourceHealth)
+      || !['known', 'unknown'].includes(evidence.freshness)
+      || !sameRetrievalFacts(facts, canonicalFacts)
+      || canonicalFacts.returnedTotals.nodes > authoritativeTotals.nodes
+      || canonicalFacts.returnedTotals.edges > authoritativeTotals.edges
+      || canonicalFacts.filteredTotal > authoritativeTotals.nodes
+      || evidence.selectedAgent !== selectedAgent
+      || evidence.selectedBrain !== selectedBrain
+      || evidence.route !== route
+      || evidence.matchOutcome !== expectedMatchOutcome(
+        evidence,
+        canonicalFacts,
+        authoritativeTotals,
+      )) {
+    throw invalidWorkerResult('Canonical source evidence is inconsistent');
+  }
+  return evidence;
+}
+
+function assertOptionalCanonicalValue(child, canonical, key, { nullAllowed = false } = {}) {
+  if (!Object.hasOwn(child, key)) return;
+  const value = child[key];
+  if (nullAllowed && value === null) return;
+  if (value !== canonical[key]) {
+    throw invalidWorkerResult(`Child source evidence ${key} is inconsistent`);
+  }
+}
+
+function assertOptionalWatermark(child, canonical, key, fields) {
+  if (!Object.hasOwn(child, key)) return;
+  const childWatermark = assertWorkerDataObject(child[key], `child source evidence.${key}`);
+  const canonicalWatermark = assertWorkerDataObject(
+    canonical[key],
+    `canonical source evidence.${key}`,
+  );
+  for (const field of fields) {
+    if (Object.hasOwn(childWatermark, field)
+        && childWatermark[field] !== canonicalWatermark[field]) {
+      throw invalidWorkerResult(`Child source evidence ${key}.${field} is inconsistent`);
+    }
+  }
+}
+
+function validateChildEvidence(child, canonical, facts, label) {
+  assertWorkerDataObject(child, label);
+  const childFacts = retrievalFacts(child, label);
+  if (!sameRetrievalFacts(childFacts, facts)) {
+    throw invalidWorkerResult('Child source evidence retrieval facts disagree');
+  }
+  if (Object.hasOwn(child, 'authoritativeTotals')) {
+    const childAuthority = exactEvidenceTotals(
+      child.authoritativeTotals,
+      `${label}.authoritativeTotals`,
+    );
+    const canonicalAuthority = exactEvidenceTotals(
+      canonical.authoritativeTotals,
+      'canonical source evidence.authoritativeTotals',
+    );
+    if (childAuthority.nodes !== canonicalAuthority.nodes
+        || childAuthority.edges !== canonicalAuthority.edges) {
+      throw invalidWorkerResult('Child source evidence authority is inconsistent');
+    }
+  }
+  for (const key of ['sourceHealth', 'freshness', 'matchOutcome']) {
+    assertOptionalCanonicalValue(child, canonical, key);
+  }
+  for (const key of ['selectedAgent', 'selectedBrain']) {
+    assertOptionalCanonicalValue(child, canonical, key, { nullAllowed: true });
+  }
+  assertOptionalWatermark(child, canonical, 'baseWatermark', ['revision', 'file']);
+  assertOptionalWatermark(child, canonical, 'deltaWatermark', ['revision', 'epoch', 'appliedRecords']);
+  assertOptionalWatermark(child, canonical, 'indexWatermark', ['builtFromRevision', 'fresh']);
+  if (Object.hasOwn(child, 'identity') && child.identity !== null) {
+    const childIdentity = assertWorkerDataObject(child.identity, `${label}.identity`);
+    const canonicalIdentity = assertWorkerDataObject(
+      canonical.identity,
+      'canonical source evidence.identity',
+    );
+    for (const key of [
+      'requesterAgent', 'targetAgent', 'brainId', 'canonicalRoot', 'catalogRevision',
+      'kind', 'sourceType', 'accessMode', 'operationId',
+    ]) {
+      if (Object.hasOwn(childIdentity, key) && childIdentity[key] !== null
+          && childIdentity[key] !== canonicalIdentity[key]) {
+        throw invalidWorkerResult(`Child source evidence identity.${key} is inconsistent`);
+      }
+    }
+  }
+}
+
+function reconcileEvidence(context, raw) {
+  assertWorkerDataObject(raw, 'query executor result');
+  const candidates = evidenceCandidates(raw);
+  const facts = candidates.length > 0
+    ? retrievalFacts(candidates[0].value, candidates[0].label)
+    : Object.freeze({
+      returnedTotals: Object.freeze({ nodes: 0, edges: 0 }),
+      completeCoverage: false,
+      filteredTotal: 0,
+    });
+  for (const candidate of candidates.slice(1)) {
+    if (!sameRetrievalFacts(facts, retrievalFacts(candidate.value, candidate.label))) {
+      throw invalidWorkerResult('Child source evidence retrieval facts disagree');
+    }
+  }
+  const evidence = canonicalEvidence(context, facts);
+  for (const candidate of candidates) {
+    validateChildEvidence(candidate.value, evidence, facts, candidate.label);
+  }
+  return evidence;
 }
 
 function attachEvidence(result, evidence) {
@@ -303,7 +522,7 @@ function createQueryOperationExecutor({ queryEngine } = {}) {
     try {
       const rawResult = await queryEngine.executeEnhancedQuery(parameters.query, options);
       throwIfAborted(context.signal);
-      const evidence = canonicalEvidence(context);
+      const evidence = reconcileEvidence(context, rawResult);
       throwIfAborted(context.signal);
       return normalizeEnvelope(rawResult, evidence);
     } catch (error) {

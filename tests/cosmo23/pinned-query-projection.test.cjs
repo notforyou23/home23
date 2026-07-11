@@ -83,6 +83,11 @@ test('large direct query scans portable iterators once and retains bounded recor
   assert.equal(sourcePin.stats().recordsConsumed, 150_000);
   assert.equal(projection.sourceRevision, 7);
   assert.equal(projection.sourceEvidence.operation, 'query_projection');
+  assert.deepEqual(projection.sourceEvidence.returnedTotals, {
+    nodes: projection.nodes.length,
+    edges: projection.edges.length,
+  });
+  assert.equal(projection.sourceEvidence.completeCoverage, true);
   assert.equal(projection.nodes.some(node => String(node.content).includes('bounded canary')), true);
 });
 

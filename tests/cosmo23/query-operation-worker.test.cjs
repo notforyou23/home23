@@ -15,16 +15,49 @@ function createSourcePin() {
     evidenceCalls,
     getEvidence(extra) {
       evidenceCalls.push(extra);
+      const returnedTotals = extra.returnedTotals || { nodes: 0, edges: 0 };
+      const completeCoverage = extra.completeCoverage === true;
       return Object.freeze({
         sourceHealth: 'healthy',
+        freshness: 'known',
         baseWatermark: { revision: 16 },
         deltaWatermark: { revision: 17 },
         indexWatermark: { builtFromRevision: 17 },
+        authoritativeTotals: { nodes: 20, edges: 19 },
+        returnedTotals,
+        completeCoverage,
+        filteredTotal: extra.filteredTotal || 0,
+        matchOutcome: returnedTotals.nodes > 0
+          ? 'matches'
+          : completeCoverage ? 'no_match' : 'unknown',
         ...extra,
       });
     },
     async release() { releases += 1; },
     releaseCount() { return releases; },
+  };
+}
+
+function childEvidence(overrides = {}) {
+  const returnedTotals = overrides.returnedTotals || { nodes: 2, edges: 1 };
+  const completeCoverage = overrides.completeCoverage ?? true;
+  return {
+    selectedAgent: null,
+    selectedBrain: null,
+    route: 'engine-internal',
+    sourceHealth: 'healthy',
+    freshness: 'known',
+    baseWatermark: { revision: 16 },
+    deltaWatermark: { revision: 17 },
+    indexWatermark: { builtFromRevision: 17 },
+    authoritativeTotals: { nodes: 20, edges: 19 },
+    returnedTotals,
+    completeCoverage,
+    filteredTotal: overrides.filteredTotal || 0,
+    matchOutcome: returnedTotals.nodes > 0
+      ? 'matches'
+      : completeCoverage ? 'no_match' : 'unknown',
+    ...overrides,
   };
 }
 
@@ -98,7 +131,7 @@ function createHarness(handler) {
       return handler ? handler(query, options, calls.length) : {
         answer: 'Pinned answer',
         metadata: { provider: options.provider, model: options.model },
-        sourceEvidence: { route: 'engine-internal' },
+        sourceEvidence: childEvidence(),
         resultArtifact: null,
       };
     },
@@ -153,15 +186,25 @@ test('direct Query forwards only the trusted projection and returns a canonical 
     selectedAgent: 'jerry',
     selectedBrain: 'brain-jerry',
     route: 'resident:jerry',
+    returnedTotals: { nodes: 2, edges: 1 },
+    completeCoverage: true,
+    filteredTotal: 0,
   }]);
+  assert.deepEqual(envelope.sourceEvidence.returnedTotals, { nodes: 2, edges: 1 });
+  assert.equal(envelope.sourceEvidence.matchOutcome, 'matches');
   assert.equal(context.sourcePin.releaseCount(), 0);
 });
 
 test('operationType alone selects Query versus PGS and legacy routing fields are rejected', async () => {
   const harness = createHarness((_query, options) => ({
     state: 'complete',
-    result: { answer: options.enablePGS ? 'pgs' : 'query', sweepOutputs: [] },
+    result: {
+      answer: options.enablePGS ? 'pgs' : 'query',
+      sweepOutputs: [],
+      sourceEvidence: childEvidence(),
+    },
     error: null,
+    sourceEvidence: childEvidence(),
     resultArtifact: null,
   }));
 
@@ -204,10 +247,12 @@ test('PGS forwards exact independent pairs and preserves machine-readable sweep 
           selectedWorkUnits: selected,
           pendingWorkUnits: pendingUnits.length - selected,
         } },
+        sourceEvidence: childEvidence(),
       },
       error: selected === pendingUnits.length ? null : {
         code: 'provider_incomplete', message: 'truncated', retryable: true,
       },
+      sourceEvidence: childEvidence(),
       resultArtifact: null,
     };
   });
@@ -270,13 +315,13 @@ test('complete, partial, and failed child envelopes keep their terminal data', a
         selectedWorkUnits: 2,
         pendingWorkUnits: terminal.state === 'complete' ? 0 : 1,
       } },
-      sourceEvidence: { route: 'child' },
+      sourceEvidence: childEvidence({ route: 'child' }),
     };
     const harness = createHarness(() => ({
       state: terminal.state,
       result,
       error: terminal.error,
-      sourceEvidence: { route: 'child-top' },
+      sourceEvidence: childEvidence({ route: 'child-top' }),
       resultArtifact: null,
     }));
     const envelope = await harness.executor(operationContext('pgs', pgsParameters({
@@ -289,6 +334,128 @@ test('complete, partial, and failed child envelopes keep their terminal data', a
     assert.equal(envelope.result.sourceEvidence, envelope.sourceEvidence);
     assert.equal(envelope.resultArtifact, null);
   }
+});
+
+test('retrieval facts are re-bound to canonical source identity and authority', async () => {
+  const harness = createHarness(() => ({
+    answer: 'Evidence-backed answer',
+    sourceEvidence: childEvidence({
+      route: 'engine-internal-forged-route',
+      returnedTotals: { nodes: 1, edges: 0 },
+    }),
+    resultArtifact: null,
+  }));
+  const context = operationContext('query', queryParameters());
+
+  const envelope = await harness.executor(context);
+
+  assert.equal(envelope.sourceEvidence.selectedAgent, 'jerry');
+  assert.equal(envelope.sourceEvidence.selectedBrain, 'brain-jerry');
+  assert.equal(envelope.sourceEvidence.route, 'resident:jerry');
+  assert.deepEqual(envelope.sourceEvidence.authoritativeTotals, { nodes: 20, edges: 19 });
+  assert.deepEqual(envelope.sourceEvidence.returnedTotals, { nodes: 1, edges: 0 });
+  assert.equal(envelope.sourceEvidence.matchOutcome, 'matches');
+});
+
+test('forged canonical assertions and malformed retrieval totals fail closed', async () => {
+  const missingReturnedTotals = childEvidence();
+  delete missingReturnedTotals.returnedTotals;
+  const missingCoverage = childEvidence();
+  delete missingCoverage.completeCoverage;
+  const extraReturnedTotal = childEvidence({
+    returnedTotals: { nodes: 1, edges: 0, clusters: 1 },
+  });
+  for (const sourceEvidence of [
+    childEvidence({ selectedBrain: 'forged-brain' }),
+    childEvidence({ authoritativeTotals: { nodes: 999, edges: 19 } }),
+    childEvidence({ matchOutcome: 'no_match' }),
+    childEvidence({ sourceHealth: 'degraded' }),
+    childEvidence({ freshness: 'unknown' }),
+    childEvidence({ deltaWatermark: { revision: 999 } }),
+    childEvidence({ identity: { brainId: 'forged-brain' } }),
+    childEvidence({ returnedTotals: { nodes: '1', edges: 0 } }),
+    childEvidence({ returnedTotals: { nodes: 1.5, edges: 0 } }),
+    childEvidence({ returnedTotals: { nodes: -1, edges: 0 } }),
+    childEvidence({ returnedTotals: { nodes: 21, edges: 0 } }),
+    childEvidence({ returnedTotals: { nodes: 1, edges: 20 } }),
+    childEvidence({ completeCoverage: 'true' }),
+    childEvidence({ filteredTotal: -1 }),
+    childEvidence({ filteredTotal: 1.5 }),
+    childEvidence({ filteredTotal: 21 }),
+    missingReturnedTotals,
+    missingCoverage,
+    extraReturnedTotal,
+  ]) {
+    const harness = createHarness(() => ({
+      answer: 'must not escape',
+      sourceEvidence,
+      resultArtifact: null,
+    }));
+    await assert.rejects(
+      harness.executor(operationContext('query', queryParameters())),
+      error => error.code === 'worker_result_invalid',
+    );
+  }
+});
+
+test('terminal top-level and result evidence must agree on retrieval facts', async () => {
+  const harness = createHarness(() => ({
+    state: 'partial',
+    result: {
+      answer: null,
+      sweepOutputs: [],
+      sourceEvidence: childEvidence({ returnedTotals: { nodes: 2, edges: 1 } }),
+    },
+    error: { code: 'provider_incomplete', message: 'short', retryable: true },
+    sourceEvidence: childEvidence({ returnedTotals: { nodes: 1, edges: 0 } }),
+    resultArtifact: null,
+  }));
+
+  await assert.rejects(
+    harness.executor(operationContext('pgs', pgsParameters())),
+    error => error.code === 'worker_result_invalid',
+  );
+});
+
+test('failed null results may use canonical baseline evidence without child retrieval facts', async () => {
+  const harness = createHarness(() => ({
+    state: 'failed',
+    result: null,
+    error: { code: 'provider_failed', message: 'gone', retryable: true },
+    sourceEvidence: null,
+    resultArtifact: null,
+  }));
+
+  const envelope = await harness.executor(operationContext('pgs', pgsParameters()));
+
+  assert.equal(envelope.state, 'failed');
+  assert.equal(envelope.result, null);
+  assert.equal(envelope.sourceEvidence.matchOutcome, 'unknown');
+  assert.deepEqual(envelope.sourceEvidence.returnedTotals, { nodes: 0, edges: 0 });
+});
+
+test('failed non-null results cannot omit child retrieval evidence', async () => {
+  const harness = createHarness(() => ({
+    state: 'failed',
+    result: { answer: null, sweepOutputs: [] },
+    error: { code: 'pgs_all_failed', message: 'none', retryable: true },
+    sourceEvidence: null,
+    resultArtifact: null,
+  }));
+
+  await assert.rejects(
+    harness.executor(operationContext('pgs', pgsParameters())),
+    error => error.code === 'worker_result_invalid',
+  );
+});
+
+test('non-object executor output fails with a typed worker result error', async () => {
+  const harness = createHarness(() => null);
+
+  await assert.rejects(
+    harness.executor(operationContext('query', queryParameters())),
+    error => error.code === 'worker_result_invalid',
+  );
 });
 
 test('read-only targets suppress actions and forged sibling ownership is denied', async () => {
