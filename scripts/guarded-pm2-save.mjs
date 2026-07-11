@@ -18,6 +18,20 @@ import {
 
 const execFile = promisify(execFileCallback);
 
+export const APPROVED_BRAIN_PROCESS_NAMES = Object.freeze([
+  'home23-cosmo23',
+  'home23-jerry',
+  'home23-forrest',
+  'home23-jerry-dash',
+  'home23-forrest-dash',
+  'home23-jerry-harness',
+  'home23-forrest-harness',
+  'home23-jerry-mcp',
+  'home23-forrest-mcp',
+]);
+const APPROVED_ALLOWLIST = new Set(APPROVED_BRAIN_PROCESS_NAMES);
+const APPROVED_ENV_ADDITION = 'HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY';
+
 function orderedStrings(value) {
   if (value == null) return [];
   const entries = Array.isArray(value) ? value : [value];
@@ -123,18 +137,46 @@ function equalAllowlistedIdentity(left, right) {
   return equalRow(stableLeft, stableRight);
 }
 
+function assertPlannedAllowlistedDelta(live, dump, name) {
+  if (!equalAllowlistedIdentity(live, dump)) {
+    throw typedError('pm2_allowlisted_identity_drift', name);
+  }
+  if (live.restartCount < dump.restartCount) {
+    throw typedError('pm2_allowlisted_delta_invalid', name);
+  }
+  const liveKeys = new Set(live.envKeys);
+  const dumpKeys = new Set(dump.envKeys);
+  if ([...dumpKeys].some((key) => !liveKeys.has(key))) {
+    throw typedError('pm2_allowlisted_delta_invalid', name);
+  }
+  const added = [...liveKeys].filter((key) => !dumpKeys.has(key));
+  if (added.some((key) => key !== APPROVED_ENV_ADDITION)) {
+    throw typedError('pm2_allowlisted_delta_invalid', name);
+  }
+}
+
 export function comparePreSaveTables(live, dump, allowChanged) {
   const names = new Set([...live.keys(), ...dump.keys()]);
   for (const name of names) {
-    if (!live.has(name) || !dump.has(name)) throw typedError('pm2_table_drift', name);
+    if (!live.has(name)) throw typedError('pm2_table_drift', name);
+    if (!dump.has(name)) {
+      if (allowChanged.has(name)) continue;
+      throw typedError('pm2_table_drift', name);
+    }
     const liveRow = live.get(name);
     const dumpRow = dump.get(name);
     if (!allowChanged.has(name) && !equalLiveAndDumpRow(liveRow, dumpRow)) {
       throw typedError('pm2_unrelated_drift', name);
     }
-    if (allowChanged.has(name) && !equalAllowlistedIdentity(liveRow, dumpRow)) {
-      throw typedError('pm2_allowlisted_identity_drift', name);
-    }
+    if (allowChanged.has(name)) assertPlannedAllowlistedDelta(liveRow, dumpRow, name);
+  }
+}
+
+function assertApprovedAllowlist(values) {
+  if (!Array.isArray(values) || values.length !== APPROVED_BRAIN_PROCESS_NAMES.length
+      || new Set(values).size !== values.length
+      || values.some((name) => !APPROVED_ALLOWLIST.has(name))) {
+    throw typedError('pm2_allowlist_invalid');
   }
 }
 
@@ -203,15 +245,19 @@ export async function guardedPm2Save({
     throw typedError('pm2_paths_invalid');
   }
   const allow = new Set(allowChanged);
-  if (allow.size !== allowChanged.length || allowChanged.some((name) => !name)) {
-    throw typedError('pm2_allowlist_invalid');
-  }
+  assertApprovedAllowlist(allowChanged);
   const original = await readDump(dumpPath).catch((error) => {
     if (error.code === 'ENOENT') throw typedError('pm2_dump_missing');
     throw error;
   });
   await fsp.mkdir(path.dirname(backupPath), { recursive: true, mode: 0o700 });
   await fsp.writeFile(backupPath, original.bytes, { mode: 0o600, flag: 'wx' });
+  const backupStat = await fsp.lstat(backupPath);
+  if (!backupStat.isFile() || backupStat.isSymbolicLink()
+      || (backupStat.mode & 0o777) !== 0o600
+      || !Buffer.from(await fsp.readFile(backupPath)).equals(original.bytes)) {
+    throw typedError('pm2_backup_invalid');
+  }
   const liveBefore = normalizePm2Table(await listProcesses(), 'live PM2 table');
   const dumpBefore = normalizePm2Table(original.document, 'dump PM2 table');
   comparePreSaveTables(liveBefore, dumpBefore, allow);
@@ -228,6 +274,7 @@ export async function guardedPm2Save({
     dumpTableBefore: tableRows(dumpBefore),
     dumpTableAfter: null,
     restored: false,
+    restorationVerified: false,
   };
   if (!apply) return result;
   let saveInvoked = false;
@@ -247,6 +294,20 @@ export async function guardedPm2Save({
     if (saveInvoked) {
       await restoreDump(dumpPath, original.bytes, original.mode);
       result.restored = true;
+      const [restoredBytes, restoredStat] = await Promise.all([
+        fsp.readFile(dumpPath),
+        fsp.lstat(dumpPath),
+      ]).catch((cause) => {
+        throw typedError('pm2_dump_restore_failed', 'restored dump could not be read', { cause });
+      });
+      if (!restoredStat.isFile() || restoredStat.isSymbolicLink()
+          || Number(restoredStat.mode & 0o777) !== original.mode
+          || !Buffer.from(restoredBytes).equals(original.bytes)) {
+        throw typedError('pm2_dump_restore_failed', 'restored dump bytes or mode mismatch', {
+          cause: error,
+        });
+      }
+      result.restorationVerified = true;
     }
     error.pm2Save = result;
     throw error;

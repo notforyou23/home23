@@ -96,18 +96,28 @@ async function scanPhysicalRoot(root) {
   try {
     rootStat = await fsp.lstat(root, { bigint: true });
   } catch (error) {
-    if (error.code === 'ENOENT') return [{ path: '.', type: 'absent', size: null, mtimeNs: null, sha256: null }];
+    if (error.code === 'ENOENT') return [{
+      path: '.', type: 'absent', size: null, mtimeNs: null, ctimeNs: null,
+      dev: null, ino: null, nlink: null, sha256: null,
+    }];
     throw error;
   }
   if (rootStat.isSymbolicLink()) {
     const linkTarget = await fsp.readlink(root);
     return [{
       path: '.', type: 'symlink', size: Number(rootStat.size),
-      mtimeNs: rootStat.mtimeNs.toString(), sha256: sha256Bytes(Buffer.from(linkTarget)), linkTarget,
+      mtimeNs: rootStat.mtimeNs.toString(), ctimeNs: rootStat.ctimeNs.toString(),
+      dev: rootStat.dev.toString(), ino: rootStat.ino.toString(), nlink: Number(rootStat.nlink),
+      sha256: sha256Bytes(Buffer.from(linkTarget)), linkTarget,
     }];
   }
   if (!rootStat.isDirectory()) throw typedError('boundary_root_invalid');
-  const records = [{ path: '.', type: 'directory', size: Number(rootStat.size), mtimeNs: rootStat.mtimeNs.toString(), sha256: null }];
+  const records = [{
+    path: '.', type: 'directory', size: Number(rootStat.size),
+    mtimeNs: rootStat.mtimeNs.toString(), ctimeNs: rootStat.ctimeNs.toString(),
+    dev: rootStat.dev.toString(), ino: rootStat.ino.toString(), nlink: Number(rootStat.nlink),
+    sha256: null,
+  }];
   async function walk(directory, relativeDirectory) {
     const directoryBefore = await fsp.lstat(directory, { bigint: true });
     const names = (await fsp.readdir(directory)).sort((left, right) => left.localeCompare(right));
@@ -119,24 +129,31 @@ async function scanPhysicalRoot(root) {
         const linkTarget = await fsp.readlink(absolute);
         records.push({
           path: relative, type: 'symlink', size: Number(stat.size),
-          mtimeNs: stat.mtimeNs.toString(), sha256: sha256Bytes(Buffer.from(linkTarget)), linkTarget,
+          mtimeNs: stat.mtimeNs.toString(), ctimeNs: stat.ctimeNs.toString(),
+          dev: stat.dev.toString(), ino: stat.ino.toString(), nlink: Number(stat.nlink),
+          sha256: sha256Bytes(Buffer.from(linkTarget)), linkTarget,
         });
       } else if (stat.isDirectory()) {
         records.push({
           path: relative, type: 'directory', size: Number(stat.size),
-          mtimeNs: stat.mtimeNs.toString(), sha256: null,
+          mtimeNs: stat.mtimeNs.toString(), ctimeNs: stat.ctimeNs.toString(),
+          dev: stat.dev.toString(), ino: stat.ino.toString(), nlink: Number(stat.nlink),
+          sha256: null,
         });
         await walk(absolute, relative);
       } else if (stat.isFile()) {
         const hashed = await hashFile(absolute);
         records.push({
           path: relative, type: 'file', size: hashed.physicalSize,
-          mtimeNs: hashed.mtimeNs, sha256: hashed.sha256,
+          mtimeNs: hashed.mtimeNs, ctimeNs: hashed.ctimeNs,
+          dev: hashed.dev, ino: hashed.ino, nlink: Number(stat.nlink), sha256: hashed.sha256,
         });
       } else {
         records.push({
           path: relative, type: 'other', size: Number(stat.size),
-          mtimeNs: stat.mtimeNs.toString(), sha256: null,
+          mtimeNs: stat.mtimeNs.toString(), ctimeNs: stat.ctimeNs.toString(),
+          dev: stat.dev.toString(), ino: stat.ino.toString(), nlink: Number(stat.nlink),
+          sha256: null,
         });
       }
     }
@@ -230,6 +247,8 @@ export async function buildBoundaryInventory({ catalog, targetAgent, targetBrain
 
 function comparable(receipt) {
   return {
+    receiptRunId: receipt.receiptRunId,
+    authority: receipt.authority,
     schemaVersion: receipt.schemaVersion,
     target: receipt.target,
     sourceRevision: receipt.sourceRevision,
@@ -242,6 +261,12 @@ function comparable(receipt) {
 export function compareBoundaryInventories(before, after) {
   if (!before || !after || before.phase !== 'before' || after.phase !== 'after') {
     throw typedError('boundary_compare_invalid');
+  }
+  if (typeof before.receiptRunId !== 'string' || !before.receiptRunId
+      || typeof before.authority !== 'string' || !before.authority
+      || before.receiptRunId !== after.receiptRunId
+      || before.authority !== after.authority) {
+    throw typedError('boundary_authority_mismatch');
   }
   const left = comparable(before);
   const right = comparable(after);

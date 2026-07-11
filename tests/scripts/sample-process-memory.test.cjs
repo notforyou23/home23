@@ -10,11 +10,13 @@ function set(timestamp, dashboard = {}, cosmo = {}) {
   return [
     {
       name: 'dashboard', pid: 101, restartCount: 3, heapUsedMiB: 100,
-      metricUpdatedAt: timestamp, observedAt: timestamp + 5, ...dashboard,
+      metricUpdatedAt: timestamp, metricTimestampAuthoritative: true,
+      observedAt: timestamp + 5, ...dashboard,
     },
     {
       name: 'cosmo', pid: 202, restartCount: 1, heapUsedMiB: 40,
-      metricUpdatedAt: timestamp, observedAt: timestamp + 5, ...cosmo,
+      metricUpdatedAt: timestamp, metricTimestampAuthoritative: true,
+      observedAt: timestamp + 5, ...cosmo,
     },
   ];
 }
@@ -55,6 +57,11 @@ test('fails closed for stale metrics, PID replacement, restart, and heap growth'
     ['metric_stale', [set(900), set(900)]],
     ['pid_replaced', [set(1_100, { pid: 999 }), set(1_200, { pid: 999 })]],
     ['process_restarted', [set(1_100, { restartCount: 4 }), set(1_200, { restartCount: 4 })]],
+    ['process_restarted', [set(1_100, { restartCount: 2 }), set(1_200, { restartCount: 2 })]],
+    ['metric_timestamp_untrusted', [
+      set(1_100, { metricTimestampAuthoritative: false }),
+      set(1_200, { metricTimestampAuthoritative: false }),
+    ]],
     ['heap_growth_exceeded', [set(1_100, { heapUsedMiB: 130 }), set(1_200, { heapUsedMiB: 130 })], 20],
   ]) {
     assert.throws(
@@ -92,5 +99,6 @@ test('samples both execution processes around the exact command', async () => {
   assert.deepEqual(result.command, ['node', 'acceptance-command.mjs']);
   assert.equal(result.targets.length, 2);
   assert.ok(result.targets.every((target) => target.metricFresh));
-  assert.equal(sampleCalls, 3);
+  assert.equal(sampleCalls, 4);
+  assert.equal(result.targets.every((target) => target.samples.at(-1).postCommand === true), true);
 });

@@ -51,7 +51,8 @@ test('recursively inventories every file, records symlinks without following, an
   assert.equal(new Set(inventory.boundaries.map(({ kind }) => kind)).size, 7);
   for (const file of ['nested/unknown.weird', 'nested/extensionless', 'nested/added-after-fixture-start']) {
     assert.ok(inventory.records.some((row) => row.boundary === 'brain'
-      && row.path === file && row.type === 'file' && row.sha256), file);
+      && row.path === file && row.type === 'file' && row.sha256
+      && row.dev && row.ino && row.ctimeNs && Number.isSafeInteger(row.nlink)), file);
   }
   const links = inventory.records.filter((row) => row.path === 'scratch-link');
   assert.ok(links.length >= 2);
@@ -88,11 +89,53 @@ test('a revision, byte, or file-set change is reported as target_changed_concurr
   const { buildBoundaryInventory, compareBoundaryInventories } = await import('../../scripts/hash-brain-boundaries.mjs');
   const state = await fixture();
   t.after(() => fs.rm(state.root, { recursive: true, force: true }));
-  const before = { phase: 'before', ...(await buildBoundaryInventory({ catalog: state.catalog, targetAgent: 'jerry' })) };
+  const identity = { receiptRunId: 'boundary-run', authority: 'live' };
+  const before = { ...identity, phase: 'before', ...(await buildBoundaryInventory({ catalog: state.catalog, targetAgent: 'jerry' })) };
   await fs.writeFile(path.join(state.canonicalRoot, 'nested', 'concurrent'), 'writer crossed');
-  const after = { phase: 'after', ...(await buildBoundaryInventory({ catalog: state.catalog, targetAgent: 'jerry' })) };
+  const after = { ...identity, phase: 'after', ...(await buildBoundaryInventory({ catalog: state.catalog, targetAgent: 'jerry' })) };
   assert.throws(
     () => compareBoundaryInventories(before, after),
+    (error) => error.code === 'target_changed_concurrently',
+  );
+});
+
+test('compare requires one receipt run and authority and detects inode or revision substitution', async (t) => {
+  const { buildBoundaryInventory, compareBoundaryInventories } = await import('../../scripts/hash-brain-boundaries.mjs');
+  const state = await fixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  const build = async (phase, overrides = {}) => ({
+    receiptRunId: 'boundary-run', authority: 'live', phase,
+    ...(await buildBoundaryInventory({ catalog: state.catalog, targetAgent: 'jerry' })),
+    ...overrides,
+  });
+  const before = await build('before');
+  const same = await build('after');
+  assert.equal(compareBoundaryInventories(before, same).unchanged, true);
+  assert.throws(
+    () => compareBoundaryInventories(before, { ...same, receiptRunId: 'other-run' }),
+    (error) => error.code === 'boundary_authority_mismatch',
+  );
+  assert.throws(
+    () => compareBoundaryInventories(before, { ...same, authority: 'isolated-controlled' }),
+    (error) => error.code === 'boundary_authority_mismatch',
+  );
+
+  const file = path.join(state.canonicalRoot, 'nested', 'extensionless');
+  const originalStat = await fs.stat(file);
+  const bytes = await fs.readFile(file);
+  await fs.rm(file);
+  await fs.writeFile(file, bytes);
+  await fs.utimes(file, originalStat.atime, originalStat.mtime);
+  const replaced = await build('after');
+  assert.throws(
+    () => compareBoundaryInventories(before, replaced),
+    (error) => error.code === 'target_changed_concurrently',
+  );
+
+  const revisionChanged = structuredClone(same);
+  revisionChanged.sourceRevision.revision += 1;
+  assert.throws(
+    () => compareBoundaryInventories(before, revisionChanged),
     (error) => error.code === 'target_changed_concurrently',
   );
 });

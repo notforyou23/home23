@@ -4,6 +4,18 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 
+const APPROVED = [
+  'home23-cosmo23',
+  'home23-jerry',
+  'home23-forrest',
+  'home23-jerry-dash',
+  'home23-forrest-dash',
+  'home23-jerry-harness',
+  'home23-forrest-harness',
+  'home23-jerry-mcp',
+  'home23-forrest-mcp',
+];
+
 function liveRow(name, overrides = {}) {
   return {
     name,
@@ -45,10 +57,17 @@ async function fixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'home23-guarded-pm2-'));
   const dumpPath = path.join(root, 'dump.pm2');
   const backupPath = path.join(root, 'receipts', 'backup.pm2');
-  const rows = [dumpRow('home23-jerry-dash'), dumpRow('unrelated-service')];
+  const rows = [...APPROVED.map((name) => dumpRow(name)), dumpRow('unrelated-service')];
   const bytes = Buffer.from(`${JSON.stringify(rows, null, 2)}\n`);
   await fs.writeFile(dumpPath, bytes, { mode: 0o640 });
   return { root, dumpPath, backupPath, bytes };
+}
+
+function completeLive(overrides = {}) {
+  return [
+    ...APPROVED.map((name) => liveRow(name, overrides[name] || {})),
+    liveRow('unrelated-service', overrides['unrelated-service'] || {}),
+  ];
 }
 
 test('normalizes flattened dump.pm2 rows identically to live jlist rows', async () => {
@@ -84,8 +103,8 @@ test('dry run writes a mode-0600 byte backup and never invokes pm2 save', async 
   const result = await guardedPm2Save({
     dumpPath: state.dumpPath,
     backupPath: state.backupPath,
-    allowChanged: [],
-    listProcesses: async () => [liveRow('home23-jerry-dash'), liveRow('unrelated-service')],
+    allowChanged: APPROVED,
+    listProcesses: async () => completeLive(),
     save: async () => { saves += 1; },
   });
   assert.equal(result.applied, false);
@@ -102,15 +121,15 @@ test('apply restores the original dump after a failed full-table postcondition',
   await assert.rejects(guardedPm2Save({
     dumpPath: state.dumpPath,
     backupPath: state.backupPath,
-    allowChanged: [],
+    allowChanged: APPROVED,
     apply: true,
     listProcesses: async () => {
       calls += 1;
-      return [liveRow('home23-jerry-dash'), liveRow('unrelated-service')];
+      return completeLive();
     },
     save: async () => {
       await fs.writeFile(state.dumpPath, `${JSON.stringify([
-        dumpRow('home23-jerry-dash'),
+        ...APPROVED.map((name) => dumpRow(name)),
         dumpRow('unrelated-service', { pid: 999 }),
       ])}\n`);
     },
@@ -124,9 +143,9 @@ test('apply restores the original dump after a failed full-table postcondition',
 test('duplicate, offline, or unrelated drift blocks save before mutation', async (t) => {
   const { guardedPm2Save } = await import('../../scripts/guarded-pm2-save.mjs');
   for (const [name, live, code] of [
-    ['duplicate', [liveRow('home23-jerry-dash'), liveRow('home23-jerry-dash')], 'pm2_duplicate_process'],
-    ['offline', [liveRow('home23-jerry-dash', { status: 'stopped' }), liveRow('unrelated-service')], 'pm2_process_not_online'],
-    ['drift', [liveRow('home23-jerry-dash'), liveRow('unrelated-service', { pm_cwd: '/moved' })], 'pm2_unrelated_drift'],
+    ['duplicate', [...completeLive(), liveRow('home23-jerry-dash')], 'pm2_duplicate_process'],
+    ['offline', completeLive({ 'home23-jerry-dash': { status: 'stopped' } }), 'pm2_process_not_online'],
+    ['drift', completeLive({ 'unrelated-service': { pm_cwd: '/moved' } }), 'pm2_unrelated_drift'],
   ]) {
     const state = await fixture();
     t.after(() => fs.rm(state.root, { recursive: true, force: true }));
@@ -134,7 +153,7 @@ test('duplicate, offline, or unrelated drift blocks save before mutation', async
     await assert.rejects(guardedPm2Save({
       dumpPath: state.dumpPath,
       backupPath: path.join(state.root, 'receipts', `${name}.pm2`),
-      allowChanged: ['home23-jerry-dash'],
+      allowChanged: APPROVED,
       apply: true,
       listProcesses: async () => live,
       save: async () => { saves += 1; },
@@ -150,7 +169,7 @@ test('allowlisted rows permit only PID, restart, and environment-key drift', asy
   } = await import('../../scripts/guarded-pm2-save.mjs');
   const live = normalizePm2Table([liveRow('home23-jerry-dash', {
     restart_time: 3,
-    env: { HOME23_MODE: 'test', NEW_CAPABILITY: 'redacted' },
+    env: { HOME23_MODE: 'test', HOME23_BRAIN_OPERATIONS_CAPABILITY_KEY: 'redacted' },
   })]);
   live.get('home23-jerry-dash').pid = 101;
   const dump = normalizePm2Table([dumpRow('home23-jerry-dash')]);
@@ -167,4 +186,50 @@ test('allowlisted rows permit only PID, restart, and environment-key drift', asy
     () => comparePreSaveTables(live, wrongScript, new Set(['home23-jerry-dash'])),
     (error) => error.code === 'pm2_allowlisted_identity_drift',
   );
+
+  const removedEnvironment = normalizePm2Table([liveRow('home23-jerry-dash', {
+    env: {},
+  })]);
+  assert.throws(
+    () => comparePreSaveTables(
+      removedEnvironment,
+      dump,
+      new Set(['home23-jerry-dash']),
+    ),
+    (error) => error.code === 'pm2_allowlisted_delta_invalid',
+  );
+});
+
+test('save requires the exact approved nine-name allowlist', async (t) => {
+  const { guardedPm2Save, APPROVED_BRAIN_PROCESS_NAMES } = await import('../../scripts/guarded-pm2-save.mjs');
+  const state = await fixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  assert.deepEqual(APPROVED_BRAIN_PROCESS_NAMES, APPROVED);
+  for (const allowChanged of [
+    APPROVED.slice(0, -1),
+    [...APPROVED, 'unrelated-service'],
+    [...APPROVED.slice(0, -1), 'made-up-home23-process'],
+  ]) {
+    await assert.rejects(guardedPm2Save({
+      dumpPath: state.dumpPath,
+      backupPath: path.join(state.root, 'receipts', `invalid-${allowChanged.length}-${Math.random()}.pm2`),
+      allowChanged,
+      listProcesses: async () => completeLive(),
+    }), (error) => error.code === 'pm2_allowlist_invalid');
+  }
+});
+
+test('failed postcondition verifies byte-and-mode restoration and fails closed on bad restore', async (t) => {
+  const { guardedPm2Save } = await import('../../scripts/guarded-pm2-save.mjs');
+  const state = await fixture();
+  t.after(() => fs.rm(state.root, { recursive: true, force: true }));
+  await assert.rejects(guardedPm2Save({
+    dumpPath: state.dumpPath,
+    backupPath: state.backupPath,
+    allowChanged: APPROVED,
+    apply: true,
+    listProcesses: async () => completeLive(),
+    save: async () => fs.writeFile(state.dumpPath, 'broken dump\n', { mode: 0o600 }),
+    restoreDump: async (file) => fs.writeFile(file, 'wrong restored bytes\n', { mode: 0o600 }),
+  }), (error) => error.code === 'pm2_dump_restore_failed');
 });

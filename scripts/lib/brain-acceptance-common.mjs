@@ -214,14 +214,37 @@ async function assertOutputParent(context, output) {
   }
 }
 
+const ownedJsonlOutputs = new Map();
+
+async function publishCreateNew(temporary, target) {
+  try {
+    await fsp.link(temporary, target);
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      throw typedError('receipt_output_exists', `receipt output already exists: ${target}`, {
+        cause: error,
+      });
+    }
+    throw error;
+  } finally {
+    await fsp.rm(temporary, { force: true }).catch(() => {});
+  }
+}
+
 export async function writeJsonReceipt(context, output, payload) {
   const target = assertOutputPath(context, output);
   await assertOutputParent(context, target);
   const row = canonicalReceiptRow(context, payload);
   const encoded = `${JSON.stringify(row, null, 2)}\n`;
   const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
-  await fsp.writeFile(temporary, encoded, { mode: 0o600, flag: 'wx' });
-  await fsp.rename(temporary, target);
+  const handle = await fsp.open(temporary, 'wx', 0o600);
+  try {
+    await handle.writeFile(encoded);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await publishCreateNew(temporary, target);
   return row;
 }
 
@@ -231,12 +254,20 @@ export async function appendJsonlReceipt(context, output, payload) {
   const row = canonicalReceiptRow(context, payload);
   let handle;
   try {
-    handle = await fsp.open(
-      target,
-      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND
-        | fs.constants.O_NOFOLLOW,
-      0o600,
-    );
+    const ownershipKey = `${context.receiptRunId}\0${context.authority}\0${target}`;
+    const owned = ownedJsonlOutputs.get(ownershipKey);
+    const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW
+      | (owned ? 0 : fs.constants.O_CREAT | fs.constants.O_EXCL);
+    try {
+      handle = await fsp.open(target, flags, 0o600);
+    } catch (error) {
+      if (error?.code === 'EEXIST') {
+        throw typedError('receipt_output_exists', `receipt output already exists: ${target}`, {
+          cause: error,
+        });
+      }
+      throw error;
+    }
     const stat = await handle.stat({ bigint: true });
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n) {
       throw typedError('output_path_invalid', 'receipt output must be one regular nonsymlink file');
@@ -244,6 +275,15 @@ export async function appendJsonlReceipt(context, output, payload) {
     const canonicalTarget = await fsp.realpath(target);
     if (!isInsideOrEqual(context.receiptRunDir, canonicalTarget)) {
       throw typedError('output_path_invalid', 'receipt output escapes the run directory');
+    }
+    if (owned && (owned.dev !== stat.dev.toString() || owned.ino !== stat.ino.toString())) {
+      throw typedError('receipt_output_changed', 'receipt output identity changed');
+    }
+    if (!owned) {
+      ownedJsonlOutputs.set(ownershipKey, {
+        dev: stat.dev.toString(),
+        ino: stat.ino.toString(),
+      });
     }
     await handle.writeFile(`${JSON.stringify(row)}\n`);
     await handle.sync();

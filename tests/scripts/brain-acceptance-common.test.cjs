@@ -51,9 +51,41 @@ test('JSON and JSONL rows stay beneath the run directory and carry verifiable ar
   const jsonl = path.join(root, 'nested', 'many.jsonl');
   await writeJsonReceipt(context, json, { helper: 'json' });
   await appendJsonlReceipt(context, jsonl, { helper: 'jsonl', sequence: 1 });
+  await appendJsonlReceipt(context, jsonl, { helper: 'jsonl', sequence: 2 });
   assert.equal((await fs.stat(json)).mode & 0o777, 0o600);
   assert.equal((await fs.stat(jsonl)).mode & 0o777, 0o600);
   await assert.rejects(writeJsonReceipt(context, path.join(root, '..', 'escape.json'), {
     helper: 'escape',
   }), (error) => error.code === 'output_path_invalid');
+});
+
+test('receipt outputs are create-new and never overwrite or adopt a pre-existing path', async (t) => {
+  const {
+    appendJsonlReceipt,
+    writeJsonReceipt,
+  } = await import('../../scripts/lib/brain-acceptance-common.mjs');
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'home23-receipt-create-new-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const context = {
+    receiptRunDir: root,
+    receiptRunId: 'run-create-new',
+    authority: 'live',
+    implementationCommit: 'd'.repeat(40),
+    hostname: 'fixture-host',
+    startedAt: '2026-07-10T00:00:00.000Z',
+  };
+  const json = path.join(root, 'already.json');
+  const jsonl = path.join(root, 'already.jsonl');
+  await fs.writeFile(json, 'operator bytes\n');
+  await fs.writeFile(jsonl, 'operator rows\n');
+  await assert.rejects(
+    writeJsonReceipt(context, json, { helper: 'must-not-overwrite' }),
+    (error) => error.code === 'receipt_output_exists',
+  );
+  await assert.rejects(
+    appendJsonlReceipt(context, jsonl, { helper: 'must-not-adopt' }),
+    (error) => error.code === 'receipt_output_exists',
+  );
+  assert.equal(await fs.readFile(json, 'utf8'), 'operator bytes\n');
+  assert.equal(await fs.readFile(jsonl, 'utf8'), 'operator rows\n');
 });

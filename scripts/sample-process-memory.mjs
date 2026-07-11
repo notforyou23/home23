@@ -52,7 +52,6 @@ function heapFromPm2(row) {
 }
 
 export function createDefaultSampleProvider() {
-  const lastMetric = new Map();
   return async function sample(targets, now = Date.now()) {
     let pm2Rows = null;
     if (targets.some((target) => target.kind === 'pm2')) {
@@ -70,18 +69,25 @@ export function createDefaultSampleProvider() {
         if (matches.length !== 1) throw typedError(matches.length ? 'pm2_duplicate_process' : 'pm2_process_missing');
         const row = matches[0];
         const heapUsedMiB = heapFromPm2(row);
-        const fingerprint = `${row.pid}:${row.pm2_env?.restart_time}:${heapUsedMiB}`;
-        const prior = lastMetric.get(target.name);
-        const metricUpdatedAt = prior?.fingerprint === fingerprint ? prior.metricUpdatedAt : now;
-        lastMetric.set(target.name, { fingerprint, metricUpdatedAt });
+        const metric = row?.pm2_env?.axm_monitor?.['Used Heap Size'];
+        const rawMetricTimestamp = metric?.updatedAt ?? metric?.updated_at ?? metric?.timestamp;
+        const metricUpdatedAt = typeof rawMetricTimestamp === 'number'
+          ? rawMetricTimestamp : Date.parse(rawMetricTimestamp);
+        if (!Number.isFinite(metricUpdatedAt)) {
+          throw typedError(
+            'heap_metric_timestamp_unavailable',
+            `PM2 V8 heap metric lacks an authoritative update timestamp for ${target.processName}`,
+          );
+        }
         output.push({
           name: target.name,
           pid: Number(row.pid),
           restartCount: Number(row.pm2_env?.restart_time || 0),
           heapUsedMiB,
           metricUpdatedAt,
+          metricTimestampAuthoritative: true,
           observedAt: now,
-          metricSource: 'pm2-axm-v8-change-observed',
+          metricSource: 'pm2-axm-v8-timestamped',
         });
       } else {
         const document = await readJson(target.metricsPath, { maxBytes: 1024 * 1024 });
@@ -97,6 +103,7 @@ export function createDefaultSampleProvider() {
         }
         output.push({
           name: target.name, pid, restartCount, heapUsedMiB, metricUpdatedAt,
+          metricTimestampAuthoritative: true,
           observedAt: now, metricSource: 'isolated-metrics-document',
         });
       }
@@ -123,6 +130,9 @@ export function summarizeSamples({ targets, baseline, samples, commandStartedAt,
   for (const target of targets) {
     const first = baselineByName.get(target.name);
     const rows = sampleMaps.map((set) => set.get(target.name));
+    if ([first, ...rows].some((row) => row.metricTimestampAuthoritative !== true)) {
+      throw typedError('metric_timestamp_untrusted', target.name);
+    }
     const inWindow = rows.filter((row) => row.metricUpdatedAt >= commandStartedAt
       && row.observedAt - row.metricUpdatedAt >= 0
       && row.observedAt - row.metricUpdatedAt <= maxMetricAgeMs);
@@ -135,7 +145,9 @@ export function summarizeSamples({ targets, baseline, samples, commandStartedAt,
     const peakHeapMiB = Math.max(first.heapUsedMiB, ...rows.map((row) => row.heapUsedMiB));
     const heapGrowthMiB = peakHeapMiB - first.heapUsedMiB;
     const pidChanged = rows.some((row) => row.pid !== first.pid);
-    const restartDelta = Math.max(0, ...rows.map((row) => row.restartCount - first.restartCount));
+    const restartDeltas = rows.map((row) => row.restartCount - first.restartCount);
+    const restartChanged = restartDeltas.some((delta) => delta !== 0);
+    const restartDelta = restartDeltas.length ? Math.max(...restartDeltas) : 0;
     const metricFresh = advancing.length >= 2;
     const summary = {
       name: target.name,
@@ -151,7 +163,7 @@ export function summarizeSamples({ targets, baseline, samples, commandStartedAt,
       samples: [first, ...rows],
     };
     if (pidChanged) throw typedError('pid_replaced', target.name, { summary });
-    if (restartDelta !== 0) throw typedError('process_restarted', target.name, { summary });
+    if (restartChanged) throw typedError('process_restarted', target.name, { summary });
     if (!metricFresh) throw typedError('metric_stale', target.name, { summary });
     if (heapGrowthMiB > maxHeapGrowthMiB) throw typedError('heap_growth_exceeded', target.name, { summary });
     summaries.push(summary);
@@ -207,6 +219,8 @@ export async function sampleProcessMemory({
     });
   }
   const commandCompletedAt = now();
+  const finalSample = await sampleProvider(targets, commandCompletedAt);
+  samples.push(finalSample.map((row) => ({ ...row, postCommand: true })));
   const summaries = summarizeSamples({
     targets, baseline, samples, commandStartedAt, maxMetricAgeMs, maxHeapGrowthMiB,
   });
