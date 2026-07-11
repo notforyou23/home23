@@ -46,6 +46,9 @@ const {
   probeMcpAvailability,
 } = require('./mcp-availability.js');
 const { createMcpProxyRouter } = require('./mcp-proxy-router.js');
+const {
+  registerSynthesisCompatibilityRoutes,
+} = require('./brain-operations/synthesis-compatibility-routes.js');
 
 const PM2_ENV_BLOCKLIST = [
   'cron_restart',
@@ -330,6 +333,7 @@ class DashboardServer {
     this.brainOperationsCoordinator = dependencies.coordinator;
     this.brainOperationsWorker = dependencies.worker || null;
     this.brainOperationsReader = dependencies.reader;
+    this.brainOperationsStore = dependencies.store || dependencies.reader?.store || null;
     this.brainOperationsExporter = dependencies.exporter;
     this.brainOperationsProviderRuntime = dependencies.providerOperationRuntime || null;
     this.brainOperationsSynthesisRuntime = dependencies.synthesisOperationRuntime || null;
@@ -7123,36 +7127,12 @@ Be specific, actionable, and maintain research continuity.`;
 
     // ── Synthesis Agent API ──
 
-    // GET /api/synthesis/state — serve brain-state.json
-    this.app.get('/api/synthesis/state', async (req, res) => {
-      try {
-        const { readCommittedSynthesisState } = require('../synthesis/synthesis-agent.js');
-        const state = this.brainOperationsSynthesisRuntime
-          ? await this.brainOperationsSynthesisRuntime.readState()
-          : await readCommittedSynthesisState({ brainDir: this.logsDir });
-        res.json(state || { generatedAt: null, message: 'No synthesis has run yet.' });
-      } catch (error) {
-        res.status(500).json({ error: error.message });
-      }
-    });
-
-    // POST /api/synthesis/run — trigger synthesis agent
-    this.app.post('/api/synthesis/run', async (req, res) => {
-      try {
-        if (!this._synthesisAgent) {
-          return res.status(503).json({ error: 'Synthesis agent not initialized' });
-        }
-        if (this._synthesisAgent.running) {
-          return res.json({ started: false, message: 'Synthesis already running' });
-        }
-        // Fire and forget — don't await
-        this._synthesisAgent.run('manual').catch(err => {
-          console.error('[synthesis] Manual run failed:', err.message);
-        });
-        res.json({ started: true });
-      } catch (error) {
-        res.status(500).json({ error: error.message });
-      }
+    registerSynthesisCompatibilityRoutes({
+      app: this.app,
+      requesterAgent: this.getHome23AgentName(),
+      synthesisRuntime: this.brainOperationsSynthesisRuntime,
+      coordinator: this.brainOperationsCoordinator,
+      store: this.brainOperationsStore,
     });
 
     // NEW: Embedding statistics
